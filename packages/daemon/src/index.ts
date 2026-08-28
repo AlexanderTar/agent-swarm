@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
@@ -53,8 +54,15 @@ async function main(): Promise<void> {
     socket.send(JSON.stringify({ type: "board_snapshot", tasks: ctx.tasks.list() }));
   });
 
-  const webOut = join(process.cwd(), "../web/out");
-  if (existsSync(webOut)) {
+  // Resolve web UI relative to this file (packages/daemon/dist/index.js), not process.cwd().
+  // launchd sets cwd to ~/.swarm, which would otherwise miss packages/web/out.
+  const daemonDir = dirname(fileURLToPath(import.meta.url));
+  const webCandidates = [
+    join(daemonDir, "../../web/out"),
+    home ? join(home, "app/current/packages/web/out") : "",
+  ].filter(Boolean);
+  const webOut = webCandidates.find((p) => existsSync(p));
+  if (webOut) {
     await app.register(fastifyStatic, { root: webOut, prefix: "/" });
   } else {
     app.get("/", async () => ({ message: "Agent Swarm daemon running. Build web UI with pnpm --filter @swarm/web build." }));
