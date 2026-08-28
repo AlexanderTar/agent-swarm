@@ -105,8 +105,8 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
         case "SessionEnd":
         case "sessionEnd": {
           if (task) {
-            const status = task.status === "done" ? "done" : task.status === "review" ? "handoff" : "handoff";
-            ctx.tasks.update(task.id, { status: status as "done" | "handoff" });
+            const status = task.status === "done" ? "done" : "ready";
+            ctx.tasks.update(task.id, { status: status as "done" | "ready" });
             void ctx.memory.extractFromTask(task.id);
             ctx.broadcast({ type: "task_updated", task: ctx.tasks.getById(task.id) });
           }
@@ -177,7 +177,7 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
     const body = req.body as { sessionId: string };
     const task = ctx.tasks.getBySession(body.sessionId);
     if (task) {
-      ctx.tasks.update(task.id, { status: "handoff" });
+      ctx.tasks.update(task.id, { status: "ready" });
       void ctx.memory.extractFromTask(task.id);
       ctx.broadcast({ type: "task_updated", task: ctx.tasks.getById(task.id) });
     }

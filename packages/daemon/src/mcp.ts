@@ -84,7 +84,7 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     await ctx.kb.indexFile(path);
     const task = ctx.tasks.writeHandoff(key, note as HandoffNote, md);
     ctx.broadcast({ type: "task_updated", task });
-    return { content: [{ type: "text", text: `Handoff written for ${key}. Status: handoff.\n\n${md.slice(0, 500)}...` }] };
+    return { content: [{ type: "text", text: `Handoff written for ${key}. Status: ready.\n\n${md.slice(0, 500)}...` }] };
   });
 
   server.tool("swarm_pickup", "List open handoffs or claim one and get pickup prompt", {
