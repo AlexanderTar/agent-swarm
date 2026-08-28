@@ -6,6 +6,58 @@ import * as p from "@clack/prompts";
 import { DEFAULT_CONFIG, ensureSwarmDirs, getSwarmPaths, loadConfig, saveConfig, SwarmDatabase } from "@swarm/core";
 
 const SWARM_HOME = process.env.SWARM_HOME ?? join(homedir(), ".swarm");
+const ALL_AGENT_IDS = ["cursor", "claude", "codex", "antigravity"] as const;
+
+export interface InstallOptions {
+  fromBootstrap?: boolean;
+  yes?: boolean;
+  agents?: string[];
+  port?: number;
+  autoUpdate?: boolean;
+  pullModels?: boolean;
+}
+
+function isInteractive(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+function defaultAgentIds(): string[] {
+  const detected = detectAgents().filter((a) => a.detected).map((a) => a.id);
+  return detected.length > 0 ? detected : [...ALL_AGENT_IDS];
+}
+
+async function ollamaReachable(): Promise<boolean> {
+  try {
+    const r = await fetch("http://127.0.0.1:11434/api/tags", { signal: AbortSignal.timeout(3000) });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function listOllamaModelBases(): Promise<Set<string>> {
+  const r = await fetch("http://127.0.0.1:11434/api/tags", { signal: AbortSignal.timeout(5000) });
+  if (!r.ok) return new Set();
+  const data = (await r.json()) as { models?: Array<{ name: string }> };
+  return new Set((data.models ?? []).map((m) => m.name.split(":")[0] ?? m.name));
+}
+
+function modelPresent(names: Set<string>, model: string): boolean {
+  const base = model.split(":")[0] ?? model;
+  return [...names].some((n) => n === base || n.startsWith(base));
+}
+
+async function ensureOllamaModels(config = loadConfig(), log = console.log): Promise<void> {
+  const names = await listOllamaModelBases();
+  for (const model of [config.embedModel, config.chatModel]) {
+    if (modelPresent(names, model)) {
+      log(`  ✓ ${model} already present`);
+      continue;
+    }
+    log(`  Pulling ${model} (this may take a few minutes)...`);
+    execSync(`ollama pull ${model}`, { stdio: "inherit" });
+  }
+}
 
 export function mergeSentinelBlock(filePath: string, name: string, fragment: string): void {
   const start = `<!-- ${name}:start -->`;
@@ -285,45 +337,92 @@ function mergeAntigravityConfig(pluginPath: string): void {
   }
 }
 
-export async function runInstall(fromBootstrap = false): Promise<void> {
-  p.intro("Agent Swarm setup");
+export async function runInstall(options: InstallOptions = {}): Promise<void> {
+  const fromBootstrap = options.fromBootstrap ?? false;
+  const nonInteractive = options.yes ?? (fromBootstrap && !isInteractive());
+
+  if (nonInteractive) {
+    console.log("Agent Swarm setup");
+  } else {
+    p.intro("Agent Swarm setup");
+  }
 
   const nodeOk = Number(process.version.slice(1).split(".")[0]) >= 20;
   if (!nodeOk) {
-    p.cancel("Node 20+ required");
+    const msg = "Node 20+ required";
+    if (nonInteractive) {
+      console.error(msg);
+    } else {
+      p.cancel(msg);
+    }
     process.exit(1);
   }
 
-  let ollamaOk = false;
-  try {
-    const r = await fetch("http://127.0.0.1:11434/api/tags", { signal: AbortSignal.timeout(3000) });
-    ollamaOk = r.ok;
-  } catch {
-    ollamaOk = false;
-  }
-  if (!ollamaOk) {
-    p.cancel("Ollama is required. Run: ollama serve && ollama pull nomic-embed-text && ollama pull qwen3:4b");
+  if (!(await ollamaReachable())) {
+    const msg = "Ollama is required. Run: ollama serve && ollama pull nomic-embed-text && ollama pull qwen3:4b";
+    if (nonInteractive) {
+      console.error(msg);
+    } else {
+      p.cancel(msg);
+    }
     process.exit(1);
   }
 
-  const detected = detectAgents().filter((a) => a.detected);
-  const selected = await p.multiselect({
-    message: "Wire which agents?",
-    options: detected.map((a) => ({ value: a.id, label: a.name })),
-    initialValues: detected.map((a) => a.id),
-  });
-  if (p.isCancel(selected)) process.exit(0);
+  let selected: string[];
+  let port: number;
+  let autoUpdate: boolean;
 
-  const port = await p.text({ message: "Daemon port", initialValue: "7777" });
-  if (p.isCancel(port)) process.exit(0);
+  if (nonInteractive) {
+    selected = options.agents ?? defaultAgentIds();
+    port = options.port ?? DEFAULT_CONFIG.port;
+    autoUpdate = options.autoUpdate ?? DEFAULT_CONFIG.autoUpdate;
+    console.log(`  Agents: ${selected.join(", ")}`);
+    console.log(`  Port: ${port}`);
+    console.log(`  Auto-update: ${autoUpdate ? "on" : "off"}`);
+    if (options.pullModels !== false) {
+      console.log("Checking Ollama models...");
+      await ensureOllamaModels();
+    }
+  } else {
+    const detected = detectAgents().filter((a) => a.detected);
+    const agentOptions = detected.length > 0
+      ? detected.map((a) => ({ value: a.id, label: a.name }))
+      : ALL_AGENT_IDS.map((id) => ({ value: id, label: id }));
 
-  const autoUpdate = await p.confirm({ message: "Enable hourly auto-update?", initialValue: true });
-  if (p.isCancel(autoUpdate)) process.exit(0);
+    const picked = await p.multiselect({
+      message: "Wire which agents?",
+      options: agentOptions,
+      initialValues: agentOptions.map((a) => a.value),
+      required: true,
+    });
+    if (p.isCancel(picked)) process.exit(0);
+    selected = picked as string[];
 
-  const paths = ensureSwarmDirs();
+    const portInput = await p.text({ message: "Daemon port", initialValue: String(DEFAULT_CONFIG.port) });
+    if (p.isCancel(portInput)) process.exit(0);
+    port = Number(portInput);
+
+    const autoUpdateInput = await p.confirm({ message: "Enable hourly auto-update?", initialValue: true });
+    if (p.isCancel(autoUpdateInput)) process.exit(0);
+    autoUpdate = Boolean(autoUpdateInput);
+
+    const config = loadConfig();
+    const names = await listOllamaModelBases();
+    const missing = [config.embedModel, config.chatModel].filter((m) => !modelPresent(names, m));
+    if (missing.length > 0) {
+      const pull = await p.confirm({
+        message: `Pull missing models (${missing.join(", ")})?`,
+        initialValue: true,
+      });
+      if (p.isCancel(pull)) process.exit(0);
+      if (pull) await ensureOllamaModels(config, (line) => p.log.info(line));
+    }
+  }
+
+  ensureSwarmDirs();
   const config = loadConfig();
-  config.port = Number(port);
-  config.autoUpdate = Boolean(autoUpdate);
+  config.port = port;
+  config.autoUpdate = autoUpdate;
   saveConfig(config);
 
   if (!fromBootstrap) {
@@ -335,20 +434,32 @@ export async function runInstall(fromBootstrap = false): Promise<void> {
     renameSync(tmp, join(SWARM_HOME, "app/current"));
   }
 
+  if (nonInteractive) console.log("Writing launchd jobs and syncing plugins...");
   writeStartScript();
   writeDaemonPlist();
-  writeUpdaterPlist(Boolean(autoUpdate));
-  pluginSync(selected as string[]);
+  writeUpdaterPlist(autoUpdate);
+  pluginSync(selected);
   bootstrapLaunchd();
 
   const codexCheck = checkCodexHooks();
-  if (selected.includes("codex") && !codexCheck.ok) {
-    p.log.warn(codexCheck.detail ?? "Codex hooks not configured");
-  } else if (selected.includes("codex")) {
-    p.log.info(codexCheck.detail ?? "Codex hooks merged");
+  if (selected.includes("codex")) {
+    const msg = codexCheck.detail ?? (codexCheck.ok ? "Codex hooks merged" : "Codex hooks not configured");
+    if (nonInteractive) {
+      console.log(codexCheck.ok ? `  ✓ ${msg}` : `  ⚠ ${msg}`);
+    } else if (!codexCheck.ok) {
+      p.log.warn(msg);
+    } else {
+      p.log.info(msg);
+    }
   }
 
-  p.outro(`Agent Swarm ready at http://127.0.0.1:${port}`);
+  const outro = `Agent Swarm ready at http://127.0.0.1:${port}`;
+  if (nonInteractive) {
+    console.log(`\n${outro}`);
+    console.log("Run `node ~/.swarm/app/current/packages/cli/dist/index.js doctor` to verify.");
+  } else {
+    p.outro(outro);
+  }
 }
 
 export async function runDoctor(hooks = false): Promise<number> {

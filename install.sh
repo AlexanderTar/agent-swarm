@@ -32,4 +32,14 @@ ln -sfn "$RELEASE_DIR" "$TMP_LINK"
 mv -f "$TMP_LINK" "$SWARM_HOME/app/current"
 
 echo "Installed to $RELEASE_DIR"
-exec node "$RELEASE_DIR/packages/cli/dist/index.js" install --from-bootstrap
+echo "Finishing setup (launchd, plugins, models)..."
+
+# Bootstrap always uses non-interactive defaults so curl|sh and post-build
+# installs complete without waiting on @clack prompts. Re-run `swarm install`
+# without --yes to customize agents, port, or auto-update.
+INSTALL_ARGS=(install --from-bootstrap --yes)
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  echo "(non-interactive stdin/stdout — using defaults for all detected agents)"
+fi
+
+exec node "$RELEASE_DIR/packages/cli/dist/index.js" "${INSTALL_ARGS[@]}"
