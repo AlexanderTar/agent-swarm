@@ -337,6 +337,80 @@ function mergeAntigravityConfig(pluginPath: string): void {
   }
 }
 
+function printInstallGuide(port: number, agents: string[], autoUpdate: boolean): void {
+  const boardUrl = `http://127.0.0.1:${port}`;
+  const cli = "node ~/.swarm/app/current/packages/cli/dist/index.js";
+  const uid = process.getuid?.() ?? "$(id -u)";
+
+  console.log(`
+══════════════════════════════════════════════════════════════
+  Agent Swarm — installed
+══════════════════════════════════════════════════════════════
+
+  Dashboard (Kanban board)
+    ${boardUrl}
+
+  Quick commands
+    open ${boardUrl}                 Open the board in your browser
+    ${cli} open                      Same, via CLI
+    ${cli} status                    Daemon PID, port, paths
+    ${cli} doctor                    Health check (add --hooks to test hooks)
+    ${cli} plugin sync               Re-link plugins after manual edits
+
+  Wired agents
+    ${agents.join(", ")}
+
+  MCP tools (call from any wired agent)
+    swarm_board          View the Kanban board
+    swarm_handoff        Write a handoff note and move task to handoff
+    swarm_pickup         Claim a handoff and get a pickup prompt
+    swarm_kb_search      Semantic search over ~/.swarm/kb
+    swarm_task_stage     Move, claim, release, heartbeat, archive tasks
+
+  Handoff workflow
+    1. End a session → tile appears on the board automatically
+    2. Call swarm_handoff (or /handoff) before switching agents
+    3. In the next agent: swarm_pickup or /pickup to claim and continue
+
+  Files & data
+    ~/.swarm/                        Home (config, DB, KB, logs)
+    ~/.swarm/kb/                     Markdown knowledge base
+    ~/.swarm/run/daemon.token        API bearer token (loopback only)
+
+  Daemon management (launchd)
+    launchctl kickstart -k gui/${uid}/dev.swarm.daemon   Restart daemon
+    tail -f ~/.swarm/logs/daemon.err.log               Error log
+${autoUpdate ? `    Auto-update: enabled (hourly via dev.swarm.updater)\n` : "    Auto-update: disabled\n"}\
+${agents.includes("codex") ? `\
+  Codex (required manual step)
+    Open Codex and run /hooks → approve swarm plugin hooks
+    Without this, Codex sessions will NOT appear on the board.
+` : ""}\
+  Requirements
+    Ollama must stay running: ollama serve
+    Models: nomic-embed-text (embeddings), qwen3:4b (chat/summarize)
+
+══════════════════════════════════════════════════════════════
+`);
+}
+
+export function rebuildNativeModules(cwd = join(SWARM_HOME, "app/current")): void {
+  const coreDir = join(cwd, "packages/core");
+  if (!existsSync(join(coreDir, "package.json"))) return;
+  console.log("Building native modules (better-sqlite3)...");
+  execSync("npm rebuild better-sqlite3", { cwd: coreDir, stdio: "inherit" });
+}
+
+export function verifyNativeModules(cwd = join(SWARM_HOME, "app/current")): boolean {
+  try {
+    const coreDir = join(cwd, "packages/core");
+    execSync('node -e "require(\\"better-sqlite3\\")"', { cwd: coreDir, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function runInstall(options: InstallOptions = {}): Promise<void> {
   const fromBootstrap = options.fromBootstrap ?? false;
   const nonInteractive = options.yes ?? (fromBootstrap && !isInteractive());
@@ -435,6 +509,10 @@ export async function runInstall(options: InstallOptions = {}): Promise<void> {
   }
 
   if (nonInteractive) console.log("Writing launchd jobs and syncing plugins...");
+  const releaseRoot = fromBootstrap ? join(SWARM_HOME, "app/current") : join(SWARM_HOME, "app/releases/dev");
+  if (!verifyNativeModules(releaseRoot)) {
+    rebuildNativeModules(releaseRoot);
+  }
   writeStartScript();
   writeDaemonPlist();
   writeUpdaterPlist(autoUpdate);
@@ -456,10 +534,10 @@ export async function runInstall(options: InstallOptions = {}): Promise<void> {
   const outro = `Agent Swarm ready at http://127.0.0.1:${port}`;
   if (nonInteractive) {
     console.log(`\n${outro}`);
-    console.log("Run `node ~/.swarm/app/current/packages/cli/dist/index.js doctor` to verify.");
   } else {
     p.outro(outro);
   }
+  printInstallGuide(port, selected, autoUpdate);
 }
 
 export async function runDoctor(hooks = false): Promise<number> {
@@ -486,6 +564,13 @@ export async function runDoctor(hooks = false): Promise<number> {
     checks.push(["sqlite-vec ABI", true]);
   } catch (e) {
     checks.push(["sqlite-vec ABI", false, String(e)]);
+  }
+
+  const current = paths.current;
+  if (existsSync(current) && !verifyNativeModules(current)) {
+    checks.push(["better-sqlite3 native", false, "Run: npm rebuild better-sqlite3 --prefix ~/.swarm/app/current/packages/core"]);
+  } else if (existsSync(current)) {
+    checks.push(["better-sqlite3 native", true]);
   }
 
   try {
