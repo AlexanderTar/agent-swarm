@@ -147,7 +147,13 @@ export class TaskService {
       clauses.push("last_activity_at < datetime('now', '-30 minutes')");
     }
     const sql = `SELECT * FROM tasks WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC`;
-    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(rowToTask);
+    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map((row) => {
+      const task = rowToTask(row);
+      if ((row.status as string) === "handoff") {
+        return { ...task, status: "ready" as TaskStatus };
+      }
+      return task;
+    });
   }
 
   update(id: number, patch: Partial<{ title: string; status: TaskStatus; initialContext: string; handoffNote: string }>): TaskRecord {
@@ -292,7 +298,7 @@ export class TaskService {
     if (!task) throw new Error(`Task not found: ${key}`);
     this.db
       .prepare(
-        `UPDATE tasks SET handoff_note = ?, status = 'handoff',
+        `UPDATE tasks SET handoff_note = ?, status = 'ready',
           claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
           claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
          WHERE key = ?`,
@@ -303,7 +309,13 @@ export class TaskService {
   }
 
   listHandoffs(): TaskRecord[] {
-    return this.list({ status: "handoff" });
+    return (this.db
+      .prepare(
+        `SELECT * FROM tasks WHERE handoff_note IS NOT NULL AND trim(handoff_note) != ''
+         AND status NOT IN ('done', 'archived') AND claimed_by IS NULL
+         ORDER BY updated_at DESC`,
+      )
+      .all() as Record<string, unknown>[]).map(rowToTask);
   }
 
   reaperExpiredClaims(): TaskRecord[] {
@@ -318,7 +330,7 @@ export class TaskService {
       const note = `Previous agent ${task.claimedBy} (${task.claimedAgent}) vanished — claim expired at ${task.claimExpiresAt}.`;
       this.db
         .prepare(
-          `UPDATE tasks SET status = 'handoff', handoff_note = COALESCE(handoff_note, '') || '\n\n' || ?,
+          `UPDATE tasks SET status = 'ready', handoff_note = COALESCE(handoff_note, '') || '\n\n' || ?,
             claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
             claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
            WHERE id = ?`,

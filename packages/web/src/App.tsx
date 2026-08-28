@@ -13,7 +13,7 @@ import { CSS } from "@dnd-kit/utilities";
 import ReactMarkdown from "react-markdown";
 import { Activity, Bot, Copy, GripVertical } from "lucide-react";
 
-const STATUSES = ["backlog", "ready", "in_progress", "blocked", "handoff", "review", "done"] as const;
+const STATUSES = ["backlog", "ready", "in_progress", "blocked", "review", "done"] as const;
 
 type TaskStatus = (typeof STATUSES)[number];
 
@@ -21,7 +21,7 @@ interface Task {
   id: number;
   key: string;
   title: string;
-  status: TaskStatus;
+  status: TaskStatus | "handoff";
   originAgent: string;
   originModel: string | null;
   repoPath: string | null;
@@ -319,7 +319,8 @@ export default function App() {
   const byStatus = useMemo(() => {
     const map = Object.fromEntries(STATUSES.map((s) => [s, [] as Task[]])) as Record<TaskStatus, Task[]>;
     for (const t of tasks) {
-      if (map[t.status]) map[t.status].push(t);
+      const status = (t.status === "handoff" ? "ready" : t.status) as TaskStatus;
+      if (map[status]) map[status].push({ ...t, status });
     }
     return map;
   }, [tasks]);

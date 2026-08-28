@@ -24,6 +24,8 @@ fi
 
 cd "$RELEASE_DIR"
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+echo "Building native modules (better-sqlite3)..."
+npm rebuild better-sqlite3 --prefix packages/core
 pnpm build
 
 # Atomic symlink swap
@@ -32,4 +34,14 @@ ln -sfn "$RELEASE_DIR" "$TMP_LINK"
 mv -f "$TMP_LINK" "$SWARM_HOME/app/current"
 
 echo "Installed to $RELEASE_DIR"
-exec node "$RELEASE_DIR/packages/cli/dist/index.js" install --from-bootstrap
+echo "Finishing setup (launchd, plugins, models)..."
+
+# Bootstrap always uses non-interactive defaults so curl|sh and post-build
+# installs complete without waiting on @clack prompts. Re-run `swarm install`
+# without --yes to customize agents, port, or auto-update.
+INSTALL_ARGS=(install --from-bootstrap --yes)
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  echo "(non-interactive stdin/stdout — using defaults for all detected agents)"
+fi
+
+exec node "$RELEASE_DIR/packages/cli/dist/index.js" "${INSTALL_ARGS[@]}"
