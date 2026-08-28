@@ -1,0 +1,433 @@
+import type Database from "better-sqlite3";
+import type { AgentKind, BoardFilters, HandoffNote, TaskRecord, TaskStatus } from "./types.js";
+
+function rowToTask(row: Record<string, unknown>): TaskRecord {
+  return {
+    id: row.id as number,
+    key: row.key as string,
+    title: row.title as string,
+    status: row.status as TaskStatus,
+    priority: row.priority as string,
+    repoPath: (row.repo_path as string) ?? null,
+    repoRemote: (row.repo_remote as string) ?? null,
+    branch: (row.branch as string) ?? null,
+    worktree: (row.worktree as string) ?? null,
+    originAgent: row.origin_agent as AgentKind,
+    originSessionId: (row.origin_session_id as string) ?? null,
+    originModel: (row.origin_model as string) ?? null,
+    originCwd: (row.origin_cwd as string) ?? null,
+    originPid: (row.origin_pid as number) ?? null,
+    claimedBy: (row.claimed_by as string) ?? null,
+    claimedAgent: (row.claimed_agent as AgentKind) ?? null,
+    claimedSessionId: (row.claimed_session_id as string) ?? null,
+    claimedAt: (row.claimed_at as string) ?? null,
+    claimExpiresAt: (row.claim_expires_at as string) ?? null,
+    heartbeatAt: (row.heartbeat_at as string) ?? null,
+    initialContext: (row.initial_context as string) ?? null,
+    handoffNote: (row.handoff_note as string) ?? null,
+    artifactsJson: row.artifacts_json as string,
+    kbLinksJson: row.kb_links_json as string,
+    tagsJson: row.tags_json as string,
+    turnCount: row.turn_count as number,
+    lastActivityAt: (row.last_activity_at as string) ?? null,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
+}
+
+export class TaskService {
+  private keyCounter = 0;
+
+  constructor(private db: Database.Database) {
+    const max = this.db.prepare("SELECT MAX(CAST(SUBSTR(key, 4) AS INTEGER)) as m FROM tasks").get() as
+      | { m: number | null }
+      | undefined;
+    this.keyCounter = max?.m ?? 0;
+  }
+
+  nextKey(): string {
+    this.keyCounter += 1;
+    return `SW-${this.keyCounter}`;
+  }
+
+  create(input: {
+    title?: string;
+    status?: TaskStatus;
+    originAgent: AgentKind;
+    originSessionId?: string;
+    originModel?: string;
+    originCwd?: string;
+    originPid?: number;
+    repoPath?: string;
+    branch?: string;
+    initialContext?: string;
+  }): TaskRecord {
+    const key = this.nextKey();
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `INSERT INTO tasks (key, title, status, origin_agent, origin_session_id, origin_model, origin_cwd, origin_pid, repo_path, branch, initial_context, last_activity_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        key,
+        input.title ?? "Untitled",
+        input.status ?? "in_progress",
+        input.originAgent,
+        input.originSessionId ?? null,
+        input.originModel ?? null,
+        input.originCwd ?? null,
+        input.originPid ?? null,
+        input.repoPath ?? null,
+        input.branch ?? null,
+        input.initialContext ?? null,
+        now,
+        now,
+      );
+    return this.getById(Number(result.lastInsertRowid))!;
+  }
+
+  upsertSessionTask(input: {
+    sessionId: string;
+    agent: AgentKind;
+    cwd?: string;
+    model?: string;
+    pid?: number;
+  }): TaskRecord {
+    const existing = this.db
+      .prepare("SELECT id FROM tasks WHERE origin_session_id = ? AND status NOT IN ('done','archived') LIMIT 1")
+      .get(input.sessionId) as { id: number } | undefined;
+    if (existing) {
+      this.touch(existing.id);
+      return this.getById(existing.id)!;
+    }
+    return this.create({
+      originAgent: input.agent,
+      originSessionId: input.sessionId,
+      originModel: input.model,
+      originCwd: input.cwd,
+      originPid: input.pid,
+      repoPath: input.cwd,
+    });
+  }
+
+  getById(id: number): TaskRecord | null {
+    const row = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+    return row ? rowToTask(row as Record<string, unknown>) : null;
+  }
+
+  getByKey(key: string): TaskRecord | null {
+    const row = this.db.prepare("SELECT * FROM tasks WHERE key = ?").get(key);
+    return row ? rowToTask(row as Record<string, unknown>) : null;
+  }
+
+  getBySession(sessionId: string): TaskRecord | null {
+    const row = this.db
+      .prepare("SELECT * FROM tasks WHERE origin_session_id = ? AND status NOT IN ('done','archived') ORDER BY updated_at DESC LIMIT 1")
+      .get(sessionId);
+    return row ? rowToTask(row as Record<string, unknown>) : null;
+  }
+
+  list(filters: BoardFilters = {}): TaskRecord[] {
+    const clauses: string[] = ["status != 'archived' OR ? = 1"];
+    const params: unknown[] = [filters.status === "archived" ? 1 : 0];
+    if (filters.status) {
+      clauses.push("status = ?");
+      params.push(filters.status);
+    }
+    if (filters.repo) {
+      clauses.push("repo_path LIKE ?");
+      params.push(`%${filters.repo}%`);
+    }
+    if (filters.agent) {
+      clauses.push("(origin_agent = ? OR claimed_agent = ?)");
+      params.push(filters.agent, filters.agent);
+    }
+    if (filters.stale) {
+      clauses.push("last_activity_at < datetime('now', '-30 minutes')");
+    }
+    const sql = `SELECT * FROM tasks WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC`;
+    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(rowToTask);
+  }
+
+  update(id: number, patch: Partial<{ title: string; status: TaskStatus; initialContext: string; handoffNote: string }>): TaskRecord {
+    const sets: string[] = ["updated_at = datetime('now')"];
+    const params: unknown[] = [];
+    if (patch.title !== undefined) {
+      sets.push("title = ?");
+      params.push(patch.title);
+    }
+    if (patch.status !== undefined) {
+      sets.push("status = ?");
+      params.push(patch.status);
+    }
+    if (patch.initialContext !== undefined) {
+      sets.push("initial_context = ?");
+      params.push(patch.initialContext);
+    }
+    if (patch.handoffNote !== undefined) {
+      sets.push("handoff_note = ?");
+      params.push(patch.handoffNote);
+    }
+    params.push(id);
+    this.db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+    return this.getById(id)!;
+  }
+
+  touch(id: number): void {
+    this.db
+      .prepare("UPDATE tasks SET last_activity_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
+      .run(id);
+  }
+
+  incrementTurn(id: number): void {
+    this.db
+      .prepare(
+        "UPDATE tasks SET turn_count = turn_count + 1, last_activity_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+      )
+      .run(id);
+  }
+
+  appendEvent(taskId: number, eventType: string, payload: Record<string, unknown>): void {
+    this.db
+      .prepare("INSERT INTO task_events (task_id, event_type, payload_json) VALUES (?, ?, ?)")
+      .run(taskId, eventType, JSON.stringify(payload));
+    this.touch(taskId);
+  }
+
+  addArtifact(taskId: number, kind: string, value: string): void {
+    const task = this.getById(taskId);
+    if (!task) return;
+    const artifacts = JSON.parse(task.artifactsJson) as Record<string, string[]>;
+    if (!artifacts[kind]) artifacts[kind] = [];
+    if (!artifacts[kind].includes(value)) artifacts[kind].push(value);
+    this.db.prepare("UPDATE tasks SET artifacts_json = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(artifacts), taskId);
+  }
+
+  claim(
+    key: string,
+    claimer: { agent: AgentKind; sessionId: string; by: string },
+    leaseSeconds: number,
+  ): { ok: boolean; task?: TaskRecord; error?: string } {
+    const expires = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE tasks SET
+          claimed_by = ?, claimed_agent = ?, claimed_session_id = ?,
+          claimed_at = ?, claim_expires_at = ?, heartbeat_at = ?,
+          status = 'in_progress', updated_at = datetime('now')
+         WHERE key = ? AND (claimed_by IS NULL OR claim_expires_at < datetime('now'))`,
+      )
+      .run(claimer.by, claimer.agent, claimer.sessionId, now, expires, now, key);
+    if (result.changes === 0) {
+      return { ok: false, error: "Task already claimed or not found" };
+    }
+    return { ok: true, task: this.getByKey(key)! };
+  }
+
+  heartbeat(key: string, sessionId: string, leaseSeconds: number): boolean {
+    const expires = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE tasks SET heartbeat_at = ?, claim_expires_at = ?, updated_at = datetime('now')
+         WHERE key = ? AND claimed_session_id = ?`,
+      )
+      .run(now, expires, key, sessionId);
+    return result.changes > 0;
+  }
+
+  release(key: string, sessionId: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE tasks SET claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
+          claimed_at = NULL, claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
+         WHERE key = ? AND claimed_session_id = ?`,
+      )
+      .run(key, sessionId);
+    return result.changes > 0;
+  }
+
+  stage(
+    key: string,
+    action: "move" | "claim" | "release" | "block" | "complete" | "fail" | "heartbeat" | "archive",
+    payload: Record<string, unknown>,
+    leaseSeconds: number,
+  ): { ok: boolean; task?: TaskRecord; error?: string } {
+    switch (action) {
+      case "move":
+        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: payload.status as TaskStatus }) };
+      case "claim":
+        return this.claim(
+          key,
+          {
+            agent: payload.agent as AgentKind,
+            sessionId: payload.sessionId as string,
+            by: payload.by as string,
+          },
+          leaseSeconds,
+        );
+      case "release":
+        this.release(key, payload.sessionId as string);
+        return { ok: true, task: this.getByKey(key)! };
+      case "block":
+        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: "blocked" }) };
+      case "complete":
+        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: "done" }) };
+      case "fail":
+        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: "blocked" }) };
+      case "heartbeat":
+        this.heartbeat(key, payload.sessionId as string, leaseSeconds);
+        return { ok: true, task: this.getByKey(key)! };
+      case "archive":
+        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: "archived" }) };
+      default:
+        return { ok: false, error: `Unknown action: ${action}` };
+    }
+  }
+
+  writeHandoff(key: string, note: HandoffNote, markdown: string): TaskRecord {
+    const task = this.getByKey(key);
+    if (!task) throw new Error(`Task not found: ${key}`);
+    this.db
+      .prepare(
+        `UPDATE tasks SET handoff_note = ?, status = 'handoff',
+          claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
+          claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
+         WHERE key = ?`,
+      )
+      .run(markdown, key);
+    this.appendEvent(task.id, "handoff", note as unknown as Record<string, unknown>);
+    return this.getByKey(key)!;
+  }
+
+  listHandoffs(): TaskRecord[] {
+    return this.list({ status: "handoff" });
+  }
+
+  reaperExpiredClaims(): TaskRecord[] {
+    const expired = this.db
+      .prepare(
+        `SELECT * FROM tasks WHERE claimed_by IS NOT NULL AND claim_expires_at < datetime('now') AND status = 'in_progress'`,
+      )
+      .all() as Record<string, unknown>[];
+    const reclaimed: TaskRecord[] = [];
+    for (const row of expired) {
+      const task = rowToTask(row);
+      const note = `Previous agent ${task.claimedBy} (${task.claimedAgent}) vanished — claim expired at ${task.claimExpiresAt}.`;
+      this.db
+        .prepare(
+          `UPDATE tasks SET status = 'handoff', handoff_note = COALESCE(handoff_note, '') || '\n\n' || ?,
+            claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
+            claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
+           WHERE id = ?`,
+        )
+        .run(note, task.id);
+      this.appendEvent(task.id, "claim_expired", { previousClaimer: task.claimedBy });
+      reclaimed.push(this.getById(task.id)!);
+    }
+    return reclaimed;
+  }
+
+  janitorArchive(config: { idleMinutes: number; minTurns: number }): number {
+    const result = this.db
+      .prepare(
+        `UPDATE tasks SET status = 'archived', updated_at = datetime('now')
+         WHERE status IN ('in_progress','review')
+         AND turn_count < ?
+         AND (artifacts_json = '{}' OR artifacts_json IS NULL)
+         AND last_activity_at < datetime('now', '-' || ? || ' minutes')
+         AND claimed_by IS NULL`,
+      )
+      .run(config.minTurns, config.idleMinutes);
+    return result.changes;
+  }
+
+  hasActiveSessions(): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as c FROM tasks WHERE status = 'in_progress' AND heartbeat_at > datetime('now', '-2 minutes')`,
+      )
+      .get() as { c: number };
+    return row.c > 0;
+  }
+
+  getEvents(taskId: number, limit = 50): Array<{ id: number; eventType: string; payload: unknown; createdAt: string }> {
+    return (
+      this.db
+        .prepare("SELECT * FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT ?")
+        .all(taskId, limit) as Array<{ id: number; event_type: string; payload_json: string; created_at: string }>
+    ).map((r) => ({
+      id: r.id,
+      eventType: r.event_type,
+      payload: JSON.parse(r.payload_json),
+      createdAt: r.created_at,
+    }));
+  }
+
+  addSubtask(taskId: number, subject: string, description?: string): void {
+    this.db.prepare("INSERT INTO subtasks (task_id, subject, description) VALUES (?, ?, ?)").run(taskId, subject, description ?? null);
+  }
+
+  completeSubtask(taskId: number, subject: string): void {
+    this.db
+      .prepare("UPDATE subtasks SET completed = 1 WHERE task_id = ? AND subject = ?")
+      .run(taskId, subject);
+  }
+
+  getSubtasks(taskId: number): Array<{ id: number; subject: string; description: string | null; completed: boolean }> {
+    return this.db
+      .prepare("SELECT id, subject, description, completed FROM subtasks WHERE task_id = ?")
+      .all(taskId) as Array<{ id: number; subject: string; description: string | null; completed: boolean }>;
+  }
+}
+
+export function renderHandoffMarkdown(note: HandoffNote, taskKey: string): string {
+  const sections = [
+    `# Handoff: ${taskKey}`,
+    "",
+    "## Goal",
+    note.goal,
+    "",
+    "## Done",
+    note.done,
+    "",
+    "<!-- SWARM:NEXT_STEPS:BEGIN -->",
+    "## Next Steps",
+    ...note.nextSteps.map((s, i) => `${i + 1}. ${s}`),
+    "<!-- SWARM:NEXT_STEPS:END -->",
+    "",
+    "## Decisions",
+    ...note.decisions.map((d) => `- ${d}`),
+    "",
+    "## Gotchas",
+    ...note.gotchas.map((g) => `- ${g}`),
+    "",
+    "## Verification",
+    "```bash",
+    ...note.verification,
+    "```",
+    "",
+    "## Files",
+    ...note.files.map((f) => `- \`${f.path}\` — ${f.reason}`),
+    "",
+    "## KB References",
+    ...note.kbRefs.map((r) => `- ${r}`),
+    "",
+    "## Open Questions",
+    ...note.openQuestions.map((q) => `- ${q}`),
+  ];
+  return sections.join("\n");
+}
+
+export function renderPickupPrompt(task: TaskRecord): string {
+  return [
+    `# Pick up task ${task.key}: ${task.title}`,
+    "",
+    task.handoffNote ?? task.initialContext ?? "(no context)",
+    "",
+    "---",
+    "Restate your plan before continuing. Call swarm_task_stage with action heartbeat periodically.",
+  ].join("\n");
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "swarm",
+  "version": "0.1.0",
+  "description": "Local agent orchestration board with Kanban UI, MCP task handoffs, and semantic knowledge base",
+  "author": {
+    "name": "Agent Swarm",
+    "url": "https://github.com/alexandertar/agent-swarm"
+  },
+  "homepage": "https://github.com/alexandertar/agent-swarm",
+  "repository": "https://github.com/alexandertar/agent-swarm",
+  "license": "MIT",
+  "keywords": ["swarm", "kanban", "handoff", "mcp", "agents", "orchestration"],
+  "extensions": {
+    "dev.swarm": {
+      "daemonUrl": "http://127.0.0.1:7777"
+    }
+  }
+}

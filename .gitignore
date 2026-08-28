@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.next/
+out/
+*.log
+.DS_Store
+.env
+.env.local
+~/.swarm/
+coverage/
+*.db
+*.db-wal
+*.db-shm

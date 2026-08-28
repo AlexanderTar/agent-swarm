@@ -1,0 +1,26 @@
+{
+  "name": "agent-swarm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first agent orchestration board with Kanban UI, MCP, and semantic knowledge base",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev": "pnpm --filter @swarm/daemon dev",
+    "test": "pnpm -r run test",
+    "test:e2e": "node scripts/e2e-smoke.mjs",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "typecheck": "pnpm -r run typecheck",
+    "generate:plugin-mcp": "node scripts/generate-plugin-mcp.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "packageManager": "pnpm@10.25.0"
+}

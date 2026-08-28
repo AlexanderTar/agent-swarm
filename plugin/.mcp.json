@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "swarm": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/../packages/mcp-stdio/dist/index.js"
+      ],
+      "env": {
+        "SWARM_URL": "http://127.0.0.1:7777"
+      }
+    }
+  }
+}

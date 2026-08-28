@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "command": "./hooks/post-hook.mjs cursor sessionStart" }
+    ],
+    "sessionEnd": [
+      { "command": "./hooks/post-hook.mjs cursor sessionEnd", "timeout": 2 }
+    ],
+    "beforeSubmitPrompt": [
+      { "command": "./hooks/post-hook.mjs cursor beforeSubmitPrompt" }
+    ],
+    "preToolUse": [
+      { "command": "./hooks/post-hook.mjs cursor preToolUse", "timeout": 2 }
+    ],
+    "postToolUse": [
+      { "command": "./hooks/post-hook.mjs cursor postToolUse", "timeout": 2 }
+    ],
+    "afterFileEdit": [
+      { "command": "./hooks/post-hook.mjs cursor afterFileEdit", "timeout": 2 }
+    ],
+    "subagentStart": [
+      { "command": "./hooks/post-hook.mjs cursor subagentStart", "timeout": 2 }
+    ],
+    "subagentStop": [
+      { "command": "./hooks/post-hook.mjs cursor subagentStop", "timeout": 2 }
+    ],
+    "preCompact": [
+      { "command": "./hooks/post-hook.mjs cursor preCompact" }
+    ],
+    "stop": [
+      { "command": "./hooks/post-hook.mjs cursor stop" }
+    ]
+  }
+}

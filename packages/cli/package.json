@@ -1,0 +1,23 @@
+{
+  "name": "@swarm/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "swarm": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.10.0",
+    "@swarm/core": "workspace:*",
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
+  }
+}
