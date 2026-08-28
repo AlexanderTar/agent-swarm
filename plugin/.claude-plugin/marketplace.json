@@ -1,0 +1,12 @@
+{
+  "name": "swarm",
+  "owner": { "name": "Agent Swarm" },
+  "plugins": [
+    {
+      "name": "swarm",
+      "source": "./",
+      "description": "Agent orchestration board with Kanban UI and MCP handoffs",
+      "version": "0.1.0"
+    }
+  ]
+}

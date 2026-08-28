@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex SessionStart", "timeout": 5 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex SessionEnd", "timeout": 5, "async": true }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex UserPromptSubmit", "timeout": 5 }] }
+    ],
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex PreToolUse", "timeout": 5, "async": true }] }
+    ],
+    "PermissionRequest": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex PermissionRequest", "timeout": 5 }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex PostToolUse", "timeout": 5, "async": true }] }
+    ],
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex PreCompact", "timeout": 10 }] }
+    ],
+    "PostCompact": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex PostCompact", "timeout": 5, "async": true }] }
+    ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex SubagentStart", "timeout": 5, "async": true }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex SubagentStop", "timeout": 5, "async": true }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" codex Stop", "timeout": 10 }] }
+    ]
+  }
+}
