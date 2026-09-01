@@ -24,5 +24,9 @@ process.stdin.on("end", async () => {
   } catch {
     // daemon down or slow — never fail the host hook
   }
-  process.stdout.write("{}");
+  process.stdout.write(
+    platform === "antigravity" && (event === "PreToolUse" || event === "Stop")
+      ? JSON.stringify({ decision: "allow" })
+      : "{}",
+  );
 });

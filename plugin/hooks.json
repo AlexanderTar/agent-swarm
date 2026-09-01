@@ -3,23 +3,47 @@
     "PreToolUse": [
       {
         "matcher": "run_command|view_file|write_to_file|replace_file_content|multi_replace_file_content",
-        "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity PreToolUse", "timeout": 5 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity PreToolUse",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": ".*",
-        "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity PostToolUse", "timeout": 5, "async": true }]
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity PostToolUse",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PreInvocation": [
-      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity PreInvocation", "timeout": 5 }] }
+      {
+        "type": "command",
+        "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity PreInvocation",
+        "timeout": 5
+      }
     ],
     "PostInvocation": [
-      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity PostInvocation", "timeout": 5, "async": true }] }
+      {
+        "type": "command",
+        "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity PostInvocation",
+        "timeout": 5
+      }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity Stop", "timeout": 5 }] }
+      {
+        "type": "command",
+        "command": "node \"${PLUGIN_ROOT}/hooks/post-hook.mjs\" antigravity Stop",
+        "timeout": 5
+      }
     ]
   }
 }

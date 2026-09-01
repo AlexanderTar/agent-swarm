@@ -11,6 +11,7 @@ import {
   materializeCodexUserHooks,
   spliceSwarmTomlBlock,
 } from "./codexHooks.js";
+import { buildAntigravityHooks, inspectAntigravityHooks } from "./antigravityHooks.js";
 
 const SWARM_HOME = process.env.SWARM_HOME ?? join(homedir(), ".swarm");
 const ALL_AGENT_IDS = ["cursor", "claude", "codex", "antigravity"] as const;
@@ -180,10 +181,8 @@ export function checkAntigravityPlugin(pluginPath: string): { ok: boolean; detai
   if (!existsSync(join(pluginPath, "hooks.json"))) {
     return { ok: false, detail: "plugin/hooks.json missing" };
   }
-  const hooks = readFileSync(join(pluginPath, "hooks.json"), "utf8");
-  if (!hooks.includes("PostInvocation")) {
-    return { ok: false, detail: "Antigravity hooks missing PostInvocation" };
-  }
+  const inspected = inspectAntigravityHooks(readFileSync(join(pluginPath, "hooks.json"), "utf8"));
+  if (!inspected.ok) return inspected;
   const pluginMcp = join(link, "mcp.json");
   if (existsSync(pluginMcp)) {
     try {
@@ -578,6 +577,8 @@ function mergeAntigravityConfig(pluginPath: string): void {
     },
   };
   writeFileSync(mcpPath, `${JSON.stringify(merged, null, 2)}\n`);
+
+  writeFileSync(join(pluginPath, "hooks.json"), `${JSON.stringify(buildAntigravityHooks(pluginPath), null, 2)}\n`);
 
   const fragmentPath = join(pluginPath, "GEMINI.md");
   if (existsSync(fragmentPath)) {
@@ -1078,6 +1079,24 @@ export async function runDoctor(hooks = false): Promise<number> {
       if (!r.ok) errors++;
     } catch {
       console.log("✗ hook replay Codex SessionStart");
+      errors++;
+    }
+    const antigravityPayload = {
+      conversationId: "doctor-antigravity",
+      workspacePaths: [process.cwd()],
+      hook_event_name: "PreInvocation",
+      invocationNum: 0,
+    };
+    try {
+      const r = await fetch("http://127.0.0.1:7777/hooks/antigravity/PreInvocation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(antigravityPayload),
+      });
+      console.log(`${r.ok ? "✓" : "✗"} hook replay Antigravity PreInvocation`);
+      if (!r.ok) errors++;
+    } catch {
+      console.log("✗ hook replay Antigravity PreInvocation");
       errors++;
     }
   }

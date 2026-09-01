@@ -5,6 +5,6 @@
   "author": { "name": "Agent Swarm", "url": "https://github.com/alexandertar/agent-swarm" },
   "license": "MIT",
   "keywords": ["swarm", "kanban", "handoff", "antigravity"],
-  "hooks": "../hooks.json",
+  "hooks": "./hooks.json",
   "rules": "../rules/"
 }
