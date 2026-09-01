@@ -12,6 +12,7 @@
     "dev": "pnpm --filter @swarm/daemon dev",
     "test": "pnpm -r run test",
     "test:e2e": "node scripts/e2e-smoke.mjs",
+    "demo:task": "node packages/cli/dist/index.js demo",
     "lint": "biome check .",
     "format": "biome format --write .",
     "typecheck": "pnpm -r run typecheck",

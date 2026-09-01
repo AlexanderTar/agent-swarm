@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   renderHandoffMarkdown,
@@ -127,7 +128,12 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     body: z.string(),
   }, async (args) => {
     const path = ctx.kb.writeDoc(args.subdir ?? "notes", args.filename, { title: args.title ?? args.filename }, args.body);
-    await ctx.kb.indexFile(path);
+    try {
+      await ctx.kb.indexFile(path);
+    } catch (err) {
+      console.warn(`[swarm] KB index failed for ${path}:`, err);
+      return { content: [{ type: "text", text: `Written: ${path} (index deferred: ${err instanceof Error ? err.message : String(err)})` }] };
+    }
     return { content: [{ type: "text", text: `Written: ${path}` }] };
   });
 
@@ -160,18 +166,65 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
   return server;
 }
 
+type McpSession = {
+  transport: StreamableHTTPServerTransport;
+  server: McpServer;
+};
+
+const sessions = new Map<string, McpSession>();
+
+function sendJsonRpcError(res: ServerResponse, status: number, code: number, message: string): void {
+  if (res.headersSent) return;
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
+}
+
+async function createSession(ctx: SwarmContext): Promise<McpSession> {
+  const server = createMcpServer(ctx);
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+    enableJsonResponse: true,
+    onsessioninitialized: (id) => {
+      sessions.set(id, { transport, server });
+    },
+  });
+  transport.onclose = () => {
+    const sid = transport.sessionId;
+    if (sid) sessions.delete(sid);
+    void server.close();
+  };
+  await server.connect(transport);
+  return { transport, server };
+}
+
 export async function handleMcpNodeRequest(
   ctx: SwarmContext,
   req: IncomingMessage,
   res: ServerResponse,
   parsedBody?: unknown,
 ): Promise<void> {
-  const server = createMcpServer(ctx);
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
-  await server.connect(transport);
-  res.on("close", () => {
-    void transport.close();
-    void server.close();
-  });
-  await transport.handleRequest(req, res, parsedBody);
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  const existing = sessionId ? sessions.get(sessionId) : undefined;
+
+  if (existing) {
+    await existing.transport.handleRequest(req, res, parsedBody);
+    return;
+  }
+
+  // New initialize — also covers clients that retry initialize still carrying a
+  // stale mcp-session-id after a daemon restart (map was wiped).
+  if (req.method === "POST" && isInitializeRequest(parsedBody)) {
+    const session = await createSession(ctx);
+    await session.transport.handleRequest(req, res, parsedBody);
+    return;
+  }
+
+  if (sessionId) {
+    // Spec: 404 → client MUST re-initialize without the old session id.
+    sendJsonRpcError(res, 404, -32001, "Session not found");
+    return;
+  }
+
+  sendJsonRpcError(res, 400, -32000, "Bad Request: Server not initialized");
 }

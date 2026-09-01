@@ -37,6 +37,10 @@ export function createContext(home?: string): SwarmContext {
   const vector = new SqliteVectorIndex(db.db);
   const ollama = new OllamaClient(config);
   const tasks = new TaskService(db.db);
+  const merged = tasks.consolidateDuplicateSessions();
+  if (merged > 0) {
+    console.warn(`[swarm] consolidated ${merged} duplicate session tile(s)`);
+  }
   const kb = new KbStore(db.db, vector, ollama, paths);
   const memory = new MemoryJobs(ollama, kb, tasks);
   const token = readOrCreateToken(paths);

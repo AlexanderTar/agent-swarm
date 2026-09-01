@@ -48,12 +48,39 @@ export class MemoryJobs {
       for (const note of result.notes) {
         const slug = note.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
         const path = this.kb.writeDoc("inbox", `${slug}.md`, { title: note.title, tags: note.tags ?? [], task: task.key }, note.body);
+        await this.kb.indexFile(path);
         paths.push(path);
       }
       return paths;
     } catch {
       return [];
     }
+  }
+
+  /** Index session summary into KB and extract atomic notes after summarisation. */
+  async syncAfterSummary(taskId: number): Promise<string[]> {
+    const task = this.tasks.getById(taskId);
+    if (!task?.handoffNote?.trim()) return [];
+
+    const paths: string[] = [];
+    const summaryPath = this.kb.writeDoc(
+      "handoffs",
+      `${task.key}-summary.md`,
+      {
+        title: `Summary: ${task.title}`,
+        task: task.key,
+        agent: task.originAgent,
+        type: "session-summary",
+        sessionId: task.originSessionId,
+      },
+      task.handoffNote,
+    );
+    await this.kb.indexFile(summaryPath);
+    paths.push(summaryPath);
+
+    const extracted = await this.extractFromTask(taskId);
+    paths.push(...extracted);
+    return paths;
   }
 
   async composeInbox(): Promise<number> {

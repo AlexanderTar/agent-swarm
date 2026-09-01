@@ -2,7 +2,7 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume|clear|compact",
+        "matcher": "startup|resume|clear|compact|fork",
         "hooks": [
           {
             "type": "command",
@@ -97,6 +97,18 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:7777/hooks/claude/SubagentStop",
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-hook.mjs\" claude MessageDisplay",
             "async": true,
             "timeout": 5
           }
