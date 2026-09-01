@@ -6,7 +6,7 @@
   "license": "MIT",
   "keywords": ["swarm", "kanban", "handoff"],
   "skills": "./skills/",
-  "hooks": "./hooks.json",
+  "hooks": "./.codex-plugin/hooks.json",
   "interface": {
     "displayName": "Agent Swarm",
     "shortDescription": "Kanban board and handoff coordination for coding agents",

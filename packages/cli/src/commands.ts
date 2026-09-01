@@ -5,6 +5,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import { DEFAULT_CONFIG, ensureSwarmDirs, getSwarmPaths, loadConfig, saveConfig, SwarmDatabase, SqliteVectorIndex, OllamaClient, TaskService, KbStore, MemoryJobs, summarizeTaskRecord, importAntigravitySessions, listTasksNeedingTitles, summarizeTaskTitle, readOrCreateToken, type AgentKind, type TaskStatus } from "@swarm/core";
+import {
+  type CodexHooksFile,
+  inspectCodexUserHooks,
+  materializeCodexUserHooks,
+  spliceSwarmTomlBlock,
+} from "./codexHooks.js";
 
 const SWARM_HOME = process.env.SWARM_HOME ?? join(homedir(), ".swarm");
 const ALL_AGENT_IDS = ["cursor", "claude", "codex", "antigravity"] as const;
@@ -98,14 +104,8 @@ export function checkCodexHooks(): { ok: boolean; detail?: string } {
   if (!existsSync(hooksPath)) {
     return { ok: false, detail: "Missing ~/.codex/hooks.json — run `swarm plugin sync`" };
   }
-  try {
-    const hooks = JSON.parse(readFileSync(hooksPath, "utf8")) as { hooks?: Record<string, unknown> };
-    if (!hooks.hooks?.SessionStart) {
-      return { ok: false, detail: "Swarm SessionStart hook not merged into ~/.codex/hooks.json" };
-    }
-  } catch {
-    return { ok: false, detail: "Invalid ~/.codex/hooks.json" };
-  }
+  const inspected = inspectCodexUserHooks(readFileSync(hooksPath, "utf8"));
+  if (!inspected.ok) return inspected;
   return {
     ok: true,
     detail: "Approve swarm hooks in Codex /hooks TUI or sessions won't appear on the board",
@@ -439,33 +439,22 @@ SWARM_AGENT = "codex"
 SWARM_REGISTER_SESSION = "0"
 # swarm:end`;
 
-  let content = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
-  const re = /# swarm:start[\s\S]*?# swarm:end/;
-  if (re.test(content)) {
-    content = content.replace(re, mcpBlock);
-  } else if (content.includes("[mcp_servers.swarm]")) {
-    // Legacy unauthenticated url-only block without sentinels.
-    content = content.replace(
-      /\[mcp_servers\.swarm\][\s\S]*?(?=\n\[|\n# |$)/,
-      `${mcpBlock}\n`,
-    );
-  } else {
-    content = content.trimEnd() + (content.length ? "\n\n" : "") + mcpBlock + "\n";
-  }
-  writeFileSync(configPath, content);
+  const content = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+  writeFileSync(configPath, spliceSwarmTomlBlock(content, mcpBlock));
 
   const pluginHooks = join(pluginPath, ".codex-plugin/hooks.json");
   if (existsSync(pluginHooks)) {
-    const incoming = JSON.parse(readFileSync(pluginHooks, "utf8")) as { hooks: Record<string, unknown> };
-    let existing: { hooks?: Record<string, unknown> } = {};
+    const incoming = JSON.parse(readFileSync(pluginHooks, "utf8")) as CodexHooksFile;
+    let existing: CodexHooksFile = {};
     if (existsSync(hooksPath)) {
       try {
-        existing = JSON.parse(readFileSync(hooksPath, "utf8")) as { hooks?: Record<string, unknown> };
+        existing = JSON.parse(readFileSync(hooksPath, "utf8")) as CodexHooksFile;
       } catch {
         existing = {};
       }
     }
-    const merged = { hooks: { ...(existing.hooks ?? {}), ...(incoming.hooks ?? {}) } };
+    const materialized = materializeCodexUserHooks(incoming, pluginPath);
+    const merged = { hooks: { ...(existing.hooks ?? {}), ...(materialized.hooks ?? {}) } };
     writeFileSync(hooksPath, `${JSON.stringify(merged, null, 2)}\n`);
   }
 
@@ -1071,6 +1060,24 @@ export async function runDoctor(hooks = false): Promise<number> {
       if (!r.ok) errors++;
     } catch {
       console.log("✗ hook replay Cursor sessionStart");
+      errors++;
+    }
+    const codexPayload = {
+      session_id: "doctor-codex",
+      cwd: process.cwd(),
+      hook_event_name: "SessionStart",
+      turn_id: "doctor-turn",
+    };
+    try {
+      const r = await fetch("http://127.0.0.1:7777/hooks/codex/SessionStart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(codexPayload),
+      });
+      console.log(`${r.ok ? "✓" : "✗"} hook replay Codex SessionStart`);
+      if (!r.ok) errors++;
+    } catch {
+      console.log("✗ hook replay Codex SessionStart");
       errors++;
     }
   }
