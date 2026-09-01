@@ -3,8 +3,9 @@ import * as sqliteVec from "sqlite-vec";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SwarmConfig } from "./types.js";
+import { consolidateTasksBySessionId } from "./tasks.js";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 export const EMBED_DIM = 256;
 
 export class SwarmDatabase {
@@ -67,6 +68,7 @@ export class SwarmDatabase {
 
         CREATE INDEX idx_tasks_status ON tasks(status);
         CREATE INDEX idx_tasks_session ON tasks(origin_session_id);
+        CREATE UNIQUE INDEX idx_tasks_session_unique ON tasks(origin_session_id) WHERE origin_session_id IS NOT NULL;
         CREATE INDEX idx_tasks_claim ON tasks(claimed_by, claim_expires_at);
 
         CREATE TABLE task_events (
@@ -140,9 +142,23 @@ export class SwarmDatabase {
     }
 
     const row = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get() as { version: number } | undefined;
-    if (row && row.version < SCHEMA_VERSION) {
-      // Future migrations go here
+    if (row && row.version < 2) {
+      // Collapse duplicate tiles that share an origin_session_id, then enforce uniqueness.
+      this.consolidateDuplicateSessions();
+      this.db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session_unique
+          ON tasks(origin_session_id)
+          WHERE origin_session_id IS NOT NULL;
+      `);
+      this.db.prepare("UPDATE schema_meta SET version = 2").run();
+    } else if (row && row.version < SCHEMA_VERSION) {
+      this.db.prepare(`UPDATE schema_meta SET version = ${SCHEMA_VERSION}`).run();
     }
+  }
+
+  /** Keep one task per origin_session_id; archive the rest after moving events/subtasks. */
+  private consolidateDuplicateSessions(): void {
+    consolidateTasksBySessionId(this.db);
   }
 
   checkEmbeddingConfig(config: SwarmConfig): { ok: boolean; reason?: string } {
@@ -180,10 +196,13 @@ export class SqliteVectorIndex implements VectorIndex {
   constructor(private db: Database.Database) {}
 
   upsert(chunkId: number, docId: number, embedding: Float32Array): void {
-    this.db.prepare("DELETE FROM vec_chunks WHERE rowid = ?").run(chunkId);
+    // sqlite-vec requires INTEGER partition keys; JS numbers bind as FLOAT unless BigInt.
+    const rowid = BigInt(Math.trunc(Number(chunkId)));
+    const partition = BigInt(Math.trunc(Number(docId)));
+    this.db.prepare("DELETE FROM vec_chunks WHERE rowid = ?").run(rowid);
     this.db
       .prepare("INSERT INTO vec_chunks(rowid, embedding, doc_id) VALUES (?, ?, ?)")
-      .run(chunkId, Buffer.from(embedding.buffer), docId);
+      .run(rowid, Buffer.from(embedding.buffer), partition);
   }
 
   search(query: Float32Array, limit: number, docId?: number): Array<{ chunkId: number; distance: number }> {
@@ -195,8 +214,8 @@ export class SqliteVectorIndex implements VectorIndex {
            AND embedding MATCH ?
            ORDER BY distance LIMIT ?`,
         )
-        .all(docId, Buffer.from(query.buffer), limit) as Array<{ rowid: number; distance: number }>;
-      return rows.map((r) => ({ chunkId: r.rowid, distance: r.distance }));
+        .all(BigInt(Math.trunc(docId)), Buffer.from(query.buffer), limit) as Array<{ rowid: number | bigint; distance: number }>;
+      return rows.map((r) => ({ chunkId: Number(r.rowid), distance: r.distance }));
     }
     const rows = this.db
       .prepare(
@@ -204,11 +223,11 @@ export class SqliteVectorIndex implements VectorIndex {
          WHERE embedding MATCH ?
          ORDER BY distance LIMIT ?`,
       )
-      .all(Buffer.from(query.buffer), limit) as Array<{ rowid: number; distance: number }>;
-    return rows.map((r) => ({ chunkId: r.rowid, distance: r.distance }));
+      .all(Buffer.from(query.buffer), limit) as Array<{ rowid: number | bigint; distance: number }>;
+    return rows.map((r) => ({ chunkId: Number(r.rowid), distance: r.distance }));
   }
 
   deleteByDoc(docId: number): void {
-    this.db.prepare("DELETE FROM vec_chunks WHERE doc_id = ?").run(docId);
+    this.db.prepare("DELETE FROM vec_chunks WHERE doc_id = ?").run(BigInt(Math.trunc(docId)));
   }
 }

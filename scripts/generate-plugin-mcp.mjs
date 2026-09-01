@@ -16,9 +16,10 @@ const mcpConfig = {
     swarm: {
       type: "stdio",
       command: "node",
-      args: ["${PLUGIN_ROOT}/../packages/mcp-stdio/dist/index.js"],
+      args: ["bin/swarm-mcp.mjs"],
       env: {
         SWARM_URL: "http://127.0.0.1:7777",
+        SWARM_REGISTER_SESSION: "0",
       },
     },
   },

@@ -3,6 +3,8 @@ export type HookPlatform = "claude" | "cursor" | "codex" | "antigravity";
 export interface NormalizedHookInput {
   platform: HookPlatform;
   sessionId: string;
+  /** Subagent / nested agent id when present (unique per spawned agent). */
+  agentId?: string;
   cwd: string;
   hookEvent: string;
   toolName?: string;
@@ -11,7 +13,26 @@ export interface NormalizedHookInput {
   prompt?: string;
   model?: string;
   agentType?: string;
+  sessionTitle?: string;
+  sessionSource?: string;
+  task?: string;
+  transcriptPath?: string;
   lastAssistantMessage?: string;
+  /** Cursor afterAgentResponse / afterAgentThought `text` field. */
+  agentText?: string;
+  /** Cursor afterAgentThought `duration_ms`. */
+  thoughtDurationMs?: number;
+  /** Claude MessageDisplay streaming delta. */
+  messageDelta?: string;
+  /** Claude MessageDisplay — last chunk in a message. */
+  messageFinal?: boolean;
+  /** Subagent / task lifecycle (Claude Task*, Cursor subagentStop). */
+  subagentStatus?: string;
+  subagentSummary?: string;
+  taskSubject?: string;
+  taskDescription?: string;
+  /** Parent session when this hook is for a subagent. */
+  parentSessionId?: string;
   raw: Record<string, unknown>;
 }
 
@@ -91,6 +112,7 @@ export function normalizeHookInput(raw: unknown, platformHint?: HookPlatform): N
     readString(raw.session_id) ??
     readString(raw.conversation_id) ??
     readString(raw.conversationId) ??
+    readString(raw.parent_conversation_id) ??
     "";
 
   const cwd =
@@ -103,6 +125,7 @@ export function normalizeHookInput(raw: unknown, platformHint?: HookPlatform): N
   return {
     platform,
     sessionId,
+    agentId: readString(raw.agent_id) ?? readString(raw.agentId) ?? readString(raw.subagent_id),
     cwd,
     hookEvent,
     toolName,
@@ -111,9 +134,101 @@ export function normalizeHookInput(raw: unknown, platformHint?: HookPlatform): N
     prompt: readString(raw.prompt),
     model: readString(raw.model) ?? readString(raw.modelName),
     agentType: readString(raw.agent_type) ?? readString(raw.agentType) ?? readString(raw.subagent_type),
+    sessionTitle:
+      readString(raw.session_title) ??
+      readString(raw.sessionTitle) ??
+      readString(raw.conversation_title) ??
+      readString(raw.conversationTitle) ??
+      readString(raw.chat_title) ??
+      readString(raw.chatTitle),
+    sessionSource: readString(raw.source),
+    task: readString(raw.task) ?? readString(raw.description),
+    transcriptPath:
+      readString(raw.transcript_path) ??
+      readString(raw.transcriptPath) ??
+      readString(raw.agent_transcript_path),
     lastAssistantMessage: readString(raw.last_assistant_message) ?? readString(raw.lastAssistantMessage),
+    agentText: readString(raw.text),
+    thoughtDurationMs: typeof raw.duration_ms === "number" ? raw.duration_ms : undefined,
+    messageDelta: readString(raw.delta),
+    messageFinal: typeof raw.final === "boolean" ? raw.final : undefined,
+    subagentStatus: readString(raw.status),
+    subagentSummary: readString(raw.summary),
+    taskSubject: readString(raw.task_subject) ?? readString(raw.taskSubject),
+    taskDescription: readString(raw.task_description) ?? readString(raw.taskDescription),
+    parentSessionId: readString(raw.parent_conversation_id) ?? readString(raw.parentSessionId),
     raw,
   };
+}
+
+function subagentIdFromTranscriptPath(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  const nested = path.match(/subagents[/\\]([^/\\]+)\.jsonl$/i);
+  if (nested?.[1]) return nested[1];
+  const base = path.split(/[/\\]/).pop()?.replace(/\.jsonl$/i, "");
+  return base?.trim() || undefined;
+}
+
+/** Board tile id for subagent lifecycle hooks (handles Cursor subagentStop without subagent_id). */
+export function resolveSubagentBoardId(input: NormalizedHookInput): string | undefined {
+  if (input.agentId?.trim()) return input.agentId.trim();
+  const fromPath = subagentIdFromTranscriptPath(input.transcriptPath);
+  if (fromPath) return fromPath;
+  return undefined;
+}
+
+/** Resolve which session id owns the board tile for this hook. */
+export function resolveHookBoardSessionId(input: NormalizedHookInput, hookEvent?: string): string {
+  const event = hookEvent ?? input.hookEvent;
+  if (
+    event === "SubagentStart" ||
+    event === "subagentStart" ||
+    event === "SubagentStop" ||
+    event === "subagentStop"
+  ) {
+    const subagentId = resolveSubagentBoardId(input);
+    if (subagentId) return subagentId;
+  }
+  return resolveBoardSessionId(input);
+}
+
+/** One board tile per Claude session or subagent (subagents share session_id but have agent_id). */
+export function resolveBoardSessionId(input: Pick<NormalizedHookInput, "sessionId" | "agentId">): string {
+  return input.agentId?.trim() || input.sessionId;
+}
+
+function repoLabel(cwd: string): string {
+  const parts = cwd.replace(/\/+$/, "").split("/").filter(Boolean);
+  return parts.at(-1) ?? cwd;
+}
+
+export function sessionTaskTitle(input: Pick<NormalizedHookInput, "sessionTitle" | "cwd" | "agentType" | "sessionSource" | "platform" | "agentId">): string {
+  if (input.sessionTitle?.trim()) return input.sessionTitle.trim();
+  const repo = repoLabel(input.cwd);
+  if (input.agentId && input.agentType) return `${input.agentType} · ${repo}`;
+  if (input.agentId) return `Subagent · ${repo}`;
+  const source = input.sessionSource ? ` (${input.sessionSource})` : "";
+  return `${input.platform} · ${repo}${source}`;
+}
+
+export function buildSessionContext(input: NormalizedHookInput, parentSessionId?: string): string {
+  const lines = [
+    "## Session",
+    "",
+    `- **Agent:** ${input.platform}${input.agentType ? ` (${input.agentType})` : ""}`,
+    `- **Working directory:** \`${input.cwd}\``,
+  ];
+  if (input.model) lines.push(`- **Model:** ${input.model}`);
+  if (input.sessionSource) lines.push(`- **Source:** ${input.sessionSource}`);
+  if (input.sessionId) lines.push(`- **Session ID:** \`${input.sessionId}\``);
+  if (input.agentId) lines.push(`- **Agent ID:** \`${input.agentId}\``);
+  if (parentSessionId && parentSessionId !== input.agentId) {
+    lines.push(`- **Parent session:** \`${parentSessionId}\``);
+  }
+  if (input.transcriptPath) lines.push(`- **Transcript:** \`${input.transcriptPath}\``);
+  if (input.task) lines.push("", "## Task", "", input.task);
+  lines.push("", "_Prompts and tool activity appear in the Timeline tab._");
+  return lines.join("\n");
 }
 
 export function formatHookOutput(platform: HookPlatform, output: HookOutput, hookEvent?: string): Record<string, unknown> {

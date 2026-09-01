@@ -1,9 +1,10 @@
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, unlinkSync, cpSync, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
-import { DEFAULT_CONFIG, ensureSwarmDirs, getSwarmPaths, loadConfig, saveConfig, SwarmDatabase } from "@swarm/core";
+import { DEFAULT_CONFIG, ensureSwarmDirs, getSwarmPaths, loadConfig, saveConfig, SwarmDatabase, SqliteVectorIndex, OllamaClient, TaskService, KbStore, MemoryJobs, summarizeTaskRecord, importAntigravitySessions, listTasksNeedingTitles, summarizeTaskTitle, readOrCreateToken, type AgentKind, type TaskStatus } from "@swarm/core";
 
 const SWARM_HOME = process.env.SWARM_HOME ?? join(homedir(), ".swarm");
 const ALL_AGENT_IDS = ["cursor", "claude", "codex", "antigravity"] as const;
@@ -84,6 +85,16 @@ export function checkCodexHooks(): { ok: boolean; detail?: string } {
   if (!config.includes("[mcp_servers.swarm]") && !config.includes("# swarm:start")) {
     return { ok: false, detail: "Run `swarm plugin sync` to add [mcp_servers.swarm]" };
   }
+  // Bare HTTP url without auth gets 401 from the daemon; prefer stdio launcher.
+  const swarmBlock = config.match(/# swarm:start[\s\S]*?# swarm:end/)?.[0] ?? "";
+  const usesStdio = /command\s*=/.test(swarmBlock) || /command\s*=/.test(config.split("[mcp_servers.swarm]")[1]?.slice(0, 400) ?? "");
+  const hasBearer =
+    /bearer_token_env_var\s*=/.test(swarmBlock) ||
+    /http_headers[\s\S]*Authorization/.test(swarmBlock) ||
+    /bearer_token_env_var\s*=/.test(config);
+  if (!usesStdio && !hasBearer && /url\s*=\s*"http:\/\/127\.0\.0\.1:\d+\/mcp"/.test(config)) {
+    return { ok: false, detail: "Codex MCP uses unauthenticated HTTP — run `swarm plugin sync`" };
+  }
   if (!existsSync(hooksPath)) {
     return { ok: false, detail: "Missing ~/.codex/hooks.json — run `swarm plugin sync`" };
   }
@@ -99,6 +110,55 @@ export function checkCodexHooks(): { ok: boolean; detail?: string } {
     ok: true,
     detail: "Approve swarm hooks in Codex /hooks TUI or sessions won't appear on the board",
   };
+}
+
+export function checkCursorHooks(): { ok: boolean; detail?: string } {
+  if (!existsSync(join(homedir(), ".cursor"))) {
+    return { ok: true, detail: "Cursor not installed" };
+  }
+  const hooksPath = join(homedir(), ".cursor/hooks.json");
+  if (!existsSync(hooksPath)) {
+    return { ok: false, detail: "Missing ~/.cursor/hooks.json — run `swarm plugin sync`" };
+  }
+  const content = readFileSync(hooksPath, "utf8");
+  if (!content.includes("post-hook.mjs") || !content.includes("sessionStart")) {
+    return { ok: false, detail: "Swarm sessionStart hook not merged into ~/.cursor/hooks.json" };
+  }
+  if (content.includes("post-hook.mjs cursor") && !content.includes("node ")) {
+    return { ok: false, detail: "Cursor hooks must invoke node — run `swarm plugin sync`" };
+  }
+  return { ok: true, detail: "Restart Cursor after sync for hooks to load" };
+}
+
+export function checkCursorMcp(pluginPath: string): { ok: boolean; detail?: string } {
+  if (!existsSync(join(homedir(), ".cursor"))) {
+    return { ok: true, detail: "Cursor not installed" };
+  }
+  const manifest = join(pluginPath, ".cursor-plugin/plugin.json");
+  if (!existsSync(manifest)) {
+    return { ok: false, detail: "Missing .cursor-plugin/plugin.json in swarm plugin" };
+  }
+  try {
+    const plugin = JSON.parse(readFileSync(manifest, "utf8")) as { mcpServers?: string };
+    if (!plugin.mcpServers) {
+      return { ok: false, detail: "Cursor plugin manifest missing mcpServers — run `swarm plugin sync`" };
+    }
+  } catch {
+    return { ok: false, detail: "Invalid .cursor-plugin/plugin.json" };
+  }
+  const mcpPath = join(homedir(), ".cursor/mcp.json");
+  if (!existsSync(mcpPath)) {
+    return { ok: false, detail: "Missing ~/.cursor/mcp.json — run `swarm plugin sync`" };
+  }
+  try {
+    const mcp = JSON.parse(readFileSync(mcpPath, "utf8")) as { mcpServers?: Record<string, unknown> };
+    if (!mcp.mcpServers?.swarm) {
+      return { ok: false, detail: "Swarm MCP not merged into ~/.cursor/mcp.json — run `swarm plugin sync`" };
+    }
+  } catch {
+    return { ok: false, detail: "Invalid ~/.cursor/mcp.json" };
+  }
+  return { ok: true, detail: "Enable the swarm plugin in Cursor Settings → Plugins" };
 }
 
 export function checkAntigravityPlugin(pluginPath: string): { ok: boolean; detail?: string } {
@@ -123,6 +183,18 @@ export function checkAntigravityPlugin(pluginPath: string): { ok: boolean; detai
   const hooks = readFileSync(join(pluginPath, "hooks.json"), "utf8");
   if (!hooks.includes("PostInvocation")) {
     return { ok: false, detail: "Antigravity hooks missing PostInvocation" };
+  }
+  const pluginMcp = join(link, "mcp.json");
+  if (existsSync(pluginMcp)) {
+    try {
+      const mcp = JSON.parse(readFileSync(pluginMcp, "utf8")) as { mcpServers?: { swarm?: { args?: string[] } } };
+      const arg = mcp.mcpServers?.swarm?.args?.[0] ?? "";
+      if (arg && !arg.startsWith("/")) {
+        return { ok: false, detail: "Plugin MCP uses relative path — run `swarm plugin sync`" };
+      }
+    } catch {
+      return { ok: false, detail: "Invalid ~/.gemini/config/plugins/swarm/mcp.json" };
+    }
   }
   return { ok: true };
 }
@@ -159,6 +231,45 @@ export PATH="$HOME/.local/share/fnm/aliases/default/bin:$HOME/.volta/bin:$HOME/.
 exec "$(command -v node)" "$HOME/.swarm/app/current/packages/daemon/dist/index.js"
 `;
   writeFileSync(join(bin, "swarmd-start.sh"), script, { mode: 0o755 });
+}
+
+export function writeSwarmCli(): string {
+  const bin = join(SWARM_HOME, "bin");
+  mkdirSync(bin, { recursive: true });
+  const cliPath = join(bin, "swarm");
+  const script = `#!/bin/bash
+set -euo pipefail
+eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || true)"
+export PATH="$HOME/.local/share/fnm/aliases/default/bin:$HOME/.volta/bin:$HOME/.local/bin:$PATH"
+export SWARM_HOME="\${SWARM_HOME:-$HOME/.swarm}"
+exec "$(command -v node)" "\$SWARM_HOME/app/current/packages/cli/dist/index.js" "$@"
+`;
+  writeFileSync(cliPath, script, { mode: 0o755 });
+  return cliPath;
+}
+
+export function linkSwarmCli(): { linked: string; pathHint?: string } {
+  const cliPath = writeSwarmCli();
+  const localBin = join(homedir(), ".local/bin");
+  mkdirSync(localBin, { recursive: true });
+  const dest = join(localBin, "swarm");
+  symlinkForce(cliPath, dest);
+
+  const pathEntries = (process.env.PATH ?? "").split(":");
+  const onPath = pathEntries.some((p) => p === localBin || p === join(homedir(), ".local/bin"));
+  return {
+    linked: dest,
+    pathHint: onPath ? undefined : `Add to ~/.zshrc:  export PATH="$HOME/.local/bin:$PATH"`,
+  };
+}
+
+export function unlinkSwarmCli(): void {
+  const dest = join(homedir(), ".local/bin/swarm");
+  try {
+    unlinkSync(dest);
+  } catch {
+    // ignore
+  }
 }
 
 export function writeDaemonPlist(): void {
@@ -233,6 +344,15 @@ export function bootstrapLaunchd(): void {
   spawnSync("launchctl", ["kickstart", "-k", `gui/${uid}/dev.swarm.daemon`], { stdio: "inherit" });
 }
 
+async function checkDaemonHealth(port = loadConfig().port): Promise<boolean> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 function symlinkForce(target: string, link: string): void {
   mkdirSync(join(link, ".."), { recursive: true });
   try {
@@ -243,6 +363,36 @@ function symlinkForce(target: string, link: string): void {
   symlinkSync(target, link);
 }
 
+function swarmMcpLauncher(pluginPath: string): string {
+  return join(pluginPath, "bin/swarm-mcp.mjs");
+}
+
+function writePluginMcpConfig(pluginPath: string): void {
+  const port = loadConfig().port;
+  const launcher = swarmMcpLauncher(pluginPath);
+  const config = {
+    $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+    mcpServers: {
+      swarm: {
+        type: "stdio",
+        command: "node",
+        args: [launcher],
+        env: {
+          SWARM_URL: `http://127.0.0.1:${port}`,
+          SWARM_REGISTER_SESSION: "0",
+        },
+      },
+    },
+  };
+  const json = `${JSON.stringify(config, null, 2)}\n`;
+  for (const name of ["mcp.json", ".mcp.json", "mcp_config.json"]) {
+    writeFileSync(join(pluginPath, name), json);
+  }
+  const cursorPluginMcp = join(pluginPath, ".cursor-plugin/mcp.json");
+  mkdirSync(dirname(cursorPluginMcp), { recursive: true });
+  writeFileSync(cursorPluginMcp, json);
+}
+
 export function pluginSync(agents: string[]): void {
   const pluginPath = join(SWARM_HOME, "app/current/plugin");
   if (!existsSync(pluginPath)) {
@@ -251,10 +401,13 @@ export function pluginSync(agents: string[]): void {
     if (existsSync(devPlugin)) symlinkForce(devPlugin, pluginPath);
   }
 
+  writePluginMcpConfig(pluginPath);
   if (agents.includes("cursor")) {
     const dest = join(homedir(), ".cursor/plugins/local/swarm");
     mkdirSync(join(dest, ".."), { recursive: true });
     symlinkForce(pluginPath, dest);
+    mergeCursorHooks(pluginPath);
+    mergeCursorMcp(dest);
   }
   if (agents.includes("claude")) {
     symlinkForce(pluginPath, join(homedir(), ".claude/skills/swarm"));
@@ -272,17 +425,34 @@ export function pluginSync(agents: string[]): void {
 function mergeCodexConfig(pluginPath: string): void {
   const configPath = join(homedir(), ".codex/config.toml");
   const hooksPath = join(homedir(), ".codex/hooks.json");
-  const mcpBlock = `
-# swarm:start
+  const launcher = swarmMcpLauncher(pluginPath);
+  const port = loadConfig().port;
+  // Prefer stdio (reads ~/.swarm/run/daemon.token) — bare HTTP url gets 401.
+  const mcpBlock = `# swarm:start
 [mcp_servers.swarm]
-url = "http://127.0.0.1:7777/mcp"
-# swarm:end
-`;
+command = "node"
+args = ["${launcher.replace(/\\/g, "/")}"]
+
+[mcp_servers.swarm.env]
+SWARM_URL = "http://127.0.0.1:${port}"
+SWARM_AGENT = "codex"
+SWARM_REGISTER_SESSION = "0"
+# swarm:end`;
+
   let content = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
-  if (!content.includes("# swarm:start")) {
-    content += mcpBlock;
-    writeFileSync(configPath, content);
+  const re = /# swarm:start[\s\S]*?# swarm:end/;
+  if (re.test(content)) {
+    content = content.replace(re, mcpBlock);
+  } else if (content.includes("[mcp_servers.swarm]")) {
+    // Legacy unauthenticated url-only block without sentinels.
+    content = content.replace(
+      /\[mcp_servers\.swarm\][\s\S]*?(?=\n\[|\n# |$)/,
+      `${mcpBlock}\n`,
+    );
+  } else {
+    content = content.trimEnd() + (content.length ? "\n\n" : "") + mcpBlock + "\n";
   }
+  writeFileSync(configPath, content);
 
   const pluginHooks = join(pluginPath, ".codex-plugin/hooks.json");
   if (existsSync(pluginHooks)) {
@@ -302,8 +472,94 @@ url = "http://127.0.0.1:7777/mcp"
   p.log.warn("Codex: approve plugin hooks in the /hooks TUI or sessions won't appear on the board.");
 }
 
+type CursorHookDef = { command: string; timeout?: number };
+
+function isSwarmCursorHook(command: string): boolean {
+  return command.includes("post-hook.mjs") && command.includes(" cursor ");
+}
+
+function buildSwarmCursorHooks(pluginPath: string): Record<string, CursorHookDef[]> {
+  const script = join(pluginPath, "hooks/post-hook.mjs");
+  const defs = (event: string, timeout?: number): CursorHookDef[] => [
+    { command: `node "${script}" cursor ${event}`, ...(timeout ? { timeout } : {}) },
+  ];
+  return {
+    sessionStart: defs("sessionStart"),
+    sessionEnd: defs("sessionEnd", 2),
+    beforeSubmitPrompt: defs("beforeSubmitPrompt"),
+    preToolUse: defs("preToolUse", 2),
+    postToolUse: defs("postToolUse", 2),
+    afterFileEdit: defs("afterFileEdit", 2),
+    subagentStart: defs("subagentStart", 2),
+    subagentStop: defs("subagentStop", 2),
+    preCompact: defs("preCompact"),
+    afterAgentResponse: defs("afterAgentResponse", 2),
+    afterAgentThought: defs("afterAgentThought", 2),
+    stop: defs("stop"),
+  };
+}
+
+function mergeCursorHooks(pluginPath: string): void {
+  const hooksPath = join(homedir(), ".cursor/hooks.json");
+  mkdirSync(dirname(hooksPath), { recursive: true });
+  const swarmHooks = buildSwarmCursorHooks(pluginPath);
+
+  let existing: { version?: number; hooks?: Record<string, CursorHookDef[]> } = {};
+  if (existsSync(hooksPath)) {
+    try {
+      existing = JSON.parse(readFileSync(hooksPath, "utf8")) as { version?: number; hooks?: Record<string, CursorHookDef[]> };
+    } catch {
+      existing = {};
+    }
+  }
+
+  const mergedHooks: Record<string, CursorHookDef[]> = { ...(existing.hooks ?? {}) };
+  for (const [event, defs] of Object.entries(swarmHooks)) {
+    const kept = (mergedHooks[event] ?? []).filter((d) => !isSwarmCursorHook(d.command));
+    mergedHooks[event] = [...kept, ...defs];
+  }
+
+  writeFileSync(hooksPath, `${JSON.stringify({ version: 1, hooks: mergedHooks }, null, 2)}\n`);
+}
+
+function mergeCursorMcp(pluginPath: string): void {
+  const launcher = swarmMcpLauncher(pluginPath);
+  if (!existsSync(launcher)) return;
+
+  const mcpPath = join(homedir(), ".cursor/mcp.json");
+  mkdirSync(dirname(mcpPath), { recursive: true });
+  const port = loadConfig().port;
+
+  let existing: { mcpServers?: Record<string, unknown>; _comments?: Record<string, unknown> } = {};
+  if (existsSync(mcpPath)) {
+    try {
+      existing = JSON.parse(readFileSync(mcpPath, "utf8")) as typeof existing;
+    } catch {
+      existing = {};
+    }
+  }
+
+  const merged = {
+    ...existing,
+    mcpServers: {
+      ...(existing.mcpServers ?? {}),
+      swarm: {
+        type: "stdio",
+        command: "node",
+        args: [launcher],
+        env: {
+          SWARM_URL: `http://127.0.0.1:${port}`,
+          SWARM_REGISTER_SESSION: "0",
+        },
+      },
+    },
+  };
+  writeFileSync(mcpPath, `${JSON.stringify(merged, null, 2)}\n`);
+}
+
 function mergeAntigravityConfig(pluginPath: string): void {
-  const mcpStdio = join(SWARM_HOME, "app/current/packages/mcp-stdio/dist/index.js");
+  const port = loadConfig().port;
+  const launcher = swarmMcpLauncher(pluginPath);
   const mcpPath = join(homedir(), ".gemini/antigravity/mcp_config.json");
   mkdirSync(dirname(mcpPath), { recursive: true });
 
@@ -316,17 +572,20 @@ function mergeAntigravityConfig(pluginPath: string): void {
     }
   }
 
+  const swarmServer = {
+    command: "node",
+    args: [launcher],
+    env: {
+      SWARM_URL: `http://127.0.0.1:${port}`,
+      SWARM_AGENT: "antigravity",
+      SWARM_REGISTER_SESSION: "0",
+    },
+  };
+
   const merged = {
     mcpServers: {
       ...(existing.mcpServers ?? {}),
-      swarm: {
-        command: "node",
-        args: [mcpStdio],
-        env: {
-          SWARM_URL: "http://127.0.0.1:7777",
-          SWARM_AGENT: "antigravity",
-        },
-      },
+      swarm: swarmServer,
     },
   };
   writeFileSync(mcpPath, `${JSON.stringify(merged, null, 2)}\n`);
@@ -337,9 +596,190 @@ function mergeAntigravityConfig(pluginPath: string): void {
   }
 }
 
-function printInstallGuide(port: number, agents: string[], autoUpdate: boolean): void {
+export interface DemoOptions {
+  title?: string;
+  status?: TaskStatus;
+  agent?: AgentKind;
+  context?: string;
+}
+
+function swarmBaseUrl(): string {
+  const paths = getSwarmPaths(SWARM_HOME);
+  const config = loadConfig(SWARM_HOME);
+  let port = config.port;
+  if (existsSync(join(paths.run, "daemon.port"))) {
+    port = Number(readFileSync(join(paths.run, "daemon.port"), "utf8").trim()) || port;
+  }
+  if (process.env.SWARM_URL) return process.env.SWARM_URL.replace(/\/$/, "");
+  return `http://127.0.0.1:${port}`;
+}
+
+function swarmAuthHeaders(): Record<string, string> {
+  const paths = getSwarmPaths(SWARM_HOME);
+  const token = process.env.SWARM_TOKEN ?? (existsSync(join(paths.run, "daemon.token"))
+    ? readFileSync(join(paths.run, "daemon.token"), "utf8").trim()
+    : readOrCreateToken(paths));
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+export async function runDemo(opts: DemoOptions = {}): Promise<void> {
+  const base = swarmBaseUrl();
+  const title = opts.title ?? "Demo: explore Agent Swarm board";
+  const status = opts.status ?? "ready";
+  const agent = opts.agent ?? "cursor";
+  const context = opts.context ?? "Demo task from `swarm demo`. Open the board and drag this card between columns.";
+
+  const health = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(3000) });
+  if (!health.ok) {
+    console.error(`Daemon not healthy at ${base} (${health.status})`);
+    const uid = process.getuid?.() ?? "";
+    console.error(`Try: launchctl kickstart -k gui/${uid}/dev.swarm.daemon`);
+    process.exit(1);
+  }
+
+  const res = await fetch(`${base}/api/tasks`, {
+    method: "POST",
+    headers: swarmAuthHeaders(),
+    body: JSON.stringify({
+      title,
+      status,
+      initialContext: context,
+      agent,
+      sessionId: `demo-${randomUUID()}`,
+      cwd: process.cwd(),
+      model: "demo-probe",
+    }),
+  });
+
+  const body = await res.json() as { key?: string; title?: string; status?: string; error?: string };
+  if (!res.ok) {
+    console.error("Failed to create demo task:", res.status, body);
+    process.exit(1);
+  }
+
+  console.log("Created demo task:");
+  console.log(`  Key:     ${body.key}`);
+  console.log(`  Title:   ${body.title}`);
+  console.log(`  Status:  ${body.status}`);
+  console.log(`  Board:   ${base}/`);
+}
+
+export async function runSummariesBackfill(args: string[]): Promise<void> {
+  const force = args.includes("--force");
+  const importAntigravity = args.includes("--import-antigravity") || !args.includes("--no-import-antigravity");
+  const keysArg = args.find((a) => a.startsWith("--keys="));
+  const limitArg = args.find((a) => a.startsWith("--limit="));
+  const limit = Math.min(Math.max(limitArg ? Number(limitArg.split("=")[1]) : 200, 1), 200);
+
+  const config = loadConfig(SWARM_HOME);
+  const paths = getSwarmPaths(SWARM_HOME);
+  const db = new SwarmDatabase(paths.db, config.embedDimensions);
+  const ollama = new OllamaClient(config);
+  const tasks = new TaskService(db.db);
+  const vector = new SqliteVectorIndex(db.db);
+  const kb = new KbStore(db.db, vector, ollama, paths);
+  const memory = new MemoryJobs(ollama, kb, tasks);
+
+  if (importAntigravity) {
+    const imported = importAntigravitySessions(tasks);
+    if (imported.length > 0) {
+      console.log(`Imported ${imported.length} antigravity session(s) from ~/.gemini/antigravity-cli/brain`);
+    }
+  }
+
+  let pending = keysArg
+    ? keysArg
+        .split("=")[1]!
+        .split(",")
+        .map((k) => tasks.getByKey(k.trim()))
+        .filter((t): t is NonNullable<typeof t> => t != null)
+    : tasks.listNeedingBackfill(force).slice(0, limit);
+
+  if (pending.length === 0) {
+    console.log("No tasks need backfill.");
+    return;
+  }
+
+  console.log(`Backfilling summaries, titles, and memory for ${pending.length} task(s) (local, Ollama ${config.chatModel})...`);
+
+  for (const task of pending) {
+    try {
+      process.stdout.write(`  ${task.key}… `);
+      const { ok, usedFallback, titleUpdated, memoryPaths } = await summarizeTaskRecord(ollama, tasks, task, {
+        hookEvent: "Stop",
+        skipIfPresent: !force,
+        memory,
+        awaitMemory: true,
+      });
+      if (!ok) {
+        console.log("failed");
+        continue;
+      }
+      const bits = [
+        titleUpdated ? "title" : null,
+        usedFallback ? "fallback" : "summary",
+        memoryPaths?.length ? `memory×${memoryPaths.length}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      console.log(bits);
+    } catch (e) {
+      console.log(`failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  console.log("\nDone.");
+}
+
+export async function runTitlesBackfill(args: string[]): Promise<void> {
+  const force = args.includes("--force");
+  const keysArg = args.find((a) => a.startsWith("--keys="));
+  const limitArg = args.find((a) => a.startsWith("--limit="));
+  const limit = Math.min(Math.max(limitArg ? Number(limitArg.split("=")[1]) : 200, 1), 500);
+
+  const config = loadConfig(SWARM_HOME);
+  const paths = getSwarmPaths(SWARM_HOME);
+  const db = new SwarmDatabase(paths.db, config.embedDimensions);
+  const ollama = new OllamaClient(config);
+  const tasks = new TaskService(db.db);
+
+  let pending = keysArg
+    ? keysArg
+        .split("=")[1]!
+        .split(",")
+        .map((k) => tasks.getByKey(k.trim()))
+        .filter((t): t is NonNullable<typeof t> => t != null)
+    : listTasksNeedingTitles(tasks, limit);
+
+  if (pending.length === 0) {
+    console.log("No tasks need title backfill.");
+    return;
+  }
+
+  console.log(`Backfilling titles for ${pending.length} task(s) (Ollama ${config.chatModel})...`);
+  let updated = 0;
+  for (const task of pending) {
+    try {
+      process.stdout.write(`  ${task.key}… `);
+      const result = await summarizeTaskTitle(ollama, tasks, task, { force: true });
+      if (result.titleUpdated) {
+        updated += 1;
+        console.log(`→ ${result.task.title}`);
+      } else {
+        console.log(result.source ? "no better title" : "no transcript/prompt");
+      }
+    } catch (e) {
+      console.log(`failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  console.log(`\nDone: ${updated}/${pending.length} titles updated`);
+}
+
+function printInstallGuide(port: number, agents: string[], autoUpdate: boolean, pathHint?: string): void {
   const boardUrl = `http://127.0.0.1:${port}`;
-  const cli = "node ~/.swarm/app/current/packages/cli/dist/index.js";
   const uid = process.getuid?.() ?? "$(id -u)";
 
   console.log(`
@@ -350,13 +790,13 @@ function printInstallGuide(port: number, agents: string[], autoUpdate: boolean):
   Dashboard (Kanban board)
     ${boardUrl}
 
-  Quick commands
-    open ${boardUrl}                 Open the board in your browser
-    ${cli} open                      Same, via CLI
-    ${cli} status                    Daemon PID, port, paths
-    ${cli} doctor                    Health check (add --hooks to test hooks)
-    ${cli} plugin sync               Re-link plugins after manual edits
-
+  CLI (new shell, or: export PATH="$HOME/.local/bin:$PATH")
+    swarm open                       Open the board
+    swarm status                     Daemon PID, port, paths
+    swarm doctor                     Health check (--hooks to test hooks)
+    swarm demo                       Create a demo task on the board
+    swarm plugin sync                Re-link plugins after manual edits
+${pathHint ? `\n  ⚠ ${pathHint}\n` : ""}\
   Wired agents
     ${agents.join(", ")}
 
@@ -516,6 +956,7 @@ export async function runInstall(options: InstallOptions = {}): Promise<void> {
   writeStartScript();
   writeDaemonPlist();
   writeUpdaterPlist(autoUpdate);
+  const { pathHint } = linkSwarmCli();
   pluginSync(selected);
   bootstrapLaunchd();
 
@@ -537,7 +978,7 @@ export async function runInstall(options: InstallOptions = {}): Promise<void> {
   } else {
     p.outro(outro);
   }
-  printInstallGuide(port, selected, autoUpdate);
+  printInstallGuide(port, selected, autoUpdate, pathHint);
 }
 
 export async function runDoctor(hooks = false): Promise<number> {
@@ -551,8 +992,16 @@ export async function runDoctor(hooks = false): Promise<number> {
   checks.push(["daemon token", existsSync(join(paths.run, "daemon.token"))]);
 
   try {
-    const r = await fetch(`http://127.0.0.1:7777/api/health`, { signal: AbortSignal.timeout(2000) });
-    checks.push(["daemon health", r.ok]);
+    let daemonOk = await checkDaemonHealth();
+    if (!daemonOk && existsSync(paths.current)) {
+      if (!verifyNativeModules(paths.current)) {
+        rebuildNativeModules(paths.current);
+      }
+      bootstrapLaunchd();
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      daemonOk = await checkDaemonHealth();
+    }
+    checks.push(["daemon health", daemonOk, daemonOk ? undefined : "not reachable"]);
   } catch {
     checks.push(["daemon health", false, "not reachable"]);
   }
@@ -585,6 +1034,10 @@ export async function runDoctor(hooks = false): Promise<number> {
     : join(process.cwd(), "plugin");
   const codex = checkCodexHooks();
   checks.push(["codex hooks", codex.ok, codex.detail]);
+  const cursor = checkCursorHooks();
+  checks.push(["cursor hooks", cursor.ok, cursor.detail]);
+  const cursorMcp = checkCursorMcp(pluginPath);
+  checks.push(["cursor mcp", cursorMcp.ok, cursorMcp.detail]);
   const ag = checkAntigravityPlugin(pluginPath);
   checks.push(["antigravity plugin", ag.ok, ag.detail]);
 
@@ -594,17 +1047,30 @@ export async function runDoctor(hooks = false): Promise<number> {
   }
 
   if (hooks) {
-    const payload = { session_id: "doctor-test", cwd: process.cwd(), hook_event_name: "SessionStart" };
+    const claudePayload = { session_id: "doctor-test", cwd: process.cwd(), hook_event_name: "SessionStart" };
+    const cursorPayload = { conversation_id: "doctor-cursor", workspace_roots: [process.cwd()], hook_event_name: "sessionStart" };
     try {
       const r = await fetch("http://127.0.0.1:7777/hooks/claude/SessionStart", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(claudePayload),
       });
-      console.log(`${r.ok ? "✓" : "✗"} hook replay SessionStart`);
+      console.log(`${r.ok ? "✓" : "✗"} hook replay Claude SessionStart`);
       if (!r.ok) errors++;
     } catch {
-      console.log("✗ hook replay SessionStart");
+      console.log("✗ hook replay Claude SessionStart");
+      errors++;
+    }
+    try {
+      const r = await fetch("http://127.0.0.1:7777/hooks/cursor/sessionStart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cursorPayload),
+      });
+      console.log(`${r.ok ? "✓" : "✗"} hook replay Cursor sessionStart`);
+      if (!r.ok) errors++;
+    } catch {
+      console.log("✗ hook replay Cursor sessionStart");
       errors++;
     }
   }
@@ -639,12 +1105,16 @@ export async function runUpdate(opts: { to?: string; quiet?: boolean }): Promise
   const dest = join(releasesDir, tag);
   execSync(`git clone --depth 1 --branch ${tag} ${repo} ${dest}`, { stdio: "inherit" });
   execSync("pnpm install && pnpm build", { cwd: dest, stdio: "inherit" });
+  if (!verifyNativeModules(dest)) {
+    rebuildNativeModules(dest);
+  }
 
   const tmp = join(SWARM_HOME, "app/current.new");
   symlinkForce(dest, tmp);
   renameSync(tmp, join(SWARM_HOME, "app/current"));
 
   bootstrapLaunchd();
+  linkSwarmCli();
   if (!opts.quiet) console.log(`Updated to ${tag}`);
 }
 
@@ -664,5 +1134,6 @@ export async function runUninstall(): Promise<void> {
   for (const label of ["dev.swarm.daemon", "dev.swarm.updater"]) {
     spawnSync("launchctl", ["bootout", `gui/${uid}/${label}`], { stdio: "ignore" });
   }
+  unlinkSwarmCli();
   p.log.success("LaunchAgents removed. Data in ~/.swarm preserved.");
 }

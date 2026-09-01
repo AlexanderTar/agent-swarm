@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { shouldReplaceSessionTitle, isFallbackSessionTitle } from "./sessionTitles.js";
 import type { AgentKind, BoardFilters, HandoffNote, TaskRecord, TaskStatus } from "./types.js";
 
 function rowToTask(row: Record<string, unknown>): TaskRecord {
@@ -93,22 +94,102 @@ export class TaskService {
     cwd?: string;
     model?: string;
     pid?: number;
+    title?: string;
+    titleFromSession?: boolean;
+    initialContext?: string;
   }): TaskRecord {
+    const sessionId = input.sessionId.trim();
+    if (!sessionId) {
+      return this.create({
+        title: input.title,
+        originAgent: input.agent,
+        originModel: input.model,
+        originCwd: input.cwd,
+        originPid: input.pid,
+        repoPath: input.cwd,
+        initialContext: input.initialContext,
+      });
+    }
+
+    // Session id is the ultimate dedup key — include done/archived so we revive instead of cloning.
     const existing = this.db
-      .prepare("SELECT id FROM tasks WHERE origin_session_id = ? AND status NOT IN ('done','archived') LIMIT 1")
-      .get(input.sessionId) as { id: number } | undefined;
+      .prepare(
+        `SELECT id, title, initial_context, status FROM tasks
+         WHERE origin_session_id = ?
+         ORDER BY
+           CASE
+             WHEN status NOT IN ('done','archived') THEN 0
+             WHEN status = 'done' THEN 1
+             ELSE 2
+           END,
+           updated_at DESC,
+           id ASC
+         LIMIT 1`,
+      )
+      .get(sessionId) as { id: number; title: string; initial_context: string | null; status: string } | undefined;
+
     if (existing) {
       this.touch(existing.id);
+      if (existing.status === "done" || existing.status === "archived") {
+        this.update(existing.id, { status: "in_progress" });
+      }
+      if (input.title && this.shouldReplaceTitle(existing.title, input.title, input.titleFromSession ?? false)) {
+        this.update(existing.id, { title: input.title });
+      }
+      if (input.cwd?.trim()) {
+        this.maybeRefreshOriginCwd(existing.id, input.cwd);
+      }
+      if (input.model) {
+        this.db
+          .prepare("UPDATE tasks SET origin_model = COALESCE(origin_model, ?), updated_at = datetime('now') WHERE id = ?")
+          .run(input.model, existing.id);
+      }
+      if (input.pid != null) {
+        this.db
+          .prepare("UPDATE tasks SET origin_pid = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(input.pid, existing.id);
+      }
+      if (input.initialContext && !existing.initial_context) {
+        this.update(existing.id, { initialContext: input.initialContext });
+      }
       return this.getById(existing.id)!;
     }
+
     return this.create({
+      title: input.title,
       originAgent: input.agent,
-      originSessionId: input.sessionId,
+      originSessionId: sessionId,
       originModel: input.model,
       originCwd: input.cwd,
       originPid: input.pid,
       repoPath: input.cwd,
+      initialContext: input.initialContext,
     });
+  }
+
+  /** Force-merge any remaining session duplicates (safe to call repeatedly). */
+  consolidateDuplicateSessions(): number {
+    return consolidateTasksBySessionId(this.db);
+  }
+
+  maybeRefreshTitle(taskId: number, title: string, fromSession: boolean): TaskRecord | null {
+    const existing = this.getById(taskId);
+    if (!existing || !this.shouldReplaceTitle(existing.title, title, fromSession)) return existing;
+    this.update(taskId, { title });
+    return this.getById(taskId);
+  }
+
+  maybeRefreshOriginCwd(taskId: number, cwd: string): TaskRecord | null {
+    const existing = this.getById(taskId);
+    if (!existing || !cwd.trim() || existing.originCwd === cwd) return existing;
+    this.db
+      .prepare("UPDATE tasks SET origin_cwd = ?, repo_path = COALESCE(repo_path, ?), updated_at = datetime('now') WHERE id = ?")
+      .run(cwd, cwd, taskId);
+    return this.getById(taskId);
+  }
+
+  private shouldReplaceTitle(current: string, next: string, fromSession: boolean): boolean {
+    return shouldReplaceSessionTitle(current, next, fromSession);
   }
 
   getById(id: number): TaskRecord | null {
@@ -122,9 +203,22 @@ export class TaskService {
   }
 
   getBySession(sessionId: string): TaskRecord | null {
+    if (!sessionId.trim()) return null;
+    // Prefer live tiles, but still resolve done/archived so hooks never spawn a twin.
     const row = this.db
-      .prepare("SELECT * FROM tasks WHERE origin_session_id = ? AND status NOT IN ('done','archived') ORDER BY updated_at DESC LIMIT 1")
-      .get(sessionId);
+      .prepare(
+        `SELECT * FROM tasks WHERE origin_session_id = ?
+         ORDER BY
+           CASE
+             WHEN status NOT IN ('done','archived') THEN 0
+             WHEN status = 'done' THEN 1
+             ELSE 2
+           END,
+           updated_at DESC,
+           id ASC
+         LIMIT 1`,
+      )
+      .get(sessionId.trim());
     return row ? rowToTask(row as Record<string, unknown>) : null;
   }
 
@@ -365,6 +459,29 @@ export class TaskService {
     return row.c > 0;
   }
 
+  listNeedingSummary(force = false): TaskRecord[] {
+    return this.listNeedingBackfill(force);
+  }
+
+  listNeedingBackfill(force = false): TaskRecord[] {
+    const sql = `SELECT * FROM tasks WHERE origin_session_id IS NOT NULL AND status != 'archived' ORDER BY updated_at DESC`;
+    const tasks = (this.db.prepare(sql).all() as Record<string, unknown>[]).map(rowToTask);
+    if (force) return tasks;
+    return tasks.filter(
+      (task) =>
+        !task.handoffNote?.trim() ||
+        !task.title?.trim() ||
+        task.title === "Untitled" ||
+        isFallbackSessionTitle(task.title),
+    );
+  }
+
+  applySessionSummary(id: number, markdown: string, status?: TaskStatus): TaskRecord {
+    const patch: Partial<{ handoffNote: string; status: TaskStatus }> = { handoffNote: markdown };
+    if (status) patch.status = status;
+    return this.update(id, patch);
+  }
+
   getEvents(taskId: number, limit = 50): Array<{ id: number; eventType: string; payload: unknown; createdAt: string }> {
     return (
       this.db
@@ -442,4 +559,75 @@ export function renderPickupPrompt(task: TaskRecord): string {
     "---",
     "Restate your plan before continuing. Call swarm_task_stage with action heartbeat periodically.",
   ].join("\n");
+}
+
+/** Keep the earliest tile per origin_session_id; archive clones after merging events/content. */
+export function consolidateTasksBySessionId(db: Database.Database): number {
+  const dups = db
+    .prepare(
+      `SELECT origin_session_id AS sid FROM tasks
+       WHERE origin_session_id IS NOT NULL
+       GROUP BY origin_session_id HAVING COUNT(*) > 1`,
+    )
+    .all() as Array<{ sid: string }>;
+
+  let archived = 0;
+  const statusRank = (s: string) =>
+    ({ in_progress: 0, review: 1, ready: 2, blocked: 3, backlog: 4, done: 5, archived: 6 })[s] ?? 9;
+
+  for (const { sid } of dups) {
+    const rows = db
+      .prepare(
+        `SELECT id, status, handoff_note, turn_count, title FROM tasks
+         WHERE origin_session_id = ? ORDER BY id ASC`,
+      )
+      .all(sid) as Array<{
+      id: number;
+      status: string;
+      handoff_note: string | null;
+      turn_count: number;
+      title: string;
+    }>;
+    if (rows.length < 2) continue;
+    const keeper = rows[0]!;
+    let bestHandoff = keeper.handoff_note;
+    let bestTurns = keeper.turn_count;
+    let bestTitle = keeper.title;
+    let bestStatus = keeper.status;
+
+    for (const loser of rows.slice(1)) {
+      db.prepare("UPDATE task_events SET task_id = ? WHERE task_id = ?").run(keeper.id, loser.id);
+      db.prepare("UPDATE subtasks SET task_id = ? WHERE task_id = ?").run(keeper.id, loser.id);
+
+      if (
+        loser.handoff_note?.trim() &&
+        (!bestHandoff?.trim() || loser.handoff_note.length > (bestHandoff?.length ?? 0))
+      ) {
+        bestHandoff = loser.handoff_note;
+      }
+      if (loser.turn_count > bestTurns) bestTurns = loser.turn_count;
+      if (loser.title?.trim()) {
+        if (!bestTitle?.trim() || bestTitle === "Untitled" || bestTitle.startsWith("[Image]")) {
+          if (!loser.title.startsWith("[Image]") || !bestTitle?.trim()) bestTitle = loser.title;
+        }
+      }
+      if (statusRank(loser.status) < statusRank(bestStatus)) bestStatus = loser.status;
+
+      db.prepare(
+        `UPDATE tasks SET origin_session_id = NULL, status = 'archived', updated_at = datetime('now') WHERE id = ?`,
+      ).run(loser.id);
+      archived += 1;
+    }
+
+    db.prepare(
+      `UPDATE tasks SET title = ?, handoff_note = ?, turn_count = ?, status = ?, updated_at = datetime('now') WHERE id = ?`,
+    ).run(
+      bestTitle,
+      bestHandoff,
+      bestTurns,
+      bestStatus === "archived" ? "ready" : bestStatus,
+      keeper.id,
+    );
+  }
+  return archived;
 }
