@@ -9,14 +9,11 @@ export * from "./ollama.js";
 export * from "./tasks.js";
 export * from "./hooks.js";
 export * from "./sessions.js";
-export * from "./hookEnrichment.js";
 export * from "./cursorSessions.js";
 export * from "./antigravitySessions.js";
 export * from "./sessionTitles.js";
 export * from "./transcripts.js";
 export * from "./sessionSummary.js";
-export * from "./summaryJob.js";
-export * from "./titleJob.js";
 export * from "./kb.js";
 export * from "./memory.js";
 
