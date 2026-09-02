@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
-import { DEFAULT_CONFIG, ensureSwarmDirs, getSwarmPaths, loadConfig, saveConfig, SwarmDatabase, SqliteVectorIndex, OllamaClient, TaskService, KbStore, MemoryJobs, summarizeTaskRecord, importAntigravitySessions, listTasksNeedingTitles, summarizeTaskTitle, readOrCreateToken, type AgentKind, type TaskStatus } from "@swarm/core";
+import { DEFAULT_CONFIG, ensureSwarmDirs, getSwarmPaths, loadConfig, saveConfig, SwarmDatabase, SqliteVectorIndex, OllamaClient, KbStore, readOrCreateToken, type AgentKind, type TaskStatus } from "@swarm/core";
 import {
   type CodexHooksFile,
   inspectCodexUserHooks,
@@ -14,7 +14,7 @@ import {
 import { buildAntigravityHooks, inspectAntigravityHooks } from "./antigravityHooks.js";
 
 const SWARM_HOME = process.env.SWARM_HOME ?? join(homedir(), ".swarm");
-const ALL_AGENT_IDS = ["cursor", "claude", "codex", "antigravity"] as const;
+const ALL_AGENT_IDS = ["cursor", "claude", "codex", "antigravity", "opencode"] as const;
 
 export interface InstallOptions {
   fromBootstrap?: boolean;
@@ -198,12 +198,30 @@ export function checkAntigravityPlugin(pluginPath: string): { ok: boolean; detai
   return { ok: true };
 }
 
+export function checkOpencodePlugin(): { ok: boolean; detail?: string } {
+  const root = join(homedir(), ".config/opencode");
+  if (!existsSync(root)) return { ok: true, detail: "not installed" };
+  if (!existsSync(join(root, "plugins/swarm.js"))) {
+    return { ok: false, detail: "missing ~/.config/opencode/plugins/swarm.js — run: swarm plugin sync" };
+  }
+  const configPath = join(root, "opencode.json");
+  if (!existsSync(configPath)) return { ok: false, detail: "missing ~/.config/opencode/opencode.json" };
+  try {
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as { mcp?: Record<string, unknown> };
+    if (!config.mcp?.swarm) return { ok: false, detail: "opencode.json has no mcp.swarm entry" };
+  } catch {
+    return { ok: false, detail: "Invalid ~/.config/opencode/opencode.json" };
+  }
+  return { ok: true };
+}
+
 export function detectAgents(): Array<{ id: string; name: string; detected: boolean }> {
   return [
     { id: "cursor", name: "Cursor", detected: existsSync(join(homedir(), ".cursor")) },
     { id: "claude", name: "Claude Code", detected: existsSync(join(homedir(), ".claude")) },
     { id: "codex", name: "Codex CLI", detected: existsSync(join(homedir(), ".codex")) },
     { id: "antigravity", name: "Antigravity", detected: existsSync(join(homedir(), ".gemini")) },
+    { id: "opencode", name: "OpenCode", detected: existsSync(join(homedir(), ".config/opencode")) },
   ];
 }
 
@@ -419,6 +437,57 @@ export function pluginSync(agents: string[]): void {
   if (agents.includes("codex")) {
     mergeCodexConfig(pluginPath);
   }
+  if (agents.includes("opencode")) {
+    mergeOpencodeConfig(pluginPath);
+  }
+}
+
+/** OpenCode loads plugins from ~/.config/opencode/plugins and MCP servers from opencode.json. */
+function mergeOpencodeConfig(pluginPath: string): void {
+  const root = join(homedir(), ".config/opencode");
+  const pluginSource = join(pluginPath, "opencode/swarm.js");
+  if (existsSync(pluginSource)) {
+    mkdirSync(join(root, "plugins"), { recursive: true });
+    symlinkForce(pluginSource, join(root, "plugins/swarm.js"));
+  }
+
+  const configPath = join(root, "opencode.json");
+  mkdirSync(root, { recursive: true });
+  let existing: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      existing = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    } catch {
+      existing = {};
+    }
+  }
+
+  const port = loadConfig().port;
+  const mcp = { ...((existing.mcp as Record<string, unknown>) ?? {}) };
+  mcp.swarm = {
+    type: "local",
+    command: ["node", swarmMcpLauncher(pluginPath)],
+    enabled: true,
+    environment: {
+      SWARM_URL: `http://127.0.0.1:${port}`,
+      SWARM_AGENT: "opencode",
+      SWARM_REGISTER_SESSION: "0",
+    },
+  };
+
+  const agentsMd = join(pluginPath, "AGENTS.md");
+  const instructions = new Set(
+    Array.isArray(existing.instructions) ? (existing.instructions as string[]) : [],
+  );
+  if (existsSync(agentsMd)) instructions.add(agentsMd);
+
+  const merged = {
+    $schema: "https://opencode.ai/config.json",
+    ...existing,
+    mcp,
+    instructions: [...instructions],
+  };
+  writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`);
 }
 
 function mergeCodexConfig(pluginPath: string): void {
@@ -481,8 +550,6 @@ function buildSwarmCursorHooks(pluginPath: string): Record<string, CursorHookDef
     subagentStart: defs("subagentStart", 2),
     subagentStop: defs("subagentStop", 2),
     preCompact: defs("preCompact"),
-    afterAgentResponse: defs("afterAgentResponse", 2),
-    afterAgentThought: defs("afterAgentThought", 2),
     stop: defs("stop"),
   };
 }
@@ -657,115 +724,14 @@ export async function runDemo(opts: DemoOptions = {}): Promise<void> {
   console.log(`  Board:   ${base}/`);
 }
 
-export async function runSummariesBackfill(args: string[]): Promise<void> {
-  const force = args.includes("--force");
-  const importAntigravity = args.includes("--import-antigravity") || !args.includes("--no-import-antigravity");
-  const keysArg = args.find((a) => a.startsWith("--keys="));
-  const limitArg = args.find((a) => a.startsWith("--limit="));
-  const limit = Math.min(Math.max(limitArg ? Number(limitArg.split("=")[1]) : 200, 1), 200);
-
+export async function runKbReindex(): Promise<void> {
   const config = loadConfig(SWARM_HOME);
   const paths = getSwarmPaths(SWARM_HOME);
   const db = new SwarmDatabase(paths.db, config.embedDimensions);
-  const ollama = new OllamaClient(config);
-  const tasks = new TaskService(db.db);
-  const vector = new SqliteVectorIndex(db.db);
-  const kb = new KbStore(db.db, vector, ollama, paths);
-  const memory = new MemoryJobs(ollama, kb, tasks);
-
-  if (importAntigravity) {
-    const imported = importAntigravitySessions(tasks);
-    if (imported.length > 0) {
-      console.log(`Imported ${imported.length} antigravity session(s) from ~/.gemini/antigravity-cli/brain`);
-    }
-  }
-
-  let pending = keysArg
-    ? keysArg
-        .split("=")[1]!
-        .split(",")
-        .map((k) => tasks.getByKey(k.trim()))
-        .filter((t): t is NonNullable<typeof t> => t != null)
-    : tasks.listNeedingBackfill(force).slice(0, limit);
-
-  if (pending.length === 0) {
-    console.log("No tasks need backfill.");
-    return;
-  }
-
-  console.log(`Backfilling summaries, titles, and memory for ${pending.length} task(s) (local, Ollama ${config.chatModel})...`);
-
-  for (const task of pending) {
-    try {
-      process.stdout.write(`  ${task.key}… `);
-      const { ok, usedFallback, titleUpdated, memoryPaths } = await summarizeTaskRecord(ollama, tasks, task, {
-        hookEvent: "Stop",
-        skipIfPresent: !force,
-        memory,
-        awaitMemory: true,
-      });
-      if (!ok) {
-        console.log("failed");
-        continue;
-      }
-      const bits = [
-        titleUpdated ? "title" : null,
-        usedFallback ? "fallback" : "summary",
-        memoryPaths?.length ? `memory×${memoryPaths.length}` : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
-      console.log(bits);
-    } catch (e) {
-      console.log(`failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  console.log("\nDone.");
-}
-
-export async function runTitlesBackfill(args: string[]): Promise<void> {
-  const force = args.includes("--force");
-  const keysArg = args.find((a) => a.startsWith("--keys="));
-  const limitArg = args.find((a) => a.startsWith("--limit="));
-  const limit = Math.min(Math.max(limitArg ? Number(limitArg.split("=")[1]) : 200, 1), 500);
-
-  const config = loadConfig(SWARM_HOME);
-  const paths = getSwarmPaths(SWARM_HOME);
-  const db = new SwarmDatabase(paths.db, config.embedDimensions);
-  const ollama = new OllamaClient(config);
-  const tasks = new TaskService(db.db);
-
-  let pending = keysArg
-    ? keysArg
-        .split("=")[1]!
-        .split(",")
-        .map((k) => tasks.getByKey(k.trim()))
-        .filter((t): t is NonNullable<typeof t> => t != null)
-    : listTasksNeedingTitles(tasks, limit);
-
-  if (pending.length === 0) {
-    console.log("No tasks need title backfill.");
-    return;
-  }
-
-  console.log(`Backfilling titles for ${pending.length} task(s) (Ollama ${config.chatModel})...`);
-  let updated = 0;
-  for (const task of pending) {
-    try {
-      process.stdout.write(`  ${task.key}… `);
-      const result = await summarizeTaskTitle(ollama, tasks, task, { force: true });
-      if (result.titleUpdated) {
-        updated += 1;
-        console.log(`→ ${result.task.title}`);
-      } else {
-        console.log(result.source ? "no better title" : "no transcript/prompt");
-      }
-    } catch (e) {
-      console.log(`failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-  console.log(`\nDone: ${updated}/${pending.length} titles updated`);
+  const kb = new KbStore(db.db, new SqliteVectorIndex(db.db), new OllamaClient(config), paths);
+  const count = await kb.reindexAll();
+  console.log(`Re-embedded ${count} markdown file(s) under ${paths.kb}`);
+  db.close();
 }
 
 function printInstallGuide(port: number, agents: string[], autoUpdate: boolean, pathHint?: string): void {
@@ -786,21 +752,26 @@ function printInstallGuide(port: number, agents: string[], autoUpdate: boolean, 
     swarm doctor                     Health check (--hooks to test hooks)
     swarm demo                       Create a demo task on the board
     swarm plugin sync                Re-link plugins after manual edits
+    swarm kb reindex                 Re-embed ~/.swarm/kb
 ${pathHint ? `\n  ⚠ ${pathHint}\n` : ""}\
   Wired agents
     ${agents.join(", ")}
 
   MCP tools (call from any wired agent)
     swarm_board          View the Kanban board
-    swarm_handoff        Write a handoff note and move task to handoff
+    swarm_task_create    Create a board item you name and summarise yourself
+    swarm_task_update    Keep its title, summary, status and tags current
+    swarm_task_join      Put a second agent on the same item
+    swarm_handoff        Write a handoff note and move the item to ready
     swarm_pickup         Claim a handoff and get a pickup prompt
+    swarm_memory_write   Save a durable fact to the knowledge base
     swarm_kb_search      Semantic search over ~/.swarm/kb
-    swarm_task_stage     Move, claim, release, heartbeat, archive tasks
 
-  Handoff workflow
-    1. End a session → tile appears on the board automatically
-    2. Call swarm_handoff (or /handoff) before switching agents
-    3. In the next agent: swarm_pickup or /pickup to claim and continue
+  Workflow
+    1. Hooks track your session but never create a board item
+    2. Call swarm_task_create when work is worth coordinating
+    3. swarm_task_update as the picture changes; swarm_handoff before switching agents
+    4. In the next agent: swarm_pickup or /pickup to claim and continue
 
   Files & data
     ~/.swarm/                        Home (config, DB, KB, logs)
@@ -818,7 +789,7 @@ ${agents.includes("codex") ? `\
 ` : ""}\
   Requirements
     Ollama must stay running: ollama serve
-    Models: nomic-embed-text (embeddings), qwen3:4b (chat/summarize)
+    Models: nomic-embed-text (embeddings), qwen3:4b (board Console chat)
 
 ══════════════════════════════════════════════════════════════
 `);
@@ -1030,6 +1001,8 @@ export async function runDoctor(hooks = false): Promise<number> {
   checks.push(["cursor mcp", cursorMcp.ok, cursorMcp.detail]);
   const ag = checkAntigravityPlugin(pluginPath);
   checks.push(["antigravity plugin", ag.ok, ag.detail]);
+  const opencode = checkOpencodePlugin();
+  checks.push(["opencode plugin", opencode.ok, opencode.detail]);
 
   for (const [name, ok, detail] of checks) {
     console.log(`${ok ? "✓" : "✗"} ${name}${detail ? `: ${detail}` : ""}`);
@@ -1097,6 +1070,18 @@ export async function runDoctor(hooks = false): Promise<number> {
       if (!r.ok) errors++;
     } catch {
       console.log("✗ hook replay Antigravity PreInvocation");
+      errors++;
+    }
+    try {
+      const r = await fetch("http://127.0.0.1:7777/hooks/opencode/SessionStart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "doctor-opencode", cwd: process.cwd(), opencode: true }),
+      });
+      console.log(`${r.ok ? "✓" : "✗"} hook replay OpenCode SessionStart`);
+      if (!r.ok) errors++;
+    } catch {
+      console.log("✗ hook replay OpenCode SessionStart");
       errors++;
     }
   }

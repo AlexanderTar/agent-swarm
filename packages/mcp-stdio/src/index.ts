@@ -46,6 +46,16 @@ async function registerSession(): Promise<void> {
   }
 }
 
+/** Tells the daemon which agent session is calling, so MCP tools can bind to it. */
+function swarmHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "x-swarm-cwd": process.cwd(),
+    "x-swarm-agent": process.env.SWARM_AGENT ?? "unknown",
+  };
+  if (process.env.SWARM_SESSION_ID) headers["x-swarm-session-id"] = process.env.SWARM_SESSION_ID;
+  return headers;
+}
+
 async function endSession(): Promise<void> {
   try {
     await fetch(`${SWARM_URL}/hooks/session/end`, {
@@ -90,7 +100,7 @@ async function main(): Promise<void> {
   });
 
   const token = await readToken();
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = swarmHeaders();
   if (token) headers.Authorization = `Bearer ${token}`;
 
   let upstream = new Client({ name: "swarm-mcp-proxy", version: "0.1.0" });

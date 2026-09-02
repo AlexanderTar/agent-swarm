@@ -2,10 +2,11 @@ import type { WebSocket } from "ws";
 import {
   SwarmDatabase,
   SqliteVectorIndex,
+  SessionService,
   TaskService,
   OllamaClient,
   KbStore,
-  MemoryJobs,
+  KbIndexer,
   loadConfig,
   ensureSwarmDirs,
   readOrCreateToken,
@@ -17,13 +18,15 @@ export interface SwarmContext {
   config: SwarmConfig;
   paths: ReturnType<typeof getSwarmPaths>;
   db: SwarmDatabase;
+  sessions: SessionService;
   tasks: TaskService;
   ollama: OllamaClient;
   kb: KbStore;
-  memory: MemoryJobs;
+  indexer: KbIndexer;
   token: string;
   clients: Set<WebSocket>;
   broadcast: (msg: unknown) => void;
+  boardUrl: string;
 }
 
 export function createContext(home?: string): SwarmContext {
@@ -36,13 +39,10 @@ export function createContext(home?: string): SwarmContext {
   }
   const vector = new SqliteVectorIndex(db.db);
   const ollama = new OllamaClient(config);
-  const tasks = new TaskService(db.db);
-  const merged = tasks.consolidateDuplicateSessions();
-  if (merged > 0) {
-    console.warn(`[swarm] consolidated ${merged} duplicate session tile(s)`);
-  }
+  const sessions = new SessionService(db.db);
+  const tasks = new TaskService(db.db, sessions);
   const kb = new KbStore(db.db, vector, ollama, paths);
-  const memory = new MemoryJobs(ollama, kb, tasks);
+  const indexer = new KbIndexer(kb, tasks, sessions);
   const token = readOrCreateToken(paths);
   const clients = new Set<WebSocket>();
 
@@ -55,5 +55,18 @@ export function createContext(home?: string): SwarmContext {
 
   kb.startWatching(() => broadcast({ type: "kb_updated" }));
 
-  return { config, paths, db, tasks, ollama, kb, memory, token, clients, broadcast };
+  return {
+    config,
+    paths,
+    db,
+    sessions,
+    tasks,
+    ollama,
+    kb,
+    indexer,
+    token,
+    clients,
+    broadcast,
+    boardUrl: `http://${config.host}:${config.port}`,
+  };
 }

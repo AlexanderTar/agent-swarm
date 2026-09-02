@@ -3,9 +3,8 @@ import {
   runDemo,
   runDoctor,
   runInstall,
+  runKbReindex,
   runStatus,
-  runSummariesBackfill,
-  runTitlesBackfill,
   runUninstall,
   runUpdate,
   pluginSync,
@@ -71,22 +70,15 @@ async function main(): Promise<void> {
     }
     case "plugin":
       if (rest[0] === "sync") {
-        pluginSync(["cursor", "claude", "codex", "antigravity"]);
+        pluginSync(["cursor", "claude", "codex", "antigravity", "opencode"]);
         console.log("Plugin sync complete");
       }
       break;
-    case "summaries":
-      if (rest[0] === "backfill") {
-        await runSummariesBackfill(rest.slice(1));
+    case "kb":
+      if (rest[0] === "reindex") {
+        await runKbReindex();
       } else {
-        console.log("Usage: swarm summaries backfill [--force] [--limit=N] [--keys=SW-1,SW-2]");
-      }
-      break;
-    case "titles":
-      if (rest[0] === "backfill") {
-        await runTitlesBackfill(rest.slice(1));
-      } else {
-        console.log("Usage: swarm titles backfill [--force] [--limit=N] [--keys=SW-1,SW-2]");
+        console.log("Usage: swarm kb reindex");
       }
       break;
     default:
@@ -101,8 +93,7 @@ Usage:
   swarm uninstall     Remove launchd jobs
   swarm open          Open board in browser
   swarm plugin sync   Rewire agent plugin symlinks
-  swarm summaries backfill   Backfill summaries, titles, and KB memory (--keys=SW-1,SW-2)
-  swarm titles backfill      Ollama-shorten titles from transcript first prompts
+  swarm kb reindex    Re-embed every markdown file under ~/.swarm/kb
 
 Demo flags:
   --title <text>      Task title
@@ -113,7 +104,7 @@ Demo flags:
 Install flags:
   --yes, -y           Skip prompts (auto-detected when stdin is not a TTY)
   --from-bootstrap    Installed via install.sh (release already at ~/.swarm/app/current)
-  --agents a,b,c      Agent ids: cursor, claude, codex, antigravity
+  --agents a,b,c      Agent ids: cursor, claude, codex, antigravity, opencode
   --port 7777         Daemon port
   --no-auto-update    Disable hourly updater launchd job
   --no-pull-models    Skip ollama pull for missing models

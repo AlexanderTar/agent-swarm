@@ -428,7 +428,6 @@ Every tool that takes `sessionId?`/`agent?` falls back to `McpClientMeta`, then 
 | `POST /hooks/session/register` | registers a `sessions` row only; returns `{ok, sessionId}` |
 | `POST /hooks/session/end` | `sessions.end` + `ingestSession` when bound |
 | `GET /api/board` | accepts `tag`; returns `TaskWithSessions[]` |
-| `GET /api/tags` | **new** — `string[]` of every tag in use |
 | `POST /api/tasks` | accepts `summary`, `tags` |
 | `PATCH /api/tasks/:key` | accepts `title`, `status`, `summary`, `tags` |
 | `POST /api/summaries/backfill` | **deleted** |
@@ -468,7 +467,8 @@ Hook response body is always `formatHookOutput(platform, output, event)`.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-`#tag ▾` is a `<select>` populated from `GET /api/tags`, first option `All tags`. Selecting a tag
+`#tag ▾` is a `<select>` populated from the tags already on the loaded board (no extra endpoint —
+the board holds every task anyway), first option `All tags`. Selecting a tag
 filters client-side (`tasks.filter(t => t.tags.includes(tag))`). Clicking a tag chip on a tile sets
 it. Empty state per column is unchanged (an empty droppable area).
 
@@ -659,8 +659,7 @@ SWARM_HOME=/tmp/swarm-e2e node scripts/e2e-smoke.mjs
    `swarm_task_update {key:"SW-1", summary:"Migration landed", status:"review", addTags:["done-ish"]}`
    → `handoffNote` is exactly that text, status `review`, tags include `done-ish`,
    `kb/tasks/SW-1.md` re-indexed with the new body.
-7. **Tag filter.** `GET /api/board?tag=board` returns SW-1; `?tag=nope` returns `[]`;
-   `GET /api/tags` includes `board`, `mcp`, `done-ish`.
+7. **Tag filter.** `GET /api/board?tag=board` returns SW-1; `?tag=nope` returns `[]`.
 8. **Session end ingests artifacts and transcript.**
    Write `/tmp/x/a.md`, `POST /hooks/claude/SessionEnd {session_id:"s1"}` →
    `kb_docs` has a row whose path is `/tmp/x/a.md`; when a transcript path resolves,
@@ -783,7 +782,7 @@ delete `packages/core/src/tasks.dedup.test.ts`.
 - [ ] Run — fails.
 - [ ] Rewrite the hook handler around `classifyHookEvent`; drop `MessageDisplay`,
       `afterAgentThought`, `afterAgentResponse` deltas, `/api/summaries/backfill`; add
-      `GET /api/tags`; wire `tag` into `/api/board`; return `formatHookOutput` bodies.
+      wire `tag` into `/api/board`; return `formatHookOutput` bodies.
 - [ ] Run — pass. Commit.
 
 ### Task 6 — MCP tools
@@ -803,7 +802,7 @@ delete `packages/core/src/tasks.dedup.test.ts`.
 **Files:** modify `packages/web/src/App.tsx`.
 
 - [ ] Extend `Task` with `tags: string[]` and `sessions: TaskSessionLabel[]`.
-- [ ] Render §5.1 tile, §5.2 header tag select (fed by `GET /api/tags`), §5.3 sessions strip.
+- [ ] Render §5.1 tile, §5.2 header tag select (derived from loaded tasks), §5.3 sessions strip.
 - [ ] Add `opencode` to `AGENT_COLORS`.
 - [ ] `pnpm --filter @swarm/web build`. Commit.
 
