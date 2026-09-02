@@ -23,9 +23,8 @@ else
 fi
 
 cd "$RELEASE_DIR"
+# pnpm.onlyBuiltDependencies in package.json compiles better-sqlite3 during install.
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
-echo "Building native modules (better-sqlite3)..."
-npm rebuild better-sqlite3 --prefix packages/core
 pnpm build
 
 # Atomic symlink swap

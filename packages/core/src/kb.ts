@@ -66,13 +66,23 @@ export class KbStore {
   }
 
   startWatching(onChange?: () => void): void {
-    this.watcher = chokidar.watch(join(this.paths.kb, "**/*.md"), {
+    // chokidar 4 dropped glob support, so watch the directory and filter here.
+    this.watcher = chokidar.watch(this.paths.kb, {
       ignoreInitial: false,
       awaitWriteFinish: { stabilityThreshold: 300 },
     });
-    this.watcher.on("add", (p: string) => void this.indexFile(p).then(() => onChange?.()));
-    this.watcher.on("change", (p: string) => void this.indexFile(p).then(() => onChange?.()));
+
+    const reindex = (p: string) => {
+      if (!p.endsWith(".md")) return;
+      void this.indexFile(p)
+        .then(() => onChange?.())
+        .catch((err) => console.warn(`[swarm] KB index failed for ${p}:`, err));
+    };
+
+    this.watcher.on("add", reindex);
+    this.watcher.on("change", reindex);
     this.watcher.on("unlink", (p: string) => {
+      if (!p.endsWith(".md")) return;
       this.removeFile(p);
       onChange?.();
     });

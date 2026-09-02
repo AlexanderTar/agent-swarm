@@ -201,6 +201,8 @@ export class SwarmDatabase {
 
     try {
       this.db.exec("VACUUM");
+      // WAL mode defers the truncation, so the file stays huge until a checkpoint.
+      this.db.pragma("wal_checkpoint(TRUNCATE)");
     } catch {
       /* a fat file is not data loss */
     }
