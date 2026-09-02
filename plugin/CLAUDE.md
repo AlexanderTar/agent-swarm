@@ -1,7 +1,23 @@
 # Agent Swarm (Claude Code)
 
-This plugin syncs your Claude Code sessions to the local Agent Swarm board at http://127.0.0.1:7777.
+Board: http://127.0.0.1:7777. Hooks track this session and attach file edits to whatever
+board item you are on; they never create one. You do, in your own words.
 
-- Hooks auto-create session tiles and track tool usage
-- Use `/handoff` or swarm-handoff skill before switching agents
-- MCP tools: swarm_board, swarm_task_stage, swarm_handoff, swarm_pickup, swarm_kb_search
+- `swarm_task_create {title, summary, tags, sessionId}` when you begin work worth
+  coordinating — a feature, an investigation, something another agent may continue.
+  Skip trivial, throwaway and read-only turns.
+- `swarm_task_join {key}` to help with work already on the board. Additive: it takes
+  the item away from nobody.
+- `swarm_task_update {key, summary, status, tags}` whenever the goal, state or next
+  step changes. The summary is what the next agent reads.
+- `swarm_task_stage` moves it between columns; `swarm_handoff` before another agent
+  takes over; `swarm_pickup` to claim a handoff.
+- `swarm_memory_write` / `swarm_memory_search` for facts, decisions and gotchas that
+  outlive this session.
+
+Write `title` and `summary` from this conversation, not from a template. Title:
+specific, human-readable, under ~60 chars ("Fix duplicate tiles on the swarm board",
+not "session-4f2a" or "Claude task"). Summary: 2-5 sentences covering goal, current
+state, next step. Tags: lowercase filter labels, e.g. `["agent-swarm", "daemon", "bugfix"]`.
+
+Your swarm session id arrives in the SessionStart briefing; pass it as `sessionId`.

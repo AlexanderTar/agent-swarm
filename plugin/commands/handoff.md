@@ -1,3 +1,4 @@
 # Handoff
 
-Write a structured handoff for the current task using the swarm-handoff skill, then call MCP `swarm_handoff`.
+Update the summary first, then write a structured handoff with the swarm-handoff skill
+and `swarm_handoff`.
