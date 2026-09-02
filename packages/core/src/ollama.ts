@@ -86,35 +86,4 @@ export class OllamaClient {
     const parsed = JSON.parse(content) as unknown;
     return options.schema.parse(parsed);
   }
-
-  async summarize(text: string, maxWords = 6): Promise<string> {
-    try {
-      const result = await this.chat({
-        user: `Summarize in ${maxWords} words or fewer:\n\n${text.slice(0, 2000)}`,
-        schema: z.object({ title: z.string() }),
-      });
-      return result.title;
-    } catch {
-      return text.split(/\s+/).slice(0, maxWords).join(" ") || "Untitled task";
-    }
-  }
-
-  /** Short board-tile title from a subagent/task prompt. */
-  async summarizeTaskTitle(prompt: string, maxWords = 8): Promise<string> {
-    try {
-      const result = await this.chat({
-        system:
-          "You name tasks on an agent Kanban board. Return a concise, specific title. " +
-          "No quotes, no trailing punctuation, no agent/platform names, Title Case or sentence case.",
-        user:
-          `Write a board title in ${maxWords} words or fewer for this agent task prompt:\n\n` +
-          `${prompt.slice(0, 3500)}`,
-        schema: z.object({ title: z.string().min(1).max(120) }),
-        schemaDescription: `JSON {"title":"..."} with at most ${maxWords} words.`,
-      });
-      return result.title.trim();
-    } catch {
-      return this.summarize(prompt, maxWords);
-    }
-  }
 }

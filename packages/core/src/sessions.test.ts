@@ -18,8 +18,11 @@ describe("SessionService", () => {
     swarm = freshDb();
     sessions = new SessionService(swarm.db);
     taskId = Number(
-      swarm.db.prepare("INSERT INTO tasks (key, title, origin_agent) VALUES ('SW-1', 'Fix board', 'claude')").run()
-        .lastInsertRowid,
+      swarm.db
+        .prepare(
+          "INSERT INTO tasks (key, title, origin_agent) VALUES ('SW-1', 'Fix board', 'claude')",
+        )
+        .run().lastInsertRowid,
     );
   });
 
@@ -45,8 +48,14 @@ describe("SessionService", () => {
     sessions.upsert({ id: "old", agent: "claude", cwd: "/repo" });
     sessions.upsert({ id: "new", agent: "codex", cwd: "/repo" });
     sessions.upsert({ id: "ended", agent: "cursor", cwd: "/repo" });
-    swarm.db.prepare("UPDATE sessions SET last_seen_at = datetime('now', '-10 minutes') WHERE id = 'old'").run();
-    swarm.db.prepare("UPDATE sessions SET last_seen_at = datetime('now', '+10 minutes') WHERE id = 'ended'").run();
+    swarm.db
+      .prepare("UPDATE sessions SET last_seen_at = datetime('now', '-10 minutes') WHERE id = 'old'")
+      .run();
+    swarm.db
+      .prepare(
+        "UPDATE sessions SET last_seen_at = datetime('now', '+10 minutes') WHERE id = 'ended'",
+      )
+      .run();
     sessions.end("ended");
 
     expect(sessions.resolve({ cwd: "/repo" })?.id).toBe("new");

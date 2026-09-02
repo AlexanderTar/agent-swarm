@@ -1,12 +1,63 @@
-import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import { existsSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HookPlatform, NormalizedHookInput } from "./hooks.js";
-import { resolveCursorSession } from "./cursorSessions.js";
+import { encodeCursorProjectPath, resolveCursorSession } from "./cursorSessions.js";
 import { extractAntigravityTranscriptText, resolveAntigravitySession } from "./antigravitySessions.js";
-import { findClaudeTranscriptPath, encodeCursorProjectPath } from "./sessionTitles.js";
 
-export { encodeCursorProjectPath } from "./sessionTitles.js";
+export function encodeClaudeProjectPath(cwd: string): string {
+  return cwd.replace(/\//g, "-");
+}
+
+export function claudeTranscriptPath(sessionId: string, cwd: string, home = homedir()): string {
+  return join(home, ".claude", "projects", encodeClaudeProjectPath(cwd), `${sessionId}.jsonl`);
+}
+
+/** Find a Claude jsonl across all project dirs (main session or subagent). */
+export function findClaudeTranscriptPath(sessionKey: string, cwd?: string, home = homedir()): string | undefined {
+  if (!sessionKey.trim()) return undefined;
+
+  const bare = sessionKey.replace(/^agent-/i, "");
+  const names = [...new Set([`${sessionKey}.jsonl`, `agent-${bare}.jsonl`, `${bare}.jsonl`])];
+
+  const tryDir = (projectDir: string): string | undefined => {
+    for (const name of names) {
+      const direct = join(projectDir, name);
+      if (existsSync(direct)) return direct;
+    }
+    try {
+      for (const entry of readdirSync(projectDir)) {
+        // Nested: <parentSession>/subagents/agent-<id>.jsonl
+        for (const name of names) {
+          const nested = join(projectDir, entry, "subagents", name);
+          if (existsSync(nested)) return nested;
+        }
+        // Also: subagents/ directly under the project (rare)
+        for (const name of names) {
+          const sub = join(projectDir, "subagents", name);
+          if (existsSync(sub)) return sub;
+        }
+      }
+    } catch {
+      /* skip unreadable dirs */
+    }
+    return undefined;
+  };
+
+  if (cwd) {
+    const hit = tryDir(join(home, ".claude", "projects", encodeClaudeProjectPath(cwd)));
+    if (hit) return hit;
+  }
+
+  const projectsRoot = join(home, ".claude", "projects");
+  if (!existsSync(projectsRoot)) return undefined;
+
+  for (const project of readdirSync(projectsRoot)) {
+    const hit = tryDir(join(projectsRoot, project));
+    if (hit) return hit;
+  }
+  return undefined;
+}
 
 export function resolveTranscriptPath(
   input: Pick<NormalizedHookInput, "platform" | "sessionId" | "agentId" | "cwd" | "transcriptPath">,
@@ -157,51 +208,4 @@ export function extractTranscriptText(platform: HookPlatform, sourcePath: string
 
   const joined = lines.join("\n");
   return joined.length > maxChars ? joined.slice(joined.length - maxChars) : joined;
-}
-
-export function eventsToTranscript(
-  events: Array<{ eventType: string; payloadJson?: string }>,
-  maxChars = 8000,
-): string {
-  const lines: string[] = [];
-  for (const event of events.slice(-40)) {
-    let payload: Record<string, unknown> = {};
-    try {
-      payload = event.payloadJson ? (JSON.parse(event.payloadJson) as Record<string, unknown>) : {};
-    } catch {
-      payload = {};
-    }
-    if (event.eventType === "prompt" && typeof payload.prompt === "string") {
-      lines.push(`User: ${stripNoise(payload.prompt).slice(0, 800)}`);
-    } else if (event.eventType === "stop_summary" && typeof payload.summary === "string") {
-      lines.push(`Assistant: ${stripNoise(payload.summary).slice(0, 800)}`);
-    } else if (payload.tool && typeof payload.tool === "string") {
-      lines.push(`Tool (${payload.tool})`);
-    }
-  }
-  const joined = lines.join("\n");
-  return joined.length > maxChars ? joined.slice(joined.length - maxChars) : joined;
-}
-
-export function buildTranscriptContext(
-  input: NormalizedHookInput,
-  boardSessionId: string,
-  events: Array<{ eventType: string; payloadJson?: string }>,
-  lastAssistantMessage?: string,
-): string {
-  const parts: string[] = [];
-  const path = resolveTranscriptPath(input, boardSessionId);
-  if (path) {
-    const fromFile = extractTranscriptText(input.platform, path);
-    if (fromFile) parts.push(fromFile);
-  }
-  const fromEvents = eventsToTranscript(events);
-  if (fromEvents) parts.push(fromEvents);
-  if (lastAssistantMessage?.trim()) {
-    parts.push(`Assistant (latest): ${stripNoise(lastAssistantMessage).slice(0, 1500)}`);
-  }
-  if (input.prompt?.trim()) {
-    parts.push(`User (latest): ${stripNoise(input.prompt).slice(0, 1500)}`);
-  }
-  return parts.join("\n\n").slice(-24_000);
 }

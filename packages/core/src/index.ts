@@ -11,11 +11,8 @@ export * from "./hooks.js";
 export * from "./sessions.js";
 export * from "./cursorSessions.js";
 export * from "./antigravitySessions.js";
-export * from "./sessionTitles.js";
 export * from "./transcripts.js";
-export * from "./sessionSummary.js";
 export * from "./kb.js";
-export * from "./memory.js";
 
 export function loadConfig(home?: string): SwarmConfig {
   const paths = getSwarmPaths(home);

@@ -1,16 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildSessionContext,
+  classifyHookEvent,
   formatHookOutput,
+  hookSessionKey,
   mapAntigravityTool,
   normalizeHookInput,
-  resolveBoardSessionId,
-  resolveHookBoardSessionId,
-  resolveSubagentBoardId,
-  sessionTaskTitle,
+  sessionBriefing,
   shortReference,
 } from "./hooks.js";
-import { resolveSessionTaskTitle } from "./sessionTitles.js";
 
 describe("normalizeHookInput", () => {
   it("normalizes Claude SessionStart", () => {
@@ -64,7 +61,7 @@ describe("normalizeHookInput", () => {
     expect(input.toolInput).toEqual({ TargetFile: "foo.ts" });
   });
 
-  it("uses agent_id as board session for subagents", () => {
+  it("uses agent_id as the board session key for subagents", () => {
     const input = normalizeHookInput({
       session_id: "parent-session",
       agent_id: "agent-abc",
@@ -72,9 +69,13 @@ describe("normalizeHookInput", () => {
       cwd: "/repo/myproject",
       hook_event_name: "SubagentStart",
     }, "claude");
-    expect(resolveBoardSessionId(input)).toBe("agent-abc");
-    expect(sessionTaskTitle(input)).toBe("Explore · myproject");
-    expect(buildSessionContext(input, "parent-session")).toContain("Parent session");
+    expect(hookSessionKey(input)).toBe("agent-abc");
+    expect(hookSessionKey({ sessionId: "solo", agentId: "  " })).toBe("solo");
+  });
+
+  it("detects opencode payloads", () => {
+    const input = normalizeHookInput({ opencode: true, session_id: "oc-1", hook_event_name: "session.created" });
+    expect(input.platform).toBe("opencode");
   });
 
   it("uses subagent_id for Cursor subagents", () => {
@@ -86,57 +87,54 @@ describe("normalizeHookInput", () => {
       workspace_roots: ["/repo/app"],
       hook_event_name: "subagentStart",
     }, "cursor");
-    expect(resolveBoardSessionId(input)).toBe("sub-123");
-    expect(buildSessionContext(input, "conv-parent")).toContain("Search the codebase");
-    expect(resolveSessionTaskTitle(input).title).toBe("Search the codebase");
+    expect(hookSessionKey(input)).toBe("sub-123");
+    expect(input.parentSessionId).toBe("conv-parent");
+  });
+});
+
+describe("classifyHookEvent", () => {
+  it("collapses each platform's spelling onto one kind", () => {
+    expect(["SessionStart", "sessionStart", "session.created"].map(classifyHookEvent)).toEqual([
+      "session_start",
+      "session_start",
+      "session_start",
+    ]);
+    expect(["SubagentStart", "subagentStart"].map(classifyHookEvent)).toEqual(["subagent_start", "subagent_start"]);
+    expect(["SessionEnd", "sessionEnd", "session.deleted"].map(classifyHookEvent)).toEqual([
+      "session_end",
+      "session_end",
+      "session_end",
+    ]);
+    for (const event of ["Stop", "stop", "StopFailure", "SubagentStop", "subagentStop", "session.idle", "PostInvocation", "afterAgentResponse", "TaskCompleted"]) {
+      expect(classifyHookEvent(event)).toBe("turn_end");
+    }
+    for (const event of ["PreToolUse", "PostToolUse", "preToolUse", "postToolUse", "afterFileEdit", "PermissionRequest", "tool.execute.before", "tool.execute.after"]) {
+      expect(classifyHookEvent(event)).toBe("tool");
+    }
+    expect(["UserPromptSubmit", "beforeSubmitPrompt"].map(classifyHookEvent)).toEqual(["prompt", "prompt"]);
+    expect(classifyHookEvent("Notification")).toBe("notification");
+    expect(["PreCompact", "preCompact", "PostCompact"].map(classifyHookEvent)).toEqual(["compact", "compact", "compact"]);
+    expect(classifyHookEvent("MessageDisplay")).toBe("other");
+    expect(classifyHookEvent("")).toBe("other");
+  });
+});
+
+describe("sessionBriefing", () => {
+  it("tells an unbound session how to create a board item", () => {
+    const text = sessionBriefing({ sessionId: "s1", boardUrl: "http://127.0.0.1:7777" });
+    expect(text).toContain("your swarm session: `s1`");
+    expect(text).toContain("This session is not on the board.");
+    expect(text).toContain("swarm_task_create");
   });
 
-  it("normalizes Cursor afterAgentResponse text", () => {
-    const input = normalizeHookInput({
-      conversation_id: "cursor-1",
-      workspace_roots: ["/repo"],
-      hook_event_name: "afterAgentResponse",
-      text: "Done — login bug fixed.",
-    }, "cursor");
-    expect(input.agentText).toBe("Done — login bug fixed.");
-  });
-
-  it("normalizes Cursor afterAgentThought with duration", () => {
-    const input = normalizeHookInput({
-      conversation_id: "cursor-1",
-      workspace_roots: ["/repo"],
-      hook_event_name: "afterAgentThought",
-      text: "I'll search for auth handlers first.",
-      duration_ms: 4200,
-    }, "cursor");
-    expect(input.agentText).toBe("I'll search for auth handlers first.");
-    expect(input.thoughtDurationMs).toBe(4200);
-  });
-
-  it("normalizes Claude MessageDisplay delta", () => {
-    const input = normalizeHookInput({
-      session_id: "claude-1",
-      cwd: "/repo",
-      hook_event_name: "MessageDisplay",
-      delta: "Working on it…",
-      final: true,
-      message_id: "msg-1",
-    }, "claude");
-    expect(input.messageDelta).toBe("Working on it…");
-    expect(input.messageFinal).toBe(true);
-  });
-
-  it("resolves subagent board id from transcript path on subagentStop", () => {
-    const input = normalizeHookInput({
-      conversation_id: "parent-conv",
-      workspace_roots: ["/repo"],
-      hook_event_name: "subagentStop",
-      agent_transcript_path: "/Users/dev/.cursor/projects/repo/agent-transcripts/parent/subagents/sub-99.jsonl",
-      summary: "Found 3 auth handlers",
-      status: "completed",
-    }, "cursor");
-    expect(resolveHookBoardSessionId(input, "subagentStop")).toBe("sub-99");
-    expect(input.subagentSummary).toBe("Found 3 auth handlers");
+  it("names the task a bound session is working on", () => {
+    const text = sessionBriefing({
+      sessionId: "s1",
+      boardUrl: "http://127.0.0.1:7777",
+      task: { key: "SW-1", title: "Fix board titles", status: "in_progress" },
+    });
+    expect(text).toContain("You are working on **SW-1 — Fix board titles** (in_progress).");
+    expect(text).not.toContain("not on the board");
   });
 });
 
@@ -146,8 +144,17 @@ describe("formatHookOutput", () => {
     expect(out.additional_context).toBe("Board: 3 tasks");
   });
 
+  it("formats opencode additionalContext", () => {
+    expect(formatHookOutput("opencode", { additionalContext: "brief" })).toEqual({ additionalContext: "brief" });
+    expect(formatHookOutput("opencode", {})).toEqual({});
+  });
+
   it("formats Antigravity allow/deny", () => {
     expect(formatHookOutput("antigravity", { permission: "allow" })).toEqual({ decision: "allow" });
+    expect(formatHookOutput("antigravity", { additionalContext: "brief" })).toEqual({
+      decision: "allow",
+      additionalContext: "brief",
+    });
     expect(formatHookOutput("antigravity", { permission: "deny", userMessage: "blocked" })).toEqual({
       decision: "deny",
       reason: "blocked",

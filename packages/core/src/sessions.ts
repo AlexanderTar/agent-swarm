@@ -94,10 +94,9 @@ export class SessionService {
 
   listByTask(taskId: number): SessionRecord[] {
     return (
-      this.db.prepare("SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at").all(taskId) as Record<
-        string,
-        unknown
-      >[]
+      this.db
+        .prepare("SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at")
+        .all(taskId) as Record<string, unknown>[]
     ).map(rowToSession);
   }
 
@@ -119,7 +118,12 @@ export class SessionService {
     }>;
     for (const row of rows) {
       const list = labels.get(row.task_id) ?? [];
-      list.push({ sessionId: row.id, agent: row.agent_kind, model: row.model, active: row.active === 1 });
+      list.push({
+        sessionId: row.id,
+        agent: row.agent_kind,
+        model: row.model,
+        active: row.active === 1,
+      });
       labels.set(row.task_id, list);
     }
     return labels;

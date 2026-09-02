@@ -1,4 +1,49 @@
-export type HookPlatform = "claude" | "cursor" | "codex" | "antigravity";
+import type { AgentKind } from "./types.js";
+
+export type HookPlatform = "claude" | "cursor" | "codex" | "antigravity" | "opencode";
+
+/** Coarse event class, so route handling is one switch instead of thirty cases. */
+export type HookEventKind =
+  | "session_start"
+  | "subagent_start"
+  | "session_end"
+  | "turn_end"
+  | "tool"
+  | "prompt"
+  | "notification"
+  | "compact"
+  | "other";
+
+const HOOK_EVENT_KINDS: Record<string, HookEventKind> = {
+  sessionstart: "session_start",
+  "session.created": "session_start",
+  subagentstart: "subagent_start",
+  sessionend: "session_end",
+  "session.deleted": "session_end",
+  stop: "turn_end",
+  stopfailure: "turn_end",
+  subagentstop: "turn_end",
+  "session.idle": "turn_end",
+  postinvocation: "turn_end",
+  afteragentresponse: "turn_end",
+  taskcompleted: "turn_end",
+  pretooluse: "tool",
+  posttooluse: "tool",
+  afterfileedit: "tool",
+  permissionrequest: "tool",
+  "tool.execute.before": "tool",
+  "tool.execute.after": "tool",
+  userpromptsubmit: "prompt",
+  beforesubmitprompt: "prompt",
+  notification: "notification",
+  precompact: "compact",
+  postcompact: "compact",
+};
+
+/** Platforms spell the same lifecycle moment five ways; collapse them here. */
+export function classifyHookEvent(event: string): HookEventKind {
+  return HOOK_EVENT_KINDS[event.trim().toLowerCase()] ?? "other";
+}
 
 export interface NormalizedHookInput {
   platform: HookPlatform;
@@ -18,14 +63,6 @@ export interface NormalizedHookInput {
   task?: string;
   transcriptPath?: string;
   lastAssistantMessage?: string;
-  /** Cursor afterAgentResponse / afterAgentThought `text` field. */
-  agentText?: string;
-  /** Cursor afterAgentThought `duration_ms`. */
-  thoughtDurationMs?: number;
-  /** Claude MessageDisplay streaming delta. */
-  messageDelta?: string;
-  /** Claude MessageDisplay — last chunk in a message. */
-  messageFinal?: boolean;
   /** Subagent / task lifecycle (Claude Task*, Cursor subagentStop). */
   subagentStatus?: string;
   subagentSummary?: string;
@@ -56,6 +93,7 @@ function readString(v: unknown): string | undefined {
 }
 
 function detectPlatform(raw: Record<string, unknown>): HookPlatform {
+  if ("opencode" in raw) return "opencode";
   if ("conversationId" in raw || ("toolCall" in raw && "workspacePaths" in raw)) return "antigravity";
   if ("conversation_id" in raw || "workspace_roots" in raw || "cursor_version" in raw) return "cursor";
   if ("turn_id" in raw && "hook_event_name" in raw) return "codex";
@@ -148,10 +186,6 @@ export function normalizeHookInput(raw: unknown, platformHint?: HookPlatform): N
       readString(raw.transcriptPath) ??
       readString(raw.agent_transcript_path),
     lastAssistantMessage: readString(raw.last_assistant_message) ?? readString(raw.lastAssistantMessage),
-    agentText: readString(raw.text),
-    thoughtDurationMs: typeof raw.duration_ms === "number" ? raw.duration_ms : undefined,
-    messageDelta: readString(raw.delta),
-    messageFinal: typeof raw.final === "boolean" ? raw.final : undefined,
     subagentStatus: readString(raw.status),
     subagentSummary: readString(raw.summary),
     taskSubject: readString(raw.task_subject) ?? readString(raw.taskSubject),
@@ -161,77 +195,46 @@ export function normalizeHookInput(raw: unknown, platformHint?: HookPlatform): N
   };
 }
 
-function subagentIdFromTranscriptPath(path: string | undefined): string | undefined {
-  if (!path) return undefined;
-  const nested = path.match(/subagents[/\\]([^/\\]+)\.jsonl$/i);
-  if (nested?.[1]) return nested[1];
-  const base = path.split(/[/\\]/).pop()?.replace(/\.jsonl$/i, "");
-  return base?.trim() || undefined;
-}
-
-/** Board tile id for subagent lifecycle hooks (handles Cursor subagentStop without subagent_id). */
-export function resolveSubagentBoardId(input: NormalizedHookInput): string | undefined {
-  if (input.agentId?.trim()) return input.agentId.trim();
-  const fromPath = subagentIdFromTranscriptPath(input.transcriptPath);
-  if (fromPath) return fromPath;
-  return undefined;
-}
-
-/** Resolve which session id owns the board tile for this hook. */
-export function resolveHookBoardSessionId(input: NormalizedHookInput, hookEvent?: string): string {
-  const event = hookEvent ?? input.hookEvent;
-  if (
-    event === "SubagentStart" ||
-    event === "subagentStart" ||
-    event === "SubagentStop" ||
-    event === "subagentStop"
-  ) {
-    const subagentId = resolveSubagentBoardId(input);
-    if (subagentId) return subagentId;
-  }
-  return resolveBoardSessionId(input);
-}
-
-/** One board tile per Claude session or subagent (subagents share session_id but have agent_id). */
-export function resolveBoardSessionId(input: Pick<NormalizedHookInput, "sessionId" | "agentId">): string {
+/** The board's key for this hook: a subagent when there is one, otherwise the host session. */
+export function hookSessionKey(input: Pick<NormalizedHookInput, "sessionId" | "agentId">): string {
   return input.agentId?.trim() || input.sessionId;
 }
 
-function repoLabel(cwd: string): string {
-  const parts = cwd.replace(/\/+$/, "").split("/").filter(Boolean);
-  return parts.at(-1) ?? cwd;
-}
+/** The text handed back to the agent on session start. */
+export function sessionBriefing(params: {
+  sessionId: string;
+  boardUrl: string;
+  task?: { key: string; title: string; status: string } | null;
+}): string {
+  const header = `## Agent Swarm\nBoard: ${params.boardUrl} · your swarm session: \`${params.sessionId}\``;
+  if (params.task) {
+    return `${header}
+You are working on **${params.task.key} — ${params.task.title}** (${params.task.status}).
 
-export function sessionTaskTitle(input: Pick<NormalizedHookInput, "sessionTitle" | "cwd" | "agentType" | "sessionSource" | "platform" | "agentId">): string {
-  if (input.sessionTitle?.trim()) return input.sessionTitle.trim();
-  const repo = repoLabel(input.cwd);
-  if (input.agentId && input.agentType) return `${input.agentType} · ${repo}`;
-  if (input.agentId) return `Subagent · ${repo}`;
-  const source = input.sessionSource ? ` (${input.sessionSource})` : "";
-  return `${input.platform} · ${repo}${source}`;
-}
-
-export function buildSessionContext(input: NormalizedHookInput, parentSessionId?: string): string {
-  const lines = [
-    "## Session",
-    "",
-    `- **Agent:** ${input.platform}${input.agentType ? ` (${input.agentType})` : ""}`,
-    `- **Working directory:** \`${input.cwd}\``,
-  ];
-  if (input.model) lines.push(`- **Model:** ${input.model}`);
-  if (input.sessionSource) lines.push(`- **Source:** ${input.sessionSource}`);
-  if (input.sessionId) lines.push(`- **Session ID:** \`${input.sessionId}\``);
-  if (input.agentId) lines.push(`- **Agent ID:** \`${input.agentId}\``);
-  if (parentSessionId && parentSessionId !== input.agentId) {
-    lines.push(`- **Parent session:** \`${parentSessionId}\``);
+Call \`swarm_task_update\` with a fresh \`summary\` when the goal, state, or next step
+changes, and \`swarm_task_stage\` to move it between columns. Add \`tags\` as they become
+obvious. Use \`swarm_handoff\` before handing the work to another agent.`;
   }
-  if (input.transcriptPath) lines.push(`- **Transcript:** \`${input.transcriptPath}\``);
-  if (input.task) lines.push("", "## Task", "", input.task);
-  lines.push("", "_Prompts and tool activity appear in the Timeline tab._");
-  return lines.join("\n");
+  return `${header}
+
+This session is not on the board. When you start work worth coordinating with other
+agents — a feature, an investigation, a handoff — call \`swarm_task_create\` with:
+- \`title\`: a specific, human-readable name you write yourself (max ~60 chars)
+- \`summary\`: 2-5 sentences in your own words — goal, current state, next step
+- \`tags\`: lowercase labels for filtering, e.g. ["repo-name", "backend", "bugfix"]
+- \`sessionId\`: \`${params.sessionId}\`
+
+To help on work already on the board, call \`swarm_task_join\` with its key instead.
+Do not create a board item for trivial, throwaway, or read-only turns.
+Keep \`summary\` current with \`swarm_task_update\` whenever the picture changes.`;
 }
 
 export function formatHookOutput(platform: HookPlatform, output: HookOutput, hookEvent?: string): Record<string, unknown> {
+  if (platform === "opencode") {
+    // Our own plugin consumes this shape verbatim.
+    return output.additionalContext ? { additionalContext: output.additionalContext } : {};
+  }
+
   if (platform === "cursor") {
     const result: Record<string, unknown> = {};
     if (output.additionalContext) result.additional_context = output.additionalContext;
@@ -256,6 +259,8 @@ export function formatHookOutput(platform: HookPlatform, output: HookOutput, hoo
     } else {
       result.decision = "allow";
     }
+    // Harmless to hosts that ignore it; the only context channel Antigravity leaves us.
+    if (output.additionalContext) result.additionalContext = output.additionalContext;
     return result;
   }
 
@@ -283,7 +288,7 @@ export function formatHookOutput(platform: HookPlatform, output: HookOutput, hoo
   return result;
 }
 
-export function agentKindFromPlatform(platform: HookPlatform): "claude" | "cursor" | "codex" | "antigravity" {
+export function agentKindFromPlatform(platform: HookPlatform): AgentKind {
   return platform;
 }
 

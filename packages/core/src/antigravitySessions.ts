@@ -1,11 +1,9 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { titleFromUserMessage } from "./cursorSessions.js";
 
 export interface AntigravitySessionRef {
   conversationId: string;
-  title?: string;
   cwd?: string;
   transcriptPath?: string;
 }
@@ -14,10 +12,9 @@ function brainRoot(home = homedir()): string {
   return join(home, ".gemini", "antigravity-cli", "brain");
 }
 
-function extractUserRequest(content: string): string | undefined {
+function extractUserRequest(content: string): string {
   const match = content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i);
-  const raw = match?.[1]?.trim() ?? content.trim();
-  return titleFromUserMessage(raw);
+  return (match?.[1] ?? content).trim();
 }
 
 function inferCwdFromTranscriptLine(obj: Record<string, unknown>): string | undefined {
@@ -31,30 +28,23 @@ function inferCwdFromTranscriptLine(obj: Record<string, unknown>): string | unde
   return undefined;
 }
 
-function readAntigravityTranscriptHead(path: string): { title?: string; cwd?: string } {
+function readTranscriptCwd(path: string): string | undefined {
   try {
-    if (!existsSync(path)) return {};
+    if (!existsSync(path)) return undefined;
     const head = readFileSync(path, "utf8").slice(0, 128 * 1024);
-    let title: string | undefined;
-    let cwd: string | undefined;
     for (const line of head.split("\n")) {
       if (!line.trim()) continue;
       try {
-        const obj = JSON.parse(line) as Record<string, unknown>;
-        if (!cwd) cwd = inferCwdFromTranscriptLine(obj);
-        if (title) continue;
-        if (obj.type === "USER_INPUT" && typeof obj.content === "string") {
-          const t = extractUserRequest(obj.content);
-          if (t && t.toLowerCase() !== "carry on") title = t;
-        }
+        const cwd = inferCwdFromTranscriptLine(JSON.parse(line) as Record<string, unknown>);
+        if (cwd) return cwd;
       } catch {
         /* skip */
       }
     }
-    return { title, cwd };
   } catch {
-    return {};
+    /* ignore */
   }
+  return undefined;
 }
 
 function resolveTranscriptFile(conversationId: string, home = homedir()): string | undefined {
@@ -68,35 +58,16 @@ function resolveTranscriptFile(conversationId: string, home = homedir()): string
   return undefined;
 }
 
-/** Resolve an Antigravity brain conversation to title, cwd, and transcript path. */
+/** Resolve an Antigravity brain conversation to its working directory and transcript path. */
 export function resolveAntigravitySession(conversationId: string, home = homedir()): AntigravitySessionRef | undefined {
   if (!conversationId.trim()) return undefined;
   const transcriptPath = resolveTranscriptFile(conversationId, home);
-  if (!transcriptPath) {
-    return { conversationId, transcriptPath: undefined };
-  }
-  const meta =
-    transcriptPath.endsWith(".jsonl")
-      ? readAntigravityTranscriptHead(transcriptPath)
-      : {};
+  if (!transcriptPath) return { conversationId };
   return {
     conversationId,
-    title: meta.title,
-    cwd: meta.cwd,
+    cwd: transcriptPath.endsWith(".jsonl") ? readTranscriptCwd(transcriptPath) : undefined,
     transcriptPath,
   };
-}
-
-/** List all Antigravity brain conversations on disk. */
-export function listAntigravityBrainSessions(home = homedir()): AntigravitySessionRef[] {
-  const root = brainRoot(home);
-  if (!existsSync(root)) return [];
-  const sessions: AntigravitySessionRef[] = [];
-  for (const conversationId of readdirSync(root)) {
-    const ref = resolveAntigravitySession(conversationId, home);
-    if (ref?.transcriptPath) sessions.push(ref);
-  }
-  return sessions;
 }
 
 export function extractAntigravityTranscriptText(sourcePath: string, maxChars = 24_000): string {
@@ -146,8 +117,7 @@ function extractAntigravityJsonlFile(path: string, maxChars: number): string {
       try {
         const obj = JSON.parse(line) as { type?: string; content?: string; thinking?: string };
         if (obj.type === "USER_INPUT" && typeof obj.content === "string") {
-          const text = extractUserRequest(obj.content) ?? obj.content.slice(0, 500);
-          lines.push(`User: ${text}`);
+          lines.push(`User: ${extractUserRequest(obj.content).slice(0, 500)}`);
         } else if (typeof obj.content === "string" && obj.content.trim()) {
           lines.push(`Agent: ${obj.content.slice(0, 400)}`);
         } else if (typeof obj.thinking === "string" && obj.thinking.trim()) {

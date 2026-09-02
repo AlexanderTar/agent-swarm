@@ -1,7 +1,7 @@
-import Database from "better-sqlite3";
 import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { SwarmDatabase } from "./db.js";
 
@@ -54,19 +54,31 @@ describe("schema v3 migration", () => {
     writeV2Db(dbPath);
 
     const swarm = new SwarmDatabase(dbPath);
-    const version = swarm.db.prepare("SELECT version FROM schema_meta").get() as { version: number };
+    const version = swarm.db.prepare("SELECT version FROM schema_meta").get() as {
+      version: number;
+    };
     expect(version.version).toBe(3);
 
     const index = swarm.db
-      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_session_unique'")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_session_unique'",
+      )
       .get();
     expect(index).toBeUndefined();
 
-    const cols = (swarm.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((c) => c.name);
-    expect(cols).toEqual(expect.arrayContaining(["parent_session_id", "transcript_path", "last_seen_at"]));
+    const cols = (
+      swarm.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    expect(cols).toEqual(
+      expect.arrayContaining(["parent_session_id", "transcript_path", "last_seen_at"]),
+    );
 
-    expect(swarm.db.prepare("SELECT status FROM tasks WHERE key = 'SW-1'").get()).toEqual({ status: "archived" });
-    expect(swarm.db.prepare("SELECT status FROM tasks WHERE key = 'SW-2'").get()).toEqual({ status: "ready" });
+    expect(swarm.db.prepare("SELECT status FROM tasks WHERE key = 'SW-1'").get()).toEqual({
+      status: "archived",
+    });
+    expect(swarm.db.prepare("SELECT status FROM tasks WHERE key = 'SW-2'").get()).toEqual({
+      status: "ready",
+    });
     expect(swarm.db.prepare("SELECT task_id FROM task_events").all()).toEqual([{ task_id: 2 }]);
 
     expect(readdirSync(join(dir, "backups")).some((f) => f.startsWith("pre-v3-"))).toBe(true);
@@ -82,10 +94,16 @@ describe("schema v3 migration", () => {
     const swarm = new SwarmDatabase(join(mkdtempSync(join(tmpdir(), "swarm-fresh-")), "swarm.db"));
     expect(swarm.db.prepare("SELECT version FROM schema_meta").get()).toEqual({ version: 3 });
     expect(
-      swarm.db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_session_unique'").get(),
+      swarm.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_session_unique'",
+        )
+        .get(),
     ).toBeUndefined();
     expect(
-      swarm.db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_sessions_cwd'").get(),
+      swarm.db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_sessions_cwd'")
+        .get(),
     ).toEqual({ name: "idx_sessions_cwd" });
     swarm.close();
   });
