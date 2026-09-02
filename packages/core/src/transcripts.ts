@@ -9,10 +9,6 @@ export function encodeClaudeProjectPath(cwd: string): string {
   return cwd.replace(/\//g, "-");
 }
 
-export function claudeTranscriptPath(sessionId: string, cwd: string, home = homedir()): string {
-  return join(home, ".claude", "projects", encodeClaudeProjectPath(cwd), `${sessionId}.jsonl`);
-}
-
 /** Find a Claude jsonl across all project dirs (main session or subagent). */
 export function findClaudeTranscriptPath(sessionKey: string, cwd?: string, home = homedir()): string | undefined {
   if (!sessionKey.trim()) return undefined;
