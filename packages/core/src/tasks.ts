@@ -9,6 +9,9 @@ import type {
   TaskWithSessions,
 } from "./types.js";
 
+/** Tool payloads are unbounded; 38k preToolUse rows were 85 MB of the live db. */
+const EVENT_PAYLOAD_MAX = 2000;
+
 export function normalizeTags(tags: readonly string[]): string[] {
   const seen = new Set<string>();
   for (const raw of tags) {
@@ -261,9 +264,15 @@ export class TaskService {
   }
 
   appendEvent(taskId: number, eventType: string, payload: Record<string, unknown>): void {
+    // ponytail: a Write tool_input carries the whole file, so cap the row rather than the callers.
+    const json = JSON.stringify(payload);
+    const stored =
+      json.length > EVENT_PAYLOAD_MAX
+        ? JSON.stringify({ truncated: true, preview: json.slice(0, EVENT_PAYLOAD_MAX) })
+        : json;
     this.db
       .prepare("INSERT INTO task_events (task_id, event_type, payload_json) VALUES (?, ?, ?)")
-      .run(taskId, eventType, JSON.stringify(payload));
+      .run(taskId, eventType, stored);
     this.touch(taskId);
   }
 

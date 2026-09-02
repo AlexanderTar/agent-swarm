@@ -90,6 +90,17 @@ describe("task tags and sessions", () => {
     expect(tasks.list({ agent: "cursor" })).toEqual([]);
   });
 
+  it("caps oversized event payloads", () => {
+    const task = tasks.create({ title: "Noisy", originAgent: "claude" });
+    tasks.appendEvent(task.id, "tool", { tool: "Write", content: "x".repeat(50_000) });
+    tasks.appendEvent(task.id, "tool", { tool: "Read" });
+
+    const [big, small] = tasks.getEvents(task.id).reverse() as Array<{ payload: Record<string, unknown> }>;
+    expect(big?.payload).toMatchObject({ truncated: true });
+    expect(JSON.stringify(big?.payload).length).toBeLessThan(2200);
+    expect(small?.payload).toEqual({ tool: "Read" });
+  });
+
   it("hides archived tasks unless asked for them", () => {
     const task = tasks.create({ title: "Old", originAgent: "claude", tags: ["board"] });
     tasks.update(task.id, { status: "archived" });

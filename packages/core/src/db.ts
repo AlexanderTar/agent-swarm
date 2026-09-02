@@ -140,7 +140,7 @@ export class SwarmDatabase {
 
         CREATE VIRTUAL TABLE vec_chunks USING vec0(
           embedding float[${embedDimensions}],
-          doc_id integer partition key
+          doc_id integer
         );
 
         INSERT INTO schema_meta (version, embed_model, embed_dimensions)
@@ -169,13 +169,32 @@ export class SwarmDatabase {
         CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at);
 
         DELETE FROM task_events
-         WHERE task_id IN (SELECT id FROM tasks WHERE initial_context LIKE '## Session%');
+         WHERE task_id IN (
+           SELECT id FROM tasks
+            WHERE initial_context LIKE '## Session%'
+               OR (initial_context IS NULL AND title = 'Untitled')
+         );
         UPDATE tasks
            SET status = 'archived', updated_at = datetime('now')
-         WHERE status != 'archived' AND initial_context LIKE '## Session%';
+         WHERE status != 'archived'
+           AND (initial_context LIKE '## Session%' OR (initial_context IS NULL AND title = 'Untitled'));
 
         UPDATE tasks SET status = 'ready' WHERE status = 'handoff';
       `);
+
+      // `doc_id integer partition key` preallocated a chunk block per doc: 369 MB for 977 chunks.
+      // A plain metadata column serves both the doc_id filter and deleteByDoc.
+      this.db.exec(`
+        DROP TABLE IF EXISTS vec_chunks;
+        CREATE VIRTUAL TABLE vec_chunks USING vec0(
+          embedding float[${embedDimensions}],
+          doc_id integer
+        );
+        DELETE FROM kb_chunks;
+        INSERT INTO kb_fts(kb_fts) VALUES('delete-all');
+      `);
+      // indexFile early-returns on a matching hash, so blanking it is what re-embeds the kb.
+      this.db.exec("UPDATE kb_docs SET content_hash = ''");
 
       this.db.prepare(`UPDATE schema_meta SET version = ${SCHEMA_VERSION}`).run();
     })();
