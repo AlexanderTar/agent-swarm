@@ -17,6 +17,13 @@ const STATUSES = ["ready", "in_progress", "blocked", "review", "done"] as const;
 
 type TaskStatus = (typeof STATUSES)[number];
 
+interface SessionLabel {
+  sessionId: string;
+  agent: string;
+  model: string | null;
+  active: boolean;
+}
+
 interface Task {
   id: number;
   key: string;
@@ -33,6 +40,20 @@ interface Task {
   claimedBy: string | null;
   artifactsJson: string;
   kbLinksJson: string;
+  tags: string[];
+  sessions: SessionLabel[];
+}
+
+/** Distinct agents on a tile, falling back to the creator when nothing is bound. */
+function agentsOf(task: Task): string[] {
+  const agents = [...new Set((task.sessions ?? []).map((s) => s.agent))];
+  return agents.length > 0 ? agents : [task.originAgent];
+}
+
+function modelsOf(task: Task): string[] {
+  const models = (task.sessions ?? []).map((s) => s.model).filter((m): m is string => Boolean(m));
+  const distinct = [...new Set(models)];
+  return distinct.length > 0 ? distinct : task.originModel ? [task.originModel] : [];
 }
 
 const BOARD_TITLE_MAX = 48;
@@ -48,6 +69,7 @@ const AGENT_COLORS: Record<string, string> = {
   cursor: "bg-blue-500/20 text-blue-300 border-blue-500/40",
   codex: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
   antigravity: "bg-purple-500/20 text-purple-300 border-purple-500/40",
+  opencode: "bg-amber-500/20 text-amber-300 border-amber-500/40",
   unknown: "bg-zinc-500/20 text-zinc-300 border-zinc-500/40",
 };
 
@@ -59,7 +81,29 @@ function AgentBadge({ agent }: { agent: string }) {
   );
 }
 
-function Column({ status, tasks, onSelect, onRemove }: { status: TaskStatus; tasks: Task[]; onSelect: (t: Task) => void; onRemove: (key: string) => void }) {
+const MAX_MODEL_CHIPS = 3;
+const MAX_TAG_CHIPS = 4;
+
+function TagChip({ tag, onClick }: { tag: string; onClick?: (tag: string) => void }) {
+  return (
+    <button
+      type="button"
+      className="text-xs px-1.5 py-0.5 rounded bg-zinc-800/70 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.(tag);
+      }}
+    >
+      #{tag}
+    </button>
+  );
+}
+
+function overflow<T>(items: T[], max: number): { shown: T[]; extra: number } {
+  return { shown: items.slice(0, max), extra: Math.max(0, items.length - max) };
+}
+
+function Column({ status, tasks, onSelect, onRemove, onTag }: { status: TaskStatus; tasks: Task[]; onSelect: (t: Task) => void; onRemove: (key: string) => void; onTag: (tag: string) => void }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
   return (
     <div className="min-w-[320px] flex-shrink-0 flex flex-col h-full min-h-0">
@@ -75,7 +119,7 @@ function Column({ status, tasks, onSelect, onRemove }: { status: TaskStatus; tas
           data-status={status}
         >
           {tasks.map((task) => (
-            <TaskCard key={task.key} task={task} onSelect={onSelect} onRemove={onRemove} />
+            <TaskCard key={task.key} task={task} onSelect={onSelect} onRemove={onRemove} onTag={onTag} />
           ))}
         </div>
       </SortableContext>
@@ -83,7 +127,7 @@ function Column({ status, tasks, onSelect, onRemove }: { status: TaskStatus; tas
   );
 }
 
-function TaskCard({ task, onSelect, onRemove }: { task: Task; onSelect: (t: Task) => void; onRemove: (key: string) => void }) {
+function TaskCard({ task, onSelect, onRemove, onTag }: { task: Task; onSelect: (t: Task) => void; onRemove: (key: string) => void; onTag: (tag: string) => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.key });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 };
   const files = useMemo(() => {
@@ -93,8 +137,12 @@ function TaskCard({ task, onSelect, onRemove }: { task: Task; onSelect: (t: Task
       return [];
     }
   }, [task.artifactsJson]);
-  const isLive = task.status === "in_progress" && task.lastActivityAt &&
-    Date.now() - new Date(task.lastActivityAt).getTime() < 120_000;
+  const agents = agentsOf(task);
+  const models = overflow(modelsOf(task), MAX_MODEL_CHIPS);
+  const tags = overflow(task.tags ?? [], MAX_TAG_CHIPS);
+  const isLive = (task.sessions ?? []).some((s) => s.active) ||
+    (task.status === "in_progress" && task.lastActivityAt &&
+      Date.now() - new Date(task.lastActivityAt).getTime() < 120_000);
 
   return (
     <div
@@ -115,12 +163,25 @@ function TaskCard({ task, onSelect, onRemove }: { task: Task; onSelect: (t: Task
           <h3 className="font-medium text-sm truncate" title={task.title}>
             {boardTitle(task.title)}
           </h3>
-          <div className="flex flex-wrap gap-1 mt-2">
-            <AgentBadge agent={task.originAgent} />
-            {task.originModel && <span className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded">{task.originModel}</span>}
+          <div className="flex flex-wrap items-center gap-1 mt-2">
+            {agents.map((agent) => (
+              <AgentBadge key={agent} agent={agent} />
+            ))}
+            {models.shown.map((model) => (
+              <span key={model} className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded">{model}</span>
+            ))}
+            {models.extra > 0 && <span className="text-xs text-zinc-500">+{models.extra}</span>}
             {task.branch && <span className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded">{task.branch}</span>}
             {files.length > 0 && <span className="text-xs text-zinc-500">{files.length} files</span>}
           </div>
+          {tags.shown.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 mt-1.5">
+              {tags.shown.map((tag) => (
+                <TagChip key={tag} tag={tag} onClick={onTag} />
+              ))}
+              {tags.extra > 0 && <span className="text-xs text-zinc-500">+{tags.extra}</span>}
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -159,10 +220,29 @@ function TaskDetail({ task, onClose, onRemove }: { task: Task & { events?: Array
 
   return (
     <div className="fixed inset-y-0 right-0 w-full max-w-lg bg-zinc-900 border-l border-zinc-800 shadow-2xl z-50 flex flex-col">
-      <div className="p-4 border-b border-zinc-800 flex items-center justify-between gap-2">
+      <div className="p-4 border-b border-zinc-800 flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-xs font-mono text-zinc-500">{task.key}</p>
           <h2 className="font-semibold truncate">{task.title}</h2>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-xs text-zinc-400">
+            {(task.sessions ?? []).length === 0 ? (
+              <span className="text-zinc-600">No agent session attached</span>
+            ) : (
+              (task.sessions ?? []).map((s) => (
+                <span key={s.sessionId} title={s.sessionId}>
+                  {s.agent}
+                  {s.model ? `·${s.model}` : ""} {s.active ? "●" : "○"}
+                </span>
+              ))
+            )}
+          </div>
+          {(task.tags ?? []).length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 mt-1.5">
+              {task.tags.map((tag) => (
+                <TagChip key={tag} tag={tag} />
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           <button
@@ -203,7 +283,9 @@ function TaskDetail({ task, onClose, onRemove }: { task: Task & { events?: Array
             <button type="button" className="mb-2 flex items-center gap-1 text-xs text-zinc-400" onClick={() => copy(task.handoffNote ?? "")}>
               <Copy size={12} /> Copy summary
             </button>
-            <ReactMarkdown>{task.handoffNote ?? "_No summary yet_"}</ReactMarkdown>
+            <ReactMarkdown>
+              {task.handoffNote ?? "_No summary yet — ask the agent to call swarm_task_update._"}
+            </ReactMarkdown>
           </div>
         )}
         {tab === "timeline" && (
@@ -329,6 +411,7 @@ export default function App() {
   const [selected, setSelected] = useState<(Task & { events?: Array<{ eventType: string; createdAt: string }> }) | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [authToken, setAuthToken] = useState<string>("");
+  const [tagFilter, setTagFilter] = useState<string>("");
   const [consoleOpen, setConsoleOpen] = useState(() => {
     try {
       return localStorage.getItem("swarm-console-open") === "true";
@@ -404,16 +487,28 @@ export default function App() {
     };
   }, [load, authToken]);
 
+  const visibleCount = useMemo(
+    () => (tagFilter ? tasks.filter((t) => (t.tags ?? []).includes(tagFilter)).length : tasks.length),
+    [tasks, tagFilter],
+  );
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+
+  // Tag list comes from the board itself — no extra endpoint to keep in sync.
+  const allTags = useMemo(
+    () => [...new Set(tasks.flatMap((t) => t.tags ?? []))].sort(),
+    [tasks],
+  );
 
   const byStatus = useMemo(() => {
     const map = Object.fromEntries(STATUSES.map((s) => [s, [] as Task[]])) as Record<TaskStatus, Task[]>;
     for (const t of tasks) {
+      if (tagFilter && !(t.tags ?? []).includes(tagFilter)) continue;
       const status = (t.status === "handoff" || t.status === "backlog" ? "ready" : t.status) as TaskStatus;
       if (map[status]) map[status].push({ ...t, status });
     }
     return map;
-  }, [tasks]);
+  }, [tasks, tagFilter]);
 
   const onDragEnd = async (event: DragEndEvent) => {
     setActiveId(null);
@@ -456,7 +551,20 @@ export default function App() {
       <header className="border-b border-zinc-800 px-4 py-3 flex items-center justify-between gap-3">
         <h1 className="text-lg font-semibold tracking-tight">Agent Swarm Board</h1>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-zinc-500">{tasks.length} tasks</span>
+          <select
+            className="text-xs bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1.5 text-zinc-300"
+            value={tagFilter}
+            onChange={(e) => setTagFilter(e.target.value)}
+            aria-label="Filter by tag"
+          >
+            <option value="">All tags</option>
+            {allTags.map((tag) => (
+              <option key={tag} value={tag}>#{tag}</option>
+            ))}
+          </select>
+          <span className="text-xs text-zinc-500">
+            {tagFilter ? `${visibleCount} of ${tasks.length}` : `${tasks.length}`} tasks
+          </span>
           <button
             type="button"
             onClick={toggleConsole}
@@ -480,7 +588,14 @@ export default function App() {
         >
           <div className="flex-1 min-h-0 h-full overflow-x-auto overflow-y-hidden swarm-scroll p-4 flex gap-3 items-stretch">
             {STATUSES.map((status) => (
-              <Column key={status} status={status} tasks={byStatus[status]} onSelect={(t) => void openTask(t)} onRemove={(key) => void removeTask(key)} />
+              <Column
+                key={status}
+                status={status}
+                tasks={byStatus[status]}
+                onSelect={(t) => void openTask(t)}
+                onRemove={(key) => void removeTask(key)}
+                onTag={setTagFilter}
+              />
             ))}
           </div>
           <DragOverlay>
