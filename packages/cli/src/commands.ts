@@ -568,10 +568,14 @@ function mergeCursorHooks(pluginPath: string): void {
     }
   }
 
-  const mergedHooks: Record<string, CursorHookDef[]> = { ...(existing.hooks ?? {}) };
+  // Drop swarm entries from every event first, so events we no longer register go away.
+  const mergedHooks: Record<string, CursorHookDef[]> = {};
+  for (const [event, defs] of Object.entries(existing.hooks ?? {})) {
+    const kept = (defs ?? []).filter((d) => !isSwarmCursorHook(d.command));
+    if (kept.length > 0) mergedHooks[event] = kept;
+  }
   for (const [event, defs] of Object.entries(swarmHooks)) {
-    const kept = (mergedHooks[event] ?? []).filter((d) => !isSwarmCursorHook(d.command));
-    mergedHooks[event] = [...kept, ...defs];
+    mergedHooks[event] = [...(mergedHooks[event] ?? []), ...defs];
   }
 
   writeFileSync(hooksPath, `${JSON.stringify({ version: 1, hooks: mergedHooks }, null, 2)}\n`);
