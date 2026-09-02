@@ -60,7 +60,7 @@ export class KbStore {
     private ollama: OllamaClient,
     private paths: SwarmPaths,
   ) {
-    for (const sub of ["notes", "handoffs", "decisions", "projects", "inbox"]) {
+    for (const sub of ["notes", "handoffs", "decisions", "projects", "inbox", "tasks", "transcripts", "memory"]) {
       mkdirSync(join(paths.kb, sub), { recursive: true });
     }
   }
@@ -108,8 +108,9 @@ export class KbStore {
 
   async indexFile(absPath: string): Promise<void> {
     if (!existsSync(absPath)) return;
+    // Artifacts live outside the kb, where two README.md would collide on the UNIQUE slug.
     const rel = relative(this.paths.kb, absPath);
-    const slug = slugify(basename(absPath));
+    const slug = slugify(rel.startsWith("..") ? absPath : basename(absPath));
     const raw = readFileSync(absPath, "utf8");
     const parsed = matter(raw);
     const contentHash = hashContent(raw);
@@ -166,17 +167,21 @@ export class KbStore {
     this.db.prepare("DELETE FROM kb_docs WHERE id = ?").run(row.id);
   }
 
-  async search(query: string, limit = 10): Promise<KbSearchResult[]> {
+  async search(query: string, limit = 10, opts?: { subdir?: string }): Promise<KbSearchResult[]> {
+    const prefix = opts?.subdir ? `${join(this.paths.kb, opts.subdir)}/%` : null;
+    // Both legs filter after ranking, so over-fetch when most docs live in other subdirs.
+    const fetch = prefix ? limit * 10 : limit * 2;
+
     const queryVec = await this.ollama.embedOne(query);
-    const vectorHits = this.vector.search(queryVec, limit * 2);
+    const vectorHits = this.vector.search(queryVec, fetch);
 
     const ftsHits = this.db
       .prepare(
         `SELECT c.id, c.body, c.heading, d.slug, d.title, d.path, bm25(kb_fts) as rank
          FROM kb_fts f JOIN kb_chunks c ON c.id = f.rowid JOIN kb_docs d ON d.id = c.doc_id
-         WHERE kb_fts MATCH ? ORDER BY rank LIMIT ?`,
+         WHERE kb_fts MATCH ?${prefix ? " AND d.path LIKE ?" : ""} ORDER BY rank LIMIT ?`,
       )
-      .all(query.replace(/[^\w\s]/g, " "), limit * 2) as Array<{
+      .all(...[query.replace(/[^\w\s]/g, " "), ...(prefix ? [prefix] : []), fetch]) as Array<{
       id: number;
       body: string;
       heading: string | null;
@@ -191,9 +196,12 @@ export class KbStore {
     vectorHits.forEach((hit, rank) => {
       const row = this.db
         .prepare(
-          `SELECT c.body, c.heading, d.slug, d.title, d.path FROM kb_chunks c JOIN kb_docs d ON d.id = c.doc_id WHERE c.id = ?`,
+          `SELECT c.body, c.heading, d.slug, d.title, d.path FROM kb_chunks c JOIN kb_docs d ON d.id = c.doc_id
+           WHERE c.id = ?${prefix ? " AND d.path LIKE ?" : ""}`,
         )
-        .get(hit.chunkId) as { body: string; heading: string | null; slug: string; title: string; path: string };
+        .get(...[hit.chunkId, ...(prefix ? [prefix] : [])]) as
+        | { body: string; heading: string | null; slug: string; title: string; path: string }
+        | undefined;
       if (!row) return;
       const rrf = 1 / (60 + rank + 1);
       scores.set(hit.chunkId, {

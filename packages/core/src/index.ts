@@ -13,6 +13,7 @@ export * from "./cursorSessions.js";
 export * from "./antigravitySessions.js";
 export * from "./transcripts.js";
 export * from "./kb.js";
+export * from "./indexer.js";
 
 export function loadConfig(home?: string): SwarmConfig {
   const paths = getSwarmPaths(home);
@@ -33,7 +34,7 @@ export function saveConfig(config: SwarmConfig, home?: string): void {
 
 export function ensureSwarmDirs(home?: string): ReturnType<typeof getSwarmPaths> {
   const paths = getSwarmPaths(home);
-  for (const dir of [paths.home, paths.kb, paths.logs, paths.run, paths.backups, paths.bin, `${paths.kb}/notes`, `${paths.kb}/handoffs`, `${paths.kb}/decisions`, `${paths.kb}/inbox`]) {
+  for (const dir of [paths.home, paths.kb, paths.logs, paths.run, paths.backups, paths.bin, `${paths.kb}/notes`, `${paths.kb}/handoffs`, `${paths.kb}/decisions`, `${paths.kb}/projects`, `${paths.kb}/inbox`, `${paths.kb}/tasks`, `${paths.kb}/transcripts`, `${paths.kb}/memory`]) {
     mkdirSync(dir, { recursive: true });
   }
   return paths;
