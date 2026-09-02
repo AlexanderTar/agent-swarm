@@ -2,40 +2,60 @@
   "version": 1,
   "hooks": {
     "sessionStart": [
-      { "command": "node ./hooks/post-hook.mjs cursor sessionStart" }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor sessionStart"
+      }
     ],
     "sessionEnd": [
-      { "command": "node ./hooks/post-hook.mjs cursor sessionEnd", "timeout": 2 }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor sessionEnd",
+        "timeout": 2
+      }
     ],
     "beforeSubmitPrompt": [
-      { "command": "node ./hooks/post-hook.mjs cursor beforeSubmitPrompt" }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor beforeSubmitPrompt"
+      }
     ],
     "preToolUse": [
-      { "command": "node ./hooks/post-hook.mjs cursor preToolUse", "timeout": 2 }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor preToolUse",
+        "timeout": 2
+      }
     ],
     "postToolUse": [
-      { "command": "node ./hooks/post-hook.mjs cursor postToolUse", "timeout": 2 }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor postToolUse",
+        "timeout": 2
+      }
     ],
     "afterFileEdit": [
-      { "command": "node ./hooks/post-hook.mjs cursor afterFileEdit", "timeout": 2 }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor afterFileEdit",
+        "timeout": 2
+      }
     ],
     "subagentStart": [
-      { "command": "node ./hooks/post-hook.mjs cursor subagentStart", "timeout": 2 }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor subagentStart",
+        "timeout": 2
+      }
     ],
     "subagentStop": [
-      { "command": "node ./hooks/post-hook.mjs cursor subagentStop", "timeout": 2 }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor subagentStop",
+        "timeout": 2
+      }
     ],
     "preCompact": [
-      { "command": "node ./hooks/post-hook.mjs cursor preCompact" }
-    ],
-    "afterAgentResponse": [
-      { "command": "node ./hooks/post-hook.mjs cursor afterAgentResponse", "timeout": 2 }
-    ],
-    "afterAgentThought": [
-      { "command": "node ./hooks/post-hook.mjs cursor afterAgentThought", "timeout": 2 }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor preCompact"
+      }
     ],
     "stop": [
-      { "command": "node ./hooks/post-hook.mjs cursor stop" }
+      {
+        "command": "node ./hooks/post-hook.mjs cursor stop"
+      }
     ]
   }
 }

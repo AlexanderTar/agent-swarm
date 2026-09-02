@@ -1,0 +1,9 @@
+{
+  "name": "swarm",
+  "version": "0.1.0",
+  "description": "Agent Swarm orchestration board for OpenCode",
+  "author": { "name": "Agent Swarm", "url": "https://github.com/alexandertar/agent-swarm" },
+  "license": "MIT",
+  "keywords": ["swarm", "kanban", "handoff", "opencode"],
+  "skills": "./skills/"
+}
