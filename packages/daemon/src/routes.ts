@@ -19,7 +19,13 @@ import type { SwarmContext } from "./context.js";
 /** The board item a hook's session is attached to, or null when the agent never created one. */
 function boundTask(ctx: SwarmContext, sessionId: string): TaskRecord | null {
   const session = ctx.sessions.get(sessionId);
-  return session?.taskId ? ctx.tasks.getById(session.taskId) : null;
+  if (!session) return null;
+  if (session.taskId) return ctx.tasks.getById(session.taskId);
+  // A subagent can start before its parent creates the item — adopt it late.
+  const parentTaskId = session.parentSessionId ? ctx.sessions.get(session.parentSessionId)?.taskId : null;
+  if (!parentTaskId) return null;
+  ctx.sessions.bind(session.id, parentTaskId);
+  return ctx.tasks.getById(parentTaskId);
 }
 
 function briefingFor(ctx: SwarmContext, sessionId: string): string {
@@ -49,6 +55,14 @@ function ingest(ctx: SwarmContext, taskId: number, sessionId: string): void {
     .ingestSession(taskId, sessionId)
     .then(() => ctx.broadcast({ type: "kb_updated" }))
     .catch((err) => console.warn(`[swarm] KB ingest failed for task ${taskId}:`, err));
+}
+
+/** Stop fires after every assistant turn — too hot to re-embed a whole transcript. */
+function ingestArtifacts(ctx: SwarmContext, taskId: number): void {
+  void ctx.indexer
+    .indexArtifacts(taskId)
+    .then((paths) => paths.length > 0 && ctx.broadcast({ type: "kb_updated" }))
+    .catch((err) => console.warn(`[swarm] artifact index failed for task ${taskId}:`, err));
 }
 
 export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext): Promise<void> {
@@ -122,7 +136,7 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
         }
         case "turn_end": {
           ctx.tasks.touch(task.id);
-          ingest(ctx, task.id, sessionId);
+          ingestArtifacts(ctx, task.id);
           break;
         }
         case "notification":

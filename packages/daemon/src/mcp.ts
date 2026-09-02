@@ -45,6 +45,9 @@ function slugify(name: string): string {
 export function createMcpServer(ctx: SwarmContext, meta: McpClientMeta = {}): McpServer {
   const server = new McpServer({ name: "swarm", version: "0.1.0" });
 
+  const callerAgent = (agent?: string, session?: SessionRecord | null): AgentKind =>
+    (agent as AgentKind) ?? session?.agentKind ?? meta.agent ?? "unknown";
+
   /**
    * Explicit sessionId wins. Otherwise fall back to the newest live session in the
    * caller's working directory.
@@ -54,8 +57,17 @@ export function createMcpServer(ctx: SwarmContext, meta: McpClientMeta = {}): Mc
   const resolveSession = (sessionId?: string): SessionRecord | null =>
     ctx.sessions.resolve({ sessionId: sessionId ?? meta.sessionId, cwd: meta.cwd });
 
-  const callerAgent = (agent?: string, session?: SessionRecord | null): AgentKind =>
-    (agent as AgentKind) ?? session?.agentKind ?? meta.agent ?? "unknown";
+  /**
+   * Resolve, or create the row when the agent names a session we never saw a hook for
+   * (Codex hooks unapproved, Antigravity, a host that drops SessionStart).
+   */
+  const requireSession = (sessionId?: string, agent?: string, model?: string): SessionRecord | null => {
+    const found = resolveSession(sessionId);
+    if (found) return found;
+    const id = sessionId ?? meta.sessionId;
+    if (!id?.trim()) return null;
+    return ctx.sessions.upsert({ id, agent: callerAgent(agent), cwd: meta.cwd, model });
+  };
 
   server.tool(
     "swarm_board",
@@ -107,7 +119,7 @@ export function createMcpServer(ctx: SwarmContext, meta: McpClientMeta = {}): Mc
       model: z.string().optional(),
     },
     async (args) => {
-      const session = resolveSession(args.sessionId);
+      const session = requireSession(args.sessionId, args.agent, args.model);
       const task = ctx.tasks.create({
         title: args.title,
         summary: args.summary,
@@ -168,11 +180,13 @@ export function createMcpServer(ctx: SwarmContext, meta: McpClientMeta = {}): Mc
     async (args) => {
       const task = ctx.tasks.getByKey(args.key);
       if (!task) return text(`Task not found: ${args.key}`, true);
-      const session = resolveSession(args.sessionId);
+      const session = requireSession(args.sessionId, args.agent, args.model);
       if (!session) {
         return text("No swarm session for this connection — pass sessionId explicitly.", true);
       }
-      if (args.model) ctx.sessions.upsert({ id: session.id, agent: callerAgent(args.agent, session), model: args.model });
+      if (args.model && args.model !== session.model) {
+        ctx.sessions.upsert({ id: session.id, agent: callerAgent(args.agent, session), model: args.model });
+      }
       ctx.sessions.bind(session.id, task.id);
       ctx.broadcast({ type: "task_updated", task: ctx.tasks.getById(task.id) });
       return json({
