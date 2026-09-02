@@ -37,12 +37,12 @@ export const SwarmPlugin = async ({ directory, worktree }) => {
 
     "tool.execute.before": async (input, output) => {
       const session_id = sessionIdOf(input?.sessionID, input?.sessionId);
-      if (session_id) post("PreToolUse", { session_id, tool_name: input?.tool, tool_input: output?.args });
+      if (session_id) post("PreToolUse", { session_id, tool_name: input?.tool, tool_input: input?.args ?? output?.args });
     },
 
     "tool.execute.after": async (input, output) => {
       const session_id = sessionIdOf(input?.sessionID, input?.sessionId);
-      if (session_id) post("PostToolUse", { session_id, tool_name: input?.tool, tool_input: output?.args });
+      if (session_id) post("PostToolUse", { session_id, tool_name: input?.tool, tool_input: input?.args ?? output?.args });
     },
   };
 };
