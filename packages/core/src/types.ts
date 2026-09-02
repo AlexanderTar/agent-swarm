@@ -10,7 +10,7 @@ export const TASK_STATUSES = [
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-export type AgentKind = "claude" | "cursor" | "codex" | "antigravity" | "unknown";
+export type AgentKind = "claude" | "cursor" | "codex" | "antigravity" | "opencode" | "unknown";
 
 export interface SwarmConfig {
   port: number;
@@ -98,8 +98,25 @@ export interface SessionRecord {
   model: string | null;
   pid: number | null;
   taskId: number | null;
+  parentSessionId: string | null;
+  transcriptPath: string | null;
   startedAt: string;
+  lastSeenAt: string | null;
   endedAt: string | null;
+}
+
+/** Agent/model labels rendered on a board tile. */
+export interface TaskSessionLabel {
+  sessionId: string;
+  agent: AgentKind;
+  model: string | null;
+  /** last_seen_at within 2 minutes and ended_at IS NULL */
+  active: boolean;
+}
+
+export interface TaskWithSessions extends TaskRecord {
+  tags: string[];
+  sessions: TaskSessionLabel[];
 }
 
 export interface KbDoc {
@@ -127,6 +144,7 @@ export interface BoardFilters {
   status?: TaskStatus;
   repo?: string;
   agent?: AgentKind;
+  tag?: string;
   stale?: boolean;
 }
 

@@ -8,6 +8,7 @@ export * from "./db.js";
 export * from "./ollama.js";
 export * from "./tasks.js";
 export * from "./hooks.js";
+export * from "./sessions.js";
 export * from "./hookEnrichment.js";
 export * from "./cursorSessions.js";
 export * from "./antigravitySessions.js";

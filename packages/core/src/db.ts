@@ -1,17 +1,19 @@
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { SwarmConfig } from "./types.js";
-import { consolidateTasksBySessionId } from "./tasks.js";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 export const EMBED_DIM = 256;
 
 export class SwarmDatabase {
   readonly db: Database.Database;
 
-  constructor(dbPath: string, embedDimensions = EMBED_DIM) {
+  constructor(
+    private dbPath: string,
+    embedDimensions = EMBED_DIM,
+  ) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
@@ -68,8 +70,8 @@ export class SwarmDatabase {
 
         CREATE INDEX idx_tasks_status ON tasks(status);
         CREATE INDEX idx_tasks_session ON tasks(origin_session_id);
-        CREATE UNIQUE INDEX idx_tasks_session_unique ON tasks(origin_session_id) WHERE origin_session_id IS NOT NULL;
         CREATE INDEX idx_tasks_claim ON tasks(claimed_by, claim_expires_at);
+        CREATE INDEX idx_tasks_updated ON tasks(updated_at);
 
         CREATE TABLE task_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,9 +99,15 @@ export class SwarmDatabase {
           model TEXT,
           pid INTEGER,
           task_id INTEGER REFERENCES tasks(id),
+          parent_session_id TEXT,
+          transcript_path TEXT,
           started_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_seen_at TEXT,
           ended_at TEXT
         );
+
+        CREATE INDEX idx_sessions_task ON sessions(task_id);
+        CREATE INDEX idx_sessions_cwd ON sessions(cwd, last_seen_at);
 
         CREATE TABLE kb_docs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,23 +150,60 @@ export class SwarmDatabase {
     }
 
     const row = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get() as { version: number } | undefined;
-    if (row && row.version < 2) {
-      // Collapse duplicate tiles that share an origin_session_id, then enforce uniqueness.
-      this.consolidateDuplicateSessions();
+    if (!row || row.version >= SCHEMA_VERSION) return;
+
+    this.snapshot();
+
+    this.db.transaction(() => {
+      // One task may now hold many sessions.
+      this.db.exec("DROP INDEX IF EXISTS idx_tasks_session_unique");
+
+      // Sessions become the session <-> task join.
+      this.addColumn("sessions", "parent_session_id", "TEXT");
+      this.addColumn("sessions", "transcript_path", "TEXT");
+      this.addColumn("sessions", "last_seen_at", "TEXT");
+
       this.db.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session_unique
-          ON tasks(origin_session_id)
-          WHERE origin_session_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_sessions_task ON sessions(task_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd, last_seen_at);
+        CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at);
+
+        DELETE FROM task_events
+         WHERE task_id IN (SELECT id FROM tasks WHERE initial_context LIKE '## Session%');
+        UPDATE tasks
+           SET status = 'archived', updated_at = datetime('now')
+         WHERE status != 'archived' AND initial_context LIKE '## Session%';
+
+        UPDATE tasks SET status = 'ready' WHERE status = 'handoff';
       `);
-      this.db.prepare("UPDATE schema_meta SET version = 2").run();
-    } else if (row && row.version < SCHEMA_VERSION) {
+
       this.db.prepare(`UPDATE schema_meta SET version = ${SCHEMA_VERSION}`).run();
+    })();
+
+    try {
+      this.db.exec("VACUUM");
+    } catch {
+      /* a fat file is not data loss */
     }
   }
 
-  /** Keep one task per origin_session_id; archive the rest after moving events/subtasks. */
-  private consolidateDuplicateSessions(): void {
-    consolidateTasksBySessionId(this.db);
+  private addColumn(table: string, column: string, type: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+  }
+
+  /** Best-effort pre-migration snapshot next to the db, per user decision 4. */
+  private snapshot(): void {
+    try {
+      const dir = join(dirname(this.dbPath), "backups");
+      mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      this.db.prepare("VACUUM INTO ?").run(join(dir, `pre-v3-${stamp}.db`));
+    } catch {
+      /* snapshot is best effort; the migration still runs */
+    }
   }
 
   checkEmbeddingConfig(config: SwarmConfig): { ok: boolean; reason?: string } {
