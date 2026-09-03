@@ -58,6 +58,8 @@ function ensureBoardTask(
     agent,
     cwd: input.cwd,
     model: input.model,
+    pid: input.pid,
+    transcriptPath: input.transcriptPath,
     title,
     titleFromSession,
     initialContext: buildSessionContext(input),
@@ -88,6 +90,8 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
             agent,
             cwd: input.cwd,
             model: input.model,
+            pid: input.pid,
+            transcriptPath: input.transcriptPath,
             title,
             titleFromSession,
             initialContext: buildSessionContext(input),
@@ -229,6 +233,8 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
             agent,
             cwd: input.cwd,
             model: input.model,
+            pid: input.pid,
+            transcriptPath: input.transcriptPath,
             ...sessionTitleFields(input),
             initialContext: buildSessionContext(input, parentSessionId),
           });
@@ -307,6 +313,8 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
                 agent,
                 cwd: input.cwd,
                 model: input.model,
+                pid: input.pid,
+                transcriptPath: input.transcriptPath,
                 ...sessionTitleFields(input),
                 initialContext: buildSessionContext(input),
               });
@@ -351,7 +359,7 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
   );
 
   app.post("/hooks/session/register", async (req, reply) => {
-    const body = req.body as { sessionId: string; agent: AgentKind; cwd?: string; pid?: number; title?: string };
+    const body = req.body as { sessionId: string; agent: AgentKind; cwd?: string; pid?: number; model?: string; transcriptPath?: string; title?: string };
     const agent = body.agent ?? "unknown";
     const cwd = body.cwd ?? process.cwd();
     const repo = cwd.replace(/\/+$/, "").split("/").filter(Boolean).at(-1) ?? cwd;
@@ -360,6 +368,8 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
       agent,
       cwd,
       pid: body.pid,
+      model: body.model,
+      transcriptPath: body.transcriptPath,
       title: body.title?.trim() || `${agent} · ${repo}`,
       titleFromSession: false,
     });
@@ -418,6 +428,7 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: SwarmContext)
       sessionId?: string;
       cwd?: string;
       model?: string;
+      tags?: string[];
     };
     const task = ctx.tasks.create({
       title: body.title ?? "Demo task",
@@ -428,6 +439,7 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: SwarmContext)
       originCwd: body.cwd ?? process.cwd(),
       originModel: body.model,
       repoPath: body.cwd,
+      tags: body.tags,
     });
     ctx.broadcast({ type: "task_updated", task });
     return reply.code(201).send(task);
@@ -452,6 +464,9 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: SwarmContext)
     const updated = ctx.tasks.update(task.id, {
       title: body.title as string | undefined,
       status: body.status as never,
+      tags: body.tags as string[] | undefined,
+      addTags: body.addTags as string[] | undefined,
+      removeTags: body.removeTags as string[] | undefined,
     });
     ctx.broadcast({ type: "task_updated", task: updated });
     return updated;

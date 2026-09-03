@@ -13,6 +13,8 @@ export interface NormalizedHookInput {
   prompt?: string;
   model?: string;
   agentType?: string;
+  /** OS pid of the agent process when provided (pid / process_pid / agent_pid). */
+  pid?: number;
   sessionTitle?: string;
   sessionSource?: string;
   task?: string;
@@ -83,6 +85,15 @@ function normalizeToolOutput(raw: Record<string, unknown>): string | undefined {
   }
 }
 
+function readPid(raw: Record<string, unknown>): number | undefined {
+  for (const k of ["pid", "process_pid", "processPid", "agent_pid", "agentPid"]) {
+    const v = raw[k];
+    if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+    if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Math.trunc(Number(v));
+  }
+  return undefined;
+}
+
 export function normalizeHookInput(raw: unknown, platformHint?: HookPlatform): NormalizedHookInput {
   if (!isRecord(raw)) {
     return {
@@ -133,6 +144,7 @@ export function normalizeHookInput(raw: unknown, platformHint?: HookPlatform): N
     toolOutput: normalizeToolOutput(raw),
     prompt: readString(raw.prompt),
     model: readString(raw.model) ?? readString(raw.modelName),
+    pid: readPid(raw),
     agentType: readString(raw.agent_type) ?? readString(raw.agentType) ?? readString(raw.subagent_type),
     sessionTitle:
       readString(raw.session_title) ??

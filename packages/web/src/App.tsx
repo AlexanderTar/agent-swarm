@@ -23,6 +23,7 @@ interface Task {
   title: string;
   status: TaskStatus | "handoff";
   originAgent: string;
+  originSessionId?: string | null;
   originModel: string | null;
   repoPath: string | null;
   branch: string | null;
@@ -31,8 +32,11 @@ interface Task {
   turnCount: number;
   lastActivityAt: string | null;
   claimedBy: string | null;
+  claimedAgent?: string | null;
+  claimedSessionId?: string | null;
   artifactsJson: string;
   kbLinksJson: string;
+  tagsJson?: string;
 }
 
 const BOARD_TITLE_MAX = 48;
@@ -93,6 +97,30 @@ function TaskCard({ task, onSelect, onRemove }: { task: Task; onSelect: (t: Task
       return [];
     }
   }, [task.artifactsJson]);
+  const tags = useMemo(() => {
+    try {
+      const raw = task.tagsJson ? (JSON.parse(task.tagsJson) as unknown) : [];
+      return Array.isArray(raw) ? raw.filter((t): t is string => typeof t === "string") : [];
+    } catch {
+      return [];
+    }
+  }, [task.tagsJson]);
+  const transcript = useMemo(() => {
+    try {
+      const t = JSON.parse(task.artifactsJson).transcript as unknown;
+      return Array.isArray(t) ? (t as unknown[]).find((v): v is string => typeof v === "string") : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [task.artifactsJson]);
+  // Prefer the live claim owner; fall back to the origin agent for unclaimed tiles.
+  const displayAgent = task.claimedAgent ?? task.originAgent;
+  const sessionLabel = task.claimedSessionId ?? task.originSessionId ?? null;
+  const agentTitle = [
+    task.claimedAgent ? `claimed by ${task.claimedAgent}` : `origin ${task.originAgent}`,
+    sessionLabel ? `session ${sessionLabel}` : null,
+    transcript ? `transcript ${transcript}` : null,
+  ].filter(Boolean).join(" · ");
   const isLive = task.status === "in_progress" && task.lastActivityAt &&
     Date.now() - new Date(task.lastActivityAt).getTime() < 120_000;
 
@@ -116,9 +144,14 @@ function TaskCard({ task, onSelect, onRemove }: { task: Task; onSelect: (t: Task
             {boardTitle(task.title)}
           </h3>
           <div className="flex flex-wrap gap-1 mt-2">
-            <AgentBadge agent={task.originAgent} />
+            <span title={agentTitle}>
+              <AgentBadge agent={displayAgent} />
+            </span>
             {task.originModel && <span className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded">{task.originModel}</span>}
             {task.branch && <span className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded">{task.branch}</span>}
+            {tags.map((t) => (
+              <span key={t} className="text-xs px-1.5 py-0.5 bg-zinc-800/60 rounded text-zinc-400">{t}</span>
+            ))}
             {files.length > 0 && <span className="text-xs text-zinc-500">{files.length} files</span>}
           </div>
         </div>

@@ -94,6 +94,20 @@ export function syncTaskSessionMetadata(
   if (input.cwd?.trim() && input.cwd !== updated.originCwd) {
     updated = tasks.maybeRefreshOriginCwd(updated.id, input.cwd) ?? updated;
   }
+  // Best-effort enrichment: fill model/pid/transcript when the task lacks them.
+  // Never overwrites known values; failures are non-fatal (hooks must exit 0).
+  try {
+    const fresh = tasks.getById(updated.id);
+    if (fresh) {
+      tasks.refreshOriginMetadata(fresh.id, { model: input.model, pid: input.pid });
+      if (input.transcriptPath?.trim()) {
+        tasks.mergeTranscriptArtifact(fresh.id, input.transcriptPath.trim());
+      }
+      updated = tasks.getById(fresh.id) ?? fresh;
+    }
+  } catch {
+    /* hooks must never fail on enrichment */
+  }
 
   return {
     task: updated,

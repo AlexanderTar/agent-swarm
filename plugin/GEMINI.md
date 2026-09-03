@@ -5,4 +5,11 @@ Coordinate work across agents via the local board at http://127.0.0.1:7777.
 
 At session start, check `swarm_board`. Before ending, use `swarm_handoff` if another agent should continue.
 Call `swarm_task_stage` with action `heartbeat` during long tasks.
+
+## Board (required)
+- Session start: `swarm_board` (repo filter), `swarm_task_join` or `swarm_task_stage claim` when starting work.
+- During: `swarm_task_stage heartbeat` every ~5min, `swarm_task_update` summary + tags when goal/state changes.
+- Tags: lowercase `["<repo>", "<area>", "<kind>"]` e.g. `["agent-swarm","daemon","bugfix"]`.
+- Metadata auto-captured (session id, transcript path, model, cwd, pid) — do NOT hand-edit, verify via `swarm_task_get`.
+- End: `swarm_handoff` with goal/done/next/decisions/gotchas/verification/files.
 <!-- swarm:end -->

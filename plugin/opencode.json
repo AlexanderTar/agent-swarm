@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "swarm": {
+      "type": "local",
+      "command": ["node", "bin/swarm-mcp.mjs"],
+      "cwd": ".",
+      "enabled": true,
+      "timeout": 15000,
+      "environment": {
+        "SWARM_URL": "http://127.0.0.1:7777",
+        "SWARM_REGISTER_SESSION": "0"
+      }
+    }
+  },
+  "instructions": ["AGENTS.md", "rules/swarm.md", "skills/swarm-task/SKILL.md"]
+}

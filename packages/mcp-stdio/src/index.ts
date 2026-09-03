@@ -17,6 +17,8 @@ import {
 
 const SWARM_URL = process.env.SWARM_URL ?? "http://127.0.0.1:7777";
 const sessionId = process.env.SWARM_SESSION_ID ?? randomUUID();
+const agentKind = process.env.SWARM_AGENT ?? "unknown";
+const agentModel = process.env.SWARM_MODEL;
 
 async function readToken(): Promise<string | undefined> {
   if (process.env.SWARM_TOKEN) return process.env.SWARM_TOKEN;
@@ -39,6 +41,7 @@ async function registerSession(): Promise<void> {
         agent: process.env.SWARM_AGENT ?? "unknown",
         cwd: process.cwd(),
         pid: process.pid,
+        ...(process.env.SWARM_MODEL ? { model: process.env.SWARM_MODEL } : {}),
       }),
     });
   } catch {
@@ -66,6 +69,40 @@ function isSessionLostError(err: unknown): boolean {
     msg.includes("HTTP 404") ||
     /session.*(expired|terminated|invalid)/i.test(msg)
   );
+}
+
+/**
+ * Auto-inject agent identity into task tool calls when the caller omitted it.
+ * Backward-compat: only fills missing/empty fields, never overwrites explicit values.
+ */
+function injectAgentContext(params: { name: string; arguments?: Record<string, unknown> }): {
+  name: string;
+  arguments?: Record<string, unknown>;
+} {
+  const tools = new Set(["swarm_task_create", "swarm_task_stage", "swarm_task_join", "swarm_pickup"]);
+  if (!tools.has(params.name) || !params.arguments || typeof params.arguments !== "object") return params;
+  const args = { ...params.arguments };
+  const missing = (v: unknown): boolean => v === undefined || v === null || (typeof v === "string" && v.trim() === "");
+  if (params.name === "swarm_task_create" || params.name === "swarm_pickup" || params.name === "swarm_task_join") {
+    if (missing(args.agent)) args.agent = agentKind;
+    if (missing(args.sessionId)) args.sessionId = sessionId;
+  }
+  if (params.name === "swarm_task_stage" && (args.action === "claim" || args.action === "heartbeat")) {
+    if (missing(args.agent)) args.agent = agentKind;
+    if (missing(args.sessionId)) args.sessionId = sessionId;
+  }
+  if (params.name === "swarm_task_stage" || params.name === "swarm_task_join") {
+    if (missing(args.cwd)) {
+      try {
+        args.cwd = process.cwd();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (missing(args.pid)) args.pid = process.pid;
+    if (missing(args.model) && agentModel) args.model = agentModel;
+  }
+  return { ...params, arguments: args };
 }
 
 async function main(): Promise<void> {
@@ -135,9 +172,10 @@ async function main(): Promise<void> {
   server.setRequestHandler(ListToolsRequestSchema, async (req) =>
     withUpstreamRetry((c) => c.listTools(req.params)),
   );
-  server.setRequestHandler(CallToolRequestSchema, async (req) =>
-    withUpstreamRetry((c) => c.callTool(req.params)),
-  );
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const params = injectAgentContext(req.params) as typeof req.params;
+    return withUpstreamRetry((c) => c.callTool(params));
+  });
   server.setRequestHandler(ListResourcesRequestSchema, async (req) =>
     withUpstreamRetry((c) => c.listResources(req.params)),
   );
