@@ -57,7 +57,7 @@ const AGENT_COLORS: Record<string, string> = {
 
 function AgentBadge({ agent }: { agent: string }) {
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border ${AGENT_COLORS[agent] ?? AGENT_COLORS.unknown}`}>
+    <span className={`text-xs px-2 py-0.5 rounded-full border min-w-0 max-w-full break-all ${AGENT_COLORS[agent] ?? AGENT_COLORS.unknown}`}>
       {agent}
     </span>
   );
@@ -66,7 +66,7 @@ function AgentBadge({ agent }: { agent: string }) {
 function Column({ status, tasks, onSelect, onRemove }: { status: TaskStatus; tasks: Task[]; onSelect: (t: Task) => void; onRemove: (key: string) => void }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
   return (
-    <div className="min-w-[320px] flex-shrink-0 flex flex-col h-full min-h-0">
+    <div className="w-[320px] flex-shrink-0 flex flex-col h-full min-h-0">
       <h2 className="flex-shrink-0 text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2 px-1">
         {status.replace("_", " ")} ({tasks.length})
       </h2>
@@ -147,10 +147,10 @@ function TaskCard({ task, onSelect, onRemove }: { task: Task; onSelect: (t: Task
             <span title={agentTitle}>
               <AgentBadge agent={displayAgent} />
             </span>
-            {task.originModel && <span className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded">{task.originModel}</span>}
-            {task.branch && <span className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded">{task.branch}</span>}
+            {task.originModel && <span className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded min-w-0 max-w-full break-all">{task.originModel}</span>}
+            {task.branch && <span className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded min-w-0 max-w-full break-all">{task.branch}</span>}
             {tags.map((t) => (
-              <span key={t} className="text-xs px-1.5 py-0.5 bg-zinc-800/60 rounded text-zinc-400">{t}</span>
+              <span key={t} className="text-xs px-1.5 py-0.5 bg-zinc-800/60 rounded text-zinc-400 min-w-0 max-w-full break-all">{t}</span>
             ))}
             {files.length > 0 && <span className="text-xs text-zinc-500">{files.length} files</span>}
           </div>
