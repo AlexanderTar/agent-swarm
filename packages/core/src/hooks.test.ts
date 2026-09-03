@@ -64,6 +64,16 @@ describe("normalizeHookInput", () => {
     expect(input.toolInput).toEqual({ TargetFile: "foo.ts" });
   });
 
+  it("parses opencode sessionID (capital D)", () => {
+    const input = normalizeHookInput({
+      sessionID: "ses_abc123",
+      directory: "/repo/app",
+      hook_event_name: "sessionStart",
+    }, "opencode");
+    expect(input.platform).toBe("opencode");
+    expect(input.sessionId).toBe("ses_abc123");
+  });
+
   it("uses agent_id as board session for subagents", () => {
     const input = normalizeHookInput({
       session_id: "parent-session",

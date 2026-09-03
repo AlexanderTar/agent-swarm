@@ -17,6 +17,7 @@ const SUMMARY_EVENTS_BY_PLATFORM: Record<HookPlatform, ReadonlySet<string>> = {
   claude: new Set(["SessionEnd", "Stop", "SubagentStop", "TaskCompleted"]),
   codex: new Set(["SessionEnd", "SubagentStop", "Stop"]),
   antigravity: new Set(["PostInvocation", "Stop"]),
+  opencode: new Set(["Stop", "sessionEnd", "SessionEnd"]),
 };
 
 export function shouldScheduleTurnSummary(platform: HookPlatform, hookEvent: string): boolean {

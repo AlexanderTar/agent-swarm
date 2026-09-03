@@ -11,6 +11,7 @@ import {
   readClaudeTranscriptTitle,
   readCursorChatTitle,
   readFirstPromptFromTranscript,
+  readModelFromClaudeTranscript,
   resolveCursorSessionIds,
   resolveSessionTaskTitle,
   shouldReplaceSessionTitle,
@@ -157,6 +158,36 @@ describe("sessionTitles", () => {
   it("treats long raw prompts and Subagent · titles as fallbacks", () => {
     expect(isFallbackSessionTitle("Subagent · endurio")).toBe(true);
     expect(isFallbackSessionTitle("general-purpose · endurio")).toBe(true);
+    expect(isFallbackSessionTitle("opencode · endurio")).toBe(true);
     expect(isFallbackSessionTitle(`You are implementing ${"x".repeat(100)}`)).toBe(true);
+  });
+
+  it("reads model from Claude transcript tail", () => {
+    const dir = mkdtempSync(join(tmpdir(), "swarm-model-"));
+    const path = join(dir, "sess.jsonl");
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ type: "user", message: { role: "user", content: "hi" } }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", model: "claude-opus-4-5", content: [{ type: "text", text: "hello" }] },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", model: "claude-sonnet-4-6", content: [{ type: "text", text: "later" }] },
+        }),
+      ].join("\n"),
+    );
+    // Most recent model wins (reverse scan).
+    expect(readModelFromClaudeTranscript(path)).toBe("claude-sonnet-4-6");
+  });
+
+  it("returns undefined for missing or model-less transcripts", () => {
+    expect(readModelFromClaudeTranscript("/nonexistent/x.jsonl")).toBeUndefined();
+    const dir = mkdtempSync(join(tmpdir(), "swarm-model-none-"));
+    const path = join(dir, "sess.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "user", message: { role: "user", content: "hi" } }) + "\n");
+    expect(readModelFromClaudeTranscript(path)).toBeUndefined();
   });
 });

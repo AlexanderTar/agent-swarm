@@ -41,12 +41,21 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     initialContext: z.string().optional(),
     agent: z.string().optional(),
     sessionId: z.string().optional(),
+    model: z.string().optional(),
+    cwd: z.string().optional(),
+    pid: z.number().optional(),
+    tags: z.array(z.string()).optional(),
   }, async (args) => {
     const task = ctx.tasks.create({
       title: args.title,
       initialContext: args.initialContext,
       originAgent: (args.agent as never) ?? "unknown",
       originSessionId: args.sessionId,
+      originModel: args.model,
+      originCwd: args.cwd,
+      originPid: args.pid,
+      repoPath: args.cwd,
+      tags: args.tags,
     });
     ctx.broadcast({ type: "task_updated", task });
     return { content: [{ type: "text", text: JSON.stringify(task, null, 2) }] };
@@ -59,11 +68,71 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     agent: z.string().optional(),
     sessionId: z.string().optional(),
     by: z.string().optional(),
+    model: z.string().optional(),
+    cwd: z.string().optional(),
+    pid: z.number().optional(),
+    tags: z.array(z.string()).optional(),
+    addTags: z.array(z.string()).optional(),
+    removeTags: z.array(z.string()).optional(),
   }, async (args) => {
     const result = ctx.tasks.stage(args.key, args.action, args as Record<string, unknown>, ctx.config.claimLeaseSeconds);
-    if (!result.ok) return { content: [{ type: "text", text: result.error ?? "Failed" }], isError: true };
+    if (!result.ok || !result.task) return { content: [{ type: "text", text: result.error ?? "Failed" }], isError: true };
+    let task = result.task;
+    if (args.tags !== undefined || args.addTags !== undefined || args.removeTags !== undefined) {
+      task = ctx.tasks.update(task.id, { tags: args.tags, addTags: args.addTags, removeTags: args.removeTags });
+    }
+    ctx.broadcast({ type: "task_updated", task });
+    return { content: [{ type: "text", text: JSON.stringify(task, null, 2) }] };
+  });
+
+  server.tool("swarm_task_join", "Join a task without stealing an active claim. Claims it if unclaimed, otherwise appends a join event.", {
+    key: z.string(),
+    agent: z.string().optional(),
+    sessionId: z.string().optional(),
+    by: z.string().optional(),
+    cwd: z.string().optional(),
+    model: z.string().optional(),
+    pid: z.number().optional(),
+    transcriptPath: z.string().optional(),
+  }, async (args) => {
+    const result = ctx.tasks.join(
+      args.key,
+      {
+        agent: (args.agent as never) ?? "unknown",
+        sessionId: args.sessionId ?? "mcp",
+        by: args.by ?? args.agent ?? "agent",
+        cwd: args.cwd,
+        model: args.model,
+        pid: args.pid,
+        transcriptPath: args.transcriptPath,
+      },
+      ctx.config.claimLeaseSeconds,
+    );
+    if (!result.ok || !result.task) return { content: [{ type: "text", text: result.error ?? "Join failed" }], isError: true };
     ctx.broadcast({ type: "task_updated", task: result.task });
     return { content: [{ type: "text", text: JSON.stringify(result.task, null, 2) }] };
+  });
+
+  server.tool("swarm_task_update", "Update a task's title, summary/context, or tags", {
+    key: z.string(),
+    title: z.string().optional(),
+    summary: z.string().optional(),
+    initialContext: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    addTags: z.array(z.string()).optional(),
+    removeTags: z.array(z.string()).optional(),
+  }, async (args) => {
+    const existing = ctx.tasks.getByKey(args.key);
+    if (!existing) return { content: [{ type: "text", text: "Not found" }], isError: true };
+    const task = ctx.tasks.update(existing.id, {
+      title: args.title,
+      initialContext: args.summary ?? args.initialContext,
+      tags: args.tags,
+      addTags: args.addTags,
+      removeTags: args.removeTags,
+    } as never);
+    ctx.broadcast({ type: "task_updated", task });
+    return { content: [{ type: "text", text: JSON.stringify(task, null, 2) }] };
   });
 
   server.tool("swarm_handoff", "Write a structured handoff note and transition to handoff", {

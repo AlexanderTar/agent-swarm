@@ -10,7 +10,7 @@ export const TASK_STATUSES = [
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-export type AgentKind = "claude" | "cursor" | "codex" | "antigravity" | "unknown";
+export type AgentKind = "claude" | "cursor" | "codex" | "antigravity" | "opencode" | "unknown";
 
 export interface SwarmConfig {
   port: number;

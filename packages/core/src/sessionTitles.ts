@@ -7,12 +7,12 @@ import type { NormalizedHookInput } from "./hooks.js";
 import { sessionTaskTitle } from "./hooks.js";
 
 const FALLBACK_TITLE =
-  /^(claude|cursor|codex|antigravity|Subagent|[A-Za-z][\w-]*) · .+(\s\([^)]+\))?$/;
+  /^(claude|cursor|codex|antigravity|opencode|Subagent|[A-Za-z][\w-]*) · .+(\s\([^)]+\))?$/;
 
 export function isFallbackSessionTitle(title: string): boolean {
   const t = title.trim();
   if (!t || t === "Untitled") return true;
-  if (/^(claude|cursor|codex|antigravity) ·(\s*\([^)]+\))?\s*$/i.test(t)) return true;
+  if (/^(claude|cursor|codex|antigravity|opencode) ·(\s*\([^)]+\))?\s*$/i.test(t)) return true;
   if (/^Subagent · /i.test(t)) return true;
   if (FALLBACK_TITLE.test(t)) return true;
   // Long raw prompts pasted as titles (common for Cursor/Claude subagents)
@@ -176,6 +176,40 @@ export function readClaudeTranscriptTitle(transcriptPath: string): string | unde
         const obj = JSON.parse(lines[i]!) as { type?: string; aiTitle?: string };
         const title = obj.type === "ai-title" && typeof obj.aiTitle === "string" ? obj.aiTitle.trim() : "";
         if (title) return title;
+      } catch {
+        /* skip malformed lines */
+      }
+    }
+  } catch {
+    /* ignore read errors */
+  }
+  return undefined;
+}
+
+/**
+ * Best-effort model id from a Claude transcript (message.model on assistant lines).
+ * Scans lines in reverse (cap ~2000) so the most recent model wins.
+ */
+export function readModelFromClaudeTranscript(transcriptPath: string): string | undefined {
+  try {
+    if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
+    const stat = statSync(transcriptPath);
+    if (stat.size === 0) return undefined;
+
+    const maxTail = 512 * 1024;
+    const readLen = Math.min(stat.size, maxTail);
+    const start = Math.max(0, stat.size - readLen);
+    const fd = openSync(transcriptPath, "r");
+    const buf = Buffer.alloc(readLen);
+    readSync(fd, buf, 0, readLen, start);
+    closeSync(fd);
+
+    const lines = buf.toString("utf8").split("\n").filter(Boolean).slice(-2000);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const obj = JSON.parse(lines[i]!) as { type?: string; message?: { model?: unknown } };
+        const model = obj.message?.model;
+        if (typeof model === "string" && model.trim()) return model.trim();
       } catch {
         /* skip malformed lines */
       }

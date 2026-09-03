@@ -1,7 +1,8 @@
 import { resolveCursorSession } from "./cursorSessions.js";
 import { resolveAntigravitySession } from "./antigravitySessions.js";
+import { resolveOpencodeSession } from "./opencodeSessions.js";
 import { resolveBoardSessionId, resolveSubagentBoardId, type NormalizedHookInput } from "./hooks.js";
-import { findClaudeTranscriptPath, resolveSessionTaskTitle } from "./sessionTitles.js";
+import { findClaudeTranscriptPath, readModelFromClaudeTranscript, resolveSessionTaskTitle } from "./sessionTitles.js";
 import type { TaskService } from "./tasks.js";
 import type { TaskRecord } from "./types.js";
 import { resolveTranscriptPath } from "./transcripts.js";
@@ -64,6 +65,19 @@ export function enrichHookInput(
     }
   }
 
+  if (input.platform === "opencode" && boardSessionId) {
+    try {
+      const ref = resolveOpencodeSession(boardSessionId);
+      if (ref) {
+        if (ref.cwd && (!input.cwd || input.cwd === process.cwd())) input.cwd = ref.cwd;
+        if (ref.title && !input.sessionTitle?.trim()) input.sessionTitle = ref.title;
+        if (ref.model && !input.model?.trim()) input.model = ref.model;
+      }
+    } catch {
+      /* hooks must never fail on enrichment */
+    }
+  }
+
   if (!input.transcriptPath) {
     const transcriptBoardId = input.agentId?.trim() || boardSessionId;
     const path = resolveTranscriptPath(input, transcriptBoardId);
@@ -93,6 +107,45 @@ export function syncTaskSessionMetadata(
   let updated = tasks.maybeRefreshTitle(task.id, title, fromSession) ?? task;
   if (input.cwd?.trim() && input.cwd !== updated.originCwd) {
     updated = tasks.maybeRefreshOriginCwd(updated.id, input.cwd) ?? updated;
+  }
+  // Best-effort enrichment: fill model/pid/transcript when the task lacks them.
+  // Never overwrites known values; failures are non-fatal (hooks must exit 0).
+  try {
+    const fresh = tasks.getById(updated.id);
+    if (fresh) {
+      tasks.refreshOriginMetadata(fresh.id, { model: input.model, pid: input.pid });
+      if (input.transcriptPath?.trim()) {
+        tasks.mergeTranscriptArtifact(fresh.id, input.transcriptPath.trim());
+      }
+      updated = tasks.getById(fresh.id) ?? fresh;
+    }
+  } catch {
+    /* hooks must never fail on enrichment */
+  }
+
+  // Best-effort model recovery when the task still lacks one.
+  try {
+    const boardSessionId = resolveBoardSessionId(input) || input.sessionId;
+    const current = tasks.getById(updated.id);
+    if (current && !current.originModel) {
+      let model: string | undefined;
+      if (input.platform === "claude" || input.transcriptPath?.trim()) {
+        const tp = input.transcriptPath?.trim() || (boardSessionId ? findClaudeTranscriptPath(boardSessionId, input.cwd) : undefined);
+        if (tp) model = readModelFromClaudeTranscript(tp);
+      } else if (input.platform === "opencode" && !input.model?.trim() && boardSessionId) {
+        model = resolveOpencodeSession(boardSessionId)?.model;
+      }
+      if (model?.trim()) {
+        tasks.refreshOriginMetadata(current.id, { model: model.trim() });
+        updated = tasks.getById(current.id) ?? updated;
+      }
+    }
+    const withModel = tasks.getById(updated.id);
+    if (withModel?.originModel) {
+      updated = tasks.ensureModelTag(withModel.id, withModel.originModel) ?? withModel;
+    }
+  } catch {
+    /* hooks must never fail on enrichment */
   }
 
   return {

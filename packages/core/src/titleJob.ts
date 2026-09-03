@@ -9,6 +9,7 @@ import {
 } from "./sessionTitles.js";
 import { resolveCursorSession } from "./cursorSessions.js";
 import { resolveAntigravitySession } from "./antigravitySessions.js";
+import { resolveOpencodeSession } from "./opencodeSessions.js";
 import type { TaskService } from "./tasks.js";
 import type { TaskRecord } from "./types.js";
 
@@ -41,6 +42,15 @@ function collectTitleSource(task: TaskRecord): string | undefined {
   if (transcriptPath) {
     const prompt = readFirstPromptFromTranscript(transcriptPath);
     if (prompt?.trim()) return prompt.trim();
+  }
+
+  if ((task.originAgent === "opencode" || task.originAgent === "unknown") && task.originSessionId?.trim()) {
+    try {
+      const title = resolveOpencodeSession(task.originSessionId.trim())?.title;
+      if (title?.trim()) return title.trim();
+    } catch {
+      /* best-effort only */
+    }
   }
 
   const input = enrichHookInput(hookInputFromTask(task));

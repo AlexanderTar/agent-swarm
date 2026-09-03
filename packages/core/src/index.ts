@@ -11,6 +11,7 @@ export * from "./hooks.js";
 export * from "./hookEnrichment.js";
 export * from "./cursorSessions.js";
 export * from "./antigravitySessions.js";
+export * from "./opencodeSessions.js";
 export * from "./sessionTitles.js";
 export * from "./transcripts.js";
 export * from "./sessionSummary.js";

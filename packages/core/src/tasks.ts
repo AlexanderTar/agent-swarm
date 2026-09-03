@@ -2,8 +2,7 @@ import type Database from "better-sqlite3";
 import { shouldReplaceSessionTitle, isFallbackSessionTitle } from "./sessionTitles.js";
 import type { AgentKind, BoardFilters, HandoffNote, TaskRecord, TaskStatus } from "./types.js";
 
-function rowToTask(row: Record<string, unknown>): TaskRecord {
-  return {
+function rowToTask(row: Record<string, unknown>): TaskRecord {  return {
     id: row.id as number,
     key: row.key as string,
     title: row.title as string,
@@ -36,6 +35,32 @@ function rowToTask(row: Record<string, unknown>): TaskRecord {
   };
 }
 
+/** Normalize tags: lowercase, trim, drop empties, dedup preserving order. */
+export function normalizeTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of tags) {
+    if (typeof t !== "string") continue;
+    const norm = t.trim().toLowerCase();
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(norm);
+  }
+  return out;
+}
+
+/** Slugify a model id for auto-tagging (e.g. "Claude Opus 4.5" → "claude-opus-4-5"). Empty → ''. */
+export function modelTag(model: string): string {
+  if (typeof model !== "string" || !model.trim()) return "";
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 40)
+    .replace(/^-+|-+$/g, "");
+}
+
 export class TaskService {
   private keyCounter = 0;
 
@@ -62,13 +87,18 @@ export class TaskService {
     repoPath?: string;
     branch?: string;
     initialContext?: string;
+    tags?: string[];
   }): TaskRecord {
     const key = this.nextKey();
     const now = new Date().toISOString();
+    const tags = normalizeTags(input.tags);
+    const tag = modelTag(input.originModel ?? "");
+    if (tag && !tags.includes(tag)) tags.push(tag);
+    const tagsJson = JSON.stringify(tags);
     const result = this.db
       .prepare(
-        `INSERT INTO tasks (key, title, status, origin_agent, origin_session_id, origin_model, origin_cwd, origin_pid, repo_path, branch, initial_context, last_activity_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (key, title, status, origin_agent, origin_session_id, origin_model, origin_cwd, origin_pid, repo_path, branch, initial_context, tags_json, last_activity_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         key,
@@ -82,6 +112,7 @@ export class TaskService {
         input.repoPath ?? null,
         input.branch ?? null,
         input.initialContext ?? null,
+        tagsJson,
         now,
         now,
       );
@@ -94,13 +125,14 @@ export class TaskService {
     cwd?: string;
     model?: string;
     pid?: number;
+    transcriptPath?: string;
     title?: string;
     titleFromSession?: boolean;
     initialContext?: string;
   }): TaskRecord {
     const sessionId = input.sessionId.trim();
     if (!sessionId) {
-      return this.create({
+      const created = this.create({
         title: input.title,
         originAgent: input.agent,
         originModel: input.model,
@@ -109,6 +141,11 @@ export class TaskService {
         repoPath: input.cwd,
         initialContext: input.initialContext,
       });
+      if (input.transcriptPath?.trim()) {
+        this.mergeTranscriptArtifact(created.id, input.transcriptPath.trim());
+        return this.getById(created.id)!;
+      }
+      return created;
     }
 
     // Session id is the ultimate dedup key — include done/archived so we revive instead of cloning.
@@ -143,6 +180,7 @@ export class TaskService {
         this.db
           .prepare("UPDATE tasks SET origin_model = COALESCE(origin_model, ?), updated_at = datetime('now') WHERE id = ?")
           .run(input.model, existing.id);
+        this.ensureModelTag(existing.id, input.model);
       }
       if (input.pid != null) {
         this.db
@@ -152,10 +190,13 @@ export class TaskService {
       if (input.initialContext && !existing.initial_context) {
         this.update(existing.id, { initialContext: input.initialContext });
       }
+      if (input.transcriptPath?.trim()) {
+        this.mergeTranscriptArtifact(existing.id, input.transcriptPath.trim());
+      }
       return this.getById(existing.id)!;
     }
 
-    return this.create({
+    const created = this.create({
       title: input.title,
       originAgent: input.agent,
       originSessionId: sessionId,
@@ -165,6 +206,11 @@ export class TaskService {
       repoPath: input.cwd,
       initialContext: input.initialContext,
     });
+    if (input.transcriptPath?.trim()) {
+      this.mergeTranscriptArtifact(created.id, input.transcriptPath.trim());
+      return this.getById(created.id)!;
+    }
+    return created;
   }
 
   /** Force-merge any remaining session duplicates (safe to call repeatedly). */
@@ -250,7 +296,18 @@ export class TaskService {
     });
   }
 
-  update(id: number, patch: Partial<{ title: string; status: TaskStatus; initialContext: string; handoffNote: string }>): TaskRecord {
+  update(
+    id: number,
+    patch: Partial<{
+      title: string;
+      status: TaskStatus;
+      initialContext: string;
+      handoffNote: string;
+      tags: string[];
+      addTags: string[];
+      removeTags: string[];
+    }>,
+  ): TaskRecord {
     const sets: string[] = ["updated_at = datetime('now')"];
     const params: unknown[] = [];
     if (patch.title !== undefined) {
@@ -269,9 +326,88 @@ export class TaskService {
       sets.push("handoff_note = ?");
       params.push(patch.handoffNote);
     }
+    if (patch.tags !== undefined) {
+      sets.push("tags_json = ?");
+      params.push(JSON.stringify(normalizeTags(patch.tags)));
+    } else if (patch.addTags !== undefined || patch.removeTags !== undefined) {
+      const current = this.getById(id);
+      const existing = current ? (JSON.parse(current.tagsJson) as string[]) : [];
+      const merged = new Set<string>(normalizeTags(existing));
+      for (const t of normalizeTags(patch.addTags)) merged.add(t);
+      for (const t of normalizeTags(patch.removeTags)) merged.delete(t);
+      sets.push("tags_json = ?");
+      params.push(JSON.stringify([...merged]));
+    }
     params.push(id);
     this.db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
     return this.getById(id)!;
+  }
+
+  setTags(id: number, tags: string[]): TaskRecord {
+    return this.update(id, { tags });
+  }
+
+  /** Fill origin model/pid only when currently NULL. Returns refreshed task. */
+  refreshOriginMetadata(taskId: number, meta: { model?: string; pid?: number }): TaskRecord | null {
+    if (meta.model?.trim()) {
+      this.db
+        .prepare("UPDATE tasks SET origin_model = ?, updated_at = datetime('now') WHERE id = ? AND origin_model IS NULL")
+        .run(meta.model.trim(), taskId);
+      this.ensureModelTag(taskId, meta.model);
+    }
+    if (meta.pid != null) {
+      this.db
+        .prepare("UPDATE tasks SET origin_pid = ?, updated_at = datetime('now') WHERE id = ? AND origin_pid IS NULL")
+        .run(meta.pid, taskId);
+    }
+    return this.getById(taskId);
+  }
+
+  /**
+   * Best-effort: ensure the model slug tag is present on a task.
+   * Never duplicates, never removes explicit tags. Never throws (hooks must exit 0).
+   */
+  ensureModelTag(taskId: number, model?: string | null): TaskRecord | null {
+    try {
+      const tag = modelTag(model ?? "");
+      if (!tag) return this.getById(taskId);
+      const task = this.getById(taskId);
+      if (!task) return null;
+      let existing: string[];
+      try {
+        existing = normalizeTags(JSON.parse(task.tagsJson));
+      } catch {
+        existing = [];
+      }
+      if (existing.includes(tag)) return task;
+      return this.update(taskId, { addTags: [tag] });
+    } catch {
+      try {
+        return this.getById(taskId);
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  /** Persist transcript path into artifacts_json.transcript (array, deduped). No schema migration. */
+  mergeTranscriptArtifact(taskId: number, transcriptPath: string): void {
+    const task = this.getById(taskId);
+    if (!task || !transcriptPath.trim()) return;
+    let artifacts: Record<string, unknown>;
+    try {
+      artifacts = JSON.parse(task.artifactsJson) as Record<string, unknown>;
+    } catch {
+      artifacts = {};
+    }
+    const current = Array.isArray(artifacts.transcript)
+      ? (artifacts.transcript as unknown[]).filter((v): v is string => typeof v === "string")
+      : [];
+    if (!current.includes(transcriptPath)) current.push(transcriptPath);
+    artifacts.transcript = current;
+    this.db
+      .prepare("UPDATE tasks SET artifacts_json = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(JSON.stringify(artifacts), taskId);
   }
 
   touch(id: number): void {
@@ -306,9 +442,10 @@ export class TaskService {
 
   claim(
     key: string,
-    claimer: { agent: AgentKind; sessionId: string; by: string },
+    claimer: { agent: AgentKind; sessionId: string; by: string; model?: string; cwd?: string; pid?: number },
     leaseSeconds: number,
   ): { ok: boolean; task?: TaskRecord; error?: string } {
+    const before = this.getByKey(key);
     const expires = new Date(Date.now() + leaseSeconds * 1000).toISOString();
     const now = new Date().toISOString();
     const result = this.db
@@ -323,7 +460,155 @@ export class TaskService {
     if (result.changes === 0) {
       return { ok: false, error: "Task already claimed or not found" };
     }
-    return { ok: true, task: this.getByKey(key)! };
+    // Backfill legacy rows created with origin_agent='unknown'.
+    if (before && before.originAgent === "unknown") {
+      try {
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        if (claimer.agent && claimer.agent !== "unknown") {
+          sets.push("origin_agent = ?");
+          params.push(claimer.agent);
+        }
+        // origin_session_id is UNIQUE — only fill when empty to avoid collisions
+        // with the claimer's own session tile.
+        if (!before.originSessionId && claimer.sessionId) {
+          sets.push("origin_session_id = ?");
+          params.push(claimer.sessionId);
+        }
+        if (!before.originModel && claimer.model) {
+          sets.push("origin_model = ?");
+          params.push(claimer.model);
+        }
+        if (!before.originCwd && claimer.cwd) {
+          sets.push("origin_cwd = ?");
+          params.push(claimer.cwd);
+        }
+        if (before.originPid == null && claimer.pid != null) {
+          sets.push("origin_pid = ?");
+          params.push(claimer.pid);
+        }
+        if (sets.length > 0) {
+          sets.push("updated_at = datetime('now')");
+          params.push(before.id);
+          this.db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+        }
+      } catch {
+        // Unique collision on origin_session_id — claim itself already succeeded.
+      }
+      try {
+        const fresh = this.getByKey(key);
+        if (fresh?.originModel) this.ensureModelTag(fresh.id, fresh.originModel);
+        else if (claimer.model) this.ensureModelTag(fresh!.id, claimer.model);
+      } catch {
+        // Best-effort only.
+      }
+    }
+    const claimed = this.getByKey(key)!;
+    this.appendEvent(claimed.id, "claim", {
+      agent: claimer.agent,
+      sessionId: claimer.sessionId,
+      by: claimer.by,
+    });
+    return { ok: true, task: claimed };
+  }
+
+  /**
+   * Join a task without stealing an active claim.
+   * - Unclaimed/expired → claim it for the joiner.
+   * - Claimed by someone else → append a "join" event + touch, return current task.
+   * - Same session → touch, return current task.
+   * Backfills unknown origin metadata where safe (never overwrites known values).
+   */
+  join(
+    key: string,
+    joiner: {
+      agent: AgentKind;
+      sessionId: string;
+      by: string;
+      cwd?: string;
+      model?: string;
+      pid?: number;
+      transcriptPath?: string;
+    },
+    leaseSeconds = 300,
+  ): { ok: boolean; task?: TaskRecord; joined?: boolean; error?: string } {
+    const existing = this.getByKey(key);
+    if (!existing) return { ok: false, error: `Task not found: ${key}` };
+
+    const expired =
+      !existing.claimedBy || !existing.claimExpiresAt || new Date(existing.claimExpiresAt).getTime() <= Date.now();
+    if (expired) {
+      const claimed = this.claim(
+        key,
+        { agent: joiner.agent, sessionId: joiner.sessionId, by: joiner.by, model: joiner.model, cwd: joiner.cwd, pid: joiner.pid },
+        leaseSeconds,
+      );
+      if (!claimed.ok || !claimed.task) return claimed;
+      this.backfillOriginFromJoiner(claimed.task.id, joiner);
+      if (joiner.transcriptPath?.trim()) this.mergeTranscriptArtifact(claimed.task.id, joiner.transcriptPath.trim());
+      return { ok: true, task: this.getByKey(key)!, joined: true };
+    }
+
+    if (existing.claimedSessionId === joiner.sessionId) {
+      this.touch(existing.id);
+      this.backfillOriginFromJoiner(existing.id, joiner);
+      if (joiner.transcriptPath?.trim()) this.mergeTranscriptArtifact(existing.id, joiner.transcriptPath.trim());
+      return { ok: true, task: this.getByKey(key)!, joined: true };
+    }
+
+    // Claimed by someone else — observe, don't steal.
+    this.appendEvent(existing.id, "join", {
+      agent: joiner.agent,
+      sessionId: joiner.sessionId,
+      by: joiner.by,
+      cwd: joiner.cwd,
+      model: joiner.model,
+      pid: joiner.pid,
+    });
+    this.backfillOriginFromJoiner(existing.id, joiner);
+    if (joiner.transcriptPath?.trim()) this.mergeTranscriptArtifact(existing.id, joiner.transcriptPath.trim());
+    return { ok: true, task: this.getByKey(key)!, joined: true };
+  }
+
+  /** Fill unknown/empty origin fields from a joiner; never overwrites known values. */
+  private backfillOriginFromJoiner(
+    taskId: number,
+    joiner: { agent: AgentKind; sessionId: string; cwd?: string; model?: string; pid?: number },
+  ): void {
+    const task = this.getById(taskId);
+    if (!task || task.originAgent !== "unknown") return;
+    try {
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      if (joiner.agent && joiner.agent !== "unknown") {
+        sets.push("origin_agent = ?");
+        params.push(joiner.agent);
+      }
+      if (!task.originModel && joiner.model) {
+        sets.push("origin_model = ?");
+        params.push(joiner.model);
+      }
+      if (!task.originCwd && joiner.cwd) {
+        sets.push("origin_cwd = ?");
+        params.push(joiner.cwd);
+      }
+      if (task.originPid == null && joiner.pid != null) {
+        sets.push("origin_pid = ?");
+        params.push(joiner.pid);
+      }
+      // Deliberately NOT backfilling origin_session_id here: it is UNIQUE and the
+      // joiner's session usually owns its own tile already.
+      if (sets.length > 0) {
+        sets.push("updated_at = datetime('now')");
+        params.push(taskId);
+        this.db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+      }
+      const fresh = this.getById(taskId);
+      if (fresh?.originModel) this.ensureModelTag(taskId, fresh.originModel);
+      else if (joiner.model) this.ensureModelTag(taskId, joiner.model);
+    } catch {
+      // Best-effort only.
+    }
   }
 
   heartbeat(key: string, sessionId: string, leaseSeconds: number): boolean {
@@ -365,6 +650,9 @@ export class TaskService {
             agent: payload.agent as AgentKind,
             sessionId: payload.sessionId as string,
             by: payload.by as string,
+            model: payload.model as string | undefined,
+            cwd: payload.cwd as string | undefined,
+            pid: payload.pid as number | undefined,
           },
           leaseSeconds,
         );
