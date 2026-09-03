@@ -41,6 +41,9 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     initialContext: z.string().optional(),
     agent: z.string().optional(),
     sessionId: z.string().optional(),
+    model: z.string().optional(),
+    cwd: z.string().optional(),
+    pid: z.number().optional(),
     tags: z.array(z.string()).optional(),
   }, async (args) => {
     const task = ctx.tasks.create({
@@ -48,6 +51,10 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
       initialContext: args.initialContext,
       originAgent: (args.agent as never) ?? "unknown",
       originSessionId: args.sessionId,
+      originModel: args.model,
+      originCwd: args.cwd,
+      originPid: args.pid,
+      repoPath: args.cwd,
       tags: args.tags,
     });
     ctx.broadcast({ type: "task_updated", task });

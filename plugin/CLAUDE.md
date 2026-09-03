@@ -12,3 +12,4 @@ This plugin syncs your Claude Code sessions to the local Agent Swarm board at ht
 - Tags: lowercase `["<repo>", "<area>", "<kind>"]` e.g. `["agent-swarm","daemon","bugfix"]`.
 - Metadata auto-captured (session id, transcript path, model, cwd, pid) — do NOT hand-edit, verify via `swarm_task_get`.
 - End: `swarm_handoff` with goal/done/next/decisions/gotchas/verification/files.
+- Pass your model explicitly on create/join (e.g. model: "claude-opus-4-5") — you know your own model; auto-capture is best-effort.

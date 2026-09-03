@@ -2,7 +2,7 @@ import type { HookPlatform, NormalizedHookInput } from "./hooks.js";
 import type { AgentKind, TaskRecord } from "./types.js";
 
 function platformFromAgent(agent: AgentKind): HookPlatform {
-  if (agent === "claude" || agent === "cursor" || agent === "codex" || agent === "antigravity") return agent;
+  if (agent === "claude" || agent === "cursor" || agent === "codex" || agent === "antigravity" || agent === "opencode") return agent;
   return "cursor";
 }
 

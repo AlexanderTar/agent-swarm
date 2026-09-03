@@ -71,7 +71,7 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
   app.post<{ Params: { platform: string; event: string }; Body: Record<string, unknown> }>(
     "/hooks/:platform/:event",
     async (req, reply) => {
-      const platform = req.params.platform as "claude" | "cursor" | "codex" | "antigravity";
+      const platform = req.params.platform as "claude" | "cursor" | "codex" | "antigravity" | "opencode";
       const event = req.params.event;
       const input = normalizeHookInput({ ...req.body, hook_event_name: event }, platform);
       input.hookEvent = event;

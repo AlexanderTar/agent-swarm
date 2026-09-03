@@ -1,4 +1,4 @@
-export type HookPlatform = "claude" | "cursor" | "codex" | "antigravity";
+export type HookPlatform = "claude" | "cursor" | "codex" | "antigravity" | "opencode";
 
 export interface NormalizedHookInput {
   platform: HookPlatform;
@@ -121,6 +121,7 @@ export function normalizeHookInput(raw: unknown, platformHint?: HookPlatform): N
 
   const sessionId =
     readString(raw.session_id) ??
+    readString(raw.sessionID) ??
     readString(raw.conversation_id) ??
     readString(raw.conversationId) ??
     readString(raw.parent_conversation_id) ??
@@ -295,7 +296,7 @@ export function formatHookOutput(platform: HookPlatform, output: HookOutput, hoo
   return result;
 }
 
-export function agentKindFromPlatform(platform: HookPlatform): "claude" | "cursor" | "codex" | "antigravity" {
+export function agentKindFromPlatform(platform: HookPlatform): "claude" | "cursor" | "codex" | "antigravity" | "opencode" {
   return platform;
 }
 

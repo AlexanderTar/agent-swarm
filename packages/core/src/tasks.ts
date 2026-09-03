@@ -50,6 +50,17 @@ export function normalizeTags(tags: unknown): string[] {
   return out;
 }
 
+/** Slugify a model id for auto-tagging (e.g. "Claude Opus 4.5" → "claude-opus-4-5"). Empty → ''. */
+export function modelTag(model: string): string {
+  if (typeof model !== "string" || !model.trim()) return "";
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 40)
+    .replace(/^-+|-+$/g, "");
+}
+
 export class TaskService {
   private keyCounter = 0;
 
@@ -80,7 +91,10 @@ export class TaskService {
   }): TaskRecord {
     const key = this.nextKey();
     const now = new Date().toISOString();
-    const tagsJson = JSON.stringify(normalizeTags(input.tags));
+    const tags = normalizeTags(input.tags);
+    const tag = modelTag(input.originModel ?? "");
+    if (tag && !tags.includes(tag)) tags.push(tag);
+    const tagsJson = JSON.stringify(tags);
     const result = this.db
       .prepare(
         `INSERT INTO tasks (key, title, status, origin_agent, origin_session_id, origin_model, origin_cwd, origin_pid, repo_path, branch, initial_context, tags_json, last_activity_at, updated_at)
@@ -166,6 +180,7 @@ export class TaskService {
         this.db
           .prepare("UPDATE tasks SET origin_model = COALESCE(origin_model, ?), updated_at = datetime('now') WHERE id = ?")
           .run(input.model, existing.id);
+        this.ensureModelTag(existing.id, input.model);
       }
       if (input.pid != null) {
         this.db
@@ -338,6 +353,7 @@ export class TaskService {
       this.db
         .prepare("UPDATE tasks SET origin_model = ?, updated_at = datetime('now') WHERE id = ? AND origin_model IS NULL")
         .run(meta.model.trim(), taskId);
+      this.ensureModelTag(taskId, meta.model);
     }
     if (meta.pid != null) {
       this.db
@@ -345,6 +361,33 @@ export class TaskService {
         .run(meta.pid, taskId);
     }
     return this.getById(taskId);
+  }
+
+  /**
+   * Best-effort: ensure the model slug tag is present on a task.
+   * Never duplicates, never removes explicit tags. Never throws (hooks must exit 0).
+   */
+  ensureModelTag(taskId: number, model?: string | null): TaskRecord | null {
+    try {
+      const tag = modelTag(model ?? "");
+      if (!tag) return this.getById(taskId);
+      const task = this.getById(taskId);
+      if (!task) return null;
+      let existing: string[];
+      try {
+        existing = normalizeTags(JSON.parse(task.tagsJson));
+      } catch {
+        existing = [];
+      }
+      if (existing.includes(tag)) return task;
+      return this.update(taskId, { addTags: [tag] });
+    } catch {
+      try {
+        return this.getById(taskId);
+      } catch {
+        return null;
+      }
+    }
   }
 
   /** Persist transcript path into artifacts_json.transcript (array, deduped). No schema migration. */
@@ -452,6 +495,13 @@ export class TaskService {
       } catch {
         // Unique collision on origin_session_id — claim itself already succeeded.
       }
+      try {
+        const fresh = this.getByKey(key);
+        if (fresh?.originModel) this.ensureModelTag(fresh.id, fresh.originModel);
+        else if (claimer.model) this.ensureModelTag(fresh!.id, claimer.model);
+      } catch {
+        // Best-effort only.
+      }
     }
     const claimed = this.getByKey(key)!;
     this.appendEvent(claimed.id, "claim", {
@@ -553,6 +603,9 @@ export class TaskService {
         params.push(taskId);
         this.db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
       }
+      const fresh = this.getById(taskId);
+      if (fresh?.originModel) this.ensureModelTag(taskId, fresh.originModel);
+      else if (joiner.model) this.ensureModelTag(taskId, joiner.model);
     } catch {
       // Best-effort only.
     }

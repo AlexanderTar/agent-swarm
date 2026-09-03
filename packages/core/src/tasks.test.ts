@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SwarmDatabase } from "./db.js";
 import { normalizeHookInput } from "./hooks.js";
-import { TaskService } from "./tasks.js";
+import { modelTag, TaskService } from "./tasks.js";
 
 const dirs: string[] = [];
 
@@ -80,6 +80,81 @@ describe("join", () => {
     const after = svc.getByKey(t.key)!;
     // Origin already claude (not unknown) so it stays; claim stays with claude.
     expect(after.claimedAgent).toBe("claude");
+  });
+});
+
+describe("model auto-tag", () => {
+  it("modelTag slugifies model ids", () => {
+    expect(modelTag("claude-opus-4-5")).toBe("claude-opus-4-5");
+    expect(modelTag("Claude Opus 4.5")).toBe("claude-opus-4-5");
+    expect(modelTag("big-pickle")).toBe("big-pickle");
+    expect(modelTag("")).toBe("");
+    expect(modelTag("   ")).toBe("");
+    expect(modelTag("--Foo__Bar--")).toBe("foo-bar");
+    expect(modelTag("x".repeat(100)).length).toBeLessThanOrEqual(40);
+  });
+
+  it("auto-tags model slug on create", () => {
+    const svc = fresh();
+    const t = svc.create({ title: "t", originAgent: "claude", originModel: "claude-opus-4-5" } as never);
+    expect(t.originModel).toBe("claude-opus-4-5");
+    expect(JSON.parse(t.tagsJson)).toContain("claude-opus-4-5");
+  });
+
+  it("no duplicate tag when model slug already present", () => {
+    const svc = fresh();
+    const t = svc.create({
+      title: "t",
+      originAgent: "claude",
+      originModel: "claude-opus-4-5",
+      tags: ["Claude-Opus-4-5", "backend"],
+    } as never);
+    expect(JSON.parse(t.tagsJson)).toEqual(["claude-opus-4-5", "backend"]);
+  });
+
+  it("claim backfill tags model", () => {
+    const svc = fresh();
+    const t = svc.create({ title: "t", originAgent: "unknown" } as never);
+    svc.claim(t.key, { agent: "claude", sessionId: "s-model-1", by: "claude", model: "claude-sonnet-4" }, 300);
+    const after = svc.getByKey(t.key)!;
+    expect(after.originModel).toBe("claude-sonnet-4");
+    expect(JSON.parse(after.tagsJson)).toContain("claude-sonnet-4");
+  });
+
+  it("join tags model without stealing claim", () => {
+    const svc = fresh();
+    const t = svc.create({ title: "t", originAgent: "unknown" } as never);
+    const r = svc.join(t.key, { agent: "codex", sessionId: "s-model-2", by: "codex", model: "gpt-5" } as never);
+    expect(r.ok).toBe(true);
+    const after = svc.getByKey(t.key)!;
+    expect(JSON.parse(after.tagsJson)).toContain("gpt-5");
+  });
+
+  it("upsertSessionTask tags model", () => {
+    const svc = fresh();
+    const t = svc.upsertSessionTask({ sessionId: "sess-model", agent: "opencode", model: "big-pickle", title: "T" } as never);
+    expect(JSON.parse(t.tagsJson)).toContain("big-pickle");
+    const again = svc.upsertSessionTask({ sessionId: "sess-model", agent: "opencode", model: "big-pickle", title: "T" } as never);
+    expect(JSON.parse(again.tagsJson).filter((x: string) => x === "big-pickle")).toHaveLength(1);
+  });
+
+  it("refreshOriginMetadata tags model", () => {
+    const svc = fresh();
+    const t = svc.create({ title: "t", originAgent: "claude" } as never);
+    svc.refreshOriginMetadata(t.id, { model: "claude-haiku-3-5" });
+    const after = svc.getById(t.id)!;
+    expect(after.originModel).toBe("claude-haiku-3-5");
+    expect(JSON.parse(after.tagsJson)).toContain("claude-haiku-3-5");
+  });
+
+  it("ensureModelTag is idempotent and never throws", () => {
+    const svc = fresh();
+    const t = svc.create({ title: "t", originAgent: "claude" } as never);
+    svc.ensureModelTag(t.id, "m1");
+    svc.ensureModelTag(t.id, "m1");
+    expect(JSON.parse(svc.getById(t.id)!.tagsJson).filter((x: string) => x === "m1")).toHaveLength(1);
+    expect(svc.ensureModelTag(999999, "m1")).toBeNull();
+    expect(svc.ensureModelTag(t.id, "")?.id).toBe(t.id);
   });
 });
 
