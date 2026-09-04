@@ -66,7 +66,7 @@ function AgentBadge({ agent }: { agent: string }) {
 function Column({ status, tasks, onSelect, onRemove }: { status: TaskStatus; tasks: Task[]; onSelect: (t: Task) => void; onRemove: (key: string) => void }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
   return (
-    <div className="w-[320px] flex-shrink-0 flex flex-col h-full min-h-0">
+    <div className="w-[400px] flex-shrink-0 flex flex-col h-full min-h-0">
       <h2 className="flex-shrink-0 text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2 px-1">
         {status.replace("_", " ")} ({tasks.length})
       </h2>
@@ -140,8 +140,8 @@ function TaskCard({ task, onSelect, onRemove }: { task: Task; onSelect: (t: Task
             <span className="text-xs font-mono text-zinc-500">{task.key}</span>
             {isLive && <Activity size={12} className="text-green-400 animate-pulse" />}
           </div>
-          <h3 className="font-medium text-sm truncate" title={task.title}>
-            {boardTitle(task.title)}
+          <h3 className="font-medium text-sm whitespace-normal break-words" title={task.title}>
+            {task.title.trim().replace(/\s+/g, " ")}
           </h3>
           <div className="flex flex-wrap gap-1 mt-2">
             <span title={agentTitle}>
