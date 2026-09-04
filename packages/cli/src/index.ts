@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  runClean,
   runDemo,
   runDoctor,
   runInstall,
@@ -89,6 +90,9 @@ async function main(): Promise<void> {
         console.log("Usage: swarm titles backfill [--force] [--limit=N] [--keys=SW-1,SW-2]");
       }
       break;
+    case "clean":
+      await runClean();
+      break;
     default:
       console.log(`swarm — Agent Swarm CLI
 
@@ -97,6 +101,7 @@ Usage:
   swarm doctor        Health checks (--hooks for synthetic replay)
   swarm status        Daemon status
   swarm demo          Create a demo task on the board
+  swarm clean         Archive subagent tasks and clean up local board
   swarm update        Update to latest tag (--to vX.Y.Z)
   swarm uninstall     Remove launchd jobs
   swarm open          Open board in browser

@@ -169,29 +169,24 @@ export function normalizeHookInput(raw: unknown, platformHint?: HookPlatform): N
     subagentSummary: readString(raw.summary),
     taskSubject: readString(raw.task_subject) ?? readString(raw.taskSubject),
     taskDescription: readString(raw.task_description) ?? readString(raw.taskDescription),
-    parentSessionId: readString(raw.parent_conversation_id) ?? readString(raw.parentSessionId),
+    parentSessionId:
+      readString(raw.parent_conversation_id) ??
+      readString(raw.parentSessionId) ??
+      readString(raw.parentConversationId) ??
+      readString(raw.parent_session_id),
     raw,
   };
 }
 
-function subagentIdFromTranscriptPath(path: string | undefined): string | undefined {
+export function subagentIdFromTranscriptPath(path: string | undefined): string | undefined {
   if (!path) return undefined;
   const nested = path.match(/subagents[/\\]([^/\\]+)\.jsonl$/i);
   if (nested?.[1]) return nested[1];
-  const base = path.split(/[/\\]/).pop()?.replace(/\.jsonl$/i, "");
-  return base?.trim() || undefined;
-}
-
-/** Board tile id for subagent lifecycle hooks (handles Cursor subagentStop without subagent_id). */
-export function resolveSubagentBoardId(input: NormalizedHookInput): string | undefined {
-  if (input.agentId?.trim()) return input.agentId.trim();
-  const fromPath = subagentIdFromTranscriptPath(input.transcriptPath);
-  if (fromPath) return fromPath;
   return undefined;
 }
 
-/** Resolve which session id owns the board tile for this hook. */
-export function resolveHookBoardSessionId(input: NormalizedHookInput, hookEvent?: string): string {
+/** Check if a hook payload originates from a nested subagent. */
+export function isSubagentHook(input: NormalizedHookInput, hookEvent?: string): boolean {
   const event = hookEvent ?? input.hookEvent;
   if (
     event === "SubagentStart" ||
@@ -199,15 +194,62 @@ export function resolveHookBoardSessionId(input: NormalizedHookInput, hookEvent?
     event === "SubagentStop" ||
     event === "subagentStop"
   ) {
-    const subagentId = resolveSubagentBoardId(input);
-    if (subagentId) return subagentId;
+    return true;
   }
-  return resolveBoardSessionId(input);
+  if (input.parentSessionId?.trim()) {
+    return true;
+  }
+  if (input.transcriptPath && /subagents[/\\][^/\\]+\.jsonl$/i.test(input.transcriptPath)) {
+    return true;
+  }
+  if (input.agentId?.trim()) {
+    // When sessionId is present and differs from agentId, agentId is a subagent identifier
+    if (input.sessionId?.trim() && input.sessionId.trim() !== input.agentId.trim()) {
+      return true;
+    }
+  }
+  const raw = input.raw as Record<string, unknown> | undefined;
+  if (raw) {
+    if (raw.subagent_id || raw.subagent_type || raw.subagentId || raw.subagentType) {
+      return true;
+    }
+    if (raw.parentConversationId || raw.parent_conversation_id || raw.parentSessionId || raw.parent_session_id) {
+      return true;
+    }
+  }
+  return false;
 }
 
-/** One board tile per Claude session or subagent (subagents share session_id but have agent_id). */
-export function resolveBoardSessionId(input: Pick<NormalizedHookInput, "sessionId" | "agentId">): string {
-  return input.agentId?.trim() || input.sessionId;
+/** Resolve the root session ID that owns the task for this hook. */
+export function resolveHookRootSessionId(
+  input: Pick<NormalizedHookInput, "sessionId" | "parentSessionId" | "agentId">,
+): string {
+  if (input.parentSessionId?.trim()) return input.parentSessionId.trim();
+  if (input.sessionId?.trim()) return input.sessionId.trim();
+  return input.agentId?.trim() || "";
+}
+
+/** Subagent identifier when present (for subtask tracking and event logging). */
+export function resolveSubagentBoardId(input: NormalizedHookInput): string | undefined {
+  if (input.agentId?.trim()) return input.agentId.trim();
+  const fromPath = subagentIdFromTranscriptPath(input.transcriptPath);
+  if (fromPath) return fromPath;
+  const raw = input.raw as Record<string, unknown> | undefined;
+  const rawSubId = readString(raw?.subagent_id) ?? readString(raw?.subagentId);
+  if (rawSubId?.trim()) return rawSubId.trim();
+  return undefined;
+}
+
+/** Resolve which session id owns the board tile for this hook (always the root session). */
+export function resolveHookBoardSessionId(input: NormalizedHookInput, _hookEvent?: string): string {
+  return resolveHookRootSessionId(input);
+}
+
+/** One board tile per root agent session — subagents do not receive their own tiles. */
+export function resolveBoardSessionId(
+  input: Pick<NormalizedHookInput, "sessionId" | "agentId" | "parentSessionId">,
+): string {
+  return resolveHookRootSessionId(input);
 }
 
 function repoLabel(cwd: string): string {

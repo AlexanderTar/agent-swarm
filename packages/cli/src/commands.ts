@@ -1163,3 +1163,42 @@ export async function runUninstall(): Promise<void> {
   unlinkSwarmCli();
   p.log.success("LaunchAgents removed. Data in ~/.swarm preserved.");
 }
+
+export async function runClean(): Promise<void> {
+  const base = swarmBaseUrl();
+  try {
+    const health = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(1500) });
+    if (health.ok) {
+      const res = await fetch(`${base}/api/tasks/cleanup`, {
+        method: "POST",
+        headers: swarmAuthHeaders(),
+      });
+      if (res.ok) {
+        const result = (await res.json()) as { archivedCount: number; details: string[] };
+        console.log(`Cleaned up ${result.archivedCount} subagent tasks via daemon.`);
+        for (const detail of result.details.slice(0, 15)) {
+          console.log(`  - ${detail}`);
+        }
+        if (result.details.length > 15) {
+          console.log(`  ... and ${result.details.length - 15} more.`);
+        }
+        return;
+      }
+    }
+  } catch {
+    // Daemon offline, fall through to direct DB access
+  }
+
+  const paths = getSwarmPaths();
+  const db = new SwarmDatabase(paths.db).db;
+  const tasks = new TaskService(db);
+  const result = tasks.cleanupSubagentTasks();
+  console.log(`Cleaned up ${result.archivedCount} subagent tasks.`);
+  for (const detail of result.details.slice(0, 15)) {
+    console.log(`  - ${detail}`);
+  }
+  if (result.details.length > 15) {
+    console.log(`  ... and ${result.details.length - 15} more.`);
+  }
+}
+

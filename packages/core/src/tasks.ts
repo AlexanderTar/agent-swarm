@@ -1249,6 +1249,13 @@ export class TaskService {
       .prepare("SELECT id, subject, description, completed FROM subtasks WHERE task_id = ?")
       .all(taskId) as Array<{ id: number; subject: string; description: string | null; completed: boolean }>;
   }
+
+  /**
+   * Cleanup excessive subagent tasks and consolidate them into their parent tasks.
+   */
+  cleanupSubagentTasks(): { archivedCount: number; details: string[] } {
+    return cleanupSubagentTasks(this.db, this);
+  }
 }
 
 export function renderHandoffMarkdown(note: HandoffNote, taskKey: string): string {
@@ -1378,3 +1385,85 @@ export function consolidateTasksBySessionId(db: Database.Database): number {
   }
   return archived;
 }
+
+/**
+ * Archive excessive subagent tasks and attach their sessions/events to parent tasks.
+ */
+export function cleanupSubagentTasks(
+  db: Database.Database,
+  taskService?: TaskService,
+): { archivedCount: number; details: string[] } {
+  const rows = db
+    .prepare(
+      `SELECT id, key, title, origin_agent, origin_session_id, initial_context
+       FROM tasks
+       WHERE status != 'archived'`,
+    )
+    .all() as Array<{
+    id: number;
+    key: string;
+    title: string;
+    origin_agent: string;
+    origin_session_id: string | null;
+    initial_context: string | null;
+  }>;
+
+  let archivedCount = 0;
+  const details: string[] = [];
+
+  for (const row of rows) {
+    const isSubagent =
+      row.title.startsWith("Subagent ·") ||
+      row.title.startsWith("You are implementing ") ||
+      row.title.includes("(@general subagent)") ||
+      row.title.includes("(@code-reviewer subagent)") ||
+      row.title.includes("(@security-reviewer subagent)") ||
+      (row.title.includes("(@") && row.title.includes("subagent)")) ||
+      row.title.includes("Caveat: The messages below were generated") ||
+      row.title.includes("<local-command-caveat>") ||
+      row.origin_session_id === "transcript_full" ||
+      (row.origin_session_id != null && /^a[0-9a-f]{16}$/i.test(row.origin_session_id)) ||
+      (row.initial_context != null && row.initial_context.includes("Parent session:"));
+
+    if (!isSubagent) continue;
+
+    const parentMatch = row.initial_context?.match(/Parent session:\*\* `([^`]+)`/);
+    const parentSession = parentMatch?.[1]?.trim();
+    if (parentSession) {
+      let parentTask: TaskRecord | null = null;
+      if (taskService) {
+        parentTask = taskService.getBySession(parentSession);
+      } else {
+        const pRow = db.prepare("SELECT * FROM tasks WHERE origin_session_id = ? AND status != 'archived' LIMIT 1").get(parentSession);
+        if (pRow) parentTask = rowToTask(pRow as Record<string, unknown>);
+      }
+      if (parentTask && parentTask.id !== row.id) {
+        if (row.origin_session_id && taskService) {
+          try {
+            taskService.attachSession(parentTask.id, {
+              sessionId: row.origin_session_id,
+              agent: row.origin_agent,
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+        try {
+          db.prepare("UPDATE subtasks SET task_id = ? WHERE task_id = ?").run(parentTask.id, row.id);
+          db.prepare("UPDATE task_events SET task_id = ? WHERE task_id = ?").run(parentTask.id, row.id);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    db.prepare(
+      `UPDATE tasks SET origin_session_id = NULL, status = 'archived', updated_at = datetime('now') WHERE id = ?`,
+    ).run(row.id);
+    archivedCount++;
+    details.push(`Archived subagent task ${row.key}: "${row.title}"`);
+  }
+
+  return { archivedCount, details };
+}
+
