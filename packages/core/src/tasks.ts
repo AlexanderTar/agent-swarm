@@ -1414,12 +1414,14 @@ export function cleanupSubagentTasks(
   for (const row of rows) {
     const isSubagent =
       row.title.startsWith("Subagent ·") ||
+      row.title.startsWith("You are implementing ") ||
       row.title.includes("(@general subagent)") ||
       row.title.includes("(@code-reviewer subagent)") ||
       row.title.includes("(@security-reviewer subagent)") ||
       (row.title.includes("(@") && row.title.includes("subagent)")) ||
       row.title.includes("Caveat: The messages below were generated") ||
       row.title.includes("<local-command-caveat>") ||
+      row.origin_session_id === "transcript_full" ||
       (row.origin_session_id != null && /^a[0-9a-f]{16}$/i.test(row.origin_session_id)) ||
       (row.initial_context != null && row.initial_context.includes("Parent session:"));
 
