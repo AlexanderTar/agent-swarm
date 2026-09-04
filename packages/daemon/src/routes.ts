@@ -411,11 +411,18 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: SwarmContext)
 
   app.get("/api/board", async (req) => {
     const q = req.query as Record<string, string>;
-    return ctx.tasks.list({
+    const tasks = ctx.tasks.list({
       status: q.status as never,
       repo: q.repo,
       agent: q.agent as AgentKind,
       stale: q.stale === "true",
+    });
+    return tasks.map((t) => {
+      try {
+        return { ...t, sessions: ctx.tasks.listSessions(t.id) };
+      } catch {
+        return t;
+      }
     });
   });
 
@@ -451,6 +458,7 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: SwarmContext)
     if (!task) return reply.code(404).send({ error: "Not found" });
     return {
       ...task,
+      sessions: ctx.tasks.listSessions(task.id),
       events: ctx.tasks.getEvents(task.id),
       subtasks: ctx.tasks.getSubtasks(task.id),
     };

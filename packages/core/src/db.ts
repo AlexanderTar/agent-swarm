@@ -5,8 +5,25 @@ import { dirname } from "node:path";
 import type { SwarmConfig } from "./types.js";
 import { consolidateTasksBySessionId } from "./tasks.js";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 export const EMBED_DIM = 256;
+
+export const TASK_SESSIONS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS task_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    agent_kind TEXT,
+    cwd TEXT,
+    model TEXT,
+    pid INTEGER,
+    transcript_path TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_task_sessions_session ON task_sessions(session_id);
+  CREATE INDEX IF NOT EXISTS idx_task_sessions_task ON task_sessions(task_id);
+`;
 
 export class SwarmDatabase {
   readonly db: Database.Database;
@@ -138,11 +155,13 @@ export class SwarmDatabase {
         INSERT INTO schema_meta (version, embed_model, embed_dimensions)
         VALUES (${SCHEMA_VERSION}, 'nomic-embed-text', ${embedDimensions});
       `);
+      this.db.exec(TASK_SESSIONS_SCHEMA);
       return;
     }
 
     const row = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get() as { version: number } | undefined;
-    if (row && row.version < 2) {
+    let version = row?.version ?? 0;
+    if (version < 2) {
       // Collapse duplicate tiles that share an origin_session_id, then enforce uniqueness.
       this.consolidateDuplicateSessions();
       this.db.exec(`
@@ -151,7 +170,12 @@ export class SwarmDatabase {
           WHERE origin_session_id IS NOT NULL;
       `);
       this.db.prepare("UPDATE schema_meta SET version = 2").run();
-    } else if (row && row.version < SCHEMA_VERSION) {
+      version = 2;
+    }
+    if (version < 3) {
+      this.migrateToV3();
+      this.db.prepare("UPDATE schema_meta SET version = 3").run();
+    } else if (version < SCHEMA_VERSION) {
       this.db.prepare(`UPDATE schema_meta SET version = ${SCHEMA_VERSION}`).run();
     }
   }
@@ -159,6 +183,95 @@ export class SwarmDatabase {
   /** Keep one task per origin_session_id; archive the rest after moving events/subtasks. */
   private consolidateDuplicateSessions(): void {
     consolidateTasksBySessionId(this.db);
+  }
+
+  /**
+   * v3: one task can track many sessions (pickup agent joins the picked-up tile
+   * instead of spawning its own). Backfills task_sessions from origin rows and
+   * folds claimed-session solo tiles into their claimed task.
+   */
+  private migrateToV3(): void {
+    this.db.exec(TASK_SESSIONS_SCHEMA);
+    // Backfill origin sessions — one row per existing tile.
+    try {
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO task_sessions (task_id, session_id, agent_kind, cwd, model, pid)
+           SELECT id, origin_session_id, origin_agent, origin_cwd, origin_model, origin_pid
+           FROM tasks WHERE origin_session_id IS NOT NULL`,
+        )
+        .run();
+    } catch {
+      // Best-effort: fresh DBs have no rows, old DBs may lack columns in odd states.
+    }
+
+    // Fold pickup duplicates: a claimed_session that also owns its own solo tile
+    // (origin_session_id = claimed_session_id on a different row) gets merged into
+    // the claimed task so the board keeps a single tile per unit of work.
+    try {
+      const claimed = this.db
+        .prepare(
+          `SELECT id AS task_id, claimed_session_id AS sid FROM tasks
+           WHERE claimed_session_id IS NOT NULL AND trim(claimed_session_id) != ''`,
+        )
+        .all() as Array<{ task_id: number; sid: string }>;
+      for (const { task_id, sid } of claimed) {
+        // If that session also owns a different solo tile, archive the solo tile
+        // into the keeper first so the session row can move without conflict.
+        try {
+          const solo = this.db
+            .prepare(
+              `SELECT id FROM tasks WHERE origin_session_id = ? AND id != ? LIMIT 1`,
+            )
+            .get(sid, task_id) as { id: number } | undefined;
+          if (solo) {
+            try {
+              this.db.prepare("UPDATE task_events SET task_id = ? WHERE task_id = ?").run(task_id, solo.id);
+            } catch {
+              /* no events or no rows */
+            }
+            try {
+              this.db.prepare("UPDATE subtasks SET task_id = ? WHERE task_id = ?").run(task_id, solo.id);
+            } catch {
+              /* ignore */
+            }
+            try {
+              this.db
+                .prepare(`UPDATE task_sessions SET task_id = ? WHERE task_id = ? AND session_id != ?`)
+                .run(task_id, solo.id, sid);
+            } catch {
+              /* ignore */
+            }
+            try {
+              this.db.prepare(`DELETE FROM task_sessions WHERE task_id = ? AND session_id = ?`).run(solo.id, sid);
+            } catch {
+              /* ignore */
+            }
+            try {
+              this.db
+                .prepare(
+                  `UPDATE tasks SET origin_session_id = NULL, status = 'archived', updated_at = datetime('now') WHERE id = ?`,
+                )
+                .run(solo.id);
+            } catch {
+              /* ignore */
+            }
+          }
+        } catch {
+          /* best-effort */
+        }
+        // Ensure the claimed session is attached to the claimed task.
+        try {
+          this.db
+            .prepare(`INSERT OR IGNORE INTO task_sessions (task_id, session_id) VALUES (?, ?)`)
+            .run(task_id, sid);
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      // Migration must never fail daemon startup.
+    }
   }
 
   checkEmbeddingConfig(config: SwarmConfig): { ok: boolean; reason?: string } {
