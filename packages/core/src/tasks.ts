@@ -61,6 +61,34 @@ export function modelTag(model: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+export interface TaskSession {
+  id: number;
+  taskId: number;
+  sessionId: string;
+  agentKind: string | null;
+  cwd: string | null;
+  model: string | null;
+  pid: number | null;
+  transcriptPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function rowToSession(row: Record<string, unknown>): TaskSession {
+  return {
+    id: row.id as number,
+    taskId: row.task_id as number,
+    sessionId: row.session_id as string,
+    agentKind: (row.agent_kind as string) ?? null,
+    cwd: (row.cwd as string) ?? null,
+    model: (row.model as string) ?? null,
+    pid: (row.pid as number) ?? null,
+    transcriptPath: (row.transcript_path as string) ?? null,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
+}
+
 export class TaskService {
   private keyCounter = 0;
 
@@ -69,6 +97,31 @@ export class TaskService {
       | { m: number | null }
       | undefined;
     this.keyCounter = max?.m ?? 0;
+    this.ensureSessionsTable();
+  }
+
+  /** Defensive: task_sessions must exist even on DBs that predate the v3 migration. */
+  private ensureSessionsTable(): void {
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS task_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          session_id TEXT NOT NULL,
+          agent_kind TEXT,
+          cwd TEXT,
+          model TEXT,
+          pid INTEGER,
+          transcript_path TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_sessions_session ON task_sessions(session_id);
+        CREATE INDEX IF NOT EXISTS idx_task_sessions_task ON task_sessions(task_id);
+      `);
+    } catch {
+      // Hooks must never fail on missing table; callers handle nulls.
+    }
   }
 
   nextKey(): string {
@@ -116,7 +169,263 @@ export class TaskService {
         now,
         now,
       );
-    return this.getById(Number(result.lastInsertRowid))!;
+    const id = Number(result.lastInsertRowid);
+    // Keep task_sessions in sync so one task can own many sessions.
+    if (input.originSessionId?.trim()) {
+      try {
+        this.attachSession(id, {
+          sessionId: input.originSessionId.trim(),
+          agent: input.originAgent,
+          cwd: input.originCwd,
+          model: input.originModel,
+          pid: input.originPid,
+        });
+      } catch {
+        // Best-effort only.
+      }
+    }
+    return this.getById(id)!;
+  }
+
+  // ── Multi-session support ──────────────────────────────────────────────
+  // One task can be worked on by many sessions (e.g. agent B picks up agent A's
+  // handoff). Pickup sessions join the picked-up tile instead of spawning a twin.
+
+  listSessions(taskId: number): TaskSession[] {
+    try {
+      this.ensureSessionsTable();
+      const rows = this.db
+        .prepare(`SELECT * FROM task_sessions WHERE task_id = ? ORDER BY id ASC`)
+        .all(taskId) as Record<string, unknown>[];
+      return rows.map(rowToSession);
+    } catch {
+      return [];
+    }
+  }
+
+  private getSessionRow(sessionId: string): TaskSession | null {
+    try {
+      this.ensureSessionsTable();
+      const row = this.db.prepare(`SELECT * FROM task_sessions WHERE session_id = ? LIMIT 1`).get(sessionId) as
+        | Record<string, unknown>
+        | undefined;
+      return row ? rowToSession(row) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Resolve the task that owns a session: claims first (pickup wins over solo tile), then attached, then origin. */
+  private getTaskIdForSession(sessionId: string): number | null {
+    const sid = sessionId.trim();
+    if (!sid) return null;
+    const claimed = this.getClaimedTaskIdForSession(sid);
+    if (claimed != null) return claimed;
+    const attached = this.getAttachedTaskIdForSession(sid);
+    if (attached != null) return attached;
+    try {
+      const origin = this.db
+        .prepare(
+          `SELECT id FROM tasks WHERE origin_session_id = ?
+           ORDER BY CASE WHEN status NOT IN ('done','archived') THEN 0 WHEN status = 'done' THEN 1 ELSE 2 END,
+           updated_at DESC, id ASC LIMIT 1`,
+        )
+        .get(sid) as { id: number } | undefined;
+      if (origin) return origin.id;
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  /**
+   * Attach a session to a task (idempotent). Updates the task with the latest
+   * session metadata and tags the task with the participating agent.
+   * Never creates a new task — use upsertSessionTask for that.
+   */
+  attachSession(
+    taskId: number,
+    input: { sessionId: string; agent?: AgentKind | string; cwd?: string; model?: string; pid?: number; transcriptPath?: string },
+  ): TaskSession | null {
+    const sessionId = input.sessionId?.trim();
+    if (!sessionId) return null;
+    const task = this.getById(taskId);
+    if (!task) return null;
+    this.ensureSessionsTable();
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO task_sessions (task_id, session_id, agent_kind, cwd, model, pid, transcript_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+             task_id = excluded.task_id,
+             agent_kind = COALESCE(excluded.agent_kind, agent_kind),
+             cwd = COALESCE(excluded.cwd, cwd),
+             model = COALESCE(excluded.model, model),
+             pid = COALESCE(excluded.pid, pid),
+             transcript_path = COALESCE(excluded.transcript_path, transcript_path),
+             updated_at = datetime('now')`,
+        )
+        .run(
+          taskId,
+          sessionId,
+          input.agent?.trim() || null,
+          input.cwd?.trim() || null,
+          input.model?.trim() || null,
+          input.pid ?? null,
+          input.transcriptPath?.trim() || null,
+        );
+    } catch {
+      // Table may be locked or session belongs elsewhere — fall through to tagging.
+      try {
+        const existing = this.getSessionRow(sessionId);
+        if (existing && existing.taskId !== taskId) {
+          // Session is pinned to another tile; move it here only via mergeSoloTileInto.
+          return existing;
+        }
+      } catch {
+        return null;
+      }
+    }
+    // Tag multi-agent work: when a different agent kind joins a task, record both
+    // the origin and the joining agent so the tile is filterable by either.
+    // Single-agent tasks keep their legacy tags untouched.
+    try {
+      const joining = (input.agent ?? "").trim().toLowerCase();
+      const origin = (task.originAgent ?? "").trim().toLowerCase();
+      if (joining && joining !== "unknown" && origin && origin !== "unknown" && joining !== origin) {
+        this.ensureAgentTag(taskId, origin);
+        this.ensureAgentTag(taskId, joining);
+      } else {
+        // Still record the joining agent when the origin is unknown (legacy rows).
+        const sessions = this.listSessions(taskId);
+        const kinds = new Set(
+          sessions.map((s) => (s.agentKind ?? "").trim().toLowerCase()).filter((a) => a && a !== "unknown"),
+        );
+        if (joining && joining !== "unknown") kinds.add(joining);
+        if (origin && origin !== "unknown") kinds.add(origin);
+        if (kinds.size > 1) {
+          for (const k of kinds) this.ensureAgentTag(taskId, k);
+        }
+      }
+    } catch {
+      /* best-effort */
+    }
+    if (input.model) this.ensureModelTag(taskId, input.model);
+    if (input.transcriptPath?.trim()) this.mergeTranscriptArtifact(taskId, input.transcriptPath.trim());
+    // Refresh origin cwd/model/pid only when empty, then touch.
+    try {
+      if (input.cwd?.trim()) this.maybeRefreshOriginCwd(taskId, input.cwd);
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.refreshOriginMetadata(taskId, { model: input.model, pid: input.pid });
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.touch(taskId);
+    } catch {
+      /* ignore */
+    }
+    return this.getSessionRow(sessionId);
+  }
+
+  /** Ensure the lowercase agent kind is present in the task's tags. Never duplicates. */
+  ensureAgentTag(taskId: number, agent?: string | null): TaskRecord | null {
+    try {
+      const norm = (agent ?? "").trim().toLowerCase();
+      if (!norm || norm === "unknown") return this.getById(taskId);
+      const task = this.getById(taskId);
+      if (!task) return null;
+      let existing: string[];
+      try {
+        existing = normalizeTags(JSON.parse(task.tagsJson));
+      } catch {
+        existing = [];
+      }
+      if (existing.includes(norm)) return task;
+      return this.update(taskId, { addTags: [norm] });
+    } catch {
+      try {
+        return this.getById(taskId);
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  /**
+   * If sessionId owns a different solo tile (origin_session_id), fold that tile
+   * into keeperId: move events/subtasks/sessions, then archive the loser with
+   * origin_session_id cleared so the UNIQUE constraint never collides.
+   * Returns the archived loser id, or null when there was nothing to merge.
+   */
+  mergeSoloTileInto(keeperId: number, sessionId: string): number | null {
+    const sid = sessionId.trim();
+    if (!sid) return null;
+    let loser: { id: number } | undefined;
+    try {
+      loser = this.db
+        .prepare(`SELECT id FROM tasks WHERE origin_session_id = ? AND id != ? LIMIT 1`)
+        .get(sid, keeperId) as { id: number } | undefined;
+    } catch {
+      return null;
+    }
+    if (!loser) return null;
+    try {
+      this.db.prepare("UPDATE task_events SET task_id = ? WHERE task_id = ?").run(keeperId, loser.id);
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.db.prepare("UPDATE subtasks SET task_id = ? WHERE task_id = ?").run(keeperId, loser.id);
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.ensureSessionsTable();
+      // Move the loser's other sessions to the keeper; the pickup session itself
+      // already points at the keeper after attachSession.
+      const rows = this.db.prepare(`SELECT session_id FROM task_sessions WHERE task_id = ?`).all(loser.id) as Array<{
+        session_id: string;
+      }>;
+      for (const r of rows) {
+        if (r.session_id === sid) {
+          try {
+            this.db.prepare(`DELETE FROM task_sessions WHERE task_id = ? AND session_id = ?`).run(loser.id, r.session_id);
+          } catch {
+            /* ignore */
+          }
+          continue;
+        }
+        try {
+          this.db.prepare(`UPDATE task_sessions SET task_id = ?, updated_at = datetime('now') WHERE task_id = ? AND session_id = ?`).run(
+            keeperId,
+            loser.id,
+            r.session_id,
+          );
+        } catch {
+          // Session already attached elsewhere — drop the loser copy.
+          try {
+            this.db.prepare(`DELETE FROM task_sessions WHERE task_id = ? AND session_id = ?`).run(loser.id, r.session_id);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.db
+        .prepare(`UPDATE tasks SET origin_session_id = NULL, status = 'archived', updated_at = datetime('now') WHERE id = ?`)
+        .run(loser.id);
+    } catch {
+      return null;
+    }
+    return loser.id;
   }
 
   upsertSessionTask(input: {
@@ -148,6 +457,42 @@ export class TaskService {
       return created;
     }
 
+    // Pickup sessions join their picked-up tile instead of spawning a twin.
+    // 1) Session has claimed a task (claimed_session_id) → reuse it.
+    // 2) Session already attached to a task (task_sessions) → reuse it.
+    // 3) Legacy origin_session_id tile → reuse it.
+    const claimedId = this.getClaimedTaskIdForSession(sessionId);
+    if (claimedId != null) {
+      const claimed = this.getById(claimedId);
+      if (claimed) {
+        this.attachSession(claimed.id, {
+          sessionId,
+          agent: input.agent,
+          cwd: input.cwd,
+          model: input.model,
+          pid: input.pid,
+          transcriptPath: input.transcriptPath,
+        });
+        this.mergeSoloTileInto(claimed.id, sessionId);
+        return this.refreshSessionTask(claimed.id, input);
+      }
+    }
+    const attachedId = this.getAttachedTaskIdForSession(sessionId);
+    if (attachedId != null) {
+      const attached = this.getById(attachedId);
+      if (attached) {
+        this.attachSession(attached.id, {
+          sessionId,
+          agent: input.agent,
+          cwd: input.cwd,
+          model: input.model,
+          pid: input.pid,
+          transcriptPath: input.transcriptPath,
+        });
+        return this.refreshSessionTask(attached.id, input);
+      }
+    }
+
     // Session id is the ultimate dedup key — include done/archived so we revive instead of cloning.
     const existing = this.db
       .prepare(
@@ -166,34 +511,15 @@ export class TaskService {
       .get(sessionId) as { id: number; title: string; initial_context: string | null; status: string } | undefined;
 
     if (existing) {
-      this.touch(existing.id);
-      if (existing.status === "done" || existing.status === "archived") {
-        this.update(existing.id, { status: "in_progress" });
-      }
-      if (input.title && this.shouldReplaceTitle(existing.title, input.title, input.titleFromSession ?? false)) {
-        this.update(existing.id, { title: input.title });
-      }
-      if (input.cwd?.trim()) {
-        this.maybeRefreshOriginCwd(existing.id, input.cwd);
-      }
-      if (input.model) {
-        this.db
-          .prepare("UPDATE tasks SET origin_model = COALESCE(origin_model, ?), updated_at = datetime('now') WHERE id = ?")
-          .run(input.model, existing.id);
-        this.ensureModelTag(existing.id, input.model);
-      }
-      if (input.pid != null) {
-        this.db
-          .prepare("UPDATE tasks SET origin_pid = ?, updated_at = datetime('now') WHERE id = ?")
-          .run(input.pid, existing.id);
-      }
-      if (input.initialContext && !existing.initial_context) {
-        this.update(existing.id, { initialContext: input.initialContext });
-      }
-      if (input.transcriptPath?.trim()) {
-        this.mergeTranscriptArtifact(existing.id, input.transcriptPath.trim());
-      }
-      return this.getById(existing.id)!;
+      this.attachSession(existing.id, {
+        sessionId,
+        agent: input.agent,
+        cwd: input.cwd,
+        model: input.model,
+        pid: input.pid,
+        transcriptPath: input.transcriptPath,
+      });
+      return this.refreshSessionTask(existing.id, input);
     }
 
     const created = this.create({
@@ -211,6 +537,66 @@ export class TaskService {
       return this.getById(created.id)!;
     }
     return created;
+  }
+
+  private getClaimedTaskIdForSession(sessionId: string): number | null {
+    try {
+      const row = this.db
+        .prepare(`SELECT id FROM tasks WHERE claimed_session_id = ? LIMIT 1`)
+        .get(sessionId.trim()) as { id: number } | undefined;
+      return row?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private getAttachedTaskIdForSession(sessionId: string): number | null {
+    try {
+      this.ensureSessionsTable();
+      const row = this.db
+        .prepare(`SELECT task_id FROM task_sessions WHERE session_id = ? LIMIT 1`)
+        .get(sessionId.trim()) as { task_id: number } | undefined;
+      return row?.task_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Touch + revive + refresh metadata for an existing session tile (origin or picked-up). */
+  private refreshSessionTask(
+    taskId: number,
+    input: { title?: string; titleFromSession?: boolean; cwd?: string; model?: string; pid?: number; initialContext?: string; transcriptPath?: string },
+  ): TaskRecord {
+    const current = this.getById(taskId);
+    if (!current) throw new Error(`Task not found: ${taskId}`);
+    this.touch(taskId);
+    if (current.status === "done" || current.status === "archived") {
+      this.update(taskId, { status: "in_progress" });
+    }
+    const fresh = this.getById(taskId)!;
+    if (input.title && this.shouldReplaceTitle(fresh.title, input.title, input.titleFromSession ?? false)) {
+      this.update(taskId, { title: input.title });
+    }
+    if (input.cwd?.trim()) {
+      this.maybeRefreshOriginCwd(taskId, input.cwd);
+    }
+    if (input.model) {
+      this.db
+        .prepare("UPDATE tasks SET origin_model = COALESCE(origin_model, ?), updated_at = datetime('now') WHERE id = ?")
+        .run(input.model, taskId);
+      this.ensureModelTag(taskId, input.model);
+    }
+    if (input.pid != null) {
+      this.db.prepare("UPDATE tasks SET origin_pid = ?, updated_at = datetime('now') WHERE id = ?").run(input.pid, taskId);
+    }
+    const after = this.getById(taskId)!;
+    if (input.initialContext && !after.initialContext) {
+      this.update(taskId, { initialContext: input.initialContext });
+    }
+    if (input.transcriptPath?.trim()) {
+      this.mergeTranscriptArtifact(taskId, input.transcriptPath.trim());
+    }
+    return this.getById(taskId)!;
   }
 
   /** Force-merge any remaining session duplicates (safe to call repeatedly). */
@@ -250,22 +636,33 @@ export class TaskService {
 
   getBySession(sessionId: string): TaskRecord | null {
     if (!sessionId.trim()) return null;
-    // Prefer live tiles, but still resolve done/archived so hooks never spawn a twin.
-    const row = this.db
-      .prepare(
-        `SELECT * FROM tasks WHERE origin_session_id = ?
-         ORDER BY
-           CASE
-             WHEN status NOT IN ('done','archived') THEN 0
-             WHEN status = 'done' THEN 1
-             ELSE 2
-           END,
-           updated_at DESC,
-           id ASC
-         LIMIT 1`,
-      )
-      .get(sessionId.trim());
-    return row ? rowToTask(row as Record<string, unknown>) : null;
+    // Pickup sessions resolve to their picked-up tile (claimed → attached → origin)
+    // so hooks never spawn a twin tile for work already on the board.
+    const taskId = this.getTaskIdForSession(sessionId.trim());
+    if (taskId != null) {
+      const task = this.getById(taskId);
+      if (task) return task;
+    }
+    // Fallback: legacy origin lookup preferring live tiles.
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT * FROM tasks WHERE origin_session_id = ?
+           ORDER BY
+             CASE
+               WHEN status NOT IN ('done','archived') THEN 0
+               WHEN status = 'done' THEN 1
+               ELSE 2
+             END,
+             updated_at DESC,
+             id ASC
+           LIMIT 1`,
+        )
+        .get(sessionId.trim());
+      return row ? rowToTask(row as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
   }
 
   list(filters: BoardFilters = {}): TaskRecord[] {
@@ -280,8 +677,10 @@ export class TaskService {
       params.push(`%${filters.repo}%`);
     }
     if (filters.agent) {
-      clauses.push("(origin_agent = ? OR claimed_agent = ?)");
-      params.push(filters.agent, filters.agent);
+      clauses.push(
+        `(origin_agent = ? OR claimed_agent = ? OR EXISTS (SELECT 1 FROM task_sessions ts WHERE ts.task_id = tasks.id AND ts.agent_kind = ?))`,
+      );
+      params.push(filters.agent, filters.agent, filters.agent);
     }
     if (filters.stale) {
       clauses.push("last_activity_at < datetime('now', '-30 minutes')");
@@ -442,7 +841,15 @@ export class TaskService {
 
   claim(
     key: string,
-    claimer: { agent: AgentKind; sessionId: string; by: string; model?: string; cwd?: string; pid?: number },
+    claimer: {
+      agent: AgentKind;
+      sessionId: string;
+      by: string;
+      model?: string;
+      cwd?: string;
+      pid?: number;
+      transcriptPath?: string;
+    },
     leaseSeconds: number,
   ): { ok: boolean; task?: TaskRecord; error?: string } {
     const before = this.getByKey(key);
@@ -461,6 +868,8 @@ export class TaskService {
       return { ok: false, error: "Task already claimed or not found" };
     }
     // Backfill legacy rows created with origin_agent='unknown'.
+    // Never steals origin_session_id: the pickup session joins via task_sessions
+    // instead of overwriting the creator, so its own tile can be folded in.
     if (before && before.originAgent === "unknown") {
       try {
         const sets: string[] = [];
@@ -468,12 +877,6 @@ export class TaskService {
         if (claimer.agent && claimer.agent !== "unknown") {
           sets.push("origin_agent = ?");
           params.push(claimer.agent);
-        }
-        // origin_session_id is UNIQUE — only fill when empty to avoid collisions
-        // with the claimer's own session tile.
-        if (!before.originSessionId && claimer.sessionId) {
-          sets.push("origin_session_id = ?");
-          params.push(claimer.sessionId);
         }
         if (!before.originModel && claimer.model) {
           sets.push("origin_model = ?");
@@ -493,7 +896,7 @@ export class TaskService {
           this.db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
         }
       } catch {
-        // Unique collision on origin_session_id — claim itself already succeeded.
+        // Best-effort only.
       }
       try {
         const fresh = this.getByKey(key);
@@ -504,20 +907,39 @@ export class TaskService {
       }
     }
     const claimed = this.getByKey(key)!;
+    // Multi-session: the pickup session joins the picked-up tile. Attach it with
+    // current metadata (attachSession tags multi-agent work) and fold its solo
+    // tile in so the board keeps one tile per unit of work.
+    try {
+      if (claimer.sessionId?.trim()) {
+        this.attachSession(claimed.id, {
+          sessionId: claimer.sessionId.trim(),
+          agent: claimer.agent,
+          cwd: claimer.cwd,
+          model: claimer.model,
+          pid: claimer.pid,
+          transcriptPath: claimer.transcriptPath,
+        });
+        this.mergeSoloTileInto(claimed.id, claimer.sessionId.trim());
+      }
+    } catch {
+      // Best-effort only; claim itself already succeeded.
+    }
     this.appendEvent(claimed.id, "claim", {
       agent: claimer.agent,
       sessionId: claimer.sessionId,
       by: claimer.by,
     });
-    return { ok: true, task: claimed };
+    return { ok: true, task: this.getByKey(key)! };
   }
 
   /**
    * Join a task without stealing an active claim.
    * - Unclaimed/expired → claim it for the joiner.
-   * - Claimed by someone else → append a "join" event + touch, return current task.
+   * - Claimed by someone else → append a "join" event + attach session, return current task.
    * - Same session → touch, return current task.
-   * Backfills unknown origin metadata where safe (never overwrites known values).
+   * Every branch attaches the joiner's session so future hooks reuse this tile
+   * instead of spawning a twin, and tags the participating agent.
    */
   join(
     key: string,
@@ -540,23 +962,37 @@ export class TaskService {
     if (expired) {
       const claimed = this.claim(
         key,
-        { agent: joiner.agent, sessionId: joiner.sessionId, by: joiner.by, model: joiner.model, cwd: joiner.cwd, pid: joiner.pid },
+        {
+          agent: joiner.agent,
+          sessionId: joiner.sessionId,
+          by: joiner.by,
+          model: joiner.model,
+          cwd: joiner.cwd,
+          pid: joiner.pid,
+          transcriptPath: joiner.transcriptPath,
+        },
         leaseSeconds,
       );
       if (!claimed.ok || !claimed.task) return claimed;
       this.backfillOriginFromJoiner(claimed.task.id, joiner);
-      if (joiner.transcriptPath?.trim()) this.mergeTranscriptArtifact(claimed.task.id, joiner.transcriptPath.trim());
       return { ok: true, task: this.getByKey(key)!, joined: true };
     }
 
     if (existing.claimedSessionId === joiner.sessionId) {
       this.touch(existing.id);
       this.backfillOriginFromJoiner(existing.id, joiner);
-      if (joiner.transcriptPath?.trim()) this.mergeTranscriptArtifact(existing.id, joiner.transcriptPath.trim());
+      this.attachSession(existing.id, {
+        sessionId: joiner.sessionId,
+        agent: joiner.agent,
+        cwd: joiner.cwd,
+        model: joiner.model,
+        pid: joiner.pid,
+        transcriptPath: joiner.transcriptPath,
+      });
       return { ok: true, task: this.getByKey(key)!, joined: true };
     }
 
-    // Claimed by someone else — observe, don't steal.
+    // Claimed by someone else — observe, don't steal, but attach so hooks reuse this tile.
     this.appendEvent(existing.id, "join", {
       agent: joiner.agent,
       sessionId: joiner.sessionId,
@@ -566,7 +1002,21 @@ export class TaskService {
       pid: joiner.pid,
     });
     this.backfillOriginFromJoiner(existing.id, joiner);
-    if (joiner.transcriptPath?.trim()) this.mergeTranscriptArtifact(existing.id, joiner.transcriptPath.trim());
+    try {
+      if (joiner.sessionId?.trim()) {
+        this.attachSession(existing.id, {
+          sessionId: joiner.sessionId.trim(),
+          agent: joiner.agent,
+          cwd: joiner.cwd,
+          model: joiner.model,
+          pid: joiner.pid,
+          transcriptPath: joiner.transcriptPath,
+        });
+        this.mergeSoloTileInto(existing.id, joiner.sessionId.trim());
+      }
+    } catch {
+      // Best-effort only.
+    }
     return { ok: true, task: this.getByKey(key)!, joined: true };
   }
 
@@ -653,6 +1103,7 @@ export class TaskService {
             model: payload.model as string | undefined,
             cwd: payload.cwd as string | undefined,
             pid: payload.pid as number | undefined,
+            transcriptPath: payload.transcriptPath as string | undefined,
           },
           leaseSeconds,
         );
@@ -886,6 +1337,14 @@ export function consolidateTasksBySessionId(db: Database.Database): number {
     for (const loser of rows.slice(1)) {
       db.prepare("UPDATE task_events SET task_id = ? WHERE task_id = ?").run(keeper.id, loser.id);
       db.prepare("UPDATE subtasks SET task_id = ? WHERE task_id = ?").run(keeper.id, loser.id);
+      try {
+        db.prepare(
+          `UPDATE task_sessions SET task_id = ?, updated_at = datetime('now') WHERE task_id = ? AND session_id != ?`,
+        ).run(keeper.id, loser.id, sid);
+        db.prepare(`DELETE FROM task_sessions WHERE task_id = ? AND session_id = ?`).run(loser.id, sid);
+      } catch {
+        // task_sessions may not exist on very old DBs — ignore.
+      }
 
       if (
         loser.handoff_note?.trim() &&

@@ -22,7 +22,14 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     agent: z.string().optional(),
   }, async (args) => {
     const tasks = ctx.tasks.list({ status: args.status, repo: args.repo, agent: args.agent as never });
-    return { content: [{ type: "text", text: JSON.stringify(tasks, null, 2) }] };
+    const withSessions = tasks.map((t) => {
+      try {
+        return { ...t, sessions: ctx.tasks.listSessions(t.id) };
+      } catch {
+        return t;
+      }
+    });
+    return { content: [{ type: "text", text: JSON.stringify(withSessions, null, 2) }] };
   });
 
   server.tool("swarm_task_get", "Get a task by key", { key: z.string() }, async ({ key }) => {
@@ -31,7 +38,11 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     return {
       content: [{
         type: "text",
-        text: JSON.stringify({ ...task, events: ctx.tasks.getEvents(task.id), subtasks: ctx.tasks.getSubtasks(task.id) }, null, 2),
+        text: JSON.stringify(
+          { ...task, sessions: ctx.tasks.listSessions(task.id), events: ctx.tasks.getEvents(task.id), subtasks: ctx.tasks.getSubtasks(task.id) },
+          null,
+          2,
+        ),
       }],
     };
   });
@@ -71,6 +82,7 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     model: z.string().optional(),
     cwd: z.string().optional(),
     pid: z.number().optional(),
+    transcriptPath: z.string().optional(),
     tags: z.array(z.string()).optional(),
     addTags: z.array(z.string()).optional(),
     removeTags: z.array(z.string()).optional(),
@@ -162,6 +174,10 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     agent: z.string().optional(),
     sessionId: z.string().optional(),
     by: z.string().optional(),
+    cwd: z.string().optional(),
+    model: z.string().optional(),
+    pid: z.number().optional(),
+    transcriptPath: z.string().optional(),
   }, async (args) => {
     if (!args.key) {
       const handoffs = ctx.tasks.listHandoffs();
@@ -169,7 +185,15 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     }
     const result = ctx.tasks.claim(
       args.key,
-      { agent: (args.agent as never) ?? "unknown", sessionId: args.sessionId ?? "mcp", by: args.by ?? args.agent ?? "agent" },
+      {
+        agent: (args.agent as never) ?? "unknown",
+        sessionId: args.sessionId ?? "mcp",
+        by: args.by ?? args.agent ?? "agent",
+        cwd: args.cwd,
+        model: args.model,
+        pid: args.pid,
+        transcriptPath: args.transcriptPath,
+      },
       ctx.config.claimLeaseSeconds,
     );
     if (!result.ok || !result.task) {

@@ -91,7 +91,7 @@ function injectAgentContext(params: { name: string; arguments?: Record<string, u
     if (missing(args.agent)) args.agent = agentKind;
     if (missing(args.sessionId)) args.sessionId = sessionId;
   }
-  if (params.name === "swarm_task_stage" || params.name === "swarm_task_join") {
+  if (params.name === "swarm_task_stage" || params.name === "swarm_task_join" || params.name === "swarm_pickup") {
     if (missing(args.cwd)) {
       try {
         args.cwd = process.cwd();
