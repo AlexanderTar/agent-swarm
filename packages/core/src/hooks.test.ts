@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   buildSessionContext,
   formatHookOutput,
+  isSubagentHook,
   mapAntigravityTool,
   normalizeHookInput,
   resolveBoardSessionId,
   resolveHookBoardSessionId,
+  resolveHookRootSessionId,
   resolveSubagentBoardId,
   sessionTaskTitle,
   shortReference,
+  subagentIdFromTranscriptPath,
 } from "./hooks.js";
 import { resolveSessionTaskTitle } from "./sessionTitles.js";
 
@@ -74,7 +77,7 @@ describe("normalizeHookInput", () => {
     expect(input.sessionId).toBe("ses_abc123");
   });
 
-  it("uses agent_id as board session for subagents", () => {
+  it("identifies Claude subagents and resolves root session", () => {
     const input = normalizeHookInput({
       session_id: "parent-session",
       agent_id: "agent-abc",
@@ -82,12 +85,15 @@ describe("normalizeHookInput", () => {
       cwd: "/repo/myproject",
       hook_event_name: "SubagentStart",
     }, "claude");
-    expect(resolveBoardSessionId(input)).toBe("agent-abc");
+    expect(isSubagentHook(input)).toBe(true);
+    expect(resolveBoardSessionId(input)).toBe("parent-session");
+    expect(resolveHookRootSessionId(input)).toBe("parent-session");
+    expect(resolveSubagentBoardId(input)).toBe("agent-abc");
     expect(sessionTaskTitle(input)).toBe("Explore · myproject");
     expect(buildSessionContext(input, "parent-session")).toContain("Parent session");
   });
 
-  it("uses subagent_id for Cursor subagents", () => {
+  it("identifies Cursor subagents and resolves root session", () => {
     const input = normalizeHookInput({
       parent_conversation_id: "conv-parent",
       subagent_id: "sub-123",
@@ -96,9 +102,68 @@ describe("normalizeHookInput", () => {
       workspace_roots: ["/repo/app"],
       hook_event_name: "subagentStart",
     }, "cursor");
-    expect(resolveBoardSessionId(input)).toBe("sub-123");
+    expect(isSubagentHook(input)).toBe(true);
+    expect(resolveBoardSessionId(input)).toBe("conv-parent");
+    expect(resolveHookRootSessionId(input)).toBe("conv-parent");
+    expect(resolveSubagentBoardId(input)).toBe("sub-123");
     expect(buildSessionContext(input, "conv-parent")).toContain("Search the codebase");
     expect(resolveSessionTaskTitle(input).title).toBe("Search the codebase");
+  });
+
+  it("identifies Antigravity subagents and avoids transcript_full corruption", () => {
+    // Normal root session with transcript_full.jsonl
+    const rootInput = normalizeHookInput({
+      conversationId: "ag-root-123",
+      workspacePaths: ["/workspace"],
+      hookEvent: "PreToolUse",
+      transcript_path: "/Users/dev/.gemini/antigravity-cli/brain/ag-root-123/.system_generated/logs/transcript_full.jsonl",
+    }, "antigravity");
+    expect(isSubagentHook(rootInput)).toBe(false);
+    expect(resolveHookRootSessionId(rootInput)).toBe("ag-root-123");
+    expect(subagentIdFromTranscriptPath(rootInput.transcriptPath)).toBeUndefined();
+
+    // Nested subagent session with parent conversation ID
+    const subInput = normalizeHookInput({
+      conversationId: "ag-child-456",
+      parentConversationId: "ag-root-123",
+      workspacePaths: ["/workspace"],
+      hookEvent: "PreInvocation",
+    }, "antigravity");
+    expect(isSubagentHook(subInput)).toBe(true);
+    expect(resolveHookRootSessionId(subInput)).toBe("ag-root-123");
+  });
+
+  it("identifies OpenCode and Codex subagents", () => {
+    const opencodeSub = normalizeHookInput({
+      sessionID: "child-session",
+      parentSessionId: "parent-session",
+      hook_event_name: "toolUse",
+    }, "opencode");
+    expect(isSubagentHook(opencodeSub)).toBe(true);
+    expect(resolveHookRootSessionId(opencodeSub)).toBe("parent-session");
+
+    const opencodeSub2 = normalizeHookInput({
+      session_id: "ses_child_456",
+      subagent_type: "general",
+      hook_event_name: "toolUse",
+    }, "opencode");
+    expect(isSubagentHook(opencodeSub2)).toBe(true);
+
+    const codexSub = normalizeHookInput({
+      session_id: "codex-child",
+      parent_conversation_id: "codex-parent",
+      hook_event_name: "PreToolUse",
+    }, "codex");
+    expect(isSubagentHook(codexSub)).toBe(true);
+    expect(resolveHookRootSessionId(codexSub)).toBe("codex-parent");
+
+    const codexSub2 = normalizeHookInput({
+      session_id: "codex-child-2",
+      parent_session_id: "codex-parent-2",
+      hook_event_name: "SessionStart",
+    }, "codex");
+    expect(isSubagentHook(codexSub2)).toBe(true);
+    expect(resolveHookRootSessionId(codexSub2)).toBe("codex-parent-2");
   });
 
   it("normalizes Cursor afterAgentResponse text", () => {
@@ -145,7 +210,9 @@ describe("normalizeHookInput", () => {
       summary: "Found 3 auth handlers",
       status: "completed",
     }, "cursor");
-    expect(resolveHookBoardSessionId(input, "subagentStop")).toBe("sub-99");
+    expect(isSubagentHook(input)).toBe(true);
+    expect(resolveHookBoardSessionId(input, "subagentStop")).toBe("parent-conv");
+    expect(resolveSubagentBoardId(input)).toBe("sub-99");
     expect(input.subagentSummary).toBe("Found 3 auth handlers");
   });
 });

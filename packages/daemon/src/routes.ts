@@ -4,11 +4,14 @@ import {
   buildSessionContext,
   enrichHookInput,
   inferStatusFromStop,
+  isSubagentHook,
   mapAntigravityTool,
   normalizeHookInput,
   resolveBoardSessionId,
   resolveHookBoardSessionId,
+  resolveHookRootSessionId,
   resolveSessionTaskTitle,
+  resolveSubagentBoardId,
   shortReference,
   summarizeTaskRecord,
   syncTaskSessionMetadata,
@@ -50,6 +53,7 @@ function ensureBoardTask(
   boardSessionId: string,
   agent: AgentKind,
 ): TaskRecord | null {
+  if (isSubagentHook(input)) return task;
   if (!boardSessionId) return task;
   const { title, titleFromSession } = sessionTitleFields(input);
   // Always upsert by session id so done/archived tiles are revived instead of duplicated.
@@ -78,15 +82,32 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
       enrichHookInput(input);
 
       const agent = agentKindFromPlatform(platform);
-      const boardSessionId = input.sessionId ? resolveHookBoardSessionId(input, event) : "";
-      let task = boardSessionId ? ctx.tasks.getBySession(boardSessionId) : null;
+      const isSubagent = isSubagentHook(input, event);
+      const rootSessionId = resolveHookRootSessionId(input);
+      let task = rootSessionId ? ctx.tasks.getBySession(rootSessionId) : null;
 
       switch (event) {
         case "SessionStart":
         case "sessionStart": {
+          if (isSubagent) {
+            if (task) {
+              const subagentId = resolveSubagentBoardId(input) || input.agentId;
+              if (subagentId) {
+                ctx.tasks.attachSession(task.id, {
+                  sessionId: subagentId,
+                  agent,
+                  cwd: input.cwd,
+                  model: input.model,
+                  pid: input.pid,
+                  transcriptPath: input.transcriptPath,
+                });
+              }
+            }
+            return reply.send({ ok: true, taskKey: task?.key });
+          }
           const { title, titleFromSession } = sessionTitleFields(input);
           task = ctx.tasks.upsertSessionTask({
-            sessionId: boardSessionId,
+            sessionId: rootSessionId,
             agent,
             cwd: input.cwd,
             model: input.model,
@@ -102,7 +123,9 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
         }
         case "UserPromptSubmit":
         case "beforeSubmitPrompt": {
-          task = ensureBoardTask(ctx, task, input, boardSessionId, agent);
+          if (!isSubagent) {
+            task = ensureBoardTask(ctx, task, input, rootSessionId, agent);
+          }
           if (task) {
             markTaskActive(ctx, task);
             if (input.prompt) {
@@ -118,7 +141,9 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
         case "PostToolUse":
         case "postToolUse":
         case "afterFileEdit": {
-          task = ensureBoardTask(ctx, task, input, boardSessionId, agent);
+          if (!isSubagent) {
+            task = ensureBoardTask(ctx, task, input, rootSessionId, agent);
+          }
           if (task) {
             markTaskActive(ctx, task);
             const tool = platform === "antigravity" ? mapAntigravityTool(input.toolName) : input.toolName;
@@ -126,13 +151,18 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
               const fp = (input.toolInput?.file_path ?? input.toolInput?.TargetFile ?? input.toolInput?.path) as string | undefined;
               if (fp) ctx.tasks.addArtifact(task.id, "files", fp);
             }
-            ctx.tasks.appendEvent(task.id, event, { tool, input: input.toolInput });
+            const payload: Record<string, unknown> = { tool, input: input.toolInput };
+            const subagentId = resolveSubagentBoardId(input);
+            if (subagentId) payload.subagent_id = subagentId;
+            ctx.tasks.appendEvent(task.id, event, payload);
             ctx.broadcast({ type: "task_updated", task: ctx.tasks.getById(task.id) });
           }
           return reply.send({ ok: true });
         }
         case "MessageDisplay": {
-          task = ensureBoardTask(ctx, task, input, boardSessionId, agent);
+          if (!isSubagent) {
+            task = ensureBoardTask(ctx, task, input, rootSessionId, agent);
+          }
           if (!task) return reply.send({ ok: true });
           markTaskActive(ctx, task);
           if (input.messageDelta?.trim()) {
@@ -172,7 +202,9 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
         }
         case "afterAgentResponse":
         case "afterAgentThought": {
-          task = ensureBoardTask(ctx, task, input, boardSessionId, agent);
+          if (!isSubagent) {
+            task = ensureBoardTask(ctx, task, input, rootSessionId, agent);
+          }
           if (!task) return reply.send({ ok: true });
           markTaskActive(ctx, task);
           const text = input.agentText?.trim();
@@ -222,67 +254,52 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
         }
         case "SubagentStart":
         case "subagentStart": {
-          const subagentBoardId = boardSessionId;
-          if (!subagentBoardId) {
-            if (task && input.agentType) ctx.tasks.addSubtask(task.id, input.agentType);
-            return reply.send({ ok: true });
-          }
-          const parentSessionId = input.parentSessionId ?? (input.agentId ? input.sessionId : undefined);
-          task = ctx.tasks.upsertSessionTask({
-            sessionId: subagentBoardId,
-            agent,
-            cwd: input.cwd,
-            model: input.model,
-            pid: input.pid,
-            transcriptPath: input.transcriptPath,
-            ...sessionTitleFields(input),
-            initialContext: buildSessionContext(input, parentSessionId),
-          });
-          markTaskActive(ctx, task);
-          ctx.tasks.appendEvent(task.id, "subagent_start", {
-            agent_type: input.agentType,
-            task: input.task,
-          });
-          if (parentSessionId) {
-            const parent = ctx.tasks.getBySession(parentSessionId);
-            if (parent) {
-              ctx.tasks.addSubtask(parent.id, input.task ?? input.agentType ?? "Subagent", input.task);
-              ctx.broadcast({ type: "task_updated", task: ctx.tasks.getById(parent.id) });
+          const subagentId = resolveSubagentBoardId(input) || input.agentId;
+          if (task) {
+            markTaskActive(ctx, task);
+            const subject = input.task ?? input.agentType ?? "Subagent";
+            ctx.tasks.addSubtask(task.id, subject, input.task);
+            ctx.tasks.appendEvent(task.id, "subagent_start", {
+              agent_type: input.agentType,
+              agent_id: subagentId,
+              task: input.task,
+            });
+            if (subagentId) {
+              ctx.tasks.attachSession(task.id, {
+                sessionId: subagentId,
+                agent,
+                cwd: input.cwd,
+                model: input.model,
+                pid: input.pid,
+                transcriptPath: input.transcriptPath,
+              });
             }
+            ctx.broadcast({ type: "task_updated", task: ctx.tasks.getById(task.id) });
+            return reply.send({ ok: true, taskKey: task.key });
           }
-          ctx.broadcast({ type: "task_updated", task });
-          scheduleTitleRefresh(ctx, task, { force: true });
-          return reply.send({ ok: true, taskKey: task.key });
+          return reply.send({ ok: true });
         }
         case "SubagentStop":
         case "subagentStop": {
           if (task) {
-            task = syncSessionFromHook(ctx, task, input);
-            const status = inferStatusFromStop(input, event) ?? "review";
-            ctx.tasks.update(task.id, { status });
+            const subject = input.task ?? input.agentType ?? "Subagent";
+            ctx.tasks.completeSubtask(task.id, subject);
             const summary = input.subagentSummary ?? input.lastAssistantMessage;
             if (summary?.trim()) {
               ctx.tasks.appendEvent(task.id, "subagent_stop", {
                 status: input.subagentStatus,
                 summary: summary.slice(0, 2000),
+                agent_id: resolveSubagentBoardId(input) || input.agentId,
               });
             }
-            scheduleTurnSummary(ctx, task, input, event);
-            scheduleTitleRefresh(ctx, task);
             ctx.broadcast({ type: "task_updated", task: ctx.tasks.getById(task.id) });
-          }
-          const parentSessionId = input.parentSessionId ?? input.sessionId;
-          if (!task && input.agentType && parentSessionId) {
-            const parent = ctx.tasks.getBySession(parentSessionId);
-            if (parent) {
-              ctx.tasks.completeSubtask(parent.id, input.agentType);
-              ctx.broadcast({ type: "task_updated", task: ctx.tasks.getById(parent.id) });
-            }
           }
           return reply.send({ ok: true });
         }
         case "TaskCreated": {
-          task = ensureBoardTask(ctx, task, input, boardSessionId, agent) ?? task;
+          if (!isSubagent) {
+            task = ensureBoardTask(ctx, task, input, rootSessionId, agent) ?? task;
+          }
           if (task) {
             const subject = input.taskSubject ?? (input.raw.task_subject as string) ?? "Subtask";
             const description = input.taskDescription ?? (input.raw.task_description as string | undefined);
@@ -293,7 +310,9 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
           return reply.send({ ok: true });
         }
         case "TaskCompleted": {
-          task = ensureBoardTask(ctx, task, input, boardSessionId, agent) ?? task;
+          if (!isSubagent) {
+            task = ensureBoardTask(ctx, task, input, rootSessionId, agent) ?? task;
+          }
           if (task) {
             const subject = input.taskSubject ?? (input.raw.task_subject as string) ?? "";
             if (subject) ctx.tasks.completeSubtask(task.id, subject);
@@ -304,7 +323,24 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
           return reply.send({ ok: true });
         }
         case "PreInvocation": {
-          const sid = input.agentId || input.sessionId || readString(input.raw.conversationId as unknown) || "";
+          if (isSubagent) {
+            if (task) {
+              const subagentId = resolveSubagentBoardId(input) || input.sessionId;
+              if (subagentId && subagentId !== task.originSessionId) {
+                ctx.tasks.attachSession(task.id, {
+                  sessionId: subagentId,
+                  agent,
+                  cwd: input.cwd,
+                  model: input.model,
+                  pid: input.pid,
+                  transcriptPath: input.transcriptPath,
+                });
+              }
+              ctx.tasks.touch(task.id);
+            }
+            return reply.send({ decision: "allow" });
+          }
+          const sid = input.sessionId || readString(input.raw.conversationId as unknown) || "";
           if (sid) {
             task = ctx.tasks.getBySession(sid) ?? task;
             if (!task) {
@@ -335,7 +371,9 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
           return reply.send({ ok: true });
         }
         case "PermissionRequest": {
-          task = ensureBoardTask(ctx, task, input, boardSessionId, agent);
+          if (!isSubagent) {
+            task = ensureBoardTask(ctx, task, input, rootSessionId, agent);
+          }
           if (task) {
             ctx.tasks.appendEvent(task.id, "permission_request", {
               tool: input.toolName,
@@ -450,6 +488,12 @@ export async function registerApiRoutes(app: FastifyInstance, ctx: SwarmContext)
     });
     ctx.broadcast({ type: "task_updated", task });
     return reply.code(201).send(task);
+  });
+
+  app.post("/api/tasks/cleanup", async () => {
+    const result = ctx.tasks.cleanupSubagentTasks();
+    ctx.broadcast({ type: "board_refreshed" });
+    return { ok: true, ...result };
   });
 
   app.get("/api/tasks/:key", async (req, reply) => {

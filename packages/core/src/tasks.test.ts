@@ -186,3 +186,47 @@ describe("hook pid + transcript", () => {
     expect(artifacts.transcript).toContain("/tmp/t.jsonl");
   });
 });
+
+describe("cleanupSubagentTasks", () => {
+  it("archives subagent tasks and moves events to parent", () => {
+    const svc = fresh();
+    const parent = svc.upsertSessionTask({
+      sessionId: "parent-session-123",
+      agent: "claude",
+      title: "Main Feature",
+    } as never);
+
+    const sub1 = svc.create({
+      title: "Subagent · myproject",
+      originAgent: "claude",
+      originSessionId: "a1234567890abcdef",
+      initialContext: "- **Parent session:** `parent-session-123`",
+    } as never);
+    svc.addSubtask(sub1.id, "Explore repo");
+    svc.appendEvent(sub1.id, "subagent_start", { agent_type: "Explore" });
+
+    const sub2 = svc.create({
+      title: "Fix bug (@general subagent)",
+      originAgent: "opencode",
+      originSessionId: "ses_child_456",
+    } as never);
+
+    const normal = svc.create({
+      title: "Genuine User Task",
+      originAgent: "claude",
+      originSessionId: "genuine-session",
+    } as never);
+
+    const result = svc.cleanupSubagentTasks();
+    expect(result.archivedCount).toBe(2);
+
+    expect(svc.getById(sub1.id)?.status).toBe("archived");
+    expect(svc.getById(sub2.id)?.status).toBe("archived");
+    expect(svc.getById(normal.id)?.status).toBe("in_progress");
+
+    // Parent task received subtask from sub1
+    const parentSubtasks = svc.getSubtasks(parent.id);
+    expect(parentSubtasks.map((s) => s.subject)).toContain("Explore repo");
+  });
+});
+
