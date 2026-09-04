@@ -4,6 +4,7 @@ import {
   buildSessionContext,
   enrichHookInput,
   inferStatusFromStop,
+  isProbePrompt,
   isSubagentHook,
   mapAntigravityTool,
   normalizeHookInput,
@@ -56,6 +57,7 @@ function ensureBoardTask(
   if (isSubagentHook(input)) return task;
   if (!boardSessionId) return task;
   const { title, titleFromSession } = sessionTitleFields(input);
+  if (isProbePrompt(title) || isProbePrompt(input.prompt)) return task;
   // Always upsert by session id so done/archived tiles are revived instead of duplicated.
   const upserted = ctx.tasks.upsertSessionTask({
     sessionId: boardSessionId,
@@ -106,6 +108,9 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
             return reply.send({ ok: true, taskKey: task?.key });
           }
           const { title, titleFromSession } = sessionTitleFields(input);
+          if (isProbePrompt(title) || isProbePrompt(input.prompt)) {
+            return reply.send({ ok: true, taskKey: task?.key });
+          }
           task = ctx.tasks.upsertSessionTask({
             sessionId: rootSessionId,
             agent,

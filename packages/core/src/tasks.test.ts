@@ -211,6 +211,12 @@ describe("cleanupSubagentTasks", () => {
       originSessionId: "ses_child_456",
     } as never);
 
+    const probe = svc.create({
+      title: "Reply with exactly: gateway-ok",
+      originAgent: "claude",
+      originSessionId: "ses_probe_789",
+    } as never);
+
     const normal = svc.create({
       title: "Genuine User Task",
       originAgent: "claude",
@@ -218,10 +224,11 @@ describe("cleanupSubagentTasks", () => {
     } as never);
 
     const result = svc.cleanupSubagentTasks();
-    expect(result.archivedCount).toBe(2);
+    expect(result.archivedCount).toBe(3);
 
     expect(svc.getById(sub1.id)?.status).toBe("archived");
     expect(svc.getById(sub2.id)?.status).toBe("archived");
+    expect(svc.getById(probe.id)?.status).toBe("archived");
     expect(svc.getById(normal.id)?.status).toBe("in_progress");
 
     // Parent task received subtask from sub1

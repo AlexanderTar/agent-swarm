@@ -220,6 +220,13 @@ export function isSubagentHook(input: NormalizedHookInput, hookEvent?: string): 
   return false;
 }
 
+/** Check if a title or prompt originates from a synthetic probe / test prompt rather than a genuine user task. */
+export function isProbePrompt(promptOrTitle: string | undefined): boolean {
+  if (!promptOrTitle) return false;
+  const t = promptOrTitle.trim().toLowerCase();
+  return t.startsWith("reply with ") || t.startsWith("reply with exactly");
+}
+
 /** Resolve the root session ID that owns the task for this hook. */
 export function resolveHookRootSessionId(
   input: Pick<NormalizedHookInput, "sessionId" | "parentSessionId" | "agentId">,

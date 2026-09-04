@@ -1415,6 +1415,8 @@ export function cleanupSubagentTasks(
     const isSubagent =
       row.title.startsWith("Subagent ·") ||
       row.title.startsWith("You are implementing ") ||
+      row.title.toLowerCase().startsWith("reply with ") ||
+      row.title.toLowerCase().includes("reply with exactly") ||
       row.title.includes("(@general subagent)") ||
       row.title.includes("(@code-reviewer subagent)") ||
       row.title.includes("(@security-reviewer subagent)") ||
