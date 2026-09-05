@@ -221,6 +221,7 @@ describe("cleanupSubagentTasks", () => {
       title: "Genuine User Task",
       originAgent: "claude",
       originSessionId: "genuine-session",
+      status: "in_progress",
     } as never);
 
     const result = svc.cleanupSubagentTasks();
@@ -234,6 +235,75 @@ describe("cleanupSubagentTasks", () => {
     // Parent task received subtask from sub1
     const parentSubtasks = svc.getSubtasks(parent.id);
     expect(parentSubtasks.map((s) => s.subject)).toContain("Explore repo");
+  });
+});
+
+describe("create() default status", () => {
+  it("defaults a freshly filed card to backlog, not in_progress", () => {
+    const svc = fresh();
+    const t = svc.create({ title: "Filed for later", originAgent: "claude" } as never);
+    expect(t.status).toBe("backlog");
+  });
+
+  it("upsertSessionTask for a brand-new session still starts in_progress", () => {
+    const svc = fresh();
+    const t = svc.upsertSessionTask({
+      sessionId: "brand-new-session",
+      agent: "claude",
+      title: "Live session",
+    } as never);
+    expect(t.status).toBe("in_progress");
+  });
+});
+
+describe("writeHandoff", () => {
+  const note = {
+    goal: "g",
+    done: "d",
+    nextSteps: [],
+    decisions: [],
+    gotchas: [],
+    verification: [],
+    files: [],
+    kbRefs: [],
+    openQuestions: [],
+  } as never;
+
+  it("without opts moves the card to ready and clears the claim (existing behavior)", () => {
+    const svc = fresh();
+    const t = svc.create({ title: "t", originAgent: "claude" } as never);
+    svc.claim(t.key, { agent: "claude", sessionId: "s1", by: "claude" } as never, 300);
+    const result = svc.writeHandoff(t.key, note, "# md");
+    expect(result.status).toBe("ready");
+    expect(result.claimedBy).toBeNull();
+    expect(result.claimedAgent).toBeNull();
+    expect(result.claimedSessionId).toBeNull();
+    expect(result.claimExpiresAt).toBeNull();
+    expect(result.heartbeatAt).toBeNull();
+    expect(result.handoffNote).toBe("# md");
+  });
+
+  it("{ keepStatus: undefined } (the shape the MCP tool always passes) behaves like no opts", () => {
+    const svc = fresh();
+    const t = svc.create({ title: "t", originAgent: "claude" } as never);
+    svc.claim(t.key, { agent: "claude", sessionId: "s1", by: "claude" } as never, 300);
+    const result = svc.writeHandoff(t.key, note, "# md", { keepStatus: undefined });
+    expect(result.status).toBe("ready");
+    expect(result.claimedBy).toBeNull();
+  });
+
+  it("with keepStatus:true writes the note without moving the card or clearing the claim", () => {
+    const svc = fresh();
+    const t = svc.create({ title: "t", originAgent: "claude" } as never);
+    svc.claim(t.key, { agent: "claude", sessionId: "s1", by: "claude" } as never, 300);
+    const result = svc.writeHandoff(t.key, note, "# md", { keepStatus: true });
+    expect(result.status).toBe("in_progress");
+    expect(result.claimedBy).toBe("claude");
+    expect(result.claimedAgent).toBe("claude");
+    expect(result.claimedSessionId).toBe("s1");
+    expect(result.claimExpiresAt).not.toBeNull();
+    expect(result.heartbeatAt).not.toBeNull();
+    expect(result.handoffNote).toBe("# md");
   });
 });
 

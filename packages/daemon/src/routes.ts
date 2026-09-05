@@ -70,6 +70,7 @@ function ensureBoardTask(
     titleFromSession,
     initialContext: buildSessionContext(input),
   });
+  scheduleTitleRefresh(ctx, upserted);
   return upserted;
 }
 
@@ -107,24 +108,14 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
             }
             return reply.send({ ok: true, taskKey: task?.key });
           }
-          const { title, titleFromSession } = sessionTitleFields(input);
-          if (isProbePrompt(title) || isProbePrompt(input.prompt)) {
-            return reply.send({ ok: true, taskKey: task?.key });
+          // Don't create a board card on process start — ensureBoardTask (below,
+          // from UserPromptSubmit / tool-use) creates it lazily on first real
+          // activity. Only sync a resumed session's already-existing card here.
+          if (task) {
+            task = syncSessionFromHook(ctx, task, input);
+            ctx.broadcast({ type: "task_updated", task });
           }
-          task = ctx.tasks.upsertSessionTask({
-            sessionId: rootSessionId,
-            agent,
-            cwd: input.cwd,
-            model: input.model,
-            pid: input.pid,
-            transcriptPath: input.transcriptPath,
-            title,
-            titleFromSession,
-            initialContext: buildSessionContext(input),
-          });
-          ctx.broadcast({ type: "task_updated", task });
-          scheduleTitleRefresh(ctx, task);
-          return reply.send({ ok: true, taskKey: task.key });
+          return reply.send({ ok: true, taskKey: task?.key });
         }
         case "UserPromptSubmit":
         case "beforeSubmitPrompt": {

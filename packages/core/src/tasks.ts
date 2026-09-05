@@ -156,7 +156,7 @@ export class TaskService {
       .run(
         key,
         input.title ?? "Untitled",
-        input.status ?? "in_progress",
+        input.status ?? "backlog",
         input.originAgent,
         input.originSessionId ?? null,
         input.originModel ?? null,
@@ -443,6 +443,7 @@ export class TaskService {
     if (!sessionId) {
       const created = this.create({
         title: input.title,
+        status: "in_progress",
         originAgent: input.agent,
         originModel: input.model,
         originCwd: input.cwd,
@@ -524,6 +525,7 @@ export class TaskService {
 
     const created = this.create({
       title: input.title,
+      status: "in_progress",
       originAgent: input.agent,
       originSessionId: sessionId,
       originModel: input.model,
@@ -1126,17 +1128,23 @@ export class TaskService {
     }
   }
 
-  writeHandoff(key: string, note: HandoffNote, markdown: string): TaskRecord {
+  writeHandoff(key: string, note: HandoffNote, markdown: string, opts?: { keepStatus?: boolean }): TaskRecord {
     const task = this.getByKey(key);
     if (!task) throw new Error(`Task not found: ${key}`);
-    this.db
-      .prepare(
-        `UPDATE tasks SET handoff_note = ?, status = 'ready',
-          claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
-          claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
-         WHERE key = ?`,
-      )
-      .run(markdown, key);
+    if (opts?.keepStatus) {
+      this.db
+        .prepare(`UPDATE tasks SET handoff_note = ?, updated_at = datetime('now') WHERE key = ?`)
+        .run(markdown, key);
+    } else {
+      this.db
+        .prepare(
+          `UPDATE tasks SET handoff_note = ?, status = 'ready',
+            claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
+            claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
+           WHERE key = ?`,
+        )
+        .run(markdown, key);
+    }
     this.appendEvent(task.id, "handoff", note as unknown as Record<string, unknown>);
     return this.getByKey(key)!;
   }
