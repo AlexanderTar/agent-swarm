@@ -56,6 +56,9 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     cwd: z.string().optional(),
     pid: z.number().optional(),
     tags: z.array(z.string()).optional(),
+    parentKey: z.string().optional(),
+    required: z.boolean().optional(),
+    coordinatorSessionId: z.string().optional(),
   }, async (args) => {
     const task = ctx.tasks.create({
       title: args.title,
@@ -67,14 +70,17 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
       originPid: args.pid,
       repoPath: args.cwd,
       tags: args.tags,
+      parentKey: args.parentKey,
+      required: args.required,
+      coordinatorSessionId: args.coordinatorSessionId ?? args.sessionId,
     });
     ctx.broadcast({ type: "task_updated", task });
     return { content: [{ type: "text", text: JSON.stringify(task, null, 2) }] };
   });
 
-  server.tool("swarm_task_stage", "Move, claim, release, block, complete, fail, heartbeat, or archive a task", {
+  server.tool("swarm_task_stage", "Claim, release, renew, submit, approve, request changes, or archive an explicit task", {
     key: z.string(),
-    action: z.enum(["move", "claim", "release", "block", "complete", "fail", "heartbeat", "archive"]),
+    action: z.enum(["claim", "release", "heartbeat", "submit", "approve", "request_changes", "archive"]),
     status: z.enum(TASK_STATUSES as unknown as [TaskStatus, ...TaskStatus[]]).optional(),
     agent: z.string().optional(),
     sessionId: z.string().optional(),
@@ -83,6 +89,7 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     cwd: z.string().optional(),
     pid: z.number().optional(),
     transcriptPath: z.string().optional(),
+    claimToken: z.string().optional(),
     tags: z.array(z.string()).optional(),
     addTags: z.array(z.string()).optional(),
     removeTags: z.array(z.string()).optional(),
@@ -97,7 +104,7 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
     return { content: [{ type: "text", text: JSON.stringify(task, null, 2) }] };
   });
 
-  server.tool("swarm_task_join", "Join a task without stealing an active claim. Claims it if unclaimed, otherwise appends a join event.", {
+  server.tool("swarm_task_join", "Join a task as a participant. Joining never claims work or changes status.", {
     key: z.string(),
     agent: z.string().optional(),
     sessionId: z.string().optional(),
@@ -149,6 +156,8 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
 
   server.tool("swarm_handoff", "Write a structured handoff note and transition to handoff", {
     key: z.string(),
+    sessionId: z.string(),
+    claimToken: z.string(),
     note: z.object({
       goal: z.string(),
       done: z.string(),
@@ -160,11 +169,9 @@ export function createMcpServer(ctx: SwarmContext): McpServer {
       kbRefs: z.array(z.string()),
       openQuestions: z.array(z.string()),
     }),
-  }, async ({ key, note }) => {
+  }, async ({ key, note, sessionId, claimToken }) => {
     const md = renderHandoffMarkdown(note as HandoffNote, key);
-    const path = ctx.kb.writeDoc("handoffs", `${key}-handoff.md`, { task: key }, md);
-    await ctx.kb.indexFile(path);
-    const task = ctx.tasks.writeHandoff(key, note as HandoffNote, md);
+    const task = ctx.tasks.writeHandoff(key, note as HandoffNote, md, sessionId, claimToken);
     ctx.broadcast({ type: "task_updated", task });
     return { content: [{ type: "text", text: `Handoff written for ${key}. Status: ready.\n\n${md.slice(0, 500)}...` }] };
   });

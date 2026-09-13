@@ -77,6 +77,10 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
   app.post<{ Params: { platform: string; event: string }; Body: Record<string, unknown> }>(
     "/hooks/:platform/:event",
     async (req, reply) => {
+      // Board tasks are deliberate plan records. Hooks must never infer a task
+      // from a session, prompt, tool, nested agent, or CLI child process.
+      return reply.send({ ok: true, automated: false });
+      /*
       const platform = req.params.platform as "claude" | "cursor" | "codex" | "antigravity" | "opencode";
       const event = req.params.event;
       const input = normalizeHookInput({ ...req.body, hook_event_name: event }, platform);
@@ -398,10 +402,13 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
         default:
           return reply.send({ ok: true });
       }
+      */
     },
   );
 
   app.post("/hooks/session/register", async (req, reply) => {
+    return reply.send({ ok: true, automated: false });
+    /*
     const body = req.body as { sessionId: string; agent: AgentKind; cwd?: string; pid?: number; model?: string; transcriptPath?: string; title?: string };
     const agent = body.agent ?? "unknown";
     const cwd = body.cwd ?? process.cwd();
@@ -418,9 +425,12 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
     });
     ctx.broadcast({ type: "task_updated", task });
     return reply.send({ ok: true, taskKey: task.key, reference: shortReference(`Session registered as ${task.key}`, `http://${ctx.config.host}:${ctx.config.port}/`) });
+    */
   });
 
   app.post("/hooks/session/end", async (req, reply) => {
+    return reply.send({ ok: true, automated: false });
+    /*
     const body = req.body as { sessionId: string };
     const task = ctx.tasks.getBySession(body.sessionId);
     if (task) {
@@ -433,6 +443,7 @@ export async function registerHookRoutes(app: FastifyInstance, ctx: SwarmContext
       ctx.broadcast({ type: "task_updated", task: ctx.tasks.getById(task.id) });
     }
     return reply.send({ ok: true });
+    */
   });
 }
 

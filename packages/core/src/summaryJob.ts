@@ -1,5 +1,4 @@
 import { enrichHookInput, syncTaskSessionMetadata } from "./hookEnrichment.js";
-import { listAntigravityBrainSessions } from "./antigravitySessions.js";
 import type { OllamaClient } from "./ollama.js";
 import { hookInputFromTask } from "./hookInputFromTask.js";
 import type { MemoryJobs } from "./memory.js";
@@ -18,20 +17,10 @@ export { hookInputFromTask } from "./hookInputFromTask.js";
 export { enrichHookInput, syncTaskSessionMetadata } from "./hookEnrichment.js";
 
 export function importAntigravitySessions(tasks: TaskService): TaskRecord[] {
-  const imported: TaskRecord[] = [];
-  for (const session of listAntigravityBrainSessions()) {
-    if (tasks.getBySession(session.conversationId)) continue;
-    imported.push(
-      tasks.upsertSessionTask({
-        sessionId: session.conversationId,
-        agent: "antigravity",
-        cwd: session.cwd,
-        title: session.title,
-        titleFromSession: Boolean(session.title),
-      }),
-    );
-  }
-  return imported;
+  // Kept as a compatibility no-op: session discovery must never manufacture
+  // plan tasks.
+  void tasks;
+  return [];
 }
 
 export async function refreshTaskSessionTitle(
