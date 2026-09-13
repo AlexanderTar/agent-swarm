@@ -2,7 +2,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, unlinkSync, cpSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import * as p from "@clack/prompts";
 import { DEFAULT_CONFIG, ensureSwarmDirs, getSwarmPaths, loadConfig, saveConfig, SwarmDatabase, SqliteVectorIndex, OllamaClient, TaskService, KbStore, MemoryJobs, summarizeTaskRecord, importAntigravitySessions, listTasksNeedingTitles, summarizeTaskTitle, readOrCreateToken, type AgentKind, type TaskStatus } from "@swarm/core";
 import {
@@ -915,7 +915,13 @@ export async function runInstall(options: InstallOptions = {}): Promise<void> {
   if (!fromBootstrap) {
     const repoRoot = join(process.cwd());
     mkdirSync(join(SWARM_HOME, "app/releases/dev"), { recursive: true });
-    cpSync(repoRoot, join(SWARM_HOME, "app/releases/dev"), { recursive: true });
+    // A development checkout can contain pnpm's linked node_modules tree.
+    // Copying it recursively follows links back into the release target on
+    // macOS; releases install their own dependencies below instead.
+    cpSync(repoRoot, join(SWARM_HOME, "app/releases/dev"), {
+      recursive: true,
+      filter: (source) => !source.includes(`${sep}node_modules${sep}`) && !source.endsWith(`${sep}node_modules`),
+    });
     const tmp = join(SWARM_HOME, "app/current.new");
     symlinkForce(join(SWARM_HOME, "app/releases/dev"), tmp);
     renameSync(tmp, join(SWARM_HOME, "app/current"));
