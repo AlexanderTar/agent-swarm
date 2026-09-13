@@ -57,12 +57,20 @@ export interface TaskRecord {
   originModel: string | null;
   originCwd: string | null;
   originPid: number | null;
+  parentTaskId: number | null;
+  required: boolean;
+  coordinatorSessionId: string | null;
   claimedBy: string | null;
   claimedAgent: AgentKind | null;
   claimedSessionId: string | null;
-  claimedAt: string | null;
-  claimExpiresAt: string | null;
-  heartbeatAt: string | null;
+  /** Opaque capability generated for each lease. Required for protected mutations. */
+  claimToken: string | null;
+  /** Epoch milliseconds. */
+  claimedAt: number | null;
+  /** Epoch milliseconds. */
+  claimExpiresAt: number | null;
+  /** Epoch milliseconds. */
+  heartbeatAt: number | null;
   initialContext: string | null;
   handoffNote: string | null;
   artifactsJson: string;

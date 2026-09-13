@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { shouldReplaceSessionTitle, isFallbackSessionTitle } from "./sessionTitles.js";
 import type { AgentKind, BoardFilters, HandoffNote, TaskRecord, TaskStatus } from "./types.js";
 
@@ -17,12 +18,16 @@ function rowToTask(row: Record<string, unknown>): TaskRecord {  return {
     originModel: (row.origin_model as string) ?? null,
     originCwd: (row.origin_cwd as string) ?? null,
     originPid: (row.origin_pid as number) ?? null,
+    parentTaskId: (row.parent_task_id as number) ?? null,
+    required: Number(row.required ?? 1) !== 0,
+    coordinatorSessionId: (row.coordinator_session_id as string) ?? null,
     claimedBy: (row.claimed_by as string) ?? null,
     claimedAgent: (row.claimed_agent as AgentKind) ?? null,
     claimedSessionId: (row.claimed_session_id as string) ?? null,
-    claimedAt: (row.claimed_at as string) ?? null,
-    claimExpiresAt: (row.claim_expires_at as string) ?? null,
-    heartbeatAt: (row.heartbeat_at as string) ?? null,
+    claimToken: (row.claim_token as string) ?? null,
+    claimedAt: row.claimed_at == null ? null : Number(row.claimed_at),
+    claimExpiresAt: row.claim_expires_at == null ? null : Number(row.claim_expires_at),
+    heartbeatAt: row.heartbeat_at == null ? null : Number(row.heartbeat_at),
     initialContext: (row.initial_context as string) ?? null,
     handoffNote: (row.handoff_note as string) ?? null,
     artifactsJson: row.artifacts_json as string,
@@ -116,7 +121,8 @@ export class TaskService {
           created_at TEXT NOT NULL DEFAULT (datetime('now')),
           updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_sessions_session ON task_sessions(session_id);
+        DROP INDEX IF EXISTS idx_task_sessions_session;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_sessions_task_session ON task_sessions(task_id, session_id);
         CREATE INDEX IF NOT EXISTS idx_task_sessions_task ON task_sessions(task_id);
       `);
     } catch {
@@ -137,6 +143,11 @@ export class TaskService {
     originModel?: string;
     originCwd?: string;
     originPid?: number;
+    /** Explicit parent task. A task is never inferred from the creating session. */
+    parentKey?: string;
+    required?: boolean;
+    /** The planner/coordinator allowed to manage a parent task's lifecycle. */
+    coordinatorSessionId?: string;
     repoPath?: string;
     branch?: string;
     initialContext?: string;
@@ -148,20 +159,29 @@ export class TaskService {
     const tag = modelTag(input.originModel ?? "");
     if (tag && !tags.includes(tag)) tags.push(tag);
     const tagsJson = JSON.stringify(tags);
+    let parentTaskId: number | null = null;
+    if (input.parentKey?.trim()) {
+      const parent = this.getByKey(input.parentKey.trim());
+      if (!parent) throw new Error(`Parent task not found: ${input.parentKey}`);
+      parentTaskId = parent.id;
+    }
     const result = this.db
       .prepare(
-        `INSERT INTO tasks (key, title, status, origin_agent, origin_session_id, origin_model, origin_cwd, origin_pid, repo_path, branch, initial_context, tags_json, last_activity_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (key, title, status, origin_agent, origin_session_id, origin_model, origin_cwd, origin_pid, parent_task_id, required, coordinator_session_id, repo_path, branch, initial_context, tags_json, last_activity_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         key,
         input.title ?? "Untitled",
-        input.status ?? "in_progress",
+        input.status ?? "ready",
         input.originAgent,
         input.originSessionId ?? null,
         input.originModel ?? null,
         input.originCwd ?? null,
         input.originPid ?? null,
+        parentTaskId,
+        input.required === false ? 0 : 1,
+        input.coordinatorSessionId ?? (parentTaskId == null ? input.originSessionId ?? null : null),
         input.repoPath ?? null,
         input.branch ?? null,
         input.initialContext ?? null,
@@ -215,23 +235,15 @@ export class TaskService {
     }
   }
 
-  /** Resolve the task that owns a session: claims first (pickup wins over solo tile), then attached, then origin. */
+  /** A session can participate in many tasks; this helper returns its latest membership only. */
   private getTaskIdForSession(sessionId: string): number | null {
     const sid = sessionId.trim();
     if (!sid) return null;
-    const claimed = this.getClaimedTaskIdForSession(sid);
-    if (claimed != null) return claimed;
-    const attached = this.getAttachedTaskIdForSession(sid);
-    if (attached != null) return attached;
     try {
-      const origin = this.db
-        .prepare(
-          `SELECT id FROM tasks WHERE origin_session_id = ?
-           ORDER BY CASE WHEN status NOT IN ('done','archived') THEN 0 WHEN status = 'done' THEN 1 ELSE 2 END,
-           updated_at DESC, id ASC LIMIT 1`,
-        )
+      const membership = this.db
+        .prepare(`SELECT task_id AS id FROM task_sessions WHERE session_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1`)
         .get(sid) as { id: number } | undefined;
-      if (origin) return origin.id;
+      if (membership) return membership.id;
     } catch {
       // ignore
     }
@@ -241,7 +253,7 @@ export class TaskService {
   /**
    * Attach a session to a task (idempotent). Updates the task with the latest
    * session metadata and tags the task with the participating agent.
-   * Never creates a new task — use upsertSessionTask for that.
+   * Never creates a task. Membership is explicit and non-exclusive.
    */
   attachSession(
     taskId: number,
@@ -257,8 +269,7 @@ export class TaskService {
         .prepare(
           `INSERT INTO task_sessions (task_id, session_id, agent_kind, cwd, model, pid, transcript_path)
            VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(session_id) DO UPDATE SET
-             task_id = excluded.task_id,
+           ON CONFLICT(task_id, session_id) DO UPDATE SET
              agent_kind = COALESCE(excluded.agent_kind, agent_kind),
              cwd = COALESCE(excluded.cwd, cwd),
              model = COALESCE(excluded.model, model),
@@ -276,16 +287,7 @@ export class TaskService {
           input.transcriptPath?.trim() || null,
         );
     } catch {
-      // Table may be locked or session belongs elsewhere — fall through to tagging.
-      try {
-        const existing = this.getSessionRow(sessionId);
-        if (existing && existing.taskId !== taskId) {
-          // Session is pinned to another tile; move it here only via mergeSoloTileInto.
-          return existing;
-        }
-      } catch {
-        return null;
-      }
+      return null;
     }
     // Tag multi-agent work: when a different agent kind joins a task, record both
     // the origin and the joining agent so the tile is filterable by either.
@@ -356,78 +358,7 @@ export class TaskService {
     }
   }
 
-  /**
-   * If sessionId owns a different solo tile (origin_session_id), fold that tile
-   * into keeperId: move events/subtasks/sessions, then archive the loser with
-   * origin_session_id cleared so the UNIQUE constraint never collides.
-   * Returns the archived loser id, or null when there was nothing to merge.
-   */
-  mergeSoloTileInto(keeperId: number, sessionId: string): number | null {
-    const sid = sessionId.trim();
-    if (!sid) return null;
-    let loser: { id: number } | undefined;
-    try {
-      loser = this.db
-        .prepare(`SELECT id FROM tasks WHERE origin_session_id = ? AND id != ? LIMIT 1`)
-        .get(sid, keeperId) as { id: number } | undefined;
-    } catch {
-      return null;
-    }
-    if (!loser) return null;
-    try {
-      this.db.prepare("UPDATE task_events SET task_id = ? WHERE task_id = ?").run(keeperId, loser.id);
-    } catch {
-      /* ignore */
-    }
-    try {
-      this.db.prepare("UPDATE subtasks SET task_id = ? WHERE task_id = ?").run(keeperId, loser.id);
-    } catch {
-      /* ignore */
-    }
-    try {
-      this.ensureSessionsTable();
-      // Move the loser's other sessions to the keeper; the pickup session itself
-      // already points at the keeper after attachSession.
-      const rows = this.db.prepare(`SELECT session_id FROM task_sessions WHERE task_id = ?`).all(loser.id) as Array<{
-        session_id: string;
-      }>;
-      for (const r of rows) {
-        if (r.session_id === sid) {
-          try {
-            this.db.prepare(`DELETE FROM task_sessions WHERE task_id = ? AND session_id = ?`).run(loser.id, r.session_id);
-          } catch {
-            /* ignore */
-          }
-          continue;
-        }
-        try {
-          this.db.prepare(`UPDATE task_sessions SET task_id = ?, updated_at = datetime('now') WHERE task_id = ? AND session_id = ?`).run(
-            keeperId,
-            loser.id,
-            r.session_id,
-          );
-        } catch {
-          // Session already attached elsewhere — drop the loser copy.
-          try {
-            this.db.prepare(`DELETE FROM task_sessions WHERE task_id = ? AND session_id = ?`).run(loser.id, r.session_id);
-          } catch {
-            /* ignore */
-          }
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-    try {
-      this.db
-        .prepare(`UPDATE tasks SET origin_session_id = NULL, status = 'archived', updated_at = datetime('now') WHERE id = ?`)
-        .run(loser.id);
-    } catch {
-      return null;
-    }
-    return loser.id;
-  }
-
+  /** @deprecated Session-derived task creation is intentionally disabled. */
   upsertSessionTask(input: {
     sessionId: string;
     agent: AgentKind;
@@ -439,104 +370,8 @@ export class TaskService {
     titleFromSession?: boolean;
     initialContext?: string;
   }): TaskRecord {
-    const sessionId = input.sessionId.trim();
-    if (!sessionId) {
-      const created = this.create({
-        title: input.title,
-        originAgent: input.agent,
-        originModel: input.model,
-        originCwd: input.cwd,
-        originPid: input.pid,
-        repoPath: input.cwd,
-        initialContext: input.initialContext,
-      });
-      if (input.transcriptPath?.trim()) {
-        this.mergeTranscriptArtifact(created.id, input.transcriptPath.trim());
-        return this.getById(created.id)!;
-      }
-      return created;
-    }
-
-    // Pickup sessions join their picked-up tile instead of spawning a twin.
-    // 1) Session has claimed a task (claimed_session_id) → reuse it.
-    // 2) Session already attached to a task (task_sessions) → reuse it.
-    // 3) Legacy origin_session_id tile → reuse it.
-    const claimedId = this.getClaimedTaskIdForSession(sessionId);
-    if (claimedId != null) {
-      const claimed = this.getById(claimedId);
-      if (claimed) {
-        this.attachSession(claimed.id, {
-          sessionId,
-          agent: input.agent,
-          cwd: input.cwd,
-          model: input.model,
-          pid: input.pid,
-          transcriptPath: input.transcriptPath,
-        });
-        this.mergeSoloTileInto(claimed.id, sessionId);
-        return this.refreshSessionTask(claimed.id, input);
-      }
-    }
-    const attachedId = this.getAttachedTaskIdForSession(sessionId);
-    if (attachedId != null) {
-      const attached = this.getById(attachedId);
-      if (attached) {
-        this.attachSession(attached.id, {
-          sessionId,
-          agent: input.agent,
-          cwd: input.cwd,
-          model: input.model,
-          pid: input.pid,
-          transcriptPath: input.transcriptPath,
-        });
-        return this.refreshSessionTask(attached.id, input);
-      }
-    }
-
-    // Session id is the ultimate dedup key — include done/archived so we revive instead of cloning.
-    const existing = this.db
-      .prepare(
-        `SELECT id, title, initial_context, status FROM tasks
-         WHERE origin_session_id = ?
-         ORDER BY
-           CASE
-             WHEN status NOT IN ('done','archived') THEN 0
-             WHEN status = 'done' THEN 1
-             ELSE 2
-           END,
-           updated_at DESC,
-           id ASC
-         LIMIT 1`,
-      )
-      .get(sessionId) as { id: number; title: string; initial_context: string | null; status: string } | undefined;
-
-    if (existing) {
-      this.attachSession(existing.id, {
-        sessionId,
-        agent: input.agent,
-        cwd: input.cwd,
-        model: input.model,
-        pid: input.pid,
-        transcriptPath: input.transcriptPath,
-      });
-      return this.refreshSessionTask(existing.id, input);
-    }
-
-    const created = this.create({
-      title: input.title,
-      originAgent: input.agent,
-      originSessionId: sessionId,
-      originModel: input.model,
-      originCwd: input.cwd,
-      originPid: input.pid,
-      repoPath: input.cwd,
-      initialContext: input.initialContext,
-    });
-    if (input.transcriptPath?.trim()) {
-      this.mergeTranscriptArtifact(created.id, input.transcriptPath.trim());
-      return this.getById(created.id)!;
-    }
-    return created;
+    void input;
+    throw new Error("Session-derived task creation is disabled; create an explicit task instead");
   }
 
   private getClaimedTaskIdForSession(sessionId: string): number | null {
@@ -599,9 +434,9 @@ export class TaskService {
     return this.getById(taskId)!;
   }
 
-  /** Force-merge any remaining session duplicates (safe to call repeatedly). */
+  /** @deprecated Session-derived tile merging is disabled. */
   consolidateDuplicateSessions(): number {
-    return consolidateTasksBySessionId(this.db);
+    return 0;
   }
 
   maybeRefreshTitle(taskId: number, title: string, fromSession: boolean): TaskRecord | null {
@@ -636,33 +471,8 @@ export class TaskService {
 
   getBySession(sessionId: string): TaskRecord | null {
     if (!sessionId.trim()) return null;
-    // Pickup sessions resolve to their picked-up tile (claimed → attached → origin)
-    // so hooks never spawn a twin tile for work already on the board.
     const taskId = this.getTaskIdForSession(sessionId.trim());
-    if (taskId != null) {
-      const task = this.getById(taskId);
-      if (task) return task;
-    }
-    // Fallback: legacy origin lookup preferring live tiles.
-    try {
-      const row = this.db
-        .prepare(
-          `SELECT * FROM tasks WHERE origin_session_id = ?
-           ORDER BY
-             CASE
-               WHEN status NOT IN ('done','archived') THEN 0
-               WHEN status = 'done' THEN 1
-               ELSE 2
-             END,
-             updated_at DESC,
-             id ASC
-           LIMIT 1`,
-        )
-        .get(sessionId.trim());
-      return row ? rowToTask(row as Record<string, unknown>) : null;
-    } catch {
-      return null;
-    }
+    return taskId == null ? null : this.getById(taskId);
   }
 
   list(filters: BoardFilters = {}): TaskRecord[] {
@@ -852,64 +662,25 @@ export class TaskService {
     },
     leaseSeconds: number,
   ): { ok: boolean; task?: TaskRecord; error?: string } {
-    const before = this.getByKey(key);
-    const expires = new Date(Date.now() + leaseSeconds * 1000).toISOString();
-    const now = new Date().toISOString();
+    const now = Date.now();
+    const expires = now + Math.max(1, leaseSeconds) * 1000;
+    const token = randomUUID();
     const result = this.db
       .prepare(
         `UPDATE tasks SET
           claimed_by = ?, claimed_agent = ?, claimed_session_id = ?,
-          claimed_at = ?, claim_expires_at = ?, heartbeat_at = ?,
-          status = 'in_progress', updated_at = datetime('now')
-         WHERE key = ? AND (claimed_by IS NULL OR claim_expires_at < datetime('now'))`,
+          claim_token = ?, claimed_at = ?, claim_expires_at = ?, heartbeat_at = ?,
+          status = CASE WHEN status = 'ready' THEN 'in_progress' ELSE 'review' END,
+          updated_at = datetime('now')
+         WHERE key = ?
+           AND status IN ('ready', 'review')
+           AND (claimed_by IS NULL OR claim_expires_at < ?)`,
       )
-      .run(claimer.by, claimer.agent, claimer.sessionId, now, expires, now, key);
+      .run(claimer.by, claimer.agent, claimer.sessionId, token, now, expires, now, key, now);
     if (result.changes === 0) {
-      return { ok: false, error: "Task already claimed or not found" };
-    }
-    // Backfill legacy rows created with origin_agent='unknown'.
-    // Never steals origin_session_id: the pickup session joins via task_sessions
-    // instead of overwriting the creator, so its own tile can be folded in.
-    if (before && before.originAgent === "unknown") {
-      try {
-        const sets: string[] = [];
-        const params: unknown[] = [];
-        if (claimer.agent && claimer.agent !== "unknown") {
-          sets.push("origin_agent = ?");
-          params.push(claimer.agent);
-        }
-        if (!before.originModel && claimer.model) {
-          sets.push("origin_model = ?");
-          params.push(claimer.model);
-        }
-        if (!before.originCwd && claimer.cwd) {
-          sets.push("origin_cwd = ?");
-          params.push(claimer.cwd);
-        }
-        if (before.originPid == null && claimer.pid != null) {
-          sets.push("origin_pid = ?");
-          params.push(claimer.pid);
-        }
-        if (sets.length > 0) {
-          sets.push("updated_at = datetime('now')");
-          params.push(before.id);
-          this.db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
-        }
-      } catch {
-        // Best-effort only.
-      }
-      try {
-        const fresh = this.getByKey(key);
-        if (fresh?.originModel) this.ensureModelTag(fresh.id, fresh.originModel);
-        else if (claimer.model) this.ensureModelTag(fresh!.id, claimer.model);
-      } catch {
-        // Best-effort only.
-      }
+      return { ok: false, error: "Task is not available for claim" };
     }
     const claimed = this.getByKey(key)!;
-    // Multi-session: the pickup session joins the picked-up tile. Attach it with
-    // current metadata (attachSession tags multi-agent work) and fold its solo
-    // tile in so the board keeps one tile per unit of work.
     try {
       if (claimer.sessionId?.trim()) {
         this.attachSession(claimed.id, {
@@ -920,7 +691,6 @@ export class TaskService {
           pid: claimer.pid,
           transcriptPath: claimer.transcriptPath,
         });
-        this.mergeSoloTileInto(claimed.id, claimer.sessionId.trim());
       }
     } catch {
       // Best-effort only; claim itself already succeeded.
@@ -934,12 +704,8 @@ export class TaskService {
   }
 
   /**
-   * Join a task without stealing an active claim.
-   * - Unclaimed/expired → claim it for the joiner.
-   * - Claimed by someone else → append a "join" event + attach session, return current task.
-   * - Same session → touch, return current task.
-   * Every branch attaches the joiner's session so future hooks reuse this tile
-   * instead of spawning a twin, and tags the participating agent.
+   * Register task membership. Joining is deliberately non-exclusive and never
+   * changes a task's lease or lifecycle state.
    */
   join(
     key: string,
@@ -952,47 +718,11 @@ export class TaskService {
       pid?: number;
       transcriptPath?: string;
     },
-    leaseSeconds = 300,
+    _leaseSeconds = 300,
   ): { ok: boolean; task?: TaskRecord; joined?: boolean; error?: string } {
     const existing = this.getByKey(key);
     if (!existing) return { ok: false, error: `Task not found: ${key}` };
 
-    const expired =
-      !existing.claimedBy || !existing.claimExpiresAt || new Date(existing.claimExpiresAt).getTime() <= Date.now();
-    if (expired) {
-      const claimed = this.claim(
-        key,
-        {
-          agent: joiner.agent,
-          sessionId: joiner.sessionId,
-          by: joiner.by,
-          model: joiner.model,
-          cwd: joiner.cwd,
-          pid: joiner.pid,
-          transcriptPath: joiner.transcriptPath,
-        },
-        leaseSeconds,
-      );
-      if (!claimed.ok || !claimed.task) return claimed;
-      this.backfillOriginFromJoiner(claimed.task.id, joiner);
-      return { ok: true, task: this.getByKey(key)!, joined: true };
-    }
-
-    if (existing.claimedSessionId === joiner.sessionId) {
-      this.touch(existing.id);
-      this.backfillOriginFromJoiner(existing.id, joiner);
-      this.attachSession(existing.id, {
-        sessionId: joiner.sessionId,
-        agent: joiner.agent,
-        cwd: joiner.cwd,
-        model: joiner.model,
-        pid: joiner.pid,
-        transcriptPath: joiner.transcriptPath,
-      });
-      return { ok: true, task: this.getByKey(key)!, joined: true };
-    }
-
-    // Claimed by someone else — observe, don't steal, but attach so hooks reuse this tile.
     this.appendEvent(existing.id, "join", {
       agent: joiner.agent,
       sessionId: joiner.sessionId,
@@ -1001,7 +731,6 @@ export class TaskService {
       model: joiner.model,
       pid: joiner.pid,
     });
-    this.backfillOriginFromJoiner(existing.id, joiner);
     try {
       if (joiner.sessionId?.trim()) {
         this.attachSession(existing.id, {
@@ -1012,7 +741,6 @@ export class TaskService {
           pid: joiner.pid,
           transcriptPath: joiner.transcriptPath,
         });
-        this.mergeSoloTileInto(existing.id, joiner.sessionId.trim());
       }
     } catch {
       // Best-effort only.
@@ -1020,79 +748,73 @@ export class TaskService {
     return { ok: true, task: this.getByKey(key)!, joined: true };
   }
 
-  /** Fill unknown/empty origin fields from a joiner; never overwrites known values. */
-  private backfillOriginFromJoiner(
-    taskId: number,
-    joiner: { agent: AgentKind; sessionId: string; cwd?: string; model?: string; pid?: number },
-  ): void {
-    const task = this.getById(taskId);
-    if (!task || task.originAgent !== "unknown") return;
-    try {
-      const sets: string[] = [];
-      const params: unknown[] = [];
-      if (joiner.agent && joiner.agent !== "unknown") {
-        sets.push("origin_agent = ?");
-        params.push(joiner.agent);
-      }
-      if (!task.originModel && joiner.model) {
-        sets.push("origin_model = ?");
-        params.push(joiner.model);
-      }
-      if (!task.originCwd && joiner.cwd) {
-        sets.push("origin_cwd = ?");
-        params.push(joiner.cwd);
-      }
-      if (task.originPid == null && joiner.pid != null) {
-        sets.push("origin_pid = ?");
-        params.push(joiner.pid);
-      }
-      // Deliberately NOT backfilling origin_session_id here: it is UNIQUE and the
-      // joiner's session usually owns its own tile already.
-      if (sets.length > 0) {
-        sets.push("updated_at = datetime('now')");
-        params.push(taskId);
-        this.db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
-      }
-      const fresh = this.getById(taskId);
-      if (fresh?.originModel) this.ensureModelTag(taskId, fresh.originModel);
-      else if (joiner.model) this.ensureModelTag(taskId, joiner.model);
-    } catch {
-      // Best-effort only.
-    }
-  }
-
-  heartbeat(key: string, sessionId: string, leaseSeconds: number): boolean {
-    const expires = new Date(Date.now() + leaseSeconds * 1000).toISOString();
-    const now = new Date().toISOString();
+  heartbeat(key: string, sessionId: string, claimToken: string, leaseSeconds: number): boolean {
+    const now = Date.now();
+    const expires = now + Math.max(1, leaseSeconds) * 1000;
     const result = this.db
       .prepare(
         `UPDATE tasks SET heartbeat_at = ?, claim_expires_at = ?, updated_at = datetime('now')
-         WHERE key = ? AND claimed_session_id = ?`,
+         WHERE key = ? AND claimed_session_id = ? AND claim_token = ? AND claim_expires_at >= ?`,
       )
-      .run(now, expires, key, sessionId);
+      .run(now, expires, key, sessionId, claimToken, now);
     return result.changes > 0;
   }
 
-  release(key: string, sessionId: string): boolean {
+  release(key: string, sessionId: string, claimToken: string): boolean {
     const result = this.db
       .prepare(
         `UPDATE tasks SET claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
-          claimed_at = NULL, claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
-         WHERE key = ? AND claimed_session_id = ?`,
+          claim_token = NULL, claimed_at = NULL, claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
+         WHERE key = ? AND claimed_session_id = ? AND claim_token = ? AND claim_expires_at >= ?`,
       )
-      .run(key, sessionId);
+      .run(key, sessionId, claimToken, Date.now());
     return result.changes > 0;
+  }
+
+  /** Implementation worker submits the work and relinquishes its lease. */
+  submit(key: string, sessionId: string, claimToken: string): { ok: boolean; task?: TaskRecord; error?: string } {
+    return this.protectedTransition(key, sessionId, claimToken, "in_progress", "review", "submit");
+  }
+
+  /** Reviewer approves an actively reviewed task. */
+  approve(key: string, sessionId: string, claimToken: string): { ok: boolean; task?: TaskRecord; error?: string } {
+    return this.protectedTransition(key, sessionId, claimToken, "review", "done", "approve");
+  }
+
+  /** Reviewer returns an actively reviewed task to the implementation queue. */
+  requestChanges(key: string, sessionId: string, claimToken: string): { ok: boolean; task?: TaskRecord; error?: string } {
+    return this.protectedTransition(key, sessionId, claimToken, "review", "ready", "request_changes");
+  }
+
+  private protectedTransition(
+    key: string,
+    sessionId: string,
+    claimToken: string,
+    from: TaskStatus,
+    to: TaskStatus,
+    eventType: string,
+  ): { ok: boolean; task?: TaskRecord; error?: string } {
+    const now = Date.now();
+    const result = this.db.prepare(
+      `UPDATE tasks SET status = ?, claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
+       claim_token = NULL, claimed_at = NULL, claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
+       WHERE key = ? AND status = ? AND claimed_session_id = ? AND claim_token = ? AND claim_expires_at >= ?`,
+    ).run(to, key, from, sessionId, claimToken, now);
+    if (result.changes === 0) return { ok: false, error: "Active lease required for this transition" };
+    const task = this.getByKey(key)!;
+    this.appendEvent(task.id, eventType, { sessionId });
+    return { ok: true, task: this.getByKey(key)! };
   }
 
   stage(
     key: string,
-    action: "move" | "claim" | "release" | "block" | "complete" | "fail" | "heartbeat" | "archive",
+    action: "move" | "claim" | "release" | "block" | "complete" | "fail" | "heartbeat" | "archive" | "submit" | "approve" | "request_changes",
     payload: Record<string, unknown>,
     leaseSeconds: number,
   ): { ok: boolean; task?: TaskRecord; error?: string } {
     switch (action) {
       case "move":
-        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: payload.status as TaskStatus }) };
+        return { ok: false, error: "Use an explicit lifecycle action; arbitrary status moves are not permitted" };
       case "claim":
         return this.claim(
           key,
@@ -1108,35 +830,40 @@ export class TaskService {
           leaseSeconds,
         );
       case "release":
-        this.release(key, payload.sessionId as string);
-        return { ok: true, task: this.getByKey(key)! };
+        return this.release(key, payload.sessionId as string, payload.claimToken as string)
+          ? { ok: true, task: this.getByKey(key)! }
+          : { ok: false, error: "Active lease required for release" };
       case "block":
-        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: "blocked" }) };
       case "complete":
-        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: "done" }) };
       case "fail":
-        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: "blocked" }) };
-      case "heartbeat":
-        this.heartbeat(key, payload.sessionId as string, leaseSeconds);
-        return { ok: true, task: this.getByKey(key)! };
       case "archive":
-        return { ok: true, task: this.update(this.getByKey(key)!.id, { status: "archived" }) };
+        return { ok: false, error: "Use an authorized lifecycle action" };
+      case "heartbeat":
+        return this.heartbeat(key, payload.sessionId as string, payload.claimToken as string, leaseSeconds)
+          ? { ok: true, task: this.getByKey(key)! }
+          : { ok: false, error: "Active lease required for heartbeat" };
+      case "submit":
+        return this.submit(key, payload.sessionId as string, payload.claimToken as string);
+      case "approve":
+        return this.approve(key, payload.sessionId as string, payload.claimToken as string);
+      case "request_changes":
+        return this.requestChanges(key, payload.sessionId as string, payload.claimToken as string);
       default:
         return { ok: false, error: `Unknown action: ${action}` };
     }
   }
 
-  writeHandoff(key: string, note: HandoffNote, markdown: string): TaskRecord {
+  writeHandoff(key: string, note: HandoffNote, markdown: string, sessionId?: string, claimToken?: string): TaskRecord {
     const task = this.getByKey(key);
     if (!task) throw new Error(`Task not found: ${key}`);
-    this.db
-      .prepare(
-        `UPDATE tasks SET handoff_note = ?, status = 'ready',
-          claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
-          claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
-         WHERE key = ?`,
-      )
-      .run(markdown, key);
+    if (!sessionId || !claimToken) throw new Error("Active lease required for handoff");
+    const result = this.db.prepare(
+      `UPDATE tasks SET handoff_note = ?, status = 'ready',
+       claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL, claim_token = NULL,
+       claimed_at = NULL, claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
+       WHERE key = ? AND status = 'in_progress' AND claimed_session_id = ? AND claim_token = ? AND claim_expires_at >= ?`,
+    ).run(markdown, key, sessionId, claimToken, Date.now());
+    if (result.changes === 0) throw new Error("Active lease required for handoff");
     this.appendEvent(task.id, "handoff", note as unknown as Record<string, unknown>);
     return this.getByKey(key)!;
   }
@@ -1154,9 +881,9 @@ export class TaskService {
   reaperExpiredClaims(): TaskRecord[] {
     const expired = this.db
       .prepare(
-        `SELECT * FROM tasks WHERE claimed_by IS NOT NULL AND claim_expires_at < datetime('now') AND status = 'in_progress'`,
+        `SELECT * FROM tasks WHERE claimed_by IS NOT NULL AND claim_expires_at < ? AND status = 'in_progress'`,
       )
-      .all() as Record<string, unknown>[];
+      .all(Date.now()) as Record<string, unknown>[];
     const reclaimed: TaskRecord[] = [];
     for (const row of expired) {
       const task = rowToTask(row);
@@ -1165,7 +892,7 @@ export class TaskService {
         .prepare(
           `UPDATE tasks SET status = 'ready', handoff_note = COALESCE(handoff_note, '') || '\n\n' || ?,
             claimed_by = NULL, claimed_agent = NULL, claimed_session_id = NULL,
-            claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
+            claim_token = NULL, claimed_at = NULL, claim_expires_at = NULL, heartbeat_at = NULL, updated_at = datetime('now')
            WHERE id = ?`,
         )
         .run(note, task.id);
@@ -1192,10 +919,24 @@ export class TaskService {
   hasActiveSessions(): boolean {
     const row = this.db
       .prepare(
-        `SELECT COUNT(*) as c FROM tasks WHERE status = 'in_progress' AND heartbeat_at > datetime('now', '-2 minutes')`,
+        `SELECT COUNT(*) as c FROM tasks WHERE status = 'in_progress' AND heartbeat_at > ?`,
       )
-      .get() as { c: number };
+      .get(Date.now() - 120_000) as { c: number };
     return row.c > 0;
+  }
+
+  /** A planner explicitly advances only the parent task it coordinates. */
+  coordinateParent(
+    key: string,
+    coordinatorSessionId: string,
+    status: Extract<TaskStatus, "ready" | "in_progress" | "review" | "done">,
+  ): { ok: boolean; task?: TaskRecord; error?: string } {
+    const result = this.db.prepare(
+      `UPDATE tasks SET status = ?, updated_at = datetime('now')
+       WHERE key = ? AND parent_task_id IS NULL AND coordinator_session_id = ? AND status NOT IN ('archived', 'done')`,
+    ).run(status, key, coordinatorSessionId);
+    if (result.changes === 0) return { ok: false, error: "Coordinator authorization required" };
+    return { ok: true, task: this.getByKey(key)! };
   }
 
   listNeedingSummary(force = false): TaskRecord[] {
@@ -1254,7 +995,7 @@ export class TaskService {
    * Cleanup excessive subagent tasks and consolidate them into their parent tasks.
    */
   cleanupSubagentTasks(): { archivedCount: number; details: string[] } {
-    return cleanupSubagentTasks(this.db, this);
+    return { archivedCount: 0, details: ["Automatic task cleanup is disabled; archive reviewed task keys explicitly."] };
   }
 }
 
@@ -1307,83 +1048,10 @@ export function renderPickupPrompt(task: TaskRecord): string {
   ].join("\n");
 }
 
-/** Keep the earliest tile per origin_session_id; archive clones after merging events/content. */
+/** @deprecated Session-based task merging is intentionally disabled. */
 export function consolidateTasksBySessionId(db: Database.Database): number {
-  const dups = db
-    .prepare(
-      `SELECT origin_session_id AS sid FROM tasks
-       WHERE origin_session_id IS NOT NULL
-       GROUP BY origin_session_id HAVING COUNT(*) > 1`,
-    )
-    .all() as Array<{ sid: string }>;
-
-  let archived = 0;
-  const statusRank = (s: string) =>
-    ({ in_progress: 0, review: 1, ready: 2, blocked: 3, backlog: 4, done: 5, archived: 6 })[s] ?? 9;
-
-  for (const { sid } of dups) {
-    const rows = db
-      .prepare(
-        `SELECT id, status, handoff_note, turn_count, title FROM tasks
-         WHERE origin_session_id = ? ORDER BY id ASC`,
-      )
-      .all(sid) as Array<{
-      id: number;
-      status: string;
-      handoff_note: string | null;
-      turn_count: number;
-      title: string;
-    }>;
-    if (rows.length < 2) continue;
-    const keeper = rows[0]!;
-    let bestHandoff = keeper.handoff_note;
-    let bestTurns = keeper.turn_count;
-    let bestTitle = keeper.title;
-    let bestStatus = keeper.status;
-
-    for (const loser of rows.slice(1)) {
-      db.prepare("UPDATE task_events SET task_id = ? WHERE task_id = ?").run(keeper.id, loser.id);
-      db.prepare("UPDATE subtasks SET task_id = ? WHERE task_id = ?").run(keeper.id, loser.id);
-      try {
-        db.prepare(
-          `UPDATE task_sessions SET task_id = ?, updated_at = datetime('now') WHERE task_id = ? AND session_id != ?`,
-        ).run(keeper.id, loser.id, sid);
-        db.prepare(`DELETE FROM task_sessions WHERE task_id = ? AND session_id = ?`).run(loser.id, sid);
-      } catch {
-        // task_sessions may not exist on very old DBs — ignore.
-      }
-
-      if (
-        loser.handoff_note?.trim() &&
-        (!bestHandoff?.trim() || loser.handoff_note.length > (bestHandoff?.length ?? 0))
-      ) {
-        bestHandoff = loser.handoff_note;
-      }
-      if (loser.turn_count > bestTurns) bestTurns = loser.turn_count;
-      if (loser.title?.trim()) {
-        if (!bestTitle?.trim() || bestTitle === "Untitled" || bestTitle.startsWith("[Image]")) {
-          if (!loser.title.startsWith("[Image]") || !bestTitle?.trim()) bestTitle = loser.title;
-        }
-      }
-      if (statusRank(loser.status) < statusRank(bestStatus)) bestStatus = loser.status;
-
-      db.prepare(
-        `UPDATE tasks SET origin_session_id = NULL, status = 'archived', updated_at = datetime('now') WHERE id = ?`,
-      ).run(loser.id);
-      archived += 1;
-    }
-
-    db.prepare(
-      `UPDATE tasks SET title = ?, handoff_note = ?, turn_count = ?, status = ?, updated_at = datetime('now') WHERE id = ?`,
-    ).run(
-      bestTitle,
-      bestHandoff,
-      bestTurns,
-      bestStatus === "archived" ? "ready" : bestStatus,
-      keeper.id,
-    );
-  }
-  return archived;
+  void db;
+  return 0;
 }
 
 /**
@@ -1393,79 +1061,7 @@ export function cleanupSubagentTasks(
   db: Database.Database,
   taskService?: TaskService,
 ): { archivedCount: number; details: string[] } {
-  const rows = db
-    .prepare(
-      `SELECT id, key, title, origin_agent, origin_session_id, initial_context
-       FROM tasks
-       WHERE status != 'archived'`,
-    )
-    .all() as Array<{
-    id: number;
-    key: string;
-    title: string;
-    origin_agent: string;
-    origin_session_id: string | null;
-    initial_context: string | null;
-  }>;
-
-  let archivedCount = 0;
-  const details: string[] = [];
-
-  for (const row of rows) {
-    const isSubagent =
-      row.title.startsWith("Subagent ·") ||
-      row.title.startsWith("You are implementing ") ||
-      row.title.toLowerCase().startsWith("reply with ") ||
-      row.title.toLowerCase().includes("reply with exactly") ||
-      row.title.includes("(@general subagent)") ||
-      row.title.includes("(@code-reviewer subagent)") ||
-      row.title.includes("(@security-reviewer subagent)") ||
-      (row.title.includes("(@") && row.title.includes("subagent)")) ||
-      row.title.includes("Caveat: The messages below were generated") ||
-      row.title.includes("<local-command-caveat>") ||
-      row.origin_session_id === "transcript_full" ||
-      (row.origin_session_id != null && /^a[0-9a-f]{16}$/i.test(row.origin_session_id)) ||
-      (row.initial_context != null && row.initial_context.includes("Parent session:"));
-
-    if (!isSubagent) continue;
-
-    const parentMatch = row.initial_context?.match(/Parent session:\*\* `([^`]+)`/);
-    const parentSession = parentMatch?.[1]?.trim();
-    if (parentSession) {
-      let parentTask: TaskRecord | null = null;
-      if (taskService) {
-        parentTask = taskService.getBySession(parentSession);
-      } else {
-        const pRow = db.prepare("SELECT * FROM tasks WHERE origin_session_id = ? AND status != 'archived' LIMIT 1").get(parentSession);
-        if (pRow) parentTask = rowToTask(pRow as Record<string, unknown>);
-      }
-      if (parentTask && parentTask.id !== row.id) {
-        if (row.origin_session_id && taskService) {
-          try {
-            taskService.attachSession(parentTask.id, {
-              sessionId: row.origin_session_id,
-              agent: row.origin_agent,
-            });
-          } catch {
-            /* ignore */
-          }
-        }
-        try {
-          db.prepare("UPDATE subtasks SET task_id = ? WHERE task_id = ?").run(parentTask.id, row.id);
-          db.prepare("UPDATE task_events SET task_id = ? WHERE task_id = ?").run(parentTask.id, row.id);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-
-    db.prepare(
-      `UPDATE tasks SET origin_session_id = NULL, status = 'archived', updated_at = datetime('now') WHERE id = ?`,
-    ).run(row.id);
-    archivedCount++;
-    details.push(`Archived subagent task ${row.key}: "${row.title}"`);
-  }
-
-  return { archivedCount, details };
+  void db;
+  void taskService;
+  return { archivedCount: 0, details: ["Automatic task cleanup is disabled; archive reviewed task keys explicitly."] };
 }
-

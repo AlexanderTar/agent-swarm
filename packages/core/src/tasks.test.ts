@@ -44,12 +44,14 @@ describe("tags", () => {
 });
 
 describe("join", () => {
-  it("join claims unclaimed task", () => {
+  it("join registers a participant without claiming an unclaimed task", () => {
     const svc = fresh();
     const t = svc.create({ title: "t", originAgent: "unknown" } as never);
     const r = svc.join(t.key, { agent: "codex", sessionId: "s1", by: "codex" } as never);
     expect(r.ok).toBe(true);
-    expect(r.task?.claimedAgent).toBe("codex");
+    expect(r.task?.claimedAgent).toBeNull();
+    expect(r.task?.status).toBe("ready");
+    expect(svc.listSessions(t.id).map((s) => s.sessionId)).toEqual(["s1"]);
   });
 
   it("join appends session without stealing claim", () => {
@@ -64,11 +66,11 @@ describe("join", () => {
     expect(events.some((e) => e.eventType === "join")).toBe(true);
   });
 
-  it("claim backfills unknown origin", () => {
+  it("claim does not rewrite task provenance", () => {
     const svc = fresh();
     const t = svc.create({ title: "t", originAgent: "unknown" } as never);
     svc.claim(t.key, { agent: "claude", sessionId: "s2", by: "claude" }, 300);
-    expect(svc.getByKey(t.key)!.originAgent).toBe("claude");
+    expect(svc.getByKey(t.key)!.originAgent).toBe("unknown");
   });
 
   it("join backfills unknown origin without stealing", () => {
@@ -130,12 +132,11 @@ describe("model auto-tag", () => {
     expect(JSON.parse(after.tagsJson)).toContain("gpt-5");
   });
 
-  it("upsertSessionTask tags model", () => {
+  it("explicit creation tags model", () => {
     const svc = fresh();
-    const t = svc.upsertSessionTask({ sessionId: "sess-model", agent: "opencode", model: "big-pickle", title: "T" } as never);
+    const t = svc.create({ originAgent: "opencode", originModel: "big-pickle", title: "T" } as never);
     expect(JSON.parse(t.tagsJson)).toContain("big-pickle");
-    const again = svc.upsertSessionTask({ sessionId: "sess-model", agent: "opencode", model: "big-pickle", title: "T" } as never);
-    expect(JSON.parse(again.tagsJson).filter((x: string) => x === "big-pickle")).toHaveLength(1);
+    expect(JSON.parse(t.tagsJson).filter((x: string) => x === "big-pickle")).toHaveLength(1);
   });
 
   it("refreshOriginMetadata tags model", () => {
@@ -171,31 +172,21 @@ describe("hook pid + transcript", () => {
     expect((b as never as { pid: number }).pid).toBe(222);
   });
 
-  it("upsertSessionTask persists pid + transcript to artifacts", () => {
+  it("explicit task creation persists pid", () => {
     const svc = fresh();
-    const t = svc.upsertSessionTask({
-      sessionId: "sess-tx",
-      agent: "claude",
-      cwd: "/repo",
-      pid: 999,
-      transcriptPath: "/tmp/t.jsonl",
+    const t = svc.create({
+      originAgent: "claude",
+      originCwd: "/repo",
+      originPid: 999,
       title: "T",
     } as never);
     expect(t.originPid).toBe(999);
-    const artifacts = JSON.parse(svc.getById(t.id)!.artifactsJson) as Record<string, string[]>;
-    expect(artifacts.transcript).toContain("/tmp/t.jsonl");
   });
 });
 
 describe("cleanupSubagentTasks", () => {
-  it("archives subagent tasks and moves events to parent", () => {
+  it("never archives tasks automatically", () => {
     const svc = fresh();
-    const parent = svc.upsertSessionTask({
-      sessionId: "parent-session-123",
-      agent: "claude",
-      title: "Main Feature",
-    } as never);
-
     const sub1 = svc.create({
       title: "Subagent · myproject",
       originAgent: "claude",
@@ -205,35 +196,98 @@ describe("cleanupSubagentTasks", () => {
     svc.addSubtask(sub1.id, "Explore repo");
     svc.appendEvent(sub1.id, "subagent_start", { agent_type: "Explore" });
 
-    const sub2 = svc.create({
-      title: "Fix bug (@general subagent)",
-      originAgent: "opencode",
-      originSessionId: "ses_child_456",
-    } as never);
-
-    const probe = svc.create({
-      title: "Reply with exactly: gateway-ok",
-      originAgent: "claude",
-      originSessionId: "ses_probe_789",
-    } as never);
-
-    const normal = svc.create({
-      title: "Genuine User Task",
-      originAgent: "claude",
-      originSessionId: "genuine-session",
-    } as never);
-
     const result = svc.cleanupSubagentTasks();
-    expect(result.archivedCount).toBe(3);
-
-    expect(svc.getById(sub1.id)?.status).toBe("archived");
-    expect(svc.getById(sub2.id)?.status).toBe("archived");
-    expect(svc.getById(probe.id)?.status).toBe("archived");
-    expect(svc.getById(normal.id)?.status).toBe("in_progress");
-
-    // Parent task received subtask from sub1
-    const parentSubtasks = svc.getSubtasks(parent.id);
-    expect(parentSubtasks.map((s) => s.subject)).toContain("Explore repo");
+    expect(result.archivedCount).toBe(0);
+    expect(svc.getById(sub1.id)?.status).toBe("ready");
   });
 });
 
+describe("explicit task lifecycle", () => {
+  it("allows one planner session to create a parent and multiple child tasks", () => {
+    const svc = fresh();
+    const parent = svc.create({ title: "Plan", originAgent: "claude", originSessionId: "planner" } as never);
+    const first = svc.create({ title: "First", originAgent: "claude", parentKey: parent.key } as never);
+    const second = svc.create({ title: "Second", originAgent: "claude", parentKey: parent.key } as never);
+
+    expect(first.parentTaskId).toBe(parent.id);
+    expect(second.parentTaskId).toBe(parent.id);
+    expect(first.status).toBe("ready");
+  });
+
+  it("lets only one worker acquire an active lease and exposes its token", () => {
+    const svc = fresh();
+    const task = svc.create({ title: "Work", originAgent: "claude" } as never);
+    const first = svc.claim(task.key, { agent: "claude", sessionId: "worker-a", by: "a" }, 300);
+    const second = svc.claim(task.key, { agent: "codex", sessionId: "worker-b", by: "b" }, 300);
+
+    expect(first.ok).toBe(true);
+    expect(first.task?.status).toBe("in_progress");
+    expect(first.task?.claimToken).toEqual(expect.any(String));
+    expect(second.ok).toBe(false);
+  });
+
+  it("atomically grants one lease across independent database connections", () => {
+    const dir = mkdtempSync(join(tmpdir(), "swarm-claim-race-"));
+    dirs.push(dir);
+    const firstDb = new SwarmDatabase(join(dir, "test.db"));
+    const secondDb = new SwarmDatabase(join(dir, "test.db"));
+    const first = new TaskService(firstDb.db);
+    const second = new TaskService(secondDb.db);
+    const task = first.create({ title: "Work", originAgent: "claude" } as never);
+
+    const a = first.claim(task.key, { agent: "claude", sessionId: "a", by: "a" }, 300);
+    const b = second.claim(task.key, { agent: "codex", sessionId: "b", by: "b" }, 300);
+
+    expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+    firstDb.close();
+    secondDb.close();
+  });
+
+  it("rejects stale lease tokens for heartbeat and handoff", () => {
+    const svc = fresh();
+    const task = svc.create({ title: "Work", originAgent: "claude" } as never);
+    const claim = svc.claim(task.key, { agent: "claude", sessionId: "worker", by: "a" }, 300);
+    const token = claim.task!.claimToken!;
+
+    expect(svc.heartbeat(task.key, "worker", "wrong-token", 300)).toBe(false);
+    expect(svc.release(task.key, "worker", "wrong-token")).toBe(false);
+    expect(svc.heartbeat(task.key, "worker", token, 300)).toBe(true);
+    expect(svc.release(task.key, "worker", token)).toBe(true);
+  });
+
+  it("submits implementation for review and requires a reviewer lease to finish", () => {
+    const svc = fresh();
+    const task = svc.create({ title: "Work", originAgent: "claude" } as never);
+    const implementation = svc.claim(task.key, { agent: "claude", sessionId: "worker", by: "a" }, 300);
+    const implementationToken = implementation.task!.claimToken!;
+
+    expect(svc.submit(task.key, "worker", implementationToken).ok).toBe(true);
+    expect(svc.getByKey(task.key)?.status).toBe("review");
+    const review = svc.claim(task.key, { agent: "codex", sessionId: "reviewer", by: "b" }, 300);
+    expect(review.task?.status).toBe("review");
+    expect(svc.approve(task.key, "reviewer", review.task!.claimToken!).ok).toBe(true);
+    expect(svc.getByKey(task.key)?.status).toBe("done");
+  });
+
+  it("returns review work to ready when the reviewer requests changes", () => {
+    const svc = fresh();
+    const task = svc.create({ title: "Work", originAgent: "claude" } as never);
+    const implementation = svc.claim(task.key, { agent: "claude", sessionId: "worker", by: "a" }, 300);
+    svc.submit(task.key, "worker", implementation.task!.claimToken!);
+    const review = svc.claim(task.key, { agent: "codex", sessionId: "reviewer", by: "b" }, 300);
+
+    expect(svc.requestChanges(task.key, "reviewer", review.task!.claimToken!).ok).toBe(true);
+    const after = svc.getByKey(task.key)!;
+    expect(after.status).toBe("ready");
+    expect(after.claimToken).toBeNull();
+  });
+
+  it("only the recorded coordinator can advance a parent task", () => {
+    const svc = fresh();
+    const plan = svc.create({ title: "Plan", originAgent: "claude", coordinatorSessionId: "planner" } as never);
+
+    expect(svc.coordinateParent(plan.key, "other", "in_progress").ok).toBe(false);
+    expect(svc.coordinateParent(plan.key, "planner", "in_progress").ok).toBe(true);
+    expect(svc.coordinateParent(plan.key, "planner", "done").ok).toBe(true);
+  });
+});

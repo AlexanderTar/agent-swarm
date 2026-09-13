@@ -3,9 +3,7 @@ import * as sqliteVec from "sqlite-vec";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SwarmConfig } from "./types.js";
-import { consolidateTasksBySessionId } from "./tasks.js";
-
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 export const EMBED_DIM = 256;
 
 export const TASK_SESSIONS_SCHEMA = `
@@ -21,7 +19,7 @@ export const TASK_SESSIONS_SCHEMA = `
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_task_sessions_session ON task_sessions(session_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_task_sessions_task_session ON task_sessions(task_id, session_id);
   CREATE INDEX IF NOT EXISTS idx_task_sessions_task ON task_sessions(task_id);
 `;
 
@@ -55,7 +53,7 @@ export class SwarmDatabase {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           key TEXT NOT NULL UNIQUE,
           title TEXT NOT NULL DEFAULT 'Untitled',
-          status TEXT NOT NULL DEFAULT 'in_progress',
+          status TEXT NOT NULL DEFAULT 'ready',
           priority TEXT NOT NULL DEFAULT 'medium',
           repo_path TEXT,
           repo_remote TEXT,
@@ -66,12 +64,16 @@ export class SwarmDatabase {
           origin_model TEXT,
           origin_cwd TEXT,
           origin_pid INTEGER,
+          parent_task_id INTEGER REFERENCES tasks(id),
+          required INTEGER NOT NULL DEFAULT 1,
+          coordinator_session_id TEXT,
           claimed_by TEXT,
           claimed_agent TEXT,
           claimed_session_id TEXT,
-          claimed_at TEXT,
-          claim_expires_at TEXT,
-          heartbeat_at TEXT,
+          claim_token TEXT,
+          claimed_at INTEGER,
+          claim_expires_at INTEGER,
+          heartbeat_at INTEGER,
           initial_context TEXT,
           handoff_note TEXT,
           artifacts_json TEXT NOT NULL DEFAULT '{}',
@@ -85,7 +87,7 @@ export class SwarmDatabase {
 
         CREATE INDEX idx_tasks_status ON tasks(status);
         CREATE INDEX idx_tasks_session ON tasks(origin_session_id);
-        CREATE UNIQUE INDEX idx_tasks_session_unique ON tasks(origin_session_id) WHERE origin_session_id IS NOT NULL;
+        CREATE INDEX idx_tasks_parent ON tasks(parent_task_id);
         CREATE INDEX idx_tasks_claim ON tasks(claimed_by, claim_expires_at);
 
         CREATE TABLE task_events (
@@ -156,122 +158,85 @@ export class SwarmDatabase {
         VALUES (${SCHEMA_VERSION}, 'nomic-embed-text', ${embedDimensions});
       `);
       this.db.exec(TASK_SESSIONS_SCHEMA);
+      this.migrateToV4();
       return;
     }
 
     const row = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get() as { version: number } | undefined;
     let version = row?.version ?? 0;
     if (version < 2) {
-      // Collapse duplicate tiles that share an origin_session_id, then enforce uniqueness.
-      this.consolidateDuplicateSessions();
-      this.db.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session_unique
-          ON tasks(origin_session_id)
-          WHERE origin_session_id IS NOT NULL;
-      `);
+      // Session identity is provenance, not task identity. Never merge tasks by session.
       this.db.prepare("UPDATE schema_meta SET version = 2").run();
       version = 2;
     }
     if (version < 3) {
       this.migrateToV3();
       this.db.prepare("UPDATE schema_meta SET version = 3").run();
-    } else if (version < SCHEMA_VERSION) {
-      this.db.prepare(`UPDATE schema_meta SET version = ${SCHEMA_VERSION}`).run();
+      version = 3;
+    }
+    if (version < 4) {
+      this.migrateToV4();
+      this.db.prepare("UPDATE schema_meta SET version = 4").run();
     }
   }
 
-  /** Keep one task per origin_session_id; archive the rest after moving events/subtasks. */
-  private consolidateDuplicateSessions(): void {
-    consolidateTasksBySessionId(this.db);
-  }
-
-  /**
-   * v3: one task can track many sessions (pickup agent joins the picked-up tile
-   * instead of spawning its own). Backfills task_sessions from origin rows and
-   * folds claimed-session solo tiles into their claimed task.
-   */
+  /** v3 compatibility: create the participant table without deriving membership from sessions. */
   private migrateToV3(): void {
     this.db.exec(TASK_SESSIONS_SCHEMA);
-    // Backfill origin sessions — one row per existing tile.
-    try {
-      this.db
-        .prepare(
-          `INSERT OR IGNORE INTO task_sessions (task_id, session_id, agent_kind, cwd, model, pid)
-           SELECT id, origin_session_id, origin_agent, origin_cwd, origin_model, origin_pid
-           FROM tasks WHERE origin_session_id IS NOT NULL`,
-        )
-        .run();
-    } catch {
-      // Best-effort: fresh DBs have no rows, old DBs may lack columns in odd states.
-    }
+  }
 
-    // Fold pickup duplicates: a claimed_session that also owns its own solo tile
-    // (origin_session_id = claimed_session_id on a different row) gets merged into
-    // the claimed task so the board keeps a single tile per unit of work.
-    try {
-      const claimed = this.db
-        .prepare(
-          `SELECT id AS task_id, claimed_session_id AS sid FROM tasks
-           WHERE claimed_session_id IS NOT NULL AND trim(claimed_session_id) != ''`,
-        )
-        .all() as Array<{ task_id: number; sid: string }>;
-      for (const { task_id, sid } of claimed) {
-        // If that session also owns a different solo tile, archive the solo tile
-        // into the keeper first so the session row can move without conflict.
-        try {
-          const solo = this.db
-            .prepare(
-              `SELECT id FROM tasks WHERE origin_session_id = ? AND id != ? LIMIT 1`,
-            )
-            .get(sid, task_id) as { id: number } | undefined;
-          if (solo) {
-            try {
-              this.db.prepare("UPDATE task_events SET task_id = ? WHERE task_id = ?").run(task_id, solo.id);
-            } catch {
-              /* no events or no rows */
-            }
-            try {
-              this.db.prepare("UPDATE subtasks SET task_id = ? WHERE task_id = ?").run(task_id, solo.id);
-            } catch {
-              /* ignore */
-            }
-            try {
-              this.db
-                .prepare(`UPDATE task_sessions SET task_id = ? WHERE task_id = ? AND session_id != ?`)
-                .run(task_id, solo.id, sid);
-            } catch {
-              /* ignore */
-            }
-            try {
-              this.db.prepare(`DELETE FROM task_sessions WHERE task_id = ? AND session_id = ?`).run(solo.id, sid);
-            } catch {
-              /* ignore */
-            }
-            try {
-              this.db
-                .prepare(
-                  `UPDATE tasks SET origin_session_id = NULL, status = 'archived', updated_at = datetime('now') WHERE id = ?`,
-                )
-                .run(solo.id);
-            } catch {
-              /* ignore */
-            }
-          }
-        } catch {
-          /* best-effort */
-        }
-        // Ensure the claimed session is attached to the claimed task.
-        try {
-          this.db
-            .prepare(`INSERT OR IGNORE INTO task_sessions (task_id, session_id) VALUES (?, ?)`)
-            .run(task_id, sid);
-        } catch {
-          /* ignore */
-        }
+  /** v4: explicit task hierarchy and participant membership; leases use epoch milliseconds + opaque tokens. */
+  private migrateToV4(): void {
+    const addColumn = (definition: string) => {
+      try {
+        this.db.exec(`ALTER TABLE tasks ADD COLUMN ${definition}`);
+      } catch {
+        // Existing databases may already have the column.
       }
-    } catch {
-      // Migration must never fail daemon startup.
+    };
+    addColumn("parent_task_id INTEGER REFERENCES tasks(id)");
+    addColumn("required INTEGER NOT NULL DEFAULT 1");
+    addColumn("coordinator_session_id TEXT");
+    addColumn("claim_token TEXT");
+
+    // SQLite permits values with a different storage class in legacy columns.
+    // Convert ISO-8601 timestamps before all lease comparisons become numeric.
+    for (const column of ["claimed_at", "claim_expires_at", "heartbeat_at"]) {
+      try {
+        this.db.exec(`
+          UPDATE tasks
+          SET ${column} = CAST(strftime('%s', ${column}) AS INTEGER) * 1000
+          WHERE typeof(${column}) = 'text' AND ${column} IS NOT NULL
+        `);
+      } catch {
+        // A partially-created legacy database may be missing the column.
+      }
     }
+    this.db.exec(`
+      DROP INDEX IF EXISTS idx_tasks_session_unique;
+      DROP INDEX IF EXISTS idx_task_sessions_session;
+      CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+      CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(claimed_by, claim_expires_at);
+    `);
+    this.db.exec(TASK_SESSIONS_SCHEMA);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS tasks_prevent_parent_cycle_insert
+      BEFORE INSERT ON tasks WHEN NEW.parent_task_id IS NOT NULL
+      BEGIN
+        SELECT CASE WHEN NEW.parent_task_id = NEW.id THEN RAISE(ABORT, 'task cannot parent itself') END;
+      END;
+      CREATE TRIGGER IF NOT EXISTS tasks_prevent_parent_cycle_update
+      BEFORE UPDATE OF parent_task_id ON tasks WHEN NEW.parent_task_id IS NOT NULL
+      BEGIN
+        WITH RECURSIVE ancestors(id) AS (
+          SELECT NEW.parent_task_id
+          UNION ALL
+          SELECT parent_task_id FROM tasks JOIN ancestors ON tasks.id = ancestors.id WHERE parent_task_id IS NOT NULL
+        )
+        SELECT CASE WHEN EXISTS (SELECT 1 FROM ancestors WHERE id = NEW.id)
+          THEN RAISE(ABORT, 'task hierarchy cycle') END;
+      END;
+    `);
   }
 
   checkEmbeddingConfig(config: SwarmConfig): { ok: boolean; reason?: string } {
