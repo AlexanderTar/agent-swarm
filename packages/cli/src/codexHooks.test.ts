@@ -1,14 +1,10 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  inspectCodexUserHooks,
-  materializeCodexUserHooks,
+  removeSwarmCodexHooks,
   spliceSwarmTomlBlock,
 } from "./codexHooks.js";
 
-const PLUGIN_HOOKS = {
+const EXISTING_HOOKS = {
   hooks: {
     SessionStart: [
       {
@@ -36,46 +32,32 @@ const PLUGIN_HOOKS = {
   },
 };
 
-describe("materializeCodexUserHooks", () => {
-  it("expands PLUGIN_ROOT to an absolute plugin path for user-level hooks.json", () => {
-    const pluginPath = "/Users/dev/.swarm/app/current/plugin";
-    const materialized = materializeCodexUserHooks(PLUGIN_HOOKS, pluginPath);
-    const command = materialized.hooks?.SessionStart?.[0]?.hooks?.[0]?.command;
-    expect(command).not.toContain("${PLUGIN_ROOT}");
-    expect(command).toBe(`node "${pluginPath}/hooks/post-hook.mjs" codex SessionStart`);
+describe("removeSwarmCodexHooks", () => {
+  it("removes only Swarm Codex hook commands and preserves unrelated hooks", () => {
+    const existing = {
+      hooks: {
+        ...EXISTING_HOOKS.hooks,
+        Stop: [
+          {
+            hooks: [
+              { type: "command", command: "node /usr/local/bin/user-stop-hook.mjs" },
+              { type: "command", command: 'node "/plugin/hooks/post-hook.mjs" codex Stop' },
+            ],
+          },
+        ],
+      },
+    };
+
+    expect(removeSwarmCodexHooks(existing)).toEqual({
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: "node /usr/local/bin/user-stop-hook.mjs" }] }],
+      },
+    });
   });
 
-  it("caps SessionEnd timeout at 3 seconds", () => {
-    const materialized = materializeCodexUserHooks(PLUGIN_HOOKS, "/plugin");
-    const sessionEnd = materialized.hooks?.SessionEnd as Array<{
-      hooks: Array<{ timeout?: number }>;
-    }>;
-    expect(sessionEnd[0]?.hooks[0]?.timeout).toBe(3);
-  });
-});
-
-describe("inspectCodexUserHooks", () => {
-  it("fails when user hooks still contain unexpanded PLUGIN_ROOT", () => {
-    const result = inspectCodexUserHooks(JSON.stringify(PLUGIN_HOOKS));
-    expect(result.ok).toBe(false);
-    expect(result.detail).toMatch(/PLUGIN_ROOT/);
-  });
-
-  it("fails when the hook script path does not exist", () => {
-    const hooks = materializeCodexUserHooks(PLUGIN_HOOKS, "/does-not-exist/plugin");
-    const result = inspectCodexUserHooks(JSON.stringify(hooks));
-    expect(result.ok).toBe(false);
-    expect(result.detail).toMatch(/post-hook\.mjs/);
-  });
-
-  it("passes when SessionStart points at an existing post-hook.mjs", () => {
-    const dir = mkdtempSync(join(tmpdir(), "swarm-codex-hooks-"));
-    const pluginPath = join(dir, "plugin");
-    mkdirSync(join(pluginPath, "hooks"), { recursive: true });
-    writeFileSync(join(pluginPath, "hooks/post-hook.mjs"), "export {};\n");
-    const hooks = materializeCodexUserHooks(PLUGIN_HOOKS, pluginPath);
-    const result = inspectCodexUserHooks(JSON.stringify(hooks));
-    expect(result.ok).toBe(true);
+  it("is idempotent when no Swarm hooks are installed", () => {
+    const userHooks = { hooks: { Stop: [{ hooks: [{ command: "echo user" }] }] } };
+    expect(removeSwarmCodexHooks(userHooks)).toEqual(userHooks);
   });
 });
 

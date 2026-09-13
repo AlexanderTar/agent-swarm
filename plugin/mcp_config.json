@@ -9,6 +9,7 @@
       ],
       "env": {
         "SWARM_URL": "http://127.0.0.1:7777",
+        "SWARM_AGENT": "claude",
         "SWARM_REGISTER_SESSION": "0"
       }
     }

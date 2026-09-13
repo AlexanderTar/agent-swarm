@@ -7,4 +7,4 @@ description: Check Agent Swarm board status, active tasks, and daemon health. Us
 
 - Board UI: http://127.0.0.1:7777
 - MCP: `swarm_board` for current tasks
-- Your session is tracked automatically via hooks; call `swarm_task_stage` heartbeat during long tasks.
+- Sessions are not board tasks. Join and claim an explicit task before working; heartbeat only while holding its active lease.

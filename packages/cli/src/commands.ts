@@ -7,14 +7,13 @@ import * as p from "@clack/prompts";
 import { DEFAULT_CONFIG, ensureSwarmDirs, getSwarmPaths, loadConfig, saveConfig, SwarmDatabase, SqliteVectorIndex, OllamaClient, TaskService, KbStore, MemoryJobs, summarizeTaskRecord, importAntigravitySessions, listTasksNeedingTitles, summarizeTaskTitle, readOrCreateToken, type AgentKind, type TaskStatus } from "@swarm/core";
 import {
   type CodexHooksFile,
-  inspectCodexUserHooks,
-  materializeCodexUserHooks,
+  removeSwarmCodexHooks,
   spliceSwarmTomlBlock,
 } from "./codexHooks.js";
-import { buildAntigravityHooks, inspectAntigravityHooks } from "./antigravityHooks.js";
+import { removeSwarmClaudeHooks, removeSwarmCursorHooks, type ClaudeSettings, type CursorHookDef } from "./pluginSync.js";
 
 const SWARM_HOME = process.env.SWARM_HOME ?? join(homedir(), ".swarm");
-const ALL_AGENT_IDS = ["cursor", "claude", "codex", "antigravity"] as const;
+const ALL_AGENT_IDS = ["cursor", "claude", "codex", "antigravity", "opencode"] as const;
 
 export interface InstallOptions {
   fromBootstrap?: boolean;
@@ -84,7 +83,6 @@ export function mergeSentinelBlock(filePath: string, name: string, fragment: str
 
 export function checkCodexHooks(): { ok: boolean; detail?: string } {
   const configPath = join(homedir(), ".codex/config.toml");
-  const hooksPath = join(homedir(), ".codex/hooks.json");
   if (!existsSync(join(homedir(), ".codex"))) {
     return { ok: true, detail: "Codex not installed" };
   }
@@ -102,33 +100,14 @@ export function checkCodexHooks(): { ok: boolean; detail?: string } {
   if (!usesStdio && !hasBearer && /url\s*=\s*"http:\/\/127\.0\.0\.1:\d+\/mcp"/.test(config)) {
     return { ok: false, detail: "Codex MCP uses unauthenticated HTTP — run `swarm plugin sync`" };
   }
-  if (!existsSync(hooksPath)) {
-    return { ok: false, detail: "Missing ~/.codex/hooks.json — run `swarm plugin sync`" };
-  }
-  const inspected = inspectCodexUserHooks(readFileSync(hooksPath, "utf8"));
-  if (!inspected.ok) return inspected;
-  return {
-    ok: true,
-    detail: "Approve swarm hooks in Codex /hooks TUI or sessions won't appear on the board",
-  };
+  return { ok: true, detail: "Codex MCP configured; task changes require explicit Swarm MCP calls." };
 }
 
 export function checkCursorHooks(): { ok: boolean; detail?: string } {
   if (!existsSync(join(homedir(), ".cursor"))) {
     return { ok: true, detail: "Cursor not installed" };
   }
-  const hooksPath = join(homedir(), ".cursor/hooks.json");
-  if (!existsSync(hooksPath)) {
-    return { ok: false, detail: "Missing ~/.cursor/hooks.json — run `swarm plugin sync`" };
-  }
-  const content = readFileSync(hooksPath, "utf8");
-  if (!content.includes("post-hook.mjs") || !content.includes("sessionStart")) {
-    return { ok: false, detail: "Swarm sessionStart hook not merged into ~/.cursor/hooks.json" };
-  }
-  if (content.includes("post-hook.mjs cursor") && !content.includes("node ")) {
-    return { ok: false, detail: "Cursor hooks must invoke node — run `swarm plugin sync`" };
-  }
-  return { ok: true, detail: "Restart Cursor after sync for hooks to load" };
+  return { ok: true, detail: "Cursor MCP configured; task changes require explicit Swarm MCP calls." };
 }
 
 export function checkCursorMcp(pluginPath: string): { ok: boolean; detail?: string } {
@@ -178,11 +157,6 @@ export function checkAntigravityPlugin(pluginPath: string): { ok: boolean; detai
   if (!gemini.includes("<!-- swarm:start -->")) {
     return { ok: false, detail: "GEMINI.md missing swarm sentinel block" };
   }
-  if (!existsSync(join(pluginPath, "hooks.json"))) {
-    return { ok: false, detail: "plugin/hooks.json missing" };
-  }
-  const inspected = inspectAntigravityHooks(readFileSync(join(pluginPath, "hooks.json"), "utf8"));
-  if (!inspected.ok) return inspected;
   const pluginMcp = join(link, "mcp.json");
   if (existsSync(pluginMcp)) {
     try {
@@ -204,6 +178,7 @@ export function detectAgents(): Array<{ id: string; name: string; detected: bool
     { id: "claude", name: "Claude Code", detected: existsSync(join(homedir(), ".claude")) },
     { id: "codex", name: "Codex CLI", detected: existsSync(join(homedir(), ".codex")) },
     { id: "antigravity", name: "Antigravity", detected: existsSync(join(homedir(), ".gemini")) },
+    { id: "opencode", name: "OpenCode", detected: existsSync(join(homedir(), ".config/opencode")) || existsSync(join(homedir(), ".local/share/opencode")) },
   ];
 }
 
@@ -378,6 +353,7 @@ function writePluginMcpConfig(pluginPath: string): void {
         args: [launcher],
         env: {
           SWARM_URL: `http://127.0.0.1:${port}`,
+          SWARM_AGENT: "claude",
           SWARM_REGISTER_SESSION: "0",
         },
       },
@@ -400,16 +376,18 @@ export function pluginSync(agents: string[]): void {
     if (existsSync(devPlugin)) symlinkForce(devPlugin, pluginPath);
   }
 
+  syncUniversalInstructions(pluginPath, agents);
   writePluginMcpConfig(pluginPath);
   if (agents.includes("cursor")) {
     const dest = join(homedir(), ".cursor/plugins/local/swarm");
     mkdirSync(join(dest, ".."), { recursive: true });
     symlinkForce(pluginPath, dest);
-    mergeCursorHooks(pluginPath);
+    mergeCursorHooks();
     mergeCursorMcp(dest);
   }
   if (agents.includes("claude")) {
     symlinkForce(pluginPath, join(homedir(), ".claude/skills/swarm"));
+    removeLegacyClaudeHooks();
   }
   if (agents.includes("antigravity")) {
     mkdirSync(join(homedir(), ".gemini/config/plugins"), { recursive: true });
@@ -418,6 +396,20 @@ export function pluginSync(agents: string[]): void {
   }
   if (agents.includes("codex")) {
     mergeCodexConfig(pluginPath);
+  }
+  if (agents.includes("opencode")) {
+    mergeOpenCodeConfig(pluginPath);
+  }
+}
+
+function removeLegacyClaudeHooks(): void {
+  const settingsPath = join(homedir(), ".claude/settings.json");
+  if (!existsSync(settingsPath)) return;
+  try {
+    const existing = JSON.parse(readFileSync(settingsPath, "utf8")) as ClaudeSettings;
+    writeFileSync(settingsPath, `${JSON.stringify(removeSwarmClaudeHooks(existing), null, 2)}\n`);
+  } catch {
+    // Do not overwrite an invalid user-owned settings file.
   }
 }
 
@@ -441,73 +433,25 @@ SWARM_REGISTER_SESSION = "0"
   const content = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
   writeFileSync(configPath, spliceSwarmTomlBlock(content, mcpBlock));
 
-  const pluginHooks = join(pluginPath, ".codex-plugin/hooks.json");
-  if (existsSync(pluginHooks)) {
-    const incoming = JSON.parse(readFileSync(pluginHooks, "utf8")) as CodexHooksFile;
-    let existing: CodexHooksFile = {};
-    if (existsSync(hooksPath)) {
-      try {
-        existing = JSON.parse(readFileSync(hooksPath, "utf8")) as CodexHooksFile;
-      } catch {
-        existing = {};
-      }
-    }
-    const materialized = materializeCodexUserHooks(incoming, pluginPath);
-    const merged = { hooks: { ...(existing.hooks ?? {}), ...(materialized.hooks ?? {}) } };
-    writeFileSync(hooksPath, `${JSON.stringify(merged, null, 2)}\n`);
-  }
-
-  p.log.warn("Codex: approve plugin hooks in the /hooks TUI or sessions won't appear on the board.");
-}
-
-type CursorHookDef = { command: string; timeout?: number };
-
-function isSwarmCursorHook(command: string): boolean {
-  return command.includes("post-hook.mjs") && command.includes(" cursor ");
-}
-
-function buildSwarmCursorHooks(pluginPath: string): Record<string, CursorHookDef[]> {
-  const script = join(pluginPath, "hooks/post-hook.mjs");
-  const defs = (event: string, timeout?: number): CursorHookDef[] => [
-    { command: `node "${script}" cursor ${event}`, ...(timeout ? { timeout } : {}) },
-  ];
-  return {
-    sessionStart: defs("sessionStart"),
-    sessionEnd: defs("sessionEnd", 2),
-    beforeSubmitPrompt: defs("beforeSubmitPrompt"),
-    preToolUse: defs("preToolUse", 2),
-    postToolUse: defs("postToolUse", 2),
-    afterFileEdit: defs("afterFileEdit", 2),
-    subagentStart: defs("subagentStart", 2),
-    subagentStop: defs("subagentStop", 2),
-    preCompact: defs("preCompact"),
-    afterAgentResponse: defs("afterAgentResponse", 2),
-    afterAgentThought: defs("afterAgentThought", 2),
-    stop: defs("stop"),
-  };
-}
-
-function mergeCursorHooks(pluginPath: string): void {
-  const hooksPath = join(homedir(), ".cursor/hooks.json");
-  mkdirSync(dirname(hooksPath), { recursive: true });
-  const swarmHooks = buildSwarmCursorHooks(pluginPath);
-
-  let existing: { version?: number; hooks?: Record<string, CursorHookDef[]> } = {};
   if (existsSync(hooksPath)) {
     try {
-      existing = JSON.parse(readFileSync(hooksPath, "utf8")) as { version?: number; hooks?: Record<string, CursorHookDef[]> };
+      const existing = JSON.parse(readFileSync(hooksPath, "utf8")) as CodexHooksFile;
+      writeFileSync(hooksPath, `${JSON.stringify(removeSwarmCodexHooks(existing), null, 2)}\n`);
     } catch {
-      existing = {};
+      // Do not overwrite an invalid user-owned hooks file.
     }
   }
+}
 
-  const mergedHooks: Record<string, CursorHookDef[]> = { ...(existing.hooks ?? {}) };
-  for (const [event, defs] of Object.entries(swarmHooks)) {
-    const kept = (mergedHooks[event] ?? []).filter((d) => !isSwarmCursorHook(d.command));
-    mergedHooks[event] = [...kept, ...defs];
+function mergeCursorHooks(): void {
+  const hooksPath = join(homedir(), ".cursor/hooks.json");
+  if (!existsSync(hooksPath)) return;
+  try {
+    const existing = JSON.parse(readFileSync(hooksPath, "utf8")) as { version?: number; hooks?: Record<string, CursorHookDef[]> };
+    writeFileSync(hooksPath, `${JSON.stringify(removeSwarmCursorHooks(existing), null, 2)}\n`);
+  } catch {
+    // Do not overwrite an invalid user-owned hooks file.
   }
-
-  writeFileSync(hooksPath, `${JSON.stringify({ version: 1, hooks: mergedHooks }, null, 2)}\n`);
 }
 
 function mergeCursorMcp(pluginPath: string): void {
@@ -537,6 +481,7 @@ function mergeCursorMcp(pluginPath: string): void {
         args: [launcher],
         env: {
           SWARM_URL: `http://127.0.0.1:${port}`,
+          SWARM_AGENT: "cursor",
           SWARM_REGISTER_SESSION: "0",
         },
       },
@@ -578,12 +523,52 @@ function mergeAntigravityConfig(pluginPath: string): void {
   };
   writeFileSync(mcpPath, `${JSON.stringify(merged, null, 2)}\n`);
 
-  writeFileSync(join(pluginPath, "hooks.json"), `${JSON.stringify(buildAntigravityHooks(pluginPath), null, 2)}\n`);
+}
 
-  const fragmentPath = join(pluginPath, "GEMINI.md");
-  if (existsSync(fragmentPath)) {
-    mergeSentinelBlock(join(homedir(), ".gemini/GEMINI.md"), "swarm", readFileSync(fragmentPath, "utf8"));
+function syncUniversalInstructions(pluginPath: string, agents: string[]): void {
+  const instructionsPath = join(pluginPath, "AGENTS.md");
+  if (!existsSync(instructionsPath)) return;
+  const instructions = readFileSync(instructionsPath, "utf8");
+  mergeSentinelBlock(join(homedir(), ".agents/AGENTS.md"), "swarm", instructions);
+  if (agents.includes("claude")) {
+    mergeSentinelBlock(join(homedir(), ".claude/CLAUDE.md"), "swarm", instructions);
   }
+  if (agents.includes("antigravity")) {
+    mergeSentinelBlock(join(homedir(), ".gemini/GEMINI.md"), "swarm", instructions);
+  }
+}
+
+function mergeOpenCodeConfig(pluginPath: string): void {
+  const configPath = join(homedir(), ".config/opencode/opencode.json");
+  const launcher = swarmMcpLauncher(pluginPath);
+  const port = loadConfig().port;
+  let existing: { mcp?: Record<string, unknown>; instructions?: string[] } = {};
+  if (existsSync(configPath)) {
+    try {
+      existing = JSON.parse(readFileSync(configPath, "utf8")) as typeof existing;
+    } catch {
+      return;
+    }
+  }
+  const instructions = new Set(existing.instructions ?? []);
+  instructions.add(join(pluginPath, "AGENTS.md"));
+  instructions.add(join(pluginPath, "rules/swarm.md"));
+  instructions.add(join(pluginPath, "skills/swarm-task/SKILL.md"));
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify({
+    ...existing,
+    mcp: {
+      ...(existing.mcp ?? {}),
+      swarm: {
+        type: "local",
+        command: ["node", launcher],
+        enabled: true,
+        timeout: 15000,
+        environment: { SWARM_URL: `http://127.0.0.1:${port}`, SWARM_AGENT: "opencode", SWARM_REGISTER_SESSION: "0" },
+      },
+    },
+    instructions: [...instructions],
+  }, null, 2)}\n`);
 }
 
 export interface DemoOptions {
@@ -783,7 +768,7 @@ function printInstallGuide(port: number, agents: string[], autoUpdate: boolean, 
   CLI (new shell, or: export PATH="$HOME/.local/bin:$PATH")
     swarm open                       Open the board
     swarm status                     Daemon PID, port, paths
-    swarm doctor                     Health check (--hooks to test hooks)
+    swarm doctor                     Health check (--hooks replays no-op hook payloads)
     swarm demo                       Create a demo task on the board
     swarm plugin sync                Re-link plugins after manual edits
 ${pathHint ? `\n  ⚠ ${pathHint}\n` : ""}\
@@ -795,12 +780,15 @@ ${pathHint ? `\n  ⚠ ${pathHint}\n` : ""}\
     swarm_handoff        Write a handoff note and move task to handoff
     swarm_pickup         Claim a handoff and get a pickup prompt
     swarm_kb_search      Semantic search over ~/.swarm/kb
-    swarm_task_stage     Move, claim, release, heartbeat, archive tasks
+    swarm_task_create    Create a main task or explicit child task
+    swarm_task_join      Record a participant without claiming work
+    swarm_task_claim     Acquire the single active work lease
+    swarm_task_stage     Heartbeat, submit for review, approve, request changes, release
 
-  Handoff workflow
-    1. End a session → tile appears on the board automatically
-    2. Call swarm_handoff (or /handoff) before switching agents
-    3. In the next agent: swarm_pickup or /pickup to claim and continue
+  Explicit work workflow
+    1. A coordinator creates one main task and a child task for each planned subtask
+    2. A participant joins, then claims before doing work
+    3. The worker explicitly submits ready work for review; reviewers approve or request changes
 
   Files & data
     ~/.swarm/                        Home (config, DB, KB, logs)
@@ -811,11 +799,6 @@ ${pathHint ? `\n  ⚠ ${pathHint}\n` : ""}\
     launchctl kickstart -k gui/${uid}/dev.swarm.daemon   Restart daemon
     tail -f ~/.swarm/logs/daemon.err.log               Error log
 ${autoUpdate ? `    Auto-update: enabled (hourly via dev.swarm.updater)\n` : "    Auto-update: disabled\n"}\
-${agents.includes("codex") ? `\
-  Codex (required manual step)
-    Open Codex and run /hooks → approve swarm plugin hooks
-    Without this, Codex sessions will NOT appear on the board.
-` : ""}\
   Requirements
     Ollama must stay running: ollama serve
     Models: nomic-embed-text (embeddings), qwen3:4b (chat/summarize)
@@ -952,7 +935,7 @@ export async function runInstall(options: InstallOptions = {}): Promise<void> {
 
   const codexCheck = checkCodexHooks();
   if (selected.includes("codex")) {
-    const msg = codexCheck.detail ?? (codexCheck.ok ? "Codex hooks merged" : "Codex hooks not configured");
+    const msg = codexCheck.detail ?? (codexCheck.ok ? "Codex MCP configured" : "Codex MCP not configured");
     if (nonInteractive) {
       console.log(codexCheck.ok ? `  ✓ ${msg}` : `  ⚠ ${msg}`);
     } else if (!codexCheck.ok) {
@@ -1023,9 +1006,9 @@ export async function runDoctor(hooks = false): Promise<number> {
     ? join(paths.home, "app/current/plugin")
     : join(process.cwd(), "plugin");
   const codex = checkCodexHooks();
-  checks.push(["codex hooks", codex.ok, codex.detail]);
+  checks.push(["codex MCP", codex.ok, codex.detail]);
   const cursor = checkCursorHooks();
-  checks.push(["cursor hooks", cursor.ok, cursor.detail]);
+  checks.push(["cursor MCP", cursor.ok, cursor.detail]);
   const cursorMcp = checkCursorMcp(pluginPath);
   checks.push(["cursor mcp", cursorMcp.ok, cursorMcp.detail]);
   const ag = checkAntigravityPlugin(pluginPath);
@@ -1201,4 +1184,3 @@ export async function runClean(): Promise<void> {
     console.log(`  ... and ${result.details.length - 15} more.`);
   }
 }
-

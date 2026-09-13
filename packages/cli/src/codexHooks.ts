@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-
 export interface CodexHookCommand {
   type?: string;
   command?: string;
@@ -17,94 +15,22 @@ export interface CodexHooksFile {
   hooks?: Record<string, CodexHookMatcher[]>;
 }
 
-const SESSION_END_MAX_TIMEOUT_SEC = 3;
-
-export function expandPluginRoot(command: string, pluginPath: string): string {
-  return command.replaceAll("${PLUGIN_ROOT}", pluginPath.replace(/\\/g, "/"));
+function isSwarmCodexHook(command: string | undefined): boolean {
+  return Boolean(command?.includes("post-hook.mjs") && /(?:^|\s)codex(?:\s|$)/.test(command));
 }
 
-function materializeCommand(
-  hook: CodexHookCommand,
-  pluginPath: string,
-  event: string,
-): CodexHookCommand {
-  const next: CodexHookCommand = { ...hook };
-  if (typeof next.command === "string") {
-    next.command = expandPluginRoot(next.command, pluginPath);
-  }
-  if (
-    event === "SessionEnd" &&
-    typeof next.timeout === "number" &&
-    next.timeout > SESSION_END_MAX_TIMEOUT_SEC
-  ) {
-    next.timeout = SESSION_END_MAX_TIMEOUT_SEC;
-  }
-  return next;
-}
-
-export function materializeCodexUserHooks(
-  incoming: CodexHooksFile,
-  pluginPath: string,
-): CodexHooksFile {
+/** Remove legacy Swarm hooks without disturbing hooks installed by the user. */
+export function removeSwarmCodexHooks(existing: CodexHooksFile): CodexHooksFile {
   const hooks: Record<string, CodexHookMatcher[]> = {};
-  for (const [event, matchers] of Object.entries(incoming.hooks ?? {})) {
-    hooks[event] = matchers.map((matcher) => ({
-      ...matcher,
-      hooks: (matcher.hooks ?? []).map((hook) => materializeCommand(hook, pluginPath, event)),
-    }));
+  for (const [event, matchers] of Object.entries(existing.hooks ?? {})) {
+    const kept = matchers.flatMap((matcher) => {
+      if (!matcher.hooks) return [matcher];
+      const commands = matcher.hooks.filter((hook) => !isSwarmCodexHook(hook.command));
+      return commands.length > 0 ? [{ ...matcher, hooks: commands }] : [];
+    });
+    if (kept.length > 0) hooks[event] = kept;
   }
-  return { hooks };
-}
-
-function firstSessionStartCommand(hooksJson: string): string | undefined {
-  try {
-    const parsed = JSON.parse(hooksJson) as CodexHooksFile;
-    const matchers = parsed.hooks?.SessionStart ?? [];
-    for (const matcher of matchers) {
-      for (const hook of matcher.hooks ?? []) {
-        if (typeof hook.command === "string" && hook.command.includes("post-hook.mjs")) {
-          return hook.command;
-        }
-      }
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
-function scriptPathFromCommand(command: string): string | undefined {
-  const quoted = command.match(/node\s+"([^"]+post-hook\.mjs)"/);
-  if (quoted?.[1]) return quoted[1];
-  const unquoted = command.match(/node\s+(\S+post-hook\.mjs)/);
-  return unquoted?.[1];
-}
-
-export function inspectCodexUserHooks(hooksJson: string): { ok: boolean; detail?: string } {
-  if (hooksJson.includes("${PLUGIN_ROOT}")) {
-    return {
-      ok: false,
-      detail: "Codex user hooks still use ${PLUGIN_ROOT} — run `swarm plugin sync`",
-    };
-  }
-  let parsed: CodexHooksFile;
-  try {
-    parsed = JSON.parse(hooksJson) as CodexHooksFile;
-  } catch {
-    return { ok: false, detail: "Invalid ~/.codex/hooks.json" };
-  }
-  if (!parsed.hooks?.SessionStart) {
-    return { ok: false, detail: "Swarm SessionStart hook not merged into ~/.codex/hooks.json" };
-  }
-  const command = firstSessionStartCommand(hooksJson);
-  const script = command ? scriptPathFromCommand(command) : undefined;
-  if (!script) {
-    return { ok: false, detail: "Swarm SessionStart hook not merged into ~/.codex/hooks.json" };
-  }
-  if (!existsSync(script)) {
-    return { ok: false, detail: `Codex hook script missing: ${script}` };
-  }
-  return { ok: true };
+  return { ...existing, hooks };
 }
 
 const SWARM_START = "# swarm:start";

@@ -1,30 +1,31 @@
 ---
 name: swarm-task
-description: Claim, join, tag, and track Agent Swarm board tasks with heartbeat and handoff. Use when starting, updating, or finishing any board task.
+description: Explicitly plan, join, claim, review, and hand off Agent Swarm board tasks. Use when starting, updating, reviewing, or finishing board work.
 ---
 
 # Swarm Task
 
 Board UI: http://127.0.0.1:7777
 
-## Board (required)
-- Session start: `swarm_board` (repo filter), `swarm_task_join` or `swarm_task_stage claim` when starting work.
-- During: `swarm_task_stage heartbeat` every ~5min, `swarm_task_update` summary + tags when goal/state changes.
-- Tags: lowercase `["<repo>", "<area>", "<kind>"]` e.g. `["agent-swarm","daemon","bugfix"]`.
-- Metadata auto-captured (session id, transcript path, model, cwd, pid) — do NOT hand-edit, verify via `swarm_task_get`.
-- End: `swarm_handoff` with goal/done/next/decisions/gotchas/verification/files.
-- Pass your model explicitly on create/join (e.g. model: "claude-opus-4-5") — you know your own model; auto-capture is best-effort.
+Read `AGENTS.md` for the universal contract. Work is explicit: a hook, session, tool call, subagent, reviewer, advisor, or CLI process never creates a task or moves one on your behalf.
+
+## Plan and create tasks
+
+1. Once a plan is approved, the coordinator calls `swarm_task_create` for one main task containing the full plan and context.
+2. The coordinator explicitly creates one linked child task for each executable plan subtask.
+3. Create no task for coordination chatter, advice, code review, a session, or a spawned agent.
 
 ## Claim vs join
-- Unclaimed task: `swarm_task_join` claims it, or `swarm_task_stage` with action `claim`.
-- Already claimed by another agent: `swarm_task_join` appends your session without stealing the claim — do NOT overwrite.
-- If origin is `unknown`, claim/join backfills agent, session, model, cwd, pid automatically.
+- `swarm_task_join` records a participant only. It does not claim, steal a lease, or change a status.
+- To work, call `swarm_task_claim`. A task has one active lease; if the claim fails, do not start concurrent work.
+- Save the claim token from a successful claim. Use it for heartbeat, updates, submit, release, handoff, and review actions.
 
-## Tags
-- Always lowercase, deduped. Minimum: repo name, e.g. `["agent-swarm","daemon","bugfix"]`.
-- Set on create via `swarm_task_create` tags, update via `swarm_task_update` or `swarm_task_stage` tags/addTags/removeTags.
-- Update summary + tags whenever goal, state, or scope changes.
+## Lifecycle
 
-## Heartbeat
-- Call `swarm_task_stage` with action `heartbeat` every ~5min during active work.
-- Verify metadata via `swarm_task_get` — never hand-edit session id, transcript path, model, cwd, or pid.
+1. Claim `ready` work to move it to `in_progress`.
+2. Heartbeat while actively working, then explicitly submit it for `review` and release the implementation lease.
+3. A reviewer claims `review`, then explicitly approves to `done` or requests changes to `ready`.
+4. Release or hand off incomplete implementation back to `ready`.
+5. The coordinator, not a child task, explicitly advances and completes the main task.
+
+Do not make a transition based on an inferred session event or a tool call.

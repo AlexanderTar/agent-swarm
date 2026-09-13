@@ -6,6 +6,6 @@ description: Claim a handoff task from the Agent Swarm board and continue where 
 # Swarm Pickup
 
 1. Call `swarm_pickup` without a key to list open handoffs, or with a specific task key.
-2. Read the returned pickup prompt completely.
-3. Restate your plan to the user before making changes.
-4. Call `swarm_task_stage` with action `heartbeat` periodically during long work.
+2. Read the returned pickup prompt completely, then join the explicit task.
+3. Claim the task before making changes. If another agent holds its lease, do not work concurrently.
+4. Heartbeat only while you hold the claim token; submit to review or explicitly release it when finished.

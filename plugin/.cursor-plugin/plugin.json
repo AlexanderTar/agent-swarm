@@ -8,7 +8,6 @@
   "license": "MIT",
   "keywords": ["swarm", "kanban", "handoff", "mcp"],
   "skills": "skills",
-  "hooks": "cursor-hooks.json",
   "rules": "./rules/",
   "mcpServers": "./mcp.json"
 }

@@ -98,7 +98,7 @@ async function main(): Promise<void> {
 
 Usage:
   swarm install       Interactive setup wizard (--yes for non-interactive)
-  swarm doctor        Health checks (--hooks for synthetic replay)
+  swarm doctor        Health checks (--hooks for no-op synthetic replay)
   swarm status        Daemon status
   swarm demo          Create a demo task on the board
   swarm clean         Archive subagent tasks and clean up local board
@@ -118,7 +118,7 @@ Demo flags:
 Install flags:
   --yes, -y           Skip prompts (auto-detected when stdin is not a TTY)
   --from-bootstrap    Installed via install.sh (release already at ~/.swarm/app/current)
-  --agents a,b,c      Agent ids: cursor, claude, codex, antigravity
+  --agents a,b,c      Agent ids: cursor, claude, codex, antigravity, opencode
   --port 7777         Daemon port
   --no-auto-update    Disable hourly updater launchd job
   --no-pull-models    Skip ollama pull for missing models
