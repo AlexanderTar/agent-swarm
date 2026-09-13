@@ -920,7 +920,9 @@ export async function runInstall(options: InstallOptions = {}): Promise<void> {
     // macOS; releases install their own dependencies below instead.
     cpSync(repoRoot, join(SWARM_HOME, "app/releases/dev"), {
       recursive: true,
-      filter: (source) => !source.includes(`${sep}node_modules${sep}`) && !source.endsWith(`${sep}node_modules`),
+      filter: (source) =>
+        (!source.includes(`${sep}node_modules${sep}`) && !source.endsWith(`${sep}node_modules`)) &&
+        (!source.includes(`${sep}.git${sep}`) && !source.endsWith(`${sep}.git`)),
     });
     const tmp = join(SWARM_HOME, "app/current.new");
     symlinkForce(join(SWARM_HOME, "app/releases/dev"), tmp);
