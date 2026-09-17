@@ -1,0 +1,227 @@
+[2mAvailable models[22m
+
+[32mauto[39m [2m- Auto[22m[2m (current, default)[22m
+[36mgpt-5.3-codex-low[39m [2m- Codex 5.3 Low[22m
+[36mgpt-5.3-codex-low-fast[39m [2m- Codex 5.3 Low Fast[22m
+[36mgpt-5.3-codex[39m [2m- Codex 5.3[22m
+[36mgpt-5.3-codex-fast[39m [2m- Codex 5.3 Fast[22m
+[36mgpt-5.3-codex-high[39m [2m- Codex 5.3 High[22m
+[36mgpt-5.3-codex-high-fast[39m [2m- Codex 5.3 High Fast[22m
+[36mgpt-5.3-codex-xhigh[39m [2m- Codex 5.3 Extra High[22m
+[36mgpt-5.3-codex-xhigh-fast[39m [2m- Codex 5.3 Extra High Fast[22m
+[36mgpt-5.2[39m [2m- GPT-5.2[22m
+[36mcursor-grok-4.6-high-fast[39m [2m- Cursor Grok 4.6 Fast[22m
+[36mcomposer-2.5[39m [2m- Composer 2.5[22m
+[36mclaude-opus-5-thinking-high[39m [2m- Claude Opus 5 1M Thinking[22m
+[36mclaude-opus-5-thinking-high-fast[39m [2m- Claude Opus 5 1M Thinking Fast[22m
+[36mgpt-5.6-sol-high[39m [2m- GPT-5.6 Sol 1M High[22m
+[36mgpt-5.6-sol-high-fast[39m [2m- GPT-5.6 Sol 1M High Fast[22m
+[36mgpt-5.6-sol-xhigh[39m [2m- GPT-5.6 Sol 1M Extra High[22m
+[36mgpt-5.6-sol-xhigh-fast[39m [2m- GPT-5.6 Sol 1M Extra High Fast[22m
+[36mclaude-fable-5-thinking-high[39m [2m- Claude Fable 5 1M Thinking (NO ZDR)[22m
+[36mclaude-fable-5-thinking-xhigh[39m [2m- Claude Fable 5 1M Extra High Thinking (NO ZDR)[22m
+[36mcursor-grok-4.5-high[39m [2m- Cursor Grok 4.5[22m
+[36mcursor-grok-4.5-high-fast[39m [2m- Cursor Grok 4.5 Fast[22m
+[36mgemini-3.7-flash-high[39m [2m- Gemini 3.7 Flash[22m
+[36mclaude-sonnet-5-thinking-high[39m [2m- Claude Sonnet 5 1M Thinking[22m
+[36mclaude-sonnet-5-thinking-xhigh[39m [2m- Claude Sonnet 5 1M Extra High Thinking[22m
+[36mgpt-5.6-luna-high[39m [2m- GPT-5.6 Luna 1M High[22m
+[36mcursor-grok-4.6-low[39m [2m- Cursor Grok 4.6 Low[22m
+[36mcursor-grok-4.6-low-fast[39m [2m- Cursor Grok 4.6 Low Fast[22m
+[36mcursor-grok-4.6-medium[39m [2m- Cursor Grok 4.6 Medium[22m
+[36mcursor-grok-4.6-medium-fast[39m [2m- Cursor Grok 4.6 Medium Fast[22m
+[36mcursor-grok-4.6-high[39m [2m- Cursor Grok 4.6[22m
+[36mcursor-grok-4.6-xhigh[39m [2m- Cursor Grok 4.6 Extra High[22m
+[36mcursor-grok-4.6-xhigh-fast[39m [2m- Cursor Grok 4.6 Extra High Fast[22m
+[36mcomposer-2.5-fast[39m [2m- Composer 2.5 Fast[22m
+[36mclaude-opus-5-low[39m [2m- Claude Opus 5 1M Low[22m
+[36mclaude-opus-5-low-fast[39m [2m- Claude Opus 5 1M Low Fast[22m
+[36mclaude-opus-5-medium[39m [2m- Claude Opus 5 1M Medium[22m
+[36mclaude-opus-5-medium-fast[39m [2m- Claude Opus 5 1M Medium Fast[22m
+[36mclaude-opus-5-high[39m [2m- Claude Opus 5 1M[22m
+[36mclaude-opus-5-high-fast[39m [2m- Claude Opus 5 1M Fast[22m
+[36mclaude-opus-5-thinking-low[39m [2m- Claude Opus 5 1M Low Thinking[22m
+[36mclaude-opus-5-thinking-low-fast[39m [2m- Claude Opus 5 1M Low Thinking Fast[22m
+[36mclaude-opus-5-thinking-medium[39m [2m- Claude Opus 5 1M Medium Thinking[22m
+[36mclaude-opus-5-thinking-medium-fast[39m [2m- Claude Opus 5 1M Medium Thinking Fast[22m
+[36mclaude-opus-5-thinking-xhigh[39m [2m- Claude Opus 5 1M Extra High Thinking[22m
+[36mclaude-opus-5-thinking-xhigh-fast[39m [2m- Claude Opus 5 1M Extra High Thinking Fast[22m
+[36mclaude-opus-5-thinking-max[39m [2m- Claude Opus 5 1M Max Thinking[22m
+[36mclaude-opus-5-thinking-max-fast[39m [2m- Claude Opus 5 1M Max Thinking Fast[22m
+[36mclaude-opus-4-8-low[39m [2m- Claude Opus 4.8 1M Low[22m
+[36mclaude-opus-4-8-low-fast[39m [2m- Claude Opus 4.8 1M Low Fast[22m
+[36mclaude-opus-4-8-medium[39m [2m- Claude Opus 4.8 1M Medium[22m
+[36mclaude-opus-4-8-medium-fast[39m [2m- Claude Opus 4.8 1M Medium Fast[22m
+[36mclaude-opus-4-8-high[39m [2m- Claude Opus 4.8 1M[22m
+[36mclaude-opus-4-8-high-fast[39m [2m- Claude Opus 4.8 1M Fast[22m
+[36mclaude-opus-4-8-xhigh[39m [2m- Claude Opus 4.8 1M Extra High[22m
+[36mclaude-opus-4-8-xhigh-fast[39m [2m- Claude Opus 4.8 1M Extra High Fast[22m
+[36mclaude-opus-4-8-max[39m [2m- Claude Opus 4.8 1M Max[22m
+[36mclaude-opus-4-8-max-fast[39m [2m- Claude Opus 4.8 1M Max Fast[22m
+[36mclaude-opus-4-8-thinking-low[39m [2m- Claude Opus 4.8 1M Low Thinking[22m
+[36mclaude-opus-4-8-thinking-low-fast[39m [2m- Claude Opus 4.8 1M Low Thinking Fast[22m
+[36mclaude-opus-4-8-thinking-medium[39m [2m- Claude Opus 4.8 1M Medium Thinking[22m
+[36mclaude-opus-4-8-thinking-medium-fast[39m [2m- Claude Opus 4.8 1M Medium Thinking Fast[22m
+[36mclaude-opus-4-8-thinking-high[39m [2m- Claude Opus 4.8 1M Thinking[22m
+[36mclaude-opus-4-8-thinking-high-fast[39m [2m- Claude Opus 4.8 1M Thinking Fast[22m
+[36mclaude-opus-4-8-thinking-xhigh[39m [2m- Claude Opus 4.8 1M Extra High Thinking[22m
+[36mclaude-opus-4-8-thinking-xhigh-fast[39m [2m- Claude Opus 4.8 1M Extra High Thinking Fast[22m
+[36mclaude-opus-4-8-thinking-max[39m [2m- Claude Opus 4.8 1M Max Thinking[22m
+[36mclaude-opus-4-8-thinking-max-fast[39m [2m- Claude Opus 4.8 1M Max Thinking Fast[22m
+[36mgpt-5.6-sol-none[39m [2m- GPT-5.6 Sol 1M None[22m
+[36mgpt-5.6-sol-none-fast[39m [2m- GPT-5.6 Sol 1M None Fast[22m
+[36mgpt-5.6-sol-low[39m [2m- GPT-5.6 Sol 1M Low[22m
+[36mgpt-5.6-sol-low-fast[39m [2m- GPT-5.6 Sol 1M Low Fast[22m
+[36mgpt-5.6-sol-medium[39m [2m- GPT-5.6 Sol 1M[22m
+[36mgpt-5.6-sol-medium-fast[39m [2m- GPT-5.6 Sol 1M Fast[22m
+[36mgpt-5.6-sol-max[39m [2m- GPT-5.6 Sol 1M Max[22m
+[36mgpt-5.6-sol-max-fast[39m [2m- GPT-5.6 Sol 1M Max Fast[22m
+[36mgpt-5.5-none[39m [2m- GPT-5.5 1M None[22m
+[36mgpt-5.5-none-fast[39m [2m- GPT-5.5 None Fast[22m
+[36mgpt-5.5-low[39m [2m- GPT-5.5 1M Low[22m
+[36mgpt-5.5-low-fast[39m [2m- GPT-5.5 Low Fast[22m
+[36mgpt-5.5-medium[39m [2m- GPT-5.5 1M[22m
+[36mgpt-5.5-medium-fast[39m [2m- GPT-5.5 Fast[22m
+[36mgpt-5.5-high[39m [2m- GPT-5.5 1M High[22m
+[36mgpt-5.5-high-fast[39m [2m- GPT-5.5 High Fast[22m
+[36mgpt-5.5-extra-high[39m [2m- GPT-5.5 1M Extra High[22m
+[36mgpt-5.5-extra-high-fast[39m [2m- GPT-5.5 Extra High Fast[22m
+[36mclaude-fable-5-1-low[39m [2m- Claude Fable 5.1 1M Low (NO ZDR)[22m
+[36mclaude-fable-5-1-medium[39m [2m- Claude Fable 5.1 1M Medium (NO ZDR)[22m
+[36mclaude-fable-5-1-high[39m [2m- Claude Fable 5.1 1M (NO ZDR)[22m
+[36mclaude-fable-5-1-xhigh[39m [2m- Claude Fable 5.1 1M Extra High (NO ZDR)[22m
+[36mclaude-fable-5-1-max[39m [2m- Claude Fable 5.1 1M Max (NO ZDR)[22m
+[36mclaude-fable-5-1-thinking-low[39m [2m- Claude Fable 5.1 1M Low Thinking (NO ZDR)[22m
+[36mclaude-fable-5-1-thinking-medium[39m [2m- Claude Fable 5.1 1M Medium Thinking (NO ZDR)[22m
+[36mclaude-fable-5-1-thinking-high[39m [2m- Claude Fable 5.1 1M Thinking (NO ZDR)[22m
+[36mclaude-fable-5-1-thinking-xhigh[39m [2m- Claude Fable 5.1 1M Extra High Thinking (NO ZDR)[22m
+[36mclaude-fable-5-1-thinking-max[39m [2m- Claude Fable 5.1 1M Max Thinking (NO ZDR)[22m
+[36mclaude-fable-5-low[39m [2m- Claude Fable 5 1M Low (NO ZDR)[22m
+[36mclaude-fable-5-medium[39m [2m- Claude Fable 5 1M Medium (NO ZDR)[22m
+[36mclaude-fable-5-high[39m [2m- Claude Fable 5 1M (NO ZDR)[22m
+[36mclaude-fable-5-xhigh[39m [2m- Claude Fable 5 1M Extra High (NO ZDR)[22m
+[36mclaude-fable-5-max[39m [2m- Claude Fable 5 1M Max (NO ZDR)[22m
+[36mclaude-fable-5-thinking-low[39m [2m- Claude Fable 5 1M Low Thinking (NO ZDR)[22m
+[36mclaude-fable-5-thinking-medium[39m [2m- Claude Fable 5 1M Medium Thinking (NO ZDR)[22m
+[36mclaude-fable-5-thinking-max[39m [2m- Claude Fable 5 1M Max Thinking (NO ZDR)[22m
+[36mcursor-grok-4.5-low[39m [2m- Cursor Grok 4.5 Low[22m
+[36mcursor-grok-4.5-low-fast[39m [2m- Cursor Grok 4.5 Low Fast[22m
+[36mcursor-grok-4.5-medium[39m [2m- Cursor Grok 4.5 Medium[22m
+[36mcursor-grok-4.5-medium-fast[39m [2m- Cursor Grok 4.5 Medium Fast[22m
+[36mgemini-3.8-flash-low[39m [2m- Gemini 3.8 Flash Low[22m
+[36mgemini-3.8-flash-medium[39m [2m- Gemini 3.8 Flash Medium[22m
+[36mgemini-3.8-flash-high[39m [2m- Gemini 3.8 Flash High[22m
+[36mgemini-3.7-flash-low[39m [2m- Gemini 3.7 Flash Low[22m
+[36mgemini-3.7-flash-medium[39m [2m- Gemini 3.7 Flash Medium[22m
+[36mmuse-spark-1.3-minimal[39m [2m- Muse Spark 1.3 1M Minimal[22m
+[36mmuse-spark-1.3-low[39m [2m- Muse Spark 1.3 1M Low[22m
+[36mmuse-spark-1.3-medium[39m [2m- Muse Spark 1.3 1M Medium[22m
+[36mmuse-spark-1.3-high[39m [2m- Muse Spark 1.3 1M[22m
+[36mmuse-spark-1.3-xhigh[39m [2m- Muse Spark 1.3 1M Extra High[22m
+[36mmuse-spark-1.3-max[39m [2m- Muse Spark 1.3 1M Max[22m
+[36mgpt-5.6-terra-none[39m [2m- GPT-5.6 Terra 1M None[22m
+[36mgpt-5.6-terra-none-fast[39m [2m- GPT-5.6 Terra 1M None Fast[22m
+[36mgpt-5.6-terra-low[39m [2m- GPT-5.6 Terra 1M Low[22m
+[36mgpt-5.6-terra-low-fast[39m [2m- GPT-5.6 Terra 1M Low Fast[22m
+[36mgpt-5.6-terra-medium[39m [2m- GPT-5.6 Terra 1M[22m
+[36mgpt-5.6-terra-medium-fast[39m [2m- GPT-5.6 Terra 1M Fast[22m
+[36mgpt-5.6-terra-high[39m [2m- GPT-5.6 Terra 1M High[22m
+[36mgpt-5.6-terra-high-fast[39m [2m- GPT-5.6 Terra 1M High Fast[22m
+[36mgpt-5.6-terra-xhigh[39m [2m- GPT-5.6 Terra 1M Extra High[22m
+[36mgpt-5.6-terra-xhigh-fast[39m [2m- GPT-5.6 Terra 1M Extra High Fast[22m
+[36mgpt-5.6-terra-max[39m [2m- GPT-5.6 Terra 1M Max[22m
+[36mgpt-5.6-terra-max-fast[39m [2m- GPT-5.6 Terra 1M Max Fast[22m
+[36mclaude-sonnet-5-low[39m [2m- Claude Sonnet 5 1M Low[22m
+[36mclaude-sonnet-5-medium[39m [2m- Claude Sonnet 5 1M Medium[22m
+[36mclaude-sonnet-5-high[39m [2m- Claude Sonnet 5 1M[22m
+[36mclaude-sonnet-5-xhigh[39m [2m- Claude Sonnet 5 1M Extra High[22m
+[36mclaude-sonnet-5-max[39m [2m- Claude Sonnet 5 1M Max[22m
+[36mclaude-sonnet-5-thinking-low[39m [2m- Claude Sonnet 5 1M Low Thinking[22m
+[36mclaude-sonnet-5-thinking-medium[39m [2m- Claude Sonnet 5 1M Medium Thinking[22m
+[36mclaude-sonnet-5-thinking-max[39m [2m- Claude Sonnet 5 1M Max Thinking[22m
+[36mclaude-4.6-sonnet-medium[39m [2m- Claude Sonnet 4.6 1M[22m
+[36mclaude-4.6-sonnet-medium-thinking[39m [2m- Claude Sonnet 4.6 1M Thinking[22m
+[36mclaude-opus-4-7-low[39m [2m- Claude Opus 4.7 1M Low[22m
+[36mclaude-opus-4-7-low-fast[39m [2m- Claude Opus 4.7 1M Low Fast[22m
+[36mclaude-opus-4-7-medium[39m [2m- Claude Opus 4.7 1M Medium[22m
+[36mclaude-opus-4-7-medium-fast[39m [2m- Claude Opus 4.7 1M Medium Fast[22m
+[36mclaude-opus-4-7-high[39m [2m- Claude Opus 4.7 1M High[22m
+[36mclaude-opus-4-7-high-fast[39m [2m- Claude Opus 4.7 1M High Fast[22m
+[36mclaude-opus-4-7-xhigh[39m [2m- Claude Opus 4.7 1M[22m
+[36mclaude-opus-4-7-xhigh-fast[39m [2m- Claude Opus 4.7 1M Fast[22m
+[36mclaude-opus-4-7-max[39m [2m- Claude Opus 4.7 1M Max[22m
+[36mclaude-opus-4-7-max-fast[39m [2m- Claude Opus 4.7 1M Max Fast[22m
+[36mclaude-opus-4-7-thinking-low[39m [2m- Claude Opus 4.7 1M Low Thinking[22m
+[36mclaude-opus-4-7-thinking-low-fast[39m [2m- Claude Opus 4.7 1M Low Thinking Fast[22m
+[36mclaude-opus-4-7-thinking-medium[39m [2m- Claude Opus 4.7 1M Medium Thinking[22m
+[36mclaude-opus-4-7-thinking-medium-fast[39m [2m- Claude Opus 4.7 1M Medium Thinking Fast[22m
+[36mclaude-opus-4-7-thinking-high[39m [2m- Claude Opus 4.7 1M High Thinking[22m
+[36mclaude-opus-4-7-thinking-high-fast[39m [2m- Claude Opus 4.7 1M High Thinking Fast[22m
+[36mclaude-opus-4-7-thinking-xhigh[39m [2m- Claude Opus 4.7 1M Thinking[22m
+[36mclaude-opus-4-7-thinking-xhigh-fast[39m [2m- Claude Opus 4.7 1M Thinking Fast[22m
+[36mclaude-opus-4-7-thinking-max[39m [2m- Claude Opus 4.7 1M Max Thinking[22m
+[36mclaude-opus-4-7-thinking-max-fast[39m [2m- Claude Opus 4.7 1M Max Thinking Fast[22m
+[36mgpt-5.4-low[39m [2m- GPT-5.4 1M Low[22m
+[36mgpt-5.4-medium[39m [2m- GPT-5.4 1M[22m
+[36mgpt-5.4-medium-fast[39m [2m- GPT-5.4 Fast[22m
+[36mgpt-5.4-high[39m [2m- GPT-5.4 1M High[22m
+[36mgpt-5.4-high-fast[39m [2m- GPT-5.4 High Fast[22m
+[36mgpt-5.4-xhigh[39m [2m- GPT-5.4 1M Extra High[22m
+[36mgpt-5.4-xhigh-fast[39m [2m- GPT-5.4 Extra High Fast[22m
+[36mclaude-4.6-opus-high[39m [2m- Claude Opus 4.6 1M[22m
+[36mclaude-4.6-opus-max[39m [2m- Claude Opus 4.6 1M Max[22m
+[36mclaude-4.6-opus-high-thinking[39m [2m- Claude Opus 4.6 1M Thinking[22m
+[36mclaude-4.6-opus-max-thinking[39m [2m- Claude Opus 4.6 1M Max Thinking[22m
+[36mclaude-4.5-opus-high[39m [2m- Claude Opus 4.5[22m
+[36mclaude-4.5-opus-high-thinking[39m [2m- Claude Opus 4.5 Thinking[22m
+[36mgpt-5.2-low[39m [2m- GPT-5.2 Low[22m
+[36mgpt-5.2-low-fast[39m [2m- GPT-5.2 Low Fast[22m
+[36mgpt-5.2-fast[39m [2m- GPT-5.2 Fast[22m
+[36mgpt-5.2-high[39m [2m- GPT-5.2 High[22m
+[36mgpt-5.2-high-fast[39m [2m- GPT-5.2 High Fast[22m
+[36mgpt-5.2-xhigh[39m [2m- GPT-5.2 Extra High[22m
+[36mgpt-5.2-xhigh-fast[39m [2m- GPT-5.2 Extra High Fast[22m
+[36mgpt-5.6-luna-none[39m [2m- GPT-5.6 Luna 1M None[22m
+[36mgpt-5.6-luna-none-fast[39m [2m- GPT-5.6 Luna 1M None Fast[22m
+[36mgpt-5.6-luna-low[39m [2m- GPT-5.6 Luna 1M Low[22m
+[36mgpt-5.6-luna-low-fast[39m [2m- GPT-5.6 Luna 1M Low Fast[22m
+[36mgpt-5.6-luna-medium[39m [2m- GPT-5.6 Luna 1M[22m
+[36mgpt-5.6-luna-medium-fast[39m [2m- GPT-5.6 Luna 1M Fast[22m
+[36mgpt-5.6-luna-high-fast[39m [2m- GPT-5.6 Luna 1M High Fast[22m
+[36mgpt-5.6-luna-xhigh[39m [2m- GPT-5.6 Luna 1M Extra High[22m
+[36mgpt-5.6-luna-xhigh-fast[39m [2m- GPT-5.6 Luna 1M Extra High Fast[22m
+[36mgpt-5.6-luna-max[39m [2m- GPT-5.6 Luna 1M Max[22m
+[36mgpt-5.6-luna-max-fast[39m [2m- GPT-5.6 Luna 1M Max Fast[22m
+[36mgemini-3.6-flash-minimal[39m [2m- Gemini 3.6 Flash Minimal[22m
+[36mgemini-3.6-flash-low[39m [2m- Gemini 3.6 Flash Low[22m
+[36mgemini-3.6-flash-medium[39m [2m- Gemini 3.6 Flash Medium[22m
+[36mgemini-3.6-flash-high[39m [2m- Gemini 3.6 Flash[22m
+[36mgemini-3.1-pro[39m [2m- Gemini 3.1 Pro[22m
+[36mgpt-5.4-mini-none[39m [2m- GPT-5.4 Mini None[22m
+[36mgpt-5.4-mini-low[39m [2m- GPT-5.4 Mini Low[22m
+[36mgpt-5.4-mini-medium[39m [2m- GPT-5.4 Mini[22m
+[36mgpt-5.4-mini-high[39m [2m- GPT-5.4 Mini High[22m
+[36mgpt-5.4-mini-xhigh[39m [2m- GPT-5.4 Mini Extra High[22m
+[36mgpt-5.4-nano-none[39m [2m- GPT-5.4 Nano None[22m
+[36mgpt-5.4-nano-low[39m [2m- GPT-5.4 Nano Low[22m
+[36mgpt-5.4-nano-medium[39m [2m- GPT-5.4 Nano[22m
+[36mgpt-5.4-nano-high[39m [2m- GPT-5.4 Nano High[22m
+[36mgpt-5.4-nano-xhigh[39m [2m- GPT-5.4 Nano Extra High[22m
+[36mclaude-4.5-sonnet[39m [2m- Claude Sonnet 4.5[22m
+[36mclaude-4.5-sonnet-thinking[39m [2m- Claude Sonnet 4.5 Thinking[22m
+[36mgpt-5.1-low[39m [2m- GPT-5.1 Low[22m
+[36mgpt-5.1[39m [2m- GPT-5.1[22m
+[36mgpt-5.1-high[39m [2m- GPT-5.1 High[22m
+[36mgemini-3-flash[39m [2m- Gemini 3 Flash[22m
+[36mgemini-3.5-flash[39m [2m- Gemini 3.5 Flash[22m
+[36mclaude-4-sonnet[39m [2m- Claude Sonnet 4[22m
+[36mclaude-4-sonnet-thinking[39m [2m- Claude Sonnet 4 Thinking[22m
+[36mgpt-5-mini[39m [2m- GPT-5 Mini[22m
+[36mkimi-k3-low[39m [2m- Kimi K3 Low[22m
+[36mkimi-k3-high[39m [2m- Kimi K3 High[22m
+[36mkimi-k3-max[39m [2m- Kimi K3[22m
+[36mkimi-k2.7-code[39m [2m- Kimi K2.7 Code[22m
+[36mglm-5.2-high[39m [2m- GLM 5.2[22m
+[36mglm-5.2-max[39m [2m- GLM 5.2 Max[22m
+
+[2mTip: use [36m--model <id>[39m (or [36m/model <id>[39m in interactive mode) to switch. Parameterized models also accept quoted overrides, e.g. [36m--model 'claude-opus-4-8[context=1m,effort=high,fast=false]'[39m.[22m
