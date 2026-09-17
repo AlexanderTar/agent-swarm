@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -142,7 +144,7 @@ func TestEntryJSON(t *testing.T) {
 func TestFallbacksAndNotInstalled(t *testing.T) {
 	claude := &fakeFetcher{kind: runtime.Claude, version: "2.1.274", err: errors.New("api.anthropic.com returned 401")}
 	agy := &fakeFetcher{kind: runtime.Agy, version: "1.2.5", err: errors.New("no models in output")}
-	cursor := &fakeFetcher{kind: runtime.Cursor, verErr: errors.New("exec: cursor-agent: not found")}
+	cursor := &fakeFetcher{kind: runtime.Cursor, verErr: fmt.Errorf("cursor-agent: %w", exec.ErrNotFound)}
 	s, _ := newCatalog(t, claude, agy, cursor)
 	entries, _ := s.Refresh(bg, false)
 	if len(entries) != 3 {
@@ -218,5 +220,100 @@ func TestLoopRefreshesHourly(t *testing.T) {
 	<-done
 	if codex.fetches != 2 {
 		t.Fatalf("fetches = %d", codex.fetches)
+	}
+}
+
+func TestStaleAtExactlyMaxAge(t *testing.T) {
+	codex := &fakeFetcher{kind: runtime.Codex, version: "1", models: m1}
+	s, c := newCatalog(t, codex)
+	s.Refresh(bg, false)
+	c.t = c.t.Add(MaxAge)
+	if entries, _ := s.Entries(bg); !entries[0].CatalogStale {
+		t.Fatal("a cache exactly MaxAge old is stale (refresh refetches it)")
+	}
+	s.Refresh(bg, false)
+	if codex.fetches != 2 {
+		t.Fatalf("fetches = %d", codex.fetches)
+	}
+}
+
+func TestVersionFailureOtherThanMissingKeepsInstalled(t *testing.T) {
+	codex := &fakeFetcher{kind: runtime.Codex, version: "1", models: m1}
+	s, _ := newCatalog(t, codex)
+	s.Refresh(bg, false)
+	codex.verErr = errors.New("codex: signal: killed")
+	entries, err := s.Refresh(bg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := entries[0]
+	if !e.Installed || e.Version != "1" || e.CatalogError != "codex: signal: killed" || !e.CatalogStale ||
+		len(e.Models) != 1 || codex.fetches != 1 {
+		t.Fatalf("entry = %+v, fetches %d", e, codex.fetches)
+	}
+	if got := s.Installed(bg); !slices.Equal(got, []runtime.AgentKind{runtime.Codex}) {
+		t.Fatalf("Installed = %v", got)
+	}
+	// never seen before and --version fails for a reason other than a missing binary
+	agy := &fakeFetcher{kind: runtime.Agy, verErr: errors.New("agy: exit status 2: boom")}
+	s2, _ := newCatalog(t, agy)
+	entries, _ = s2.Refresh(bg, false)
+	if e := entries[0]; !e.Installed || e.CatalogError != "agy: exit status 2: boom" || agy.fetches != 0 {
+		t.Fatalf("agy = %+v", e)
+	}
+	codex.verErr = fmt.Errorf("codex: %w", exec.ErrNotFound)
+	entries, _ = s.Refresh(bg, false)
+	if e := entries[0]; e.Installed || e.CatalogError != "not installed" {
+		t.Fatalf("missing binary = %+v", e)
+	}
+}
+
+func TestCorruptModelsJSON(t *testing.T) {
+	codex := &fakeFetcher{kind: runtime.Codex, version: "1", models: m1}
+	s, _ := newCatalog(t, codex)
+	var logged []string
+	s.Log = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	s.Refresh(bg, false)
+	if _, err := s.DB.Exec(`UPDATE model_catalog SET models_json = '{oops'`); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.Entries(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := entries[0]; !strings.HasPrefix(e.CatalogError, "cached models are unreadable") || !e.CatalogStale ||
+		e.Models == nil || len(e.Models) != 0 {
+		t.Fatalf("entry = %+v", e)
+	}
+	ms, def, err := s.ModelsFor(bg, runtime.Codex)
+	if ms != nil || def != "" || err != nil || len(logged) != 1 || !strings.Contains(logged[0], "codex") {
+		t.Fatalf("ModelsFor = %v %q %v, logged %q", ms, def, err, logged)
+	}
+}
+
+func TestLoopLogsRefreshErrors(t *testing.T) {
+	codex := &fakeFetcher{kind: runtime.Codex, version: "1", models: m1}
+	s, _ := newCatalog(t, codex)
+	logged := make(chan string, 4)
+	s.Log = func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }
+	waiting := make(chan struct{})
+	s.After = func(time.Duration) <-chan time.Time {
+		waiting <- struct{}{}
+		return make(chan time.Time)
+	}
+	s.DB.Close()
+	ctx, cancel := context.WithCancel(bg)
+	done := make(chan struct{})
+	go func() { s.Loop(ctx); close(done) }()
+	<-waiting
+	cancel()
+	<-done
+	select {
+	case msg := <-logged:
+		if !strings.Contains(msg, "catalog refresh") {
+			t.Fatalf("log = %q", msg)
+		}
+	default:
+		t.Fatal("refresh error was not logged")
 	}
 }

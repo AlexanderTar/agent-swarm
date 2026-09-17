@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -75,6 +76,9 @@ func (f *ClaudeFetcher) Version(ctx context.Context) (string, error) {
 	return versionOf(ctx, f.Run, "claude")
 }
 
+// maxClaudePages bounds paging so a server that always reports has_more can't hang a refresh.
+const maxClaudePages = 50
+
 // token reads the OAuth token from the keychain on every call; it is never stored.
 func (f *ClaudeFetcher) token(ctx context.Context) (string, error) {
 	out, err := f.Run(ctx, "security", "find-generic-password", "-s", "Claude Code-credentials", "-a", f.User, "-w")
@@ -100,12 +104,15 @@ func (f *ClaudeFetcher) Fetch(ctx context.Context) (Fetched, error) {
 	version, _ := f.Version(ctx)
 	var all []json.RawMessage
 	after := ""
-	for {
-		url := f.BaseURL + "/v1/models?limit=100"
-		if after != "" {
-			url = f.BaseURL + "/v1/models?after_id=" + after + "&limit=100"
+	for pages := 0; ; pages++ {
+		if pages == maxClaudePages {
+			return Fetched{}, fmt.Errorf("api.anthropic.com returned more than %d pages", maxClaudePages)
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		q := url.Values{"limit": {"100"}}
+		if after != "" {
+			q.Set("after_id", after)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.BaseURL+"/v1/models?"+q.Encode(), nil)
 		if err != nil {
 			return Fetched{}, err
 		}

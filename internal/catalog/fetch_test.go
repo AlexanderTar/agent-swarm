@@ -108,6 +108,37 @@ func TestClaudeFetcherFailuresNeverLeakTheToken(t *testing.T) {
 	}
 }
 
+func TestClaudeFetcherCapsPaging(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		json.NewEncoder(w).Encode(map[string]any{"data": []any{}, "has_more": true, "last_id": fmt.Sprintf("m&%d", requests)})
+	}))
+	defer srv.Close()
+	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL, User: "alex"}
+	_, err := f.Fetch(bg)
+	if err == nil || err.Error() != "api.anthropic.com returned more than 50 pages" || requests != 50 {
+		t.Fatalf("err = %v after %d requests", err, requests)
+	}
+}
+
+func TestClaudeFetcherEscapesAfterID(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.Query().Get("after_id"))
+		if len(got) == 1 {
+			json.NewEncoder(w).Encode(map[string]any{"data": []any{}, "has_more": true, "last_id": "a&b=c d"})
+			return
+		}
+		fmt.Fprint(w, `{"data":[{"id":"claude-opus-5","display_name":"Opus 5","created_at":"2026-07-15T00:00:00Z"}],"has_more":false}`)
+	}))
+	defer srv.Close()
+	f := &ClaudeFetcher{Run: keychain(nil).Runner(), HTTP: srv.Client(), BaseURL: srv.URL, User: "alex"}
+	if _, err := f.Fetch(bg); err != nil || len(got) != 2 || got[1] != "a&b=c d" {
+		t.Fatalf("after_id = %q, %v", got, err)
+	}
+}
+
 type fakeProc struct {
 	requests []map[string]any
 }

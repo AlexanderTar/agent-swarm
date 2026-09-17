@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -13,6 +15,9 @@ import (
 )
 
 const MaxAge = 24 * time.Hour
+
+// notInstalled is the stored error for an agent whose binary isn't on PATH.
+const notInstalled = "not installed"
 
 type AgentCatalogEntry struct {
 	Kind             runtime.AgentKind `json:"kind"`
@@ -48,6 +53,7 @@ type Service struct {
 	Fetchers []Fetcher
 	Now      func() time.Time
 	After    func(time.Duration) <-chan time.Time // nil means time.After
+	Log      func(format string, args ...any)     // nil means no logging
 	mu       sync.Mutex
 }
 
@@ -94,14 +100,16 @@ func (s *Service) Entries(ctx context.Context) ([]AgentCatalogEntry, error) {
 		}
 		e := AgentCatalogEntry{Kind: f.Kind(), Models: []CatalogModel{}}
 		if found {
-			json.Unmarshal([]byte(r.models), &e.Models)
+			e.Installed, e.Version = r.err != notInstalled, r.version
+			e.DefaultModel, e.CatalogSource, e.CatalogError = r.def, r.source, r.err
+			if err := json.Unmarshal([]byte(r.models), &e.Models); err != nil {
+				e.CatalogError = "cached models are unreadable: " + err.Error()
+			}
 			if e.Models == nil {
 				e.Models = []CatalogModel{}
 			}
-			e.Installed, e.Version = r.version != "", r.version
-			e.DefaultModel, e.CatalogSource, e.CatalogError = r.def, r.source, r.err
 			e.CatalogFetchedAt = db.FromMillis(r.fetched)
-			e.CatalogStale = r.err != "" || r.fetched == 0 || s.Now().Sub(e.CatalogFetchedAt) > MaxAge
+			e.CatalogStale = e.CatalogError != "" || r.fetched == 0 || s.Now().Sub(e.CatalogFetchedAt) >= MaxAge
 		}
 		out = append(out, e)
 	}
@@ -135,8 +143,12 @@ func (s *Service) refreshOne(ctx context.Context, f Fetcher, force bool) error {
 		old = row{models: "[]"}
 	}
 	version, verr := f.Version(ctx)
-	if verr != nil {
-		old.version, old.err, old.attempted = "", "not installed", now
+	if errors.Is(verr, exec.ErrNotFound) {
+		old.version, old.err, old.attempted = "", notInstalled, now
+		return s.save(ctx, f.Kind(), old)
+	}
+	if verr != nil { // installed but --version failed: keep the cache, retry next refresh
+		old.err, old.attempted = verr.Error(), now
 		return s.save(ctx, f.Kind(), old)
 	}
 	fresh := found && old.version == version && old.err == "" && now-old.fetched < MaxAge.Milliseconds()
@@ -156,6 +168,12 @@ func (s *Service) refreshOne(ctx context.Context, f Fetcher, force bool) error {
 	return s.save(ctx, f.Kind(), next)
 }
 
+func (s *Service) logf(format string, args ...any) {
+	if s.Log != nil {
+		s.Log(format, args...)
+	}
+}
+
 // ModelsFor returns the cached models and default for kind (nil when never fetched).
 func (s *Service) ModelsFor(ctx context.Context, kind runtime.AgentKind) ([]CatalogModel, string, error) {
 	r, found, err := s.load(ctx, kind)
@@ -163,15 +181,18 @@ func (s *Service) ModelsFor(ctx context.Context, kind runtime.AgentKind) ([]Cata
 		return nil, "", err
 	}
 	var ms []CatalogModel
-	json.Unmarshal([]byte(r.models), &ms)
+	if err := json.Unmarshal([]byte(r.models), &ms); err != nil {
+		s.logf("catalog: cached %s models are unreadable: %v", kind, err)
+		return nil, "", nil
+	}
 	return ms, r.def, nil
 }
 
-// Installed lists agents whose last version check succeeded, in fetcher order.
+// Installed lists agents whose binary was found at the last refresh, in fetcher order.
 func (s *Service) Installed(ctx context.Context) []runtime.AgentKind {
 	var out []runtime.AgentKind
 	for _, f := range s.Fetchers {
-		if r, found, _ := s.load(ctx, f.Kind()); found && r.version != "" {
+		if r, found, _ := s.load(ctx, f.Kind()); found && r.err != notInstalled {
 			out = append(out, f.Kind())
 		}
 	}
@@ -185,7 +206,9 @@ func (s *Service) Loop(ctx context.Context) {
 		after = time.After
 	}
 	for {
-		s.Refresh(ctx, false)
+		if _, err := s.Refresh(ctx, false); err != nil && ctx.Err() == nil {
+			s.logf("catalog refresh: %v", err)
+		}
 		select {
 		case <-ctx.Done():
 			return
