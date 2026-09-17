@@ -130,9 +130,13 @@ func (s *Store) Expired(ctx context.Context, after int64) (bool, error) {
 	return after < min.Int64-1, nil
 }
 
-// Prune deletes events older than maxAge (A6: 7 days).
+// Prune deletes events older than maxAge (A6: 7 days). It deletes a strict seq
+// prefix, the way Expired reasons about the feed: a regressed clock would
+// otherwise punch a hole in the middle that no client can detect.
 func (s *Store) Prune(ctx context.Context, maxAge time.Duration) (int64, error) {
-	res, err := s.DB.ExecContext(ctx, `DELETE FROM events WHERE created_at < ?`, db.Millis(s.Now().Add(-maxAge)))
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM events WHERE seq < COALESCE(
+		(SELECT MIN(seq) FROM events WHERE created_at >= ?), (SELECT MAX(seq) + 1 FROM events))`,
+		db.Millis(s.Now().Add(-maxAge)))
 	if err != nil {
 		return 0, err
 	}
