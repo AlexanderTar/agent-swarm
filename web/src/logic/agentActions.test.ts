@@ -11,6 +11,7 @@ describe("displayState and labels (§16.2)", () => {
   it.each([
     [makeAgent({ state: "queued", session: null }), "queued", "Queued", "grey"],
     [makeAgent({ session: null, preflight_error: "Codex isn't installed on this Mac." }), "preflight_failed", "Failed", "red"],
+    [makeAgent({ state: "queued", session: null, preflight_error: "x" }), "preflight_failed", "Failed", "red"],
     [makeAgent({ session: session("running") }), "running", "Running", "green"],
     [makeAgent({ session: session("running", { waiting: true }) }), "waiting", "Waiting", "green-hollow"],
     [makeAgent({ session: session("running", { stale: true }) }), "stale", "No activity for 30 min", "amber"],
@@ -56,8 +57,9 @@ describe("agentActions (§10.7, one case per row)", () => {
     expect(labels(makeAgent({ session: session(s) }))).toEqual(["retry:Retry", "ack:Acknowledge", "terminal:Terminal"]);
     expect(labels(makeAgent({ session: session(s, { tmux_alive: false }) }))).toEqual(["retry:Retry", "ack:Acknowledge"]);
   });
-  it("failed at preflight: Retry, Cancel", () => {
+  it("failed at preflight: Retry, Cancel, even while the agent is still queued", () => {
     expect(labels(makeAgent({ session: null, preflight_error: "x" }))).toEqual(["retry:Retry", "cancel:Cancel"]);
+    expect(labels(makeAgent({ state: "queued", session: null, preflight_error: "x" }))).toEqual(["retry:Retry", "cancel:Cancel"]);
   });
   it("completed, cancelled and acknowledged: none", () => {
     expect(labels(makeAgent({ state: "finished", session: session("completed") }))).toEqual([]);

@@ -12,9 +12,10 @@ export interface AgentAction {
 }
 
 export function displayState(a: AgentNode): DisplayState {
-  if (a.state === "queued") return "queued";
+  // contracts §3.2: no session + a preflight error is "failed at preflight", whatever agent.state says
   const s = a.session;
   if (!s) return a.preflight_error !== null ? "preflight_failed" : "queued";
+  if (a.state === "queued") return "queued";
   if (s.state === "running") return s.waiting ? "waiting" : s.stale ? "stale" : "running";
   return s.state;
 }
