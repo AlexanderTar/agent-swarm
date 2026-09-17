@@ -6,8 +6,10 @@ import (
 	"database/sql"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -30,7 +32,8 @@ func TestLaunchPath(t *testing.T) {
 func testConfig(t *testing.T) Config {
 	dir := t.TempDir()
 	return Config{Bin: "/Users/a/.swarm/bin/swarm", Home: filepath.Join(dir, "swarm-home"),
-		LaunchAgentsDir: filepath.Join(dir, "LaunchAgents"), Path: "/Users/a/bin:/usr/bin&x", UID: 501}
+		LaunchAgentsDir: filepath.Join(dir, "LaunchAgents"), Path: "/Users/a/bin:/usr/bin&x", UID: 501,
+		User: "a", UserHome: "/Users/a"}
 }
 
 func TestPlistContent(t *testing.T) {
@@ -47,10 +50,16 @@ func TestPlistContent(t *testing.T) {
 		"<key>StandardErrorPath</key><string>" + c.Home + "/logs/daemon.err.log</string>",
 		"<key>RunAtLoad</key><true/>",
 		"<key>SuccessfulExit</key><false/>",
+		"<key>USER</key><string>a</string>",
+		"<key>HOME</key><string>/Users/a</string>",
 	} {
 		if !bytes.Contains(p, []byte(want)) {
 			t.Errorf("plist lacks %s\n%s", want, p)
 		}
+	}
+	c.User, c.UserHome = "", ""
+	if p := Plist(c); bytes.Contains(p, []byte("<key>USER</key>")) || bytes.Contains(p, []byte("<key>HOME</key>")) {
+		t.Errorf("empty USER/HOME must be omitted\n%s", p)
 	}
 	if PlistPath(c) != filepath.Join(c.LaunchAgentsDir, "dev.swarm.daemon.plist") {
 		t.Error("PlistPath")
@@ -146,5 +155,57 @@ func TestInstallRefusesLegacyData(t *testing.T) {
 	}
 	if _, err := os.Stat(c.LaunchAgentsDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("refused install wrote files")
+	}
+}
+
+func TestInstallBootoutErrors(t *testing.T) {
+	notLoaded := []error{
+		errors.New("launchctl: exit status 3: Boot-out failed: 3: No such process"),
+		errors.New("launchctl: exit status 113: Could not find service \"dev.swarm.daemon\" in domain for port"),
+	}
+	exit3 := exec.Command("sh", "-c", "exit 3").Run() // a real *exec.ExitError with code 3
+	notLoaded = append(notLoaded, fmt.Errorf("launchctl: %w: ", exit3))
+	for _, e := range notLoaded {
+		c := testConfig(t)
+		f := &execx.Fake{Responses: map[string]execx.Result{
+			"launchctl bootout gui/501/dev.swarm.daemon":  {Err: e},
+			"launchctl bootstrap gui/501 " + PlistPath(c): {},
+		}}
+		if err := Install(bg, c, f.Runner(), false, io.Discard); err != nil {
+			t.Errorf("%v: %v", e, err)
+		}
+	}
+
+	c := testConfig(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"launchctl bootout gui/501/dev.swarm.daemon": {Err: errors.New("launchctl: exit status 1: Operation not permitted")},
+	}}
+	err := Install(bg, c, f.Runner(), false, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "launchctl bootout") || !strings.Contains(err.Error(), "Operation not permitted") {
+		t.Fatalf("bootout failure: %v", err)
+	}
+	if want := []string{"launchctl bootout gui/501/dev.swarm.daemon"}; !slices.Equal(f.Calls(), want) {
+		t.Fatalf("bootstrap ran after bootout failed: %v", f.Calls())
+	}
+}
+
+func TestInstallTightensRunDir(t *testing.T) {
+	c := testConfig(t)
+	run := filepath.Join(c.Home, "run")
+	if err := os.MkdirAll(run, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(run, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"launchctl bootout gui/501/dev.swarm.daemon":  {},
+		"launchctl bootstrap gui/501 " + PlistPath(c): {},
+	}}
+	if err := Install(bg, c, f.Runner(), false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(run); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("run dir: %v %v", fi, err)
 	}
 }

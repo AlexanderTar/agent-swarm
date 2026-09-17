@@ -6,9 +6,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -25,6 +27,8 @@ type Config struct {
 	LaunchAgentsDir string // ~/Library/LaunchAgents
 	Path            string // PATH for the daemon (see LaunchPath)
 	UID             int
+	User            string // USER for the daemon; omitted when empty
+	UserHome        string // HOME for the daemon; omitted when empty
 }
 
 func PlistPath(c Config) string { return filepath.Join(c.LaunchAgentsDir, Label+".plist") }
@@ -67,6 +71,12 @@ func esc(s string) string {
 
 func Plist(c Config) []byte {
 	logs := filepath.Join(c.Home, "logs")
+	env := ""
+	for _, kv := range [][2]string{{"USER", c.User}, {"HOME", c.UserHome}} {
+		if kv[1] != "" {
+			env += fmt.Sprintf("    <key>%s</key><string>%s</string>\n", kv[0], esc(kv[1]))
+		}
+	}
 	return []byte(fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -89,11 +99,11 @@ func Plist(c Config) []byte {
   <dict>
     <key>PATH</key><string>%s</string>
     <key>SWARM_HOME</key><string>%s</string>
-  </dict>
+%s  </dict>
 </dict>
 </plist>
 `, Label, esc(c.Bin), esc(c.Home), esc(c.Home), esc(filepath.Join(logs, "daemon.out.log")),
-		esc(filepath.Join(logs, "daemon.err.log")), esc(c.Path), esc(c.Home)))
+		esc(filepath.Join(logs, "daemon.err.log")), esc(c.Path), esc(c.Home), env))
 }
 
 // HasLegacyData reports whether dbPath is an Agent Swarm 1.x database (C5).
@@ -133,13 +143,30 @@ func Install(ctx context.Context, c Config, run execx.Runner, dryRun bool, w io.
 			return err
 		}
 	}
+	// run holds session tokens: tighten it even when it already existed.
+	if err := os.Chmod(filepath.Join(c.Home, "run"), 0o700); err != nil {
+		return err
+	}
 	if err := os.WriteFile(path, Plist(c), 0o644); err != nil {
 		return err
 	}
-	run(ctx, bootout[0], bootout[1:]...) // not loaded yet is fine
+	if _, err := run(ctx, bootout[0], bootout[1:]...); err != nil && !notLoaded(err) {
+		return fmt.Errorf("launchctl bootout: %w", err)
+	}
 	if _, err := run(ctx, bootstrap[0], bootstrap[1:]...); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %w", err)
 	}
 	fmt.Fprintf(w, "Installed %s and started the daemon.\n", path)
 	return nil
+}
+
+// notLoaded reports whether a bootout error only means the job wasn't loaded
+// (launchctl exits 3 "No such process", or 113 "Could not find service").
+func notLoaded(err error) bool {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 3 {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such process") || strings.Contains(msg, "could not find service")
 }
