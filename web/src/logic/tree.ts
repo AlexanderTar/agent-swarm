@@ -8,6 +8,14 @@ export const LEVEL_TYPES: Record<CardLevel, ItemType[]> = {
   top: ["epic", "bug", "spike"],
 };
 
+// F20: the allowed parent type per item type for a user-created item (top-level types have no
+// parent and are absent here). The mock daemon and later item-creation UIs both need this rule;
+// export it once so nobody re-derives it.
+export const PARENT_TYPES: Partial<Record<ItemType, ItemType[]>> = {
+  story: ["epic"],
+  task: ["story", "bug", "spike"],
+};
+
 export const isFilterActive = (f: Filter) => f.q.trim() !== "" || f.type !== "" || f.status !== "";
 
 export function matches(item: Matchable, f: Filter): boolean {
