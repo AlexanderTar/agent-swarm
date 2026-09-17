@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -168,6 +169,10 @@ func (s *Server) addRepo(w http.ResponseWriter, r *http.Request) {
 	path := body.Path
 	if path == "~" || strings.HasPrefix(path, "~/") {
 		path = repos.ExpandHome(path, s.Repos.Home)
+	}
+	if !filepath.IsAbs(path) { // the daemon's cwd means nothing to the caller
+		s.writeErr(w, apiErr(http.StatusUnprocessableEntity, "bad_request", "Use an absolute path."))
+		return
 	}
 	rp, err := s.Repos.AddManual(r.Context(), path)
 	if err != nil {

@@ -128,7 +128,7 @@ func TestReposRoutes(t *testing.T) {
 	if len(body.Groups) != 1 || body.Groups[0].Name != "proj" || len(body.Groups[0].Repos) != 3 {
 		t.Fatalf("same-named groups must merge: %+v", body.Groups)
 	}
-	for _, want := range []string{`"remote_url":null`, `"remote_owner":null`, `"last_used_at":null`, `"source":"scan"`} {
+	for _, want := range []string{`"remote_url":null`, `"remote_owner":null`, `"default_branch":null`, `"last_used_at":null`, `"source":"scan"`} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("repo wire lacks %s: %s", want, b)
 		}
@@ -160,6 +160,8 @@ func TestReposRoutes(t *testing.T) {
 	if r := decode[repos.Repo](t, b); status != 201 || r.Path != filepath.Join(e.home, "Later/tilde") {
 		t.Fatalf("add ~ = %d %s", status, b)
 	}
+	status, b = e.api("POST", "/api/repos", map[string]string{"path": "GitHub/app"})
+	wantErr(t, status, b, 422, "bad_request", "Use an absolute path.")
 	for _, p := range []string{filepath.Join(e.home, "GitHub"), "", "~/GitHub"} {
 		status, b = e.api("POST", "/api/repos", map[string]string{"path": p})
 		wantErr(t, status, b, 422, "bad_request", "No git repository found in this folder.")
@@ -197,6 +199,12 @@ func TestKBRoutes(t *testing.T) {
 	if _, b := e.api("GET", "/api/kb/search?q=", nil); string(b) != "[]\n" {
 		t.Fatalf("empty query = %q", b)
 	}
+	for q, want := range map[string]int{"limit=0": 1, "limit=999": 2} {
+		status, b := e.api("GET", "/api/kb/search?q=kanban+alpha&"+q, nil)
+		if hits := decode[[]kb.Hit](t, b); status != 200 || len(hits) != want {
+			t.Fatalf("%s = %d %s", q, status, b)
+		}
+	}
 	status, b = e.api("GET", "/api/kb/search?q=x&limit=abc", nil)
 	wantErr(t, status, b, 400, "bad_request", "limit must be a number.")
 
@@ -208,6 +216,9 @@ func TestKBRoutes(t *testing.T) {
 	if d := decode[kb.DocView](t, b); status != 200 || d.Title != "Alpha spec" || !strings.HasPrefix(d.Markdown, "# Alpha") {
 		t.Fatalf("get = %d %s", status, b)
 	}
+	if _, b := e.api("GET", "/api/kb/notes/beta", nil); !strings.Contains(string(b), `"frontmatter":{}`) {
+		t.Fatalf("no-frontmatter doc = %s", b)
+	}
 	status, b = e.api("GET", "/api/kb/specs/missing", nil)
 	wantErr(t, status, b, 404, "not_found", "No document specs/missing.")
 
@@ -215,4 +226,8 @@ func TestKBRoutes(t *testing.T) {
 	e.s.KB.Sync(bg) // marks search unavailable
 	status, b = e.api("GET", "/api/kb/search?q=alpha", nil)
 	wantErr(t, status, b, 503, "internal", "Search unavailable: run `ollama pull qwen3-embedding:0.6b`")
+
+	e.s.DB.Close()
+	status, b = e.api("GET", "/api/kb/specs/alpha", nil)
+	wantErr(t, status, b, 500, "internal", "Something went wrong.")
 }

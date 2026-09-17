@@ -92,7 +92,7 @@ func modelsJSON(ms []CatalogModel) string {
 }
 
 func (s *Service) Entries(ctx context.Context) ([]AgentCatalogEntry, error) {
-	var out []AgentCatalogEntry
+	out := []AgentCatalogEntry{}
 	for _, f := range s.Fetchers {
 		r, found, err := s.load(ctx, f.Kind())
 		if err != nil {

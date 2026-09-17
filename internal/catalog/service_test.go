@@ -317,3 +317,11 @@ func TestLoopLogsRefreshErrors(t *testing.T) {
 		t.Fatal("refresh error was not logged")
 	}
 }
+
+func TestEntriesWithoutFetchersIsEmptyNotNull(t *testing.T) {
+	s, _ := newCatalog(t)
+	got, err := s.Entries(context.Background())
+	if err != nil || got == nil {
+		t.Fatalf("Entries = %#v, %v", got, err)
+	}
+}

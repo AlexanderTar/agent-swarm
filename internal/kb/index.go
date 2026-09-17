@@ -494,12 +494,19 @@ func (x *Index) Search(ctx context.Context, q string, limit int) ([]Hit, error) 
 
 func (x *Index) Get(ctx context.Context, slug string) (DocView, error) {
 	var file string
-	if err := x.DB.QueryRowContext(ctx, `SELECT path FROM kb_docs WHERE slug = ?`, slug).Scan(&file); err != nil {
+	err := x.DB.QueryRowContext(ctx, `SELECT path FROM kb_docs WHERE slug = ?`, slug).Scan(&file)
+	if errors.Is(err, sql.ErrNoRows) {
 		return DocView{}, &NotFoundError{Slug: slug}
 	}
-	raw, err := os.ReadFile(file)
 	if err != nil {
+		return DocView{}, err
+	}
+	raw, err := os.ReadFile(file)
+	if errors.Is(err, fs.ErrNotExist) {
 		return DocView{}, &NotFoundError{Slug: slug}
+	}
+	if err != nil {
+		return DocView{}, err
 	}
 	d, err := ParseDoc(slug, file, raw)
 	if err != nil {
