@@ -167,7 +167,11 @@ public enum Copy {
     public static let launchFailed = "Couldn't start orchestrator. Your entries are saved."
     public static let answerNotSent = "Couldn't send your answer. Answer again to retry."
     public static let queuedCaption = "Starts when an agent slot becomes available."
-    public static func catalogStale(_ age: String, _ error: String) -> String { "Model list from \(age) ago. Couldn't refresh: \(error)" }
+    /// An empty error (nothing to report) drops the sentence instead of leaving a dangling
+    /// "Couldn't refresh: " — the same twin bug `catalogNeverFetched` had.
+    public static func catalogStale(_ age: String, _ error: String) -> String {
+        error.isEmpty ? "Model list from \(age) ago" : "Model list from \(age) ago. Couldn't refresh: \(error)"
+    }
     /// The same note for a catalog that was never fetched, where an age would be nonsense.
     /// An empty error (nothing to report) shows the bare label instead of a dangling sentence.
     public static func catalogNeverFetched(_ error: String) -> String {

@@ -241,11 +241,13 @@ public final class SettingsModel {
         await save()
     }
 
-    /// "Model lists updated 3h ago", using the oldest list among enabled agents.
+    /// "Model lists updated 3h ago", using the oldest list among enabled agents. Guarded in practice by
+    /// `!catalogStale` (the daemon serves `fetched == 0` as stale), but routed through `ageLine` anyway
+    /// so a zero or negative timestamp can never render as an age even if that guard is ever bypassed.
     public var catalogLine: String? {
         let dates = catalog.filter { settings.enabledAgents.contains($0.kind) && $0.installed && !$0.catalogStale }
             .map(\.catalogFetchedAt)
-        return dates.min().map { Copy.modelListsUpdated(format.ageCompact($0.date)) }
+        return dates.min().map { format.ageLine($0, never: Copy.neverFetched, Copy.modelListsUpdated) }
     }
 
     public var staleNotes: [String] {

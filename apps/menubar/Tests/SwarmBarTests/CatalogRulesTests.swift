@@ -197,6 +197,19 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(Copy.catalogNeverFetched(""), "Never fetched")
     }
 
+    /// Same dangling-colon class as `catalogNeverFetched`: an empty error must not leave
+    /// "Couldn't refresh: " hanging off the end.
+    func testCatalogStaleCopyDropsTheSentenceWhenTheErrorIsEmpty() throws {
+        XCTAssertEqual(Copy.catalogStale("3h", "agy models timed out"), "Model list from 3h ago. Couldn't refresh: agy models timed out")
+        XCTAssertEqual(Copy.catalogStale("3h", ""), "Model list from 3h ago")
+
+        let format = Format(now: fixtureNow, timeZone: TimeZone(identifier: "UTC")!)
+        let live: [AgentCatalogEntry] = try Fixture.decode("catalog.json")
+        var stale = live[2]
+        stale.catalogError = ""
+        XCTAssertEqual(R.catalogNote(stale, format: format), "Model list from 1d ago", "the call site that actually renders it")
+    }
+
     func testAdvisorMenuAndPayload() {
         XCTAssertEqual(R.advisorOptions(catalog, enabled: [.codex, .claude]).map(\.label), [
             "Claude · Opus (latest)", "Claude · Opus 5", "Claude · Sonnet 4.6", "Codex · GPT X", "No advisor",

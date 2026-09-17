@@ -157,6 +157,20 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(negative.scanLine, "Never scanned", "the wire is a trust boundary: anything <= 0 is never")
     }
 
+    /// `catalogLine` is guarded in practice by the `!catalogStale` filter (the daemon serves
+    /// `fetched == 0` as stale), but the guard living in the daemon rather than here means a raw
+    /// `ageCompact` call here would still render the epoch as an age if that guard were ever bypassed.
+    /// Route it through `ageLine` like every other age render, so it can't.
+    func testCatalogLineNeverRendersAnEpochOrNegativeTimestampAsAnAge() async {
+        client.catalogEntries = [AgentCatalogEntry(kind: .claude, catalogFetchedAt: Timestamp(ms: 0))]
+        let zero = await model()
+        XCTAssertEqual(zero.catalogLine, "Never fetched")
+
+        client.catalogEntries = [AgentCatalogEntry(kind: .claude, catalogFetchedAt: Timestamp(ms: -1))]
+        let negative = await model()
+        XCTAssertEqual(negative.catalogLine, "Never fetched", "the wire is a trust boundary: anything <= 0 is never")
+    }
+
     func testNotificationsTab() async {
         let m = await model()
         XCTAssertEqual(m.levelRows.map(\.label), ["Info", "Attention", "Action required"])
