@@ -45,6 +45,7 @@ type Patch struct {
 	Brief      *string
 	Acceptance *[]string
 	Priority   *int
+	Status     *Status
 	Revision   int
 }
 
@@ -270,7 +271,15 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	if err != nil {
 		return Item{}, err
 	}
-	return it, s.changed(ctx, tx, it)
+	if err := s.changed(ctx, tx, it); err != nil {
+		return Item{}, err
+	}
+	if parentID.Valid {
+		if err := s.ReconcileTx(ctx, tx, in.ParentKey); err != nil {
+			return Item{}, err
+		}
+	}
+	return it, nil
 }
 
 func capitalize(s string) string { return strings.ToUpper(s[:1]) + s[1:] }
@@ -341,6 +350,13 @@ func (s *Store) Update(ctx context.Context, key string, p Patch, by Actor) (Item
 			if err := s.changed(ctx, tx, it); err != nil {
 				return err
 			}
+		}
+		if p.Status != nil {
+			if _, err := s.TransitionTx(ctx, tx, it.Key, *p.Status, by); err != nil {
+				return err
+			}
+		} else if err := s.ReconcileTx(ctx, tx, it.Key); err != nil {
+			return err
 		}
 		out, err = s.getByID(ctx, tx, it.ID)
 		return err
