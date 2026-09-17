@@ -57,4 +57,23 @@ describe("QueryStore", () => {
     release();
     await vi.waitFor(() => expect(s.get("k")?.data).toBe(2));
   });
+
+  it("drops an in-flight read's stale response when it's invalidated with no subscribers (R1 Important)", async () => {
+    const s = new QueryStore();
+    const unsub = s.subscribe("k", () => {});
+    let release!: () => void;
+    const first = s.fetch("k", () => new Promise<number>((r) => { release = () => r(1); }));
+    unsub(); // the view unmounts while the read is still in flight: zero subscribers left
+    s.invalidate(["k"]);
+    release(); // the pre-invalidate response lands
+    await first;
+    // The stale response must not commit as fresh data that a later non-forced fetch can short-circuit on.
+    expect(s.get("k")).toBeUndefined();
+    // "remount": a plain fetch call must actually load, not serve the dropped, stale value back.
+    const reload = vi.fn(async () => 2);
+    s.subscribe("k", () => {});
+    await s.fetch("k", reload);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(s.get("k")?.data).toBe(2);
+  });
 });

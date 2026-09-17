@@ -38,7 +38,13 @@ export class QueryStore {
       )
       .finally(() => {
         this.inflight.delete(key);
-        if (this.dirty.delete(key)) void this.fetch(key, this.loaders.get(key) ?? load, true);
+        if (this.dirty.delete(key)) {
+          // R1 fix: a response fetched before an invalidation must never commit as fresh. If a
+          // subscriber is still around once it lands, refetch for them; otherwise drop it outright
+          // so a later non-forced `fetch` (e.g. on remount) can't short-circuit on stale data.
+          if ((this.subs.get(key)?.size ?? 0) > 0) void this.fetch(key, this.loaders.get(key) ?? load, true);
+          else this.entries.delete(key);
+        }
       });
     this.inflight.set(key, p);
     return p;
@@ -49,8 +55,15 @@ export class QueryStore {
     for (const key of [...this.entries.keys()]) {
       if (!prefixes.some((p) => key.startsWith(p))) continue;
       const loader = this.loaders.get(key);
+      if (this.inflight.has(key)) {
+        // R1 fix: an in-flight read was issued before this invalidation, so its landing response
+        // must not satisfy a later non-forced fetch. Mark it dirty regardless of subscriber count —
+        // `fetch`'s `finally()` re-checks subscribers once it settles and refetches or drops it then.
+        if (loader) this.dirty.add(key);
+        continue;
+      }
       if (loader && (this.subs.get(key)?.size ?? 0) > 0) void this.fetch(key, loader, true);
-      else if (!this.inflight.has(key)) this.entries.delete(key);
+      else this.entries.delete(key);
     }
   }
 
