@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connectEvents, createSseParser } from "./sse";
 import type { BoardEvent, ConnState } from "./types";
 
@@ -34,11 +34,13 @@ function streamResponse(status = 200) {
   };
 }
 
-function harness(backoffMs: number[] = [0]) {
+function harness(backoffMs: number[] = [0], onEvent?: (e: BoardEvent) => void) {
   const streams: ReturnType<typeof streamResponse>[] = [];
   const requests: Record<string, string>[] = [];
+  const signals: (AbortSignal | undefined)[] = [];
   const fetchFn = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     requests.push(init?.headers as Record<string, string>);
+    signals.push(init?.signal ?? undefined);
     const s = streamResponse();
     streams.push(s);
     return s.res;
@@ -49,14 +51,21 @@ function harness(backoffMs: number[] = [0]) {
     url: "/api/events",
     headers: async () => ({ Authorization: "Bearer t" }),
     fetchFn,
-    onEvent: (e) => events.push(e),
+    onEvent: (e) => {
+      events.push(e);
+      onEvent?.(e);
+    },
     onState: (s) => states.push(s),
     backoffMs,
   });
-  return { streams, requests, events, states, handle };
+  return { streams, requests, signals, events, states, handle };
 }
 
 describe("connectEvents", () => {
+  // failures are logged, so every test stubs console.error and the throwing-handler test asserts on it
+  beforeEach(() => void vi.spyOn(console, "error").mockImplementation(() => {}));
+  afterEach(() => vi.restoreAllMocks());
+
   it("opens, sends auth and delivers parsed events", async () => {
     const h = harness();
     await vi.waitFor(() => expect(h.states).toEqual(["connecting", "open"]));
@@ -111,5 +120,33 @@ describe("connectEvents", () => {
     handle.retryNow();
     await new Promise((r) => setTimeout(r, 10));
     expect(n).toBe(2);
+  });
+  it("a throwing handler aborts the stream, logs, and replays the event after reconnect", async () => {
+    let boom = false;
+    const h = harness([0], () => {
+      if (boom) {
+        boom = false;
+        throw new Error("handler exploded");
+      }
+    });
+    await vi.waitFor(() => expect(h.streams).toHaveLength(1));
+    h.streams[0]?.push("id: 3\nevent: item.changed\ndata: {}\n\n");
+    await vi.waitFor(() => expect(h.handle.lastEventId()).toBe("3"));
+    boom = true;
+    h.streams[0]?.push("id: 9\nevent: item.changed\ndata: {}\n\n");
+    await vi.waitFor(() => expect(h.streams).toHaveLength(2));
+    expect(h.signals[0]?.aborted).toBe(true);
+    expect(console.error).toHaveBeenCalled();
+    expect(h.handle.lastEventId()).toBe("3");
+    expect(h.requests[1]?.["Last-Event-ID"]).toBe("3");
+    h.handle.close();
+  });
+
+  it("close aborts an open stream", async () => {
+    const h = harness();
+    await vi.waitFor(() => expect(h.streams).toHaveLength(1));
+    h.handle.close();
+    await vi.waitFor(() => expect(h.signals[0]?.aborted).toBe(true));
+    expect(h.streams).toHaveLength(1);
   });
 });

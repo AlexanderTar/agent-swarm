@@ -84,13 +84,16 @@ export function connectEvents(o: EventsOptions): EventsHandle {
         const { value, done } = await reader.read();
         if (done) break;
         for (const m of parse(decoder.decode(value, { stream: true }))) {
-          if (m.id !== null) lastId = m.id;
+          // the cursor advances only once the handler has taken the event, so a throw replays it
           o.onEvent({ seq: m.id === null ? null : Number(m.id), type: m.event, data: parseData(m.data) });
+          if (m.id !== null) lastId = m.id;
         }
       }
-    } catch {
-      // any failure falls through to the reconnect below
+    } catch (e) {
+      // a dropped stream, an HTTP error or a throw from onEvent: all reconnect below
+      if (!(e instanceof DOMException && e.name === "AbortError")) console.error("events:", e);
     } finally {
+      ctrl.abort(); // releases the body on every exit path, including a throwing handler
       running = false;
     }
     if (closed) return;
