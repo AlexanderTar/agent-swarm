@@ -51,7 +51,7 @@ final class MenuLabelTests: XCTestCase {
         never.fetchedAt = Timestamp(ms: 0)
         let unfetched = MenuLabel.make(activeCount: 0, connected: true, enabled: [.claude], usage: [never],
                                        compact: false, format: format)
-        XCTAssertEqual(unfetched.segments.map(\.tooltip), ["Never updated"])
+        XCTAssertEqual(unfetched.segments.map(\.tooltip), ["Never updated."], "the tooltip slot is a sentence")
         XCTAssertEqual(UsageSection.rows(never, format: format).map(\.trailing), Array(repeating: "Never updated", count: 3))
 
         var noReset = usage[3]

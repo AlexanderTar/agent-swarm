@@ -31,7 +31,8 @@ public struct MenuLabel: Equatable, Sendable {
             let text = compact ? "" : Format.percent(head.usedPct) + (monthly ? "M" : "")
             let tooltip: String
             if snap.stale {
-                tooltip = format.agoLine(snap.fetchedAt, never: Copy.neverUpdated) { "Last updated \($0)." }
+                // The tooltip slot is a sentence, so it punctuates the never label; the compact row doesn't.
+                tooltip = format.agoLine(snap.fetchedAt, never: Copy.neverUpdated + ".") { "Last updated \($0)." }
             } else if monthly {
                 tooltip = "\(head.label) usage" + (head.resetsAt.map { " · resets \(format.dayMonth($0.date))" } ?? "")
             } else {
