@@ -322,6 +322,27 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(opened.last, "http://127.0.0.1:7777/#/inbox?req=req_plan")
     }
 
+    /// The "View all" list is its own fetch, separate from `/api/state`'s trimmed `notifications.items`
+    /// (the mock even serves it from a different fixture). Once it's expanded, a plain `refresh()` —
+    /// not just another "View all" click — must keep it current, or it freezes until "Read all". And
+    /// once the section collapses, the cached expanded list must drop, so reopening it never shows a
+    /// stale snapshot instead of a fresh one.
+    func testExpandedNotificationsRefreshOnStateRefreshAndDropWhenCollapsed() async throws {
+        let m = make()
+        m.setSection(.notifications, open: true)
+        await m.refresh()
+        await m.viewAllNotifications()
+        XCTAssertEqual(m.visibleNotifications.count, 5)
+
+        client.notificationList.append(SwarmNotification(id: "ntf_new", level: .info, kind: "item.created", createdAt: .minutes(-1)))
+        await m.refresh()
+        XCTAssertEqual(m.visibleNotifications.count, 6, "a plain refresh must keep the expanded list current, not just \"View all\" again")
+
+        m.setSection(.notifications, open: false)
+        await m.refresh()
+        XCTAssertEqual(m.visibleNotifications.count, 5, "collapsing drops the cached expanded list, falling back to the state's own trimmed 5")
+    }
+
     /// Carry-in: a failed answer's own notification comes back with `kind: "answer.failed"`; before the
     /// popover reopens (whichever action fired it), the typed text must already be sitting in the draft,
     /// or a retry from Notification Center loses it a second time.

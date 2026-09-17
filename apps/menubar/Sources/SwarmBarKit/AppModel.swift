@@ -144,6 +144,7 @@ public final class AppModel {
         do {
             apply(try await client.state())
             if let c = try? await client.catalog() { catalog = c }
+            await refreshExpandedNotifications()
         } catch is CancellationError {
             return
         } catch DaemonError.timedOut {
@@ -151,6 +152,19 @@ public final class AppModel {
         } catch {
             await markDisconnected()
         }
+    }
+
+    /// The "View all" list (`allNotifications`) is a separate fetch from `/api/state`'s trimmed
+    /// `notifications.items`, so a plain refresh must keep it current too, or it freezes until "Read
+    /// all" clears it. Dropped once the Notifications section collapses, so reopening it never shows a
+    /// stale snapshot instead of a fresh one.
+    private func refreshExpandedNotifications() async {
+        guard isOpen(.notifications) else {
+            allNotifications = nil
+            return
+        }
+        guard allNotifications != nil else { return }
+        if let all = try? await client.notifications(limit: 50) { allNotifications = all }
     }
 
     func markDisconnected() async {
