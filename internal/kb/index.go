@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"math"
 	"os"
@@ -161,6 +162,7 @@ func (x *Index) Sync(ctx context.Context) error {
 		return err
 	}
 	seen := map[string]bool{}
+	changed := false
 	err := filepath.WalkDir(x.Dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -177,7 +179,9 @@ func (x *Index) Sync(ctx context.Context) error {
 		rel, _ := filepath.Rel(x.Dir, p)
 		slug := filepath.ToSlash(strings.TrimSuffix(rel, ".md"))
 		seen[slug] = true
-		return x.syncFile(ctx, slug, p)
+		c, err := x.syncFile(ctx, slug, p)
+		changed = changed || c
+		return err
 	})
 	if err != nil {
 		return err
@@ -189,12 +193,18 @@ func (x *Index) Sync(ctx context.Context) error {
 	var gone []string
 	for rows.Next() {
 		var slug string
-		rows.Scan(&slug)
+		if err := rows.Scan(&slug); err != nil {
+			rows.Close()
+			return err
+		}
 		if !seen[slug] {
 			gone = append(gone, slug)
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	for _, slug := range gone {
 		// delete chunks directly so the kb_fts delete trigger fires; vectors cascade
 		if _, err := x.DB.ExecContext(ctx, `DELETE FROM kb_chunks WHERE doc_id = (SELECT id FROM kb_docs WHERE slug = ?)`, slug); err != nil {
@@ -204,31 +214,38 @@ func (x *Index) Sync(ctx context.Context) error {
 			return err
 		}
 	}
-	x.embedPending(ctx)
+	embedded, err := x.embedPending(ctx)
+	if err != nil {
+		return err
+	}
+	if !changed && len(gone) == 0 && !embedded {
+		return nil // nothing moved: keep the in-memory vectors
+	}
 	return x.reload(ctx)
 }
 
-func (x *Index) syncFile(ctx context.Context, slug, file string) error {
+// syncFile upserts one document and reports whether the database changed.
+func (x *Index) syncFile(ctx context.Context, slug, file string) (bool, error) {
 	raw, err := os.ReadFile(file)
 	if err != nil {
-		return nil // unreadable files are skipped
+		return false, nil // unreadable files are skipped
 	}
 	var docID int64
 	var oldHash string
 	err = x.DB.QueryRowContext(ctx, `SELECT id, content_hash FROM kb_docs WHERE slug = ?`, slug).Scan(&docID, &oldHash)
 	if err != nil && err != sql.ErrNoRows {
-		return err
+		return false, err
 	}
 	if oldHash == sum(string(raw)) {
-		return nil
+		return false, nil
 	}
 	doc, perr := ParseDoc(slug, file, raw)
 	if perr != nil {
-		return nil // bad frontmatter: leave the previous version indexed
+		return false, nil // bad frontmatter: leave the previous version indexed
 	}
 	fm, _ := json.Marshal(doc.Frontmatter)
 	now := db.Millis(x.Now())
-	return x.DB.Tx(ctx, func(tx *sql.Tx) error {
+	return true, x.DB.Tx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, `INSERT INTO kb_docs (slug, title, path, frontmatter_json, content_hash, superseded_by, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)
 			ON CONFLICT(slug) DO UPDATE SET title = excluded.title, path = excluded.path,
@@ -250,13 +267,19 @@ func (x *Index) syncFile(ctx context.Context, slug, file string) error {
 			var id int64
 			var idx int
 			var h string
-			rows.Scan(&id, &idx, &h)
+			if err := rows.Scan(&id, &idx, &h); err != nil {
+				rows.Close()
+				return err
+			}
 			existing[idx] = struct {
 				id   int64
 				hash string
 			}{id, h}
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
 		chunks := ChunkMarkdown(doc.Body)
 		for _, c := range chunks {
 			old, ok := existing[c.Index]
@@ -282,45 +305,63 @@ func (x *Index) syncFile(ctx context.Context, slug, file string) error {
 	})
 }
 
-func (x *Index) embedPending(ctx context.Context) {
+// embedPending embeds chunks without a vector and reports whether it stored any.
+// An unavailable embedder is a state (see Status), not an error; DB failures are errors.
+func (x *Index) embedPending(ctx context.Context) (bool, error) {
 	if !x.checkAvailable(ctx) {
-		return
+		return false, nil
 	}
+	stored := false
 	for {
-		rows, err := x.DB.QueryContext(ctx, `SELECT c.id, COALESCE(c.heading, ''), c.body FROM kb_chunks c
-			LEFT JOIN kb_vectors v ON v.chunk_id = c.id AND v.model = ?
-			WHERE v.chunk_id IS NULL ORDER BY c.id LIMIT ?`, x.Emb.Model(), batchSize)
-		if err != nil {
-			return
-		}
-		var ids []int64
-		var texts []string
-		for rows.Next() {
-			var id int64
-			var h, b string
-			rows.Scan(&id, &h, &b)
-			ids = append(ids, id)
-			texts = append(texts, strings.TrimSpace(h+"\n"+b))
-		}
-		rows.Close()
-		if len(ids) == 0 {
-			return
+		ids, texts, err := x.pendingBatch(ctx)
+		if err != nil || len(ids) == 0 {
+			return stored, err
 		}
 		vecs, err := x.Emb.Embed(ctx, texts)
+		if err == nil && len(vecs) != len(ids) {
+			err = errors.New("embedder returned the wrong number of vectors")
+		}
 		if err != nil {
-			x.mu.Lock()
-			x.available, x.lastErr = false, ErrUnavailable.Error()
-			x.mu.Unlock()
-			return
+			x.markUnavailable()
+			return stored, nil
 		}
 		for i, id := range ids {
 			v := normalize(vecs[i])
 			if _, err := x.DB.ExecContext(ctx, `INSERT OR REPLACE INTO kb_vectors (chunk_id, model, dim, vec) VALUES (?, ?, ?, ?)`,
 				id, x.Emb.Model(), len(v), encode(v)); err != nil {
-				return
+				return stored, err
 			}
+			stored = true
 		}
 	}
+}
+
+func (x *Index) pendingBatch(ctx context.Context) ([]int64, []string, error) {
+	rows, err := x.DB.QueryContext(ctx, `SELECT c.id, COALESCE(c.heading, ''), c.body FROM kb_chunks c
+		LEFT JOIN kb_vectors v ON v.chunk_id = c.id AND v.model = ?
+		WHERE v.chunk_id IS NULL ORDER BY c.id LIMIT ?`, x.Emb.Model(), batchSize)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	var texts []string
+	for rows.Next() {
+		var id int64
+		var h, b string
+		if err := rows.Scan(&id, &h, &b); err != nil {
+			return nil, nil, err
+		}
+		ids = append(ids, id)
+		texts = append(texts, strings.TrimSpace(h+"\n"+b))
+	}
+	return ids, texts, rows.Err()
+}
+
+func (x *Index) markUnavailable() {
+	x.mu.Lock()
+	x.available, x.lastErr = false, ErrUnavailable.Error()
+	x.mu.Unlock()
 }
 
 // topK returns the k chunk ids with the highest dot product (vectors are unit length).
@@ -394,7 +435,8 @@ func (x *Index) Search(ctx context.Context, q string, limit int) ([]Hit, error) 
 		return nil, ErrUnavailable
 	}
 	qv, err := x.Emb.Embed(ctx, []string{q})
-	if err != nil {
+	if err != nil || len(qv) != 1 {
+		x.markUnavailable()
 		return nil, ErrUnavailable
 	}
 	vectorIDs := x.topK(normalize(qv[0]), 2*limit)
@@ -405,10 +447,16 @@ func (x *Index) Search(ctx context.Context, q string, limit int) ([]Hit, error) 
 	}
 	for rows.Next() {
 		var id int64
-		rows.Scan(&id)
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
 		textIDs = append(textIDs, id)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	hits := []Hit{}
 	for _, s := range rrf(vectorIDs, textIDs) {
@@ -420,8 +468,11 @@ func (x *Index) Search(ctx context.Context, q string, limit int) ([]Hit, error) 
 		err := x.DB.QueryRowContext(ctx, `SELECT d.slug, d.title, COALESCE(c.heading, ''), c.body, d.superseded_by
 			FROM kb_chunks c JOIN kb_docs d ON d.id = c.doc_id WHERE c.id = ?`, s.id).
 			Scan(&h.Slug, &h.Title, &h.Heading, &h.Snippet, &superseded)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
 		if err != nil || superseded.Valid {
-			continue
+			continue // chunk deleted since ranking, or doc superseded
 		}
 		snippet := []rune(strings.Join(strings.Fields(h.Snippet), " "))
 		h.Snippet = string(snippet[:min(200, len(snippet))])

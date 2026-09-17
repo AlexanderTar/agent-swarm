@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -266,5 +267,75 @@ func TestWatchDebounces(t *testing.T) {
 	}
 	if n := x.syncs.Load() - before; n < 1 || n > 3 {
 		t.Fatalf("burst caused %d syncs, want it debounced", n)
+	}
+}
+
+func TestSearchEmbedFailureMarksUnavailable(t *testing.T) {
+	emb := &fakeEmb{}
+	x := newIndex(t, emb)
+	emb.setDown(true)
+	if _, err := x.Search(bg, "alpha", 3); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("search = %v", err)
+	}
+	if st, _ := x.Status(bg); st.Available || st.Error != ErrUnavailable.Error() {
+		t.Fatalf("status after failed search = %+v", st)
+	}
+	emb.setDown(false)
+	if _, err := x.Search(bg, "alpha", 3); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := x.Status(bg); !st.Available || st.Error != "" {
+		t.Fatalf("status after recovery = %+v", st)
+	}
+}
+
+func TestSyncEmbedsPendingWithoutFileChanges(t *testing.T) {
+	emb := &fakeEmb{down: true}
+	x := newIndex(t, emb)
+	if st, _ := x.Status(bg); st.Pending != 5 {
+		t.Fatalf("status = %+v", st)
+	}
+	emb.setDown(false)
+	if err := x.Sync(bg); err != nil { // no file changed since the first Sync
+		t.Fatal(err)
+	}
+	if st, _ := x.Status(bg); st.Pending != 0 || st.Embedded != 5 || !st.Available {
+		t.Fatalf("status = %+v", st)
+	}
+	// "alphaish" has no FTS match, so any hit comes from the vector index.
+	if hits, err := x.Search(bg, "alphaish", 3); err != nil || len(hits) == 0 {
+		t.Fatalf("vector-only search = %v, %v", hits, err)
+	}
+}
+
+func TestSyncReturnsDBErrors(t *testing.T) {
+	emb := &fakeEmb{down: true}
+	x := newIndex(t, emb)
+	if _, err := x.DB.Exec(`CREATE TRIGGER boom BEFORE INSERT ON kb_vectors BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	emb.setDown(false)
+	if err := x.Sync(bg); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("Sync = %v, want the vector insert error", err)
+	}
+	x.DB.Close()
+	if err := x.Sync(bg); err == nil {
+		t.Fatal("Sync on a closed DB must fail")
+	}
+}
+
+func TestSyncWithoutChangesKeepsMemoryIndex(t *testing.T) {
+	x := newIndex(t, &fakeEmb{})
+	x.mu.RLock()
+	before := reflect.ValueOf(x.vecs).Pointer()
+	x.mu.RUnlock()
+	if err := x.Sync(bg); err != nil {
+		t.Fatal(err)
+	}
+	x.mu.RLock()
+	after := reflect.ValueOf(x.vecs).Pointer()
+	x.mu.RUnlock()
+	if before != after {
+		t.Fatal("a no-change Sync must not reload every vector")
 	}
 }
