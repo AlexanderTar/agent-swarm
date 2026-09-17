@@ -34,7 +34,9 @@ type Deps struct {
 	Settings     *settings.Store
 	Catalog      *catalog.Service
 	KB           *kb.Index
-	WriteTimeout time.Duration // per SSE write; 0 means 10 s
+	WriteTimeout time.Duration                    // per SSE write; 0 means 10 s
+	PingInterval time.Duration                    // SSE keep-alive; 0 means 25 s
+	Log          func(format string, args ...any) // nil means log.Printf
 }
 
 type authMode int
@@ -59,9 +61,19 @@ type Server struct {
 	idemMu sync.Mutex
 }
 
+// New panics on an empty daemon token: it would authenticate every tokenless request.
 func New(d Deps) *Server {
+	if d.Token == "" {
+		panic("httpapi: empty daemon token")
+	}
 	if d.WriteTimeout == 0 {
 		d.WriteTimeout = 10 * time.Second
+	}
+	if d.PingInterval == 0 {
+		d.PingInterval = 25 * time.Second
+	}
+	if d.Log == nil {
+		d.Log = log.Printf
 	}
 	s := &Server{Deps: d, mux: http.NewServeMux()}
 	s.routes = s.baseRoutes()
@@ -70,10 +82,10 @@ func New(d Deps) *Server {
 	}
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			writeErr(w, apiErr(http.StatusNotFound, "not_found", "Unknown API route."))
+			s.writeErr(w, apiErr(http.StatusNotFound, "not_found", "Unknown API route."))
 			return
 		}
-		writeErr(w, apiErr(http.StatusNotFound, "not_found", "The board isn't built yet."))
+		s.writeErr(w, apiErr(http.StatusNotFound, "not_found", "The board isn't built yet."))
 	})
 	return s
 }
@@ -99,18 +111,18 @@ func (s *Server) wrap(rt route) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch rt.auth {
 		case authDaemon:
-			if subtle.ConstantTimeCompare([]byte(bearer(r)), []byte(s.Token)) != 1 {
-				writeErr(w, errUnauthorized)
+			if tok := bearer(r); tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(s.Token)) != 1 {
+				s.writeErr(w, errUnauthorized)
 				return
 			}
 		case authLoopback:
 			if !isLocal(r) {
-				writeErr(w, apiErr(http.StatusUnauthorized, "unauthorized", "Bootstrap is only available on this Mac."))
+				s.writeErr(w, apiErr(http.StatusUnauthorized, "unauthorized", "Bootstrap is only available on this Mac."))
 				return
 			}
 		case authSession:
 			if _, ok := s.sessionAuth(r); !ok {
-				writeErr(w, errUnauthorized)
+				s.writeErr(w, errUnauthorized)
 				return
 			}
 		}
@@ -127,6 +139,8 @@ func isLocal(r *http.Request) bool {
 	h := r.Host
 	if hh, _, err := net.SplitHostPort(h); err == nil {
 		h = hh
+	} else {
+		h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
 	}
 	return h == "127.0.0.1" || h == "localhost" || h == "::1"
 }
@@ -168,7 +182,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, err error) {
+// writeErr writes the §7 error envelope; unmapped errors are logged and become 500 internal.
+func (s *Server) writeErr(w http.ResponseWriter, err error) {
 	var (
 		ae *apiError
 		ie *items.Error
@@ -180,7 +195,9 @@ func writeErr(w http.ResponseWriter, err error) {
 	case errors.As(err, &ie):
 		status, ok := statusFor[ie.Code]
 		if !ok {
-			status = http.StatusInternalServerError
+			s.Log("httpapi: unmapped item error code %q: %v", ie.Code, err)
+			ae = apiErr(http.StatusInternalServerError, "internal", ie.Message)
+			break
 		}
 		ae = apiErr(status, ie.Code, ie.Message)
 		if ie.Code == items.CodeTransitionDenied {
@@ -195,7 +212,7 @@ func writeErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, kb.ErrUnavailable):
 		ae = apiErr(http.StatusServiceUnavailable, "internal", err.Error())
 	default:
-		log.Printf("httpapi: %v", err)
+		s.Log("httpapi: %v", err)
 		ae = apiErr(http.StatusInternalServerError, "internal", "Something went wrong.")
 	}
 	body := map[string]string{"code": ae.Code, "message": ae.Message}
@@ -228,5 +245,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
+	if s.Token == "" {
+		s.writeErr(w, errors.New("bootstrap: empty daemon token"))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"token": s.Token})
 }

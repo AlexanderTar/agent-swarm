@@ -75,7 +75,8 @@ func mkfile(t *testing.T, path, body string) {
 	}
 }
 
-func newEnv(t *testing.T) *env {
+// newEnv builds a server over temp stores; opts adjust the Deps before New.
+func newEnv(t *testing.T, opts ...func(*Deps)) *env {
 	t.Helper()
 	d := dbtest.Open(t)
 	now := time.Now
@@ -108,8 +109,12 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	it := &items.Store{DB: d, Events: ev, Now: now}
-	s := New(Deps{Version: "test", Token: daemonToken, DB: d, Events: ev, Items: it, Repos: rp,
-		Settings: st, Catalog: cat, KB: idx, WriteTimeout: 200 * time.Millisecond})
+	deps := Deps{Version: "test", Token: daemonToken, DB: d, Events: ev, Items: it, Repos: rp,
+		Settings: st, Catalog: cat, KB: idx, WriteTimeout: 200 * time.Millisecond}
+	for _, o := range opts {
+		o(&deps)
+	}
+	s := New(deps)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	return &env{t: t, srv: srv, s: s, home: home, items: it, events: ev, repos: rp, cat: cat, fetcher: f, emb: emb}
