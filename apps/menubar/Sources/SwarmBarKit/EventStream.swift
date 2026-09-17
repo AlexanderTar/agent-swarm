@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 public struct ServerEvent: Equatable, Sendable {
     public var id: Int64?
@@ -60,30 +61,30 @@ public enum SwarmEvent: Equatable, Sendable {
     case settings(Settings)
     case catalog([AgentCatalogEntry])
 
+    private static let log = Logger(subsystem: "dev.swarm.menubar", category: "events")
+
+    /// A known event whose payload doesn't decode degrades to `.changed`, so the client still
+    /// refetches: payloads are hints (contracts §5), and P1 sends `request.opened` as
+    /// `{id, kind, item}`, which `SwarmRequest` can't decode. Unknown types stay dropped.
     public init?(_ e: ServerEvent) {
         let data = Data(e.data.utf8)
-        func decode<T: Decodable>(_ t: T.Type) -> T? { try? SwarmJSON.decode(t, from: data) }
+        func decode<T: Decodable>(_ t: T.Type, _ make: (T) -> SwarmEvent) -> SwarmEvent {
+            do {
+                return make(try SwarmJSON.decode(t, from: data))
+            } catch {
+                Self.log.info("\(e.type, privacy: .public): payload ignored, refetching (\(String(describing: error), privacy: .public))")
+                return .changed(e.type)
+            }
+        }
         switch e.type {
         case "reset": self = .reset
         case "item.changed", "agent.changed", "checkpoint.created", "request.resolved": self = .changed(e.type)
-        case "request.opened":
-            guard let r = decode(SwarmRequest.self) else { return nil }
-            self = .requestOpened(r)
-        case "notification.created":
-            guard let n = decode(SwarmNotification.self) else { return nil }
-            self = .notification(n)
-        case "usage.changed":
-            guard let u = decode(UsageSnapshot.self) else { return nil }
-            self = .usage(u)
-        case "terminal.open":
-            guard let t = decode(TerminalOpen.self) else { return nil }
-            self = .terminalOpen(t)
-        case "settings.changed":
-            guard let s = decode(Settings.self) else { return nil }
-            self = .settings(s)
-        case "catalog.changed":
-            guard let c = decode([AgentCatalogEntry].self) else { return nil }
-            self = .catalog(c)
+        case "request.opened": self = decode(SwarmRequest.self) { .requestOpened($0) }
+        case "notification.created": self = decode(SwarmNotification.self) { .notification($0) }
+        case "usage.changed": self = decode(UsageSnapshot.self) { .usage($0) }
+        case "terminal.open": self = decode(TerminalOpen.self) { .terminalOpen($0) }
+        case "settings.changed": self = decode(Settings.self) { .settings($0) }
+        case "catalog.changed": self = decode([AgentCatalogEntry].self) { .catalog($0) }
         default: return nil
         }
     }
@@ -97,6 +98,10 @@ public final class EventStream {
     public typealias Sleep = @Sendable (Duration) async throws -> Void
 
     public static func backoff(attempt: Int) -> Duration { .seconds(min(30, 1 << min(attempt, 5))) }
+
+    /// Idle timeout between received bytes. The daemon pings every 25 s (contracts §5), so three
+    /// missed pings drop a silent connection and the normal backoff + daemon-down path runs.
+    public static let idleTimeout: TimeInterval = 70
 
     private let endpoint: DaemonEndpoint
     private let connect: Connect
@@ -141,7 +146,7 @@ public final class EventStream {
                 var req: URLRequest
                 if let id = lastEventID { path += "?after=\(id)" }
                 req = try endpoint.request("GET", path)
-                req.timeoutInterval = 24 * 3600
+                req.timeoutInterval = Self.idleTimeout
                 req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                 if let id = lastEventID { req.setValue(String(id), forHTTPHeaderField: "Last-Event-ID") }
                 let bytes = try await connect(req)

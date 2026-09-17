@@ -39,10 +39,16 @@ final class SSEParserTests: XCTestCase {
         XCTAssertEqual(reset, [.reset])
     }
 
-    func testUnknownOrMalformedEventsAreDropped() {
-        for type in ["request.opened", "notification.created", "usage.changed", "terminal.open", "settings.changed", "catalog.changed", "mystery"] {
-            XCTAssertNil(SwarmEvent(ServerEvent(type: type, data: "{\"bad\":true}")), type)
+    /// P1 sends `request.opened` as `{id, kind, item}` (contracts §5), which SwarmRequest can't
+    /// decode. A known event must still trigger a refetch instead of vanishing.
+    func testMalformedPayloadsDegradeToChangedAndUnknownEventsAreDropped() {
+        for type in ["request.opened", "notification.created", "usage.changed", "terminal.open", "settings.changed", "catalog.changed"] {
+            XCTAssertEqual(SwarmEvent(ServerEvent(type: type, data: "{\"bad\":true}")), .changed(type), type)
         }
+        XCTAssertEqual(SwarmEvent(ServerEvent(type: "request.opened", data: "{\"id\":\"req_1\",\"kind\":\"question\",\"item\":\"EPIC-1\"}")),
+                       .changed("request.opened"))
+        XCTAssertNil(SwarmEvent(ServerEvent(type: "mystery", data: "{}")))
+        XCTAssertNil(SwarmEvent(ServerEvent(type: "repos.changed", data: "{}")))
     }
 }
 
@@ -108,6 +114,30 @@ final class EventStreamTests: XCTestCase {
         XCTAssertEqual(reqs[4].url?.absoluteString, "http://127.0.0.1:7777/api/events")
         XCTAssertEqual(reqs[0].value(forHTTPHeaderField: "Accept"), "text/event-stream")
         XCTAssertEqual(reqs[0].value(forHTTPHeaderField: "Authorization"), "Bearer tok-123")
+    }
+
+    /// The daemon pings every 25 s; without an idle timeout a hung daemon would look connected
+    /// for a day. A silent stream must drop and go through the normal down + backoff path.
+    func testSilentStreamTimesOutAndReportsTheDaemonDown() async throws {
+        let rec = Recorder()
+        let connect: EventStream.Connect = { req in
+            rec.lock.withLock { rec.requests.append(req) }
+            throw URLError(.timedOut)
+        }
+        var status: [Bool] = []
+        let sleep: EventStream.Sleep = { d in
+            let n = rec.lock.withLock { () -> Int in
+                rec.slept.append(d)
+                return rec.slept.count
+            }
+            if n >= 3 { throw CancellationError() }
+        }
+        let stream = EventStream(endpoint: try tempEndpoint(), connect: connect, sleep: sleep,
+                                 onEvent: { _ in }, onConnected: { status.append($0) })
+        await stream.run()
+        XCTAssertEqual(status, [false, false, false])
+        XCTAssertEqual(rec.lock.withLock { rec.slept }, [.seconds(1), .seconds(2), .seconds(4)])
+        XCTAssertEqual(rec.lock.withLock { rec.requests }.first?.timeoutInterval, 70)
     }
 
     func testBackoffCapsAt30Seconds() {
