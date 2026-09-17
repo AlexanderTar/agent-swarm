@@ -108,6 +108,17 @@ func TestParseCodexModelList(t *testing.T) {
 	if ms[0].DefaultEffort != "high" {
 		t.Errorf("no medium → model default, got %q", ms[0].DefaultEffort)
 	}
+	for _, own := range []string{"", "low"} {
+		body := `{"data":[{"id":"z","model":"z","displayName":"Z","defaultReasoningEffort":"` + own + `","supportedReasoningEfforts":[{"reasoningEffort":"high"},{"reasoningEffort":"xhigh"}]}]}`
+		ms, _, _, _ = ParseCodexModelList([]byte(body))
+		if ms[0].DefaultEffort != "xhigh" {
+			t.Errorf("own default %q not offered → highest, got %q", own, ms[0].DefaultEffort)
+		}
+	}
+	cache, _ := ParseCodexModelsCache([]byte(`{"models":[{"slug":"z","visibility":"list","default_reasoning_level":"","supported_reasoning_levels":[{"effort":"high"}]}]}`))
+	if cache[0].DefaultEffort != "high" {
+		t.Errorf("cache: empty own default → highest, got %q", cache[0].DefaultEffort)
+	}
 	_, _, next, _ = ParseCodexModelList([]byte(`{"data":[{"id":"x","model":"","displayName":"X","hidden":true,"supportedReasoningEfforts":[]}],"nextCursor":"c2"}`))
 	if next != "c2" {
 		t.Errorf("cursor = %q", next)
@@ -172,14 +183,21 @@ func TestParseAgyModels(t *testing.T) {
 	if def != "" {
 		t.Errorf("bad settings → no default, got %q", def)
 	}
-	// agy knows only low, medium and high; a bare id beside suffixed ones is the "default" level.
-	ms, _, _ = ParseAgyModels("m-max\tM Max\nm-high\tM (High)\nm\tM\n", nil)
-	if !slices.Equal(ids(ms), []string{"m-max", "m"}) {
+	// agy knows only low, medium and high. A bare slug beside suffixed ones can't be
+	// launched without --effort, so it is dropped (no "default" level, unlike cursor).
+	ms, _, _ = ParseAgyModels("m-max\tM Max\nm\tM\nm-low\tM (Low)\nm-medium\tM (Medium)\nq\tQ\nq-low\tQ (Low)\n", nil)
+	if !slices.Equal(ids(ms), []string{"m-max", "m", "q"}) {
 		t.Fatalf("agy levels = %v", ids(ms))
 	}
-	if m := ms[1]; !slices.Equal(m.Efforts, []string{"default", "high"}) || m.Label != "M" || m.DefaultEffort != "high" ||
-		m.LaunchModel("default") != "m" || m.LaunchModel("high") != "m-high" {
-		t.Errorf("agy default level = %+v", m)
+	if m := ms[0]; len(m.Efforts) != 0 || m.LaunchIDs != nil || m.LaunchModel("") != "m-max" {
+		t.Errorf("agy bare-only = %+v", m)
+	}
+	if m := ms[1]; !slices.Equal(m.Efforts, []string{"low", "medium"}) || m.Label != "M" || m.DefaultEffort != "medium" ||
+		m.SupportsEffort("default") || len(m.LaunchIDs) != 2 || m.LaunchModel("") != "m-medium" || m.LaunchModel("low") != "m-low" {
+		t.Errorf("agy bare sibling = %+v", m)
+	}
+	if m := ms[2]; !slices.Equal(m.Efforts, []string{"low"}) || m.DefaultEffort != "low" || m.LaunchModel("") != "q-low" {
+		t.Errorf("agy highest fallback = %+v", m)
 	}
 	if _, _, err := ParseAgyModels("Fetching available models...\n", nil); err == nil {
 		t.Error("no models is an error")

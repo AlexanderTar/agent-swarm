@@ -110,13 +110,16 @@ func ClaudeAliasFallback() []CatalogModel {
 // ---- codex ----
 
 func codexDefaultEffort(efforts []string, own string) string {
-	if slices.Contains(efforts, "medium") {
+	switch {
+	case slices.Contains(efforts, "medium"):
 		return "medium" // D2: GPT models default to medium
-	}
-	if len(efforts) == 0 {
+	case len(efforts) == 0:
 		return ""
+	case slices.Contains(efforts, own):
+		return own
+	default:
+		return efforts[len(efforts)-1] // the model's own default isn't offered: take the highest
 	}
-	return own
 }
 
 // ParseCodexModelList parses the `result` of app-server `model/list`.
@@ -198,16 +201,19 @@ func ParseCodexModelsCache(body []byte) ([]CatalogModel, error) {
 
 // ---- slug agents (agy, cursor) ----
 
-// slugDialect says which level suffixes an agent uses, weakest first, and whether
-// a level may sit before `-thinking` (cursor `claude-4.6-sonnet-medium-thinking`).
+// slugDialect says which level suffixes an agent uses, weakest first, whether
+// a level may sit before `-thinking` (cursor `claude-4.6-sonnet-medium-thinking`),
+// and whether a bare slug beside suffixed ones is offered as the "default" level.
+// agy has no such level: its bare base slug fails without --effort (P0-12), so it is dropped.
 type slugDialect struct {
-	levels   []string
-	thinking bool
+	levels       []string
+	thinking     bool
+	defaultLevel bool
 }
 
 var (
 	agyDialect    = slugDialect{levels: []string{"low", "medium", "high"}}
-	cursorDialect = slugDialect{levels: []string{"none", "minimal", "low", "medium", "high", "xhigh", "extra-high", "max"}, thinking: true}
+	cursorDialect = slugDialect{levels: []string{"none", "minimal", "low", "medium", "high", "xhigh", "extra-high", "max"}, thinking: true, defaultLevel: true}
 )
 
 // split returns the base id and level:
@@ -268,14 +274,18 @@ func (d slugDialect) group(lines []slugLine, stripEffort func(string) string) []
 	out := make([]CatalogModel, 0, len(order))
 	for _, base := range order {
 		m := groups[base]
-		if label, ok := bareLabel[base]; ok {
-			m.Label = label
-		}
-		if len(m.Efforts) == 1 && m.Efforts[0] == DefaultLevel {
+		label, bare := bareLabel[base]
+		if bare && len(m.Efforts) == 1 {
 			// a bare id with no suffixed siblings has no effort control
-			m.Efforts, m.LaunchIDs = []string{}, nil
+			m.Label, m.Efforts, m.LaunchIDs = label, []string{}, nil
 			out = append(out, *m)
 			continue
+		}
+		if bare && d.defaultLevel {
+			m.Label = label
+		} else if bare {
+			m.Efforts = slices.DeleteFunc(m.Efforts, func(l string) bool { return l == DefaultLevel })
+			delete(m.LaunchIDs, DefaultLevel)
 		}
 		sort.SliceStable(m.Efforts, func(i, j int) bool { return d.rank(m.Efforts[i]) < d.rank(m.Efforts[j]) })
 		pref := "high"
