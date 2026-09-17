@@ -315,10 +315,20 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
         a.state = "finished";
         if (s) s.state = "cancelled";
         break;
-      case "ack":
+      case "ack": {
         a.state = "acknowledged";
+        // R2 fix: contracts §3.2 — `finished` is "completed, cancelled and acknowledged children";
+        // move the node out of its parent's `children` into `finished` (a top-level node has neither
+        // bucket to move between — it's just hidden by the `state=active` filter, see agentsList).
+        const parent = a.parent_name ? agent(a.parent_name) : undefined;
+        if (parent) {
+          const i = parent.children.findIndex((c) => c.name === a.name);
+          if (i >= 0) parent.children.splice(i, 1);
+          if (!parent.finished.some((c) => c.name === a.name)) parent.finished.push(a);
+        }
         d.emit("agent.changed", { name, root_key: a.root_key });
         return ok(undefined, 204); // 13.6: contracts §4 — ack is 204, no body
+      }
       case "retry":
         a.preflight_error = null;
         a.session = { ...(s ?? { id: `ses_${++counter}`, attempt: 0, generation: 0, waiting: false, stale: false, started_at: NOW, ended_at: null }), state: "spawning", attempt: (s?.attempt ?? 0) + 1, generation: (s?.generation ?? 0) + 1, tmux_alive: true };
@@ -404,8 +414,11 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
   // 13.2: contracts §5 `GET /api/agents?state=active|all&root=`. `active` (the default) drops
   // top-level nodes that are finished/acknowledged; the nested finished[] array always survives,
   // since §16.9's "▸ Finished (N)" renders from it.
+  // R2 fix: an unrecognized `state` is a 400, mirroring every other enum query param the daemon
+  // validates the same way (items/list.go:38-44 — "view must be tree or flat.", "Unknown status %q.").
   function agentsList(q: URLSearchParams): MockResponse {
     const state = q.get("state") ?? "active";
+    if (state !== "active" && state !== "all") return fail(400, "bad_request", `Unknown state "${state}".`);
     const root = q.get("root");
     let nodes = db.agents;
     if (root) nodes = nodes.filter((a) => a.root_key === root);
@@ -456,17 +469,24 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
     const method = req.method.toUpperCase();
     d.calls.push({ method, path: url.pathname + url.search, body: req.body });
     if (method === "GET" && url.pathname === "/api/bootstrap") return ok({ token: db.token });
+    const o = overrides.get(`${method} ${url.pathname}`);
+    let hit: RegExpExecArray | null = null;
+    let fn: Route[2] | undefined;
+    if (!o) {
+      for (const [m, re, f] of routes) {
+        hit = m === method ? re.exec(url.pathname) : null;
+        if (hit) { fn = f; break; }
+      }
+    }
+    // R2 fix: the daemon's catch-all (httpapi/server.go:90-100) is registered without the auth
+    // wrapper, so an unknown route 404s unauthenticated too — only a *matched* route enforces the
+    // bearer token (httpapi/server.go:120's `wrap`), checked here before running the handler.
+    if (!o && !fn) return fail(404, "not_found", "Unknown API route.");
     const authz = req.headers?.authorization ?? req.headers?.Authorization;
     // 13.3: byte-identical to the daemon's pinned copy (contracts §2, httpapi/server.go:120).
     if (authz !== `Bearer ${db.token}`) return fail(401, "unauthorized", "Missing or invalid token.");
-    const o = overrides.get(`${method} ${url.pathname}`);
     if (o) return typeof o === "function" ? o(req.body) : o;
-    for (const [m, re, fn] of routes) {
-      const hit = m === method ? re.exec(url.pathname) : null;
-      if (hit) return fn({ p: hit.groups ?? {}, q: url.searchParams, body: req.body ?? {} });
-    }
-    // 13.3: byte-identical to the daemon's pinned copy (contracts §2, httpapi/server.go:93).
-    return fail(404, "not_found", "Unknown API route.");
+    return (fn as Route[2])({ p: hit?.groups ?? {}, q: url.searchParams, body: req.body ?? {} });
   }
 
   // 13.5: compute blocked_by/open_requests once up front, the way the daemon always serves them

@@ -15,6 +15,13 @@ describe("mock daemon", () => {
     expect(call(d, "GET", "/api/nope").status).toBe(404);
   });
 
+  it("404s an unknown route before checking auth (R2, httpapi/server.go's unwrapped catch-all)", () => {
+    const d = createMockDaemon();
+    expect(d.handle({ method: "GET", url: "/api/nope" })).toMatchObject({
+      status: 404, body: { error: { code: "not_found", message: "Unknown API route." } },
+    });
+  });
+
   it("serves items and item detail", () => {
     const d = createMockDaemon();
     const list = call(d, "GET", "/api/items?view=flat").body as { items: Item[] };
@@ -204,11 +211,13 @@ describe("mock daemon", () => {
     expect(call(d, "POST", "/api/agents/nobody/pause", {}).status).toBe(404);
   });
 
-  it("acknowledges an agent with 204 and no body (13.6, contracts §4)", () => {
+  it("acknowledges an agent with 204 and no body, moving it into the parent's finished[] (13.6 R2, contracts §3.2)", () => {
     const d = createMockDaemon();
     const r = call(d, "POST", "/api/agents/login-form-coder/ack", {});
     expect(r).toEqual({ status: 204, body: undefined });
-    expect(d.db.agents.flatMap((a) => a.children).find((a) => a.name === "login-form-coder")?.state).toBe("acknowledged");
+    const parent = d.db.agents.find((a) => a.name === "auth-epic-orchestrator")!;
+    expect(parent.children.find((a) => a.name === "login-form-coder")).toBeUndefined();
+    expect(parent.finished.find((a) => a.name === "login-form-coder")?.state).toBe("acknowledged");
   });
 
   it("filters agents by state and root (13.2, contracts §5)", () => {
@@ -224,6 +233,13 @@ describe("mock daemon", () => {
     // the nested finished[] array must survive filtering (§16.9 "▸ Finished (N)")
     const auth = (call(d, "GET", "/api/agents").body as AgentNode[]).find((a) => a.name === "auth-epic-orchestrator");
     expect(auth?.finished.map((a) => a.name)).toContain("login-form-coder-1");
+  });
+
+  it("refuses an unrecognized state value (R2, mirrors items/list.go's enum query params)", () => {
+    const d = createMockDaemon();
+    expect(call(d, "GET", "/api/agents?state=bogus")).toMatchObject({
+      status: 400, body: { error: { code: "bad_request", message: 'Unknown state "bogus".' } },
+    });
   });
 
   it("honours overrides", () => {
