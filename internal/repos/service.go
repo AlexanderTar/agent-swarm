@@ -54,6 +54,7 @@ type Service struct {
 	Now          func() time.Time
 	After        func(time.Duration) <-chan time.Time // nil means time.After
 	DirtyTimeout time.Duration                        // 0 means 2 s
+	Stat         func(string) (os.FileInfo, error)    // nil means os.Stat (missing detection)
 	Log          func(format string, args ...any)     // nil means no logging
 	Ctx          context.Context                      // bounds shared scans (daemon lifetime); nil means Background
 
@@ -94,6 +95,9 @@ func (s *Service) runScan(c *scanCall) {
 		ctx = context.Background()
 	}
 	defer close(c.done)
+	if _, err := s.Events.Publish(ctx, events.ReposChanged, map[string]any{"scanning": true}); err != nil && ctx.Err() == nil {
+		s.logf("repos: publish repos.changed failed: %v", err)
+	}
 	c.stats, c.err = s.scan(ctx) // a cancelled scan stores nothing
 	s.mu.Lock()
 	s.cur = nil
@@ -150,6 +154,24 @@ func (s *Service) scan(ctx context.Context) (ScanStats, error) {
 	}
 	groups := Groups(w, owners)
 	stats := ScanStats{Found: len(w.Repos)}
+	// Missing detection stats known repos before the transaction: one path on an
+	// unmounted mount can block for seconds, and the single SQLite writer must
+	// not be held for that long (L12: short transactions).
+	known, err := s.knownRepos(ctx)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	stat := s.Stat
+	if stat == nil {
+		stat = os.Stat
+	}
+	gone := map[string]bool{}
+	for _, r := range known {
+		if _, err := stat(r.path); err != nil {
+			gone[r.id] = true
+			stats.Missing++
+		}
+	}
 	now := db.Millis(s.Now())
 	err = s.DB.Tx(ctx, func(tx *sql.Tx) error { // a cancel mid-transaction rolls it back
 		for _, p := range w.Repos {
@@ -175,35 +197,9 @@ func (s *Service) scan(ctx context.Context) (ScanStats, error) {
 				}
 			}
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT id, path, missing FROM repos`)
-		if err != nil {
-			return err
-		}
-		type row struct {
-			id, path string
-			missing  bool
-		}
-		var all []row
-		for rows.Next() {
-			var r row
-			if err := rows.Scan(&r.id, &r.path, &r.missing); err != nil {
-				rows.Close()
-				return err
-			}
-			all = append(all, r)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		for _, r := range all {
-			_, statErr := os.Stat(r.path)
-			gone := statErr != nil
-			if gone {
-				stats.Missing++
-			}
-			if gone != r.missing {
-				if _, err := tx.ExecContext(ctx, `UPDATE repos SET missing = ?, updated_at = ? WHERE id = ?`, gone, now, r.id); err != nil {
+		for _, r := range known {
+			if gone[r.id] != r.missing {
+				if _, err := tx.ExecContext(ctx, `UPDATE repos SET missing = ?, updated_at = ? WHERE id = ?`, gone[r.id], now, r.id); err != nil {
 					return err
 				}
 			}
@@ -211,6 +207,28 @@ func (s *Service) scan(ctx context.Context) (ScanStats, error) {
 		return nil
 	})
 	return stats, err
+}
+
+type repoRow struct {
+	id, path string
+	missing  bool
+}
+
+func (s *Service) knownRepos(ctx context.Context) ([]repoRow, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, path, missing FROM repos`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []repoRow
+	for rows.Next() {
+		var r repoRow
+		if err := rows.Scan(&r.id, &r.path, &r.missing); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (s *Service) triggerChan() chan struct{} {
