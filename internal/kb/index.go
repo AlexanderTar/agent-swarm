@@ -58,6 +58,7 @@ type Index struct {
 	Now func() time.Time
 
 	syncMu    sync.Mutex // one Sync at a time
+	stale     bool       // guarded by syncMu: the DB may differ from vecs; cleared by a successful reload
 	mu        sync.RWMutex
 	vecs      map[int64][]float32
 	available bool
@@ -131,7 +132,11 @@ func (x *Index) checkAvailable(ctx context.Context) bool {
 // Load checks Ollama and reads stored vectors into memory.
 func (x *Index) Load(ctx context.Context) error {
 	x.checkAvailable(ctx)
-	return x.reload(ctx)
+	x.syncMu.Lock()
+	defer x.syncMu.Unlock()
+	err := x.reload(ctx)
+	x.stale = err != nil
+	return err
 }
 
 func (x *Index) reload(ctx context.Context) error {
@@ -162,7 +167,6 @@ func (x *Index) Sync(ctx context.Context) error {
 		return err
 	}
 	seen := map[string]bool{}
-	changed := false
 	err := filepath.WalkDir(x.Dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -180,7 +184,7 @@ func (x *Index) Sync(ctx context.Context) error {
 		slug := filepath.ToSlash(strings.TrimSuffix(rel, ".md"))
 		seen[slug] = true
 		c, err := x.syncFile(ctx, slug, p)
-		changed = changed || c
+		x.stale = x.stale || c
 		return err
 	})
 	if err != nil {
@@ -205,6 +209,7 @@ func (x *Index) Sync(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	x.stale = x.stale || len(gone) > 0
 	for _, slug := range gone {
 		// delete chunks directly so the kb_fts delete trigger fires; vectors cascade
 		if _, err := x.DB.ExecContext(ctx, `DELETE FROM kb_chunks WHERE doc_id = (SELECT id FROM kb_docs WHERE slug = ?)`, slug); err != nil {
@@ -215,13 +220,18 @@ func (x *Index) Sync(ctx context.Context) error {
 		}
 	}
 	embedded, err := x.embedPending(ctx)
+	x.stale = x.stale || embedded
 	if err != nil {
 		return err
 	}
-	if !changed && len(gone) == 0 && !embedded {
+	if !x.stale {
 		return nil // nothing moved: keep the in-memory vectors
 	}
-	return x.reload(ctx)
+	if err := x.reload(ctx); err != nil {
+		return err
+	}
+	x.stale = false
+	return nil
 }
 
 // syncFile upserts one document and reports whether the database changed.

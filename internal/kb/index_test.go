@@ -339,3 +339,27 @@ func TestSyncWithoutChangesKeepsMemoryIndex(t *testing.T) {
 		t.Fatal("a no-change Sync must not reload every vector")
 	}
 }
+
+func TestSyncReloadsAfterPartialFailure(t *testing.T) {
+	emb := &fakeEmb{down: true}
+	x := newIndex(t, emb) // 5 chunks pending, nothing in memory
+	if _, err := x.DB.Exec(`CREATE TRIGGER boom BEFORE INSERT ON kb_vectors
+		WHEN new.chunk_id = (SELECT max(id) FROM kb_chunks) BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	emb.setDown(false)
+	if err := x.Sync(bg); err == nil { // stores 4 vectors, then fails
+		t.Fatal("want the injected failure")
+	}
+	x.DB.Exec(`DROP TRIGGER boom`)
+	emb.setDown(true)
+	if err := x.Sync(bg); err != nil { // no file change and nothing embedded
+		t.Fatal(err)
+	}
+	emb.setDown(false)
+	// "alphaish" has no FTS match, so hits must come from the 4 committed vectors.
+	hits, err := x.Search(bg, "alphaish", 5)
+	if err != nil || !slices.Contains(slugs(hits), "specs/alpha") {
+		t.Fatalf("search after partial failure = %v, %v", hits, err)
+	}
+}
