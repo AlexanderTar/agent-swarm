@@ -305,6 +305,76 @@ func TestServeBoundsWaitForBackgroundLoops(t *testing.T) {
 	}
 }
 
+// An open SSE stream never goes idle, so shutdown must end it instead of waiting it out.
+func TestServeShutsDownWithAnOpenEventStream(t *testing.T) {
+	home := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan string, 1)
+	done := make(chan error, 1)
+	loopDone := make(chan struct{})
+	go func() {
+		done <- serve(ctx, daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf,
+			grace: 2 * time.Second, Ready: func(a string) { ready <- a },
+			loops: []func(context.Context){func(c context.Context) {
+				<-c.Done()
+				time.Sleep(100 * time.Millisecond) // work that must still finish before the db closes
+				close(loopDone)
+			}}})
+	}()
+	addr := <-ready
+	tok, err := os.ReadFile(filepath.Join(home, "run", "daemon.token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("GET", "http://"+addr+"/api/events", nil)
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tok)))
+	resp, err := (&http.Client{}).Do(req) // returns once the stream's first flush lands
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	start := time.Now()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("shutdown waited %v for an open SSE stream", d)
+	}
+	select {
+	case <-loopDone:
+	default:
+		t.Fatal("the background loop lost its grace period")
+	}
+}
+
+// A user who tightens ~/.swarm keeps it; only run/ (tokens) is forced to 0700.
+func TestOpenDaemonKeepsTightHomePermissions(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "swarm")
+	if err := os.MkdirAll(filepath.Join(home, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dm, err := openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dm.db.Close()
+	for dir, want := range map[string]os.FileMode{home: 0o700, filepath.Join(home, "run"): 0o700} {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != want {
+			t.Errorf("%s mode = %v, want %v", dir, fi.Mode().Perm(), want)
+		}
+	}
+}
+
 func TestTokenEmptyIsReplacedUnreadableFails(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, "run", "daemon.token")

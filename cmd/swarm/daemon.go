@@ -109,9 +109,10 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		if err := os.MkdirAll(dir.path, dir.mode); err != nil {
 			return nil, err
 		}
-		if err := os.Chmod(dir.path, dir.mode); err != nil {
-			return nil, err
-		}
+	}
+	// only run/ holds secrets: force its mode, and leave a home the user tightened alone
+	if err := os.Chmod(filepath.Join(cfg.Home, "run"), 0o700); err != nil {
+		return nil, err
 	}
 	d, err := db.Open(ctx, filepath.Join(cfg.Home, "swarm.db")) // refuses 1.x data before writing a token
 	if err != nil {
@@ -225,8 +226,9 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 	if serveErr == nil {
 		shutdown, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
+		dm.api.Close() // SSE streams never go idle; end them so Shutdown can finish
 		if err := hs.Shutdown(shutdown); err != nil {
-			hs.Close() // SSE streams never go idle
+			hs.Close()
 		}
 		if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
 			serveErr = err

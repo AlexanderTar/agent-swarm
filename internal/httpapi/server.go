@@ -58,10 +58,16 @@ type route struct {
 
 type Server struct {
 	Deps
-	mux    *http.ServeMux
-	routes []route
-	idemMu sync.Mutex
+	mux       *http.ServeMux
+	routes    []route
+	idemMu    sync.Mutex
+	done      chan struct{} // closed by Close: ends the SSE streams
+	closeOnce sync.Once
 }
+
+// Close ends every open SSE stream. They never go idle on their own, so
+// http.Server.Shutdown would otherwise wait out the whole grace period.
+func (s *Server) Close() { s.closeOnce.Do(func() { close(s.done) }) }
 
 // New panics on an empty daemon token: it would authenticate every tokenless request.
 func New(d Deps) *Server {
@@ -77,7 +83,7 @@ func New(d Deps) *Server {
 	if d.Log == nil {
 		d.Log = log.Printf
 	}
-	s := &Server{Deps: d, mux: http.NewServeMux()}
+	s := &Server{Deps: d, mux: http.NewServeMux(), done: make(chan struct{})}
 	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes())
 	for _, rt := range s.routes {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))

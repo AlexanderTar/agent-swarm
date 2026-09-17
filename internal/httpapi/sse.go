@@ -95,6 +95,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.done: // the daemon is shutting down
+			return
 		case <-wake:
 		case <-ping.C:
 			if send(": ping\n\n") != nil || flush() != nil {
