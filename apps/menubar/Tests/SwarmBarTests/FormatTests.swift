@@ -21,8 +21,15 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(f.ageLine(Timestamp(ms: 0), never: "Never scanned") { "Scanned \($0) ago" }, "Never scanned")
         XCTAssertEqual(f.ageLine(Timestamp(fixtureNow.addingTimeInterval(-7200)), never: "Never scanned") { "Scanned \($0) ago" },
                        "Scanned 2h ago")
+        XCTAssertEqual(f.ageLine(Timestamp(ms: -1), never: "Never scanned") { "Scanned \($0) ago" }, "Never scanned",
+                       "the wire is a trust boundary: anything <= 0 is never")
+        XCTAssertEqual(f.ageLine(Timestamp(ms: .min), never: "Never scanned") { "Scanned \($0) ago" }, "Never scanned")
         XCTAssertEqual(f.ageLine(Timestamp(ms: 1), never: "Never scanned") { "Scanned \($0) ago" }, "Scanned 20713d ago",
-                       "only 0 means never; any other timestamp is still an age")
+                       "a positive timestamp is still an age, however old")
+        XCTAssertEqual(f.agoLine(Timestamp(ms: 0), never: "Never updated") { "Updated \($0)" }, "Never updated")
+        XCTAssertEqual(f.agoLine(Timestamp(ms: -1), never: "Never updated") { "Updated \($0)" }, "Never updated")
+        XCTAssertEqual(f.agoLine(Timestamp(fixtureNow.addingTimeInterval(-720)), never: "Never updated") { "Updated \($0)" },
+                       "Updated 12 min ago")
     }
 
     func testPercent() {
