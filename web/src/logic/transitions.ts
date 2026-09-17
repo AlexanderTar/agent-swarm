@@ -3,19 +3,24 @@ import { C, STATUS_LABEL, T } from "../copy";
 import { ITEM_STATUSES } from "../types";
 import type { Item, ItemStatus } from "../types";
 
-export type Movable = Pick<Item, "key" | "type" | "status">;
+export type Movable = Pick<Item, "key" | "type" | "status" | "status_before_block">;
 export type MoveCheck = { ok: true } | { ok: false; reason: string; special?: "accept" | "spike" };
 export interface MoveOption { status: ItemStatus; label: string; check: MoveCheck }
 
 const OK: MoveCheck = { ok: true };
 const isClosed = (s: ItemStatus) => s === "done" || s === "cancelled";
 
+// Mirrors the daemon's `check()` (internal/items/transition.go) for a user actor, in the same order.
 export function checkMove(item: Movable, to: ItemStatus): MoveCheck {
   const from = item.status;
   const generic: MoveCheck = { ok: false, reason: T.genericStatus(STATUS_LABEL[from]) };
+  if (to === "awaiting_approval" && item.type !== "spike") return { ok: false, reason: C.awaitingNonSpike };
   if (to === from) return generic;
+  if (to === "cancelled") return from === "done" ? generic : OK;
+  if (to === "blocked") return isClosed(from) ? generic : OK;
+  if (from === "blocked") return to === item.status_before_block ? OK : generic; // only the saved status
   if (isClosed(from)) return to === "ready" ? OK : generic; // reopen only
-  if (to === "awaiting_approval") return item.type === "spike" ? generic : { ok: false, reason: C.awaitingNonSpike };
+  if (from === "draft" && to === "ready") return OK;
   if (to === "done") {
     switch (item.type) {
       case "epic":
@@ -27,13 +32,10 @@ export function checkMove(item: Movable, to: ItemStatus): MoveCheck {
       case "story":
         return { ok: false, reason: T.storyDoneDenied(item.key) };
       case "task":
-        return from === "in_review" ? OK : { ok: false, reason: T.taskDoneDenied(item.key) };
+        // in_review means a completed checkpoint exists, so the daemon refuses the user generically
+        return from === "in_review" ? generic : { ok: false, reason: T.taskDoneDenied(item.key) };
     }
   }
-  if (to === "cancelled" || to === "blocked") return OK;
-  if (item.type === "story") return generic; // derived (I1)
-  if (from === "blocked") return OK; // the daemon restores status_before_block and refuses anything else
-  if (from === "draft" && to === "ready") return OK;
   return generic; // everything else is daemon- or orchestrator-only
 }
 

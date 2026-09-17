@@ -3,7 +3,8 @@ import { ApiError } from "../api";
 import type { ItemStatus, ItemType } from "../types";
 import { checkMove, failureMessage, moveOptions } from "./transitions";
 
-const it_ = (type: ItemType, status: ItemStatus, key = `${type.toUpperCase()}-1`) => ({ key, type, status });
+const it_ = (type: ItemType, status: ItemStatus, key = `${type.toUpperCase()}-1`, before: ItemStatus | null = null) =>
+  ({ key, type, status, status_before_block: before });
 
 describe("checkMove (user actor, §10.1 + §17.3)", () => {
   it.each([
@@ -12,10 +13,11 @@ describe("checkMove (user actor, §10.1 + §17.3)", () => {
     ["open → cancelled", it_("epic", "in_progress"), "cancelled"],
     ["story → blocked", it_("story", "ready"), "blocked"],
     ["story → cancelled", it_("story", "in_progress"), "cancelled"],
-    ["blocked → earlier status", it_("task", "blocked"), "in_progress"],
+    ["blocked → the saved status", it_("task", "blocked", "TASK-1", "in_progress"), "in_progress"],
+    ["blocked story → the saved status", it_("story", "blocked", "STORY-40", "in_review"), "in_review"],
+    ["blocked → cancelled", it_("task", "blocked", "TASK-1", "in_progress"), "cancelled"],
     ["reopen done", it_("epic", "done"), "ready"],
     ["reopen cancelled", it_("story", "cancelled"), "ready"],
-    ["task in review → done", it_("task", "in_review"), "done"],
   ] as const)("allows %s", (_n, item, to) => {
     expect(checkMove(item, to)).toEqual({ ok: true });
   });
@@ -40,8 +42,10 @@ describe("checkMove (user actor, §10.1 + §17.3)", () => {
     });
   });
 
-  it("refuses awaiting approval for non-spikes", () => {
+  it("refuses awaiting approval for non-spikes, whatever the current status", () => {
     expect(checkMove(it_("epic", "ready"), "awaiting_approval")).toEqual({ ok: false, reason: "Only spikes can await approval." });
+    expect(checkMove(it_("task", "done"), "awaiting_approval")).toEqual({ ok: false, reason: "Only spikes can await approval." });
+    expect(checkMove(it_("bug", "blocked", "BUG-2", "in_progress"), "awaiting_approval")).toEqual({ ok: false, reason: "Only spikes can await approval." });
   });
 
   it.each([
@@ -53,6 +57,12 @@ describe("checkMove (user actor, §10.1 + §17.3)", () => {
     ["cancelled epic → done", it_("epic", "cancelled"), "done", "Cancelled"],
     ["same status", it_("task", "ready"), "ready", "Ready"],
     ["in_review → in_progress (orchestrator only)", it_("task", "in_review"), "in_progress", "In review"],
+    ["task in review → done (orchestrator only)", it_("task", "in_review", "TASK-7"), "done", "In review"],
+    ["blocked task → any other status", it_("task", "blocked", "TASK-1", "in_progress"), "ready", "Blocked"],
+    ["blocked task with no saved status", it_("task", "blocked"), "in_progress", "Blocked"],
+    ["blocked story → a status that isn't the saved one", it_("story", "blocked", "STORY-40", "in_review"), "ready", "Blocked"],
+    ["blocked epic → done (no accept review)", it_("epic", "blocked", "EPIC-1", "in_review"), "done", "Blocked"],
+    ["blocked spike → done", it_("spike", "blocked", "SPIKE-3", "in_progress"), "done", "Blocked"],
   ] as const)("uses the generic copy for %s", (_n, item, to, label) => {
     expect(checkMove(item, to)).toEqual({ ok: false, reason: `Couldn't update status. The item remains ${label}.` });
   });
