@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,6 +54,7 @@ type Service struct {
 	Now          func() time.Time
 	After        func(time.Duration) <-chan time.Time // nil means time.After
 	DirtyTimeout time.Duration                        // 0 means 2 s
+	Log          func(format string, args ...any)     // nil means no logging
 
 	mu        sync.Mutex
 	cur       *scanCall
@@ -71,14 +73,19 @@ func (s *Service) Scan(ctx context.Context) (ScanStats, error) {
 	s.mu.Lock()
 	if c := s.cur; c != nil {
 		s.mu.Unlock()
-		<-c.done
-		return c.stats, c.err
+		select {
+		case <-c.done:
+			return c.stats, c.err
+		case <-ctx.Done():
+			return ScanStats{}, ctx.Err()
+		}
 	}
 	c := &scanCall{done: make(chan struct{})}
 	s.cur = c
 	s.mu.Unlock()
 
-	c.stats, c.err = s.scan(context.WithoutCancel(ctx))
+	ctx = context.WithoutCancel(ctx)
+	c.stats, c.err = s.scan(ctx)
 	s.mu.Lock()
 	s.cur = nil
 	if c.err == nil {
@@ -87,9 +94,17 @@ func (s *Service) Scan(ctx context.Context) (ScanStats, error) {
 	s.mu.Unlock()
 	close(c.done)
 	if c.err == nil {
-		s.Events.Publish(ctx, events.ReposChanged, map[string]any{"scanning": false, "found": c.stats.Found})
+		if _, err := s.Events.Publish(ctx, events.ReposChanged, map[string]any{"scanning": false, "found": c.stats.Found}); err != nil {
+			s.logf("repos: publish repos.changed failed: %v", err)
+		}
 	}
 	return c.stats, c.err
+}
+
+func (s *Service) logf(format string, args ...any) {
+	if s.Log != nil {
+		s.Log(format, args...)
+	}
 }
 
 func (s *Service) Scanning() bool {
@@ -161,6 +176,9 @@ func (s *Service) scan(ctx context.Context) (ScanStats, error) {
 			all = append(all, r)
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
 		for _, r := range all {
 			_, statErr := os.Stat(r.path)
 			gone := statErr != nil
@@ -203,7 +221,9 @@ func (s *Service) Loop(ctx context.Context, interval func(context.Context) time.
 	}
 	trig := s.triggerChan()
 	for {
-		s.Scan(ctx)
+		if _, err := s.Scan(ctx); err != nil {
+			s.logf("repos: scheduled scan failed: %v", err)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -232,7 +252,9 @@ func (s *Service) AddManual(ctx context.Context, path string) (Repo, error) {
 	if err != nil {
 		return Repo{}, err
 	}
-	s.Events.Publish(ctx, events.ReposChanged, map[string]any{"scanning": s.Scanning()})
+	if _, err := s.Events.Publish(ctx, events.ReposChanged, map[string]any{"scanning": s.Scanning()}); err != nil {
+		return Repo{}, fmt.Errorf("publish repos.changed: %w", err)
+	}
 	list, err := s.query(ctx, `WHERE r.path = ?`, real)
 	if err != nil || len(list) == 0 {
 		return Repo{}, err
@@ -265,6 +287,7 @@ func (s *Service) query(ctx context.Context, where string, args ...any) ([]Repo,
 		r.Groups = []string{}
 		if groups != "" {
 			r.Groups = strings.Split(groups, "\x1f")
+			sort.Strings(r.Groups)
 		}
 		out = append(out, r)
 	}

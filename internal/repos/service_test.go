@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -302,4 +303,57 @@ func waitFor(t *testing.T, ok func() bool) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func TestLoopLogsFailedScan(t *testing.T) {
+	home := realTemp(t)
+	mkRepo(t, home, "GitHub/a")
+	s := newService(t, home, &fakeGit{})
+	s.DB.Close()
+	logged := make(chan string, 4)
+	s.Log = func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }
+	s.After = func(time.Duration) <-chan time.Time { return make(chan time.Time) }
+	ctx, cancel := context.WithCancel(bgc)
+	defer cancel()
+	go s.Loop(ctx, func(context.Context) time.Duration { return time.Hour })
+	select {
+	case msg := <-logged:
+		if !strings.HasPrefix(msg, "repos: scheduled scan failed: ") {
+			t.Fatalf("log = %q", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed scan was not logged")
+	}
+}
+
+func TestScanPublishesEvenIfCallerCancelled(t *testing.T) {
+	home := realTemp(t)
+	mkRepo(t, home, "GitHub/a")
+	s := newService(t, home, &fakeGit{})
+	ctx, cancel := context.WithCancel(bgc)
+	cancel()
+	if _, err := s.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := s.Events.After(bgc, 0, 10)
+	if len(evs) != 1 || evs[0].Type != events.ReposChanged {
+		t.Fatalf("events = %+v", evs)
+	}
+}
+
+func TestScanJoinerHonoursItsContext(t *testing.T) {
+	home := realTemp(t)
+	mkRepo(t, home, "GitHub/a")
+	g := &fakeGit{gate: make(chan struct{}), start: make(chan struct{})}
+	s := newService(t, home, g)
+	done := make(chan struct{})
+	go func() { defer close(done); s.Scan(bgc) }()
+	<-g.start
+	ctx, cancel := context.WithTimeout(bgc, 20*time.Millisecond)
+	defer cancel()
+	if _, err := s.Scan(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("joiner err = %v", err)
+	}
+	close(g.gate)
+	<-done
 }
