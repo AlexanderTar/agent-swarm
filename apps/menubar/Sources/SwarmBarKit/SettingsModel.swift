@@ -99,11 +99,17 @@ public final class SettingsModel {
     /// A stored effort the catalog no longer offers for its model must never survive into a save
     /// (L27): normalise it into `settings` itself, at the source, so `defaultsRows` stays a pure
     /// projection and `setAgent`/`setModel` can't rebuild `AgentChoice` from a still-stale raw value.
+    ///
+    /// Mirrors `goneModel`'s guard: a missing or empty-`models` entry (a failed `/api/catalog`, or an
+    /// agent that isn't installed or was never probed — `catalog/service.go:101` serves exactly that)
+    /// means there is nothing to check the stored level against, not that every level is invalid. Wiping
+    /// it here would be silent (no row error, `blocked` stays false) and would ride out on the very next
+    /// unrelated save.
     private func normalizeStoredEfforts() {
         for role in Self.defaultsOrder {
             guard let d = settings[role] else { continue }
-            let model = CatalogRules.resolve(CatalogRules.entry(catalog, d.agent), d.model)
-            let effort = CatalogRules.normalizeEffort(d.agent, model, d.effort)
+            guard let e = CatalogRules.entry(catalog, d.agent), !e.models.isEmpty else { continue }
+            let effort = CatalogRules.normalizeEffort(d.agent, CatalogRules.resolve(e, d.model), d.effort)
             if effort != d.effort {
                 settings[role] = RoleDefault(agent: d.agent, model: d.model, effort: effort)
             }
@@ -124,6 +130,10 @@ public final class SettingsModel {
         guard !blocked else { return }
         do {
             settings = try await client.saveSettings(settings)
+            // The daemon's own response is adopted verbatim; normalise it the same way a load is, so a
+            // response that carries a level the (locally cached) catalog no longer offers can't sit
+            // unnormalised until the next edit happens to touch that role.
+            normalizeStoredEfforts()
             saveError = nil
         } catch {
             saveError = Copy.settingsSaveFailed

@@ -145,6 +145,38 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertNotEqual(m.settings[.mechanical]?.effort, "high")
     }
 
+    /// A missing or empty-`models` catalog entry (a failed `/api/catalog`, or an agent that isn't
+    /// installed or was never probed — `internal/catalog/service.go:101` serves exactly that) means
+    /// there is nothing to normalise against, not that every level is invalid: the stored effort must
+    /// survive untouched, including through a save, or an outage silently wipes Settings.
+    func testNormalizeStoredEffortsSkipsARoleWithNoUsableCatalogEntry() async {
+        var stale = state.settings
+        stale[.mechanical] = RoleDefault(agent: .agy, model: "whatever", effort: "high")
+        state.settings = stale
+
+        // No entry at all for `.agy`.
+        client.catalogEntries = []
+        let missing = await model()
+        XCTAssertEqual(missing.settings[.mechanical]?.effort, "high", "no catalog entry: nothing to normalise against")
+        await missing.setCenter(.info, false)
+        XCTAssertEqual(missing.settings[.mechanical]?.effort, "high", "an unrelated save must not PUT the wipe")
+
+        // An entry that exists but has no models yet.
+        client.catalogEntries = [AgentCatalogEntry(kind: .agy, models: [])]
+        let empty = await model()
+        XCTAssertEqual(empty.settings[.mechanical]?.effort, "high", "an entry with no models yet must not wipe the stored effort either")
+        await empty.setCenter(.info, false)
+        XCTAssertEqual(empty.settings[.mechanical]?.effort, "high")
+
+        // A real catalog (Haiku, no efforts) must still normalise, exactly as before this fix.
+        client.catalogEntries = try! MockDaemonClient(fixtures: Fixture.dir).catalogEntries
+        var validButNoEfforts = state.settings
+        validButNoEfforts[.mechanical] = RoleDefault(agent: .claude, model: "haiku", effort: "high")
+        state.settings = validButNoEfforts
+        let real = await model()
+        XCTAssertEqual(real.settings[.mechanical]?.effort, "", "a real catalog entry still normalises a level the model doesn't offer")
+    }
+
     /// `ReposResponse()` defaults `scannedAt` to 0 (never scanned), and the wire is a trust boundary
     /// (anything <= 0), so this must read "Never scanned", not an age from 1970.
     func testScanLineNeverRendersTheEpochOrANegativeTimestampAsAnAge() async {
