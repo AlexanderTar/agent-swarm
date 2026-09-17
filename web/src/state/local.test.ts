@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { readJson, useLocalSet, writeJson } from "./local";
+import { readJson, storage, useLocalSet, writeJson } from "./local";
 
 describe("local storage helpers", () => {
   it("reads and writes JSON with a fallback", () => {
@@ -26,5 +26,20 @@ describe("local storage helpers", () => {
     unmount();
     const again = renderHook(() => useLocalSet("swarm.test", ["draft"]));
     expect([...again.result.current[0]]).toEqual(["done"]);
+  });
+
+  it("falls back when the storage getter itself throws (site data blocked)", () => {
+    vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    });
+    expect(storage("localStorage")).toBeNull();
+    expect(readJson(storage("localStorage"), "k", 7)).toBe(7);
+    expect(() => writeJson(storage("localStorage"), "k", 1)).not.toThrow();
+    const { result } = renderHook(() => useLocalSet("swarm.blocked", ["draft"]));
+    expect([...result.current[0]]).toEqual(["draft"]);
+    act(() => result.current[1]("done"));
+    expect([...result.current[0]]).toEqual(["draft", "done"]);
+    vi.restoreAllMocks();
+    expect(localStorage.getItem("swarm.blocked")).toBeNull();
   });
 });

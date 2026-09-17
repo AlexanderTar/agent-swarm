@@ -10,6 +10,7 @@ describe("format", () => {
     expect(ageCompact(NOW - 12 * MIN, NOW)).toBe("12m");
     expect(ageCompact(NOW - 125 * MIN, NOW)).toBe("2h");
     expect(ageCompact(NOW - 3 * 24 * 60 * MIN, NOW)).toBe("3d");
+    expect(ageCompact(NOW - 59.5 * MIN, NOW)).toBe("59m");
   });
 
   it("formats long ages", () => {
@@ -17,6 +18,7 @@ describe("format", () => {
     expect(ageAgo(NOW - 10_000, NOW)).toBe("1 min ago");
     expect(ageAgo(NOW - 61 * MIN, NOW)).toBe("1 h ago");
     expect(ageAgo(NOW - 50 * 60 * MIN, NOW)).toBe("2 d ago");
+    expect(ageAgo(NOW - 59.5 * MIN, NOW)).toBe("59 min ago");
   });
 
   it("formats time, duration, tokens, cost, sha and truncation", () => {
@@ -26,6 +28,7 @@ describe("format", () => {
     expect(formatTokens(950)).toBe("950");
     expect(formatTokens(12_345)).toBe("12.3k");
     expect(formatTokens(1_234_567)).toBe("1.2M");
+    expect(formatTokens(999_950)).toBe("1.0M");
     expect(formatCost(0.4213)).toBe("$0.42");
     expect(sha7("0123456789abcdef")).toBe("0123456");
     expect(truncate("abcdef", 4)).toBe("abc…");

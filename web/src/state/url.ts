@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { ITEM_STATUSES } from "../types";
 import type { CardLevel, Filter, Grouping, InboxFilter, ItemStatus, ItemType, View } from "../types";
 
@@ -70,5 +70,6 @@ export function useBoardUrl(): [BoardUrl, (patch: Partial<BoardUrl>) => void] {
     window.history.replaceState(null, "", next);
     window.dispatchEvent(new HashChangeEvent("hashchange"));
   }, []);
-  return [parseHash(hash), update];
+  const url = useMemo(() => parseHash(hash), [hash]);
+  return [url, update];
 }

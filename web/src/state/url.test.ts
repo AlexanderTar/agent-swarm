@@ -45,6 +45,13 @@ describe("url state (§16.5)", () => {
     expect(window.location.hash).toBe("#/kanban?item=TASK-102");
   });
 
+  it("keeps the parsed value stable across renders", () => {
+    const { result, rerender } = renderHook(() => useBoardUrl());
+    const first = result.current[0];
+    rerender();
+    expect(result.current[0]).toBe(first);
+  });
+
   it("follows external hash changes", () => {
     const { result } = renderHook(() => useBoardUrl());
     act(() => {
