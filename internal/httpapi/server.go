@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +77,7 @@ func New(d Deps) *Server {
 		d.Log = log.Printf
 	}
 	s := &Server{Deps: d, mux: http.NewServeMux()}
-	s.routes = append(s.baseRoutes(), s.itemRoutes()...)
+	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes())
 	for _, rt := range s.routes {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}

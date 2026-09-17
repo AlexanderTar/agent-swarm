@@ -180,6 +180,9 @@ func TestSearchRanksAndChecksDirty(t *testing.T) {
 	if !slices.Equal(names(recent), []string{"endurio-app"}) || recent[0].LastUsedAt == 0 {
 		t.Fatalf("recent = %+v", recent)
 	}
+	if none, err := s.Recent(bgc, -1); err != nil || len(none) != 0 {
+		t.Fatalf("Recent(-1) = %+v, %v", none, err)
+	}
 }
 
 func TestMissingAndManualRepos(t *testing.T) {

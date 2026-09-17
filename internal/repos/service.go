@@ -296,7 +296,11 @@ func (s *Service) query(ctx context.Context, where string, args ...any) ([]Repo,
 
 func (s *Service) All(ctx context.Context) ([]Repo, error) { return s.query(ctx, "") }
 
+// Recent returns up to limit repos, most recently used first; limit <= 0 returns none.
 func (s *Service) Recent(ctx context.Context, limit int) ([]Repo, error) {
+	if limit <= 0 {
+		return []Repo{}, nil
+	}
 	list, err := s.query(ctx, `WHERE r.last_used_at IS NOT NULL`)
 	sort.SliceStable(list, func(i, j int) bool { return list[i].LastUsedAt > list[j].LastUsedAt })
 	if len(list) > limit {
