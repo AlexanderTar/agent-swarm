@@ -2,8 +2,16 @@ import { C } from "../copy";
 import { kebab } from "../logic/kebab";
 import { checkMove } from "../logic/transitions";
 import { PARENT_TYPES, ancestors, buildIndex, makeItem } from "../logic/tree";
-import type { AgentNode, AgentEndpoint, Graph, Item, Request } from "../types";
+import type { AgentNode, AgentEndpoint, Graph, Item, ItemType, Request } from "../types";
 import { type MockDb, NOW, seed } from "./fixtures";
+
+// 13.3: the daemon's own hint for a top-level create with no parent (items/store.go:53).
+const PARENT_HINT: Partial<Record<ItemType, string>> = {
+  story: "A story needs a parent epic.",
+  task: "A task needs a parent story, bug or spike.",
+};
+const article = (w: string) => (/^[aeiou]/i.test(w) ? `an ${w}` : `a ${w}`);
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export interface MockRequest { method: string; url: string; headers?: Record<string, string>; body?: unknown }
 export interface MockResponse { status: number; body?: unknown }
@@ -39,6 +47,8 @@ const fail = (status: number, code: string, message: string, reason?: string): M
   status,
   body: { error: reason === undefined ? { code, message } : { code, message, reason } },
 });
+// 13.3: matches items/store.go:122 ("No item %s.") for every item-key lookup.
+const notFound = (key: string): MockResponse => fail(404, "not_found", `No item ${key}.`);
 const closed = (s: string) => s === "done" || s === "cancelled";
 
 function allAgents(nodes: AgentNode[]): AgentNode[] {
@@ -119,7 +129,7 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
 
   function detail(key: string): MockResponse {
     const it = item(key);
-    if (!it) return fail(404, "not_found", `${key} not found`);
+    if (!it) return notFound(key);
     const idx = buildIndex(db.items);
     const keys = subtree(key);
     const all = allAgents(db.agents).filter((a) => keys.has(a.item_key));
@@ -140,11 +150,14 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
 
   function patch(key: string, body: Body): MockResponse {
     const it = item(key);
-    if (!it) return fail(404, "not_found", `${key} not found`);
+    if (!it) return notFound(key);
     if (body.revision !== it.revision) return fail(409, "conflict", C.staleRevision);
     if (body.status && body.status !== it.status) {
       const c = checkMove(it, body.status);
       if (!c.ok) return fail(422, "transition_denied", c.reason, c.reason);
+      // 13.1: mirrors setStatus (internal/items/transition.go:304-316) — save the status being left
+      // when moving to Blocked, and clear the saved status on every other move.
+      it.status_before_block = body.status === "blocked" ? it.status : null;
       it.status = body.status;
     }
     for (const f of ["title", "brief", "acceptance", "priority"] as const) if (body[f] !== undefined) (it as Body)[f] = body[f];
@@ -158,10 +171,19 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
   function createItem(body: Body): MockResponse {
     return once(body.request_id, () => {
       if (body.type === "spike") return fail(400, "bad_request", C.spikeViaNewItem);
-      const allowed = PARENT_TYPES[body.type as keyof typeof PARENT_TYPES];
+      const type = body.type as ItemType;
+      const allowed = PARENT_TYPES[type];
       const parent = body.parent_key ? item(body.parent_key) : undefined;
-      if (allowed && (!parent || !allowed.includes(parent.type))) return fail(400, "bad_request", "invalid parent");
-      if (!allowed && body.parent_key) return fail(400, "bad_request", "top-level items have no parent");
+      // 13.3: mirrors items/store.go:214-231 — a missing parent key is 404, a disallowed parent type
+      // is "%s can't be a child of %s.", and a required-but-absent parent is the daemon's own hint.
+      if (!body.parent_key) {
+        const hint = PARENT_HINT[type];
+        if (hint) return fail(400, "bad_request", hint);
+      } else if (!parent) {
+        return notFound(body.parent_key);
+      } else if (!allowed?.includes(parent.type)) {
+        return fail(400, "bad_request", `${capitalize(article(type))} can't be a child of ${article(parent.type)}.`);
+      }
       const key = `${String(body.type).toUpperCase()}-${++counter}`;
       const it = makeItem({
         key, type: body.type, title: body.title, brief: body.brief, acceptance: body.acceptance, status: "draft",
@@ -176,7 +198,8 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
   function addDep(key: string, body: Body): MockResponse {
     const a = item(key);
     const b = item(body.blocked_by);
-    if (!a || !b) return fail(404, "not_found", "not found");
+    if (!a) return notFound(key);
+    if (!b) return notFound(body.blocked_by);
     const idx = buildIndex(db.items);
     const lineage = (k: string) => ancestors(k, idx.byKey).map((x) => x.key);
     // F10: the daemon refuses a hierarchy edge with 409 conflict (items/deps.go:57), not 400.
@@ -198,7 +221,7 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
 
   function graph(key: string, q: URLSearchParams): MockResponse {
     const it = item(key);
-    if (!it) return fail(404, "not_found", `${key} not found`);
+    if (!it) return notFound(key);
     let keys: Set<string>;
     if (q.get("scope") === "neighbourhood") {
       keys = new Set([key]);
@@ -242,7 +265,7 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
   function startOrchestrator(key: string, body: Body): MockResponse {
     return once(body.request_id, () => {
       const it = item(key);
-      if (!it) return fail(404, "not_found", `${key} not found`);
+      if (!it) return notFound(key);
       const live = allAgents(db.agents).some((a) => a.item_key === key && a.role === "orchestrator" && (a.state === "active" || a.state === "queued"));
       if (live) return fail(409, "conflict", C.orchestratorExists);
       const name = body.name || `${kebab(it.title, 24)}-orchestrator`;
@@ -294,7 +317,8 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
         break;
       case "ack":
         a.state = "acknowledged";
-        break;
+        d.emit("agent.changed", { name, root_key: a.root_key });
+        return ok(undefined, 204); // 13.6: contracts §4 — ack is 204, no body
       case "retry":
         a.preflight_error = null;
         a.session = { ...(s ?? { id: `ses_${++counter}`, attempt: 0, generation: 0, waiting: false, stale: false, started_at: NOW, ended_at: null }), state: "spawning", attempt: (s?.attempt ?? 0) + 1, generation: (s?.generation ?? 0) + 1, tmux_alive: true };
@@ -328,6 +352,8 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
       }
       case "approve":
         if (body.section_sha256 !== undefined && body.section_sha256 !== r.section_sha256) return fail(409, "conflict", C.staleApproval);
+        // 13.4: contracts §4 / §16.11 C2 — a stale artifact_revision refuses the approval too.
+        if (body.artifact_revision !== undefined && body.artifact_revision !== r.artifact_revision) return fail(409, "conflict", C.staleApproval);
         if (body.binding !== undefined && JSON.stringify(body.binding) !== JSON.stringify(r.binding)) return fail(409, "conflict", C.staleApproval);
         return resolve(r, "approved", null);
       case "confirm-repos": {
@@ -375,6 +401,18 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
     });
   }
 
+  // 13.2: contracts §5 `GET /api/agents?state=active|all&root=`. `active` (the default) drops
+  // top-level nodes that are finished/acknowledged; the nested finished[] array always survives,
+  // since §16.9's "▸ Finished (N)" renders from it.
+  function agentsList(q: URLSearchParams): MockResponse {
+    const state = q.get("state") ?? "active";
+    const root = q.get("root");
+    let nodes = db.agents;
+    if (root) nodes = nodes.filter((a) => a.root_key === root);
+    if (state === "active") nodes = nodes.filter((a) => a.state !== "finished" && a.state !== "acknowledged");
+    return ok(nodes);
+  }
+
   function addRepo(body: Body): MockResponse {
     const path = String(body.path ?? "");
     if (!path.startsWith("/") || path.endsWith("/not-a-repo")) return fail(422, "bad_request", C.notARepo);
@@ -400,7 +438,7 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
     )],
     ["POST", new RegExp(`^/api/items/${K}/orchestrator$`), (c) => startOrchestrator(c.p.key as string, c.body)],
     ["POST", /^\/api\/spikes$/, (c) => createSpike(c.body)],
-    ["GET", /^\/api\/agents$/, () => ok(db.agents)],
+    ["GET", /^\/api\/agents$/, (c) => agentsList(c.q)],
     ["POST", /^\/api\/agents\/(?<name>[^/]+)\/(?<action>pause|resume|cancel|ack|retry|terminal)$/, (c) => agentAction(c.p.name as string, c.p.action as AgentEndpoint)],
     ["GET", /^\/api\/agents\/(?<name>[^/]+)\/advice$/, (c) => ok(db.advice[c.p.name as string] ?? [])],
     ["GET", /^\/api\/requests$/, () => ok(db.requests.filter((r) => r.state === "open"))],
@@ -419,15 +457,22 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
     d.calls.push({ method, path: url.pathname + url.search, body: req.body });
     if (method === "GET" && url.pathname === "/api/bootstrap") return ok({ token: db.token });
     const authz = req.headers?.authorization ?? req.headers?.Authorization;
-    if (authz !== `Bearer ${db.token}`) return fail(401, "unauthorized", "missing or invalid token");
+    // 13.3: byte-identical to the daemon's pinned copy (contracts §2, httpapi/server.go:120).
+    if (authz !== `Bearer ${db.token}`) return fail(401, "unauthorized", "Missing or invalid token.");
     const o = overrides.get(`${method} ${url.pathname}`);
     if (o) return typeof o === "function" ? o(req.body) : o;
     for (const [m, re, fn] of routes) {
       const hit = m === method ? re.exec(url.pathname) : null;
       if (hit) return fn({ p: hit.groups ?? {}, q: url.searchParams, body: req.body ?? {} });
     }
-    return fail(404, "not_found", `${method} ${url.pathname}`);
+    // 13.3: byte-identical to the daemon's pinned copy (contracts §2, httpapi/server.go:93).
+    return fail(404, "not_found", "Unknown API route.");
   }
+
+  // 13.5: compute blocked_by/open_requests once up front, the way the daemon always serves them
+  // (store.go:445-446) — not only after the first mutation, which made the fixture's raw
+  // "TASK-102 blocked by the already-done TASK-98" literal a time-dependent false green.
+  recompute();
 
   return d;
 }

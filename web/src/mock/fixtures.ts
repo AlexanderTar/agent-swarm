@@ -38,11 +38,13 @@ function items(): Item[] {
     makeItem({ key: "EPIC-12", title: "Authentication", status: "in_progress", priority: 1, created_at: NOW - 3000 * MIN, repos: ["repo_chat"], repos_version: 1, origin_spike_key: "SPIKE-2", progress: { done: 0, total: 2, unit: "stories" }, active_agents: 3, open_requests: 1, revision: 7, brief: "Sign-in for the chat app.", acceptance: ["Users can log in", "Sessions persist"] }),
     child("STORY-40", "EPIC-12", "EPIC-12", { title: "Login", status: "in_progress", sort_order: 1, progress: { done: 0, total: 3, unit: "tasks" }, active_agents: 2 }),
     child("TASK-101", "STORY-40", "EPIC-12", { title: "Build login form", status: "in_progress", sort_order: 1, active_agents: 1, role_hint: "coder" }),
-    child("TASK-102", "STORY-40", "EPIC-12", { title: "Persist session", status: "blocked", sort_order: 2, blocked_by: ["TASK-98"] }),
-    child("TASK-104", "STORY-40", "EPIC-12", { title: "Validate inputs", status: "in_review", sort_order: 3, active_agents: 1, open_requests: 1, blocked_by: ["TASK-102"] }),
+    // blocked_by is left off here: createMockDaemon() derives it from `deps` below (13.5), the way
+    // the daemon computes it from unresolved dependencies only (store.go:445).
+    child("TASK-102", "STORY-40", "EPIC-12", { title: "Persist session", status: "blocked", status_before_block: "in_progress", sort_order: 2 }),
+    child("TASK-104", "STORY-40", "EPIC-12", { title: "Validate inputs", status: "in_review", sort_order: 3, active_agents: 1, open_requests: 1 }),
     child("STORY-41", "EPIC-12", "EPIC-12", { title: "Password reset", status: "ready", sort_order: 2, progress: { done: 0, total: 1, unit: "tasks" } }),
     child("TASK-103", "STORY-41", "EPIC-12", { title: "Password reset form", status: "ready" }),
-    makeItem({ key: "BUG-7", title: "Login crash", status: "blocked", priority: 2, created_at: NOW - 2000 * MIN, progress: { done: 1, total: 2, unit: "tasks" } }),
+    makeItem({ key: "BUG-7", title: "Login crash", status: "blocked", status_before_block: "in_progress", priority: 2, created_at: NOW - 2000 * MIN, progress: { done: 1, total: 2, unit: "tasks" } }),
     child("TASK-98", "BUG-7", "BUG-7", { title: "Fix token refresh race", status: "done", sort_order: 1 }),
     child("TASK-110", "BUG-7", "BUG-7", { title: "Add crash regression test", status: "ready", sort_order: 2 }),
     makeItem({ key: "BUG-8", title: "Upload retry", status: "in_review", priority: 2, created_at: NOW - 1500 * MIN, open_requests: 1, revision: 4 }),
