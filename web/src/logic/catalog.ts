@@ -17,8 +17,9 @@ const DEFAULT_LEVEL = "default";
 const offeredEfforts = (model: CatalogModel): string[] =>
   model.default_effort === DEFAULT_LEVEL ? model.efforts.filter((e) => e !== DEFAULT_LEVEL) : model.efforts;
 
-const supportsEffort = (model: CatalogModel | undefined, effort: string) =>
-  effort !== "" && model !== undefined && offeredEfforts(model).includes(effort);
+// The bare slug has no level name of its own, so it is named after the agent wherever it is shown.
+const levelLabel = (kind: AgentKind, level: string) =>
+  level === DEFAULT_LEVEL ? T.defaultLevel(AGENT_LABEL[kind]) : level;
 
 export const entryFor = (catalog: AgentCatalogEntry[], kind: AgentKind | "") => catalog.find((e) => e.kind === kind);
 
@@ -52,7 +53,6 @@ export function modelOptions(entry: AgentCatalogEntry | undefined, advisorOnly =
 }
 
 export function defaultEffortLabel(kind: AgentKind, model: CatalogModel): string {
-  // The bare slug has no level name of its own, so it is named after the agent instead.
   if (model.default_effort === DEFAULT_LEVEL) return T.defaultLevel(AGENT_LABEL[kind]);
   if (model.default_effort !== "") return T.defaultLevel(model.default_effort);
   if (kind === "claude") return model.efforts.includes("high") ? T.defaultLevel("high") : C.defaultClaudeCode;
@@ -67,9 +67,15 @@ export function effortOptions(kind: AgentKind | "", model: CatalogModel | undefi
   if (kind === "" || !model || model.efforts.length === 0) return null;
   return [
     { value: "", label: defaultEffortLabel(kind, model) },
-    ...offeredEfforts(model).map((e) => ({ value: e, label: e === DEFAULT_LEVEL ? T.defaultLevel(AGENT_LABEL[kind]) : e })),
+    ...offeredEfforts(model).map((e) => ({ value: e, label: levelLabel(kind, e) })),
   ];
 }
+
+// The one seam for "is this level still offered?". A stored level the model's menu doesn't show
+// means the agent default (L27): either the model dropped it, or it is a bare level that merged
+// into the "" row. Consumers must reuse this rather than re-deriving the rule.
+export const normalizeEffort = (kind: AgentKind | "", model: CatalogModel | undefined, effort: string): string =>
+  effortOptions(kind, model)?.some((o) => o.value === effort) ? effort : "";
 
 export function prefill(
   settings: Settings,
@@ -94,7 +100,7 @@ export function prefill(
 export function changeAgent(choice: AgentChoice, agent: AgentKind, catalog: AgentCatalogEntry[]) {
   const model = resolveModel(entryFor(catalog, agent), choice.model);
   if (model) {
-    const effort = supportsEffort(model, choice.effort) ? choice.effort : "";
+    const effort = normalizeEffort(agent, model, choice.effort);
     return { choice: { agent, model: choice.model, effort }, errors: {} as FieldErrors };
   }
   return { choice: { agent, model: "", effort: "" }, errors: { model: C.modelUnavailable } as FieldErrors };
@@ -102,14 +108,14 @@ export function changeAgent(choice: AgentChoice, agent: AgentKind, catalog: Agen
 
 export function changeModel(choice: AgentChoice, model: string, catalog: AgentCatalogEntry[]): { choice: AgentChoice; note?: string } {
   const m = resolveModel(entryFor(catalog, choice.agent), model);
-  if (choice.effort !== "" && !supportsEffort(m, choice.effort)) {
-    const next = { ...choice, model, effort: "" };
-    // A bare "default" that merged into the "" row launches the same way, so there is nothing to tell.
-    return m && choice.effort !== DEFAULT_LEVEL
-      ? { choice: next, note: T.effortUnavailable(choice.effort, m.label) }
-      : { choice: next };
+  const next = { ...choice, model, effort: normalizeEffort(choice.agent, m, choice.effort) };
+  // Silent only when the bare level merged into the NEW model's "" row: it launches the same way.
+  // A target with no bare level at all really did lose the choice, so it gets the note.
+  const merged = choice.effort === DEFAULT_LEVEL && m?.default_effort === DEFAULT_LEVEL;
+  if (next.effort === "" && choice.effort !== "" && !merged && m && choice.agent !== "") {
+    return { choice: next, note: T.effortUnavailable(levelLabel(choice.agent, choice.effort), m.label) };
   }
-  return { choice: { ...choice, model } };
+  return { choice: next };
 }
 
 export function validateChoice(
@@ -172,7 +178,6 @@ export function choicePayload(c: AgentChoice): { agent: AgentKind; model: string
 export function advisorPayload(a: AdvisorChoice, settings: Settings, catalog: AgentCatalogEntry[]): AdvisorPayload {
   if (a === "none") return "none";
   const model = resolveModel(entryFor(catalog, a.agent), a.model);
-  const stored = settings.roles.advisor?.effort ?? "";
-  const effort = supportsEffort(model, stored) ? stored : "";
+  const effort = normalizeEffort(a.agent, model, settings.roles.advisor?.effort ?? "");
   return effort ? { ...a, effort } : { ...a };
 }

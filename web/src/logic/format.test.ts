@@ -11,6 +11,9 @@ describe("format", () => {
     expect(ageCompact(NOW - 125 * MIN, NOW)).toBe("2h");
     expect(ageCompact(NOW - 3 * 24 * 60 * MIN, NOW)).toBe("3d");
     expect(ageCompact(NOW - 59.5 * MIN, NOW)).toBe("59m");
+    // Ruling: the minute band FLOORS, so an age never overstates. 90s is "1m", not "2m".
+    expect(ageCompact(NOW - 90_000, NOW)).toBe("1m");
+    expect(ageCompact(NOW - 119_000, NOW)).toBe("1m");
   });
 
   it("builds an age sentence, or the caller's copy when there is no usable timestamp", () => {

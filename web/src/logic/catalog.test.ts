@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { AgentCatalogEntry, CatalogModel, Settings } from "../types";
 import {
   advisorOptions, advisorPayload, agentOptions, catalogNote, changeAgent, changeModel, choicePayload, decodeAdvisor,
-  defaultEffortLabel, effortOptions, encodeAdvisor, isValid, modelLabel, modelOptions, prefill, resolveModel, validateChoice,
+  defaultEffortLabel, effortOptions, encodeAdvisor, isValid, modelLabel, modelOptions, normalizeEffort, prefill,
+  resolveModel, validateChoice,
 } from "./catalog";
 
 // L26/L27: no real model names anywhere in src/logic, fixtures included.
@@ -47,6 +48,11 @@ const catalog: AgentCatalogEntry[] = [
       m({
         id: "model-8", label: "Model Eight", efforts: ["default", "none", "minimal"], default_effort: "default",
         effort_encoding: "slug", launch_ids: { default: "model-8", none: "model-8-none", minimal: "model-8-minimal" },
+      }),
+      // No bare slug beside its suffixed siblings, so it has no "default" level at all.
+      m({
+        id: "model-10", label: "Model Ten", efforts: ["low", "high"], default_effort: "high",
+        effort_encoding: "slug", launch_ids: { low: "model-10-low", high: "model-10-high" },
       }),
     ],
   }),
@@ -128,7 +134,26 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     expect(changeModel({ agent: "cursor", model: "model-6", effort: "default" }, "model-8", catalog)).toEqual({
       choice: { agent: "cursor", model: "model-8", effort: "" },
     });
+    // The target has no bare level at all, so this really is a lost choice — and the note names the
+    // level the way the menu spelled it, not the raw wire value.
+    expect(changeModel({ agent: "cursor", model: "model-6", effort: "default" }, "model-10", catalog)).toEqual({
+      choice: { agent: "cursor", model: "model-10", effort: "" },
+      note: "Default (Cursor) isn't available for Model Ten; using the default.",
+    });
     expect(changeAgent({ agent: "claude", model: "model-8", effort: "default" }, "cursor", catalog).choice.effort).toBe("");
+  });
+
+  it("normalises a level against the model's own menu", () => {
+    // The one seam T19/T25 must reuse rather than re-deriving "is this level still offered?".
+    const six = resolveModel(catalog[2], "model-6");
+    expect(normalizeEffort("cursor", six, "low")).toBe("low");
+    expect(normalizeEffort("cursor", six, "default")).toBe("default");
+    expect(normalizeEffort("cursor", six, "xhigh")).toBe("");
+    expect(normalizeEffort("cursor", resolveModel(catalog[2], "model-8"), "default")).toBe("");
+    expect(normalizeEffort("claude", resolveModel(catalog[0], "gamma"), "high")).toBe("");
+    expect(normalizeEffort("cursor", undefined, "low")).toBe("");
+    expect(normalizeEffort("", six, "low")).toBe("");
+    expect(normalizeEffort("cursor", six, "")).toBe("");
   });
 
   it("keeps the daemon's level order for slug models, including the bare `default` level", () => {
