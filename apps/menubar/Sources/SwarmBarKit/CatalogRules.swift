@@ -87,6 +87,11 @@ public enum CatalogRules {
     /// It is the agent's own choice, so it reads "Default (<Agent>)" rather than the bare word.
     private static let bareLevel = "default"
 
+    /// A level as the menu spells it: the slug, or "Default (<Agent>)" for the bare level.
+    private static func levelLabel(_ kind: AgentKind, _ level: String) -> String {
+        level == bareLevel ? Copy.defaultLevel(Copy.agentLabel(kind)) : level
+    }
+
     public static func defaultEffortLabel(_ kind: AgentKind, _ model: CatalogModel) -> String {
         if model.defaultEffort == bareLevel { return Copy.defaultLevel(Copy.agentLabel(kind)) }
         if !model.defaultEffort.isEmpty { return Copy.defaultLevel(model.defaultEffort) }
@@ -101,7 +106,7 @@ public enum CatalogRules {
         guard let kind, let model, !model.efforts.isEmpty else { return nil }
         let levels = model.defaultEffort == bareLevel ? model.efforts.filter { $0 != bareLevel } : model.efforts
         return [PickerOption("", defaultEffortLabel(kind, model))]
-            + levels.map { PickerOption($0, $0 == bareLevel ? Copy.defaultLevel(Copy.agentLabel(kind)) : $0) }
+            + levels.map { PickerOption($0, levelLabel(kind, $0)) }
     }
 
     /// A stored level the model's menu doesn't offer means the agent default (L27): an effort the model
@@ -132,9 +137,10 @@ public enum CatalogRules {
         var next = choice
         next.model = model
         next.effort = normalizeEffort(choice.agent, m, choice.effort)
-        // A bare level that merged into the "" row launches the same way, so there is nothing to tell the user.
-        if next.effort.isEmpty, !choice.effort.isEmpty, choice.effort != bareLevel {
-            return (next, m.map { Copy.effortUnavailable(choice.effort, $0.label) })
+        // Silent only when the bare level merged into the new model's "" row: it launches the same way.
+        let merged = choice.effort == bareLevel && m?.defaultEffort == bareLevel
+        if next.effort.isEmpty, !choice.effort.isEmpty, !merged, let agent = choice.agent {
+            return (next, m.map { Copy.effortUnavailable(levelLabel(agent, choice.effort), $0.label) })
         }
         return (next, nil)
     }

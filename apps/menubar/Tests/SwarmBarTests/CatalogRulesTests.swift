@@ -86,10 +86,15 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(R.normalizeEffort(.claude, R.resolve(catalog[0], "haiku"), "high"), "")
         XCTAssertEqual(R.normalizeEffort(nil, withLevels, "low"), "")
 
-        let cursor = [AgentCatalogEntry(kind: .cursor, models: [withLevels, bareIsDefault])]
+        let noBareLevel = CatalogModel(id: "c-three", label: "C Three", efforts: ["low", "medium", "high"], defaultEffort: "high")
+        let cursor = [AgentCatalogEntry(kind: .cursor, models: [withLevels, bareIsDefault, noBareLevel])]
         let moved = R.changeModel(AgentChoice(agent: .cursor, model: "c-one", effort: "default"), to: "c-two", catalog: cursor)
         XCTAssertEqual(moved.0.effort, "")
         XCTAssertNil(moved.note, "the dropped row resolves to the same launch id, so there is nothing to report")
+        // A model with no bare level at all is a real reset, so §16.4's note still fires.
+        let dropped = R.changeModel(AgentChoice(agent: .cursor, model: "c-one", effort: "default"), to: "c-three", catalog: cursor)
+        XCTAssertEqual(dropped.0.effort, "")
+        XCTAssertEqual(dropped.note, "Default (Cursor) isn't available for C Three; using the default.")
         XCTAssertEqual(R.changeAgent(AgentChoice(agent: .claude, model: "c-two", effort: "default"), to: .cursor, catalog: cursor).0.effort, "")
     }
 
