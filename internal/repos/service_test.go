@@ -329,12 +329,57 @@ func TestLoopLogsFailedScan(t *testing.T) {
 	}
 }
 
-func TestScanPublishesEvenIfCallerCancelled(t *testing.T) {
+// A cancelled scan stops walking and running git, stores nothing and publishes nothing.
+func TestCancelledScanStopsAndPublishesNothing(t *testing.T) {
+	home := realTemp(t)
+	for i := range 50 {
+		mkRepo(t, home, fmt.Sprintf("GitHub/r%d", i))
+	}
+	g := &fakeGit{}
+	s := newService(t, home, g)
+	ctx, cancel := context.WithCancel(bgc)
+	s.Excludes = func(context.Context) []string { cancel(); return nil } // cancels as the scan starts
+	start := time.Now()
+	if _, err := s.Scan(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("cancelled scan took %v", d)
+	}
+	if n := g.calls.Load(); n != 0 {
+		t.Fatalf("git calls = %d", n)
+	}
+	all, _ := s.All(bgc)
+	evs, _ := s.Events.After(bgc, 0, 10)
+	if len(all) != 0 || len(evs) != 0 || !s.ScannedAt().IsZero() || s.Scanning() {
+		t.Fatalf("repos = %v events = %+v scannedAt = %v", names(all), evs, s.ScannedAt())
+	}
+}
+
+func TestWalkStopsWhenCancelled(t *testing.T) {
+	home := realTemp(t)
+	mkRepo(t, home, "GitHub/a")
+	ctx, cancel := context.WithCancel(bgc)
+	cancel()
+	if w, err := walk(ctx, home, nil); !errors.Is(err, context.Canceled) || len(w.Repos) != 0 {
+		t.Fatalf("walk = %+v %v", w, err)
+	}
+}
+
+// Once results are stored, a late cancel still publishes them (Task 10 ruling).
+func TestScanPublishesStoredResultsDespiteLateCancel(t *testing.T) {
 	home := realTemp(t)
 	mkRepo(t, home, "GitHub/a")
 	s := newService(t, home, &fakeGit{})
 	ctx, cancel := context.WithCancel(bgc)
-	cancel()
+	defer cancel()
+	base, calls := s.Now, 0
+	s.Now = func() time.Time { // 1st call stamps the rows, 2nd follows the commit
+		if calls++; calls == 2 {
+			cancel()
+		}
+		return base()
+	}
 	if _, err := s.Scan(ctx); err != nil {
 		t.Fatal(err)
 	}

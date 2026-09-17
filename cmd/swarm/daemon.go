@@ -42,6 +42,9 @@ type daemonConfig struct {
 	Embedder   kb.Embedder // nil means Ollama
 	Log        func(format string, args ...any)
 	Ready      func(addr string)
+
+	grace time.Duration           // shutdown budget; 0 means 5 s
+	loops []func(context.Context) // extra background loops (tests)
 }
 
 type logf = func(format string, args ...any)
@@ -71,7 +74,7 @@ func loadOrCreateToken(path string) (string, error) {
 		return "", fmt.Errorf("Can't read the daemon token (%s): %w", path, err)
 	}
 	if tok := strings.TrimSpace(string(b)); tok != "" {
-		return tok, nil
+		return tok, os.Chmod(path, 0o600) // tighten a token copied in with a looser mode
 	}
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -109,15 +112,16 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 			return nil, err
 		}
 	}
-	token, err := loadOrCreateToken(filepath.Join(cfg.Home, "run", "daemon.token"))
+	d, err := db.Open(ctx, filepath.Join(cfg.Home, "swarm.db")) // refuses 1.x data before writing a token
 	if err != nil {
 		return nil, err
 	}
-	if token == "" { // httpapi.New panics on an empty token
-		return nil, errors.New("the daemon token is empty")
+	token, err := loadOrCreateToken(filepath.Join(cfg.Home, "run", "daemon.token"))
+	if err == nil && token == "" { // httpapi.New panics on an empty token
+		err = errors.New("the daemon token is empty")
 	}
-	d, err := db.Open(ctx, filepath.Join(cfg.Home, "swarm.db"))
 	if err != nil {
+		d.Close()
 		return nil, err
 	}
 	userHome, _ := os.UserHomeDir()
@@ -161,57 +165,78 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 	}
 	defer dm.db.Close()
 	cfg = dm.cfg
+	if cfg.grace == 0 {
+		cfg.grace = 5 * time.Second
+	}
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port))
 	if err != nil {
 		return err
 	}
-	var bg sync.WaitGroup
-	defer bg.Wait() // loops stop with ctx; let them finish before the db closes
-	ctx, stopLoops := context.WithCancel(ctx)
+	loopCtx, stopLoops := context.WithCancel(ctx)
 	defer stopLoops()
+	loops := cfg.loops
 	if cfg.Background {
-		bg.Go(func() {
-			if err := dm.idx.Sync(ctx); err != nil {
-				cfg.Log("kb sync: %v", err)
-			}
-			if err := dm.idx.Watch(ctx, 500*time.Millisecond); err != nil {
-				cfg.Log("kb watch: %v", err)
-			}
-		})
-		bg.Go(func() { syncLoop(ctx, dm.idx, kbResyncEach, cfg.Log) })
-		bg.Go(func() {
-			dm.rp.Loop(ctx, func(ctx context.Context) time.Duration {
-				s, err := dm.st.Get(ctx)
-				if err != nil || s.ScanIntervalSec < 3600 {
-					return 6 * time.Hour
+		loops = append(loops,
+			func(ctx context.Context) {
+				if err := dm.idx.Sync(ctx); err != nil && ctx.Err() == nil {
+					cfg.Log("kb sync: %v", err)
 				}
-				return time.Duration(s.ScanIntervalSec) * time.Second
-			})
-		})
-		bg.Go(func() { dm.cat.Loop(ctx) })
-		bg.Go(func() { pruneLoop(ctx, dm.ev, dm.db, cfg.Log) })
+				if err := dm.idx.Watch(ctx, 500*time.Millisecond); err != nil {
+					cfg.Log("kb watch: %v", err)
+				}
+			},
+			func(ctx context.Context) { syncLoop(ctx, dm.idx, kbResyncEach, cfg.Log) },
+			func(ctx context.Context) {
+				dm.rp.Loop(ctx, func(ctx context.Context) time.Duration {
+					s, err := dm.st.Get(ctx)
+					if err != nil || s.ScanIntervalSec < 3600 {
+						return 6 * time.Hour
+					}
+					return time.Duration(s.ScanIntervalSec) * time.Second
+				})
+			},
+			dm.cat.Loop,
+			func(ctx context.Context) { pruneLoop(ctx, dm.ev, dm.db, cfg.Log) },
+		)
 	}
+	var bg sync.WaitGroup
+	for _, loop := range loops {
+		bg.Go(func() { loop(loopCtx) })
+	}
+
 	hs := &http.Server{Handler: dm.api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	if cfg.Ready != nil {
 		cfg.Ready(ln.Addr().String())
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
+	var serveErr error
 	select {
-	case err := <-errc:
-		return err
+	case serveErr = <-errc:
 	case <-ctx.Done():
 	}
-	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := hs.Shutdown(shutdown); err != nil {
-		hs.Close() // SSE streams never go idle
+	deadline := time.Now().Add(cfg.grace)
+	stopLoops()
+	if serveErr == nil {
+		shutdown, cancel := context.WithDeadline(context.Background(), deadline)
+		defer cancel()
+		if err := hs.Shutdown(shutdown); err != nil {
+			hs.Close() // SSE streams never go idle
+		}
+		if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
+			serveErr = err
+		}
 	}
-	if err := <-errc; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	// wait for the loops before the db closes, but never past the grace period
+	loopsDone := make(chan struct{})
+	go func() { bg.Wait(); close(loopsDone) }()
+	select {
+	case <-loopsDone:
+	case <-time.After(time.Until(deadline)):
+		cfg.Log("shutdown: background work still running after the grace period")
 	}
-	return nil
+	return serveErr
 }
 
 // syncLoop re-syncs the knowledge base on a fixed period, alongside Watch.

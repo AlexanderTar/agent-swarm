@@ -84,8 +84,8 @@ func (s *Service) Scan(ctx context.Context) (ScanStats, error) {
 	s.cur = c
 	s.mu.Unlock()
 
-	ctx = context.WithoutCancel(ctx)
-	c.stats, c.err = s.scan(ctx)
+	c.stats, c.err = s.scan(ctx)     // honours ctx: a cancelled scan stores nothing
+	ctx = context.WithoutCancel(ctx) // stored results are published even after a late cancel
 	s.mu.Lock()
 	s.cur = nil
 	if c.err == nil {
@@ -124,17 +124,26 @@ func (s *Service) scan(ctx context.Context) (ScanStats, error) {
 	if s.Excludes != nil {
 		excludes = s.Excludes(ctx)
 	}
-	w := Walk(s.Home, excludes)
+	w, err := walk(ctx, s.Home, excludes)
+	if err != nil {
+		return ScanStats{}, err
+	}
 	infos := map[string]GitInfo{}
 	owners := map[string]string{}
 	for _, p := range w.Repos {
+		if err := ctx.Err(); err != nil {
+			return ScanStats{}, err
+		}
 		infos[p] = ReadGitInfo(ctx, s.Run, p)
 		owners[p] = infos[p].RemoteOwner
+	}
+	if err := ctx.Err(); err != nil { // git calls may have failed from the cancel
+		return ScanStats{}, err
 	}
 	groups := Groups(w, owners)
 	stats := ScanStats{Found: len(w.Repos)}
 	now := db.Millis(s.Now())
-	err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+	err = s.DB.Tx(ctx, func(tx *sql.Tx) error { // a cancel mid-transaction rolls it back
 		for _, p := range w.Repos {
 			info := infos[p]
 			_, err := tx.ExecContext(ctx, `INSERT INTO repos (id, path, name, remote_url, remote_owner, default_branch,
@@ -221,7 +230,7 @@ func (s *Service) Loop(ctx context.Context, interval func(context.Context) time.
 	}
 	trig := s.triggerChan()
 	for {
-		if _, err := s.Scan(ctx); err != nil {
+		if _, err := s.Scan(ctx); err != nil && ctx.Err() == nil {
 			s.logf("repos: scheduled scan failed: %v", err)
 		}
 		select {

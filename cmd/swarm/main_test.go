@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -255,17 +256,64 @@ func TestTokenIsReusedAndLegacyDataRefused(t *testing.T) {
 	if err == nil || err.Error() != "Agent Swarm 1.x data found. Run `swarm migrate` first." {
 		t.Fatalf("legacy = %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(legacy, "run", "daemon.token")); !os.IsNotExist(err) {
+		t.Fatalf("legacy home got a token: %v", err)
+	}
 	code, _, e := swarm("install", "--dry-run", "--home", legacy)
 	if code != 1 || !strings.Contains(e, "Run `swarm migrate` first.") {
 		t.Fatalf("install on legacy = %d %q", code, e)
 	}
 }
 
+// A background loop that ignores cancellation must not hold shutdown past the grace period.
+func TestServeBoundsWaitForBackgroundLoops(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	var mu sync.Mutex
+	var logged []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, daemonConfig{Home: t.TempDir(), ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: logf,
+			grace: 200 * time.Millisecond, loops: []func(context.Context){func(context.Context) { <-block }},
+			Ready: func(string) { close(ready) }})
+	}()
+	<-ready
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("serve waited for a stuck background loop")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("shutdown took %v", d)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logged) != 1 || logged[0] != "shutdown: background work still running after the grace period" {
+		t.Fatalf("logged %q", logged)
+	}
+}
+
 func TestTokenEmptyIsReplacedUnreadableFails(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, "run", "daemon.token")
-	os.MkdirAll(filepath.Dir(path), 0o700)
-	os.WriteFile(path, []byte("\n"), 0o644)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	dm, err := openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
 	if err != nil {
 		t.Fatal(err)
@@ -277,7 +325,23 @@ func TestTokenEmptyIsReplacedUnreadableFails(t *testing.T) {
 		t.Fatalf("token = %q mode %v", b, fi.Mode().Perm())
 	}
 
-	os.Chmod(path, 0o000)
+	// a reused token is tightened to 0600 too
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dm, err = openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm.db.Close()
+	again, _ := os.ReadFile(path)
+	if fi, _ := os.Stat(path); string(again) != string(b) || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("reused token = %q mode %v", again, fi.Mode().Perm())
+	}
+
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
 	defer os.Chmod(path, 0o600)
 	_, err = openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
 	if err == nil || !strings.Contains(err.Error(), "Can't read the daemon token ("+path+")") {
@@ -312,9 +376,13 @@ func TestPrune(t *testing.T) {
 	ev := events.New(d, func() time.Time { return now })
 	for _, age := range []time.Duration{8 * 24 * time.Hour, time.Hour} {
 		at := db.Millis(now.Add(-age))
-		d.Exec(`INSERT INTO events (type, payload_json, created_at) VALUES ('x', '{}', ?)`, at)
-		d.Exec(`INSERT INTO idempotency (caller, request_id, tool, result_json, created_at) VALUES ('c', ?, 't', '{}', ?)`,
-			age.String(), at)
+		if _, err := d.Exec(`INSERT INTO events (type, payload_json, created_at) VALUES ('x', '{}', ?)`, at); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(`INSERT INTO idempotency (caller, request_id, tool, result_json, created_at) VALUES ('c', ?, 't', '{}', ?)`,
+			age.String(), at); err != nil {
+			t.Fatal(err)
+		}
 	}
 	prune(context.Background(), ev, d, now, t.Errorf)
 	for _, table := range []string{"events", "idempotency"} {
@@ -333,7 +401,9 @@ func TestSyncLoopPicksUpNewDocs(t *testing.T) {
 	done := make(chan struct{})
 	go func() { syncLoop(ctx, idx, 10*time.Millisecond, t.Errorf); close(done) }()
 	defer func() { cancel(); <-done }()
-	os.WriteFile(filepath.Join(idx.Dir, "note.md"), []byte("# Note\n\nBody.\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(idx.Dir, "note.md"), []byte("# Note\n\nBody.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		st, err := idx.Status(ctx)
@@ -370,8 +440,12 @@ func TestClientSendsViaOnMutations(t *testing.T) {
 	}))
 	defer srv.Close()
 	home := t.TempDir()
-	os.MkdirAll(filepath.Join(home, "run"), 0o700)
-	os.WriteFile(filepath.Join(home, "run", "daemon.token"), []byte("tok\n"), 0o600)
+	if err := os.MkdirAll(filepath.Join(home, "run"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "run", "daemon.token"), []byte("tok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	c, err := newClient(home, srv.URL+"/")
 	if err != nil {
 		t.Fatal(err)
