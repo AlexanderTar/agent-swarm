@@ -1,0 +1,32 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+:root {
+  color-scheme: light dark;
+}
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --color-canvas: light-dark(#fafafa, #09090b);
+  --color-panel: light-dark(#ffffff, #18181b);
+  --color-raised: light-dark(#f4f4f5, #27272a);
+  --color-line: light-dark(#e4e4e7, #3f3f46);
+  --color-ink: light-dark(#18181b, #f4f4f5);
+  --color-muted: light-dark(#71717a, #a1a1aa);
+  --color-accent: light-dark(#2563eb, #60a5fa);
+  --color-ok: light-dark(#15803d, #4ade80);
+  --color-warn: light-dark(#b45309, #fbbf24);
+  --color-bad: light-dark(#b91c1c, #f87171);
+}
+
+body {
+  @apply bg-canvas text-ink font-sans antialiased;
+  font-size: 13px;
+}
+
+.key {
+  @apply font-mono;
+  font-size: 12px;
+}
