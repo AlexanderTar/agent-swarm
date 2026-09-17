@@ -77,8 +77,9 @@ public enum RepoPicker {
         return Copy.selected(selection.map { id in known.first { $0.id == id }?.name ?? id }.joined(separator: ", "))
     }
 
-    /// "Scanning your home folder…" or "Scanned 2h ago".
+    /// "Scanning your home folder…", "Scanned 2h ago", or "Never scanned" before the first scan.
     public static func scanLine(_ r: ReposResponse, format: Format) -> String {
-        r.scanning ? Copy.scanning : Copy.scannedAgo(format.ageCompact(r.scannedAt.date))
+        guard !r.scanning else { return Copy.scanning }
+        return format.ageLine(r.scannedAt, never: Copy.neverScanned, Copy.scannedAgo)
     }
 }

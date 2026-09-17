@@ -183,6 +183,10 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(R.catalogNote(live[2], format: format), "Model list from 1d ago. Couldn't refresh: agy models timed out")
         XCTAssertNil(R.catalogNote(live[0], format: format))
         XCTAssertNil(R.catalogNote(nil, format: format))
+        // A catalog that was never fetched is served stale with catalog_fetched_at 0 (catalog/service.go:112).
+        var never = live[2]
+        never.catalogFetchedAt = Timestamp(ms: 0)
+        XCTAssertEqual(R.catalogNote(never, format: format), "Never fetched. Couldn't refresh: agy models timed out")
     }
 
     func testAdvisorMenuAndPayload() {

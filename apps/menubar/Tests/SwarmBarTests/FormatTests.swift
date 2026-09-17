@@ -16,6 +16,15 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(f.ago(fixtureNow.addingTimeInterval(-50 * 3600)), "2 d ago")
     }
 
+    /// A timestamp that was never set is 0 (contracts W2), which is 1970 — an age from it reads "20700d".
+    func testAgeLineFallsBackForATimestampThatWasNeverSet() {
+        XCTAssertEqual(f.ageLine(Timestamp(ms: 0), never: "Never scanned") { "Scanned \($0) ago" }, "Never scanned")
+        XCTAssertEqual(f.ageLine(Timestamp(fixtureNow.addingTimeInterval(-7200)), never: "Never scanned") { "Scanned \($0) ago" },
+                       "Scanned 2h ago")
+        XCTAssertEqual(f.ageLine(Timestamp(ms: 1), never: "Never scanned") { "Scanned \($0) ago" }, "Scanned 20713d ago",
+                       "only 0 means never; any other timestamp is still an age")
+    }
+
     func testPercent() {
         XCTAssertEqual(Format.percent(42.4), "42%")
         XCTAssertEqual(Format.percent(99.5), "100%")

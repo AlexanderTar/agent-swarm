@@ -19,6 +19,13 @@ public struct Format: Sendable {
         return "\(Int(s / 86400))d"
     }
 
+    /// The caller's line for a compact age ("Scanned 2h ago"), or its `never` line for a timestamp that was
+    /// never set — 0 ms (contracts W2) is 1970, and an age from the epoch reads "20713d". The fallback text
+    /// is the caller's, so §17 copy stays out of `Format`.
+    public func ageLine(_ ts: Timestamp, never: String, _ line: (String) -> String) -> String {
+        ts.ms == 0 ? never : line(ageCompact(ts.date))
+    }
+
     /// "12 min ago", "2 h ago", "3 d ago" (stale usage, tooltips).
     public func ago(_ date: Date) -> String {
         let s = max(0, now.timeIntervalSince(date))

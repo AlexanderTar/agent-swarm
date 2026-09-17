@@ -178,7 +178,10 @@ public enum CatalogRules {
 
     public static func catalogNote(_ entry: AgentCatalogEntry?, format: Format) -> String? {
         guard let entry, entry.catalogStale else { return nil }
-        return Copy.catalogStale(format.ageCompact(entry.catalogFetchedAt.date), entry.catalogError)
+        // A catalog that was never fetched is served stale with `catalog_fetched_at: 0` (catalog/service.go).
+        return format.ageLine(entry.catalogFetchedAt, never: Copy.catalogNeverFetched(entry.catalogError)) {
+            Copy.catalogStale($0, entry.catalogError)
+        }
     }
 
     /// One menu of "Agent · Model" pairs plus "No advisor" (§16.3). Claude lists only models that can advise.

@@ -154,6 +154,8 @@ public enum Copy {
     public static let nameTaken = "This agent name is already in use."
     public static let scanning = "Scanning your home folder…"
     public static func scannedAgo(_ age: String) -> String { "Scanned \(age) ago" }
+    public static let neverScanned = "Never scanned"
+    public static let neverFetched = "Never fetched"
     public static let repoMissing = "Repository is unavailable. Choose another location."
     public static let repoDirty = "Has uncommitted changes. The orchestrator works in its own worktree."
     public static func agentNotInstalled(_ agent: String) -> String { "\(agent) isn't installed on this Mac." }
@@ -165,6 +167,8 @@ public enum Copy {
     public static let answerNotSent = "Couldn't send your answer. Answer again to retry."
     public static let queuedCaption = "Starts when an agent slot becomes available."
     public static func catalogStale(_ age: String, _ error: String) -> String { "Model list from \(age) ago. Couldn't refresh: \(error)" }
+    /// The same note for a catalog that was never fetched, where an age would be nonsense.
+    public static func catalogNeverFetched(_ error: String) -> String { "\(neverFetched). Couldn't refresh: \(error)" }
     public static func modelGone(_ model: String, _ agent: String) -> String { "\(model) is no longer offered by \(agent)." }
     public static func effortUnavailable(_ level: String, _ model: String) -> String { "\(level) isn't available for \(model); using the default." }
     public static func cancelOrchestrator(_ name: String, _ n: Int) -> String { "Cancel \(name) and its \(n) agents?" }

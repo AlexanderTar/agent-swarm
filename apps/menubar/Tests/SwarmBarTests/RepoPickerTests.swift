@@ -53,6 +53,9 @@ final class RepoPickerTests: XCTestCase {
     func testScanLine() {
         let format = Format(now: fixtureNow)
         XCTAssertEqual(RepoPicker.scanLine(repos, format: format), "Scanned 2h ago")
+        // No scan yet: scanned_at is 0 (repos/service.go ScannedAt is zero), which is not an age.
+        repos.scannedAt = Timestamp(ms: 0)
+        XCTAssertEqual(RepoPicker.scanLine(repos, format: format), "Never scanned")
         repos.scanning = true
         XCTAssertEqual(RepoPicker.scanLine(repos, format: format), "Scanning your home folder…")
     }
