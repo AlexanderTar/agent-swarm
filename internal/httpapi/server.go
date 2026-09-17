@@ -76,7 +76,7 @@ func New(d Deps) *Server {
 		d.Log = log.Printf
 	}
 	s := &Server{Deps: d, mux: http.NewServeMux()}
-	s.routes = s.baseRoutes()
+	s.routes = append(s.baseRoutes(), s.itemRoutes()...)
 	for _, rt := range s.routes {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}
