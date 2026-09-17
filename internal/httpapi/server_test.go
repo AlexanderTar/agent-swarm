@@ -170,6 +170,27 @@ func TestEmptyTokenNeverAuthenticates(t *testing.T) {
 	New(Deps{})
 }
 
+func TestWebHandlerServesNonAPIPaths(t *testing.T) {
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "board "+r.URL.Path)
+	})
+	e := newEnv(t, func(d *Deps) { d.Web = web })
+	for _, p := range []string{"/", "/index.html", "/assets/app.js", "/apiary"} {
+		status, body := e.call("GET", p, nil, "")
+		if status != 200 || string(body) != "board "+p {
+			t.Errorf("GET %s = %d %s", p, status, body)
+		}
+	}
+	for _, p := range []string{"/api", "/api/nope"} {
+		status, body := e.api("GET", p, nil)
+		wantErr(t, status, body, 404, "not_found", "Unknown API route.")
+	}
+	status, body := e.api("GET", "/api/health", nil)
+	if status != 200 || !strings.Contains(string(body), `"ok":true`) {
+		t.Errorf("health with Web = %d %s", status, body)
+	}
+}
+
 func TestUnknownRoutesAndBadJSON(t *testing.T) {
 	e := newEnv(t)
 	status, body := e.api("GET", "/api/nope", nil)

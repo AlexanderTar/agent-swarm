@@ -38,6 +38,7 @@ type Deps struct {
 	WriteTimeout time.Duration                    // per SSE write; 0 means 10 s
 	PingInterval time.Duration                    // SSE keep-alive; 0 means 25 s
 	Log          func(format string, args ...any) // nil means log.Printf
+	Web          http.Handler                     // board for non-/api paths; nil means not built yet
 }
 
 type authMode int
@@ -82,8 +83,12 @@ func New(d Deps) *Server {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 			s.writeErr(w, apiErr(http.StatusNotFound, "not_found", "Unknown API route."))
+			return
+		}
+		if s.Web != nil {
+			s.Web.ServeHTTP(w, r)
 			return
 		}
 		s.writeErr(w, apiErr(http.StatusNotFound, "not_found", "The board isn't built yet."))
