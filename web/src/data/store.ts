@@ -54,14 +54,17 @@ export class QueryStore {
   invalidate(prefixes: string[]): void {
     for (const key of [...this.entries.keys()]) {
       if (!prefixes.some((p) => key.startsWith(p))) continue;
-      const loader = this.loaders.get(key);
       if (this.inflight.has(key)) {
         // R1 fix: an in-flight read was issued before this invalidation, so its landing response
         // must not satisfy a later non-forced fetch. Mark it dirty regardless of subscriber count —
         // `fetch`'s `finally()` re-checks subscribers once it settles and refetches or drops it then.
-        if (loader) this.dirty.add(key);
+        // No `loader` guard needed: every key in `entries` was put there by `fetch()`, which sets
+        // `loaders.get(key)` before either `entries` or `inflight`, and `loaders` is never cleared —
+        // so a key that's in both `entries` (this loop's source) and `inflight` always has one.
+        this.dirty.add(key);
         continue;
       }
+      const loader = this.loaders.get(key);
       if (loader && (this.subs.get(key)?.size ?? 0) > 0) void this.fetch(key, loader, true);
       else this.entries.delete(key);
     }
