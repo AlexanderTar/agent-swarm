@@ -11,10 +11,11 @@ public struct Format: Sendable {
         self.timeZone = timeZone
     }
 
-    /// "1m", "12m", "2h", "3d" (Settings ages, "Scanned 2h ago").
+    /// "1m", "12m", "2h", "3d" (Settings ages, "Scanned 2h ago"). Floors, never rounds: an age must
+    /// never overstate how long something has been true.
     public func ageCompact(_ date: Date) -> String {
         let s = max(0, now.timeIntervalSince(date))
-        if s < 3600 { return "\(max(1, Int((s / 60).rounded())))m" }
+        if s < 3600 { return "\(max(1, Int(s / 60)))m" }
         if s < 86400 { return "\(Int(s / 3600))h" }
         return "\(Int(s / 86400))d"
     }

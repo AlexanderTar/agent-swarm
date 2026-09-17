@@ -7,6 +7,7 @@ final class FormatTests: XCTestCase {
 
     func testAges() {
         XCTAssertEqual(f.ageCompact(fixtureNow.addingTimeInterval(-30)), "1m")
+        XCTAssertEqual(f.ageCompact(fixtureNow.addingTimeInterval(-90)), "1m", "floor, not round: an age must never overstate")
         XCTAssertEqual(f.ageCompact(fixtureNow.addingTimeInterval(-12 * 60)), "12m")
         XCTAssertEqual(f.ageCompact(fixtureNow.addingTimeInterval(-125 * 60)), "2h")
         XCTAssertEqual(f.ageCompact(fixtureNow.addingTimeInterval(-3 * 86400)), "3d")

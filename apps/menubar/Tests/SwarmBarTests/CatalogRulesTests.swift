@@ -187,6 +187,14 @@ final class CatalogRulesTests: XCTestCase {
         var never = live[2]
         never.catalogFetchedAt = Timestamp(ms: 0)
         XCTAssertEqual(R.catalogNote(never, format: format), "Never fetched. Couldn't refresh: agy models timed out")
+        // An empty error string must not leave a dangling "Couldn't refresh: ".
+        never.catalogError = ""
+        XCTAssertEqual(R.catalogNote(never, format: format), "Never fetched")
+    }
+
+    func testCatalogNeverFetchedCopyDropsTheSentenceWhenTheErrorIsEmpty() {
+        XCTAssertEqual(Copy.catalogNeverFetched("agy models timed out"), "Never fetched. Couldn't refresh: agy models timed out")
+        XCTAssertEqual(Copy.catalogNeverFetched(""), "Never fetched")
     }
 
     func testAdvisorMenuAndPayload() {

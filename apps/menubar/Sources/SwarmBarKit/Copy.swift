@@ -169,7 +169,10 @@ public enum Copy {
     public static let queuedCaption = "Starts when an agent slot becomes available."
     public static func catalogStale(_ age: String, _ error: String) -> String { "Model list from \(age) ago. Couldn't refresh: \(error)" }
     /// The same note for a catalog that was never fetched, where an age would be nonsense.
-    public static func catalogNeverFetched(_ error: String) -> String { "\(neverFetched). Couldn't refresh: \(error)" }
+    /// An empty error (nothing to report) shows the bare label instead of a dangling sentence.
+    public static func catalogNeverFetched(_ error: String) -> String {
+        error.isEmpty ? neverFetched : "\(neverFetched). Couldn't refresh: \(error)"
+    }
     public static func modelGone(_ model: String, _ agent: String) -> String { "\(model) is no longer offered by \(agent)." }
     public static func effortUnavailable(_ level: String, _ model: String) -> String { "\(level) isn't available for \(model); using the default." }
     public static func cancelOrchestrator(_ name: String, _ n: Int) -> String { "Cancel \(name) and its \(n) agents?" }
