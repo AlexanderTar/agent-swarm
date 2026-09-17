@@ -73,6 +73,16 @@ describe("RepoPicker (§16.3)", () => {
     await waitFor(() => expect(daemon.calls.some((c) => c.path === "/api/repos/rescan")).toBe(true));
   });
 
+  it("shows the daemon's reason, not its message, on a failed add (F20: errorText, contracts §2)", async () => {
+    const daemon = createMockDaemon();
+    daemon.override("POST /api/repos", { status: 422, body: { error: { code: "bad_request", message: "x", reason: "That folder has no .git directory." } } });
+    const { user } = renderWithDaemon(<Host />, { daemon, events: false });
+    await screen.findByRole("group", { name: "Recent" });
+    await user.click(screen.getByRole("button", { name: "Add folder…" }));
+    await user.type(screen.getByRole("textbox", { name: "Add folder…" }), "/Users/alex/code/whatever{Enter}");
+    expect(await screen.findByText("That folder has no .git directory.")).toBeInTheDocument();
+  });
+
   it("shows the scanning footer", async () => {
     const daemon = createMockDaemon();
     daemon.db.repos.scanning = true;

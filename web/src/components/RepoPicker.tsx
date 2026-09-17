@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ApiError } from "../api";
+import { ApiError, errorText } from "../api";
 import { C } from "../copy";
 import { useMutation } from "../data/hooks";
 import { useRepos } from "../data/queries";
@@ -26,7 +26,8 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
       setPath("");
       setAdding(false);
     } catch (e) {
-      setAddError(e instanceof ApiError ? e.message : C.notARepo);
+      // F20 / contracts §2: clients show `reason ?? message`; errorText already applies that rule.
+      setAddError(e instanceof ApiError ? errorText(e) : C.notARepo);
     }
   };
 
