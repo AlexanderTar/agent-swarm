@@ -122,6 +122,41 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(saves, before + 1)
     }
 
+    /// A stored effort the catalog no longer offers must be normalised at the source, not just for
+    /// display: `settings[role]` itself must never carry it, or a save PUTs the stale level and
+    /// `setAgent` can resurrect it from the still-stale stored value.
+    func testStoredEffortIsNormalisedAtTheSourceNotJustForDisplay() async {
+        var stale = state.settings
+        stale[.mechanical] = RoleDefault(agent: .claude, model: "haiku", effort: "high") // Haiku has no efforts
+        state.settings = stale
+        let m = await model()
+        XCTAssertEqual(m.defaultsRows[7].effort, "", "the row never shows a level the model doesn't offer")
+        XCTAssertEqual(m.settings[.mechanical]?.effort, "", "normalised at the source, not just for display")
+
+        // An unrelated save round-trips the whole `Settings` object through the mock's echo, which is
+        // the PUT payload: the stale level must not ride along on it.
+        await m.setCenter(.info, false)
+        XCTAssertEqual(m.settings[.mechanical]?.effort, "", "the PUT payload must not resurrect the stale level")
+
+        // Changing the agent rebuilds from the stored value (`d.effort`); with the source already
+        // clean this can no longer resurrect the stale level either.
+        await m.setAgent(.mechanical, "codex")
+        await m.setAgent(.mechanical, "claude")
+        XCTAssertNotEqual(m.settings[.mechanical]?.effort, "high")
+    }
+
+    /// `ReposResponse()` defaults `scannedAt` to 0 (never scanned), and the wire is a trust boundary
+    /// (anything <= 0), so this must read "Never scanned", not an age from 1970.
+    func testScanLineNeverRendersTheEpochOrANegativeTimestampAsAnAge() async {
+        client.reposResponse.scannedAt = Timestamp(ms: 0)
+        let neverScanned = await model()
+        XCTAssertEqual(neverScanned.scanLine, "Never scanned")
+
+        client.reposResponse.scannedAt = Timestamp(ms: -1)
+        let negative = await model()
+        XCTAssertEqual(negative.scanLine, "Never scanned", "the wire is a trust boundary: anything <= 0 is never")
+    }
+
     func testNotificationsTab() async {
         let m = await model()
         XCTAssertEqual(m.levelRows.map(\.label), ["Info", "Attention", "Action required"])

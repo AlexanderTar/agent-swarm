@@ -93,6 +93,21 @@ public final class SettingsModel {
         async let r = try? client.repos(query: "")
         catalog = await c ?? []
         repos = await r ?? ReposResponse()
+        normalizeStoredEfforts()
+    }
+
+    /// A stored effort the catalog no longer offers for its model must never survive into a save
+    /// (L27): normalise it into `settings` itself, at the source, so `defaultsRows` stays a pure
+    /// projection and `setAgent`/`setModel` can't rebuild `AgentChoice` from a still-stale raw value.
+    private func normalizeStoredEfforts() {
+        for role in Self.defaultsOrder {
+            guard let d = settings[role] else { continue }
+            let model = CatalogRules.resolve(CatalogRules.entry(catalog, d.agent), d.model)
+            let effort = CatalogRules.normalizeEffort(d.agent, model, d.effort)
+            if effort != d.effort {
+                settings[role] = RoleDefault(agent: d.agent, model: d.model, effort: effort)
+            }
+        }
     }
 
     // MARK: saving
@@ -169,7 +184,10 @@ public final class SettingsModel {
     public func cancelDisable() { pendingDisable = nil }
 
     public func checkAgain() async {
-        if let c = try? await client.refreshCatalog() { catalog = c }
+        if let c = try? await client.refreshCatalog() {
+            catalog = c
+            normalizeStoredEfforts()
+        }
     }
 
     // MARK: Defaults tab
@@ -183,15 +201,13 @@ public final class SettingsModel {
             var models = CatalogRules.modelOptions(entry, advisorOnly: isAdvisor && d.agent == .claude)
             if isAdvisor { models.append(PickerOption(RoleDefault.noAdvisorModel, Copy.noAdvisor)) }
             let model = CatalogRules.resolve(entry, d.model)
-            // A stored effort the current catalog no longer offers for this model must not survive
-            // into the picker's selection (L27 / carry-in from Task 8): re-check it here, not just
-            // on the next user edit through setAgent/setModel.
-            let effort = CatalogRules.normalizeEffort(d.agent, model, d.effort)
+            // `d.effort` is already normalised at the source (`normalizeStoredEfforts`, called from
+            // `load()`/`checkAgain()`), so this is a pure projection of `settings`.
             return DefaultsRow(role: role, label: Copy.defaultsRowLabel(role), agent: d.agent.rawValue,
                                agentOptions: CatalogRules.agentOptions(enabled: settings.enabledAgents),
                                model: d.model, modelOptions: models,
                                effortOptions: none ? nil : CatalogRules.effortOptions(d.agent, model),
-                               effort: effort,
+                               effort: d.effort,
                                error: incomplete[role] ?? CatalogRules.goneModel(d, catalog: catalog),
                                note: notes[role])
         }
@@ -340,9 +356,12 @@ public final class SettingsModel {
         await save()
     }
 
-    /// "Last scan: 2h ago · 112 repositories".
+    /// "Last scan: 2h ago · 112 repositories", or "Never scanned" before the daemon's first scan
+    /// (`scannedAt` is 0 then) — the wire is a trust boundary, so anything at or below 0 is never.
     public var scanLine: String {
-        repos.scanning ? Copy.scanning : Copy.lastScan(format.ageCompact(repos.scannedAt.date), repos.all.count)
+        repos.scanning ? Copy.scanning : format.ageLine(repos.scannedAt, never: Copy.neverScanned) {
+            Copy.lastScan($0, repos.all.count)
+        }
     }
 
     public func rescanNow() async {
