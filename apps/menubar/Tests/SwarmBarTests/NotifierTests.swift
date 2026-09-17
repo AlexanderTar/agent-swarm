@@ -79,6 +79,27 @@ final class NotifierTests: XCTestCase {
         await n.handle(action: "answer", userInfo: ["request": "req_question"], text: "   ")
         await n.handle(action: "answer", userInfo: [:], text: "lost")
         XCTAssertEqual(client.calls, ["answer req_question Use zod."])
+        XCTAssertEqual(poster.posted, [], "nothing to say when the answer went through")
+    }
+
+    /// A failed answer is the one case where the user has typed something that can be lost, and the
+    /// notification is the only channel left when the daemon is what failed.
+    func testAFailedAnswerIsReportedBackWithTheTypedText() async {
+        let n = make()
+        client.failNext = .unreachable
+        await n.handle(action: "answer", userInfo: ["request": "req_question", "item": "TASK-101"], text: "Use zod.")
+        XCTAssertEqual(client.calls, ["answer req_question Use zod."])
+        XCTAssertEqual(poster.posted, [PostedNotification(
+            id: "answer-failed:req_question", title: "Couldn't send your answer. Answer again to retry.",
+            body: "Use zod.", category: "swarm.question", sound: true,
+            userInfo: ["id": "answer-failed:req_question", "kind": "answer.failed",
+                       "request": "req_question", "item": "TASK-101", "text": "Use zod."])])
+
+        // The retry goes through the same Answer action, so the text is never stranded.
+        poster.posted = []
+        await n.handle(action: "answer", userInfo: ["request": "req_question"], text: "Use zod.")
+        XCTAssertEqual(client.calls, ["answer req_question Use zod.", "answer req_question Use zod."])
+        XCTAssertEqual(poster.posted, [])
     }
 
     func testOtherActionsOpenTheBoardOrTerminal() async {

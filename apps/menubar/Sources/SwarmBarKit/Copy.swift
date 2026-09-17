@@ -162,6 +162,7 @@ public enum Copy {
     public static let modelUnavailable = "Choose a model available for this agent."
     public static func superpowersMissing(_ agent: String) -> String { "Install the superpowers plugin for \(agent) to run orchestrators." }
     public static let launchFailed = "Couldn't start orchestrator. Your entries are saved."
+    public static let answerNotSent = "Couldn't send your answer. Answer again to retry."
     public static let queuedCaption = "Starts when an agent slot becomes available."
     public static func catalogStale(_ age: String, _ error: String) -> String { "Model list from \(age) ago. Couldn't refresh: \(error)" }
     public static func modelGone(_ model: String, _ agent: String) -> String { "\(model) is no longer offered by \(agent)." }

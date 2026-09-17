@@ -117,7 +117,11 @@ public final class Notifier {
         switch action {
         case NotificationAction.answer:
             guard let req = userInfo["request"], let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            try? await client.answer(requestID: req, text: text)
+            do {
+                try await client.answer(requestID: req, text: text)
+            } catch {
+                await answerFailed(req, text, userInfo)
+            }
         case NotificationAction.openTerminal:
             if let agent = userInfo["agent"] { await openTerminal(agent) }
         case NotificationAction.review:
@@ -131,5 +135,16 @@ public final class Notifier {
                 openBoard(userInfo["item"].map(BoardLink.item) ?? "")
             }
         }
+    }
+
+    /// The answer didn't reach the daemon, and a notification action has no other way to say so. Posting it
+    /// back in the question category keeps the typed text visible and the Answer field one tap away, so the
+    /// retry needs nothing the user has to type again. `text` also rides in `userInfo` for the popover draft.
+    private func answerFailed(_ request: String, _ text: String, _ userInfo: [String: String]) async {
+        let id = "answer-failed:\(request)"
+        var info = ["id": id, "kind": "answer.failed", "request": request, "text": text]
+        info["item"] = userInfo["item"]
+        await poster.post(PostedNotification(id: id, title: Copy.answerNotSent, body: text,
+                                             category: "swarm.question", sound: true, userInfo: info))
     }
 }
