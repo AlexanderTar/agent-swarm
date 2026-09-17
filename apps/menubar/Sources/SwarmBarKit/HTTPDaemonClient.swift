@@ -24,14 +24,14 @@ public struct DaemonEndpoint: Sendable, Equatable {
     }
 
     /// A request carrying `Authorization: Bearer <daemon token>`; throws `.unreachable` without a token.
-    public func request(_ method: String, _ pathAndQuery: String) throws -> URLRequest {
+    public func request(_ method: String, _ pathAndQuery: String, timeout: TimeInterval = 10) throws -> URLRequest {
         guard let raw = try? String(contentsOf: tokenFile, encoding: .utf8),
               case let token = raw.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
             throw DaemonError.unreachable
         }
         var r = URLRequest(url: URL(string: baseURL.absoluteString + pathAndQuery)!)
         r.httpMethod = method
-        r.timeoutInterval = 10
+        r.timeoutInterval = timeout
         r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         r.setValue("application/json", forHTTPHeaderField: "Accept")
         if method != "GET" { r.setValue("menubar", forHTTPHeaderField: "X-Swarm-Via") }
@@ -55,9 +55,12 @@ public final class HTTPDaemonClient: DaemonClient {
     private struct UsageRefresh: Encodable { let agent: AgentKind? }
     private struct AddRepo: Encodable { let path: String }
 
+    /// Routes that legitimately run long: catalog refresh probes every agent CLI, rescan walks the disk.
+    static let slowTimeout: TimeInterval = 120
+
     private func call<T: Decodable>(_ method: String, _ path: String, body: (any Encodable)? = nil,
-                                    as: T.Type = T.self) async throws -> T {
-        var req = try endpoint.request(method, path)
+                                    timeout: TimeInterval = 10, as: T.Type = T.self) async throws -> T {
+        var req = try endpoint.request(method, path, timeout: timeout)
         if method != "GET" {
             // Contracts §4 lists `{}` for every mutating route without other fields.
             let payload: any Encodable = body ?? Empty()
@@ -70,6 +73,8 @@ public final class HTTPDaemonClient: DaemonClient {
             (data, response) = try await session.data(for: req)
         } catch let e as URLError where e.code == .cancelled {
             throw CancellationError()
+        } catch let e as URLError where e.code == .timedOut {
+            throw DaemonError.timedOut
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -131,7 +136,7 @@ public final class HTTPDaemonClient: DaemonClient {
 
     public func catalog() async throws -> [AgentCatalogEntry] { try await call("GET", "/api/catalog") }
 
-    public func refreshCatalog() async throws -> [AgentCatalogEntry] { try await call("POST", "/api/catalog/refresh") }
+    public func refreshCatalog() async throws -> [AgentCatalogEntry] { try await call("POST", "/api/catalog/refresh", timeout: Self.slowTimeout) }
 
     public func repos(query: String) async throws -> ReposResponse {
         let q = query.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
@@ -142,7 +147,7 @@ public final class HTTPDaemonClient: DaemonClient {
         try await call("POST", "/api/repos", body: AddRepo(path: path))
     }
 
-    public func rescanRepos() async throws -> ScanStats { try await call("POST", "/api/repos/rescan") }
+    public func rescanRepos() async throws -> ScanStats { try await call("POST", "/api/repos/rescan", timeout: Self.slowTimeout) }
 
     public func createSpike(_ body: CreateSpikeBody) async throws -> CreateSpikeResponse {
         try await call("POST", "/api/spikes", body: body)

@@ -7,11 +7,12 @@ public enum DisplayState: String, Sendable, CaseIterable {
     case queued, waiting, stale, preflightFailed
 
     public init(_ a: AgentNode) {
-        if a.state == .queued { self = .queued; return }
+        // Contracts §3.2: failed at preflight ⇔ no session and a preflight error, whatever `a.state` is.
         guard let s = a.session else {
             self = a.preflightError != nil ? .preflightFailed : .queued
             return
         }
+        if a.state == .queued { self = .queued; return }
         switch s.state {
         case .running: self = s.waiting ? .waiting : s.stale ? .stale : .running
         case .spawning: self = .spawning

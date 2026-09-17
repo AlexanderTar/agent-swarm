@@ -22,6 +22,7 @@ final class AgentActionsTests: XCTestCase {
             (agent(nil, agentState: .queued), .queued, "Queued", .grey),
             (agent(nil), .queued, "Queued", .grey),
             (agent(nil, preflight: "Codex isn't installed on this Mac."), .preflightFailed, "Failed", .red),
+            (agent(nil, agentState: .queued, preflight: "x"), .preflightFailed, "Failed", .red),
             (agent(.running), .running, nil, .green),
             (agent(.running, waiting: true), .waiting, "Waiting", .greenHollow),
             (agent(.running, stale: true), .stale, "No activity for 30 min", .amber),
@@ -87,6 +88,8 @@ final class AgentActionsTests: XCTestCase {
 
     func testFailedAtPreflight() {
         XCTAssertEqual(labels(agent(nil, preflight: "x")), ["retry:Retry", "cancel:Cancel:menu"])
+        // Contracts §3.2: no session + preflight_error, whatever AgentState the daemon leaves it in.
+        XCTAssertEqual(labels(agent(nil, agentState: .queued, preflight: "x")), ["retry:Retry", "cancel:Cancel:menu"])
     }
 
     func testCompletedCancelledAcknowledgedHaveNone() {

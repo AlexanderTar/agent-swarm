@@ -1,8 +1,10 @@
 import Foundation
 
 public enum DaemonError: Error, Equatable, Sendable {
-    /// Connection refused, timed out, or no daemon token on disk.
+    /// Connection refused, host unreachable, or no daemon token on disk: the daemon-down state.
     case unreachable
+    /// The daemon accepted the request but didn't answer in time. Not an outage.
+    case timedOut
     /// §7 error body: `{"error":{"code","message"}}` with its HTTP status.
     case api(status: Int, code: String, message: String)
     case decoding(String)
@@ -10,6 +12,8 @@ public enum DaemonError: Error, Equatable, Sendable {
     public var message: String {
         switch self {
         case .unreachable: return "Daemon unavailable."
+        // Not in spec §17; wording pending a coordinator ruling.
+        case .timedOut: return "The daemon took too long to respond. Try again."
         case let .api(_, _, message): return message
         case let .decoding(detail): return detail
         }

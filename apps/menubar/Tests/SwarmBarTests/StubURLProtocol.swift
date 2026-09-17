@@ -8,6 +8,7 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         let path: String
         let headers: [String: String]
         let body: String
+        let timeout: TimeInterval
     }
 
     typealias Handler = @Sendable (URLRequest) throws -> (Int, Data)
@@ -46,7 +47,8 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         let url = request.url!
         let path = url.query.map { url.path + "?" + $0 } ?? url.path
         let seen = Seen(method: request.httpMethod ?? "GET", path: path,
-                        headers: request.allHTTPHeaderFields ?? [:], body: String(decoding: body, as: UTF8.self))
+                        headers: request.allHTTPHeaderFields ?? [:], body: String(decoding: body, as: UTF8.self),
+                        timeout: request.timeoutInterval)
         let h = Self.lock.withLock {
             Self.seenRequests.append(seen)
             return Self.handler

@@ -99,6 +99,20 @@ final class HTTPDaemonClientTests: XCTestCase {
         XCTAssertEqual(try Fixture.json(Data(seen[11].body.utf8)), try Fixture.json(Fixture.data("repo-add-request.json")))
         XCTAssertTrue(seen.filter { $0.method != "GET" }.allSatisfy { $0.headers["X-Swarm-Via"] == "menubar" })
         XCTAssertTrue(seen.allSatisfy { $0.headers["Authorization"] == "Bearer tok-123" })
+        // Slow routes (catalog refresh probes every CLI, rescan walks the disk) get 120 s; the rest 10 s.
+        XCTAssertEqual(seen.filter { $0.timeout == 120 }.map(\.path), ["/api/catalog/refresh", "/api/repos/rescan"])
+        XCTAssertTrue(seen.filter { $0.timeout != 120 }.allSatisfy { $0.timeout == 10 })
+    }
+
+    func testTimeoutsAreNotOutages() async throws {
+        let session = StubURLProtocol.install { req in
+            if req.url!.path == "/api/repos/rescan" { throw URLError(.timedOut) }
+            throw URLError(.cannotConnectToHost)
+        }
+        let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)
+        await assertThrows(.timedOut) { _ = try await client.rescanRepos() }
+        await assertThrows(.unreachable) { _ = try await client.catalog() }
+        XCTAssertNotEqual(DaemonError.timedOut.message, DaemonError.unreachable.message)
     }
 
     func testErrorsMapToDaemonError() async throws {
