@@ -72,7 +72,7 @@ func (s *Store) AddDep(ctx context.Context, key, blockedBy string, by Actor) err
 		if n, _ := res.RowsAffected(); n == 0 {
 			return nil
 		}
-		return s.changed(ctx, tx, a)
+		return s.changedBoth(ctx, tx, a, b)
 	})
 }
 
@@ -96,8 +96,17 @@ func (s *Store) RemoveDep(ctx context.Context, key, blockedBy string, by Actor) 
 		if n, _ := res.RowsAffected(); n == 0 {
 			return nil
 		}
-		return s.changed(ctx, tx, a)
+		return s.changedBoth(ctx, tx, a, b)
 	})
+}
+
+// changedBoth announces an edge change on both items; a cross-root edge changes
+// the other root's detail panel and graph too, so its tree must hear about it.
+func (s *Store) changedBoth(ctx context.Context, tx *sql.Tx, a, b Item) error {
+	if err := s.changed(ctx, tx, a); err != nil || a.RootID == b.RootID {
+		return err
+	}
+	return s.changed(ctx, tx, b)
 }
 
 // isAncestor reports whether anc is a strict ancestor of id.
@@ -212,7 +221,9 @@ func (s *Store) Graph(ctx context.Context, key, scope string, hops int) (Graph, 
 					}
 				}
 			}
-			frontier = next
+			if frontier = next; len(frontier) == 0 {
+				break // nothing new to visit: a huge ?hops= must not spin
+			}
 		}
 	default:
 		return Graph{}, errf(CodeBadRequest, "scope must be root or neighbourhood.")

@@ -2,8 +2,10 @@ package items_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -311,9 +313,55 @@ func TestEpicAcceptanceFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantStatus(t, s, e.Key, items.Ready)
-	if states, _ := acceptRequests(t, s, e); count(states, "accept_epic:stale") != 1 {
+	states, _ = acceptRequests(t, s, e)
+	if count(states, "accept_epic:stale") != 1 {
 		t.Fatalf("reopen: requests = %v", states)
 	}
+	// the board only invalidates its inbox on request.*, so staling must be announced
+	resolved := eventsOfType(t, s, events.RequestResolved)
+	if len(resolved) != 1 {
+		t.Fatalf("reopen: request.resolved = %v", resolved)
+	}
+	if got, want := resolved[0], (map[string]string{"id": onlyKey(t, states), "kind": "accept_epic",
+		"item": e.Key, "state": "stale"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("reopen: payload = %v, want %v", got, want)
+	}
+}
+
+// Cancelling a root in review must resolve its open accept request, not orphan it.
+func TestCancelStalesTheOpenAcceptRequest(t *testing.T) {
+	s := newStore(t)
+	b := mk(t, s, items.Bug, "", "Crash")
+	task := mk(t, s, items.Task, b.Key, "Fix")
+	setStatus(t, s, b, items.InProgress)
+	setStatus(t, s, task, items.Done)
+	seedCheckpoint(t, s.DB, b, "integrated", 1, later(s), gitJSON)
+	s.Reconcile(ctx, b.Key)
+	wantStatus(t, s, b.Key, items.InReview)
+
+	if err := move(t, s, b.Key, items.Cancelled, user); err != nil {
+		t.Fatal(err)
+	}
+	states, _ := acceptRequests(t, s, b)
+	if count(states, "accept_fix:open") != 0 || count(states, "accept_fix:stale") != 1 {
+		t.Fatalf("cancel: requests = %v", states)
+	}
+	resolved := eventsOfType(t, s, events.RequestResolved)
+	if len(resolved) != 1 || resolved[0]["item"] != b.Key || resolved[0]["kind"] != "accept_fix" ||
+		resolved[0]["state"] != "stale" || resolved[0]["id"] != onlyKey(t, states) {
+		t.Fatalf("cancel: request.resolved = %v", resolved)
+	}
+}
+
+func onlyKey(t *testing.T, m map[string]string) string {
+	t.Helper()
+	if len(m) != 1 {
+		t.Fatalf("want one request, got %v", m)
+	}
+	for k := range m {
+		return k
+	}
+	return ""
 }
 
 func TestAcceptRequestsGoStale(t *testing.T) {

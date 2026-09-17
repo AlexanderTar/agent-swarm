@@ -61,7 +61,7 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Item, int, error) {
 		return []Item{}, 0, nil // only punctuation: nothing can match
 	}
 	matches, err := s.queryItems(ctx, s.DB, `SELECT `+itemCols+` WHERE `+strings.Join(where, " AND ")+
-		` ORDER BY i.updated_at DESC`, args...)
+		` ORDER BY i.updated_at DESC, i.id`, args...) // id breaks ties: migrated rows share timestamps
 	if err != nil {
 		return nil, 0, err
 	}
@@ -123,7 +123,10 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Item, int, error) {
 		if tops[i].Priority != tops[j].Priority {
 			return tops[i].Priority < tops[j].Priority
 		}
-		return tops[i].CreatedAt.After(tops[j].CreatedAt)
+		if !tops[i].CreatedAt.Equal(tops[j].CreatedAt) {
+			return tops[i].CreatedAt.After(tops[j].CreatedAt)
+		}
+		return tops[i].ID < tops[j].ID // migrated rows share timestamps
 	})
 	out := []Item{}
 	var walk func(it Item)

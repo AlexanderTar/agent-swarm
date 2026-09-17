@@ -2,9 +2,12 @@ package items_test
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -46,6 +49,60 @@ func TestAddAndRemoveDeps(t *testing.T) {
 	}
 	if err := s.AddDep(ctx, t2.Key, "TASK-99", user); code(err) != items.CodeNotFound {
 		t.Fatalf("unknown key: %v", err)
+	}
+}
+
+// A cross-root edge changes both trees, so both must get an item.changed.
+func TestCrossRootDepsChangeBothTrees(t *testing.T) {
+	s := newStore(t)
+	e1 := mk(t, s, items.Bug, "", "E1")
+	e2 := mk(t, s, items.Bug, "", "E2")
+	a := mk(t, s, items.Task, e1.Key, "A")
+	b := mk(t, s, items.Task, e2.Key, "B")
+	roots := func() []string {
+		var out []string
+		for _, e := range eventsOfType(t, s, events.ItemChanged) {
+			if e["key"] == a.Key || e["key"] == b.Key {
+				out = append(out, e["root_key"])
+			}
+		}
+		return out
+	}
+	before := len(roots())
+	if err := s.AddDep(ctx, a.Key, b.Key, user); err != nil {
+		t.Fatal(err)
+	}
+	if got := roots()[before:]; !slices.Equal(got, []string{e1.Key, e2.Key}) {
+		t.Fatalf("AddDep announced %v", got)
+	}
+	before = len(roots())
+	if err := s.RemoveDep(ctx, a.Key, b.Key, user); err != nil {
+		t.Fatal(err)
+	}
+	if got := roots()[before:]; !slices.Equal(got, []string{e1.Key, e2.Key}) {
+		t.Fatalf("RemoveDep announced %v", got)
+	}
+}
+
+// An exhausted frontier ends the walk: a huge ?hops= must not spin.
+func TestGraphHopsStopWhenTheFrontierEmpties(t *testing.T) {
+	s := newStore(t)
+	a := mk(t, s, items.Epic, "", "E")
+	done := make(chan items.Graph, 1)
+	go func() {
+		g, err := s.Graph(ctx, a.Key, "neighbourhood", math.MaxInt32)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- g
+	}()
+	select {
+	case g := <-done:
+		if len(g.Nodes) != 1 {
+			t.Fatalf("nodes = %v", g.Nodes)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Graph is still walking an empty frontier")
 	}
 }
 

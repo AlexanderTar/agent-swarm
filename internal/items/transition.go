@@ -55,10 +55,9 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 	if err := s.setStatus(ctx, tx, &it, to); err != nil {
 		return Item{}, err
 	}
-	if to == Ready && (from == Done || from == Cancelled) {
-		// reopen: old acceptances and close approvals no longer count
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE item_id = ?
-			AND state IN ('open', 'approved') AND kind IN ('accept_epic', 'accept_fix', 'close_spike')`, it.ID); err != nil {
+	// reopen: old acceptances and close approvals no longer count; cancel: nothing is left to accept
+	if (to == Ready && (from == Done || from == Cancelled)) || to == Cancelled {
+		if err := s.staleAccepts(ctx, tx, it); err != nil {
 			return Item{}, err
 		}
 	}
@@ -66,6 +65,46 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 		return Item{}, err
 	}
 	return s.getByID(ctx, tx, it.ID)
+}
+
+// staleAccepts stales every live acceptance or close approval on it. The kinds
+// only exist on roots and spikes, so no type check is needed.
+func (s *Store) staleAccepts(ctx context.Context, tx *sql.Tx, it Item) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind FROM requests WHERE item_id = ?
+		AND state IN ('open', 'approved') AND kind IN ('accept_epic', 'accept_fix', 'close_spike')`, it.ID)
+	if err != nil {
+		return err
+	}
+	var live [][2]string
+	for rows.Next() {
+		var id, kind string
+		if err := rows.Scan(&id, &kind); err != nil {
+			rows.Close()
+			return err
+		}
+		live = append(live, [2]string{id, kind})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range live {
+		if err := s.resolveStale(ctx, tx, r[0], r[1], it.Key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveStale stales one request and announces it; the board only invalidates
+// its inbox on request.* (contracts §5). Payload per R5: {id, kind, item, state}.
+func (s *Store) resolveStale(ctx context.Context, tx *sql.Tx, id, kind, itemKey string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE id = ?`, id); err != nil {
+		return err
+	}
+	_, err := s.Events.Append(ctx, tx, events.RequestResolved,
+		map[string]string{"id": id, "kind": kind, "item": itemKey, "state": "stale"})
+	return err
 }
 
 func (s *Store) check(ctx context.Context, tx *sql.Tx, it Item, to Status, by Actor) error {
@@ -386,11 +425,7 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 	}
 	rows.Close()
 	for _, id := range staleIDs {
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE id = ?`, id); err != nil {
-			return err
-		}
-		if _, err := s.Events.Append(ctx, tx, events.RequestResolved,
-			map[string]string{"id": id, "kind": kind, "item": it.Key, "state": "stale"}); err != nil {
+		if err := s.resolveStale(ctx, tx, id, kind, it.Key); err != nil {
 			return err
 		}
 	}

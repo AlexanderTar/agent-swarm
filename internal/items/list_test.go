@@ -111,3 +111,23 @@ func TestChildrenSortByKeyNumber(t *testing.T) {
 		t.Fatalf("order = %v", keys)
 	}
 }
+
+// Migrated v1 rows share timestamps; the top level must not reshuffle between fetches.
+func TestTopLevelOrderIsStableOnTies(t *testing.T) {
+	s := newStore(t)
+	var want []string
+	for i := range 6 {
+		e := mk(t, s, items.Epic, "", fmt.Sprint("E", i))
+		exec(t, s.DB, `UPDATE items SET created_at = 1, updated_at = 1 WHERE id = ?`, e.ID)
+		want = append(want, e.Key)
+	}
+	for range 5 {
+		all, _, err := s.List(ctx, items.ListFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if keys, _ := listKeys(all); !slices.Equal(keys, want) {
+			t.Fatalf("order = %v, want %v", keys, want)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package items_test
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -101,3 +102,24 @@ func seedRequest(t *testing.T, d *db.DB, it items.Item, kind, state string) stri
 
 // later returns a timestamp after every write the tick clock has made so far.
 func later(s *items.Store) int64 { return db.Millis(s.Now()) }
+
+// eventsOfType returns the payloads of every event of typ, in seq order.
+func eventsOfType(t *testing.T, s *items.Store, typ string) []map[string]string {
+	t.Helper()
+	evs, err := s.Events.After(ctx, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := []map[string]string{}
+	for _, e := range evs {
+		if e.Type != typ {
+			continue
+		}
+		var m map[string]string
+		if err := json.Unmarshal(e.Payload, &m); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, m)
+	}
+	return out
+}
