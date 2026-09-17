@@ -199,6 +199,16 @@ func TestParseAgyModels(t *testing.T) {
 	if m := ms[2]; !slices.Equal(m.Efforts, []string{"low"}) || m.DefaultEffort != "low" || m.LaunchModel("") != "q-low" {
 		t.Errorf("agy highest fallback = %+v", m)
 	}
+	// A repeated slug is counted once (first wins); a repeated bare slug is still a model without effort.
+	ms, _, _ = ParseAgyModels("m\tM\nm\tM again\nq-low\tQ (Low)\nq-low\tQ (Low) again\n", nil)
+	if len(ms) != 2 || len(ms[0].Efforts) != 0 || ms[0].LaunchIDs != nil || ms[0].Label != "M" || ms[0].LaunchModel("") != "m" ||
+		!slices.Equal(ms[1].Efforts, []string{"low"}) || ms[1].Label != "Q" {
+		t.Errorf("agy duplicates = %+v", ms)
+	}
+	ms, _, _ = ParseCursorModels("m - M\nm - M again\nm-high - M High\n")
+	if m := ms[0]; !slices.Equal(m.Efforts, []string{"default", "high"}) || m.Label != "M" {
+		t.Errorf("cursor duplicates = %+v", m)
+	}
 	if _, _, err := ParseAgyModels("Fetching available models...\n", nil); err == nil {
 		t.Error("no models is an error")
 	}

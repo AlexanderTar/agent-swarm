@@ -264,6 +264,11 @@ func (d slugDialect) group(lines []slugLine, stripEffort func(string) string) []
 		}
 		if level == "" {
 			level = DefaultLevel
+		}
+		if _, dup := m.LaunchIDs[level]; dup {
+			continue // a repeated slug counts once; the first line wins
+		}
+		if level == DefaultLevel {
 			bareLabel[base] = l.display
 		} else if m.Label == "" {
 			m.Label = stripEffort(l.display)
@@ -286,6 +291,11 @@ func (d slugDialect) group(lines []slugLine, stripEffort func(string) string) []
 		} else if bare {
 			m.Efforts = slices.DeleteFunc(m.Efforts, func(l string) bool { return l == DefaultLevel })
 			delete(m.LaunchIDs, DefaultLevel)
+		}
+		if len(m.Efforts) == 0 { // unreachable after dedupe; kept so the index below can't panic
+			m.Label, m.LaunchIDs = label, nil
+			out = append(out, *m)
+			continue
 		}
 		sort.SliceStable(m.Efforts, func(i, j int) bool { return d.rank(m.Efforts[i]) < d.rank(m.Efforts[j]) })
 		pref := "high"
