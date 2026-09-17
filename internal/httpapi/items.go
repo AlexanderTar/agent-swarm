@@ -98,9 +98,9 @@ func (s *Server) itemRoutes() []route {
 
 // idempotent runs fn once per (caller, request_id) and replays the stored result (I11).
 // ponytail: one server-wide lock; per-caller locks if UI writes ever contend.
-func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, requestID, tool string, status int, fn func() (any, error)) {
+func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, requestID, tool string, status int, fn func(context.Context) (any, error)) {
 	if requestID == "" {
-		v, err := fn()
+		v, err := fn(r.Context())
 		if err != nil {
 			s.writeErr(w, err)
 			return
@@ -114,10 +114,13 @@ func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, requestID, t
 	}
 	sum := sha256.Sum256([]byte(s.Token))
 	caller := "ui:" + hex.EncodeToString(sum[:])
+	// the write and its replay record must not be split by a client abort, or a
+	// retry with the same request_id creates a second item
+	ctx := context.WithoutCancel(r.Context())
 	s.idemMu.Lock()
 	defer s.idemMu.Unlock()
 	var stored string
-	err := s.DB.QueryRowContext(r.Context(), `SELECT result_json FROM idempotency WHERE caller = ? AND request_id = ?`,
+	err := s.DB.QueryRowContext(ctx, `SELECT result_json FROM idempotency WHERE caller = ? AND request_id = ?`,
 		caller, requestID).Scan(&stored)
 	if err == nil {
 		writeJSON(w, status, json.RawMessage(stored))
@@ -127,13 +130,13 @@ func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, requestID, t
 		s.writeErr(w, err)
 		return
 	}
-	v, err := fn()
+	v, err := fn(ctx)
 	if err != nil {
 		s.writeErr(w, err)
 		return
 	}
 	body, _ := json.Marshal(v)
-	if _, err := s.DB.ExecContext(r.Context(), `INSERT OR IGNORE INTO idempotency (caller, request_id, tool, result_json, created_at)
+	if _, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO idempotency (caller, request_id, tool, result_json, created_at)
 		VALUES (?, ?, ?, ?, ?)`, caller, requestID, tool, string(body), db.Millis(time.Now())); err != nil {
 		s.writeErr(w, err)
 		return
@@ -174,16 +177,16 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "Spikes start with an intent. Use New spike."))
 		return
 	}
-	s.idempotent(w, r, body.RequestID, "POST /api/items", http.StatusCreated, func() (any, error) {
-		it, err := s.Items.Create(r.Context(), items.CreateInput{Type: items.Type(body.Type), Title: body.Title,
+	s.idempotent(w, r, body.RequestID, "POST /api/items", http.StatusCreated, func(ctx context.Context) (any, error) {
+		it, err := s.Items.Create(ctx, items.CreateInput{Type: items.Type(body.Type), Title: body.Title,
 			Brief: body.Brief, Acceptance: body.Acceptance, ParentKey: body.ParentKey}, items.User(via(r)))
 		if err != nil {
 			return nil, err
 		}
-		if it, err = s.Items.Get(r.Context(), it.Key); err != nil {
+		if it, err = s.Items.Get(ctx, it.Key); err != nil {
 			return nil, err
 		}
-		return s.itemOut(r.Context(), it)
+		return s.itemOut(ctx, it)
 	})
 }
 

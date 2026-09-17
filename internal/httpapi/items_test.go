@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -91,6 +94,31 @@ func TestCreateItemIsIdempotent(t *testing.T) {
 	}
 	if len(keys) != 1 {
 		t.Fatalf("concurrent replays created %v", keys)
+	}
+}
+
+// A client that aborts between the item write and its idempotency record would
+// let a retry create a second item, so both run on a context it can't cancel.
+func TestIdempotentRecordSurvivesAClientAbort(t *testing.T) {
+	e := newEnv(t)
+	ctx, cancel := context.WithCancel(bg)
+	cancel()
+	r := httptest.NewRequest("POST", "/api/items", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	var inner context.Context
+	e.s.idempotent(w, r, "req-abort", "POST /api/items", http.StatusCreated, func(c context.Context) (any, error) {
+		inner = c
+		return map[string]string{"key": "BUG-1"}, nil
+	})
+	if inner == nil || inner.Err() != nil {
+		t.Fatalf("fn ran on the client's context: %v", inner)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d %s", w.Code, w.Body)
+	}
+	var n int
+	if err := e.s.DB.QueryRow(`SELECT count(*) FROM idempotency WHERE request_id = 'req-abort'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("idempotency rows = %d, %v", n, err)
 	}
 }
 
