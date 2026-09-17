@@ -154,7 +154,7 @@ public final class MockDaemonClient: DaemonClient {
     public func createSpike(_ body: CreateSpikeBody) async throws -> CreateSpikeResponse {
         try record("spike \(body.name)")
         if let r = spikeResult { return try r.get() }
-        return CreateSpikeResponse(agent: AgentNode(name: body.name, role: .orchestrator), queued: false)
+        return CreateSpikeResponse(agent: AgentNode(name: body.name, kind: body.agent, model: body.model, role: .orchestrator), queued: false)
     }
 
     public func terminalOpened(name: String) async throws {

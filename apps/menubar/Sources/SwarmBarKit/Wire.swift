@@ -78,7 +78,7 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
         case parentName = "parent_name", preflightError = "preflight_error"
     }
 
-    public init(id: String = "agt_1", name: String, kind: AgentKind = .claude, model: String = "sonnet",
+    public init(id: String = "agt_1", name: String, kind: AgentKind = .claude, model: String,
                 role: Role = .coder, itemKey: String = "TASK-1", itemTitle: String = "Task",
                 rootKey: String = "EPIC-1", parentName: String? = nil, state: AgentState = .active,
                 session: SessionInfo? = SessionInfo(state: .running), preflightError: String? = nil,
