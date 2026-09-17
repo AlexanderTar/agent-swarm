@@ -46,6 +46,14 @@ final class MenuLabelTests: XCTestCase {
             "Claude & GPT 5h 63% · Gemini 5h 0%",
             "Monthly Auto usage · resets 1 Oct",
         ])
+        // A snapshot that never fetched is stale with fetched_at 0, which is not an age.
+        var never = usage[0]
+        never.fetchedAt = Timestamp(ms: 0)
+        let unfetched = MenuLabel.make(activeCount: 0, connected: true, enabled: [.claude], usage: [never],
+                                       compact: false, format: format)
+        XCTAssertEqual(unfetched.segments.map(\.tooltip), ["Never updated"])
+        XCTAssertEqual(UsageSection.rows(never, format: format).map(\.trailing), Array(repeating: "Never updated", count: 3))
+
         var noReset = usage[3]
         noReset.meters[0].resetsAt = nil
         XCTAssertEqual(MenuLabel.make(activeCount: 0, connected: true, enabled: [.cursor], usage: [noReset], compact: false, format: format)

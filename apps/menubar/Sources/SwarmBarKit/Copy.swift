@@ -156,6 +156,7 @@ public enum Copy {
     public static func scannedAgo(_ age: String) -> String { "Scanned \(age) ago" }
     public static let neverScanned = "Never scanned"
     public static let neverFetched = "Never fetched"
+    public static let neverUpdated = "Never updated"
     public static let repoMissing = "Repository is unavailable. Choose another location."
     public static let repoDirty = "Has uncommitted changes. The orchestrator works in its own worktree."
     public static func agentNotInstalled(_ agent: String) -> String { "\(agent) isn't installed on this Mac." }

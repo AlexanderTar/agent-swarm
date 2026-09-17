@@ -31,7 +31,7 @@ public struct MenuLabel: Equatable, Sendable {
             let text = compact ? "" : Format.percent(head.usedPct) + (monthly ? "M" : "")
             let tooltip: String
             if snap.stale {
-                tooltip = "Last updated \(format.ago(snap.fetchedAt.date))."
+                tooltip = format.agoLine(snap.fetchedAt, never: Copy.neverUpdated) { "Last updated \($0)." }
             } else if monthly {
                 tooltip = "\(head.label) usage" + (head.resetsAt.map { " · resets \(format.dayMonth($0.date))" } ?? "")
             } else {
@@ -105,7 +105,7 @@ public enum UsageSection {
         return snap.meters.map { m in
             let trailing: String
             if snap.stale {
-                trailing = "Updated \(format.ago(snap.fetchedAt.date))"
+                trailing = format.agoLine(snap.fetchedAt, never: Copy.neverUpdated) { "Updated \($0)" }
             } else if let r = m.resetsAt {
                 trailing = m.window == "monthly" ? "Cycle ends \(format.dayMonth(r.date))" : format.resets(r.date)
             } else {

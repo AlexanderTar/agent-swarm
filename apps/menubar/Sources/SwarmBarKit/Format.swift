@@ -26,6 +26,11 @@ public struct Format: Sendable {
         ts.ms == 0 ? never : line(ageCompact(ts.date))
     }
 
+    /// `ageLine`'s shape for the relative form: "Updated 12 min ago", or `never` for an unset timestamp.
+    public func agoLine(_ ts: Timestamp, never: String, _ line: (String) -> String) -> String {
+        ts.ms == 0 ? never : line(ago(ts.date))
+    }
+
     /// "12 min ago", "2 h ago", "3 d ago" (stale usage, tooltips).
     public func ago(_ date: Date) -> String {
         let s = max(0, now.timeIntervalSince(date))
