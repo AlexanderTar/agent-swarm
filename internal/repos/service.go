@@ -55,6 +55,7 @@ type Service struct {
 	After        func(time.Duration) <-chan time.Time // nil means time.After
 	DirtyTimeout time.Duration                        // 0 means 2 s
 	Log          func(format string, args ...any)     // nil means no logging
+	Ctx          context.Context                      // bounds shared scans (daemon lifetime); nil means Background
 
 	mu        sync.Mutex
 	cur       *scanCall
@@ -68,37 +69,44 @@ type scanCall struct {
 	err   error
 }
 
-// Scan walks the home folder; a call made while a scan runs waits for it.
+// Scan walks the home folder. Scans are shared and run under s.Ctx, so a caller's
+// ctx only bounds its own wait: the scan finishes and publishes for everyone else.
 func (s *Service) Scan(ctx context.Context) (ScanStats, error) {
 	s.mu.Lock()
-	if c := s.cur; c != nil {
-		s.mu.Unlock()
-		select {
-		case <-c.done:
-			return c.stats, c.err
-		case <-ctx.Done():
-			return ScanStats{}, ctx.Err()
-		}
+	c := s.cur
+	if c == nil {
+		c = &scanCall{done: make(chan struct{})}
+		s.cur = c
+		go s.runScan(c)
 	}
-	c := &scanCall{done: make(chan struct{})}
-	s.cur = c
 	s.mu.Unlock()
+	select {
+	case <-c.done:
+		return c.stats, c.err
+	case <-ctx.Done():
+		return ScanStats{}, ctx.Err()
+	}
+}
 
-	c.stats, c.err = s.scan(ctx)     // honours ctx: a cancelled scan stores nothing
-	ctx = context.WithoutCancel(ctx) // stored results are published even after a late cancel
+func (s *Service) runScan(c *scanCall) {
+	ctx := s.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	defer close(c.done)
+	c.stats, c.err = s.scan(ctx) // a cancelled scan stores nothing
 	s.mu.Lock()
 	s.cur = nil
 	if c.err == nil {
 		s.scannedAt = s.Now()
 	}
 	s.mu.Unlock()
-	close(c.done)
-	if c.err == nil {
-		if _, err := s.Events.Publish(ctx, events.ReposChanged, map[string]any{"scanning": false, "found": c.stats.Found}); err != nil {
+	if c.err == nil { // stored results are published even after a late cancel
+		if _, err := s.Events.Publish(context.WithoutCancel(ctx), events.ReposChanged,
+			map[string]any{"scanning": false, "found": c.stats.Found}); err != nil {
 			s.logf("repos: publish repos.changed failed: %v", err)
 		}
 	}
-	return c.stats, c.err
 }
 
 func (s *Service) logf(format string, args ...any) {

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -175,6 +176,7 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 	}
 	loopCtx, stopLoops := context.WithCancel(ctx)
 	defer stopLoops()
+	dm.rp.Ctx = loopCtx // shared scans (loop and rescan requests) stop at shutdown
 	loops := cfg.loops
 	if cfg.Background {
 		loops = append(loops,
@@ -201,8 +203,10 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 		)
 	}
 	var bg sync.WaitGroup
+	var running atomic.Int32
 	for _, loop := range loops {
-		bg.Go(func() { loop(loopCtx) })
+		running.Add(1)
+		bg.Go(func() { defer running.Add(-1); loop(loopCtx) })
 	}
 
 	hs := &http.Server{Handler: dm.api.Handler(), ReadHeaderTimeout: 10 * time.Second}
@@ -234,7 +238,9 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 	select {
 	case <-loopsDone:
 	case <-time.After(time.Until(deadline)):
-		cfg.Log("shutdown: background work still running after the grace period")
+		if running.Load() > 0 { // the timer can win the race against loops that just finished
+			cfg.Log("shutdown: background work still running after the grace period")
+		}
 	}
 	return serveErr
 }

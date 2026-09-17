@@ -329,7 +329,7 @@ func TestLoopLogsFailedScan(t *testing.T) {
 	}
 }
 
-// A cancelled scan stops walking and running git, stores nothing and publishes nothing.
+// Cancelling the service context stops the scan: no walk, no git, nothing stored or published.
 func TestCancelledScanStopsAndPublishesNothing(t *testing.T) {
 	home := realTemp(t)
 	for i := range 50 {
@@ -338,9 +338,10 @@ func TestCancelledScanStopsAndPublishesNothing(t *testing.T) {
 	g := &fakeGit{}
 	s := newService(t, home, g)
 	ctx, cancel := context.WithCancel(bgc)
+	s.Ctx = ctx
 	s.Excludes = func(context.Context) []string { cancel(); return nil } // cancels as the scan starts
 	start := time.Now()
-	if _, err := s.Scan(ctx); !errors.Is(err, context.Canceled) {
+	if _, err := s.Scan(bgc); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
 	if d := time.Since(start); d > time.Second {
@@ -373,6 +374,7 @@ func TestScanPublishesStoredResultsDespiteLateCancel(t *testing.T) {
 	s := newService(t, home, &fakeGit{})
 	ctx, cancel := context.WithCancel(bgc)
 	defer cancel()
+	s.Ctx = ctx
 	base, calls := s.Now, 0
 	s.Now = func() time.Time { // 1st call stamps the rows, 2nd follows the commit
 		if calls++; calls == 2 {
@@ -380,12 +382,41 @@ func TestScanPublishesStoredResultsDespiteLateCancel(t *testing.T) {
 		}
 		return base()
 	}
-	if _, err := s.Scan(ctx); err != nil {
+	if _, err := s.Scan(bgc); err != nil {
 		t.Fatal(err)
 	}
 	evs, _ := s.Events.After(bgc, 0, 10)
 	if len(evs) != 1 || evs[0].Type != events.ReposChanged {
 		t.Fatalf("events = %+v", evs)
+	}
+}
+
+// The caller that started a scan only stops waiting when it cancels; the scan finishes for everyone.
+func TestLeaderCancelDoesNotStopTheSharedScan(t *testing.T) {
+	home := realTemp(t)
+	mkRepo(t, home, "GitHub/a")
+	g := &fakeGit{gate: make(chan struct{}), start: make(chan struct{})}
+	s := newService(t, home, g)
+	leaderCtx, cancelLeader := context.WithCancel(bgc)
+	leader := make(chan error, 1)
+	go func() { _, err := s.Scan(leaderCtx); leader <- err }()
+	<-g.start
+	joiner := make(chan ScanStats, 1)
+	go func() { st, _ := s.Scan(bgc); joiner <- st }()
+	cancelLeader()
+	if err := <-leader; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader err = %v", err)
+	}
+	close(g.gate)
+	if st := <-joiner; st.Found != 1 {
+		t.Fatalf("joiner stats = %+v", st)
+	}
+	evs, _ := s.Events.After(bgc, 0, 10)
+	if len(evs) != 1 || evs[0].Type != events.ReposChanged {
+		t.Fatalf("events = %+v", evs)
+	}
+	if all, _ := s.All(bgc); len(all) != 1 {
+		t.Fatalf("repos = %v", names(all))
 	}
 }
 
