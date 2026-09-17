@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -78,13 +79,18 @@ func scanItem(sc scanner) (Item, error) {
 	if err != nil {
 		return it, err
 	}
-	json.Unmarshal([]byte(acc), &it.Acceptance)
-	json.Unmarshal([]byte(suggested), &it.SuggestedRepos)
-	repos := hints
+	reposCol, repos := "repo_hints_json", hints
 	if it.ParentID == "" {
-		repos = confirmed
+		reposCol, repos = "confirmed_repos_json", confirmed
 	}
-	json.Unmarshal([]byte(repos), &it.Repos)
+	for _, c := range []struct {
+		name, raw string
+		dst       *[]string
+	}{{"acceptance_json", acc, &it.Acceptance}, {"suggested_repos_json", suggested, &it.SuggestedRepos}, {reposCol, repos, &it.Repos}} {
+		if err := json.Unmarshal([]byte(c.raw), c.dst); err != nil {
+			return it, fmt.Errorf("items: %s %s: %w", it.Key, c.name, err)
+		}
+	}
 	it.Acceptance = nonNil(it.Acceptance)
 	it.Repos = nonNil(it.Repos)
 	it.SuggestedRepos = nonNil(it.SuggestedRepos)
@@ -206,6 +212,9 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	id := ids.New("itm")
 	rootID, parentID := id, sql.NullString{}
 	if in.ParentKey == "" {
+		if by.isOrchestrator() {
+			return Item{}, errf(CodeBadRequest, "Orchestrators can only create items inside their own top-level item.")
+		}
 		if hint, ok := parentHint[in.Type]; ok {
 			return Item{}, errf(CodeBadRequest, "%s", hint)
 		}

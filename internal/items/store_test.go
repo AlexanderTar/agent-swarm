@@ -176,6 +176,10 @@ func TestOrchestratorStaysInItsRoot(t *testing.T) {
 	if err == nil || err.Error() != "STORY-1 is outside EPIC-1." || code(err) != items.CodeBadRequest {
 		t.Fatalf("err = %v", err)
 	}
+	_, err = s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "mine"}, items.Orchestrator("agt_1", e1.ID))
+	if err == nil || err.Error() != "Orchestrators can only create items inside their own top-level item." || code(err) != items.CodeBadRequest {
+		t.Fatalf("top-level err = %v", err)
+	}
 	p := "new"
 	_, err = s.Update(ctx, st2.Key, items.Patch{Title: &p, Revision: st2.Revision}, items.Orchestrator("agt_1", e1.ID))
 	if err == nil || err.Error() != "STORY-1 is outside EPIC-1." {
@@ -283,5 +287,25 @@ func TestGetComputesCounts(t *testing.T) {
 	}
 	if items.StatusLabel(items.AwaitingApproval) != "Awaiting approval" || items.StatusLabel(items.InProgress) != "In progress" {
 		t.Error("labels")
+	}
+}
+
+func TestCorruptListColumnIsAnError(t *testing.T) {
+	s := newStore(t)
+	e := mk(t, s, items.Epic, "", "E")
+	exec(t, s.DB, `UPDATE items SET acceptance_json = 'not json' WHERE id = ?`, e.ID)
+	if _, err := s.Get(ctx, e.Key); err == nil || !strings.Contains(err.Error(), "acceptance_json") {
+		t.Fatalf("Get err = %v", err)
+	}
+	title := "New"
+	if _, err := s.Update(ctx, e.Key, items.Patch{Title: &title, Revision: e.Revision}, user); err == nil {
+		t.Fatal("Update succeeded on a corrupt row")
+	}
+	var stored string
+	if err := s.DB.QueryRow(`SELECT acceptance_json FROM items WHERE id = ?`, e.ID).Scan(&stored); err != nil || stored != "not json" {
+		t.Fatalf("stored = %q, %v", stored, err)
+	}
+	if _, err := s.Children(ctx, e.Key); err == nil {
+		t.Fatal("Children succeeded on a corrupt parent row")
 	}
 }
