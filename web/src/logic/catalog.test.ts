@@ -124,7 +124,10 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     } as unknown as Settings);
     expect(prefill(stored("model-8"), "orchestrator", catalog).choice.effort).toBe("");
     expect(prefill(stored("model-6"), "orchestrator", catalog).choice.effort).toBe("default");
-    expect(changeModel({ agent: "cursor", model: "model-6", effort: "default" }, "model-8", catalog).choice.effort).toBe("");
+    // The merged level launches exactly as "" does, so there is no note to show.
+    expect(changeModel({ agent: "cursor", model: "model-6", effort: "default" }, "model-8", catalog)).toEqual({
+      choice: { agent: "cursor", model: "model-8", effort: "" },
+    });
     expect(changeAgent({ agent: "claude", model: "model-8", effort: "default" }, "cursor", catalog).choice.effort).toBe("");
   });
 

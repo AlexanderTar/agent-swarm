@@ -104,7 +104,10 @@ export function changeModel(choice: AgentChoice, model: string, catalog: AgentCa
   const m = resolveModel(entryFor(catalog, choice.agent), model);
   if (choice.effort !== "" && !supportsEffort(m, choice.effort)) {
     const next = { ...choice, model, effort: "" };
-    return m ? { choice: next, note: T.effortUnavailable(choice.effort, m.label) } : { choice: next };
+    // A bare "default" that merged into the "" row launches the same way, so there is nothing to tell.
+    return m && choice.effort !== DEFAULT_LEVEL
+      ? { choice: next, note: T.effortUnavailable(choice.effort, m.label) }
+      : { choice: next };
   }
   return { choice: { ...choice, model } };
 }
