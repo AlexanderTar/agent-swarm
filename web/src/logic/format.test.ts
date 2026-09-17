@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ageAgo, ageCompact, formatCost, formatDuration, formatTime, formatTokens, sha7, truncate } from "./format";
+import { ageAgo, ageCompact, ageLine, formatCost, formatDuration, formatTime, formatTokens, sha7, truncate } from "./format";
 
 const NOW = 1_800_000_000_000;
 const MIN = 60_000;
@@ -11,6 +11,14 @@ describe("format", () => {
     expect(ageCompact(NOW - 125 * MIN, NOW)).toBe("2h");
     expect(ageCompact(NOW - 3 * 24 * 60 * MIN, NOW)).toBe("3d");
     expect(ageCompact(NOW - 59.5 * MIN, NOW)).toBe("59m");
+  });
+
+  it("builds an age sentence, or the caller's copy when the timestamp is 0", () => {
+    const scanned = (age: string) => `Scanned ${age} ago`;
+    expect(ageLine(NOW - 125 * MIN, "Never scanned", scanned, NOW)).toBe("Scanned 2h ago");
+    expect(ageLine(0, "Never scanned", scanned, NOW)).toBe("Never scanned");
+    // Only 0 counts as never: 1 ms past the epoch is a real (absurd) age, not a missing timestamp.
+    expect(ageLine(1, "Never scanned", scanned, NOW)).toBe("Scanned 20833d ago");
   });
 
   it("formats long ages", () => {

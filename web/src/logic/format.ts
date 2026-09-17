@@ -9,6 +9,12 @@ export function ageCompact(ms: number, now = Date.now()): string {
   return `${Math.floor(d / DAY)}d`;
 }
 
+// One seam for "rendered age, or nothing was ever recorded": the caller passes both the copy for a
+// missing timestamp and the sentence to wrap a real age in, so the fallback never lands inside
+// someone else's sentence ("Scanned Never scanned ago"). Only 0 counts as never.
+export const ageLine = (ms: number, never: string, line: (age: string) => string, now = Date.now()): string =>
+  ms === 0 ? never : line(ageCompact(ms, now));
+
 export function ageAgo(ms: number, now = Date.now()): string {
   const d = Math.max(0, now - ms);
   if (d < HOUR) return `${Math.max(1, Math.floor(d / MIN))} min ago`;

@@ -199,20 +199,36 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     const noSp = [entry({ kind: "claude", models: catalog[0]!.models, superpowers: false })];
     expect(validateChoice(ok, "none", noSp, ["claude"], "orchestrator")).toEqual({ agent: "Install the superpowers plugin for Claude to run orchestrators." });
     expect(validateChoice(ok, "none", noSp, ["claude"], "coder")).toEqual({});
-    expect(isValid(validateChoice({ agent: "", model: "", effort: "" }, "none", catalog, ["claude"], "orchestrator"))).toBe(false);
+    // Ruling (fix round 2): the invalid-agent sentinel carries a message the form can show.
+    expect(validateChoice({ agent: "", model: "", effort: "" }, "none", catalog, ["claude"], "orchestrator"))
+      .toEqual({ agent: "Choose an agent." });
+    expect(validateChoice({ ...ok, agent: "codex" }, "none", catalog, ["claude"], "orchestrator"))
+      .toEqual({ agent: "Choose an agent." });
+    expect(isValid({ agent: "Choose an agent." })).toBe(false);
   });
 
   it("notes a stale catalog", () => {
-    const stale = entry({ kind: "claude", models: [], catalog_stale: true, catalog_error: "timeout", catalog_fetched_at: 0 });
-    expect(catalogNote(stale, 3 * 3_600_000)).toBe("Model list from 3h ago. Couldn't refresh: timeout");
+    const stale = entry({
+      kind: "claude", models: [], catalog_stale: true, catalog_error: "timeout", catalog_fetched_at: 3_600_000,
+    });
+    expect(catalogNote(stale, 4 * 3_600_000)).toBe("Model list from 3h ago. Couldn't refresh: timeout");
     expect(catalogNote(catalog[0])).toBeUndefined();
+  });
+
+  it("says never fetched instead of an age when the catalog has no timestamp", () => {
+    // Ruling (fix round 2): catalog_fetched_at 0 means never fetched.
+    const never = entry({ kind: "claude", models: [], catalog_stale: true, catalog_error: "timeout", catalog_fetched_at: 0 });
+    expect(catalogNote(never, 3 * 3_600_000)).toBe("Never fetched. Couldn't refresh: timeout");
+    expect(catalogNote({ ...never, catalog_error: "" }, 3 * 3_600_000)).toBe("Never fetched");
   });
 
   it("re-checks the Settings advisor effort against the chosen advisor model", () => {
     // Settings guarantees the level only for the Settings model; the user may pick another pair.
     expect(advisorPayload({ agent: "claude", model: "gamma" }, settings, catalog)).toEqual({ agent: "claude", model: "gamma" });
+    // Ruling (fix round 2): send no effort at all — the daemon substitutes its own default before
+    // the launch-id lookup, so the launch id is identical and the payload is smaller.
     expect(advisorPayload({ agent: "cursor", model: "model-7" }, settings, catalog)).toEqual({
-      agent: "cursor", model: "model-7", effort: "medium",
+      agent: "cursor", model: "model-7",
     });
     expect(advisorPayload({ agent: "claude", model: "gone-2" }, settings, catalog)).toEqual({ agent: "claude", model: "gone-2" });
   });

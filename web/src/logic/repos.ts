@@ -1,6 +1,6 @@
 import { C, T } from "../copy";
 import type { Repo, ReposResponse } from "../types";
-import { ageCompact } from "./format";
+import { ageLine } from "./format";
 
 export interface RepoSection { id: string; title: string; groupName: string | null; repos: Repo[] }
 
@@ -48,4 +48,4 @@ export function selectedLine(sel: string[], known: Repo[]): string {
 }
 
 export const scanLine = (r: ReposResponse, now = Date.now()) =>
-  r.scanning ? C.scanning : T.scannedAgo(ageCompact(r.scanned_at, now));
+  r.scanning ? C.scanning : ageLine(r.scanned_at, C.neverScanned, T.scannedAgo, now);

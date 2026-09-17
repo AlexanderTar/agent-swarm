@@ -1,6 +1,6 @@
 import { AGENT_LABEL, AGENT_LOGIN_CMD, C, T } from "../copy";
 import type { AdvisorPayload, AgentCatalogEntry, AgentKind, CatalogModel, Settings, SettingsRole } from "../types";
-import { ageCompact } from "./format";
+import { ageLine } from "./format";
 
 export interface Option { value: string; label: string; disabled?: boolean }
 export interface AgentChoice { agent: AgentKind | ""; model: string; effort: string }
@@ -119,7 +119,7 @@ export function validateChoice(
   enabled: AgentKind[],
   role: SettingsRole,
 ): FieldErrors {
-  if (choice.agent === "" || !enabled.includes(choice.agent)) return { agent: "" };
+  if (choice.agent === "" || !enabled.includes(choice.agent)) return { agent: C.chooseAgent };
   const errors: FieldErrors = {};
   const entry = entryFor(catalog, choice.agent);
   const name = AGENT_LABEL[choice.agent];
@@ -138,7 +138,8 @@ export const isValid = (e: FieldErrors) => Object.keys(e).length === 0;
 
 export function catalogNote(entry: AgentCatalogEntry | undefined, now = Date.now()): string | undefined {
   if (!entry?.catalog_stale) return undefined;
-  return T.catalogStale(ageCompact(entry.catalog_fetched_at, now), entry.catalog_error);
+  const never = entry.catalog_error ? T.catalogNeverFetched(entry.catalog_error) : C.neverFetched;
+  return ageLine(entry.catalog_fetched_at, never, (age) => T.catalogStale(age, entry.catalog_error), now);
 }
 
 export function advisorOptions(catalog: AgentCatalogEntry[], enabled: AgentKind[]): Option[] {
@@ -166,11 +167,12 @@ export function choicePayload(c: AgentChoice): { agent: AgentKind; model: string
 
 // §16.3: the advisor's effort comes from Settings — but Settings only validated that level against
 // the Settings advisor model, so re-check it against the model the user actually picked (the
-// daemon's SupportsEffort rule) and fall back to that model's own default effort.
+// daemon's SupportsEffort rule). A level that model doesn't offer is left out entirely: the daemon
+// substitutes its own default before the launch-id lookup, so the launch id is the same either way.
 export function advisorPayload(a: AdvisorChoice, settings: Settings, catalog: AgentCatalogEntry[]): AdvisorPayload {
   if (a === "none") return "none";
   const model = resolveModel(entryFor(catalog, a.agent), a.model);
   const stored = settings.roles.advisor?.effort ?? "";
-  const effort = supportsEffort(model, stored) ? stored : (model?.default_effort ?? "");
+  const effort = supportsEffort(model, stored) ? stored : "";
   return effort ? { ...a, effort } : { ...a };
 }

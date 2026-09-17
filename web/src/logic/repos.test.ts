@@ -51,6 +51,8 @@ describe("repo picker rules (§16.3)", () => {
 
   it("describes the scan", () => {
     expect(scanLine({ ...resp, scanning: true })).toBe("Scanning your home folder…");
-    expect(scanLine({ ...resp, scanned_at: 0 }, 2 * 3_600_000)).toBe("Scanned 2h ago");
+    expect(scanLine({ ...resp, scanned_at: 3_600_000 }, 3 * 3_600_000)).toBe("Scanned 2h ago");
+    // Ruling (fix round 2): scanned_at 0 means never scanned, not a 20000-day age.
+    expect(scanLine({ ...resp, scanned_at: 0 }, 2 * 3_600_000)).toBe("Never scanned");
   });
 });

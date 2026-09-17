@@ -23,6 +23,16 @@ describe("copy (§17)", () => {
     expect(AGENT_LABEL).toMatchObject({ claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor" });
   });
 
+  // Added by the fix-round-2 rulings; queued for the P5 §17 spec pass.
+  it("has the empty-agent and missing-timestamp copy", () => {
+    expect(C).toMatchObject({
+      chooseAgent: "Choose an agent.",
+      neverScanned: "Never scanned",
+      neverFetched: "Never fetched",
+    });
+    expect(T.catalogNeverFetched("timeout")).toBe("Never fetched. Couldn't refresh: timeout");
+  });
+
   it("has the §17.3 and §17.4 static copy", () => {
     expect(C).toMatchObject({
       search: "Search name or key…",
