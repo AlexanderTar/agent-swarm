@@ -1,0 +1,7 @@
+{"fetched_at":"2026-09-17T08:00:00Z","etag":"W/\"abc\"","client_version":"0.154.0","models":[
+{"slug":"gpt-6-astra","display_name":"GPT-6-Astra","default_reasoning_level":"low","visibility":"list","supported_reasoning_levels":[{"effort":"low","description":""},{"effort":"medium","description":""},{"effort":"high","description":""},{"effort":"xhigh","description":""},{"effort":"max","description":""},{"effort":"ultra","description":""}]},
+{"slug":"gpt-reserve","display_name":"GPT-Reserve","default_reasoning_level":"medium","visibility":"hide","supported_reasoning_levels":[{"effort":"low","description":""},{"effort":"medium","description":""}]},
+{"slug":"gpt-5.6-sol","display_name":"GPT-5.6-Sol","default_reasoning_level":"low","visibility":"list","supported_reasoning_levels":[{"effort":"low","description":""},{"effort":"medium","description":""},{"effort":"high","description":""}]},
+{"slug":"gpt-5.5","display_name":"GPT-5.5","default_reasoning_level":"high","visibility":"list","supported_reasoning_levels":[{"effort":"high","description":""},{"effort":"xhigh","description":""}]},
+{"slug":"codex-auto-review","display_name":"Codex Auto Review","default_reasoning_level":"medium","visibility":"hide","supported_reasoning_levels":[{"effort":"medium","description":""}]}
+]}
