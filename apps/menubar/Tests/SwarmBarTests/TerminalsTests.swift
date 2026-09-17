@@ -41,7 +41,7 @@ final class TerminalsTests: XCTestCase {
     func testScriptTextMatchesPhaseZero() {
         let s = Terminals.focusOrOpenScript(name: "login-form-coder", tmuxPath: "/opt/homebrew/bin/tmux")
         XCTAssertTrue(s.contains(#"set target to "swarm:login-form-coder""#))
-        XCTAssertTrue(s.contains(#"set cmd to "/opt/homebrew/bin/tmux -L swarm attach -t login-form-coder""#))
+        XCTAssertTrue(s.contains(#"set cmd to "/opt/homebrew/bin/tmux -L swarm attach -t =login-form-coder""#))
         XCTAssertTrue(s.contains("tell application \"Ghostty\""))
         XCTAssertTrue(s.contains("if name of t ends with target then"))
         XCTAssertTrue(s.contains("focus t"))
@@ -68,9 +68,29 @@ final class TerminalsTests: XCTestCase {
         let invalid = await t.hasSession("bad name")
         XCTAssertEqual([alive, dead, invalid], [true, false, false])
         XCTAssertEqual(runner.calls, [
-            "/usr/local/bin/tmux -L swarm has-session -t login-form-coder",
-            "/usr/local/bin/tmux -L swarm has-session -t login-form-coder",
+            "/usr/local/bin/tmux -L swarm has-session -t =login-form-coder",
+            "/usr/local/bin/tmux -L swarm has-session -t =login-form-coder",
         ])
+    }
+
+    /// tmux resolves `-t name` by exact match, then prefix, then fnmatch, so a finished
+    /// `login-form-coder` would otherwise find and attach to a live `login-form-coder-2`.
+    func testTmuxTargetsAreExactSoSiblingSessionsNeverMatch() async {
+        final class TmuxRunner: CommandRunning, @unchecked Sendable {
+            let live: Set<String>
+            init(live: Set<String>) { self.live = live }
+            func run(_ executable: String, _ args: [String]) async -> CommandResult {
+                guard let target = args.last else { return CommandResult(status: 1) }
+                if target.hasPrefix("=") { return CommandResult(status: live.contains(String(target.dropFirst())) ? 0 : 1) }
+                return CommandResult(status: live.contains(where: { $0.hasPrefix(target) }) ? 0 : 1)
+            }
+        }
+        let t = Terminals(runner: TmuxRunner(live: ["login-form-coder-2"]), script: script,
+                          ghosttyPIDs: { [] }, fileExists: { $0 == "/usr/local/bin/tmux" })
+        let sibling = await t.hasSession("login-form-coder")
+        let itself = await t.hasSession("login-form-coder-2")
+        XCTAssertEqual([sibling, itself], [false, true])
+        XCTAssertEqual(t.fallbackArgs("login-form-coder").suffix(2).joined(separator: " "), "-t =login-form-coder")
     }
 
     func testFocusOrOpenThroughAppleScript() async {
@@ -90,7 +110,7 @@ final class TerminalsTests: XCTestCase {
         script.reply = .failure(Denied())
         let first = await t.open("login-form-coder")
         XCTAssertEqual(first, .fallback)
-        XCTAssertEqual(runner.calls, ["/usr/bin/open -na Ghostty --args -e /usr/local/bin/tmux -L swarm attach -t login-form-coder"])
+        XCTAssertEqual(runner.calls, ["/usr/bin/open -na Ghostty --args -e /usr/local/bin/tmux -L swarm attach -t =login-form-coder"])
         XCTAssertEqual(t.fallbackAgents["login-form-coder"], [100])
 
         script.reply = .success("focused")

@@ -32,6 +32,10 @@ public final class Terminals {
         name.count <= Kebab.maxName && name.range(of: "^[a-z0-9]+(-[a-z0-9]+)*$", options: .regularExpression) != nil
     }
 
+    /// tmux resolves a bare `-t name` by exact match, then prefix, then fnmatch, so `login`
+    /// would find `login-2`. `=name` is the exact-match form; a shell reads it literally.
+    public static func exactTarget(_ name: String) -> String { "=" + name }
+
     public static func appleScriptString(_ s: String) -> String {
         "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
@@ -41,7 +45,7 @@ public final class Terminals {
     public static func focusOrOpenScript(name: String, tmuxPath: String) -> String {
         """
         set target to \(appleScriptString("swarm:" + name))
-        set cmd to \(appleScriptString("\(tmuxPath) -L \(socket) attach -t \(name)"))
+        set cmd to \(appleScriptString("\(tmuxPath) -L \(socket) attach -t \(exactTarget(name))"))
         tell application "Ghostty"
             repeat with w in windows
                 repeat with t in terminals of w
@@ -62,13 +66,13 @@ public final class Terminals {
     }
 
     public func fallbackArgs(_ name: String) -> [String] {
-        ["-na", "Ghostty", "--args", "-e", tmuxPath, "-L", Self.socket, "attach", "-t", name]
+        ["-na", "Ghostty", "--args", "-e", tmuxPath, "-L", Self.socket, "attach", "-t", Self.exactTarget(name)]
     }
 
-    /// `tmux -L swarm has-session -t <name>`.
+    /// `tmux -L swarm has-session -t =<name>`.
     public func hasSession(_ name: String) async -> Bool {
         guard Self.isValidName(name) else { return false }
-        return await runner.run(tmuxPath, ["-L", Self.socket, "has-session", "-t", name]).status == 0
+        return await runner.run(tmuxPath, ["-L", Self.socket, "has-session", "-t", Self.exactTarget(name)]).status == 0
     }
 
     public func open(_ name: String) async -> Outcome {
