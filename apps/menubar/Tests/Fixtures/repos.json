@@ -1,0 +1,231 @@
+{
+  "recent": [
+    {
+      "id": "repo_chat",
+      "name": "endurio-chat",
+      "path": "/Users/alex/GitHub/endurio-chat",
+      "remote_url": "git@github.com:EndurioApp/endurio-chat.git",
+      "remote_owner": "EndurioApp",
+      "default_branch": "main",
+      "source": "scan",
+      "groups": [
+        "EndurioApp",
+        "endurio"
+      ],
+      "missing": false,
+      "dirty": false,
+      "last_used_at": 1789648320000
+    }
+  ],
+  "groups": [
+    {
+      "name": "AlexanderTar",
+      "source": "remote_owner",
+      "repos": [
+        {
+          "id": "repo_landing",
+          "name": "endurio-landing",
+          "path": "/Users/alex/GitHub/endurio-landing",
+          "remote_url": "https://github.com/AlexanderTar/endurio-landing.git",
+          "remote_owner": "AlexanderTar",
+          "default_branch": "main",
+          "source": "scan",
+          "groups": [
+            "endurio",
+            "AlexanderTar"
+          ],
+          "missing": false,
+          "dirty": false,
+          "last_used_at": null
+        },
+        {
+          "id": "repo_swarm",
+          "name": "agent-swarm",
+          "path": "/Users/alex/GitHub/agent-swarm",
+          "remote_url": "https://github.com/AlexanderTar/agent-swarm.git",
+          "remote_owner": "AlexanderTar",
+          "default_branch": "main",
+          "source": "scan",
+          "groups": [
+            "AlexanderTar"
+          ],
+          "missing": false,
+          "dirty": false,
+          "last_used_at": null
+        }
+      ]
+    },
+    {
+      "name": "EndurioApp",
+      "source": "remote_owner",
+      "repos": [
+        {
+          "id": "repo_chat",
+          "name": "endurio-chat",
+          "path": "/Users/alex/GitHub/endurio-chat",
+          "remote_url": "git@github.com:EndurioApp/endurio-chat.git",
+          "remote_owner": "EndurioApp",
+          "default_branch": "main",
+          "source": "scan",
+          "groups": [
+            "EndurioApp",
+            "endurio"
+          ],
+          "missing": false,
+          "dirty": false,
+          "last_used_at": 1789648320000
+        },
+        {
+          "id": "repo_app",
+          "name": "endurio-app",
+          "path": "/Users/alex/GitHub/endurio-app",
+          "remote_url": "git@github.com:EndurioApp/endurio-app.git",
+          "remote_owner": "EndurioApp",
+          "default_branch": "main",
+          "source": "scan",
+          "groups": [
+            "EndurioApp",
+            "endurio"
+          ],
+          "missing": false,
+          "dirty": true,
+          "last_used_at": null
+        }
+      ]
+    },
+    {
+      "name": "endurio",
+      "source": "workspace_dir",
+      "repos": [
+        {
+          "id": "repo_chat",
+          "name": "endurio-chat",
+          "path": "/Users/alex/GitHub/endurio-chat",
+          "remote_url": "git@github.com:EndurioApp/endurio-chat.git",
+          "remote_owner": "EndurioApp",
+          "default_branch": "main",
+          "source": "scan",
+          "groups": [
+            "EndurioApp",
+            "endurio"
+          ],
+          "missing": false,
+          "dirty": false,
+          "last_used_at": 1789648320000
+        },
+        {
+          "id": "repo_app",
+          "name": "endurio-app",
+          "path": "/Users/alex/GitHub/endurio-app",
+          "remote_url": "git@github.com:EndurioApp/endurio-app.git",
+          "remote_owner": "EndurioApp",
+          "default_branch": "main",
+          "source": "scan",
+          "groups": [
+            "EndurioApp",
+            "endurio"
+          ],
+          "missing": false,
+          "dirty": true,
+          "last_used_at": null
+        },
+        {
+          "id": "repo_landing",
+          "name": "endurio-landing",
+          "path": "/Users/alex/GitHub/endurio-landing",
+          "remote_url": "https://github.com/AlexanderTar/endurio-landing.git",
+          "remote_owner": "AlexanderTar",
+          "default_branch": "main",
+          "source": "scan",
+          "groups": [
+            "endurio",
+            "AlexanderTar"
+          ],
+          "missing": false,
+          "dirty": false,
+          "last_used_at": null
+        }
+      ]
+    }
+  ],
+  "all": [
+    {
+      "id": "repo_swarm",
+      "name": "agent-swarm",
+      "path": "/Users/alex/GitHub/agent-swarm",
+      "remote_url": "https://github.com/AlexanderTar/agent-swarm.git",
+      "remote_owner": "AlexanderTar",
+      "default_branch": "main",
+      "source": "scan",
+      "groups": [
+        "AlexanderTar"
+      ],
+      "missing": false,
+      "dirty": false,
+      "last_used_at": null
+    },
+    {
+      "id": "repo_app",
+      "name": "endurio-app",
+      "path": "/Users/alex/GitHub/endurio-app",
+      "remote_url": "git@github.com:EndurioApp/endurio-app.git",
+      "remote_owner": "EndurioApp",
+      "default_branch": "main",
+      "source": "scan",
+      "groups": [
+        "EndurioApp",
+        "endurio"
+      ],
+      "missing": false,
+      "dirty": true,
+      "last_used_at": null
+    },
+    {
+      "id": "repo_chat",
+      "name": "endurio-chat",
+      "path": "/Users/alex/GitHub/endurio-chat",
+      "remote_url": "git@github.com:EndurioApp/endurio-chat.git",
+      "remote_owner": "EndurioApp",
+      "default_branch": "main",
+      "source": "scan",
+      "groups": [
+        "EndurioApp",
+        "endurio"
+      ],
+      "missing": false,
+      "dirty": false,
+      "last_used_at": 1789648320000
+    },
+    {
+      "id": "repo_landing",
+      "name": "endurio-landing",
+      "path": "/Users/alex/GitHub/endurio-landing",
+      "remote_url": "https://github.com/AlexanderTar/endurio-landing.git",
+      "remote_owner": "AlexanderTar",
+      "default_branch": "main",
+      "source": "scan",
+      "groups": [
+        "endurio",
+        "AlexanderTar"
+      ],
+      "missing": false,
+      "dirty": false,
+      "last_used_at": null
+    },
+    {
+      "id": "repo_gone",
+      "name": "old-api",
+      "path": "/Users/alex/Code/old-api",
+      "remote_url": null,
+      "remote_owner": null,
+      "default_branch": null,
+      "source": "scan",
+      "groups": [],
+      "missing": true,
+      "dirty": false,
+      "last_used_at": null
+    }
+  ],
+  "scanned_at": 1789644720000,
+  "scanning": false
+}

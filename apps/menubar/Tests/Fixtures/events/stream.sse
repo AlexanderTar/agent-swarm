@@ -1,0 +1,45 @@
+: ping
+
+id: 41
+event: agent.changed
+data: {"name":"login-form-coder","root_key":"EPIC-12"}
+
+id: 42
+event: request.opened
+data: {"id":"req_section","kind":"approve_section","agent_name":"auth-epic-orchestrator","item_key":"STORY-40","item_title":"Login","root_key":"EPIC-12","artifact_id":"art_01","artifact_revision":2,"section_id":"session-handling","section_title":"Session handling","section_sha256":"9f2c1e","prompt":"Review the session handling section.","options":[],"state":"open","confirmed":null,"binding":null,"response_text":null,"responded_via":null,"responded_at":null,"created_at":1789649520000}
+
+id: 43
+event: notification.created
+data: {"id":"ntf_05","level":"action","kind":"request.question","title":"Answer needed","body":"TASK-101: Which validation library?","agent_name":"login-form-coder","item_key":"TASK-101","request_id":"req_question","read_at":null,"created_at":1789650120000}
+
+id: 44
+event: usage.changed
+data: {"agent":"codex","meters":[{"id":"primary","label":"5h","window":"5h","used_pct":18,"resets_at":1789662720000},{"id":"secondary","label":"Weekly","window":"weekly","used_pct":9,"resets_at":1789977600000}],"headline_id":"primary","source":"codex app-server account/rateLimits/read","error":null,"fetched_at":1789651860000,"attempted_at":1789651860000,"stale":false}
+
+id: 45
+event: terminal.open
+data: {"name":"login-form-coder","tmux":"login-form-coder"}
+
+id: 46
+event: settings.changed
+data: {"enabled_agents":["claude","codex","agy"],"roles":{"orchestrator":{"agent":"claude","model":"opus"},"coder":{"agent":"claude","model":"sonnet"},"reviewer":{"agent":"codex","model":"gpt-6-astra","effort":"high"},"ui_reviewer":{"agent":"claude","model":"opus"},"researcher":{"agent":"claude","model":"sonnet"},"debugger":{"agent":"claude","model":"opus"},"mechanical":{"agent":"claude","model":"haiku"},"advisor":{"agent":"claude","model":"fable"}},"notifications":{"info":{"center":true,"sound":false},"attention":{"center":true,"sound":true},"action":{"center":true,"sound":true}},"max_orchestrators":3,"max_agents":8,"max_agents_per_root":4,"scan_excludes":["~/Library","~/.Trash","~/Downloads"],"scan_interval_sec":21600,"menubar_compact":false,"usage_poll_sec":300,"pause_deadline_sec":120}
+
+id: 47
+event: catalog.changed
+data: [{"kind":"claude","installed":true,"version":"2.1.274","auth_ok":true,"auth_error":"","superpowers":true,"models":[{"id":"claude-fable-5-1","label":"Fable 5.1","aliases":["fable"],"efforts":["low","medium","high","xhigh","max"],"default_effort":"","effort_encoding":"flag","advisor_capable":true},{"id":"claude-opus-5","label":"Opus 5","aliases":["opus"],"efforts":["low","medium","high","xhigh","max"],"default_effort":"","effort_encoding":"flag","advisor_capable":true},{"id":"claude-sonnet-5","label":"Sonnet 5","aliases":["sonnet"],"efforts":["low","medium","high","xhigh","max"],"default_effort":"","effort_encoding":"flag","advisor_capable":true},{"id":"claude-haiku-4-5-20251001","label":"Haiku 4.5","aliases":["haiku"],"efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false},{"id":"claude-sonnet-4-6","label":"Sonnet 4.6","efforts":["low","medium","high","max"],"default_effort":"","effort_encoding":"flag","advisor_capable":true}],"default_model":"claude-opus-5","catalog_source":"api.anthropic.com/v1/models","catalog_fetched_at":1789641120000,"catalog_stale":false,"catalog_error":""},{"kind":"codex","installed":true,"version":"0.154.0","auth_ok":true,"auth_error":"","superpowers":true,"models":[{"id":"gpt-6-astra","label":"GPT-6 Astra","efforts":["low","medium","high","xhigh","ultra"],"default_effort":"medium","effort_encoding":"flag","advisor_capable":false,"is_default":true},{"id":"gpt-5.3-codex","label":"GPT-5.3 Codex","efforts":["low","medium","high"],"default_effort":"medium","effort_encoding":"flag","advisor_capable":false},{"id":"gpt-legacy","label":"GPT Legacy","efforts":["medium"],"default_effort":"medium","effort_encoding":"flag","advisor_capable":false,"hidden":true}],"default_model":"gpt-6-astra","catalog_source":"codex app-server model/list","catalog_fetched_at":1789641120000,"catalog_stale":false,"catalog_error":""},{"kind":"agy","installed":true,"version":"1.2.5","auth_ok":false,"auth_error":"agy isn't signed in.","superpowers":false,"models":[{"id":"gemini-3.8-flash","label":"Gemini 3.8 Flash","efforts":["low","medium","high"],"default_effort":"high","effort_encoding":"slug","launch_ids":{"low":"gemini-3.8-flash-low","medium":"gemini-3.8-flash-medium","high":"gemini-3.8-flash-high"},"advisor_capable":false},{"id":"claude-sonnet-4-6","label":"Claude Sonnet 4.6 (agy)","efforts":[],"default_effort":"","effort_encoding":"slug","advisor_capable":false}],"default_model":"gemini-3.8-flash","catalog_source":"agy models","catalog_fetched_at":1789558320000,"catalog_stale":true,"catalog_error":"agy models timed out"},{"kind":"cursor","installed":false,"version":"","auth_ok":false,"auth_error":"","superpowers":false,"models":[],"default_model":"","catalog_source":"cursor-agent models","catalog_fetched_at":0,"catalog_stale":false,"catalog_error":""}]
+
+id: 48
+event: item.changed
+data: {"key":"TASK-101","root_key":"EPIC-12"}
+
+id: 49
+event: checkpoint.created
+data: {"item":"TASK-101","agent":"login-form-coder","kind":"progress"}
+
+id: 50
+event: request.resolved
+data: {"id":"req_question","kind":"question","agent_name":"login-form-coder","item_key":"TASK-101","item_title":"Login form","root_key":"EPIC-12","artifact_id":null,"artifact_revision":null,"section_id":null,"section_title":null,"section_sha256":null,"prompt":"Which validation library?","options":["zod","valibot"],"state":"answered","confirmed":null,"binding":null,"response_text":null,"responded_via":null,"responded_at":null,"created_at":1789650120000}
+
+id: 51
+event: repos.changed
+data: {"scanning":false,"found":112}
