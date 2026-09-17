@@ -42,6 +42,21 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertEqual(f.intentCaption, "Creates a spike to find the root cause and turn it into a bug with a fix plan.")
     }
 
+    /// `CatalogRules.prefill` builds `choice` from `Settings` while `catalog == []` (it hasn't loaded
+    /// yet), so a stored effort the catalog doesn't offer for that model must be re-checked once
+    /// `load()` brings the catalog in, or it survives straight into `body()`.
+    func testStoredEffortIsNormalisedOnceTheCatalogArrives() async {
+        var settings = state.settings
+        settings[.orchestrator] = RoleDefault(agent: .claude, model: "opus", effort: "ultra") // opus doesn't offer "ultra"
+        let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true,
+                                    format: Format(now: fixtureNow))
+        XCTAssertEqual(f.choice.effort, "ultra", "before load() the catalog hasn't arrived to check it against")
+        await f.load()
+        XCTAssertEqual(f.choice.effort, "", "normalised once the catalog arrives")
+        f.name = "x"
+        XCTAssertNil(f.body()?.effort, "a level the model doesn't offer must never reach the spike body")
+    }
+
     func testNameValidationMessages() async {
         let f = await form()
         f.name = "🔥🔥"
