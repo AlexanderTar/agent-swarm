@@ -11,9 +11,11 @@ export function ageCompact(ms: number, now = Date.now()): string {
 
 // One seam for "rendered age, or nothing was ever recorded": the caller passes both the copy for a
 // missing timestamp and the sentence to wrap a real age in, so the fallback never lands inside
-// someone else's sentence ("Scanned Never scanned ago"). Only 0 counts as never.
+// someone else's sentence ("Scanned Never scanned ago"). This is a trust boundary — the wire can
+// send 0, a negative, or junk that decodes to NaN — so anything that isn't a positive, finite
+// number is "never" rather than an age measured from the epoch.
 export const ageLine = (ms: number, never: string, line: (age: string) => string, now = Date.now()): string =>
-  ms === 0 ? never : line(ageCompact(ms, now));
+  !Number.isFinite(ms) || ms <= 0 ? never : line(ageCompact(ms, now));
 
 export function ageAgo(ms: number, now = Date.now()): string {
   const d = Math.max(0, now - ms);

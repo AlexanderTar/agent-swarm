@@ -219,6 +219,7 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     // Ruling (fix round 2): catalog_fetched_at 0 means never fetched.
     const never = entry({ kind: "claude", models: [], catalog_stale: true, catalog_error: "timeout", catalog_fetched_at: 0 });
     expect(catalogNote(never, 3 * 3_600_000)).toBe("Never fetched. Couldn't refresh: timeout");
+    expect(catalogNote({ ...never, catalog_fetched_at: -1 }, 3 * 3_600_000)).toBe("Never fetched. Couldn't refresh: timeout");
     expect(catalogNote({ ...never, catalog_error: "" }, 3 * 3_600_000)).toBe("Never fetched");
   });
 

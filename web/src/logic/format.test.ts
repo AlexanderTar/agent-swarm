@@ -13,11 +13,14 @@ describe("format", () => {
     expect(ageCompact(NOW - 59.5 * MIN, NOW)).toBe("59m");
   });
 
-  it("builds an age sentence, or the caller's copy when the timestamp is 0", () => {
+  it("builds an age sentence, or the caller's copy when there is no usable timestamp", () => {
     const scanned = (age: string) => `Scanned ${age} ago`;
     expect(ageLine(NOW - 125 * MIN, "Never scanned", scanned, NOW)).toBe("Scanned 2h ago");
-    expect(ageLine(0, "Never scanned", scanned, NOW)).toBe("Never scanned");
-    // Only 0 counts as never: 1 ms past the epoch is a real (absurd) age, not a missing timestamp.
+    // Trust boundary: the wire can send 0, a negative, or junk that decodes to NaN.
+    for (const ms of [0, -1, -NOW, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(ageLine(ms, "Never scanned", scanned, NOW)).toBe("Never scanned");
+    }
+    // 1 ms past the epoch is still a real (absurd) age, not a missing timestamp.
     expect(ageLine(1, "Never scanned", scanned, NOW)).toBe("Scanned 20833d ago");
   });
 
