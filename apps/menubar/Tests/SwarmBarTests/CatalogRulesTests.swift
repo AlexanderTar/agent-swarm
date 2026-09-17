@@ -35,6 +35,18 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(R.agentOptions(enabled: [.agy, .claude, .fake]), [PickerOption("claude", "Claude"), PickerOption("agy", "agy")])
     }
 
+    /// The served alias fallback has `id == aliases[0]` (`internal/catalog/parse.go` `ClaudeAliasFallback`),
+    /// so the alias pass and the id pass would otherwise emit the same option twice.
+    func testAServedAliasThatEqualsTheModelIdIsOneOption() {
+        let fallback = AgentCatalogEntry(kind: .claude, models: [
+            CatalogModel(id: "opus", label: "Opus (latest)", aliases: ["opus"], efforts: ["low", "high"], advisorCapable: true),
+            CatalogModel(id: "haiku", label: "Haiku (latest)", aliases: ["haiku"]),
+        ], catalogSource: "aliases")
+        XCTAssertEqual(R.modelOptions(fallback), [PickerOption("opus", "Opus (latest)"), PickerOption("haiku", "Haiku (latest)")])
+        XCTAssertEqual(R.modelOptions(fallback, advisorOnly: true).map(\.value), ["opus"])
+        XCTAssertEqual(R.advisorOptions([fallback], enabled: [.claude]).map(\.value), ["claude:opus", "none"])
+    }
+
     func testDefaultEffortLabels() {
         XCTAssertEqual(R.defaultEffortLabel(.claude, CatalogModel(id: "a", efforts: ["low", "high"])), "Default (high)")
         XCTAssertEqual(R.defaultEffortLabel(.claude, CatalogModel(id: "a", efforts: ["low", "medium"])), "Default (Claude Code)")
@@ -50,6 +62,35 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertNil(R.effortOptions(.claude, R.resolve(catalog[0], "haiku")))
         XCTAssertNil(R.effortOptions(.claude, nil))
         XCTAssertNil(R.effortOptions(nil, R.resolve(catalog[1], "gpt-x")))
+    }
+
+    /// The cursor-only level literally named "default" (R7/R8) never reads "Default (default)", and when it
+    /// is the model's default effort it is the same launch id as "" and so gets one row, not two.
+    func testCursorDefaultLevelLabelsAndNormalisation() {
+        let withLevels = CatalogModel(id: "c-one", label: "C One", efforts: ["default", "low", "medium", "high"], defaultEffort: "medium")
+        let bareIsDefault = CatalogModel(id: "c-two", label: "C Two", efforts: ["default", "none", "minimal"], defaultEffort: "default")
+        XCTAssertEqual(R.effortOptions(.cursor, withLevels), [
+            PickerOption("", "Default (medium)"), PickerOption("default", "Default (Cursor)"),
+            PickerOption("low", "low"), PickerOption("medium", "medium"), PickerOption("high", "high"),
+        ])
+        XCTAssertEqual(R.effortOptions(.cursor, bareIsDefault), [
+            PickerOption("", "Default (Cursor)"), PickerOption("none", "none"), PickerOption("minimal", "minimal"),
+        ])
+        XCTAssertEqual(R.defaultEffortLabel(.cursor, bareIsDefault), "Default (Cursor)")
+
+        // A stored level the model's menu doesn't offer means the agent default.
+        XCTAssertEqual(R.normalizeEffort(.cursor, bareIsDefault, "default"), "")
+        XCTAssertEqual(R.normalizeEffort(.cursor, withLevels, "default"), "default")
+        XCTAssertEqual(R.normalizeEffort(.claude, R.resolve(catalog[0], "m-opus"), "max"), "max")
+        XCTAssertEqual(R.normalizeEffort(.claude, R.resolve(catalog[0], "m-sonnet46"), "xhigh"), "")
+        XCTAssertEqual(R.normalizeEffort(.claude, R.resolve(catalog[0], "haiku"), "high"), "")
+        XCTAssertEqual(R.normalizeEffort(nil, withLevels, "low"), "")
+
+        let cursor = [AgentCatalogEntry(kind: .cursor, models: [withLevels, bareIsDefault])]
+        let moved = R.changeModel(AgentChoice(agent: .cursor, model: "c-one", effort: "default"), to: "c-two", catalog: cursor)
+        XCTAssertEqual(moved.0.effort, "")
+        XCTAssertNil(moved.note, "the dropped row resolves to the same launch id, so there is nothing to report")
+        XCTAssertEqual(R.changeAgent(AgentChoice(agent: .claude, model: "c-two", effort: "default"), to: .cursor, catalog: cursor).0.effort, "")
     }
 
     func testPrefillFromSettings() {
@@ -111,8 +152,12 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(R.validate(ok, advisor: .none, catalog: broken, enabled: [.claude], role: .orchestrator),
                        FieldErrors(agent: "Install the superpowers plugin for Claude to run orchestrators."))
         XCTAssertTrue(R.validate(ok, advisor: .none, catalog: broken, enabled: [.claude], role: .coder).isValid)
-        XCTAssertFalse(R.validate(AgentChoice(agent: nil, model: ""), advisor: .none, catalog: catalog, enabled: [.claude], role: .orchestrator).isValid)
-        XCTAssertFalse(R.validate(ok, advisor: .none, catalog: catalog, enabled: [.codex], role: .orchestrator).isValid)
+        let noAgent = R.validate(AgentChoice(agent: nil, model: ""), advisor: .none, catalog: catalog, enabled: [.claude], role: .orchestrator)
+        XCTAssertFalse(noAgent.isValid)
+        XCTAssertEqual(noAgent.agent, "Choose an agent.", "never an empty message")
+        let notEnabled = R.validate(ok, advisor: .none, catalog: catalog, enabled: [.codex], role: .orchestrator)
+        XCTAssertFalse(notEnabled.isValid)
+        XCTAssertEqual(notEnabled.agent, "Choose an agent.")
         XCTAssertEqual(R.validate(AgentChoice(agent: .agy, model: "x"), advisor: .none, catalog: catalog, enabled: [.agy], role: .coder).agent,
                        "agy isn't installed on this Mac.")
         XCTAssertEqual(["claude", "codex login", "agy", "cursor-agent login"], AgentKind.selectable.map(Copy.loginCommand))
@@ -145,8 +190,25 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(AdvisorChoice(encoded: "claude:a:b"), .pair(.claude, "a:b"))
         XCTAssertEqual(AdvisorChoice(encoded: "none"), AdvisorChoice.none)
         XCTAssertEqual(AdvisorChoice(encoded: "robot:x"), AdvisorChoice.none)
-        XCTAssertEqual(R.advisorPayload(.pair(.claude, "opus"), settings: settings), .pair(agent: .claude, model: "opus", effort: "high"))
-        XCTAssertEqual(R.advisorPayload(.pair(.claude, "opus"), settings: .defaults), .pair(agent: .claude, model: "opus", effort: nil))
-        XCTAssertEqual(R.advisorPayload(.none, settings: settings), AdvisorPayload.none)
+        XCTAssertEqual(R.advisorPayload(.pair(.claude, "opus"), settings: settings, catalog: catalog),
+                       .pair(agent: .claude, model: "opus", effort: "high"))
+        XCTAssertEqual(R.advisorPayload(.pair(.claude, "opus"), settings: .defaults, catalog: catalog),
+                       .pair(agent: .claude, model: "opus", effort: nil))
+        XCTAssertEqual(R.advisorPayload(.none, settings: settings, catalog: catalog), AdvisorPayload.none)
+    }
+
+    /// The Settings advisor effort is re-checked against the model the user picked; an unsupported level
+    /// falls back to that model's default effort, which the payload spells as no `effort` at all (§6.7).
+    func testAdvisorEffortIsRecheckedAgainstTheChosenModel() {
+        var stored = settings
+        stored.roles["advisor"] = RoleDefault(agent: .claude, model: "m-opus", effort: "xhigh")
+        XCTAssertEqual(R.advisorPayload(.pair(.claude, "m-sonnet46"), settings: stored, catalog: catalog),
+                       .pair(agent: .claude, model: "m-sonnet46", effort: nil), "Sonnet 4.6 doesn't offer xhigh")
+        XCTAssertEqual(R.advisorPayload(.pair(.claude, "m-opus"), settings: stored, catalog: catalog),
+                       .pair(agent: .claude, model: "m-opus", effort: "xhigh"))
+        XCTAssertEqual(R.advisorPayload(.pair(.claude, "haiku"), settings: stored, catalog: catalog),
+                       .pair(agent: .claude, model: "haiku", effort: nil), "no effort control at all")
+        XCTAssertEqual(R.advisorPayload(.pair(.codex, "gpt-x"), settings: stored, catalog: catalog),
+                       .pair(agent: .codex, model: "gpt-x", effort: nil), "xhigh isn't a Codex level here")
     }
 }

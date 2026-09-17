@@ -158,6 +158,7 @@ public enum Copy {
     public static let repoDirty = "Has uncommitted changes. The orchestrator works in its own worktree."
     public static func agentNotInstalled(_ agent: String) -> String { "\(agent) isn't installed on this Mac." }
     public static func agentNotSignedIn(_ agent: String, _ cmd: String) -> String { "\(agent) isn't signed in. Run `\(cmd)` in a terminal." }
+    public static let chooseAgent = "Choose an agent."
     public static let modelUnavailable = "Choose a model available for this agent."
     public static func superpowersMissing(_ agent: String) -> String { "Install the superpowers plugin for \(agent) to run orchestrators." }
     public static let launchFailed = "Couldn't start orchestrator. Your entries are saved."
