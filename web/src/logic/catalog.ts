@@ -9,6 +9,17 @@ export interface FieldErrors { agent?: string; model?: string; advisor?: string 
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+// catalog.DefaultLevel: the bare slug of a slug-encoded model (§6.7).
+const DEFAULT_LEVEL = "default";
+
+// The levels a user can actually pick. When "default" is also the model's default_effort, the
+// daemon resolves it and "" to the same launch id, so offering both would be two identical rows.
+const offeredEfforts = (model: CatalogModel): string[] =>
+  model.default_effort === DEFAULT_LEVEL ? model.efforts.filter((e) => e !== DEFAULT_LEVEL) : model.efforts;
+
+const supportsEffort = (model: CatalogModel | undefined, effort: string) =>
+  effort !== "" && model !== undefined && offeredEfforts(model).includes(effort);
+
 export const entryFor = (catalog: AgentCatalogEntry[], kind: AgentKind | "") => catalog.find((e) => e.kind === kind);
 
 export function resolveModel(entry: AgentCatalogEntry | undefined, value: string): CatalogModel | undefined {
@@ -28,28 +39,53 @@ export function modelOptions(entry: AgentCatalogEntry | undefined, advisorOnly =
   if (!entry) return [];
   const visible = entry.models.filter((m) => !m.hidden && (!advisorOnly || m.advisor_capable));
   const aliases = visible.flatMap((m) => (m.aliases ?? []).map((a) => ({ value: a, label: `${capitalize(a)} (latest)` })));
-  return [...aliases, ...visible.map((m) => ({ value: m.id, label: m.label }))];
+  // The offline alias fallback (§6.7) ships models whose id is their own alias, so the alias pass
+  // and the full-name pass collide. One row per launch id, first occurrence wins, order preserved.
+  const seen = new Set<string>();
+  const out: Option[] = [];
+  for (const o of [...aliases, ...visible.map((m) => ({ value: m.id, label: m.label }))]) {
+    if (seen.has(o.value)) continue;
+    seen.add(o.value);
+    out.push(o);
+  }
+  return out;
 }
 
 export function defaultEffortLabel(kind: AgentKind, model: CatalogModel): string {
+  // The bare slug has no level name of its own, so it is named after the agent instead.
+  if (model.default_effort === DEFAULT_LEVEL) return T.defaultLevel(AGENT_LABEL[kind]);
   if (model.default_effort !== "") return T.defaultLevel(model.default_effort);
   if (kind === "claude") return model.efforts.includes("high") ? T.defaultLevel("high") : C.defaultClaudeCode;
+  // Belt and braces: every Go parser sets default_effort for a non-Claude agent, so this is unreachable.
   return T.defaultLevel(model.efforts.includes("high") ? "high" : (model.efforts.at(-1) ?? ""));
 }
 
 // §16.4: the model's own levels in the order the daemon ranked them, plus "Default ({level})" on top.
-// Slug agents (§6.7) list a literal "default" level for the bare slug; it stays where the daemon put it.
+// Slug agents (§6.7) list a literal "default" level for the bare slug; it keeps the daemon's position
+// and is named after the agent, and it drops out when "" already resolves to it.
 export function effortOptions(kind: AgentKind | "", model: CatalogModel | undefined): Option[] | null {
   if (kind === "" || !model || model.efforts.length === 0) return null;
-  return [{ value: "", label: defaultEffortLabel(kind, model) }, ...model.efforts.map((e) => ({ value: e, label: e }))];
+  return [
+    { value: "", label: defaultEffortLabel(kind, model) },
+    ...offeredEfforts(model).map((e) => ({ value: e, label: e === DEFAULT_LEVEL ? T.defaultLevel(AGENT_LABEL[kind]) : e })),
+  ];
 }
 
-export function prefill(settings: Settings, role: SettingsRole = "orchestrator"): { choice: AgentChoice; advisor: AdvisorChoice } {
+export function prefill(
+  settings: Settings,
+  role: SettingsRole = "orchestrator",
+  catalog: AgentCatalogEntry[] = [],
+): { choice: AgentChoice; advisor: AdvisorChoice } {
   const r = settings.roles[role];
   const a = settings.roles.advisor;
+  // A stored "default" collapses into "" once the catalog proves both resolve to the same launch
+  // id. Without a catalog the level is left alone rather than guessed away.
+  const stored = r?.effort ?? "";
+  const model = resolveModel(entryFor(catalog, r?.agent ?? ""), r?.model ?? "");
+  const effort = stored === DEFAULT_LEVEL && model?.default_effort === DEFAULT_LEVEL ? "" : stored;
   return {
     choice: r
-      ? { agent: r.agent, model: r.model, effort: r.effort ?? "" }
+      ? { agent: r.agent, model: r.model, effort }
       : { agent: settings.enabled_agents[0] ?? "", model: "", effort: "" },
     advisor: a && a.model !== "none" ? { agent: a.agent, model: a.model } : "none", // contracts D-11
   };
@@ -58,7 +94,7 @@ export function prefill(settings: Settings, role: SettingsRole = "orchestrator")
 export function changeAgent(choice: AgentChoice, agent: AgentKind, catalog: AgentCatalogEntry[]) {
   const model = resolveModel(entryFor(catalog, agent), choice.model);
   if (model) {
-    const effort = model.efforts.includes(choice.effort) ? choice.effort : "";
+    const effort = supportsEffort(model, choice.effort) ? choice.effort : "";
     return { choice: { agent, model: choice.model, effort }, errors: {} as FieldErrors };
   }
   return { choice: { agent, model: "", effort: "" }, errors: { model: C.modelUnavailable } as FieldErrors };
@@ -66,7 +102,7 @@ export function changeAgent(choice: AgentChoice, agent: AgentKind, catalog: Agen
 
 export function changeModel(choice: AgentChoice, model: string, catalog: AgentCatalogEntry[]): { choice: AgentChoice; note?: string } {
   const m = resolveModel(entryFor(catalog, choice.agent), model);
-  if (choice.effort !== "" && !m?.efforts.includes(choice.effort)) {
+  if (choice.effort !== "" && !supportsEffort(m, choice.effort)) {
     const next = { ...choice, model, effort: "" };
     return m ? { choice: next, note: T.effortUnavailable(choice.effort, m.label) } : { choice: next };
   }
@@ -125,8 +161,13 @@ export function choicePayload(c: AgentChoice): { agent: AgentKind; model: string
   return c.effort ? { ...base, effort: c.effort } : base;
 }
 
-export function advisorPayload(a: AdvisorChoice, settings: Settings): AdvisorPayload {
+// §16.3: the advisor's effort comes from Settings — but Settings only validated that level against
+// the Settings advisor model, so re-check it against the model the user actually picked (the
+// daemon's SupportsEffort rule) and fall back to that model's own default effort.
+export function advisorPayload(a: AdvisorChoice, settings: Settings, catalog: AgentCatalogEntry[]): AdvisorPayload {
   if (a === "none") return "none";
-  const effort = settings.roles.advisor?.effort;
+  const model = resolveModel(entryFor(catalog, a.agent), a.model);
+  const stored = settings.roles.advisor?.effort ?? "";
+  const effort = supportsEffort(model, stored) ? stored : (model?.default_effort ?? "");
   return effort ? { ...a, effort } : { ...a };
 }

@@ -23,6 +23,8 @@ const catalog: AgentCatalogEntry[] = [
       m({ id: "model-2", label: "Model Two", efforts: ["low", "medium", "high"], advisor_capable: true }),
       m({ id: "model-3", label: "Model Three", aliases: ["gamma"] }),
       m({ id: "model-4", label: "Model Four", hidden: true }),
+      // The offline alias fallback (§6.7) ships models whose id IS their alias.
+      m({ id: "delta", label: "Delta (latest)", aliases: ["delta"], efforts: ["low", "high"], advisor_capable: true }),
     ],
   }),
   entry({
@@ -40,6 +42,11 @@ const catalog: AgentCatalogEntry[] = [
       m({
         id: "model-7", label: "Model Seven", efforts: ["default", "medium"], default_effort: "medium",
         effort_encoding: "slug", launch_ids: { default: "model-7", medium: "model-7-medium" },
+      }),
+      // D2 fell through to the bare slug, so "" and "default" resolve to the same launch id.
+      m({
+        id: "model-8", label: "Model Eight", efforts: ["default", "none", "minimal"], default_effort: "default",
+        effort_encoding: "slug", launch_ids: { default: "model-8", none: "model-8-none", minimal: "model-8-minimal" },
       }),
     ],
   }),
@@ -59,10 +66,21 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     expect(modelLabel(catalog[0], "alpha")).toBe("Alpha (latest)");
     expect(modelLabel(catalog[0], "model-3")).toBe("Model Three");
     expect(modelLabel(undefined, "zzz")).toBe("zzz");
-    expect(modelOptions(catalog[0]).map((o) => o.label)).toEqual(["Alpha (latest)", "Gamma (latest)", "Model One", "Model Two", "Model Three"]);
-    expect(modelOptions(catalog[0], true).map((o) => o.value)).toEqual(["alpha", "model-1", "model-2"]);
+    expect(modelOptions(catalog[0]).map((o) => o.label)).toEqual([
+      "Alpha (latest)", "Gamma (latest)", "Delta (latest)", "Model One", "Model Two", "Model Three",
+    ]);
+    expect(modelOptions(catalog[0], true).map((o) => o.value)).toEqual(["alpha", "delta", "model-1", "model-2"]);
     expect(modelOptions(undefined)).toEqual([]);
     expect(agentOptions(["claude", "agy"])).toEqual([{ value: "claude", label: "Claude" }, { value: "agy", label: "agy" }]);
+  });
+
+  it("offers a model whose id is its own alias exactly once", () => {
+    // §6.7 ClaudeAliasFallback: the alias pass and the full-name pass emit the same launch id.
+    const rows = modelOptions(catalog[0]);
+    expect(rows.filter((o) => o.value === "delta")).toEqual([{ value: "delta", label: "Delta (latest)" }]);
+    expect(new Set(rows.map((o) => o.value)).size).toBe(rows.length);
+    const advisor = advisorOptions(catalog, ["claude"]);
+    expect(new Set(advisor.map((o) => o.value)).size).toBe(advisor.length);
   });
 
   it("labels the default effort", () => {
@@ -80,11 +98,41 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     expect(effortOptions("claude", undefined)).toBeNull();
   });
 
+  it("names the bare `default` level after the agent and drops it when it is the model's default", () => {
+    // Worked example 1: the level is a real, distinct choice, so it stays and reads "Default (<Agent>)".
+    expect(effortOptions("cursor", m({
+      id: "model-9", efforts: ["default", "low", "medium", "high"], default_effort: "medium", effort_encoding: "slug",
+    }))).toEqual([
+      { value: "", label: "Default (medium)" },
+      { value: "default", label: "Default (Cursor)" },
+      { value: "low", label: "low" },
+      { value: "medium", label: "medium" },
+      { value: "high", label: "high" },
+    ]);
+    // Worked example 2: "" already resolves to the bare slug, so the redundant row is dropped.
+    expect(effortOptions("cursor", resolveModel(catalog[2], "model-8"))).toEqual([
+      { value: "", label: "Default (Cursor)" },
+      { value: "none", label: "none" },
+      { value: "minimal", label: "minimal" },
+    ]);
+  });
+
+  it("normalises a stored `default` that the model no longer offers", () => {
+    const stored = (model: string) => ({
+      enabled_agents: ["cursor"],
+      roles: { orchestrator: { agent: "cursor", model, effort: "default" } },
+    } as unknown as Settings);
+    expect(prefill(stored("model-8"), "orchestrator", catalog).choice.effort).toBe("");
+    expect(prefill(stored("model-6"), "orchestrator", catalog).choice.effort).toBe("default");
+    expect(changeModel({ agent: "cursor", model: "model-6", effort: "default" }, "model-8", catalog).choice.effort).toBe("");
+    expect(changeAgent({ agent: "claude", model: "model-8", effort: "default" }, "cursor", catalog).choice.effort).toBe("");
+  });
+
   it("keeps the daemon's level order for slug models, including the bare `default` level", () => {
     // R7/R8: only slug agents carry a "default" level and the daemon already ranks it first.
     expect(effortOptions("cursor", resolveModel(catalog[2], "model-6"))).toEqual([
       { value: "", label: "Default (high)" },
-      { value: "default", label: "default" },
+      { value: "default", label: "Default (Cursor)" },
       { value: "low", label: "low" },
       { value: "high", label: "high" },
     ]);
@@ -157,16 +205,26 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     expect(catalogNote(catalog[0])).toBeUndefined();
   });
 
+  it("re-checks the Settings advisor effort against the chosen advisor model", () => {
+    // Settings guarantees the level only for the Settings model; the user may pick another pair.
+    expect(advisorPayload({ agent: "claude", model: "gamma" }, settings, catalog)).toEqual({ agent: "claude", model: "gamma" });
+    expect(advisorPayload({ agent: "cursor", model: "model-7" }, settings, catalog)).toEqual({
+      agent: "cursor", model: "model-7", effort: "medium",
+    });
+    expect(advisorPayload({ agent: "claude", model: "gone-2" }, settings, catalog)).toEqual({ agent: "claude", model: "gone-2" });
+  });
+
   it("builds advisor options, codecs and payloads", () => {
     expect(advisorOptions(catalog, ["claude", "codex"]).map((o) => o.label)).toEqual([
-      "Claude · Alpha (latest)", "Claude · Model One", "Claude · Model Two", "Codex · Model Five", "No advisor",
+      "Claude · Alpha (latest)", "Claude · Delta (latest)", "Claude · Model One", "Claude · Model Two",
+      "Codex · Model Five", "No advisor",
     ]);
     expect(encodeAdvisor({ agent: "claude", model: "alpha" })).toBe("claude:alpha");
     expect(encodeAdvisor("none")).toBe("none");
     expect(decodeAdvisor("codex:model-5")).toEqual({ agent: "codex", model: "model-5" });
     expect(decodeAdvisor("none")).toBe("none");
-    expect(advisorPayload({ agent: "claude", model: "alpha" }, settings)).toEqual({ agent: "claude", model: "alpha", effort: "high" });
-    expect(advisorPayload("none", settings)).toBe("none");
+    expect(advisorPayload({ agent: "claude", model: "alpha" }, settings, catalog)).toEqual({ agent: "claude", model: "alpha", effort: "high" });
+    expect(advisorPayload("none", settings, catalog)).toBe("none");
     expect(choicePayload({ agent: "claude", model: "alpha", effort: "" })).toEqual({ agent: "claude", model: "alpha" });
     expect(choicePayload({ agent: "codex", model: "model-5", effort: "high" })).toEqual({ agent: "codex", model: "model-5", effort: "high" });
   });
