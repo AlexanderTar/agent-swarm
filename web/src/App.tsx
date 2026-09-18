@@ -8,6 +8,11 @@ import { DataProvider, useConnection } from "./data/hooks";
 import { useAgents, useItems, useRequests } from "./data/queries";
 import { filterItems, isFilterActive, outsideView } from "./logic/tree";
 import { Details } from "./panels/Details";
+import { NeedsYou } from "./panels/NeedsYou";
+import { NewItemSheet } from "./panels/NewItemSheet";
+import { NewSpikeSheet } from "./panels/NewSpikeSheet";
+import { Review } from "./panels/Review";
+import { SpawnSheet } from "./panels/SpawnSheet";
 import { NARROW, useMediaQuery } from "./state/media";
 import { filterOf, useBoardUrl } from "./state/url";
 import type { Item, ItemType } from "./types";
@@ -28,7 +33,7 @@ export function App() {
   const conn = useConnection();
   const narrow = useMediaQuery(NARROW);
   const [focus, setFocus] = useState<"agents" | undefined>();
-  const [sheet, setSheet] = useState<SheetState>(null); // rendered in Task 31
+  const [sheet, setSheet] = useState<SheetState>(null);
   const filter = filterOf(url);
   const all = items.data?.items ?? EMPTY_ITEMS;
   const active = isFilterActive(filter);
@@ -37,6 +42,11 @@ export function App() {
   const select = (key: string, f?: "agents") => {
     setFocus(f);
     setUrl({ item: key });
+  };
+  const closeSheet = () => setSheet(null);
+  const created = (key: string) => {
+    setSheet(null);
+    select(key);
   };
   const clearFilters = () => setUrl({ q: "", type: "", status: "" });
   const newItem = (type: ItemType, parentKey?: string) =>
@@ -69,7 +79,17 @@ export function App() {
       />
     ) : url.view === "dependencies" ? (
       <Dependencies {...viewProps} />
-    ) : null;
+    ) : (
+      <NeedsYou
+        filter={url.filter}
+        selected={url.req}
+        connected={conn.connected}
+        onFilter={(f) => setUrl({ filter: f })}
+        onSelectRequest={(id) => setUrl({ req: id })}
+        onViewItem={(key) => setUrl({ view: "hierarchy", item: key, req: "" })}
+        renderReview={(r) => <Review key={r.id} request={r} connected={conn.connected} />}
+      />
+    );
 
   const showDetails = url.item !== "" && url.view !== "inbox";
   const outside = showDetails && outsideView(url.item, all, filter, url.view, url.level);
@@ -108,6 +128,11 @@ export function App() {
           </div>
         )}
       </main>
+      {sheet?.kind === "spike" && <NewSpikeSheet caption={sheet.caption} onClose={closeSheet} onCreated={created} />}
+      {sheet?.kind === "item" && (
+        <NewItemSheet key={`${sheet.type}:${sheet.parentKey ?? ""}`} type={sheet.type} parentKey={sheet.parentKey} onClose={closeSheet} onCreated={created} />
+      )}
+      {sheet?.kind === "spawn" && <SpawnSheet itemKey={sheet.itemKey} onClose={closeSheet} />}
     </div>
   );
 }
