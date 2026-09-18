@@ -79,7 +79,7 @@ struct DefaultsTab: View {
             Text(Copy.defaultsForNewAgents).font(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 GridRow {
-                    Text("Role").foregroundStyle(.secondary)
+                    Text(Copy.role).foregroundStyle(.secondary)
                     Text(Copy.agent).foregroundStyle(.secondary)
                     Text(Copy.model).foregroundStyle(.secondary)
                     Text(Copy.effort).foregroundStyle(.secondary)
