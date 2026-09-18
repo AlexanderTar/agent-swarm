@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -351,7 +352,11 @@ func newServicesOnly(t *testing.T, extra func(d *Deps)) *runtimeEnv {
 		d.Usage = &usage.Poller{DB: d.DB, Events: d.Events, Settings: d.Settings, Now: time.Now}
 		d.MCP = &mcpserver.Server{RT: rt, KB: d.KB, Advisor: adv, Version: "test", Log: func(string, ...any) {}}
 		d.Run = (&execx.Fake{}).Runner()
-		d.After = time.After
+		// After never fires by default: only TestTerminalFallbackRunsGhosttyThroughTheInjectedRunner
+		// wants the 1.5 s terminal-fallback timer to actually run, and it overrides
+		// this itself. Every other test that hits POST …/terminal would otherwise
+		// leave a real 1.5 s timer running past the end of the test.
+		d.After = func(time.Duration) <-chan time.Time { return make(chan time.Time) }
 		if extra != nil {
 			extra(d)
 		}
@@ -598,4 +603,266 @@ func waitUntilHTTP(t *testing.T, cond func() bool) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// ---- added by Task 33: requests, artifacts, notifications, usage, advice ----
+
+func agentIDByName(t *testing.T, e *runtimeEnv, name string) string {
+	t.Helper()
+	var id string
+	if err := e.s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = ?`, name).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func itemIDByKey(t *testing.T, e *runtimeEnv, key string) string {
+	t.Helper()
+	var id string
+	if err := e.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, key).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+type requestSeed struct {
+	httpSeed
+	QuestionID, ApprovalID, SecondApprovalID, SectionHash string
+}
+
+// newRequestServer seeds one open question and two open approve_section
+// requests on the same artifact section, all raised by the base tree's
+// orchestrator (Task 33).
+func newRequestServer(t *testing.T) (*runtimeEnv, requestSeed) {
+	t.Helper()
+	e, base := newRuntimeServer(t)
+	ctx := bg
+	agentID := agentIDByName(t, e, base.AgentName)
+	itemID := itemIDByKey(t, e, base.RootKey)
+	now := db.Millis(time.Now())
+
+	questionID := ids.New("req")
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, agent_id, item_id, prompt, options_json, state, created_at)
+		VALUES (?, 'question', ?, ?, 'Keep it?', '[]', 'open', ?)`, questionID, agentID, itemID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	body := "The flow is three screens.\n"
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
+	artID := ids.New("art")
+	sections := fmt.Sprintf(`[{"id":"overview","heading":"Overview","sha256":%q,"start":0,"end":%d}]`, sum, len(body))
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO artifacts (id, item_id, kind, path, head_revision, created_at)
+		VALUES (?, ?, 'spec', 'docs/specs/flow.md', 1, ?)`, artID, itemID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO artifact_revisions (artifact_id, revision, sha256, content, sections_json, created_at)
+		VALUES (?, 1, ?, ?, ?, ?)`, artID, sum, body, sections, now); err != nil {
+		t.Fatal(err)
+	}
+
+	approvalID := ids.New("req")
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO requests
+		(id, kind, agent_id, item_id, artifact_id, section_id, section_sha256, artifact_revision, prompt, options_json, state, created_at)
+		VALUES (?, 'approve_section', ?, ?, ?, 'overview', ?, 1, 'Approve the overview.', '[]', 'open', ?)`,
+		approvalID, agentID, itemID, artID, sum, now); err != nil {
+		t.Fatal(err)
+	}
+	secondApprovalID := ids.New("req")
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO requests
+		(id, kind, agent_id, item_id, artifact_id, section_id, section_sha256, artifact_revision, prompt, options_json, state, created_at)
+		VALUES (?, 'approve_section', ?, ?, ?, 'overview', ?, 1, 'Approve again.', '[]', 'open', ?)`,
+		secondApprovalID, agentID, itemID, artID, sum, now); err != nil {
+		t.Fatal(err)
+	}
+	return e, requestSeed{httpSeed: base, QuestionID: questionID, ApprovalID: approvalID,
+		SecondApprovalID: secondApprovalID, SectionHash: sum}
+}
+
+type acceptSeed struct {
+	httpSeed
+	AcceptID, CurrentBindingBody string
+}
+
+// newAcceptServer seeds a daemon-opened accept_epic request whose binding
+// matches the epic's current integrated checkpoint and revision (Task 33's
+// TestAcceptEpicChecksTheBinding). The epic's own story is marked done by raw
+// SQL, matching internal/runtime's own test precedent for driving a status
+// the real transition machinery would otherwise take many more steps to reach.
+func newAcceptServer(t *testing.T) (*runtimeEnv, acceptSeed) {
+	t.Helper()
+	e, base := newRuntimeServer(t)
+	ctx := bg
+	epic, err := e.items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Accept me"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, err := e.items.Create(ctx, items.CreateInput{Type: items.Story, ParentKey: epic.Key, Title: "Only story"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE id = ?`, story.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.DB.ExecContext(ctx, `UPDATE items SET status = 'in_review' WHERE id = ?`, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	epicNow, err := e.items.Get(ctx, epic.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentID := agentIDByName(t, e, base.AgentName)
+	sessionID := base.SessionID
+	ckpID := ids.New("ckp")
+	now := db.Millis(time.Now())
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary, created_at)
+		VALUES (?, ?, ?, ?, 'integrated', 1, 'Integrated.', ?)`, ckpID, sessionID, agentID, epic.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	binding := map[string]any{"item_revision": epicNow.Revision, "integrated_checkpoint": ckpID, "git": []any{}}
+	bindingBytes, err := json.Marshal(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqID := ids.New("req")
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, item_id, prompt, options_json, state, binding_json, created_at)
+		VALUES (?, 'accept_epic', ?, 'Accept this epic?', '[]', 'open', ?, ?)`, reqID, epic.ID, string(bindingBytes), now); err != nil {
+		t.Fatal(err)
+	}
+	seed := base
+	seed.EpicKey = epic.Key
+	currentBody := fmt.Sprintf(`{"binding":%s,"via":"board"}`, string(bindingBytes))
+	return e, acceptSeed{httpSeed: seed, AcceptID: reqID, CurrentBindingBody: currentBody}
+}
+
+type confirmSeed struct {
+	httpSeed
+	RequestID, SecondRequestID, RepoA, RepoB string
+}
+
+// newConfirmServer seeds a fresh, unconfirmed epic (repos_version starts at 0,
+// unlike the base tree's already-confirmed root) with two open confirm_repos
+// requests on it (Task 33).
+func newConfirmServer(t *testing.T) (*runtimeEnv, confirmSeed) {
+	t.Helper()
+	e, base := newRuntimeServer(t)
+	ctx := bg
+	epic, err := e.items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Confirm me"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentID := agentIDByName(t, e, base.AgentName)
+	repoA := seedRepo(t, e, "web", filepath.Join(e.home, "GitHub", "web"))
+	repoB := seedRepo(t, e, "tools", filepath.Join(e.home, "GitHub", "tools"))
+	now := db.Millis(time.Now())
+	reqID := ids.New("req")
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, agent_id, item_id, prompt, options_json, state, created_at)
+		VALUES (?, 'confirm_repos', ?, ?, 'Confirm repos', '[]', 'open', ?)`, reqID, agentID, epic.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	req2ID := ids.New("req")
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, agent_id, item_id, prompt, options_json, state, created_at)
+		VALUES (?, 'confirm_repos', ?, ?, 'Confirm repos again', '[]', 'open', ?)`, req2ID, agentID, epic.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	return e, confirmSeed{httpSeed: base, RequestID: reqID, SecondRequestID: req2ID, RepoA: repoA, RepoB: repoB}
+}
+
+type artifactSeed struct {
+	httpSeed
+	ArtifactID, SectionID, NewText, OtherSectionText string
+}
+
+// newArtifactServer seeds one artifact at head revision 2, revision 1 holding
+// different text, so ?revision=1 proves it serves the snapshot (Task 33).
+func newArtifactServer(t *testing.T) (*runtimeEnv, artifactSeed) {
+	t.Helper()
+	e, base := newRuntimeServer(t)
+	ctx := bg
+	itemID := itemIDByKey(t, e, base.RootKey)
+	artID := ids.New("art")
+	now := db.Millis(time.Now())
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO artifacts (id, item_id, kind, path, head_revision, created_at)
+		VALUES (?, ?, 'spec', 'docs/specs/x.md', 2, ?)`, artID, itemID, now); err != nil {
+		t.Fatal(err)
+	}
+	const oldOverview, oldOther = "OLDTEXT overview.\n", "OTHERTEXT-OLD detail.\n"
+	oldText := oldOverview + oldOther
+	oldSections := fmt.Sprintf(`[{"id":"overview","heading":"Overview","sha256":"r1o","start":0,"end":%d},
+		{"id":"other","heading":"Other","sha256":"r1x","start":%d,"end":%d}]`, len(oldOverview), len(oldOverview), len(oldText))
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO artifact_revisions (artifact_id, revision, sha256, content, sections_json, created_at)
+		VALUES (?, 1, 'r1', ?, ?, ?)`, artID, oldText, oldSections, now); err != nil {
+		t.Fatal(err)
+	}
+	const newOverview, newOther = "NEWTEXT overview.\n", "OTHERTEXT detail.\n"
+	newText := newOverview + newOther
+	newSections := fmt.Sprintf(`[{"id":"overview","heading":"Overview","sha256":"r2o","start":0,"end":%d},
+		{"id":"other","heading":"Other","sha256":"r2x","start":%d,"end":%d}]`, len(newOverview), len(newOverview), len(newText))
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO artifact_revisions (artifact_id, revision, sha256, content, sections_json, created_at)
+		VALUES (?, 2, 'r2', ?, ?, ?)`, artID, newText, newSections, now); err != nil {
+		t.Fatal(err)
+	}
+	return e, artifactSeed{httpSeed: base, ArtifactID: artID, SectionID: "overview",
+		NewText: "NEWTEXT", OtherSectionText: "OTHERTEXT detail"}
+}
+
+type notificationSeed struct {
+	httpSeed
+	FirstID string
+}
+
+// newNotificationServer seeds n unread notifications, oldest first.
+func newNotificationServer(t *testing.T, n int) (*runtimeEnv, notificationSeed) {
+	t.Helper()
+	e, base := newRuntimeServer(t)
+	base_now := time.Now()
+	var first string
+	for i := 0; i < n; i++ {
+		id := ids.New("ntf")
+		if i == 0 {
+			first = id
+		}
+		ms := db.Millis(base_now.Add(time.Duration(i) * time.Second))
+		if _, err := e.s.DB.ExecContext(bg, `INSERT INTO notifications (id, level, kind, title, body, dedup_key, created_at)
+			VALUES (?, 'info', 'test', 'Title', 'Body', ?, ?)`, id, id, ms); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return e, notificationSeed{httpSeed: base, FirstID: first}
+}
+
+// newUsageServer wires one "fake" usage source and seeds a stale snapshot so
+// the test's own manual refresh is the first one within the 60 s gate.
+func newUsageServer(t *testing.T) (*runtimeEnv, httpSeed) {
+	t.Helper()
+	e, seed := newRuntimeServerWith(t, func(d *Deps) {
+		d.Usage.Sources = []usage.Source{{Agent: runtime.Fake, Fetch: func(context.Context) ([]usage.Meter, string, error) {
+			return []usage.Meter{{ID: "m1", Label: "5h", Window: "5h", UsedPct: 10}}, "m1", nil
+		}}}
+	})
+	old := db.Millis(time.Now().Add(-2 * time.Hour))
+	if _, err := e.s.DB.ExecContext(bg, `INSERT INTO usage_snapshots (agent_kind, meters_json, headline_id, source, fetched_at, attempted_at)
+		VALUES ('fake', '[]', 'm1', 'test', ?, ?)`, old, old); err != nil {
+		t.Fatal(err)
+	}
+	return e, seed
+}
+
+type adviceSeed struct {
+	httpSeed
+	AgentName string
+}
+
+// newAdviceServer seeds one answered advice row for the base tree's orchestrator.
+func newAdviceServer(t *testing.T) (*runtimeEnv, adviceSeed) {
+	t.Helper()
+	e, base := newRuntimeServer(t)
+	itemID := itemIDByKey(t, e, base.RootKey)
+	now := db.Millis(time.Now())
+	if _, err := e.s.DB.ExecContext(bg, `INSERT INTO advice
+		(id, session_id, item_id, advisor_kind, advisor_model, question, state, mode, answer, created_at, finished_at)
+		VALUES (?, ?, ?, 'fake', 'fake-1', 'Question?', 'answered', 'simulated', 'Answer.', ?, ?)`,
+		ids.New("adv"), base.SessionID, itemID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	return e, adviceSeed{httpSeed: base, AgentName: base.AgentName}
 }
