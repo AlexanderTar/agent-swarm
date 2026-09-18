@@ -196,11 +196,24 @@ func TestKbWriteRejectsDotDotAndEmptyFilename(t *testing.T) {
 	}
 }
 
-// §8.1: the result is exactly {"advice_id","state","answer"?} - no undocumented
-// "error" field (fix round 2 full-pass finding, same class as item 1).
+// §8.1: the result is {"advice_id","state","answer"?,"error"?} - "error" is
+// present only when adv.Error is non-empty (a failed run), added 2026-09-18
+// so a diagnostic isn't silently discarded. This test covers the success path,
+// where "error" must be absent.
+//
+// seedAgentAndSession leaves advisor_kind unset, which AdvisorCommand (no
+// case for "") turns into an immediate "can't run as a read-only advisor"
+// failure before the fixture's stubbed Run ({"result":"advice"}, wired for
+// runtime.Claude's parseClaudeAnswer) ever runs. The agent needs a handled
+// kind to actually exercise the success path this test is named for.
 func TestAdvisorToolRunsWhenVisible(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()
+	if _, err := s.RT.DB.ExecContext(ctx,
+		`UPDATE agents SET advisor_kind = 'claude', advisor_model = 'claude-sonnet' WHERE id = ?`,
+		seed.AgentID); err != nil {
+		t.Fatal(err)
+	}
 	c := seed.Caller
 	c.AdvisorMode = "simulated"
 	out, err := s.call(ctx, c, "swarm_advise", `{"question":"Client or server?","wait_seconds":5}`)
@@ -215,12 +228,18 @@ func TestAdvisorToolRunsWhenVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := raw["error"]; ok {
-		t.Fatalf("result must not have an undocumented \"error\" key: %v", raw)
+		t.Fatalf("a successful run must not have an \"error\" key: %v", raw)
 	}
 	for _, k := range []string{"advice_id", "state", "answer"} {
 		if _, ok := raw[k]; !ok {
 			t.Fatalf("result missing %q: %v", k, raw)
 		}
+	}
+	var state, answer string
+	json.Unmarshal(raw["state"], &state)
+	json.Unmarshal(raw["answer"], &answer)
+	if state != "answered" || answer != "advice" {
+		t.Fatalf("want a genuine success (state=answered, answer=advice), got state=%q answer=%q: %v", state, answer, raw)
 	}
 	// a wait outside 0-50 is clamped, not refused
 	if _, err := s.call(ctx, c, "swarm_advise", `{"question":"q","wait_seconds":500}`); err != nil {

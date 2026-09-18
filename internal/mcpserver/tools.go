@@ -431,7 +431,7 @@ const kbSearchGetSchema = `"op":{"type":"string","enum":["search","get"]},"q":{"
 // class as item 3's swarm_artifact enum).
 const kbFullSchema = `"op":{"type":"string","enum":["search","get","write"]},"q":{"type":"string"},
 	"slug":{"type":"string"},"limit":{"type":"integer"},
-	"subdir":{"type":"string"},"filename":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}`
+	"subdir":{"type":"string","enum":["specs","plans","decisions","notes"]},"filename":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}`
 
 func kbReadOnlyTool(s *Server) ToolDef {
 	return ToolDef{
@@ -570,13 +570,15 @@ func advisorTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			// §8.1: the result is exactly {"advice_id","state","answer"?} - no
-			// "error" (fix round 2 full-pass finding, same class as item 1). This
-			// does discard real diagnostic detail on a failed run (adv.Error can
-			// carry a message like "Fake can't run as a read-only advisor"), which
-			// state:"failed" alone doesn't convey - flagged in the report rather
-			// than silently assumed fine.
-			return map[string]any{"advice_id": adv.ID, "state": adv.State, "answer": adv.Answer}, nil
+			// §8.1: result is {"advice_id","state","answer"?,"error"?} - "error"
+			// added 2026-09-18 so a failed run's diagnostic (adv.Error, e.g. "Fake
+			// can't run as a read-only advisor") isn't discarded; state:"failed"
+			// alone doesn't tell the caller why.
+			out := map[string]any{"advice_id": adv.ID, "state": adv.State, "answer": adv.Answer}
+			if adv.Error != "" {
+				out["error"] = adv.Error
+			}
+			return out, nil
 		},
 	}
 }
