@@ -565,6 +565,57 @@ func (h *harness) killPane(t *testing.T, agentName string) {
 	}
 }
 
+// hookPost calls POST /hook/fake/{event} as agentName's own session — the
+// same request a real CLI's hook config would make (internal/hook.Run), just
+// issued directly instead of shelling out to `swarm hook`, since the fake
+// agent's own scenario steps have no shell-exec capability. Returns the raw
+// decoded hookSpecificOutput map, or nil for an empty (allow, no context) body.
+func (h *harness) hookPost(t *testing.T, agentName, event string, toolInput map[string]any) map[string]any {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"session_id": "prov-" + unique(), "tool_name": "Bash",
+		"cwd": t.TempDir(), "tool_input": toolInput})
+	req, err := http.NewRequest(http.MethodPost, h.url+"/hook/fake/"+event, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+h.sessionToken(t, agentName))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		t.Fatalf("POST /hook/fake/%s: %d %s", event, resp.StatusCode, raw)
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("POST /hook/fake/%s: decode %s: %v", event, raw, err)
+	}
+	return out
+}
+
+// paneEnv reads one environment variable straight off the real tmux pane the
+// daemon spawned for agentName (R10): a value asserted here was proven to
+// have reached the pane, as opposed to merely being set in the Go test
+// process's own environment, which the pane never sees.
+func (h *harness) paneEnv(t *testing.T, agentName, key string) string {
+	t.Helper()
+	socket := os.Getenv("SWARM_TMUX_SOCKET")
+	if socket == "" {
+		t.Fatal("SWARM_TMUX_SOCKET is not set")
+	}
+	out, err := exec.Command("tmux", "-L", socket, "show-environment", "-t", agentName, key).CombinedOutput()
+	if err != nil {
+		t.Fatalf("tmux show-environment %s %s: %v: %s", agentName, key, err, out)
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(out)), key+"=")
+}
+
 // gitRepo creates a bare-bones repo under the daemon's own scan root, with a
 // user identity and (unless signOff is false) commit signing configured
 // against the throwaway keyring, and one commit so HEAD exists.
