@@ -33,6 +33,7 @@ type SpikeInput struct {
 	Effort    string
 	Request   string
 	RepoPaths []string
+	Repos     []string // suggested repo ids, shown back on the confirm_repos ask (D42)
 }
 
 type SpawnInput struct {
@@ -195,10 +196,11 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	}
 
 	it, err := s.Items.Create(ctx, items.CreateInput{
-		Type:        items.Spike,
-		Title:       in.Name,
-		SpikeIntent: in.Intent,
-		Brief:       in.Request,
+		Type:           items.Spike,
+		Title:          in.Name,
+		SpikeIntent:    in.Intent,
+		Brief:          in.Request,
+		SuggestedRepos: in.Repos,
 	}, items.User("board"))
 	if err != nil {
 		return "", Agent{}, false, err

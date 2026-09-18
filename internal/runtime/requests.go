@@ -452,12 +452,6 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 	return out, err
 }
 
-// askConfirmRepos is a placeholder until Task 17's confirm.go replaces it with
-// the real L25/I13 implementation.
-func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInput) (Request, error) {
-	return Request{}, errors.New("confirm_repos: not yet implemented")
-}
-
 // resolve is the shared body of the five user-action methods. origin is a
 // parameter, not a literal in here: L7's guard test fails any function outside
 // {Answer, Approve, RequestChanges, ConfirmRepos, CloseSpike} that contains the

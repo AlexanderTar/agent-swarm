@@ -168,6 +168,40 @@ func (s *Store) startSessionForTest(ctx context.Context, a Agent, attempt, gener
 	return s.startSession(ctx, a, attempt, generation, false, "")
 }
 
+// seedRepo inserts a repos row pointing at a temp git repo and returns its id.
+func seedRepo(t *testing.T, s *Store, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	id, now := ids.New("repo"), db.Millis(s.Now())
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO repos
+		(id, path, name, default_branch, source, created_at, updated_at)
+		VALUES (?, ?, ?, 'main', 'manual', ?, ?)`,
+		id, gitRepoNoSigning(t), name, now, now); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// seedWorktreeReservation gives repoID one active worktree with an unreleased
+// reservation held by agentID, which is what blocks dropping that repo.
+// root_item_id and owner_agent_id are real foreign keys, so both must exist.
+func seedWorktreeReservation(t *testing.T, s *Store, repoID, agentID, rootItemID string) string {
+	t.Helper()
+	ctx := context.Background()
+	wtID, now := ids.New("wt"), db.Millis(s.Now())
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktrees
+		(id, repo_id, path, branch, base_ref, base_sha, owner_agent_id, root_item_id, state, created_at)
+		VALUES (?, ?, ?, 'task/x', 'main', 'abc1234', ?, ?, 'active', ?)`,
+		wtID, repoID, t.TempDir(), agentID, rootItemID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktree_reservations
+		(worktree_id, agent_id, mode, created_at) VALUES (?, ?, 'rw', ?)`, wtID, agentID, now); err != nil {
+		t.Fatal(err)
+	}
+	return wtID
+}
+
 func gitRepoNoSigning(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
