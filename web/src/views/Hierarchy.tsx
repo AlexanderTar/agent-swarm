@@ -3,7 +3,7 @@ import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Key, TypeIcon } from "../components/icons";
 import { StatusPill } from "../components/StatusLabel";
 import { C, T } from "../copy";
-import { hierarchyRows, isFilterActive } from "../logic/tree";
+import { PARENT_TYPES, hierarchyRows, isFilterActive } from "../logic/tree";
 import { useLocalSet } from "../state/local";
 import type { HierarchyProps } from "./props";
 
@@ -71,7 +71,9 @@ export function Hierarchy(p: HierarchyProps) {
         {rows.map((r) => {
           const it = r.item;
           const top = r.depth === 0;
-          const childType = it.type === "epic" ? "story" : it.type === "story" || it.type === "bug" || it.type === "spike" ? "task" : null;
+          // F20 ruling: reuse the parent/child table exported from logic/tree.ts instead of
+          // re-deriving it, so this can't drift from PARENT_TYPES (and the daemon rules it mirrors).
+          const childType = (["story", "task"] as const).find((c) => PARENT_TYPES[c]?.includes(it.type)) ?? null;
           return (
             <div
               key={it.key}
