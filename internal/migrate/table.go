@@ -85,7 +85,7 @@ var Table = []Root{
 	},
 	{
 		Title: "Full Go API migration with in-process ADK agent, alternative to SW-673 (endurio-chat)",
-		Type:  "task", Status: "ready", From: []string{"SW-710"},
+		Type:  "epic", Status: "ready", From: []string{"SW-710"},
 	},
 	{
 		Title: "Support, chat attachments and privacy across Endurio",

@@ -36,7 +36,7 @@ func TestTableMatchesTheSpecTree(t *testing.T) {
 			[]string{"PR A: Qdrant vector store",
 				"PR B: ai-SDK completion and the unified tool registry",
 				"PR C: Go ADK service, MCP bridge and Eve removal"}, nil},
-		{"Full Go API migration with in-process ADK agent, alternative to SW-673 (endurio-chat)", "task", "ready",
+		{"Full Go API migration with in-process ADK agent, alternative to SW-673 (endurio-chat)", "epic", "ready",
 			[]string{"SW-710"}, nil, nil},
 		{"Support, chat attachments and privacy across Endurio", "epic", "ready", []string{"SW-661"},
 			[]string{"endurio-chat backend", "endurio-app client", "Cross-repo verification"}, nil},
