@@ -31,13 +31,94 @@ type Doctor struct {
 	GhosttyApps     []string
 	LookPath        func(string) (string, error)
 	HTTP            *http.Client
+	Cfg             Config                       // P5: the per-agent checks derive every path from this (S-5)
+	Installed       func(context.Context) []Kind // P5: which agents to check; InstalledKinds in production
 }
 
 var tmuxVersion = regexp.MustCompile(`tmux (\d+)\.(\d+)`)
 
-// Checks runs every prerequisite check in a fixed order.
+// Checks runs every prerequisite check in a fixed order: P1's eight first (their
+// order is asserted), then the per-agent blocks, superpowers, and the one legacy
+// item §11.1 says must fail.
 func (d Doctor) Checks(ctx context.Context) []Check {
-	return []Check{d.tmux(ctx), d.ghostty(), d.ollama(ctx), d.agents(), d.signing(ctx), d.launchAgent(), d.daemon(ctx), d.data()}
+	out := []Check{d.tmux(ctx), d.ghostty(), d.ollama(ctx), d.agents(), d.signing(ctx),
+		d.launchAgent(), d.daemon(ctx), d.data()}
+	for _, k := range d.installedKinds(ctx) {
+		switch k {
+		case KindClaude:
+			out = append(out, CheckClaude(ctx, d.Cfg, d.Run)...)
+		case KindCodex:
+			out = append(out, CheckCodex(ctx, d.Cfg, d.Run)...)
+		case KindCursor:
+			out = append(out, CheckCursor(ctx, d.Cfg, d.Run)...)
+		case KindAgy:
+			out = append(out, CheckAgy(ctx, d.Cfg, d.Run)...)
+		}
+	}
+	return append(out, d.superpowers(ctx)...)
+}
+
+func (d Doctor) installedKinds(ctx context.Context) []Kind {
+	if d.Installed == nil {
+		return nil
+	}
+	return d.Installed(ctx)
+}
+
+// superpowers is §12.4's usability check plus its "both variants" warning (I17).
+func (d Doctor) superpowers(ctx context.Context) []Check {
+	var out []Check
+	for _, k := range d.installedKinds(ctx) {
+		name := k.Display() + " superpowers"
+		if bothSuperpowersVariants(d.Cfg, k) {
+			out = append(out, Check{name, false,
+				"Both superpowers and superpowers-dev are installed for " + k.Display() + ". Remove one."})
+			continue
+		}
+		ok, detail := SuperpowersOK(d.Cfg, k)
+		out = append(out, Check{name, ok, detail})
+	}
+	return out
+}
+
+// bothSuperpowersVariants reports whether an agent has superpowers and
+// superpowers-dev at the same time (§12.4: they conflict).
+func bothSuperpowersVariants(c Config, k Kind) bool {
+	var roots []string
+	switch k {
+	case KindClaude:
+		roots = []string{c.Claude("plugins", "cache", "*", "%s", "*")}
+	case KindCodex:
+		roots = []string{c.Codex("plugins", "cache", "*", "%s", "*")}
+	case KindAgy:
+		roots = []string{c.Gemini("config", "plugins", "%s")}
+	case KindCursor:
+		roots = []string{c.Cursor("plugins", "cache", "*", "%s", "*"), c.Cursor("plugins", "local", "%s")}
+	}
+	present := func(name string) bool {
+		for _, pattern := range roots {
+			hits, _ := filepath.Glob(fmt.Sprintf(pattern, name))
+			if len(hits) > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	return present("superpowers") && present("superpowers-dev")
+}
+
+// LegacyChecks is `swarm doctor --legacy` (§25). Its details are diagnostics, not
+// §17 copy.
+func (d Doctor) LegacyChecks(ctx context.Context) []Check {
+	left := Leftovers(d.Cfg)
+	if len(left) == 0 {
+		return []Check{{"Agent Swarm 1.x", true, "No Agent Swarm 1.x state left."}}
+	}
+	var lines []string
+	for _, l := range left {
+		lines = append(lines, l.What+" at "+l.Path)
+	}
+	return []Check{{"Agent Swarm 1.x", false, strings.Join(lines, "; ")}}
 }
 
 func (d Doctor) tmux(ctx context.Context) Check {
