@@ -1,9 +1,9 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { useItems } from "../data/queries";
 import { createMockDaemon } from "../mock/daemon";
-import { renderWithDaemon } from "../test/render";
+import { clickNode, renderWithDaemon } from "../test/render";
 import type { Filter } from "../types";
 import { Dependencies } from "./Dependencies";
 
@@ -32,17 +32,10 @@ describe("Dependencies view (§16.8)", () => {
   it("selects nodes and opens the root of an external node", async () => {
     const onSelect = vi.fn();
     const { user } = renderWithDaemon(<Host selected="TASK-102" onSelect={onSelect} />, { events: false });
-    // React Flow's pane wires a d3-zoom pan-start handler to "mousedown"; with `nodesDraggable`
-    // false, nothing on the node stops that handler from also firing on a node click. Real browsers
-    // set `MouseEvent.view`, so d3-drag's `nodrag(event.view)` never breaks there, but jsdom (via
-    // @testing-library/user-event's full pointerdown→mousedown→mouseup→click sequence) leaves `view`
-    // null, and d3-drag crashes reading `view.document` — an unhandled exception that fails the test
-    // run even though the assertions below pass. `fireEvent.click` dispatches only the "click" event
-    // the node's own `onClick` listens for, without the intermediate mousedown d3-zoom reacts to, so
-    // it exercises the same selection behavior without touching that unrelated environment gap.
-    fireEvent.click(await screen.findByTestId("node-TASK-104"));
+    // See test/render.tsx's clickNode() for why a node click uses fireEvent instead of user.click.
+    clickNode(await screen.findByTestId("node-TASK-104"));
     expect(onSelect).toHaveBeenCalledWith("TASK-104");
-    fireEvent.click(node("TASK-98"));
+    clickNode(node("TASK-98"));
     expect(onSelect).not.toHaveBeenCalledWith("TASK-98");
     await user.click(screen.getByRole("button", { name: "Open root" }));
     expect(onSelect).toHaveBeenCalledWith("BUG-7");
