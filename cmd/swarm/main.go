@@ -18,6 +18,7 @@ Commands:
   daemon [--port N]                run the daemon (launchd starts it)
   install [--plugins] [--yes]      set up launchd, agent integrations and the superpowers plugins
   uninstall                        remove the launchd job and agent integrations (keeps data)
+  migrate [--dry-run | --resume | --rollback]   import Agent Swarm 1.x data and cut over
   doctor [--json] [--legacy]       check prerequisites, agents, Ollama, signing; --legacy reports 1.x state
   status                           daemon, items, repositories, knowledge base
   items [--type T] [--status S] [-q TEXT]
@@ -44,6 +45,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdInstall(args[1:], stdout, stderr)
 	case "uninstall":
 		return cmdUninstall(args[1:], stdout, stderr)
+	case "migrate":
+		return cmdMigrate(args[1:], stdout, stderr)
 	case "doctor":
 		return cmdDoctor(args[1:], stdout, stderr)
 	case "status":

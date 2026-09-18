@@ -24,6 +24,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
+	"github.com/AlexanderTar/agent-swarm/internal/migrate"
 	_ "modernc.org/sqlite"
 )
 
@@ -712,6 +713,42 @@ func TestInstallPluginsOnlySkipsTheLaunchAgent(t *testing.T) {
 	}
 	if !pluginsOnly {
 		t.Error("PluginsOnly was not set")
+	}
+}
+
+// The four modes are mutually exclusive, and each one calls its own runner method.
+func TestMigrateFlagsAreExclusiveAndDispatch(t *testing.T) {
+	saved := migrateRun
+	t.Cleanup(func() { migrateRun = saved })
+	for _, tc := range []struct {
+		args []string
+		want string
+		code int
+	}{
+		{[]string{"migrate"}, "migrate", 0},
+		{[]string{"migrate", "--dry-run"}, "dry-run", 0},
+		{[]string{"migrate", "--resume"}, "resume", 0},
+		{[]string{"migrate", "--rollback"}, "rollback", 0},
+		{[]string{"migrate", "--resume", "--rollback"}, "", 2},
+		{[]string{"migrate", "--dry-run", "--resume"}, "", 2},
+	} {
+		var got string
+		migrateRun = func(ctx context.Context, r *migrate.Runner, mode string) error { got = mode; return nil }
+		code := run(append(tc.args, "--home", t.TempDir()), io.Discard, io.Discard)
+		if code != tc.code {
+			t.Errorf("%v exit = %d, want %d", tc.args, code, tc.code)
+		}
+		if got != tc.want {
+			t.Errorf("%v mode = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
+func TestUsageListsMigrate(t *testing.T) {
+	var out bytes.Buffer
+	run([]string{"help"}, &out, io.Discard)
+	if !strings.Contains(out.String(), "migrate [--dry-run | --resume | --rollback]") {
+		t.Errorf("usage is missing migrate:\n%s", out.String())
 	}
 }
 
