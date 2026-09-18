@@ -175,7 +175,18 @@ func (p *Poller) RefreshOne(ctx context.Context, kind runtime.AgentKind) error {
 	}
 	src := p.sourceFor(kind)
 	if src == nil {
-		return fmt.Errorf("usage: no source configured for %s", kind)
+		// contracts §4: POST /api/usage/refresh is 202 with only one other
+		// branch, 429 limit_reached — "no source configured" (S-4: nothing at
+		// all when SWARM_USAGE isn't "live", or a kind not enabled) is not a
+		// third status. httpapi.refreshUsage would otherwise have turned this
+		// plain error into a 500 (wrapUsageErr only recognises *usage.Error).
+		// Recording the attempt (not just returning nil) is what makes the
+		// existing 60s rate limit above apply to a second sourceless refresh
+		// too, and it's what puts a row in usage_snapshots for GET /api/usage
+		// to return at all — before the first refresh, a never-configured
+		// kind has no row and so is absent from the list. Found wiring the
+		// e2e harness's scenario 17.
+		return p.recordAttemptOnly(ctx, kind, p.now())
 	}
 	return p.fetchAndStore(ctx, *src)
 }
@@ -232,6 +243,20 @@ func (p *Poller) storeFailure(ctx context.Context, kind runtime.AgentKind, now t
 		VALUES (?, '[]', NULL, ?, ?, 0, ?)
 		ON CONFLICT(agent_kind) DO UPDATE SET error = excluded.error, attempted_at = excluded.attempted_at`,
 		string(kind), string(kind), fetchErr.Error(), db.Millis(now))
+	return err
+}
+
+// recordAttemptOnly is storeFailure without an error: a kind with no source
+// configured at all isn't a fetch failure, so it leaves the error column
+// clear (an empty string in the wire shape, never a message blaming a fetch
+// that never happened) while still giving GET /api/usage a row (meters: [],
+// stale: true) and the 60s manual-refresh gate something to check.
+func (p *Poller) recordAttemptOnly(ctx context.Context, kind runtime.AgentKind, now time.Time) error {
+	_, err := p.DB.ExecContext(ctx, `INSERT INTO usage_snapshots
+		(agent_kind, meters_json, headline_id, source, error, fetched_at, attempted_at)
+		VALUES (?, '[]', NULL, ?, NULL, 0, ?)
+		ON CONFLICT(agent_kind) DO UPDATE SET attempted_at = excluded.attempted_at`,
+		string(kind), string(kind), db.Millis(now))
 	return err
 }
 
