@@ -573,6 +573,13 @@ func TestRollbackReportsARealLaunchctlFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Input/output error") {
 		t.Fatalf("err = %v, want it to report the launchctl failure", err)
 	}
+	// N1: the failing action's actual argv must be named, not just the error —
+	// From/To are both empty for a launchctl action, so without this the message
+	// used to read "launchctl  → : Bootstrap failed: 37…" with no way to tell
+	// which launchctl call failed.
+	if !strings.Contains(err.Error(), "bootstrap gui/501 "+plist) {
+		t.Errorf("err = %v, want it to name the failing launchctl command", err)
+	}
 }
 
 // A second run of step 7 (e.g. via --resume after a later step crashed) must not

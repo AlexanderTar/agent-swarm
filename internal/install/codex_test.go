@@ -193,9 +193,9 @@ func TestRemoveLegacyCodexMCPTakesTheSwarmTablesAndNothingElse(t *testing.T) {
 		}
 	}
 	for _, keep := range []string{
-		"[hooks.state]",         // §21.4: leaked between the sentinels; must survive
-		"[mcp_servers.vercel]",  // the user's own server
-		"${AUTH_TOKEN}",         // the comment-and-placeholder round-trip hazard (rule 4)
+		"[hooks.state]",        // §21.4: leaked between the sentinels; must survive
+		"[mcp_servers.vercel]", // the user's own server
+		"${AUTH_TOKEN}",        // the comment-and-placeholder round-trip hazard (rule 4)
 		"[projects.\"/Users/fake/GitHub/agent-swarm\"]",
 		"[tui.model_availability_nux]",
 		"model = \"gpt-5.5\"",

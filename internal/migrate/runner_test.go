@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,8 +71,8 @@ func newMigrateEnv(t *testing.T) *migrateEnv {
 	env := &migrateEnv{Cfg: c, Fake: f, Out: &bytes.Buffer{}}
 	env.Runner = &migrate.Runner{
 		Cfg: c, Run: f.Runner(), Out: env.Out,
-		Now:    func() time.Time { return time.Unix(1700000000, 0).UTC() },
-		Statfs: func(string) (uint64, error) { return 100 << 30, nil }, // 100 GiB free
+		Now:       func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		Statfs:    func(string) (uint64, error) { return 100 << 30, nil }, // 100 GiB free
 		DoInstall: func(context.Context) error { env.Installed++; return nil },
 	}
 	return env
@@ -456,13 +457,24 @@ func TestMigrateRefusesWhenSwarmV1DBExistsButSwarmDBIsNotLegacyAndNoJournalExist
 	if strings.Contains(env.Out.String(), "Already migrated") {
 		t.Fatal("must not claim Already migrated when v1's data was never actually restored")
 	}
-	// O3: --rollback has nothing to undo here (no journal at all), so the message
-	// must name the actual manual recovery rather than pointing at a command that
-	// does nothing useful for this exact case.
-	for _, want := range []string{"swarm-v1.db", "swarm.db", "doctor --legacy"} {
+	// O3 round 3: the manual recovery must be factually correct, not just present.
+	wantBootout := fmt.Sprintf("launchctl bootout gui/%d/%s", env.Cfg.UID, install.Label)
+	for _, want := range []string{"swarm-v1.db", "swarm.db", "doctor --legacy", wantBootout} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v, want it to mention %q (a concrete recovery step)", err, want)
 		}
+	}
+	// swarm.db exists here (it's the v2 database from the completed migration
+	// above), so a bare "mv swarm-v1.db swarm.db" would silently clobber it —
+	// the message must tell the user to move it aside first.
+	if !strings.Contains(err.Error(), "aside") || !strings.Contains(err.Error(), "overwrite") {
+		t.Errorf("err = %v, want it to warn that swarm.db would be overwritten and must be moved aside first", err)
+	}
+	// swarm doctor --legacy (install.Leftovers) has no launchd/plist check at all —
+	// only symlinks, config table entries and the legacy db — so the message must
+	// not claim otherwise.
+	if strings.Contains(err.Error(), "launchd jobs") {
+		t.Errorf("err = %v, want it to not claim doctor --legacy checks launchd jobs (it doesn't)", err)
 	}
 	// Confirm the message's honesty: --rollback really is a dead end here (no
 	// journal), so it must not have been offered as if it would fix this.
@@ -472,6 +484,44 @@ func TestMigrateRefusesWhenSwarmV1DBExistsButSwarmDBIsNotLegacyAndNoJournalExist
 	}
 	if !strings.Contains(env.Out.String(), "Nothing to roll back") {
 		t.Error("--rollback should have nothing to do here; the refusal message must not point at it as a fix")
+	}
+}
+
+// O3 round 3, item 4: swarm.db can be MISSING entirely in this same broken state
+// (HasLegacyData is false for a missing file too), which is a different case from
+// "swarm.db exists but isn't v1 data" — there is nothing to move aside, and the
+// message must not claim the (nonexistent) file "is not Agent Swarm 1.x data".
+func TestMigrateRefusalMessageOmitsMoveAsideWhenSwarmDBIsMissing(t *testing.T) {
+	env := newMigrateEnv(t)
+	if err := env.Runner.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(env.Cfg.Home, "migrate", "journal.json")); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	// Unlike the sibling test, swarm.db itself is gone too — only the v1 backup
+	// remains.
+	if err := os.Remove(filepath.Join(env.Cfg.Home, "swarm.db")); err != nil {
+		t.Fatal(err)
+	}
+	err := env.Runner.Migrate(context.Background())
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if strings.Contains(err.Error(), "aside") || strings.Contains(err.Error(), "overwrite") {
+		t.Errorf("err = %v, want no move-aside step: there is nothing to overwrite", err)
+	}
+	if strings.Contains(err.Error(), "is not Agent Swarm 1.x data") {
+		t.Errorf("err = %v, must not describe a missing file as \"is not Agent Swarm 1.x data\"", err)
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("err = %v, want it to say swarm.db does not exist", err)
+	}
+	wantBootout := fmt.Sprintf("launchctl bootout gui/%d/%s", env.Cfg.UID, install.Label)
+	for _, want := range []string{"swarm-v1.db", "doctor --legacy", wantBootout} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to mention %q", err, want)
+		}
 	}
 }
 

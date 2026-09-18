@@ -64,7 +64,15 @@ func (r *Runner) Rollback(ctx context.Context) error {
 	unrestorable := false
 	for _, a := range j.Undo() {
 		if err := r.undo(ctx, a); err != nil {
-			failures = append(failures, fmt.Sprintf("%s %s → %s: %v", a.Kind, a.From, a.To, err))
+			// N1: a launchctl action carries its command in Args, not From/To (both
+			// empty for that kind) — without this, a real bootstrap/bootout failure
+			// printed as "launchctl  → : Bootstrap failed: 37…", with no way to tell
+			// which specific launchctl call failed.
+			detail := fmt.Sprintf("%s → %s", a.From, a.To)
+			if len(a.Args) > 0 {
+				detail = strings.Join(a.Args, " ")
+			}
+			failures = append(failures, fmt.Sprintf("%s %s: %v", a.Kind, detail, err))
 		}
 	}
 	for _, s := range j.Steps {

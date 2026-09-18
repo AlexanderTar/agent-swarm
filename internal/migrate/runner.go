@@ -35,9 +35,9 @@ type Runner struct {
 	Out          io.Writer
 	DoInstall    func(ctx context.Context) error  // step 9
 	Statfs       func(dir string) (uint64, error) // free bytes
-	FailAfter    int                               // test seam: ErrInjected after this step
+	FailAfter    int                              // test seam: ErrInjected after this step
 	ValidateHook func(ctx context.Context) error  // test seam for step 5
-	HoldTimeout  time.Duration                     // step 2's lsof wait; 20 s when zero
+	HoldTimeout  time.Duration                    // step 2's lsof wait; 20 s when zero
 }
 
 func (r *Runner) home() string     { return r.Cfg.Home }
@@ -82,17 +82,43 @@ func (r *Runner) Migrate(ctx context.Context) error {
 		// did not finish cleanly (the journal is gone, but v1's data was never fully
 		// restored either). "Already migrated" would be a lie here.
 		if _, err := os.Stat(r.keptPath()); err == nil {
-			// O3: `swarm migrate --rollback` has nothing to undo here — there is no
-			// journal at all — so it must not be offered as if it would fix this; the
-			// message names the actual manual recovery instead of pointing at a
-			// command that would just print "Nothing to roll back."
-			return fmt.Errorf("%s exists but there is no migration journal and %s is not "+
-				"Agent Swarm 1.x data; an earlier `swarm migrate` did not finish, and "+
-				"`swarm migrate --rollback` has nothing left to undo (the journal is gone). "+
-				"To recover by hand: stop the daemon, rename %s to %s, then run "+
-				"`swarm doctor --legacy` to see what else (launchd jobs, agent integrations) "+
-				"still needs attention.",
-				r.keptPath(), r.v1Path(), r.keptPath(), r.v1Path())
+			// O3, round 3: `swarm migrate --rollback` has nothing to undo here — there
+			// is no journal at all — so it must not be offered as if it would fix
+			// this. The manual recovery named below was checked against the real
+			// commands and the real doctor --legacy checks (install.Leftovers has no
+			// launchd/plist check at all, only symlinks/config entries), not guessed:
+			//   - the bootout command is the exact one step 2 itself runs;
+			//   - swarm.db is moved aside first when it exists, matching Rollback's
+			//     own step-6 undo (which moves v2 aside before restoring v1) — a bare
+			//     `mv swarm-v1.db swarm.db` would silently clobber it otherwise;
+			//   - "swarm.db does not exist" is called out as its own case rather than
+			//     folded into "is not Agent Swarm 1.x data", which would misdescribe a
+			//     missing file.
+			v2Exists := false
+			if _, err := os.Stat(r.v1Path()); err == nil {
+				v2Exists = true
+			}
+			what := fmt.Sprintf("%s is not Agent Swarm 1.x data", r.v1Path())
+			if !v2Exists {
+				what = fmt.Sprintf("%s does not exist", r.v1Path())
+			}
+			steps := []string{fmt.Sprintf("Stop the daemon: launchctl bootout gui/%d/%s", r.Cfg.UID, install.Label)}
+			if v2Exists {
+				steps = append(steps, fmt.Sprintf(
+					"Move %s aside first — step 3 would overwrite it: mv %s %s.aside",
+					r.v1Path(), r.v1Path(), r.v1Path()))
+			}
+			steps = append(steps,
+				fmt.Sprintf("Put the Agent Swarm 1.x database back: mv %s %s", r.keptPath(), r.v1Path()),
+				"Run `swarm doctor --legacy` to see which agent integrations still point at 1.x")
+			var recovery strings.Builder
+			for i, st := range steps {
+				fmt.Fprintf(&recovery, "\n  %d. %s", i+1, st)
+			}
+			return fmt.Errorf("%s exists but there is no migration journal and %s; an earlier "+
+				"`swarm migrate` did not finish, and `swarm migrate --rollback` has nothing left "+
+				"to undo (the journal is gone). To recover by hand:%s",
+				r.keptPath(), what, recovery.String())
 		}
 		// No v1 data, no leftover swarm-v1.db, and no journal: an earlier build, or a
 		// fresh install.
