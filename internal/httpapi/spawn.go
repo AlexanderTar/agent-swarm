@@ -337,7 +337,7 @@ func (s *Server) terminal(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-	writeJSON(w, http.StatusOK, terminalWire{Tmux: tmuxName, OpenedBy: openedBy})
+	writeJSON(w, http.StatusOK, terminalWire{Tmux: tmuxName, TmuxSocket: s.Deps.RT.TmuxSocket(), OpenedBy: openedBy})
 }
 
 // terminalOpened is sent by the menubar once it runs the AppleScript; it

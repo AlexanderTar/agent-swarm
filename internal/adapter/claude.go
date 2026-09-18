@@ -88,9 +88,9 @@ func (c *Claude) Resume(s Spec) (Launch, error) {
 }
 
 var (
-	claudeProcess  = []*regexp.Regexp{regexp.MustCompile(`^\d+\.\d+\.\d+$`), regexp.MustCompile(`^claude$`)}
+	claudeProcess = []*regexp.Regexp{regexp.MustCompile(`^\d+\.\d+\.\d+$`), regexp.MustCompile(`^claude$`)}
 	// P0-4: "❯" + U+00A0 alone between two rule lines.
-	claudeIdle     = regexp.MustCompile("(?m)^\u276f[\u00a0 ]$")
+	claudeIdle = regexp.MustCompile("(?m)^\u276f[\u00a0 ]$")
 	// P0-4: the spinner, e.g. "✽ Beboppin'… (48s · ↓ 114 tokens)".
 	claudeBusy     = regexp.MustCompile("(?m)^[\u273b\u273d\u2736\u2722\u00b7*] \\S+\u2026 \\(")
 	claudeTrust    = regexp.MustCompile(`Is this a project you created or one you trust\?`)

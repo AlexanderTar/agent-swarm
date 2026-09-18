@@ -53,7 +53,7 @@ func (c *Codex) Resume(s Spec) (Launch, error) {
 }
 
 var (
-	codexProcess   = []*regexp.Regexp{regexp.MustCompile(`^codex$`)}
+	codexProcess = []*regexp.Regexp{regexp.MustCompile(`^codex$`)}
 	// P0-4: "› " followed by nothing, or by an entirely dim placeholder.
 	codexIdle      = regexp.MustCompile("(?m)^(?:\u001b\\[[0-9;]*m)*\u203a(?:\u001b\\[[0-9;]*m)*\\s*(?:\u001b\\[2m[^\u001b]*\u001b\\[0m)?\\s*$")
 	codexTrust     = regexp.MustCompile(`Do you trust the contents of this directory\?`)

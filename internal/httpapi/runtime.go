@@ -235,10 +235,16 @@ type spikeResponseWire struct {
 	Queued bool          `json:"queued"`
 }
 
-// terminalWire is contracts §4 POST /api/agents/{name}/terminal.
+// terminalWire is contracts §4 POST /api/agents/{name}/terminal. TmuxSocket
+// is a P2 carry-in (not yet in the live contracts.md route table, which still
+// shows only {tmux, opened_by}): swarm attach (Task 36) must never hard-code
+// "-L swarm" (S-1), so the daemon tells the caller which tmux server it runs,
+// taken from runtime.Store.TmuxSocket() so it can never disagree with the
+// Spawner the daemon actually spawns through.
 type terminalWire struct {
-	Tmux     string `json:"tmux"`
-	OpenedBy string `json:"opened_by"`
+	Tmux       string `json:"tmux"`
+	TmuxSocket string `json:"tmux_socket"`
+	OpenedBy   string `json:"opened_by"`
 }
 
 // pauseAllWire is contracts §4 POST /api/pause-all.
