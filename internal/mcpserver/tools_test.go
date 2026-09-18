@@ -194,6 +194,10 @@ func TestKbWriteRejectsDotDotAndEmptyFilename(t *testing.T) {
 		`{"op":"write","subdir":"notes","filename":"","title":"x","body":"y"}`); err == nil {
 		t.Fatal("an empty filename must be refused")
 	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_kb",
+		`{"op":"write","subdir":"bogus","filename":"x.md","title":"x","body":"y"}`); err == nil {
+		t.Fatal("a subdir outside the enum must be refused, not just one containing ..")
+	}
 }
 
 // §8.1: the result is {"advice_id","state","answer"?,"error"?} - "error" is

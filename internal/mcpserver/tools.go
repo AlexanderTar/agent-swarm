@@ -503,10 +503,17 @@ func kbHandler(s *Server, canWrite bool) func(context.Context, Caller, json.RawM
 
 // kbWrite writes a new markdown document under KB.Dir and re-syncs the index.
 // subdir/filename come from an agent, so ".." is refused before it reaches a
-// path.Join.
+// path.Join. The schema's subdir enum is advisory only for a non-validating
+// client (decode is plain json.Unmarshal, no schema check), so it is
+// re-enforced here the same way op's enum is enforced by the switch above.
 func kbWrite(ctx context.Context, s *Server, subdir, filename, title, body string) (any, error) {
-	if strings.Contains(subdir, "..") || strings.Contains(filename, "..") {
-		return nil, errors.New("bad_request: subdir and filename cannot contain \"..\"")
+	switch subdir {
+	case "specs", "plans", "decisions", "notes":
+	default:
+		return nil, fmt.Errorf("bad_request: subdir must be specs, plans, decisions or notes, got %q", subdir)
+	}
+	if strings.Contains(filename, "..") {
+		return nil, errors.New("bad_request: filename cannot contain \"..\"")
 	}
 	if filename == "" {
 		return nil, errors.New("bad_request: filename is required")
