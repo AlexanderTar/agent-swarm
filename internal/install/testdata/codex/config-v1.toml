@@ -1,0 +1,25 @@
+model = "gpt-5.5"
+
+# swarm:start
+[mcp_servers.swarm]
+command = "node"
+args = ["/Users/fake/.swarm/app/current/plugin/bin/swarm-mcp.mjs"]
+
+[mcp_servers.swarm.env]
+SWARM_URL = "http://127.0.0.1:7777"
+SWARM_AGENT = "codex"
+SWARM_REGISTER_SESSION = "0"
+
+[hooks.state]
+enabled = true
+# swarm:end
+
+[mcp_servers.vercel]
+args = ["-y", "mcp-remote", "https://mcp.vercel.com", "--header", "Authorization: Bearer ${AUTH_TOKEN}"]
+command = "npx"
+
+[projects."/Users/fake/GitHub/agent-swarm"]
+trust_level = "trusted"
+
+[tui.model_availability_nux]
+gpt-6-astra = 4
