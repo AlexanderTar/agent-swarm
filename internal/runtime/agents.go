@@ -23,7 +23,19 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
+	"github.com/AlexanderTar/agent-swarm/internal/settings"
 )
+
+// AdvisorChoice is the caller-supplied "advisor" field on swarm_spawn,
+// POST /api/spikes and POST /api/items/{key}/orchestrator (spec §7, §8.1).
+// A nil *AdvisorChoice on the input struct it's embedded in means "use
+// Settings"; None means the caller explicitly asked for no advisor.
+type AdvisorChoice struct {
+	None   bool
+	Kind   AgentKind
+	Model  string
+	Effort string
+}
 
 type SpikeInput struct {
 	Name      string
@@ -31,6 +43,7 @@ type SpikeInput struct {
 	Kind      AgentKind
 	Model     string
 	Effort    string
+	Advisor   *AdvisorChoice
 	Request   string
 	RepoPaths []string
 	Repos     []string // suggested repo ids, shown back on the confirm_repos ask (D42)
@@ -42,6 +55,7 @@ type SpawnInput struct {
 	Kind          AgentKind
 	Model         string
 	Effort        string
+	Advisor       *AdvisorChoice
 	ParentAgentID any
 	Name          string
 	Brief         BriefInput
@@ -53,6 +67,7 @@ type OrchestratorInput struct {
 	Kind      AgentKind
 	Model     string
 	Effort    string
+	Advisor   *AdvisorChoice
 	Name      string
 	RepoPaths []string
 }
@@ -206,6 +221,8 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		return "", Agent{}, false, err
 	}
 
+	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
+
 	preflightErr := s.Preflight(ctx, PreflightInput{
 		Kind:      in.Kind,
 		Model:     in.Model,
@@ -231,10 +248,12 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		}
 		_ = s.tx(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `INSERT INTO agents
-				(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at,
+				 advisor_kind, advisor_model, advisor_effort, advisor_mode)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
 				a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
-				a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs)
+				a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs,
+				string(advKind), advModel, advEffort, advMode)
 			return err
 		})
 		if s.Notify != nil {
@@ -279,10 +298,12 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO agents
-			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
-			a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs)
+			a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs,
+			string(advKind), advModel, advEffort, advMode)
 		if err != nil {
 			return err
 		}
@@ -339,6 +360,8 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 			in.Model = models[0].ID
 		}
 	}
+
+	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
 	if err := s.Preflight(ctx, PreflightInput{
 		Kind:      in.Kind,
@@ -400,10 +423,12 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 			a.State = AgentActive
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO agents
-			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
-			a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs)
+			a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs,
+			string(advKind), advModel, advEffort, advMode)
 		if err != nil {
 			return err
 		}
@@ -445,6 +470,44 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	return a, false, nil
 }
 
+// resolveAdvisor is Task 12's spawn-order step 1, advisor half (P2 plan line
+// 6122): picks the advisor kind/model/effort/mode for a newly spawned agent
+// of kind sessionKind. choice is the caller's swarm_spawn/API "advisor"
+// field: nil means "use Settings" (the common case today, since no caller
+// sets this yet), choice.None means the caller explicitly asked for no
+// advisor. Returns four empty strings when there is no advisor.
+func (s *Store) resolveAdvisor(ctx context.Context, sessionKind AgentKind, choice *AdvisorChoice) (kind AgentKind, model, effort, mode string) {
+	if choice != nil && choice.None {
+		return "", "", "", ""
+	}
+	if choice != nil {
+		kind, model, effort = choice.Kind, choice.Model, choice.Effort
+	} else {
+		cfg, err := s.Settings.Get(ctx)
+		if err != nil {
+			return "", "", "", ""
+		}
+		rd := cfg.Roles[RoleAdvisor]
+		if rd.Model == "" || rd.Model == settings.NoAdvisor {
+			return "", "", "", ""
+		}
+		kind, model, effort = rd.Agent, rd.Model, rd.Effort
+	}
+	if model == "" {
+		return "", "", "", ""
+	}
+	capable := false
+	if models, _, err := s.Catalog.ModelsFor(ctx, kind); err == nil {
+		if m, ok := catalog.Find(models, model); ok {
+			capable = m.AdvisorCapable
+		}
+	}
+	if s.Advisor != nil {
+		mode = s.Advisor.Mode(sessionKind, kind, model, capable)
+	}
+	return kind, model, effort, mode
+}
+
 func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	it, err := s.Items.Get(ctx, in.ItemKey)
 	if err != nil {
@@ -473,6 +536,8 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 			in.Model = models[0].ID
 		}
 	}
+
+	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
 	if err := s.Preflight(ctx, PreflightInput{
 		Kind:      in.Kind,
@@ -548,10 +613,12 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 			a.State = AgentActive
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO agents
-			(id, name, kind, model, effort, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, name, kind, model, effort, role, item_id, root_item_id, parent_agent_id, brief, state, created_at,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
-			a.ItemID, a.RootItemID, parentParam, a.Brief, string(a.State), nowMs)
+			a.ItemID, a.RootItemID, parentParam, a.Brief, string(a.State), nowMs,
+			string(advKind), advModel, advEffort, advMode)
 		if err != nil {
 			return err
 		}

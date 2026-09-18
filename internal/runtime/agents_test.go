@@ -907,3 +907,122 @@ func TestSpawnWithPreRun(t *testing.T) {
 		t.Fatalf("prerun calls = %v, want ['echo prerun-output']", calls)
 	}
 }
+
+// fakeAdvisor is a minimal test double for the three-line runtime.Advisor
+// interface (Task 12b brief), for tests that only need to confirm
+// resolveAdvisor's wiring reaches s.Advisor.Mode, not Mode's own logic.
+type fakeAdvisor struct{ mode string }
+
+func (f fakeAdvisor) Mode(AgentKind, AgentKind, string, bool) string { return f.mode }
+func (f fakeAdvisor) Ask(context.Context, string, string, []string, time.Duration) (Advice, error) {
+	return Advice{}, errors.New("not used in this test")
+}
+
+// advisorCols reads back the four advisor_* columns for one agent row, the
+// same way other tests in this file assert on inserted columns.
+func advisorCols(t *testing.T, s *Store, agentID string) (kind, model, effort, mode string) {
+	t.Helper()
+	err := s.DB.QueryRowContext(context.Background(), `SELECT COALESCE(advisor_kind, ''),
+		COALESCE(advisor_model, ''), COALESCE(advisor_effort, ''), COALESCE(advisor_mode, '')
+		FROM agents WHERE id = ?`, agentID).Scan(&kind, &model, &effort, &mode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kind, model, effort, mode
+}
+
+// TestSpawnUsesSettingsAdvisorDefaultWhenNoneChosen is Task 12b case 1: a
+// Spawn with no Advisor on the input picks up the Settings role default
+// (roleDefaults[RoleAdvisor] = {Claude, "fable", ""}) and, with a wired
+// Advisor, its resolved mode.
+func TestSpawnUsesSettingsAdvisorDefaultWhenNoneChosen(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "simulated"}
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, model, _, mode := advisorCols(t, s, a.ID)
+	if kind != "claude" || model != "fable" {
+		t.Fatalf("advisor kind/model = %q/%q, want claude/fable (Settings default)", kind, model)
+	}
+	if mode != "simulated" {
+		t.Fatalf("advisor mode = %q, want simulated (from the wired fakeAdvisor)", mode)
+	}
+}
+
+// TestSpawnAdvisorNoneOverridesSettings is Task 12b case 2: an explicit
+// AdvisorChoice{None: true} wins over a real Settings advisor default.
+func TestSpawnAdvisorNoneOverridesSettings(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "simulated"}
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Advisor: &AdvisorChoice{None: true}, Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, model, effort, mode := advisorCols(t, s, a.ID)
+	if kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor cols = %q/%q/%q/%q, want all empty (explicit none)", kind, model, effort, mode)
+	}
+}
+
+// TestSpawnExplicitAdvisorChoiceOverridesSettings is Task 12b case 3: an
+// explicit AdvisorChoice wins over whatever Settings has.
+func TestSpawnExplicitAdvisorChoiceOverridesSettings(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "native"}
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Advisor: &AdvisorChoice{Kind: Codex, Model: "some-model"}, Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, model, _, mode := advisorCols(t, s, a.ID)
+	if kind != "codex" || model != "some-model" {
+		t.Fatalf("advisor kind/model = %q/%q, want codex/some-model (explicit choice)", kind, model)
+	}
+	if mode != "native" {
+		t.Fatalf("advisor mode = %q, want native (from the wired fakeAdvisor)", mode)
+	}
+}
+
+// TestStartOrchestratorUsesSettingsAdvisorDefault is Task 12b case 4
+// (StartOrchestrator half): the same resolveAdvisor wiring reached
+// StartOrchestrator, not just Spawn.
+func TestStartOrchestratorUsesSettingsAdvisorDefault(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "simulated"}
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil || queued {
+		t.Fatalf("err = %v, queued = %v", err, queued)
+	}
+	kind, model, _, mode := advisorCols(t, s, a.ID)
+	if kind != "claude" || model != "fable" || mode != "simulated" {
+		t.Fatalf("advisor kind/model/mode = %q/%q/%q, want claude/fable/simulated", kind, model, mode)
+	}
+}
+
+// TestStartSpikeUsesSettingsAdvisorDefault is Task 12b case 4 (StartSpike
+// half, success path): the same resolveAdvisor wiring reached StartSpike.
+func TestStartSpikeUsesSettingsAdvisorDefault(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "simulated"}
+	ctx := context.Background()
+	_, a, queued, err := s.StartSpike(ctx, SpikeInput{Name: "Spike advisor", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil || queued {
+		t.Fatalf("err = %v, queued = %v", err, queued)
+	}
+	kind, model, _, mode := advisorCols(t, s, a.ID)
+	if kind != "claude" || model != "fable" || mode != "simulated" {
+		t.Fatalf("advisor kind/model/mode = %q/%q/%q, want claude/fable/simulated", kind, model, mode)
+	}
+}
