@@ -43,8 +43,15 @@ func (f *Fake) argv(s Spec) []string {
 	return []string{s.Bin + "-fake-agent", "--session", s.SessionID, "--url", s.DaemonURL,
 		"--name", s.AgentName, "--kickoff", s.Kickoff}
 }
+
+// Launch selects the scenario by the agent's own kebab name: SWARM_FAKE_SCENARIO
+// is per-spawn (a tmux session's own env, not the daemon's), which is what lets
+// one daemon run many different scripted spawns over its lifetime rather than
+// being pinned to one scenario from the moment it starts. scripts/e2e (P2 Task
+// 37/38) names each spike/orchestrator/child it spawns to match the scenario
+// file it wants that agent to run.
 func (f *Fake) Launch(s Spec) (Launch, error) {
-	return Launch{Argv: f.argv(s), Env: map[string]string{}}, nil
+	return Launch{Argv: f.argv(s), Env: map[string]string{"SWARM_FAKE_SCENARIO": s.AgentName}}, nil
 }
 func (f *Fake) Resume(s Spec) (Launch, error) {
 	l, _ := f.Launch(s)
