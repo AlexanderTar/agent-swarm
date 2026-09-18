@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -137,7 +138,13 @@ func artifactTool(s *Server) ToolDef {
 		Name:        "swarm_artifact",
 		Description: "Register a spec, plan or debug report artifact and get back its sections and any requests it made stale.",
 		Roles:       orchestratorRole,
-		Schema: objSchema(`"op":{"type":"string","enum":["register"]},"item":{"type":"string"},
+		// §8.1: op is "register"|"revise" (fix round 2, item 3: the enum was
+		// missing "revise", which schema-blocks it for any real MCP client that
+		// validates arguments before sending, even though RegisterArtifact
+		// (internal/runtime, outside this batch) ignores `op` and infers
+		// register-vs-revise itself from whether a row already exists for the
+		// item+path).
+		Schema: objSchema(`"op":{"type":"string","enum":["register","revise"]},"item":{"type":"string"},
 			"kind":{"type":"string"},"path":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
@@ -220,6 +227,14 @@ func isConfirmed(ctx context.Context, s *Server, rootID, repoID string) (bool, e
 	return false, nil
 }
 
+// worktreeOut is §8.1's one documented result shape for the whole tool -
+// {worktree_id,path,branch,base_sha,state} - used by every op that has a
+// worktree.Worktree to hand back (fix round 2, item 5).
+func worktreeOut(wt worktree.Worktree) map[string]any {
+	return map[string]any{"worktree_id": wt.ID, "path": wt.Path, "branch": wt.Branch,
+		"base_sha": wt.BaseSHA, "state": wt.State}
+}
+
 func worktreeTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_worktree",
@@ -274,8 +289,7 @@ func worktreeTool(s *Server) ToolDef {
 				if err != nil {
 					return nil, err
 				}
-				return map[string]any{"worktree_id": wt.ID, "path": wt.Path, "branch": wt.Branch,
-					"base_sha": wt.BaseSHA, "state": wt.State}, nil
+				return worktreeOut(wt), nil
 			case "share":
 				target, err := s.RT.Agent(ctx, in.Agent)
 				if err != nil {
@@ -294,7 +308,9 @@ func worktreeTool(s *Server) ToolDef {
 					map[string]string{"worktree_id": wt.ID, "path": wt.Path, "branch": wt.Branch, "mode": in.Mode}); err != nil {
 					return nil, err
 				}
-				return map[string]any{"ok": true}, nil
+				// Share doesn't mutate the worktrees row (only a reservation
+				// table), so the pre-share `wt` already reflects the true state.
+				return worktreeOut(wt), nil
 			case "release":
 				target, err := s.RT.Agent(ctx, in.Agent)
 				if err != nil {
@@ -303,13 +319,19 @@ func worktreeTool(s *Server) ToolDef {
 				if err := s.RT.Worktree.Release(ctx, in.Worktree, target.ID); err != nil {
 					return nil, err
 				}
-				return map[string]any{"ok": true}, nil
+				// Release, like Share, doesn't mutate the worktrees row itself, so
+				// a fresh Get after it reflects the true (unchanged) state.
+				wt, err := s.RT.Worktree.Get(ctx, in.Worktree)
+				if err != nil {
+					return nil, err
+				}
+				return worktreeOut(wt), nil
 			case "remove":
 				wt, err := s.RT.Worktree.Remove(ctx, in.Worktree, a.ID)
 				if err != nil {
 					return nil, err
 				}
-				return map[string]any{"worktree_id": wt.ID, "state": wt.State}, nil
+				return worktreeOut(wt), nil
 			default:
 				return nil, fmt.Errorf("op must be create, share, review, release or remove, got %q", in.Op)
 			}
@@ -489,9 +511,15 @@ func materializeTool(s *Server) ToolDef {
 		Name:        "swarm_materialize",
 		Description: "Turn an approved spike plan into real items: only available to the spike's own orchestrator.",
 		Roles:       orchestratorRole,
-		Schema:      objSchema(`"spec":{"type":"string"},"plan":{"type":"string"},"report":{"type":"string"}`),
+		// §8.1: input is {spike, spec?, plan?, report?} - spike is required (no
+		// "?" in the spec), not inferred from the caller's own item (fix round
+		// 2, item 4). RT.Materialize still independently checks the caller is
+		// that spike's orchestrator (a.ItemID != spike.ID), so passing it
+		// explicitly adds no privilege the caller didn't already have.
+		Schema: objSchema(`"spike":{"type":"string"},"spec":{"type":"string"},"plan":{"type":"string"},"report":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
+				Spike  string `json:"spike"`
 				Spec   string `json:"spec"`
 				Plan   string `json:"plan"`
 				Report string `json:"report"`
@@ -499,19 +527,23 @@ func materializeTool(s *Server) ToolDef {
 			if err := decode(args, &in); err != nil {
 				return nil, err
 			}
-			a, err := callerAgent(ctx, s, c)
+			if in.Spike == "" {
+				return nil, errors.New("bad_request: spike is required")
+			}
+			res, err := s.RT.Materialize(ctx, c.SessionID, in.Spike, in.Spec, in.Plan, in.Report)
 			if err != nil {
 				return nil, err
 			}
-			spikeKey, err := rootKeyFor(ctx, s, a.ItemID)
-			if err != nil {
-				return nil, err
+			// runtime.MaterializeResult has no json tags (the same gap as
+			// Advisor/Agent/Checkpoint/Artifact), so it needs the same manual
+			// wire-mapping those already get elsewhere in this file - bare `res`
+			// would marshal as {"Root":...,"Created":[...]}, not spec's
+			// {"root","created"} (fix round 2 full-pass finding).
+			created := res.Created
+			if created == nil {
+				created = []string{}
 			}
-			res, err := s.RT.Materialize(ctx, c.SessionID, spikeKey, in.Spec, in.Plan, in.Report)
-			if err != nil {
-				return nil, err
-			}
-			return res, nil
+			return map[string]any{"root": res.Root, "created": created}, nil
 		},
 	}
 }

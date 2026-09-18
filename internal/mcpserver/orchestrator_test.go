@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -243,6 +244,49 @@ func TestArtifactToolReturnsSectionsAndStaleRequests(t *testing.T) {
 	}
 	if res.StaleRequests == nil {
 		t.Fatal("stale_requests is always an array, never null (W4)")
+	}
+}
+
+// §8.1: op is "register"|"revise" - the schema enum must allow both, and a
+// second call against the same item+path (with op:"revise") bumps the
+// revision (fix round 2, item 3).
+func TestArtifactToolSchemaAllowsRevise(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	var schema struct {
+		Properties struct {
+			Op struct {
+				Enum []string `json:"enum"`
+			} `json:"op"`
+		} `json:"properties"`
+	}
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name == "swarm_artifact" {
+			if err := json.Unmarshal(d.Schema, &schema); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !slices.Contains(schema.Properties.Op.Enum, "revise") {
+		t.Fatalf("swarm_artifact's op enum must allow \"revise\": %v", schema.Properties.Op.Enum)
+	}
+
+	p := writeSpec(t, "# Spec\n\n## One\n\na\n")
+	if _, err := s.call(ctx, seed.Caller, "swarm_artifact",
+		`{"op":"register","item":"`+seed.RootKey+`","kind":"spec","path":"`+p+`"}`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_artifact",
+		`{"op":"revise","item":"`+seed.RootKey+`","kind":"spec","path":"`+p+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Revision int `json:"revision"`
+	}
+	json.Unmarshal(mustJSON(out), &res)
+	if res.Revision != 2 {
+		t.Fatalf("a revise of the same item+path must bump the revision: %+v", res)
 	}
 }
 
@@ -552,6 +596,10 @@ func TestControlToolResumeErrorsWhenNotPaused(t *testing.T) {
 	}
 }
 
+// §8.1 documents one result shape for the whole tool -
+// {worktree_id,path,branch,base_sha,state} - not a per-op shape, so share,
+// release and remove must return it too wherever the data exists (fix round
+// 2, item 5).
 func TestWorktreeReleaseAndUnknownOp(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
@@ -559,18 +607,79 @@ func TestWorktreeReleaseAndUnknownOp(t *testing.T) {
 	out, _ := s.call(ctx, seed.Caller, "swarm_worktree", `{"op":"create","repo":"`+seed.RepoID+`","branch":"task/rel"}`)
 	var wt struct {
 		WorktreeID string `json:"worktree_id"`
+		Path       string `json:"path"`
+		Branch     string `json:"branch"`
 	}
 	json.Unmarshal(mustJSON(out), &wt)
-	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
-		`{"op":"share","worktree":"`+wt.WorktreeID+`","agent":"`+worker.Name+`","mode":"ro"}`); err != nil {
+
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"share","worktree":"`+wt.WorktreeID+`","agent":"`+worker.Name+`","mode":"ro"}`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
-		`{"op":"release","worktree":"`+wt.WorktreeID+`","agent":"`+worker.Name+`"}`); err != nil {
+	var shared struct {
+		WorktreeID string `json:"worktree_id"`
+		Path       string `json:"path"`
+		Branch     string `json:"branch"`
+		BaseSHA    string `json:"base_sha"`
+		State      string `json:"state"`
+	}
+	json.Unmarshal(mustJSON(out), &shared)
+	if shared.WorktreeID != wt.WorktreeID || shared.Path != wt.Path || shared.Branch != wt.Branch || shared.State == "" {
+		t.Fatalf("share result = %+v", shared)
+	}
+
+	out, err = s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"release","worktree":"`+wt.WorktreeID+`","agent":"`+worker.Name+`"}`)
+	if err != nil {
 		t.Fatal(err)
 	}
+	var released struct {
+		WorktreeID string `json:"worktree_id"`
+		Path       string `json:"path"`
+		State      string `json:"state"`
+	}
+	json.Unmarshal(mustJSON(out), &released)
+	if released.WorktreeID != wt.WorktreeID || released.Path != wt.Path || released.State == "" {
+		t.Fatalf("release result = %+v", released)
+	}
+
 	if _, err := s.call(ctx, seed.Caller, "swarm_worktree", `{"op":"bogus"}`); err == nil {
 		t.Fatal("an unknown swarm_worktree op must be refused")
+	}
+}
+
+// remove's result keeps worktree_id/path/branch/base_sha - only state (and
+// possibly retained_reason via state itself) changes - because Service.Remove
+// hands back the pre-delete Worktree with just its state field updated
+// (fix round 2, item 5).
+func TestWorktreeRemoveReturnsTheFullShape(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree", `{"op":"create","repo":"`+seed.RepoID+`","branch":"task/rm"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+		Path       string `json:"path"`
+		Branch     string `json:"branch"`
+	}
+	json.Unmarshal(mustJSON(out), &wt)
+
+	out, err = s.call(ctx, seed.Caller, "swarm_worktree", `{"op":"remove","worktree":"`+wt.WorktreeID+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed struct {
+		WorktreeID string `json:"worktree_id"`
+		Path       string `json:"path"`
+		Branch     string `json:"branch"`
+		State      string `json:"state"`
+	}
+	json.Unmarshal(mustJSON(out), &removed)
+	if removed.WorktreeID != wt.WorktreeID || removed.Path != wt.Path || removed.Branch != wt.Branch || removed.State == "" {
+		t.Fatalf("remove result = %+v", removed)
 	}
 }
 
@@ -595,6 +704,117 @@ func TestMaterializeToolReachesStoreMaterialize(t *testing.T) {
 	c := seed.Caller
 	c.SpikeOrchestrator = true
 	if _, err := s.call(ctx, c, "swarm_materialize", `{}`); err == nil {
-		t.Fatal("materializing an epic with no spec/plan must fail")
+		t.Fatal("spike is required and must be refused when absent")
+	}
+}
+
+// materializePlanBody is a minimal swarm-tree'd plan, copied (not imported -
+// internal/runtime is a different package and this is a one-caller fixture,
+// same "copy don't share" call as helpers_test.go's fakeTmux etc.) from
+// internal/runtime/helpers_test.go's planBody.
+const materializePlanBody = "# Plan\n\n## Work breakdown\n\n" +
+	"```swarm-tree\n" +
+	`{"root":{"type":"epic","title":"Ship auth","brief":"","acceptance":["It works."]},
+ "children":[{"ref":"s1","type":"story","title":"Server","brief":"","acceptance":[],
+   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"]}]}],
+ "deps":[]}` + "\n```\n\n## Verification\n\ngo test ./...\n"
+
+// TestMaterializeToolResultUsesSnakeCaseKeys is a bonus finding from the fix
+// round 2 full pass (not one of the 5 assigned items): runtime.MaterializeResult
+// has no json tags (the same class of gap as Advisor/Agent/Checkpoint/Artifact),
+// so returning it bare would marshal as {"Root":...,"Created":[...]} instead of
+// spec's {"root","created"}. Drives a real materialize to completion to prove
+// the wire keys, not just the Go struct shape.
+func TestMaterializeToolResultUsesSnakeCaseKeys(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "chat")
+	key, agent, _, err := s.RT.StartSpike(ctx, runtime.SpikeInput{Name: "Ship auth", Intent: "feature",
+		Kind: runtime.Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.RT.LatestSession(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "confirm_repos", Prompt: "chat only",
+		Repos: []runtime.ReposProposal{{Repo: repo, Reason: "it's the only one"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
+		writeSpec(t, "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeSpec(t, materializePlanBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sec := range spec.Sections {
+		r, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+			SectionID: sec.ID, Prompt: "Approve " + sec.Title + "."})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RT.Approve(ctx, r.ID, runtime.ApproveInput{SectionSHA256: sec.SHA256,
+			ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "approval", ArtifactID: plan.ArtifactID,
+		Prompt: "Approve the plan."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.Approve(ctx, r.ID, runtime.ApproveInput{ArtifactRevision: plan.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Caller{SessionID: ses.ID, AgentID: agent.ID, AgentName: agent.Name,
+		Role: runtime.RoleOrchestrator, SpikeOrchestrator: true}
+	out, err := s.call(ctx, c, "swarm_materialize",
+		`{"spike":"`+key+`","spec":"`+spec.ArtifactID+`","plan":"`+plan.ArtifactID+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(mustJSON(out), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["root"]; !ok {
+		t.Fatalf("result must have a lowercase \"root\" key, got %v", raw)
+	}
+	if _, ok := raw["created"]; !ok {
+		t.Fatalf("result must have a lowercase \"created\" key, got %v", raw)
+	}
+}
+
+// §8.1: spike is a required input field, not inferred from the caller's own
+// item - passing it explicitly must actually reach Store.Materialize (fix
+// round 2, item 4).
+func TestMaterializeToolUsesTheExplicitSpikeField(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	c := seed.Caller
+	c.SpikeOrchestrator = true
+	// the caller's own item, passed explicitly: reaches Store.Materialize,
+	// which then fails for the documented reason (no spec/plan), not for a
+	// missing spike.
+	_, err := s.call(ctx, c, "swarm_materialize", `{"spike":"`+seed.RootKey+`"}`)
+	if err == nil || strings.Contains(err.Error(), "spike is required") {
+		t.Fatalf("err = %v; want Store.Materialize's own spec/plan error", err)
+	}
+	// a spike key that isn't the caller's own item is refused by
+	// Store.Materialize's ownership check, proving the field isn't silently
+	// re-inferred from the caller's context instead of being used.
+	other := seedOtherRoot(t, s)
+	_, err = s.call(ctx, c, "swarm_materialize", `{"spike":"`+other+`"}`)
+	if err == nil || !strings.Contains(err.Error(), "Only the spike's orchestrator can materialize it") {
+		t.Fatalf("err = %v; want the ownership refusal", err)
 	}
 }

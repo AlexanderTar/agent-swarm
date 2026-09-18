@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -46,6 +47,8 @@ func TestAskRequiresArtifactForApproval(t *testing.T) {
 }
 
 // swarm_ask's success path: a plain question round-trips through requestOut.
+// §8.1: the result is exactly {"request_id","state"} - no kind/prompt/
+// artifact_id/section_id echoed back (fix round 2, item 1).
 func TestAskQuestionSucceeds(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()
@@ -53,13 +56,19 @@ func TestAskQuestionSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(mustJSON(out), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 2 {
+		t.Fatalf("result must be exactly {request_id,state}, got keys %v", raw)
+	}
 	var res struct {
 		RequestID string `json:"request_id"`
-		Kind      string `json:"kind"`
 		State     string `json:"state"`
 	}
 	json.Unmarshal(mustJSON(out), &res)
-	if res.RequestID == "" || res.Kind != "question" || res.State != "open" {
+	if res.RequestID == "" || res.State != "open" {
 		t.Fatalf("result = %+v", res)
 	}
 }
@@ -98,6 +107,31 @@ func TestReadToolRefusesAnUnknownRef(t *testing.T) {
 	}
 }
 
+// §8.1: the bound tool's op enum must allow write, not just search/get -
+// otherwise a real MCP client that validates arguments against the declared
+// schema before sending could never reach the write case below (fix round 2
+// full-pass finding, same class as item 3's swarm_artifact enum).
+func TestKbBoundSchemaAllowsWrite(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	var schema struct {
+		Properties struct {
+			Op struct {
+				Enum []string `json:"enum"`
+			} `json:"op"`
+		} `json:"properties"`
+	}
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name == "swarm_kb" {
+			if err := json.Unmarshal(d.Schema, &schema); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !slices.Contains(schema.Properties.Op.Enum, "write") {
+		t.Fatalf("a bound caller's swarm_kb op enum must allow \"write\": %v", schema.Properties.Op.Enum)
+	}
+}
+
 // I6/§8.1: swarm_kb search, get and write for a bound caller.
 func TestKbSearchGetAndWrite(t *testing.T) {
 	s, seed := newServerWithSession(t)
@@ -118,6 +152,15 @@ func TestKbSearchGetAndWrite(t *testing.T) {
 	out, err = s.call(ctx, seed.Caller, "swarm_kb", `{"op":"get","slug":"`+w.Slug+`"}`)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// §8.1: get's result is exactly {"markdown"} - no slug/title/frontmatter
+	// (fix round 2, item 2).
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(mustJSON(out), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("get result must be exactly {markdown}, got keys %v", raw)
 	}
 	if !strings.Contains(string(mustJSON(out)), "zephyr") {
 		t.Fatalf("get result = %s", mustJSON(out))
@@ -153,6 +196,8 @@ func TestKbWriteRejectsDotDotAndEmptyFilename(t *testing.T) {
 	}
 }
 
+// §8.1: the result is exactly {"advice_id","state","answer"?} - no undocumented
+// "error" field (fix round 2 full-pass finding, same class as item 1).
 func TestAdvisorToolRunsWhenVisible(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()
@@ -164,6 +209,18 @@ func TestAdvisorToolRunsWhenVisible(t *testing.T) {
 	}
 	if !strings.Contains(string(mustJSON(out)), "advice_id") {
 		t.Fatalf("out = %s", mustJSON(out))
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(mustJSON(out), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["error"]; ok {
+		t.Fatalf("result must not have an undocumented \"error\" key: %v", raw)
+	}
+	for _, k := range []string{"advice_id", "state", "answer"} {
+		if _, ok := raw[k]; !ok {
+			t.Fatalf("result missing %q: %v", k, raw)
+		}
 	}
 	// a wait outside 0-50 is clamped, not refused
 	if _, err := s.call(ctx, c, "swarm_advise", `{"question":"q","wait_seconds":500}`); err != nil {

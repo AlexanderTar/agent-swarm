@@ -133,11 +133,12 @@ func askTool(s *Server) ToolDef {
 	}
 }
 
+// requestOut is §8.1's swarm_ask result, exactly {"request_id","state"} - no
+// echoed-back kind/prompt/artifact_id/section_id (fix round 2, item 1: the
+// caller already sent those, so echoing them isn't a spec omission worth
+// second-guessing).
 func requestOut(r runtime.Request) map[string]any {
-	return map[string]any{
-		"request_id": r.ID, "kind": r.Kind, "state": r.State, "prompt": r.Prompt,
-		"artifact_id": r.ArtifactID, "section_id": r.SectionID,
-	}
+	return map[string]any{"request_id": r.ID, "state": r.State}
 }
 
 // ---------- swarm_send ----------
@@ -423,7 +424,13 @@ func callerRootID(ctx context.Context, s *Server, c Caller) (string, error) {
 const kbSearchGetSchema = `"op":{"type":"string","enum":["search","get"]},"q":{"type":"string"},
 	"slug":{"type":"string"},"limit":{"type":"integer"}`
 
-const kbFullSchema = kbSearchGetSchema + `,
+// kbFullSchema is the bound-caller schema: its own op enum, not
+// kbSearchGetSchema's, because §8.1 gives bound callers "write" too - reusing
+// the unbound enum here schema-blocked write for any real MCP client that
+// validates arguments before sending (fix round 2 full-pass finding, same
+// class as item 3's swarm_artifact enum).
+const kbFullSchema = `"op":{"type":"string","enum":["search","get","write"]},"q":{"type":"string"},
+	"slug":{"type":"string"},"limit":{"type":"integer"},
 	"subdir":{"type":"string"},"filename":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}`
 
 func kbReadOnlyTool(s *Server) ToolDef {
@@ -480,7 +487,9 @@ func kbHandler(s *Server, canWrite bool) func(context.Context, Caller, json.RawM
 			if err != nil {
 				return nil, err
 			}
-			return doc, nil
+			// §8.1: get's result is exactly {"markdown"} - not the full DocView
+			// (fix round 2, item 2).
+			return map[string]any{"markdown": doc.Markdown}, nil
 		case "write":
 			if !canWrite {
 				return nil, errors.New("read-only: an unbound caller cannot write to the knowledge base")
@@ -561,8 +570,13 @@ func advisorTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"advice_id": adv.ID, "state": adv.State, "answer": adv.Answer,
-				"error": adv.Error}, nil
+			// §8.1: the result is exactly {"advice_id","state","answer"?} - no
+			// "error" (fix round 2 full-pass finding, same class as item 1). This
+			// does discard real diagnostic detail on a failed run (adv.Error can
+			// carry a message like "Fake can't run as a read-only advisor"), which
+			// state:"failed" alone doesn't convey - flagged in the report rather
+			// than silently assumed fine.
+			return map[string]any{"advice_id": adv.ID, "state": adv.State, "answer": adv.Answer}, nil
 		},
 	}
 }
