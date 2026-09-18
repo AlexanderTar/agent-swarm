@@ -346,12 +346,14 @@ func TestRemoveRefusesANonOwnerAndAnUnreleasedShare(t *testing.T) {
 	}
 }
 
-// The C4 guard and the claim that blocks a new Share must be one transaction
-// (Important 4): a Share landing between the "no other reservations" check
-// and the eventual deletion must never succeed. Rig s.Run so the moment
-// Remove reaches DirtyStrict's "status" call — which only happens after
-// claimForRemoval has committed — a concurrent Share fires; it must be
-// refused because the worktree already left the active state.
+// The C4 guard must fully exclude a concurrent Share, not just check-then-race
+// (Important 4): a Share landing between the "no other reservations" read and
+// the eventual deletion must never succeed. Rig s.Run so the moment Remove
+// reaches DirtyStrict's "status" call — i.e. once Remove already holds
+// lockFor(wt.ID) and has passed its guard — a concurrent Share fires. Share
+// blocks on the same per-worktree lock until Remove finishes, then sees the
+// worktree is no longer active and is refused: it can never observe (or act
+// on) an in-between state.
 func TestShareRefusesAConcurrentClaimRace(t *testing.T) {
 	repo := gitRepo(t)
 	s, repoID := newService(t, repo)
@@ -380,6 +382,84 @@ func TestShareRefusesAConcurrentClaimRace(t *testing.T) {
 	}
 	if err := <-shareErr; err == nil {
 		t.Fatal("a Share racing the removal's claim must be refused")
+	}
+}
+
+// retained_reason is a documented value set (spec:515: dirty|unmerged|
+// remove_failed, or empty), not a free-text field — the board and menubar
+// render it to the user. Exercise every path that writes it and read the
+// persisted column back, so nothing (e.g. an internal sentinel) can leak into
+// a field people see.
+func TestRetainedReasonIsAlwaysADocumentedValue(t *testing.T) {
+	documented := map[string]bool{"": true, "dirty": true, "unmerged": true, "remove_failed": true}
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+
+	dirty, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reason-dirty",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirty.Path, "x"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Remove(ctx, dirty.ID, "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+
+	unmerged, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reason-unmerged",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unmerged.Path, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, unmerged.Path, "add", "f.txt")
+	run(t, unmerged.Path, "-c", "commit.gpgsign=false", "commit", "-m", "work")
+	if _, err := s.Remove(ctx, unmerged.ID, "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+
+	failed, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reason-failed",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := s.Run
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) > 3 && args[2] == "worktree" && args[3] == "remove" {
+			return nil, errors.New("boom: simulated git worktree remove failure")
+		}
+		return real(ctx, name, args...)
+	}
+	if _, err := s.Remove(ctx, failed.ID, "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+	s.Run = real
+
+	clean, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reason-clean",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Remove(ctx, clean.ID, "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{dirty.ID: "dirty", unmerged.ID: "unmerged", failed.ID: "remove_failed", clean.ID: ""}
+	for wtID, wantReason := range want {
+		var reason sql.NullString
+		if err := s.DB.QueryRowContext(ctx, `SELECT retained_reason FROM worktrees WHERE id = ?`, wtID).Scan(&reason); err != nil {
+			t.Fatal(err)
+		}
+		if !documented[reason.String] {
+			t.Errorf("worktree %s: retained_reason = %q is not a documented value", wtID, reason.String)
+		}
+		if reason.String != wantReason {
+			t.Errorf("worktree %s: retained_reason = %q, want %q", wtID, reason.String, wantReason)
+		}
 	}
 }
 

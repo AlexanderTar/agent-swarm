@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -35,6 +36,30 @@ type Service struct {
 	// OnRetained fires inside the same transaction that marks a worktree
 	// retained, so a caller can e.g. raise a notification atomically.
 	OnRetained func(ctx context.Context, tx *sql.Tx, wt Worktree) error
+
+	mu     sync.Mutex
+	wtLock map[string]*sync.Mutex
+}
+
+// lockFor returns the per-worktree mutex that serializes Remove against
+// Share (C4). It closes the race between the "no other reservation" guard
+// and the eventual delete without any persisted claim state: L12 already
+// guarantees a single daemon process holds the only *Service, so an
+// in-process lock is a complete exclusion mechanism, and — unlike a
+// persisted "claiming" state — a crash mid-Remove leaves the row exactly as
+// it was (no partial state to reconcile on restart).
+func (s *Service) lockFor(wtID string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wtLock == nil {
+		s.wtLock = make(map[string]*sync.Mutex)
+	}
+	l, ok := s.wtLock[wtID]
+	if !ok {
+		l = &sync.Mutex{}
+		s.wtLock[wtID] = l
+	}
+	return l
 }
 
 // CreateInput is Create and Review's input.
@@ -242,29 +267,32 @@ func (s *Service) repoPath(ctx context.Context, repoID string) (string, error) {
 }
 
 // Share records agentID's reservation on the worktree. It refuses once the
-// worktree has left the active state (C4): Remove's claim and this check run
-// as one-statement transactions on the same row, and SQLite's writer lock
-// (db.Open's _txlock=immediate) serializes them, so a Share racing a Remove
-// either lands before the claim (Remove then sees it and backs off) or after
-// (Share then sees the claimed state and refuses) — never in between.
+// worktree has left the active state (C4). lockFor(wtID) makes this mutually
+// exclusive with Remove for the same worktree: a Share that starts first
+// completes (insert, then Remove's guard sees it and backs off); a Share that
+// starts after a Remove has finished sees the worktree's final state (still
+// 'active' if Remove backed off, or 'retained'/'removed' otherwise) and
+// refuses accordingly. Never an in-between state, because Remove holds the
+// lock for its whole guard-check-through-delete sequence.
 func (s *Service) Share(ctx context.Context, wtID, agentID, mode string) error {
 	if mode != "rw" && mode != "ro" {
 		return fmt.Errorf("worktree: unknown share mode %q", mode)
 	}
-	return s.DB.Tx(ctx, func(tx *sql.Tx) error {
-		var state string
-		if err := tx.QueryRowContext(ctx, `SELECT state FROM worktrees WHERE id = ?`, wtID).Scan(&state); err != nil {
-			return err
-		}
-		if state != "active" {
-			return fmt.Errorf("worktree: %s is not active", wtID)
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO worktree_reservations
-			(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)
-			ON CONFLICT(worktree_id, agent_id) DO UPDATE SET mode = excluded.mode, released_at = NULL`,
-			wtID, agentID, mode, db.Millis(s.Now()))
+	lock := s.lockFor(wtID)
+	lock.Lock()
+	defer lock.Unlock()
+	var state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM worktrees WHERE id = ?`, wtID).Scan(&state); err != nil {
 		return err
-	})
+	}
+	if state != "active" {
+		return fmt.Errorf("worktree: %s is not active", wtID)
+	}
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO worktree_reservations
+		(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT(worktree_id, agent_id) DO UPDATE SET mode = excluded.mode, released_at = NULL`,
+		wtID, agentID, mode, db.Millis(s.Now()))
+	return err
 }
 
 // Release clears agentID's reservation on the worktree.
@@ -334,10 +362,14 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 }
 
 // Remove runs the §12.1 checks in order. Only the owner may call it, and only
-// when nobody else holds an unreleased reservation (C4). The "no other
-// reservation" check and the state change that keeps a new one from landing
-// happen in one transaction (L12/§5): see claimForRemoval and Share.
+// when nobody else holds an unreleased reservation (C4). lockFor(wtID) holds
+// for the whole guard-check-through-delete sequence, so a concurrent Share
+// cannot land in the window between the "no other reservation" read and the
+// final state write — see Share and lockFor.
 func (s *Service) Remove(ctx context.Context, wtID, callerAgentID string) (Worktree, error) {
+	lock := s.lockFor(wtID)
+	lock.Lock()
+	defer lock.Unlock()
 	wt, err := s.Get(ctx, wtID)
 	if err != nil {
 		return Worktree{}, err
@@ -345,56 +377,15 @@ func (s *Service) Remove(ctx context.Context, wtID, callerAgentID string) (Workt
 	if wt.OwnerAgentID != callerAgentID {
 		return Worktree{}, fmt.Errorf("worktree: only the owner can remove %s", wt.Path)
 	}
-	claimed, err := s.claimForRemoval(ctx, wtID, callerAgentID)
-	if err != nil {
+	var others int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktree_reservations
+		WHERE worktree_id = ? AND agent_id <> ? AND released_at IS NULL`, wtID, callerAgentID).Scan(&others); err != nil {
 		return Worktree{}, err
 	}
-	if !claimed {
-		return Worktree{}, fmt.Errorf("worktree: %s is held by another agent, or a removal is already in progress", wt.Path)
+	if others > 0 {
+		return Worktree{}, fmt.Errorf("worktree: %d agents still hold %s", others, wt.Path)
 	}
-	wt.State, wt.RetainedReason = "retained", removingReason
 	return s.remove(ctx, wt)
-}
-
-// removingReason is a private worktrees.retained_reason sentinel. worktrees.state
-// only allows 'active'/'retained'/'removed' (no migration in P2), so
-// claimForRemoval borrows 'retained' as the claimed/in-flight marker; remove
-// always overwrites it with the real outcome (a genuine retained_reason, or
-// 'removed' with retained_reason cleared) before returning.
-const removingReason = "__removing__"
-
-// claimForRemoval verifies, in one transaction, that wtID is active, owned by
-// callerAgentID and has no other unreleased reservation, then marks it
-// retained/removingReason so a concurrent Share is refused (C4). It reports
-// whether the claim succeeded; false means someone else already holds or is
-// removing it, not an error.
-func (s *Service) claimForRemoval(ctx context.Context, wtID, callerAgentID string) (bool, error) {
-	var claimed bool
-	err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
-		var owner, state string
-		if err := tx.QueryRowContext(ctx, `SELECT owner_agent_id, state FROM worktrees WHERE id = ?`, wtID).
-			Scan(&owner, &state); err != nil {
-			return err
-		}
-		if owner != callerAgentID || state != "active" {
-			return nil
-		}
-		var others int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktree_reservations
-			WHERE worktree_id = ? AND agent_id <> ? AND released_at IS NULL`, wtID, callerAgentID).Scan(&others); err != nil {
-			return err
-		}
-		if others > 0 {
-			return nil
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = ?
-			WHERE id = ? AND state = 'active'`, removingReason, wtID); err != nil {
-			return err
-		}
-		claimed = true
-		return nil
-	})
-	return claimed, err
 }
 
 func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
