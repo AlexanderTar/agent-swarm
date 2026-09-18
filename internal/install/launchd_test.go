@@ -209,3 +209,14 @@ func TestInstallTightensRunDir(t *testing.T) {
 		t.Fatalf("run dir: %v %v", fi, err)
 	}
 }
+
+// internal/migrate needs the same not-loaded judgement for its step 2 bootout
+// (§20), so notLoaded is exported rather than duplicated.
+func TestNotLoadedIsExportedForMigrate(t *testing.T) {
+	if !NotLoaded(errors.New("Could not find service \"dev.swarm.updater\"")) {
+		t.Error("a missing service must count as not loaded")
+	}
+	if NotLoaded(errors.New("Operation not permitted")) {
+		t.Error("a real failure must not count as not loaded")
+	}
+}
