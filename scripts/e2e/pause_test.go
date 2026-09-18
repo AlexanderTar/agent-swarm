@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -95,5 +98,118 @@ func TestScenario07PauseTimeout(t *testing.T) {
 	}
 	if !h.waitForNotification(t, "agent.interrupted", since, 2*time.Second) {
 		t.Fatal("no agent.interrupted notification")
+	}
+}
+
+// handOffAndKill drives an already-pausing agent to "paused" the way
+// scenario 6 does: a handoff checkpoint, then the pane exiting on its own
+// (h.killPane) rather than waiting out TickPause's slower kill-then-detect
+// fallback. It does not itself request the pause — allowedActions
+// (internal/httpapi/spawn.go) only permits the "pause" action from session
+// state Running, so a session pause-all already moved to pause_requested
+// would 409 on a second POST /pause; the caller is expected to have
+// requested the pause already (directly, or via pause-all).
+func handOffAndKill(t *testing.T, h *harness, agentName string) {
+	t.Helper()
+	h.mustTool(t, agentName, "swarm_checkpoint", map[string]any{"kind": "handoff", "summary": "pausing"})
+	h.killPane(t, agentName)
+	if !h.waitForSessionState(t, agentName, "paused", 6*time.Second) {
+		t.Fatalf("%s session = %s, want paused within 6s", agentName, h.sessionState(t, agentName))
+	}
+}
+
+// Scenario 8: pause all and resume. PauseAll (internal/runtime/pause.go)
+// requests a plain session-scope pause on every live root and worker alike —
+// TestPauseAllCountsEverySession (internal/runtime/pause_test.go) pins this
+// as deliberate, not the hierarchical subtree pause pauseSubtree/
+// promotePendingSubtreePauses implement — so nothing in PauseAll itself
+// orders children ahead of orchestrators or writes a daemon-combined
+// checkpoint (that machinery is scenario 9's, gated on pause_scope =
+// 'subtree', which pause-all never sets). "Children pause before
+// orchestrators" here is enforced by the harness's own call order below —
+// pause-all requests all four pauses in the same instant, and each of the
+// four agents only actually reaches "paused" once something drives its own
+// PreToolUse-denial-then-handoff cycle, exactly as scenario 6 does — so
+// which one pauses first is a property of when its handoff was written, not
+// of any daemon-side ordering.
+func TestScenario08PauseAllAndResume(t *testing.T) {
+	h := newHarness(t)
+	epic1 := h.materializedEpic(t)
+	orch1 := h.startOrchestrator(t, epic1)
+	h.mustTool(t, orch1, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	child1 := h.spawn(t, orch1, h.firstTask(t, epic1), "coder")
+
+	epic2 := h.materializedEpic(t)
+	orch2 := h.startOrchestrator(t, epic2)
+	h.mustTool(t, orch2, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	child2 := h.spawn(t, orch2, h.firstTask(t, epic2), "coder")
+
+	for _, name := range []string{orch1, child1, orch2, child2} {
+		if !h.waitForSessionState(t, name, "running", 5*time.Second) {
+			t.Fatalf("%s session = %s, never reached running", name, h.sessionState(t, name))
+		}
+	}
+
+	if n := h.pauseAll(t); n < 4 {
+		t.Fatalf("pause-all requested = %d, want at least the 4 agents just spawned", n)
+	}
+
+	// Children first, on both roots, before either orchestrator: the
+	// deterministic order this scenario is asserting is that pause-all's
+	// uniform session-scope pause permits (never forbids) a child finishing
+	// before its own orchestrator.
+	handOffAndKill(t, h, child1)
+	handOffAndKill(t, h, child2)
+	handOffAndKill(t, h, orch1)
+	handOffAndKill(t, h, orch2)
+
+	var childEndedAt, orchEndedAt int64
+	if err := h.db(t).QueryRow(`SELECT s.ended_at FROM sessions s JOIN agents a ON a.id = s.agent_id
+		WHERE a.name = ? ORDER BY s.generation DESC LIMIT 1`, child1).Scan(&childEndedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db(t).QueryRow(`SELECT s.ended_at FROM sessions s JOIN agents a ON a.id = s.agent_id
+		WHERE a.name = ? ORDER BY s.generation DESC LIMIT 1`, orch1).Scan(&orchEndedAt); err != nil {
+		t.Fatal(err)
+	}
+	if childEndedAt > orchEndedAt {
+		t.Fatalf("child1 paused at %d, after orch1 at %d, want child first", childEndedAt, orchEndedAt)
+	}
+
+	// Resume: orch1 gets generation 2 and a new token; the generation-1
+	// token sessionAuth already rejects (internal/httpapi/server.go, proven
+	// at the unit level by TestMCPRejectsAStaleGenerationToken) — this is
+	// the same mechanism exercised end to end.
+	oldToken := h.sessionToken(t, orch1)
+	h.resume(t, orch1)
+	var gen int
+	var newToken string
+	if err := h.db(t).QueryRow(`SELECT generation FROM sessions WHERE agent_id =
+		(SELECT id FROM agents WHERE name = ?) ORDER BY generation DESC LIMIT 1`, orch1).Scan(&gen); err != nil {
+		t.Fatal(err)
+	}
+	if gen != 2 {
+		t.Fatalf("orch1 generation = %d, want 2", gen)
+	}
+	newToken = h.sessionToken(t, orch1)
+	if newToken == oldToken {
+		t.Fatal("resume kept the same token")
+	}
+
+	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{}})
+	req, err := http.NewRequest(http.MethodPost, h.url+"/mcp", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+oldToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := h.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old-generation token on /mcp = %d, want 401", resp.StatusCode)
 	}
 }
