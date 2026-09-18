@@ -454,12 +454,18 @@ func (h *harness) waitForEvent(t *testing.T, typ string, match func(payload []by
 // waitForNotification is waitForEvent's counterpart against the notifications
 // table, which carries the exact §17.5 `kind` string rather than an event
 // envelope.
-func (h *harness) waitForNotification(t *testing.T, kind string, timeout time.Duration) bool {
+// waitForNotification only counts rows created at or after since: this
+// suite shares one long-lived daemon across every scenario, so a kind that
+// already fired once for an earlier test would otherwise make this check
+// pass instantly regardless of whether the action under test raised a new
+// one. Pass time.Now() captured right before the action, not h's own start.
+func (h *harness) waitForNotification(t *testing.T, kind string, since time.Time, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
+	sinceMs := since.UnixMilli()
 	for {
 		var n int
-		h.db(t).QueryRow(`SELECT count(*) FROM notifications WHERE kind = ?`, kind).Scan(&n)
+		h.db(t).QueryRow(`SELECT count(*) FROM notifications WHERE kind = ? AND created_at >= ?`, kind, sinceMs).Scan(&n)
 		if n > 0 {
 			return true
 		}
@@ -497,6 +503,27 @@ func (h *harness) waitForRequest(t *testing.T, itemKey, kind string, timeout tim
 			t.Fatalf("no open %s request on %s within %s", kind, itemKey, timeout)
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// killPane ends the tmux pane a fake agent runs in, as if the real CLI
+// process had exited on its own. The e2e harness drives agents by calling
+// MCP tools directly as their own session (see tool/mustTool), never through
+// the fake agent's own scripted process, so a checkpoint the harness writes
+// never makes the underlying pane exit by itself — an agent's tmux session
+// stays alive (running the shared _default.json's long sleep) until
+// something kills it. The reconciler only frees an admission slot, or
+// declares a crash, once it sees the pane actually gone (internal/runtime/
+// reconcile.go's resolveDead), so any scenario that depends on either
+// (11's queue drain, 10's crash) has to do this.
+func (h *harness) killPane(t *testing.T, agentName string) {
+	t.Helper()
+	socket := os.Getenv("SWARM_TMUX_SOCKET")
+	if socket == "" {
+		t.Fatal("SWARM_TMUX_SOCKET is not set")
+	}
+	if out, err := exec.Command("tmux", "-L", socket, "kill-window", "-t", agentName).CombinedOutput(); err != nil {
+		t.Fatalf("tmux kill-window %s: %v: %s", agentName, err, out)
 	}
 }
 
