@@ -254,6 +254,13 @@ func TestDeriveStoryStatus(t *testing.T) {
 		{"no children", nil, "ready"},
 		{"a draft child", []string{"draft", "ready"}, "ready"},
 		{"a blocked child", []string{"blocked", "ready"}, "in_progress"},
+		// Regression: one child finished (done) while a sibling is still ready. This
+		// must agree with internal/items/transition.go's deriveStory, whose moved
+		// count (status NOT IN ('draft','ready')) counts "done" as moved, so a story
+		// with one done and one ready child is in_progress, not ready or done.
+		{"one done, one still ready", []string{"done", "ready"}, "in_progress"},
+		// Same shape with in_review instead of done.
+		{"one in_review, one still ready", []string{"in_review", "ready"}, "in_progress"},
 	} {
 		if got := migrate.DeriveStoryStatus(tc.children); got != tc.want {
 			t.Errorf("%s: DeriveStoryStatus(%v) = %q, want %q", tc.name, tc.children, got, tc.want)

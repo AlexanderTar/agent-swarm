@@ -14,7 +14,7 @@ type Root struct {
 	Status  string // §20's table, verbatim
 	From    []string
 	Stories []Story
-	Tasks   []Child // bug roots (and childless task roots) put tasks directly under the root
+	Tasks   []Child // bug roots put tasks directly under the root; other roots leave this empty
 }
 
 // Story is a story §20 authors. From is its v1 key when the story IS a v1 row;
@@ -180,34 +180,48 @@ func SourceKeys() []string {
 
 // DeriveStoryStatus applies §10.1's derived-story rule to the children's statuses.
 // A story with no children is ready.
+//
+// This computes the exact same n/done/fin/review/moved counts, in the exact same
+// branch order, as internal/items/transition.go's (*Store).deriveStory — the
+// canonical, already-shipped implementation of this rule (Phase 1, reviewed and
+// merged). The two must never diverge: deriveStory reads the counts from a SQL
+// aggregate over live children and updates an existing item in place, so it has a
+// "leave the status alone" branch for the all-cancelled case; DeriveStoryStatus
+// creates a story that does not exist yet, so that branch instead returns the
+// concrete status "cancelled". If either implementation's branch order changes, the
+// other must change with it — see table_test.go's TestDeriveStoryStatus for the
+// input/output pairs that must hold in both places.
 func DeriveStoryStatus(children []string) string {
 	if len(children) == 0 {
 		return "ready"
 	}
-	allFinished, allReviewedOrFinished, anyLive, anyNotCancelled := true, true, false, false
+	n := len(children)
+	var done, fin, review, moved int
 	for _, s := range children {
 		switch s {
-		case "done", "cancelled":
+		case "done":
+			done++
+			fin++
+		case "cancelled":
+			fin++
 		case "in_review":
-			allFinished = false
-		default:
-			allFinished, allReviewedOrFinished = false, false
+			review++
 		}
-		if s != "cancelled" {
-			anyNotCancelled = true
-		}
-		if s != "ready" && s != "draft" && s != "cancelled" && s != "done" && s != "in_review" {
-			anyLive = true
+		if s != "draft" && s != "ready" {
+			moved++
 		}
 	}
 	switch {
-	case allFinished && !anyNotCancelled:
-		return "cancelled"
-	case allFinished:
+	case fin == n && done > 0:
 		return "done"
-	case allReviewedOrFinished && anyNotCancelled:
+	case fin == n:
+		// Every child cancelled. deriveStory leaves an existing story's status
+		// untouched here; a story being created for the first time has no status to
+		// leave alone, so it is created already cancelled.
+		return "cancelled"
+	case fin+review == n:
 		return "in_review"
-	case anyLive:
+	case moved > 0:
 		return "in_progress"
 	default:
 		return "ready"
