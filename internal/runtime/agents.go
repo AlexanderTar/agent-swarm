@@ -87,16 +87,10 @@ func (s *Store) go_(f func()) {
 }
 
 func (s *Store) baseEnv(osEnv func(string) string) map[string]string {
-	if s.BaseEnv != nil {
-		return s.BaseEnv(osEnv)
+	if s.BaseEnv == nil {
+		panic("runtime: BaseEnv is not wired")
 	}
-	m := map[string]string{}
-	for _, k := range []string{"USER", "HOME", "LOGNAME", "SHELL", "TMPDIR", "PATH"} {
-		if v := osEnv(k); v != "" {
-			m[k] = v
-		}
-	}
-	return m
+	return s.BaseEnv(osEnv)
 }
 
 // defaultName is §4: "<kebab(title) up to 24>-orchestrator" for a top-level
@@ -153,7 +147,7 @@ func (s *Store) Preflight(ctx context.Context, in PreflightInput) error {
 	if err != nil {
 		return err
 	}
-	if in.Kind != Fake && !slices.Contains(cfg.EnabledAgents, in.Kind) {
+	if !slices.Contains(cfg.EnabledAgents, in.Kind) {
 		return fmt.Errorf("%s isn't installed on this Mac.", in.Kind.Display())
 	}
 	a, ok := s.Adapters[in.Kind]
@@ -375,22 +369,6 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, err
 	}
 
-	var queued bool
-	agentState := AgentActive
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
-		admitted, err := s.Admit(ctx, tx, RoleOrchestrator, it.RootID)
-		if err != nil {
-			return err
-		}
-		if !admitted {
-			queued = true
-			agentState = AgentQueued
-		}
-		return nil
-	}); err != nil {
-		return Agent{}, false, err
-	}
-
 	agentID := ids.New("agt")
 	nowMs := s.now().UnixMilli()
 	a := Agent{
@@ -403,13 +381,23 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		ItemID:     it.ID,
 		RootItemID: it.RootID,
 		Brief:      briefText,
-		State:      agentState,
 		CreatedAt:  s.now(),
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
+	var queued bool
 	err = s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO agents
+		admitted, err := s.Admit(ctx, tx, RoleOrchestrator, it.RootID)
+		if err != nil {
+			return err
+		}
+		if !admitted {
+			queued = true
+			a.State = AgentQueued
+		} else {
+			a.State = AgentActive
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
@@ -528,22 +516,6 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return Agent{}, false, err
 	}
 
-	var queued bool
-	agentState := AgentActive
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
-		admitted, err := s.Admit(ctx, tx, in.Role, it.RootID)
-		if err != nil {
-			return err
-		}
-		if !admitted {
-			queued = true
-			agentState = AgentQueued
-		}
-		return nil
-	}); err != nil {
-		return Agent{}, false, err
-	}
-
 	agentID := ids.New("agt")
 	nowMs := s.now().UnixMilli()
 	a := Agent{
@@ -557,13 +529,23 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		RootItemID:    it.RootID,
 		ParentAgentID: parentID,
 		Brief:         briefText,
-		State:         agentState,
 		CreatedAt:     s.now(),
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
+	var queued bool
 	err = s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO agents
+		admitted, err := s.Admit(ctx, tx, in.Role, it.RootID)
+		if err != nil {
+			return err
+		}
+		if !admitted {
+			queued = true
+			a.State = AgentQueued
+		} else {
+			a.State = AgentActive
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
@@ -714,9 +696,9 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		if len(cmd) == 0 {
 			continue
 		}
-		runner := execx.Run
-		if s.Worktree != nil && s.Worktree.Run != nil {
-			runner = s.Worktree.Run
+		runner := s.Exec
+		if runner == nil {
+			runner = execx.Run
 		}
 		out, err := runner(ctx, cmd[0], cmd[1:]...)
 		if err != nil {

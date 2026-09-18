@@ -73,38 +73,31 @@ func (s *Store) DrainQueue(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		var admitted bool
-		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			ok, err := s.Admit(ctx, tx, a.Role, a.RootItemID)
-			admitted = ok
-			return err
-		}); err != nil {
-			return err
-		}
-		if !admitted {
-			return nil
-		}
 		// A queued child that fails preflight when it is taken off the queue
 		// relays spawn_failed to its parent (§11.3).
-		if err := s.startQueued(ctx, a); err != nil {
+		admitted, err := s.startQueued(ctx, a)
+		if err != nil {
 			s.logf("drain: %s could not start: %v", a.Name, err)
+		}
+		if !admitted && err == nil {
+			return nil
 		}
 	}
 }
 
-func (s *Store) startQueued(ctx context.Context, a Agent) error {
+func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 	ad, ok := s.Adapters[a.Kind]
 	if !ok {
-		return fmt.Errorf("no adapter for %s", a.Kind)
+		return false, fmt.Errorf("no adapter for %s", a.Kind)
 	}
 
 	var itemKey string
 	if err := s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey); err != nil {
-		return err
+		return false, err
 	}
 	it, err := s.Items.Get(ctx, itemKey)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	var repoPaths []string
@@ -123,17 +116,28 @@ func (s *Store) startQueued(ctx context.Context, a Agent) error {
 		RepoPaths: repoPaths,
 	})
 
-	if preflightErr != nil {
-		nowMs := s.now().UnixMilli()
-		sesID := ids.New("ses")
-		tokBytes := make([]byte, 32)
-		if _, err := rand.Read(tokBytes); err != nil {
+	var admitted bool
+	nowMs := s.now().UnixMilli()
+	sesID := ids.New("ses")
+	tokBytes := make([]byte, 32)
+	if _, err := rand.Read(tokBytes); err != nil {
+		return false, err
+	}
+	tokHashBytes := sha256.Sum256(tokBytes)
+	tokHash := hex.EncodeToString(tokHashBytes[:])
+	cwd := filepath.Join(s.Home, "work", a.Name)
+
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		ok, err := s.Admit(ctx, tx, a.Role, a.RootItemID)
+		if err != nil {
 			return err
 		}
-		tokHashBytes := sha256.Sum256(tokBytes)
-		tokHash := hex.EncodeToString(tokHashBytes[:])
-		cwd := filepath.Join(s.Home, "work", a.Name)
-		err := s.tx(ctx, func(tx *sql.Tx) error {
+		if !ok {
+			return nil
+		}
+		admitted = true
+
+		if preflightErr != nil {
 			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active' WHERE id = ?`, a.ID); err != nil {
 				return err
 			}
@@ -161,10 +165,19 @@ func (s *Store) startQueued(ctx context.Context, a Agent) error {
 				}
 			}
 			return nil
-		})
-		if err != nil {
-			return err
 		}
+
+		_, err = tx.ExecContext(ctx, `UPDATE agents SET state = 'active' WHERE id = ?`, a.ID)
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	if !admitted {
+		return false, nil
+	}
+
+	if preflightErr != nil {
 		if s.Notify != nil {
 			_ = s.Notify.Raise(ctx, nil, NotifyInput{
 				Kind:      "agent.preflight_failed",
@@ -173,20 +186,14 @@ func (s *Store) startQueued(ctx context.Context, a Agent) error {
 				Args:      map[string]string{"reason": preflightErr.Error()},
 			})
 		}
-		return nil
+		return true, nil
 	}
 
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active' WHERE id = ?`, a.ID)
-		return err
-	}); err != nil {
-		return err
-	}
 	a.State = AgentActive
 
 	ses, err := s.startSession(ctx, a, 1, 1, false, "")
 	if err != nil {
-		return err
+		return true, err
 	}
 
 	s.go_(func() {
@@ -195,5 +202,5 @@ func (s *Store) startQueued(ctx context.Context, a Agent) error {
 		}
 	})
 
-	return nil
+	return true, nil
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
@@ -268,6 +269,7 @@ type Store struct {
 	Adapters  map[AgentKind]adapter.Adapter
 	Worktree  *worktree.Service
 	Notify    Notifier
+	Exec      execx.Runner                                // runner for prerun commands; nil means execx.Run
 	Bin       string                                      // absolute path to the swarm binary
 	DaemonURL string                                      // http://127.0.0.1:<cfg.Port>; never :7777 in a fixture
 	OSEnv     func(string) string                         // nil means os.Getenv

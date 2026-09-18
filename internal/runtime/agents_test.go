@@ -122,6 +122,9 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 	it := &items.Store{DB: d, Events: ev, Now: clk.Now}
 	cat := &catalog.Service{DB: d, Events: ev, Now: clk.Now, Log: func(string, ...any) {}}
 	seedFakeCatalog(t, d)
+	if _, err := d.ExecContext(context.Background(), `INSERT INTO settings (key, value_json, updated_at) VALUES ('enabled_agents', '["claude", "fake"]', 1)`); err != nil {
+		t.Fatal(err)
+	}
 	st := &settings.Store{DB: d, Events: ev, Now: clk.Now, ModelsFor: cat.ModelsFor,
 		Installed: func(context.Context) []AgentKind { return []AgentKind{Fake} }}
 	fa := adapter.NewFake(adapter.Deps{Home: home, UserHome: t.TempDir(),
@@ -312,9 +315,8 @@ func TestSpawnSuffixesADaemonGeneratedName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if (first.Name != "build-it-coder" && first.Name != "write-the-failing-test-coder") ||
-		(second.Name != "build-it-coder-2" && second.Name != "write-the-failing-test-coder-2") {
-		t.Fatalf("names = %q, %q", first.Name, second.Name)
+	if first.Name != "write-the-failing-test-coder" || second.Name != "write-the-failing-test-coder-2" {
+		t.Fatalf("names = %q, %q, want write-the-failing-test-coder and write-the-failing-test-coder-2", first.Name, second.Name)
 	}
 }
 
@@ -705,15 +707,31 @@ func TestRetryWithNote(t *testing.T) {
 }
 
 func TestBaseEnv(t *testing.T) {
+	// A nil BaseEnv inside runtime is a programming error: Spawn panics with `runtime: BaseEnv is not wired`.
 	s := &Store{}
+	defer func() {
+		r := recover()
+		if r != "runtime: BaseEnv is not wired" {
+			t.Fatalf("panic = %v, want 'runtime: BaseEnv is not wired'", r)
+		}
+	}()
+	s.baseEnv(func(string) string { return "" })
+}
+
+func TestBaseEnvUsesWiredFunction(t *testing.T) {
+	s := &Store{
+		BaseEnv: func(getenv func(string) string) map[string]string {
+			return map[string]string{"PATH": getenv("PATH"), "GNUPGHOME": "/tmp/gpg"}
+		},
+	}
 	env := s.baseEnv(func(k string) string {
 		if k == "PATH" {
 			return "/bin"
 		}
 		return ""
 	})
-	if env["PATH"] != "/bin" {
-		t.Fatalf("PATH = %q", env["PATH"])
+	if env["PATH"] != "/bin" || env["GNUPGHOME"] != "/tmp/gpg" {
+		t.Fatalf("env = %v", env)
 	}
 }
 
@@ -870,6 +888,12 @@ func (f *fakeAdapterWithPreRun) Launch(spec adapter.Spec) (adapter.Launch, error
 func TestSpawnWithPreRun(t *testing.T) {
 	s, _, fa := newStore(t)
 	s.Adapters[Fake] = &fakeAdapterWithPreRun{Fake: fa}
+	fakeExec := &execx.Fake{
+		Responses: map[string]execx.Result{
+			"echo prerun-output": {Out: "prerun-output\n"},
+		},
+	}
+	s.Exec = fakeExec.Runner()
 	ctx := context.Background()
 	seedEpicWithTask(t, s)
 	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1", Brief: BriefInput{Objective: "task"}})
@@ -878,5 +902,8 @@ func TestSpawnWithPreRun(t *testing.T) {
 	}
 	if a.Name == "" {
 		t.Fatal("empty name")
+	}
+	if calls := fakeExec.Calls(); len(calls) != 1 || calls[0] != "echo prerun-output" {
+		t.Fatalf("prerun calls = %v, want ['echo prerun-output']", calls)
 	}
 }

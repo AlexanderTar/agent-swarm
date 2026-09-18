@@ -3,21 +3,31 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
 func setLimits(t *testing.T, s *Store, orchestrators, agents, perRoot int) {
 	t.Helper()
 	ctx := context.Background()
-	cfg, err := s.Settings.Get(ctx)
-	if err != nil {
-		t.Fatal(err)
+	now := s.now().UnixMilli()
+	for _, kv := range [][2]string{
+		{"max_orchestrators", fmt.Sprintf("%d", orchestrators)},
+		{"max_agents", fmt.Sprintf("%d", agents)},
+		{"max_agents_per_root", fmt.Sprintf("%d", perRoot)},
+	} {
+		_, err := s.DB.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at)
+			VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+			kv[0], kv[1], now)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	cfg.MaxOrchestrators, cfg.MaxAgents, cfg.MaxAgentsPerRoot = orchestrators, agents, perRoot
-	if _, err := s.Settings.Put(ctx, cfg); err != nil {
-		t.Fatal(err)
-	}
+	s.Events.Notify()
 }
 
 func TestAdmitOrchestratorsUseTheirOwnLimit(t *testing.T) {
@@ -240,5 +250,84 @@ func TestDrainQueuePreflightFailureRelaysToParent(t *testing.T) {
 	var count int
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'`, orch.ID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("relay message count = %d, err = %v", count, err)
+	}
+}
+
+// TestAdmitConcurrentSpawnsNeverExceedLimit verifies that concurrent spawns hitting
+// the limit never over-admit agents due to a TOCTOU race.
+func TestAdmitConcurrentSpawnsNeverExceedLimit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 2, 5)
+
+	ep, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Concurrency Epic"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, err := s.Items.Create(ctx, items.CreateInput{Type: items.Story, ParentKey: ep.Key, Title: "Concurrency Story"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const numTasks = 10
+	var taskKeys []string
+	for i := 0; i < numTasks; i++ {
+		tk, err := s.Items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: story.Key, Title: fmt.Sprintf("Task %d", i+1)}, items.User("board"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id = ?`, tk.ID); err != nil {
+			t.Fatal(err)
+		}
+		taskKeys = append(taskKeys, tk.Key)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id IN (?, ?)`, ep.ID, story.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, numTasks)
+	startBarrier := make(chan struct{})
+
+	for i := 0; i < numTasks; i++ {
+		wg.Add(1)
+		go func(key string) {
+			defer wg.Done()
+			<-startBarrier
+			_, _, err := s.Spawn(ctx, SpawnInput{
+				ItemKey: key,
+				Role:    RoleCoder,
+				Kind:    Fake,
+				Model:   "fake-1",
+				Brief:   BriefInput{Objective: "run concurrent task"},
+			})
+			if err != nil {
+				errCh <- err
+			}
+		}(taskKeys[i])
+	}
+
+	close(startBarrier)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("spawn error: %v", err)
+		}
+	}
+
+	var activeCount, queuedCount int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE state = 'active'`).Scan(&activeCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE state = 'queued'`).Scan(&queuedCount); err != nil {
+		t.Fatal(err)
+	}
+
+	if activeCount != 2 {
+		t.Fatalf("active agents = %d, want exactly 2 (exceeded MaxAgents=2 limit due to race!)", activeCount)
+	}
+	if queuedCount != numTasks-2 {
+		t.Fatalf("queued agents = %d, want %d", queuedCount, numTasks-2)
 	}
 }
