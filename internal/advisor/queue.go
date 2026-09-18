@@ -47,6 +47,11 @@ type Service struct {
 
 	once sync.Once
 	sem  chan struct{}
+
+	// offsetsMu/offsets is ScanTranscript's per-session byte offset (Task 27).
+	// It lives only in memory: a restart is a new Service with an empty map.
+	offsetsMu sync.Mutex
+	offsets   map[string]int64
 }
 
 func (s *Service) now() time.Time {
