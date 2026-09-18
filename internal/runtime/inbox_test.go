@@ -172,6 +172,70 @@ func TestDeferredRelaysAreFoldedIntoOneDigest(t *testing.T) {
 	}
 }
 
+func TestSyncRefusesAnUnknownSession(t *testing.T) {
+	s, _, _ := newStore(t)
+	if _, err := s.Sync(context.Background(), "ses_nope", nil, 20); err == nil {
+		t.Fatal("an unknown session must be refused")
+	}
+}
+
+func TestIdempotentEdgeCases(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Idem2", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	calls := 0
+	run := func(reqID string) (json.RawMessage, error) {
+		var out json.RawMessage
+		err := s.tx(ctx, func(tx *sql.Tx) error {
+			var err error
+			out, err = s.Idempotent(ctx, tx, ses.ID, reqID, "swarm_x", func() (any, error) {
+				calls++
+				return map[string]int{"n": calls}, nil
+			})
+			return err
+		})
+		return out, err
+	}
+	if _, err := run(""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(""); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("an empty request_id must run every time, calls = %d", calls)
+	}
+	if _, err := run(strings.Repeat("x", 65)); err == nil {
+		t.Fatal("a request_id over 64 characters must be refused")
+	}
+}
+
+func TestPendingCountCountsUnackedMessages(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Pending", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	n, err := s.PendingCount(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pending = %d, want 1 (the assignment)", n)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	res, _ := s.Sync(ctx, ses.ID, nil, 20)
+	if _, err := s.Sync(ctx, ses.ID, []string{res.Messages[0].MsgID}, 20); err != nil {
+		t.Fatal(err)
+	}
+	n, err = s.PendingCount(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("pending after ack = %d, want 0", n)
+	}
+}
+
 func TestWakeClassFor(t *testing.T) {
 	immediate := []struct {
 		kind  MessageKind

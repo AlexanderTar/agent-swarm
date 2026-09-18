@@ -209,6 +209,36 @@ func TestRegisterIsOrchestratorOnlyAndScopedToTheRoot(t *testing.T) {
 	}
 }
 
+func TestArtifactMarkdownRefusesUnknownArtifactRevisionOrSection(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Neg", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	res, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "# s\n\n## One\n\na\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArtifactMarkdown(ctx, "art_nope", 0, ""); err == nil {
+		t.Fatal("an unknown artifact must be refused")
+	}
+	if _, _, err := s.ArtifactMarkdown(ctx, res.ArtifactID, 99, ""); err == nil {
+		t.Fatal("an unknown revision must be refused")
+	}
+	if _, _, err := s.ArtifactMarkdown(ctx, res.ArtifactID, 0, "nope"); err == nil {
+		t.Fatal("an unknown section must be refused")
+	}
+}
+
+func TestRegisterArtifactRefusesAnUnknownItem(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "NoItem", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	if _, err := s.RegisterArtifact(ctx, ses.ID, "register", "TASK-999", "note", writeFile(t, "# n\n")); err == nil {
+		t.Fatal("an unknown item must be refused")
+	}
+}
+
 func TestOneMegabyteCap(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

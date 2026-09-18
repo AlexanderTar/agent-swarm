@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
@@ -229,6 +230,183 @@ func TestAskNeverProducesAnApprovalResult(t *testing.T) {
 		WHERE kind IN ('approval_result','user_answer','repos_confirmed') OR origin = 'user_action'`).Scan(&n)
 	if n != 0 {
 		t.Fatalf("%d user_action messages were produced by an MCP path", n)
+	}
+}
+
+func TestRequestsListsOpenRequestsScopedToAnItem(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "List", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "Anything?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.Requests(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range all {
+		if r.ID == req.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Requests() must list the open request")
+	}
+	scoped, err := s.Requests(ctx, "SPIKE-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) != 1 || scoped[0].ID != req.ID {
+		t.Fatalf("scoped = %+v", scoped)
+	}
+	if _, err := s.Answer(ctx, req.ID, "yes", "board"); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := s.Requests(ctx, "SPIKE-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(closed) != 0 {
+		t.Fatal("an answered request must not be listed as open")
+	}
+}
+
+func TestRequestPayloadAndOnRequestOpenedAreWired(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Wired", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "Wired?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload any
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		var perr error
+		payload, perr = s.RequestPayload(ctx, tx, req.ID)
+		if perr != nil {
+			return perr
+		}
+		return s.OnRequestOpened(ctx, tx, req.ID)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, ok := payload.(requestWire)
+	if !ok || w.ID != req.ID {
+		t.Fatalf("RequestPayload = %+v", payload)
+	}
+}
+
+func TestWithdrawRefusesSomeoneElsesOrAnAlreadyResolvedRequest(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "W1", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	_, b, _, _ := s.StartSpike(ctx, SpikeInput{Name: "W2", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	sesA, _ := s.LatestSession(ctx, a.ID)
+	sesB, _ := s.LatestSession(ctx, b.ID)
+	req, err := s.Ask(ctx, sesA.ID, AskInput{Kind: "question", Prompt: "Mine?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, sesB.ID, AskInput{Withdraw: req.ID}); err == nil {
+		t.Fatal("another agent cannot withdraw this request")
+	}
+	if _, err := s.Ask(ctx, sesA.ID, AskInput{Withdraw: req.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, sesA.ID, AskInput{Withdraw: req.ID}); err == nil {
+		t.Fatal("an already-resolved request cannot be withdrawn again")
+	}
+}
+
+func TestApproveAndAnswerRefuseAnUnknownRequest(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.Approve(ctx, "req_nope", ApproveInput{Via: "board"}); err == nil {
+		t.Fatal("an unknown request must be refused")
+	}
+	if _, err := s.Answer(ctx, "req_nope", "x", "board"); err == nil {
+		t.Fatal("an unknown request must be refused")
+	}
+}
+
+func TestAnswerRefusesAnEmptyText(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Empty", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "?"})
+	if _, err := s.Answer(ctx, req.ID, "", "board"); err == nil {
+		t.Fatal("an empty answer must be refused")
+	}
+}
+
+func TestWithdrawRefusesAnUnknownRequest(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "W3", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Withdraw: "req_nope"}); err == nil {
+		t.Fatal("an unknown request must be refused")
+	}
+}
+
+func TestAskApprovalValidatesTheArtifact(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Val", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: "x"}); err == nil {
+		t.Fatal("approval needs an artifact_id")
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: "art_nope", Prompt: "x"}); err == nil {
+		t.Fatal("an unknown artifact must be refused")
+	}
+	note, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "note", writeFile(t, "# n\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: note.ArtifactID, Prompt: "x"}); err == nil {
+		t.Fatal("a note cannot be approved")
+	}
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "# s\n\n## One\n\na\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID, Prompt: "x"}); err == nil {
+		t.Fatal("a spec approval needs a section_id")
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+		SectionID: "nope", Prompt: "x"}); err == nil {
+		t.Fatal("an unknown section must be refused")
+	}
+}
+
+func TestRequestsRefusesAnUnknownItem(t *testing.T) {
+	s, _, _ := newStore(t)
+	if _, err := s.Requests(context.Background(), "TASK-999"); err == nil {
+		t.Fatal("an unknown item must be refused")
+	}
+}
+
+func TestOnRequestOpenedRefusesAnUnknownRequest(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	err := s.tx(ctx, func(tx *sql.Tx) error { return s.OnRequestOpened(ctx, tx, "req_nope") })
+	if err == nil {
+		t.Fatal("an unknown request must be refused")
+	}
+}
+
+func TestNotifyIsANoOpWithoutANotifier(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Notify = nil
+	if err := s.notify(context.Background(), nil, NotifyInput{Kind: "x"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

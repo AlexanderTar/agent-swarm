@@ -4,7 +4,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -326,5 +330,89 @@ func TestCompletedWithAResolutionOpensCloseSpike(t *testing.T) {
 	it, _ := s.Items.Get(ctx, "SPIKE-1")
 	if it.Status != items.AwaitingApproval {
 		t.Fatalf("spike status = %s", it.Status)
+	}
+}
+
+func TestResolutionValidation(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress,
+		Summary: "x", Resolution: "no_change"}); err == nil ||
+		err.Error() != "resolution is only valid on a completed checkpoint." {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "x", Resolution: "no_change"}); err == nil ||
+		err.Error() != "resolution is only valid on a spike." {
+		t.Fatalf("err = %v", err)
+	}
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "BadRes", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "x", Resolution: "nonsense"}); err == nil ||
+		err.Error() != "resolution must be no_change or duplicate_of:<KEY>." {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestWriteCheckpointRefusesAnUnknownSession(t *testing.T) {
+	s, _, _ := newStore(t)
+	if _, err := s.WriteCheckpoint(context.Background(), "ses_nope", CheckpointInput{Kind: Progress, Summary: "x"}); err == nil {
+		t.Fatal("an unknown session must be refused")
+	}
+}
+
+func TestCheckpointsListsMostRecentFirstAndRespectsLimit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "still going"}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.Checkpoints(ctx, "TASK-1", 0, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Kind != Progress || list[1].Kind != Accepted {
+		t.Fatalf("checkpoints = %+v", list)
+	}
+	limited, err := s.Checkpoints(ctx, "TASK-1", 1, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limited) != 1 || limited[0].Kind != Progress {
+		t.Fatalf("limited = %+v", limited)
+	}
+}
+
+// changedFiles is the daemon-computed diff for L24's lenient orchestrator path.
+func TestChangedFilesCountsShortstatOutputAndIsLenientOnErrors(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, _ := worker(t, s)
+	repoID := seedRepo(t, s, "proj")
+	wtPath := t.TempDir()
+	now := db.Millis(s.Now())
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktrees
+		(id, repo_id, path, branch, base_ref, base_sha, owner_agent_id, root_item_id, state, created_at)
+		VALUES (?, ?, ?, 'task/x', 'main', 'abc1234', ?, ?, 'active', ?)`,
+		ids.New("wt"), repoID, wtPath, w.ID, w.RootItemID, now); err != nil {
+		t.Fatal(err)
+	}
+	fake := &execx.Fake{Responses: map[string]execx.Result{
+		"git -C " + wtPath + " diff --shortstat abc1234..deadbee": {Out: " 2 files changed, 10 insertions(+), 2 deletions(-)\n"},
+	}}
+	s.Exec = fake.Runner()
+	if n := s.changedFiles(ctx, []GitRef{{Repo: "proj", SHA: "deadbee"}}); n != 2 {
+		t.Fatalf("changedFiles = %d, want 2", n)
+	}
+	// a repo with no worktree row counts as zero, the lenient direction
+	if n := s.changedFiles(ctx, []GitRef{{Repo: "nope", SHA: "x"}}); n != 0 {
+		t.Fatalf("unknown repo = %d, want 0", n)
 	}
 }

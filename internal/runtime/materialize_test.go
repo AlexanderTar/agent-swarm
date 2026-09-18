@@ -218,6 +218,18 @@ func TestMaterializeRefusesAFileEditedAfterApproval(t *testing.T) {
 	}
 }
 
+func TestMaterializeRefusesAMissingPlanFile(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, planPath := approvedFeatureSpike(t, s)
+	if err := os.Remove(planPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, ""); err == nil {
+		t.Fatal("a missing file must be refused")
+	}
+}
+
 func TestMaterializeRefusesAnUnconfirmedRepoInATask(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -303,6 +315,133 @@ func TestDebugSpikeMaterializesABug(t *testing.T) {
 	notified(t, s, "item.created.bug")
 	if notifiedCount(s, "item.created") != 0 {
 		t.Fatal("a bug root must use the .bug lookup key, not the plain one")
+	}
+}
+
+func TestMaterializeRefusesAPlanNotApprovedAtItsCurrentRevision(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE kind = 'approve_plan'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "")
+	if err == nil || !strings.HasPrefix(err.Error(), "approval_missing:") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// checkTreeShape's own guard: a feature spike's plan must root an epic, even
+// when the tree is otherwise internally valid (a bug rooting a task is legal
+// on its own — L4 — just not for this intent).
+func TestMaterializeRefusesARootTypeMismatch(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "chat")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Mismatch", Intent: "feature",
+		Kind: Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
+		Repos: []ReposProposal{{Repo: repo, Reason: "x"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	badPlan := "## Work breakdown\n\n```swarm-tree\n" +
+		`{"root":{"type":"bug","title":"Wrong","brief":"","acceptance":[]},
+"children":[{"ref":"t1","type":"task","title":"t","brief":"","acceptance":[],"repos":["chat"]}],"deps":[]}` +
+		"\n```\n"
+	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, badPlan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sr, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+		SectionID: spec.Sections[0].ID, Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, sr.ID, ApproveInput{SectionSHA256: spec.Sections[0].SHA256,
+		ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	pr, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: plan.ArtifactID, Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, pr.ID, ApproveInput{ArtifactRevision: plan.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Materialize(ctx, ses.ID, key, spec.ArtifactID, plan.ArtifactID, "")
+	if err == nil || !strings.HasPrefix(err.Error(), "tree_invalid: root must be epic") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// tdd_exempt on a swarm-tree task must land on the materialized item.
+func TestMaterializePropagatesTddExempt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "chat")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Exempt", Intent: "feature",
+		Kind: Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
+		Repos: []ReposProposal{{Repo: repo, Reason: "x"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := "## Work breakdown\n\n```swarm-tree\n" +
+		`{"root":{"type":"epic","title":"E","brief":"","acceptance":["x"]},
+"children":[{"ref":"s1","type":"story","title":"S","brief":"","acceptance":[],
+  "children":[{"ref":"t1","type":"task","title":"T","brief":"","acceptance":[],"tdd_exempt":"docs","repos":["chat"]}]}],
+"deps":[]}` + "\n```\n"
+	planRes, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, plan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sr, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+		SectionID: spec.Sections[0].ID, Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, sr.ID, ApproveInput{SectionSHA256: spec.Sections[0].SHA256,
+		ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	pr, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planRes.ArtifactID, Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, pr.ID, ApproveInput{ArtifactRevision: planRes.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Materialize(ctx, ses.ID, key, spec.ArtifactID, planRes.ArtifactID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	children, _ := s.Items.Children(ctx, res.Root)
+	tasks, _ := s.Items.Children(ctx, children[0].Key)
+	if len(tasks) != 1 || tasks[0].TddExempt != "docs" {
+		t.Fatalf("tdd_exempt did not propagate: %+v", tasks)
 	}
 }
 

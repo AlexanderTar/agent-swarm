@@ -17,8 +17,8 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 		Kind: Fake, Model: "fake-1", Repos: []string{repoA}})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos",
-		Prompt: "The change needs the client and the shared schema.",
-		Repos:  []ReposProposal{{Repo: repoA, Reason: "the login form lives here", Source: "user"}},
+		Prompt:    "The change needs the client and the shared schema.",
+		Repos:     []ReposProposal{{Repo: repoA, Reason: "the login form lives here", Source: "user"}},
 		Expansion: []ReposProposal{{Repo: repoB, Reason: "the session schema is shared"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +50,26 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	}
 	if !strings.Contains(payload, `"path"`) || !strings.Contains(payload, `"name"`) {
 		t.Fatalf("the payload lists id, name and path: %s", payload)
+	}
+}
+
+func TestConfirmReposRefusesAnUnknownOrAlreadyResolvedRequest(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repoA := seedRepo(t, s, "chat")
+	if _, err := s.ConfirmRepos(ctx, "req_nope", []string{repoA}, "", 0, "board"); err == nil {
+		t.Fatal("an unknown request must be refused")
+	}
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Twice", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
+		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}})
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 0, "board"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 1, "board"); err == nil ||
+		err.Error() != "Already resolved." {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -132,12 +152,19 @@ func TestOnlyAnOrchestratorMayAskToConfirmRepos(t *testing.T) {
 func TestConfirmReposNeedsAReasonPerProposal(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	repoA := seedRepo(t, s, "chat")
+	repoA, repoB := seedRepo(t, s, "chat"), seedRepo(t, s, "app")
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Reason", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which?",
 		Repos: []ReposProposal{{Repo: repoA}}}); err == nil {
 		t.Fatal("every proposed repo needs a one-line reason")
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which?",
+		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}, Expansion: []ReposProposal{{Repo: repoB}}}); err == nil {
+		t.Fatal("every suggested repo needs a one-line reason")
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which?"}); err == nil {
+		t.Fatal("at least one proposal is required")
 	}
 }
 
@@ -207,6 +234,29 @@ func TestRequestChangesOnCloseSpikeReopensIt(t *testing.T) {
 	it, _ := s.Items.Get(ctx, "SPIKE-1")
 	if it.Status != items.InProgress {
 		t.Fatalf("status = %s", it.Status)
+	}
+}
+
+func TestConfirmedReposReturnsTheConfirmedSet(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repoA := seedRepo(t, s, "chat")
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Get", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
+		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 0, "board"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.ConfirmedRepos(ctx, a.RootItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != repoA || list[0].Name != "chat" {
+		t.Fatalf("confirmed = %+v", list)
 	}
 }
 
