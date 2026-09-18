@@ -48,8 +48,28 @@ func row(key, title, status, repo, ctx, handoff, parentKey, created, updated str
 	return []any{key, title, status, rp, ctx, handoff, p, created, updated}
 }
 
+// S-8, and the sole guarding assertion that always runs regardless of SQLite build
+// behavior: a real immutable=1 read of the live database on 2026-09-18 reported 14
+// children for SW-673 where the correct count (mode=ro, WAL-aware) was 36.
+// TestOpenV1ReadsTheWALAndNeverUsesImmutable below exercises the WAL-visibility
+// scenario end to end, but it may skip depending on whether the local
+// modernc.org/sqlite build checkpoints on Close (it does, on every build tested so
+// far, making that skip the norm rather than a local anomaly) — a skip there must
+// never silence this DSN check, so it lives in its own test with no skip path.
+func TestV1DSNIsReadOnlyAndNeverImmutable(t *testing.T) {
+	dsn := migrate.V1DSN(filepath.Join(t.TempDir(), "swarm.db"))
+	if strings.Contains(dsn, "immutable") {
+		t.Errorf("DSN = %q; must never contain immutable (S-8)", dsn)
+	}
+	if !strings.Contains(dsn, "mode=ro") {
+		t.Errorf("DSN = %q; must contain mode=ro so the -wal file is read (S-8)", dsn)
+	}
+}
+
 // S-8: immutable=1 skipped the WAL and undercounted SW-673's children on
-// 2026-09-18 (14 instead of 36). The reader must read the WAL.
+// 2026-09-18 (14 instead of 36). The reader must read the WAL. This test exercises
+// that scenario end to end; TestV1DSNIsReadOnlyAndNeverImmutable above is what
+// actually guards the DSN itself when this one skips.
 func TestOpenV1ReadsTheWALAndNeverUsesImmutable(t *testing.T) {
 	path := newV1DB(t, row("SW-1", "One", "ready", "", "c", "", "", "2026-09-01 10:00:00", "2026-09-01 10:00:00"))
 	// Write a second row through a separate handle and do not checkpoint, so the new
@@ -80,9 +100,6 @@ func TestOpenV1ReadsTheWALAndNeverUsesImmutable(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("read %d rows, want 2; a WAL-only row was missed (S-8)", len(got))
-	}
-	if dsn := migrate.V1DSN(path); strings.Contains(dsn, "immutable") || !strings.Contains(dsn, "mode=ro") {
-		t.Errorf("DSN = %q; must be mode=ro and never immutable (S-8)", dsn)
 	}
 }
 
