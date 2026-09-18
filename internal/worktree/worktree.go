@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -88,11 +89,9 @@ func (s *Service) git(ctx context.Context, dir string, args ...string) ([]byte, 
 	return s.Run(ctx, "git", append([]string{"-C", dir}, args...)...)
 }
 
-// SigningOK is preflight step 7 (L23). An unset or false value fails. --local
-// scopes the read to this repo's own config, so a global commit.gpgsign never
-// masks the repo's own (unset) setting.
+// SigningOK is preflight step 7 (L23). An unset or false value fails.
 func (s *Service) SigningOK(ctx context.Context, repoPath string) error {
-	out, err := s.git(ctx, repoPath, "config", "--local", "commit.gpgsign")
+	out, err := s.git(ctx, repoPath, "config", "commit.gpgsign")
 	if err != nil || strings.TrimSpace(string(out)) != "true" {
 		return fmt.Errorf("Commit signing is off for %s. Enable it in git config.", filepath.Base(repoPath))
 	}
@@ -210,9 +209,11 @@ func (s *Service) Get(ctx context.Context, wtID string) (Worktree, error) {
 	return scanWorktree(row)
 }
 
-// query returns worktrees matching a WHERE clause with one arg.
-func (s *Service) query(ctx context.Context, where string, arg any) ([]Worktree, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+worktreeCols+` FROM worktrees `+where, arg)
+// query returns worktrees matching a clause appended after "FROM worktrees "
+// (a bare WHERE, or an alias like "w WHERE ..." for a correlated subquery)
+// with its positional args.
+func (s *Service) query(ctx context.Context, where string, args ...any) ([]Worktree, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+worktreeCols+` FROM worktrees `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -230,22 +231,8 @@ func (s *Service) query(ctx context.Context, where string, arg any) ([]Worktree,
 
 // ForAgent returns every worktree owned by, or shared with, agentID.
 func (s *Service) ForAgent(ctx context.Context, agentID string) ([]Worktree, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+worktreeCols+` FROM worktrees w
-		WHERE owner_agent_id = ? OR EXISTS (SELECT 1 FROM worktree_reservations r
-			WHERE r.worktree_id = w.id AND r.agent_id = ? AND r.released_at IS NULL)`, agentID, agentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Worktree
-	for rows.Next() {
-		wt, err := scanWorktree(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, wt)
-	}
-	return out, rows.Err()
+	return s.query(ctx, `w WHERE owner_agent_id = ? OR EXISTS (SELECT 1 FROM worktree_reservations r
+		WHERE r.worktree_id = w.id AND r.agent_id = ? AND r.released_at IS NULL)`, agentID, agentID)
 }
 
 func (s *Service) repoPath(ctx context.Context, repoID string) (string, error) {
@@ -254,16 +241,30 @@ func (s *Service) repoPath(ctx context.Context, repoID string) (string, error) {
 	return path, err
 }
 
-// Share records agentID's reservation on the worktree.
+// Share records agentID's reservation on the worktree. It refuses once the
+// worktree has left the active state (C4): Remove's claim and this check run
+// as one-statement transactions on the same row, and SQLite's writer lock
+// (db.Open's _txlock=immediate) serializes them, so a Share racing a Remove
+// either lands before the claim (Remove then sees it and backs off) or after
+// (Share then sees the claimed state and refuses) — never in between.
 func (s *Service) Share(ctx context.Context, wtID, agentID, mode string) error {
 	if mode != "rw" && mode != "ro" {
 		return fmt.Errorf("worktree: unknown share mode %q", mode)
 	}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO worktree_reservations
-		(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)
-		ON CONFLICT(worktree_id, agent_id) DO UPDATE SET mode = excluded.mode, released_at = NULL`,
-		wtID, agentID, mode, db.Millis(s.Now()))
-	return err
+	return s.DB.Tx(ctx, func(tx *sql.Tx) error {
+		var state string
+		if err := tx.QueryRowContext(ctx, `SELECT state FROM worktrees WHERE id = ?`, wtID).Scan(&state); err != nil {
+			return err
+		}
+		if state != "active" {
+			return fmt.Errorf("worktree: %s is not active", wtID)
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO worktree_reservations
+			(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT(worktree_id, agent_id) DO UPDATE SET mode = excluded.mode, released_at = NULL`,
+			wtID, agentID, mode, db.Millis(s.Now()))
+		return err
+	})
 }
 
 // Release clears agentID's reservation on the worktree.
@@ -308,9 +309,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Worktree, error) 
 	return wt, s.insert(ctx, wt)
 }
 
+// shaPattern rejects anything that isn't a plausible git commit-ish before it
+// reaches filepath.Join or an exec argv: sha is agent-controlled (the review
+// {repo, sha} MCP operation), and length alone (len(sha) < 7) let arbitrary
+// characters, including path separators, through.
+var shaPattern = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
 // Review creates the detached worktree a reviewer reads (I5).
 func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Worktree, error) {
-	if len(sha) < 7 {
+	if !shaPattern.MatchString(sha) {
 		return Worktree{}, fmt.Errorf("worktree: %q is not a sha", sha)
 	}
 	path := filepath.Join(filepath.Dir(in.RepoPath), filepath.Base(in.RepoPath)+"--review-"+sha[:7])
@@ -327,7 +334,9 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 }
 
 // Remove runs the §12.1 checks in order. Only the owner may call it, and only
-// when nobody else holds an unreleased reservation (C4).
+// when nobody else holds an unreleased reservation (C4). The "no other
+// reservation" check and the state change that keeps a new one from landing
+// happen in one transaction (L12/§5): see claimForRemoval and Share.
 func (s *Service) Remove(ctx context.Context, wtID, callerAgentID string) (Worktree, error) {
 	wt, err := s.Get(ctx, wtID)
 	if err != nil {
@@ -336,15 +345,56 @@ func (s *Service) Remove(ctx context.Context, wtID, callerAgentID string) (Workt
 	if wt.OwnerAgentID != callerAgentID {
 		return Worktree{}, fmt.Errorf("worktree: only the owner can remove %s", wt.Path)
 	}
-	var others int
-	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktree_reservations
-		WHERE worktree_id = ? AND agent_id <> ? AND released_at IS NULL`, wtID, callerAgentID).Scan(&others); err != nil {
+	claimed, err := s.claimForRemoval(ctx, wtID, callerAgentID)
+	if err != nil {
 		return Worktree{}, err
 	}
-	if others > 0 {
-		return Worktree{}, fmt.Errorf("worktree: %d agents still hold %s", others, wt.Path)
+	if !claimed {
+		return Worktree{}, fmt.Errorf("worktree: %s is held by another agent, or a removal is already in progress", wt.Path)
 	}
+	wt.State, wt.RetainedReason = "retained", removingReason
 	return s.remove(ctx, wt)
+}
+
+// removingReason is a private worktrees.retained_reason sentinel. worktrees.state
+// only allows 'active'/'retained'/'removed' (no migration in P2), so
+// claimForRemoval borrows 'retained' as the claimed/in-flight marker; remove
+// always overwrites it with the real outcome (a genuine retained_reason, or
+// 'removed' with retained_reason cleared) before returning.
+const removingReason = "__removing__"
+
+// claimForRemoval verifies, in one transaction, that wtID is active, owned by
+// callerAgentID and has no other unreleased reservation, then marks it
+// retained/removingReason so a concurrent Share is refused (C4). It reports
+// whether the claim succeeded; false means someone else already holds or is
+// removing it, not an error.
+func (s *Service) claimForRemoval(ctx context.Context, wtID, callerAgentID string) (bool, error) {
+	var claimed bool
+	err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+		var owner, state string
+		if err := tx.QueryRowContext(ctx, `SELECT owner_agent_id, state FROM worktrees WHERE id = ?`, wtID).
+			Scan(&owner, &state); err != nil {
+			return err
+		}
+		if owner != callerAgentID || state != "active" {
+			return nil
+		}
+		var others int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktree_reservations
+			WHERE worktree_id = ? AND agent_id <> ? AND released_at IS NULL`, wtID, callerAgentID).Scan(&others); err != nil {
+			return err
+		}
+		if others > 0 {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = ?
+			WHERE id = ? AND state = 'active'`, removingReason, wtID); err != nil {
+			return err
+		}
+		claimed = true
+		return nil
+	})
+	return claimed, err
 }
 
 func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {

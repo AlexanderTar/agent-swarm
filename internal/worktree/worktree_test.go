@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,8 +19,19 @@ import (
 func fixedNow() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }
 
 // gitRepo makes a temp repo with one signed-off (unsigned) commit on main.
+//
+// Hermetic on purpose (Critical 1 fix round): SigningOK reads the *effective*
+// git config, on purpose, because that's what git itself signs on — a global
+// commit.gpgsign=true genuinely means signing is on even with no local
+// override. That only makes SigningOK's tests trustworthy if the operator's
+// own global/system config and GPG keyring can never leak in and change the
+// answer, so every test gets its own global/system config (empty) and its own
+// GNUPGHOME, and a test that wants a global value sets GIT_CONFIG_GLOBAL itself.
 func gitRepo(t *testing.T) string {
 	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GNUPGHOME", t.TempDir())
 	dir := filepath.Join(t.TempDir(), "proj")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -210,6 +222,72 @@ func TestRemoveKeepsAnUnmergedBranch(t *testing.T) {
 	}
 }
 
+// The "pushed" half of mergedOrPushed (upstream == HEAD) is the only guard
+// between a committed-but-unmerged branch and deletion once merge-base fails
+// (Important 2); it had no coverage at all.
+func TestRemoveDeletesAPushedUnmergedBranch(t *testing.T) {
+	repo := gitRepo(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	run(t, repo, "clone", "--bare", repo, origin)
+	run(t, repo, "remote", "add", "origin", origin)
+	run(t, repo, "fetch", "origin")
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/pushed",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, wt.Path, "add", "f.txt")
+	run(t, wt.Path, "-c", "commit.gpgsign=false", "commit", "-m", "work")
+	run(t, wt.Path, "push", "-u", "origin", "task/pushed")
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed (pushed counts as safe)", out)
+	}
+}
+
+// A branch pushed once, then amended with a further local commit that was
+// never pushed, must still be retained: the upstream no longer equals HEAD.
+func TestRemoveKeepsABranchWithAnUnpushedCommitAfterAPush(t *testing.T) {
+	repo := gitRepo(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	run(t, repo, "clone", "--bare", repo, origin)
+	run(t, repo, "remote", "add", "origin", origin)
+	run(t, repo, "fetch", "origin")
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/pushed-then-more",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, wt.Path, "add", "f.txt")
+	run(t, wt.Path, "-c", "commit.gpgsign=false", "commit", "-m", "work")
+	run(t, wt.Path, "push", "-u", "origin", "task/pushed-then-more")
+	if err := os.WriteFile(filepath.Join(wt.Path, "g.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, wt.Path, "add", "g.txt")
+	run(t, wt.Path, "-c", "commit.gpgsign=false", "commit", "-m", "more work, not pushed")
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "unmerged" {
+		t.Fatalf("worktree = %+v, want retained/unmerged", out)
+	}
+}
+
 func TestRemoveDeletesAMergedCleanWorktreeAndNeverForces(t *testing.T) {
 	repo := gitRepo(t)
 	s, repoID := newService(t, repo)
@@ -265,6 +343,43 @@ func TestRemoveRefusesANonOwnerAndAnUnreleasedShare(t *testing.T) {
 	}
 	if _, err := s.Remove(ctx, wt.ID, "agt_1"); err != nil {
 		t.Fatalf("after release it should remove: %v", err)
+	}
+}
+
+// The C4 guard and the claim that blocks a new Share must be one transaction
+// (Important 4): a Share landing between the "no other reservations" check
+// and the eventual deletion must never succeed. Rig s.Run so the moment
+// Remove reaches DirtyStrict's "status" call — which only happens after
+// claimForRemoval has committed — a concurrent Share fires; it must be
+// refused because the worktree already left the active state.
+func TestShareRefusesAConcurrentClaimRace(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/race",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := make(chan struct{})
+	shareErr := make(chan error, 1)
+	real := s.Run
+	var once sync.Once
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "status" {
+			once.Do(func() { close(claimed) })
+		}
+		return real(ctx, name, args...)
+	}
+	go func() {
+		<-claimed
+		shareErr <- s.Share(context.Background(), wt.ID, "agt_2", "ro")
+	}()
+	if _, err := s.Remove(ctx, wt.ID, "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-shareErr; err == nil {
+		t.Fatal("a Share racing the removal's claim must be refused")
 	}
 }
 
@@ -409,6 +524,18 @@ func TestReviewRefusesAShortSHA(t *testing.T) {
 	}
 }
 
+// Review's sha is agent-controlled input landing in a filepath.Join; a
+// same-length string with path-traversal characters must be refused, not
+// just a too-short one (Important 3).
+func TestReviewRefusesANonHexSHA(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	if _, err := s.Review(context.Background(), CreateInput{RepoID: repoID, RepoPath: repo,
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"}, "../../etc"); err == nil {
+		t.Fatal("a non-hex sha must be refused")
+	}
+}
+
 func TestPathForWithoutASlashUsesTheWholeBranch(t *testing.T) {
 	got := PathFor("/repos/proj", "standalone", func(string) bool { return false })
 	if want := "/repos/proj--standalone"; got != want {
@@ -438,6 +565,24 @@ func TestSigningOK(t *testing.T) {
 	run(t, repo, "config", "--unset", "commit.gpgsign")
 	if err := s.SigningOK(ctx, repo); err == nil {
 		t.Fatal("an unset commit.gpgsign is also off")
+	}
+}
+
+// SigningOK must read git's *effective* config (Critical 1): a global
+// commit.gpgsign=true with no local override is a real "signing is on", the
+// exact setup this machine (and the spec's own P0-7 validation) runs under.
+// Scoping the read to --local would report "off" here and block every spawn.
+func TestSigningOKHonoursTheEffectiveGlobalConfig(t *testing.T) {
+	repo := gitRepo(t) // hermetic: GIT_CONFIG_GLOBAL starts at os.DevNull
+	run(t, repo, "config", "--unset", "commit.gpgsign")
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(global, []byte("[commit]\n\tgpgsign = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	s, _ := newService(t, repo)
+	if err := s.SigningOK(context.Background(), repo); err != nil {
+		t.Fatalf("a global commit.gpgsign=true with no local override should pass: %v", err)
 	}
 }
 
