@@ -9,6 +9,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/notifyrules"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -159,7 +160,7 @@ func TestReadAllAndMarkRead(t *testing.T) {
 func TestNoRuleBodyEscapesWithBraces(t *testing.T) {
 	for kind := range Rules {
 		args := map[string]string{}
-		for _, ph := range placeholders(Rules[kind].Body) {
+		for _, ph := range notifyrules.Placeholders(Rules[kind].Body) {
 			args[ph] = "X"
 		}
 		r, err := Render(kind, args)

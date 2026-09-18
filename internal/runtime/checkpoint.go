@@ -43,9 +43,18 @@ var pauseAllowedKinds = []CheckpointKind{Handoff, BlockedCkp, FailedCkp}
 // bug: fakeNotifier.Raise (agents_test.go) just records the call, it never
 // calls Render, so passing no Args was invisible until something exercised a
 // real, wired notify.Service end to end — which no test did before the e2e
-// harness. Not touched: internal/runtime's other Notify.Raise/notify() call
-// sites already pass Args explicitly (grep -n "Args:" internal/runtime/*.go)
-// and were unaffected.
+// harness. Originally believed not to need touching: internal/runtime's
+// other Notify.Raise/notify() call sites already pass an Args map (grep -n
+// "Args:" internal/runtime/*.go) — but "Args is present" turned out not to
+// mean "Args is complete". A post-review pass (still Batch 6b) found more of
+// the same class this grep couldn't see: OnWorktreeRetained's Args had
+// {path, detail} but not the {ROOT-KEY} its template needs, and
+// OnRequestOpened's had only {KEY}, not {name, prompt}. fakeNotifier.Raise
+// now validates every raised kind's Args against the real §17.5 template
+// (via internal/notifyrules, a leaf-package extraction of notify.Rules that
+// runtime's own tests can import without the cycle notify itself would
+// create), so this class of bug fails the first test that exercises the
+// call site, not just an end-to-end run.
 var checkpointNotify = map[CheckpointKind]struct {
 	kind             string
 	name, key, title bool

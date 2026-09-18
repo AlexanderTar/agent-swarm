@@ -13,66 +13,27 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
+	"github.com/AlexanderTar/agent-swarm/internal/notifyrules"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 // Rule is one §17.5 row: a notification level, title, body template and the
-// menubar category it groups under.
-type Rule struct {
-	Level, Title, Body, Category string
-}
+// menubar category it groups under. A re-export of notifyrules.Rule, kept
+// here (not moved wholesale) so internal/runtime's own tests can validate
+// the Args a call site builds against the real template without importing
+// this package back — notify imports runtime for NotifyInput, so the
+// reverse would cycle. notifyrules is the leaf the data actually lives in;
+// see its doc comment.
+type Rule = notifyrules.Rule
 
-// Rules is the literal §17.5 table. item.created.bug is an internal lookup
-// key only (a different title for a bug root); Raise writes "item.created"
-// into the kind column and the SSE payload either way, because §17.5 and the
-// menubar's category map know one kind.
-var Rules = map[string]Rule{
-	"agent.accepted":          {"info", "Task accepted", "{name} started {KEY}: {title}.", "swarm.info"},
-	"item.completed":          {"info", "Task completed", "{KEY}: {title} is complete.", "swarm.info"},
-	"item.created":            {"info", "Epic ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
-	"item.created.bug":        {"info", "Bug ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
-	"agent.queued":            {"info", "Agent queued", "{name} starts when an agent slot becomes available.", "swarm.info"},
-	"agent.paused":            {"attention", "Agent paused", "{name} is paused on {KEY}.", "swarm.agent"},
-	"agent.interrupted":       {"attention", "Agent stopped", "{name} stopped before {KEY} finished.", "swarm.agent"},
-	"agent.retried":           {"info", "Agent retrying", "{name} started attempt {N} on {KEY}.", "swarm.info"},
-	"agent.failed":            {"attention", "Agent failed", "{name} couldn't finish {KEY}. Review the error.", "swarm.agent"},
-	"agent.crashed":           {"attention", "Agent crashed", "{name} exited unexpectedly on {KEY}.", "swarm.agent"},
-	"agent.stale":             {"attention", "No recent activity", "{name} has been quiet for 30 minutes on {KEY}.", "swarm.agent"},
-	"agent.undeliverable":     {"attention", "Couldn't deliver messages", "{name} hasn't picked up {N} message(s).", "swarm.agent"},
-	"agent.preflight_failed":  {"attention", "Couldn't start agent", "{reason}", "swarm.info"},
-	"worktree.retained":       {"attention", "Worktree kept", "The worktree for {ROOT-KEY} has {detail} and was kept.", "swarm.info"},
-	"tmux.unknown":            {"attention", "Unknown tmux session", "{name} is running but Swarm has no record of it.", "swarm.info"},
-	"request.confirm_repos":   {"action", "Confirm repositories", "{KEY}: {name} proposes {N} repositories{expansion}.", "swarm.approval"},
-	"request.close_spike":     {"action", "Close spike?", "{KEY}: {name} found nothing to build ({resolution}).", "swarm.approval"},
-	"request.question":        {"action", "Answer needed", "{KEY}: {prompt}", "swarm.question"},
-	"request.approve_section": {"action", "Section approval needed", `{KEY}: Review "{section}".`, "swarm.approval"},
-	"request.approve_plan":    {"action", "Plan approval needed", "{KEY}: Review the proposed implementation plan.", "swarm.approval"},
-	"request.approve_report":  {"action", "Report approval needed", "{KEY}: Review the root cause and fix plan.", "swarm.approval"},
-	"request.accept_epic":     {"action", "Epic acceptance needed", "{KEY}: Review completed work and accept the epic.", "swarm.approval"},
-	"request.accept_fix":      {"action", "Fix acceptance needed", "{KEY}: Review the fix and accept it.", "swarm.approval"},
-}
+// Rules is the literal §17.5 table, re-exported from notifyrules.
+var Rules = notifyrules.Rules
 
 // dedupWindow is how long a repeat of the same dedup_key is suppressed.
 const dedupWindow = 30 * time.Second
 
-// placeholderRe finds every {name} in a template. Render fails when one has no
-// argument, and placeholders lists them (the tests build a full argument map
-// from it, and the callers in internal/runtime use it to check they pass
-// everything).
+// placeholderRe finds every {name} in a template, for substitution in Render.
 var placeholderRe = regexp.MustCompile(`\{([A-Za-z][A-Za-z0-9 _-]*)\}`)
-
-func placeholders(tmpl string) []string {
-	ms := placeholderRe.FindAllStringSubmatch(tmpl, -1)
-	out := make([]string, 0, len(ms))
-	seen := map[string]bool{}
-	for _, m := range ms {
-		if !seen[m[1]] {
-			seen[m[1]] = true
-			out = append(out, m[1])
-		}
-	}
-	return out
-}
 
 // Render substitutes args into kind's template and fails on a placeholder
 // with no argument, so a missed key is a test failure rather than a literal

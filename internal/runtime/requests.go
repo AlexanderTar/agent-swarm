@@ -24,6 +24,14 @@ func canonicalJSON(raw json.RawMessage) string {
 	}
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
+		// ponytail: unreachable today — req.Binding is always this package's
+		// own json.Marshal output, and in.Binding has already round-tripped
+		// through httpapi's readJSON before Approve ever sees it — so this
+		// falls back to a raw-byte compare only if that ever stops being
+		// true. It fails safe (a garbled binding just won't match, 409, not
+		// a false-positive approval), but if a caller of canonicalJSON that
+		// *can* see truly malformed input ever appears, give this a real
+		// error return instead of a silent best-effort compare.
 		return string(raw)
 	}
 	b, _ := json.Marshal(v)
@@ -283,14 +291,25 @@ func (s *Store) RequestWireByID(ctx context.Context, id string) (RequestWire, er
 }
 
 // OnRequestOpened is wired into items.Store.RequestOpened: the accept_* requests
-// the reconciler opens still get their §17.5 notification.
+// the reconciler opens still get their §17.5 notification. In production
+// w.Kind is always accept_epic/accept_fix (reconcileRoot, internal/items/
+// transition.go, is the only caller of RequestOpened, and both those
+// templates need only KEY) — Args also carries name/prompt defensively,
+// unconditionally like finishOpen just below does for the same reason: an
+// unused key is harmless, and it makes this function correct for any other
+// kind it might someday be wired to, rather than only the two it happens to
+// see today.
 func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) error {
 	w, err := s.RequestWireTx(ctx, tx, id)
 	if err != nil {
 		return err
 	}
+	args := map[string]string{"KEY": w.ItemKey, "prompt": w.Prompt}
+	if w.AgentName != nil {
+		args["name"] = *w.AgentName
+	}
 	return s.notify(ctx, tx, NotifyInput{Kind: "request." + string(w.Kind), ItemKey: w.ItemKey,
-		RequestID: w.ID, Args: map[string]string{"KEY": w.ItemKey}})
+		RequestID: w.ID, Args: args})
 }
 
 // finishOpen is the shared tail of every ask* helper: publish request.opened

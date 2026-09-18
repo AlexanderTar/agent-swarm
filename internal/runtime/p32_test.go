@@ -51,8 +51,14 @@ func TestDeliverAdvicePutsAnAdviceMessageInTheInbox(t *testing.T) {
 func TestOnWorktreeRetainedRaisesTheSeventeenFiveNotification(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
+	// RootItemID must name a real item: OnWorktreeRetained resolves it to
+	// ROOT-KEY (review round fix — it used to send {path, detail}, missing
+	// the ROOT-KEY the §17.5 template requires, which made Render fail
+	// closed and rolled back retain's own transaction with it).
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "WT", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	err := s.tx(ctx, func(tx *sql.Tx) error {
-		return s.OnWorktreeRetained(ctx, tx, worktree.Worktree{Path: "/tmp/wt-x", RetainedReason: "unmerged"})
+		return s.OnWorktreeRetained(ctx, tx, worktree.Worktree{Path: "/tmp/wt-x",
+			RetainedReason: "unmerged", RootItemID: a.RootItemID})
 	})
 	if err != nil {
 		t.Fatal(err)

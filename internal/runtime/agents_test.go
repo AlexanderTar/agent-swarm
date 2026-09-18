@@ -20,6 +20,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/notifyrules"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
@@ -137,7 +138,7 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 		// wired here, not in Task 21. Run is the real execx.Run because the git calls
 		// go against temp repos gitRepoNoSigning creates.
 		Worktree:  &worktree.Service{DB: d, Run: execx.Run, Now: clk.Now, Log: func(string, ...any) {}},
-		Notify:    &fakeNotifier{},
+		Notify:    &fakeNotifier{t: t},
 		Adapters:  map[AgentKind]adapter.Adapter{Fake: fa},
 		Bin:       "/usr/local/bin/swarm",
 		DaemonURL: "http://127.0.0.1:17778", // F3: never the live daemon's port in a fixture
@@ -151,16 +152,41 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 	return s, tm, fa
 }
 
-// fakeNotifier records what the runtime raised.
+// fakeNotifier records what the runtime raised, and — this is the fix for
+// the detection gap that let ~15 missing-Args bugs (plus OnWorktreeRetained's
+// missing ROOT-KEY) ship undetected through this entire package's test suite
+// — validates each one against the real §17.5 template from notifyrules
+// (the leaf-package extraction of internal/notify's own Rules table; notify
+// itself can't be imported here without a cycle, since it imports runtime
+// for NotifyInput). A call site that builds a Kind with the wrong Args now
+// fails the test that exercises it, the same way notify.Render would fail
+// closed against a real, wired notify.Service — which is exactly what let
+// these bugs through before: nothing in this package's own suite ever
+// called Render for real.
 type fakeNotifier struct {
+	t      *testing.T
 	mu     sync.Mutex
 	raised []NotifyInput
 }
 
 func (f *fakeNotifier) Raise(ctx context.Context, tx *sql.Tx, n NotifyInput) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.raised = append(f.raised, n)
+	f.mu.Unlock()
+	if f.t == nil {
+		return nil
+	}
+	f.t.Helper()
+	rule, ok := notifyrules.Rules[n.Kind]
+	if !ok {
+		f.t.Fatalf("notify: unknown kind %q (fakeNotifier/notifyrules.Rules disagree with notify.Rules)", n.Kind)
+		return nil
+	}
+	for _, ph := range notifyrules.Placeholders(rule.Body) {
+		if _, ok := n.Args[ph]; !ok {
+			f.t.Fatalf("notify: %s is missing %s (Args = %v)", n.Kind, ph, n.Args)
+		}
+	}
 	return nil
 }
 

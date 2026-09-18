@@ -1254,12 +1254,24 @@ func (s *Store) publishAgentChanged(ctx context.Context, tx *sql.Tx, agentName, 
 
 // OnWorktreeRetained is worktree.Service.OnRetained: §17.5's "Worktree kept"
 // (P2 T35's P32). It runs inside the worktree service's own transaction, so it
-// takes the tx.
+// takes the tx — and that transaction is retain's own (internal/worktree/
+// worktree.go), the one that sets state='retained': a Render failure here
+// (a missing required placeholder) rolls the whole thing back, so the
+// worktree never actually gets marked retained in the DB. The template
+// (internal/notify/notify.go) needs {ROOT-KEY} and {detail}, not {path} —
+// resolved via itemKey, the same helper publishAgentChanged uses above.
+// ItemKey is set too: without it the dedup key degenerates to the bare
+// string "worktree.retained::", collapsing two different worktrees retained
+// within the same 30s window into one notification.
 func (s *Store) OnWorktreeRetained(ctx context.Context, tx *sql.Tx, wt worktree.Worktree) error {
 	detail := "uncommitted changes"
 	if wt.RetainedReason == "unmerged" {
 		detail = "unmerged commits"
 	}
-	return s.notify(ctx, tx, NotifyInput{Kind: "worktree.retained",
-		Args: map[string]string{"path": wt.Path, "detail": detail}})
+	rootKey, err := s.itemKey(ctx, tx, wt.RootItemID)
+	if err != nil {
+		return err
+	}
+	return s.notify(ctx, tx, NotifyInput{Kind: "worktree.retained", ItemKey: rootKey,
+		Args: map[string]string{"ROOT-KEY": rootKey, "detail": detail}})
 }
