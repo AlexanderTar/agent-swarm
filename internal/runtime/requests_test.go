@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -135,6 +137,37 @@ func TestApproveBindsToTheSectionHash(t *testing.T) {
 	json.Unmarshal([]byte(payload), &p)
 	if p.Decision != "approved" || p.SectionID == "" || p.Hash != art.Sections[0].SHA256 {
 		t.Fatalf("payload = %s", payload)
+	}
+}
+
+// The brief requires comparing "the whole binding against the stored one" for
+// accept_epic/accept_fix unconditionally, unlike ArtifactRevision's explicit
+// "when supplied" qualifier: a caller that omits Binding must not bypass the
+// staleness check and silently approve a request whose underlying integration
+// or item revision has already moved on.
+func TestApproveRefusesAnAcceptRequestWhoseBindingIsOmittedOrStale(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	reqID := ids.New("req")
+	binding := `{"item_revision":1,"integrated_checkpoint":"ckp_x","git":null}`
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, item_id, prompt, state, binding_json, created_at)
+		VALUES (?, 'accept_epic', ?, 'Review completed work and accept the epic.', 'open', ?, ?)`,
+		reqID, ep.ID, binding, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, reqID, ApproveInput{Via: "board"}); err == nil ||
+		!strings.Contains(err.Error(), "This request changed. Review the latest version.") {
+		t.Fatalf("omitting the binding must be refused, not silently approved: %v", err)
+	}
+	if _, err := s.Approve(ctx, reqID, ApproveInput{
+		Binding: json.RawMessage(`{"item_revision":2,"integrated_checkpoint":"ckp_x","git":null}`),
+		Via:     "board"}); err == nil || !strings.Contains(err.Error(), "This request changed. Review the latest version.") {
+		t.Fatalf("a mismatched binding must be refused: %v", err)
+	}
+	// echoing the exact stored binding back succeeds
+	if _, err := s.Approve(ctx, reqID, ApproveInput{Binding: json.RawMessage(binding), Via: "board"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

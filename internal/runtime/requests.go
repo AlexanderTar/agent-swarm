@@ -486,13 +486,19 @@ func (s *Store) resolve(ctx context.Context, id, state, responseText, via, origi
 			state, nullIf(responseText), nullIf(via), db.Millis(now), id); err != nil {
 			return err
 		}
-		rootID, err := s.rootItemID(ctx, tx, req.ItemID)
-		if err != nil {
-			return err
-		}
-		if _, err := s.enqueue(ctx, tx, Message{Kind: kind, Origin: origin, ToAgentID: req.AgentID,
-			RootItemID: rootID, ItemID: req.ItemID, RequestID: id, Payload: payload}); err != nil {
-			return err
+		// accept_epic/accept_fix requests are opened by the daemon's reconciler
+		// with no asking agent (items/transition.go's reconcileRoot never sets
+		// agent_id): there is nobody to send a result message to, so this is
+		// skipped rather than trying to enqueue to an empty to_agent_id.
+		if req.AgentID != "" {
+			rootID, err := s.rootItemID(ctx, tx, req.ItemID)
+			if err != nil {
+				return err
+			}
+			if _, err := s.enqueue(ctx, tx, Message{Kind: kind, Origin: origin, ToAgentID: req.AgentID,
+				RootItemID: rootID, ItemID: req.ItemID, RequestID: id, Payload: payload}); err != nil {
+				return err
+			}
 		}
 		key, err := s.itemKey(ctx, tx, req.ItemID)
 		if err != nil {
@@ -542,7 +548,12 @@ func (s *Store) Approve(ctx context.Context, id string, in ApproveInput) (Reques
 		if in.ArtifactRevision != 0 && req.ArtifactRevision != 0 && in.ArtifactRevision != req.ArtifactRevision {
 			return &items.Error{Code: items.CodeConflict, Message: "This request changed. Review the latest version."}
 		}
-		if (req.Kind == "accept_epic" || req.Kind == "accept_fix") && len(in.Binding) > 0 &&
+		// Unconditional, unlike ArtifactRevision above: the brief has no "when
+		// supplied" qualifier here, so a caller that omits Binding while the
+		// request has one must be refused, not waved through — the acceptance
+		// may be bound to an integrated_checkpoint or item_revision that has
+		// since moved on.
+		if (req.Kind == "accept_epic" || req.Kind == "accept_fix") &&
 			string(in.Binding) != string(req.Binding) {
 			return &items.Error{Code: items.CodeConflict, Message: "This request changed. Review the latest version."}
 		}

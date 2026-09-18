@@ -98,9 +98,12 @@ func jsonArray[T any](v []T) string {
 
 // tryTransition applies a checkpoint's item-status effect. A denied transition
 // (the item was not in the expected state — e.g. a reviewer completing a task
-// still sitting at Ready) is a silent no-op: the checkpoint itself always
-// records, and the derived status only moves when the state machine allows it.
-// Any other error (a DB failure) still propagates.
+// still sitting at Ready) is a no-op: the checkpoint itself always records,
+// and the derived status only moves when the state machine allows it. That is
+// not silent, though — it leaves the item's displayed status disagreeing with
+// what was just recorded, so it is logged (matching changedFiles' own
+// lenient-but-logged pattern below). Any other error (a DB failure) still
+// propagates.
 func (s *Store) tryTransition(ctx context.Context, tx *sql.Tx, key string, to items.Status) error {
 	_, err := s.Items.TransitionTx(ctx, tx, key, to, items.Daemon())
 	if err == nil {
@@ -108,6 +111,7 @@ func (s *Store) tryTransition(ctx context.Context, tx *sql.Tx, key string, to it
 	}
 	var ie *items.Error
 	if errors.As(err, &ie) && ie.Code == items.CodeTransitionDenied {
+		s.logf("checkpoint: %s stays put, denied moving to %s: %v", key, to, err)
 		return nil
 	}
 	return err

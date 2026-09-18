@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -180,6 +181,36 @@ func TestTDDGateSkippedForExemptTasksAndReviewRoles(t *testing.T) {
 	if _, err := s.WriteCheckpoint(ctx, w2Ses.ID, CheckpointInput{Kind: CompletedCkp,
 		Summary: "docs updated"}); err != nil {
 		t.Fatalf("an exempt task needs no TDD evidence: %v", err)
+	}
+}
+
+// tryTransition's swallow of a denied transition must still leave a trace: the
+// checkpoint record and the item's displayed status can now disagree, and an
+// operator needs a log line to find out why (matching changedFiles' own
+// lenient-but-logged pattern in this file).
+func TestTryTransitionLogsADeniedTransitionInsteadOfSilence(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	// TASK-1 is still "ready" (never accepted), so completing it as a reviewer
+	// asks for a Ready->InReview transition that the state machine denies.
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+	var logged string
+	s.Log = func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "reviewed, still ready"}); err != nil {
+		t.Fatal(err)
+	}
+	if logged == "" {
+		t.Fatal("a denied transition must be logged, not silently swallowed")
+	}
+	if !strings.Contains(logged, "TASK-1") {
+		t.Fatalf("the log line should name the item, got %q", logged)
 	}
 }
 
