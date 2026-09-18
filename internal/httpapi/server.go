@@ -50,7 +50,11 @@ type Deps struct {
 	// Hook is the daemon-side /hook/{agent}/{event} decision handler (P2 T34).
 	// The brief's Task 31 field list for Deps didn't name this one, but the
 	// hook route has no other way to reach it; noted in the batch report.
-	Hook         *hook.Handler
+	Hook *hook.Handler
+	// Dev enables POST /api/dev/seed (Task 39). Set from daemonConfig.Dev,
+	// which only `make dev --dev` and a test's devDaemon pass; the launchd
+	// job never does. It gates nothing else.
+	Dev          bool
 	WriteTimeout time.Duration                    // per SSE write; 0 means 10 s
 	PingInterval time.Duration                    // SSE keep-alive; 0 means 25 s
 	Log          func(format string, args ...any) // nil means log.Printf
@@ -131,7 +135,7 @@ func New(d Deps) *Server {
 		s.mcpHandler = d.MCP.Handler(s.resolveMCPCaller)
 	}
 	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes(),
-		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.agentIORoutes())
+		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.agentIORoutes(), s.devRoutes())
 	for _, rt := range s.routes {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}

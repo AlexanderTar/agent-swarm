@@ -258,7 +258,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 
 	api := httpapi.New(httpapi.Deps{Version: version, Token: token, DB: d, Events: ev,
 		Items: it, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
-		RT: rt, Notify: nt, Usage: up, Advisor: adv, MCP: mcpsrv, Hook: hookH,
+		RT: rt, Notify: nt, Usage: up, Advisor: adv, MCP: mcpsrv, Hook: hookH, Dev: cfg.Dev,
 		Run: execx.Run, After: time.After})
 	return &daemon{cfg: cfg, db: d, ev: ev, cat: cat, st: st, rp: rp, idx: idx, api: api,
 		rt: rt, up: up}, nil

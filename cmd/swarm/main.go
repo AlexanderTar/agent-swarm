@@ -39,6 +39,7 @@ Commands:
   confirm-repos REQ PATH... [--comment TEXT]
   request-changes REQ COMMENT
   usage [--refresh]
+  dev-seed                          load the contract fixture keys (make dev only)
   version
 
 Every command takes --home DIR (default $SWARM_HOME or ~/.swarm).
@@ -109,6 +110,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdRequestChanges(args[1:], stdout, stderr)
 	case "usage":
 		return cmdUsage(args[1:], stdout, stderr)
+	case "dev-seed":
+		return cmdDevSeed(args[1:], stdout, stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, "swarm "+version)
 		return 0
