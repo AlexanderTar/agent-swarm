@@ -391,12 +391,14 @@ func cmdAck(args []string, stdout, stderr io.Writer) int {
 
 // reqRow is the part of §3.3 Request the CLI reads back.
 type reqRow struct {
-	ID      string          `json:"id"`
-	Kind    string          `json:"kind"`
-	ItemKey string          `json:"item_key"`
-	Prompt  string          `json:"prompt"`
-	State   string          `json:"state"`
-	Binding json.RawMessage `json:"binding"`
+	ID               string          `json:"id"`
+	Kind             string          `json:"kind"`
+	ItemKey          string          `json:"item_key"`
+	Prompt           string          `json:"prompt"`
+	State            string          `json:"state"`
+	SectionSHA256    *string         `json:"section_sha256"`
+	ArtifactRevision *int            `json:"artifact_revision"`
+	Binding          json.RawMessage `json:"binding"`
 }
 
 func cmdRequests(args []string, stdout, stderr io.Writer) int {
@@ -455,6 +457,13 @@ func cmdAnswer(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// cmdApprove fetches the request first and echoes back whatever of
+// section_sha256/artifact_revision/binding it carries: Approve's server-side
+// check (§7.2) is unconditional on each field the request actually has (a
+// stale caller must be refused, not waved through), so a body that omits a
+// field the request set doesn't skip that check, it fails it — every
+// accept_epic/accept_fix approval, and every approve_section/approve_plan
+// whose section has a hash, 409ed unconditionally before this fix.
 func cmdApprove(args []string, stdout, stderr io.Writer) int {
 	c, rest, code, done := connect("approve", args, stderr, nil)
 	if done {
@@ -464,8 +473,22 @@ func cmdApprove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, "Usage: swarm approve REQ\n")
 		return 2
 	}
+	req, err := requestByID(c, rest[0])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	body := map[string]any{"via": "cli"}
+	if req.SectionSHA256 != nil {
+		body["section_sha256"] = *req.SectionSHA256
+	}
+	if req.ArtifactRevision != nil {
+		body["artifact_revision"] = *req.ArtifactRevision
+	}
+	if len(req.Binding) > 0 {
+		body["binding"] = req.Binding
+	}
 	var wire map[string]any
-	if err := c.do("POST", "/api/requests/"+rest[0]+"/approve", map[string]string{"via": "cli"}, &wire); err != nil {
+	if err := c.do("POST", "/api/requests/"+rest[0]+"/approve", body, &wire); err != nil {
 		return fail(stderr, err)
 	}
 	fmt.Fprintln(stdout, "Approved.")

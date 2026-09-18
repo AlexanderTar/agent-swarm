@@ -174,6 +174,55 @@ func TestRequestActions(t *testing.T) {
 	}
 }
 
+// TestApproveSendsTheBindingBack is the regression for a bug this batch
+// introduced and the review round caught: cmdApprove used to post only
+// {"via":"cli"}, never the request's own section_sha256/artifact_revision/
+// binding — fields Approve's server-side check (§7.2) is unconditional on
+// whenever the request carries them, so an accept_epic/accept_fix approval
+// (or an approve_section/approve_plan whose section has a hash) 409ed every
+// time, unconditionally. The earlier TestRequestActions couldn't catch this:
+// its stub returns {"state":"approved"} no matter what body it receives.
+// This one actually inspects the POST body and fails the test if the
+// binding it fetched isn't echoed back.
+func TestApproveSendsTheBindingBack(t *testing.T) {
+	var approveBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/requests":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[{"id":"req_1","kind":"accept_epic","item_key":"EPIC-1","prompt":"Accept it.",
+				"state":"open","binding":{"item_revision":7,"integrated_checkpoint":"ckp_1","git":[]}}]`))
+		case r.Method == "POST" && r.URL.Path == "/api/requests/req_1/approve":
+			b, _ := io.ReadAll(r.Body)
+			approveBody = string(b)
+			var body map[string]any
+			json.Unmarshal(b, &body)
+			if body["binding"] == nil {
+				w.WriteHeader(409)
+				w.Write([]byte(`{"error":{"code":"conflict","message":"This request changed. Review the latest version."}}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"id":"req_1","state":"approved"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	home := t.TempDir()
+	writeToken(t, home, "tok")
+	var out bytes.Buffer
+	code := run([]string{"approve", "--home", home, "--url", srv.URL, "req_1"}, &out, &out)
+	if code != 0 {
+		t.Fatalf("code = %d: %s (approve body sent: %s)", code, out.String(), approveBody)
+	}
+	var sent map[string]any
+	json.Unmarshal([]byte(approveBody), &sent)
+	if sent["binding"] == nil {
+		t.Fatalf("approve body = %s, want a binding field echoed back", approveBody)
+	}
+}
+
 func TestAgentsPrintsATree(t *testing.T) {
 	srv, _, home := stubDaemon(t, map[string]string{
 		"GET /api/agents": `[{"name":"auth-orchestrator","role":"orchestrator","state":"active",
