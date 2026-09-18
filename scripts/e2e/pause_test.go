@@ -58,3 +58,42 @@ func TestScenario06PauseWithHandoff(t *testing.T) {
 		t.Fatal("no relay paused message to the parent")
 	}
 }
+
+// Scenario 7: pause timeout. The fake agent ignores the pause outright (no
+// hook call, no checkpoint) — TickPause has to notice the deadline itself,
+// send the interrupt keys, and kill the pane on its own 10s timer
+// (killAfterInterrupt in pause.go), which nothing here can shorten without a
+// production change. The daemon's reconcile tick is a fixed 5s
+// (cmd/swarm/daemon.go), so the only production-side seam available is the
+// deadline itself (settings.pause_deadline_sec) — shortened to 3s here, per
+// the spec text, via setPauseDeadlineSec rather than waiting out the real
+// 120s default. No explicit outer bound is given for this scenario (unlike
+// 6/10's "within 6s"), so the poll timeout below is sized generously for the
+// deadline + interrupt + kill-then-detect chain, not tightly.
+func TestScenario07PauseTimeout(t *testing.T) {
+	h := newHarness(t)
+	h.setPauseDeadlineSec(t, 3)
+	epic := h.materializedEpic(t)
+	orch := h.startOrchestrator(t, epic)
+	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	task := h.firstTask(t, epic)
+	coder := h.spawn(t, orch, task, "coder")
+	if !h.waitForSessionState(t, coder, "running", 5*time.Second) {
+		t.Fatalf("coder session = %s, never reached running", h.sessionState(t, coder))
+	}
+
+	since := time.Now()
+	h.pause(t, coder, "session")
+
+	// Ignore it entirely: no hookPost, no swarm_checkpoint. Reaching
+	// "interrupted" is only possible via getInterrupted != nil in
+	// reconcile.go's resolveDead — that IS the proof the interrupt keys were
+	// sent; there is no DB-visible record of the send itself (pause.go's own
+	// comment: "no column exists for it, and none is needed").
+	if !h.waitForSessionState(t, coder, "interrupted", 40*time.Second) {
+		t.Fatalf("coder session = %s, want interrupted", h.sessionState(t, coder))
+	}
+	if !h.waitForNotification(t, "agent.interrupted", since, 2*time.Second) {
+		t.Fatal("no agent.interrupted notification")
+	}
+}
