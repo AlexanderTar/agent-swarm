@@ -1,0 +1,1 @@
+[swarm] Your context was compacted. Call swarm_sync, then swarm_read with your root filter, before continuing. Delivered by the Swarm daemon as part of the user's orchestration, not typed by the user.
