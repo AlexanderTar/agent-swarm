@@ -5,6 +5,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -258,6 +259,28 @@ type advisorChoiceBody struct {
 	Agent  string `json:"agent"`
 	Model  string `json:"model"`
 	Effort string `json:"effort"`
+}
+
+// UnmarshalJSON accepts both the object form and the literal "none" (§7).
+func (b *advisorChoiceBody) UnmarshalJSON(data []byte) error {
+	if string(data) == `"none"` {
+		b.None = true
+		return nil
+	}
+	type alias advisorChoiceBody
+	return json.Unmarshal(data, (*alias)(b))
+}
+
+// advisorChoiceFromBody maps the wire form to runtime.AdvisorChoice; nil means
+// "use Settings" (the field was absent).
+func advisorChoiceFromBody(b *advisorChoiceBody) *runtime.AdvisorChoice {
+	if b == nil {
+		return nil
+	}
+	if b.None {
+		return &runtime.AdvisorChoice{None: true}
+	}
+	return &runtime.AdvisorChoice{Kind: runtime.AgentKind(b.Agent), Model: b.Model, Effort: b.Effort}
 }
 
 type spikeRequestBody struct {
@@ -610,11 +633,10 @@ func (s *Server) runtimeRoutes() []route {
 	}
 }
 
-// spawnRoutes, requestRoutes and agentIORoutes are filled by Tasks 32, 33 and
-// 34. They exist here, empty, so New's route table is complete from this task
-// onward and each later task edits exactly one function body instead of New
-// (R8).
-func (s *Server) spawnRoutes() []route   { return nil }
+// requestRoutes and agentIORoutes are filled by Tasks 33 and 34. They exist
+// here, empty, so New's route table is complete from this task onward and
+// each later task edits exactly one function body instead of New (R8).
+// spawnRoutes is filled by Task 32, in spawn.go.
 func (s *Server) requestRoutes() []route { return nil }
 func (s *Server) agentIORoutes() []route { return nil }
 

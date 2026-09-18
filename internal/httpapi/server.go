@@ -84,6 +84,13 @@ type Server struct {
 	idemMu    sync.Mutex
 	done      chan struct{} // closed by Close: ends the SSE streams
 	closeOnce sync.Once
+
+	// termMu guards termWait (the pending Ghostty-fallback cancel channel per
+	// agent name) and termFallback (agents that already needed the fallback
+	// once, so later opens skip straight to it, P0-6).
+	termMu       sync.Mutex
+	termWait     map[string]chan struct{}
+	termFallback map[string]bool
 }
 
 // Close ends every open SSE stream. They never go idle on their own, so

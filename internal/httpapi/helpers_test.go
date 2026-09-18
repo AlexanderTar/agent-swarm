@@ -287,7 +287,13 @@ type testTmux struct {
 
 func (f *testTmux) Start(context.Context, string, string, map[string]string, []string) error { return nil }
 func (f *testTmux) Panes(context.Context) ([]runtime.Pane, error)                             { return f.panes, nil }
-func (f *testTmux) Capture(context.Context, string, int) (string, error)                      { return "", nil }
+
+// Capture always reports the idle prompt (matches internal/adapter.Fake's
+// IdlePrompt): watchStartup then moves a freshly spawned session straight to
+// "running" instead of polling capture-pane for up to 30 s per spawn.
+func (f *testTmux) Capture(context.Context, string, int) (string, error) {
+	return "─────\n❯ \n─────\n", nil
+}
 func (f *testTmux) PasteLine(context.Context, string, string) error                           { return nil }
 func (f *testTmux) Keys(ctx context.Context, name string, keys ...string) error {
 	f.keys = append(f.keys, name)
