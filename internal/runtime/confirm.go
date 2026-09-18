@@ -176,6 +176,84 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 	return out, err
 }
 
+// validateRepoConfirmTx is the read half of a repo confirmation (I13): the
+// repos_version check, that every id exists, and that no dropped repo still
+// has a live worktree reservation. Shared by the request-bound ConfirmRepos
+// and the item-level ValidateItemRepos (orchestrator spawn, L25).
+func (s *Store) validateRepoConfirmTx(ctx context.Context, tx *sql.Tx, root items.Item, repoIDs []string, version int) ([]repoRef, error) {
+	if len(repoIDs) == 0 {
+		return nil, &items.Error{Code: items.CodeBadRequest, Message: "Choose at least one repository."}
+	}
+	if root.ReposVersion != version {
+		return nil, &items.Error{Code: items.CodeConflict, Message: "This request changed. Review the latest version."}
+	}
+	refs, err := s.repoRefs(ctx, tx, repoIDs) // also proves every id exists
+	if err != nil {
+		return nil, err
+	}
+	for _, dropped := range removed(root.Repos, repoIDs) {
+		busy, name, err := s.repoHasLiveReservations(ctx, tx, root.ID, dropped)
+		if err != nil {
+			return nil, err
+		}
+		if busy {
+			return nil, &items.Error{Code: items.CodeConflict,
+				Message: fmt.Sprintf("%s has active worktrees. Finish or release them first.", name)}
+		}
+	}
+	return refs, nil
+}
+
+// commitRepoConfirmTx writes the confirmed set on root. The caller reconciles
+// (ReconcileTx) at whatever point in its own flow that belongs.
+func (s *Store) commitRepoConfirmTx(ctx context.Context, tx *sql.Tx, root items.Item, repoIDs []string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = ?,
+		repos_version = repos_version + 1, updated_at = ? WHERE id = ?`,
+		jsonArray(repoIDs), db.Millis(s.Now()), root.ID)
+	return err
+}
+
+// ValidateItemRepos is the read half of a repo confirmation for itemKey, with
+// no associated request (L25: the orchestrator-spawn sheet's own repo
+// picker). It resolves repoIDs to their filesystem paths, so the caller can
+// feed them into a new agent's own Preflight (§11.4 steps 6-7), and returns
+// before anything is written — the write happens only once the spawn that
+// will use these repos has actually succeeded (see CommitItemRepos).
+func (s *Store) ValidateItemRepos(ctx context.Context, itemKey string, repoIDs []string, version int) ([]string, error) {
+	var paths []string
+	err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+		root, err := s.Items.GetTx(ctx, tx, itemKey)
+		if err != nil {
+			return err
+		}
+		refs, err := s.validateRepoConfirmTx(ctx, tx, root, repoIDs, version)
+		if err != nil {
+			return err
+		}
+		paths = make([]string, len(refs))
+		for i, r := range refs {
+			paths[i] = r.Path
+		}
+		return nil
+	})
+	return paths, err
+}
+
+// CommitItemRepos writes the confirmed set on itemKey and reconciles, once
+// the orchestrator that will use these repos has actually spawned (L25).
+func (s *Store) CommitItemRepos(ctx context.Context, itemKey string, repoIDs []string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		root, err := s.Items.GetTx(ctx, tx, itemKey)
+		if err != nil {
+			return err
+		}
+		if err := s.commitRepoConfirmTx(ctx, tx, root, repoIDs); err != nil {
+			return err
+		}
+		return s.Items.ReconcileTx(ctx, tx, itemKey)
+	})
+}
+
 // ConfirmRepos records the user's repository choice (L25, I13). It is a UI or
 // CLI action, so it writes the only repos_confirmed message the system ever
 // produces.
@@ -200,27 +278,12 @@ func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, c
 		if err != nil {
 			return err
 		}
-		if root.ReposVersion != version {
-			return &items.Error{Code: items.CodeConflict, Message: "This request changed. Review the latest version."}
-		}
-		refs, err := s.repoRefs(ctx, tx, repoIDs) // also proves every id exists
+		refs, err := s.validateRepoConfirmTx(ctx, tx, root, repoIDs, version)
 		if err != nil {
 			return err
 		}
-		for _, dropped := range removed(root.Repos, repoIDs) {
-			busy, name, err := s.repoHasLiveReservations(ctx, tx, root.ID, dropped)
-			if err != nil {
-				return err
-			}
-			if busy {
-				return &items.Error{Code: items.CodeConflict,
-					Message: fmt.Sprintf("%s has active worktrees. Finish or release them first.", name)}
-			}
-		}
 		now := db.Millis(s.Now())
-		if _, err := tx.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = ?,
-			repos_version = repos_version + 1, updated_at = ? WHERE id = ?`,
-			jsonArray(repoIDs), now, root.ID); err != nil {
+		if err := s.commitRepoConfirmTx(ctx, tx, root, repoIDs); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'approved',

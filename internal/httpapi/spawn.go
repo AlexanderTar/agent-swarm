@@ -3,12 +3,10 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
@@ -72,30 +70,6 @@ func wrapPreflightErr(err error) error {
 	return apiErr(http.StatusUnprocessableEntity, "preflight_failed", err.Error())
 }
 
-// confirmItemRepos is L25: a non-empty repos list on the orchestrator route
-// confirms that set on the root item, the same optimistic-concurrency shape
-// swarm_confirm_repos uses (a stale repos_version is 409).
-//
-// ponytail: this does not feed the repos into the new orchestrator's own
-// Preflight check (RepoPaths stays empty), unlike a repo picked at spike
-// creation. §11.4 step 7 already covers the signing check at the point a repo
-// is actually used — swarm_worktree create re-runs it for "repos confirmed
-// later" — and no test in this batch exercises signing at spawn time for an
-// orchestrator. Add RepoPaths resolution here if that changes.
-func (s *Server) confirmItemRepos(ctx context.Context, key string, repoIDs []string, version int) error {
-	it, err := s.Items.Get(ctx, key)
-	if err != nil {
-		return err
-	}
-	if it.ReposVersion != version {
-		return apiErr(http.StatusConflict, "conflict", "This request changed. Review the latest version.")
-	}
-	body, _ := json.Marshal(repoIDs)
-	_, err = s.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = ?, repos_version = repos_version + 1, updated_at = ?
-		WHERE id = ?`, string(body), db.Millis(time.Now()), it.ID)
-	return err
-}
-
 func (s *Server) startOrchestrator(w http.ResponseWriter, r *http.Request) {
 	var body orchestratorRequestBody
 	if err := readJSON(r, &body); err != nil {
@@ -104,13 +78,29 @@ func (s *Server) startOrchestrator(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.PathValue("key")
 	s.idempotent(w, r, body.RequestID, "POST /api/items/{key}/orchestrator", http.StatusOK, func(ctx context.Context) (any, error) {
+		// L25: repos picked on the spawn sheet are validated (repos_version,
+		// existence, live reservations on anything dropped) BEFORE the
+		// orchestrator spawns, and their paths feed Preflight's §11.4 steps
+		// 6-7 (repo exists, signing) — mirroring StartSpike's own
+		// RepoPaths-into-Preflight pattern. The item itself is confirmed
+		// only after StartOrchestrator succeeds, so a Preflight failure never
+		// leaves the item's repos confirmed with nothing running.
+		var repoPaths []string
+		if len(body.Repos) > 0 {
+			paths, err := s.RT.ValidateItemRepos(ctx, key, body.Repos, body.ReposVersion)
+			if err != nil {
+				return nil, err
+			}
+			repoPaths = paths
+		}
 		a, _, err := s.RT.StartOrchestrator(ctx, runtime.OrchestratorInput{ItemKey: key, Kind: runtime.AgentKind(body.Agent),
-			Model: body.Model, Effort: body.Effort, Advisor: advisorChoiceFromBody(body.Advisor), Name: body.Name})
+			Model: body.Model, Effort: body.Effort, Advisor: advisorChoiceFromBody(body.Advisor), Name: body.Name,
+			RepoPaths: repoPaths})
 		if err != nil {
 			return nil, wrapPreflightErr(err)
 		}
 		if len(body.Repos) > 0 {
-			if err := s.confirmItemRepos(ctx, key, body.Repos, body.ReposVersion); err != nil {
+			if err := s.RT.CommitItemRepos(ctx, key, body.Repos); err != nil {
 				return nil, err
 			}
 		}

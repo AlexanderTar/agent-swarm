@@ -53,6 +53,72 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	}
 }
 
+// Required fix 1: ValidateItemRepos is the item-level (request-free) half of
+// a repo confirmation, used by the orchestrator-spawn route so it can resolve
+// paths for Preflight and refuse a bad pick BEFORE anything spawns.
+func TestValidateItemReposResolvesPathsWithoutWriting(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repoA := seedRepo(t, s, "chat")
+	it, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Root"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := s.ValidateItemRepos(ctx, it.Key, []string{repoA}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] == "" {
+		t.Fatalf("paths = %v", paths)
+	}
+	// nothing written: repos_version is still 0.
+	again, err := s.Items.Get(ctx, it.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ReposVersion != 0 || len(again.Repos) != 0 {
+		t.Fatalf("item = %+v, want no write", again)
+	}
+}
+
+func TestValidateItemReposRefusesAStaleVersionOrAnUnknownRepo(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repoA := seedRepo(t, s, "chat")
+	it, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Root"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ValidateItemRepos(ctx, it.Key, []string{repoA}, 7); err == nil {
+		t.Fatal("want a conflict on a stale version")
+	}
+	if _, err := s.ValidateItemRepos(ctx, it.Key, []string{"repo_does_not_exist"}, 0); err == nil {
+		t.Fatal("want a bad_request on an unknown repo id")
+	}
+}
+
+// Required fix 1: CommitItemRepos is the write half, called only once the
+// spawn that will use these repos has actually succeeded.
+func TestCommitItemReposWritesTheConfirmedSetAndReconciles(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repoA := seedRepo(t, s, "chat")
+	it, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Root"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitItemRepos(ctx, it.Key, []string{repoA}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Items.Get(ctx, it.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ReposVersion != 1 || len(again.Repos) != 1 || again.Repos[0] != repoA {
+		t.Fatalf("item = %+v", again)
+	}
+}
+
 func TestConfirmReposRefusesAnUnknownOrAlreadyResolvedRequest(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

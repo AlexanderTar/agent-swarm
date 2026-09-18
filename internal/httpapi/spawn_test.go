@@ -106,6 +106,54 @@ func TestStartOrchestratorAndTheSecondOneIs409(t *testing.T) {
 	}
 }
 
+// Required fix 1 (I-1): a stale repos_version must be refused BEFORE the
+// orchestrator spawns — not spawned-then-409, which would leave the item
+// permanently wedged (retry hits "already has an orchestrator").
+func TestStartOrchestratorWithAStaleReposVersionSpawnsNothing(t *testing.T) {
+	s, seed := newRuntimeServerWithEpic(t)
+	rec := s.post(t, "/api/items/"+seed.EpicKey+"/orchestrator",
+		`{"request_id":"o1","agent":"fake","model":"fake-1","repos":["`+seed.RepoID+`"],"repos_version":99}`)
+	if rec.Code != 409 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var count int
+	itemID := itemIDByKey(t, s, seed.EpicKey)
+	if err := s.DB.QueryRowContext(bg, `SELECT COUNT(*) FROM agents WHERE root_item_id = ?`, itemID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("agents spawned = %d, want 0", count)
+	}
+	var version int
+	if err := s.DB.QueryRowContext(bg, `SELECT repos_version FROM items WHERE id = ?`, itemID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 0 {
+		t.Fatalf("repos_version = %d, want unchanged 0", version)
+	}
+}
+
+// Required fix 1 (I-1): an unknown repo id must be refused, not silently
+// accepted as a confirmed repo.
+func TestStartOrchestratorWithAnUnknownRepoIsRefused(t *testing.T) {
+	s, seed := newRuntimeServerWithEpic(t)
+	rec := s.post(t, "/api/items/"+seed.EpicKey+"/orchestrator",
+		`{"request_id":"o1","agent":"fake","model":"fake-1","repos":["repo_does_not_exist"],"repos_version":0}`)
+	if rec.Code >= 300 {
+		// refused, as required — exact code isn't the point of this test
+	} else {
+		t.Fatalf("status = %d: %s, want an error", rec.Code, rec.Body)
+	}
+	var count int
+	itemID := itemIDByKey(t, s, seed.EpicKey)
+	if err := s.DB.QueryRowContext(bg, `SELECT COUNT(*) FROM agents WHERE root_item_id = ?`, itemID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("agents spawned = %d, want 0", count)
+	}
+}
+
 // §10.7: the action table, state by state.
 func TestActionsAllowedPerState(t *testing.T) {
 	cases := []struct {
