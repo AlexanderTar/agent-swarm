@@ -616,6 +616,111 @@ func (h *harness) paneEnv(t *testing.T, agentName, key string) string {
 	return strings.TrimPrefix(strings.TrimSpace(string(out)), key+"=")
 }
 
+// setPauseDeadlineSec writes settings.pause_deadline_sec directly, the same
+// bypass-validate raw-SQL pattern setMaxAgents/enableFake already use: PUT
+// /api/settings clamps this to [30, 600] (settings.go's validate), which
+// would make scenarios 6c/7/8/9 wait out the real production default (120s)
+// instead of the spec's own short test deadlines. Settings.Get applies no
+// such clamp on read (only Put validates), so this is honored as-is by
+// pauseDeadlineSec (internal/runtime/pause.go). It is deliberately never
+// restored: it only affects agents that go through Pause/PauseAll, which no
+// scenario outside this file exercises, and every scenario file in this
+// package runs against one long-lived, shared daemon anyway (see the package
+// doc comment above).
+func (h *harness) setPauseDeadlineSec(t *testing.T, n int) {
+	t.Helper()
+	d, err := sql.Open("sqlite", "file:"+filepath.Join(h.home, "swarm.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES ('pause_deadline_sec', ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+		strconv.Itoa(n), time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pause calls POST /api/agents/{name}/pause with the given scope
+// ("session" or "subtree").
+func (h *harness) pause(t *testing.T, agentName, scope string) {
+	t.Helper()
+	h.doT(t, http.MethodPost, "/api/agents/"+agentName+"/pause", map[string]string{"scope": scope}, nil)
+}
+
+// pauseAll calls POST /api/pause-all (bodyless — Batch 6a's ledger note) and
+// returns how many pauses it requested.
+func (h *harness) pauseAll(t *testing.T) int {
+	t.Helper()
+	var out struct {
+		Requested int `json:"requested"`
+	}
+	h.doT(t, http.MethodPost, "/api/pause-all", nil, &out)
+	return out.Requested
+}
+
+// resume calls POST /api/agents/{name}/resume.
+func (h *harness) resume(t *testing.T, agentName string) {
+	t.Helper()
+	h.doT(t, http.MethodPost, "/api/agents/"+agentName+"/resume", nil, nil)
+}
+
+// sessionState reads an agent's current (latest generation/attempt) session
+// state straight from the DB, mirroring sessionToken's own lookup.
+func (h *harness) sessionState(t *testing.T, agentName string) string {
+	t.Helper()
+	var state string
+	err := h.db(t).QueryRow(`SELECT s.state FROM sessions s JOIN agents a ON a.id = s.agent_id
+		WHERE a.name = ? ORDER BY s.generation DESC, s.attempt DESC LIMIT 1`, agentName).Scan(&state)
+	if err != nil {
+		t.Fatalf("session state for %s: %v", agentName, err)
+	}
+	return state
+}
+
+// waitForSessionState polls sessionState until it equals want.
+func (h *harness) waitForSessionState(t *testing.T, agentName, want string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if h.sessionState(t, agentName) == want {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// waitForRelay polls the messages table for a 'relay' message addressed to
+// toAgentName carrying the given event, created at or after since — the
+// messages-table counterpart to waitForNotification/waitForEvent.
+func (h *harness) waitForRelay(t *testing.T, toAgentName, event string, since time.Time, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	sinceMs := since.UnixMilli()
+	needle := `"event":"` + event + `"`
+	for {
+		rows, err := h.db(t).Query(`SELECT m.payload_json FROM messages m JOIN agents a ON a.id = m.to_agent_id
+			WHERE m.kind = 'relay' AND a.name = ? AND m.created_at >= ?`, toAgentName, sinceMs)
+		if err == nil {
+			for rows.Next() {
+				var p string
+				if rows.Scan(&p) == nil && strings.Contains(p, needle) {
+					rows.Close()
+					return true
+				}
+			}
+			rows.Close()
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // gitRepo creates a bare-bones repo under the daemon's own scan root, with a
 // user identity and (unless signOff is false) commit signing configured
 // against the throwaway keyring, and one commit so HEAD exists.
