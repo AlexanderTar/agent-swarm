@@ -277,3 +277,68 @@ func TestScenario09UnresponsiveOrchestrator(t *testing.T) {
 		t.Fatalf("child wrote %d handoff checkpoints, want 0 (it never responded)", childHandoffs)
 	}
 }
+
+// Scenario 10: crash. Killing the fake agent's pane out of the blue (no
+// handoff, no pause requested at all) marks the session crashed within 6s —
+// this needs only the reconcile loop's normal dead-pane detection, the same
+// one reconcile tick scenario 6 relies on, so no timing seam is needed here
+// either. Acknowledging then moves it to "history": isFinishedChild
+// (internal/httpapi/runtime.go) buckets an acknowledged agent under
+// "finished" rather than "children" in the agent tree.
+func TestScenario10Crash(t *testing.T) {
+	h := newHarness(t)
+	epic := h.materializedEpic(t)
+	orch := h.startOrchestrator(t, epic)
+	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	task := h.firstTask(t, epic)
+	coder := h.spawn(t, orch, task, "coder")
+	if !h.waitForSessionState(t, coder, "running", 5*time.Second) {
+		t.Fatalf("coder session = %s, never reached running", h.sessionState(t, coder))
+	}
+
+	statusBefore := h.itemStatus(t, task)
+	since := time.Now()
+	h.killPane(t, coder)
+
+	if !h.waitForSessionState(t, coder, "crashed", 6*time.Second) {
+		t.Fatalf("coder session = %s, want crashed within 6s", h.sessionState(t, coder))
+	}
+	if !h.waitForNotification(t, "agent.crashed", since, 2*time.Second) {
+		t.Fatal("no agent.crashed notification")
+	}
+	if !h.waitForRelay(t, orch, "crashed", since, 2*time.Second) {
+		t.Fatal("no relay crashed message to the parent")
+	}
+	if got := h.itemStatus(t, task); got != statusBefore {
+		t.Fatalf("item status changed from %q to %q on a crash", statusBefore, got)
+	}
+
+	h.doT(t, http.MethodPost, "/api/agents/"+coder+"/ack", nil, nil)
+
+	var tree []map[string]any
+	h.doT(t, http.MethodGet, "/api/agents?root="+epic+"&state=all", nil, &tree)
+	var root map[string]any
+	for _, n := range tree {
+		if n["name"] == orch {
+			root = n
+			break
+		}
+	}
+	if root == nil {
+		t.Fatalf("orchestrator %s not found in %+v", orch, tree)
+	}
+	found := false
+	for _, f := range root["finished"].([]any) {
+		if fm, ok := f.(map[string]any); ok && fm["name"] == coder {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("acked coder not under \"finished\": %+v", root)
+	}
+	for _, c := range root["children"].([]any) {
+		if cm, ok := c.(map[string]any); ok && cm["name"] == coder {
+			t.Fatalf("acked coder still under \"children\": %+v", root)
+		}
+	}
+}
