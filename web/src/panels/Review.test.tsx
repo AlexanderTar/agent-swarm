@@ -116,4 +116,41 @@ describe("Review (§16.11)", () => {
     expect(screen.getByRole("button", { name: "Approve plan" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Request changes" })).toBeDisabled();
   });
+
+  it("shows the daemon's reason, not the raw message, when approve fails for a reason other than a stale binding", async () => {
+    const d = createMockDaemon();
+    d.override("POST /api/requests/req_plan/approve", {
+      status: 500,
+      body: { error: { code: "internal", message: "internal error", reason: "The plan artifact is locked for editing." } },
+    });
+    const { user } = setup("req_plan", d);
+    await screen.findByText("Two stories.");
+    await user.click(screen.getByRole("button", { name: "Approve plan" }));
+    expect(await screen.findByText("The plan artifact is locked for editing.")).toBeInTheDocument();
+    expect(screen.queryByText("internal error")).not.toBeInTheDocument();
+  });
+
+  it("shows a message and retry when the section snapshot fails to load", async () => {
+    const d = createMockDaemon();
+    d.override("GET /api/artifacts/art_spec", { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load the spec." } } });
+    setup("req_section", d);
+    expect(await screen.findByText("Couldn't load the spec.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("shows a message and retry when the item detail fails to load in an acceptance review", async () => {
+    const d = createMockDaemon();
+    d.override("GET /api/items/EPIC-12", { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load the item." } } });
+    setup("req_accept", d);
+    expect(await screen.findByText("Couldn't load the item.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("shows a message and retry when checkpoints fail to load in an acceptance review", async () => {
+    const d = createMockDaemon();
+    d.override("GET /api/items/EPIC-12/checkpoints", { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load checkpoints." } } });
+    setup("req_accept", d);
+    expect(await screen.findByText("Couldn't load checkpoints.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
 });

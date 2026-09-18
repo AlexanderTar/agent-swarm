@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ApiError } from "../api";
+import { ApiError, errorText } from "../api";
 import { ArtifactViewer } from "../components/ArtifactViewer";
 import { ConfirmRepos } from "../components/ConfirmRepos";
 import { Markdown } from "../components/Markdown";
@@ -18,6 +18,17 @@ function Snapshot({ r }: { r: Request }) {
   const [full, setFull] = useState(false);
   const section = r.kind === "approve_section" && !full ? r.section_id ?? undefined : undefined;
   const art = useArtifact(r.artifact_id, r.artifact_revision ?? undefined, section);
+  // Standing rule: a failed load gets a message + retry, never a permanent "…" placeholder.
+  if (art.error) {
+    return (
+      <p className="text-bad">
+        {errorText(art.error)}{" "}
+        <button type="button" className="text-accent underline" onClick={() => art.reload()}>
+          {C.retry}
+        </button>
+      </p>
+    );
+  }
   return (
     <div className="space-y-3">
       {art.data ? <Markdown>{art.data.markdown}</Markdown> : <p className="text-muted">…</p>}
@@ -38,6 +49,25 @@ function AcceptBody({ r }: { r: Request }) {
     detail.data ? `checkpoints:final:${r.item_key}:${children.map((c) => c.key).join(",")}` : null,
     (api) => Promise.all(children.map((c) => api.checkpoints(c.key, 1).then((l) => l[0] ?? null))),
   );
+  // Standing rule: a failed load gets a message + retry, never a permanent blank panel. Checked
+  // after every hook above runs, so this early return never changes the hook order between renders.
+  if (detail.error || cps.error) {
+    return (
+      <p className="text-bad">
+        {errorText(detail.error ?? cps.error)}{" "}
+        <button
+          type="button"
+          className="text-accent underline"
+          onClick={() => {
+            detail.reload();
+            cps.reload();
+          }}
+        >
+          {C.retry}
+        </button>
+      </p>
+    );
+  }
   const integrated = cps.data?.find((c) => c.id === binding.integrated_checkpoint);
   const plan = detail.data?.artifacts.find((a) => a.kind === "plan");
   return (
@@ -91,7 +121,7 @@ export function Review({ request: r, connected }: { request: Request; connected:
       if (e instanceof ApiError && e.code === "conflict") {
         setStale(true);
         invalidate(["requests", "item:", "artifact:", "checkpoints:"]);
-      } else toast({ message: e instanceof ApiError ? e.message : String(e) });
+      } else toast({ message: errorText(e) });
     }
   };
 
