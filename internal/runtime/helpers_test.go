@@ -97,6 +97,12 @@ func seedEpicWithThreeTasks(t *testing.T, s *Store) items.Item {
 	return ep
 }
 
+// startSessionForTest exposes the unexported startSession to other test files
+// in the package (Task 15: TDD evidence survives a pause into a new generation).
+func (s *Store) startSessionForTest(ctx context.Context, a Agent, attempt, generation int) (Session, error) {
+	return s.startSession(ctx, a, attempt, generation, false, "")
+}
+
 func gitRepoNoSigning(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
