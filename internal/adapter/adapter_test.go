@@ -1,0 +1,181 @@
+package adapter
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"testing"
+	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+)
+
+func testDeps(t *testing.T) Deps {
+	t.Helper()
+	return Deps{Home: t.TempDir(), UserHome: t.TempDir(), Bin: "/usr/local/bin/swarm",
+		Run: (&execx.Fake{}).Runner(), Now: nowStub, Log: func(string, ...any) {}}
+}
+
+func nowStub() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }
+
+func TestNewRejectsUnknownKinds(t *testing.T) {
+	if _, err := New("opencode", testDeps(t)); err == nil {
+		t.Fatal("opencode must not be a supported kind (L2)")
+	}
+}
+
+// Each adapter registers itself from its own file (Tasks 6-9), so All() grows as
+// they land. Task 3 ships the fake one; Task 9 replaces this with the full set.
+func TestAllReturnsEveryRegisteredKind(t *testing.T) {
+	got := All(testDeps(t))
+	for k, a := range got {
+		if a.Kind() != k {
+			t.Errorf("%s adapter reports Kind() = %s", k, a.Kind())
+		}
+	}
+	if _, ok := got[kinds.Fake]; !ok {
+		t.Fatal("All() is missing the fake adapter")
+	}
+	if _, err := New(kinds.Fake, testDeps(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Idle is the shared §11.3 rule: IdlePrompt matches and Busy matches nothing.
+func TestIdleCombinesPromptAndBusy(t *testing.T) {
+	a := NewFake(testDeps(t))
+	idle := "─────\n❯ \n─────\n"
+	busy := "✽ Beboppin'… (48s · ↓ 114 tokens)\n─────\n❯ \n─────\n"
+	if !a.Idle(idle) {
+		t.Error("idle capture should be idle")
+	}
+	if a.Idle(busy) {
+		t.Error("a capture with a spinner is not idle even with the prompt drawn")
+	}
+	if a.Idle("$ \n") {
+		t.Error("a shell prompt is not idle")
+	}
+}
+
+func TestTrustAndForgetAreNoOpsByDefault(t *testing.T) {
+	a := NewFake(testDeps(t))
+	ctx := context.Background()
+	if err := a.TrustFolder(ctx, "/tmp/x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ForgetFolder(ctx, "/tmp/x"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// R1: the two shared helpers live here, so their tests do too.
+func TestNewUUIDv4ShapeAndVersion(t *testing.T) {
+	re := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	seen := map[string]bool{}
+	for range 100 {
+		id := newUUIDv4()
+		if !re.MatchString(id) {
+			t.Fatalf("newUUIDv4() = %q, not a v4 UUID", id)
+		}
+		if seen[id] {
+			t.Fatalf("newUUIDv4() repeated %q", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestWriteFileAtomicKeepsTheExistingModeAndLeavesNoTemp(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(p, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(p, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("content = %q, want \"new\"", got)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600 preserved", fi.Mode().Perm())
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 {
+		t.Fatalf("%d entries left in the folder, want only config.toml: %v", len(ents), ents)
+	}
+}
+
+// A new file takes the mode it is asked for, and a missing parent is created.
+func TestWriteFileAtomicCreatesTheParent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "a", "b", "settings.json")
+	if err := writeFileAtomic(p, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o644 {
+		t.Fatalf("mode = %v, want 0644", fi.Mode().Perm())
+	}
+}
+
+// A parent path that is actually a file (not a directory) can't be mkdir'd
+// into, and writeFileAtomic must surface that error rather than panic or
+// silently drop the write.
+func TestWriteFileAtomicPropagatesAMkdirFailure(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(blocker, "sub", "settings.json")
+	if err := writeFileAtomic(p, []byte("{}"), 0o644); err == nil {
+		t.Fatal("expected an error when the parent path is a file")
+	}
+}
+
+// launchDir and writeLaunchFile are the shared per-launch config helpers the
+// real adapters (Tasks 7-9) use; nothing in this task calls them yet, so they
+// need their own direct coverage.
+func TestDepsLaunchDirAndWriteLaunchFile(t *testing.T) {
+	d := testDeps(t)
+	want := filepath.Join(d.Home, "run", "launch", "ses_1")
+	if got := d.launchDir("ses_1"); got != want {
+		t.Fatalf("launchDir() = %q, want %q", got, want)
+	}
+	p, err := d.writeLaunchFile("ses_1", "settings.json", []byte("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p != filepath.Join(want, "settings.json") {
+		t.Fatalf("writeLaunchFile() path = %q", p)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", fi.Mode().Perm())
+	}
+	dfi, err := os.Stat(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dfi.Mode().Perm() != 0o700 {
+		t.Fatalf("launch dir mode = %v, want 0700", dfi.Mode().Perm())
+	}
+}
