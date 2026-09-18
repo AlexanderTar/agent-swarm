@@ -106,7 +106,7 @@ export function Kanban(p: KanbanProps) {
   const toast = useToast();
   const [storedCols, toggleCol] = useLocalSet("swarm.kanban.columns", DEFAULT_COLLAPSED_COLUMNS);
   const [laneState, setLaneState] = useState<Record<string, boolean>>(() => readJson(storage("localStorage"), LANES_KEY, {}));
-  const [pending, setPending] = useState<Record<string, ItemStatus>>({});
+  const [pending, setPending] = useState<Record<string, { to: ItemStatus; revision: number }>>({});
   const [dragging, setDragging] = useState<Item | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const patch = useMutation(
@@ -130,19 +130,27 @@ export function Kanban(p: KanbanProps) {
   const filtered = isFilterActive(p.filter);
   const empty = emptyState(p.items, p.filter, p.level);
 
-  // Drop pending markers once the refetched item shows the target status.
+  // Drop pending markers once the refetched item's revision has moved past the one the PATCH was
+  // sent against. Important #1 (T21-23 review): a concurrent change can land the item at a status
+  // other than the one this card asked for — clearing on an exact status match left the marker (and
+  // the disabled drag/Move-to controls it drives) stuck forever whenever that happened. A revision
+  // bump is proof the PATCH round-trip settled, regardless of where it landed.
   useEffect(() => {
     setPending((cur) => {
       const next = { ...cur };
-      for (const [k, s] of Object.entries(cur)) if (idx.byKey.get(k)?.status === s) delete next[k];
+      for (const [k, v] of Object.entries(cur)) if (idx.byKey.get(k)?.revision !== v.revision) delete next[k];
       return Object.keys(next).length === Object.keys(cur).length ? cur : next;
     });
   }, [idx]);
 
+  // F16 (T21-23 review): Kanban first mounts with `p.loaded === false` and returns null (see the
+  // `if (!p.loaded) return null` guard below), so `scroller` is never attached to a DOM node on the
+  // one run an empty-deps effect gets. Depend on `p.loaded` so this fires once the scroller actually
+  // exists.
   useEffect(() => {
     const pos = readJson(storage("localStorage"), SCROLL_KEY, { left: 0, top: 0 });
     scroller.current?.scrollTo?.(pos.left, pos.top);
-  }, []);
+  }, [p.loaded]);
 
   async function move(card: Item, status: ItemStatus) {
     if (status === card.status) return;
@@ -161,7 +169,7 @@ export function Kanban(p: KanbanProps) {
       toast({ message: check.reason });
       return;
     }
-    setPending((cur) => ({ ...cur, [card.key]: status }));
+    setPending((cur) => ({ ...cur, [card.key]: { to: status, revision: card.revision } }));
     try {
       await patch.run(card.key, status, card.revision);
     } catch (e) {
@@ -200,7 +208,7 @@ export function Kanban(p: KanbanProps) {
     writeJson(storage("localStorage"), LANES_KEY, next);
   };
   const cardsIn = (l: Lane, s: ItemStatus) =>
-    l.cards.filter((c) => (pending[c.key] ?? c.status) === s);
+    l.cards.filter((c) => (pending[c.key]?.to ?? c.status) === s);
   const lockFor = (s: ItemStatus): string | null => {
     if (!dragging || s === dragging.status) return null;
     const c = checkMove(dragging, s);
