@@ -242,4 +242,3 @@ func TestDrainQueuePreflightFailureRelaysToParent(t *testing.T) {
 		t.Fatalf("relay message count = %d, err = %v", count, err)
 	}
 }
-

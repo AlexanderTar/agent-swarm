@@ -328,8 +328,12 @@ func TestHandlerEdgeCases(t *testing.T) {
 	}
 
 	// Missing adapter
-	hNoAdapters := *h
-	hNoAdapters.Adapters = map[runtime.AgentKind]adapter.Adapter{}
+	hNoAdapters := &Handler{
+		DB:  h.DB,
+		RT:  h.RT,
+		Now: h.Now,
+		Log: h.Log,
+	}
 	out, err = hNoAdapters.Handle(ctx, runtime.Claude, "Stop", ses, []byte(`{}`))
 	if err != nil || len(out) != 0 {
 		t.Fatalf("no adapter: out=%s, err=%v", out, err)
@@ -342,11 +346,14 @@ func TestHandlerEdgeCases(t *testing.T) {
 	}
 
 	// Default Now() clock
-	hDefaultNow := *h
-	hDefaultNow.Now = nil
+	hDefaultNow := &Handler{
+		DB:       h.DB,
+		RT:       h.RT,
+		Adapters: h.Adapters,
+		Log:      h.Log,
+	}
 	out, err = hDefaultNow.Handle(ctx, runtime.Claude, "Stop", ses, []byte(`{}`))
 	if err != nil || len(out) != 0 {
 		t.Fatalf("default now: out=%s, err=%v", out, err)
 	}
 }
-

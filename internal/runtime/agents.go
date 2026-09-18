@@ -99,7 +99,6 @@ func (s *Store) baseEnv(osEnv func(string) string) map[string]string {
 	return m
 }
 
-
 // defaultName is §4: "<kebab(title) up to 24>-orchestrator" for a top-level
 // orchestrator, "<kebab(item title) up to 24>-<role>" for a worker.
 func defaultName(role Role, title string) (string, error) {
@@ -652,16 +651,16 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 
 	nowMs := s.now().UnixMilli()
 	ses := Session{
-		ID:          sesID,
-		AgentID:     a.ID,
-		Attempt:     attempt,
-		Generation:  generation,
-		TokenHash:   tokenHash,
-		TmuxName:    a.Name,
-		Cwd:         cwd,
-		CwdKind:     "neutral",
-		State:       Spawning,
-		StartedAt:   s.now(),
+		ID:         sesID,
+		AgentID:    a.ID,
+		Attempt:    attempt,
+		Generation: generation,
+		TokenHash:  tokenHash,
+		TmuxName:   a.Name,
+		Cwd:        cwd,
+		CwdKind:    "neutral",
+		State:      Spawning,
+		StartedAt:  s.now(),
 	}
 
 	err = s.tx(ctx, func(tx *sql.Tx) error {

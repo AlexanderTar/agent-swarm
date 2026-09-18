@@ -552,7 +552,6 @@ func TestTerminalPublishesTheEvent(t *testing.T) {
 	}
 }
 
-
 func seedFakeCatalog(t *testing.T, d *db.DB) {
 	t.Helper()
 	_, err := d.ExecContext(context.Background(), `INSERT INTO model_catalog
@@ -881,6 +880,3 @@ func TestSpawnWithPreRun(t *testing.T) {
 		t.Fatal("empty name")
 	}
 }
-
-
-
