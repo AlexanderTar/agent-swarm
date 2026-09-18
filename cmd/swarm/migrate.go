@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -15,6 +18,16 @@ import (
 
 // execLookPath is exec.LookPath, named as a variable so a test can replace it.
 var execLookPath = exec.LookPath
+
+// migrateContext gives swarm migrate a context that Ctrl-C (or a SIGTERM) cancels
+// instead of hard-killing the process outright. A hard kill has no chance to run
+// anything, including the per-action journal saves migrate.Runner relies on; a
+// canceled context lets the current step notice at its next checkpoint and return
+// cleanly, so whatever it already journaled is what --resume/--rollback see. A test
+// seam so a test can drive this without sending itself a real signal.
+var migrateContext = func() (context.Context, func()) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
 
 // migrateRun is the test seam.
 var migrateRun = func(ctx context.Context, r *migrate.Runner, mode string) error {
@@ -73,7 +86,9 @@ func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 			return installAgents(ctx, o)
 		},
 	}
-	if err := migrateRun(context.Background(), r, mode); err != nil {
+	ctx, stop := migrateContext()
+	defer stop()
+	if err := migrateRun(ctx, r, mode); err != nil {
 		return fail(stderr, err)
 	}
 	return 0

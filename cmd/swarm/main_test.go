@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -741,6 +742,28 @@ func TestMigrateFlagsAreExclusiveAndDispatch(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%v mode = %q, want %q", tc.args, got, tc.want)
 		}
+	}
+}
+
+// C1(a): Ctrl-C (SIGINT) during swarm migrate must cancel the context migrateRun
+// gets, not hard-kill the process outright — a hard kill has no chance to run
+// anything, including the per-action journal saves the runner relies on. This
+// sends the test process itself a real SIGINT while migrateContext's
+// signal.NotifyContext is armed; that is the documented way to test this pattern
+// (the signal is intercepted for cancellation, not left to its default
+// terminate-the-process disposition).
+func TestMigrateContextCancelsOnSIGINTInsteadOfKillingTheProcess(t *testing.T) {
+	ctx, stop := migrateContext()
+	defer stop()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+		// Good: the signal became a cancellation, and the test process is still here
+		// to observe it — a hard kill would have ended it instead.
+	case <-time.After(3 * time.Second):
+		t.Fatal("context was not canceled after SIGINT")
 	}
 }
 
