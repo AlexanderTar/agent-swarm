@@ -250,7 +250,8 @@ type Advisor interface {
 }
 
 // Store is the single P2 service. Fields are wired once in cmd/swarm/daemon.go.
-// Task 12 adds Tmux/Adapters/Worktree/Notify/Go; Task 26 adds Advisor.
+// Task 12 adds Tmux/Adapters/Worktree/Notify/Bin/DaemonURL/OSEnv/BaseEnv/After;
+// Task 26 adds Advisor.
 type Store struct {
 	DB       *db.DB
 	Events   *events.Store

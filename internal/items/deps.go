@@ -38,7 +38,9 @@ func (s *Store) AddDep(ctx context.Context, key, blockedBy string, by Actor) err
 
 // AddDepTx is AddDep on a transaction the caller owns. Task 19's materializer
 // writes a whole tree in one tx; a nested BeginTx here would stall on
-// _txlock=immediate for busy_timeout (5 s) and then fail.
+// _txlock=immediate for busy_timeout (5 s) and then fail. Unlike AddDep, this
+// does not wake SSE subscribers itself: the caller commits its own tx, so the
+// caller is responsible for calling Events.Notify() after that commit.
 func (s *Store) AddDepTx(ctx context.Context, tx *sql.Tx, key, blockedBy string, by Actor) error {
 	a, err := s.getTx(ctx, tx, key)
 	if err != nil {

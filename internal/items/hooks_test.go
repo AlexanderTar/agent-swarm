@@ -59,12 +59,12 @@ func TestStaleAcceptsCoversApprovalKinds(t *testing.T) {
 	if _, err := st.Transition(ctx, sp.Key, items.Cancelled, user); err != nil {
 		t.Fatal(err)
 	}
-	var open int
-	if err := st.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE item_id = ? AND state = 'open'`, sp.ID).Scan(&open); err != nil {
+	var stale int
+	if err := st.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE item_id = ? AND state = 'stale'`, sp.ID).Scan(&stale); err != nil {
 		t.Fatal(err)
 	}
-	if open != 0 {
-		t.Fatalf("%d approval requests still open after cancel", open)
+	if stale != 3 {
+		t.Fatalf("%d approval requests are stale after cancel, want 3", stale)
 	}
 }
 

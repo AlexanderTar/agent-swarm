@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -81,10 +83,10 @@ func TestStoreLogf(t *testing.T) {
 	s.logf("no logger set: %d", 1) // must not panic when Log is nil
 
 	var got string
-	s.Log = func(format string, args ...any) { got = format }
-	s.logf("hello %s", "world")
-	if got != "hello %s" {
-		t.Fatalf("logf did not call Log, got %q", got)
+	s.Log = func(format string, args ...any) { got = fmt.Sprintf(format, args...) }
+	s.logf("hello %s, you are %d", "world", 7)
+	if want := "hello world, you are 7"; got != want {
+		t.Fatalf("logf produced %q, want %q", got, want)
 	}
 }
 
@@ -105,7 +107,7 @@ func TestStoreTxNotifiesOnlyAfterCommit(t *testing.T) {
 		t.Fatal("tx did not notify after a successful commit")
 	}
 
-	boom := errTx("boom")
+	boom := errors.New("boom")
 	if err := s.tx(context.Background(), func(tx *sql.Tx) error { return boom }); err != boom {
 		t.Fatalf("tx = %v, want %v", err, boom)
 	}
@@ -115,7 +117,3 @@ func TestStoreTxNotifiesOnlyAfterCommit(t *testing.T) {
 	default:
 	}
 }
-
-type errTx string
-
-func (e errTx) Error() string { return string(e) }

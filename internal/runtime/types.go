@@ -1,5 +1,3 @@
-// Package runtime owns every row a Swarm agent produces: agents, sessions,
-// messages, checkpoints, requests and artifacts (spec §5, §6, §10).
 package runtime
 
 import "github.com/AlexanderTar/agent-swarm/internal/kinds"
