@@ -1,3 +1,4 @@
+import { errorText } from "../api";
 import { C } from "../copy";
 import { useQuery } from "../data/hooks";
 import { qk, useCheckpoints } from "../data/queries";
@@ -42,6 +43,27 @@ export function CheckpointList({ itemKey, agentNames }: { itemKey: string; agent
     const lists = await Promise.all(agentNames.map((n) => api.advice(n)));
     return lists.flat().filter((a) => a.item_key === itemKey);
   });
+  // R1 Important: a failed load must not look like a slow one — surface it with the daemon's own
+  // reason (via errorText, contracts §2) and a way to try again, the same pattern T24 will copy for
+  // the details panel.
+  const err = cps.error ?? advice.error;
+  if (err) {
+    return (
+      <p className="text-bad">
+        {errorText(err)}{" "}
+        <button
+          type="button"
+          className="text-accent underline"
+          onClick={() => {
+            cps.reload();
+            advice.reload();
+          }}
+        >
+          {C.retry}
+        </button>
+      </p>
+    );
+  }
   if (!cps.data || !advice.data) return <p className="text-muted">…</p>;
   const entries = mergeTimeline(cps.data, advice.data);
   if (entries.length === 0) return <p className="text-muted">{C.noCheckpoints}</p>;

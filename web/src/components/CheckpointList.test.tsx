@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderWithDaemon } from "../test/render";
 import { CheckpointList } from "./CheckpointList";
@@ -31,5 +31,25 @@ describe("CheckpointList (§16.9)", () => {
   it("shows the empty state", async () => {
     renderWithDaemon(<CheckpointList itemKey="TASK-103" agentNames={[]} />, { events: false });
     expect(await screen.findByText("No checkpoints yet.")).toBeInTheDocument();
+  });
+
+  it("surfaces a failed load with the daemon's reason and a working retry (R1 Important)", async () => {
+    const { daemon, user } = renderWithDaemon(<CheckpointList itemKey="TASK-101" agentNames={[]} />, { events: false });
+    let attempt = 0;
+    daemon.override("GET /api/items/TASK-101/checkpoints", () => {
+      attempt += 1;
+      if (attempt === 1) {
+        return { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load checkpoints." } } };
+      }
+      return {
+        status: 200,
+        body: daemon.db.checkpoints.filter((c) => c.item_key === "TASK-101").sort((a, b) => b.created_at - a.created_at),
+      };
+    });
+    expect(await screen.findByText("Couldn't load checkpoints.")).toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: "Retry" });
+    await user.click(retry);
+    await waitFor(() => expect(screen.getByText(/Form renders/)).toBeInTheDocument());
+    expect(screen.queryByText("Couldn't load checkpoints.")).not.toBeInTheDocument();
   });
 });
