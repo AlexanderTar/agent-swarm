@@ -1,0 +1,26 @@
+{
+  "_comment": "Shared golden cases for agent-name normalisation (spec §4 ids.Kebab). Each case calls KebabMax(input, max). A case with \"error\": true must fail: Go returns ids.ErrEmptyName (error_message), Swift Kebab.make returns nil, TypeScript kebab() returns \"\". Consumers: apps/menubar KebabTests (P4), internal/ids golden test (P2), web/src/logic/kebab.test.ts (optional).",
+  "version": 1,
+  "error_message": "Enter a name containing a letter or number.",
+  "cases": [
+    {"input": "Investigate login crash", "max": 48, "output": "investigate-login-crash"},
+    {"input": "Café Crash", "max": 48, "output": "cafe-crash"},
+    {"input": "naïve résumé", "max": 48, "output": "naive-resume"},
+    {"input": "  hello ,,  world!! ", "max": 48, "output": "hello-world"},
+    {"input": "--Hi--", "max": 48, "output": "hi"},
+    {"input": "Auth_Epic/V2", "max": 48, "output": "auth-epic-v2"},
+    {"input": "UPPER 123 lower", "max": 48, "output": "upper-123-lower"},
+    {"input": "ﬁle ①", "max": 48, "output": "file-1"},
+    {"input": "Straße", "max": 48, "output": "strae"},
+    {"input": "alpha-bravo-charlie-delta-echo-foxtrot-golf-hotel-india", "max": 48, "output": "alpha-bravo-charlie-delta-echo-foxtrot-golf"},
+    {"input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "max": 48, "output": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"input": "Authentication epic for login", "max": 24, "output": "authentication-epic-for"},
+    {"input": "abc-defgh", "max": 4, "output": "abc"},
+    {"input": "abcdefghij klmnop", "max": 12, "output": "abcdefghij"},
+    {"input": "abcdefghij-klm", "max": 10, "output": "abcdefghij"},
+    {"input": "🔥🔥", "max": 48, "error": true},
+    {"input": "", "max": 48, "error": true},
+    {"input": "---", "max": 48, "error": true},
+    {"input": "日本語", "max": 48, "error": true}
+  ]
+}
