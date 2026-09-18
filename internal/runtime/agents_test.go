@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -553,49 +552,6 @@ func TestTerminalPublishesTheEvent(t *testing.T) {
 	}
 }
 
-func seedEpicWithTask(t *testing.T, s *Store) items.Item {
-	t.Helper()
-	ctx := context.Background()
-	ep, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Build it"}, items.User("board"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	story, err := s.Items.Create(ctx, items.CreateInput{Type: items.Story, ParentKey: ep.Key,
-		Title: "Build the thing"}, items.User("board"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	task, err := s.Items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: story.Key,
-		Title: "Write the failing test"}, items.User("board"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// `ready` directly, not through Transition: the daemon's Ready->InProgress hop
-	// needs an accepted checkpoint, which these tests are not about.
-	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id IN (?, ?, ?)`,
-		ep.ID, story.ID, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	return ep
-}
-
-func gitRepoNoSigning(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	for _, args := range [][]string{
-		{"init", "-b", "main"},
-		{"config", "user.email", "t@example.invalid"},
-		{"config", "user.name", "T"},
-		{"config", "commit.gpgsign", "false"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-	}
-	return dir
-}
 
 func seedFakeCatalog(t *testing.T, d *db.DB) {
 	t.Helper()
@@ -628,3 +584,303 @@ func TestStartupTimesOutAfterThirtySeconds(t *testing.T) {
 		t.Fatalf("raised %v, want agent.preflight_failed", got)
 	}
 }
+
+func TestSessionByToken(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Token test", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokPath := filepath.Join(s.Home, "run", "tokens", ses.ID)
+	tok, err := os.ReadFile(tokPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SessionByToken(ctx, string(tok))
+	if err != nil {
+		t.Fatalf("SessionByToken: %v", err)
+	}
+	if got.ID != ses.ID {
+		t.Fatalf("got ID %s, want %s", got.ID, ses.ID)
+	}
+	if _, err := s.SessionByToken(ctx, "invalid-token"); err == nil {
+		t.Fatal("expected error for invalid token")
+	}
+}
+
+func TestTerminalOpened(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if err := s.TerminalOpened(ctx, "agent", "menubar"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentTree(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "sub"}, ParentAgentID: orch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := s.AgentTree(ctx, "EPIC-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree) != 2 {
+		t.Fatalf("len(tree) = %d, want 2", len(tree))
+	}
+	if tree[0].ID != orch.ID || tree[1].ID != child.ID {
+		t.Fatalf("tree = %+v", tree)
+	}
+}
+
+func TestLoginCommand(t *testing.T) {
+	if got := loginCommand(Claude); got != "claude /login" {
+		t.Errorf("Claude = %q", got)
+	}
+	if got := loginCommand(Codex); got != "codex login" {
+		t.Errorf("Codex = %q", got)
+	}
+	if got := loginCommand(Agy); got != "agy login" {
+		t.Errorf("Agy = %q", got)
+	}
+	if got := loginCommand(Cursor); got != "cursor-agent login" {
+		t.Errorf("Cursor = %q", got)
+	}
+	if got := loginCommand(Fake); got != "fake login" {
+		t.Errorf("Fake = %q", got)
+	}
+}
+
+func TestStartOrchestratorPreflightFailed(t *testing.T) {
+	s, _, f := newStore(t)
+	f.NotInstalled = true
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	_, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err == nil || !strings.Contains(err.Error(), "isn't installed") {
+		t.Fatalf("err = %v, want isn't installed", err)
+	}
+}
+
+func TestRetryWithNote(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'failed' WHERE agent_id = ?`, a.ID)
+	retried, err := s.Retry(ctx, a.Name, "please retry with extra care")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.ID != a.ID {
+		t.Fatalf("retried agent = %+v", retried)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.Attempt != 2 {
+		t.Fatalf("attempt = %d, want 2", ses.Attempt)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'assignment_update'`, a.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("assignment_update message count = %d, err = %v", count, err)
+	}
+}
+
+func TestBaseEnv(t *testing.T) {
+	s := &Store{}
+	env := s.baseEnv(func(k string) string {
+		if k == "PATH" {
+			return "/bin"
+		}
+		return ""
+	})
+	if env["PATH"] != "/bin" {
+		t.Fatalf("PATH = %q", env["PATH"])
+	}
+}
+
+func TestStoreDefaults(t *testing.T) {
+	s := &Store{}
+	_ = s.now()
+	ch := s.after(time.Millisecond)
+	<-ch
+	done := make(chan struct{})
+	s.go_(func() { close(done) })
+	<-done
+}
+
+func TestPreflightEffortAndRepoNotFound(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	// unsupported effort
+	err := s.Preflight(ctx, PreflightInput{Kind: Fake, Model: "fake-1", Role: RoleCoder, Effort: "high"})
+	if err == nil || !strings.Contains(err.Error(), "isn't available for fake-1") {
+		t.Fatalf("effort err = %v", err)
+	}
+	// non-existent repo path
+	err = s.Preflight(ctx, PreflightInput{Kind: Fake, Model: "fake-1", Role: RoleCoder, RepoPaths: []string{"/nonexistent/path/here"}})
+	if err == nil || !strings.Contains(err.Error(), "Repository is unavailable") {
+		t.Fatalf("repo err = %v", err)
+	}
+}
+
+func TestStartOrchestratorBranches(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 1, 4, 4)
+	seedEpicWithTask(t, s)
+	// Start first orchestrator with empty model -> defaults to fake-1
+	orch1, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake})
+	if err != nil || queued {
+		t.Fatalf("orch1 err = %v, queued = %v", err, queued)
+	}
+	if orch1.Model != "fake-1" {
+		t.Fatalf("orch1 model = %q", orch1.Model)
+	}
+	// Conflict: already has an orchestrator
+	_, _, err = s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake})
+	if err == nil || !strings.Contains(err.Error(), "already has an orchestrator") {
+		t.Fatalf("expected conflict, got %v", err)
+	}
+	// Second epic with max_orchestrators=1 -> queued
+	ep2, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Second Epic"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id = ?`, ep2.ID)
+	orch2, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep2.Key, Kind: Fake})
+	if err != nil || !queued {
+		t.Fatalf("orch2 err = %v, queued = %v", err, queued)
+	}
+	if orch2.State != AgentQueued {
+		t.Fatalf("state = %s", orch2.State)
+	}
+}
+
+func TestCancelFinishedAgent(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "To cancel", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cancel once -> moves to finished
+	if _, err := s.Cancel(ctx, a.Name); err != nil {
+		t.Fatal(err)
+	}
+	// Cancel again is idempotent
+	if _, err := s.Cancel(ctx, a.Name); err != nil {
+		t.Fatalf("expected idempotent cancel, got: %v", err)
+	}
+	if _, err := s.Cancel(ctx, "nonexistent-agent"); err == nil {
+		t.Fatal("expected error cancelling nonexistent agent")
+	}
+}
+
+func TestSpawnMissingItem(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "NONEXISTENT", Role: RoleCoder, Kind: Fake, Model: "fake-1"})
+	if err == nil {
+		t.Fatal("expected error for nonexistent item")
+	}
+}
+
+func TestRetryFromFinished(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Cancel(ctx, a.Name); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := s.Retry(ctx, a.Name, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.State != AgentActive {
+		t.Fatalf("state = %s, want active", retried.State)
+	}
+}
+
+func TestSpawnDefaultsKindAndModel(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Adapters[Claude] = fa
+	ctx := context.Background()
+	_, _ = s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','1','[{"id":"opus","label":"Opus","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}]','opus','test',1,1)`)
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != Claude || a.Model != "opus" {
+		t.Fatalf("agent = %+v", a)
+	}
+}
+
+func TestSpawnOrchestratorConflict(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	_, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = s.Spawn(ctx, SpawnInput{ItemKey: "EPIC-1", Role: RoleOrchestrator, Kind: Fake, Model: "fake-1"})
+	if err == nil || !strings.Contains(err.Error(), "already has an orchestrator") {
+		t.Fatalf("expected conflict, got %v", err)
+	}
+}
+
+type fakeAdapterWithPreRun struct {
+	*adapter.Fake
+}
+
+func (f *fakeAdapterWithPreRun) Launch(spec adapter.Spec) (adapter.Launch, error) {
+	return adapter.Launch{
+		PreRun: [][]string{{"echo", "prerun-output"}},
+		Argv:   []string{"fake-agent", adapter.PreRunOutput},
+	}, nil
+}
+
+func TestSpawnWithPreRun(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Adapters[Fake] = &fakeAdapterWithPreRun{Fake: fa}
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1", Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Name == "" {
+		t.Fatal("empty name")
+	}
+}
+
+
+

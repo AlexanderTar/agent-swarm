@@ -99,10 +99,6 @@ func (s *Store) baseEnv(osEnv func(string) string) map[string]string {
 	return m
 }
 
-// Admit reports whether a new agent of this role may start now.
-func (s *Store) Admit(ctx context.Context, tx *sql.Tx, role Role, rootItemID string) (bool, error) {
-	return true, nil
-}
 
 // defaultName is §4: "<kebab(title) up to 24>-orchestrator" for a top-level
 // orchestrator, "<kebab(item title) up to 24>-<role>" for a worker.
