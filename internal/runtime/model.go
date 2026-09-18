@@ -276,6 +276,7 @@ type Store struct {
 	Adapters  map[AgentKind]adapter.Adapter
 	Worktree  *worktree.Service
 	Notify    Notifier
+	Advisor   Advisor                                     // internal/advisor.Service (Tasks 25-27); nil means no swarm_advise wiring
 	Exec      execx.Runner                                // runner for prerun commands; nil means execx.Run
 	Bin       string                                      // absolute path to the swarm binary
 	DaemonURL string                                      // http://127.0.0.1:<cfg.Port>; never :7777 in a fixture
