@@ -299,6 +299,42 @@ func TestUnresponsiveOrchestratorGetsADaemonWrittenCheckpoint(t *testing.T) {
 	}
 }
 
+// §10.5: a plain worker inside a subtree pause must not get a daemon-written
+// "orchestrator did not respond" checkpoint fabricated on its own behalf.
+// Unlike the test above, this one does NOT hand-set the worker to
+// 'interrupted' first — it lets TickPause's own per-session interrupt loop
+// and overdueSubtreePauses (both reading the same overdue, subtree-scoped
+// row) run in the same tick, the race that produced a bogus checkpoint for
+// the worker before overdueSubtreePauses gained its EXISTS(children) guard
+// (found writing scripts/e2e/pause_test.go's scenario 9).
+func TestSubtreePauseNeverWritesADaemonCheckpointForAChildlessWorker(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	if _, err := s.Pause(ctx, orch.Name, "subtree"); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(200 * time.Second) // past the default 120s pause deadline
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM checkpoints
+		WHERE agent_id = ? AND daemon_written = 1`, w.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("worker got %d daemon-written checkpoint(s), want 0 -- it has no children to report on", n)
+	}
+	got, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != PauseRequested && got.State != Quiescing {
+		t.Fatalf("worker session = %s, want still pause_requested/quiescing (interrupted, not converted to a fake handoff)", got.State)
+	}
+}
+
 // §10.5: a subtree pause freezes a root's queued spawns. DrainQueue must not
 // admit them while the pause is live, and must go back to admitting them
 // normally once it resolves — otherwise a newly-launched, never-paused agent
