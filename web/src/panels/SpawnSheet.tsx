@@ -16,7 +16,7 @@ import type { AgentCatalogEntry, AgentNode, Item, Settings } from "../types";
 function Form(p: { item: Item; settings: Settings; catalog: AgentCatalogEntry[]; agents: AgentNode[]; onClose(): void }) {
   const { connected } = useConnection();
   const [repos, setRepos] = useState(p.item.repos);
-  const [fields, setFields] = useState<AgentFieldsValue>(() => prefill(p.settings));
+  const [fields, setFields] = useState<AgentFieldsValue>(() => prefill(p.settings, "orchestrator", p.catalog));
   const [name, setName] = useState(() => defaultOrchestratorName(p.item.title));
   const [requestId, setRequestId] = useState(newRequestId);
   const [failure, setFailure] = useState<SubmitFailure>({});

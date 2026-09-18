@@ -188,6 +188,19 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     expect(prefill(noAdvisor).advisor).toBe("none");
   });
 
+  it("drops a stored effort the resolved model doesn't offer at all (progress.md:77 carry)", () => {
+    // model-3 has no efforts (mirrors claude-haiku-4-5-20251001 in the mock fixtures, efforts: []).
+    // A stale/unsupported level must be normalised the same way every other consumer does, not just
+    // when it happens to be the bare "default" string.
+    const stale = {
+      enabled_agents: ["claude"],
+      roles: { orchestrator: { agent: "claude", model: "model-3", effort: "high" } },
+    } as unknown as Settings;
+    expect(prefill(stale, "orchestrator", catalog).choice.effort).toBe("");
+    // Without a catalog, still leave the stored value alone rather than guess.
+    expect(prefill(stale).choice.effort).toBe("high");
+  });
+
   it("changing agent re-checks the model and never substitutes", () => {
     const r = changeAgent({ agent: "claude", model: "alpha", effort: "high" }, "codex", catalog);
     expect(r).toEqual({ choice: { agent: "codex", model: "", effort: "" }, errors: { model: "Choose a model available for this agent." } });

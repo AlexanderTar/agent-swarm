@@ -43,6 +43,24 @@ describe("NewSpikeSheet (§16.3, I15)", () => {
     });
   });
 
+  it("drops a stale effort Settings holds for a model that no longer offers it (progress.md:77 carry)", async () => {
+    // Same repro as SpawnSheet: claude-haiku-4-5-20251001 has efforts: [], so a stored "high" is
+    // stale. The Effort control is correctly hidden, but the submit must not still carry it.
+    const d = createMockDaemon();
+    d.db.settings.max_orchestrators = 8;
+    d.db.settings.roles.orchestrator = { agent: "claude", model: "haiku", effort: "high" };
+    const onCreated = vi.fn();
+    const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={onCreated} />, { daemon: d, events: false });
+    const sheet = await screen.findByRole("dialog", { name: "New spike" });
+    expect(within(sheet).queryByRole("combobox", { name: "Effort" })).not.toBeInTheDocument();
+    await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Offline sync");
+    await user.click(within(sheet).getByRole("button", { name: "Start orchestrator" }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    const post = d.calls.find((c) => c.path === "/api/spikes");
+    expect(post?.body).toMatchObject({ agent: "claude", model: "haiku" });
+    expect(post?.body).not.toHaveProperty("effort");
+  });
+
   it("shows a taken name under the field", async () => {
     const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
     await user.type(await screen.findByRole("textbox", { name: "Name" }), "Login review");

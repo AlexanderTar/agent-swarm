@@ -84,11 +84,12 @@ export function prefill(
 ): { choice: AgentChoice; advisor: AdvisorChoice } {
   const r = settings.roles[role];
   const a = settings.roles.advisor;
-  // A stored "default" collapses into "" once the catalog proves both resolve to the same launch
-  // id. Without a catalog the level is left alone rather than guessed away.
+  // A stored level is only as good as the model it was set against. With a catalog that resolves
+  // the stored model, re-validate it through the same seam every other consumer uses (progress.md:77
+  // carry). Without a catalog the level is left alone rather than guessed away.
   const stored = r?.effort ?? "";
   const model = resolveModel(entryFor(catalog, r?.agent ?? ""), r?.model ?? "");
-  const effort = stored === DEFAULT_LEVEL && model?.default_effort === DEFAULT_LEVEL ? "" : stored;
+  const effort = model ? normalizeEffort(r?.agent ?? "", model, stored) : stored;
   return {
     choice: r
       ? { agent: r.agent, model: r.model, effort }

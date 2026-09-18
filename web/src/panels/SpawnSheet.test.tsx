@@ -49,6 +49,23 @@ describe("SpawnSheet (§16.10)", () => {
     expect(new Set(posts.map((c) => (c.body as { request_id: string }).request_id)).size).toBe(1);
   });
 
+  it("drops a stale effort Settings holds for a model that no longer offers it (progress.md:77 carry)", async () => {
+    // claude-haiku-4-5-20251001 has efforts: [] in the mock catalog, so a stored "high" from an
+    // earlier, different model is stale and unsupported. The Effort control is correctly hidden
+    // (§16.4 L27), but the submit must not still carry the dead value.
+    const d = roomy();
+    d.db.settings.roles.orchestrator = { agent: "claude", model: "haiku", effort: "high" };
+    const onClose = vi.fn();
+    const { user } = renderWithDaemon(<SpawnSheet itemKey="EPIC-20" onClose={onClose} />, { daemon: d, events: false });
+    const sheet = await screen.findByRole("dialog", { name: "Start orchestrator" });
+    expect(within(sheet).queryByRole("combobox", { name: "Effort" })).not.toBeInTheDocument();
+    await user.click(within(sheet).getByRole("button", { name: "Start orchestrator" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const post = d.calls.find((c) => c.path === "/api/items/EPIC-20/orchestrator");
+    expect(post?.body).toMatchObject({ agent: "claude", model: "haiku" });
+    expect(post?.body).not.toHaveProperty("effort");
+  });
+
   it("keeps entries after a failure and retries with a new request id", async () => {
     const d = roomy();
     let calls = 0;

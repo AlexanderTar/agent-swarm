@@ -26,7 +26,7 @@ function Form(p: {
   const [name, setName] = useState("");
   const [intent, setIntent] = useState<"feature" | "debug">("feature");
   const [repos, setRepos] = useState<string[]>([]);
-  const [fields, setFields] = useState<AgentFieldsValue>(() => prefill(p.settings));
+  const [fields, setFields] = useState<AgentFieldsValue>(() => prefill(p.settings, "orchestrator", p.catalog));
   const [request, setRequest] = useState("");
   const [requestId, setRequestId] = useState(newRequestId);
   const [failure, setFailure] = useState<SubmitFailure>({});
