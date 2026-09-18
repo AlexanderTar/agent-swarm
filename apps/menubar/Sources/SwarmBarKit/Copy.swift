@@ -39,6 +39,11 @@ public enum Copy {
     public static let refreshModels = "Refresh models"
     public static func modelListsUpdated(_ age: String) -> String { "Model lists updated \(age) ago" }
     public static let advisorCaption = "Claude agents use the built-in advisor. Other agents get a simulated one."
+    public static let settings = "Settings"
+    public static func removeFolder(_ path: String) -> String { "Remove \(path)" }
+    /// DisplayState.label returns nil for .running (it's the unlabelled default state); this is
+    /// only the accessibility-string fallback for that case, not a DisplayState value.
+    public static let runningLabel = "Running"
 
     // §17.1 new orchestrator window
     public static func agentName(_ kebab: String) -> String { "Agent name: \(kebab)" }

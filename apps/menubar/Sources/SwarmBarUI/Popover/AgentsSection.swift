@@ -92,7 +92,7 @@ struct AgentRowView: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(agent.name), \(state.label ?? "Running")")
+        .accessibilityLabel("\(agent.name), \(state.label ?? Copy.runningLabel)")
     }
 
     private func run(_ a: AgentAction) {

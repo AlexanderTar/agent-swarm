@@ -188,7 +188,7 @@ struct LimitsTab: View {
                 HStack {
                     Text(path)
                     Spacer()
-                    IconButton("minus", help: "Remove \(path)", disabled: !model.connected) {
+                    IconButton("minus", help: Copy.removeFolder(path), disabled: !model.connected) {
                         Task { await model.removeExclude(path) }
                     }
                 }

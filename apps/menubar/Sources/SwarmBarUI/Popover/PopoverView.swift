@@ -49,7 +49,7 @@ public struct PopoverView: View {
             Text(model.activeLine)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
-            IconButton("gearshape", help: "Settings", action: openSettings)
+            IconButton("gearshape", help: Copy.settings, action: openSettings)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
