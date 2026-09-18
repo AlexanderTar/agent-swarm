@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "SWARM_MOCK=1 vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "e2e": "playwright test --project=mock",
+    "e2e:live": "SWARM_E2E_LIVE=1 playwright test --project=live"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",
