@@ -1,0 +1,17 @@
+{
+  "name": "superpowers-marketplace",
+  "owner": {"name": "obra"},
+  "plugins": [
+    {"name": "superpowers", "source": "obra/superpowers", "description": "Core skills"},
+    {"name": "superpowers-dev", "source": "obra/superpowers-dev", "description": "Development build"},
+    {"name": "elements-of-style", "source": "obra/elements-of-style", "description": "Writing"},
+    {"name": "episodic-memory", "source": "obra/episodic-memory", "description": "Memory"},
+    {"name": "superpowers-chrome", "source": "obra/superpowers-chrome", "description": "Chrome"},
+    {"name": "superpowers-lab", "source": "obra/superpowers-lab", "description": "Lab"},
+    {"name": "superpowers-developing-for-claude-code", "source": "obra/superpowers-developing-for-claude-code", "description": "CC"},
+    {"name": "claude-session-driver", "source": "obra/claude-session-driver", "description": "Driver"},
+    {"name": "double-shot-latte", "source": "obra/double-shot-latte", "description": "Latte"},
+    {"name": "private-journal-mcp", "source": "obra/private-journal-mcp", "description": "Journal"},
+    {"name": "brand-new-plugin", "source": "obra/brand-new-plugin", "description": "Added after 2026-09-17"}
+  ]
+}
