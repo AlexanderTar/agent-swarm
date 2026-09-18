@@ -53,14 +53,18 @@ type seedItem struct {
 // refuses any status besides Draft/Ready at creation (items/store.go:206),
 // and there is no cheap way to earn "in_review"/"done"/etc. other than a
 // real checkpoint history this task's own file list never asks for. A
-// consequence, also disclosed: some of these trees are snapshots the real
-// reconciler could not have produced on its own (EPIC-12's accept_epic
-// binding names an integrated checkpoint that has no matching row, and
-// STORY-41 sits "ready" as a sibling of an epic already "in_progress"),
-// exactly as fixtures.ts's own static mock data is never run through the
-// real Go state machine either. Interacting with the seeded data (e.g.
-// approving the seeded accept_epic) is not guaranteed to derive further
-// changes the way a fully live epic would.
+// consequence, also disclosed: EPIC-12's seeded accept_epic request is bound
+// to an integrated-checkpoint id with no matching row, so rootState.finished
+// reads false for it. reconcileRoot's stale-check (internal/items/
+// transition.go) runs on ANY ReconcileTx that walks up to EPIC-12 — not only
+// on an attempt to approve the request — so answering the seeded question on
+// TASK-104, or PATCHing anything under STORY-40, stales the accept_epic
+// request as a side effect. A board developer who interacts with unrelated
+// seeded data on this tree will watch it disappear. This matches fixtures.ts's
+// own nature as static mock data that never runs through the real Go state
+// machine either, not a new inconsistency this seed introduces, but it is a
+// real landmine for anyone clicking around the seeded board rather than just
+// reading it.
 func seedItems() []seedItem {
 	return []seedItem{
 		{key: "EPIC-12", typ: "epic", title: "Authentication", status: "in_progress", priority: 1, revision: 7},
