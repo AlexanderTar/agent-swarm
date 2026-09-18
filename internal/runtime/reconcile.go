@@ -213,21 +213,6 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 	if err != nil {
 		return err
 	}
-	if !hasTerminal {
-		// A session that never wrote even its first checkpoint has no confirmed
-		// evidence of having actually run: a pane the test/production fixture
-		// simply never reported (rather than one that died) must not be flagged
-		// as a crash. Once an agent has accepted its assignment, a missing pane
-		// with no completed/failed checkpoint really is a crash (§10.6).
-		var anyCheckpoints int
-		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM checkpoints
-			WHERE agent_id = ?`, r.AgentID).Scan(&anyCheckpoints); err != nil {
-			return err
-		}
-		if anyCheckpoints == 0 {
-			return nil
-		}
-	}
 	switch {
 	case hasTerminal && kind == CompletedCkp:
 		return s.tx(ctx, func(tx *sql.Tx) error {

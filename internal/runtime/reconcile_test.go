@@ -114,8 +114,14 @@ func TestDeadPaneWithNoTerminalCheckpointCrashes(t *testing.T) {
 	w, _ := s.agentByID(ctx, wSes.AgentID)
 	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
 	before, _ := s.Items.Get(ctx, "TASK-1")
-	panes(tm, Pane{Session: w.Name, Dead: true, DeadStatus: 137, Command: "swarm-fake-agent"})
+	// The orchestrator gets its own live, matching pane too: without one, its
+	// own session would also be resolved as dead-with-no-checkpoint and marked
+	// crashed by the very logic this test exercises, racing the worker's own
+	// crash notification.
+	panes(tm, Pane{Session: w.Name, Dead: true, DeadStatus: 137, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
 	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -246,6 +252,40 @@ func TestOwesNothingCountsAnOpenRequest(t *testing.T) {
 	got, _ := s.LatestSession(ctx, a.ID)
 	if got.Waiting {
 		t.Fatal("an open question the agent raised means it owes something")
+	}
+}
+
+// A real agent that crashes before it ever writes a single checkpoint (a bad
+// launch flag, a model rejection, a network failure on its first turn, a pane
+// killed externally) must still be marked crashed, notified and relayed
+// within one reconcile tick — Reconcile must never quietly no-op just
+// because nothing was ever recorded for this agent.
+func TestDeadPaneCrashesEvenWithNoCheckpointAtAll(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	// No checkpoint written at all — not even "accepted".
+	panes(tm, Pane{Session: w.Name, Dead: true, DeadStatus: 1, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Crashed || ses.ExitCode == nil || *ses.ExitCode != 1 {
+		t.Fatalf("session = %+v, want crashed with exit_code 1", ses)
+	}
+	n := notified(t, s, "agent.crashed")
+	if n.AgentName != w.Name {
+		t.Fatalf("notification = %+v", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"crashed"%'`, orch.ID).Scan(&relays)
+	if relays != 1 {
+		t.Fatalf("relay crashed count = %d, want exactly one", relays)
 	}
 }
 
