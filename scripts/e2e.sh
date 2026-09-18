@@ -2,11 +2,36 @@
 # End-to-end run with the fake adapter (spec §23.1, §23.2).
 # It never touches the live daemon, ~/.swarm, the real tmux server or a real agent.
 set -euo pipefail
-export PATH=/opt/homebrew/bin:$PATH
+# Explicit, not "/opt/homebrew/bin:$PATH": the daemon's catalog loop runs
+# `claude --version`/`codex --version`/etc. against whatever it finds on
+# PATH, and this dev machine has all four real agent CLIs on ~/.local/bin.
+# A real one being found and run from the e2e daemon would violate "no real
+# agent CLI" (S-1's sibling invariant for this script) even though nothing
+# here ever chooses to spawn one — Preflight's Installed() check alone
+# would start shelling out to them. tmux/gpg/git/curl/go all resolve under
+# just these three.
+export PATH=/opt/homebrew/bin:/usr/bin:/bin
 root="$(cd "$(dirname "$0")/.." && pwd)"
 export SWARM_HOME="$(mktemp -d)"
 export SWARM_TMUX_SOCKET="swarm-e2e"
 export SWARM_E2E_SCENARIOS_DIR="$root/scripts/e2e/scenarios"
+# cmd/swarm daemon has no --scan-root flag: repos.Service.Home defaults to
+# os.UserHomeDir(), i.e. $HOME. Without this, `make e2e` would have the repo
+# scanner (rp.Loop, and the "make e2e" run itself since Background defaults
+# true) walk the *real* user's home directory on every run — slow,
+# nondeterministic, and reads real data an e2e run has no business touching.
+# Scenario 22 (repo discovery) wants a controlled fixture tree here too, and
+# scenario 20's throwaway commit identity wants an empty global git config,
+# which a fresh HOME gives it for free.
+#
+# This is exported to the daemon process only (below), never to this shell:
+# `go build`/`go test` still need the real $HOME for GOCACHE/GOMODCACHE/
+# GOPATH, or they'd redownload the module cache from a fixture-empty one.
+# SWARM_E2E_FIXTURE_HOME tells the Go test suite (scenario 22) where that
+# same directory is, so it can build its fixture tree into it.
+fixture_home="$SWARM_HOME/home"
+mkdir -p "$fixture_home"
+export SWARM_E2E_FIXTURE_HOME="$fixture_home"
 # 17778, not 17777: that is `make dev`'s port, and the two must be able to run at
 # the same time (D84).
 port=17778
@@ -47,7 +72,7 @@ unset SWARM_USAGE
 
 go build -o "$SWARM_HOME/swarm" ./cmd/swarm
 go build -o "$SWARM_HOME/swarm-fake-agent" ./cmd/swarm-fake-agent
-"$SWARM_HOME/swarm" daemon --home "$SWARM_HOME" --port "$port" >"$SWARM_HOME/daemon.log" 2>&1 &
+HOME="$fixture_home" "$SWARM_HOME/swarm" daemon --home "$SWARM_HOME" --port "$port" >"$SWARM_HOME/daemon.log" 2>&1 &
 daemon_pid=$!
 for _ in $(seq 1 50); do
   curl -sf "http://127.0.0.1:$port/api/health" >/dev/null && break

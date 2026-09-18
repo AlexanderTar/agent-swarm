@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +39,9 @@ func unique() string {
 type harness struct {
 	url, token, home string
 	http             *http.Client
+
+	dbMu   sync.Mutex
+	dbConn *sql.DB // lazy, read-only; see db()
 }
 
 // newHarness reads the three env vars scripts/e2e.sh exports and makes sure
@@ -66,6 +70,28 @@ func newHarness(t *testing.T) *harness {
 // read-only one.
 func (h *harness) enableFake(t *testing.T) {
 	t.Helper()
+	d, err := sql.Open("sqlite", "file:"+filepath.Join(h.home, "swarm.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	now := time.Now().UnixMilli()
+
+	// The whole suite shares one daemon and never tears an agent down between
+	// tests, so the production defaults (3 orchestrators, 8 agents, 4 per
+	// root) run out well before scenario 30 — raise them generously here,
+	// every time (idempotent, cheap), not just on the first call: if scenario
+	// 11's own t.Cleanup that restores max_agents were ever skipped (a panic,
+	// say), every later test still gets it raised back up here rather than
+	// staying stuck at 1.
+	for _, kv := range [][2]string{{"max_orchestrators", "200"}, {"max_agents", "200"}, {"max_agents_per_root", "50"}} {
+		if _, err := d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)
+			ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+			kv[0], kv[1], now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	var cur map[string]any
 	h.doT(t, http.MethodGet, "/api/settings", nil, &cur)
 	agents, _ := cur["enabled_agents"].([]any)
@@ -79,12 +105,12 @@ func (h *harness) enableFake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := sql.Open("sqlite", "file:"+filepath.Join(h.home, "swarm.db")+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	now := time.Now().UnixMilli()
+	// kinds.AgentKinds (settings.go's validate) deliberately excludes "fake"
+	// — it's a test-only kind, never meant to reach a real user's settings
+	// picker — so PUT /api/settings 400s on it every time. internal/runtime's
+	// own tests hit the same wall and clear it the same way
+	// (agents_test.go:125): write the row with raw SQL instead of going
+	// through Store.Put's validation.
 	_, err = d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES ('enabled_agents', ?, ?)
 		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
 		string(raw), now)
@@ -101,19 +127,6 @@ func (h *harness) enableFake(t *testing.T) {
 		fetched_at = excluded.fetched_at, attempted_at = excluded.attempted_at`, now, now)
 	if err != nil {
 		t.Fatal(err)
-	}
-	// The whole suite shares one daemon and never tears an agent down between
-	// tests, so the production defaults (3 orchestrators, 8 agents, 4 per
-	// root) run out well before scenario 30 — raise them generously here.
-	// Scenario 11 (the concurrency queue) sets max_agents back down to 1 for
-	// its own duration and restores it after, rather than everyone else
-	// living with a tiny ceiling.
-	for _, kv := range [][2]string{{"max_orchestrators", "200"}, {"max_agents", "200"}, {"max_agents_per_root", "50"}} {
-		if _, err := d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)
-			ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
-			kv[0], kv[1], now); err != nil {
-			t.Fatal(err)
-		}
 	}
 }
 
@@ -184,13 +197,25 @@ func (h *harness) doT(t *testing.T, method, path string, body, out any) {
 // directly for state a route doesn't expose (session tokens, message rows) —
 // §23.2's own text says each scenario "checks the DB state", and WAL mode
 // (internal/db.Open) makes that safe alongside the daemon's own writer.
+// db returns one lazily-opened, cached read-only connection per harness
+// (i.e. per test, since newHarness makes a fresh harness each time). The
+// waitFor* pollers call this every ~200ms; opening a fresh *sql.DB each call
+// leaked a handle per iteration (each with its own t.Cleanup, none of them
+// running until the whole test ended) — fine for a two-call test, a real
+// problem for a 20-30s wait.
 func (h *harness) db(t *testing.T) *sql.DB {
 	t.Helper()
+	h.dbMu.Lock()
+	defer h.dbMu.Unlock()
+	if h.dbConn != nil {
+		return h.dbConn
+	}
 	d, err := sql.Open("sqlite", "file:"+filepath.Join(h.home, "swarm.db")+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { d.Close() })
+	h.dbConn = d
 	return d
 }
 
