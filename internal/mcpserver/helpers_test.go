@@ -23,6 +23,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
+	"github.com/AlexanderTar/agent-swarm/internal/notifyrules"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
@@ -111,16 +112,34 @@ func (c *testClock) After(d time.Duration) <-chan time.Time {
 }
 
 // fakeNotifier records what the runtime raised; copied from
-// internal/runtime/agents_test.go.
+// internal/runtime/agents_test.go, including the Args-validation fix that
+// closed the missing-Args detection gap there (Batch 6b review round): a
+// call site whose Args don't satisfy the real §17.5 template now fails
+// whatever mcpserver test exercises it, not just internal/runtime's own.
 type fakeNotifier struct {
+	t      *testing.T
 	mu     sync.Mutex
 	raised []runtime.NotifyInput
 }
 
 func (f *fakeNotifier) Raise(ctx context.Context, tx *sql.Tx, n runtime.NotifyInput) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.raised = append(f.raised, n)
+	f.mu.Unlock()
+	if f.t == nil {
+		return nil
+	}
+	f.t.Helper()
+	rule, ok := notifyrules.Rules[n.Kind]
+	if !ok {
+		f.t.Fatalf("notify: unknown kind %q", n.Kind)
+		return nil
+	}
+	for _, ph := range notifyrules.Placeholders(rule.Body) {
+		if _, ok := n.Args[ph]; !ok {
+			f.t.Fatalf("notify: %s is missing %s (Args = %v)", n.Kind, ph, n.Args)
+		}
+	}
 	return nil
 }
 
@@ -180,7 +199,7 @@ func newTestServer(t *testing.T) *Server {
 		Now: clk.Now, Log: func(string, ...any) {}, Tmux: tm,
 		Worktree:  &worktree.Service{DB: d, Run: execx.Run, Now: clk.Now, Log: func(string, ...any) {}},
 		Repos:     &repos.Service{DB: d, Events: ev, Now: clk.Now, Run: execx.Run, Log: func(string, ...any) {}},
-		Notify:    &fakeNotifier{},
+		Notify:    &fakeNotifier{t: t},
 		Adapters:  map[runtime.AgentKind]adapter.Adapter{runtime.Fake: fa},
 		Bin:       "/usr/local/bin/swarm",
 		DaemonURL: "http://127.0.0.1:17778",

@@ -296,9 +296,12 @@ func (s *Store) RequestWireByID(ctx context.Context, id string) (RequestWire, er
 // transition.go, is the only caller of RequestOpened, and both those
 // templates need only KEY) — Args also carries name/prompt defensively,
 // unconditionally like finishOpen just below does for the same reason: an
-// unused key is harmless, and it makes this function correct for any other
-// kind it might someday be wired to, rather than only the two it happens to
-// see today.
+// unused key is harmless. That covers accept_epic/accept_fix robustly
+// against either template changing to want name or prompt too; it does NOT
+// make this function correct for every kind in general — approve_section
+// needs {section}, confirm_repos needs {N}/{expansion}, close_spike needs
+// {resolution}, and none of those are built here. If RequestOpened is ever
+// wired to open one of those kinds, this needs its own Args for it.
 func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) error {
 	w, err := s.RequestWireTx(ctx, tx, id)
 	if err != nil {

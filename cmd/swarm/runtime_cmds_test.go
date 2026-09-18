@@ -182,19 +182,29 @@ func TestRequestActions(t *testing.T) {
 // (or an approve_section/approve_plan whose section has a hash) 409ed every
 // time, unconditionally. The earlier TestRequestActions couldn't catch this:
 // its stub returns {"state":"approved"} no matter what body it receives.
-// This one actually inspects the POST body and fails the test if the
-// binding it fetched isn't echoed back.
+//
+// Two requests are fetched from the same GET /api/requests list: req_1
+// (accept_epic, binding only) guards the binding echo, req_2
+// (approve_section-shaped, section_sha256 + artifact_revision, no binding)
+// guards those two fields independently — a mutation test that deletes
+// either echo line in cmdApprove must turn req_2's case red on its own,
+// which a binding-only fixture could never do (a mutation review round
+// confirmed exactly that gap in an earlier draft of this test).
 func TestApproveSendsTheBindingBack(t *testing.T) {
-	var approveBody string
+	bodies := map[string]string{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/api/requests":
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[{"id":"req_1","kind":"accept_epic","item_key":"EPIC-1","prompt":"Accept it.",
-				"state":"open","binding":{"item_revision":7,"integrated_checkpoint":"ckp_1","git":[]}}]`))
+			w.Write([]byte(`[
+				{"id":"req_1","kind":"accept_epic","item_key":"EPIC-1","prompt":"Accept it.",
+					"state":"open","binding":{"item_revision":7,"integrated_checkpoint":"ckp_1","git":[]}},
+				{"id":"req_2","kind":"approve_section","item_key":"SPIKE-3","prompt":"Approve the data model.",
+					"state":"open","section_sha256":"sha-dm-3","artifact_revision":3}
+			]`))
 		case r.Method == "POST" && r.URL.Path == "/api/requests/req_1/approve":
 			b, _ := io.ReadAll(r.Body)
-			approveBody = string(b)
+			bodies["req_1"] = string(b)
 			var body map[string]any
 			json.Unmarshal(b, &body)
 			if body["binding"] == nil {
@@ -204,6 +214,18 @@ func TestApproveSendsTheBindingBack(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{"id":"req_1","state":"approved"}`))
+		case r.Method == "POST" && r.URL.Path == "/api/requests/req_2/approve":
+			b, _ := io.ReadAll(r.Body)
+			bodies["req_2"] = string(b)
+			var body map[string]any
+			json.Unmarshal(b, &body)
+			if body["section_sha256"] == nil || body["artifact_revision"] == nil {
+				w.WriteHeader(409)
+				w.Write([]byte(`{"error":{"code":"conflict","message":"This request changed. Review the latest version."}}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"id":"req_2","state":"approved"}`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -211,15 +233,30 @@ func TestApproveSendsTheBindingBack(t *testing.T) {
 	defer srv.Close()
 	home := t.TempDir()
 	writeToken(t, home, "tok")
+
 	var out bytes.Buffer
 	code := run([]string{"approve", "--home", home, "--url", srv.URL, "req_1"}, &out, &out)
 	if code != 0 {
-		t.Fatalf("code = %d: %s (approve body sent: %s)", code, out.String(), approveBody)
+		t.Fatalf("req_1: code = %d: %s (body sent: %s)", code, out.String(), bodies["req_1"])
 	}
-	var sent map[string]any
-	json.Unmarshal([]byte(approveBody), &sent)
-	if sent["binding"] == nil {
-		t.Fatalf("approve body = %s, want a binding field echoed back", approveBody)
+	var sent1 map[string]any
+	json.Unmarshal([]byte(bodies["req_1"]), &sent1)
+	if sent1["binding"] == nil {
+		t.Fatalf("req_1 body = %s, want a binding field echoed back", bodies["req_1"])
+	}
+
+	out.Reset()
+	code = run([]string{"approve", "--home", home, "--url", srv.URL, "req_2"}, &out, &out)
+	if code != 0 {
+		t.Fatalf("req_2: code = %d: %s (body sent: %s)", code, out.String(), bodies["req_2"])
+	}
+	var sent2 map[string]any
+	json.Unmarshal([]byte(bodies["req_2"]), &sent2)
+	if sent2["section_sha256"] == nil {
+		t.Fatalf("req_2 body = %s, want section_sha256 echoed back", bodies["req_2"])
+	}
+	if sent2["artifact_revision"] == nil {
+		t.Fatalf("req_2 body = %s, want artifact_revision echoed back", bodies["req_2"])
 	}
 }
 

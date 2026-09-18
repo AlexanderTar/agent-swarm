@@ -484,7 +484,7 @@ func cmdApprove(args []string, stdout, stderr io.Writer) int {
 	if req.ArtifactRevision != nil {
 		body["artifact_revision"] = *req.ArtifactRevision
 	}
-	if len(req.Binding) > 0 {
+	if len(req.Binding) > 0 && string(req.Binding) != "null" {
 		body["binding"] = req.Binding
 	}
 	var wire map[string]any
