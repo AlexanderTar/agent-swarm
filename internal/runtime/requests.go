@@ -14,6 +14,22 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
+// canonicalJSON re-marshals raw through an untyped decode so two JSON values
+// that differ only in key order or number formatting compare equal. Empty
+// input canonicalizes to "" rather than "null", so an absent binding on
+// either side still compares as absent.
+func canonicalJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
 // AskInput is swarm_ask's input (§8.1).
 type AskInput struct {
 	Kind       string // "question" | "approval" | "confirm_repos"
@@ -583,8 +599,23 @@ func (s *Store) Approve(ctx context.Context, id string, in ApproveInput) (Reques
 		// request has one must be refused, not waved through — the acceptance
 		// may be bound to an integrated_checkpoint or item_revision that has
 		// since moved on.
+		//
+		// canonicalJSON, not a raw string compare, on both sides: req.Binding
+		// is the bytes originally produced by json.Marshal(acceptBinding{...})
+		// (internal/items/transition.go), which — being a struct — marshals
+		// its fields in declaration order (item_revision, integrated_checkpoint,
+		// git). in.Binding is httpapi's approveBody.Binding, typed `any`; any
+		// JSON client's object decodes through Go's stdlib into a
+		// map[string]interface{} before this call ever sees it, and
+		// json.Marshal of a Go map always sorts keys alphabetically
+		// (git, integrated_checkpoint, item_revision) — a different byte
+		// order than the struct produced, for every possible caller,
+		// regardless of what order the client sent. A literal string compare
+		// between the two therefore could never succeed for a "matching"
+		// binding at all; found while wiring scenario 29 (Batch 6b/P2), the
+		// first real exercise of this check.
 		if (req.Kind == "accept_epic" || req.Kind == "accept_fix") &&
-			string(in.Binding) != string(req.Binding) {
+			canonicalJSON(in.Binding) != canonicalJSON(req.Binding) {
 			return &items.Error{Code: items.CodeConflict, Message: "This request changed. Review the latest version."}
 		}
 		return nil

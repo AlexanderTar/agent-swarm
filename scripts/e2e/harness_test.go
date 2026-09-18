@@ -333,13 +333,35 @@ func (h *harness) materializedEpic(t *testing.T) string {
 	taskKey, _ := task["key"].(string)
 	// POST /api/items has no status field at all (contracts §4: request_id,
 	// type, title, brief?, acceptance?, parent_key? — that's the whole body),
-	// so a fresh item is always Draft. PATCH it to Ready so a worker has
-	// something to actually work; Update carries its own transition rules,
-	// which is why this goes through the real route rather than raw SQL.
+	// so a fresh item is always Draft. PATCH both story and task to Ready so
+	// a worker has something to actually work and, once the task finishes,
+	// deriveStory (internal/items/transition.go) has a chance to move the
+	// story at all — deriveStory is a no-op unless the story's CURRENT status
+	// is already one of {ready, in_progress, in_review, done}, exactly
+	// mirroring the real materialize.go's own createTree, which gives every
+	// non-root node Status: items.Ready up front. Update carries its own
+	// transition rules, which is why this goes through the real route rather
+	// than raw SQL.
+	storyRev, _ := story["revision"].(float64)
+	h.doT(t, http.MethodPatch, "/api/items/"+storyKey,
+		map[string]any{"status": "ready", "revision": int(storyRev)}, nil)
 	rev, _ := task["revision"].(float64)
 	h.doT(t, http.MethodPatch, "/api/items/"+taskKey,
 		map[string]any{"status": "ready", "revision": int(rev)}, nil)
 	return epicKey
+}
+
+// itemRevision is itemStatus's sibling: the item's current revision, needed
+// by any caller that goes on to PATCH or swarm_items-update it (both require
+// the caller's own last-seen revision, §10.1's optimistic-concurrency guard).
+func (h *harness) itemRevision(t *testing.T, key string) int {
+	t.Helper()
+	var detail struct {
+		Item map[string]any `json:"item"`
+	}
+	h.doT(t, http.MethodGet, "/api/items/"+key, nil, &detail)
+	rev, _ := detail.Item["revision"].(float64)
+	return int(rev)
 }
 
 // firstTask returns the key of the first task item under root.
@@ -489,6 +511,22 @@ func (h *harness) openRequest(t *testing.T, itemKey, kind string) string {
 		}
 	}
 	return ""
+}
+
+// requestState reads a request's current state straight from the DB.
+// GET /api/requests (listRequests -> openRequestsWire) only ever returns
+// *open* requests, so it can't tell a stale/approved/answered request from a
+// nonexistent one — a scenario that needs to observe a request actually go
+// stale has to read the row directly, same as waitForNotification does for
+// the notifications table.
+func (h *harness) requestState(t *testing.T, id string) string {
+	t.Helper()
+	var state string
+	err := h.db(t).QueryRow(`SELECT state FROM requests WHERE id = ?`, id).Scan(&state)
+	if err != nil {
+		return ""
+	}
+	return state
 }
 
 // waitForRequest polls openRequest until it appears.
