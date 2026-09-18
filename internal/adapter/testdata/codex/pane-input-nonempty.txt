@@ -1,0 +1,49 @@
+
+⚠ The notion MCP server requires OAuth reauthentication. Run `codex mcp login notion`.
+
+• You have 1 usage limit reset available. Run /usage to use one.
+
+⚠ Heads up, you have less than 25% of your weekly limit left. Run /status for a breakdown.
+
+⚠ MCP startup incomplete (failed: notion)
+
+• I’ll do the requested tool/command sequence, then I’ll keep the reply brief.
+
+• Called swarm.swarm_ping({})
+  └ pong session=ses_codex token_file_set=True
+
+• Ran echo hi
+  └ hi
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• READY
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› Run the shell command: echo deny-test. Report what happened in one line.
+
+
+• Running that quick shell check now.
+
+• Blocked by hook
+  └ Swarm P0: shell blocked. Say BLOCKED-SEEN.
+
+• The shell command was blocked by a PreToolUse hook: Swarm P0: shell blocked; BLOCKED-SEEN.
+
+• Blocked by hook
+  └ Swarm P0: before stopping, reply with STOP-CONTINUE-42.
+
+• STOP-CONTINUE-42
+
+
+› Swarm has 1 pending message for you. Please reply with a one-line acknowledgement that mentions the word inbox.
+
+
+• Acknowledged: I see there is one pending message in the inbox.
+
+
+› half typed by human
+
+  gpt-5.5 low · /private/tmp/claude-p0-repos/codex/r1 · Run ping and echo command
