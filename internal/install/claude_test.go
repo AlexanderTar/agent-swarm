@@ -41,6 +41,60 @@ func TestWriteClaudeInstallsSkillsAndTouchesNothingElse(t *testing.T) {
 	}
 }
 
+// WriteClaude must remove a leftover v1 symlink before writing the v2 skills:
+// the two occupy the same path, and WriteIfChanged's MkdirAll/WriteFile/Rename
+// would otherwise transparently follow the stale link into the v1 release target.
+func TestWriteClaudeRemovesALeftoverV1LinkBeforeWriting(t *testing.T) {
+	c := fakeHome(t)
+	target := filepath.Join(c.Home, "app", "current", "plugin", "skills")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canary := filepath.Join(target, "canary")
+	if err := os.WriteFile(canary, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := c.Claude("skills", "swarm")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := install.WriteClaude(c); err != nil {
+		t.Fatal(err)
+	}
+
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Error("skills/swarm is still a symlink; the v1 link was not replaced")
+	}
+	if !fi.IsDir() {
+		t.Error("skills/swarm is not a real directory")
+	}
+	if _, err := os.Stat(filepath.Join(link, "SKILL.md")); err != nil {
+		t.Error(err)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "canary" {
+		t.Errorf("v1 target dir = %v, want only the canary file untouched", entries)
+	}
+	again, err := install.RemoveLegacyClaude(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("RemoveLegacyClaude changed %v after WriteClaude, want none left to remove", again)
+	}
+}
+
 // §20: the v1 link is removed as a link. Cursor reads this folder too, so a stale
 // swarm-status skill here would still be loaded.
 func TestRemoveLegacyClaudeRemovesTheV1SkillLinkAsALink(t *testing.T) {

@@ -12,7 +12,16 @@ import (
 // built per launch by the adapter (§11.1), and its trust state lives in
 // ~/.claude.json, which Claude Code rewrites itself and Swarm never edits (§11.5).
 // So install writes the two skills and nothing else.
+//
+// The v1 symlink and the v2 skills folder share the same path
+// (c.Claude("skills", "swarm")): if the v1 link is still there, WriteSkills'
+// MkdirAll/WriteFile/Rename would transparently follow it into the v1 release
+// target instead of creating a real v2 directory. RemoveLegacyClaude must run
+// first so WriteSkills always lands on a real path.
 func WriteClaude(c Config) ([]string, error) {
+	if _, err := RemoveLegacyClaude(c); err != nil {
+		return nil, err
+	}
 	return WriteSkills(c, KindClaude)
 }
 
