@@ -247,13 +247,13 @@ func (s *Store) relayMaterialized(ctx context.Context, tx *sql.Tx, a Agent, spik
 
 // notifyItemCreated raises §17.5's item.created (or item.created.bug for a
 // debug spike's bug root).
-func (s *Store) notifyItemCreated(ctx context.Context, tx *sql.Tx, spike items.Item, rootKey string, rootType items.Type) error {
+func (s *Store) notifyItemCreated(ctx context.Context, tx *sql.Tx, spike items.Item, rootKey, rootTitle string, rootType items.Type) error {
 	kind := "item.created"
 	if rootType == items.Bug {
 		kind = "item.created.bug"
 	}
 	return s.notify(ctx, tx, NotifyInput{Kind: kind, ItemKey: rootKey,
-		Args: map[string]string{"SPIKE-KEY": spike.Key, "ROOT-KEY": rootKey}})
+		Args: map[string]string{"SPIKE-KEY": spike.Key, "ROOT-KEY": rootKey, "title": rootTitle}})
 }
 
 // Materialize turns an approved spike into an epic (feature) or a bug (debug),
@@ -314,7 +314,7 @@ func (s *Store) Materialize(ctx context.Context, sessionID, spikeKey, specID, pl
 		if err := s.relayMaterialized(ctx, tx, a, spikeKey, out); err != nil {
 			return err
 		}
-		return s.notifyItemCreated(ctx, tx, spike, out.Root, rootType)
+		return s.notifyItemCreated(ctx, tx, spike, out.Root, tree.Root.Title, rootType)
 	})
 	return out, err
 }

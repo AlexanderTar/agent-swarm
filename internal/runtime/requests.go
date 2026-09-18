@@ -436,7 +436,7 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			return &items.Error{Code: items.CodeBadRequest, Message: "This artifact kind cannot be approved."}
 		}
 		var sectionID sql.NullString
-		var sectionSHA string
+		var sectionSHA, sectionTitle string
 		if in.SectionID != "" {
 			var raw string
 			if err := tx.QueryRowContext(ctx, `SELECT sections_json FROM artifact_revisions
@@ -448,7 +448,7 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			found := false
 			for _, sec := range secs {
 				if sec.ID == in.SectionID {
-					sectionSHA, found = sec.SHA256, true
+					sectionSHA, sectionTitle, found = sec.SHA256, sec.Title, true
 					break
 				}
 			}
@@ -469,7 +469,14 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		if err != nil {
 			return err
 		}
-		out, err = s.finishOpen(ctx, tx, id, a.Name, key, nil)
+		// request.approve_section is the one finishOpen-routed template that
+		// needs more than {KEY}/{name}: `{KEY}: Review "{section}".` (§17.5).
+		// approve_plan/approve_report need neither section nor an extra arg.
+		var extra map[string]string
+		if reqKind == "approve_section" {
+			extra = map[string]string{"section": sectionTitle}
+		}
+		out, err = s.finishOpen(ctx, tx, id, a.Name, key, extra)
 		return err
 	})
 	return out, err
