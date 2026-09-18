@@ -192,6 +192,35 @@ describe("Details panel (§16.9)", () => {
     expect(opener).toHaveFocus();
   });
 
+  it("keeps the typed draft after a failed save instead of discarding it", async () => {
+    const d = createMockDaemon();
+    d.override("PATCH /api/items/TASK-103", { status: 500, body: { error: { code: "internal", message: "boom" } } });
+    const { user } = setup("TASK-103", {}, d);
+    await user.click(await screen.findByRole("button", { name: "Password reset form" }));
+    const input = screen.getByRole("textbox", { name: "Title" });
+    await user.clear(input);
+    await user.type(input, "Reset form{Enter}");
+    await waitFor(() => expect(d.calls.some((c) => c.method === "PATCH")).toBe(true));
+    // The failed save must not discard the typed text or fall back to the server's stale copy —
+    // the editor stays open with exactly what the user typed.
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Reset form");
+    expect(screen.queryByRole("button", { name: "Password reset form" })).not.toBeInTheDocument();
+  });
+
+  it("disables the priority select and edit triggers while a patch is in flight", async () => {
+    const d = createMockDaemon();
+    const release = d.hold("PATCH /api/items/TASK-103");
+    const { user } = setup("TASK-103", {}, d);
+    const titleButton = await screen.findByRole("button", { name: "Password reset form" });
+    const briefButton = screen.getByRole("button", { name: "Brief" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Priority" }), "0");
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Priority" })).toBeDisabled());
+    expect(titleButton).toBeDisabled();
+    expect(briefButton).toBeDisabled();
+    release();
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Priority" })).toBeEnabled());
+  });
+
   it("returns focus to the title button after an in-place edit saves", async () => {
     const { user } = setup("TASK-103");
     const titleButton = await screen.findByRole("button", { name: "Password reset form" });

@@ -16,16 +16,19 @@ import { checkMove, failureMessage } from "../logic/transitions";
 import type { Item, ItemStatus, PatchItemBody, Priority } from "../types";
 import type { DetailsProps } from "../views/props";
 
-function Editable(p: { label: string; value: string; multiline?: boolean; maxLength: number; disabled: boolean; onSave(v: string): void; className?: string }) {
+function Editable(p: { label: string; value: string; multiline?: boolean; maxLength: number; disabled: boolean; onSave(v: string): Promise<boolean>; className?: string }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(p.value);
   const trigger = useRef<HTMLButtonElement>(null);
   // Tracks the editing state as of the last render, so the focus effect below can tell "just closed"
   // apart from "freshly mounted" (both look like `editing === false`).
   const wasEditing = useRef(editing);
-  const save = () => {
-    setEditing(false);
-    if (draft !== p.value) p.onSave(draft);
+  const save = async () => {
+    if (draft === p.value) { setEditing(false); return; }
+    // Keep the editor open (and the typed draft) until the save actually settles. A failed PATCH
+    // must not discard what the user typed or fall back to the server's stale copy — only a
+    // success closes the editor.
+    if (await p.onSave(draft)) setEditing(false);
   };
   // Standing rule: this inline editor is transient UI too — closing it (blur, Enter, Escape) drops
   // focus to <body> unless something claims it back. Restore it to the trigger button, same as a
@@ -100,15 +103,17 @@ export function Details(p: DetailsProps) {
   if (!d) return <p className="p-4 text-muted">…</p>;
   const item = d.item;
 
-  const save = async (body: Omit<PatchItemBody, "revision">) => {
+  const save = async (body: Omit<PatchItemBody, "revision">): Promise<boolean> => {
     try {
       await patch.run(item.key, { ...body, revision: item.revision });
       setStale(false);
+      return true;
     } catch (e) {
       if (e instanceof ApiError && e.code === "conflict") {
         setStale(true);
         invalidate([qk.item(item.key), "items"]);
       } else toast({ message: body.status ? failureMessage(e, item) : errorText(e) });
+      return false;
     }
   };
 
@@ -145,8 +150,8 @@ export function Details(p: DetailsProps) {
         label={C.title}
         value={item.title}
         maxLength={200}
-        disabled={!p.connected}
-        onSave={(title) => void save({ title })}
+        disabled={!p.connected || patch.pending}
+        onSave={(title) => save({ title })}
         className="text-base font-semibold"
       />
       <div className="flex items-center justify-between gap-2">
@@ -156,7 +161,7 @@ export function Details(p: DetailsProps) {
           <select
             aria-label={C.priority}
             value={String(item.priority)}
-            disabled={!p.connected}
+            disabled={!p.connected || patch.pending}
             onChange={(e) => void save({ priority: Number(e.target.value) as Priority })}
             className="rounded border border-line bg-canvas px-1"
           >
@@ -196,7 +201,7 @@ export function Details(p: DetailsProps) {
         <div className="space-y-3">
           <div>
             <h4 className="text-muted">{C.brief}</h4>
-            <Editable label={C.brief} value={item.brief} multiline maxLength={600} disabled={!p.connected} onSave={(brief) => void save({ brief })} />
+            <Editable label={C.brief} value={item.brief} multiline maxLength={600} disabled={!p.connected || patch.pending} onSave={(brief) => save({ brief })} />
           </div>
           {item.acceptance.length > 0 && (
             <div>
