@@ -256,7 +256,10 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 				a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 				a.ItemID, a.RootItemID, a.Brief, string(a.State), a.PreflightError, nowMs,
 				string(advKind), advModel, advEffort, advMode)
-			return err
+			if err != nil {
+				return err
+			}
+			return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 		})
 		if s.Notify != nil {
 			_ = s.Notify.Raise(ctx, nil, NotifyInput{
@@ -317,7 +320,10 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 			(id, seq, kind, wake_class, priority, origin, to_agent_id, root_item_id, item_id, payload_json, state, created_at)
 			VALUES (?, ?, 'assignment', 'immediate', 1, 'daemon', ?, ?, ?, ?, 'pending', ?)`,
 			ids.New("msg"), seq, a.ID, it.ID, it.ID, string(payload), nowMs)
-		return err
+		if err != nil {
+			return err
+		}
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
 	if err != nil {
 		return "", Agent{}, false, err
@@ -442,7 +448,10 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 			(id, seq, kind, wake_class, priority, origin, to_agent_id, root_item_id, item_id, payload_json, state, created_at)
 			VALUES (?, ?, 'assignment', 'immediate', 1, 'daemon', ?, ?, ?, ?, 'pending', ?)`,
 			ids.New("msg"), seq, a.ID, it.RootID, it.ID, string(payload), nowMs)
-		return err
+		if err != nil {
+			return err
+		}
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
 	if err != nil {
 		return Agent{}, false, err
@@ -632,7 +641,10 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 			(id, seq, kind, wake_class, priority, origin, to_agent_id, root_item_id, item_id, payload_json, state, created_at)
 			VALUES (?, ?, 'assignment', 'immediate', 1, 'daemon', ?, ?, ?, ?, 'pending', ?)`,
 			ids.New("msg"), seq, a.ID, it.RootID, it.ID, string(payload), nowMs)
-		return err
+		if err != nil {
+			return err
+		}
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
 	if err != nil {
 		return Agent{}, false, err
@@ -898,7 +910,7 @@ func (s *Store) Cancel(ctx context.Context, name string) (Agent, error) {
 			return err
 		}
 		_, _ = tx.ExecContext(ctx, `UPDATE worktree_reservations SET released_at = ? WHERE agent_id = ? AND released_at IS NULL`, nowMs, a.ID)
-		return nil
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
 	if err != nil {
 		return Agent{}, err
@@ -946,6 +958,11 @@ func (s *Store) Retry(ctx context.Context, name, note string) (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+	}); err != nil {
+		return Agent{}, err
+	}
 	s.go_(func() {
 		if err := s.watchStartup(context.WithoutCancel(ctx), a, newSes, s.Adapters[a.Kind]); err != nil {
 			s.logf("spawn: watchStartup %s: %v", a.Name, err)
@@ -956,9 +973,15 @@ func (s *Store) Retry(ctx context.Context, name, note string) (Agent, error) {
 }
 
 func (s *Store) Ack(ctx context.Context, name string) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'acknowledged' WHERE name = ?`, name)
+	a, err := s.Agent(ctx, name)
+	if err != nil {
 		return err
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'acknowledged' WHERE name = ?`, name); err != nil {
+			return err
+		}
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
 }
 
@@ -1194,15 +1217,16 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 // like everything else rather than through the terminal (L6, P2 T35's P32).
 func (s *Store) DeliverAdvice(ctx context.Context, sessionID string, adv Advice) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
 		}
-		_ = ses
 		// Message.Payload is json.RawMessage (model.go); the brief's snippet
-		// assigns Advice directly, which doesn't type-check.
-		payload, err := json.Marshal(map[string]any{"question": adv.Question, "answer": adv.Answer,
-			"error": adv.Error, "state": adv.State})
+		// assigns Advice directly, which doesn't type-check. advice_id is the
+		// correlation key the inline swarm_advise result carries too (spec
+		// line 1023); no consumer reads it yet, but it belongs on the wire.
+		payload, err := json.Marshal(map[string]any{"advice_id": adv.ID, "question": adv.Question,
+			"answer": adv.Answer, "error": adv.Error, "state": adv.State})
 		if err != nil {
 			return err
 		}
@@ -1210,6 +1234,20 @@ func (s *Store) DeliverAdvice(ctx context.Context, sessionID string, adv Advice)
 			ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: payload})
 		return err
 	})
+}
+
+// publishAgentChanged appends agent.changed (contracts §5: {name, root_key})
+// inside tx, matching the events.Append-inside-the-mutation's-own-transaction
+// pattern used elsewhere (e.g. ConfirmRepos). P3's board invalidates its
+// agent list on this event, so every route that spawns, pauses, resumes,
+// cancels, retries or acknowledges an agent needs to raise it.
+func (s *Store) publishAgentChanged(ctx context.Context, tx *sql.Tx, agentName, rootItemID string) error {
+	rootKey, err := s.itemKey(ctx, tx, rootItemID)
+	if err != nil {
+		return err
+	}
+	_, err = s.Events.Append(ctx, tx, events.AgentChanged, map[string]string{"name": agentName, "root_key": rootKey})
+	return err
 }
 
 // OnWorktreeRetained is worktree.Service.OnRetained: §17.5's "Worktree kept"

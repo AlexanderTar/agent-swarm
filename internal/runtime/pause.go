@@ -253,9 +253,11 @@ func (s *Store) pauseOne(ctx context.Context, a Agent, ses Session, deadline tim
 			scope, db.Millis(deadline), ses.ID); err != nil {
 			return err
 		}
-		_, err := s.enqueue(ctx, tx, Message{Kind: "control", Origin: "daemon",
-			ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: payload})
-		return err
+		if _, err := s.enqueue(ctx, tx, Message{Kind: "control", Origin: "daemon",
+			ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: payload}); err != nil {
+			return err
+		}
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
 	if err != nil {
 		return Session{}, err
@@ -282,9 +284,11 @@ func (s *Store) pauseSubtree(ctx context.Context, orch Agent, orchSes Session, d
 		}
 	}
 	err = s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE sessions SET pause_scope = 'subtree',
-			pause_deadline_at = ? WHERE id = ?`, db.Millis(deadline), orchSes.ID)
-		return err
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET pause_scope = 'subtree',
+			pause_deadline_at = ? WHERE id = ?`, db.Millis(deadline), orchSes.ID); err != nil {
+			return err
+		}
+		return s.publishAgentChanged(ctx, tx, orch.Name, orch.RootItemID)
 	})
 	if err != nil {
 		return Session{}, err
@@ -516,15 +520,17 @@ func (s *Store) Resume(ctx context.Context, name string) (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
-	if a.State != AgentActive {
-		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active' WHERE id = ?`, a.ID)
-			return err
-		}); err != nil {
-			return Agent{}, err
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		if a.State != AgentActive {
+			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active' WHERE id = ?`, a.ID); err != nil {
+				return err
+			}
 		}
-		a.State = AgentActive
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+	}); err != nil {
+		return Agent{}, err
 	}
+	a.State = AgentActive
 	s.go_(func() {
 		if err := s.watchStartup(context.WithoutCancel(ctx), a, newSes, s.Adapters[a.Kind]); err != nil {
 			s.logf("resume: watchStartup %s: %v", a.Name, err)

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 )
 
 // erroringTmux wraps the fake tmux so a test can force one call to fail,
@@ -101,6 +103,40 @@ func TestPauseRequestEnqueuesAControlMessageAndMovesTheSession(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339, p.DeadlineAt); err != nil {
 		t.Fatalf("deadline_at must be RFC3339 (W2): %q", p.DeadlineAt)
+	}
+}
+
+// Required fix 4 (I-5): Pause and Resume must raise agent.changed (contracts
+// §5) so P3's board invalidates its agent list.
+func TestPauseAndResumePublishAgentChanged(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	countAgentChanged := func() int {
+		evs, _ := s.Events.After(ctx, 0, 1000)
+		n := 0
+		for _, e := range evs {
+			if e.Type == events.AgentChanged {
+				n++
+			}
+		}
+		return n
+	}
+	before := countAgentChanged()
+	if _, err := s.Pause(ctx, w.Name, "session"); err != nil {
+		t.Fatal(err)
+	}
+	if countAgentChanged() != before+1 {
+		t.Fatalf("agent.changed count after Pause = %d, want %d", countAgentChanged(), before+1)
+	}
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = 'p1' WHERE id = ?`, wSes.ID)
+	afterPause := countAgentChanged()
+	if _, err := s.Resume(ctx, w.Name); err != nil {
+		t.Fatal(err)
+	}
+	if countAgentChanged() != afterPause+1 {
+		t.Fatalf("agent.changed count after Resume = %d, want %d", countAgentChanged(), afterPause+1)
 	}
 }
 

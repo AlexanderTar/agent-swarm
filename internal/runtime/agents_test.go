@@ -320,6 +320,40 @@ func TestSpawnSuffixesADaemonGeneratedName(t *testing.T) {
 	}
 }
 
+// Required fix 4 (I-5): agent.changed (contracts §5) fires from both Spawn
+// and StartOrchestrator, not just StartSpike/Cancel/Retry/Ack.
+func TestSpawnAndStartOrchestratorPublishAgentChanged(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	root := seedEpicWithTask(t, s)
+	countAgentChanged := func() int {
+		evs, _ := s.Events.After(ctx, 0, 1000)
+		n := 0
+		for _, e := range evs {
+			if e.Type == events.AgentChanged {
+				n++
+			}
+		}
+		return n
+	}
+	before := countAgentChanged()
+	if _, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root, Brief: BriefInput{Objective: "do it"}}); err != nil {
+		t.Fatal(err)
+	}
+	afterSpawn := countAgentChanged()
+	if afterSpawn != before+1 {
+		t.Fatalf("agent.changed count after Spawn = %d, want %d", afterSpawn, before+1)
+	}
+	if _, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	afterOrch := countAgentChanged()
+	if afterOrch != afterSpawn+1 {
+		t.Fatalf("agent.changed count after StartOrchestrator = %d, want %d", afterOrch, afterSpawn+1)
+	}
+}
+
 // §5: at most one live session per agent, and one orchestrator per top-level item.
 func TestSpawnRefusesASecondOrchestratorForTheSameRoot(t *testing.T) {
 	s, _, _ := newStore(t)
@@ -527,6 +561,59 @@ func TestAckMovesTheAgentToAcknowledged(t *testing.T) {
 	out, _ := s.Agent(ctx, a.Name)
 	if out.State != AgentAcknowledged {
 		t.Fatalf("state = %s", out.State)
+	}
+}
+
+// Required fix 4 (I-5): agent.changed (contracts §5) must fire from every
+// route that changes an agent's state, so P3's board invalidates its agent
+// list — StartSpike (via Spawn's shared insert path), Cancel, Retry and Ack
+// here; StartOrchestrator, Spawn, Pause and Resume are covered elsewhere.
+func TestCancelRetryAndAckPublishAgentChanged(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	countAgentChanged := func() int {
+		evs, _ := s.Events.After(ctx, 0, 1000)
+		n := 0
+		for _, e := range evs {
+			if e.Type == events.AgentChanged {
+				n++
+			}
+		}
+		return n
+	}
+	before := countAgentChanged()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Events", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterSpawn := countAgentChanged()
+	if afterSpawn != before+1 {
+		t.Fatalf("agent.changed count after StartSpike = %d, want %d", afterSpawn, before+1)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Retry(ctx, a.Name, ""); err != nil {
+		t.Fatal(err)
+	}
+	afterRetry := countAgentChanged()
+	if afterRetry != afterSpawn+1 {
+		t.Fatalf("agent.changed count after Retry = %d, want %d", afterRetry, afterSpawn+1)
+	}
+	if err := s.Ack(ctx, a.Name); err != nil {
+		t.Fatal(err)
+	}
+	afterAck := countAgentChanged()
+	if afterAck != afterRetry+1 {
+		t.Fatalf("agent.changed count after Ack = %d, want %d", afterAck, afterRetry+1)
+	}
+	if _, err := s.Cancel(ctx, a.Name); err != nil {
+		t.Fatal(err)
+	}
+	afterCancel := countAgentChanged()
+	if afterCancel != afterAck+1 {
+		t.Fatalf("agent.changed count after Cancel = %d, want %d", afterCancel, afterAck+1)
 	}
 }
 
