@@ -134,6 +134,14 @@ func handOffAndKill(t *testing.T, h *harness, agentName string) {
 // of any daemon-side ordering.
 func TestScenario08PauseAllAndResume(t *testing.T) {
 	h := newHarness(t)
+	// This scenario drives each of its four pauses to completion by hand, one
+	// at a time (up to ~6s apiece) — a short pause_deadline_sec left behind by
+	// scenario 7 or 9 (this package shares one daemon and its settings table
+	// across every test) would let TickPause's own interrupt-then-kill timer
+	// race ahead and kill a later agent's pane out from under this test before
+	// it gets there. Reset it to the production default explicitly rather
+	// than assume a fresh one.
+	h.setPauseDeadlineSec(t, 120)
 	epic1 := h.materializedEpic(t)
 	orch1 := h.startOrchestrator(t, epic1)
 	h.mustTool(t, orch1, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
