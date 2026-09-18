@@ -9,12 +9,14 @@ import (
 	"slices"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
 type AgentState string
@@ -253,15 +255,25 @@ type Advisor interface {
 // Task 12 adds Tmux/Adapters/Worktree/Notify/Bin/DaemonURL/OSEnv/BaseEnv/After;
 // Task 26 adds Advisor.
 type Store struct {
-	DB       *db.DB
-	Events   *events.Store
-	Items    *items.Store
-	Repos    *repos.Service
-	Settings *settings.Store
-	Catalog  *catalog.Service
-	Home     string // SWARM_HOME
-	Now      func() time.Time
-	Log      func(format string, args ...any)
+	DB        *db.DB
+	Events    *events.Store
+	Items     *items.Store
+	Repos     *repos.Service
+	Settings  *settings.Store
+	Catalog   *catalog.Service
+	Home      string // SWARM_HOME
+	Now       func() time.Time
+	Log       func(format string, args ...any)
+	Tmux      Tmux
+	Adapters  map[AgentKind]adapter.Adapter
+	Worktree  *worktree.Service
+	Notify    Notifier
+	Bin       string                                      // absolute path to the swarm binary
+	DaemonURL string                                      // http://127.0.0.1:<cfg.Port>; never :7777 in a fixture
+	OSEnv     func(string) string                         // nil means os.Getenv
+	BaseEnv   func(func(string) string) map[string]string // always supplied by cmd/swarm; never defaulted here
+	After     func(time.Duration) <-chan time.Time        // nil means time.After
+	Go        func(func())                                // nil means `go f()`; tests run it inline
 }
 
 func (s *Store) logf(format string, args ...any) {

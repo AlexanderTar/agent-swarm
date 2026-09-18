@@ -20,6 +20,7 @@ type Fake struct {
 	NoSuperpowers bool
 	Version       string
 	WakeOK        bool // e2e can turn on a "native wake" to test the skip-the-paste path
+	Dialogs       []Dialog
 }
 
 func NewFake(d Deps) *Fake {
@@ -60,7 +61,7 @@ var (
 func (f *Fake) ProcessNames() []*regexp.Regexp { return []*regexp.Regexp{fakeProcess} }
 func (f *Fake) IdlePrompt() *regexp.Regexp     { return fakeIdle }
 func (f *Fake) Busy() *regexp.Regexp           { return fakeBusy }
-func (f *Fake) StartupDialogs() []Dialog       { return nil }
+func (f *Fake) StartupDialogs() []Dialog       { return f.Dialogs }
 func (f *Fake) InterruptKeys() []string        { return []string{"Escape"} }
 func (f *Fake) Idle(capture string) bool       { return idle(f, capture) }
 

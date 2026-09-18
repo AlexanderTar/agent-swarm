@@ -1,0 +1,630 @@
+package runtime
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
+	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/worktree"
+)
+
+// fakeTmux records every call and serves scripted captures.
+type fakeTmux struct {
+	started  []string // "<name>|<cwd>|<argv joined>"
+	env      map[string]map[string]string
+	captures map[string][]string // per session: one capture per poll, the last repeats
+	pasted   []string
+	keys     []string
+	killed   []string
+	panes    []Pane
+	n        map[string]int
+	clk      *testClock // the Store's clock, so a test can advance it: tm.clk.Advance(d)
+}
+
+func newFakeTmux() *fakeTmux {
+	return &fakeTmux{env: map[string]map[string]string{}, captures: map[string][]string{},
+		n: map[string]int{}}
+}
+func (f *fakeTmux) Start(ctx context.Context, name, cwd string, env map[string]string, argv []string) error {
+	f.started = append(f.started, name+"|"+cwd+"|"+strings.Join(argv, " "))
+	f.env[name] = env
+	return nil
+}
+func (f *fakeTmux) Panes(context.Context) ([]Pane, error) { return f.panes, nil }
+func (f *fakeTmux) Capture(ctx context.Context, name string, lines int) (string, error) {
+	seq := f.captures[name]
+	if len(seq) == 0 {
+		return "─────\n❯ \n─────\n", nil // idle by default
+	}
+	i := f.n[name]
+	if i >= len(seq) {
+		i = len(seq) - 1
+	}
+	f.n[name] = i + 1
+	return seq[i], nil
+}
+func (f *fakeTmux) PasteLine(ctx context.Context, name, line string) error {
+	f.pasted = append(f.pasted, name+"|"+line)
+	return nil
+}
+func (f *fakeTmux) Keys(ctx context.Context, name string, keys ...string) error {
+	f.keys = append(f.keys, name+"|"+strings.Join(keys, ","))
+	return nil
+}
+func (f *fakeTmux) Env(ctx context.Context, name, key string) (string, error) {
+	return f.env[name][key], nil
+}
+func (f *fakeTmux) Kill(ctx context.Context, name string) error {
+	f.killed = append(f.killed, name)
+	return nil
+}
+
+// testClock is the one clock every runtime test shares (R12). It advances 1 ms on
+// every read, so `created_at` values order instead of all landing on the same
+// millisecond and passing `acceptedSince`/`rootState` comparisons by `>=`
+// equality. Advance moves it by hand, and After — the Store.After seam — advances
+// it by the duration it was asked to wait and then fires at once. That is what
+// makes a poll loop like watchStartup reach its deadline: with a frozen clock
+// `for s.Now().Before(deadline)` never ends, so the 30-second failure branch of
+// §11.5 is unreachable and untested.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newTestClock() *testClock {
+	return &testClock{t: time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(time.Millisecond)
+	return c.t
+}
+
+func (c *testClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+func (c *testClock) After(d time.Duration) <-chan time.Time {
+	c.Advance(d)
+	ch := make(chan time.Time, 1)
+	ch <- c.Now()
+	return ch
+}
+
+// newStore wires a Store on a migrated temp DB with the fake adapter and tmux.
+func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
+	t.Helper()
+	d := dbtest.Open(t)
+	home := t.TempDir()
+	clk := newTestClock()
+	ev := events.New(d, clk.Now)
+	it := &items.Store{DB: d, Events: ev, Now: clk.Now}
+	cat := &catalog.Service{DB: d, Events: ev, Now: clk.Now, Log: func(string, ...any) {}}
+	seedFakeCatalog(t, d)
+	st := &settings.Store{DB: d, Events: ev, Now: clk.Now, ModelsFor: cat.ModelsFor,
+		Installed: func(context.Context) []AgentKind { return []AgentKind{Fake} }}
+	fa := adapter.NewFake(adapter.Deps{Home: home, UserHome: t.TempDir(),
+		Bin: "/usr/local/bin/swarm", Run: execx.Run, Log: func(string, ...any) {}})
+	tm := newFakeTmux()
+	tm.clk = clk
+	s := &Store{DB: d, Events: ev, Items: it, Settings: st, Catalog: cat, Home: home,
+		Now: clk.Now, Log: func(string, ...any) {}, Tmux: tm,
+		// D25: Preflight calls s.Worktree.SigningOK for every repo, so the field is
+		// wired here, not in Task 21. Run is the real execx.Run because the git calls
+		// go against temp repos gitRepoNoSigning creates.
+		Worktree:  &worktree.Service{DB: d, Run: execx.Run, Now: clk.Now, Log: func(string, ...any) {}},
+		Notify:    &fakeNotifier{},
+		Adapters:  map[AgentKind]adapter.Adapter{Fake: fa},
+		Bin:       "/usr/local/bin/swarm",
+		DaemonURL: "http://127.0.0.1:17778", // F3: never the live daemon's port in a fixture
+		OSEnv:     func(k string) string { return map[string]string{"USER": "u", "HOME": home, "PATH": "/usr/bin"}[k] },
+		BaseEnv: func(getenv func(string) string) map[string]string {
+			return map[string]string{"USER": getenv("USER"), "HOME": getenv("HOME"), "PATH": getenv("PATH")}
+		},
+		After: clk.After,
+		Go:    func(f func()) { f() }, // D28: inline, so the assertions are deterministic
+	}
+	return s, tm, fa
+}
+
+// fakeNotifier records what the runtime raised.
+type fakeNotifier struct {
+	mu     sync.Mutex
+	raised []NotifyInput
+}
+
+func (f *fakeNotifier) Raise(ctx context.Context, tx *sql.Tx, n NotifyInput) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.raised = append(f.raised, n)
+	return nil
+}
+
+func (f *fakeNotifier) kinds() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.raised))
+	for _, n := range f.raised {
+		out = append(out, n.Kind)
+	}
+	return out
+}
+
+func notified(t *testing.T, s *Store, kind string) NotifyInput {
+	t.Helper()
+	f := s.Notify.(*fakeNotifier)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, n := range f.raised {
+		if n.Kind == kind {
+			return n
+		}
+	}
+	t.Fatalf("no %s notification; raised %v", kind, f.kinds())
+	return NotifyInput{}
+}
+
+func notifiedCount(s *Store, kind string) int {
+	f := s.Notify.(*fakeNotifier)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int
+	for _, in := range f.raised {
+		if in.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+func lastNotified(t *testing.T, s *Store) NotifyInput {
+	t.Helper()
+	f := s.Notify.(*fakeNotifier)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.raised) == 0 {
+		t.Fatal("nothing was notified")
+	}
+	return f.raised[len(f.raised)-1]
+}
+
+func TestStartSpikeCreatesTheItemTheAgentAndTheSession(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	key, a, queued, err := s.StartSpike(ctx, SpikeInput{Name: "Investigate login crash",
+		Intent: "debug", Kind: Fake, Model: "fake-1",
+		Request: "Users see a crash after the second login attempt."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatal("the first spawn is not queued")
+	}
+	if !strings.HasPrefix(key, "SPIKE-") {
+		t.Fatalf("key = %q", key)
+	}
+	if a.Name != "investigate-login-crash" {
+		t.Fatalf("name = %q", a.Name)
+	}
+	if a.Role != RoleOrchestrator || a.State != AgentActive {
+		t.Fatalf("agent = %+v", a)
+	}
+	it, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Status != items.Draft || it.SpikeIntent != "debug" {
+		t.Fatalf("item = %+v", it)
+	}
+	if it.Brief != "Users see a crash after the second login attempt." {
+		t.Fatalf("the request text becomes the brief: %q", it.Brief)
+	}
+	// one tmux session in the neutral folder (I3)
+	if len(tm.started) != 1 || !strings.Contains(tm.started[0], filepath.Join(s.Home, "work", a.Name)) {
+		t.Fatalf("started = %v", tm.started)
+	}
+	if fi, err := os.Stat(filepath.Join(s.Home, "work", a.Name)); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("neutral folder mode = %v (%v)", fi, err)
+	}
+	// the token is on disk 0600 and hashed in the row, never in argv
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokPath := filepath.Join(s.Home, "run", "tokens", ses.ID)
+	tok, err := os.ReadFile(tokPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(tokPath); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("token mode = %v", fi.Mode().Perm())
+	}
+	if strings.Contains(tm.started[0], strings.TrimSpace(string(tok))) {
+		t.Fatal("the token must never appear in argv")
+	}
+	if tm.env[a.Name]["SWARM_TOKEN_FILE"] != tokPath {
+		t.Fatalf("SWARM_TOKEN_FILE = %q", tm.env[a.Name]["SWARM_TOKEN_FILE"])
+	}
+	for _, k := range []string{"USER", "HOME", "PATH", "SWARM_URL", "SWARM_SESSION", "SWARM_AGENT_KIND"} {
+		if tm.env[a.Name][k] == "" {
+			t.Errorf("%s missing from the tmux environment (L9)", k)
+		}
+	}
+	// the assignment message is waiting, and it carries the rendered brief
+	var kind, payload string
+	if err := s.DB.QueryRowContext(ctx, `SELECT kind, payload_json FROM messages WHERE to_agent_id = ?`, a.ID).
+		Scan(&kind, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "assignment" || !strings.Contains(payload, key) {
+		t.Fatalf("message = %s %s", kind, payload)
+	}
+}
+
+// §17.3: a user-typed name that is taken is refused, not silently suffixed (P4 carry).
+func TestStartSpikeRefusesADuplicateUserTypedName(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	in := SpikeInput{Name: "Login crash", Intent: "debug", Kind: Fake, Model: "fake-1"}
+	if _, _, _, err := s.StartSpike(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err := s.StartSpike(ctx, in)
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Message != "This agent name is already in use." || ie.Code != items.CodeConflict {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// §4: a daemon-generated worker name gets the -2 suffix instead.
+func TestSpawnSuffixesADaemonGeneratedName(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	root := seedEpicWithTask(t, s)
+	first, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root, Brief: BriefInput{Objective: "do it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root, Brief: BriefInput{Objective: "do it again"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (first.Name != "build-it-coder" && first.Name != "write-the-failing-test-coder") ||
+		(second.Name != "build-it-coder-2" && second.Name != "write-the-failing-test-coder-2") {
+		t.Fatalf("names = %q, %q", first.Name, second.Name)
+	}
+}
+
+// §5: at most one live session per agent, and one orchestrator per top-level item.
+func TestSpawnRefusesASecondOrchestratorForTheSameRoot(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	if _, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Message != "This item already has an orchestrator." {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// §11.4: preflight order, with the §17.3 copy for each failure.
+func TestPreflightFailures(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		set  func(*Store, *adapter.Fake)
+		want string
+	}{
+		{"not installed", func(s *Store, f *adapter.Fake) { f.NotInstalled = true },
+			"Fake isn't installed on this Mac."},
+		{"not signed in", func(s *Store, f *adapter.Fake) { f.AuthError = errors.New("no token") },
+			"Fake isn't signed in. Run `fake login` in a terminal."},
+		{"no superpowers", func(s *Store, f *adapter.Fake) { f.NoSuperpowers = true },
+			"Install the superpowers plugin for Fake to run orchestrators."},
+	}
+	for _, c := range cases {
+		s, _, f := newStore(t)
+		c.set(s, f)
+		err := s.Preflight(ctx, PreflightInput{Kind: Fake, Model: "fake-1", Role: RoleOrchestrator})
+		if err == nil || err.Error() != c.want {
+			t.Errorf("%s: err = %v, want %q", c.name, err, c.want)
+		}
+	}
+	// a model that is not in the catalog
+	s, _, _ := newStore(t)
+	if err := s.Preflight(ctx, PreflightInput{Kind: Fake, Model: "gone-9", Role: RoleCoder}); err == nil ||
+		err.Error() != "Choose a model available for this agent." {
+		t.Errorf("model err = %v", err)
+	}
+}
+
+// §11.4 step 7: signing off fails the spawn with the repo name.
+func TestPreflightRefusesARepoWithSigningOff(t *testing.T) {
+	s, _, _ := newStore(t)
+	repo := gitRepoNoSigning(t)
+	err := s.Preflight(context.Background(), PreflightInput{Kind: Fake, Model: "fake-1",
+		Role: RoleCoder, RepoPaths: []string{repo}})
+	if err == nil || !strings.HasPrefix(err.Error(), "Commit signing is off for ") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// §10.2: a preflight failure leaves the spike in draft with a failed agent and no session.
+func TestStartSpikeOnPreflightFailureLeavesADraftAndAFailedAgent(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.NoSuperpowers = true
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Look into it", Intent: "feature",
+		Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatalf("StartSpike must succeed and record the failure: %v", err)
+	}
+	it, _ := s.Items.Get(ctx, key)
+	if it.Status != items.Draft {
+		t.Fatalf("status = %s", it.Status)
+	}
+	if len(tm.started) != 0 {
+		t.Fatalf("nothing should be spawned: %v", tm.started)
+	}
+	if _, err := s.LatestSession(ctx, a.ID); err == nil {
+		t.Fatal("no session row belongs to a preflight failure (contracts: session === null)")
+	}
+	if got := lastNotified(t, s).Kind; got != "agent.preflight_failed" {
+		t.Fatalf("notification = %q", got)
+	}
+}
+
+// §11.5: dialogs are answered once each, with the exact keys, only when required.
+func TestSpawnAnswersStartupDialogsOnce(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.Dialogs = []adapter.Dialog{
+		{Match: regexp.MustCompile(`Is this a project you created or one you trust\?`),
+			Require: regexp.MustCompile(`Yes, I trust this folder`), Keys: []string{"Down", "Enter"}},
+	}
+	tm.captures["look-into-it"] = []string{
+		"Is this a project you created or one you trust?\n  No, exit\n  Yes, I trust this folder\n",
+		"Is this a project you created or one you trust?\n  No, exit\n  Yes, I trust this folder\n",
+		"─────\n❯ \n─────\n",
+	}
+	if _, _, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Look into it",
+		Intent: "feature", Kind: Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	var sent int
+	for _, k := range tm.keys {
+		if k == "look-into-it|Down,Enter" {
+			sent++
+		}
+	}
+	if sent != 1 {
+		t.Fatalf("the keys were sent %d times, want once", sent)
+	}
+}
+
+// §11.1, §11.5: a Fail dialog fails the spawn with the pane text in the error.
+func TestSpawnFailsOnAFailDialog(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.Dialogs = []adapter.Dialog{
+		{Match: regexp.MustCompile(`Hooks can run outside the sandbox`), Fail: true},
+	}
+	tm.captures["look-into-it"] = []string{"Hooks can run outside the sandbox after you trust them.\n"}
+	_, a, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Look into it",
+		Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Failed {
+		t.Fatalf("session state = %s", ses.State)
+	}
+}
+
+// §10.7: cancel kills the pane, releases the reservations and finishes the agent.
+func TestCancelKillsAndFinishes(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bye", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Cancel(ctx, a.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != AgentFinished {
+		t.Fatalf("agent state = %s", out.State)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	if ses.State != Cancelled {
+		t.Fatalf("session state = %s", ses.State)
+	}
+	if len(tm.keys) == 0 || !strings.HasSuffix(tm.keys[len(tm.keys)-1], "|Escape") {
+		t.Fatalf("interrupt keys were not sent: %v", tm.keys)
+	}
+	if len(tm.killed) != 1 || tm.killed[0] != a.Name {
+		t.Fatalf("killed = %v", tm.killed)
+	}
+	// the item status does not change (§10.7)
+	it, _ := s.Items.Get(ctx, "SPIKE-1")
+	if it.Status != items.Draft {
+		t.Fatalf("item status = %s", it.Status)
+	}
+}
+
+// §10.7: retry starts a new attempt and a new generation with a fresh token.
+func TestRetryStartsANewAttemptAndRevokesTheOldToken(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Again", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	first, _ := s.LatestSession(ctx, a.ID)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Retry(ctx, a.Name, "the reviewer found a missing test"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Attempt != 2 || next.Generation != 2 {
+		t.Fatalf("session = attempt %d, generation %d", next.Attempt, next.Generation)
+	}
+	if next.TokenHash == first.TokenHash {
+		t.Fatal("a new generation needs a new token")
+	}
+	if _, err := os.Stat(filepath.Join(s.Home, "run", "tokens", first.ID)); !os.IsNotExist(err) {
+		t.Fatal("the old token file must be deleted")
+	}
+	// the note reaches the agent as an assignment_update (I8)
+	var n int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'assignment_update'`, a.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("assignment_update count = %d", n)
+	}
+}
+
+// §10.7: ack moves a crashed agent to history.
+func TestAckMovesTheAgentToAcknowledged(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Acked", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE agent_id = ?`, a.ID)
+	if err := s.Ack(ctx, a.Name); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := s.Agent(ctx, a.Name)
+	if out.State != AgentAcknowledged {
+		t.Fatalf("state = %s", out.State)
+	}
+}
+
+// §7: terminal publishes terminal.open and reports the tmux name.
+func TestTerminalPublishesTheEvent(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Term", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	name, by, err := s.Terminal(ctx, a.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != a.Name || by != "menubar" {
+		t.Fatalf("terminal = %q, %q", name, by)
+	}
+	evs, _ := s.Events.After(ctx, 0, 100)
+	var found bool
+	for _, e := range evs {
+		if e.Type == events.TerminalOpen {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no terminal.open event")
+	}
+}
+
+func seedEpicWithTask(t *testing.T, s *Store) items.Item {
+	t.Helper()
+	ctx := context.Background()
+	ep, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Build it"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, err := s.Items.Create(ctx, items.CreateInput{Type: items.Story, ParentKey: ep.Key,
+		Title: "Build the thing"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.Items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: story.Key,
+		Title: "Write the failing test"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// `ready` directly, not through Transition: the daemon's Ready->InProgress hop
+	// needs an accepted checkpoint, which these tests are not about.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id IN (?, ?, ?)`,
+		ep.ID, story.ID, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	return ep
+}
+
+func gitRepoNoSigning(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "t@example.invalid"},
+		{"config", "user.name", "T"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return dir
+}
+
+func seedFakeCatalog(t *testing.T, d *db.DB) {
+	t.Helper()
+	_, err := d.ExecContext(context.Background(), `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('fake','fake-1','[{"id":"fake-1","label":"Fake 1","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}]','fake-1','test',1,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// §11.5: a pane that never goes idle and shows no dialog fails after 30 s.
+func TestStartupTimesOutAfterThirtySeconds(t *testing.T) {
+	s, tm, _ := newStore(t)
+	// One capture, repeated: never idle, matches no dialog.
+	tm.captures["stuck"] = []string{"Loading…\n"}
+	_, a, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Stuck",
+		Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Failed {
+		t.Fatalf("session state = %s, want failed after the 30 s deadline", ses.State)
+	}
+	if got := s.Notify.(*fakeNotifier).kinds(); !slices.Contains(got, "agent.preflight_failed") {
+		t.Fatalf("raised %v, want agent.preflight_failed", got)
+	}
+}
