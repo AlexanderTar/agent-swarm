@@ -88,6 +88,7 @@ type Agent struct {
 	AdvisorMode                       string
 	Brief                             string
 	State                             AgentState
+	PreflightError                    string // set only when the agent never spawned (contracts §3.2)
 	CreatedAt                         time.Time
 	FinishedAt                        *time.Time
 }
@@ -285,6 +286,13 @@ type Store struct {
 	After     func(time.Duration) <-chan time.Time        // nil means time.After
 	Go        func(func())                                // nil means `go f()`; tests run it inline
 
+	// TmuxPath and TmuxSocketName are the two strings `swarm attach` and
+	// httpapi's Ghostty fallback need, so neither ever writes "-L swarm" as a
+	// literal (safety invariant S-1, R11). cmd/swarm sets both from the same
+	// Spawner the daemon spawns through, so they can never disagree.
+	TmuxPath       string
+	TmuxSocketName string
+
 	// bookkeeping is Task 20/22's in-memory state: how long ago each pausing
 	// session was sent interrupt keys, how many idle-paste attempts a wake has
 	// made, and the live SSE-side wake subscriptions. None of it has a schema
@@ -297,6 +305,11 @@ type Store struct {
 	pasteAttempts map[string]int
 	wakeSubs      map[string][]chan string
 }
+
+// TmuxBin and TmuxSocket are the two readers httpapi's Ghostty fallback uses
+// (R11, S-1): the socket always comes from here, never from a literal.
+func (s *Store) TmuxBin() string    { return s.TmuxPath }
+func (s *Store) TmuxSocket() string { return s.TmuxSocketName }
 
 func (s *Store) logf(format string, args ...any) {
 	if s.Log != nil {

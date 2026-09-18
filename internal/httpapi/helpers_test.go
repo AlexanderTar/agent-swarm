@@ -3,6 +3,8 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,15 +15,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
+	"github.com/AlexanderTar/agent-swarm/internal/mcpserver"
+	"github.com/AlexanderTar/agent-swarm/internal/notify"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
 var bg = context.Background()
@@ -110,7 +120,10 @@ func newEnv(t *testing.T, opts ...func(*Deps)) *env {
 	}
 	it := &items.Store{DB: d, Events: ev, Now: now}
 	deps := Deps{Version: "test", Token: daemonToken, DB: d, Events: ev, Items: it, Repos: rp,
-		Settings: st, Catalog: cat, KB: idx, WriteTimeout: 200 * time.Millisecond}
+		Settings: st, Catalog: cat, KB: idx, WriteTimeout: 200 * time.Millisecond,
+		// Run and After are P1-irrelevant seams P2 (R11) added to Deps; New panics
+		// on a nil Run, so every test gets a safe default here before opts run.
+		Run: (&execx.Fake{}).Runner(), After: time.After}
 	for _, o := range opts {
 		o(&deps)
 	}
@@ -186,5 +199,397 @@ func wantErr(t *testing.T, status int, body []byte, wantStatus int, code, msg st
 	e := decode[errBody](t, body)
 	if status != wantStatus || e.Error.Code != code || (msg != "" && e.Error.Message != msg) {
 		t.Fatalf("got %d %s, want %d %s %q", status, body, wantStatus, code, msg)
+	}
+}
+
+// ---- added by Task 31: the P2 runtime harness ----
+
+// rec is the {status, body} pair in the shape the P2 tests read. It is not a
+// second transport: get and post below go through P1's env.api, which uses
+// the same httptest.Server and the same token as every P1 test in this package.
+type rec struct {
+	Code int
+	Body *bytes.Buffer
+}
+
+func (r *rec) String() string { return r.Body.String() }
+
+// httpSeed is what the P2 route tests name.
+type httpSeed struct {
+	RootKey, StoryKey, TaskKey, SpikeKey, EpicKey string
+	AgentName, SessionID, SessionToken            string
+	RepoID                                        string
+}
+
+type runtimeEnv struct {
+	*env
+	RT    *runtime.Store
+	Seed  httpSeed
+	DB    *db.DB
+	Token string
+}
+
+// Handler forwards to the wrapped Server, so tests can drive the mux directly
+// (the wake-stream and auth tests bypass the httptest.Server transport).
+func (e *runtimeEnv) Handler() http.Handler { return e.s.Handler() }
+
+func (e *runtimeEnv) get(t *testing.T, path string) *rec {
+	t.Helper()
+	code, body := e.api(http.MethodGet, path, nil)
+	return &rec{Code: code, Body: bytes.NewBuffer(body)}
+}
+
+// post takes the body as a raw JSON string, because every P2 route test writes
+// its body as a literal. env.api marshals a value, so the string is wrapped in
+// a json.RawMessage to reach the wire unchanged.
+func (e *runtimeEnv) post(t *testing.T, path, body string) *rec {
+	t.Helper()
+	code, out := e.api(http.MethodPost, path, json.RawMessage(body))
+	return &rec{Code: code, Body: bytes.NewBuffer(out)}
+}
+
+// getNoToken and postSession are the two variants the auth tests need.
+func (e *runtimeEnv) getNoToken(t *testing.T, path string) *rec {
+	t.Helper()
+	code, out := e.call(http.MethodGet, path, nil, "")
+	return &rec{Code: code, Body: bytes.NewBuffer(out)}
+}
+
+func (e *runtimeEnv) postSession(t *testing.T, path, token, body string) *rec {
+	t.Helper()
+	code, out := e.call(http.MethodPost, path, json.RawMessage(body), token)
+	return &rec{Code: code, Body: bytes.NewBuffer(out)}
+}
+
+// postToken is env.call with a session token instead of the daemon token (Task 34).
+func (e *runtimeEnv) postToken(t *testing.T, token, path, body string) *rec {
+	t.Helper()
+	code, out := e.call(http.MethodPost, path, json.RawMessage(body), token)
+	return &rec{Code: code, Body: bytes.NewBuffer(out)}
+}
+
+// postVia is post with an explicit X-Swarm-Via header (W7).
+func (e *runtimeEnv) postVia(t *testing.T, via, path, body string) *rec {
+	t.Helper()
+	code, out := e.call(http.MethodPost, path, json.RawMessage(body), daemonToken, "X-Swarm-Via", via)
+	return &rec{Code: code, Body: bytes.NewBuffer(out)}
+}
+
+// testTmux is a minimal runtime.Tmux double: every P2 fixture in this package
+// seeds sessions with raw SQL rather than a real spawn (matching
+// internal/mcpserver's own harness, D-style precedent), so this only needs to
+// satisfy the interface and never touch a real process (S-1, S-2).
+type testTmux struct {
+	panes   []runtime.Pane
+	killed  []string
+	keys    []string
+}
+
+func (f *testTmux) Start(context.Context, string, string, map[string]string, []string) error { return nil }
+func (f *testTmux) Panes(context.Context) ([]runtime.Pane, error)                             { return f.panes, nil }
+func (f *testTmux) Capture(context.Context, string, int) (string, error)                      { return "", nil }
+func (f *testTmux) PasteLine(context.Context, string, string) error                           { return nil }
+func (f *testTmux) Keys(ctx context.Context, name string, keys ...string) error {
+	f.keys = append(f.keys, name)
+	return nil
+}
+func (f *testTmux) Env(context.Context, string, string) (string, error) { return "", nil }
+func (f *testTmux) Kill(ctx context.Context, name string) error {
+	f.killed = append(f.killed, name)
+	return nil
+}
+
+func seedFakeAgentCatalog(t *testing.T, d *db.DB) {
+	t.Helper()
+	if _, err := d.ExecContext(bg, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('fake', 'fake-1', '[{"id":"fake-1","label":"Fake 1","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}]', 'fake-1', 'test', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(bg, `INSERT INTO settings (key, value_json, updated_at)
+		VALUES ('enabled_agents', '["fake"]', 1)`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// newServicesOnly is newEnv plus every P2 service, wired but with nothing
+// seeded — newRuntimeServerWith adds the tree; newEmptyServer stops here.
+func newServicesOnly(t *testing.T, extra func(d *Deps)) *runtimeEnv {
+	t.Helper()
+	var rt *runtime.Store
+	home := t.TempDir()
+	e := newEnv(t, func(d *Deps) {
+		seedFakeAgentCatalog(t, d.DB)
+		fa := adapter.NewFake(adapter.Deps{Home: home, UserHome: t.TempDir(), Bin: "/usr/local/bin/swarm",
+			Run: execx.Run, Log: func(string, ...any) {}})
+		tm := &testTmux{}
+		nt := &notify.Service{DB: d.DB, Events: d.Events, Now: time.Now, Log: func(string, ...any) {}}
+		rt = &runtime.Store{DB: d.DB, Events: d.Events, Items: d.Items, Repos: d.Repos, Settings: d.Settings,
+			Catalog: d.Catalog, Home: home, Now: time.Now, Log: func(string, ...any) {}, Tmux: tm,
+			Worktree: &worktree.Service{DB: d.DB, Run: execx.Run, Now: time.Now, Log: func(string, ...any) {}},
+			Notify:   nt, Adapters: map[runtime.AgentKind]adapter.Adapter{runtime.Fake: fa},
+			Bin: "/usr/local/bin/swarm", DaemonURL: "http://127.0.0.1:0",
+			OSEnv: func(string) string { return "" },
+			BaseEnv: func(getenv func(string) string) map[string]string {
+				return map[string]string{"PATH": "/usr/bin"}
+			},
+			After: time.After, Go: func(f func()) { f() },
+			// S-1: never the production socket, even by accident.
+			TmuxPath: "tmux", TmuxSocketName: fakeTmuxSocket(t)}
+		adv := &advisor.Service{DB: d.DB, Events: d.Events, Home: home, UserHome: t.TempDir(),
+			Adapters: rt.Adapters, MaxConcurrent: 2, Timeout: 5 * time.Minute, Now: time.Now,
+			Log: func(string, ...any) {},
+			Run: func(context.Context, string, ...string) ([]byte, error) { return []byte(`{"result":"advice"}`), nil }}
+		rt.Advisor = adv
+		d.RT, d.Notify, d.Advisor = rt, nt, adv
+		d.Usage = &usage.Poller{DB: d.DB, Events: d.Events, Settings: d.Settings, Now: time.Now}
+		d.MCP = &mcpserver.Server{RT: rt, KB: d.KB, Advisor: adv, Version: "test", Log: func(string, ...any) {}}
+		d.Run = (&execx.Fake{}).Runner()
+		d.After = time.After
+		if extra != nil {
+			extra(d)
+		}
+	})
+	return &runtimeEnv{env: e, RT: rt, DB: e.s.DB, Token: e.s.Token}
+}
+
+func fakeTmuxSocket(t *testing.T) string { return "swarm-test-" + t.Name() }
+
+// newEmptyServer is every P2 service wired over an otherwise-empty database:
+// a fresh daemon that has never spawned anything (TestStateIsEmptyButWellShapedOnAFreshDaemon).
+func newEmptyServer(t *testing.T) *runtimeEnv {
+	t.Helper()
+	return newServicesOnly(t, nil)
+}
+
+// newRuntimeServerWith is newServicesOnly plus the seeded tree (Task 31's
+// brief); every other named constructor in this file is a thin layer over it,
+// including the literal call in TestTerminalFallbackRunsGhosttyThroughTheInjectedRunner.
+func newRuntimeServerWith(t *testing.T, extra func(d *Deps)) (*runtimeEnv, httpSeed) {
+	t.Helper()
+	e := newServicesOnly(t, extra)
+	seed := seedRuntimeTree(t, e)
+	e.Seed = seed
+	return e, seed
+}
+
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// seedSession inserts one session row and returns its id and plaintext bearer
+// token; sessionAuth hashes what it reads off the wire the same way.
+func seedSession(t *testing.T, e *runtimeEnv, agentID, tmuxName string, generation int, state string) (sessionID, token string) {
+	t.Helper()
+	sessionID = ids.New("ses")
+	token = "test-token-" + sessionID
+	now := db.Millis(time.Now())
+	if _, err := e.s.DB.ExecContext(bg, `INSERT INTO sessions
+		(id, agent_id, attempt, generation, token_hash, tmux_name, cwd, state, cwd_kind, started_at)
+		VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'neutral', ?)`,
+		sessionID, agentID, generation, hashToken(token), tmuxName, filepath.Join(t.TempDir(), tmuxName), state, now); err != nil {
+		t.Fatal(err)
+	}
+	return sessionID, token
+}
+
+// seedAgent inserts one agent row (raw SQL, like internal/mcpserver's own
+// fixtures: no test in this package spawns for real, S-1/S-2).
+func seedAgent(t *testing.T, e *runtimeEnv, role runtime.Role, itemID, rootItemID, parentAgentID, name string) string {
+	t.Helper()
+	agentID := ids.New("agt")
+	now := db.Millis(time.Now())
+	var parent any
+	if parentAgentID != "" {
+		parent = parentAgentID
+	}
+	if _, err := e.s.DB.ExecContext(bg, `INSERT INTO agents
+		(id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+		VALUES (?, ?, 'fake', 'fake-1', ?, ?, ?, ?, 'seeded', 'active', ?)`,
+		agentID, name, string(role), itemID, rootItemID, parent, now); err != nil {
+		t.Fatal(err)
+	}
+	return agentID
+}
+
+func seedRepo(t *testing.T, e *runtimeEnv, name, path string) string {
+	t.Helper()
+	id := ids.New("repo")
+	now := db.Millis(time.Now())
+	if _, err := e.s.DB.ExecContext(bg, `INSERT INTO repos (id, path, name, source, created_at, updated_at)
+		VALUES (?, ?, ?, 'manual', ?, ?)`, id, path, name, now, now); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// seedRuntimeTree builds one EPIC with one story, one task, one spike, one
+// confirmed repo and one running orchestrator session (Task 31's brief).
+func seedRuntimeTree(t *testing.T, e *runtimeEnv) httpSeed {
+	t.Helper()
+	ctx := bg
+	repoID := seedRepo(t, e, "app", filepath.Join(e.home, "GitHub", "app"))
+	epic, err := e.items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Root epic", Brief: "The root."}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = ?, repos_version = 1 WHERE id = ?`,
+		`["`+repoID+`"]`, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	story, err := e.items.Create(ctx, items.CreateInput{Type: items.Story, ParentKey: epic.Key, Title: "Story"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := e.items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: story.Key, Title: "Task"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spike, err := e.items.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Spike", SpikeIntent: "feature"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchID := seedAgent(t, e, runtime.RoleOrchestrator, epic.ID, epic.ID, "", "root-orchestrator")
+	sessionID, token := seedSession(t, e, orchID, "root-orchestrator", 1, "running")
+	// a worker on the task so item-detail's own agents list (D13) is non-empty.
+	workerID := seedAgent(t, e, runtime.RoleCoder, task.ID, epic.ID, orchID, "task-worker")
+	seedSession(t, e, workerID, "task-worker", 1, "running")
+	return httpSeed{RootKey: epic.Key, StoryKey: story.Key, TaskKey: task.Key, SpikeKey: spike.Key,
+		AgentName: "root-orchestrator", SessionID: sessionID, SessionToken: token, RepoID: repoID}
+}
+
+// newRuntimeServer is newRuntimeServerWith with no extra Deps tweak.
+func newRuntimeServer(t *testing.T) (*runtimeEnv, httpSeed) {
+	t.Helper()
+	return newRuntimeServerWith(t, nil)
+}
+
+// newRuntimeServerNoSuperpowers is the base tree with the fake adapter's
+// superpowers check turned off, so a spawn's own Preflight call fails at
+// request time (Task 32's TestCreateSpikeWithAPreflightFailure).
+func newRuntimeServerNoSuperpowers(t *testing.T) (*runtimeEnv, httpSeed) {
+	t.Helper()
+	e, seed := newRuntimeServerWith(t, nil)
+	e.RT.Adapters[runtime.Fake].(*adapter.Fake).NoSuperpowers = true
+	return e, seed
+}
+
+// newRuntimeServerWithPreflightFailure is the base tree plus one spike whose
+// preflight already failed (an agent with preflight_error set and no session).
+func newRuntimeServerWithPreflightFailure(t *testing.T) (*runtimeEnv, httpSeed) {
+	t.Helper()
+	e, seed := newRuntimeServer(t)
+	fa := e.RT.Adapters[runtime.Fake].(*adapter.Fake)
+	fa.NoSuperpowers = true
+	if _, _, _, err := e.RT.StartSpike(bg, runtime.SpikeInput{Name: "Broken spike", Intent: "feature",
+		Kind: runtime.Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	fa.NoSuperpowers = false
+	return e, seed
+}
+
+// newRuntimeServerWithCheckpoints is the base tree plus n checkpoints on
+// TaskKey, oldest first in created_at so the newest-first assertion is real.
+func newRuntimeServerWithCheckpoints(t *testing.T, n int) (*runtimeEnv, httpSeed) {
+	t.Helper()
+	e, seed := newRuntimeServer(t)
+	var agentID, sessionID string
+	if err := e.s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = 'task-worker'`).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.s.DB.QueryRowContext(bg, `SELECT id FROM sessions WHERE agent_id = ?`, agentID).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	var itemID string
+	if err := e.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.TaskKey).Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Hour)
+	for i := 0; i < n; i++ {
+		id := ids.New("ckp")
+		ms := db.Millis(base.Add(time.Duration(i) * time.Minute))
+		if _, err := e.s.DB.ExecContext(bg, `INSERT INTO checkpoints
+			(id, session_id, agent_id, item_id, kind, attempt, summary, created_at)
+			VALUES (?, ?, ?, ?, 'progress', 1, ?, ?)`, id, sessionID, agentID, itemID, "progress "+id, ms); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return e, seed
+}
+
+// newRuntimeServerWithEpic adds a second, orchestrator-free epic (for
+// POST /api/items/{key}/orchestrator tests) alongside the base tree.
+func newRuntimeServerWithEpic(t *testing.T) (*runtimeEnv, httpSeed) {
+	t.Helper()
+	e, seed := newRuntimeServer(t)
+	epic, err := e.items.Create(bg, items.CreateInput{Type: items.Epic, Title: "Second epic"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed.EpicKey = epic.Key
+	e.Seed = seed
+	return e, seed
+}
+
+// newServerWithSessionState seeds one agent whose latest session is in `state`
+// and returns the server and the agent's name. "queued" is the one state with
+// no session row at all (an agent waiting for a slot has never been spawned),
+// so it sets agents.state = 'queued' and writes no session; every other value
+// is a sessions.state with the agent left `active` (Task 32).
+func newServerWithSessionState(t *testing.T, state string) (*runtimeEnv, string) {
+	t.Helper()
+	e, seed := newRuntimeServer(t)
+	name := "agent-" + state
+	agentState := "active"
+	if state == "queued" {
+		agentState = "queued"
+	}
+	agentID := ids.New("agt")
+	now := db.Millis(time.Now())
+	if _, err := e.s.DB.ExecContext(bg, `INSERT INTO agents
+		(id, name, kind, model, role, item_id, root_item_id, brief, state, created_at)
+		SELECT ?, ?, 'fake', 'fake-1', 'coder', id, root_id, 'seeded', ?, ?
+		FROM items WHERE key = ?`, agentID, name, agentState, now, seed.TaskKey); err != nil {
+		t.Fatal(err)
+	}
+	if state != "queued" {
+		seedSession(t, e, agentID, name, 1, state)
+	}
+	return e, name
+}
+
+// seedRunningAgent seeds one fresh running agent+session and returns its name
+// (Task 32's terminal-fallback test).
+func seedRunningAgent(t *testing.T, e *runtimeEnv) string {
+	t.Helper()
+	name := "running-" + ids.New("agt")
+	var itemID, rootID string
+	if err := e.s.DB.QueryRowContext(bg, `SELECT id, root_id FROM items WHERE key = ?`, e.Seed.TaskKey).Scan(&itemID, &rootID); err != nil {
+		t.Fatal(err)
+	}
+	agentID := ids.New("agt")
+	now := db.Millis(time.Now())
+	if _, err := e.s.DB.ExecContext(bg, `INSERT INTO agents
+		(id, name, kind, model, role, item_id, root_item_id, brief, state, created_at)
+		VALUES (?, ?, 'fake', 'fake-1', 'coder', ?, ?, 'seeded', 'active', ?)`,
+		agentID, name, itemID, rootID, now); err != nil {
+		t.Fatal(err)
+	}
+	seedSession(t, e, agentID, name, 1, "running")
+	return name
+}
+
+// waitUntilHTTP is the 5-second poll every P2 test in this package shares
+// (the same body as internal/advisor's waitUntil).
+func waitUntilHTTP(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the condition")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

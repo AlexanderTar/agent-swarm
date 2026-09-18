@@ -328,7 +328,7 @@ func TestRequestPayloadAndOnRequestOpenedAreWired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, ok := payload.(requestWire)
+	w, ok := payload.(RequestWire)
 	if !ok || w.ID != req.ID {
 		t.Fatalf("RequestPayload = %+v", payload)
 	}

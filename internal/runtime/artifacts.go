@@ -310,7 +310,7 @@ func (s *Store) staleApprovals(ctx context.Context, tx *sql.Tx, artifactID strin
 		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE id = ?`, id); err != nil {
 			return nil, err
 		}
-		w, err := s.requestWireTx(ctx, tx, id)
+		w, err := s.RequestWireTx(ctx, tx, id)
 		if err != nil {
 			return nil, err
 		}

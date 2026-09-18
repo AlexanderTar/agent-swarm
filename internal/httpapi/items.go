@@ -13,6 +13,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 // itemWire is Item on the wire (contracts §3.1): ms timestamps, null for unset optional
@@ -212,13 +213,51 @@ func (s *Server) getItem(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
-	out := map[string]any{"agents": []any{}, "requests": []any{}, "artifacts": []any{}} // Phase 2 fills these
 	item, err := s.itemOut(ctx, it)
 	if err != nil {
 		s.writeErr(w, err)
 		return
 	}
-	out["item"] = item
+	out := map[string]any{"item": item, "agents": []any{}, "requests": []any{}, "artifacts": []any{}}
+	// RT is nil in a P1-only harness (no P2 wired yet, D13); once wired (always
+	// true from cmd/swarm's daemon, Task 35), these three fill in.
+	if s.RT != nil {
+		flat, err := s.RT.AgentTree(ctx, it.RootKey)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		var onThisItem []runtime.Agent
+		for _, a := range flat {
+			if a.ItemID == it.ID {
+				onThisItem = append(onThisItem, a)
+			}
+		}
+		live := s.livePanes(ctx)
+		agentNodes, err := s.agentNodesFor(ctx, onThisItem, flat, live)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		out["agents"] = agentNodes
+		reqs, err := s.openRequestsWire(ctx, key, "")
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		out["requests"] = reqs
+		artifacts, err := s.RT.ArtifactsFor(ctx, it.ID)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		artifactWires, err := s.artifactsOut(ctx, artifacts)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		out["artifacts"] = artifactWires
+	}
 	lists := map[string][]items.Item{"ancestors": ancestors, "children": children, "blocked_by": blockedBy, "blocks": blocks}
 	wired := map[string][]itemWire{}
 	for name, v := range lists {

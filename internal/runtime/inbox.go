@@ -145,7 +145,7 @@ func (s *Store) agentByIDTx(ctx context.Context, tx *sql.Tx, id string) (Agent, 
 	row := tx.QueryRowContext(ctx, `SELECT
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
-		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state, created_at, finished_at
+		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state, COALESCE(preflight_error, ''), created_at, finished_at
 		FROM agents WHERE id = ?`, id)
 	a, err := scanAgent(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -158,7 +158,7 @@ func (s *Store) agentByNameTx(ctx context.Context, tx *sql.Tx, name string) (Age
 	row := tx.QueryRowContext(ctx, `SELECT
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
-		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state, created_at, finished_at
+		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state, COALESCE(preflight_error, ''), created_at, finished_at
 		FROM agents WHERE name = ?`, name)
 	a, err := scanAgent(row)
 	if errors.Is(err, sql.ErrNoRows) {

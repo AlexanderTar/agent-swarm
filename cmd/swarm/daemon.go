@@ -156,7 +156,10 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		return nil, err
 	}
 	api := httpapi.New(httpapi.Deps{Version: version, Token: token, DB: d, Events: ev,
-		Items: &items.Store{DB: d, Events: ev, Now: now}, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log})
+		Items: &items.Store{DB: d, Events: ev, Now: now}, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
+		// Run and After are wired here so httpapi.New's nil-Run panic never fires;
+		// Task 35 replaces the rest of this Deps literal with the full P2 wiring.
+		Run: execx.Run, After: time.After})
 	return &daemon{cfg: cfg, db: d, ev: ev, cat: cat, st: st, rp: rp, idx: idx, api: api}, nil
 }
 

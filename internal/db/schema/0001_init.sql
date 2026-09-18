@@ -125,6 +125,7 @@ CREATE TABLE agents (
   advisor_mode    TEXT CHECK (advisor_mode IN ('native','simulated')),
   brief           TEXT NOT NULL,
   state           TEXT NOT NULL CHECK (state IN ('queued','active','finished','acknowledged')),
+  preflight_error TEXT, -- set only when the agent never spawned (contracts §3.2 AgentNode)
   created_at      INTEGER NOT NULL,
   finished_at     INTEGER
 );

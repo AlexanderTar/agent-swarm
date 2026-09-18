@@ -238,7 +238,7 @@ func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, c
 			ToAgentID: req.AgentID, RootItemID: root.ID, RequestID: id, Payload: payload}); err != nil {
 			return err
 		}
-		w, err := s.requestWireTx(ctx, tx, id)
+		w, err := s.RequestWireTx(ctx, tx, id)
 		if err != nil {
 			return err
 		}

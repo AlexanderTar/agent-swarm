@@ -42,9 +42,9 @@ type ApproveInput struct {
 	Via              string
 }
 
-// requestWire is the contracts §3.3 Request. It is the payload of request.opened
+// RequestWire is the contracts §3.3 Request. It is the payload of request.opened
 // and request.resolved (R5) and the body of every /api/requests route.
-type requestWire struct {
+type RequestWire struct {
 	ID               string          `json:"id"`
 	Kind             RequestKind     `json:"kind"`
 	AgentName        *string         `json:"agent_name"`
@@ -185,26 +185,26 @@ func (s *Store) sectionTitle(ctx context.Context, tx *sql.Tx, artifactID string,
 	return "", nil
 }
 
-// requestWireTx builds the full §3.3 Request for the SSE feed and for
+// RequestWireTx builds the full §3.3 Request for the SSE feed and for
 // items.Store.RequestPayload (R5).
-func (s *Store) requestWireTx(ctx context.Context, tx *sql.Tx, id string) (requestWire, error) {
+func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (RequestWire, error) {
 	r, err := s.requestTx(ctx, tx, id)
 	if err != nil {
-		return requestWire{}, err
+		return RequestWire{}, err
 	}
 	key, err := s.itemKey(ctx, tx, r.ItemID)
 	if err != nil {
-		return requestWire{}, err
+		return RequestWire{}, err
 	}
 	it, err := s.Items.GetTx(ctx, tx, key)
 	if err != nil {
-		return requestWire{}, err
+		return RequestWire{}, err
 	}
 	confirmed := r.Confirmed
 	if confirmed == nil {
 		confirmed = []string{}
 	}
-	w := requestWire{ID: r.ID, Kind: r.Kind, ItemKey: key, ItemTitle: it.Title, RootKey: it.RootKey,
+	w := RequestWire{ID: r.ID, Kind: r.Kind, ItemKey: key, ItemTitle: it.Title, RootKey: it.RootKey,
 		Prompt: r.Prompt, Options: r.Options, State: r.State, Confirmed: confirmed, Binding: r.Binding,
 		CreatedAt: db.Millis(r.CreatedAt)}
 	if r.AgentID != "" {
@@ -249,13 +249,27 @@ func (s *Store) requestWireTx(ctx context.Context, tx *sql.Tx, id string) (reque
 // RequestPayload is wired into items.Store.RequestPayload so P1's reconciler
 // publishes the same shape (R5).
 func (s *Store) RequestPayload(ctx context.Context, tx *sql.Tx, id string) (any, error) {
-	return s.requestWireTx(ctx, tx, id)
+	return s.RequestWireTx(ctx, tx, id)
+}
+
+// RequestWireByID is RequestWireTx outside any caller's transaction: httpapi's
+// /api/requests/* routes (P2 T33) call it after Answer/Approve/RequestChanges/
+// ConfirmRepos/CloseSpike return the domain Request, to serve the exact §3.3
+// wire shape without a second copy of it in internal/httpapi.
+func (s *Store) RequestWireByID(ctx context.Context, id string) (RequestWire, error) {
+	var out RequestWire
+	err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		out, err = s.RequestWireTx(ctx, tx, id)
+		return err
+	})
+	return out, err
 }
 
 // OnRequestOpened is wired into items.Store.RequestOpened: the accept_* requests
 // the reconciler opens still get their §17.5 notification.
 func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) error {
-	w, err := s.requestWireTx(ctx, tx, id)
+	w, err := s.RequestWireTx(ctx, tx, id)
 	if err != nil {
 		return err
 	}
@@ -267,7 +281,7 @@ func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) erro
 // with the full wire form, raise the §17.5 notification, and reconcile the item
 // (a spike may move to awaiting_approval).
 func (s *Store) finishOpen(ctx context.Context, tx *sql.Tx, reqID, agentName, itemKey string, extra map[string]string) (Request, error) {
-	w, err := s.requestWireTx(ctx, tx, reqID)
+	w, err := s.RequestWireTx(ctx, tx, reqID)
 	if err != nil {
 		return Request{}, err
 	}
@@ -335,7 +349,7 @@ func (s *Store) withdraw(ctx context.Context, sessionID, reqID string) (Request,
 		if err != nil {
 			return err
 		}
-		w, err := s.requestWireTx(ctx, tx, reqID)
+		w, err := s.RequestWireTx(ctx, tx, reqID)
 		if err != nil {
 			return err
 		}
@@ -507,7 +521,7 @@ func (s *Store) resolve(ctx context.Context, id, state, responseText, via, origi
 		if err != nil {
 			return err
 		}
-		w, err := s.requestWireTx(ctx, tx, id)
+		w, err := s.RequestWireTx(ctx, tx, id)
 		if err != nil {
 			return err
 		}

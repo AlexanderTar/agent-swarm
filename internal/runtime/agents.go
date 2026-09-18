@@ -234,25 +234,26 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		agentID := ids.New("agt")
 		nowMs := s.now().UnixMilli()
 		a := Agent{
-			ID:         agentID,
-			Name:       name,
-			Kind:       in.Kind,
-			Model:      in.Model,
-			Effort:     in.Effort,
-			Role:       RoleOrchestrator,
-			ItemID:     it.ID,
-			RootItemID: it.ID,
-			Brief:      in.Request,
-			State:      AgentActive,
-			CreatedAt:  s.now(),
+			ID:             agentID,
+			Name:           name,
+			Kind:           in.Kind,
+			Model:          in.Model,
+			Effort:         in.Effort,
+			Role:           RoleOrchestrator,
+			ItemID:         it.ID,
+			RootItemID:     it.ID,
+			Brief:          in.Request,
+			State:          AgentActive,
+			PreflightError: preflightErr.Error(),
+			CreatedAt:      s.now(),
 		}
 		_ = s.tx(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `INSERT INTO agents
-				(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at,
+				(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, preflight_error, created_at,
 				 advisor_kind, advisor_model, advisor_effort, advisor_mode)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
 				a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
-				a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs,
+				a.ItemID, a.RootItemID, a.Brief, string(a.State), a.PreflightError, nowMs,
 				string(advKind), advModel, advEffort, advMode)
 			return err
 		})
@@ -1108,7 +1109,7 @@ func scanAgent(row *sql.Row) (Agent, error) {
 		&a.ID, &a.Name, &kind, &a.Model, &a.Effort, &role,
 		&a.ItemID, &a.RootItemID, &a.ParentAgentID,
 		&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode,
-		&a.Brief, &state, &created, &finished,
+		&a.Brief, &state, &a.PreflightError, &created, &finished,
 	)
 	if err != nil {
 		return a, err
@@ -1128,7 +1129,8 @@ func (s *Store) Agent(ctx context.Context, name string) (Agent, error) {
 	row := s.DB.QueryRowContext(ctx, `SELECT
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
-		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state, created_at, finished_at
+		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
+		COALESCE(preflight_error, ''), created_at, finished_at
 		FROM agents WHERE name = ?`, name)
 	return scanAgent(row)
 }
@@ -1137,7 +1139,8 @@ func (s *Store) agentByID(ctx context.Context, id string) (Agent, error) {
 	row := s.DB.QueryRowContext(ctx, `SELECT
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
-		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state, created_at, finished_at
+		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
+		COALESCE(preflight_error, ''), created_at, finished_at
 		FROM agents WHERE id = ?`, id)
 	return scanAgent(row)
 }
@@ -1150,7 +1153,8 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 	rows, err := s.DB.QueryContext(ctx, `SELECT
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
-		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state, created_at, finished_at
+		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
+		COALESCE(preflight_error, ''), created_at, finished_at
 		FROM agents WHERE root_item_id = ? ORDER BY created_at`, it.RootID)
 	if err != nil {
 		return nil, err
@@ -1167,7 +1171,7 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 			&a.ID, &a.Name, &kind, &a.Model, &a.Effort, &role,
 			&a.ItemID, &a.RootItemID, &a.ParentAgentID,
 			&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode,
-			&a.Brief, &state, &created, &finished,
+			&a.Brief, &state, &a.PreflightError, &created, &finished,
 		); err != nil {
 			return nil, err
 		}

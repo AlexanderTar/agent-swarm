@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
@@ -130,7 +131,8 @@ func TestErrorEnvelope(t *testing.T) {
 		{errors.New("disk on fire"), 500, "internal", "Something went wrong.", ""},
 	}
 	var logged []string
-	s := New(Deps{Token: "t", Log: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }})
+	s := New(Deps{Token: "t", Run: (&execx.Fake{}).Runner(),
+		Log: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }})
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
 		s.writeErr(rec, c.err)

@@ -16,13 +16,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
+	"github.com/AlexanderTar/agent-swarm/internal/mcpserver"
+	"github.com/AlexanderTar/agent-swarm/internal/notify"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/usage"
 )
 
 type Deps struct {
@@ -35,10 +41,25 @@ type Deps struct {
 	Settings     *settings.Store
 	Catalog      *catalog.Service
 	KB           *kb.Index
+	RT           *runtime.Store
+	Notify       *notify.Service
+	Usage        *usage.Poller
+	Advisor      *advisor.Service
+	MCP          *mcpserver.Server
 	WriteTimeout time.Duration                    // per SSE write; 0 means 10 s
 	PingInterval time.Duration                    // SSE keep-alive; 0 means 25 s
 	Log          func(format string, args ...any) // nil means log.Printf
 	Web          http.Handler                     // board for non-/api paths; nil means not built yet
+
+	// Run is how this package starts a process. The only one it starts is the
+	// Ghostty fallback for POST /api/agents/{name}/terminal (§10.4), and without
+	// an injected runner that test launches the real Ghostty against the real
+	// tmux server (R11). Nil is a programming error, like runtime.Store.BaseEnv:
+	// New panics with "httpapi: Run is not wired" rather than defaulting to
+	// execx.Run.
+	Run execx.Runner
+	// After is the 1.5 s menubar-reply timer, injected so the test does not sleep.
+	After func(time.Duration) <-chan time.Time
 }
 
 type authMode int
@@ -74,6 +95,12 @@ func New(d Deps) *Server {
 	if d.Token == "" {
 		panic("httpapi: empty daemon token")
 	}
+	if d.Run == nil {
+		panic("httpapi: Run is not wired")
+	}
+	if d.After == nil {
+		d.After = time.After
+	}
 	if d.WriteTimeout == 0 {
 		d.WriteTimeout = 10 * time.Second
 	}
@@ -84,7 +111,8 @@ func New(d Deps) *Server {
 		d.Log = log.Printf
 	}
 	s := &Server{Deps: d, mux: http.NewServeMux(), done: make(chan struct{})}
-	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes())
+	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes(),
+		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.agentIORoutes())
 	for _, rt := range s.routes {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}
