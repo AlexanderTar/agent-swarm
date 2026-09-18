@@ -35,6 +35,33 @@ describe("Sheet", () => {
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(2);
   });
+
+  it("moves focus into itself on open and restores it to the trigger on close", async () => {
+    const user = userEvent.setup();
+    function Host() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>Open sheet</button>
+          {open && (
+            <Sheet title="Start orchestrator" onClose={() => setOpen(false)} footer={<button type="button">Go</button>}>
+              body
+            </Sheet>
+          )}
+        </>
+      );
+    }
+    render(<Host />);
+    const trigger = screen.getByRole("button", { name: "Open sheet" });
+    trigger.focus();
+    await user.click(trigger);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    // Focus must land inside the sheet, not stay behind it or fall to <body>.
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
 });
 
 describe("Segmented", () => {
@@ -84,6 +111,8 @@ describe("MoveToMenu", () => {
     await user.keyboard("{End}{ArrowUp}{Enter}");
     expect(onMove).toHaveBeenCalledWith("done", { ok: false, reason: "Accept this epic to mark it Done.", special: "accept" });
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    // A keyboard user who picked an entry must land back on the trigger, not <body>.
+    expect(screen.getByRole("button", { name: "In review" })).toHaveFocus();
   });
 
   it("closes on Escape and can be disabled", async () => {
@@ -92,6 +121,7 @@ describe("MoveToMenu", () => {
     await user.click(screen.getByRole("button", { name: "Move to…" }));
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Move to…" })).toHaveFocus();
     rerender(<MoveToMenu item={story} onMove={vi.fn()} disabled />);
     expect(screen.getByRole("button", { name: "Move to…" })).toBeDisabled();
   });

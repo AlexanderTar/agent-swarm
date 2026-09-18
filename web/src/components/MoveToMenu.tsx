@@ -13,6 +13,7 @@ export function MoveToMenu(p: {
 }) {
   const [open, setOpen] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   const options = moveOptions(p.item);
   const enabled = (c: MoveCheck) => c.ok || c.special !== undefined;
 
@@ -23,6 +24,11 @@ export function MoveToMenu(p: {
   useEffect(() => {
     if (open) focusAt(0);
   }, [open]);
+  // A keyboard user must land back on the trigger, not <body>, whichever way the menu closes.
+  const close = () => {
+    setOpen(false);
+    trigger.current?.focus();
+  };
   const onKeyDown = (e: KeyboardEvent) => {
     const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? [])];
     const cur = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -30,7 +36,7 @@ export function MoveToMenu(p: {
     else if (e.key === "ArrowUp") focusAt(cur - 1);
     else if (e.key === "Home") focusAt(0);
     else if (e.key === "End") focusAt(items.length - 1);
-    else if (e.key === "Escape") setOpen(false);
+    else if (e.key === "Escape") close();
     else return;
     e.preventDefault();
     e.stopPropagation();
@@ -39,6 +45,7 @@ export function MoveToMenu(p: {
   return (
     <div className="relative inline-block">
       <button
+        ref={trigger}
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -58,7 +65,7 @@ export function MoveToMenu(p: {
               role="menuitem"
               disabled={!enabled(o.check)}
               onClick={() => {
-                setOpen(false);
+                close();
                 p.onMove(o.status, o.check);
               }}
               className="flex w-full flex-col items-start rounded px-2 py-1 text-left hover:bg-raised disabled:cursor-not-allowed disabled:text-muted"

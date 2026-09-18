@@ -1,13 +1,22 @@
 import { X } from "lucide-react";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 export function Sheet(p: { title: string; subtitle?: string; width?: number; onClose(): void; children: ReactNode; footer?: ReactNode }) {
   const { onClose } = p;
+  const closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+  // Take focus into the sheet on mount (an accessibility basic, not polish — otherwise a keyboard
+  // user who opened it never lands anywhere near it), and restore it to whatever had focus before
+  // (the trigger, in every real caller) once the sheet unmounts.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    closeButton.current?.focus();
+    return () => previouslyFocused?.focus();
+  }, []);
   return (
     <aside
       role="dialog"
@@ -20,7 +29,7 @@ export function Sheet(p: { title: string; subtitle?: string; width?: number; onC
           <h2 className="font-semibold">{p.title}</h2>
           {p.subtitle && <p className="text-muted">{p.subtitle}</p>}
         </div>
-        <button type="button" aria-label="Close" onClick={onClose} className="rounded p-1 hover:bg-raised">
+        <button ref={closeButton} type="button" aria-label="Close" onClick={onClose} className="rounded p-1 hover:bg-raised">
           <X className="size-4" />
         </button>
       </header>
