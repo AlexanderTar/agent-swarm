@@ -66,6 +66,21 @@ func TestPlistContent(t *testing.T) {
 	}
 }
 
+// The plist is the one place SWARM_TMUX_SOCKET=swarm and SWARM_USAGE=live
+// appear (P2 T35, R9, S-1, S-4). Drop either and the installed daemon quietly
+// stops working; add either anywhere else and those invariants are gone.
+func TestPlistCarriesTheProductionEnvironment(t *testing.T) {
+	p := Plist(testConfig(t))
+	for _, want := range []string{
+		"<key>SWARM_TMUX_SOCKET</key><string>swarm</string>",
+		"<key>SWARM_USAGE</key><string>live</string>",
+	} {
+		if !bytes.Contains(p, []byte(want)) {
+			t.Errorf("the plist is missing %s\n%s", want, p)
+		}
+	}
+}
+
 func TestInstallDryRunWritesNothing(t *testing.T) {
 	c := testConfig(t)
 	f := &execx.Fake{}

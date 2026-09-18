@@ -77,6 +77,14 @@ func Plist(c Config) []byte {
 			env += fmt.Sprintf("    <key>%s</key><string>%s</string>\n", kv[0], esc(kv[1]))
 		}
 	}
+	// SWARM_TMUX_SOCKET=swarm and SWARM_USAGE=live are the only place the
+	// production tmux socket name and the real usage sources are enabled
+	// (safety invariants S-1, S-4, R9). Every other daemon — a test's, a `go
+	// run`, `make dev`, `make e2e`, one started by hand in a worktree — never
+	// sets either and stays on its own socket with no usage sources.
+	for _, kv := range [][2]string{{"SWARM_TMUX_SOCKET", "swarm"}, {"SWARM_USAGE", "live"}} {
+		env += fmt.Sprintf("    <key>%s</key><string>%s</string>\n", kv[0], kv[1])
+	}
 	return []byte(fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

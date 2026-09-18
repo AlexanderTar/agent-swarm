@@ -22,6 +22,8 @@ Commands:
   items [--type T] [--status S] [-q TEXT]
   repos [--rescan] | repos add PATH
   kb search QUERY | kb status
+  mcp                              the stdio MCP server every agent launches
+  hook <agent> <event>             the hook client every agent's config calls
   version
 
 Every command takes --home DIR (default $SWARM_HOME or ~/.swarm).
@@ -31,7 +33,14 @@ Flags go before arguments: swarm repos --home DIR add PATH.
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
+// run is runWithStdin over the process's own stdin.
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithStdin(args, os.Stdin, stdout, stderr)
+}
+
+// runWithStdin is the dispatcher; a test seam only mcp and hook need, since
+// they are the two subcommands that read stdin (§11.2, L16).
+func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -51,6 +60,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdRepos(args[1:], stdout, stderr)
 	case "kb":
 		return cmdKB(args[1:], stdout, stderr)
+	case "mcp":
+		return cmdMCP(args[1:], stdin, stdout, stderr)
+	case "hook":
+		return cmdHook(args[1:], stdin, stdout, stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, "swarm "+version)
 		return 0

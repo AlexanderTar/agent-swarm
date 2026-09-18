@@ -24,6 +24,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
 // AdvisorChoice is the caller-supplied "advisor" field on swarm_spawn,
@@ -1186,4 +1187,39 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// DeliverAdvice is advisor.Service.Deliver: an answered advice request becomes
+// an `advice` message in the agent's inbox, so it arrives through swarm_sync
+// like everything else rather than through the terminal (L6, P2 T35's P32).
+func (s *Store) DeliverAdvice(ctx context.Context, sessionID string, adv Advice) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		_ = ses
+		// Message.Payload is json.RawMessage (model.go); the brief's snippet
+		// assigns Advice directly, which doesn't type-check.
+		payload, err := json.Marshal(map[string]any{"question": adv.Question, "answer": adv.Answer,
+			"error": adv.Error, "state": adv.State})
+		if err != nil {
+			return err
+		}
+		_, err = s.enqueue(ctx, tx, Message{Kind: "advice", Origin: "daemon",
+			ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: payload})
+		return err
+	})
+}
+
+// OnWorktreeRetained is worktree.Service.OnRetained: §17.5's "Worktree kept"
+// (P2 T35's P32). It runs inside the worktree service's own transaction, so it
+// takes the tx.
+func (s *Store) OnWorktreeRetained(ctx context.Context, tx *sql.Tx, wt worktree.Worktree) error {
+	detail := "uncommitted changes"
+	if wt.RetainedReason == "unmerged" {
+		detail = "unmerged commits"
+	}
+	return s.notify(ctx, tx, NotifyInput{Kind: "worktree.retained",
+		Args: map[string]string{"path": wt.Path, "detail": detail}})
 }
