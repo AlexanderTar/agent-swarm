@@ -288,7 +288,13 @@ func (s *Store) finishOpen(ctx context.Context, tx *sql.Tx, reqID, agentName, it
 	if _, err := s.Events.Append(ctx, tx, events.RequestOpened, w); err != nil {
 		return Request{}, err
 	}
-	args := map[string]string{"KEY": itemKey}
+	// "name" is here unconditionally, like "KEY": some request kinds' templates
+	// use it (confirm_repos, close_spike) and some don't (question,
+	// approve_section/plan/report) — an unused key in Args is harmless, but a
+	// used one with no value fails notify.Render closed (found while wiring
+	// the e2e harness, same class of bug as checkpoint.go's, batch report has
+	// the full account).
+	args := map[string]string{"KEY": itemKey, "name": agentName}
 	for k, v := range extra {
 		args[k] = v
 	}

@@ -363,7 +363,8 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 			if s.Notify != nil {
 				if err := s.Notify.Raise(ctx, tx, NotifyInput{Kind: "request.close_spike",
-					AgentName: a.Name, ItemKey: itemKey, RequestID: reqID}); err != nil {
+					AgentName: a.Name, ItemKey: itemKey, RequestID: reqID,
+					Args: map[string]string{"KEY": itemKey, "name": a.Name, "resolution": in.Resolution}}); err != nil {
 					return err
 				}
 			}

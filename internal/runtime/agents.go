@@ -463,6 +463,7 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 				Kind:      "agent.queued",
 				AgentName: a.Name,
 				ItemKey:   it.Key,
+				Args:      map[string]string{"name": a.Name},
 			})
 		}
 		return a, true, nil
@@ -656,6 +657,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 				Kind:      "agent.queued",
 				AgentName: a.Name,
 				ItemKey:   it.Key,
+				Args:      map[string]string{"name": a.Name},
 			})
 		}
 		return a, true, nil

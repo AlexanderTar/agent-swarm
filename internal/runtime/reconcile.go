@@ -177,7 +177,8 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 				db.Millis(now), r.SessionID); err != nil {
 				return err
 			}
-			return s.notify(ctx, tx, NotifyInput{Kind: "agent.paused", AgentName: r.AgentName, ItemKey: r.ItemKey})
+			return s.notify(ctx, tx, NotifyInput{Kind: "agent.paused", AgentName: r.AgentName, ItemKey: r.ItemKey,
+				Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}})
 		})
 	}
 	var exitCode *int
@@ -194,7 +195,7 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 				return err
 			}
 			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.interrupted", AgentName: r.AgentName,
-				ItemKey: r.ItemKey}); err != nil {
+				ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
 				return err
 			}
 			if r.ParentAgentID == "" {
@@ -237,7 +238,7 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 				return err
 			}
 			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.crashed", AgentName: r.AgentName,
-				ItemKey: r.ItemKey}); err != nil {
+				ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
 				return err
 			}
 			if r.ParentAgentID == "" {
@@ -283,7 +284,8 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 		return nil // M6: a waiting session is never stale
 	}
 	if s.Now().Sub(r.lastActivity()) >= staleAfter {
-		return s.notify(ctx, nil, NotifyInput{Kind: "agent.stale", AgentName: r.AgentName, ItemKey: r.ItemKey})
+		return s.notify(ctx, nil, NotifyInput{Kind: "agent.stale", AgentName: r.AgentName, ItemKey: r.ItemKey,
+			Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}})
 	}
 	return nil
 }
