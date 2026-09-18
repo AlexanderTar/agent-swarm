@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 )
@@ -50,29 +51,43 @@ func (s *Store) Admit(ctx context.Context, tx *sql.Tx, role Role, rootItemID str
 
 // DrainQueue starts queued agents in FIFO order while slots are free. It runs
 // from the reconciler (§10.6) and after any agent finishes.
+//
+// A queued agent whose root is under a live subtree pause is frozen (§10.5):
+// skipped, but without stopping the drain of other roots' queues, and without
+// counting as a "could not be moved" stop the way a real admission failure
+// does. agents.state stays 'queued' — the freeze is a read-time check here,
+// not a persisted state — so it thaws on its own the moment the pause
+// resolves, with nothing to reconcile back.
 func (s *Store) DrainQueue(ctx context.Context) error {
 	// tried stops the loop from re-selecting a row it could not move (D32). Without
 	// it, a queued agent whose startQueued returns an error before it changes state
 	// is selected again on the next pass, forever, inside the reconciler's tick.
 	tried := map[string]bool{}
+	frozen := map[string]bool{}
 	for {
-		var id string
-		err := s.DB.QueryRowContext(ctx, `SELECT id FROM agents WHERE state = 'queued'
-			ORDER BY created_at, id LIMIT 1`).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
+		id, err := s.nextQueuedAgentID(ctx, tried, frozen)
 		if err != nil {
 			return err
+		}
+		if id == "" {
+			return nil
+		}
+		a, err := s.agentByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		paused, err := s.rootHasLiveSubtreePause(ctx, a.RootItemID)
+		if err != nil {
+			return err
+		}
+		if paused {
+			frozen[id] = true
+			continue
 		}
 		if tried[id] {
 			return nil
 		}
 		tried[id] = true
-		a, err := s.agentByID(ctx, id)
-		if err != nil {
-			return err
-		}
 		// A queued child that fails preflight when it is taken off the queue
 		// relays spawn_failed to its parent (§11.3).
 		admitted, err := s.startQueued(ctx, a)
@@ -83,6 +98,34 @@ func (s *Store) DrainQueue(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// nextQueuedAgentID is the oldest queued agent not already excluded (tried or
+// frozen this pass), or "" once none are left.
+func (s *Store) nextQueuedAgentID(ctx context.Context, tried, frozen map[string]bool) (string, error) {
+	excluded := make([]string, 0, len(tried)+len(frozen))
+	for id := range tried {
+		excluded = append(excluded, id)
+	}
+	for id := range frozen {
+		excluded = append(excluded, id)
+	}
+	query := `SELECT id FROM agents WHERE state = 'queued'`
+	args := make([]any, 0, len(excluded))
+	if len(excluded) > 0 {
+		placeholders := strings.Repeat("?,", len(excluded))
+		query += ` AND id NOT IN (` + placeholders[:len(placeholders)-1] + `)`
+		for _, id := range excluded {
+			args = append(args, id)
+		}
+	}
+	query += ` ORDER BY created_at, id LIMIT 1`
+	var id string
+	err := s.DB.QueryRowContext(ctx, query, args...).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
 }
 
 func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {

@@ -263,6 +263,81 @@ func TestUnresponsiveOrchestratorGetsADaemonWrittenCheckpoint(t *testing.T) {
 	}
 }
 
+// §10.5: a subtree pause freezes a root's queued spawns. DrainQueue must not
+// admit them while the pause is live, and must go back to admitting them
+// normally once it resolves — otherwise a newly-launched, never-paused agent
+// gets picked up by promotePendingSubtreePauses as a live descendant on the
+// very next tick and blocks the pause from ever completing.
+func TestDrainQueueSkipsARootUnderALiveSubtreePause(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4) // only one non-orchestrator agent globally
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, queued1, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued1 {
+		t.Fatal("the first child should be admitted; the slot is free")
+	}
+	second, queued2, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued2 {
+		t.Fatal("the second child should queue; the global agent limit is 1")
+	}
+
+	if _, err := s.Pause(ctx, orch.Name, "subtree"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Free the admission slot the way a normal completion would, so DrainQueue
+	// would admit the queued child if the live subtree pause didn't stop it.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`,
+		first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Agent(ctx, second.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != AgentQueued {
+		t.Fatalf("state = %s, want still queued while the subtree pause is live", got.State)
+	}
+
+	// Resolve the pause (the orchestrator's own subtree-pause bookkeeping
+	// clears once it and its children are done, however that happens).
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET pause_scope = NULL WHERE agent_id = ?`,
+		orch.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Agent(ctx, second.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != AgentActive {
+		t.Fatalf("state = %s, want admitted once the pause resolved", got.State)
+	}
+}
+
 // C3: resume is refused while stopping, allowed from paused and interrupted.
 func TestResumePreconditionAndNewGeneration(t *testing.T) {
 	s, _, _ := clockStore(t)

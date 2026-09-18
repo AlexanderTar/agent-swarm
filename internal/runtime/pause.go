@@ -552,3 +552,19 @@ func (s *Store) PauseAll(ctx context.Context) (int, error) {
 	}
 	return n, nil
 }
+
+// rootHasLiveSubtreePause reports whether rootItemID has a subtree pause in
+// flight: the root's own session already carries pause_scope = 'subtree' from
+// the moment Pause(scope="subtree") is called (§10.5), whether or not it has
+// itself moved past 'running' yet, through to 'paused'/'interrupted'. Once it
+// reaches either of those the pause is resolved and the root's queue thaws.
+// DrainQueue calls this to freeze a root's queued spawns for exactly as long
+// as the pause is live, without touching agents.state (which stays 'queued').
+func (s *Store) rootHasLiveSubtreePause(ctx context.Context, rootItemID string) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions ses JOIN agents a ON a.id = ses.agent_id
+		WHERE a.root_item_id = ? AND ses.pause_scope = 'subtree'
+		AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`,
+		rootItemID).Scan(&n)
+	return n > 0, err
+}
