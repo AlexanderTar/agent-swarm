@@ -16,8 +16,9 @@ const usage = `Usage: swarm <command> [flags]
 
 Commands:
   daemon [--port N]                run the daemon (launchd starts it)
-  install [--dry-run]              set up the launchd service
-  doctor [--json]                  check prerequisites, agents, Ollama, signing
+  install [--plugins] [--yes]      set up launchd, agent integrations and the superpowers plugins
+  uninstall                        remove the launchd job and agent integrations (keeps data)
+  doctor [--json] [--legacy]       check prerequisites, agents, Ollama, signing; --legacy reports 1.x state
   status                           daemon, items, repositories, knowledge base
   items [--type T] [--status S] [-q TEXT]
   repos [--rescan] | repos add PATH
@@ -41,6 +42,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdDaemon(args[1:], stdout, stderr)
 	case "install":
 		return cmdInstall(args[1:], stdout, stderr)
+	case "uninstall":
+		return cmdUninstall(args[1:], stdout, stderr)
 	case "doctor":
 		return cmdDoctor(args[1:], stdout, stderr)
 	case "status":
