@@ -171,9 +171,15 @@ type Message struct {
 	CreatedAt                          time.Time
 }
 
+// ArtifactSection is one heading-delimited slice of an artifact revision. The
+// JSON tags are the sections_json wire shape (Task 18 persists it; Task 16
+// reads it back to resolve a section's title for the Request wire form).
 type ArtifactSection struct {
-	ID, Title, SHA256 string
-	Start, End        int
+	ID     string `json:"id"`
+	Title  string `json:"heading"`
+	SHA256 string `json:"sha256"`
+	Start  int    `json:"start"`
+	End    int    `json:"end"`
 }
 
 type Artifact struct {

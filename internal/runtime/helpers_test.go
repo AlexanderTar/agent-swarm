@@ -2,11 +2,76 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os/exec"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
+
+// seedSectionApproval writes a spike, an artifact with one section and an open
+// approve_section request, without needing Task 18's registrar. The sha256 is the
+// real hash of the section body, because Approve compares it and a placeholder
+// would make every approval a conflict.
+func seedSectionApproval(t *testing.T, s *Store) (Request, Session, Artifact) {
+	t.Helper()
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Design the flow",
+		Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const body = "The flow is three screens.\n"
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
+	artID, now := ids.New("art"), db.Millis(s.Now())
+	sections := fmt.Sprintf(`[{"id":"overview","heading":"Overview","sha256":%q,"approval_state":"none"}]`, sum)
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO artifacts
+		(id, item_id, kind, path, head_revision, created_by, created_at)
+		VALUES (?, ?, 'spec', 'docs/specs/flow.md', 1, ?, ?)`, artID, it.ID, a.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO artifact_revisions
+		(artifact_id, revision, sha256, content, sections_json, created_at)
+		VALUES (?, 1, ?, ?, ?, ?)`, artID, sum, "## Overview\n"+body, sections, now); err != nil {
+		t.Fatal(err)
+	}
+	reqID := ids.New("req")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests
+		(id, kind, agent_id, session_id, item_id, artifact_id, section_id, section_sha256,
+		 prompt, state, artifact_revision, created_at)
+		VALUES (?, 'approve_section', ?, ?, ?, ?, 'overview', ?, 'Approve the overview.', 'open', 1, ?)`,
+		reqID, a.ID, ses.ID, it.ID, artID, sum, now); err != nil {
+		t.Fatal(err)
+	}
+	// The real flow reaches awaiting_approval through Ask + ReconcileTx; this
+	// helper writes the request directly (Task 18's registrar doesn't exist yet),
+	// so it forces the same status by hand.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'awaiting_approval', updated_at = ?
+		WHERE id = ?`, now, it.ID); err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.RequestByID(ctx, reqID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// There is no ArtifactByID in the ledger and this task does not add one: the
+	// helper already knows every value it just wrote, so it fills the struct.
+	art := Artifact{ID: artID, ItemID: it.ID, Kind: "spec", Path: "docs/specs/flow.md",
+		HeadRevision: 1, Revision: 1,
+		Sections: []ArtifactSection{{ID: "overview", Title: "Overview", SHA256: sum}}}
+	return req, ses, art
+}
 
 func seedEpicWithTask(t *testing.T, s *Store) items.Item {
 	t.Helper()
