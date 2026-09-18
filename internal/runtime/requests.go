@@ -293,6 +293,9 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 	if in.Withdraw != "" {
 		return s.withdraw(ctx, sessionID, in.Withdraw)
 	}
+	if st, err := s.SessionState(ctx, sessionID); err == nil && st.Pausing() {
+		return Request{}, errors.New(pausedTool)
+	}
 	switch in.Kind {
 	case "question":
 		return s.askQuestion(ctx, sessionID, in)

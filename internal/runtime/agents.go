@@ -938,7 +938,7 @@ func (s *Store) LatestSession(ctx context.Context, agentID string) (Session, err
 	var st string
 	var waiting int
 	var needsCompaction int
-	var lastSeen, lastWake, started, ended sql.NullInt64
+	var lastSeen, lastWake, started, ended, pauseDeadline sql.NullInt64
 	var exitCode sql.NullInt64
 	err := s.DB.QueryRowContext(ctx, `SELECT
 		id, agent_id, attempt, generation, COALESCE(provider_session_id, ''), token_hash, tmux_name,
@@ -946,7 +946,7 @@ func (s *Store) LatestSession(ctx context.Context, agentID string) (Session, err
 		needs_compaction_notice, last_seen_at, last_wake_at, exit_code, started_at, ended_at
 		FROM sessions WHERE agent_id = ? ORDER BY generation DESC, attempt DESC LIMIT 1`, agentID).Scan(
 		&ses.ID, &ses.AgentID, &ses.Attempt, &ses.Generation, &ses.ProviderSessionID, &ses.TokenHash,
-		&ses.TmuxName, &ses.Cwd, &ses.CwdKind, &st, &waiting, &ses.PauseScope, &ses.PauseDeadlineAt,
+		&ses.TmuxName, &ses.Cwd, &ses.CwdKind, &st, &waiting, &ses.PauseScope, &pauseDeadline,
 		&ses.StopBlocks, &needsCompaction, &lastSeen, &lastWake, &exitCode, &started, &ended,
 	)
 	if err != nil {
@@ -955,6 +955,10 @@ func (s *Store) LatestSession(ctx context.Context, agentID string) (Session, err
 	ses.State = SessionState(st)
 	ses.Waiting = (waiting != 0)
 	ses.NeedsCompactionNotice = (needsCompaction != 0)
+	if pauseDeadline.Valid {
+		t := db.FromMillis(pauseDeadline.Int64)
+		ses.PauseDeadlineAt = &t
+	}
 	if lastSeen.Valid {
 		t := db.FromMillis(lastSeen.Int64)
 		ses.LastSeenAt = &t
@@ -985,7 +989,7 @@ func (s *Store) SessionByToken(ctx context.Context, token string) (Session, erro
 	var st string
 	var waiting int
 	var needsCompaction int
-	var lastSeen, lastWake, started, ended sql.NullInt64
+	var lastSeen, lastWake, started, ended, pauseDeadline sql.NullInt64
 	var exitCode sql.NullInt64
 	err := s.DB.QueryRowContext(ctx, `SELECT
 		id, agent_id, attempt, generation, COALESCE(provider_session_id, ''), token_hash, tmux_name,
@@ -993,7 +997,7 @@ func (s *Store) SessionByToken(ctx context.Context, token string) (Session, erro
 		needs_compaction_notice, last_seen_at, last_wake_at, exit_code, started_at, ended_at
 		FROM sessions WHERE token_hash = ?`, hash).Scan(
 		&ses.ID, &ses.AgentID, &ses.Attempt, &ses.Generation, &ses.ProviderSessionID, &ses.TokenHash,
-		&ses.TmuxName, &ses.Cwd, &ses.CwdKind, &st, &waiting, &ses.PauseScope, &ses.PauseDeadlineAt,
+		&ses.TmuxName, &ses.Cwd, &ses.CwdKind, &st, &waiting, &ses.PauseScope, &pauseDeadline,
 		&ses.StopBlocks, &needsCompaction, &lastSeen, &lastWake, &exitCode, &started, &ended,
 	)
 	if err != nil {
@@ -1002,6 +1006,10 @@ func (s *Store) SessionByToken(ctx context.Context, token string) (Session, erro
 	ses.State = SessionState(st)
 	ses.Waiting = (waiting != 0)
 	ses.NeedsCompactionNotice = (needsCompaction != 0)
+	if pauseDeadline.Valid {
+		t := db.FromMillis(pauseDeadline.Int64)
+		ses.PauseDeadlineAt = &t
+	}
 	if lastSeen.Valid {
 		t := db.FromMillis(lastSeen.Int64)
 		ses.LastSeenAt = &t

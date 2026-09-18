@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
@@ -282,6 +283,18 @@ type Store struct {
 	BaseEnv   func(func(string) string) map[string]string // always supplied by cmd/swarm; never defaulted here
 	After     func(time.Duration) <-chan time.Time        // nil means time.After
 	Go        func(func())                                // nil means `go f()`; tests run it inline
+
+	// bookkeeping is Task 20/22's in-memory state: how long ago each pausing
+	// session was sent interrupt keys, how many idle-paste attempts a wake has
+	// made, and the live SSE-side wake subscriptions. None of it has a schema
+	// column, and none needs one (D57): a restart mid-pause simply resends the
+	// interrupt keys or restarts the paste backoff, and the reconciler's
+	// un-acked-message rule is the durable guarantee the user hears about a
+	// stuck delivery either way.
+	bookkeepingMu sync.Mutex
+	interruptedAt map[string]time.Time
+	pasteAttempts map[string]int
+	wakeSubs      map[string][]chan string
 }
 
 func (s *Store) logf(format string, args ...any) {
