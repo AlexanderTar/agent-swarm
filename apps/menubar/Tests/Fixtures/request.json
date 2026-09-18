@@ -1,0 +1,25 @@
+{
+  "id": "req_question",
+  "kind": "question",
+  "agent_name": "login-form-coder",
+  "item_key": "TASK-101",
+  "item_title": "Login form",
+  "root_key": "EPIC-12",
+  "artifact_id": null,
+  "artifact_revision": null,
+  "section_id": null,
+  "section_title": null,
+  "section_sha256": null,
+  "prompt": "Which validation library?",
+  "options": [
+    "zod",
+    "valibot"
+  ],
+  "state": "answered",
+  "confirmed": null,
+  "binding": null,
+  "response_text": "Use zod.",
+  "responded_via": "menubar",
+  "responded_at": 1789651920000,
+  "created_at": 1789650120000
+}

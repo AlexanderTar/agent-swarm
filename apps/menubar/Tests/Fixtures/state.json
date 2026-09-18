@@ -1,0 +1,630 @@
+{
+  "agents": [
+    {
+      "id": "agt_01",
+      "name": "auth-epic-orchestrator",
+      "kind": "claude",
+      "model": "opus",
+      "effort": null,
+      "role": "orchestrator",
+      "item_key": "EPIC-12",
+      "item_title": "Authentication",
+      "root_key": "EPIC-12",
+      "parent_name": null,
+      "advisor": {
+        "kind": "claude",
+        "model": "fable",
+        "effort": null,
+        "mode": "native"
+      },
+      "state": "active",
+      "session": {
+        "id": "ses_01",
+        "state": "running",
+        "attempt": 1,
+        "generation": 1,
+        "waiting": false,
+        "stale": false,
+        "tmux_alive": true,
+        "started_at": 1789644720000,
+        "ended_at": null
+      },
+      "preflight_error": null,
+      "created_at": 1789641120000,
+      "finished_at": null,
+      "children": [
+        {
+          "id": "agt_02",
+          "name": "login-form-coder",
+          "kind": "claude",
+          "model": "sonnet",
+          "effort": null,
+          "role": "coder",
+          "item_key": "TASK-101",
+          "item_title": "Login form",
+          "root_key": "EPIC-12",
+          "parent_name": "auth-epic-orchestrator",
+          "advisor": {
+            "kind": "claude",
+            "model": "fable",
+            "effort": null,
+            "mode": "native"
+          },
+          "state": "active",
+          "session": {
+            "id": "ses_02",
+            "state": "running",
+            "attempt": 1,
+            "generation": 1,
+            "waiting": false,
+            "stale": false,
+            "tmux_alive": true,
+            "started_at": 1789644720000,
+            "ended_at": null
+          },
+          "preflight_error": null,
+          "created_at": 1789641120000,
+          "finished_at": null,
+          "children": [],
+          "finished": []
+        },
+        {
+          "id": "agt_03",
+          "name": "login-review",
+          "kind": "codex",
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "role": "reviewer",
+          "item_key": "TASK-101",
+          "item_title": "Login form",
+          "root_key": "EPIC-12",
+          "parent_name": "auth-epic-orchestrator",
+          "advisor": {
+            "kind": "claude",
+            "model": "opus",
+            "effort": "high",
+            "mode": "simulated"
+          },
+          "state": "active",
+          "session": {
+            "id": "ses_03",
+            "state": "running",
+            "attempt": 1,
+            "generation": 1,
+            "waiting": true,
+            "stale": false,
+            "tmux_alive": true,
+            "started_at": 1789644720000,
+            "ended_at": null
+          },
+          "preflight_error": null,
+          "created_at": 1789641120000,
+          "finished_at": null,
+          "children": [],
+          "finished": []
+        }
+      ],
+      "finished": [
+        {
+          "id": "agt_04",
+          "name": "session-coder",
+          "kind": "claude",
+          "model": "sonnet",
+          "effort": null,
+          "role": "coder",
+          "item_key": "TASK-99",
+          "item_title": "Session store",
+          "root_key": "EPIC-12",
+          "parent_name": "auth-epic-orchestrator",
+          "advisor": {
+            "kind": "claude",
+            "model": "fable",
+            "effort": null,
+            "mode": "native"
+          },
+          "state": "finished",
+          "session": {
+            "id": "ses_04",
+            "state": "completed",
+            "attempt": 1,
+            "generation": 1,
+            "waiting": false,
+            "stale": false,
+            "tmux_alive": false,
+            "started_at": 1789644720000,
+            "ended_at": 1789648320000
+          },
+          "preflight_error": null,
+          "created_at": 1789641120000,
+          "finished_at": 1789648320000,
+          "children": [],
+          "finished": []
+        }
+      ]
+    },
+    {
+      "id": "agt_05",
+      "name": "crash-debug-orchestrator",
+      "kind": "claude",
+      "model": "opus",
+      "effort": null,
+      "role": "orchestrator",
+      "item_key": "SPIKE-3",
+      "item_title": "Crash on login",
+      "root_key": "SPIKE-3",
+      "parent_name": null,
+      "advisor": {
+        "kind": "claude",
+        "model": "fable",
+        "effort": null,
+        "mode": "native"
+      },
+      "state": "active",
+      "session": {
+        "id": "ses_05",
+        "state": "paused",
+        "attempt": 1,
+        "generation": 1,
+        "waiting": false,
+        "stale": false,
+        "tmux_alive": false,
+        "started_at": 1789644720000,
+        "ended_at": 1789651320000
+      },
+      "preflight_error": null,
+      "created_at": 1789641120000,
+      "finished_at": null,
+      "children": [],
+      "finished": []
+    },
+    {
+      "id": "agt_06",
+      "name": "docs-fix-coder",
+      "kind": "claude",
+      "model": "sonnet",
+      "effort": null,
+      "role": "coder",
+      "item_key": "TASK-7",
+      "item_title": "Fix docs link",
+      "root_key": "BUG-7",
+      "parent_name": null,
+      "advisor": {
+        "kind": "claude",
+        "model": "fable",
+        "effort": null,
+        "mode": "native"
+      },
+      "state": "active",
+      "session": {
+        "id": "ses_06",
+        "state": "crashed",
+        "attempt": 1,
+        "generation": 1,
+        "waiting": false,
+        "stale": false,
+        "tmux_alive": true,
+        "started_at": 1789644720000,
+        "ended_at": 1789651620000
+      },
+      "preflight_error": null,
+      "created_at": 1789641120000,
+      "finished_at": null,
+      "children": [],
+      "finished": []
+    },
+    {
+      "id": "agt_07",
+      "name": "billing-spike-orchestrator",
+      "kind": "claude",
+      "model": "opus",
+      "effort": null,
+      "role": "orchestrator",
+      "item_key": "SPIKE-4",
+      "item_title": "Billing export",
+      "root_key": "SPIKE-4",
+      "parent_name": null,
+      "advisor": {
+        "kind": "claude",
+        "model": "fable",
+        "effort": null,
+        "mode": "native"
+      },
+      "state": "queued",
+      "session": null,
+      "preflight_error": null,
+      "created_at": 1789641120000,
+      "finished_at": null,
+      "children": [],
+      "finished": []
+    },
+    {
+      "id": "agt_08",
+      "name": "search-spike-orchestrator",
+      "kind": "codex",
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "role": "orchestrator",
+      "item_key": "SPIKE-5",
+      "item_title": "Search ranking",
+      "root_key": "SPIKE-5",
+      "parent_name": null,
+      "advisor": null,
+      "state": "active",
+      "session": null,
+      "preflight_error": "Codex isn't installed on this Mac.",
+      "created_at": 1789641120000,
+      "finished_at": null,
+      "children": [],
+      "finished": []
+    }
+  ],
+  "requests": [
+    {
+      "id": "req_section",
+      "kind": "approve_section",
+      "agent_name": "auth-epic-orchestrator",
+      "item_key": "STORY-40",
+      "item_title": "Login",
+      "root_key": "EPIC-12",
+      "artifact_id": "art_01",
+      "artifact_revision": 2,
+      "section_id": "session-handling",
+      "section_title": "Session handling",
+      "section_sha256": "9f2c1e",
+      "prompt": "Review the session handling section.",
+      "options": [],
+      "state": "open",
+      "confirmed": null,
+      "binding": null,
+      "response_text": null,
+      "responded_via": null,
+      "responded_at": null,
+      "created_at": 1789649520000
+    },
+    {
+      "id": "req_question",
+      "kind": "question",
+      "agent_name": "login-form-coder",
+      "item_key": "TASK-101",
+      "item_title": "Login form",
+      "root_key": "EPIC-12",
+      "artifact_id": null,
+      "artifact_revision": null,
+      "section_id": null,
+      "section_title": null,
+      "section_sha256": null,
+      "prompt": "Which validation library?",
+      "options": [
+        "zod",
+        "valibot"
+      ],
+      "state": "open",
+      "confirmed": null,
+      "binding": null,
+      "response_text": null,
+      "responded_via": null,
+      "responded_at": null,
+      "created_at": 1789650120000
+    },
+    {
+      "id": "req_plan",
+      "kind": "approve_plan",
+      "agent_name": "crash-debug-orchestrator",
+      "item_key": "SPIKE-3",
+      "item_title": "Crash on login",
+      "root_key": "SPIKE-3",
+      "artifact_id": "art_02",
+      "artifact_revision": 1,
+      "section_id": null,
+      "section_title": null,
+      "section_sha256": null,
+      "prompt": "Review the proposed implementation plan.",
+      "options": [],
+      "state": "open",
+      "confirmed": null,
+      "binding": null,
+      "response_text": null,
+      "responded_via": null,
+      "responded_at": null,
+      "created_at": 1789650720000
+    },
+    {
+      "id": "req_repos",
+      "kind": "confirm_repos",
+      "agent_name": "crash-debug-orchestrator",
+      "item_key": "SPIKE-3",
+      "item_title": "Crash on login",
+      "root_key": "SPIKE-3",
+      "artifact_id": null,
+      "artifact_revision": null,
+      "section_id": null,
+      "section_title": null,
+      "section_sha256": null,
+      "prompt": "Confirm the repositories for this spike.",
+      "options": {
+        "proposed": [
+          {
+            "repo": "repo_chat",
+            "reason": "The login API lives here.",
+            "source": "user"
+          },
+          {
+            "repo": "repo_app",
+            "reason": "The client shows the crash.",
+            "source": "agent"
+          }
+        ],
+        "expansion": [
+          {
+            "repo": "repo_landing",
+            "reason": "It links to the login page."
+          }
+        ]
+      },
+      "state": "open",
+      "confirmed": null,
+      "binding": null,
+      "response_text": null,
+      "responded_via": null,
+      "responded_at": null,
+      "created_at": 1789651320000
+    }
+  ],
+  "notifications": {
+    "unread": 4,
+    "items": [
+      {
+        "id": "ntf_05",
+        "level": "action",
+        "kind": "request.question",
+        "title": "Answer needed",
+        "body": "TASK-101: Which validation library?",
+        "agent_name": "login-form-coder",
+        "item_key": "TASK-101",
+        "request_id": "req_question",
+        "read_at": null,
+        "created_at": 1789650120000
+      },
+      {
+        "id": "ntf_04",
+        "level": "attention",
+        "kind": "agent.crashed",
+        "title": "Agent crashed",
+        "body": "docs-fix-coder exited unexpectedly on TASK-7.",
+        "agent_name": "docs-fix-coder",
+        "item_key": "TASK-7",
+        "request_id": null,
+        "read_at": null,
+        "created_at": 1789651620000
+      },
+      {
+        "id": "ntf_03",
+        "level": "action",
+        "kind": "request.approve_section",
+        "title": "Section approval needed",
+        "body": "STORY-40: Review \"Session handling\".",
+        "agent_name": "auth-epic-orchestrator",
+        "item_key": "STORY-40",
+        "request_id": "req_section",
+        "read_at": null,
+        "created_at": 1789649520000
+      },
+      {
+        "id": "ntf_02",
+        "level": "info",
+        "kind": "item.created",
+        "title": "Epic ready",
+        "body": "SPIKE-2 produced EPIC-12: Authentication. Start an orchestrator when you're ready.",
+        "agent_name": null,
+        "item_key": "EPIC-12",
+        "request_id": null,
+        "read_at": null,
+        "created_at": 1789641120000
+      },
+      {
+        "id": "ntf_01",
+        "level": "info",
+        "kind": "agent.accepted",
+        "title": "Task accepted",
+        "body": "login-form-coder started TASK-101: Login form.",
+        "agent_name": "login-form-coder",
+        "item_key": "TASK-101",
+        "request_id": null,
+        "read_at": 1789648320000,
+        "created_at": 1789644720000
+      }
+    ]
+  },
+  "usage": [
+    {
+      "agent": "claude",
+      "meters": [
+        {
+          "id": "five_hour",
+          "label": "5h",
+          "window": "5h",
+          "used_pct": 42.4,
+          "resets_at": 1789659720000
+        },
+        {
+          "id": "seven_day",
+          "label": "Weekly (all models)",
+          "window": "weekly",
+          "used_pct": 31,
+          "resets_at": 1789977600000
+        },
+        {
+          "id": "seven_day_fable",
+          "label": "Fable weekly",
+          "window": "weekly",
+          "used_pct": 18,
+          "resets_at": 1789977600000
+        }
+      ],
+      "headline_id": "five_hour",
+      "source": "api.anthropic.com/api/oauth/usage",
+      "error": "HTTP 429",
+      "fetched_at": 1789651200000,
+      "attempted_at": 1789651860000,
+      "stale": true
+    },
+    {
+      "agent": "codex",
+      "meters": [
+        {
+          "id": "primary",
+          "label": "5h",
+          "window": "5h",
+          "used_pct": 18,
+          "resets_at": 1789662720000
+        },
+        {
+          "id": "secondary",
+          "label": "Weekly",
+          "window": "weekly",
+          "used_pct": 9,
+          "resets_at": 1789977600000
+        }
+      ],
+      "headline_id": "primary",
+      "source": "codex app-server account/rateLimits/read",
+      "error": null,
+      "fetched_at": 1789651860000,
+      "attempted_at": 1789651860000,
+      "stale": false
+    },
+    {
+      "agent": "agy",
+      "meters": [
+        {
+          "id": "gemini_5h",
+          "label": "Gemini 5h",
+          "window": "5h",
+          "used_pct": 0,
+          "resets_at": 1789666320000
+        },
+        {
+          "id": "claude_gpt_5h",
+          "label": "Claude & GPT 5h",
+          "window": "5h",
+          "used_pct": 63,
+          "resets_at": 1789659120000
+        },
+        {
+          "id": "gemini_weekly",
+          "label": "Gemini weekly",
+          "window": "weekly",
+          "used_pct": 12,
+          "resets_at": 1789977600000
+        },
+        {
+          "id": "claude_gpt_weekly",
+          "label": "Claude & GPT weekly",
+          "window": "weekly",
+          "used_pct": 40,
+          "resets_at": 1789977600000
+        }
+      ],
+      "headline_id": "claude_gpt_5h",
+      "source": "cloudcode-pa retrieveUserQuotaSummary",
+      "error": null,
+      "fetched_at": 1789651860000,
+      "attempted_at": 1789651860000,
+      "stale": false
+    },
+    {
+      "agent": "cursor",
+      "meters": [
+        {
+          "id": "cursor_auto",
+          "label": "Monthly Auto",
+          "window": "monthly",
+          "used_pct": 27,
+          "resets_at": 1790812800000
+        },
+        {
+          "id": "cursor_api",
+          "label": "Monthly API",
+          "window": "monthly",
+          "used_pct": 4,
+          "resets_at": 1790812800000
+        }
+      ],
+      "headline_id": "cursor_auto",
+      "source": "api2.cursor.sh GetCurrentPeriodUsage",
+      "error": null,
+      "fetched_at": 1789651860000,
+      "attempted_at": 1789651860000,
+      "stale": false
+    }
+  ],
+  "active_count": 4,
+  "settings": {
+    "enabled_agents": [
+      "claude",
+      "codex",
+      "agy"
+    ],
+    "roles": {
+      "orchestrator": {
+        "agent": "claude",
+        "model": "opus"
+      },
+      "coder": {
+        "agent": "claude",
+        "model": "sonnet"
+      },
+      "reviewer": {
+        "agent": "codex",
+        "model": "gpt-6-astra",
+        "effort": "high"
+      },
+      "ui_reviewer": {
+        "agent": "claude",
+        "model": "opus"
+      },
+      "researcher": {
+        "agent": "claude",
+        "model": "sonnet"
+      },
+      "debugger": {
+        "agent": "claude",
+        "model": "opus"
+      },
+      "mechanical": {
+        "agent": "claude",
+        "model": "haiku"
+      },
+      "advisor": {
+        "agent": "claude",
+        "model": "fable"
+      }
+    },
+    "notifications": {
+      "info": {
+        "center": true,
+        "sound": false
+      },
+      "attention": {
+        "center": true,
+        "sound": true
+      },
+      "action": {
+        "center": true,
+        "sound": true
+      }
+    },
+    "max_orchestrators": 3,
+    "max_agents": 8,
+    "max_agents_per_root": 4,
+    "scan_excludes": [
+      "~/Library",
+      "~/.Trash",
+      "~/Downloads"
+    ],
+    "scan_interval_sec": 21600,
+    "menubar_compact": false,
+    "usage_poll_sec": 300,
+    "pause_deadline_sec": 120
+  }
+}

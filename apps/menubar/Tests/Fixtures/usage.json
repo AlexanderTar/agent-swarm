@@ -1,0 +1,123 @@
+[
+  {
+    "agent": "claude",
+    "meters": [
+      {
+        "id": "five_hour",
+        "label": "5h",
+        "window": "5h",
+        "used_pct": 42.4,
+        "resets_at": 1789659720000
+      },
+      {
+        "id": "seven_day",
+        "label": "Weekly (all models)",
+        "window": "weekly",
+        "used_pct": 31,
+        "resets_at": 1789977600000
+      },
+      {
+        "id": "seven_day_fable",
+        "label": "Fable weekly",
+        "window": "weekly",
+        "used_pct": 18,
+        "resets_at": 1789977600000
+      }
+    ],
+    "headline_id": "five_hour",
+    "source": "api.anthropic.com/api/oauth/usage",
+    "error": "HTTP 429",
+    "fetched_at": 1789651200000,
+    "attempted_at": 1789651860000,
+    "stale": true
+  },
+  {
+    "agent": "codex",
+    "meters": [
+      {
+        "id": "primary",
+        "label": "5h",
+        "window": "5h",
+        "used_pct": 18,
+        "resets_at": 1789662720000
+      },
+      {
+        "id": "secondary",
+        "label": "Weekly",
+        "window": "weekly",
+        "used_pct": 9,
+        "resets_at": 1789977600000
+      }
+    ],
+    "headline_id": "primary",
+    "source": "codex app-server account/rateLimits/read",
+    "error": null,
+    "fetched_at": 1789651860000,
+    "attempted_at": 1789651860000,
+    "stale": false
+  },
+  {
+    "agent": "agy",
+    "meters": [
+      {
+        "id": "gemini_5h",
+        "label": "Gemini 5h",
+        "window": "5h",
+        "used_pct": 0,
+        "resets_at": 1789666320000
+      },
+      {
+        "id": "claude_gpt_5h",
+        "label": "Claude & GPT 5h",
+        "window": "5h",
+        "used_pct": 63,
+        "resets_at": 1789659120000
+      },
+      {
+        "id": "gemini_weekly",
+        "label": "Gemini weekly",
+        "window": "weekly",
+        "used_pct": 12,
+        "resets_at": 1789977600000
+      },
+      {
+        "id": "claude_gpt_weekly",
+        "label": "Claude & GPT weekly",
+        "window": "weekly",
+        "used_pct": 40,
+        "resets_at": 1789977600000
+      }
+    ],
+    "headline_id": "claude_gpt_5h",
+    "source": "cloudcode-pa retrieveUserQuotaSummary",
+    "error": null,
+    "fetched_at": 1789651860000,
+    "attempted_at": 1789651860000,
+    "stale": false
+  },
+  {
+    "agent": "cursor",
+    "meters": [
+      {
+        "id": "cursor_auto",
+        "label": "Monthly Auto",
+        "window": "monthly",
+        "used_pct": 27,
+        "resets_at": 1790812800000
+      },
+      {
+        "id": "cursor_api",
+        "label": "Monthly API",
+        "window": "monthly",
+        "used_pct": 4,
+        "resets_at": 1790812800000
+      }
+    ],
+    "headline_id": "cursor_auto",
+    "source": "api2.cursor.sh GetCurrentPeriodUsage",
+    "error": null,
+    "fetched_at": 1789651860000,
+    "attempted_at": 1789651860000,
+    "stale": false
+  }
+]

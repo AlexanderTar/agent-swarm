@@ -1,0 +1,546 @@
+import Foundation
+
+// Wire types for the daemon HTTP API. The authority is
+// ~/.superpowers/specs/2026-09-17-agent-swarm-contracts.md (§3): snake_case keys,
+// integer-millisecond timestamps, optional scalars present as null.
+// Swift ignores JSON keys it doesn't declare, so read-only types list only what the
+// menubar uses; the fixtures in Tests/Fixtures carry the full shapes for the Go check.
+
+public enum AgentKind: String, Codable, Sendable, CaseIterable {
+    case claude, codex, agy, cursor, fake
+
+    /// The four agents a user can enable, in settings order (claude first).
+    public static let selectable: [AgentKind] = [.claude, .codex, .agy, .cursor]
+}
+
+public enum Role: String, Codable, Sendable {
+    case orchestrator, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical
+}
+
+/// Keys of `Settings.roles`: the seven agent roles plus "advisor" (L28).
+public enum SettingsRole: String, Sendable, CaseIterable {
+    case orchestrator, advisor, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical
+}
+
+public enum AgentState: String, Codable, Sendable {
+    case queued, active, finished, acknowledged
+}
+
+public enum SessionState: String, Codable, Sendable {
+    case spawning, running, pauseRequested = "pause_requested", quiescing, stopping, paused
+    case interrupted, completed, failed, crashed, cancelled
+}
+
+public struct SessionInfo: Codable, Sendable, Equatable {
+    public var id: String
+    public var state: SessionState
+    public var attempt: Int
+    public var generation: Int
+    public var waiting: Bool
+    public var stale: Bool
+    public var tmuxAlive: Bool
+    public var startedAt: Timestamp
+    public var endedAt: Timestamp?
+
+    enum CodingKeys: String, CodingKey {
+        case id, state, attempt, generation, waiting, stale
+        case tmuxAlive = "tmux_alive", startedAt = "started_at", endedAt = "ended_at"
+    }
+
+    public init(id: String = "ses_1", state: SessionState, attempt: Int = 1, generation: Int = 1,
+                waiting: Bool = false, stale: Bool = false, tmuxAlive: Bool = true,
+                startedAt: Timestamp = Timestamp(ms: 0), endedAt: Timestamp? = nil) {
+        self.id = id; self.state = state; self.attempt = attempt; self.generation = generation
+        self.waiting = waiting; self.stale = stale; self.tmuxAlive = tmuxAlive
+        self.startedAt = startedAt; self.endedAt = endedAt
+    }
+}
+
+public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var kind: AgentKind
+    public var model: String
+    public var role: Role
+    public var itemKey: String
+    public var itemTitle: String
+    public var rootKey: String
+    public var parentName: String?
+    public var state: AgentState
+    public var session: SessionInfo?
+    public var preflightError: String?
+    public var children: [AgentNode]
+    public var finished: [AgentNode]
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, model, role, state, session, children, finished
+        case itemKey = "item_key", itemTitle = "item_title", rootKey = "root_key"
+        case parentName = "parent_name", preflightError = "preflight_error"
+    }
+
+    public init(id: String = "agt_1", name: String, kind: AgentKind = .claude, model: String,
+                role: Role = .coder, itemKey: String = "TASK-1", itemTitle: String = "Task",
+                rootKey: String = "EPIC-1", parentName: String? = nil, state: AgentState = .active,
+                session: SessionInfo? = SessionInfo(state: .running), preflightError: String? = nil,
+                children: [AgentNode] = [], finished: [AgentNode] = []) {
+        self.id = id; self.name = name; self.kind = kind; self.model = model; self.role = role
+        self.itemKey = itemKey; self.itemTitle = itemTitle; self.rootKey = rootKey
+        self.parentName = parentName; self.state = state; self.session = session
+        self.preflightError = preflightError; self.children = children; self.finished = finished
+    }
+}
+
+public enum RequestKind: String, Codable, Sendable {
+    case question, confirmRepos = "confirm_repos", approveSection = "approve_section"
+    case approvePlan = "approve_plan", approveReport = "approve_report"
+    case acceptEpic = "accept_epic", acceptFix = "accept_fix", closeSpike = "close_spike"
+}
+
+public struct SwarmRequest: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var kind: RequestKind
+    public var agentName: String?
+    public var itemKey: String
+    public var itemTitle: String
+    public var sectionTitle: String?
+    public var prompt: String
+    public var state: String
+    public var createdAt: Timestamp
+    /// `confirm_repos` only: how many repos the agent proposes (`options.proposed`).
+    public var proposedRepos: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, prompt, state, options
+        case agentName = "agent_name", itemKey = "item_key", itemTitle = "item_title"
+        case sectionTitle = "section_title", createdAt = "created_at"
+    }
+
+    private struct RepoOptions: Codable { var proposed: [Proposal]; struct Proposal: Codable { var repo: String } }
+
+    public init(id: String, kind: RequestKind, agentName: String? = nil, itemKey: String = "TASK-1",
+                itemTitle: String = "Task", sectionTitle: String? = nil, prompt: String = "",
+                state: String = "open", createdAt: Timestamp = Timestamp(ms: 0), proposedRepos: Int? = nil) {
+        self.id = id; self.kind = kind; self.agentName = agentName; self.itemKey = itemKey
+        self.itemTitle = itemTitle; self.sectionTitle = sectionTitle; self.prompt = prompt
+        self.state = state; self.createdAt = createdAt; self.proposedRepos = proposedRepos
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(RequestKind.self, forKey: .kind)
+        agentName = try c.decodeIfPresent(String.self, forKey: .agentName)
+        itemKey = try c.decode(String.self, forKey: .itemKey)
+        itemTitle = try c.decode(String.self, forKey: .itemTitle)
+        sectionTitle = try c.decodeIfPresent(String.self, forKey: .sectionTitle)
+        prompt = try c.decode(String.self, forKey: .prompt)
+        state = try c.decode(String.self, forKey: .state)
+        createdAt = try c.decode(Timestamp.self, forKey: .createdAt)
+        proposedRepos = kind == .confirmRepos
+            ? (try? c.decode(RepoOptions.self, forKey: .options))?.proposed.count : nil
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(agentName, forKey: .agentName)
+        try c.encode(itemKey, forKey: .itemKey)
+        try c.encode(itemTitle, forKey: .itemTitle)
+        try c.encode(sectionTitle, forKey: .sectionTitle)
+        try c.encode(prompt, forKey: .prompt)
+        try c.encode(state, forKey: .state)
+        try c.encode(createdAt, forKey: .createdAt)
+        if let n = proposedRepos {
+            try c.encode(RepoOptions(proposed: Array(repeating: .init(repo: ""), count: n)), forKey: .options)
+        }
+    }
+}
+
+public enum NotificationLevel: String, Codable, Sendable, CaseIterable {
+    case info, attention, action
+}
+
+public struct SwarmNotification: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var level: NotificationLevel
+    public var kind: String
+    public var title: String
+    public var body: String
+    public var agentName: String?
+    public var itemKey: String?
+    public var requestId: String?
+    public var readAt: Timestamp?
+    public var createdAt: Timestamp
+
+    enum CodingKeys: String, CodingKey {
+        case id, level, kind, title, body
+        case agentName = "agent_name", itemKey = "item_key", requestId = "request_id"
+        case readAt = "read_at", createdAt = "created_at"
+    }
+
+    public init(id: String, level: NotificationLevel, kind: String, title: String = "", body: String = "",
+                agentName: String? = nil, itemKey: String? = nil, requestId: String? = nil,
+                readAt: Timestamp? = nil, createdAt: Timestamp = Timestamp(ms: 0)) {
+        self.id = id; self.level = level; self.kind = kind; self.title = title; self.body = body
+        self.agentName = agentName; self.itemKey = itemKey; self.requestId = requestId
+        self.readAt = readAt; self.createdAt = createdAt
+    }
+}
+
+public struct NotificationList: Codable, Sendable, Equatable {
+    public var unread: Int
+    public var items: [SwarmNotification]
+    public init(unread: Int = 0, items: [SwarmNotification] = []) { self.unread = unread; self.items = items }
+}
+
+public struct Meter: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var label: String
+    public var window: String
+    public var usedPct: Double
+    public var resetsAt: Timestamp?
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, window, usedPct = "used_pct", resetsAt = "resets_at"
+    }
+
+    public init(id: String, label: String, window: String = "5h", usedPct: Double, resetsAt: Timestamp? = nil) {
+        self.id = id; self.label = label; self.window = window; self.usedPct = usedPct; self.resetsAt = resetsAt
+    }
+}
+
+public struct UsageSnapshot: Codable, Sendable, Equatable {
+    public var agent: AgentKind
+    public var meters: [Meter]
+    public var headlineId: String?
+    public var error: String?
+    public var fetchedAt: Timestamp
+    public var stale: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case agent, meters, error, stale, headlineId = "headline_id", fetchedAt = "fetched_at"
+    }
+
+    public init(agent: AgentKind, meters: [Meter], headlineId: String? = nil, error: String? = nil,
+                fetchedAt: Timestamp = Timestamp(ms: 0), stale: Bool = false) {
+        self.agent = agent; self.meters = meters; self.headlineId = headlineId; self.error = error
+        self.fetchedAt = fetchedAt; self.stale = stale
+    }
+
+    public var headline: Meter? { meters.first { $0.id == headlineId } ?? meters.first }
+}
+
+public struct RoleDefault: Codable, Sendable, Equatable {
+    public var agent: AgentKind
+    public var model: String
+    /// "" = the agent's default (L27). Encoded only when non-empty.
+    public var effort: String
+
+    enum CodingKeys: String, CodingKey { case agent, model, effort }
+
+    public init(agent: AgentKind, model: String, effort: String = "") {
+        self.agent = agent; self.model = model; self.effort = effort
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        agent = try c.decode(AgentKind.self, forKey: .agent)
+        model = try c.decode(String.self, forKey: .model)
+        effort = try c.decodeIfPresent(String.self, forKey: .effort) ?? ""
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(agent, forKey: .agent)
+        try c.encode(model, forKey: .model)
+        if !effort.isEmpty { try c.encode(effort, forKey: .effort) }
+    }
+
+    /// Settings stores "No advisor" as model "none" (P1 settings.NoAdvisor).
+    public static let noAdvisorModel = "none"
+}
+
+public struct NotifyPref: Codable, Sendable, Equatable {
+    public var center: Bool
+    public var sound: Bool
+    public init(center: Bool = true, sound: Bool = true) { self.center = center; self.sound = sound }
+}
+
+public struct Settings: Codable, Sendable, Equatable {
+    public var enabledAgents: [AgentKind]
+    public var roles: [String: RoleDefault]
+    public var notifications: [String: NotifyPref]
+    public var maxOrchestrators: Int
+    public var maxAgents: Int
+    public var maxAgentsPerRoot: Int
+    public var scanExcludes: [String]
+    public var scanIntervalSec: Int
+    public var menubarCompact: Bool
+    public var usagePollSec: Int
+    public var pauseDeadlineSec: Int
+
+    enum CodingKeys: String, CodingKey {
+        case roles, notifications
+        case enabledAgents = "enabled_agents", maxOrchestrators = "max_orchestrators"
+        case maxAgents = "max_agents", maxAgentsPerRoot = "max_agents_per_root"
+        case scanExcludes = "scan_excludes", scanIntervalSec = "scan_interval_sec"
+        case menubarCompact = "menubar_compact", usagePollSec = "usage_poll_sec"
+        case pauseDeadlineSec = "pause_deadline_sec"
+    }
+
+    /// §6.5 defaults with §2.1 A3 roles. Used before the first successful load.
+    public static let defaults = Settings(
+        enabledAgents: [.claude],
+        roles: [
+            "orchestrator": RoleDefault(agent: .claude, model: "opus"),
+            "coder": RoleDefault(agent: .claude, model: "sonnet"),
+            "reviewer": RoleDefault(agent: .claude, model: "opus"),
+            "ui_reviewer": RoleDefault(agent: .claude, model: "opus"),
+            "researcher": RoleDefault(agent: .claude, model: "sonnet"),
+            "debugger": RoleDefault(agent: .claude, model: "opus"),
+            "mechanical": RoleDefault(agent: .claude, model: "haiku"),
+            "advisor": RoleDefault(agent: .claude, model: "fable"),
+        ],
+        notifications: ["info": NotifyPref(), "attention": NotifyPref(), "action": NotifyPref()],
+        maxOrchestrators: 3, maxAgents: 8, maxAgentsPerRoot: 4,
+        scanExcludes: ["~/Library", "~/.Trash", "~/Downloads"], scanIntervalSec: 21600,
+        menubarCompact: false, usagePollSec: 300, pauseDeadlineSec: 120)
+
+    public subscript(role: SettingsRole) -> RoleDefault? {
+        get { roles[role.rawValue] }
+        set { roles[role.rawValue] = newValue }
+    }
+
+    public func pref(_ level: NotificationLevel) -> NotifyPref {
+        notifications[level.rawValue] ?? NotifyPref()
+    }
+}
+
+public struct StateResponse: Codable, Sendable, Equatable {
+    public var agents: [AgentNode]
+    public var requests: [SwarmRequest]
+    public var notifications: NotificationList
+    public var usage: [UsageSnapshot]
+    public var activeCount: Int
+    public var settings: Settings
+
+    enum CodingKeys: String, CodingKey {
+        case agents, requests, notifications, usage, settings, activeCount = "active_count"
+    }
+
+    public init(agents: [AgentNode] = [], requests: [SwarmRequest] = [], notifications: NotificationList = NotificationList(),
+                usage: [UsageSnapshot] = [], activeCount: Int = 0, settings: Settings = .defaults) {
+        self.agents = agents; self.requests = requests; self.notifications = notifications
+        self.usage = usage; self.activeCount = activeCount; self.settings = settings
+    }
+}
+
+public struct CatalogModel: Codable, Sendable, Equatable {
+    public var id: String
+    public var label: String
+    public var aliases: [String]
+    public var efforts: [String]
+    public var defaultEffort: String
+    public var advisorCapable: Bool
+    public var hidden: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, aliases, efforts, hidden
+        case defaultEffort = "default_effort", advisorCapable = "advisor_capable"
+    }
+
+    public init(id: String, label: String? = nil, aliases: [String] = [], efforts: [String] = [],
+                defaultEffort: String = "", advisorCapable: Bool = false, hidden: Bool = false) {
+        self.id = id; self.label = label ?? id; self.aliases = aliases; self.efforts = efforts
+        self.defaultEffort = defaultEffort; self.advisorCapable = advisorCapable; self.hidden = hidden
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = try c.decode(String.self, forKey: .label)
+        aliases = try c.decodeIfPresent([String].self, forKey: .aliases) ?? []
+        efforts = try c.decodeIfPresent([String].self, forKey: .efforts) ?? []
+        defaultEffort = try c.decodeIfPresent(String.self, forKey: .defaultEffort) ?? ""
+        advisorCapable = try c.decodeIfPresent(Bool.self, forKey: .advisorCapable) ?? false
+        hidden = try c.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+    }
+}
+
+/// `version`, `auth_error`, `default_model` and `catalog_error` are plain strings, "" when empty (contracts §3.5).
+public struct AgentCatalogEntry: Codable, Sendable, Equatable {
+    public var kind: AgentKind
+    public var installed: Bool
+    public var version: String
+    public var authOk: Bool
+    public var authError: String
+    public var superpowers: Bool
+    public var models: [CatalogModel]
+    public var defaultModel: String
+    public var catalogSource: String
+    public var catalogFetchedAt: Timestamp
+    public var catalogStale: Bool
+    public var catalogError: String
+
+    enum CodingKeys: String, CodingKey {
+        case kind, installed, version, superpowers, models
+        case authOk = "auth_ok", authError = "auth_error", defaultModel = "default_model"
+        case catalogSource = "catalog_source", catalogFetchedAt = "catalog_fetched_at"
+        case catalogStale = "catalog_stale", catalogError = "catalog_error"
+    }
+
+    public init(kind: AgentKind, installed: Bool = true, version: String = "1.0", authOk: Bool = true,
+                authError: String = "", superpowers: Bool = true, models: [CatalogModel] = [], defaultModel: String = "",
+                catalogSource: String = "test", catalogFetchedAt: Timestamp = Timestamp(ms: 0),
+                catalogStale: Bool = false, catalogError: String = "") {
+        self.kind = kind; self.installed = installed; self.version = version; self.authOk = authOk
+        self.authError = authError; self.superpowers = superpowers; self.models = models
+        self.defaultModel = defaultModel; self.catalogSource = catalogSource
+        self.catalogFetchedAt = catalogFetchedAt; self.catalogStale = catalogStale; self.catalogError = catalogError
+    }
+}
+
+public struct Repo: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var path: String
+    public var remoteUrl: String?
+    public var remoteOwner: String?
+    public var defaultBranch: String?
+    public var source: String // scan | manual
+    public var groups: [String]
+    public var missing: Bool
+    public var dirty: Bool
+    public var lastUsedAt: Timestamp?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, path, source, groups, missing, dirty
+        case remoteUrl = "remote_url", remoteOwner = "remote_owner", defaultBranch = "default_branch"
+        case lastUsedAt = "last_used_at"
+    }
+
+    public init(id: String, name: String, path: String, remoteUrl: String? = nil, remoteOwner: String? = nil,
+                defaultBranch: String? = nil, source: String = "scan", groups: [String] = [],
+                missing: Bool = false, dirty: Bool = false, lastUsedAt: Timestamp? = nil) {
+        self.id = id; self.name = name; self.path = path; self.remoteUrl = remoteUrl; self.remoteOwner = remoteOwner
+        self.defaultBranch = defaultBranch; self.source = source; self.groups = groups
+        self.missing = missing; self.dirty = dirty; self.lastUsedAt = lastUsedAt
+    }
+}
+
+public struct RepoGroup: Codable, Sendable, Equatable {
+    public var name: String
+    public var source: String // remote_owner | workspace_dir | code_workspace
+    public var repos: [Repo]
+    public init(name: String, source: String, repos: [Repo]) { self.name = name; self.source = source; self.repos = repos }
+}
+
+public struct ReposResponse: Codable, Sendable, Equatable {
+    public var recent: [Repo]
+    public var groups: [RepoGroup]
+    public var all: [Repo]
+    public var scannedAt: Timestamp
+    public var scanning: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case recent, groups, all, scanning, scannedAt = "scanned_at"
+    }
+
+    public init(recent: [Repo] = [], groups: [RepoGroup] = [], all: [Repo] = [],
+                scannedAt: Timestamp = Timestamp(ms: 0), scanning: Bool = false) {
+        self.recent = recent; self.groups = groups; self.all = all; self.scannedAt = scannedAt; self.scanning = scanning
+    }
+}
+
+public struct ScanStats: Codable, Sendable, Equatable {
+    public var found: Int
+    public var missing: Int
+    public init(found: Int, missing: Int) { self.found = found; self.missing = missing }
+}
+
+/// `advisor` in POST /api/spikes: an agent/model pair, or the string "none".
+public enum AdvisorPayload: Codable, Sendable, Equatable {
+    case none
+    case pair(agent: AgentKind, model: String, effort: String?)
+
+    enum CodingKeys: String, CodingKey { case agent, model, effort }
+
+    public init(from decoder: Decoder) throws {
+        if let s = try? decoder.singleValueContainer().decode(String.self), s == "none" {
+            self = .none
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self = .pair(agent: try c.decode(AgentKind.self, forKey: .agent),
+                     model: try c.decode(String.self, forKey: .model),
+                     effort: try c.decodeIfPresent(String.self, forKey: .effort))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .none:
+            var c = encoder.singleValueContainer()
+            try c.encode("none")
+        case let .pair(agent, model, effort):
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(agent, forKey: .agent)
+            try c.encode(model, forKey: .model)
+            try c.encodeIfPresent(effort, forKey: .effort)
+        }
+    }
+}
+
+public enum SpikeIntent: String, Codable, Sendable, CaseIterable {
+    case feature, debug
+}
+
+public struct CreateSpikeBody: Codable, Sendable, Equatable {
+    public var requestId: String
+    public var name: String
+    public var intent: SpikeIntent
+    public var repos: [String]
+    public var agent: AgentKind
+    public var model: String
+    public var effort: String?
+    public var advisor: AdvisorPayload
+    public var request: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, intent, repos, agent, model, effort, advisor, request, requestId = "request_id"
+    }
+
+    public init(requestId: String, name: String, intent: SpikeIntent, repos: [String], agent: AgentKind,
+                model: String, effort: String?, advisor: AdvisorPayload, request: String?) {
+        self.requestId = requestId; self.name = name; self.intent = intent; self.repos = repos
+        self.agent = agent; self.model = model; self.effort = effort; self.advisor = advisor; self.request = request
+    }
+}
+
+public struct CreateSpikeResponse: Codable, Sendable, Equatable {
+    public var agent: AgentNode
+    public var queued: Bool
+    public init(agent: AgentNode, queued: Bool) { self.agent = agent; self.queued = queued }
+}
+
+public enum AgentEndpoint: String, Sendable, CaseIterable {
+    case pause, resume, cancel, ack, retry, terminal
+}
+
+public enum PauseScope: String, Codable, Sendable {
+    case session, subtree
+}
+
+/// `terminal.open` SSE payload (§7.1).
+public struct TerminalOpen: Codable, Sendable, Equatable {
+    public var name: String
+    public var tmux: String
+}
+
+public struct APIErrorBody: Codable, Sendable, Equatable {
+    public struct Detail: Codable, Sendable, Equatable {
+        public var code: String
+        public var message: String
+    }
+    public var error: Detail
+}
