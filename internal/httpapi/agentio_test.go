@@ -72,6 +72,17 @@ func TestMCPAcceptsASessionTokenAndTheDaemonToken(t *testing.T) {
 	}
 }
 
+// Required fix 3 (Minor-1): resolveMCPCaller routes through sessionAuth, so a
+// token from a superseded generation must 401 there too, not just on /hook.
+func TestMCPRejectsAStaleGenerationToken(t *testing.T) {
+	s, seed := newAgentIOServer(t)
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+	rec := s.postToken(t, seed.OldGenerationToken, "/mcp", body)
+	if rec.Code != 401 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
 // §7.1: wake events go only through this stream, never through /api/events.
 // D80: an httptest.ResponseRecorder is NOT safe to read from the test goroutine
 // while a handler goroutine writes it — `go test -race` fails on that, correctly,
