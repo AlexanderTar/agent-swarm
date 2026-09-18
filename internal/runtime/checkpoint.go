@@ -25,10 +25,34 @@ const pausedTool = "paused: finish your handoff and stop."
 var gatedRoles = []Role{RoleCoder, RoleDebugger, RoleMechanical}
 var pauseAllowedKinds = []CheckpointKind{Handoff, BlockedCkp, FailedCkp}
 
-// checkpointNotifyKind is the §17.5 notification for a checkpoint kind; kinds
-// absent from this map raise nothing.
-var checkpointNotifyKind = map[CheckpointKind]string{
-	Accepted: "accepted", CompletedCkp: "completed", FailedCkp: "failed", BlockedCkp: "blocked",
+// checkpointNotify is the §17.5 notification for a checkpoint kind: the wire
+// kind and which of {name, KEY, title} its template needs. A kind absent from
+// this map raises nothing — that includes Blocked, which §17.5's table has no
+// row for at all.
+//
+// Found while wiring up the e2e harness (Batch 6b/P2 Task 37): every one of
+// these calls used to go straight to Notify.Raise with only AgentName/ItemKey
+// set and no Args, and notify.Render fails closed on a template placeholder
+// with no argument (by design, so a missed key is a test failure and not a
+// literal "{name}" in a banner) — so every accepted/failed checkpoint raised
+// here rolled its whole transaction back with "notify: agent.X is missing
+// name, KEY[, title]" the moment a real notify.Service was wired, and the
+// Completed case used "agent.completed", a kind notify.Rules never defined at
+// all ("notify: unknown kind"), so every completed checkpoint failed the same
+// way. Nothing in internal/runtime's own test suite could have caught either
+// bug: fakeNotifier.Raise (agents_test.go) just records the call, it never
+// calls Render, so passing no Args was invisible until something exercised a
+// real, wired notify.Service end to end — which no test did before the e2e
+// harness. Not touched: internal/runtime's other Notify.Raise/notify() call
+// sites already pass Args explicitly (grep -n "Args:" internal/runtime/*.go)
+// and were unaffected.
+var checkpointNotify = map[CheckpointKind]struct {
+	kind             string
+	name, key, title bool
+}{
+	Accepted:     {"agent.accepted", true, true, true},
+	CompletedCkp: {"item.completed", false, true, true},
+	FailedCkp:    {"agent.failed", true, true, false},
 }
 
 // CheckpointInput is swarm_checkpoint's input (§8.1).
@@ -364,9 +388,19 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			map[string]string{"item": itemKey, "agent": a.Name, "kind": string(in.Kind)}); err != nil {
 			return err
 		}
-		if kindStr, ok := checkpointNotifyKind[in.Kind]; ok && s.Notify != nil {
-			if err := s.Notify.Raise(ctx, tx, NotifyInput{Kind: "agent." + kindStr,
-				AgentName: a.Name, ItemKey: itemKey}); err != nil {
+		if cn, ok := checkpointNotify[in.Kind]; ok && s.Notify != nil {
+			args := map[string]string{}
+			if cn.name {
+				args["name"] = a.Name
+			}
+			if cn.key {
+				args["KEY"] = itemKey
+			}
+			if cn.title {
+				args["title"] = it.Title
+			}
+			if err := s.Notify.Raise(ctx, tx, NotifyInput{Kind: cn.kind,
+				AgentName: a.Name, ItemKey: itemKey, Args: args}); err != nil {
 				return err
 			}
 		}

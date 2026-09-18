@@ -23,22 +23,28 @@ import (
 
 func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 
-// resolveScenarioPath is --scenario, or $SWARM_FAKE_SCENARIO, or the given
-// default. A value that already looks like a path (has a "/" or ends
-// ".json") is used as-is; a bare name is resolved against
-// $SWARM_E2E_SCENARIOS_DIR (scripts/e2e.sh sets it) so the tmux pane's own
-// cwd — under $SWARM_HOME/work/<agent>, not the repo — never matters.
+// resolveScenarioPath is --scenario, or $SWARM_FAKE_SCENARIO. A value that
+// already looks like a path (has a "/" or ends ".json") is used as-is; a bare
+// name is resolved against $SWARM_E2E_SCENARIOS_DIR (scripts/e2e.sh sets it)
+// so the tmux pane's own cwd — under $SWARM_HOME/work/<agent>, not the repo —
+// never matters.
 //
 // Each daemon spawns many fake agents over its lifetime with different
 // scripts, so the scenario can't be a single value fixed at daemon startup;
 // adapter.Fake.Launch sets $SWARM_FAKE_SCENARIO per spawn, to the agent's own
-// kebab name (Task 37 design note, see the batch report). A test that wants a
-// specific scenario for a specific spawn names its item/agent to match.
+// kebab name (Task 37 design note, see the batch report). A harness that
+// wants a specific scenario for a specific spawn names its item/agent to
+// match. When the daemon picked that name itself (a collision suffix, or a
+// test that only needs a live, addressable session and doesn't care what the
+// pane does), there is no file to match: $SWARM_FAKE_SCENARIO then falls back
+// to _default.json rather than failing, so the harness never has to predict
+// every name the daemon might produce. An explicit --scenario is never
+// substituted this way — a deliberate, wrong path should fail loudly.
 func resolveScenarioPath(flagVal string) (string, error) {
-	cand := flagVal
-	if cand == "" {
-		cand = os.Getenv("SWARM_FAKE_SCENARIO")
+	if flagVal != "" {
+		return flagVal, nil
 	}
+	cand := os.Getenv("SWARM_FAKE_SCENARIO")
 	if cand == "" {
 		return "", errors.New("no scenario given: pass --scenario or set SWARM_FAKE_SCENARIO")
 	}
@@ -49,7 +55,11 @@ func resolveScenarioPath(flagVal string) (string, error) {
 	if dir == "" {
 		dir = "scripts/e2e/scenarios"
 	}
-	return filepath.Join(dir, cand+".json"), nil
+	path := filepath.Join(dir, cand+".json")
+	if _, err := os.Stat(path); err != nil {
+		return filepath.Join(dir, "_default.json"), nil
+	}
+	return path, nil
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
