@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -200,6 +202,25 @@ func seedWorktreeReservation(t *testing.T, s *Store, repoID, agentID, rootItemID
 		t.Fatal(err)
 	}
 	return wtID
+}
+
+// planBody is a plan artifact with one valid swarm-tree block (I10). Tasks 18
+// and 19 both parse this same tree, so it lives here rather than being copied.
+const planBody = "# Plan\n\n## Work breakdown\n\n" +
+	"```swarm-tree\n" +
+	`{"root":{"type":"epic","title":"Ship auth","brief":"","acceptance":["It works."]},
+ "children":[{"ref":"s1","type":"story","title":"Server","brief":"","acceptance":[],
+   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"]},
+               {"ref":"t2","type":"task","title":"Login route","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"]}]}],
+ "deps":[{"item":"t2","blocked_by":"t1"}]}` + "\n```\n\n## Verification\n\ngo test ./...\n"
+
+func writeFile(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func gitRepoNoSigning(t *testing.T) string {
