@@ -284,6 +284,14 @@ func (s *Server) refreshUsage(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
+	// contracts §4's {agent?} is optional at the wire level, but the 60 s
+	// refresh gate and the underlying fetch are both per-agent (§13) — there
+	// is no "refresh everything" operation to fall back to, so an absent
+	// agent is a real 400, not a 500 from an empty-string lookup miss.
+	if body.Agent == "" {
+		s.writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "Choose an agent to refresh."))
+		return
+	}
 	if err := s.Usage.RefreshOne(r.Context(), runtime.AgentKind(body.Agent)); err != nil {
 		s.writeErr(w, wrapUsageErr(err))
 		return

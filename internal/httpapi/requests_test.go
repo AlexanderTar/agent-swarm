@@ -169,6 +169,16 @@ func TestUsageRoutes(t *testing.T) {
 	}
 }
 
+// Required fix 2 (I-4): an absent "agent" must not 500 (sourceFor("") misses,
+// which used to fall through wrapUsageErr as a plain, unwrapped error).
+func TestUsageRefreshWithNoAgentIsRefusedNotA500(t *testing.T) {
+	s, _ := newUsageServer(t)
+	rec := s.post(t, "/api/usage/refresh", `{}`)
+	if rec.Code != 400 {
+		t.Fatalf("status = %d: %s, want 400", rec.Code, rec.Body)
+	}
+}
+
 func TestAdviceRoute(t *testing.T) {
 	s, seed := newAdviceServer(t)
 	rec := s.get(t, "/api/agents/"+seed.AgentName+"/advice")
