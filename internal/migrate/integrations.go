@@ -71,42 +71,44 @@ func (r *Runner) backupIndex() map[string]string {
 }
 
 // newArtifactPaths lists every path step 9 (DoInstall) may create for the first
-// time: the daemon plist, Claude's two v2 skill folders (which install.WriteClaude
-// creates fresh whenever there was no v1 symlink at that same path to overwrite —
-// filesToBackUp's restore mechanism only covers regular files with prior content,
-// not a fresh directory tree), and the ~/.local/bin/swarm link. If DoInstall creates
+// time: the daemon plist, every agent's two v2 skill folders (install.WriteSkills
+// runs for all of install.Kinds — claude, codex, cursor, agy — each writing
+// install.SkillNames; these are fresh directory trees whenever there was no v1
+// symlink at that same path to overwrite, which filesToBackUp's restore-from-copy
+// mechanism never covers), and the ~/.local/bin/swarm link. If DoInstall creates
 // one of these where nothing was there before, rollback just removes it: there is
-// nothing to restore it to (Important 3).
+// nothing to restore it to (Important 3, widened per O2 to cover all four agents'
+// skill folders, not only Claude's).
 func (r *Runner) newArtifactPaths() []string {
 	c := r.Cfg
-	return []string{
-		install.PlistPath(c),
-		c.Claude("skills", "swarm"),
-		c.Claude("skills", "swarm-orchestrator"),
-		c.LocalBin(),
+	paths := []string{install.PlistPath(c), c.LocalBin()}
+	for _, k := range install.Kinds {
+		for _, name := range install.SkillNames {
+			paths = append(paths, filepath.Join(c.SkillsDir(k), name))
+		}
 	}
+	return paths
 }
 
-// install is §20 step 9.
+// install is §20 step 9. Both of its own undo actions are journaled — and saved —
+// BEFORE r.DoInstall runs, not after (O1): newArtifactPaths' existed-before check
+// only needs an Lstat, which is knowable up front, and the bootout below is a fixed
+// action independent of what DoInstall actually does. Unlike step 8's RemoveLegacy*
+// calls, where the mutation itself is the only way to learn what changed, there is
+// nothing here that needs to wait for DoInstall to return — so a crash or Ctrl-C
+// partway through DoInstall's real, multi-minute work (writing the plist,
+// bootstrapping, syncing every agent's configuration) still leaves an accurate
+// journal, exactly like every other step since C1(b).
 func (r *Runner) install(ctx context.Context, j *Journal, s *Step) error {
 	if r.DoInstall == nil {
 		return fmt.Errorf("migrate: no install function was provided")
 	}
-	paths := r.newArtifactPaths()
-	existedBefore := make([]bool, len(paths))
-	for i, p := range paths {
-		// Lstat, not Stat: a pre-existing symlink (the v1 skills link, say) must count
+	for _, p := range r.newArtifactPaths() {
+		// Lstat, not Stat: a pre-existing symlink (a v1 skills link, say) must count
 		// as "existed" even though DoInstall's own RemoveLegacy* call removes it and
 		// WriteSkills then creates a real directory in its place — that removal is
 		// already reported separately (the "unrestorable" note in Rollback's output).
-		_, err := os.Lstat(p)
-		existedBefore[i] = err == nil
-	}
-	if err := r.DoInstall(ctx); err != nil {
-		return err
-	}
-	for i, p := range paths {
-		if !existedBefore[i] {
+		if _, err := os.Lstat(p); err != nil {
 			s.Add(Action{Kind: "remove", To: p})
 		}
 	}
@@ -114,11 +116,14 @@ func (r *Runner) install(ctx context.Context, j *Journal, s *Step) error {
 	// --rollback must stop v2 before it bootstraps the restored v1 plist over that
 	// same label (C2) — otherwise both would fight over one label, or v2 keeps
 	// running against the just-restored v1 schema and crash-loops under KeepAlive.
-	// This is added last so it undoes first: Undo() replays a step's own actions
+	// Added last so it undoes first: Undo() replays a step's own actions
 	// newest-added-first, and step 9 as a whole runs before step 2 in Undo()'s
 	// overall (newest-step-first) order, so this bootout always precedes step 2's
 	// bootstrap of the v1 plist.
 	s.Add(Action{Kind: "launchctl", Args: []string{"bootout",
 		fmt.Sprintf("gui/%d/%s", r.Cfg.UID, install.Label)}})
-	return j.Save(r.home())
+	if err := j.Save(r.home()); err != nil {
+		return err
+	}
+	return r.DoInstall(ctx)
 }

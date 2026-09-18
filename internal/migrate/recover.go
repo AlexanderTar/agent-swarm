@@ -79,14 +79,27 @@ func (r *Runner) Rollback(ctx context.Context) error {
 	if err := os.Remove(JournalPath(r.home())); err != nil && !os.IsNotExist(err) {
 		failures = append(failures, "removing the journal: "+err.Error())
 	}
-	if len(failures) > 0 {
-		return fmt.Errorf("the rollback finished with %d problem(s):\n  %s",
-			len(failures), strings.Join(failures, "\n  "))
-	}
-	if len(incomplete) > 0 {
-		return fmt.Errorf("every journaled action was undone, but step(s) %v were interrupted "+
-			"mid-step (a hard crash or Ctrl-C) and may have done more than was journaled; "+
-			"verify Agent Swarm 1.x by hand before trusting it", incomplete)
+	// O1(c): both signals matter and must reach the user together. A real machine
+	// can hit both at once — e.g. bootstrapping the restored v1 plist genuinely
+	// fails ("Bootstrap failed: 37: Operation already in progress", which
+	// install.NotLoaded does not recognize as harmless) on the very rollback that
+	// is also cleaning up after an interrupted step — so returning on whichever is
+	// checked first would silently drop the other.
+	if len(failures) > 0 || len(incomplete) > 0 {
+		var msg strings.Builder
+		if len(failures) > 0 {
+			fmt.Fprintf(&msg, "the rollback finished with %d problem(s):\n  %s",
+				len(failures), strings.Join(failures, "\n  "))
+		}
+		if len(incomplete) > 0 {
+			if msg.Len() > 0 {
+				msg.WriteString("\n")
+			}
+			fmt.Fprintf(&msg, "step(s) %v were interrupted mid-step (a hard crash or Ctrl-C) "+
+				"and may have done more than was journaled; verify Agent Swarm 1.x by hand before trusting it",
+				incomplete)
+		}
+		return errors.New(msg.String())
 	}
 	r.logf("Rolled back. Agent Swarm 1.x is running again.")
 	return nil

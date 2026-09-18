@@ -82,10 +82,17 @@ func (r *Runner) Migrate(ctx context.Context) error {
 		// did not finish cleanly (the journal is gone, but v1's data was never fully
 		// restored either). "Already migrated" would be a lie here.
 		if _, err := os.Stat(r.keptPath()); err == nil {
+			// O3: `swarm migrate --rollback` has nothing to undo here — there is no
+			// journal at all — so it must not be offered as if it would fix this; the
+			// message names the actual manual recovery instead of pointing at a
+			// command that would just print "Nothing to roll back."
 			return fmt.Errorf("%s exists but there is no migration journal and %s is not "+
-				"Agent Swarm 1.x data; an earlier `swarm migrate` or `swarm migrate --rollback` "+
-				"did not finish. Run `swarm migrate --rollback` to attempt recovery.",
-				r.keptPath(), r.v1Path())
+				"Agent Swarm 1.x data; an earlier `swarm migrate` did not finish, and "+
+				"`swarm migrate --rollback` has nothing left to undo (the journal is gone). "+
+				"To recover by hand: stop the daemon, rename %s to %s, then run "+
+				"`swarm doctor --legacy` to see what else (launchd jobs, agent integrations) "+
+				"still needs attention.",
+				r.keptPath(), r.v1Path(), r.keptPath(), r.v1Path())
 		}
 		// No v1 data, no leftover swarm-v1.db, and no journal: an earlier build, or a
 		// fresh install.
@@ -292,21 +299,25 @@ func (r *Runner) backup(ctx context.Context, j *Journal, s *Step) error {
 		return fmt.Errorf("the backup at %s failed integrity_check: %s", dst, res)
 	}
 
-	// Every file step 8 edits, plus both launchd plists (S-7). Each restore action is
-	// journaled — and saved — immediately before its copy is made, not batched until
-	// the loop finishes, so a crash partway through the loop still leaves an accurate
-	// record of exactly which copies exist (C1).
+	// Every file step 8 edits, plus both launchd plists (S-7). Unlike every other
+	// action kind, "restore" is journaled AFTER its copy exists, not before
+	// (Minor): f.src (a.To) is never touched during this step, so a crash between
+	// the copy and this save just risks an orphaned, un-cleaned-up backup copy
+	// under backups/config-*/ — cosmetic. Journaling it first, as C1(b) does for
+	// every other action, would instead mean a crash in that same window leaves
+	// undo() finding no file at a.From and reporting "the backup copy is missing"
+	// as a rollback FAILURE, even though f.src was provably never modified.
 	cfgDir := uniquePath(filepath.Join(dir, "config-"+r.stamp()))
 	for _, f := range r.filesToBackUp() {
 		if _, err := os.Stat(f.src); err != nil {
 			continue // a file the user never had needs no backup
 		}
 		target := filepath.Join(cfgDir, f.rel)
-		s.Add(Action{Kind: "restore", From: target, To: f.src})
-		if err := j.Save(r.home()); err != nil {
+		if err := install.CopyFile(f.src, target); err != nil {
 			return err
 		}
-		if err := install.CopyFile(f.src, target); err != nil {
+		s.Add(Action{Kind: "restore", From: target, To: f.src})
+		if err := j.Save(r.home()); err != nil {
 			return err
 		}
 	}

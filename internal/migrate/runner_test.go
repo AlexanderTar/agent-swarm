@@ -456,8 +456,22 @@ func TestMigrateRefusesWhenSwarmV1DBExistsButSwarmDBIsNotLegacyAndNoJournalExist
 	if strings.Contains(env.Out.String(), "Already migrated") {
 		t.Fatal("must not claim Already migrated when v1's data was never actually restored")
 	}
-	if !strings.Contains(err.Error(), "--rollback") {
-		t.Errorf("err = %v, want it to point at --rollback", err)
+	// O3: --rollback has nothing to undo here (no journal at all), so the message
+	// must name the actual manual recovery rather than pointing at a command that
+	// does nothing useful for this exact case.
+	for _, want := range []string{"swarm-v1.db", "swarm.db", "doctor --legacy"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to mention %q (a concrete recovery step)", err, want)
+		}
+	}
+	// Confirm the message's honesty: --rollback really is a dead end here (no
+	// journal), so it must not have been offered as if it would fix this.
+	env.Out.Reset()
+	if err := env.Runner.Rollback(context.Background()); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if !strings.Contains(env.Out.String(), "Nothing to roll back") {
+		t.Error("--rollback should have nothing to do here; the refusal message must not point at it as a fix")
 	}
 }
 

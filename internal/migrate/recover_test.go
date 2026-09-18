@@ -262,6 +262,95 @@ func TestInstallRemovesANewlyWrittenPlistOnRollback(t *testing.T) {
 	}
 }
 
+// O1: step 9 must journal its own undo actions BEFORE r.DoInstall runs, not after.
+// Reproduces the reviewer's exact scenario: a DoInstall that does real work (writes
+// the v2 plist, creates a fresh skill directory) and then fails partway through —
+// modeling a Ctrl-C during the real, ~120s installAgents step. Both of step 9's own
+// actions (the artifact-removal set and the bootout) are knowable before DoInstall
+// ever runs, unlike step 8's RemoveLegacy* calls, so there is no reason for either
+// to be lost just because DoInstall did not return.
+func TestInstallJournalsBeforeDoInstallRunsSoAPartialCrashIsStillRecorded(t *testing.T) {
+	env := newMigrateEnv(t)
+	plist := filepath.Join(env.Cfg.LaunchAgentsDir, install.Label+".plist")
+	skillDir := env.Cfg.Claude("skills", "swarm")
+	env.Runner.DoInstall = func(context.Context) error {
+		env.Installed++
+		if err := os.WriteFile(plist, []byte("<plist>v2 daemon</plist>\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		return context.Canceled // a Ctrl-C partway through the real installAgents step
+	}
+	err := env.Runner.Migrate(context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	j, err := migrate.LoadJournal(env.Cfg.Home)
+	if err != nil || j == nil {
+		t.Fatalf("journal = %+v, %v", j, err)
+	}
+	var step9 *migrate.Step
+	for i := range j.Steps {
+		if j.Steps[i].N == 9 {
+			step9 = &j.Steps[i]
+		}
+	}
+	if step9 == nil || len(step9.Undo) == 0 {
+		t.Fatalf("step 9's undo actions were not journaled before DoInstall ran: %+v", step9)
+	}
+	var sawBootout bool
+	for _, a := range step9.Undo {
+		if a.Kind == "launchctl" && len(a.Args) > 0 && a.Args[0] == "bootout" {
+			sawBootout = true
+		}
+	}
+	if !sawBootout {
+		t.Errorf("the bootout was not journaled before DoInstall ran: %+v", step9.Undo)
+	}
+
+	err = env.Runner.Rollback(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "9") {
+		t.Fatalf("err = %v, want it to name interrupted step 9", err)
+	}
+	if !strings.Contains(strings.Join(env.Fake.Calls(), "\n"), "launchctl bootout gui/501/dev.swarm.daemon") {
+		t.Error("rollback never attempted the bootout")
+	}
+	if _, err := os.Lstat(skillDir); !os.IsNotExist(err) {
+		t.Error("the fresh skill directory survived rollback")
+	}
+}
+
+// O1(c): a failed action and an interrupted step can both be true of the same
+// rollback (e.g. bootstrapping the restored v1 plist genuinely fails with
+// something install.NotLoaded does not recognize, on the very rollback that is
+// also cleaning up after a step that never finished) — both signals must reach the
+// user, not just whichever is checked first.
+func TestRollbackReportsBothAFailureAndAnIncompleteStepTogether(t *testing.T) {
+	env := newMigrateEnv(t)
+	j := &migrate.Journal{Version: 1, StartedAt: 1}
+	s := j.Begin(6, "switch the database files")
+	s.StartedAt = 1
+	missing := filepath.Join(env.Cfg.Home, "backups", "config-x", "codex", "config.toml")
+	s.Add(migrate.Action{Kind: "restore", From: missing, To: env.Cfg.Codex("config.toml")})
+	// s.DoneAt is deliberately left zero: this step never finished.
+	if err := j.Save(env.Cfg.Home); err != nil {
+		t.Fatal(err)
+	}
+
+	err := env.Runner.Rollback(context.Background())
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "problem") {
+		t.Errorf("err = %v, want it to report the failed restore", err)
+	}
+	if !strings.Contains(err.Error(), "interrupted") || !strings.Contains(err.Error(), "6") {
+		t.Errorf("err = %v, want it to ALSO name the interrupted step, not just the failure", err)
+	}
+}
+
 // undo tolerates a rename that was already undone (or never happened): a missing
 // `to` is a no-op, not an error.
 func TestRollbackSkipsARenameThatWasAlreadyUndone(t *testing.T) {
@@ -301,34 +390,53 @@ func TestRollbackReportsAnUnknownActionKind(t *testing.T) {
 // restore-from-copy mechanism only covers regular files with prior content, never a
 // freshly created directory tree or link. Rollback must still clean these up rather
 // than leaving v2's own artifacts stranded after claiming to have restored v1.
-func TestInstallRemovesFreshClaudeSkillsAndLocalBinOnRollback(t *testing.T) {
+// O2: install.WriteSkills runs for all four agent kinds (claude, codex, cursor,
+// agy), each writing both install.SkillNames — eight possible fresh directories,
+// not just Claude's two. The fake DoInstall here independently derives all eight
+// paths (plus LocalBin) straight from install.Kinds/install.SkillNames/SkillsDir —
+// the same ground truth production code uses — rather than being wired to write
+// only to whatever newArtifactPaths already checks; a version of this test that
+// only exercised Claude's two paths passed even when the other six agents' skill
+// folders were never cleaned up, because it could never expose a gap in that list.
+func TestInstallRemovesAllFreshSkillDirsAndLocalBinOnRollback(t *testing.T) {
 	env := newMigrateEnv(t)
-	claudeSkill := env.Cfg.Claude("skills", "swarm")
-	localBin := env.Cfg.LocalBin()
+	var created []string
 	env.Runner.DoInstall = func(context.Context) error {
 		env.Installed++
-		if err := os.MkdirAll(claudeSkill, 0o755); err != nil {
+		for _, k := range install.Kinds {
+			for _, name := range install.SkillNames {
+				dir := filepath.Join(env.Cfg.SkillsDir(k), name)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+					return err
+				}
+				created = append(created, dir)
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(env.Cfg.LocalBin()), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(claudeSkill, "SKILL.md"), []byte("# swarm\n"), 0o644); err != nil {
+		if err := os.Symlink(env.Cfg.Bin, env.Cfg.LocalBin()); err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(localBin), 0o755); err != nil {
-			return err
-		}
-		return os.Symlink(env.Cfg.Bin, localBin)
+		created = append(created, env.Cfg.LocalBin())
+		return nil
 	}
 	if err := env.Runner.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if len(created) != len(install.Kinds)*len(install.SkillNames)+1 {
+		t.Fatalf("test setup created %d paths, want %d", len(created), len(install.Kinds)*len(install.SkillNames)+1)
+	}
 	if err := env.Runner.Rollback(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(claudeSkill); !os.IsNotExist(err) {
-		t.Errorf("the fresh claude skills dir survived rollback: %v", err)
-	}
-	if _, err := os.Lstat(localBin); !os.IsNotExist(err) {
-		t.Errorf("~/.local/bin/swarm survived rollback: %v", err)
+	for _, p := range created {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%s survived rollback: %v", p, err)
+		}
 	}
 }
 
