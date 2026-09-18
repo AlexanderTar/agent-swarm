@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/migrate"
 )
@@ -75,6 +76,9 @@ func TestRollbackRestoresV1ExactlyAfterACrashAtEveryStep(t *testing.T) {
 				t.Fatalf("rollback: %v", err)
 			}
 			after := snapshot(t, env.Cfg)
+			// Full set equality, not just before ⊆ after: a test named "RestoresV1Exactly"
+			// must also catch a file rollback leaves BEHIND that was never there before
+			// (Important 4) — a one-directional subset check would never flag that.
 			for path, want := range before {
 				got, ok := after[path]
 				if !ok {
@@ -84,6 +88,21 @@ func TestRollbackRestoresV1ExactlyAfterACrashAtEveryStep(t *testing.T) {
 				if got != want {
 					t.Errorf("%s changed: %s → %s", path, want, got)
 				}
+			}
+			for path := range after {
+				if _, ok := before[path]; ok {
+					continue
+				}
+				// M2 (explicitly deferred, non-blocking): SQLite's own -wal/-shm sidecar
+				// files can be left beside the restored v1 database (a 0-byte WAL, a
+				// pre-allocated SHM) as a byproduct of opening it read-only for
+				// integrity_check during the backup/undo path. Hygiene only — the
+				// database itself is exact — so it is excluded here rather than fixed in
+				// this round.
+				if strings.HasSuffix(path, "-wal") || strings.HasSuffix(path, "-shm") {
+					continue
+				}
+				t.Errorf("%s exists after the rollback but did not exist before it", path)
 			}
 			// The v1 launchd jobs were bootstrapped again (§20 recovery).
 			calls := strings.Join(env.Fake.Calls(), "\n")
@@ -187,15 +206,22 @@ func TestRollbackAttemptsEveryActionAfterAFailureAndReportsIt(t *testing.T) {
 	env := newMigrateEnv(t)
 	j := &migrate.Journal{Version: 1, StartedAt: 1}
 	s := j.Begin(3, "back up the database and the configuration")
-	// A restore whose backup copy is missing: this must fail...
-	missing := filepath.Join(env.Cfg.Home, "backups", "config-x", "codex", "config.toml")
-	s.Add(migrate.Action{Kind: "restore", From: missing, To: env.Cfg.Codex("config.toml")})
-	// ...but a later, satisfiable action must still be attempted.
+	// Undo() replays a step's actions newest-added-first, so the action added LAST
+	// executes FIRST. The satisfiable rename is added first (so it executes second,
+	// genuinely AFTER the failure below) — swapped from an earlier version of this
+	// test where the failing action was added first and so, after reversal, actually
+	// ran last, meaning it never blocked anything downstream: that version passed
+	// even when Rollback was patched to `break` on the first failure, which proves
+	// it had zero discriminating power (Important 1).
 	moved := filepath.Join(env.Cfg.Home, "swarm-v1-test.db")
 	if err := os.Rename(filepath.Join(env.Cfg.Home, "swarm.db"), moved); err != nil {
 		t.Fatal(err)
 	}
 	s.Add(migrate.Action{Kind: "rename", From: filepath.Join(env.Cfg.Home, "swarm.db"), To: moved})
+	// A restore whose backup copy is missing, added SECOND so it executes FIRST:
+	// this must fail, but the rename above (executing after it) must still run.
+	missing := filepath.Join(env.Cfg.Home, "backups", "config-x", "codex", "config.toml")
+	s.Add(migrate.Action{Kind: "restore", From: missing, To: env.Cfg.Codex("config.toml")})
 	if err := j.Save(env.Cfg.Home); err != nil {
 		t.Fatal(err)
 	}
@@ -267,6 +293,220 @@ func TestRollbackReportsAnUnknownActionKind(t *testing.T) {
 	err := env.Runner.Rollback(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "unknown journal action") {
 		t.Fatalf("err = %v, want it to name the unknown action kind", err)
+	}
+}
+
+// Important 3: step 9 may create ~/.claude's v2 skill folder and ~/.local/bin/swarm
+// fresh, with no v1 symlink at that same path to overwrite — filesToBackUp's
+// restore-from-copy mechanism only covers regular files with prior content, never a
+// freshly created directory tree or link. Rollback must still clean these up rather
+// than leaving v2's own artifacts stranded after claiming to have restored v1.
+func TestInstallRemovesFreshClaudeSkillsAndLocalBinOnRollback(t *testing.T) {
+	env := newMigrateEnv(t)
+	claudeSkill := env.Cfg.Claude("skills", "swarm")
+	localBin := env.Cfg.LocalBin()
+	env.Runner.DoInstall = func(context.Context) error {
+		env.Installed++
+		if err := os.MkdirAll(claudeSkill, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(claudeSkill, "SKILL.md"), []byte("# swarm\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(localBin), 0o755); err != nil {
+			return err
+		}
+		return os.Symlink(env.Cfg.Bin, localBin)
+	}
+	if err := env.Runner.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Runner.Rollback(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(claudeSkill); !os.IsNotExist(err) {
+		t.Errorf("the fresh claude skills dir survived rollback: %v", err)
+	}
+	if _, err := os.Lstat(localBin); !os.IsNotExist(err) {
+		t.Errorf("~/.local/bin/swarm survived rollback: %v", err)
+	}
+}
+
+// C2: v1 and v2 share the same launchd label (dev.swarm.daemon). After a fully
+// successful migration, v2 is registered under it; rollback must boot that out
+// BEFORE bootstrapping the restored v1 plist over the same label, or v1 comes back
+// fighting v2 for one label (or v2 keeps running against the just-restored v1
+// schema and crash-loops under KeepAlive). This needs no crash injection at all —
+// it is exactly scenario 28, rollback after a completed migration.
+func TestRollbackBootsOutV2BeforeBootstrappingV1(t *testing.T) {
+	env := newMigrateEnv(t)
+	if err := env.Runner.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := len(env.Fake.Calls())
+	if err := env.Runner.Rollback(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	calls := env.Fake.Calls()[before:]
+	bootoutV2, bootstrapV1 := -1, -1
+	wantBootout := "launchctl bootout gui/501/dev.swarm.daemon"
+	wantBootstrap := "launchctl bootstrap gui/501 " + filepath.Join(env.Cfg.LaunchAgentsDir, install.Label+".plist")
+	for i, c := range calls {
+		if c == wantBootout && bootoutV2 == -1 {
+			bootoutV2 = i
+		}
+		if c == wantBootstrap {
+			bootstrapV1 = i
+		}
+	}
+	if bootoutV2 == -1 {
+		t.Fatalf("rollback never booted out the v2 daemon; calls =\n%s", strings.Join(calls, "\n"))
+	}
+	if bootstrapV1 == -1 {
+		t.Fatalf("rollback never bootstrapped the v1 daemon; calls =\n%s", strings.Join(calls, "\n"))
+	}
+	if bootoutV2 > bootstrapV1 {
+		t.Errorf("bootout at call %d ran after bootstrap at call %d; v1 must not start until v2 is stopped",
+			bootoutV2, bootstrapV1)
+	}
+}
+
+// C1(c): a step that started but never finished (StartedAt set, DoneAt zero) is
+// what a genuine hard crash — including a bare Ctrl-C, which has no chance to run
+// any cleanup — leaves behind; it is distinct from the FailAfter test seam, which
+// only fires AFTER a step's DoneAt is recorded (a clean stop between steps, not a
+// crash mid-step). Rollback must still replay whatever that step DID manage to
+// journal, but it cannot claim unqualified success: it genuinely does not know
+// what else, if anything, that step did before being cut off.
+func TestRollbackRefusesUnqualifiedSuccessAfterAGenuineMidStepCrash(t *testing.T) {
+	env := newMigrateEnv(t)
+	j := &migrate.Journal{Version: 1, StartedAt: 1}
+	s := j.Begin(6, "switch the database files")
+	s.StartedAt = 1
+	// One rename genuinely happened and was journaled before the simulated crash.
+	from := filepath.Join(env.Cfg.Home, "swarm.db")
+	to := filepath.Join(env.Cfg.Home, "swarm-v1.db")
+	if err := os.Rename(from, to); err != nil {
+		t.Fatal(err)
+	}
+	s.Add(migrate.Action{Kind: "rename", From: from, To: to})
+	// s.DoneAt is deliberately left zero: this step never finished.
+	if err := j.Save(env.Cfg.Home); err != nil {
+		t.Fatal(err)
+	}
+
+	err := env.Runner.Rollback(context.Background())
+	if err == nil {
+		t.Fatal("want an error: step 6 never finished, so Rollback cannot claim full success")
+	}
+	if !strings.Contains(err.Error(), "interrupted") || !strings.Contains(err.Error(), "6") {
+		t.Errorf("err = %v, want it to name the interrupted step", err)
+	}
+	// The one action that WAS journaled must still have been undone.
+	if _, err := os.Stat(from); err != nil {
+		t.Errorf("the journaled rename was not undone: %v", err)
+	}
+	// The journal is still removed even though full success cannot be claimed: a
+	// later swarm migrate should start clean rather than seeing a stale journal.
+	if j2, err := migrate.LoadJournal(env.Cfg.Home); err != nil || j2 != nil {
+		t.Errorf("journal = %+v, %v; should have been removed", j2, err)
+	}
+}
+
+// Important 2: step 7's resume guard compares the on-disk file's actual hash
+// against the sha256 already recorded in the database, not just whether a file
+// exists at that path — so a truncated write (a crash mid-os.WriteFile) gets
+// repaired instead of silently accepted as "already done". Everything needed to
+// detect and fix this is already in the database (content and sha256).
+func TestKnowledgeBaseRepairsATruncatedNoteFileOnResume(t *testing.T) {
+	env := newMigrateEnv(t)
+	env.Runner.FailAfter = 6 // stop right before step 7 ever runs
+	if err := env.Runner.Migrate(context.Background()); !errors.Is(err, migrate.ErrInjected) {
+		t.Fatalf("want ErrInjected, got %v", err)
+	}
+	// A stray, 0-byte file sits where step 7 will write one of the imported notes —
+	// modeling a crash mid-os.WriteFile.
+	target := filepath.Join(env.Cfg.Home, "kb", "imported", "SW-674.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env.Runner.FailAfter = 0
+	if err := env.Runner.Resume(context.Background()); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	body, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) == 0 || !strings.Contains(string(body), "SW-674") {
+		t.Errorf("the truncated note was not repaired: %q", body)
+	}
+}
+
+// A launchctl undo action that fails for a real reason (not "not loaded") is a
+// reportable problem, not something to swallow — Rollback must still attempt every
+// other action and report this one.
+func TestRollbackReportsARealLaunchctlFailure(t *testing.T) {
+	env := newMigrateEnv(t)
+	plist := filepath.Join(env.Cfg.LaunchAgentsDir, install.Label+".plist")
+	env.Fake.Responses["launchctl bootstrap gui/501 "+plist] = execx.Result{
+		Err: errors.New("exit status 5: Input/output error")}
+	j := &migrate.Journal{Version: 1, StartedAt: 1}
+	s := j.Begin(2, "stop the Agent Swarm 1.x jobs")
+	s.Add(migrate.Action{Kind: "launchctl", Args: []string{"bootstrap", "gui/501", plist}})
+	if err := j.Save(env.Cfg.Home); err != nil {
+		t.Fatal(err)
+	}
+	err := env.Runner.Rollback(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Input/output error") {
+		t.Fatalf("err = %v, want it to report the launchctl failure", err)
+	}
+}
+
+// A second run of step 7 (e.g. via --resume after a later step crashed) must not
+// rewrite notes that are already correct on disk — only a genuine mismatch (a
+// truncated or missing file) should trigger a rewrite (Important 2's other half).
+func TestKnowledgeBaseIsIdempotentWhenNotesAreAlreadyCorrect(t *testing.T) {
+	env := newMigrateEnv(t)
+	if err := env.Runner.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	note := filepath.Join(env.Cfg.Home, "kb", "imported", "SW-674.md")
+	before, err := os.Stat(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeBody, err := os.ReadFile(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pretend only step 6 finished, so a resume re-runs step 7 (and 8, 9) fresh.
+	j := &migrate.Journal{Version: 1, StartedAt: 1}
+	s := j.Begin(6, "switch the database files")
+	s.DoneAt = 1
+	if err := j.Save(env.Cfg.Home); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Runner.Resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterBody, err := os.ReadFile(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterBody) != string(beforeBody) {
+		t.Error("the note's content changed")
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Error("an already-correct note was rewritten (mtime changed)")
 	}
 }
 

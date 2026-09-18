@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,10 +55,15 @@ func newMigrateEnv(t *testing.T) *migrateEnv {
 		}
 	}
 
+	// lsof's real "nothing holds this file" answer is a genuine exit code 1 with no
+	// output; a real *exec.ExitError is built here (rather than a plain errors.New)
+	// so lsofFoundNothing's errors.As check exercises the exact shape production
+	// code produces, not a string that merely looks similar (Important 5).
+	exit1 := exec.Command("sh", "-c", "exit 1").Run()
 	f := &execx.Fake{Responses: map[string]execx.Result{
 		"launchctl bootout gui/501/dev.swarm.daemon":  {},
 		"launchctl bootout gui/501/dev.swarm.updater": {},
-		"lsof -t -- " + v1:                            {Err: errors.New("exit status 1")}, // nobody holds it
+		"lsof -t -- " + v1:                            {Err: exit1}, // nobody holds it
 		"launchctl bootstrap gui/501 " + filepath.Join(c.LaunchAgentsDir, install.Label+".plist"):        {},
 		"launchctl bootstrap gui/501 " + filepath.Join(c.LaunchAgentsDir, install.UpdaterLabel+".plist"): {},
 	}}
@@ -174,6 +180,20 @@ func TestMigrateASecondTimeSaysAlreadyMigratedAndChangesNothing(t *testing.T) {
 	}
 }
 
+// A corrupt/future-version journal must propagate as an error from Migrate itself,
+// not just from LoadJournal in isolation.
+func TestMigratePropagatesAJournalLoadError(t *testing.T) {
+	env := newMigrateEnv(t)
+	j := &migrate.Journal{Version: migrate.JournalVersion + 1}
+	if err := j.Save(env.Cfg.Home); err != nil {
+		t.Fatal(err)
+	}
+	err := env.Runner.Migrate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "newer build") {
+		t.Fatalf("err = %v, want the future-version journal error", err)
+	}
+}
+
 // §20 step 1: an unfinished journal offers --resume or --rollback.
 func TestMigrateRefusesWhenAnUnfinishedJournalExists(t *testing.T) {
 	env := newMigrateEnv(t)
@@ -223,6 +243,16 @@ func TestPreflightRefusesWithoutEnoughFreeSpace(t *testing.T) {
 	}
 }
 
+// A Statfs failure (not just "not enough space") must propagate, not be swallowed.
+func TestPreflightPropagatesAStatfsError(t *testing.T) {
+	env := newMigrateEnv(t)
+	env.Runner.Statfs = func(string) (uint64, error) { return 0, errors.New("statfs boom") }
+	err := env.Runner.Migrate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "statfs boom") {
+		t.Fatalf("err = %v, want the Statfs error", err)
+	}
+}
+
 // §20 step 2: both jobs are booted out, and the db is waited for.
 func TestStopV1BootsOutBothJobsAndWaitsForTheDatabase(t *testing.T) {
 	env := newMigrateEnv(t)
@@ -252,6 +282,32 @@ func TestStopV1FailsWhenSomethingKeepsHoldingTheDatabase(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(env.Cfg.Home, "swarm-v1.db")); !os.IsNotExist(err) {
 		t.Error("nothing may be renamed while a process holds the database")
+	}
+}
+
+// Important 5: lsof failing to run at all (a missing binary, a permission error,
+// …) must not be mistaken for its normal "nothing holds this file" answer — both
+// currently look like "empty stdout, non-nil err" unless the error's actual shape
+// is checked. Treating a broken lsof as a pass could let step 6 rename a database a
+// live v1 daemon still has open.
+func TestStopV1FailsWhenLsofItselfCannotRun(t *testing.T) {
+	env := newMigrateEnv(t)
+	v1 := filepath.Join(env.Cfg.Home, "swarm.db")
+	// A genuine "command not found" shape, not lsof's exit-code-1 "found nothing".
+	_, lookErr := exec.LookPath("swarm-migrate-nonexistent-binary-xyz")
+	if lookErr == nil {
+		t.Fatal("test setup: this binary must not exist")
+	}
+	env.Fake.Responses["lsof -t -- "+v1] = execx.Result{Err: lookErr}
+	err := env.Runner.Migrate(context.Background())
+	if err == nil {
+		t.Fatal("want an error: lsof itself failed to run, which must not be treated as \"free\"")
+	}
+	if strings.Contains(err.Error(), "still open by process") {
+		t.Errorf("err = %v; this must be reported as lsof failing, not as something holding the file", err)
+	}
+	if _, err := os.Stat(filepath.Join(env.Cfg.Home, "swarm-v1.db")); !os.IsNotExist(err) {
+		t.Error("nothing may be renamed while lsof's own failure is unresolved")
 	}
 }
 
@@ -304,6 +360,27 @@ func TestBackupIncludesBothLaunchdPlists(t *testing.T) {
 	}
 }
 
+// A step-4 (build) failure — a v1 status with no §20 mapping — must propagate
+// rather than being swallowed, and must not touch v1.
+func TestBuildPropagatesAnImportFailure(t *testing.T) {
+	env := newMigrateEnv(t)
+	d, err := sql.Open("sqlite", "file:"+filepath.Join(env.Cfg.Home, "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE tasks SET status = 'review' WHERE key = 'SW-361'`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	err = env.Runner.Migrate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "review") {
+		t.Fatalf("err = %v, want the MapStatus error", err)
+	}
+	if _, err := os.Stat(filepath.Join(env.Cfg.Home, "swarm-v1.db")); !os.IsNotExist(err) {
+		t.Error("a failed build must change nothing")
+	}
+}
+
 // §20 step 5: a validation failure deletes the temp database and leaves v1 alone.
 func TestAValidationFailureLeavesV1Untouched(t *testing.T) {
 	env := newMigrateEnv(t)
@@ -351,6 +428,65 @@ func TestDefaultStatfsReportsFreeBytesOnATempDir(t *testing.T) {
 	}
 	if free == 0 {
 		t.Error("free = 0, want the temp filesystem to report some free space")
+	}
+}
+
+// C1(d): swarm-v1.db existing alongside a swarm.db that is NOT Agent Swarm 1.x
+// data, with no journal at all, means an earlier migration or rollback did not
+// finish cleanly (a broken --rollback deleted the journal without ever actually
+// restoring v1 — see the Ctrl-C-mid-step-6 scenario). "Already migrated" would be
+// a lie, and there would be no CLI recovery path left if Migrate said that.
+func TestMigrateRefusesWhenSwarmV1DBExistsButSwarmDBIsNotLegacyAndNoJournalExists(t *testing.T) {
+	env := newMigrateEnv(t)
+	if err := env.Runner.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the broken-rollback aftermath: the journal is gone (as a completed
+	// rollback would leave it), but v1's data was never actually restored to
+	// swarm.db — it is still the v2 database, exactly as a Ctrl-C mid-step-6 would
+	// leave things.
+	if err := os.Remove(filepath.Join(env.Cfg.Home, "migrate", "journal.json")); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	env.Out.Reset()
+	err := env.Runner.Migrate(context.Background())
+	if err == nil {
+		t.Fatal("want an error, not a silent \"Already migrated\"")
+	}
+	if strings.Contains(env.Out.String(), "Already migrated") {
+		t.Fatal("must not claim Already migrated when v1's data was never actually restored")
+	}
+	if !strings.Contains(err.Error(), "--rollback") {
+		t.Errorf("err = %v, want it to point at --rollback", err)
+	}
+}
+
+// A corrupt/future-version journal must propagate from DryRun too.
+func TestDryRunPropagatesAJournalLoadError(t *testing.T) {
+	env := newMigrateEnv(t)
+	j := &migrate.Journal{Version: migrate.JournalVersion + 1}
+	if err := j.Save(env.Cfg.Home); err != nil {
+		t.Fatal(err)
+	}
+	err := env.Runner.DryRun(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "newer build") {
+		t.Fatalf("err = %v, want the future-version journal error", err)
+	}
+}
+
+// Minor 3: --dry-run against an unfinished journal must offer --resume/--rollback
+// rather than printing a plan built against the current, possibly half-switched
+// files.
+func TestDryRunOffersResumeOrRollbackWhenAnUnfinishedJournalExists(t *testing.T) {
+	env := newMigrateEnv(t)
+	j := &migrate.Journal{Version: 1, StartedAt: 1}
+	j.Begin(4, "build the new database")
+	if err := j.Save(env.Cfg.Home); err != nil {
+		t.Fatal(err)
+	}
+	err := env.Runner.DryRun(context.Background())
+	if !errors.Is(err, migrate.ErrUnfinished) {
+		t.Fatalf("err = %v, want ErrUnfinished", err)
 	}
 }
 

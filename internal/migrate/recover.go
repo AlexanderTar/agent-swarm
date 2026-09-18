@@ -48,6 +48,18 @@ func (r *Runner) Rollback(ctx context.Context) error {
 		r.logf("Nothing to roll back.")
 		return nil
 	}
+	// A step that started but never finished (StartedAt set, DoneAt zero) means a
+	// hard crash — including a bare Ctrl-C, a real kill with no cleanup chance — hit
+	// mid-step. Every action that step DID manage to journal is still in j.Undo()
+	// and gets replayed below, but Rollback genuinely does not know what else that
+	// step did before it was cut off, so it must not claim unqualified success (C1).
+	var incomplete []int
+	for _, st := range j.Steps {
+		if st.StartedAt != 0 && st.DoneAt == 0 {
+			incomplete = append(incomplete, st.N)
+		}
+	}
+
 	var failures []string
 	unrestorable := false
 	for _, a := range j.Undo() {
@@ -70,6 +82,11 @@ func (r *Runner) Rollback(ctx context.Context) error {
 	if len(failures) > 0 {
 		return fmt.Errorf("the rollback finished with %d problem(s):\n  %s",
 			len(failures), strings.Join(failures, "\n  "))
+	}
+	if len(incomplete) > 0 {
+		return fmt.Errorf("every journaled action was undone, but step(s) %v were interrupted "+
+			"mid-step (a hard crash or Ctrl-C) and may have done more than was journaled; "+
+			"verify Agent Swarm 1.x by hand before trusting it", incomplete)
 	}
 	r.logf("Rolled back. Agent Swarm 1.x is running again.")
 	return nil

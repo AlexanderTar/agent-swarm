@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -76,7 +77,18 @@ func (r *Runner) Migrate(ctx context.Context) error {
 		return ErrUnfinished
 	}
 	if !install.HasLegacyData(r.v1Path()) {
-		// No v1 data and no journal: an earlier build, or a fresh install.
+		// swarm-v1.db existing alongside a non-legacy swarm.db, with no journal at
+		// all, is not a clean v2 install: it means an earlier migration or rollback
+		// did not finish cleanly (the journal is gone, but v1's data was never fully
+		// restored either). "Already migrated" would be a lie here.
+		if _, err := os.Stat(r.keptPath()); err == nil {
+			return fmt.Errorf("%s exists but there is no migration journal and %s is not "+
+				"Agent Swarm 1.x data; an earlier `swarm migrate` or `swarm migrate --rollback` "+
+				"did not finish. Run `swarm migrate --rollback` to attempt recovery.",
+				r.keptPath(), r.v1Path())
+		}
+		// No v1 data, no leftover swarm-v1.db, and no journal: an earlier build, or a
+		// fresh install.
 		r.logf("Already migrated")
 		return nil
 	}
@@ -93,7 +105,7 @@ func (r *Runner) runFrom(ctx context.Context, j *Journal, first int) error {
 	steps := []struct {
 		N    int
 		Name string
-		Fn   func(ctx context.Context, s *Step) error
+		Fn   func(ctx context.Context, j *Journal, s *Step) error
 	}{
 		{2, "stop the Agent Swarm 1.x jobs", r.stopV1},
 		{3, "back up the database and the configuration", r.backup},
@@ -108,13 +120,18 @@ func (r *Runner) runFrom(ctx context.Context, j *Journal, first int) error {
 		if st.N < first {
 			continue
 		}
+		// A cancellation caught between steps (e.g. Ctrl-C during the previous
+		// step's own cleanup) must not start a brand new step.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		s := j.Begin(st.N, st.Name)
 		s.StartedAt = r.Now().UnixMilli()
 		if err := j.Save(r.home()); err != nil {
 			return err
 		}
 		r.logf("%d/9 %s", st.N, st.Name)
-		if err := st.Fn(ctx, s); err != nil {
+		if err := st.Fn(ctx, j, s); err != nil {
 			// The journal already records what this step did before it failed, so
 			// --rollback and --resume both have something to work from.
 			_ = j.Save(r.home())
@@ -175,15 +192,22 @@ func (r *Runner) preflight(ctx context.Context) error {
 }
 
 // stopV1 is §20 step 2.
-func (r *Runner) stopV1(ctx context.Context, s *Step) error {
+func (r *Runner) stopV1(ctx context.Context, j *Journal, s *Step) error {
 	for _, label := range []string{install.Label, install.UpdaterLabel} {
 		target := fmt.Sprintf("gui/%d/%s", r.Cfg.UID, label)
+		// The undo action (bring the v1 job back from the plist step 3 backs up) is
+		// journaled BEFORE the bootout runs (S-7/C1): its content does not depend on
+		// the bootout's outcome, and journaling first means a hard crash (including a
+		// bare Ctrl-C, which is a real kill with no cleanup chance) right after the
+		// bootout still leaves --rollback with a record of what to undo.
+		s.Add(Action{Kind: "launchctl", Args: []string{"bootstrap",
+			fmt.Sprintf("gui/%d", r.Cfg.UID), filepath.Join(r.Cfg.LaunchAgentsDir, label+".plist")}})
+		if err := j.Save(r.home()); err != nil {
+			return err
+		}
 		if _, err := r.Run(ctx, "launchctl", "bootout", target); err != nil && !install.NotLoaded(err) {
 			return fmt.Errorf("launchctl bootout %s: %w", label, err)
 		}
-		// Undo: bring the v1 job back from the plist step 3 backs up.
-		s.Add(Action{Kind: "launchctl", Args: []string{"bootstrap",
-			fmt.Sprintf("gui/%d", r.Cfg.UID), filepath.Join(r.Cfg.LaunchAgentsDir, label+".plist")}})
 	}
 	deadline := r.HoldTimeout
 	if deadline == 0 {
@@ -191,29 +215,63 @@ func (r *Runner) stopV1(ctx context.Context, s *Step) error {
 	}
 	var last string
 	for waited := time.Duration(0); waited < deadline; waited += 500 * time.Millisecond {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		out, err := r.Run(ctx, "lsof", "-t", "--", r.v1Path())
 		last = strings.TrimSpace(string(out))
-		// lsof exits non-zero with no output when nothing holds the file, so the
-		// output is the signal and err is ignored here on purpose.
-		_ = err
 		if last == "" {
-			return nil
+			if lsofFoundNothing(err) {
+				return nil
+			}
+			// lsof itself failed to run (missing binary, permission error, …) rather
+			// than reporting "nothing holds it": treating this as a pass could rename a
+			// database a live v1 daemon still has open.
+			return fmt.Errorf("checking whether anything still holds %s: %w", r.v1Path(), err)
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	return fmt.Errorf("%s is still open by process %s; quit it and run swarm migrate again", r.v1Path(), last)
 }
 
+// lsofFoundNothing reports whether err is exactly lsof's normal "nothing holds this
+// file" answer: a real *exec.ExitError with code 1, or no error at all. Any other
+// shape (a missing binary, a permission error, an unexpected exit code) is a real
+// failure and must not be treated as "free".
+func lsofFoundNothing(err error) bool {
+	if err == nil {
+		return true
+	}
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && ee.ExitCode() == 1
+}
+
 // backup is §20 step 3: VACUUM INTO, integrity_check, then the config copies.
-func (r *Runner) backup(ctx context.Context, s *Step) error {
+func (r *Runner) backup(ctx context.Context, j *Journal, s *Step) error {
 	dir := filepath.Join(r.home(), "backups")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	dst := uniquePath(filepath.Join(dir, "swarm-v1-"+r.stamp()+".db"))
+	// The undo (remove the backup file) is journaled before VACUUM INTO runs: "remove"
+	// is idempotent on a path that was never created, so this is safe even if the
+	// process is killed before VACUUM INTO ever starts (C1/S-7).
+	s.Add(Action{Kind: "remove", To: dst})
+	if err := j.Save(r.home()); err != nil {
+		return err
+	}
 	// VACUUM INTO runs through modernc.org/sqlite; no sqlite3 CLI is needed. The path
-	// is a bound parameter, which SQLite accepts for VACUUM INTO.
-	src, err := sql.Open("sqlite", "file:"+r.v1Path())
+	// is a bound parameter, which SQLite accepts for VACUUM INTO. V1DSN (mode=ro) is
+	// reused rather than a bare read-write DSN, so S-8's read-only guard actually
+	// covers this connection too — a read-write handle could checkpoint the v1 WAL
+	// before step 5 even validates.
+	src, err := sql.Open("sqlite", V1DSN(r.v1Path()))
 	if err != nil {
 		return err
 	}
@@ -221,7 +279,6 @@ func (r *Runner) backup(ctx context.Context, s *Step) error {
 	if _, err := src.ExecContext(ctx, `VACUUM INTO ?`, dst); err != nil {
 		return fmt.Errorf("VACUUM INTO %s: %w", dst, err)
 	}
-	s.Add(Action{Kind: "remove", To: dst})
 	check, err := sql.Open("sqlite", "file:"+dst+"?mode=ro")
 	if err != nil {
 		return err
@@ -235,17 +292,23 @@ func (r *Runner) backup(ctx context.Context, s *Step) error {
 		return fmt.Errorf("the backup at %s failed integrity_check: %s", dst, res)
 	}
 
-	// Every file step 8 edits, plus both launchd plists (S-7).
+	// Every file step 8 edits, plus both launchd plists (S-7). Each restore action is
+	// journaled — and saved — immediately before its copy is made, not batched until
+	// the loop finishes, so a crash partway through the loop still leaves an accurate
+	// record of exactly which copies exist (C1).
 	cfgDir := uniquePath(filepath.Join(dir, "config-"+r.stamp()))
 	for _, f := range r.filesToBackUp() {
 		if _, err := os.Stat(f.src); err != nil {
 			continue // a file the user never had needs no backup
 		}
 		target := filepath.Join(cfgDir, f.rel)
+		s.Add(Action{Kind: "restore", From: target, To: f.src})
+		if err := j.Save(r.home()); err != nil {
+			return err
+		}
 		if err := install.CopyFile(f.src, target); err != nil {
 			return err
 		}
-		s.Add(Action{Kind: "restore", From: target, To: f.src})
 	}
 	r.logf("    backup: %s", dst)
 	return nil
@@ -273,11 +336,14 @@ func (r *Runner) filesToBackUp() []struct{ src, rel string } {
 }
 
 // build is §20 step 4.
-func (r *Runner) build(ctx context.Context, s *Step) error {
+func (r *Runner) build(ctx context.Context, j *Journal, s *Step) error {
+	s.Add(Action{Kind: "remove", To: r.tmpPath()})
+	if err := j.Save(r.home()); err != nil {
+		return err
+	}
 	if err := os.Remove(r.tmpPath()); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	s.Add(Action{Kind: "remove", To: r.tmpPath()})
 	rep, err := Import(ctx, ImportInput{V1Path: r.v1Path(), NewPath: r.tmpPath(),
 		KBDir: r.kbPath(), Now: r.Now})
 	if err != nil {
@@ -291,7 +357,7 @@ func (r *Runner) build(ctx context.Context, s *Step) error {
 }
 
 // validate is §20 step 5. A failure deletes the temp database and leaves v1 alone.
-func (r *Runner) validate(ctx context.Context, s *Step) error {
+func (r *Runner) validate(ctx context.Context, j *Journal, s *Step) error {
 	fail := func(err error) error {
 		os.Remove(r.tmpPath())
 		return err
@@ -316,22 +382,30 @@ func (r *Runner) validate(ctx context.Context, s *Step) error {
 	return nil
 }
 
-// switchFiles is §20 step 6. Each rename is its own journaled action.
-func (r *Runner) switchFiles(ctx context.Context, s *Step) error {
+// switchFiles is §20 step 6. Each rename is its own journaled action, saved before
+// it runs: a hard crash (including Ctrl-C) between two renames must not lose track
+// of the one that already happened (C1).
+func (r *Runner) switchFiles(ctx context.Context, j *Journal, s *Step) error {
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		from, to := r.v1Path()+suffix, r.keptPath()+suffix
 		if _, err := os.Stat(from); err != nil {
 			continue
 		}
+		s.Add(Action{Kind: "rename", From: from, To: to})
+		if err := j.Save(r.home()); err != nil {
+			return err
+		}
 		if err := os.Rename(from, to); err != nil {
 			return err
 		}
-		s.Add(Action{Kind: "rename", From: from, To: to})
+	}
+	s.Add(Action{Kind: "rename", From: r.tmpPath(), To: r.v1Path()})
+	if err := j.Save(r.home()); err != nil {
+		return err
 	}
 	if err := os.Rename(r.tmpPath(), r.v1Path()); err != nil {
 		return err
 	}
-	s.Add(Action{Kind: "rename", From: r.tmpPath(), To: r.v1Path()})
 	return nil
 }
 
@@ -340,6 +414,19 @@ func (r *Runner) switchFiles(ctx context.Context, s *Step) error {
 
 // DryRun is §20's "--dry-run prints the plan and changes nothing".
 func (r *Runner) DryRun(ctx context.Context) error {
+	j, err := LoadJournal(r.home())
+	if err != nil {
+		return err
+	}
+	switch {
+	case j != nil && j.Complete:
+		r.logf("Already migrated")
+		return nil
+	case j != nil:
+		// An unfinished migration means --dry-run's plan (built against the current,
+		// possibly half-switched files) would be misleading; offer the real options.
+		return ErrUnfinished
+	}
 	if err := r.preflight(ctx); err != nil {
 		return err
 	}
