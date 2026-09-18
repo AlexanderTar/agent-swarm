@@ -26,20 +26,21 @@ func TestNewRejectsUnknownKinds(t *testing.T) {
 	}
 }
 
-// Each adapter registers itself from its own file (Tasks 6-9), so All() grows as
-// they land. Task 3 ships the fake one; Task 9 replaces this with the full set.
-func TestAllReturnsEveryRegisteredKind(t *testing.T) {
+// Every adapter registers itself from its own file; with all four landed the set
+// is complete. This replaces the partial check Task 3 shipped.
+func TestAllReturnsEveryRealKindPlusFake(t *testing.T) {
 	got := All(testDeps(t))
-	for k, a := range got {
+	for _, k := range []kinds.AgentKind{kinds.Claude, kinds.Codex, kinds.Agy, kinds.Cursor, kinds.Fake} {
+		a, ok := got[k]
+		if !ok {
+			t.Fatalf("All() is missing %s", k)
+		}
 		if a.Kind() != k {
 			t.Errorf("%s adapter reports Kind() = %s", k, a.Kind())
 		}
 	}
-	if _, ok := got[kinds.Fake]; !ok {
-		t.Fatal("All() is missing the fake adapter")
-	}
-	if _, err := New(kinds.Fake, testDeps(t)); err != nil {
-		t.Fatal(err)
+	if len(got) != 5 {
+		t.Fatalf("All() returned %d adapters", len(got))
 	}
 }
 
