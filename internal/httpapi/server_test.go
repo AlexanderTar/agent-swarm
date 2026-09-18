@@ -227,8 +227,8 @@ func TestSessionAuth(t *testing.T) {
 	live := seedSessionToken(t, e, "live-token", "running")
 	seedSessionToken(t, e, "old-token", "completed")
 	h := e.s.wrap(route{method: "GET", pattern: "/hook/x", auth: authSession, h: func(w http.ResponseWriter, r *http.Request) {
-		id, _ := e.s.sessionAuth(r)
-		w.Write([]byte(id))
+		c, _ := e.s.sessionAuth(r)
+		w.Write([]byte(c.SessionID))
 	}})
 	for token, want := range map[string]int{"live-token": 200, "old-token": 401, daemonToken: 401, "": 401} {
 		req := httptest.NewRequest("POST", "/hook/x", nil)

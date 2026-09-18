@@ -21,6 +21,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/hook"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/mcpserver"
@@ -46,6 +47,10 @@ type Deps struct {
 	Usage        *usage.Poller
 	Advisor      *advisor.Service
 	MCP          *mcpserver.Server
+	// Hook is the daemon-side /hook/{agent}/{event} decision handler (P2 T34).
+	// The brief's Task 31 field list for Deps didn't name this one, but the
+	// hook route has no other way to reach it; noted in the batch report.
+	Hook *hook.Handler
 	WriteTimeout time.Duration                    // per SSE write; 0 means 10 s
 	PingInterval time.Duration                    // SSE keep-alive; 0 means 25 s
 	Log          func(format string, args ...any) // nil means log.Printf
@@ -91,6 +96,10 @@ type Server struct {
 	termMu       sync.Mutex
 	termWait     map[string]chan struct{}
 	termFallback map[string]bool
+
+	// mcpHandler is built once in New from Deps.MCP (P2 T34): /mcp resolves the
+	// caller itself (session token or daemon token) and delegates to it.
+	mcpHandler http.Handler
 }
 
 // Close ends every open SSE stream. They never go idle on their own, so
@@ -118,6 +127,9 @@ func New(d Deps) *Server {
 		d.Log = log.Printf
 	}
 	s := &Server{Deps: d, mux: http.NewServeMux(), done: make(chan struct{})}
+	if d.MCP != nil {
+		s.mcpHandler = d.MCP.Handler(s.resolveMCPCaller)
+	}
 	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes(),
 		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.agentIORoutes())
 	for _, rt := range s.routes {
@@ -192,17 +204,37 @@ func isLocal(r *http.Request) bool {
 	return h == "127.0.0.1" || h == "localhost" || h == "::1"
 }
 
-// sessionAuth maps a session bearer token to a live session id (Phase 2 /hook routes).
-func (s *Server) sessionAuth(r *http.Request) (string, bool) {
+// sessionCaller is what a session token resolves to (P2 T34).
+type sessionCaller struct {
+	SessionID, AgentID, AgentName string
+	Kind                          runtime.AgentKind
+	Role                          runtime.Role
+	AdvisorMode                   string
+	SpikeOrchestrator             bool
+}
+
+// sessionAuth maps a session bearer token to its live session. An older
+// generation's token is not live (§10.5, P0-10): the generation check is what
+// makes a token a resumed/retried session left behind fail closed, not just a
+// session whose row happens to still say "running".
+func (s *Server) sessionAuth(r *http.Request) (sessionCaller, bool) {
 	tok := bearer(r)
 	if tok == "" {
-		return "", false
+		return sessionCaller{}, false
 	}
 	sum := sha256.Sum256([]byte(tok))
-	var id string
-	err := s.DB.QueryRowContext(r.Context(), `SELECT id FROM sessions WHERE token_hash = ?
-		AND state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`, hex.EncodeToString(sum[:])).Scan(&id)
-	return id, err == nil
+	var c sessionCaller
+	var itemType string
+	err := s.DB.QueryRowContext(r.Context(), `SELECT ses.id, a.id, a.name, a.kind, a.role, COALESCE(a.advisor_mode, ''), i.type
+		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
+		WHERE ses.token_hash = ? AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
+		AND ses.generation = (SELECT MAX(s2.generation) FROM sessions s2 WHERE s2.agent_id = ses.agent_id)`,
+		hex.EncodeToString(sum[:])).Scan(&c.SessionID, &c.AgentID, &c.AgentName, &c.Kind, &c.Role, &c.AdvisorMode, &itemType)
+	if err != nil {
+		return sessionCaller{}, false
+	}
+	c.SpikeOrchestrator = c.Role == runtime.RoleOrchestrator && itemType == "spike"
+	return c, true
 }
 
 type apiError struct {

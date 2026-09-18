@@ -633,11 +633,8 @@ func (s *Server) runtimeRoutes() []route {
 	}
 }
 
-// agentIORoutes is filled by Task 34. It exists here, empty, so New's route
-// table is complete from this task onward and Task 34 edits exactly one
-// function body instead of New (R8). spawnRoutes and requestRoutes are filled
-// by Tasks 32 and 33, in spawn.go and requests.go.
-func (s *Server) agentIORoutes() []route { return nil }
+// agentIORoutes is filled by Task 34, in agentio.go. spawnRoutes and
+// requestRoutes are filled by Tasks 32 and 33, in spawn.go and requests.go.
 
 // rtNotWired is the guard the three read routes below share: a plain P1
 // harness (no P2 services wired) hits it instead of a nil-pointer panic. Every

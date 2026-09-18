@@ -23,6 +23,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/hook"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
@@ -265,7 +266,11 @@ func (e *runtimeEnv) postSession(t *testing.T, path, token, body string) *rec {
 // postToken is env.call with a session token instead of the daemon token (Task 34).
 func (e *runtimeEnv) postToken(t *testing.T, token, path, body string) *rec {
 	t.Helper()
-	code, out := e.call(http.MethodPost, path, json.RawMessage(body), token)
+	// Content-Type and Accept are explicit here (unlike post/postVia) because
+	// /mcp's SDK handler refuses a POST without both; every other P2 route
+	// ignores them.
+	code, out := e.call(http.MethodPost, path, json.RawMessage(body), token,
+		"Content-Type", "application/json", "Accept", "application/json, text/event-stream")
 	return &rec{Code: code, Body: bytes.NewBuffer(out)}
 }
 
@@ -351,6 +356,7 @@ func newServicesOnly(t *testing.T, extra func(d *Deps)) *runtimeEnv {
 		d.RT, d.Notify, d.Advisor = rt, nt, adv
 		d.Usage = &usage.Poller{DB: d.DB, Events: d.Events, Settings: d.Settings, Now: time.Now}
 		d.MCP = &mcpserver.Server{RT: rt, KB: d.KB, Advisor: adv, Version: "test", Log: func(string, ...any) {}}
+		d.Hook = &hook.Handler{DB: d.DB, RT: rt, Adapters: rt.Adapters, Advisor: adv, Now: time.Now, Log: func(string, ...any) {}}
 		d.Run = (&execx.Fake{}).Runner()
 		// After never fires by default: only TestTerminalFallbackRunsGhosttyThroughTheInjectedRunner
 		// wants the 1.5 s terminal-fallback timer to actually run, and it overrides
@@ -850,6 +856,60 @@ func newUsageServer(t *testing.T) (*runtimeEnv, httpSeed) {
 type adviceSeed struct {
 	httpSeed
 	AgentName string
+}
+
+// ---- added by Task 34: hook, mcp and wake-stream fixtures ----
+
+// agentIOSeed carries the tokens the agent-facing routes need.
+type agentIOSeed struct {
+	httpSeed
+	OldGenerationToken string // a token from a superseded generation: every route must 401 it
+	TranscriptPath     string
+}
+
+// newAgentIOServer is newRuntimeServer plus a second, superseded generation on
+// the base orchestrator (so the fail-closed token check has something to
+// reject) and one pending message on it (so SessionStart's hook has a notice
+// to report, matching §11.2's decision table).
+func newAgentIOServer(t *testing.T) (*runtimeEnv, agentIOSeed) {
+	t.Helper()
+	e, base := newRuntimeServer(t)
+	ctx := bg
+	agentID := agentIDByName(t, e, base.AgentName)
+	rootItemID := itemIDByKey(t, e, base.RootKey)
+	_, oldToken := seedSession(t, e, agentID, base.AgentName, 0, "running")
+
+	var seq int64
+	if err := e.s.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM messages`).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	now := db.Millis(time.Now())
+	if _, err := e.s.DB.ExecContext(ctx, `INSERT INTO messages
+		(id, seq, kind, wake_class, priority, origin, to_agent_id, root_item_id, payload_json, state, created_at)
+		VALUES (?, ?, 'assignment', 'immediate', 1, 'daemon', ?, ?, '{}', 'pending', ?)`,
+		ids.New("msg"), seq, agentID, rootItemID, now); err != nil {
+		t.Fatal(err)
+	}
+	return e, agentIOSeed{httpSeed: base, OldGenerationToken: oldToken}
+}
+
+// newAgentIOServerWithAdvisorTranscript points a copy of
+// internal/advisor/testdata/claude/transcript-advisor-entries.jsonl (a real
+// P0-14 fixture: five transcript lines that dedupe to one native advisor
+// call) at TranscriptPath, in t.TempDir().
+func newAgentIOServerWithAdvisorTranscript(t *testing.T) (*runtimeEnv, agentIOSeed) {
+	t.Helper()
+	e, seed := newAgentIOServer(t)
+	data, err := os.ReadFile(filepath.Join("..", "advisor", "testdata", "claude", "transcript-advisor-entries.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seed.TranscriptPath = dst
+	return e, seed
 }
 
 // newAdviceServer seeds one answered advice row for the base tree's orchestrator.
