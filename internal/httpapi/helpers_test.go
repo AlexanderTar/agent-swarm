@@ -286,13 +286,15 @@ func (e *runtimeEnv) postVia(t *testing.T, via, path, body string) *rec {
 // internal/mcpserver's own harness, D-style precedent), so this only needs to
 // satisfy the interface and never touch a real process (S-1, S-2).
 type testTmux struct {
-	panes   []runtime.Pane
-	killed  []string
-	keys    []string
+	panes  []runtime.Pane
+	killed []string
+	keys   []string
 }
 
-func (f *testTmux) Start(context.Context, string, string, map[string]string, []string) error { return nil }
-func (f *testTmux) Panes(context.Context) ([]runtime.Pane, error)                             { return f.panes, nil }
+func (f *testTmux) Start(context.Context, string, string, map[string]string, []string) error {
+	return nil
+}
+func (f *testTmux) Panes(context.Context) ([]runtime.Pane, error) { return f.panes, nil }
 
 // Capture always reports the idle prompt (matches internal/adapter.Fake's
 // IdlePrompt): watchStartup then moves a freshly spawned session straight to
@@ -300,7 +302,7 @@ func (f *testTmux) Panes(context.Context) ([]runtime.Pane, error)               
 func (f *testTmux) Capture(context.Context, string, int) (string, error) {
 	return "─────\n❯ \n─────\n", nil
 }
-func (f *testTmux) PasteLine(context.Context, string, string) error                           { return nil }
+func (f *testTmux) PasteLine(context.Context, string, string) error { return nil }
 func (f *testTmux) Keys(ctx context.Context, name string, keys ...string) error {
 	f.keys = append(f.keys, name)
 	return nil

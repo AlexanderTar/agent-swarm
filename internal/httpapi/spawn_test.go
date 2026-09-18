@@ -51,7 +51,9 @@ func TestCreateSpikeWithATakenNameIs409(t *testing.T) {
 	if rec.Code != 409 {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
 	}
-	var body struct{ Error struct{ Code, Message string } }
+	var body struct {
+		Error struct{ Code, Message string }
+	}
 	json.Unmarshal(rec.Body.Bytes(), &body)
 	if body.Error.Message != "This agent name is already in use." {
 		t.Fatalf("message = %q", body.Error.Message)

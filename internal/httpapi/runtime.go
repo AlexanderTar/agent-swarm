@@ -144,25 +144,25 @@ type usageWire struct {
 
 // adviceWire is contracts §3.2 Advice.
 type adviceWire struct {
-	ID              string  `json:"id"`
-	SessionID       string  `json:"session_id"`
-	ItemKey         string  `json:"item_key"`
-	AdvisorKind     string  `json:"advisor_kind"`
-	AdvisorModel    string  `json:"advisor_model"`
-	AdvisorEffort   *string `json:"advisor_effort"`
-	Question        string  `json:"question"`
-	Answer          *string `json:"answer"`
-	Error           *string `json:"error"`
-	State           string  `json:"state"`
-	Mode            string  `json:"mode"`
-	DurationMs      *int    `json:"duration_ms"`
-	InputTokens     *int    `json:"input_tokens"`
-	OutputTokens    *int    `json:"output_tokens"`
-	CacheReadTokens *int    `json:"cache_read_tokens"`
-	CacheWriteTokens *int   `json:"cache_write_tokens"`
-	CostUSD         *float64 `json:"cost_usd"`
-	CreatedAt       int64   `json:"created_at"`
-	FinishedAt      *int64  `json:"finished_at"`
+	ID               string   `json:"id"`
+	SessionID        string   `json:"session_id"`
+	ItemKey          string   `json:"item_key"`
+	AdvisorKind      string   `json:"advisor_kind"`
+	AdvisorModel     string   `json:"advisor_model"`
+	AdvisorEffort    *string  `json:"advisor_effort"`
+	Question         string   `json:"question"`
+	Answer           *string  `json:"answer"`
+	Error            *string  `json:"error"`
+	State            string   `json:"state"`
+	Mode             string   `json:"mode"`
+	DurationMs       *int     `json:"duration_ms"`
+	InputTokens      *int     `json:"input_tokens"`
+	OutputTokens     *int     `json:"output_tokens"`
+	CacheReadTokens  *int     `json:"cache_read_tokens"`
+	CacheWriteTokens *int     `json:"cache_write_tokens"`
+	CostUSD          *float64 `json:"cost_usd"`
+	CreatedAt        int64    `json:"created_at"`
+	FinishedAt       *int64   `json:"finished_at"`
 }
 
 type artifactSectionWire struct {
@@ -215,12 +215,12 @@ type requestWire = runtime.RequestWire
 
 // stateWire is contracts §4 GET /api/state: the menubar snapshot.
 type stateWire struct {
-	Agents        []agentNodeWire    `json:"agents"`
-	Requests      []requestWire      `json:"requests"`
-	Notifications notificationsWire  `json:"notifications"`
-	Usage         []usageWire        `json:"usage"`
-	ActiveCount   int                `json:"active_count"`
-	Settings      any                `json:"settings"`
+	Agents        []agentNodeWire   `json:"agents"`
+	Requests      []requestWire     `json:"requests"`
+	Notifications notificationsWire `json:"notifications"`
+	Usage         []usageWire       `json:"usage"`
+	ActiveCount   int               `json:"active_count"`
+	Settings      any               `json:"settings"`
 }
 
 type notificationsWire struct {

@@ -33,24 +33,24 @@ import (
 )
 
 type Deps struct {
-	Version      string
-	Token        string // daemon token (~/.swarm/run/daemon.token)
-	DB           *db.DB
-	Events       *events.Store
-	Items        *items.Store
-	Repos        *repos.Service
-	Settings     *settings.Store
-	Catalog      *catalog.Service
-	KB           *kb.Index
-	RT           *runtime.Store
-	Notify       *notify.Service
-	Usage        *usage.Poller
-	Advisor      *advisor.Service
-	MCP          *mcpserver.Server
+	Version  string
+	Token    string // daemon token (~/.swarm/run/daemon.token)
+	DB       *db.DB
+	Events   *events.Store
+	Items    *items.Store
+	Repos    *repos.Service
+	Settings *settings.Store
+	Catalog  *catalog.Service
+	KB       *kb.Index
+	RT       *runtime.Store
+	Notify   *notify.Service
+	Usage    *usage.Poller
+	Advisor  *advisor.Service
+	MCP      *mcpserver.Server
 	// Hook is the daemon-side /hook/{agent}/{event} decision handler (P2 T34).
 	// The brief's Task 31 field list for Deps didn't name this one, but the
 	// hook route has no other way to reach it; noted in the batch report.
-	Hook *hook.Handler
+	Hook         *hook.Handler
 	WriteTimeout time.Duration                    // per SSE write; 0 means 10 s
 	PingInterval time.Duration                    // SSE keep-alive; 0 means 25 s
 	Log          func(format string, args ...any) // nil means log.Printf

@@ -158,7 +158,9 @@ func TestUnknownItemIs404(t *testing.T) {
 	if rec.Code != 404 {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	var body struct{ Error struct{ Code, Message string } }
+	var body struct {
+		Error struct{ Code, Message string }
+	}
 	json.Unmarshal(rec.Body.Bytes(), &body)
 	if body.Error.Code != "not_found" {
 		t.Fatalf("error = %+v", body.Error)
