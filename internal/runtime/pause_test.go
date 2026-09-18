@@ -3,10 +3,47 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+// erroringTmux wraps the fake tmux so a test can force one call to fail,
+// exercising the pause machine's error-handling branches (a real tmux really
+// can fail these calls; the fake alone never does).
+type erroringTmux struct {
+	*fakeTmux
+	envErr, killErr, keysErr, panesErr error
+}
+
+func (e *erroringTmux) Env(ctx context.Context, name, key string) (string, error) {
+	if e.envErr != nil {
+		return "", e.envErr
+	}
+	return e.fakeTmux.Env(ctx, name, key)
+}
+
+func (e *erroringTmux) Panes(ctx context.Context) ([]Pane, error) {
+	if e.panesErr != nil {
+		return nil, e.panesErr
+	}
+	return e.fakeTmux.Panes(ctx)
+}
+
+func (e *erroringTmux) Kill(ctx context.Context, name string) error {
+	if e.killErr != nil {
+		return e.killErr
+	}
+	return e.fakeTmux.Kill(ctx, name)
+}
+
+func (e *erroringTmux) Keys(ctx context.Context, name string, keys ...string) error {
+	if e.keysErr != nil {
+		return e.keysErr
+	}
+	return e.fakeTmux.Keys(ctx, name, keys...)
+}
 
 // clockStore is newStore plus a handle on the clock, for the tests that move time
 // by hand. It does NOT install a second clock (D54): newStore already wires one
@@ -280,6 +317,110 @@ func TestResumeFallsBackToAFreshLaunch(t *testing.T) {
 	}
 }
 
+// Resume also reactivates an agent that was left acknowledged while its
+// session sat paused.
+func TestResumeReactivatesAnAcknowledgedAgent(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = 'p1' WHERE id = ?`, wSes.ID)
+	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'acknowledged' WHERE id = ?`, w.ID)
+	if _, err := s.Resume(ctx, w.Name); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Agent(ctx, w.Name)
+	if got.State != AgentActive {
+		t.Fatalf("agent state = %s, want active again after resume", got.State)
+	}
+}
+
+// killIfOurs logs and does nothing when it cannot even read SWARM_SESSION —
+// a real tmux failure must not be mistaken for a matching pane.
+func TestKillIfOursLogsAnEnvError(t *testing.T) {
+	s, tm, at := clockStore(t)
+	et := &erroringTmux{fakeTmux: tm, envErr: errors.New("tmux is gone")}
+	s.Tmux = et
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.Pause(ctx, w.Name, "session")
+	s.Sync(ctx, wSes.ID, nil, 20)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "handing off"})
+	at.Advance(6 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != 0 {
+		t.Fatalf("an unreadable env must not be treated as a match: %v", tm.killed)
+	}
+}
+
+// A real Kill failure surfaces to the reconciler instead of being swallowed.
+func TestTickPausePropagatesAKillError(t *testing.T) {
+	s, tm, at := clockStore(t)
+	et := &erroringTmux{fakeTmux: tm, killErr: errors.New("tmux kill-session failed")}
+	s.Tmux = et
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	s.Pause(ctx, w.Name, "session")
+	s.Sync(ctx, wSes.ID, nil, 20)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "handing off"})
+	at.Advance(6 * time.Second)
+	if err := s.TickPause(ctx); err == nil {
+		t.Fatal("a real kill failure must propagate")
+	}
+}
+
+// A real interrupt-keys failure surfaces too.
+func TestTickPausePropagatesAKeysError(t *testing.T) {
+	s, tm, at := clockStore(t)
+	et := &erroringTmux{fakeTmux: tm, keysErr: errors.New("tmux send-keys failed")}
+	s.Tmux = et
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	s.Pause(ctx, w.Name, "session")
+	at.Advance(121 * time.Second)
+	if err := s.TickPause(ctx); err == nil {
+		t.Fatal("a real interrupt-keys failure must propagate")
+	}
+}
+
+// An agent that never got a session (preflight failed before one was
+// started) can be neither paused nor resumed.
+func TestPauseAndResumeRefuseAnAgentWithNoSession(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	// Claude isn't wired into this fixture's Adapters map, so Preflight fails
+	// and StartSpike records the agent without ever starting a session.
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "No adapter", Intent: "feature", Kind: Claude, Model: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pause(ctx, a.Name, "session"); err == nil {
+		t.Fatal("Pause must refuse an agent with no session")
+	}
+	if _, err := s.Resume(ctx, a.Name); err == nil {
+		t.Fatal("Resume must refuse an agent with no session")
+	}
+}
+
+// Pause and Resume both refuse an unknown agent name outright.
+func TestPauseAndResumeRefuseAnUnknownAgent(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	if _, err := s.Pause(ctx, "no-such-agent", "session"); err == nil {
+		t.Fatal("Pause must refuse an unknown agent")
+	}
+	if _, err := s.Resume(ctx, "no-such-agent"); err == nil {
+		t.Fatal("Resume must refuse an unknown agent")
+	}
+}
+
 // §10.5: pause-all covers every root, children first.
 func TestPauseAllCountsEverySession(t *testing.T) {
 	s, _, _ := clockStore(t)
@@ -292,5 +433,21 @@ func TestPauseAllCountsEverySession(t *testing.T) {
 	}
 	if n != 3 {
 		t.Fatalf("requested = %d, want the orchestrator, the coder and the spike", n)
+	}
+}
+
+// PauseAll's own query only ever selects live sessions, so an already-pausing
+// one is idempotent (still counted), not skipped.
+func TestPauseAllCountsAnAlreadyPausingSessionOnce(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, wSes.ID)
+	n, err := s.PauseAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("requested = %d, want the orchestrator and the already-pausing coder", n)
 	}
 }

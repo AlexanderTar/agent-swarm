@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -9,6 +11,78 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 )
+
+// A real tmux failure to list panes at all must surface, not be treated as
+// "every session is gone."
+func TestReconcilePropagatesAPanesError(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	s.Tmux = &erroringTmux{fakeTmux: tm, panesErr: errors.New("tmux list-panes failed")}
+	if err := s.Reconcile(context.Background()); err == nil {
+		t.Fatal("a Panes failure must propagate")
+	}
+}
+
+// erroringNotifier always fails, so a test can verify a notify failure
+// actually surfaces instead of being silently swallowed.
+type erroringNotifier struct{ err error }
+
+func (e *erroringNotifier) Raise(context.Context, *sql.Tx, NotifyInput) error { return e.err }
+
+// A notification failure on an unknown tmux session must surface, not vanish.
+func TestReconcilePropagatesANotifyFailure(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
+	panes(tm, Pane{Session: "someone-elses-session", Command: "vim"})
+	if err := s.Reconcile(context.Background()); err == nil {
+		t.Fatal("a notify failure must propagate")
+	}
+}
+
+// A stale notification failure must also surface.
+func TestResolveAliveStalePropagatesANotifyFailure(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Quiet2", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	tm.captures[a.Name] = []string{"working on it…\n"}
+	at.Advance(31 * time.Minute)
+	if err := s.Reconcile(ctx); err == nil {
+		t.Fatal("a stale notify failure must propagate")
+	}
+}
+
+// ReconcileLoop just wraps Reconcile in a ticker and stops on cancel; this
+// only exercises that wiring, not the reconciliation logic itself (covered
+// above).
+func TestReconcileLoopStopsOnContextCancel(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	panes(tm)
+	// A hand-fed tick instead of the fake clock's instant one (which never
+	// leaves the select block, so a cancel lands mid-Reconcile and races a
+	// live query) or a real timer (same race, just rarer). One buffered tick
+	// lets exactly one Reconcile complete; by the time we cancel, the loop is
+	// parked back in the select with nothing left to receive, so cancel is the
+	// only thing that can wake it — no race either way.
+	tick := make(chan time.Time, 1)
+	tick <- time.Now()
+	s.After = func(time.Duration) <-chan time.Time { return tick }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.ReconcileLoop(ctx, time.Millisecond)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReconcileLoop did not stop on cancel")
+	}
+}
 
 func TestDeadPaneWithACompletedCheckpointCompletesTheSession(t *testing.T) {
 	s, tm, _ := clockStore(t)
@@ -69,6 +143,109 @@ func TestDeadPaneWithNoTerminalCheckpointCrashes(t *testing.T) {
 	got, _ := s.Agent(ctx, w.Name)
 	if got.State != AgentActive {
 		t.Fatalf("agent state = %s, want active until acknowledged", got.State)
+	}
+}
+
+// A top-level crash (no parent to relay to) still records crashed.
+// A crashed notify failure must surface too.
+func TestDeadPaneCrashPropagatesANotifyFailure(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "WillCrash", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
+	panes(tm)
+	if err := s.Reconcile(ctx); err == nil {
+		t.Fatal("a crash notify failure must propagate")
+	}
+}
+
+// The "paused" notification on a dead-while-stopping session must also
+// propagate a failure instead of leaving the session's state ambiguous.
+func TestDeadPaneWhileStoppingPropagatesANotifyFailure(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
+	_, _, wSes := worker(t, s)
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, wSes.ID)
+	panes(tm)
+	if err := s.Reconcile(ctx); err == nil {
+		t.Fatal("a paused notify failure must propagate")
+	}
+}
+
+func TestDeadPaneCrashWithNoParentSkipsTheRelay(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Lonely", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	panes(tm)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.LatestSession(ctx, a.ID)
+	if got.State != Crashed {
+		t.Fatalf("state = %s", got.State)
+	}
+}
+
+func TestDeadPaneWithAFailedCheckpointFails(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: FailedCkp, Summary: "couldn't finish"})
+	panes(tm)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Failed {
+		t.Fatalf("session state = %s", ses.State)
+	}
+}
+
+// M6: an orchestrator with a live child owes something and is never waiting.
+func TestOrchestratorWithALiveChildIsNeverWaiting(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	orchSes, _ := s.LatestSession(ctx, orch.ID)
+	s.Sync(ctx, orchSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, orch.ID)
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": orchSes.ID}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.LatestSession(ctx, orch.ID)
+	if got.Waiting {
+		t.Fatal("an orchestrator with a live child owes something and must not be waiting")
+	}
+}
+
+// M6: an agent with an open request it raised is never waiting.
+func TestOwesNothingCountsAnOpenRequest(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Asking", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.Sync(ctx, ses.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, a.ID)
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which one?"}); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.LatestSession(ctx, a.ID)
+	if got.Waiting {
+		t.Fatal("an open question the agent raised means it owes something")
 	}
 }
 

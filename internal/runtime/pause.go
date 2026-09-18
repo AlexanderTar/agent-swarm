@@ -296,24 +296,11 @@ func (s *Store) pauseSubtree(ctx context.Context, orch Agent, orchSes Session, d
 // descendantAgents returns every agent under rootAgentID, deepest first
 // (§10.5: children are paused before their orchestrator).
 func (s *Store) descendantAgents(ctx context.Context, rootAgentID string) ([]Agent, error) {
-	rows, err := s.DB.QueryContext(ctx, `WITH RECURSIVE d(id, depth) AS (
+	ids, err := s.queryIDs(ctx, `WITH RECURSIVE d(id, depth) AS (
 			SELECT id, 1 FROM agents WHERE parent_agent_id = ?
 			UNION ALL SELECT a.id, d.depth + 1 FROM agents a JOIN d ON a.parent_agent_id = d.id)
 		SELECT id FROM d ORDER BY depth DESC, id`, rootAgentID)
 	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	out := make([]Agent, 0, len(ids))
@@ -346,24 +333,29 @@ func (s *Store) advanceSubtreePauses(ctx context.Context) error {
 	return s.writeUnresponsiveOrchestratorCheckpoints(ctx)
 }
 
-func (s *Store) promotePendingSubtreePauses(ctx context.Context) error {
+type pendingSubtree struct{ sesID, agentID string }
+
+func (s *Store) pendingSubtreePauses(ctx context.Context) ([]pendingSubtree, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.agent_id FROM sessions ses
 		WHERE ses.pause_scope = 'subtree' AND ses.state = 'running'`)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	type pending struct{ sesID, agentID string }
-	var candidates []pending
+	defer rows.Close()
+	var out []pendingSubtree
 	for rows.Next() {
-		var p pending
+		var p pendingSubtree
 		if err := rows.Scan(&p.sesID, &p.agentID); err != nil {
-			rows.Close()
-			return err
+			return nil, err
 		}
-		candidates = append(candidates, p)
+		out = append(out, p)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	return out, rows.Err()
+}
+
+func (s *Store) promotePendingSubtreePauses(ctx context.Context) error {
+	candidates, err := s.pendingSubtreePauses(ctx)
+	if err != nil {
 		return err
 	}
 	for _, p := range candidates {
@@ -419,28 +411,33 @@ func (s *Store) promotePendingSubtreePauses(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) writeUnresponsiveOrchestratorCheckpoints(ctx context.Context) error {
+type overdueSubtree struct {
+	sesID, agentID string
+	attempt        int
+}
+
+func (s *Store) overdueSubtreePauses(ctx context.Context) ([]overdueSubtree, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.agent_id, ses.attempt FROM sessions ses
 		WHERE ses.pause_scope = 'subtree' AND ses.state IN ('pause_requested', 'quiescing')
 		AND ses.pause_deadline_at IS NOT NULL AND ses.pause_deadline_at < ?`, db.Millis(s.Now()))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	type overdue struct {
-		sesID, agentID string
-		attempt        int
-	}
-	var candidates []overdue
+	defer rows.Close()
+	var out []overdueSubtree
 	for rows.Next() {
-		var o overdue
+		var o overdueSubtree
 		if err := rows.Scan(&o.sesID, &o.agentID, &o.attempt); err != nil {
-			rows.Close()
-			return err
+			return nil, err
 		}
-		candidates = append(candidates, o)
+		out = append(out, o)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	return out, rows.Err()
+}
+
+func (s *Store) writeUnresponsiveOrchestratorCheckpoints(ctx context.Context) error {
+	candidates, err := s.overdueSubtreePauses(ctx)
+	if err != nil {
 		return err
 	}
 	for _, o := range candidates {
@@ -539,23 +536,10 @@ func (s *Store) Resume(ctx context.Context, name string) (Agent, error) {
 // PauseAll requests a session-scope pause on every live root and worker
 // session (§10.5). It returns how many pauses were requested.
 func (s *Store) PauseAll(ctx context.Context) (int, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT a.name FROM agents a JOIN sessions ses ON ses.agent_id = a.id
+	names, err := s.queryIDs(ctx, `SELECT a.name FROM agents a JOIN sessions ses ON ses.agent_id = a.id
 		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
 		AND ses.generation = (SELECT MAX(s2.generation) FROM sessions s2 WHERE s2.agent_id = a.id)`)
 	if err != nil {
-		return 0, err
-	}
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		names = append(names, name)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return 0, err
 	}
 	n := 0
@@ -567,20 +551,4 @@ func (s *Store) PauseAll(ctx context.Context) (int, error) {
 		n++
 	}
 	return n, nil
-}
-
-// rootHasLiveSubtreePause reports whether rootItemID has a subtree pause in
-// flight, so DrainQueue can freeze that root's queued spawns until it
-// resolves (§10.5).
-//
-// ponytail: untested by this batch's suite (the brief's own test discards the
-// frozen count); a minimal, self-contained check rather than a new schema
-// column or a broader freeze mechanism. Revisit if a future task needs to
-// assert this precisely.
-func (s *Store) rootHasLiveSubtreePause(ctx context.Context, rootItemID string) (bool, error) {
-	var n int
-	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions ses JOIN agents a ON a.id = ses.agent_id
-		WHERE a.root_item_id = ? AND ses.pause_scope = 'subtree'
-		AND ses.state IN ('running', 'pause_requested', 'quiescing', 'stopping')`, rootItemID).Scan(&n)
-	return n > 0, err
 }

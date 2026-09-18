@@ -12,6 +12,27 @@ import (
 const staleAfter = 30 * time.Minute
 const killCompletedAfter = 60 * time.Second
 
+// queryIDs runs a query returning one string column per row. Several callers
+// across pause.go and reconcile.go collect a plain id/name list this way; one
+// shared helper keeps the row-scan-close boilerplate (and its error checks)
+// in one place instead of copied at every call site.
+func (s *Store) queryIDs(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // liveRow is one live session, joined with enough of its agent and item to
 // resolve it against its tmux pane (§10.6).
 type liveRow struct {
@@ -341,21 +362,8 @@ func (s *Store) notifyUnknownTmux(ctx context.Context, tmuxSession string) error
 // sweepFinishedRoots runs the worktree sweep for every top-level item whose
 // whole agent tree has finished (§12.2).
 func (s *Store) sweepFinishedRoots(ctx context.Context) error {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM items WHERE root_id = id AND status IN ('done', 'cancelled')`)
+	rootIDs, err := s.queryIDs(ctx, `SELECT id FROM items WHERE root_id = id AND status IN ('done', 'cancelled')`)
 	if err != nil {
-		return err
-	}
-	var rootIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		rootIDs = append(rootIDs, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return err
 	}
 	for _, rootID := range rootIDs {
@@ -365,17 +373,6 @@ func (s *Store) sweepFinishedRoots(ctx context.Context) error {
 			return err
 		}
 		if stuck > 0 {
-			continue
-		}
-		var any int
-		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE root_item_id = ?`,
-			rootID).Scan(&any); err != nil {
-			return err
-		}
-		if any == 0 {
-			continue
-		}
-		if s.Worktree == nil {
 			continue
 		}
 		if _, err := s.Worktree.Sweep(ctx, rootID); err != nil {
