@@ -82,8 +82,12 @@ func TestCreateSpikeWithAPreflightFailure(t *testing.T) {
 
 func TestStartOrchestratorAndTheSecondOneIs409(t *testing.T) {
 	s, seed := newRuntimeServerWithEpic(t)
+	// A real, signed repo (not seed.RepoID's fake `.git` directory): required
+	// fix 1 makes this route feed the repo into Preflight's own signing check
+	// (§11.4 step 7), which a bare directory can't pass deterministically.
+	signedRepo := seedRepo(t, s, "signed-app", gitRepoSigningOn(t))
 	rec := s.post(t, "/api/items/"+seed.EpicKey+"/orchestrator",
-		`{"request_id":"o1","agent":"fake","model":"fake-1","repos":["`+seed.RepoID+`"],"repos_version":0}`)
+		`{"request_id":"o1","agent":"fake","model":"fake-1","repos":["`+signedRepo+`"],"repos_version":0}`)
 	if rec.Code != 200 {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
 	}

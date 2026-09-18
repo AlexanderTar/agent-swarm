@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -441,6 +442,30 @@ func seedRepo(t *testing.T, e *runtimeEnv, name, path string) string {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// gitRepoSigningOn is a real, deterministic git repo with commit.gpgsign set
+// locally (not read from whatever the host's global git config happens to
+// have) — required fix 1 threads a spawn-time repo pick into Preflight's own
+// §11.4 signing check, so any test that needs that check to actually pass
+// needs a real repo, not the fake `.git` directories newEnv scatters around
+// for the repo-scan tests (those never run a real git command against them).
+func gitRepoSigningOn(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "t@example.invalid"},
+		{"config", "user.name", "T"},
+		{"config", "commit.gpgsign", "true"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return dir
 }
 
 // seedRuntimeTree builds one EPIC with one story, one task, one spike, one
