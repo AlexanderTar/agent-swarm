@@ -14,6 +14,24 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
+// panes sets the fake tmux's pane list for a test (Task 21; Task 22's wake
+// tests use it too).
+func panes(tm *fakeTmux, p ...Pane) { tm.panes = p }
+
+// sweptCount is how many worktrees the sweep has finished with. `removed` is the
+// happy path and `retained` is a dirty or unmerged tree the sweep deliberately
+// kept (§12.2), so both count as swept — the question these tests ask is whether
+// the sweep ran at all, not whether git let it delete.
+func sweptCount(t *testing.T, s *Store) int {
+	t.Helper()
+	var n int
+	if err := s.DB.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM worktrees WHERE state IN ('removed', 'retained')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 // seedSectionApproval writes a spike, an artifact with one section and an open
 // approve_section request, without needing Task 18's registrar. The sha256 is the
 // real hash of the section body, because Approve compares it and a placeholder
