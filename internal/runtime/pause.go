@@ -420,10 +420,29 @@ type overdueSubtree struct {
 	attempt        int
 }
 
+// overdueSubtreePauses finds an unresponsive orchestrator, not just any
+// overdue subtree-scoped session. pauseSubtree stamps pause_scope = 'subtree'
+// on every descendant too (so rootHasLiveSubtreePause can see the whole
+// subtree is pausing), and a plain worker sits in the same
+// pause_requested/quiescing states its own deadline while TickPause's normal
+// per-session interrupt-then-kill loop handles it. Without the EXISTS guard
+// below, that worker's own overdue deadline ALSO matched here on the very
+// tick TickPause's loop just sent it its interrupt keys (interrupt() never
+// changes ses.State), so writeUnresponsiveOrchestratorCheckpoints fabricated
+// a "the orchestrator did not respond" checkpoint on behalf of a plain
+// worker that has no children to report on — and because that checkpoint is
+// itself kind:'handoff', the worker's session then looked exactly like a
+// real handoff, letting the ordinary killAfterHandoff (5s) path kill it
+// instead of the killAfterInterrupt (10s) path already in flight for it.
+// Found while writing scenario 9's e2e test (Batch 6c): the existing unit
+// test for this path (TestUnresponsiveOrchestratorGetsADaemonWrittenCheckpoint)
+// short-circuits the worker straight to 'interrupted' via raw SQL, which
+// never exercises TickPause's own interrupt tick racing this query.
 func (s *Store) overdueSubtreePauses(ctx context.Context) ([]overdueSubtree, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.agent_id, ses.attempt FROM sessions ses
 		WHERE ses.pause_scope = 'subtree' AND ses.state IN ('pause_requested', 'quiescing')
-		AND ses.pause_deadline_at IS NOT NULL AND ses.pause_deadline_at < ?`, db.Millis(s.Now()))
+		AND ses.pause_deadline_at IS NOT NULL AND ses.pause_deadline_at < ?
+		AND EXISTS (SELECT 1 FROM agents c WHERE c.parent_agent_id = ses.agent_id)`, db.Millis(s.Now()))
 	if err != nil {
 		return nil, err
 	}

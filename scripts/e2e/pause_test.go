@@ -213,3 +213,67 @@ func TestScenario08PauseAllAndResume(t *testing.T) {
 		t.Fatalf("old-generation token on /mcp = %d, want 401", resp.StatusCode)
 	}
 }
+
+// Scenario 9: unresponsive orchestrator during a subtree pause. Neither the
+// orchestrator nor its child ever responds — both are left on _default.json,
+// which only ever syncs once then sleeps. pauseSubtree (pause.go) pauses the
+// child first with the same deadline as the orchestrator's own; the child
+// times out through the same interrupt-then-kill path scenario 7 exercises,
+// which is what makes it "a child without a handoff" once it's no longer
+// live — promotePendingSubtreePauses then promotes the orchestrator's own
+// session to pause_requested, whose deadline is already long past, so
+// writeUnresponsiveOrchestratorCheckpoints fires in that same reconcile
+// tick. No bound is given in the spec text for this one (unlike 6/10's
+// "within 6s"), so the timeout below is sized for the full deadline +
+// interrupt + kill-then-detect + promote chain, not tight.
+func TestScenario09UnresponsiveOrchestrator(t *testing.T) {
+	h := newHarness(t)
+	h.setPauseDeadlineSec(t, 3)
+	epic := h.materializedEpic(t)
+	orch := h.startOrchestrator(t, epic)
+	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	child := h.spawn(t, orch, h.firstTask(t, epic), "coder")
+	if !h.waitForSessionState(t, orch, "running", 5*time.Second) {
+		t.Fatalf("orch session = %s, never reached running", h.sessionState(t, orch))
+	}
+	if !h.waitForSessionState(t, child, "running", 5*time.Second) {
+		t.Fatalf("child session = %s, never reached running", h.sessionState(t, child))
+	}
+
+	h.pause(t, orch, "subtree")
+
+	// Neither agent is ever touched again: both ignore the pause.
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		var daemonWritten int
+		var summary, blockersJSON string
+		err := h.db(t).QueryRow(`SELECT daemon_written, summary, blockers_json FROM checkpoints
+			WHERE agent_id = (SELECT id FROM agents WHERE name = ?) AND kind = 'handoff'
+			ORDER BY created_at DESC LIMIT 1`, orch).Scan(&daemonWritten, &summary, &blockersJSON)
+		if err == nil {
+			if daemonWritten != 1 {
+				t.Fatalf("orchestrator's own handoff daemon_written = %d, want 1", daemonWritten)
+			}
+			if summary != "Paused by daemon; orchestrator did not respond." {
+				t.Fatalf("summary = %q", summary)
+			}
+			if !bytes.Contains([]byte(blockersJSON), []byte(child)) {
+				t.Fatalf("blockers = %s, want to list %s (no handoff)", blockersJSON, child)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no daemon-written checkpoint for %s within %s: %v", orch, 60*time.Second, err)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	var childHandoffs int
+	if err := h.db(t).QueryRow(`SELECT COUNT(*) FROM checkpoints WHERE agent_id =
+		(SELECT id FROM agents WHERE name = ?) AND kind = 'handoff'`, child).Scan(&childHandoffs); err != nil {
+		t.Fatal(err)
+	}
+	if childHandoffs != 0 {
+		t.Fatalf("child wrote %d handoff checkpoints, want 0 (it never responded)", childHandoffs)
+	}
+}
