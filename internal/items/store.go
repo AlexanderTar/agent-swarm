@@ -20,6 +20,12 @@ type Store struct {
 	DB     *db.DB
 	Events *events.Store
 	Now    func() time.Time
+
+	// RequestPayload builds the request.* SSE payload (contracts R5). nil keeps the
+	// interim {id, kind, item, state} form.
+	RequestPayload func(ctx context.Context, tx *sql.Tx, id string) (any, error)
+	// RequestOpened raises the §17.5 notification for a request the daemon opened.
+	RequestOpened func(ctx context.Context, tx *sql.Tx, id string) error
 }
 
 type CreateInput struct {
@@ -122,6 +128,11 @@ func (s *Store) getTx(ctx context.Context, q querier, key string) (Item, error) 
 		return it, errf(CodeNotFound, "No item %s.", key)
 	}
 	return it, err
+}
+
+// GetTx reads an item inside the caller's own write transaction (D48).
+func (s *Store) GetTx(ctx context.Context, tx *sql.Tx, key string) (Item, error) {
+	return s.getTx(ctx, tx, key)
 }
 
 func (s *Store) getByID(ctx context.Context, q querier, id string) (Item, error) {

@@ -1,45 +1,32 @@
-// Package runtime holds agents, sessions and messages (Phase 2). Phase 1 only
-// needs the enums, which settings and catalog share.
+// Package runtime owns every row a Swarm agent produces: agents, sessions,
+// messages, checkpoints, requests and artifacts (spec §5, §6, §10).
 package runtime
 
-type AgentKind string
+import "github.com/AlexanderTar/agent-swarm/internal/kinds"
+
+// The enums live in internal/kinds so settings and catalog can use them without
+// importing runtime (which would be a cycle once Store holds them).
+type AgentKind = kinds.AgentKind
+type Role = kinds.Role
 
 const (
-	Claude AgentKind = "claude"
-	Codex  AgentKind = "codex"
-	Agy    AgentKind = "agy"
-	Cursor AgentKind = "cursor"
-	Fake   AgentKind = "fake"
+	Claude = kinds.Claude
+	Codex  = kinds.Codex
+	Agy    = kinds.Agy
+	Cursor = kinds.Cursor
+	Fake   = kinds.Fake
 )
-
-// AgentKinds is the settings order (claude first).
-var AgentKinds = []AgentKind{Claude, Codex, Agy, Cursor}
-
-func (k AgentKind) Display() string {
-	switch k {
-	case Claude:
-		return "Claude"
-	case Codex:
-		return "Codex"
-	case Agy:
-		return "agy"
-	case Cursor:
-		return "Cursor"
-	}
-	return "Fake"
-}
-
-type Role string
 
 const (
-	RoleOrchestrator Role = "orchestrator"
-	RoleCoder        Role = "coder"
-	RoleReviewer     Role = "reviewer"
-	RoleUIReviewer   Role = "ui_reviewer"
-	RoleResearcher   Role = "researcher"
-	RoleDebugger     Role = "debugger"
-	RoleMechanical   Role = "mechanical"
-	RoleAdvisor      Role = "advisor" // Settings only; never an agent row (L28)
+	RoleOrchestrator = kinds.RoleOrchestrator
+	RoleCoder        = kinds.RoleCoder
+	RoleReviewer     = kinds.RoleReviewer
+	RoleUIReviewer   = kinds.RoleUIReviewer
+	RoleResearcher   = kinds.RoleResearcher
+	RoleDebugger     = kinds.RoleDebugger
+	RoleMechanical   = kinds.RoleMechanical
+	RoleAdvisor      = kinds.RoleAdvisor
 )
 
-var SettingsRoles = []Role{RoleOrchestrator, RoleAdvisor, RoleCoder, RoleReviewer, RoleUIReviewer, RoleResearcher, RoleDebugger, RoleMechanical}
+var AgentKinds = kinds.AgentKinds
+var SettingsRoles = kinds.SettingsRoles

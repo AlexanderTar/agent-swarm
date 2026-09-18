@@ -103,6 +103,23 @@ func seedRequest(t *testing.T, d *db.DB, it items.Item, kind, state string) stri
 // later returns a timestamp after every write the tick clock has made so far.
 func later(s *items.Store) int64 { return db.Millis(s.Now()) }
 
+// insertIntegrated writes the integrated checkpoint reconcileRoot needs, with an
+// agent and session row so the foreign keys hold. created_at is far in the future
+// so rootState's `ckpAt < lastChild` guard passes whatever the tick clock did.
+func insertIntegrated(t *testing.T, s *items.Store, itemID string) {
+	t.Helper()
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, brief, state, created_at)
+		VALUES ('agt_i', 'orch', 'fake', 'm', 'orchestrator', ?, ?, '', 'active', 1);
+		INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, state, cwd_kind, started_at)
+		VALUES ('ses_i', 'agt_i', 1, 1, 'h', 'orch', '/tmp', 'running', 'neutral', 1);
+		INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary, git_json, created_at)
+		VALUES ('ckp_i', 'ses_i', 'agt_i', ?, 'integrated', 1, 'merged', '[]', 9999999999999);`, itemID, itemID, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // eventsOfType returns the payloads of every event of typ, in seq order.
 func eventsOfType(t *testing.T, s *items.Store, typ string) []map[string]string {
 	t.Helper()

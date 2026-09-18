@@ -1,0 +1,279 @@
+// Package runtime owns every row a Swarm agent produces: agents, sessions,
+// messages, checkpoints, requests and artifacts (spec §5, §6, §10).
+package runtime
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"slices"
+	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/repos"
+	"github.com/AlexanderTar/agent-swarm/internal/settings"
+)
+
+type AgentState string
+type SessionState string
+type CheckpointKind string
+type MessageKind string
+type RequestKind string
+type RequestState string
+type WakeClass string
+
+const (
+	AgentQueued       AgentState = "queued"
+	AgentActive       AgentState = "active"
+	AgentFinished     AgentState = "finished"
+	AgentAcknowledged AgentState = "acknowledged"
+)
+
+const (
+	Spawning       SessionState = "spawning"
+	Running        SessionState = "running"
+	PauseRequested SessionState = "pause_requested"
+	Quiescing      SessionState = "quiescing"
+	Stopping       SessionState = "stopping"
+	Paused         SessionState = "paused"
+	Interrupted    SessionState = "interrupted"
+	Completed      SessionState = "completed"
+	Failed         SessionState = "failed"
+	Crashed        SessionState = "crashed"
+	Cancelled      SessionState = "cancelled"
+)
+
+var LiveStates = []SessionState{Spawning, Running, PauseRequested, Quiescing, Stopping}
+var PausingStates = []SessionState{PauseRequested, Quiescing, Stopping}
+
+func (s SessionState) Live() bool    { return slices.Contains(LiveStates, s) }
+func (s SessionState) Pausing() bool { return slices.Contains(PausingStates, s) }
+
+var sessionLabels = map[SessionState]string{
+	Spawning: "Starting", Running: "Running", PauseRequested: "Pause requested",
+	Quiescing: "Finishing current step", Stopping: "Finishing current step",
+	Paused: "Paused", Interrupted: "Interrupted", Crashed: "Crashed",
+	Failed: "Failed", Completed: "Completed", Cancelled: "Cancelled",
+}
+
+// Label is the §17.2 label.
+func (s SessionState) Label() string { return sessionLabels[s] }
+
+const (
+	Accepted     CheckpointKind = "accepted"
+	Progress     CheckpointKind = "progress"
+	BlockedCkp   CheckpointKind = "blocked"
+	Handoff      CheckpointKind = "handoff"
+	CompletedCkp CheckpointKind = "completed"
+	FailedCkp    CheckpointKind = "failed"
+	Integrated   CheckpointKind = "integrated"
+)
+
+type Agent struct {
+	ID, Name                          string
+	Kind                              AgentKind
+	Model, Effort                     string
+	Role                              Role
+	ItemID, RootItemID, ParentAgentID string
+	AdvisorKind                       string
+	AdvisorModel                      string
+	AdvisorEffort                     string
+	AdvisorMode                       string
+	Brief                             string
+	State                             AgentState
+	CreatedAt                         time.Time
+	FinishedAt                        *time.Time
+}
+
+type Session struct {
+	ID, AgentID                            string
+	Attempt, Generation                    int
+	ProviderSessionID, TokenHash, TmuxName string
+	Cwd, CwdKind                           string
+	State                                  SessionState
+	Waiting                                bool
+	PauseScope                             string
+	PauseDeadlineAt                        *time.Time
+	StopBlocks                             int
+	NeedsCompactionNotice                  bool
+	LastSeenAt, LastWakeAt                 *time.Time
+	ExitCode                               *int
+	StartedAt                              time.Time
+	EndedAt                                *time.Time
+}
+
+type GitRef struct {
+	Repo, Branch, SHA string
+	Dirty             bool
+}
+
+type Verify struct {
+	Cmd, Phase string
+	OK         bool
+	Note       string
+}
+
+type Checkpoint struct {
+	ID, SessionID, AgentID, ItemID string
+	Kind                           CheckpointKind
+	Attempt                        int
+	Resolution, Summary            string
+	Next, Blockers                 []string
+	Git                            []GitRef
+	Verification                   []Verify
+	Artifacts, Processed           []string
+	DaemonWritten                  bool
+	CreatedAt                      time.Time
+}
+
+// Party is one message endpoint (spec §6.2).
+type Party struct {
+	Agent   string `json:"agent"`
+	Name    string `json:"name"`
+	Session string `json:"session"`
+}
+
+// Envelope is what swarm_sync returns (§6.2).
+type Envelope struct {
+	V           int             `json:"v"`
+	MsgID       string          `json:"msg_id"`
+	Seq         int64           `json:"seq"`
+	Kind        MessageKind     `json:"kind"`
+	Origin      string          `json:"origin"`
+	From        *Party          `json:"from,omitempty"`
+	To          Party           `json:"to"`
+	RootItem    string          `json:"root_item"`
+	Item        string          `json:"item,omitempty"`
+	Correlation string          `json:"correlation_id,omitempty"`
+	ReplyTo     string          `json:"reply_to,omitempty"`
+	RequestID   string          `json:"request_id,omitempty"`
+	Payload     json.RawMessage `json:"payload"`
+}
+
+type Message struct {
+	ID                                 string
+	Seq                                int64
+	Kind                               MessageKind
+	WakeClass                          WakeClass
+	Priority                           int
+	Origin, FromAgentID, FromSessionID string
+	ToAgentID, RootItemID, ItemID      string
+	CorrelationID, ReplyTo, RequestID  string
+	Payload                            json.RawMessage
+	State                              string
+	DeliveryCount                      int
+	CreatedAt                          time.Time
+}
+
+type ArtifactSection struct {
+	ID, Title, SHA256 string
+	Start, End        int
+}
+
+type Artifact struct {
+	ID, ItemID             string
+	Kind, Path             string
+	HeadRevision, Revision int
+	Sections               []ArtifactSection
+	CreatedBy              string
+	CreatedAt              time.Time
+}
+
+type Request struct {
+	ID                               string
+	Kind                             RequestKind
+	AgentID, SessionID, ItemID       string
+	ArtifactID                       string
+	SectionID, SectionSHA256, Prompt string
+	Options                          json.RawMessage
+	State                            RequestState
+	Confirmed                        []string
+	ArtifactRevision                 int
+	Binding                          json.RawMessage
+	ResponseText, RespondedVia       string
+	RespondedAt                      *time.Time
+	CreatedAt                        time.Time
+}
+
+type Advice struct {
+	ID, SessionID, ItemID                       string
+	AdvisorKind, AdvisorModel, AdvisorEffort    string
+	Question, ContextPath                       string
+	ContextChars                                int
+	State, Answer, Error, Mode, SourceRequestID string
+	DurationMs                                  int
+	InputTokens, OutputTokens                   int
+	CacheReadTokens, CacheWriteTokens           int
+	CostUSD                                     *float64
+	CreatedAt                                   time.Time
+	FinishedAt                                  *time.Time
+}
+
+// Pane is a tmux pane snapshot.
+type Pane struct {
+	Session    string
+	Dead       bool
+	DeadStatus int
+	Attached   bool
+	Command    string
+}
+
+// Tmux is the spawner seam; *spawn.Spawner implements it (Task 4).
+type Tmux interface {
+	Start(ctx context.Context, name, cwd string, env map[string]string, argv []string) error
+	Panes(ctx context.Context) ([]Pane, error)
+	Capture(ctx context.Context, name string, lines int) (string, error)
+	PasteLine(ctx context.Context, name, line string) error
+	Keys(ctx context.Context, name string, keys ...string) error
+	Env(ctx context.Context, name, key string) (string, error)
+	Kill(ctx context.Context, name string) error
+}
+
+// Notifier raises a §17.5 notification. internal/notify implements it (Task 23).
+type Notifier interface {
+	Raise(ctx context.Context, tx *sql.Tx, n NotifyInput) error
+}
+
+type NotifyInput struct {
+	Kind, AgentName, ItemKey, RequestID string
+	Args                                map[string]string
+}
+
+// Advisor answers an agent's swarm_advise call. internal/advisor implements it
+// (Tasks 25-27).
+type Advisor interface {
+	Mode(kind AgentKind, advisorKind AgentKind, advisorModel string, advisorCapable bool) string
+	Ask(ctx context.Context, sessionID, question string, focus []string, wait time.Duration) (Advice, error)
+}
+
+// Store is the single P2 service. Fields are wired once in cmd/swarm/daemon.go.
+// Task 12 adds Tmux/Adapters/Worktree/Notify/Go; Task 26 adds Advisor.
+type Store struct {
+	DB       *db.DB
+	Events   *events.Store
+	Items    *items.Store
+	Repos    *repos.Service
+	Settings *settings.Store
+	Catalog  *catalog.Service
+	Home     string // SWARM_HOME
+	Now      func() time.Time
+	Log      func(format string, args ...any)
+}
+
+func (s *Store) logf(format string, args ...any) {
+	if s.Log != nil {
+		s.Log(format, args...)
+	}
+}
+
+// tx runs fn in one immediate transaction and wakes SSE subscribers after commit.
+func (s *Store) tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	if err := s.DB.Tx(ctx, fn); err != nil {
+		return err
+	}
+	s.Events.Notify()
+	return nil
+}
