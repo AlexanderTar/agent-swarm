@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -380,8 +381,63 @@ func TestShareRefusesAConcurrentClaimRace(t *testing.T) {
 	if _, err := s.Remove(ctx, wt.ID, "agt_1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-shareErr; err == nil {
-		t.Fatal("a Share racing the removal's claim must be refused")
+	wantErr := fmt.Sprintf("worktree: %s is not active", wt.ID)
+	if err := <-shareErr; err == nil || err.Error() != wantErr {
+		t.Fatalf("Share err = %v, want %q", err, wantErr)
+	}
+	final, err := s.Get(ctx, wt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "removed" || final.RemovedAt == nil {
+		t.Fatalf("worktree = %+v, want removed with RemovedAt set", final)
+	}
+}
+
+// The same Share-during-delete race is open on the §12.2 sweep path if the
+// per-worktree lock isn't also taken there (Important 2): Sweep calls the
+// same private remove as Remove, but through its own loop, so it needs its
+// own lockFor call around each iteration.
+func TestSweepRefusesAConcurrentShareDuringRemoval(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/sweep-race",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := make(chan struct{})
+	shareErr := make(chan error, 1)
+	real := s.Run
+	var once sync.Once
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "status" {
+			once.Do(func() { close(claimed) })
+		}
+		return real(ctx, name, args...)
+	}
+	go func() {
+		<-claimed
+		shareErr <- s.Share(context.Background(), wt.ID, "agt_2", "ro")
+	}()
+	out, err := s.Sweep(ctx, "itm_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].State != "removed" {
+		t.Fatalf("Sweep result = %+v, want one removed worktree", out)
+	}
+	wantErr := fmt.Sprintf("worktree: %s is not active", wt.ID)
+	if err := <-shareErr; err == nil || err.Error() != wantErr {
+		t.Fatalf("Share err = %v, want %q", err, wantErr)
+	}
+	final, err := s.Get(ctx, wt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "removed" || final.RemovedAt == nil {
+		t.Fatalf("worktree = %+v, want removed with RemovedAt set", final)
 	}
 }
 

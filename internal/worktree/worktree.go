@@ -36,30 +36,28 @@ type Service struct {
 	// OnRetained fires inside the same transaction that marks a worktree
 	// retained, so a caller can e.g. raise a notification atomically.
 	OnRetained func(ctx context.Context, tx *sql.Tx, wt Worktree) error
-
-	mu     sync.Mutex
-	wtLock map[string]*sync.Mutex
 }
 
-// lockFor returns the per-worktree mutex that serializes Remove against
-// Share (C4). It closes the race between the "no other reservation" guard
-// and the eventual delete without any persisted claim state: L12 already
-// guarantees a single daemon process holds the only *Service, so an
-// in-process lock is a complete exclusion mechanism, and — unlike a
-// persisted "claiming" state — a crash mid-Remove leaves the row exactly as
-// it was (no partial state to reconcile on restart).
-func (s *Service) lockFor(wtID string) *sync.Mutex {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.wtLock == nil {
-		s.wtLock = make(map[string]*sync.Mutex)
-	}
-	l, ok := s.wtLock[wtID]
-	if !ok {
-		l = &sync.Mutex{}
-		s.wtLock[wtID] = l
-	}
-	return l
+// wtLocks holds the per-worktree mutex that serializes Remove/Sweep against
+// Share (C4). It closes the race between the "no other reservation" guard and
+// the eventual delete without any persisted claim state: L12 already
+// guarantees a single daemon process is the only writer, so an in-process
+// lock is a complete exclusion mechanism, and — unlike a persisted "claiming"
+// state — a crash mid-removal leaves the row exactly as it was (no partial
+// state to reconcile on restart).
+//
+// Package-level, not a Service field, on purpose: a lock scoped to one
+// *Service only serializes callers that share that exact value. Two *Service
+// values open on the same database (there is only one construction site
+// today, but nothing stops a second) would each get their own empty lock map
+// and the guard would silently stop working — a package-level map is keyed
+// by worktree id across every *Service, however many exist.
+var wtLocks sync.Map // worktree id -> *sync.Mutex
+
+// lockFor returns the mutex for wtID, creating it on first use.
+func lockFor(wtID string) *sync.Mutex {
+	l, _ := wtLocks.LoadOrStore(wtID, &sync.Mutex{})
+	return l.(*sync.Mutex)
 }
 
 // CreateInput is Create and Review's input.
@@ -278,7 +276,7 @@ func (s *Service) Share(ctx context.Context, wtID, agentID, mode string) error {
 	if mode != "rw" && mode != "ro" {
 		return fmt.Errorf("worktree: unknown share mode %q", mode)
 	}
-	lock := s.lockFor(wtID)
+	lock := lockFor(wtID)
 	lock.Lock()
 	defer lock.Unlock()
 	var state string
@@ -367,7 +365,7 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 // cannot land in the window between the "no other reservation" read and the
 // final state write — see Share and lockFor.
 func (s *Service) Remove(ctx context.Context, wtID, callerAgentID string) (Worktree, error) {
-	lock := s.lockFor(wtID)
+	lock := lockFor(wtID)
 	lock.Lock()
 	defer lock.Unlock()
 	wt, err := s.Get(ctx, wtID)
@@ -429,7 +427,13 @@ func (s *Service) mergedOrPushed(ctx context.Context, wt Worktree) bool {
 }
 
 // Sweep is §12.2: it runs Remove's rules on every active worktree of one root,
-// ignoring reservations, because the caller has checked the whole tree is finished.
+// ignoring reservations, because the caller has checked the whole tree is
+// finished. Each worktree is still locked for its own removal (C4): a Share
+// racing this exact worktree must see the same before/after guarantee Remove
+// gives, not an in-between state. The lock is taken here, per iteration, and
+// not inside remove itself — remove is also Remove's helper, and Remove
+// already holds this same lock around its own call to remove; locking inside
+// remove would self-deadlock.
 func (s *Service) Sweep(ctx context.Context, rootItemID string) ([]Worktree, error) {
 	wts, err := s.query(ctx, `WHERE root_item_id = ? AND state = 'active'`, rootItemID)
 	if err != nil {
@@ -442,7 +446,10 @@ func (s *Service) Sweep(ctx context.Context, rootItemID string) ([]Worktree, err
 	}
 	var out []Worktree
 	for _, wt := range wts {
+		lock := lockFor(wt.ID)
+		lock.Lock()
 		done, err := s.remove(ctx, wt)
+		lock.Unlock()
 		if err != nil {
 			return out, err
 		}
