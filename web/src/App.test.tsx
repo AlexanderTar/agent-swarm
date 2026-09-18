@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { createMockDaemon } from "./mock/daemon";
 import { renderWithDaemon } from "./test/render";
 
 describe("App shell (§16.5)", () => {
@@ -59,6 +60,23 @@ describe("App shell (§16.5)", () => {
     await user.click(screen.getByRole("button", { name: "Show in hierarchy" }));
     expect(window.location.hash).toBe("#/hierarchy?item=EPIC-12");
     expect(screen.queryByText("This item is outside the current view.")).not.toBeInTheDocument();
+  });
+
+  it("shows a banner with the daemon's reason and a working retry when items fail to load", async () => {
+    const d = createMockDaemon();
+    let attempt = 0;
+    d.override("GET /api/items", () => {
+      attempt += 1;
+      if (attempt === 1) {
+        return { status: 500, body: { error: { code: "internal", message: "x", reason: "Couldn't load items." } } };
+      }
+      return { status: 200, body: { items: d.db.items, matches: d.db.items.length } };
+    });
+    const { user } = renderWithDaemon(<App />, { daemon: d, events: false });
+    expect(await screen.findByText("Couldn't load items.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText("Couldn't load items.")).not.toBeInTheDocument());
+    expect(await screen.findByRole("button", { name: "Needs you 9" })).toBeInTheDocument();
   });
 
   it("shows the disconnected banner", async () => {

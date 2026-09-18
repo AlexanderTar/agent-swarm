@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { createApi } from "./api";
-import { ConnectionBanner, OutsideViewBanner } from "./components/Banners";
+import { createApi, errorText } from "./api";
+import { ConnectionBanner, ItemsErrorBanner, OutsideViewBanner } from "./components/Banners";
 import { Header } from "./components/Header";
 import { ToastProvider } from "./components/Toast";
 import { C } from "./copy";
@@ -77,6 +77,7 @@ export function App() {
   return (
     <div className="flex h-screen flex-col">
       {conn.state === "closed" && <ConnectionBanner onRetry={conn.retry} />}
+      {items.error ? <ItemsErrorBanner message={errorText(items.error)} onRetry={items.reload} /> : null}
       <Header
         url={url}
         setUrl={setUrl}
