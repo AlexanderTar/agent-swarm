@@ -320,8 +320,12 @@ func orEmptySlice(s []string) []string {
 	return s
 }
 
-// writeImportedNote writes <KBDir>/imported/<SW-KEY>.md with the complete v1 text
-// and registers it as a note artifact (§20).
+// writeImportedNote computes <KBDir>/imported/<SW-KEY>.md's content and registers it
+// as a note artifact (§20 step 4). It writes only to the temp database: the file
+// itself is not created here. Step 5's "leaves v1 untouched" must be true of the
+// filesystem too, so nothing under kb/imported/ may exist before step 6 confirms the
+// switch; step 7 flushes this content to disk once the new database is live (via
+// LoadNoteFiles).
 func writeImportedNote(ctx context.Context, tx *sql.Tx, in ImportInput, itemID string,
 	v1 V1Task, now int64, rep *ImportReport) error {
 	ctxText := strings.TrimSpace(v1.InitialContext)
@@ -354,12 +358,6 @@ func writeImportedNote(ctx context.Context, tx *sql.Tx, in ImportInput, itemID s
 	}
 	body := b.String()
 	path := filepath.Join(in.KBDir, "imported", v1.Key+".md")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return err
-	}
 	artID := ids.New("art")
 	if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts
 		(id, item_id, kind, path, head_revision, created_by, created_at)
@@ -424,8 +422,8 @@ func Validate(ctx context.Context, d *db.DB, rep *ImportReport) error {
 	for _, it := range stored {
 		// L4: every parent/child pair must be legal.
 		if it.ParentID == "" {
-			if it.Type != "epic" && it.Type != "bug" {
-				return fmt.Errorf("%s is a top-level %s; only epics and bugs may be top-level", it.Key, it.Type)
+			if it.Type != "epic" && it.Type != "bug" && it.Type != "spike" {
+				return fmt.Errorf("%s is a top-level %s; only epics, bugs and spikes may be top-level (L4)", it.Key, it.Type)
 			}
 			if it.RootID != it.ID {
 				return fmt.Errorf("%s is top-level but its root_id is %s", it.Key, it.RootID)

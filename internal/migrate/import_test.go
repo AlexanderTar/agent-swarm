@@ -246,41 +246,52 @@ func TestImportKeepsV1TaskTitlesAndRewritesRootAndStoryTitles(t *testing.T) {
 	}
 }
 
-// §20: the complete text goes to kb/imported/<SW-KEY>.md and is linked as a note.
+// §20: the complete text is computed and stored in the temp database's
+// artifact_revisions.content, linked as a note. Step 4 does not write the file to
+// disk yet (that is step 7's job, once step 6 confirms the new database is live).
 func TestImportWritesTheFullTextAndRegistersANoteArtifact(t *testing.T) {
 	_, newPath, kb := importInto(t, fullV1(t))
 	p := filepath.Join(kb, "imported", "SW-674.md")
-	body, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(body), "context for SW-674") {
-		t.Errorf("the initial_context is missing:\n%s", body)
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Errorf("%s must not exist yet: stat err = %v", p, err)
 	}
 	d, err := db.Open(context.Background(), newPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	var kind, path string
+	var kind, path, content string
 	var head int
 	var createdBy sql.NullString
-	if err := d.QueryRow(`SELECT a.kind, a.path, a.head_revision, a.created_by FROM artifacts a
-		JOIN items i ON i.id = a.item_id WHERE i.legacy_key = 'SW-674'`).Scan(&kind, &path, &head, &createdBy); err != nil {
+	if err := d.QueryRow(`SELECT a.kind, a.path, a.head_revision, a.created_by, r.content
+		FROM artifacts a
+		JOIN items i ON i.id = a.item_id
+		JOIN artifact_revisions r ON r.artifact_id = a.id AND r.revision = a.head_revision
+		WHERE i.legacy_key = 'SW-674'`).Scan(&kind, &path, &head, &createdBy, &content); err != nil {
 		t.Fatal(err)
 	}
 	if kind != "note" || path != p || head != 1 {
 		t.Errorf("artifact = %s/%s/%d", kind, path, head)
 	}
+	if !strings.Contains(content, "context for SW-674") {
+		t.Errorf("the initial_context is missing from the stored content:\n%s", content)
+	}
 	if createdBy.Valid {
 		t.Error("created_by must be NULL: no agent wrote an imported note")
 	}
-	var revs int
-	if err := d.QueryRow(`SELECT count(*) FROM artifact_revisions`).Scan(&revs); err != nil {
+}
+
+// The note-writing refactor's core guarantee: step 4 touches only the temp
+// database. Even on a fully successful import, nothing exists yet under
+// kb/imported/, so a discarded temp DB (step 5's validation failure) never leaves a
+// stray file behind either.
+func TestImportLeavesNoFilesUnderKBImported(t *testing.T) {
+	_, _, kb := importInto(t, fullV1(t))
+	entries, err := os.ReadDir(filepath.Join(kb, "imported"))
+	if err == nil {
+		t.Errorf("kb/imported has %d file(s); step 4 must write only to the database", len(entries))
+	} else if !os.IsNotExist(err) {
 		t.Fatal(err)
-	}
-	if revs == 0 {
-		t.Error("no artifact_revisions row")
 	}
 }
 
