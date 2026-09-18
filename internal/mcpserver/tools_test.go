@@ -85,7 +85,7 @@ func TestSendSucceedsToAnAgentInTheSameRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(mustJSON(out)), "message_id") {
+	if !strings.Contains(string(mustJSON(out)), "msg_id") {
 		t.Fatalf("out = %s", mustJSON(out))
 	}
 }

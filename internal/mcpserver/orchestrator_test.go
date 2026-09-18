@@ -3,8 +3,12 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 // §8.1: swarm_items can't touch another top-level item's tree.
@@ -269,6 +273,59 @@ func TestReadToolRefsFilterReposAndSinceSeq(t *testing.T) {
 		t.Fatalf("refs result = %+v", res)
 	}
 
+	// a ref to an agent resolves via agentOut, a ref to an artifact resolves
+	// via artifactOut, and a checkpoint on the ref'd item surfaces via
+	// checkpointOut.
+	worker := spawnWorker(t, s, seed)
+	workerSes, err := s.RT.LatestSession(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCaller := Caller{SessionID: workerSes.ID, AgentID: worker.ID, AgentName: worker.Name, Role: runtime.RoleCoder}
+	if _, err := s.call(ctx, workerCaller, "swarm_checkpoint", `{"kind":"progress","summary":"working"}`); err != nil {
+		t.Fatal(err)
+	}
+	p := writeSpec(t, "# Spec\n\n## One\n\na\n")
+	artOut, err := s.call(ctx, seed.Caller, "swarm_artifact",
+		`{"op":"register","item":"`+seed.RootKey+`","kind":"spec","path":"`+p+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var art struct {
+		ArtifactID string `json:"artifact_id"`
+	}
+	json.Unmarshal(mustJSON(artOut), &art)
+	if art.ArtifactID == "" {
+		t.Fatalf("artifact register result = %+v", art)
+	}
+
+	out, err = s.call(ctx, seed.Caller, "swarm_read",
+		`{"refs":["`+seed.TaskKey+`","`+worker.Name+`","`+art.ArtifactID+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res4 struct {
+		Agents []struct {
+			Name string `json:"name"`
+		} `json:"agents"`
+		Artifacts []struct {
+			ArtifactID string `json:"artifact_id"`
+		} `json:"artifacts"`
+		Checkpoints []struct {
+			Item string `json:"item"`
+		} `json:"checkpoints"`
+	}
+	json.Unmarshal(mustJSON(out), &res4)
+	if len(res4.Agents) != 1 || res4.Agents[0].Name != worker.Name {
+		t.Fatalf("agent ref result = %+v", res4)
+	}
+	if len(res4.Artifacts) != 1 || res4.Artifacts[0].ArtifactID != art.ArtifactID {
+		t.Fatalf("artifact ref result = %+v", res4)
+	}
+	if len(res4.Checkpoints) == 0 {
+		t.Fatalf("a checkpoint on the ref'd item must surface: %+v", res4)
+	}
+
 	out, err = s.call(ctx, seed.Caller, "swarm_read", `{"filter":{"root":"`+seed.RootKey+`"}}`)
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +335,9 @@ func TestReadToolRefsFilterReposAndSinceSeq(t *testing.T) {
 		t.Fatalf("filter result had no items: %+v", res)
 	}
 
-	out, err = s.call(ctx, seed.Caller, "swarm_read", `{"repos":true}`)
+	// §8.1: "repos" input is a directory-search object, and confirmed_repos is
+	// always returned for a bound caller regardless of whether "repos" is sent.
+	out, err = s.call(ctx, seed.Caller, "swarm_read", `{}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,6 +349,22 @@ func TestReadToolRefsFilterReposAndSinceSeq(t *testing.T) {
 	json.Unmarshal(mustJSON(out), &res2)
 	if len(res2.ConfirmedRepos) != 1 || res2.ConfirmedRepos[0].ID != seed.RepoID {
 		t.Fatalf("confirmed_repos = %+v", res2)
+	}
+
+	// repos: {q} searches the repo directory (a different feature under the
+	// same top-level key).
+	out, err = s.call(ctx, seed.Caller, "swarm_read", `{"repos":{"q":"proj"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res2b struct {
+		Repos []struct {
+			ID string `json:"id"`
+		} `json:"repos"`
+	}
+	json.Unmarshal(mustJSON(out), &res2b)
+	if len(res2b.Repos) != 1 || res2b.Repos[0].ID != seed.RepoID {
+		t.Fatalf("repos search = %+v", res2b)
 	}
 
 	// since_seq well past anything ever issued comes back reset:true.
@@ -315,9 +390,60 @@ func TestReadToolRefsFilterReposAndSinceSeq(t *testing.T) {
 	if res3.Reset {
 		t.Fatalf("a fresh cursor must not reset: %+v", res3)
 	}
+
+	// since_seq > 0 with real events published after the cursor exercises the
+	// event-scan loop's item.changed and checkpoint.created cases. agent.changed
+	// is never actually published anywhere in production (a pre-existing gap
+	// outside this batch's file ownership — see the comment in readTool), so it
+	// is published directly here to prove the branch still works if that gap is
+	// ever closed.
+	baseCursor := res3.Cursor
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.OtherTaskKey+`","title":"Renamed","revision":1}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, workerCaller, "swarm_checkpoint", `{"kind":"progress","summary":"more"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.Events.Publish(ctx, events.AgentChanged, map[string]string{"name": worker.Name}); err != nil {
+		t.Fatal(err)
+	}
+	out, err = s.call(ctx, seed.Caller, "swarm_read", `{"since_seq":`+strconv.FormatInt(baseCursor, 10)+`}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res5 struct {
+		Reset  bool  `json:"reset"`
+		Cursor int64 `json:"cursor"`
+		Items  []struct {
+			Key string `json:"key"`
+		} `json:"items"`
+		Agents []struct {
+			Name string `json:"name"`
+		} `json:"agents"`
+		Checkpoints []struct {
+			Item string `json:"item"`
+		} `json:"checkpoints"`
+	}
+	json.Unmarshal(mustJSON(out), &res5)
+	if res5.Reset {
+		t.Fatalf("a recent cursor must not reset: %+v", res5)
+	}
+	if len(res5.Items) == 0 {
+		t.Fatalf("an item.changed event since the cursor must surface the item: %+v", res5)
+	}
+	if len(res5.Checkpoints) == 0 {
+		t.Fatalf("a checkpoint.created event since the cursor must surface the checkpoint: %+v", res5)
+	}
+	if len(res5.Agents) == 0 {
+		t.Fatalf("an agent.changed event since the cursor must surface the agent: %+v", res5)
+	}
+	if res5.Cursor <= baseCursor {
+		t.Fatalf("cursor must advance: %+v", res5)
+	}
 }
 
-func TestItemsToolUpdateAndList(t *testing.T) {
+func TestItemsToolUpdate(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
 	out, err := s.call(ctx, seed.Caller, "swarm_items",
@@ -333,29 +459,44 @@ func TestItemsToolUpdateAndList(t *testing.T) {
 	if it.Title != "Renamed" {
 		t.Fatalf("item = %+v", it)
 	}
-	out, err = s.call(ctx, seed.Caller, "swarm_items", `{"op":"list","filter":{"root":"`+seed.RootKey+`"}}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(mustJSON(out)), seed.TaskKey) {
-		t.Fatalf("list = %s", mustJSON(out))
-	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_items", `{"op":"bogus"}`); err == nil {
 		t.Fatal("an unknown swarm_items op must be refused")
 	}
 }
 
-func TestItemsToolGetAndFullUpdate(t *testing.T) {
+// §8.1: op is create|update|link|unlink — link/unlink call items.Store's
+// AddDep/RemoveDep (the same primitive the blockOn test helper already uses
+// directly) and return the item with its blocked_by updated.
+func TestItemsToolLinkAndUnlink(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
-	out, err := s.call(ctx, seed.Caller, "swarm_items", `{"op":"get","key":"`+seed.TaskKey+`"}`)
+	out, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"link","key":"`+seed.TaskKey+`","blocked_by":"`+seed.OtherTaskKey+`"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(mustJSON(out)), seed.TaskKey) {
-		t.Fatalf("get = %s", mustJSON(out))
+	var it struct {
+		BlockedBy []string `json:"blocked_by"`
 	}
-	out, err = s.call(ctx, seed.Caller, "swarm_items", `{"op":"update","key":"`+seed.TaskKey+
+	json.Unmarshal(mustJSON(out), &it)
+	if !strings.Contains(strings.Join(it.BlockedBy, ","), seed.OtherTaskKey) {
+		t.Fatalf("after link, blocked_by = %+v", it)
+	}
+	out, err = s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"unlink","key":"`+seed.TaskKey+`","blocked_by":"`+seed.OtherTaskKey+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.Unmarshal(mustJSON(out), &it)
+	if len(it.BlockedBy) != 0 {
+		t.Fatalf("after unlink, blocked_by = %+v", it)
+	}
+}
+
+func TestItemsToolFullUpdate(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_items", `{"op":"update","key":"`+seed.TaskKey+
 		`","brief":"new brief","acceptance":["a","b"],"priority":1,"revision":1}`)
 	if err != nil {
 		t.Fatal(err)
@@ -365,16 +506,22 @@ func TestItemsToolGetAndFullUpdate(t *testing.T) {
 	}
 }
 
-func TestControlToolResumeAndAckAndBadAction(t *testing.T) {
+func TestControlToolResumeAndBadAction(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
 	worker := spawnWorker(t, s, seed)
 	s.RT.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE agent_id = ?`, worker.ID)
-	if _, err := s.call(ctx, seed.Caller, "swarm_control", `{"target":"`+worker.Name+`","action":"resume"}`); err != nil {
+	out, err := s.call(ctx, seed.Caller, "swarm_control", `{"target":"`+worker.Name+`","action":"resume"}`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.call(ctx, seed.Caller, "swarm_control", `{"target":"`+worker.Name+`","action":"ack"}`); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(string(mustJSON(out)), `"state"`) {
+		t.Fatalf("resume result = %s, want a real state (§8.1)", mustJSON(out))
+	}
+	// §8.1: "ack" is not a swarm_control action (that's the separate
+	// POST /api/agents/{name}/ack UI endpoint).
+	if _, err := s.call(ctx, seed.Caller, "swarm_control", `{"target":"`+worker.Name+`","action":"ack"}`); err == nil {
+		t.Fatal(`"ack" is not a valid swarm_control action`)
 	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_control", `{"target":"`+worker.Name+`","action":"bogus"}`); err == nil {
 		t.Fatal("an unknown swarm_control action must be refused")

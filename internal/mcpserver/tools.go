@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
+	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -66,19 +68,19 @@ func checkpointTool(s *Server) ToolDef {
 		Description: "Record progress: accepted, progress, blocked, handoff, completed or failed, with the verification evidence TDD requires.",
 		Schema: objSchema(`"kind":{"type":"string"},"item":{"type":"string"},"summary":{"type":"string"},
 			"resolution":{"type":"string"},"next":{"type":"array"},"blockers":{"type":"array"},
-			"git":{"type":"array"},"verify":{"type":"array"},"artifacts":{"type":"array"},"processed":{"type":"array"}`),
+			"git":{"type":"array"},"verification":{"type":"array"},"artifacts":{"type":"array"},"processed":{"type":"array"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Kind       string           `json:"kind"`
-				ItemKey    string           `json:"item"`
-				Summary    string           `json:"summary"`
-				Resolution string           `json:"resolution"`
-				Next       []string         `json:"next"`
-				Blockers   []string         `json:"blockers"`
-				Git        []runtime.GitRef `json:"git"`
-				Verify     []runtime.Verify `json:"verify"`
-				Artifacts  []string         `json:"artifacts"`
-				Processed  []string         `json:"processed"`
+				Kind         string           `json:"kind"`
+				ItemKey      string           `json:"item"`
+				Summary      string           `json:"summary"`
+				Resolution   string           `json:"resolution"`
+				Next         []string         `json:"next"`
+				Blockers     []string         `json:"blockers"`
+				Git          []runtime.GitRef `json:"git"`
+				Verification []runtime.Verify `json:"verification"`
+				Artifacts    []string         `json:"artifacts"`
+				Processed    []string         `json:"processed"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -86,7 +88,7 @@ func checkpointTool(s *Server) ToolDef {
 			res, err := s.RT.WriteCheckpoint(ctx, c.SessionID, runtime.CheckpointInput{
 				Kind: runtime.CheckpointKind(in.Kind), ItemKey: in.ItemKey, Summary: in.Summary,
 				Resolution: in.Resolution, Next: in.Next, Blockers: in.Blockers,
-				Git: in.Git, Verification: in.Verify, Artifacts: in.Artifacts, Processed: in.Processed,
+				Git: in.Git, Verification: in.Verification, Artifacts: in.Artifacts, Processed: in.Processed,
 			})
 			if err != nil {
 				return nil, err
@@ -144,14 +146,14 @@ func sendTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_send",
 		Description: "Send a short message to another agent in the same top-level item, or to your parent.",
-		Schema: objSchema(`"to":{"type":"string"},"kind":{"type":"string"},"body":{"type":"string"},
-			"correlation_id":{"type":"string"}`),
+		Schema: objSchema(`"to":{"type":"string"},"kind":{"type":"string","enum":["question","answer","finding"]},
+			"body":{"type":"string"},"reply_to":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				To            string `json:"to"`
-				Kind          string `json:"kind"`
-				Body          string `json:"body"`
-				CorrelationID string `json:"correlation_id"`
+				To      string `json:"to"`
+				Kind    string `json:"kind"`
+				Body    string `json:"body"`
+				ReplyTo string `json:"reply_to"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -160,101 +162,248 @@ func sendTool(s *Server) ToolDef {
 			if kind == "" {
 				kind = "relay"
 			}
-			id, err := s.RT.Send(ctx, c.SessionID, in.To, runtime.MessageKind(kind), in.Body, in.CorrelationID)
+			// runtime.Store.Send's last parameter is named correlationID and is the
+			// only thread-tracking hook it exposes (internal/runtime is outside this
+			// batch's file ownership); §8.1's reply_to input maps onto it.
+			id, err := s.RT.Send(ctx, c.SessionID, in.To, runtime.MessageKind(kind), in.Body, in.ReplyTo)
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"message_id": id}, nil
+			return map[string]any{"msg_id": id}, nil
 		},
 	}
 }
 
 // ---------- swarm_read ----------
 
-// readTool is §8.1's catch-all state read: items by ref or filter, the
-// caller's confirmed repos, and the event feed since a cursor (I19's
-// since_seq/reset rule, mirrored from internal/httpapi's SSE handler: a
-// cursor older than the retention window comes back with reset:true and the
-// caller starts over from the latest cursor). This wire shape is invented for
-// this batch — §8.1's literal text was not available; the coordinator should
-// check it against the spec.
+// readInput is §8.1's swarm_read input, read directly from
+// ~/.superpowers/specs/2026-09-17-agent-swarm-go-orchestrator.md §8.1 (fix
+// round 1): {refs?, filter?, repos?: {q?, group?, limit?}, since_seq?, fields?}.
+// fields (selective projection) is deliberately not implemented in this fix
+// round — see the note on readTool below.
+type readInput struct {
+	Refs   []string `json:"refs"`
+	Filter *struct {
+		Root, Type, Status, Q string
+	} `json:"filter"`
+	Repos *struct {
+		Q     string `json:"q"`
+		Group string `json:"group"`
+		Limit int    `json:"limit"`
+	} `json:"repos"`
+	// a pointer distinguishes "since_seq omitted" (no event scan at all) from
+	// an explicit "since_seq":0 (a fresh cursor: scan every event ever issued).
+	SinceSeq *int64   `json:"since_seq"`
+	Fields   []string `json:"fields"`
+}
+
+func agentOut(a runtime.Agent) map[string]any {
+	return map[string]any{"name": a.Name, "kind": a.Kind, "model": a.Model, "role": a.Role, "state": a.State}
+}
+
+func checkpointOut(c runtime.Checkpoint) map[string]any {
+	return map[string]any{"item": c.ItemID, "kind": c.Kind, "summary": c.Summary, "created_at": c.CreatedAt}
+}
+
+func artifactOut(a runtime.Artifact) map[string]any {
+	sections := make([]artifactSectionWire, len(a.Sections))
+	for i, sec := range a.Sections {
+		sections[i] = artifactSectionWire{ID: sec.ID, Title: sec.Title, SHA256: sec.SHA256}
+	}
+	return map[string]any{"artifact_id": a.ID, "kind": a.Kind, "revision": a.Revision, "sections": sections}
+}
+
+// readTool is §8.1's catch-all state read, read directly from the real spec
+// (fix round 1 — the batch briefs never had the literal shapes). Known gap:
+// `fields` (selective field projection) is not implemented; every matched
+// item/agent/checkpoint/artifact is returned whole. Nothing in this batch's
+// own tests needs it, and no other task in this batch was found depending on
+// it either, so it is deferred rather than guessed at.
 func readTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_read",
-		Description: "Read items by key or filter, your top-level item's confirmed repos, and events since a cursor.",
+		Description: "Read items, artifacts, agents and checkpoints by ref or filter, search repos, and get changes since a cursor.",
 		Schema: objSchema(`"refs":{"type":"array","items":{"type":"string"}},
-			"filter":{"type":"object"},"repos":{"type":"boolean"},"since_seq":{"type":"integer"}`),
+			"filter":{"type":"object"},
+			"repos":{"type":"object","properties":{"q":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer"}}},
+			"since_seq":{"type":"integer"},"fields":{"type":"array","items":{"type":"string"}}`),
 		Unbound: true,
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
-			var in struct {
-				Refs   []string `json:"refs"`
-				Filter *struct {
-					View   string `json:"view"`
-					Type   string `json:"type"`
-					Status string `json:"status"`
-					Q      string `json:"q"`
-					Root   string `json:"root"`
-				} `json:"filter"`
-				Repos    bool  `json:"repos"`
-				SinceSeq int64 `json:"since_seq"`
-			}
+			var in readInput
 			if err := decode(args, &in); err != nil {
 				return nil, err
 			}
-			out := map[string]any{"items": []items.Item{}, "confirmed_repos": []any{}}
+			out := map[string]any{
+				"items": []items.Item{}, "artifacts": []any{}, "agents": []any{},
+				"checkpoints": []any{}, "repos": []repos.Repo{}, "confirmed_repos": []repos.Repo{},
+			}
+			itemSeen := map[string]bool{}
+			addItem := func(it items.Item) {
+				if itemSeen[it.Key] {
+					return
+				}
+				itemSeen[it.Key] = true
+				out["items"] = append(out["items"].([]items.Item), it)
+			}
 
+			// refs mix item keys, art_ ids and agent names (§8.1); route each by
+			// what actually resolves, since there is no single shared id space.
 			for _, ref := range in.Refs {
-				it, err := s.RT.Items.Get(ctx, ref)
+				if strings.HasPrefix(ref, "art_") {
+					art, _, err := s.RT.ArtifactMarkdown(ctx, ref, 0, "")
+					if err != nil {
+						return nil, err
+					}
+					out["artifacts"] = append(out["artifacts"].([]any), artifactOut(art))
+					continue
+				}
+				if it, err := s.RT.Items.Get(ctx, ref); err == nil {
+					addItem(it)
+					continue
+				}
+				a, err := s.RT.Agent(ctx, ref)
 				if err != nil {
 					return nil, err
 				}
-				out["items"] = append(out["items"].([]items.Item), it)
+				out["agents"] = append(out["agents"].([]any), agentOut(a))
 			}
 			if in.Filter != nil {
 				list, _, err := s.RT.Items.List(ctx, items.ListFilter{
-					View: in.Filter.View, Type: items.Type(in.Filter.Type),
-					Status: items.Status(in.Filter.Status), Q: in.Filter.Q, Root: in.Filter.Root,
+					Type: items.Type(in.Filter.Type), Status: items.Status(in.Filter.Status),
+					Q: in.Filter.Q, Root: in.Filter.Root,
 				})
 				if err != nil {
 					return nil, err
 				}
-				out["items"] = append(out["items"].([]items.Item), list...)
+				for _, it := range list {
+					addItem(it)
+				}
+			}
+			// checkpoints: the latest one per item resolved above.
+			for _, it := range out["items"].([]items.Item) {
+				cps, err := s.RT.Checkpoints(ctx, it.Key, 1, time.Time{})
+				if err != nil {
+					return nil, err
+				}
+				if len(cps) > 0 {
+					out["checkpoints"] = append(out["checkpoints"].([]any), checkpointOut(cps[0]))
+				}
 			}
 
-			if in.Repos && !c.Unbound {
+			if in.Repos != nil {
+				limit := in.Repos.Limit
+				if limit <= 0 {
+					limit = 30
+				}
+				var found []repos.Repo
+				var err error
+				switch {
+				case in.Repos.Q != "":
+					found, err = s.RT.Repos.Search(ctx, in.Repos.Q, limit)
+				case in.Repos.Group != "":
+					var views []repos.GroupView
+					if views, err = s.RT.Repos.GroupViews(ctx); err == nil {
+						for _, v := range views {
+							if v.Name == in.Repos.Group {
+								found = v.Repos
+							}
+						}
+					}
+				default:
+					found, err = s.RT.Repos.Recent(ctx, limit)
+				}
+				if err != nil {
+					return nil, err
+				}
+				if found == nil {
+					found = []repos.Repo{}
+				}
+				out["repos"] = found
+			}
+
+			if !c.Unbound {
 				rootID, err := callerRootID(ctx, s, c)
 				if err != nil {
 					return nil, err
 				}
-				repos, err := s.RT.ConfirmedRepos(ctx, rootID)
+				confirmed, err := s.RT.ConfirmedRepos(ctx, rootID)
 				if err != nil {
 					return nil, err
 				}
-				out["confirmed_repos"] = repos
+				if confirmed == nil {
+					confirmed = []repos.Repo{}
+				}
+				out["confirmed_repos"] = confirmed
 			}
 
-			expired, err := s.RT.Events.Expired(ctx, in.SinceSeq)
+			// since_seq: only items/agents/checkpoints changed after that events.seq
+			// (agent.changed is never actually published anywhere in the codebase —
+			// a pre-existing gap outside this batch's file ownership — so an agent
+			// changing never surfaces here; item.changed and checkpoint.created are
+			// real and do). since_seq is a *int64 so an omitted field (no scan, just
+			// hand back the current head as a cursor to start polling from) is
+			// distinguishable from an explicit 0 (scan every event ever issued).
+			latest, err := s.RT.Events.Latest(ctx)
 			if err != nil {
 				return nil, err
 			}
-			after := in.SinceSeq
-			if expired {
-				out["reset"] = true
-				if after, err = s.RT.Events.Latest(ctx); err != nil {
+			cursor := latest
+			reset := false
+			if in.SinceSeq != nil {
+				since := *in.SinceSeq
+				expired, err := s.RT.Events.Expired(ctx, since)
+				if err != nil {
 					return nil, err
 				}
-			} else {
-				out["reset"] = false
+				reset = expired
+				if !expired {
+					evs, err := s.RT.Events.After(ctx, since, 1000)
+					if err != nil {
+						return nil, err
+					}
+					for _, e := range evs {
+						switch e.Type {
+						case events.ItemChanged:
+							var p struct {
+								Key string `json:"key"`
+							}
+							if json.Unmarshal(e.Payload, &p) == nil && p.Key != "" {
+								if it, err := s.RT.Items.Get(ctx, p.Key); err == nil {
+									addItem(it)
+								}
+							}
+						case events.AgentChanged:
+							var p struct {
+								Name string `json:"name"`
+							}
+							if json.Unmarshal(e.Payload, &p) == nil && p.Name != "" {
+								if a, err := s.RT.Agent(ctx, p.Name); err == nil {
+									out["agents"] = append(out["agents"].([]any), agentOut(a))
+								}
+							}
+						case events.CheckpointCreated:
+							var p struct {
+								Item string `json:"item"`
+							}
+							if json.Unmarshal(e.Payload, &p) == nil && p.Item != "" {
+								if cps, err := s.RT.Checkpoints(ctx, p.Item, 1, time.Time{}); err == nil && len(cps) > 0 {
+									out["checkpoints"] = append(out["checkpoints"].([]any), checkpointOut(cps[0]))
+								}
+							}
+						}
+					}
+					// ponytail: a page stops short of `latest` at the 1000-event cap, so
+					// the cursor must not skip past what was actually scanned; below the
+					// cap, `latest` is already exactly where the scan left off.
+					if len(evs) == 1000 {
+						cursor = evs[len(evs)-1].Seq
+					}
+				} else {
+					cursor = latest
+				}
 			}
-			evs, err := s.RT.Events.After(ctx, after, 500)
-			if err != nil {
-				return nil, err
-			}
-			out["events"] = evs
-			if len(evs) > 0 {
-				after = evs[len(evs)-1].Seq
-			}
-			out["cursor"] = after
+			out["reset"] = reset
+			out["cursor"] = cursor
 			return out, nil
 		},
 	}
@@ -321,10 +470,11 @@ func kbHandler(s *Server, canWrite bool) func(context.Context, Caller, json.RawM
 			if err != nil {
 				return nil, err
 			}
+			// §8.1: search's result is the bare array, not {"hits": [...]}.
 			if hits == nil {
 				hits = []kb.Hit{}
 			}
-			return map[string]any{"hits": hits}, nil
+			return hits, nil
 		case "get":
 			doc, err := s.KB.Get(ctx, in.Slug)
 			if err != nil {

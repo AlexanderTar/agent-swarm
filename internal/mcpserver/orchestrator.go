@@ -42,17 +42,20 @@ func rootKeyFor(ctx context.Context, s *Server, rootID string) (string, error) {
 
 // ---------- swarm_items ----------
 
+// itemsTool is §8.1, read directly from the real spec (fix round 1): op is
+// exactly create|update|link|unlink — reading and listing items is
+// swarm_read's job (its refs/filter cover exactly that), not swarm_items'.
 func itemsTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_items",
-		Description: "Create, update, read or list items inside your own top-level item's tree.",
+		Description: "Create or update an item, or link/unlink a dependency, inside your own top-level item's tree.",
 		Roles:       orchestratorRole,
-		Schema: objSchema(`"op":{"type":"string","enum":["create","update","get","list"]},
+		Schema: objSchema(`"op":{"type":"string","enum":["create","update","link","unlink"]},
 			"key":{"type":"string"},"parent":{"type":"string"},"type":{"type":"string"},
 			"title":{"type":"string"},"brief":{"type":"string"},"acceptance":{"type":"array"},
 			"priority":{"type":"integer"},"role_hint":{"type":"string"},"tdd_exempt":{"type":"string"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
-			"filter":{"type":"object"}`),
+			"blocked_by":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Op         string   `json:"op"`
@@ -68,9 +71,7 @@ func itemsTool(s *Server) ToolDef {
 				Repos      []string `json:"repos"`
 				Revision   int      `json:"revision"`
 				Status     string   `json:"status"`
-				Filter     *struct {
-					View, Type, Status, Q, Root string
-				} `json:"filter"`
+				BlockedBy  string   `json:"blocked_by"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -106,26 +107,18 @@ func itemsTool(s *Server) ToolDef {
 					p.Status = &st
 				}
 				return s.RT.Items.Update(ctx, in.Key, p, actor)
-			case "get":
-				return s.RT.Items.Get(ctx, in.Key)
-			case "list":
-				f := items.ListFilter{}
-				if in.Filter != nil {
-					f = items.ListFilter{View: in.Filter.View, Type: items.Type(in.Filter.Type),
-						Status: items.Status(in.Filter.Status), Q: in.Filter.Q, Root: in.Filter.Root}
-				} else {
-					f.Root = a.RootItemID
-				}
-				list, total, err := s.RT.Items.List(ctx, f)
-				if err != nil {
+			case "link":
+				if err := s.RT.Items.AddDep(ctx, in.Key, in.BlockedBy, actor); err != nil {
 					return nil, err
 				}
-				if list == nil {
-					list = []items.Item{}
+				return s.RT.Items.Get(ctx, in.Key)
+			case "unlink":
+				if err := s.RT.Items.RemoveDep(ctx, in.Key, in.BlockedBy, actor); err != nil {
+					return nil, err
 				}
-				return map[string]any{"items": list, "total": total}, nil
+				return s.RT.Items.Get(ctx, in.Key)
 			default:
-				return nil, fmt.Errorf("op must be create, update, get or list, got %q", in.Op)
+				return nil, fmt.Errorf("op must be create, update, link or unlink, got %q", in.Op)
 			}
 		},
 	}
@@ -281,7 +274,8 @@ func worktreeTool(s *Server) ToolDef {
 				if err != nil {
 					return nil, err
 				}
-				return map[string]any{"worktree_id": wt.ID, "path": wt.Path, "branch": wt.Branch}, nil
+				return map[string]any{"worktree_id": wt.ID, "path": wt.Path, "branch": wt.Branch,
+					"base_sha": wt.BaseSHA, "state": wt.State}, nil
 			case "share":
 				target, err := s.RT.Agent(ctx, in.Agent)
 				if err != nil {
@@ -325,6 +319,13 @@ func worktreeTool(s *Server) ToolDef {
 
 // ---------- swarm_spawn ----------
 
+// spawnWorktreeRef is one entry of §8.1's worktrees: [{worktree, mode}] —
+// fixed in round 1 from an earlier, wrong []string.
+type spawnWorktreeRef struct {
+	Worktree string `json:"worktree"`
+	Mode     string `json:"mode"`
+}
+
 func spawnTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_spawn",
@@ -332,7 +333,10 @@ func spawnTool(s *Server) ToolDef {
 		Roles:       orchestratorRole,
 		Schema: objSchema(`"item":{"type":"string"},"role":{"type":"string"},"agent":{"type":"string"},
 			"model":{"type":"string"},"effort":{"type":"string"},"name":{"type":"string"},
-			"brief":{"type":"object"},"worktrees":{"type":"array"}`),
+			"advisor":{},"cwd":{"type":"string"},
+			"brief":{"type":"object"},
+			"worktrees":{"type":"array","items":{"type":"object","properties":{
+				"worktree":{"type":"string"},"mode":{"type":"string","enum":["rw","ro"]}}}}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Item   string `json:"item"`
@@ -341,7 +345,15 @@ func spawnTool(s *Server) ToolDef {
 				Model  string `json:"model"`
 				Effort string `json:"effort"`
 				Name   string `json:"name"`
-				Brief  struct {
+				// Advisor and Cwd are accepted (§8.1) but not yet wired to the spawned
+				// agent: runtime.SpawnInput/Spawn (internal/runtime/agents.go, outside
+				// this batch's file ownership) has no advisor_* columns in its INSERT
+				// and startSession always uses the neutral folder — a pre-existing gap
+				// from Batches 1-4, confirmed unchanged, carried forward rather than
+				// worked around here.
+				Advisor json.RawMessage `json:"advisor"`
+				Cwd     string          `json:"cwd"`
+				Brief   struct {
 					Objective  string   `json:"objective"`
 					Acceptance []string `json:"acceptance"`
 					ScopeIn    []string `json:"scope_in"`
@@ -350,7 +362,7 @@ func spawnTool(s *Server) ToolDef {
 					Verify     []string `json:"verify"`
 					StopWhen   []string `json:"stop_when"`
 				} `json:"brief"`
-				Worktrees []string `json:"worktrees"`
+				Worktrees []spawnWorktreeRef `json:"worktrees"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -381,20 +393,32 @@ func spawnTool(s *Server) ToolDef {
 				// §17.3 copy; wrapping them here would break an exact-match test.
 				return nil, err
 			}
-			return map[string]any{"agent": agent.Name, "queued": queued}, nil
+			// A queued spawn gets no session until the queue later drains it
+			// (Task 13's limiter): "session" is "" rather than a fabricated id.
+			var sessionID string
+			if !queued {
+				if ses, err := s.RT.LatestSession(ctx, agent.ID); err == nil {
+					sessionID = ses.ID
+				}
+			}
+			return map[string]any{"agent": agent.Name, "session": sessionID, "queued": queued}, nil
 		},
 	}
 }
 
 // ---------- swarm_control ----------
 
+// controlTool is §8.1, read directly from the real spec (fix round 1): the
+// action enum is exactly pause|resume|cancel|retry (no "ack" — that is a
+// separate, non-MCP UI action, POST /api/agents/{name}/ack, not part of this
+// tool) and the result is {"state"}, not a bare ok.
 func controlTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_control",
-		Description: "Pause, resume, cancel, retry or acknowledge an agent in your own subtree.",
+		Description: "Pause, resume, cancel or retry an agent in your own subtree.",
 		Roles:       orchestratorRole,
 		Schema: objSchema(`"target":{"type":"string"},
-			"action":{"type":"string","enum":["pause","resume","cancel","retry","ack"]},
+			"action":{"type":"string","enum":["pause","resume","cancel","retry"]},
 			"scope":{"type":"string"},"note":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
@@ -420,35 +444,40 @@ func controlTool(s *Server) ToolDef {
 			if target.RootItemID != caller.RootItemID {
 				return nil, fmt.Errorf("bad_request: %s is outside your subtree", in.Target)
 			}
+			var state string
 			switch in.Action {
 			case "pause":
 				scope := in.Scope
 				if scope == "" {
 					scope = "session"
 				}
-				if _, err := s.RT.Pause(ctx, in.Target, scope); err != nil {
+				ses, err := s.RT.Pause(ctx, in.Target, scope)
+				if err != nil {
 					return nil, err
 				}
+				state = string(ses.State)
 			case "resume":
-				if _, err := s.RT.Resume(ctx, in.Target); err != nil {
+				agent, err := s.RT.Resume(ctx, in.Target)
+				if err != nil {
 					return nil, err
 				}
+				state = string(agent.State)
 			case "cancel":
-				if _, err := s.RT.Cancel(ctx, in.Target); err != nil {
+				agent, err := s.RT.Cancel(ctx, in.Target)
+				if err != nil {
 					return nil, err
 				}
+				state = string(agent.State)
 			case "retry":
-				if _, err := s.RT.Retry(ctx, in.Target, in.Note); err != nil {
+				agent, err := s.RT.Retry(ctx, in.Target, in.Note)
+				if err != nil {
 					return nil, err
 				}
-			case "ack":
-				if err := s.RT.Ack(ctx, in.Target); err != nil {
-					return nil, err
-				}
+				state = string(agent.State)
 			default:
-				return nil, fmt.Errorf("action must be pause, resume, cancel, retry or ack, got %q", in.Action)
+				return nil, fmt.Errorf("action must be pause, resume, cancel or retry, got %q", in.Action)
 			}
-			return map[string]any{"ok": true}, nil
+			return map[string]any{"state": state}, nil
 		},
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
+	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
@@ -178,6 +179,7 @@ func newTestServer(t *testing.T) *Server {
 	rt := &runtime.Store{DB: d, Events: ev, Items: it, Settings: st, Catalog: cat, Home: home,
 		Now: clk.Now, Log: func(string, ...any) {}, Tmux: tm,
 		Worktree:  &worktree.Service{DB: d, Run: execx.Run, Now: clk.Now, Log: func(string, ...any) {}},
+		Repos:     &repos.Service{DB: d, Events: ev, Now: clk.Now, Run: execx.Run, Log: func(string, ...any) {}},
 		Notify:    &fakeNotifier{},
 		Adapters:  map[runtime.AgentKind]adapter.Adapter{runtime.Fake: fa},
 		Bin:       "/usr/local/bin/swarm",
