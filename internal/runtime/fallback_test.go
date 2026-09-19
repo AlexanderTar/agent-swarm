@@ -175,4 +175,148 @@ func TestStartSpikeNilUsageNeverSubstitutes(t *testing.T) {
 	}
 }
 
+func countAgents(t *testing.T, s *Store) int {
+	t.Helper()
+	var n int
+	if err := s.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM agents`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// ---- StartOrchestrator ----
+
+func TestStartOrchestratorSubstitutesExhaustedFallback(t *testing.T) {
+	s, tm := newStoreWithFallback(t)
+	seedEpicWithTask(t, s)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	s.Usage = fakeUsage{Claude: true}
+	a, queued, err := s.StartOrchestrator(context.Background(), OrchestratorInput{ItemKey: "EPIC-1",
+		Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatal("not queued")
+	}
+	if a.Kind != Codex || a.Model != "gpt-6-astra" {
+		t.Fatalf("agent = %+v, want substituted", a)
+	}
+	if len(tm.started) != 1 {
+		t.Fatalf("started = %v", tm.started)
+	}
+	n := notified(t, s, "agent.fallback_used")
+	if n.Args["name"] != a.Name || n.Args["agent"] != "Codex" || n.Args["from"] != "Claude" {
+		t.Fatalf("fallback_used args = %+v", n.Args)
+	}
+}
+
+func TestStartOrchestratorBothExhaustedReturnsErrorNoRow(t *testing.T) {
+	s, tm := newStoreWithFallback(t)
+	seedEpicWithTask(t, s)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	s.Usage = fakeUsage{Claude: true, Codex: true}
+	before := countAgents(t, s)
+	_, _, err := s.StartOrchestrator(context.Background(), OrchestratorInput{ItemKey: "EPIC-1",
+		Kind: Claude, Model: "claude-sonnet-5"})
+	if err == nil {
+		t.Fatal("want an error when both the agent and its fallback are exhausted")
+	}
+	if got := countAgents(t, s); got != before {
+		t.Fatalf("agents = %d, want unchanged at %d (no row on this refusal)", got, before)
+	}
+	if len(tm.started) != 0 {
+		t.Fatalf("started = %v, want no session", tm.started)
+	}
+}
+
+func TestStartOrchestratorNilUsageNeverSubstitutes(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	seedEpicWithTask(t, s)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	a, _, err := s.StartOrchestrator(context.Background(), OrchestratorInput{ItemKey: "EPIC-1",
+		Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != Claude {
+		t.Fatalf("agent = %+v, want unaffected", a)
+	}
+}
+
+// ---- Spawn ----
+
+func TestSpawnSubstitutesExhaustedFallback(t *testing.T) {
+	s, tm := newStoreWithFallback(t)
+	seedEpicWithTask(t, s)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	s.Usage = fakeUsage{Claude: true}
+	a, queued, err := s.Spawn(context.Background(), SpawnInput{ItemKey: "TASK-1", Role: RoleCoder,
+		Kind: Claude, Model: "claude-sonnet-5", Brief: BriefInput{Objective: "do it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatal("not queued")
+	}
+	if a.Kind != Codex || a.Model != "gpt-6-astra" {
+		t.Fatalf("agent = %+v, want substituted", a)
+	}
+	if len(tm.started) != 1 {
+		t.Fatalf("started = %v", tm.started)
+	}
+	notified(t, s, "agent.fallback_used")
+}
+
+func TestSpawnBothExhaustedReturnsErrorNoRow(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	seedEpicWithTask(t, s)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	s.Usage = fakeUsage{Claude: true, Codex: true}
+	before := countAgents(t, s)
+	_, _, err := s.Spawn(context.Background(), SpawnInput{ItemKey: "TASK-1", Role: RoleCoder,
+		Kind: Claude, Model: "claude-sonnet-5", Brief: BriefInput{Objective: "do it"}})
+	if err == nil {
+		t.Fatal("want an error when both the agent and its fallback are exhausted")
+	}
+	if got := countAgents(t, s); got != before {
+		t.Fatalf("agents = %d, want unchanged at %d", got, before)
+	}
+}
+
+func TestSpawnNilUsageNeverSubstitutes(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	seedEpicWithTask(t, s)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	a, _, err := s.Spawn(context.Background(), SpawnInput{ItemKey: "TASK-1", Role: RoleCoder,
+		Kind: Claude, Model: "claude-sonnet-5", Brief: BriefInput{Objective: "do it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != Claude {
+		t.Fatalf("agent = %+v, want unaffected", a)
+	}
+}
+
+// TestSpawnFallbackReplayDoesNotDoubleNotify proves the idempotent-replay
+// guard: retrying the same SessionID/RequestID after a substitution must not
+// raise agent.fallback_used a second time.
+func TestSpawnFallbackReplayDoesNotDoubleNotify(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	seedEpicWithTask(t, s)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	s.Usage = fakeUsage{Claude: true}
+	in := SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude, Model: "claude-sonnet-5",
+		Brief: BriefInput{Objective: "do it"}, SessionID: "ses_orch", RequestID: "req-1"}
+	if _, _, err := s.Spawn(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Spawn(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.fallback_used"); n != 1 {
+		t.Fatalf("agent.fallback_used raised %d times, want 1", n)
+	}
+}
+
 var _ = agentRow // used by later steps' tests in this file

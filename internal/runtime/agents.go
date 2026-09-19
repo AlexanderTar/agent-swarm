@@ -394,6 +394,13 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		}
 	}
 
+	origKind := in.Kind
+	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model)
+	if ferr != nil {
+		return Agent{}, false, ferr
+	}
+	in.Kind, in.Model = fbKind, fbModel
+
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
 	if err := s.Preflight(ctx, PreflightInput{
@@ -480,6 +487,10 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	})
 	if err != nil {
 		return Agent{}, false, err
+	}
+	if substituted && s.Notify != nil {
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name,
+			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
 	}
 
 	if queued {
@@ -588,6 +599,13 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		}
 	}
 
+	origKind := in.Kind
+	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model)
+	if ferr != nil {
+		return Agent{}, false, ferr
+	}
+	in.Kind, in.Model = fbKind, fbModel
+
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
 	if err := s.Preflight(ctx, PreflightInput{
@@ -690,6 +708,12 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	})
 	if err != nil {
 		return Agent{}, false, err
+	}
+	// A replay must not re-raise agent.fallback_used: it already went out
+	// on the genuine first call (same rule as agent.queued just below).
+	if ran && substituted && s.Notify != nil {
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: result.Agent.Name,
+			Args: map[string]string{"name": result.Agent.Name, "agent": result.Agent.Kind.Display(), "from": origKind.Display()}})
 	}
 
 	if result.Queued {
