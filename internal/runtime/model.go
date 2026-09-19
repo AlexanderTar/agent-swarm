@@ -375,6 +375,18 @@ func PeekIdempotent[T any](ctx context.Context, s *Store, sessionID, requestID s
 	if requestID == "" {
 		return false, nil
 	}
+	// Must fail closed here, before any caller's external side effect: a
+	// PeekIdempotent caller (Spawn/Resume/Cancel/Retry) runs its side effect
+	// (start/kill a tmux session, flip agent state) *after* this returns, so
+	// if the length check lived only in Idempotent -- reached afterward, at
+	// the final DB write -- an over-long request_id would let the side
+	// effect run, then fail with 400 once IdemTx got to it: a client error
+	// response with the mutation already applied, and no idempotency record
+	// to make the next (corrected) retry a no-op either.
+	if len(requestID) > 64 {
+		return false, &items.Error{Code: items.CodeBadRequest,
+			Message: "request_id must be at most 64 characters."}
+	}
 	var stored string
 	err = s.DB.QueryRowContext(ctx, `SELECT result_json FROM idempotency WHERE caller = ? AND request_id = ?`,
 		sessionID, requestID).Scan(&stored)

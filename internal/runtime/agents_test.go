@@ -1005,6 +1005,61 @@ func TestRetryRefusesAWrongSessionState(t *testing.T) {
 	}
 }
 
+// Fix round 1, Important #1: PeekIdempotent's own length check must fail
+// closed BEFORE Retry's external side effect (starting a new tmux session,
+// flipping the agent active) runs, not only inside IdemTx/Idempotent at the
+// final DB write -- reviewer-reproduced: without this, a >64-char request_id
+// let the side effect run, then failed with 400 anyway, leaving the mutation
+// applied under an error response.
+func TestRetryRefusesAnOverLongRequestIDBeforeTheSideEffect(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE agent_id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startedBefore := len(tm.started)
+	tooLong := strings.Repeat("x", 65)
+	_, err = s.Retry(ctx, a.Name, "with a note", "ses_caller", tooLong)
+	if err == nil {
+		t.Fatal("expected a bad_request refusal for an over-long request_id")
+	}
+	if ie, ok := err.(*items.Error); !ok || ie.Code != items.CodeBadRequest {
+		t.Fatalf("err = %v, want a CodeBadRequest items.Error", err)
+	}
+	if len(tm.started) != startedBefore {
+		t.Fatalf("tmux started %d times, want still %d: an over-long request_id must refuse BEFORE the side effect",
+			len(tm.started), startedBefore)
+	}
+	after, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ID != before.ID || after.Attempt != before.Attempt || after.Generation != before.Generation {
+		t.Fatalf("a new session must not have been started: before = %+v, after = %+v", before, after)
+	}
+	if after.State != Crashed {
+		t.Fatalf("the original session's state must be untouched: state = %s", after.State)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'assignment_update'`,
+		a.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("the retry note must not have been sent: assignment_update count = %d", n)
+	}
+}
+
 // Task 41: a repeated request_id must not spawn a second agent, and (this is
 // the part a merely-typed-return-cache-hit wouldn't prove on its own) must
 // not start a second tmux session for it either.
