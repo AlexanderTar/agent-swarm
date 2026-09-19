@@ -357,7 +357,7 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 		return "", &items.Error{Code: items.CodeBadRequest, Message: "A message body is limited to 4000 characters."}
 	}
 	var id string
-	_, err := idemTx(ctx, s, sessionID, requestID, "swarm_send", &id, func(tx *sql.Tx) error {
+	_, err := IdemTx(ctx, s, sessionID, requestID, "swarm_send", &id, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err

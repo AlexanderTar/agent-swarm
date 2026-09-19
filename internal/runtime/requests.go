@@ -372,7 +372,7 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 
 func (s *Store) withdraw(ctx context.Context, sessionID, reqID, requestID string) (Request, error) {
 	var out Request
-	_, err := idemTx(ctx, s, sessionID, requestID, "swarm_ask", &out, func(tx *sql.Tx) error {
+	_, err := IdemTx(ctx, s, sessionID, requestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -417,7 +417,7 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
 	}
 	var out Request
-	_, err := idemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
+	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -447,7 +447,7 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
 	}
 	var out Request
-	_, err := idemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
+	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err

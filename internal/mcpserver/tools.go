@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -438,7 +439,8 @@ const kbSearchGetSchema = `"op":{"type":"string","enum":["search","get"]},"q":{"
 // class as item 3's swarm_artifact enum).
 const kbFullSchema = `"op":{"type":"string","enum":["search","get","write"]},"q":{"type":"string"},
 	"slug":{"type":"string"},"limit":{"type":"integer"},
-	"subdir":{"type":"string","enum":["specs","plans","decisions","notes"]},"filename":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}`
+	"subdir":{"type":"string","enum":["specs","plans","decisions","notes"]},"filename":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},
+	"request_id":{"type":"string"}`
 
 func kbReadOnlyTool(s *Server) ToolDef {
 	return ToolDef{
@@ -466,14 +468,15 @@ func kbToolFor(s *Server) ToolDef { return kbFullTool(s) }
 func kbHandler(s *Server, canWrite bool) func(context.Context, Caller, json.RawMessage) (any, error) {
 	return func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 		var in struct {
-			Op       string `json:"op"`
-			Q        string `json:"q"`
-			Slug     string `json:"slug"`
-			Limit    int    `json:"limit"`
-			Subdir   string `json:"subdir"`
-			Filename string `json:"filename"`
-			Title    string `json:"title"`
-			Body     string `json:"body"`
+			Op        string `json:"op"`
+			Q         string `json:"q"`
+			Slug      string `json:"slug"`
+			Limit     int    `json:"limit"`
+			Subdir    string `json:"subdir"`
+			Filename  string `json:"filename"`
+			Title     string `json:"title"`
+			Body      string `json:"body"`
+			RequestID string `json:"request_id"`
 		}
 		if err := decode(args, &in); err != nil {
 			return nil, err
@@ -501,7 +504,7 @@ func kbHandler(s *Server, canWrite bool) func(context.Context, Caller, json.RawM
 			if !canWrite {
 				return nil, errors.New("read-only: an unbound caller cannot write to the knowledge base")
 			}
-			return kbWrite(ctx, s, in.Subdir, in.Filename, in.Title, in.Body)
+			return kbWrite(ctx, s, c.SessionID, in.RequestID, in.Subdir, in.Filename, in.Title, in.Body)
 		default:
 			return nil, fmt.Errorf("op must be search, get or write, got %q", in.Op)
 		}
@@ -513,7 +516,18 @@ func kbHandler(s *Server, canWrite bool) func(context.Context, Caller, json.RawM
 // path.Join. The schema's subdir enum is advisory only for a non-validating
 // client (decode is plain json.Unmarshal, no schema check), so it is
 // re-enforced here the same way op's enum is enforced by the switch above.
-func kbWrite(ctx context.Context, s *Server, subdir, filename, title, body string) (any, error) {
+//
+// The idempotency guard (I11) wraps only the file write, not KB.Sync: Sync
+// issues several of its own un-batched queries/execs against the same shared
+// *sql.DB (internal/kb's Index.Sync), and SQLite allows only one writer at a
+// time, so calling it from inside the transaction runtime.IdemTx already has
+// open would self-block waiting on a lock the outer transaction itself holds.
+// Sync runs after that transaction commits instead, unconditionally (cache
+// hit or miss) -- it only reconciles the search index against whatever is on
+// disk, so re-running it on a replay is always safe, the same way a plain
+// post-commit read is elsewhere in this codebase (e.g. items.Store.Update's
+// own final Get).
+func kbWrite(ctx context.Context, s *Server, sessionID, requestID, subdir, filename, title, body string) (any, error) {
 	switch subdir {
 	case "specs", "plans", "decisions", "notes":
 	default:
@@ -529,23 +543,31 @@ func kbWrite(ctx context.Context, s *Server, subdir, filename, title, body strin
 		filename += ".md"
 	}
 	dir := filepath.Join(s.KB.Dir, filepath.Clean(subdir))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
 	path := filepath.Join(dir, filepath.Clean(filename))
-	content := fmt.Sprintf("---\ntitle: %q\n---\n\n%s\n", title, body)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return nil, err
-	}
-	if err := s.KB.Sync(ctx); err != nil {
-		return nil, err
-	}
 	rel, err := filepath.Rel(s.KB.Dir, path)
 	if err != nil {
 		return nil, err
 	}
 	slug := strings.TrimSuffix(filepath.ToSlash(rel), ".md")
-	return map[string]any{"slug": slug}, nil
+
+	var out map[string]string
+	if _, err := runtime.IdemTx(ctx, s.RT, sessionID, requestID, "swarm_kb", &out, func(tx *sql.Tx) error {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		content := fmt.Sprintf("---\ntitle: %q\n---\n\n%s\n", title, body)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return err
+		}
+		out = map[string]string{"slug": slug}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.KB.Sync(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ---------- swarm_advise ----------

@@ -229,7 +229,7 @@ func (s *Store) changedFiles(ctx context.Context, refs []GitRef) int {
 // WriteCheckpoint is swarm_checkpoint (§8.1, L24).
 func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in CheckpointInput) (CheckpointResult, error) {
 	var out CheckpointResult
-	_, err := idemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
+	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
 		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err

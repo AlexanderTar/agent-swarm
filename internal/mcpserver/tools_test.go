@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -361,6 +362,57 @@ func TestKbSearchGetAndWrite(t *testing.T) {
 	}
 	if !strings.Contains(string(mustJSON(out)), "decision-one") {
 		t.Fatalf("search result = %s", mustJSON(out))
+	}
+}
+
+// Task 41: a repeated request_id must not overwrite the file a second time --
+// proven here by changing the body on the replay and checking it did NOT
+// take, which a merely-idempotent-by-construction write (same path, same
+// content) wouldn't distinguish from a real guard.
+func TestKbWriteRequestIDReplaysInsteadOfWritingTwice(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	out1, err := s.call(ctx, seed.Caller, "swarm_kb",
+		`{"op":"write","subdir":"notes","filename":"decision-two","title":"D2","body":"first body","request_id":"req-1"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_kb",
+		`{"op":"write","subdir":"notes","filename":"decision-two","title":"D2","body":"second body","request_id":"req-1"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+	path := filepath.Join(s.KB.Dir, "notes", "decision-two.md")
+	content := readFile(t, path)
+	if !strings.Contains(content, "first body") || strings.Contains(content, "second body") {
+		t.Fatalf("replayed write must not have re-run: content = %q", content)
+	}
+}
+
+func TestKbWriteWithoutOrDistinctRequestIDsEachWrite(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_kb",
+		`{"op":"write","subdir":"notes","filename":"a","title":"A","body":"a","request_id":"req-a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_kb",
+		`{"op":"write","subdir":"notes","filename":"a","title":"A","body":"a again","request_id":"req-b"}`); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(s.KB.Dir, "notes", "a.md")
+	if content := readFile(t, path); !strings.Contains(content, "a again") {
+		t.Fatalf("a distinct request_id must genuinely re-write: content = %q", content)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_kb",
+		`{"op":"write","subdir":"notes","filename":"a","title":"A","body":"a once more"}`); err != nil {
+		t.Fatal(err)
+	}
+	if content := readFile(t, path); !strings.Contains(content, "a once more") {
+		t.Fatalf("no request_id at all must genuinely re-write: content = %q", content)
 	}
 }
 

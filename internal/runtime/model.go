@@ -327,7 +327,7 @@ func (s *Store) tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return nil
 }
 
-// idemTx runs fn (a mutating Store method's existing tx body) inside one
+// IdemTx runs fn (a mutating Store method's existing tx body) inside one
 // transaction, guarded by Idempotent (I11) on (sessionID, requestID). It
 // exists so each mutating method's own tx-body needs only one extra wrapping
 // line, not a hand-rolled marshal/unmarshal at every call site: on a cache
@@ -338,7 +338,7 @@ func (s *Store) tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 // matters wherever the caller has its own post-commit side effect (e.g.
 // starting a tmux session) that must not repeat on replay -- see Spawn,
 // Resume and Retry.
-func idemTx[T any](ctx context.Context, s *Store, sessionID, requestID, tool string, out *T, fn func(tx *sql.Tx) error) (ran bool, err error) {
+func IdemTx[T any](ctx context.Context, s *Store, sessionID, requestID, tool string, out *T, fn func(tx *sql.Tx) error) (ran bool, err error) {
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		raw, err := s.Idempotent(ctx, tx, sessionID, requestID, tool, func() (any, error) {
 			ran = true
