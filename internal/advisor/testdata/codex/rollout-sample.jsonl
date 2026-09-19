@@ -1,0 +1,9 @@
+{"timestamp":"2026-09-17T11:45:09Z","type":"session_meta","payload":{"id":"conv-codex-1","cwd":"/private/tmp/repos/codex/r1"}}
+{"timestamp":"2026-09-17T11:45:09Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Call the swarm_ping MCP tool, then run the shell command: echo hi."}]}}
+{"timestamp":"2026-09-17T11:45:10Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll ping the swarm probe and then run the echo command."}]}}
+{"timestamp":"2026-09-17T11:45:10Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_1","arguments":"{\"command\":[\"echo\",\"hi\"]}"}}
+{"timestamp":"2026-09-17T11:45:11Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"hi\n"}}
+{"timestamp":"2026-09-17T11:45:11Z","type":"response_item","payload":{"type":"custom_tool_call","name":"mcp__swarm__swarm_ping","call_id":"call_2","input":"{}"}}
+{"timestamp":"2026-09-17T11:45:12Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_2","output":"pong session=ses_codex"}}
+{"timestamp":"2026-09-17T11:45:12Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"READY"}]}}
+{"timestamp":"2026-09-17T11:45:13Z","type":"event_msg","payload":{"type":"agent_turn_complete"}}

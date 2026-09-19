@@ -1,0 +1,298 @@
+package hook
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+)
+
+const noticeGap = 60 * time.Second
+const maxStopBlocks = 3
+
+// AdvisorScanner is the transcript scanner interface for native advisors.
+type AdvisorScanner interface {
+	ScanTranscript(ctx context.Context, sessionID, transcriptPath string) error
+}
+
+// normalize maps each agent's event name to the shared name used below.
+func normalize(kind runtime.AgentKind, event string) string {
+	switch strings.ToLower(event) {
+	case "sessionstart":
+		return "SessionStart"
+	case "userpromptsubmit", "beforesubmitprompt", "preinvocation":
+		return "UserPromptSubmit"
+	case "pretooluse":
+		return "PreToolUse"
+	case "posttooluse", "postinvocation":
+		return "PostToolUse"
+	case "precompact":
+		return "PreCompact"
+	case "postcompact":
+		return "PostCompact"
+	case "stop":
+		return "Stop"
+	}
+	return event
+}
+
+type sessionRow struct {
+	ID, AgentID, AgentName, ItemKey, ProviderID string
+	State                                       runtime.SessionState
+	StopBlocks                                  int
+	NeedsCompaction                             bool
+	LastNoticeAt                                *time.Time
+	Pending                                     int
+	HasHandoff                                  bool
+	Kind                                        runtime.AgentKind
+}
+
+type Handler struct {
+	DB       *db.DB
+	RT       *runtime.Store
+	Adapters map[runtime.AgentKind]adapter.Adapter
+	Advisor  AdvisorScanner
+	Now      func() time.Time
+	Log      func(string, ...any)
+	mu       sync.Mutex
+	noticeAt map[string]time.Time
+	readFile func(string) ([]byte, error) // nil means os.ReadFile
+}
+
+func (h *Handler) now() time.Time {
+	if h.Now != nil {
+		return h.Now()
+	}
+	return time.Now()
+}
+
+func (h *Handler) logf(format string, args ...any) {
+	if h.Log != nil {
+		h.Log(format, args...)
+	}
+}
+
+func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, error) {
+	var s sessionRow
+	var needsCompaction int
+	var hasHandoff int
+	err := h.DB.QueryRowContext(ctx, `
+		SELECT
+			s.id,
+			s.agent_id,
+			a.name,
+			i.key,
+			COALESCE(s.provider_session_id, ''),
+			s.state,
+			s.stop_blocks,
+			s.needs_compaction_notice,
+			a.kind,
+			(SELECT COUNT(*) FROM messages WHERE to_agent_id = s.agent_id AND state <> 'acked'),
+			EXISTS (SELECT 1 FROM checkpoints WHERE session_id = s.id AND kind = 'handoff')
+		FROM sessions s
+		JOIN agents a ON s.agent_id = a.id
+		JOIN items i ON a.item_id = i.id
+		WHERE s.id = ?`, sessionID).Scan(
+		&s.ID,
+		&s.AgentID,
+		&s.AgentName,
+		&s.ItemKey,
+		&s.ProviderID,
+		&s.State,
+		&s.StopBlocks,
+		&needsCompaction,
+		&s.Kind,
+		&s.Pending,
+		&hasHandoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	s.NeedsCompaction = (needsCompaction != 0)
+	s.HasHandoff = (hasHandoff != 0)
+
+	h.mu.Lock()
+	if t, ok := h.noticeAt[s.ID]; ok {
+		s.LastNoticeAt = &t
+	}
+	h.mu.Unlock()
+
+	return &s, nil
+}
+
+func (h *Handler) touch(ctx context.Context, s *sessionRow, in adapter.HookInput) error {
+	nowMs := h.now().UnixMilli()
+	if in.ProviderSessionID != "" {
+		if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET provider_session_id = ? WHERE id = ? AND (provider_session_id IS NULL OR provider_session_id = '')`, in.ProviderSessionID, s.ID); err != nil {
+			return err
+		}
+	}
+	_, err := h.DB.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`, nowMs, s.ID)
+	return err
+}
+
+// Handle runs the §11.2 decision table and returns the agent-specific output
+// bytes (empty means "print nothing"). It never errors on an unknown session.
+func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, sessionID string, stdin []byte) ([]byte, error) {
+	// L16: identity comes from the token. The {agent} path segment is a hint only;
+	// the adapter is the one the session's agent row names, and a mismatch is
+	// logged and ignored rather than trusted.
+	s0, err := h.load(ctx, sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if s0.Kind != kind {
+		h.logf("hook: %s posted to /hook/%s; using the session's kind", s0.Kind, kind)
+	}
+	a, ok := h.Adapters[s0.Kind]
+	if !ok {
+		return nil, nil
+	}
+	ev := normalize(s0.Kind, event)
+	in, err := a.ParseHook(event, stdin)
+	if err != nil {
+		h.logf("hook: %s %s does not parse: %v", s0.Kind, event, err)
+		in = adapter.HookInput{}
+	}
+	if err := h.touch(ctx, s0, in); err != nil {
+		return nil, err
+	}
+	s, err := h.load(ctx, sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// native advisor accounting reads the transcript on PostToolUse and Stop (§11.6)
+	if (ev == "PostToolUse" || ev == "Stop") && in.TranscriptPath != "" && h.Advisor != nil {
+		if err := h.Advisor.ScanTranscript(ctx, s.ID, in.TranscriptPath); err != nil {
+			h.logf("advisor: transcript scan for %s: %v", s.ID, err)
+		}
+	}
+	d, err := h.decide(ctx, kind, a, s, ev, in)
+	if err != nil {
+		return nil, err
+	}
+	if d.Context == "" && !d.Block {
+		return nil, nil
+	}
+	return a.HookOutput(event, d)
+}
+
+func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.Adapter, s *sessionRow, ev string, in adapter.HookInput) (adapter.HookDecision, error) {
+	switch ev {
+	case "SessionStart":
+		var parts []string
+		if in.Source == "compact" || s.NeedsCompaction {
+			parts = append(parts, runtime.CompactionNotice())
+			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 0 WHERE id = ?`, s.ID); err != nil {
+				return adapter.HookDecision{}, err
+			}
+		}
+		if s.Pending > 0 {
+			parts = append(parts, runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey))
+		}
+		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
+
+	case "PreCompact":
+		if kind == runtime.Codex || kind == runtime.Cursor || s.Kind == runtime.Codex || s.Kind == runtime.Cursor {
+			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 1 WHERE id = ?`, s.ID); err != nil {
+				return adapter.HookDecision{}, err
+			}
+		}
+		return adapter.HookDecision{
+			Context: "Write a `progress` checkpoint with your current state before context is compacted.",
+		}, nil
+
+	case "PostCompact":
+		return adapter.HookDecision{}, nil
+
+	case "UserPromptSubmit":
+		var parts []string
+		if s.NeedsCompaction {
+			parts = append(parts, runtime.CompactionNotice())
+			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 0 WHERE id = ?`, s.ID); err != nil {
+				return adapter.HookDecision{}, err
+			}
+		}
+		if s.Pending > 0 {
+			parts = append(parts, runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey))
+		}
+		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
+
+	case "PreToolUse":
+		if s.State.Pausing() && !in.IsSwarmTool {
+			return adapter.HookDecision{
+				Block:  true,
+				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
+			}, nil
+		}
+		if in.Command != "" {
+			if blocked, reason := (AttrCheck{ReadFile: h.readFile}).Block(in.Command, in.Cwd); blocked {
+				return adapter.HookDecision{
+					Block:  true,
+					Reason: reason,
+				}, nil
+			}
+		}
+		return adapter.HookDecision{}, nil
+
+	case "PostToolUse":
+		var parts []string
+		if s.NeedsCompaction {
+			parts = append(parts, runtime.CompactionNotice())
+			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 0 WHERE id = ?`, s.ID); err != nil {
+				return adapter.HookDecision{}, err
+			}
+		}
+		canNotice := s.LastNoticeAt == nil || h.now().Sub(*s.LastNoticeAt) >= noticeGap
+		if s.Pending > 0 && canNotice {
+			parts = append(parts, runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey))
+		}
+		if len(parts) == 0 {
+			return adapter.HookDecision{}, nil
+		}
+		h.mu.Lock()
+		if h.noticeAt == nil {
+			h.noticeAt = make(map[string]time.Time)
+		}
+		h.noticeAt[s.ID] = h.now()
+		h.mu.Unlock()
+		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
+
+	case "Stop":
+		if s.State.Pausing() && !s.HasHandoff {
+			return adapter.HookDecision{
+				Block:  true,
+				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
+			}, nil
+		}
+		if s.Pending > 0 && s.StopBlocks < maxStopBlocks {
+			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET stop_blocks = stop_blocks + 1 WHERE id = ?`, s.ID); err != nil {
+				return adapter.HookDecision{}, err
+			}
+			return adapter.HookDecision{
+				Block:  true,
+				Reason: runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey),
+			}, nil
+		}
+		if s.StopBlocks > 0 {
+			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET stop_blocks = 0 WHERE id = ?`, s.ID); err != nil {
+				return adapter.HookDecision{}, err
+			}
+		}
+		return adapter.HookDecision{}, nil
+	}
+
+	return adapter.HookDecision{}, nil
+}

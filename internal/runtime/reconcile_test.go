@@ -1,0 +1,544 @@
+package runtime
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+)
+
+// A real tmux failure to list panes at all must surface, not be treated as
+// "every session is gone."
+func TestReconcilePropagatesAPanesError(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	s.Tmux = &erroringTmux{fakeTmux: tm, panesErr: errors.New("tmux list-panes failed")}
+	if err := s.Reconcile(context.Background()); err == nil {
+		t.Fatal("a Panes failure must propagate")
+	}
+}
+
+// erroringNotifier always fails, so a test can verify a notify failure
+// actually surfaces instead of being silently swallowed.
+type erroringNotifier struct{ err error }
+
+func (e *erroringNotifier) Raise(context.Context, *sql.Tx, NotifyInput) error { return e.err }
+
+// A notification failure on an unknown tmux session must surface, not vanish.
+func TestReconcilePropagatesANotifyFailure(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
+	panes(tm, Pane{Session: "someone-elses-session", Command: "vim"})
+	if err := s.Reconcile(context.Background()); err == nil {
+		t.Fatal("a notify failure must propagate")
+	}
+}
+
+// A stale notification failure must also surface.
+func TestResolveAliveStalePropagatesANotifyFailure(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Quiet2", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	tm.captures[a.Name] = []string{"working on it…\n"}
+	at.Advance(31 * time.Minute)
+	if err := s.Reconcile(ctx); err == nil {
+		t.Fatal("a stale notify failure must propagate")
+	}
+}
+
+// ReconcileLoop just wraps Reconcile in a ticker and stops on cancel; this
+// only exercises that wiring, not the reconciliation logic itself (covered
+// above).
+func TestReconcileLoopStopsOnContextCancel(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	panes(tm)
+	// A hand-fed tick instead of the fake clock's instant one (which never
+	// leaves the select block, so a cancel lands mid-Reconcile and races a
+	// live query) or a real timer (same race, just rarer). One buffered tick
+	// lets exactly one Reconcile complete; by the time we cancel, the loop is
+	// parked back in the select with nothing left to receive, so cancel is the
+	// only thing that can wake it — no race either way.
+	tick := make(chan time.Time, 1)
+	tick <- time.Now()
+	s.After = func(time.Duration) <-chan time.Time { return tick }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.ReconcileLoop(ctx, time.Millisecond)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReconcileLoop did not stop on cancel")
+	}
+}
+
+func TestDeadPaneWithACompletedCheckpointCompletesTheSession(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test", Phase: "red", OK: false}, {Cmd: "go test", Phase: "green", OK: true}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}})
+	panes(tm) // the pane is gone
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Completed {
+		t.Fatalf("session state = %s", ses.State)
+	}
+	got, _ := s.Agent(ctx, w.Name)
+	if got.State != AgentFinished {
+		t.Fatalf("agent state = %s", got.State)
+	}
+}
+
+func TestDeadPaneWithNoTerminalCheckpointCrashes(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	before, _ := s.Items.Get(ctx, "TASK-1")
+	// The orchestrator gets its own live, matching pane too: without one, its
+	// own session would also be resolved as dead-with-no-checkpoint and marked
+	// crashed by the very logic this test exercises, racing the worker's own
+	// crash notification.
+	panes(tm, Pane{Session: w.Name, Dead: true, DeadStatus: 137, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Crashed || ses.ExitCode == nil || *ses.ExitCode != 137 {
+		t.Fatalf("session = %+v", ses)
+	}
+	after, _ := s.Items.Get(ctx, "TASK-1")
+	if before.Status != after.Status {
+		t.Fatalf("the item status must not change on a crash: %s → %s", before.Status, after.Status)
+	}
+	// The `attention` level is notify.Rules' (Task 23); here the assertion is that
+	// the crash raised anything at all, against the right agent and item.
+	n := notified(t, s, "agent.crashed")
+	if n.ItemKey != "TASK-1" {
+		t.Fatalf("notification = %+v", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"crashed"%'`, orch.ID).Scan(&relays)
+	if relays != 1 {
+		t.Fatalf("relay crashed count = %d", relays)
+	}
+	// the agent stays listed until acknowledged (§10.6)
+	got, _ := s.Agent(ctx, w.Name)
+	if got.State != AgentActive {
+		t.Fatalf("agent state = %s, want active until acknowledged", got.State)
+	}
+}
+
+// A top-level crash (no parent to relay to) still records crashed.
+// A crashed notify failure must surface too.
+func TestDeadPaneCrashPropagatesANotifyFailure(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "WillCrash", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
+	panes(tm)
+	if err := s.Reconcile(ctx); err == nil {
+		t.Fatal("a crash notify failure must propagate")
+	}
+}
+
+// The "paused" notification on a dead-while-stopping session must also
+// propagate a failure instead of leaving the session's state ambiguous.
+func TestDeadPaneWhileStoppingPropagatesANotifyFailure(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
+	_, _, wSes := worker(t, s)
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, wSes.ID)
+	panes(tm)
+	if err := s.Reconcile(ctx); err == nil {
+		t.Fatal("a paused notify failure must propagate")
+	}
+}
+
+func TestDeadPaneCrashWithNoParentSkipsTheRelay(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Lonely", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	panes(tm)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.LatestSession(ctx, a.ID)
+	if got.State != Crashed {
+		t.Fatalf("state = %s", got.State)
+	}
+}
+
+func TestDeadPaneWithAFailedCheckpointFails(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: FailedCkp, Summary: "couldn't finish"})
+	panes(tm)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Failed {
+		t.Fatalf("session state = %s", ses.State)
+	}
+}
+
+// M6: an orchestrator with a live child owes something and is never waiting.
+func TestOrchestratorWithALiveChildIsNeverWaiting(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	orchSes, _ := s.LatestSession(ctx, orch.ID)
+	s.Sync(ctx, orchSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, orch.ID)
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": orchSes.ID}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.LatestSession(ctx, orch.ID)
+	if got.Waiting {
+		t.Fatal("an orchestrator with a live child owes something and must not be waiting")
+	}
+}
+
+// M6: an agent with an open request it raised is never waiting.
+func TestOwesNothingCountsAnOpenRequest(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Asking", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.Sync(ctx, ses.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, a.ID)
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which one?"}); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.LatestSession(ctx, a.ID)
+	if got.Waiting {
+		t.Fatal("an open question the agent raised means it owes something")
+	}
+}
+
+// A real agent that crashes before it ever writes a single checkpoint (a bad
+// launch flag, a model rejection, a network failure on its first turn, a pane
+// killed externally) must still be marked crashed, notified and relayed
+// within one reconcile tick — Reconcile must never quietly no-op just
+// because nothing was ever recorded for this agent.
+func TestDeadPaneCrashesEvenWithNoCheckpointAtAll(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	// No checkpoint written at all — not even "accepted".
+	panes(tm, Pane{Session: w.Name, Dead: true, DeadStatus: 1, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Crashed || ses.ExitCode == nil || *ses.ExitCode != 1 {
+		t.Fatalf("session = %+v, want crashed with exit_code 1", ses)
+	}
+	n := notified(t, s, "agent.crashed")
+	if n.AgentName != w.Name {
+		t.Fatalf("notification = %+v", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"crashed"%'`, orch.ID).Scan(&relays)
+	if relays != 1 {
+		t.Fatalf("relay crashed count = %d, want exactly one", relays)
+	}
+}
+
+func TestDeadPaneWhileStoppingBecomesPaused(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, wSes.ID)
+	panes(tm)
+	s.Reconcile(ctx)
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Paused {
+		t.Fatalf("state = %s", ses.State)
+	}
+}
+
+func TestAliveWithAnOldCompletedCheckpointIsKilled(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.DB.ExecContext(ctx, `UPDATE items SET tdd_exempt = 'docs' WHERE key = 'TASK-1'`)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	at.Advance(61 * time.Second)
+	s.Reconcile(ctx)
+	if len(tm.killed) != 1 {
+		t.Fatalf("killed = %v", tm.killed)
+	}
+}
+
+// M6: a waiting session is never marked stale.
+func TestWaitingIsSetAndClearedAndNeverStale(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Waiting", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.Sync(ctx, ses.ID, nil, 20) // clear the inbox
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Reconcile(ctx)
+	got, _ := s.LatestSession(ctx, a.ID)
+	if !got.Waiting {
+		t.Fatal("an idle agent that owes nothing is waiting")
+	}
+	at.Advance(31 * time.Minute)
+	s.Reconcile(ctx)
+	if notifiedCount(s, "agent.stale") != 0 {
+		t.Fatal("a waiting session is never marked stale (M6)")
+	}
+	// give it something to do; waiting clears
+	enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"x"}`, 1)
+	s.Reconcile(ctx)
+	got, _ = s.LatestSession(ctx, a.ID)
+	if got.Waiting {
+		t.Fatal("an un-acked message clears waiting")
+	}
+}
+
+// A1: 30 min of silence while not waiting is stale.
+func TestStaleAfterThirtyMinutesOfSilence(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Quiet", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	tm.captures[a.Name] = []string{"working on it…\n"} // not idle, so not waiting
+	at.Advance(31 * time.Minute)
+	s.Reconcile(ctx)
+	if n := notifiedCount(s, "agent.stale"); n != 1 {
+		t.Fatalf("agent.stale count = %d", n)
+	}
+	// a hook call clears it
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`,
+		db.Millis(at.Now()), ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.stale"); n != 1 {
+		t.Fatalf("the notification must not repeat while dedup holds: %d", n)
+	}
+}
+
+// §10.6: a tmux session with no row is reported and never killed.
+func TestUnknownTmuxSessionIsReportedNotKilled(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	panes(tm, Pane{Session: "someone-elses-session", Command: "vim"})
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// §17.5's body is "{name} is running but Swarm has no record of it." — the name
+	// is the tmux session, which runtime passes as AgentName.
+	if n := notified(t, s, "tmux.unknown"); n.AgentName != "someone-elses-session" {
+		t.Fatalf("notification = %+v", n)
+	}
+	if len(tm.killed) != 0 {
+		t.Fatalf("an unknown session must never be killed: %v", tm.killed)
+	}
+}
+
+// §12.2: the sweep runs once the root is done and every agent has finished.
+func TestSweepRunsOnlyWhenTheWholeTreeIsFinished(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	// A worktree the sweep can act on: its path is a plain temp dir, not a real
+	// checkout, so DirtyStrict's `git status` fails and remove() retains it
+	// (sweptCount's own doc: "retained" counts as swept too). Without a worktree
+	// row at all, Sweep has nothing to touch and sweptCount could never move.
+	epic, err := s.Items.Get(ctx, "EPIC-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoID := seedRepo(t, s, "proj")
+	seedWorktreeReservation(t, s, repoID, w.ID, epic.ID)
+	s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE key = 'EPIC-1'`)
+	panes(tm)
+	s.Reconcile(ctx)
+	if sweptCount(t, s) != 0 {
+		t.Fatal("the sweep waits for every agent in the tree to finish")
+	}
+	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id IN (?, ?)`, orch.ID, w.ID)
+	s.Reconcile(ctx)
+	if sweptCount(t, s) == 0 {
+		t.Fatal("the sweep should run now")
+	}
+}
+
+// §10.6: at startup, queued spawns are retried FIFO.
+func TestReconcileDrainsTheQueue(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4)
+	seedEpicWithTwoTasks(t, s)
+	first, _, _ := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
+	second, queued, _ := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "two"}})
+	if !queued {
+		t.Fatal("the second should queue")
+	}
+	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID)
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, first.ID)
+	panes(tm)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Agent(ctx, second.Name)
+	if got.State != AgentActive {
+		t.Fatalf("state = %s", got.State)
+	}
+}
+
+// The following two tests exercise the pause machine (Task 20's pause.go) but
+// live here because they call s.Reconcile (Task 21's), per the batch brief's
+// note under Task 20.
+
+func TestFirstSyncMovesToQuiescingAndTheHandoffToStopping(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.Pause(ctx, w.Name, "session")
+	if _, err := s.Sync(ctx, wSes.ID, nil, 20); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Quiescing {
+		t.Fatalf("state after the first sync = %s", ses.State)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff,
+		Summary: "stopped after the failing test"}); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ = s.LatestSession(ctx, w.ID)
+	if ses.State != Stopping {
+		t.Fatalf("state after the handoff = %s", ses.State)
+	}
+	// the parent is told
+	var n int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"paused"%'`, orch.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("relay paused count = %d", n)
+	}
+	// the kill comes 5 s later, and only after the SWARM_SESSION check
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	at.Advance(6 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != 1 || tm.killed[0] != w.Name {
+		t.Fatalf("killed = %v", tm.killed)
+	}
+	// paused only once the pane is dead
+	tm.panes = nil
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ = s.LatestSession(ctx, w.ID)
+	if ses.State != Paused {
+		t.Fatalf("state = %s, want paused once the pane is gone", ses.State)
+	}
+	// The notifier is runtime's fakeNotifier (internal/notify is Task 23 and sits
+	// above runtime), so assert through it rather than against a `notifications`
+	// table that nothing in this package writes.
+	if got := s.Notify.(*fakeNotifier).kinds(); !slices.Contains(got, "agent.paused") {
+		t.Fatalf("raised %v, want agent.paused", got)
+	}
+}
+
+// L11: the deadline path sends the interrupt keys, waits 10 s, kills, and records
+// interrupted.
+func TestDeadlineInterruptsAndNeverRecordsPaused(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	s.Pause(ctx, w.Name, "session")
+	at.Advance(121 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.keys) == 0 || !strings.HasSuffix(tm.keys[len(tm.keys)-1], "|Escape") {
+		t.Fatalf("interrupt keys = %v", tm.keys)
+	}
+	at.Advance(11 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != 1 {
+		t.Fatalf("killed = %v", tm.killed)
+	}
+	tm.panes = nil
+	s.Reconcile(ctx)
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Interrupted {
+		t.Fatalf("state = %s, want interrupted, never paused", ses.State)
+	}
+	if got := s.Notify.(*fakeNotifier).kinds(); !slices.Contains(got, "agent.interrupted") {
+		t.Fatalf("raised %v, want agent.interrupted", got)
+	}
+	// The `attention` level belongs to notify.Rules, not to runtime; Task 23's
+	// TestEveryRuleKeyIsComplete pins it. Asserting it here would be asserting
+	// against a table this package never writes.
+}

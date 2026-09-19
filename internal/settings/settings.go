@@ -13,15 +13,15 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
 const NoAdvisor = "none"
 
 type RoleDefault struct {
-	Agent  runtime.AgentKind `json:"agent"`
-	Model  string            `json:"model"`
-	Effort string            `json:"effort,omitempty"` // "" = agent default (L27)
+	Agent  kinds.AgentKind `json:"agent"`
+	Model  string          `json:"model"`
+	Effort string          `json:"effort,omitempty"` // "" = agent default (L27)
 }
 
 type NotifyPref struct {
@@ -30,36 +30,36 @@ type NotifyPref struct {
 }
 
 type Settings struct {
-	EnabledAgents    []runtime.AgentKind          `json:"enabled_agents"`
-	Roles            map[runtime.Role]RoleDefault `json:"roles"`
-	Notifications    map[string]NotifyPref        `json:"notifications"`
-	MaxOrchestrators int                          `json:"max_orchestrators"`
-	MaxAgents        int                          `json:"max_agents"`
-	MaxAgentsPerRoot int                          `json:"max_agents_per_root"`
-	ScanExcludes     []string                     `json:"scan_excludes"`
-	ScanIntervalSec  int                          `json:"scan_interval_sec"`
-	MenubarCompact   bool                         `json:"menubar_compact"`
-	UsagePollSec     int                          `json:"usage_poll_sec"`
-	PauseDeadlineSec int                          `json:"pause_deadline_sec"`
+	EnabledAgents    []kinds.AgentKind          `json:"enabled_agents"`
+	Roles            map[kinds.Role]RoleDefault `json:"roles"`
+	Notifications    map[string]NotifyPref      `json:"notifications"`
+	MaxOrchestrators int                        `json:"max_orchestrators"`
+	MaxAgents        int                        `json:"max_agents"`
+	MaxAgentsPerRoot int                        `json:"max_agents_per_root"`
+	ScanExcludes     []string                   `json:"scan_excludes"`
+	ScanIntervalSec  int                        `json:"scan_interval_sec"`
+	MenubarCompact   bool                       `json:"menubar_compact"`
+	UsagePollSec     int                        `json:"usage_poll_sec"`
+	PauseDeadlineSec int                        `json:"pause_deadline_sec"`
 }
 
 // roleDefaults is §2.1 A3; "default" effort is "".
-var roleDefaults = map[runtime.Role]RoleDefault{
-	runtime.RoleOrchestrator: {runtime.Claude, "opus", ""},
-	runtime.RoleCoder:        {runtime.Claude, "sonnet", ""},
-	runtime.RoleReviewer:     {runtime.Claude, "opus", ""},
-	runtime.RoleUIReviewer:   {runtime.Claude, "opus", ""},
-	runtime.RoleResearcher:   {runtime.Claude, "sonnet", ""},
-	runtime.RoleDebugger:     {runtime.Claude, "opus", ""},
-	runtime.RoleMechanical:   {runtime.Claude, "haiku", ""},
-	runtime.RoleAdvisor:      {runtime.Claude, "fable", ""},
+var roleDefaults = map[kinds.Role]RoleDefault{
+	kinds.RoleOrchestrator: {kinds.Claude, "opus", ""},
+	kinds.RoleCoder:        {kinds.Claude, "sonnet", ""},
+	kinds.RoleReviewer:     {kinds.Claude, "opus", ""},
+	kinds.RoleUIReviewer:   {kinds.Claude, "opus", ""},
+	kinds.RoleResearcher:   {kinds.Claude, "sonnet", ""},
+	kinds.RoleDebugger:     {kinds.Claude, "opus", ""},
+	kinds.RoleMechanical:   {kinds.Claude, "haiku", ""},
+	kinds.RoleAdvisor:      {kinds.Claude, "fable", ""},
 }
 
 // Defaults: Claude plus any installed agent, in settings order.
-func Defaults(installed []runtime.AgentKind) Settings {
-	enabled := []runtime.AgentKind{runtime.Claude}
-	for _, k := range runtime.AgentKinds {
-		if k != runtime.Claude && slices.Contains(installed, k) {
+func Defaults(installed []kinds.AgentKind) Settings {
+	enabled := []kinds.AgentKind{kinds.Claude}
+	for _, k := range kinds.AgentKinds {
+		if k != kinds.Claude && slices.Contains(installed, k) {
 			enabled = append(enabled, k)
 		}
 	}
@@ -90,12 +90,12 @@ type Store struct {
 	DB        *db.DB
 	Events    *events.Store
 	Now       func() time.Time
-	ModelsFor func(context.Context, runtime.AgentKind) ([]catalog.CatalogModel, string, error)
-	Installed func(context.Context) []runtime.AgentKind
+	ModelsFor func(context.Context, kinds.AgentKind) ([]catalog.CatalogModel, string, error)
+	Installed func(context.Context) []kinds.AgentKind
 }
 
 func (s *Store) Get(ctx context.Context) (Settings, error) {
-	var installed []runtime.AgentKind
+	var installed []kinds.AgentKind
 	if s.Installed != nil {
 		installed = s.Installed(ctx)
 	}
@@ -131,7 +131,7 @@ func (s *Store) Get(ctx context.Context) (Settings, error) {
 
 func fillMissing(s *Settings, def Settings) {
 	if s.Roles == nil {
-		s.Roles = map[runtime.Role]RoleDefault{}
+		s.Roles = map[kinds.Role]RoleDefault{}
 	}
 	for r, d := range def.Roles {
 		if _, ok := s.Roles[r]; !ok {
@@ -193,14 +193,14 @@ func (s *Store) switchDisabled(ctx context.Context, prev Settings, next *Setting
 	}
 	first := next.EnabledAgents[0]
 	for role, rd := range next.Roles {
-		if rd.Model == NoAdvisor && role == runtime.RoleAdvisor {
+		if rd.Model == NoAdvisor && role == kinds.RoleAdvisor {
 			continue
 		}
 		disabledNow := slices.Contains(prev.EnabledAgents, rd.Agent) && !slices.Contains(next.EnabledAgents, rd.Agent)
 		if !disabledNow {
 			continue
 		}
-		if first == runtime.Claude {
+		if first == kinds.Claude {
 			next.Roles[role] = roleDefaults[role]
 			continue
 		}
@@ -218,18 +218,18 @@ func (s *Store) switchDisabled(ctx context.Context, prev Settings, next *Setting
 
 func (s *Store) validate(ctx context.Context, prev, next Settings) error {
 	for _, k := range next.EnabledAgents {
-		if !slices.Contains(runtime.AgentKinds, k) {
+		if !slices.Contains(kinds.AgentKinds, k) {
 			return invalid("Unknown agent %s.", k)
 		}
 	}
 	for role := range next.Roles {
-		if !slices.Contains(runtime.SettingsRoles, role) {
+		if !slices.Contains(kinds.SettingsRoles, role) {
 			return invalid("Unknown role %s.", role)
 		}
 	}
-	for _, role := range runtime.SettingsRoles {
+	for _, role := range kinds.SettingsRoles {
 		rd := next.Roles[role]
-		if role == runtime.RoleAdvisor && rd.Model == NoAdvisor {
+		if role == kinds.RoleAdvisor && rd.Model == NoAdvisor {
 			continue
 		}
 		if !slices.Contains(next.EnabledAgents, rd.Agent) {
@@ -252,7 +252,7 @@ func (s *Store) validate(ctx context.Context, prev, next Settings) error {
 			}
 			return invalid("Choose a model available for this agent.")
 		}
-		if role == runtime.RoleAdvisor && rd.Agent == runtime.Claude && !m.AdvisorCapable {
+		if role == kinds.RoleAdvisor && rd.Agent == kinds.Claude && !m.AdvisorCapable {
 			return invalid("Choose a model available for this agent.")
 		}
 		if !m.SupportsEffort(rd.Effort) {

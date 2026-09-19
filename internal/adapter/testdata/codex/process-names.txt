@@ -1,0 +1,1 @@
+pane_current_command=codex; ps comm=codex

@@ -66,6 +66,7 @@ func TestDispatch(t *testing.T) {
 // startDaemon runs serve on a random port and returns its URL and home.
 func startDaemon(t *testing.T) (url, home string, stop func()) {
 	t.Helper()
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	home = t.TempDir()
 	scan, _ := filepath.EvalSymlinks(t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -230,6 +231,7 @@ func TestDaemonAndClientCommands(t *testing.T) {
 }
 
 func TestTokenIsReusedAndLegacyDataRefused(t *testing.T) {
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	_, home, stop := startDaemon(t)
 	first, _ := os.ReadFile(filepath.Join(home, "run", "daemon.token"))
 	stop()
@@ -267,6 +269,7 @@ func TestTokenIsReusedAndLegacyDataRefused(t *testing.T) {
 
 // A background loop that ignores cancellation must not hold shutdown past the grace period.
 func TestServeBoundsWaitForBackgroundLoops(t *testing.T) {
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	block := make(chan struct{})
 	defer close(block)
 	var mu sync.Mutex
@@ -307,6 +310,7 @@ func TestServeBoundsWaitForBackgroundLoops(t *testing.T) {
 
 // An open SSE stream never goes idle, so shutdown must end it instead of waiting it out.
 func TestServeShutsDownWithAnOpenEventStream(t *testing.T) {
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	home := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -352,6 +356,7 @@ func TestServeShutsDownWithAnOpenEventStream(t *testing.T) {
 
 // A user who tightens ~/.swarm keeps it; only run/ (tokens) is forced to 0700.
 func TestOpenDaemonKeepsTightHomePermissions(t *testing.T) {
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	home := filepath.Join(t.TempDir(), "swarm")
 	if err := os.MkdirAll(filepath.Join(home, "run"), 0o755); err != nil {
 		t.Fatal(err)
@@ -376,6 +381,7 @@ func TestOpenDaemonKeepsTightHomePermissions(t *testing.T) {
 }
 
 func TestTokenEmptyIsReplacedUnreadableFails(t *testing.T) {
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	home := t.TempDir()
 	path := filepath.Join(home, "run", "daemon.token")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -420,6 +426,7 @@ func TestTokenEmptyIsReplacedUnreadableFails(t *testing.T) {
 }
 
 func TestDaemonLoggersWired(t *testing.T) {
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	var mu sync.Mutex
 	var got []string
 	logf := func(format string, args ...any) {

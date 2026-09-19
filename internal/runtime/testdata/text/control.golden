@@ -1,0 +1,1 @@
+[swarm] PAUSE requested for login-form-coder (TASK-101). Stop current work now, call swarm_sync, write a handoff checkpoint, then stop. Delivered by the Swarm daemon as part of the user's orchestration, not typed by the user.

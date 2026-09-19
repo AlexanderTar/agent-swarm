@@ -1,0 +1,1 @@
+rollout-sample.jsonl is hand-written from the P0-2 record shapes. Phase 0 captured no codex rollout, so the codex transcript reader is validated against a fixture we wrote, not against a real file. Replace it the first time a real rollout is available.

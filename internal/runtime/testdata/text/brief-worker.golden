@@ -1,0 +1,25 @@
+# TASK-101 · Build the login form
+agent: login-form-coder · role: coder · parent: auth-epic-orchestrator · root: EPIC-12
+worktrees:
+- agent-swarm: /Users/u/GitHub/agent-swarm--task-101-login-form @ task/task-101-login-form (base 1a2b3c4, rw)
+
+## Objective
+Add the login form and wire it to the session endpoint.
+
+## Acceptance
+- The form validates an empty email.
+- A successful login redirects to /home.
+
+## Scope
+In: web/src/views/Login.tsx
+Out: the session endpoint itself
+
+## Context
+- art_01J9Z: the approved spec
+- TASK-98: session cookie helper landed
+
+## Verify
+- pnpm test web/src/views/Login.test.tsx
+
+## Stop when
+- The task is marked done by the orchestrator.

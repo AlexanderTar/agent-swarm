@@ -22,6 +22,24 @@ Commands:
   items [--type T] [--status S] [-q TEXT]
   repos [--rescan] | repos add PATH
   kb search QUERY | kb status
+  mcp                              the stdio MCP server every agent launches
+  hook <agent> <event>             the hook client every agent's config calls
+  new --name N --intent feature|debug [--repo PATH...] [--agent A --model M --effort E] [--request TEXT]
+  start KEY [--agent A --model M --effort E] [--repo PATH...]
+  agents [--all]                   list agents as a tree
+  attach NAME                      attach to an agent's tmux session here
+  pause NAME|--all [--group]       pause an agent, its group, or everything
+  resume NAME
+  cancel NAME
+  retry NAME [--note TEXT]         new attempt for a failed, crashed or interrupted agent
+  ack NAME                         move a failed, crashed or interrupted agent to history
+  requests                         list open requests
+  answer REQ TEXT
+  approve REQ
+  confirm-repos REQ PATH... [--comment TEXT]
+  request-changes REQ COMMENT
+  usage [--refresh]
+  dev-seed                          load the contract fixture keys (make dev only)
   version
 
 Every command takes --home DIR (default $SWARM_HOME or ~/.swarm).
@@ -31,7 +49,14 @@ Flags go before arguments: swarm repos --home DIR add PATH.
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
+// run is runWithStdin over the process's own stdin.
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithStdin(args, os.Stdin, stdout, stderr)
+}
+
+// runWithStdin is the dispatcher; a test seam only mcp and hook need, since
+// they are the two subcommands that read stdin (§11.2, L16).
+func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -51,6 +76,42 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdRepos(args[1:], stdout, stderr)
 	case "kb":
 		return cmdKB(args[1:], stdout, stderr)
+	case "mcp":
+		return cmdMCP(args[1:], stdin, stdout, stderr)
+	case "hook":
+		return cmdHook(args[1:], stdin, stdout, stderr)
+	case "new":
+		return cmdNew(args[1:], stdout, stderr)
+	case "start":
+		return cmdStart(args[1:], stdout, stderr)
+	case "agents":
+		return cmdAgents(args[1:], stdout, stderr)
+	case "attach":
+		return cmdAttach(args[1:], stdout, stderr)
+	case "pause":
+		return cmdPause(args[1:], stdout, stderr)
+	case "resume":
+		return cmdResume(args[1:], stdout, stderr)
+	case "cancel":
+		return cmdCancel(args[1:], stdout, stderr)
+	case "retry":
+		return cmdRetry(args[1:], stdout, stderr)
+	case "ack":
+		return cmdAck(args[1:], stdout, stderr)
+	case "requests":
+		return cmdRequests(args[1:], stdout, stderr)
+	case "answer":
+		return cmdAnswer(args[1:], stdout, stderr)
+	case "approve":
+		return cmdApprove(args[1:], stdout, stderr)
+	case "confirm-repos":
+		return cmdConfirmRepos(args[1:], stdout, stderr)
+	case "request-changes":
+		return cmdRequestChanges(args[1:], stdout, stderr)
+	case "usage":
+		return cmdUsage(args[1:], stdout, stderr)
+	case "dev-seed":
+		return cmdDevSeed(args[1:], stdout, stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, "swarm "+version)
 		return 0

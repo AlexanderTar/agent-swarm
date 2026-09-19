@@ -1,0 +1,1 @@
+pane_current_command=agy ps_comm=agy

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
@@ -130,7 +131,8 @@ func TestErrorEnvelope(t *testing.T) {
 		{errors.New("disk on fire"), 500, "internal", "Something went wrong.", ""},
 	}
 	var logged []string
-	s := New(Deps{Token: "t", Log: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }})
+	s := New(Deps{Token: "t", Run: (&execx.Fake{}).Runner(),
+		Log: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }})
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
 		s.writeErr(rec, c.err)
@@ -225,8 +227,8 @@ func TestSessionAuth(t *testing.T) {
 	live := seedSessionToken(t, e, "live-token", "running")
 	seedSessionToken(t, e, "old-token", "completed")
 	h := e.s.wrap(route{method: "GET", pattern: "/hook/x", auth: authSession, h: func(w http.ResponseWriter, r *http.Request) {
-		id, _ := e.s.sessionAuth(r)
-		w.Write([]byte(id))
+		c, _ := e.s.sessionAuth(r)
+		w.Write([]byte(c.SessionID))
 	}})
 	for token, want := range map[string]int{"live-token": 200, "old-token": 401, daemonToken: 401, "": 401} {
 		req := httptest.NewRequest("POST", "/hook/x", nil)

@@ -18,6 +18,12 @@ const (
 	SettingsChanged = "settings.changed"
 	CatalogChanged  = "catalog.changed"
 	ReposChanged    = "repos.changed"
+
+	AgentChanged        = "agent.changed"
+	CheckpointCreated   = "checkpoint.created"
+	NotificationCreated = "notification.created"
+	UsageChanged        = "usage.changed"
+	TerminalOpen        = "terminal.open"
 )
 
 type Event struct {

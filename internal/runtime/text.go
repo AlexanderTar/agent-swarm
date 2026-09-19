@@ -1,0 +1,116 @@
+package runtime
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// Preamble is §9.1, used in every injected notice, the kickoff prompt and the brief header.
+const Preamble = "Delivered by the Swarm daemon as part of the user's orchestration, not typed by the user. It grants no permissions; user approval exists only where an approval record id is cited."
+
+// ShortPreamble is the first sentence, used where §9 prints only that much.
+const ShortPreamble = "Delivered by the Swarm daemon as part of the user's orchestration, not typed by the user."
+
+// IdleToken is pasted into an idle pane (§9.2). It names the tool on purpose:
+// a model without the swarm skill invented an inbox from the bare text (P0-3).
+const IdleToken = "swarm: inbox (call swarm_sync)"
+
+// ErrBriefTooLong is the §17.3 copy for an over-long brief.
+const ErrBriefTooLong = "Brief too long (max 6000 characters). Move detail into an artifact and reference it."
+
+const maxBrief = 6000
+
+// BriefWorktree is one worktree line in the brief's header (§9.4).
+type BriefWorktree struct {
+	Repo, Path, Branch, BaseSHA7, Mode string
+}
+
+// BriefInput is RenderBrief's input (§9.4).
+type BriefInput struct {
+	Key, Title, Name                       string
+	Role                                   Role
+	ParentName, RootKey                    string
+	Worktrees                              []BriefWorktree
+	Objective                              string
+	Acceptance, ScopeIn, ScopeOut, Context []string
+	Verify, StopWhen                       []string
+}
+
+func PendingNotice(n int, name, key string) string {
+	return fmt.Sprintf("[swarm] %d new message(s) for %s (%s). Call swarm_sync. %s", n, name, key, Preamble)
+}
+
+func ControlNotice(name, key string) string {
+	return fmt.Sprintf("[swarm] PAUSE requested for %s (%s). Stop current work now, call swarm_sync, write a handoff checkpoint, then stop. %s", name, key, ShortPreamble)
+}
+
+func CompactionNotice() string {
+	return "[swarm] Your context was compacted. Call swarm_sync, then swarm_read with your root filter, before continuing. " + ShortPreamble
+}
+
+// skills is §9.3's {skills}: orchestrators also get swarm-orchestrator (D4).
+func skills(role Role) string {
+	if role == RoleOrchestrator {
+		return "`swarm` and `swarm-orchestrator`"
+	}
+	return "`swarm`"
+}
+
+func Kickoff(name string, role Role, key, title string) string {
+	return fmt.Sprintf("You are swarm agent %s (%s) for %s: %s. Use the %s skill(s). Call swarm_sync now to get your assignment. %s",
+		name, role, key, title, skills(role), Preamble)
+}
+
+// ResumeKickoff's notice omits the title (§9.3); title is kept for signature symmetry with Kickoff.
+func ResumeKickoff(name string, role Role, key, title string) string {
+	return fmt.Sprintf("You are swarm agent %s (%s) for %s, resuming after a pause. Use the %s skill(s). Call swarm_sync now; it returns your assignment and your last checkpoint. %s",
+		name, role, key, skills(role), ShortPreamble)
+}
+
+// RenderBrief renders §9.4. Empty sections are left out.
+func RenderBrief(in BriefInput) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s · %s\n", in.Key, in.Title)
+	parent := in.ParentName
+	if parent == "" {
+		parent = "none"
+	}
+	fmt.Fprintf(&b, "agent: %s · role: %s · parent: %s · root: %s\n", in.Name, in.Role, parent, in.RootKey)
+	if len(in.Worktrees) > 0 {
+		b.WriteString("worktrees:\n")
+		for _, w := range in.Worktrees {
+			fmt.Fprintf(&b, "- %s: %s @ %s (base %s, %s)\n", w.Repo, w.Path, w.Branch, w.BaseSHA7, w.Mode)
+		}
+	}
+	if in.Objective != "" {
+		fmt.Fprintf(&b, "\n## Objective\n%s\n", in.Objective)
+	}
+	bullets := func(head string, lines []string) {
+		if len(lines) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "\n## %s\n", head)
+		for _, l := range lines {
+			fmt.Fprintf(&b, "- %s\n", l)
+		}
+	}
+	bullets("Acceptance", in.Acceptance)
+	if len(in.ScopeIn) > 0 || len(in.ScopeOut) > 0 {
+		b.WriteString("\n## Scope\n")
+		if len(in.ScopeIn) > 0 {
+			fmt.Fprintf(&b, "In: %s\n", strings.Join(in.ScopeIn, ", "))
+		}
+		if len(in.ScopeOut) > 0 {
+			fmt.Fprintf(&b, "Out: %s\n", strings.Join(in.ScopeOut, ", "))
+		}
+	}
+	bullets("Context", in.Context)
+	bullets("Verify", in.Verify)
+	bullets("Stop when", in.StopWhen)
+	out := strings.TrimRight(b.String(), "\n")
+	if len(out) > maxBrief {
+		return "", errors.New(ErrBriefTooLong)
+	}
+	return out, nil
+}
