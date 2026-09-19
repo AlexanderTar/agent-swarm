@@ -70,7 +70,7 @@ final class SettingsModelTests: XCTestCase {
     func testDefaultsGrid() async {
         let m = await model()
         let rows = m.defaultsRows
-        XCTAssertEqual(rows.map(\.label), ["Orchestrator", "Advisor", "Coding", "Code review", "UI review", "Research", "Debugging", "Mechanical"])
+        XCTAssertEqual(rows.map(\.label), ["Orchestrator", "Advisor", "Coding", "Code review", "UI review", "Research", "Debugging", "Mechanical", "Fallback"])
         XCTAssertEqual(rows[0].agentOptions.map(\.label), ["Claude", "Codex", "Antigravity"])
         XCTAssertEqual(rows[0].modelOptions.map(\.label).prefix(4), ["Fable (latest)", "Opus (latest)", "Sonnet (latest)", "Haiku (latest)"])
         XCTAssertEqual(rows[0].effortOptions?.first?.label, "Default (high)")
@@ -82,6 +82,12 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(rows[3].effortOptions?.first?.label, "Default (medium)")
         XCTAssertFalse(rows[3].modelOptions.contains { $0.value == "gpt-legacy" }, "hidden models stay out")
         XCTAssertNil(rows[7].effortOptions, "Haiku shows Not supported")
+        // docs/specs/2026-09-19-usage-fallback-agent.md: the Fallback row is
+        // a plain default like any other -- no "no advisor" option, no
+        // advisor-only model filtering.
+        XCTAssertEqual(rows[8].agent, "claude")
+        XCTAssertEqual(rows[8].model, "sonnet")
+        XCTAssertFalse(rows[8].modelOptions.contains { $0.value == "none" })
         XCTAssertEqual(m.catalogLine, "Model lists updated 3h ago")
         XCTAssertEqual(m.staleNotes, ["Model list from 1d ago. Couldn't refresh: agy models timed out"])
         await m.refreshModels()
@@ -120,6 +126,20 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(saves, before, "a missing model blocks saving until it's changed")
         await g.setModel(.mechanical, "haiku")
         XCTAssertEqual(saves, before + 1)
+    }
+
+    /// docs/specs/2026-09-19-usage-fallback-agent.md: the Fallback row goes
+    /// through the exact same setAgent/setModel path as a real role, reading
+    /// and writing Settings.fallbackDefault (not the roles dictionary) via
+    /// the `.fallback` subscript case.
+    func testFallbackRowRoundTrips() async {
+        let m = await model()
+        XCTAssertEqual(m.settings[.fallback], RoleDefault(agent: .claude, model: "sonnet"))
+        await m.setAgent(.fallback, "codex")
+        await m.setModel(.fallback, "gpt-6-astra")
+        XCTAssertEqual(m.settings.fallbackDefault, RoleDefault(agent: .codex, model: "gpt-6-astra"))
+        XCTAssertEqual(m.settings[.fallback], RoleDefault(agent: .codex, model: "gpt-6-astra"))
+        XCTAssertNil(m.settings.roles["fallback"], "the fallback default is never stored in the roles dictionary")
     }
 
     /// A stored effort the catalog no longer offers must be normalised at the source, not just for

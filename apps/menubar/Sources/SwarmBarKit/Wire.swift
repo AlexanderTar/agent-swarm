@@ -17,9 +17,14 @@ public enum Role: String, Codable, Sendable {
     case orchestrator, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical
 }
 
-/// Keys of `Settings.roles`: the seven agent roles plus "advisor" (L28).
+/// Keys of `Settings.roles`, plus "advisor" (L28) and "fallback" -- the last
+/// one isn't a `roles` dictionary key at all (it's `Settings.fallbackDefault`,
+/// a top-level field), but the subscript below maps it there so every
+/// Defaults-tab row (`SettingsModel.defaultsRows`/`setAgent`/`setModel`/
+/// `setEffort`) can treat it exactly like a role default with no other code
+/// change (docs/specs/2026-09-19-usage-fallback-agent.md).
 public enum SettingsRole: String, Sendable, CaseIterable {
-    case orchestrator, advisor, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical
+    case orchestrator, advisor, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical, fallback
 }
 
 public enum AgentState: String, Codable, Sendable {
@@ -270,6 +275,12 @@ public struct NotifyPref: Codable, Sendable, Equatable {
 public struct Settings: Codable, Sendable, Equatable {
     public var enabledAgents: [AgentKind]
     public var roles: [String: RoleDefault]
+    /// The agent+model substituted when a role's configured agent is
+    /// confirmed out of usage (docs/specs/2026-09-19-usage-fallback-agent.md).
+    /// Defaulted here (not just in `.defaults` below) so every existing
+    /// memberwise `Settings(...)` call site in this codebase's tests keeps
+    /// compiling unchanged.
+    public var fallbackDefault: RoleDefault = RoleDefault(agent: .claude, model: "sonnet")
     public var notifications: [String: NotifyPref]
     public var maxOrchestrators: Int
     public var maxAgents: Int
@@ -282,6 +293,7 @@ public struct Settings: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case roles, notifications
+        case fallbackDefault = "fallback_default"
         case enabledAgents = "enabled_agents", maxOrchestrators = "max_orchestrators"
         case maxAgents = "max_agents", maxAgentsPerRoot = "max_agents_per_root"
         case scanExcludes = "scan_excludes", scanIntervalSec = "scan_interval_sec"
@@ -302,14 +314,25 @@ public struct Settings: Codable, Sendable, Equatable {
             "mechanical": RoleDefault(agent: .claude, model: "haiku"),
             "advisor": RoleDefault(agent: .claude, model: "fable"),
         ],
+        fallbackDefault: RoleDefault(agent: .claude, model: "sonnet"),
         notifications: ["info": NotifyPref(), "attention": NotifyPref(), "action": NotifyPref()],
         maxOrchestrators: 3, maxAgents: 8, maxAgentsPerRoot: 4,
         scanExcludes: ["~/Library", "~/.Trash", "~/Downloads"], scanIntervalSec: 21600,
         menubarCompact: false, usagePollSec: 300, pauseDeadlineSec: 120)
 
+    /// `.fallback` isn't a `roles` dictionary key (see `SettingsRole`'s own
+    /// doc comment): it reads/writes `fallbackDefault` directly, which is
+    /// what lets every `SettingsModel` Defaults-tab method work for it with
+    /// no other change.
     public subscript(role: SettingsRole) -> RoleDefault? {
-        get { roles[role.rawValue] }
-        set { roles[role.rawValue] = newValue }
+        get { role == .fallback ? fallbackDefault : roles[role.rawValue] }
+        set {
+            if role == .fallback {
+                if let newValue { fallbackDefault = newValue }
+            } else {
+                roles[role.rawValue] = newValue
+            }
+        }
     }
 
     public func pref(_ level: NotificationLevel) -> NotifyPref {
