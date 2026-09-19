@@ -151,6 +151,7 @@ CREATE TABLE sessions (
   pause_root          INTEGER NOT NULL DEFAULT 0,
   stop_blocks         INTEGER NOT NULL DEFAULT 0,
   needs_compaction_notice INTEGER NOT NULL DEFAULT 0,
+  failure_text        TEXT,
   last_seen_at        INTEGER,
   last_wake_at        INTEGER,
   exit_code           INTEGER,

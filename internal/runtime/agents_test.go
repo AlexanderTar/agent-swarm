@@ -403,12 +403,21 @@ func TestFailSessionRelaysToParent(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	orch, w, wSes := worker(t, s)
-	if err := s.failSession(ctx, w, wSes, "Is this a project you created or one you trust?\n"); err != nil {
+	if wSes.FailureText != nil {
+		t.Fatalf("fresh session FailureText = %v, want nil", wSes.FailureText)
+	}
+	const paneText = "Is this a project you created or one you trust?\n"
+	if err := s.failSession(ctx, w, wSes, paneText); err != nil {
 		t.Fatal(err)
 	}
 	ses, err := s.LatestSession(ctx, w.ID)
 	if err != nil || ses.State != Failed {
 		t.Fatalf("session = %+v, err = %v", ses, err)
+	}
+	// The full pane text stays on the row, queryable after the tmux pane is
+	// gone, not just as a shortened notification argument.
+	if ses.FailureText == nil || *ses.FailureText != paneText {
+		t.Fatalf("FailureText = %v, want %q", ses.FailureText, paneText)
 	}
 	var count int
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'`,
