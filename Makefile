@@ -1,9 +1,9 @@
 GO ?= /opt/homebrew/bin/go
 GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 
-.PHONY: build vet fmt test dev dev-seed e2e
+.PHONY: build vet fmt test dev dev-seed e2e web-build web-test
 
-build:
+build: web-build
 	$(GO) build -o bin/swarm ./cmd/swarm
 
 vet:
@@ -12,9 +12,15 @@ vet:
 fmt:
 	@out=$$($(GOFMT) -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
-test: vet fmt
+test: vet fmt web-build web-test
 	$(GO) test -race ./...
 	GO=$(GO) scripts/cover.sh
+
+web-build:
+	cd web && pnpm install --frozen-lockfile && pnpm build
+
+web-test:
+	cd web && pnpm install --frozen-lockfile && pnpm test
 
 # Dev daemon: its own home and port, never ~/.swarm or :7777. --dev enables
 # POST /api/dev/seed only; it gates nothing else (usage polling stays off
