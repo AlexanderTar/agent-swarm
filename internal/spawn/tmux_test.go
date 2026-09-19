@@ -213,6 +213,36 @@ func TestPanesAndKillStillReportAGenuineConnectFailure(t *testing.T) {
 	}
 }
 
+// P0-crash-4 (2026-09-19): tmux 3.7c replaces literal tab bytes in a -F
+// format string's OUTPUT with "_" whenever the calling process has no
+// locale set (confirmed live: reproduced with `env -i` stripping LANG/
+// LC_ALL) -- exactly launchd's environment for this daemon, never an
+// interactive shell's. A tab-delimited paneFormat silently parsed zero
+// panes from every one of the daemon's own live sessions as a result. This
+// pins Panes() to a delimiter tmux never sanitizes (a real tmux process
+// under this same daemon's real launchd environment, not a fake Runner,
+// would be needed to reproduce the underscore substitution itself -- this
+// test instead pins the parsing contract survives even the exact garbled
+// shape locale sanitization would have produced under the old delimiter,
+// by asserting a comma inside pane_current_command doesn't confuse a
+// "|"-split, and that the format constant itself no longer contains a tab).
+func TestPaneFormatSurvivesLocaleSanitizationOfControlCharacters(t *testing.T) {
+	if strings.Contains(paneFormat, "\t") {
+		t.Fatal("paneFormat must not use a tab delimiter -- tmux replaces literal tabs in -F output with \"_\" when the calling process has no locale set (confirmed live against the real daemon's launchd environment), silently breaking every field split")
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"tmux -L swarm list-panes -a -F " + paneFormat: {Out: "full-go-api-migration-orchestrator|0||2|2.1.278\n"},
+	}}
+	s := &Spawner{Socket: "swarm", Tmux: "tmux", Run: f.Runner(), Log: func(string, ...any) {}}
+	ps, err := s.Panes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ps) != 1 || ps[0].Session != "full-go-api-migration-orchestrator" || ps[0].Dead || ps[0].Command != "2.1.278" {
+		t.Fatalf("Panes = %+v", ps)
+	}
+}
+
 // remain-on-exit keeps a dead pane visible so the reconciler can read its status.
 func TestTmuxConfSetsTitlesFocusEventsAndRemainOnExit(t *testing.T) {
 	conf := string(TmuxConf())

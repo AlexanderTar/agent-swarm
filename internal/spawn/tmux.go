@@ -99,7 +99,19 @@ func (s *Spawner) Start(ctx context.Context, name, cwd string, env map[string]st
 	return nil
 }
 
-const paneFormat = "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{session_attached}\t#{pane_current_command}"
+// paneFormat's fields are "|"-delimited, not tab-delimited: confirmed live
+// (P0-crash-4, 2026-09-19) that tmux 3.7c replaces literal tab bytes in a
+// -F format string's OUTPUT with "_" whenever the calling process has no
+// locale set (no LANG/LC_ALL/LC_CTYPE) -- exactly launchd's environment for
+// this daemon, never an interactive shell's. That silently broke every
+// field split below (no real tab left to split on), so Panes() always
+// returned zero real panes to a daemon that had launched normally from
+// launchd, while the exact same command run from a terminal (which always
+// has a locale) parsed fine -- the daemon then treated every one of its own
+// live sessions as gone and crashed them. "|" is not sanitized under any
+// locale and cannot appear in a session name (ids.Kebab-sanitized) or a
+// process name, so it can't collide with real field content.
+const paneFormat = "#{session_name}|#{pane_dead}|#{pane_dead_status}|#{session_attached}|#{pane_current_command}"
 
 // noServer reports whether a tmux failure just means there is no server on
 // this socket yet, not a real error. A socket that already had a server but
@@ -134,7 +146,7 @@ func (s *Spawner) Panes(ctx context.Context) ([]runtime.Pane, error) {
 		if line == "" {
 			continue
 		}
-		f := strings.Split(line, "\t")
+		f := strings.Split(line, "|")
 		if len(f) < 5 {
 			continue
 		}
