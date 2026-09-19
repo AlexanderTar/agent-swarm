@@ -94,16 +94,17 @@ func (s *Store) sessionTx(ctx context.Context, tx *sql.Tx, id string) (Session, 
 	var ses Session
 	var st string
 	var waiting int
+	var pauseRoot int
 	var needsCompaction int
 	var lastSeen, lastWake, started, ended, pauseDeadline sql.NullInt64
 	var exitCode sql.NullInt64
 	err := tx.QueryRowContext(ctx, `SELECT
 		id, agent_id, attempt, generation, COALESCE(provider_session_id, ''), token_hash, tmux_name,
-		cwd, cwd_kind, state, waiting, COALESCE(pause_scope, ''), pause_deadline_at, stop_blocks,
+		cwd, cwd_kind, state, waiting, COALESCE(pause_scope, ''), pause_root, pause_deadline_at, stop_blocks,
 		needs_compaction_notice, last_seen_at, last_wake_at, exit_code, started_at, ended_at
 		FROM sessions WHERE id = ?`, id).Scan(
 		&ses.ID, &ses.AgentID, &ses.Attempt, &ses.Generation, &ses.ProviderSessionID, &ses.TokenHash,
-		&ses.TmuxName, &ses.Cwd, &ses.CwdKind, &st, &waiting, &ses.PauseScope, &pauseDeadline,
+		&ses.TmuxName, &ses.Cwd, &ses.CwdKind, &st, &waiting, &ses.PauseScope, &pauseRoot, &pauseDeadline,
 		&ses.StopBlocks, &needsCompaction, &lastSeen, &lastWake, &exitCode, &started, &ended,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -113,6 +114,7 @@ func (s *Store) sessionTx(ctx context.Context, tx *sql.Tx, id string) (Session, 
 		return ses, err
 	}
 	ses.State = SessionState(st)
+	ses.PauseRoot = pauseRoot != 0
 	ses.Waiting = waiting != 0
 	ses.NeedsCompactionNotice = needsCompaction != 0
 	if pauseDeadline.Valid {

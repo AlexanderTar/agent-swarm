@@ -101,6 +101,7 @@ type Session struct {
 	State                                  SessionState
 	Waiting                                bool
 	PauseScope                             string
+	PauseRoot                              bool // this session is the target of its own subtree pause
 	PauseDeadlineAt                        *time.Time
 	StopBlocks                             int
 	NeedsCompactionNotice                  bool
