@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -780,6 +781,37 @@ func TestStartupTimesOutAfterThirtySeconds(t *testing.T) {
 	}
 	if got := s.Notify.(*fakeNotifier).kinds(); !slices.Contains(got, "agent.preflight_failed") {
 		t.Fatalf("raised %v, want agent.preflight_failed", got)
+	}
+}
+
+// §11.5 (2026-09-19, live incident): continuous new output must not trip the
+// stall timeout even past 30s of elapsed time -- only real inactivity should.
+// A real subtask doing legitimate startup work (installs, an advisor call)
+// got marked failed at exactly spawn+30s under the old fixed-deadline logic,
+// even though its pane stayed alive and kept producing new output for
+// minutes; every retry that false failure triggered killed and restarted the
+// pane, discarding real progress.
+func TestStartupSurvivesBusyOutputPastThirtySeconds(t *testing.T) {
+	s, tm, _ := newStore(t)
+	// 70 distinct captures = 35s of changing output at the 500ms poll
+	// interval, past the old fixed 30s deadline, then one idle capture.
+	var captures []string
+	for i := 0; i < 70; i++ {
+		captures = append(captures, fmt.Sprintf("Crunching… (%ds)\n", i))
+	}
+	captures = append(captures, "─────\n❯ \n─────\n")
+	tm.captures["busy"] = captures
+	_, a, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Busy",
+		Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Running {
+		t.Fatalf("session state = %s, want running: continuous new output must not fail the spawn", ses.State)
 	}
 }
 

@@ -241,6 +241,16 @@ func TestClaudeIdleAgainstTheCapturedPanes(t *testing.T) {
 	if a.Idle(pane(t, "claude", "pane-input-nonempty.txt")) {
 		t.Error("typed input is not idle")
 	}
+	// 2026-09-19, live incident: Claude 2.1.278 draws a dim "next action"
+	// suggestion after the prompt when idle with an empty input box (a real
+	// captured pane showed "\x1b[39m❯ \x1b[2mcheck on s0.1 progress\x1b[0m").
+	// The old regex required nothing but the bare prompt, so this was never
+	// detected as idle: watchStartup's Idle check never fired and wake.go's
+	// idle-paste never fired either, leaving a real pending message
+	// undelivered forever.
+	if !a.Idle(pane(t, "claude", "pane-idle-with-suggestion.txt")) {
+		t.Error("a dim next-action suggestion after the prompt is still idle")
+	}
 }
 
 // §11.1, P0-4: trust defaults to "No, exit", so the keys are Down then Enter, and

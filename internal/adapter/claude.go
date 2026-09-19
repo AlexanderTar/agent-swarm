@@ -89,8 +89,24 @@ func (c *Claude) Resume(s Spec) (Launch, error) {
 
 var (
 	claudeProcess = []*regexp.Regexp{regexp.MustCompile(`^\d+\.\d+\.\d+$`), regexp.MustCompile(`^claude$`)}
-	// P0-4: "❯" + U+00A0 alone between two rule lines.
-	claudeIdle = regexp.MustCompile("(?m)^\u276f[\u00a0 ]$")
+	// P0-4, extended 2026-09-19 (live incident): "❯" + U+00A0 alone between
+	// two rule lines used to be the whole idle prompt. Claude 2.1.278 now
+	// draws a dim "next action" suggestion right after the prompt (SGR 2,
+	// e.g. "\x1b[2mcheck on s0.1 progress\x1b[0m") when idle with an empty
+	// input box, and a leading color-reset escape before the "❯" itself
+	// once that suggestion needs a different color than the line above it.
+	// The old regex required nothing but the bare prompt, so every session
+	// showing a suggestion was never detected as idle: watchStartup's Idle
+	// check never fired (falling through to the stall-timeout branch instead
+	// of a clean startup) and wake.go's idle-paste never fired either, so a
+	// real pending message just sat in the pane forever, renotified as
+	// "undeliverable" on every wake tick. The fix tolerates leading SGR
+	// resets before "❯" and an SGR-2-wrapped span after it, but the
+	// optional trailing content must still start with SGR 2 specifically --
+	// a real human draft typed into the box (pane-input-nonempty.txt) renders
+	// in the default color with no escape prefix at all, so it still
+	// correctly fails to match.
+	claudeIdle = regexp.MustCompile("(?m)^(?:\x1b\\[[0-9;]*m)*\u276f[\u00a0 ](?:\x1b\\[2m.*)?$")
 	// P0-4: the spinner, e.g. "✽ Beboppin'… (48s · ↓ 114 tokens)".
 	claudeBusy     = regexp.MustCompile("(?m)^[\u273b\u273d\u2736\u2722\u00b7*] \\S+\u2026 \\(")
 	claudeTrust    = regexp.MustCompile(`Is this a project you created or one you trust\?`)

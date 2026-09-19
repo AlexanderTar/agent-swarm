@@ -914,16 +914,43 @@ var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
 
 func stripANSI(s string) string { return ansiEscape.ReplaceAllString(s, "") }
 
+// startupStallTimeout and startupCeiling (2026-09-19, live incident): a fixed
+// 30s deadline from spawn used to fail a session outright the moment real
+// startup work (bun install, an advisor call, reading files) ran past 30s
+// without the adapter ever reporting Idle -- even though the pane was never
+// stuck, just busy. Confirmed live: a subtask doing real work got marked
+// failed at exactly spawn+30s while its tmux pane stayed alive and kept
+// producing new output for 10+ more minutes, and every retry this triggered
+// killed and restarted the pane, discarding real progress (advisor
+// consultation, a pending swarm_ask question) each time. startupStallTimeout
+// now only measures INACTIVITY: it resets on every poll where the capture
+// text actually changed, so a busy pane (its spinner alone changes the
+// capture every tick) never trips it. startupCeiling is an independent,
+// non-resetting outer bound so a pane that keeps producing distinct output
+// forever without ever going idle still ends this background goroutine
+// eventually instead of polling forever.
+const startupStallTimeout = 30 * time.Second
+const startupCeiling = 10 * time.Minute
+
 func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapter.Adapter) error {
 	answered := map[int]bool{}
-	deadline := s.Now().Add(30 * time.Second)
-	for s.Now().Before(deadline) {
+	ceiling := s.Now().Add(startupCeiling)
+	stallDeadline := s.Now().Add(startupStallTimeout)
+	lastCapture := ""
+	for s.Now().Before(ceiling) {
 		if st, err := s.SessionState(ctx, ses.ID); err == nil && st != Spawning {
 			return nil // a hook call already moved it to running
 		}
 		capture, err := s.Tmux.Capture(ctx, ses.TmuxName, 60)
 		if err != nil {
 			return err
+		}
+		if capture != lastCapture {
+			lastCapture = capture
+			stallDeadline = s.Now().Add(startupStallTimeout)
+		}
+		if !s.Now().Before(stallDeadline) {
+			return s.failSession(ctx, a, ses, lastLines(capture, 40))
 		}
 		plain := stripANSI(capture)
 		for i, d := range ad.StartupDialogs() {
