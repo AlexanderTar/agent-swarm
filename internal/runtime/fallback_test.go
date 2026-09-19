@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
 )
 
@@ -157,6 +158,37 @@ func TestStartSpikeBothExhaustedRefuses(t *testing.T) {
 		t.Fatalf("started = %v, want no session (both exhausted)", tm.started)
 	}
 	_ = ctx
+}
+
+// TestStartSpikeDefaultFallbackSameAsExhaustedKindRefuses covers the branch
+// every fresh install actually hits: the shipped default FallbackDefault is
+// {Claude, "sonnet"} (the same agent every role defaults to), so when
+// Claude itself is exhausted, fb.Agent == kind and there is nothing to
+// substitute -- the terminal path, not a silent no-op success. A user must
+// point the fallback at a second agent to get an escape from Claude
+// exhaustion; this test is what makes that consequence visible rather than
+// discovered.
+func TestStartSpikeDefaultFallbackSameAsExhaustedKindRefuses(t *testing.T) {
+	s, tm := newStoreWithFallback(t)
+	// FallbackDefault is left at its shipped default (Claude/sonnet, set by
+	// newStoreWithFallback's underlying newStore/Settings.Defaults) -- no
+	// setFallback call here, unlike every other test in this file.
+	s.Usage = fakeUsage{Claude: true}
+	ctx := context.Background()
+	_, a, queued, err := s.StartSpike(ctx, SpikeInput{Name: "Investigate crash", Intent: "debug",
+		Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatal("not queued")
+	}
+	if a.PreflightError == "" {
+		t.Fatalf("agent = %+v, want a PreflightError set (default fallback == the exhausted kind)", a)
+	}
+	if len(tm.started) != 0 {
+		t.Fatalf("started = %v, want no session", tm.started)
+	}
 }
 
 func TestStartSpikeNilUsageNeverSubstitutes(t *testing.T) {
@@ -515,6 +547,48 @@ func TestDrainQueueBothExhaustedRelaysToParent(t *testing.T) {
 	var count int
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'`, orch.ID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("relay message count = %d, err = %v", count, err)
+	}
+}
+
+// TestDrainQueueSubstitutedFallbackFailsItsOwnPreflightPersistsConsistently
+// covers substituted=true where the fallback itself then fails Preflight
+// (e.g. not installed): the persisted row's kind/model and the
+// preflight_failed reason must agree on which agent Preflight actually
+// ran against (the fallback), not the originally configured one.
+func TestDrainQueueSubstitutedFallbackFailsItsOwnPreflightPersistsConsistently(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4)
+	seedEpicWithTwoTasks(t, s)
+	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "one"}})
+	if err != nil || queued {
+		t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+	}
+	second, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "two"}})
+	if err != nil || !queued {
+		t.Fatalf("second = %v, queued = %v, err = %v", second.Name, queued, err)
+	}
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, first.ID)
+	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID)
+	s.Usage = fakeUsage{Claude: true}
+	// A broken-but-registered adapter (Preflight's own Installed check fails),
+	// not a missing map entry (startQueued's own "no adapter for %s" guard,
+	// a wiring gap distinct from a real preflight failure) -- this exercises
+	// the preflightErr path this test is actually about.
+	s.Adapters[Codex] = &adapter.Fake{NotInstalled: true}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	drained := agentRow(t, s, second.Name)
+	if drained.Kind != Codex || drained.Model != "gpt-6-astra" {
+		t.Fatalf("drained = %+v, want the row to persist the substituted (failed) fallback", drained)
+	}
+	n := notified(t, s, "agent.preflight_failed")
+	if !strings.Contains(n.Args["reason"], "Codex") {
+		t.Fatalf("reason = %q, want it to name the fallback the row now shows", n.Args["reason"])
 	}
 }
 

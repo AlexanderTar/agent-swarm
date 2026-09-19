@@ -360,7 +360,7 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		}
 	})
 	if substituted && s.Notify != nil {
-		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name,
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name, ItemKey: it.Key,
 			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
 	}
 
@@ -489,7 +489,7 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, err
 	}
 	if substituted && s.Notify != nil {
-		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name,
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name, ItemKey: it.Key,
 			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
 	}
 
@@ -712,7 +712,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	// A replay must not re-raise agent.fallback_used: it already went out
 	// on the genuine first call (same rule as agent.queued just below).
 	if ran && substituted && s.Notify != nil {
-		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: result.Agent.Name,
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: result.Agent.Name, ItemKey: it.Key,
 			Args: map[string]string{"name": result.Agent.Name, "agent": result.Agent.Kind.Display(), "from": origKind.Display()}})
 	}
 
@@ -1118,7 +1118,9 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		return Agent{}, err
 	}
 	if substituted && s.Notify != nil {
-		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: out.Name,
+		var itemKey string
+		_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, out.ItemID).Scan(&itemKey)
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: out.Name, ItemKey: itemKey,
 			Args: map[string]string{"name": out.Name, "agent": out.Kind.Display(), "from": origKind.Display()}})
 	}
 	s.go_(func() {

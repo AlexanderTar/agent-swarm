@@ -195,7 +195,15 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 		admitted = true
 
 		if preflightErr != nil {
-			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active' WHERE id = ?`, a.ID); err != nil {
+			// a.Kind/a.Model already reflect a substituted fallback here when
+			// substituted is true and that fallback's own Preflight is what
+			// just failed (resolveUsageFallback's "both exhausted" case
+			// leaves them at the original kind instead, so this is a no-op
+			// then) -- persisting them keeps the row consistent with
+			// preflightErr's own text, which names whichever kind Preflight
+			// actually ran against.
+			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ? WHERE id = ?`,
+				string(a.Kind), a.Model, a.ID); err != nil {
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO sessions
@@ -254,7 +262,7 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 		return true, err
 	}
 	if substituted && s.Notify != nil {
-		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name,
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name, ItemKey: it.Key,
 			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
 	}
 
