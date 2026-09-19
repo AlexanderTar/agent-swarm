@@ -442,6 +442,19 @@ not built.
   a daemon that predates this field.
 - Any change to `internal/usage/*.go` itself.
 - The unrelated orchestrator-crash bug noted separately this session.
+- **Stale `advisor_mode` after a Retry/`startQueued` substitution.**
+  `StartSpike`/`StartOrchestrator`/`Spawn` call `resolveAdvisor(ctx, in.Kind,
+  ...)` *after* substitution, so `Advisor.Mode(sessionKind, ...)` already
+  sees the fallback kind. `Retry` and `startQueued` don't recompute
+  it — they reuse the `advisor_kind`/`advisor_model`/`advisor_effort`/
+  `advisor_mode` columns computed at the *original* spawn time, so a
+  Claude→Codex substitution on retry leaves `advisor_mode` reflecting
+  whatever `Mode(claude, ...)` returned. If `internal/advisor` branches on
+  that mode (native vs. simulated), advice delivery for the retried session
+  could misbehave. Rare path (retry or drain + exhaustion + an advisor
+  configured); not fixed here. Follow-up: recompute via
+  `s.Advisor.Mode(fbKind, a.AdvisorKind, a.AdvisorModel, capable)` and add
+  `advisor_mode = ?` to both UPDATEs, with its own test.
 - **The Notion Specs-database page** this repo's CLAUDE.md asks every spec
   to get: this worktree has no Notion access from its own sandbox boundary.
   Not done — the coordinator should publish it (or ask a session that has
