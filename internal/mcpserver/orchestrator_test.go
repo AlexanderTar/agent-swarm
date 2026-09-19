@@ -247,6 +247,44 @@ func TestArtifactToolReturnsSectionsAndStaleRequests(t *testing.T) {
 	}
 }
 
+// Task 41: a repeated request_id must not register a second revision, even
+// if the replay's op says "revise" -- proving the guard runs before the
+// register-vs-revise inference, not just that identical input is a no-op.
+func TestArtifactRequestIDReplaysInsteadOfRevisingTwice(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	p := writeSpec(t, "# Spec\n\n## One\n\na\n")
+	out1, err := s.call(ctx, seed.Caller, "swarm_artifact",
+		`{"op":"register","item":"`+seed.RootKey+`","kind":"spec","path":"`+p+`","request_id":"req-1"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_artifact",
+		`{"op":"revise","item":"`+seed.RootKey+`","kind":"spec","path":"`+p+`","request_id":"req-1"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+	var res struct {
+		Revision int `json:"revision"`
+	}
+	json.Unmarshal(mustJSON(out2), &res)
+	if res.Revision != 1 {
+		t.Fatalf("replay must not bump the revision: %+v", res)
+	}
+	out3, err := s.call(ctx, seed.Caller, "swarm_artifact",
+		`{"op":"revise","item":"`+seed.RootKey+`","kind":"spec","path":"`+p+`","request_id":"req-2"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.Unmarshal(mustJSON(out3), &res)
+	if res.Revision != 2 {
+		t.Fatalf("a genuinely distinct request_id must still revise: %+v", res)
+	}
+}
+
 // §8.1: op is "register"|"revise" - the schema enum must allow both, and a
 // second call against the same item+path (with op:"revise") bumps the
 // revision (fix round 2, item 3).
@@ -882,11 +920,11 @@ func TestMaterializeToolResultUsesSnakeCaseKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
-		writeSpec(t, "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"))
+		writeSpec(t, "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeSpec(t, materializePlanBody))
+	plan, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeSpec(t, materializePlanBody), "")
 	if err != nil {
 		t.Fatal(err)
 	}

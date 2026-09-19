@@ -322,8 +322,9 @@ func (s *Store) staleApprovals(ctx context.Context, tx *sql.Tx, artifactID strin
 }
 
 // RegisterArtifact is swarm_register (register or revise a spec/plan/report/note,
-// C2, I10). Only the item's own top-level orchestrator may call it.
-func (s *Store) RegisterArtifact(ctx context.Context, sessionID, op, itemKey, kind, path string) (ArtifactResult, error) {
+// C2, I10). Only the item's own top-level orchestrator may call it. requestID
+// is I11's idempotency key (empty means "no idempotency, just run once").
+func (s *Store) RegisterArtifact(ctx context.Context, sessionID, op, itemKey, kind, path, requestID string) (ArtifactResult, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return ArtifactResult{}, fmt.Errorf("artifact: %w", err)
@@ -341,7 +342,7 @@ func (s *Store) RegisterArtifact(ctx context.Context, sessionID, op, itemKey, ki
 		tree = &t
 	}
 	var out ArtifactResult
-	err = s.tx(ctx, func(tx *sql.Tx) error {
+	_, err = IdemTx(ctx, s, sessionID, requestID, "swarm_artifact", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err

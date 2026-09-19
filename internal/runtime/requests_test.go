@@ -399,14 +399,14 @@ func TestAskApprovalValidatesTheArtifact(t *testing.T) {
 	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: "art_nope", Prompt: "x"}); err == nil {
 		t.Fatal("an unknown artifact must be refused")
 	}
-	note, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "note", writeFile(t, "# n\n"))
+	note, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "note", writeFile(t, "# n\n"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: note.ArtifactID, Prompt: "x"}); err == nil {
 		t.Fatal("a note cannot be approved")
 	}
-	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "# s\n\n## One\n\na\n"))
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
 	if err != nil {
 		t.Fatal(err)
 	}

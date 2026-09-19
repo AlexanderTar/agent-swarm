@@ -41,12 +41,12 @@ func approvedFeatureSpike(t *testing.T, s *Store) (ses Session, specID, planID, 
 		t.Fatal(err)
 	}
 	const specBody = "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"
-	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, specBody))
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, specBody), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	planPath = writeFile(t, planBody)
-	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", planPath)
+	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", planPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func approvedDebugSpike(t *testing.T, s *Store) (ses Session, reportID string) {
 	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
 		t.Fatal(err)
 	}
-	report, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "debug_report", writeFile(t, reportBody))
+	report, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "debug_report", writeFile(t, reportBody), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestMaterializeRefusesARootTypeMismatch(t *testing.T) {
 	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
 		t.Fatal(err)
 	}
-	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"))
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestMaterializeRefusesARootTypeMismatch(t *testing.T) {
 		`{"root":{"type":"bug","title":"Wrong","brief":"","acceptance":[]},
 "children":[{"ref":"t1","type":"task","title":"t","brief":"","acceptance":[],"repos":["chat"]}],"deps":[]}` +
 		"\n```\n"
-	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, badPlan))
+	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, badPlan), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestMaterializePropagatesTddExempt(t *testing.T) {
 	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
 		t.Fatal(err)
 	}
-	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"))
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestMaterializePropagatesTddExempt(t *testing.T) {
 "children":[{"ref":"s1","type":"story","title":"S","brief":"","acceptance":[],
   "children":[{"ref":"t1","type":"task","title":"T","brief":"","acceptance":[],"tdd_exempt":"docs","repos":["chat"]}]}],
 "deps":[]}` + "\n```\n"
-	planRes, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, plan))
+	planRes, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, plan), "")
 	if err != nil {
 		t.Fatal(err)
 	}

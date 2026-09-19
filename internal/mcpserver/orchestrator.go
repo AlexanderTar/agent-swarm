@@ -184,18 +184,19 @@ func artifactTool(s *Server) ToolDef {
 		// register-vs-revise itself from whether a row already exists for the
 		// item+path).
 		Schema: objSchema(`"op":{"type":"string","enum":["register","revise"]},"item":{"type":"string"},
-			"kind":{"type":"string"},"path":{"type":"string"}`),
+			"kind":{"type":"string"},"path":{"type":"string"},"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Op   string `json:"op"`
-				Item string `json:"item"`
-				Kind string `json:"kind"`
-				Path string `json:"path"`
+				Op        string `json:"op"`
+				Item      string `json:"item"`
+				Kind      string `json:"kind"`
+				Path      string `json:"path"`
+				RequestID string `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
 			}
-			res, err := s.RT.RegisterArtifact(ctx, c.SessionID, in.Op, in.Item, in.Kind, in.Path)
+			res, err := s.RT.RegisterArtifact(ctx, c.SessionID, in.Op, in.Item, in.Kind, in.Path, in.RequestID)
 			if err != nil {
 				return nil, err
 			}

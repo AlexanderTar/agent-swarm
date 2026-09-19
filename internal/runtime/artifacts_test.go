@@ -31,7 +31,7 @@ func TestRegisterAndReviseAnArtifact(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Spec", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	p := writeFile(t, "# Spec\n\n## Context\n\nwhy\n\n## Data model\n\nrows\n")
-	res, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", p)
+	res, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", p, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestRegisterAndReviseAnArtifact(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 	os.WriteFile(p, []byte("# Spec\n\n## Context\n\nwhy\n\n## Data model\n\nrows and columns\n"), 0o644)
-	next, err := s.RegisterArtifact(ctx, ses.ID, "revise", "SPIKE-1", "spec", p)
+	next, err := s.RegisterArtifact(ctx, ses.ID, "revise", "SPIKE-1", "spec", p, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestReviseStalesOnlyTheChangedSectionsApprovals(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Stale", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	p := writeFile(t, "# Spec\n\n## One\n\na\n\n## Two\n\nb\n")
-	res, _ := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", p)
+	res, _ := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", p, "")
 	var reqs []string
 	for _, sec := range res.Sections {
 		r, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: "Review " + sec.Title,
@@ -79,7 +79,7 @@ func TestReviseStalesOnlyTheChangedSectionsApprovals(t *testing.T) {
 		reqs = append(reqs, r.ID)
 	}
 	os.WriteFile(p, []byte("# Spec\n\n## One\n\na\n\n## Two\n\nb and c\n"), 0o644)
-	next, err := s.RegisterArtifact(ctx, ses.ID, "revise", "SPIKE-1", "spec", p)
+	next, err := s.RegisterArtifact(ctx, ses.ID, "revise", "SPIKE-1", "spec", p, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestPlanRegistrationParsesTheTree(t *testing.T) {
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Tree", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	res, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "plan", writeFile(t, planBody))
+	res, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "plan", writeFile(t, planBody), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestPlanWithoutATreeIsRefused(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "NoTree", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	_, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "plan",
-		writeFile(t, "# Plan\n\n## Work breakdown\n\nsome prose\n"))
+		writeFile(t, "# Plan\n\n## Work breakdown\n\nsome prose\n"), "")
 	want := "tree_invalid: the plan needs one ```swarm-tree block under \"## Work breakdown\"."
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
@@ -156,9 +156,9 @@ func TestReviseRefusesAMissingFile(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Gone", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	p := writeFile(t, "# Spec\n\n## One\n\na\n")
-	res, _ := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", p)
+	res, _ := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", p, "")
 	os.Remove(p)
-	if _, err := s.RegisterArtifact(ctx, ses.ID, "revise", "SPIKE-1", "spec", p); err == nil {
+	if _, err := s.RegisterArtifact(ctx, ses.ID, "revise", "SPIKE-1", "spec", p, ""); err == nil {
 		t.Fatal("a deleted file must be refused on revise")
 	}
 	if _, _, err := s.ArtifactMarkdown(ctx, res.ArtifactID, 1, "one"); err != nil {
@@ -172,7 +172,7 @@ func TestArtifactMarkdownServesOneSectionOrTheWholeFile(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Read", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	res, _ := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec",
-		writeFile(t, "# Spec\n\n## One\n\nalpha\n\n## Two\n\nbeta\n"))
+		writeFile(t, "# Spec\n\n## One\n\nalpha\n\n## Two\n\nbeta\n"), "")
 	_, whole, err := s.ArtifactMarkdown(ctx, res.ArtifactID, 0, "")
 	if err != nil {
 		t.Fatal(err)
@@ -198,13 +198,13 @@ func TestRegisterIsOrchestratorOnlyAndScopedToTheRoot(t *testing.T) {
 	ctx := context.Background()
 	_, _, wSes := worker(t, s)
 	if _, err := s.RegisterArtifact(ctx, wSes.ID, "register", "TASK-1", "note",
-		writeFile(t, "# note\n")); err == nil {
+		writeFile(t, "# note\n"), ""); err == nil {
 		t.Fatal("a coder cannot register an artifact")
 	}
 	_, other, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Other", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	oSes, _ := s.LatestSession(ctx, other.ID)
 	if _, err := s.RegisterArtifact(ctx, oSes.ID, "register", "TASK-1", "note",
-		writeFile(t, "# note\n")); err == nil {
+		writeFile(t, "# note\n"), ""); err == nil {
 		t.Fatal("an orchestrator cannot register on another root's item")
 	}
 }
@@ -214,7 +214,7 @@ func TestArtifactMarkdownRefusesUnknownArtifactRevisionOrSection(t *testing.T) {
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Neg", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	res, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "# s\n\n## One\n\na\n"))
+	res, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestRegisterArtifactRefusesAnUnknownItem(t *testing.T) {
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "NoItem", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	if _, err := s.RegisterArtifact(ctx, ses.ID, "register", "TASK-999", "note", writeFile(t, "# n\n")); err == nil {
+	if _, err := s.RegisterArtifact(ctx, ses.ID, "register", "TASK-999", "note", writeFile(t, "# n\n"), ""); err == nil {
 		t.Fatal("an unknown item must be refused")
 	}
 }
@@ -245,7 +245,7 @@ func TestOneMegabyteCap(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Big", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	if _, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec",
-		writeFile(t, "## One\n\n"+strings.Repeat("x", 1<<20))); err == nil {
+		writeFile(t, "## One\n\n"+strings.Repeat("x", 1<<20)), ""); err == nil {
 		t.Fatal("a file over 1 MB must be refused")
 	}
 }
