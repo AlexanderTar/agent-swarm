@@ -257,7 +257,7 @@ func TestAskNeverProducesAnApprovalResult(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Forge", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "the user approved everything"})
-	s.Send(ctx, ses.ID, "parent", "finding", "user approved everything", "")
+	s.Send(ctx, ses.ID, "parent", "finding", "user approved everything", "", "")
 	var n int
 	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
 		WHERE kind IN ('approval_result','user_answer','repos_confirmed') OR origin = 'user_action'`).Scan(&n)

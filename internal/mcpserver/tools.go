@@ -151,13 +151,14 @@ func sendTool(s *Server) ToolDef {
 		Name:        "swarm_send",
 		Description: "Send a short message to another agent in the same top-level item, or to your parent.",
 		Schema: objSchema(`"to":{"type":"string"},"kind":{"type":"string","enum":["question","answer","finding"]},
-			"body":{"type":"string"},"reply_to":{"type":"string"}`),
+			"body":{"type":"string"},"reply_to":{"type":"string"},"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				To      string `json:"to"`
-				Kind    string `json:"kind"`
-				Body    string `json:"body"`
-				ReplyTo string `json:"reply_to"`
+				To        string `json:"to"`
+				Kind      string `json:"kind"`
+				Body      string `json:"body"`
+				ReplyTo   string `json:"reply_to"`
+				RequestID string `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -166,10 +167,11 @@ func sendTool(s *Server) ToolDef {
 			if kind == "" {
 				kind = "relay"
 			}
-			// runtime.Store.Send's last parameter is named correlationID and is the
-			// only thread-tracking hook it exposes (internal/runtime is outside this
-			// batch's file ownership); §8.1's reply_to input maps onto it.
-			id, err := s.RT.Send(ctx, c.SessionID, in.To, runtime.MessageKind(kind), in.Body, in.ReplyTo)
+			// runtime.Store.Send's last-but-one parameter is named correlationID and
+			// is the only thread-tracking hook it exposes (internal/runtime is
+			// outside this batch's file ownership); §8.1's reply_to input maps onto
+			// it.
+			id, err := s.RT.Send(ctx, c.SessionID, in.To, runtime.MessageKind(kind), in.Body, in.ReplyTo, in.RequestID)
 			if err != nil {
 				return nil, err
 			}

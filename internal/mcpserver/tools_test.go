@@ -155,6 +155,59 @@ func TestSendSucceedsToAnAgentInTheSameRoot(t *testing.T) {
 	}
 }
 
+func countMessagesFor(t *testing.T, s *Server, toAgentID string) int {
+	t.Helper()
+	var n int
+	if err := s.RT.DB.QueryRow(`SELECT COUNT(*) FROM messages WHERE to_agent_id = ?`, toAgentID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// Task 41: a repeated request_id must not enqueue a second message.
+func TestSendRequestIDReplaysInsteadOfSendingTwice(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	body := `{"to":"` + seed.Caller.AgentName + `","body":"note to self","request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_send", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countMessagesFor(t, s, seed.Caller.AgentID); n != 1 {
+		t.Fatalf("messages after first call = %d, want 1", n)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_send", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countMessagesFor(t, s, seed.Caller.AgentID); n != 1 {
+		t.Fatalf("messages after replayed call = %d, want still 1", n)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
+func TestSendWithoutOrDistinctRequestIDsEachSend(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_send",
+		`{"to":"`+seed.Caller.AgentName+`","body":"one","request_id":"req-a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_send",
+		`{"to":"`+seed.Caller.AgentName+`","body":"two","request_id":"req-b"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_send",
+		`{"to":"`+seed.Caller.AgentName+`","body":"three"}`); err != nil {
+		t.Fatal(err)
+	}
+	if n := countMessagesFor(t, s, seed.Caller.AgentID); n != 3 {
+		t.Fatalf("messages = %d, want 3", n)
+	}
+}
+
 func TestReadToolRefusesAnUnknownRef(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()

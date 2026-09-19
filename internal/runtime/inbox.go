@@ -349,12 +349,15 @@ func (s *Store) itemKey(ctx context.Context, tx *sql.Tx, id string) (string, err
 
 // Send is swarm_send (§8.1). "parent" resolves through agents.parent_agent_id; a
 // cross-root target or an unknown name is refused. origin is always 'agent'.
-func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind, body, correlationID string) (string, error) {
+// requestID is I11's idempotency key (empty means "no idempotency, just run
+// once"): a repeated (session, requestID) pair replays the first message's id
+// instead of enqueueing a second message.
+func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind, body, correlationID, requestID string) (string, error) {
 	if len(body) > 4000 {
 		return "", &items.Error{Code: items.CodeBadRequest, Message: "A message body is limited to 4000 characters."}
 	}
 	var id string
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	_, err := idemTx(ctx, s, sessionID, requestID, "swarm_send", &id, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err

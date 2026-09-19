@@ -275,7 +275,7 @@ func TestSendResolvesParentAndRefusesCrossRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	wSes, _ := s.LatestSession(ctx, worker.ID)
-	id, err := s.Send(ctx, wSes.ID, "parent", "finding", "the login test fails on an empty email", "")
+	id, err := s.Send(ctx, wSes.ID, "parent", "finding", "the login test fails on an empty email", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,13 +286,13 @@ func TestSendResolvesParentAndRefusesCrossRoot(t *testing.T) {
 	}
 	// another root
 	_, other, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Other", Intent: "feature", Kind: Fake, Model: "fake-1"})
-	if _, err := s.Send(ctx, wSes.ID, other.Name, "finding", "hello", ""); err == nil {
+	if _, err := s.Send(ctx, wSes.ID, other.Name, "finding", "hello", "", ""); err == nil {
 		t.Fatal("a send to another top-level item must be refused")
 	}
-	if _, err := s.Send(ctx, wSes.ID, "nobody", "finding", "hello", ""); err == nil {
+	if _, err := s.Send(ctx, wSes.ID, "nobody", "finding", "hello", "", ""); err == nil {
 		t.Fatal("an unknown name must be refused")
 	}
-	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", strings.Repeat("x", 4001), ""); err == nil {
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", strings.Repeat("x", 4001), "", ""); err == nil {
 		t.Fatal("a body over 4000 characters must be refused")
 	}
 	// the origin is always 'agent' — no MCP path may write user_action (L7)
