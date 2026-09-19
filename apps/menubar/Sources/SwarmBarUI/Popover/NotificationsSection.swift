@@ -3,6 +3,7 @@ import SwiftUI
 
 struct NotificationsSection: View {
     @Bindable var model: AppModel
+    let cap: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -12,8 +13,9 @@ struct NotificationsSection: View {
                     .disabled(!model.connected || model.state.notifications.unread == 0)
             }
             if model.isOpen(.notifications) {
+                SectionBody(cap: cap) {
                 if model.visibleNotifications.isEmpty {
-                    Text(Copy.emptyNotifications).foregroundStyle(.secondary)
+                    Text(Copy.emptyNotifications).font(.callout).foregroundStyle(.secondary)
                 }
                 ForEach(model.visibleNotifications) { n in
                     Button {
@@ -30,6 +32,7 @@ struct NotificationsSection: View {
                 }
                 if model.showViewAllNotifications {
                     Button(Copy.viewAllNotifications) { Task { await model.viewAllNotifications() } }.buttonStyle(.link)
+                }
                 }
             }
         }

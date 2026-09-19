@@ -33,6 +33,13 @@ public struct MenuBarLabelView: View {
         .fixedSize()
     }
 
+    /// Where the live badge sits: the top-right corner of the 14 pt swarm glyph, which is the
+    /// first thing in the HStack above. It is deliberately NOT drawn into `LabelRenderer.image`:
+    /// that image is a template, and AppKit paints template images monochrome, so a green dot
+    /// inside it would come out black or white. It is overlaid on the SwiftUI side instead.
+    public static let badgeOffset = CGPoint(x: 9, y: 0)
+    public static let badgeSize: CGFloat = 5
+
     /// Slot rectangles (label coordinates, origin top-left) for per-agent tooltips.
     public static func tooltipSlots(_ label: MenuLabel) -> [(String, CGFloat)] {
         label.segments.map { ($0.tooltip, $0.agent == .cursor ? 64 : 54) }
@@ -48,5 +55,26 @@ public enum LabelRenderer {
         let image = renderer.nsImage ?? NSImage()
         image.isTemplate = true
         return image
+    }
+}
+
+/// The menu bar item: the template label image, plus a green corner dot while agents are live.
+/// The dot has to live outside the template image (see `MenuBarLabelView.badgeOffset`).
+public struct MenuBarLabelImage: View {
+    let label: MenuLabel
+
+    public init(_ label: MenuLabel) { self.label = label }
+
+    public var body: some View {
+        Image(nsImage: LabelRenderer.image(label))
+            .overlay(alignment: .topLeading) {
+                if label.showsActiveBadge {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: MenuBarLabelView.badgeSize, height: MenuBarLabelView.badgeSize)
+                        .offset(x: MenuBarLabelView.badgeOffset.x, y: MenuBarLabelView.badgeOffset.y)
+                }
+            }
+            .accessibilityLabel(label.showsActiveBadge ? Copy.agentsWorking : Copy.appTitle)
     }
 }

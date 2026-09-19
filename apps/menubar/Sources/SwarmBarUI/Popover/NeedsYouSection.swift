@@ -3,22 +3,27 @@ import SwiftUI
 
 struct NeedsYouSection: View {
     @Bindable var model: AppModel
+    let cap: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader(Copy.needsYou, open: model.isOpen(.needsYou),
                           toggle: { model.setSection(.needsYou, open: !model.isOpen(.needsYou)) }) {
-                Text("\(model.openRequests.count)").foregroundStyle(.secondary).monospacedDigit()
+                if !model.openRequests.isEmpty {
+                    Text("\(model.openRequests.count)").foregroundStyle(.secondary).monospacedDigit()
+                }
             }
             if model.isOpen(.needsYou) {
-                if model.openRequests.isEmpty {
-                    Text(Copy.emptyNeedsYou).foregroundStyle(.secondary)
-                }
-                ForEach(model.visibleRequests) { r in
-                    RequestRow(model: model, request: r)
-                }
-                if let more = model.viewAllRequests {
-                    Button(more) { model.openInbox() }.buttonStyle(.link)
+                SectionBody(cap: cap, spacing: 8) {
+                    if model.openRequests.isEmpty {
+                        Text(Copy.emptyNeedsYou).font(.callout).foregroundStyle(.secondary)
+                    }
+                    ForEach(model.visibleRequests) { r in
+                        RequestRow(model: model, request: r)
+                    }
+                    if let more = model.viewAllRequests {
+                        Button(more) { model.openInbox() }.buttonStyle(.link)
+                    }
                 }
             }
         }
@@ -39,25 +44,27 @@ struct RequestRow: View {
             Text(RequestLine.text(request)).lineLimit(3)
             if request.kind == .question {
                 if model.answering == request.id {
-                    HStack {
+                    HStack(spacing: 4) {
                         TextField(Copy.answer, text: draft).textFieldStyle(.roundedBorder)
                             .onSubmit { Task { await model.sendAnswer(request.id) } }
-                        Button(Copy.sendAnswer) { Task { await model.sendAnswer(request.id) } }
-                            .disabled(!model.connected || draft.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
+                        IconButton("paperplane.fill", help: Copy.sendAnswer,
+                                   disabled: !model.connected || draft.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty) {
+                            Task { await model.sendAnswer(request.id) }
+                        }
                     }
                 }
-                HStack {
+                HStack(spacing: 2) {
                     Button(Copy.answer) { model.answering = model.answering == request.id ? nil : request.id }
                         .disabled(!model.connected)
                     Spacer()
                     if let name = model.requestTerminal(request) {
-                        Button(Copy.openTerminal) { Task { await model.openTerminal(name) } }
+                        IconButton("terminal", help: Copy.openTerminal) { Task { await model.openTerminal(name) } }
                     }
                 }
             } else {
                 HStack {
                     Spacer()
-                    Button(Copy.review) { model.review(request) }
+                    IconButton("doc.text.magnifyingglass", help: Copy.review) { model.review(request) }
                 }
             }
         }

@@ -92,7 +92,7 @@ struct LabelHost: View {
     let onChange: () -> Void
 
     var body: some View {
-        Image(nsImage: LabelRenderer.image(model.label))
+        MenuBarLabelImage(model.label)
             .onChange(of: model.label) { onChange() }
     }
 }

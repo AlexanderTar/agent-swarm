@@ -3,25 +3,28 @@ import SwiftUI
 
 struct AgentsSection: View {
     @Bindable var model: AppModel
-    let openNewOrchestrator: () -> Void
+    let cap: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             SectionHeader(Copy.agents, open: model.isOpen(.agents),
                           toggle: { model.setSection(.agents, open: !model.isOpen(.agents)) }) {
-                Button(model.pauseAllLabel) { Task { await model.pauseAll() } }
-                    .disabled(model.pauseAllDisabled)
+                HStack(spacing: 6) {
+                    if model.label.showsActiveBadge {
+                        StateDot(.greenPulse).help(Copy.agentsWorking)
+                    }
+                    Button(model.pauseAllLabel) { Task { await model.pauseAll() } }
+                        .disabled(model.pauseAllDisabled)
+                }
             }
             if let error = model.actionError {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
             if model.isOpen(.agents) {
+                SectionBody(cap: cap, spacing: 2) {
                 if model.agentRows.isEmpty {
-                    HStack {
-                        Text(Copy.emptyAgents).foregroundStyle(.secondary)
-                        Spacer()
-                        Button(Copy.newOrchestrator, action: openNewOrchestrator).disabled(!model.connected)
-                    }
+                    Text(Copy.emptyAgents).font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(model.agentRows) { row in
                     switch row.kind {
@@ -40,6 +43,7 @@ struct AgentsSection: View {
                         .padding(.leading, CGFloat(row.depth) * 16)
                         .frame(minHeight: 28)
                     }
+                }
                 }
             }
         }

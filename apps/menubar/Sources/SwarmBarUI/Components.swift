@@ -7,9 +7,11 @@ public struct StateDot: View {
 
     public init(_ tone: DotTone) { self.tone = tone }
 
+    private var pulses: Bool { tone == .greyPulse || tone == .greenPulse }
+
     private var color: Color {
         switch tone {
-        case .green, .greenHollow: return .green
+        case .green, .greenHollow, .greenPulse: return .green
         case .grey, .greyPulse: return .secondary
         case .amber: return .orange
         case .hollow: return .secondary
@@ -27,9 +29,9 @@ public struct StateDot: View {
             }
         }
         .frame(width: 8, height: 8)
-        .opacity(tone == .greyPulse && pulse ? 0.3 : 1)
-        .animation(tone == .greyPulse ? .easeInOut(duration: 0.8).repeatForever() : nil, value: pulse)
-        .onAppear { pulse = tone == .greyPulse }
+        .opacity(pulses && pulse ? 0.3 : 1)
+        .animation(pulses ? .easeInOut(duration: 0.8).repeatForever() : nil, value: pulse)
+        .onAppear { pulse = pulses }
         .accessibilityHidden(true)
     }
 }
@@ -65,7 +67,8 @@ public struct SectionHeader<Trailing: View>: View {
     }
 }
 
-/// A 28 pt icon button with a tooltip.
+/// A 24 pt icon button with a tooltip. Icon-only controls always carry `help` as both the
+/// tooltip and the accessibility label, so nothing loses its meaning when the words go away.
 public struct IconButton: View {
     let symbol: String
     let help: String
@@ -81,7 +84,10 @@ public struct IconButton: View {
 
     public var body: some View {
         Button(action: action) {
-            Image(systemName: symbol).frame(width: 28, height: 28).contentShape(Rectangle())
+            Image(systemName: symbol)
+                .font(.system(size: 12))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .disabled(disabled)
@@ -124,5 +130,39 @@ public struct OptionPicker: View {
                 }
             }
         }
+    }
+}
+
+/// A section body that scrolls on its own once it outgrows `cap`. Section headers stay outside it,
+/// so a long agent list scrolls under its own header instead of shoving Usage off the popover.
+/// The scrollbar is the system's overlay one, which hides itself; nothing is hand-rolled.
+public struct SectionBody<Content: View>: View {
+    let cap: CGFloat
+    let spacing: CGFloat
+    let content: Content
+
+    public init(cap: CGFloat, spacing: CGFloat = 6, @ViewBuilder content: () -> Content) {
+        self.cap = cap
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    public var body: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: spacing) { content }
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: cap)
+        .fixedSize(horizontal: false, vertical: true)
+        .scrollIndicators(.automatic)
+        .scrollBounceBehavior(.basedOnSize)
+    }
+}
+
+extension View {
+    /// Liquid Glass buttons where the OS has them (macOS 26), the platform's own bordered buttons
+    /// below that. Applied once at a window root; inner `.borderless`/`.plain`/`.link` styles win.
+    @ViewBuilder public func glassButtons() -> some View {
+        if #available(macOS 26, *) { buttonStyle(.glass) } else { self }
     }
 }

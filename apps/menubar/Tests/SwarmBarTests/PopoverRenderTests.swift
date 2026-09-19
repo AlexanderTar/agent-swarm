@@ -28,13 +28,18 @@ final class PopoverRenderTests: XCTestCase {
         let m = makeAppModel(client)
         await m.refresh()
         XCTAssertEqual(renderedSize(PopoverView(model: m, openNewOrchestrator: {}, openSettings: {})).width, 360)
+        // Each section now scrolls inside its own cap, so the stack is bounded by the caps rather
+        // than by content length; 900 is four generous caps' worth of room.
+        let cap: CGFloat = 220
         let sections = VStack {
-            NeedsYouSection(model: m)
-            AgentsSection(model: m, openNewOrchestrator: {})
-            UsageSectionView(model: m)
-            NotificationsSection(model: m)
+            NeedsYouSection(model: m, cap: cap)
+            AgentsSection(model: m, cap: cap)
+            UsageSectionView(model: m, cap: cap)
+            NotificationsSection(model: m, cap: cap)
         }
-        XCTAssertGreaterThan(renderedSize(sections.frame(width: 360)).height, 600)
+        let height = renderedSize(sections.frame(width: 360)).height
+        XCTAssertGreaterThan(height, 200, "sections render content")
+        XCTAssertLessThan(height, 4 * cap + 200, "no section grows past its cap")
 
         client.stateResult = .success(try Fixture.decode("state-empty.json"))
         await m.refresh()
