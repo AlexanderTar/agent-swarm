@@ -1008,6 +1008,46 @@ func TestRetryRefusesAWrongSessionState(t *testing.T) {
 // Task 41: a repeated request_id must not spawn a second agent, and (this is
 // the part a merely-typed-return-cache-hit wouldn't prove on its own) must
 // not start a second tmux session for it either.
+// TestSpawnRequestIDReplaysEvenWithAnExplicitNameOrOrchestratorRole proves
+// the guard runs before Spawn's own pre-existing checks that read the row
+// the first call just wrote: resolveName refuses an explicit name already
+// taken, and the orchestrator-uniqueness check refuses a second orchestrator
+// on the same root. Both would otherwise fire on a replay (spuriously,
+// since the "conflict" is the first call's own agent) unless the idempotency
+// check happens first.
+func TestSpawnRequestIDReplaysEvenWithAnExplicitNameOrOrchestratorRole(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	in := SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Name: "the-worker", Brief: BriefInput{Objective: "task"}, SessionID: "ses_caller", RequestID: "req-name"}
+	a1, _, err := s.Spawn(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, _, err := s.Spawn(ctx, in)
+	if err != nil {
+		t.Fatalf("replay with an explicit name must not hit resolveName's own-name conflict: %v", err)
+	}
+	if a2.ID != a1.ID {
+		t.Fatalf("replay = %+v, want the same agent", a2)
+	}
+
+	orchIn := SpawnInput{ItemKey: "EPIC-1", Role: RoleOrchestrator, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "orch"}, SessionID: "ses_caller", RequestID: "req-orch"}
+	o1, _, err := s.Spawn(ctx, orchIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o2, _, err := s.Spawn(ctx, orchIn)
+	if err != nil {
+		t.Fatalf("replay with role orchestrator must not hit the one-orchestrator-per-root conflict: %v", err)
+	}
+	if o2.ID != o1.ID {
+		t.Fatalf("replay = %+v, want the same agent", o2)
+	}
+}
+
 func TestSpawnRequestIDReplaysInsteadOfSpawningTwice(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()

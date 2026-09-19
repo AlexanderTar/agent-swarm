@@ -531,6 +531,20 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return Agent{}, false, err
 	}
 
+	// A genuine replay must not re-evaluate any of the checks below: by the
+	// time it replays, the first call's own agent row already exists, so the
+	// orchestrator-uniqueness check and resolveName's own-name conflict would
+	// both spuriously fire against that row. This also skips a redundant
+	// Preflight, which could itself fail on a replay for reasons that have
+	// nothing to do with whether the spawn already succeeded (e.g. the CLI's
+	// installed state changed since).
+	var result spawnResult
+	if hit, err := PeekIdempotent(ctx, s, in.SessionID, in.RequestID, &result); err != nil {
+		return Agent{}, false, err
+	} else if hit {
+		return result.Agent, result.Queued, nil
+	}
+
 	if in.Role == RoleOrchestrator {
 		var existing int
 		err = s.DB.QueryRowContext(ctx, `SELECT 1 FROM agents WHERE root_item_id = ? AND role = 'orchestrator' AND state IN ('queued', 'active')`, it.RootID).Scan(&existing)
@@ -617,7 +631,6 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
-	var result spawnResult
 	ran, err := IdemTx(ctx, s, in.SessionID, in.RequestID, "swarm_spawn", &result, func(tx *sql.Tx) error {
 		admitted, err := s.Admit(ctx, tx, in.Role, it.RootID)
 		if err != nil {
