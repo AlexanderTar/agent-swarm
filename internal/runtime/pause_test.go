@@ -577,6 +577,233 @@ func TestPauseAllStillReachesALiveChildUnderAFinishedRoot(t *testing.T) {
 	}
 }
 
+// Sibling regression to Important #2, found in re-review: Pause's own
+// idempotency guard ("a second pause must not extend the deadline") sat
+// above the scope dispatch, so Pause(x, "subtree") on an x already
+// Pausing() under scope="session" returned early -- the descendant cascade
+// never ran at all, x stayed pause_scope="session"/pause_root=0, and
+// rootHasLiveSubtreePause stayed false, reopening the exact queue-freeze
+// guarantee Ruling B closed, for this one shape. Reachable via two
+// ordinary calls: Pause(orch, "session") then PauseAll. Exercises the fix
+// directly, bypassing PauseAll's own grouping, since Pause/pauseSubtree is
+// the actual fix location.
+func TestPauseUpgradesAnAlreadySessionPausingTargetToSubtree(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	if _, err := s.Pause(ctx, orch.Name, "session"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.State != PauseRequested || before.PauseScope != "session" {
+		t.Fatalf("setup: orchestrator = %+v, want pause_requested/session", before)
+	}
+
+	got, err := s.Pause(ctx, orch.Name, "subtree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != before.State {
+		t.Fatalf("state = %s, want untouched at %s (Important #1's guarantee, applied to the target itself)", got.State, before.State)
+	}
+	if got.PauseScope != "subtree" {
+		t.Fatalf("pause_scope = %q, want upgraded to subtree", got.PauseScope)
+	}
+	if got.PauseDeadlineAt == nil || before.PauseDeadlineAt == nil || !got.PauseDeadlineAt.Equal(*before.PauseDeadlineAt) {
+		t.Fatalf("deadline changed by the upgrade (before=%v after=%v), want untouched", before.PauseDeadlineAt, got.PauseDeadlineAt)
+	}
+	var root int
+	if err := s.DB.QueryRowContext(ctx, `SELECT pause_root FROM sessions WHERE id = ?`, got.ID).Scan(&root); err != nil {
+		t.Fatal(err)
+	}
+	if root != 1 {
+		t.Fatal("pause_root = 0, want 1 after the upgrade")
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wSes.State != PauseRequested {
+		t.Fatalf("worker state = %s, want pause_requested -- the cascade must still run despite the upgrade", wSes.State)
+	}
+	live, err := s.rootHasLiveSubtreePause(ctx, orch.RootItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live {
+		t.Fatal("rootHasLiveSubtreePause = false, want true after the upgrade")
+	}
+}
+
+// Required test #1 (round 4): the exact two-call sequence the reviewer used
+// to reproduce the bug, through PauseAll's own grouping this time. n must
+// count only the descendant PauseAll's cascade actually reaches -- the
+// orchestrator itself was already pausing, not newly requested.
+func TestPauseAllUpgradesAnAlreadySessionPausedTargetToSubtree(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	if _, err := s.Pause(ctx, orch.Name, "session"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.PauseAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != before.State {
+		t.Fatalf("orchestrator state changed %s -> %s, want untouched", before.State, after.State)
+	}
+	if before.PauseDeadlineAt == nil || after.PauseDeadlineAt == nil || !before.PauseDeadlineAt.Equal(*after.PauseDeadlineAt) {
+		t.Fatalf("orchestrator deadline changed (before=%v after=%v), want untouched", before.PauseDeadlineAt, after.PauseDeadlineAt)
+	}
+	if after.PauseScope != "subtree" {
+		t.Fatalf("orchestrator pause_scope = %q, want upgraded to subtree", after.PauseScope)
+	}
+	var root int
+	if err := s.DB.QueryRowContext(ctx, `SELECT pause_root FROM sessions WHERE id = ?`, after.ID).Scan(&root); err != nil {
+		t.Fatal(err)
+	}
+	if root != 1 {
+		t.Fatal("orchestrator pause_root = 0, want 1 after pause-all's upgrade")
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wSes.State != PauseRequested {
+		t.Fatalf("worker state = %s, want pause_requested", wSes.State)
+	}
+	if n != 1 {
+		t.Fatalf("requested = %d, want 1 -- only the worker is newly transitioned", n)
+	}
+	live, err := s.rootHasLiveSubtreePause(ctx, orch.RootItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live {
+		t.Fatal("rootHasLiveSubtreePause = false, want true after pause-all's upgrade")
+	}
+}
+
+// Required test #2 (round 4): the same shape, but with a queued sibling
+// present, proving the queue-freeze guarantee actually holds for it now.
+func TestPauseAllUpgradeFreezesAQueuedSiblingSpawn(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4) // only one non-orchestrator agent globally
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, queued1, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued1 {
+		t.Fatal("the first child should be admitted; the slot is free")
+	}
+	second, queued2, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued2 {
+		t.Fatal("the second child should queue; the global agent limit is 1")
+	}
+
+	if _, err := s.Pause(ctx, orch.Name, "session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PauseAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var scope string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(pause_scope, '') FROM sessions
+		WHERE agent_id = ?`, orch.ID).Scan(&scope); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "subtree" {
+		t.Fatalf("orchestrator pause_scope = %q after the upgrade, want subtree", scope)
+	}
+
+	// Free the admission slot the way a normal completion would, so
+	// DrainQueue would admit the queued sibling if the upgrade's own freeze
+	// didn't stop it.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`,
+		first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Agent(ctx, second.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != AgentQueued {
+		t.Fatalf("state = %s, want still queued -- the upgrade must freeze the queue too", got.State)
+	}
+}
+
+// Boundary of the same fix: a target already session-pausing with NO live
+// descendant has nothing to cascade to, so it must stay at session scope
+// (never spuriously upgraded) and PauseAll must report 0 for it -- matching
+// the pre-upgrade idempotency guarantee exactly, just reached via the new
+// code path instead of the old unconditional early return.
+func TestPauseAllLeavesAnAlreadyPausingChildlessTargetAtSessionScope(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pause(ctx, orch.Name, "session"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.PauseAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("requested = %d, want 0 -- nothing to cascade to, the target itself was not newly requested", n)
+	}
+	after, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PauseScope != "session" {
+		t.Fatalf("pause_scope = %q, want left at session -- no live descendant to justify an upgrade", after.PauseScope)
+	}
+	if before.PauseDeadlineAt == nil || after.PauseDeadlineAt == nil || !before.PauseDeadlineAt.Equal(*after.PauseDeadlineAt) {
+		t.Fatal("deadline changed on a plain re-pause")
+	}
+}
+
 // §10.5: a subtree pause freezes a root's queued spawns. DrainQueue must not
 // admit them while the pause is live, and must go back to admitting them
 // normally once it resolves — otherwise a newly-launched, never-paused agent
@@ -825,8 +1052,12 @@ func TestPauseAllCountsEverySession(t *testing.T) {
 	}
 }
 
-// PauseAll's own query only ever selects live sessions, so an already-pausing
-// one is idempotent (still counted), not skipped.
+// An already-pausing descendant is left alone by pauseSubtree's own
+// Pausing() skip (Important #1), not by anything in PauseAll's own query --
+// that query counts every live session, an already-pausing one included.
+// The extension below (added the same round as Important #1) confirms the
+// already-pausing worker's row is genuinely untouched by a second pause-all,
+// not just that it was (still) counted.
 func TestPauseAllCountsAnAlreadyPausingSessionOnce(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
