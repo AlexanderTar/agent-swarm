@@ -1,0 +1,73 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="base" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5B7CFA"/>
+      <stop offset="55%" stop-color="#7B5CF0"/>
+      <stop offset="100%" stop-color="#9B4FE0"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="45%" stop-color="#FFFFFF" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="innerGlow" cx="30%" cy="22%" r="75%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.35"/>
+      <stop offset="35%" stop-color="#FFFFFF" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="floorGlow" cx="50%" cy="105%" r="60%">
+      <stop offset="0%" stop-color="#2A1660" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#2A1660" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <filter id="glyphShadow" x="-60%" y="-60%" width="220%" height="220%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#180B4A" flood-opacity="0.45"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#180B4A" flood-opacity="0.3"/>
+    </filter>
+    <radialGradient id="nodeGrad" cx="35%" cy="28%" r="78%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="50%" stop-color="#F2EEFF"/>
+      <stop offset="100%" stop-color="#C7BEF2"/>
+    </radialGradient>
+    <linearGradient id="armGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#DCD4F7"/>
+    </linearGradient>
+    <clipPath id="squircle">
+      <rect x="0" y="0" width="1024" height="1024" rx="229" ry="229"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#base)"/>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#floorGlow)"/>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#innerGlow)"/>
+
+    <!-- frosted glass highlight blobs -->
+    <ellipse cx="330" cy="150" rx="420" ry="200" fill="#FFFFFF" opacity="0.20" filter="url(#softBlur)"/>
+    <ellipse cx="800" cy="120" rx="220" ry="120" fill="#FFFFFF" opacity="0.14" filter="url(#softBlur)"/>
+
+    <!-- top glass sheen band -->
+    <path d="M0 0 H1024 V420 C 780 520, 260 520, 0 380 Z" fill="url(#sheen)"/>
+
+    <!-- glyph: exact proportional scale-up (x25.333) of assets/icons/swarm.svg's
+         24x24 glyph, centered in the 1024 canvas, so the arms stay symmetric. -->
+    <g filter="url(#glyphShadow)">
+      <path d="M486.7 423.3 h50.7 v81.1 l116.5 108.9 -35.5 35.5 -106.4-98.8 -106.4 98.8 -35.5-35.5 116.5-108.9 z" fill="url(#armGrad)"/>
+      <circle cx="512" cy="360" r="76" fill="url(#nodeGrad)"/>
+      <circle cx="334.7" cy="664" r="76" fill="url(#nodeGrad)"/>
+      <circle cx="689.3" cy="664" r="76" fill="url(#nodeGrad)"/>
+      <ellipse cx="486" cy="332" rx="26" ry="16" fill="#FFFFFF" opacity="0.9" transform="rotate(-25 486 332)"/>
+      <ellipse cx="308.7" cy="636" rx="26" ry="16" fill="#FFFFFF" opacity="0.9" transform="rotate(-25 308.7 636)"/>
+      <ellipse cx="663.3" cy="636" rx="26" ry="16" fill="#FFFFFF" opacity="0.9" transform="rotate(-25 663.3 636)"/>
+      <circle cx="512" cy="360" r="76" fill="none" stroke="#5B4A9E" stroke-opacity="0.25" stroke-width="3"/>
+      <circle cx="334.7" cy="664" r="76" fill="none" stroke="#5B4A9E" stroke-opacity="0.25" stroke-width="3"/>
+      <circle cx="689.3" cy="664" r="76" fill="none" stroke="#5B4A9E" stroke-opacity="0.25" stroke-width="3"/>
+    </g>
+
+    <!-- rim light for glass edge definition -->
+    <rect x="6" y="6" width="1012" height="1012" rx="223" ry="223" fill="none" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="4"/>
+  </g>
+</svg>

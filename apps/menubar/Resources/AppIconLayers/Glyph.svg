@@ -1,0 +1,34 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Exact proportional scale-up (x25.333) of assets/icons/swarm.svg's 24x24 glyph,
+       centered in the 1024 canvas, so the arms stay symmetric. -->
+  <defs>
+    <radialGradient id="nodeGrad" cx="35%" cy="28%" r="78%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="50%" stop-color="#F2EEFF"/>
+      <stop offset="100%" stop-color="#C7BEF2"/>
+    </radialGradient>
+    <linearGradient id="armGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#DCD4F7"/>
+    </linearGradient>
+    <filter id="depth" x="-60%" y="-60%" width="220%" height="220%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#180B4A" flood-opacity="0.45"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#180B4A" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#depth)">
+    <path d="M486.7 423.3 h50.7 v81.1 l116.5 108.9 -35.5 35.5 -106.4-98.8 -106.4 98.8 -35.5-35.5 116.5-108.9 z" fill="url(#armGrad)"/>
+    <circle cx="512" cy="360" r="76" fill="url(#nodeGrad)"/>
+    <circle cx="334.7" cy="664" r="76" fill="url(#nodeGrad)"/>
+    <circle cx="689.3" cy="664" r="76" fill="url(#nodeGrad)"/>
+    <!-- glossy highlight on each node -->
+    <ellipse cx="486" cy="332" rx="26" ry="16" fill="#FFFFFF" opacity="0.9" transform="rotate(-25 486 332)"/>
+    <ellipse cx="308.7" cy="636" rx="26" ry="16" fill="#FFFFFF" opacity="0.9" transform="rotate(-25 308.7 636)"/>
+    <ellipse cx="663.3" cy="636" rx="26" ry="16" fill="#FFFFFF" opacity="0.9" transform="rotate(-25 663.3 636)"/>
+    <!-- rim shade for edge definition against the glass background -->
+    <circle cx="512" cy="360" r="76" fill="none" stroke="#5B4A9E" stroke-opacity="0.25" stroke-width="3"/>
+    <circle cx="334.7" cy="664" r="76" fill="none" stroke="#5B4A9E" stroke-opacity="0.25" stroke-width="3"/>
+    <circle cx="689.3" cy="664" r="76" fill="none" stroke="#5B4A9E" stroke-opacity="0.25" stroke-width="3"/>
+  </g>
+</svg>

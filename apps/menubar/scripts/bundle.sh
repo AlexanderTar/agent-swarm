@@ -17,6 +17,7 @@ rm -rf "$out"
 mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
 cp "$bin" "$out/Contents/MacOS/Swarm"
 cp "$pkg/Resources/Info.plist" "$out/Contents/Info.plist"
+cp "$pkg/Resources/Swarm.icns" "$out/Contents/Resources/Swarm.icns"
 for icon in claude codex agy cursor swarm; do
   cp "$root/assets/icons/$icon.svg" "$out/Contents/Resources/$icon.svg"
 done
