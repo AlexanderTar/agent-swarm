@@ -177,6 +177,7 @@ const settings = (): Settings => ({
     mechanical: { agent: "claude", model: "haiku" },
     advisor: { agent: "claude", model: "fable" },
   },
+  fallback_default: { agent: "claude", model: "sonnet" },
   notifications: { info: { center: true, sound: true }, attention: { center: true, sound: true }, action: { center: true, sound: true } },
   max_orchestrators: 3,
   max_agents: 8,
