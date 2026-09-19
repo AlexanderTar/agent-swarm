@@ -1,10 +1,10 @@
 import Foundation
 
-/// The menu bar item text (§16.1): `[swarm] 6   ✳ 42%   ◎ 18%   ▲ 63%   ⌘ 27%M`.
+/// The menu bar item text (§16.1): `[swarm] 6   ✳ 42%   ◎ 18%   ▲ 63%   ⌘ 27%`.
 public struct MenuLabel: Equatable, Sendable {
     public struct Segment: Equatable, Sendable {
         public var agent: AgentKind
-        /// "42%", "27%M", "--", or "" in compact mode.
+        /// "42%", "--", or "" in compact mode.
         public var text: String
         public var dimmed: Bool
         public var tooltip: String
@@ -20,9 +20,12 @@ public struct MenuLabel: Equatable, Sendable {
     public var compact: Bool
     public var badge: Badge = .none
 
-    /// Width reserved for each value, so the item never shifts: "100%" or "100%M".
+    /// Width reserved for each value, so the item never shifts: "100%".
     public static let widestValue = "100%"
-    public static let widestMonthlyValue = "100%M"
+    /// Monthly meters render the same compact "100%" as any other meter now
+    /// (no more "M" suffix) — kept as an alias so MenuBarLabel.swift's width
+    /// reservation for the cursor column stays a no-op without editing it.
+    public static let widestMonthlyValue = widestValue
 
     public static func make(activeCount: Int, connected: Bool, enabled: [AgentKind], usage: [UsageSnapshot],
                             compact: Bool, format: Format) -> MenuLabel {
@@ -33,7 +36,7 @@ public struct MenuLabel: Equatable, Sendable {
                 return Segment(agent: kind, text: compact ? "" : "--", dimmed: false, tooltip: Copy.emptyUsage)
             }
             let monthly = head.window == "monthly"
-            let text = compact ? "" : Format.percent(head.usedPct) + (monthly ? "M" : "")
+            let text = compact ? "" : Format.percent(head.usedPct)
             let tooltip: String
             if snap.stale {
                 // The tooltip slot is a sentence, so it punctuates the never label; the compact row doesn't.
@@ -90,7 +93,7 @@ public enum UsageSection {
         /// "42% used"
         public var used: String
         public var fraction: Double
-        /// "Resets in 2h 10m", "Resets Mon 09:00", "Cycle ends 1 Oct" or "Updated 12 min ago".
+        /// "Resets in 2h 10m", "Resets Mon 09:00", "Resets 1 Oct" or "Updated 12 min ago".
         public var trailing: String
 
         /// Bar colour band (§16.2 polish): blue under 70 %, yellow to 90 %, red above.
@@ -119,7 +122,7 @@ public enum UsageSection {
             if snap.stale {
                 trailing = format.agoLine(snap.fetchedAt, never: Copy.neverUpdated) { "Updated \($0)" }
             } else if let r = m.resetsAt {
-                trailing = m.window == "monthly" ? "Cycle ends \(format.dayMonth(r.date))" : format.resets(r.date)
+                trailing = m.window == "monthly" ? "Resets \(format.dayMonth(r.date))" : format.resets(r.date)
             } else {
                 trailing = ""
             }

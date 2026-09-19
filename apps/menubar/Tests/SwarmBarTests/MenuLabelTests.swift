@@ -21,9 +21,9 @@ final class MenuLabelTests: XCTestCase {
         let all = MenuLabel.make(activeCount: 6, connected: true, enabled: [.cursor, .agy, .codex, .claude],
                                  usage: usage, compact: false, format: format)
         XCTAssertEqual(all.count, "6")
-        XCTAssertEqual(texts(all), ["claude 42% dim", "codex 18%", "agy 63%", "cursor 27%M"])
+        XCTAssertEqual(texts(all), ["claude 42% dim", "codex 18%", "agy 63%", "cursor 27%"])
         XCTAssertEqual(MenuLabel.widestValue, "100%")
-        XCTAssertEqual(MenuLabel.widestMonthlyValue, "100%M")
+        XCTAssertEqual(MenuLabel.widestMonthlyValue, "100%", "no more bare \"M\" suffix on monthly meters")
     }
 
     func testNoDataAndDaemonDown() {
@@ -112,7 +112,7 @@ final class MenuLabelTests: XCTestCase {
         XCTAssertEqual(claude[0].fraction, 0.424, accuracy: 0.0001)
 
         XCTAssertEqual(UsageSection.rows(usage[1], format: format).map(\.trailing), ["Resets in 3h 0m", "Resets Mon 08:00"])
-        XCTAssertEqual(UsageSection.rows(usage[3], format: format).map(\.trailing), ["Cycle ends 1 Oct", "Cycle ends 1 Oct"])
+        XCTAssertEqual(UsageSection.rows(usage[3], format: format).map(\.trailing), ["Resets 1 Oct", "Resets 1 Oct"])
         XCTAssertEqual(UsageSection.rows(nil, format: format), [])
         var bare = usage[1]
         bare.meters = [Meter(id: "x", label: "X", usedPct: 140)]
