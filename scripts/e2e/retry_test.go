@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"testing"
+	"time"
 )
 
 // Scenario 26: review and retry. A reviewer's finding (represented here by
@@ -43,6 +44,16 @@ func TestScenario26ReviewAndRetry(t *testing.T) {
 	// first attempt's pane first — exactly what a real agent process exiting
 	// on its own would leave behind.
 	h.killPane(t, worker)
+	// Retry now refuses a session that isn't completed/failed/crashed/
+	// interrupted (Task 41's state guard, matching Pause/Resume's own
+	// convention), so this must wait for the daemon's reconciler to observe
+	// the dead pane and land the session on "completed" (the attempt's own
+	// completed checkpoint makes that the terminal state here) before
+	// retrying it -- the same wait every other pane-killing scenario in this
+	// suite already does before acting on the result.
+	if !h.waitForSessionState(t, worker, "completed", 6*time.Second) {
+		t.Fatal("worker session never reached completed after its pane died")
+	}
 	h.mustTool(t, orch, "swarm_control", map[string]any{
 		"target": worker, "action": "retry", "note": "reviewer: missing an edge case",
 	})
