@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -62,7 +64,7 @@ func TestRefreshRules(t *testing.T) {
 	e := entries[0]
 	if e.Kind != kinds.Codex || !e.Installed || e.Version != "0.154.0" || e.DefaultModel != "m1" ||
 		e.CatalogSource != "codex source" || e.CatalogStale || e.CatalogError != "" || !e.CatalogFetchedAt.Equal(c.t) ||
-		len(e.Models) != 1 || e.AuthOK || e.Superpowers {
+		len(e.Models) != 1 || !e.AuthOK || e.Superpowers {
 		t.Fatalf("entry = %+v", e)
 	}
 
@@ -92,7 +94,8 @@ func TestRefreshRules(t *testing.T) {
 	entries, _ = s.Refresh(bg, true)
 	e = entries[0]
 	if !e.CatalogStale || e.CatalogError != "chatgpt authentication required" || len(e.Models) != 1 ||
-		!e.CatalogFetchedAt.Equal(fetchedAt) || e.DefaultModel != "m1" {
+		!e.CatalogFetchedAt.Equal(fetchedAt) || e.DefaultModel != "m1" || e.AuthOK ||
+		e.AuthError != "chatgpt authentication required" {
 		t.Fatalf("failed refresh = %+v", e)
 	}
 	codex.err = nil
@@ -320,8 +323,44 @@ func TestLoopLogsRefreshErrors(t *testing.T) {
 
 func TestEntriesWithoutFetchersIsEmptyNotNull(t *testing.T) {
 	s, _ := newCatalog(t)
-	got, err := s.Entries(context.Background())
+	got, err := s.Entries(bg)
 	if err != nil || got == nil {
 		t.Fatalf("Entries = %#v, %v", got, err)
+	}
+}
+
+// §12.4: Superpowers reflects the real glob-based install check, the same one
+// doctor and swarm install use — proven here by planting the exact file each
+// agent's check looks for and confirming both true and false report correctly.
+func TestEntriesReportsSuperpowersFromTheRealFiles(t *testing.T) {
+	home := t.TempDir()
+	codex := &fakeFetcher{kind: kinds.Codex, version: "0.154.0", models: m1}
+	s, _ := newCatalog(t, codex)
+	s.Home = home
+	if _, err := s.Refresh(bg, false); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.Entries(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[0].Superpowers {
+		t.Fatalf("Superpowers = true before the skill file exists")
+	}
+
+	skill := filepath.Join(home, ".codex", "plugins", "cache", "obra", "superpowers", "6.3.0",
+		"skills", "brainstorming", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("# b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = s.Entries(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !entries[0].Superpowers {
+		t.Fatalf("Superpowers = false with the skill file present at %s", skill)
 	}
 }

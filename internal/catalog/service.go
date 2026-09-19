@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -54,7 +55,10 @@ type Service struct {
 	Now      func() time.Time
 	After    func(time.Duration) <-chan time.Time // nil means time.After
 	Log      func(format string, args ...any)     // nil means no logging
-	mu       sync.Mutex
+	// Home is $HOME, for the superpowers-installed glob check. Empty in tests
+	// that don't care about Superpowers (it just reports false everywhere).
+	Home string
+	mu   sync.Mutex
 }
 
 type row struct {
@@ -91,6 +95,39 @@ func modelsJSON(ms []CatalogModel) string {
 	return string(b)
 }
 
+// superpowersInstalled is the same §12.4 usability check as
+// internal/install.SuperpowersOK (kept as a small glob-only duplicate here to
+// avoid a new install<->catalog package dependency for one boolean check; keep
+// the two glob sets in sync if either changes). An empty home (tests that don't
+// care) always reports false.
+func superpowersInstalled(home string, kind kinds.AgentKind) bool {
+	if home == "" {
+		return false
+	}
+	var globs []string
+	switch kind {
+	case kinds.Claude:
+		globs = []string{filepath.Join(home, ".claude", "plugins", "cache", "*", "superpowers*", "*", "skills", "brainstorming", "SKILL.md")}
+	case kinds.Codex:
+		globs = []string{filepath.Join(home, ".codex", "plugins", "cache", "*", "superpowers", "*", "skills", "brainstorming", "SKILL.md")}
+	case kinds.Agy:
+		globs = []string{filepath.Join(home, ".gemini", "config", "plugins", "superpowers*", "skills", "brainstorming", "SKILL.md")}
+	case kinds.Cursor:
+		globs = []string{
+			filepath.Join(home, ".cursor", "plugins", "cache", "*", "superpowers", "*", "skills", "brainstorming", "SKILL.md"),
+			filepath.Join(home, ".cursor", "plugins", "local", "superpowers", "skills", "brainstorming", "SKILL.md"),
+		}
+	default:
+		return false
+	}
+	for _, g := range globs {
+		if hits, _ := filepath.Glob(g); len(hits) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) Entries(ctx context.Context) ([]AgentCatalogEntry, error) {
 	out := []AgentCatalogEntry{}
 	for _, f := range s.Fetchers {
@@ -99,6 +136,7 @@ func (s *Service) Entries(ctx context.Context) ([]AgentCatalogEntry, error) {
 			return nil, err
 		}
 		e := AgentCatalogEntry{Kind: f.Kind(), Models: []CatalogModel{}}
+		e.Superpowers = superpowersInstalled(s.Home, f.Kind())
 		if found {
 			e.Installed, e.Version = r.err != notInstalled, r.version
 			e.DefaultModel, e.CatalogSource, e.CatalogError = r.def, r.source, r.err
@@ -110,6 +148,14 @@ func (s *Service) Entries(ctx context.Context) ([]AgentCatalogEntry, error) {
 			}
 			e.CatalogFetchedAt = db.FromMillis(r.fetched)
 			e.CatalogStale = e.CatalogError != "" || r.fetched == 0 || s.Now().Sub(e.CatalogFetchedAt) >= MaxAge
+			// A successful fetch could only have happened with working auth (the claude
+			// fetcher needs a real keychain token, codex/agy/cursor need a real CLI
+			// session); a stored error other than "not installed" means it wasn't.
+			e.AuthOK = e.Installed && r.err == ""
+			e.AuthError = r.err
+			if !e.Installed {
+				e.AuthError = ""
+			}
 		}
 		out = append(out, e)
 	}
