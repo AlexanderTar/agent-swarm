@@ -87,6 +87,9 @@ func TestDefaults(t *testing.T) {
 		!slices.Equal(d.ScanExcludes, []string{"~/Library", "~/.Trash", "~/Downloads"}) {
 		t.Errorf("defaults = %+v", d)
 	}
+	if want := (RoleDefault{kinds.Claude, "sonnet", ""}); d.FallbackDefault != want {
+		t.Errorf("fallback default = %+v, want %+v", d.FallbackDefault, want)
+	}
 }
 
 func TestGetPutRoundTrip(t *testing.T) {
@@ -145,6 +148,9 @@ func TestPutValidation(t *testing.T) {
 		{func(c *Settings) { c.EnabledAgents = append(c.EnabledAgents, "opencode") }, "Unknown agent opencode."},
 		{func(c *Settings) { c.EnabledAgents = nil }, "At least one agent must stay enabled."},
 		{func(c *Settings) { c.Roles["janitor"] = RoleDefault{kinds.Claude, "opus", ""} }, "Unknown role janitor."},
+		{func(c *Settings) { c.FallbackDefault = RoleDefault{kinds.Agy, "gemini", ""} }, "agy isn't enabled. Choose an enabled agent."},
+		{func(c *Settings) { c.FallbackDefault = RoleDefault{kinds.Claude, "claude-9", ""} }, "Choose a model available for this agent."},
+		{func(c *Settings) { c.FallbackDefault = RoleDefault{kinds.Claude, "sonnet", "ultra"} }, "ultra isn't available for Claude Sonnet 5."},
 		{func(c *Settings) { c.MaxOrchestrators = 9 }, "Maximum concurrent orchestrators must be between 1 and 8."},
 		{func(c *Settings) { c.MaxOrchestrators = 0 }, "Maximum concurrent orchestrators must be between 1 and 8."},
 		{func(c *Settings) { c.MaxAgents = 33 }, "Maximum concurrent agents must be between 1 and 32."},
@@ -193,10 +199,36 @@ func TestModelGoneFromCatalog(t *testing.T) {
 	verr(t, err, "claude-sonnet-5 is no longer offered by Claude.")
 }
 
+func TestFallbackModelGoneFromCatalog(t *testing.T) {
+	s := newStore(t, kinds.Claude)
+	cur, _ := s.Get(ctx)
+	// Repoint every role that defaults to "sonnet" or "haiku" at the
+	// surviving "opus" model first, so the roles loop (which validate()
+	// runs before FallbackDefault) can't fail on one of them instead once
+	// sonnet and haiku disappear below -- isolating the assertion to
+	// FallbackDefault's own pinned model, the same way TestModelGoneFromCatalog
+	// isolates it to RoleCoder's.
+	cur.Roles[kinds.RoleCoder] = RoleDefault{kinds.Claude, "opus", ""}
+	cur.Roles[kinds.RoleResearcher] = RoleDefault{kinds.Claude, "opus", ""}
+	cur.Roles[kinds.RoleMechanical] = RoleDefault{kinds.Claude, "opus", ""}
+	cur.FallbackDefault = RoleDefault{kinds.Claude, "claude-sonnet-5", ""}
+	if _, err := s.Put(ctx, cur); err != nil {
+		t.Fatal(err)
+	}
+	saved := catalogs[kinds.Claude]
+	catalogs[kinds.Claude] = saved[:2] // sonnet and haiku disappear
+	defer func() { catalogs[kinds.Claude] = saved }()
+	cur, _ = s.Get(ctx)
+	cur.MaxAgents = 9
+	_, err := s.Put(ctx, cur)
+	verr(t, err, "claude-sonnet-5 is no longer offered by Claude.")
+}
+
 func TestDisablingAnAgentSwitchesDefaults(t *testing.T) {
 	s := newStore(t, kinds.Claude, kinds.Codex)
 	cur, _ := s.Get(ctx)
 	cur.Roles[kinds.RoleCoder] = RoleDefault{kinds.Codex, "gpt-6-astra", "high"}
+	cur.FallbackDefault = RoleDefault{kinds.Codex, "gpt-6-astra", ""}
 	cur, err := s.Put(ctx, cur)
 	if err != nil {
 		t.Fatal(err)
@@ -208,6 +240,11 @@ func TestDisablingAnAgentSwitchesDefaults(t *testing.T) {
 	}
 	if got.Roles[kinds.RoleCoder] != (RoleDefault{kinds.Claude, "sonnet", ""}) {
 		t.Fatalf("coder = %+v", got.Roles[kinds.RoleCoder])
+	}
+	// I18 parity: FallbackDefault is reassigned the same way a role is when
+	// its agent gets disabled.
+	if got.FallbackDefault != (RoleDefault{kinds.Claude, "sonnet", ""}) {
+		t.Fatalf("fallback default = %+v", got.FallbackDefault)
 	}
 
 	got.EnabledAgents = []kinds.AgentKind{kinds.Codex, kinds.Claude}
@@ -222,6 +259,9 @@ func TestDisablingAnAgentSwitchesDefaults(t *testing.T) {
 		if got.Roles[r] != want {
 			t.Errorf("%s = %+v, want %+v", r, got.Roles[r], want)
 		}
+	}
+	if want := (RoleDefault{kinds.Codex, "gpt-6-astra", ""}); got.FallbackDefault != want {
+		t.Errorf("fallback default = %+v, want %+v", got.FallbackDefault, want)
 	}
 }
 

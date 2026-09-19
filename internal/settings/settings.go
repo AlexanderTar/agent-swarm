@@ -30,17 +30,22 @@ type NotifyPref struct {
 }
 
 type Settings struct {
-	EnabledAgents    []kinds.AgentKind          `json:"enabled_agents"`
-	Roles            map[kinds.Role]RoleDefault `json:"roles"`
-	Notifications    map[string]NotifyPref      `json:"notifications"`
-	MaxOrchestrators int                        `json:"max_orchestrators"`
-	MaxAgents        int                        `json:"max_agents"`
-	MaxAgentsPerRoot int                        `json:"max_agents_per_root"`
-	ScanExcludes     []string                   `json:"scan_excludes"`
-	ScanIntervalSec  int                        `json:"scan_interval_sec"`
-	MenubarCompact   bool                       `json:"menubar_compact"`
-	UsagePollSec     int                        `json:"usage_poll_sec"`
-	PauseDeadlineSec int                        `json:"pause_deadline_sec"`
+	EnabledAgents []kinds.AgentKind          `json:"enabled_agents"`
+	Roles         map[kinds.Role]RoleDefault `json:"roles"`
+	// FallbackDefault is the agent+model substituted in place of a role's
+	// configured agent when that agent is confirmed out of usage (see
+	// docs/specs/2026-09-19-usage-fallback-agent.md). Validated and
+	// reassigned on a disabled agent the same way a role default is.
+	FallbackDefault  RoleDefault           `json:"fallback_default"`
+	Notifications    map[string]NotifyPref `json:"notifications"`
+	MaxOrchestrators int                   `json:"max_orchestrators"`
+	MaxAgents        int                   `json:"max_agents"`
+	MaxAgentsPerRoot int                   `json:"max_agents_per_root"`
+	ScanExcludes     []string              `json:"scan_excludes"`
+	ScanIntervalSec  int                   `json:"scan_interval_sec"`
+	MenubarCompact   bool                  `json:"menubar_compact"`
+	UsagePollSec     int                   `json:"usage_poll_sec"`
+	PauseDeadlineSec int                   `json:"pause_deadline_sec"`
 }
 
 // roleDefaults is §2.1 A3; "default" effort is "".
@@ -67,6 +72,7 @@ func Defaults(installed []kinds.AgentKind) Settings {
 	return Settings{
 		EnabledAgents:    enabled,
 		Roles:            maps.Clone(roleDefaults),
+		FallbackDefault:  RoleDefault{Agent: kinds.Claude, Model: "sonnet"},
 		Notifications:    map[string]NotifyPref{"info": on, "attention": on, "action": on},
 		MaxOrchestrators: 3,
 		MaxAgents:        8,
@@ -186,32 +192,92 @@ func (s *Store) Put(ctx context.Context, next Settings) (Settings, error) {
 	return next, nil
 }
 
+// reassignDefault is I18's own per-default logic: what a RoleDefault (a
+// role, or FallbackDefault) becomes when the agent it names gets disabled.
+// fallback (a zero value for every real role) is the roleDefaults entry to
+// fall back to when first is Claude; FallbackDefault has no such
+// pre-canned entry, so its caller passes the shipped {Claude, "sonnet"} one.
+func (s *Store) reassignDefault(ctx context.Context, first kinds.AgentKind, claudeFallback RoleDefault) (RoleDefault, error) {
+	if first == kinds.Claude {
+		return claudeFallback, nil
+	}
+	models, def, err := s.ModelsFor(ctx, first)
+	if err != nil {
+		return RoleDefault{}, err
+	}
+	if def == "" && len(models) > 0 {
+		def = models[0].ID
+	}
+	return RoleDefault{Agent: first, Model: def}, nil
+}
+
 // switchDisabled implements I18 for agents this update disables.
 func (s *Store) switchDisabled(ctx context.Context, prev Settings, next *Settings) error {
 	if len(next.EnabledAgents) == 0 {
 		return invalid("At least one agent must stay enabled.")
 	}
 	first := next.EnabledAgents[0]
+	disabledNow := func(agent kinds.AgentKind) bool {
+		return slices.Contains(prev.EnabledAgents, agent) && !slices.Contains(next.EnabledAgents, agent)
+	}
 	for role, rd := range next.Roles {
 		if rd.Model == NoAdvisor && role == kinds.RoleAdvisor {
 			continue
 		}
-		disabledNow := slices.Contains(prev.EnabledAgents, rd.Agent) && !slices.Contains(next.EnabledAgents, rd.Agent)
-		if !disabledNow {
+		if !disabledNow(rd.Agent) {
 			continue
 		}
-		if first == kinds.Claude {
-			next.Roles[role] = roleDefaults[role]
-			continue
-		}
-		models, def, err := s.ModelsFor(ctx, first)
+		reassigned, err := s.reassignDefault(ctx, first, roleDefaults[role])
 		if err != nil {
 			return err
 		}
-		if def == "" && len(models) > 0 {
-			def = models[0].ID
+		next.Roles[role] = reassigned
+	}
+	if disabledNow(next.FallbackDefault.Agent) {
+		reassigned, err := s.reassignDefault(ctx, first, RoleDefault{Agent: kinds.Claude, Model: "sonnet"})
+		if err != nil {
+			return err
 		}
-		next.Roles[role] = RoleDefault{Agent: first, Model: def}
+		next.FallbackDefault = reassigned
+	}
+	return nil
+}
+
+// validateDefault checks one RoleDefault (a role, or FallbackDefault)
+// against enabled and the real catalog, in the exact order this codebase
+// has always checked a default: enabled, then catalog/model, then (via
+// extra, when non-nil — RoleAdvisor's own AdvisorCapable rule) any
+// role-specific rule on the resolved model, then effort. oldRD is the
+// previously-saved value for the same slot, so a model that just
+// disappeared from the catalog gets its own clearer message.
+func (s *Store) validateDefault(ctx context.Context, oldRD, rd RoleDefault, enabled []kinds.AgentKind, extra func(catalog.CatalogModel) error) error {
+	if !slices.Contains(enabled, rd.Agent) {
+		return invalid("%s isn't enabled. Choose an enabled agent.", rd.Agent.Display())
+	}
+	models, _, err := s.ModelsFor(ctx, rd.Agent)
+	if err != nil {
+		return err
+	}
+	if len(models) == 0 {
+		if rd.Model == "" {
+			return invalid("Choose a model available for this agent.")
+		}
+		return nil
+	}
+	m, ok := catalog.Find(models, rd.Model)
+	if !ok {
+		if oldRD.Agent == rd.Agent && oldRD.Model == rd.Model {
+			return invalid("%s is no longer offered by %s.", rd.Model, rd.Agent.Display())
+		}
+		return invalid("Choose a model available for this agent.")
+	}
+	if extra != nil {
+		if err := extra(m); err != nil {
+			return err
+		}
+	}
+	if !m.SupportsEffort(rd.Effort) {
+		return invalid("%s isn't available for %s.", rd.Effort, m.Label)
 	}
 	return nil
 }
@@ -232,32 +298,24 @@ func (s *Store) validate(ctx context.Context, prev, next Settings) error {
 		if role == kinds.RoleAdvisor && rd.Model == NoAdvisor {
 			continue
 		}
-		if !slices.Contains(next.EnabledAgents, rd.Agent) {
-			return invalid("%s isn't enabled. Choose an enabled agent.", rd.Agent.Display())
+		var advisorCapable func(catalog.CatalogModel) error
+		if role == kinds.RoleAdvisor {
+			advisorCapable = func(m catalog.CatalogModel) error {
+				if rd.Agent == kinds.Claude && !m.AdvisorCapable {
+					return invalid("Choose a model available for this agent.")
+				}
+				return nil
+			}
 		}
-		models, _, err := s.ModelsFor(ctx, rd.Agent)
-		if err != nil {
+		if err := s.validateDefault(ctx, prev.Roles[role], rd, next.EnabledAgents, advisorCapable); err != nil {
 			return err
 		}
-		if len(models) == 0 {
-			if rd.Model == "" {
-				return invalid("Choose a model available for this agent.")
-			}
-			continue
-		}
-		m, ok := catalog.Find(models, rd.Model)
-		if !ok {
-			if old := prev.Roles[role]; old.Agent == rd.Agent && old.Model == rd.Model {
-				return invalid("%s is no longer offered by %s.", rd.Model, rd.Agent.Display())
-			}
-			return invalid("Choose a model available for this agent.")
-		}
-		if role == kinds.RoleAdvisor && rd.Agent == kinds.Claude && !m.AdvisorCapable {
-			return invalid("Choose a model available for this agent.")
-		}
-		if !m.SupportsEffort(rd.Effort) {
-			return invalid("%s isn't available for %s.", rd.Effort, m.Label)
-		}
+	}
+	// FallbackDefault has no "none"/advisor-capable carve-out: it must
+	// always resolve to a real, enabled agent and model, or the feature it
+	// backs is defeated.
+	if err := s.validateDefault(ctx, prev.FallbackDefault, next.FallbackDefault, next.EnabledAgents, nil); err != nil {
+		return err
 	}
 	switch {
 	case next.MaxOrchestrators < 1 || next.MaxOrchestrators > 8:
