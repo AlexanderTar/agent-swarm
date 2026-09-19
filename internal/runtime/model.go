@@ -326,3 +326,34 @@ func (s *Store) tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	s.Events.Notify()
 	return nil
 }
+
+// idemTx runs fn (a mutating Store method's existing tx body) inside one
+// transaction, guarded by Idempotent (I11) on (sessionID, requestID). It
+// exists so each mutating method's own tx-body needs only one extra wrapping
+// line, not a hand-rolled marshal/unmarshal at every call site: on a cache
+// miss, fn runs and *out is left exactly as fn set it (no round trip); on a
+// cache hit (a genuine replay), fn never runs and *out is unmarshaled from
+// the stored result instead, so the caller gets the identical typed value
+// either way. ran reports whether fn actually executed this call, which
+// matters wherever the caller has its own post-commit side effect (e.g.
+// starting a tmux session) that must not repeat on replay -- see Spawn,
+// Resume and Retry.
+func idemTx[T any](ctx context.Context, s *Store, sessionID, requestID, tool string, out *T, fn func(tx *sql.Tx) error) (ran bool, err error) {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		raw, err := s.Idempotent(ctx, tx, sessionID, requestID, tool, func() (any, error) {
+			ran = true
+			if err := fn(tx); err != nil {
+				return nil, err
+			}
+			return *out, nil
+		})
+		if err != nil {
+			return err
+		}
+		if ran {
+			return nil
+		}
+		return json.Unmarshal(raw, out)
+	})
+	return ran, err
+}

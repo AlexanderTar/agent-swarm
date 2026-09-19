@@ -36,6 +36,62 @@ func TestCheckpointRejectsABadKind(t *testing.T) {
 	}
 }
 
+func countCheckpoints(t *testing.T, s *Server) int {
+	t.Helper()
+	var n int
+	if err := s.RT.DB.QueryRow(`SELECT COUNT(*) FROM checkpoints`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// Task 41: a repeated request_id must not write a second checkpoint, and must
+// return the exact same result as the first call (I11).
+func TestCheckpointRequestIDReplaysInsteadOfWritingTwice(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	out1, err := s.call(ctx, seed.Caller, "swarm_checkpoint",
+		`{"kind":"accepted","summary":"starting","request_id":"req-1"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countCheckpoints(t, s); n != 1 {
+		t.Fatalf("checkpoints after first call = %d, want 1", n)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_checkpoint",
+		`{"kind":"accepted","summary":"starting","request_id":"req-1"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countCheckpoints(t, s); n != 1 {
+		t.Fatalf("checkpoints after replayed call = %d, want still 1", n)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
+// Distinct request_ids (or no request_id at all) must each genuinely mutate.
+func TestCheckpointWithoutOrDistinctRequestIDsEachMutate(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_checkpoint",
+		`{"kind":"accepted","summary":"starting","request_id":"req-a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_checkpoint",
+		`{"kind":"progress","summary":"still going","request_id":"req-b"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_checkpoint",
+		`{"kind":"progress","summary":"more still going"}`); err != nil {
+		t.Fatal(err)
+	}
+	if n := countCheckpoints(t, s); n != 3 {
+		t.Fatalf("checkpoints = %d, want 3", n)
+	}
+}
+
 // swarm_ask requires an artifact for an approval.
 func TestAskRequiresArtifactForApproval(t *testing.T) {
 	s, seed := newServerWithSession(t)

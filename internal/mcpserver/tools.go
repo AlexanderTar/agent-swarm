@@ -68,7 +68,8 @@ func checkpointTool(s *Server) ToolDef {
 		Description: "Record progress: accepted, progress, blocked, handoff, completed or failed, with the verification evidence TDD requires.",
 		Schema: objSchema(`"kind":{"type":"string"},"item":{"type":"string"},"summary":{"type":"string"},
 			"resolution":{"type":"string"},"next":{"type":"array"},"blockers":{"type":"array"},
-			"git":{"type":"array"},"verification":{"type":"array"},"artifacts":{"type":"array"},"processed":{"type":"array"}`),
+			"git":{"type":"array"},"verification":{"type":"array"},"artifacts":{"type":"array"},"processed":{"type":"array"},
+			"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Kind         string           `json:"kind"`
@@ -81,6 +82,7 @@ func checkpointTool(s *Server) ToolDef {
 				Verification []runtime.Verify `json:"verification"`
 				Artifacts    []string         `json:"artifacts"`
 				Processed    []string         `json:"processed"`
+				RequestID    string           `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -89,6 +91,7 @@ func checkpointTool(s *Server) ToolDef {
 				Kind: runtime.CheckpointKind(in.Kind), ItemKey: in.ItemKey, Summary: in.Summary,
 				Resolution: in.Resolution, Next: in.Next, Blockers: in.Blockers,
 				Git: in.Git, Verification: in.Verification, Artifacts: in.Artifacts, Processed: in.Processed,
+				RequestID: in.RequestID,
 			})
 			if err != nil {
 				return nil, err

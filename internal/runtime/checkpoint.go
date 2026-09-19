@@ -76,6 +76,11 @@ type CheckpointInput struct {
 	Verification []Verify
 	Artifacts    []string
 	Processed    []string
+	// RequestID is I11's idempotency key, scoped to the calling MCP session:
+	// a repeated (session, RequestID) pair replays the first checkpoint's
+	// result instead of writing a second one. Empty means "no idempotency,
+	// just run once" (Store.Idempotent's own documented behavior).
+	RequestID string
 }
 
 // CheckpointResult is swarm_checkpoint's result.
@@ -224,7 +229,7 @@ func (s *Store) changedFiles(ctx context.Context, refs []GitRef) int {
 // WriteCheckpoint is swarm_checkpoint (§8.1, L24).
 func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in CheckpointInput) (CheckpointResult, error) {
 	var out CheckpointResult
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	_, err := idemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
 		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
