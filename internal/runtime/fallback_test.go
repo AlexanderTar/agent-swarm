@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
@@ -319,4 +320,148 @@ func TestSpawnFallbackReplayDoesNotDoubleNotify(t *testing.T) {
 	}
 }
 
-var _ = agentRow // used by later steps' tests in this file
+// ---- Retry ----
+
+// crashLatestSession puts a's current session into a retryable state.
+func crashLatestSession(t *testing.T, s *Store, a Agent) {
+	t.Helper()
+	ses, err := s.LatestSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(context.Background(), `UPDATE sessions SET state = 'crashed' WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRetrySubstitutesExhaustedFallbackAndPersistsIt(t *testing.T) {
+	s, tm := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Retry me", Intent: "feature", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashLatestSession(t, s, a)
+	s.Usage = fakeUsage{Claude: true}
+	out, err := s.Retry(ctx, a.Name, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != Codex || out.Model != "gpt-6-astra" {
+		t.Fatalf("agent = %+v, want substituted", out)
+	}
+	if row := agentRow(t, s, a.Name); row.Kind != Codex || row.Model != "gpt-6-astra" {
+		t.Fatalf("persisted row = %+v, want substituted kind/model", row)
+	}
+	n := notified(t, s, "agent.fallback_used")
+	if n.Args["agent"] != "Codex" || n.Args["from"] != "Claude" {
+		t.Fatalf("fallback_used args = %+v", n.Args)
+	}
+	if len(tm.started) != 2 { // one from StartSpike, one from Retry
+		t.Fatalf("started = %v", tm.started)
+	}
+}
+
+func TestRetryBothExhaustedReturnsErrorNoNewSession(t *testing.T) {
+	s, tm := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Retry me", Intent: "feature", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashLatestSession(t, s, a)
+	s.Usage = fakeUsage{Claude: true, Codex: true}
+	startedBefore := len(tm.started)
+	if _, err := s.Retry(ctx, a.Name, "", "", ""); err == nil {
+		t.Fatal("want an error when both the agent and its fallback are exhausted")
+	}
+	if row := agentRow(t, s, a.Name); row.Kind != Claude {
+		t.Fatalf("row kind = %s, want unchanged", row.Kind)
+	}
+	if len(tm.started) != startedBefore {
+		t.Fatalf("started = %v, want no new session", tm.started)
+	}
+}
+
+// TestRetrySubstitutedFallbackFailsItsOwnPreflight covers a substituted
+// fallback that is itself broken (not installed): Retry must return that
+// error rather than spawn a session doomed to fail, and must not persist
+// the broken substitute onto the agent row.
+func TestRetrySubstitutedFallbackFailsItsOwnPreflight(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Retry me", Intent: "feature", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashLatestSession(t, s, a)
+	s.Usage = fakeUsage{Claude: true}
+	delete(s.Adapters, Codex) // the fallback agent isn't actually installed
+	if _, err := s.Retry(ctx, a.Name, "", "", ""); err == nil {
+		t.Fatal("want an error when the substituted fallback fails its own Preflight")
+	}
+	if row := agentRow(t, s, a.Name); row.Kind != Claude {
+		t.Fatalf("row kind = %s, want unchanged (never persist a broken substitute)", row.Kind)
+	}
+}
+
+func TestRetryNilUsageNeverSubstitutes(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Retry me", Intent: "feature", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashLatestSession(t, s, a)
+	out, err := s.Retry(ctx, a.Name, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != Claude {
+		t.Fatalf("agent = %+v, want unaffected", out)
+	}
+}
+
+// ---- Resume: explicitly excluded (spec Locked Decision 2) ----
+
+// TestResumeIgnoresUsageExhaustion proves Resume never substitutes even when
+// Store.Usage reports the agent's kind exhausted: Resume continues an
+// existing provider session, and switching agent kind mid-resume cannot
+// continue a Claude conversation on Codex.
+func TestResumeIgnoresUsageExhaustion(t *testing.T) {
+	s, tm := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Resume me", Intent: "feature", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = 'p1' WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.Usage = fakeUsage{Claude: true}
+	out, err := s.Resume(ctx, a.Name, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != Claude {
+		t.Fatalf("agent = %+v, want Resume to never substitute", out)
+	}
+	if row := agentRow(t, s, a.Name); row.Kind != Claude {
+		t.Fatalf("row kind = %s, want unchanged", row.Kind)
+	}
+	if slices.Contains(s.Notify.(*fakeNotifier).kinds(), "agent.fallback_used") {
+		t.Fatal("Resume must never raise agent.fallback_used")
+	}
+	if !strings.Contains(tm.started[len(tm.started)-1], "--resume") {
+		t.Fatal("want the resumed launch, not a fresh one")
+	}
+}

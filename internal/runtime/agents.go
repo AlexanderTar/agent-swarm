@@ -1054,6 +1054,32 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		return Agent{}, &items.Error{Code: items.CodeConflict, Message: notRetryable}
 	}
 
+	// origKind is captured before resolveUsageFallback may substitute a.Kind,
+	// so the agent.fallback_used notification below can report what was
+	// actually configured.
+	origKind := a.Kind
+	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, a.Kind, a.Model)
+	if ferr != nil {
+		return Agent{}, ferr
+	}
+	if substituted {
+		// Retry never re-validates the *original* kind -- it trusts the
+		// agent row was already vetted at spawn time -- but a freshly
+		// substituted kind has never been Preflighted, so it must be here,
+		// or a broken substitute (not installed, not signed in) would spawn
+		// a session doomed to fail instead of surfacing a clear refusal.
+		if err := s.Preflight(ctx, PreflightInput{Kind: fbKind, Model: fbModel, Effort: a.Effort, Role: a.Role}); err != nil {
+			return Agent{}, err
+		}
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ? WHERE id = ?`, string(fbKind), fbModel, a.ID)
+			return err
+		}); err != nil {
+			return Agent{}, err
+		}
+		a.Kind, a.Model = fbKind, fbModel
+	}
+
 	if note != "" {
 		payload, _ := json.Marshal(map[string]string{"note": note})
 		nowMs := s.now().UnixMilli()
@@ -1090,6 +1116,10 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		return nil
 	}); err != nil {
 		return Agent{}, err
+	}
+	if substituted && s.Notify != nil {
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: out.Name,
+			Args: map[string]string{"name": out.Name, "agent": out.Kind.Display(), "from": origKind.Display()}})
 	}
 	s.go_(func() {
 		if err := s.watchStartup(context.WithoutCancel(ctx), out, newSes, s.Adapters[out.Kind]); err != nil {
