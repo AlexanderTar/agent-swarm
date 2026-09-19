@@ -142,12 +142,15 @@ public enum Copy {
         }
     }
 
-    /// Last-resort names for the well-known Claude model aliases, used ONLY by `OptionPicker`'s
-    /// no-match fallback when a stored model slug has no catalog entry to resolve against at all
-    /// (nothing fetched yet, and nothing cached — `AppModel.catalog` is in-memory only, so this is
-    /// the one spot with no live data to derive a label from; see `CatalogRules.aliasLabel` for the
-    /// normal path, which reads the real name straight from the catalog instead of guessing).
-    /// `nil` for anything else; the caller falls back to the raw value.
+    /// Last-resort names for the well-known Claude model aliases, used in two spots that both lack
+    /// a real versioned name to show: `OptionPicker`'s no-match fallback (a stored model slug with
+    /// no catalog entry to resolve against at all — nothing fetched yet, and nothing cached, since
+    /// `AppModel.catalog` is in-memory only), and `CatalogRules.aliasLabel` when the catalog *is*
+    /// reachable but only offers the daemon's own unversioned `ClaudeAliasFallback` labels (e.g.
+    /// "Opus (latest)", no digit — served when the daemon is up but its own fetch to Anthropic
+    /// failed with nothing cached). Whenever the catalog has a real versioned label (a live fetch,
+    /// or a full non-alias entry), that's used as-is instead of this table. `nil` for anything
+    /// else; the caller falls back to the raw value or the unversioned label.
     public static func claudeAliasName(_ alias: String) -> String? {
         switch alias {
         case "opus": return "Opus 5"

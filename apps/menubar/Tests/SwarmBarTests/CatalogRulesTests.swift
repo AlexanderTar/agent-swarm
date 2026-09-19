@@ -43,8 +43,10 @@ final class CatalogRulesTests: XCTestCase {
             CatalogModel(id: "opus", label: "Opus (latest)", aliases: ["opus"], efforts: ["low", "high"], advisorCapable: true),
             CatalogModel(id: "haiku", label: "Haiku (latest)", aliases: ["haiku"]),
         ], catalogSource: "aliases")
-        XCTAssertEqual(R.modelOptions(fallback), [PickerOption("opus", "Opus (latest)"), PickerOption("haiku", "Haiku (latest)")],
-                       "the alias's own catalog label carries through unchanged when it already reads \"(latest)\"")
+        XCTAssertEqual(R.modelOptions(fallback), [PickerOption("opus", "Opus 5 (latest)"), PickerOption("haiku", "Haiku 4.5 (latest)")],
+                       "catalog.ClaudeAliasFallback's own unversioned label (no digit) is substituted with the known versioned name, not trusted through")
+        XCTAssertEqual(R.modelLabel(fallback, "opus"), "Opus 5 (latest)",
+                       "modelLabel hits the same substitution, not just modelOptions")
         XCTAssertEqual(R.modelOptions(fallback, advisorOnly: true).map(\.value), ["opus"])
         XCTAssertEqual(R.advisorOptions([fallback], enabled: [.claude]).map(\.value), ["claude:opus", "none"])
     }

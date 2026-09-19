@@ -61,19 +61,26 @@ public enum CatalogRules {
         return entry.models.first { $0.id == value } ?? entry.models.first { $0.aliases.contains(value) }
     }
 
-    /// The alias's display text always comes from the model's own catalog label (real backend
-    /// data — the live path's is Anthropic's `display_name`, e.g. "Opus 5"; the offline
-    /// `ClaudeAliasFallback` path already bakes in "Opus (latest)" with no version, since no live
-    /// version info exists then). Never guessed here: just add "(latest)" unless it's already
-    /// there, so the version number the catalog reports carries through and no menubar-side name
-    /// table needs to track model renames.
-    private static func aliasLabel(_ modelLabel: String) -> String {
-        modelLabel.hasSuffix("(latest)") ? modelLabel : "\(modelLabel) (latest)"
+    /// The alias's display text. Normally this is the model's own catalog label with "(latest)"
+    /// appended — the live path's label is Anthropic's `display_name`, already versioned (e.g.
+    /// "Opus 5" → "Opus 5 (latest)"), so no menubar-side name table needs to track model renames.
+    /// But the daemon's own disconnected fallback (`catalog.ClaudeAliasFallback`, served whenever
+    /// the daemon is reachable but its fetch to Anthropic failed with nothing cached — a real,
+    /// reachable-daemon state, not just "no catalog at all") bakes in an UNVERSIONED label already
+    /// shaped "Opus (latest)" for exactly the 4 known Claude aliases, with `id == alias`. A label
+    /// with no digit in it is that shape (a real version always has one: "5", "4.5", "5.1"), so
+    /// substitute the known versioned name for it via the same table `OptionPicker`'s total-fallback
+    /// case uses, rather than trusting the unversioned label through.
+    private static func aliasLabel(_ modelLabel: String, _ alias: String) -> String {
+        if !modelLabel.contains(where: \.isNumber), let known = Copy.claudeAliasName(alias) {
+            return "\(known) (latest)"
+        }
+        return modelLabel.hasSuffix("(latest)") ? modelLabel : "\(modelLabel) (latest)"
     }
 
     public static func modelLabel(_ entry: AgentCatalogEntry?, _ value: String) -> String {
         guard let m = resolve(entry, value) else { return value }
-        return m.id == value ? m.label : aliasLabel(m.label)
+        return m.aliases.contains(value) ? aliasLabel(m.label, value) : m.label
     }
 
     public static func agentOptions(enabled: [AgentKind]) -> [PickerOption] {
@@ -87,7 +94,7 @@ public enum CatalogRules {
         guard let entry else { return [] }
         let visible = entry.models.filter { !$0.hidden && (!advisorOnly || $0.advisorCapable) }
         var seen = Set<String>()
-        return (visible.flatMap { m in m.aliases.map { PickerOption($0, aliasLabel(m.label)) } }
+        return (visible.flatMap { m in m.aliases.map { PickerOption($0, aliasLabel(m.label, $0)) } }
             + visible.map { PickerOption($0.id, $0.label) }).filter { seen.insert($0.value).inserted }
     }
 
