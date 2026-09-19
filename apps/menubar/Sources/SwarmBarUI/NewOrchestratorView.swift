@@ -111,7 +111,8 @@ public struct NewOrchestratorView: View {
     private var agentFields: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                OptionPicker(Copy.agent, options: form.agentOptions, value: form.choice.agent?.rawValue ?? "") { form.setAgent($0) }
+                OptionPicker(Copy.agent, options: form.agentOptions, value: form.choice.agent?.rawValue ?? "",
+                             icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAgent($0) }
                 OptionPicker(Copy.model, options: form.modelOptions, value: form.choice.model) { form.setModel($0) }
             }
             if let error = form.errors.agent, !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }

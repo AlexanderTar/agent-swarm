@@ -75,9 +75,9 @@ struct DefaultsTab: View {
     @Bindable var model: SettingsModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(Copy.defaultsForNewAgents).font(.headline)
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                 GridRow {
                     Text(Copy.role).foregroundStyle(.secondary)
                     Text(Copy.agent).foregroundStyle(.secondary)
@@ -87,10 +87,11 @@ struct DefaultsTab: View {
                 ForEach(model.defaultsRows) { row in
                     GridRow {
                         Text(row.label)
-                        OptionPicker(Copy.agent, options: row.agentOptions, value: row.agent) { v in
+                        OptionPicker(Copy.agent, options: row.agentOptions, value: row.agent,
+                                     icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { v in
                             Task { await model.setAgent(row.role, v) }
                         }
-                        .labelsHidden().frame(width: 120)
+                        .labelsHidden().frame(width: 132)
                         OptionPicker(Copy.model, options: row.modelOptions, value: row.model) { v in
                             Task { await model.setModel(row.role, v) }
                         }
@@ -99,11 +100,11 @@ struct DefaultsTab: View {
                             OptionPicker(Copy.effort, options: efforts, value: row.effort) { v in
                                 Task { await model.setEffort(row.role, v) }
                             }
-                            .labelsHidden().frame(width: 170)
+                            .labelsHidden().frame(width: 170, alignment: .leading)
                         } else if row.model != RoleDefault.noAdvisorModel {
-                            Text(Copy.notSupported).foregroundStyle(.secondary)
+                            Text(Copy.notSupported).foregroundStyle(.secondary).frame(width: 170, alignment: .leading)
                         } else {
-                            Text("")
+                            Text("").frame(width: 170, alignment: .leading)
                         }
                     }
                     if let error = row.error {
@@ -118,15 +119,16 @@ struct DefaultsTab: View {
                     }
                 }
             }
-            Spacer()
             ForEach(model.staleNotes, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
             HStack {
                 if let line = model.catalogLine { Text(line).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
                 Button(Copy.refreshModels) { Task { await model.refreshModels() } }.disabled(!model.connected)
             }
+            Spacer()
         }
         .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
