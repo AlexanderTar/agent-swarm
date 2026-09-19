@@ -306,6 +306,12 @@ type Store struct {
 	interruptedAt map[string]time.Time
 	pasteAttempts map[string]int
 	wakeSubs      map[string][]chan string
+	// lastAliveAt is P0-crash-3 (2026-09-19): the last reconcile tick that saw
+	// each live session's pane present and correctly owned (§10.6's resolveDead
+	// doc comment has the incident). Same D57 reasoning as the rest of this
+	// block: a daemon restart just resets a session's grace window back to
+	// counting from its own StartedAt, exactly like a session on its first tick.
+	lastAliveAt map[string]time.Time
 }
 
 // TmuxBin and TmuxSocket are the two readers httpapi's Ghostty fallback uses

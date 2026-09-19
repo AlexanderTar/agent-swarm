@@ -125,13 +125,17 @@ func (s *Store) Reconcile(ctx context.Context) error {
 				ok = false
 			}
 		}
-		if !ok || p.Dead {
-			if err := s.resolveDead(ctx, r, p, ok); err != nil {
+		if ok && !p.Dead {
+			// P0-crash-3: record this as the last tick that actually confirmed
+			// the pane, so a later single-tick miss has a recent basis to grace
+			// from instead of falling back to StartedAt (see resolveDead).
+			s.setLastAlive(r.SessionID, s.Now())
+			if err := s.resolveAlive(ctx, r, p); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := s.resolveAlive(ctx, r, p); err != nil {
+		if err := s.resolveDead(ctx, r, p, ok); err != nil {
 			return err
 		}
 	}
@@ -169,28 +173,42 @@ func (s *Store) terminalCheckpointKind(ctx context.Context, agentID string, atte
 // resolveDead applies the "pane is dead" half of the §10.6 table. paneKnown is
 // false when there was no matching pane at all (as opposed to one this
 // generation no longer owns, or one tmux still reports as dead).
-// spawnGracePeriod protects a session that has JUST started against a
-// reconcile tick whose Panes() snapshot simply hasn't picked up the new
-// tmux pane yet. P0-crash-2 (2026-09-19): a real, live, actively-working
-// orchestrator session was marked 'crashed' 4.3s after Start() succeeded --
-// confirmed live: the tmux pane was still alive and its SWARM_SESSION env
-// still matched the "crashed" session's own ID, so the pane was never dead;
-// Reconcile's single Panes() snapshot for that tick simply didn't contain
-// it. This is keyed on StartedAt, not on the session still being in the
-// Spawning state: watchStartup can flip a session straight to Running
-// within the same tick it started (a fast Idle match, or a fake adapter in
-// tests), so gating on Spawning alone would still miss the race for any
-// session that happened to become idle quickly. The window is comfortably
-// inside the 30s watchStartup already allows a startup dialog to resolve,
-// so it cannot mask a session that is genuinely stuck. It does NOT apply
-// when tmux reports the pane itself as dead (p.Dead) -- that is real exit
-// signal, not a listing race, and must still be handled immediately.
+// spawnGracePeriod protects a session against a reconcile tick whose Panes()
+// snapshot simply hasn't picked up its tmux pane yet -- a real, transient
+// listing miss, not the pane actually being gone. P0-crash-2 (2026-09-19): a
+// real, live, actively-working orchestrator session was marked 'crashed' 4.3s
+// after Start() succeeded -- confirmed live: the tmux pane was still alive
+// and its SWARM_SESSION env still matched the "crashed" session's own ID, so
+// the pane was never dead; Reconcile's single Panes() snapshot for that tick
+// simply didn't contain it.
+//
+// P0-crash-3 (2026-09-19): the same agent was then marked crashed a second
+// time, ~3.5 minutes into a session that had already been confirmed alive on
+// earlier reconcile ticks -- long past any "just started" window, yet still
+// exit_code NULL (§10.6's own signal that paneKnown was false, not that tmux
+// reported the pane dead). A single-tick Panes() miss is not only a
+// just-started race; it can recur for an established session too. So the
+// grace window is no longer anchored solely to StartedAt: it counts from
+// lastAliveAt, the most recent tick that actually confirmed the pane, and
+// only falls back to StartedAt when the session has never been confirmed
+// alive at all (its first tick, or a genuinely-fast crash before ever being
+// seen). Either way the window is comfortably inside the 30s watchStartup
+// already allows a startup dialog to resolve, so it cannot mask a session
+// that is genuinely stuck -- and it still does NOT apply when tmux reports
+// the pane itself as dead (p.Dead): that is real exit signal, not a listing
+// race, and must still be handled immediately.
 const spawnGracePeriod = 10 * time.Second
 
 func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bool) error {
 	now := s.Now()
-	if !paneKnown && now.Sub(r.StartedAt) < spawnGracePeriod {
-		return nil // give the next tick(s) a chance to see the new pane
+	if !paneKnown {
+		basis := r.StartedAt
+		if last := s.getLastAlive(r.SessionID); last != nil {
+			basis = *last
+		}
+		if now.Sub(basis) < spawnGracePeriod {
+			return nil // give the next tick(s) a chance to see the pane again
+		}
 	}
 	if r.State == Stopping {
 		return s.tx(ctx, func(tx *sql.Tx) error {
@@ -274,6 +292,29 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 			return err
 		})
 	}
+}
+
+// getLastAlive and setLastAlive guard Store.lastAliveAt (P0-crash-3), the
+// in-memory record of the last reconcile tick that saw each session's pane
+// present and correctly owned. Same style as pause.go's getInterrupted /
+// setInterrupted.
+func (s *Store) getLastAlive(sessionID string) *time.Time {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	t, ok := s.lastAliveAt[sessionID]
+	if !ok {
+		return nil
+	}
+	return &t
+}
+
+func (s *Store) setLastAlive(sessionID string, at time.Time) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.lastAliveAt == nil {
+		s.lastAliveAt = map[string]time.Time{}
+	}
+	s.lastAliveAt[sessionID] = at
 }
 
 // resolveAlive applies the "pane is alive" half of the §10.6 table.

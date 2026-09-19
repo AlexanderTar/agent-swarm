@@ -89,6 +89,59 @@ func TestReconcileGivesAFreshSessionAGracePeriodBeforeMarkingItCrashed(t *testin
 	}
 }
 
+// P0-crash-3 (2026-09-19): a real, live, actively-working orchestrator
+// session -- long past its own start, and already confirmed alive on an
+// earlier reconcile tick -- was marked crashed a second time when a single
+// later tick's Panes() snapshot missed its pane (exit_code stayed NULL, §10.6's
+// own signal that this was a listing miss, not tmux reporting the pane dead).
+// spawnGracePeriod must protect this case too, not just a session's first few
+// seconds: the grace window now counts from the last tick that confirmed the
+// pane (lastAliveAt), not only from StartedAt.
+func TestReconcileGivesAnEstablishedSessionTheSameGraceOnALaterMissingTick(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+
+	// Move well past spawnGracePeriod's StartedAt-anchored window before the
+	// session is ever seen once, so the old P0-crash-2 grace (which only ever
+	// looked at StartedAt) cannot be what saves it below -- only lastAliveAt can.
+	at.Advance(spawnGracePeriod + 5*time.Second)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ses, _ := s.LatestSession(ctx, w.ID); ses.State == Crashed {
+		t.Fatal("the tick that first confirms an alive pane must not itself crash the session")
+	}
+
+	// The pane vanishes from a single later tick's snapshot. This must NOT
+	// immediately crash it: it was just confirmed alive, so it gets the same
+	// grace period a brand-new session gets.
+	panes(tm) // pane missing from this tick's snapshot only
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ses, _ := s.LatestSession(ctx, w.ID); ses.State == Crashed {
+		t.Fatal("P0-crash-3: a single missing-pane tick on an already-confirmed-alive session must not immediately crash it")
+	}
+
+	// Only once it has stayed missing for spawnGracePeriod since it was last
+	// confirmed alive is it really treated as gone.
+	at.Advance(spawnGracePeriod + time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Crashed {
+		t.Fatalf("a session that stays missing past the grace period since it was last confirmed alive must eventually crash, got %s", ses.State)
+	}
+}
+
 // ReconcileLoop just wraps Reconcile in a ticker and stops on cancel; this
 // only exercises that wiring, not the reconciliation logic itself (covered
 // above).
