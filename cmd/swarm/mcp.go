@@ -31,10 +31,14 @@ func cmdMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		token = strings.TrimSpace(string(b))
 	}
-	// No default URL (S6, matching internal/hook.Run): `swarm mcp` only ever
-	// runs inside a pane the daemon spawned, which always has SWARM_URL.
-	// Defaulting to :7777 would mean running this binary by hand posts MCP
-	// calls into the user's live production daemon.
+	// A bound shim (spawned by the daemon) always has SWARM_URL already. An
+	// unbound one is now also the normal case for `swarm install`'s global
+	// MCP registration (M3) — an interactive, non-spawned session with no
+	// SWARM_URL of its own — so it defaults to the local daemon the same way
+	// every other client command does, instead of failing with an empty URL.
+	if url == "" {
+		url = defaultURL()
+	}
 	s := &mcpshim.Shim{In: stdin, Out: stdout, Err: stderr, URL: url, Token: token,
 		AgentKind: kind, HTTP: &http.Client{Timeout: 60 * time.Second},
 		Log: log.New(stderr, "", log.LstdFlags).Printf}
