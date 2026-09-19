@@ -238,6 +238,13 @@ func TestClaudeIdleAgainstTheCapturedPanes(t *testing.T) {
 	if a.Idle(pane(t, "claude", "pane-busy.txt")) {
 		t.Error("pane-busy.txt draws the empty prompt but must not count as idle")
 	}
+	// Live incident (2026-09-19): the spinner line renders with a leading SGR
+	// color escape (`\x1b[38;5;174m·...`), so the plain, unanchored-for-ANSI
+	// Busy regex never matched it and a genuinely busy session got reported
+	// idle/waiting.
+	if a.Idle(pane(t, "claude", "pane-busy-ansi.txt")) {
+		t.Error("pane-busy-ansi.txt's spinner is ANSI-prefixed but must still count as busy")
+	}
 	if a.Idle(pane(t, "claude", "pane-input-nonempty.txt")) {
 		t.Error("typed input is not idle")
 	}

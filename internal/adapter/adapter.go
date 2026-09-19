@@ -112,13 +112,27 @@ type base struct {
 
 func (b base) Kind() kinds.AgentKind { return b.kind }
 
+// ansiEscape strips terminal escape sequences before a Busy regex sees the
+// capture. Live incident (2026-09-19): the spinner line renders with a
+// leading SGR color escape (e.g. "\x1b[38;5;174m·..."), so a plain Busy
+// pattern anchored at line-start never matched it and a genuinely busy
+// session got reported idle/waiting. IdlePrompt is deliberately NOT run
+// through this: it relies on the raw, unstripped capture to tell an empty
+// prompt's dim placeholder text (wrapped in its own escape codes) apart from
+// a real human draft (plain, unescaped) -- stripping first would erase that
+// distinction.
+var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
+
+// StripANSI removes terminal escape sequences from a tmux capture.
+func StripANSI(s string) string { return ansiEscape.ReplaceAllString(s, "") }
+
 // idle is §11.3: the idle prompt matches and no line matches Busy. RE2 has no
 // lookahead, so the two checks are separate.
 func idle(a Adapter, capture string) bool {
 	if !a.IdlePrompt().MatchString(capture) {
 		return false
 	}
-	if bz := a.Busy(); bz != nil && bz.MatchString(capture) {
+	if bz := a.Busy(); bz != nil && bz.MatchString(StripANSI(capture)) {
 		return false
 	}
 	return true

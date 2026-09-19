@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -963,18 +962,17 @@ func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText 
 	})
 }
 
-// ansiEscape strips terminal escape sequences before a StartupDialogs regex
+// stripANSI strips terminal escape sequences before a StartupDialogs regex
 // sees the capture. P0-crash-1 (2026-09-19): Claude 2.1.278 renders a
 // highlighted menu option (e.g. the dev-channels warning's "1. I am using
 // this for local development") with a separate color escape around every
 // word, so a plain multi-word Dialog.Match like claudeDev never matched the
-// raw -e capture and the prompt sat unanswered forever. Idle/Busy detection
-// and failSession's saved pane text still see the raw capture (P0-4 needs
-// the dim attribute there to tell a placeholder from typed text); only
-// dialog matching needs words to be contiguous.
-var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
-
-func stripANSI(s string) string { return ansiEscape.ReplaceAllString(s, "") }
+// raw -e capture and the prompt sat unanswered forever. failSession's saved
+// pane text still sees the raw capture (the first line shown to the user
+// keeps its real shape); only dialog matching needs words contiguous.
+// adapter.Idle's own Busy check strips ANSI too now (2026-09-19, separate
+// live incident), via the same adapter.StripANSI this wraps.
+func stripANSI(s string) string { return adapter.StripANSI(s) }
 
 // startupStallTimeout and startupCeiling (2026-09-19, live incident): a fixed
 // 30s deadline from spawn used to fail a session outright the moment real

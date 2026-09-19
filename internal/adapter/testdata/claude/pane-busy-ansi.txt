@@ -1,0 +1,10 @@
+⏺ Advising using Sonnet 5
+
+[38;5;174m·[39m [38;5;174mHyperspacing…[39m [38;5;246m(1m 19s · ↓ 5.2k tokens · [38;5;248mthinking with high effort[38;5;246m)[39m
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+──────────────────────────────────────────────────────────────────────────────────────────────── Agent swarm big refactor ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Sonnet 5 high | none | (no PR) | ~/.swarm/work/s0-review-3 | ▓▓░░░░░░░░ 91k/1.0M (9%)                      Session: 37.0% 42m | Weekly: 54.0% 2d19h42m
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
