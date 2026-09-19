@@ -72,7 +72,7 @@ func TestRetainRaisesARealNotificationWithoutRollingBack(t *testing.T) {
 	// Minimal runtime.Store: OnWorktreeRetained only needs DB (for itemKey)
 	// and Notify — no Tmux/Adapters/Items wiring required for this path.
 	rt := &runtime.Store{DB: d, Notify: &notify.Service{DB: d, Events: ev, Now: now}}
-	wtSvc := &worktree.Service{DB: d, Run: execx.Run, Now: now, OnRetained: rt.OnWorktreeRetained}
+	wtSvc := &worktree.Service{DB: d, Run: execx.Run, Now: now, Home: t.TempDir(), OnRetained: rt.OnWorktreeRetained}
 
 	if _, err := d.ExecContext(ctx, `INSERT INTO repos (id, name, path, source, created_at, updated_at)
 		VALUES ('repo_t', 'proj', ?, 'manual', 0, 0)`, repo); err != nil {

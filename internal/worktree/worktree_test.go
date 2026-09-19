@@ -82,10 +82,10 @@ func newService(t *testing.T, repoPath string) (*Service, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Service{DB: d, Run: execx.Run, Now: fixedNow, Log: func(string, ...any) {}}, "repo_1"
+	return &Service{DB: d, Run: execx.Run, Now: fixedNow, Log: func(string, ...any) {}, Home: t.TempDir()}, "repo_1"
 }
 
-func TestCreateMakesASiblingWorktreeAndRecordsTheBase(t *testing.T) {
+func TestCreateMakesAWorktreeUnderHomeAndRecordsTheBase(t *testing.T) {
 	repo := gitRepo(t)
 	s, repoID := newService(t, repo)
 	wt, err := s.Create(context.Background(), CreateInput{RepoID: repoID, RepoPath: repo,
@@ -93,7 +93,7 @@ func TestCreateMakesASiblingWorktreeAndRecordsTheBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(filepath.Dir(repo), "proj--task-101-login-form")
+	want := filepath.Join(s.Home, "worktrees", "proj--task-101-login-form")
 	if wt.Path != want {
 		t.Fatalf("path = %q, want %q", wt.Path, want)
 	}
@@ -532,8 +532,9 @@ func TestReviewCreatesADetachedWorktreeAtTheSHA(t *testing.T) {
 	if wt.Branch != "" || wt.DetachedSHA != sha {
 		t.Fatalf("worktree = %+v, want detached at %s", wt, sha)
 	}
-	if !strings.HasSuffix(wt.Path, "proj--review-"+sha[:7]) {
-		t.Fatalf("path = %q", wt.Path)
+	want := filepath.Join(s.Home, "worktrees", "proj--review-"+sha[:7])
+	if wt.Path != want {
+		t.Fatalf("path = %q, want %q", wt.Path, want)
 	}
 	if _, err := s.Remove(ctx, wt.ID, "agt_1"); err != nil {
 		t.Fatalf("a clean detached worktree removes cleanly: %v", err)
@@ -673,8 +674,8 @@ func TestReviewRefusesANonHexSHA(t *testing.T) {
 }
 
 func TestPathForWithoutASlashUsesTheWholeBranch(t *testing.T) {
-	got := PathFor("/repos/proj", "standalone", func(string) bool { return false })
-	if want := "/repos/proj--standalone"; got != want {
+	got := PathFor("/swarm/worktrees", "/repos/proj", "standalone", func(string) bool { return false })
+	if want := "/swarm/worktrees/proj--standalone"; got != want {
 		t.Fatalf("PathFor = %q, want %q", got, want)
 	}
 }

@@ -137,7 +137,7 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 		// D25: Preflight calls s.Worktree.SigningOK for every repo, so the field is
 		// wired here, not in Task 21. Run is the real execx.Run because the git calls
 		// go against temp repos gitRepoNoSigning creates.
-		Worktree:  &worktree.Service{DB: d, Run: execx.Run, Now: clk.Now, Log: func(string, ...any) {}},
+		Worktree:  &worktree.Service{DB: d, Run: execx.Run, Now: clk.Now, Log: func(string, ...any) {}, Home: home},
 		Notify:    &fakeNotifier{t: t},
 		Adapters:  map[AgentKind]adapter.Adapter{Fake: fa},
 		Bin:       "/usr/local/bin/swarm",

@@ -207,7 +207,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 			return nil, err
 		}
 	}
-	for _, dir := range []string{filepath.Join(cfg.Home, "work"), filepath.Join(cfg.Home, "run", "tokens"), filepath.Join(cfg.Home, "run", "advice")} {
+	for _, dir := range []string{filepath.Join(cfg.Home, "work"), filepath.Join(cfg.Home, "run", "tokens"), filepath.Join(cfg.Home, "run", "advice"), filepath.Join(cfg.Home, "worktrees")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			d.Close()
 			return nil, err
@@ -223,7 +223,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// live server.
 	spawner := &spawn.Spawner{Socket: spawn.SocketFromEnv(os.Getenv), Conf: confPath,
 		Tmux: lookTmux(), Run: execx.Run, Log: cfg.Log}
-	wt := &worktree.Service{DB: d, Run: execx.Run, Now: now, Log: cfg.Log}
+	wt := &worktree.Service{DB: d, Run: execx.Run, Now: now, Log: cfg.Log, Home: cfg.Home}
 	nt := &notify.Service{DB: d, Events: ev, Now: now, Log: cfg.Log}
 	adDeps := adapter.Deps{Home: cfg.Home, UserHome: userHome, Bin: selfPath(), Run: execx.Run,
 		Start: execx.Start, Now: now, Log: cfg.Log}

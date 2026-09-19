@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,7 +120,13 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 		"repos": []string{repoAID, repoBID}, "repos_version": binding.ReposVersion, "via": "board",
 	}, nil)
 
-	h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/login"})
+	wtOut := h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/login"})
+	// §12.1 centralization: the worktree lives under the daemon's shared
+	// ~/.swarm/worktrees folder, never as a sibling of the fixture repo.
+	wantDir := filepath.Join(h.home, "worktrees") + string(filepath.Separator)
+	if wtPath, _ := wtOut["path"].(string); !strings.HasPrefix(wtPath, wantDir) {
+		t.Fatalf("worktree path = %q, want a child of %q", wtPath, wantDir)
+	}
 
 	h.mustTool(t, orch, "swarm_ask", map[string]any{"kind": "question", "prompt": "Keep the old email flow too?"})
 	questionReq := h.waitForRequestFull(t, spikeKey, "question", 5*time.Second)

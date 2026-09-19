@@ -29,14 +29,19 @@ type Worktree struct {
 
 // Service runs the worktree operations against one database.
 type Service struct {
-	DB  *db.DB
-	Run execx.Runner
-	Now func() time.Time
-	Log func(format string, args ...any)
+	DB   *db.DB
+	Run  execx.Runner
+	Now  func() time.Time
+	Log  func(format string, args ...any)
+	Home string // $SWARM_HOME; worktrees live under Home/worktrees (§12.1)
 	// OnRetained fires inside the same transaction that marks a worktree
 	// retained, so a caller can e.g. raise a notification atomically.
 	OnRetained func(ctx context.Context, tx *sql.Tx, wt Worktree) error
 }
+
+// worktreesDir is where every worktree lives, regardless of where its repo
+// sits on disk (§12.1) — see PathFor.
+func (s *Service) worktreesDir() string { return filepath.Join(s.Home, "worktrees") }
 
 // wtLocks holds the per-worktree mutex that serializes Remove/Sweep against
 // Share (C4). It closes the race between the "no other reservation" guard and
@@ -84,9 +89,12 @@ func BranchName(rootType, rootKey, rootTitle string) string {
 	return rootType + "/" + name
 }
 
-// PathFor is §12.1: "<repo parent>/<repo name>--<slug>", where the slug is the
-// branch with its type prefix removed. A collision gets -2, -3, …
-func PathFor(repoPath, branch string, exists func(string) bool) string {
+// PathFor is §12.1: "<worktreesDir>/<repo name>--<slug>", where the slug is
+// the branch with its type prefix removed. Every worktree lives under
+// worktreesDir regardless of where repoPath sits on disk, so a user with
+// repos scattered across many parent folders never gets any one of them
+// congested with worktree siblings. A collision gets -2, -3, …
+func PathFor(worktreesDir, repoPath, branch string, exists func(string) bool) string {
 	_, tail, ok := strings.Cut(branch, "/")
 	if !ok {
 		tail = branch
@@ -95,7 +103,13 @@ func PathFor(repoPath, branch string, exists func(string) bool) string {
 	if err != nil {
 		slug = "work"
 	}
-	base := filepath.Join(filepath.Dir(repoPath), filepath.Base(repoPath)+"--"+slug)
+	return pathWithSuffix(worktreesDir, repoPath, slug, exists)
+}
+
+// pathWithSuffix is PathFor and Service.Review's shared base+collision-loop
+// logic: "<worktreesDir>/<repo name>--<suffix>", suffixed -2, -3, … on collision.
+func pathWithSuffix(worktreesDir, repoPath, suffix string, exists func(string) bool) string {
+	base := filepath.Join(worktreesDir, filepath.Base(repoPath)+"--"+suffix)
 	p := base
 	for i := 2; exists(p); i++ {
 		p = fmt.Sprintf("%s-%d", base, i)
@@ -330,7 +344,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Worktree, error) 
 	if _, err := s.git(ctx, in.RepoPath, "fetch", "--quiet", "origin"); err != nil {
 		s.logf("worktree: fetch %s failed, using the local base: %v", in.RepoPath, err)
 	}
-	path := PathFor(in.RepoPath, in.Branch, fileExists)
+	path := PathFor(s.worktreesDir(), in.RepoPath, in.Branch, fileExists)
 	args := []string{"worktree", "add"}
 	if !s.branchExists(ctx, in.RepoPath, in.Branch) {
 		args = append(args, "-b", in.Branch, path, base)
@@ -361,10 +375,7 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 	if !shaPattern.MatchString(sha) {
 		return Worktree{}, fmt.Errorf("worktree: %q is not a sha", sha)
 	}
-	path := filepath.Join(filepath.Dir(in.RepoPath), filepath.Base(in.RepoPath)+"--review-"+sha[:7])
-	for i := 2; fileExists(path); i++ {
-		path = fmt.Sprintf("%s-%d", path, i)
-	}
+	path := pathWithSuffix(s.worktreesDir(), in.RepoPath, "review-"+sha[:7], fileExists)
 	if out, err := s.git(ctx, in.RepoPath, "worktree", "add", "--detach", path, sha); err != nil {
 		return Worktree{}, fmt.Errorf("git worktree add --detach: %w: %s", err, out)
 	}

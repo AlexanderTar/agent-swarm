@@ -197,7 +197,7 @@ func newTestServer(t *testing.T) *Server {
 	tm.clk = clk
 	rt := &runtime.Store{DB: d, Events: ev, Items: it, Settings: st, Catalog: cat, Home: home,
 		Now: clk.Now, Log: func(string, ...any) {}, Tmux: tm,
-		Worktree:  &worktree.Service{DB: d, Run: execx.Run, Now: clk.Now, Log: func(string, ...any) {}},
+		Worktree:  &worktree.Service{DB: d, Run: execx.Run, Now: clk.Now, Log: func(string, ...any) {}, Home: home},
 		Repos:     &repos.Service{DB: d, Events: ev, Now: clk.Now, Run: execx.Run, Log: func(string, ...any) {}},
 		Notify:    &fakeNotifier{t: t},
 		Adapters:  map[runtime.AgentKind]adapter.Adapter{runtime.Fake: fa},

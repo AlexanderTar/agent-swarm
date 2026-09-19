@@ -341,7 +341,7 @@ func newServicesOnly(t *testing.T, extra func(d *Deps)) *runtimeEnv {
 		nt := &notify.Service{DB: d.DB, Events: d.Events, Now: time.Now, Log: func(string, ...any) {}}
 		rt = &runtime.Store{DB: d.DB, Events: d.Events, Items: d.Items, Repos: d.Repos, Settings: d.Settings,
 			Catalog: d.Catalog, Home: home, Now: time.Now, Log: func(string, ...any) {}, Tmux: tm,
-			Worktree: &worktree.Service{DB: d.DB, Run: execx.Run, Now: time.Now, Log: func(string, ...any) {}},
+			Worktree: &worktree.Service{DB: d.DB, Run: execx.Run, Now: time.Now, Log: func(string, ...any) {}, Home: home},
 			Notify:   nt, Adapters: map[runtime.AgentKind]adapter.Adapter{runtime.Fake: fa},
 			Bin: "/usr/local/bin/swarm", DaemonURL: "http://127.0.0.1:0",
 			OSEnv: func(string) string { return "" },
