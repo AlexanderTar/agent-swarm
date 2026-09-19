@@ -202,9 +202,9 @@ func TestSyncVendorsCursorPluginsAsRealFoldersNotSymlinks(t *testing.T) {
 		}
 	}
 	f := &execx.Fake{Responses: map[string]execx.Result{
-		"cursor-agent plugin marketplace add https://github.com/obra/superpowers-marketplace":                {Out: "added"},
-		"git clone --depth 1 https://github.com/obra/superpowers.git " + vendor:                              {Out: "cloned"},
-		"git clone --depth 1 https://github.com/obra/elements-of-style.git " + c.Vendor("elements-of-style"): {Out: "cloned"},
+		"cursor-agent plugin marketplace add https://github.com/obra/superpowers-marketplace":                    {Out: "added"},
+		"git clone --depth 1 https://github.com/obra/superpowers.git " + vendor:                                  {Out: "cloned"},
+		"git clone --depth 1 https://github.com/obra/the-elements-of-style.git " + c.Vendor("elements-of-style"): {Out: "cloned"},
 	}}
 	seedClone()
 	p := install.Plugins{Cfg: c, Run: f.Runner(), HTTP: srv.Client(), MarketplaceURL: srv.URL, Log: &bytes.Buffer{}}
