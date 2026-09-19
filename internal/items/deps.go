@@ -33,71 +33,93 @@ type Graph struct {
 }
 
 func (s *Store) AddDep(ctx context.Context, key, blockedBy string, by Actor) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
-		a, err := s.getTx(ctx, tx, key)
+	return s.write(ctx, func(tx *sql.Tx) error { return s.AddDepTx(ctx, tx, key, blockedBy, by) })
+}
+
+// AddDepTx is AddDep on a transaction the caller owns. Task 19's materializer
+// writes a whole tree in one tx; a nested BeginTx here would stall on
+// _txlock=immediate for busy_timeout (5 s) and then fail. Unlike AddDep, this
+// does not wake SSE subscribers itself: the caller commits its own tx, so the
+// caller is responsible for calling Events.Notify() after that commit.
+func (s *Store) AddDepTx(ctx context.Context, tx *sql.Tx, key, blockedBy string, by Actor) error {
+	a, err := s.getTx(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	b, err := s.getTx(ctx, tx, blockedBy)
+	if err != nil {
+		return err
+	}
+	if err := s.orchestratorScope(ctx, tx, by, a); err != nil {
+		return err
+	}
+	if a.ID == b.ID {
+		return errf(CodeConflict, CycleMessage)
+	}
+	for _, pair := range [][2]string{{a.ID, b.ID}, {b.ID, a.ID}} {
+		up, err := isAncestor(ctx, tx, pair[0], pair[1])
 		if err != nil {
 			return err
 		}
-		b, err := s.getTx(ctx, tx, blockedBy)
-		if err != nil {
-			return err
+		if up {
+			return errf(CodeConflict, HierarchyDepMessage)
 		}
-		if err := s.orchestratorScope(ctx, tx, by, a); err != nil {
-			return err
-		}
-		if a.ID == b.ID {
-			return errf(CodeConflict, CycleMessage)
-		}
-		for _, pair := range [][2]string{{a.ID, b.ID}, {b.ID, a.ID}} {
-			up, err := isAncestor(ctx, tx, pair[0], pair[1])
-			if err != nil {
-				return err
-			}
-			if up {
-				return errf(CodeConflict, HierarchyDepMessage)
-			}
-		}
-		cycle, err := reachable(ctx, tx, b.ID, a.ID)
-		if err != nil {
-			return err
-		}
-		if cycle {
-			return errf(CodeConflict, CycleMessage)
-		}
-		res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO item_deps (item_id, blocked_by_id, created_at) VALUES (?, ?, ?)`,
-			a.ID, b.ID, db.Millis(s.Now()))
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return nil
-		}
-		return s.changed(ctx, tx, a)
-	})
+	}
+	cycle, err := reachable(ctx, tx, b.ID, a.ID)
+	if err != nil {
+		return err
+	}
+	if cycle {
+		return errf(CodeConflict, CycleMessage)
+	}
+	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO item_deps (item_id, blocked_by_id, created_at) VALUES (?, ?, ?)`,
+		a.ID, b.ID, db.Millis(s.Now()))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	return s.changedBoth(ctx, tx, a, b)
 }
 
 func (s *Store) RemoveDep(ctx context.Context, key, blockedBy string, by Actor) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
-		a, err := s.getTx(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		b, err := s.getTx(ctx, tx, blockedBy)
-		if err != nil {
-			return err
-		}
-		if err := s.orchestratorScope(ctx, tx, by, a); err != nil {
-			return err
-		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM item_deps WHERE item_id = ? AND blocked_by_id = ?`, a.ID, b.ID)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return nil
-		}
-		return s.changed(ctx, tx, a)
-	})
+	return s.write(ctx, func(tx *sql.Tx) error { return s.RemoveDepTx(ctx, tx, key, blockedBy, by) })
+}
+
+// RemoveDepTx is RemoveDep on a transaction the caller owns (mirrors
+// AddDepTx). Like AddDepTx, it does not wake SSE subscribers itself: the
+// caller commits its own tx and is responsible for calling Events.Notify()
+// after that commit.
+func (s *Store) RemoveDepTx(ctx context.Context, tx *sql.Tx, key, blockedBy string, by Actor) error {
+	a, err := s.getTx(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	b, err := s.getTx(ctx, tx, blockedBy)
+	if err != nil {
+		return err
+	}
+	if err := s.orchestratorScope(ctx, tx, by, a); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM item_deps WHERE item_id = ? AND blocked_by_id = ?`, a.ID, b.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	return s.changedBoth(ctx, tx, a, b)
+}
+
+// changedBoth announces an edge change on both items; a cross-root edge changes
+// the other root's detail panel and graph too, so its tree must hear about it.
+func (s *Store) changedBoth(ctx context.Context, tx *sql.Tx, a, b Item) error {
+	if err := s.changed(ctx, tx, a); err != nil || a.RootID == b.RootID {
+		return err
+	}
+	return s.changed(ctx, tx, b)
 }
 
 // isAncestor reports whether anc is a strict ancestor of id.
@@ -212,7 +234,9 @@ func (s *Store) Graph(ctx context.Context, key, scope string, hops int) (Graph, 
 					}
 				}
 			}
-			frontier = next
+			if frontier = next; len(frontier) == 0 {
+				break // nothing new to visit: a huge ?hops= must not spin
+			}
 		}
 	default:
 		return Graph{}, errf(CodeBadRequest, "scope must be root or neighbourhood.")

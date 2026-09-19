@@ -1,0 +1,13 @@
+{
+  "id": "repo_notes",
+  "name": "notes",
+  "path": "/Users/alex/.config/notes",
+  "remote_url": null,
+  "remote_owner": null,
+  "default_branch": "main",
+  "source": "manual",
+  "groups": [],
+  "missing": false,
+  "dirty": false,
+  "last_used_at": null
+}

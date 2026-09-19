@@ -1,0 +1,15 @@
+{
+  "request_id": "4B1D6C8E-2F55-4E47-9A51-0C7B0D3F6A10",
+  "name": "Investigate login crash",
+  "intent": "debug",
+  "repos": [
+    "repo_chat"
+  ],
+  "agent": "claude",
+  "model": "opus",
+  "advisor": {
+    "agent": "claude",
+    "model": "fable"
+  },
+  "request": "Users see a crash after the second login attempt."
+}

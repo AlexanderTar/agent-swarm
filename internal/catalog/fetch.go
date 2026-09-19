@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
 type Fetched struct {
@@ -32,7 +32,7 @@ func fetched(ms []CatalogModel, def, source string) Fetched {
 }
 
 type Fetcher interface {
-	Kind() runtime.AgentKind
+	Kind() kinds.AgentKind
 	Version(ctx context.Context) (string, error)
 	Fetch(ctx context.Context) (Fetched, error)
 }
@@ -70,7 +70,7 @@ type ClaudeFetcher struct {
 	User    string
 }
 
-func (f *ClaudeFetcher) Kind() runtime.AgentKind { return runtime.Claude }
+func (f *ClaudeFetcher) Kind() kinds.AgentKind { return kinds.Claude }
 
 func (f *ClaudeFetcher) Version(ctx context.Context) (string, error) {
 	return versionOf(ctx, f.Run, "claude")
@@ -161,7 +161,7 @@ type CodexFetcher struct {
 	Timeout   time.Duration
 }
 
-func (f *CodexFetcher) Kind() runtime.AgentKind { return runtime.Codex }
+func (f *CodexFetcher) Kind() kinds.AgentKind { return kinds.Codex }
 
 func (f *CodexFetcher) Version(ctx context.Context) (string, error) {
 	return versionOf(ctx, f.Run, "codex")
@@ -273,7 +273,7 @@ type AgyFetcher struct {
 	SettingsFile string
 }
 
-func (f *AgyFetcher) Kind() runtime.AgentKind { return runtime.Agy }
+func (f *AgyFetcher) Kind() kinds.AgentKind { return kinds.Agy }
 
 func (f *AgyFetcher) Version(ctx context.Context) (string, error) {
 	return versionOf(ctx, f.Run, "agy")
@@ -291,7 +291,7 @@ func (f *AgyFetcher) Fetch(ctx context.Context) (Fetched, error) {
 
 type CursorFetcher struct{ Run execx.Runner }
 
-func (f *CursorFetcher) Kind() runtime.AgentKind { return runtime.Cursor }
+func (f *CursorFetcher) Kind() kinds.AgentKind { return kinds.Cursor }
 
 func (f *CursorFetcher) Version(ctx context.Context) (string, error) {
 	return versionOf(ctx, f.Run, "cursor-agent")

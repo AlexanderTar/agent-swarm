@@ -4,11 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
@@ -93,7 +95,7 @@ func TestBootstrapIsLoopbackOnly(t *testing.T) {
 		e.s.Handler().ServeHTTP(rec, req)
 		wantErr(t, rec.Code, rec.Body.Bytes(), 401, "unauthorized", "Bootstrap is only available on this Mac.")
 	}
-	for _, host := range []string{"localhost:7777", "[::1]:7777", "127.0.0.1"} {
+	for _, host := range []string{"localhost:7777", "[::1]:7777", "127.0.0.1", "localhost", "[::1]"} {
 		req := httptest.NewRequest("GET", "/api/bootstrap", nil)
 		req.RemoteAddr, req.Host = "[::1]:5000", host
 		rec := httptest.NewRecorder()
@@ -125,17 +127,69 @@ func TestErrorEnvelope(t *testing.T) {
 		{&kb.NotFoundError{Slug: "x"}, 404, "not_found", "No document x.", ""},
 		{repos.ErrNotRepo, 422, "bad_request", "No git repository found in this folder.", ""},
 		{kb.ErrUnavailable, 503, "internal", "Search unavailable: run `ollama pull qwen3-embedding:0.6b`", ""},
-		{&items.Error{Code: "mystery", Message: "Odd."}, 500, "mystery", "Odd.", ""},
+		{&items.Error{Code: "mystery", Message: "Odd."}, 500, "internal", "Odd.", ""},
 		{errors.New("disk on fire"), 500, "internal", "Something went wrong.", ""},
 	}
+	var logged []string
+	s := New(Deps{Token: "t", Run: (&execx.Fake{}).Runner(),
+		Log: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }})
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
-		writeErr(rec, c.err)
+		s.writeErr(rec, c.err)
 		b := decode[errBody](t, rec.Body.Bytes())
 		if rec.Code != c.status || b.Error.Code != c.code || b.Error.Message != c.msg || b.Error.Reason != c.reason ||
 			rec.Header().Get("Content-Type") != "application/json" {
 			t.Errorf("%v → %d %s", c.err, rec.Code, rec.Body.String())
 		}
+	}
+	if len(logged) != 2 || !strings.Contains(logged[0], "mystery") || !strings.Contains(logged[1], "disk on fire") {
+		t.Errorf("logged = %q, want only the two unmapped errors", logged)
+	}
+}
+
+func TestEmptyTokenNeverAuthenticates(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("New accepted an empty daemon token")
+		}
+	}()
+	// a Server built without New (or a zeroed token) still refuses an empty bearer and never bootstraps ""
+	s := &Server{Deps: Deps{Log: t.Logf}}
+	for _, rt := range []route{{"GET", "/api/events", authDaemon, s.events}, {"GET", "/api/bootstrap", authLoopback, s.bootstrap}} {
+		for _, auth := range []string{"", "Bearer ", "Bearer"} {
+			req := httptest.NewRequest("GET", rt.pattern, nil)
+			req.RemoteAddr, req.Host = "127.0.0.1:5000", "127.0.0.1"
+			if auth != "" {
+				req.Header.Set("Authorization", auth)
+			}
+			rec := httptest.NewRecorder()
+			s.wrap(rt)(rec, req)
+			if rec.Code == 200 || strings.Contains(rec.Body.String(), `"token"`) {
+				t.Errorf("%s with %q = %d %s", rt.pattern, auth, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	New(Deps{})
+}
+
+func TestWebHandlerServesNonAPIPaths(t *testing.T) {
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "board "+r.URL.Path)
+	})
+	e := newEnv(t, func(d *Deps) { d.Web = web })
+	for _, p := range []string{"/", "/index.html", "/assets/app.js", "/apiary"} {
+		status, body := e.call("GET", p, nil, "")
+		if status != 200 || string(body) != "board "+p {
+			t.Errorf("GET %s = %d %s", p, status, body)
+		}
+	}
+	for _, p := range []string{"/api", "/api/nope"} {
+		status, body := e.api("GET", p, nil)
+		wantErr(t, status, body, 404, "not_found", "Unknown API route.")
+	}
+	status, body := e.api("GET", "/api/health", nil)
+	if status != 200 || !strings.Contains(string(body), `"ok":true`) {
+		t.Errorf("health with Web = %d %s", status, body)
 	}
 }
 
@@ -173,8 +227,8 @@ func TestSessionAuth(t *testing.T) {
 	live := seedSessionToken(t, e, "live-token", "running")
 	seedSessionToken(t, e, "old-token", "completed")
 	h := e.s.wrap(route{method: "GET", pattern: "/hook/x", auth: authSession, h: func(w http.ResponseWriter, r *http.Request) {
-		id, _ := e.s.sessionAuth(r)
-		w.Write([]byte(id))
+		c, _ := e.s.sessionAuth(r)
+		w.Write([]byte(c.SessionID))
 	}})
 	for token, want := range map[string]int{"live-token": 200, "old-token": 401, daemonToken: 401, "": 401} {
 		req := httptest.NewRequest("POST", "/hook/x", nil)

@@ -1,0 +1,68 @@
+{
+  "enabled_agents": [
+    "claude",
+    "codex",
+    "agy"
+  ],
+  "roles": {
+    "orchestrator": {
+      "agent": "claude",
+      "model": "opus"
+    },
+    "coder": {
+      "agent": "claude",
+      "model": "sonnet"
+    },
+    "reviewer": {
+      "agent": "codex",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "ui_reviewer": {
+      "agent": "claude",
+      "model": "opus"
+    },
+    "researcher": {
+      "agent": "claude",
+      "model": "sonnet"
+    },
+    "debugger": {
+      "agent": "claude",
+      "model": "opus"
+    },
+    "mechanical": {
+      "agent": "claude",
+      "model": "haiku"
+    },
+    "advisor": {
+      "agent": "claude",
+      "model": "fable"
+    }
+  },
+  "notifications": {
+    "info": {
+      "center": true,
+      "sound": false
+    },
+    "attention": {
+      "center": true,
+      "sound": true
+    },
+    "action": {
+      "center": true,
+      "sound": true
+    }
+  },
+  "max_orchestrators": 3,
+  "max_agents": 8,
+  "max_agents_per_root": 4,
+  "scan_excludes": [
+    "~/Library",
+    "~/.Trash",
+    "~/Downloads"
+  ],
+  "scan_interval_sec": 21600,
+  "menubar_compact": false,
+  "usage_poll_sec": 300,
+  "pause_deadline_sec": 120
+}

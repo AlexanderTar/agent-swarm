@@ -125,6 +125,7 @@ CREATE TABLE agents (
   advisor_mode    TEXT CHECK (advisor_mode IN ('native','simulated')),
   brief           TEXT NOT NULL,
   state           TEXT NOT NULL CHECK (state IN ('queued','active','finished','acknowledged')),
+  preflight_error TEXT, -- set only when the agent never spawned (contracts §3.2 AgentNode)
   created_at      INTEGER NOT NULL,
   finished_at     INTEGER
 );
@@ -147,6 +148,7 @@ CREATE TABLE sessions (
   cwd_kind            TEXT NOT NULL CHECK (cwd_kind IN ('neutral','worktree')),
   pause_scope         TEXT CHECK (pause_scope IN ('session','subtree')),
   pause_deadline_at   INTEGER,
+  pause_root          INTEGER NOT NULL DEFAULT 0,
   stop_blocks         INTEGER NOT NULL DEFAULT 0,
   needs_compaction_notice INTEGER NOT NULL DEFAULT 0,
   last_seen_at        INTEGER,

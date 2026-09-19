@@ -1,0 +1,35 @@
+{
+  "id": "agt_02",
+  "name": "login-form-coder",
+  "kind": "claude",
+  "model": "sonnet",
+  "effort": null,
+  "role": "coder",
+  "item_key": "TASK-101",
+  "item_title": "Login form",
+  "root_key": "EPIC-12",
+  "parent_name": "auth-epic-orchestrator",
+  "advisor": {
+    "kind": "claude",
+    "model": "fable",
+    "effort": null,
+    "mode": "native"
+  },
+  "state": "active",
+  "session": {
+    "id": "ses_02",
+    "state": "running",
+    "attempt": 1,
+    "generation": 1,
+    "waiting": false,
+    "stale": false,
+    "tmux_alive": true,
+    "started_at": 1789644720000,
+    "ended_at": null
+  },
+  "preflight_error": null,
+  "created_at": 1789641120000,
+  "finished_at": null,
+  "children": [],
+  "finished": []
+}

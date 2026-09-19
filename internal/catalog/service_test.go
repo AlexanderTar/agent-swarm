@@ -15,11 +15,11 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
 type fakeFetcher struct {
-	kind    runtime.AgentKind
+	kind    kinds.AgentKind
 	version string
 	verErr  error
 	models  []CatalogModel
@@ -27,7 +27,7 @@ type fakeFetcher struct {
 	fetches int
 }
 
-func (f *fakeFetcher) Kind() runtime.AgentKind { return f.kind }
+func (f *fakeFetcher) Kind() kinds.AgentKind { return f.kind }
 func (f *fakeFetcher) Version(context.Context) (string, error) {
 	return f.version, f.verErr
 }
@@ -53,14 +53,14 @@ var m1 = []CatalogModel{{ID: "m1", Label: "M1", Efforts: []string{"low", "high"}
 var m2 = []CatalogModel{{ID: "m2", Label: "M2", Efforts: []string{}, EffortEncoding: "flag"}}
 
 func TestRefreshRules(t *testing.T) {
-	codex := &fakeFetcher{kind: runtime.Codex, version: "0.154.0", models: m1}
+	codex := &fakeFetcher{kind: kinds.Codex, version: "0.154.0", models: m1}
 	s, c := newCatalog(t, codex)
 	entries, err := s.Refresh(bg, false)
 	if err != nil || codex.fetches != 1 {
 		t.Fatalf("first refresh: %v, fetches %d", err, codex.fetches)
 	}
 	e := entries[0]
-	if e.Kind != runtime.Codex || !e.Installed || e.Version != "0.154.0" || e.DefaultModel != "m1" ||
+	if e.Kind != kinds.Codex || !e.Installed || e.Version != "0.154.0" || e.DefaultModel != "m1" ||
 		e.CatalogSource != "codex source" || e.CatalogStale || e.CatalogError != "" || !e.CatalogFetchedAt.Equal(c.t) ||
 		len(e.Models) != 1 || e.AuthOK || e.Superpowers {
 		t.Fatalf("entry = %+v", e)
@@ -121,7 +121,7 @@ func TestRefreshRules(t *testing.T) {
 }
 
 func TestEntryJSON(t *testing.T) {
-	b, err := json.Marshal(AgentCatalogEntry{Kind: runtime.Claude, CatalogFetchedAt: time.UnixMilli(1234).UTC()})
+	b, err := json.Marshal(AgentCatalogEntry{Kind: kinds.Claude, CatalogFetchedAt: time.UnixMilli(1234).UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,9 +142,9 @@ func TestEntryJSON(t *testing.T) {
 }
 
 func TestFallbacksAndNotInstalled(t *testing.T) {
-	claude := &fakeFetcher{kind: runtime.Claude, version: "2.1.274", err: errors.New("api.anthropic.com returned 401")}
-	agy := &fakeFetcher{kind: runtime.Agy, version: "1.2.5", err: errors.New("no models in output")}
-	cursor := &fakeFetcher{kind: runtime.Cursor, verErr: fmt.Errorf("cursor-agent: %w", exec.ErrNotFound)}
+	claude := &fakeFetcher{kind: kinds.Claude, version: "2.1.274", err: errors.New("api.anthropic.com returned 401")}
+	agy := &fakeFetcher{kind: kinds.Agy, version: "1.2.5", err: errors.New("no models in output")}
+	cursor := &fakeFetcher{kind: kinds.Cursor, verErr: fmt.Errorf("cursor-agent: %w", exec.ErrNotFound)}
 	s, _ := newCatalog(t, claude, agy, cursor)
 	entries, _ := s.Refresh(bg, false)
 	if len(entries) != 3 {
@@ -160,17 +160,17 @@ func TestFallbacksAndNotInstalled(t *testing.T) {
 	if e := entries[2]; e.Installed || e.Version != "" || cursor.fetches != 0 {
 		t.Errorf("cursor = %+v", e)
 	}
-	if got := s.Installed(bg); !slices.Equal(got, []runtime.AgentKind{runtime.Claude, runtime.Agy}) {
+	if got := s.Installed(bg); !slices.Equal(got, []kinds.AgentKind{kinds.Claude, kinds.Agy}) {
 		t.Errorf("Installed = %v", got)
 	}
-	ms, def, err := s.ModelsFor(bg, runtime.Claude)
+	ms, def, err := s.ModelsFor(bg, kinds.Claude)
 	if err != nil || len(ms) != 4 || def != "" {
 		t.Errorf("ModelsFor(claude) = %v %q %v", ms, def, err)
 	}
-	if ms, _, err := s.ModelsFor(bg, runtime.Codex); err != nil || ms != nil {
+	if ms, _, err := s.ModelsFor(bg, kinds.Codex); err != nil || ms != nil {
 		t.Errorf("unknown kind = %v %v", ms, err)
 	}
-	fresh := &fakeFetcher{kind: runtime.Codex, version: "1", models: m2}
+	fresh := &fakeFetcher{kind: kinds.Codex, version: "1", models: m2}
 	s2, _ := newCatalog(t, fresh)
 	if entries, _ := s2.Entries(bg); entries[0].Installed || entries[0].Models == nil {
 		t.Errorf("never refreshed = %+v", entries[0])
@@ -198,7 +198,7 @@ func TestTokenIsNeverPersisted(t *testing.T) {
 }
 
 func TestLoopRefreshesHourly(t *testing.T) {
-	codex := &fakeFetcher{kind: runtime.Codex, version: "1", models: m1}
+	codex := &fakeFetcher{kind: kinds.Codex, version: "1", models: m1}
 	s, _ := newCatalog(t, codex)
 	ticks := make(chan time.Time)
 	waiting := make(chan struct{})
@@ -224,7 +224,7 @@ func TestLoopRefreshesHourly(t *testing.T) {
 }
 
 func TestStaleAtExactlyMaxAge(t *testing.T) {
-	codex := &fakeFetcher{kind: runtime.Codex, version: "1", models: m1}
+	codex := &fakeFetcher{kind: kinds.Codex, version: "1", models: m1}
 	s, c := newCatalog(t, codex)
 	s.Refresh(bg, false)
 	c.t = c.t.Add(MaxAge)
@@ -238,7 +238,7 @@ func TestStaleAtExactlyMaxAge(t *testing.T) {
 }
 
 func TestVersionFailureOtherThanMissingKeepsInstalled(t *testing.T) {
-	codex := &fakeFetcher{kind: runtime.Codex, version: "1", models: m1}
+	codex := &fakeFetcher{kind: kinds.Codex, version: "1", models: m1}
 	s, _ := newCatalog(t, codex)
 	s.Refresh(bg, false)
 	codex.verErr = errors.New("codex: signal: killed")
@@ -251,11 +251,11 @@ func TestVersionFailureOtherThanMissingKeepsInstalled(t *testing.T) {
 		len(e.Models) != 1 || codex.fetches != 1 {
 		t.Fatalf("entry = %+v, fetches %d", e, codex.fetches)
 	}
-	if got := s.Installed(bg); !slices.Equal(got, []runtime.AgentKind{runtime.Codex}) {
+	if got := s.Installed(bg); !slices.Equal(got, []kinds.AgentKind{kinds.Codex}) {
 		t.Fatalf("Installed = %v", got)
 	}
 	// never seen before and --version fails for a reason other than a missing binary
-	agy := &fakeFetcher{kind: runtime.Agy, verErr: errors.New("agy: exit status 2: boom")}
+	agy := &fakeFetcher{kind: kinds.Agy, verErr: errors.New("agy: exit status 2: boom")}
 	s2, _ := newCatalog(t, agy)
 	entries, _ = s2.Refresh(bg, false)
 	if e := entries[0]; !e.Installed || e.CatalogError != "agy: exit status 2: boom" || agy.fetches != 0 {
@@ -269,7 +269,7 @@ func TestVersionFailureOtherThanMissingKeepsInstalled(t *testing.T) {
 }
 
 func TestCorruptModelsJSON(t *testing.T) {
-	codex := &fakeFetcher{kind: runtime.Codex, version: "1", models: m1}
+	codex := &fakeFetcher{kind: kinds.Codex, version: "1", models: m1}
 	s, _ := newCatalog(t, codex)
 	var logged []string
 	s.Log = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
@@ -285,14 +285,14 @@ func TestCorruptModelsJSON(t *testing.T) {
 		e.Models == nil || len(e.Models) != 0 {
 		t.Fatalf("entry = %+v", e)
 	}
-	ms, def, err := s.ModelsFor(bg, runtime.Codex)
+	ms, def, err := s.ModelsFor(bg, kinds.Codex)
 	if ms != nil || def != "" || err != nil || len(logged) != 1 || !strings.Contains(logged[0], "codex") {
 		t.Fatalf("ModelsFor = %v %q %v, logged %q", ms, def, err, logged)
 	}
 }
 
 func TestLoopLogsRefreshErrors(t *testing.T) {
-	codex := &fakeFetcher{kind: runtime.Codex, version: "1", models: m1}
+	codex := &fakeFetcher{kind: kinds.Codex, version: "1", models: m1}
 	s, _ := newCatalog(t, codex)
 	logged := make(chan string, 4)
 	s.Log = func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }
@@ -315,5 +315,13 @@ func TestLoopLogsRefreshErrors(t *testing.T) {
 		}
 	default:
 		t.Fatal("refresh error was not logged")
+	}
+}
+
+func TestEntriesWithoutFetchersIsEmptyNotNull(t *testing.T) {
+	s, _ := newCatalog(t)
+	got, err := s.Entries(context.Background())
+	if err != nil || got == nil {
+		t.Fatalf("Entries = %#v, %v", got, err)
 	}
 }

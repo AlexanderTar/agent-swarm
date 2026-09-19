@@ -1,0 +1,251 @@
+{
+  "_comment": "Menubar contract fixtures (spec \u00a723.3 row 23). Shapes follow ~/.superpowers/specs/2026-09-17-agent-swarm-contracts.md. P2's Go test decodes every JSON entry with json.Decoder.DisallowUnknownFields into the wire type the route uses, re-encodes it, and checks that every key path in the fixture appears in the Go output. Timestamps are integer milliseconds. 'direction' is 'request' (menubar to daemon), 'response' (daemon to menubar) or 'event' (SSE). 'status' is the HTTP status the route returns for that case.",
+  "fixtures": [
+    {
+      "file": "state.json",
+      "method": "GET",
+      "path": "/api/state",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "state-empty.json",
+      "method": "GET",
+      "path": "/api/state",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "notifications.json",
+      "method": "GET",
+      "path": "/api/notifications?limit=50",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/notifications/{id}/read",
+      "direction": "request"
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/notifications/read-all",
+      "direction": "request"
+    },
+    {
+      "file": "read-all.json",
+      "method": "POST",
+      "path": "/api/notifications/read-all",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "usage.json",
+      "method": "GET",
+      "path": "/api/usage",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "usage-refresh-request.json",
+      "method": "POST",
+      "path": "/api/usage/refresh",
+      "direction": "request"
+    },
+    {
+      "file": "settings.json",
+      "method": "GET",
+      "path": "/api/settings",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "settings.json",
+      "method": "PUT",
+      "path": "/api/settings",
+      "direction": "request"
+    },
+    {
+      "file": "settings.json",
+      "method": "PUT",
+      "path": "/api/settings",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "catalog.json",
+      "method": "GET",
+      "path": "/api/catalog",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/catalog/refresh",
+      "direction": "request"
+    },
+    {
+      "file": "catalog.json",
+      "method": "POST",
+      "path": "/api/catalog/refresh",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "repos.json",
+      "method": "GET",
+      "path": "/api/repos?q=",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "repo-add-request.json",
+      "method": "POST",
+      "path": "/api/repos",
+      "direction": "request"
+    },
+    {
+      "file": "repo.json",
+      "method": "POST",
+      "path": "/api/repos",
+      "direction": "response",
+      "status": 201
+    },
+    {
+      "file": "error-not-repo.json",
+      "method": "POST",
+      "path": "/api/repos",
+      "direction": "response",
+      "status": 422
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/repos/rescan",
+      "direction": "request"
+    },
+    {
+      "file": "rescan.json",
+      "method": "POST",
+      "path": "/api/repos/rescan",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "spike-request.json",
+      "method": "POST",
+      "path": "/api/spikes",
+      "direction": "request"
+    },
+    {
+      "file": "spike-response.json",
+      "method": "POST",
+      "path": "/api/spikes",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "spike-response-preflight.json",
+      "method": "POST",
+      "path": "/api/spikes",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "pause-request.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/pause",
+      "direction": "request"
+    },
+    {
+      "file": "agent.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/pause",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/resume",
+      "direction": "request"
+    },
+    {
+      "file": "error-conflict.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/resume",
+      "direction": "response",
+      "status": 409
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/cancel",
+      "direction": "request"
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/ack",
+      "direction": "request"
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/retry",
+      "direction": "request"
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/agents/{name}/terminal-opened",
+      "direction": "request"
+    },
+    {
+      "file": "empty-request.json",
+      "method": "POST",
+      "path": "/api/pause-all",
+      "direction": "request"
+    },
+    {
+      "file": "pause-all.json",
+      "method": "POST",
+      "path": "/api/pause-all",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "answer-request.json",
+      "method": "POST",
+      "path": "/api/requests/{id}/answer",
+      "direction": "request"
+    },
+    {
+      "file": "request.json",
+      "method": "POST",
+      "path": "/api/requests/{id}/answer",
+      "direction": "response",
+      "status": 200
+    },
+    {
+      "file": "terminal-open.json",
+      "event": "terminal.open",
+      "direction": "event"
+    },
+    {
+      "file": "events/stream.sse",
+      "method": "GET",
+      "path": "/api/events",
+      "direction": "event"
+    },
+    {
+      "file": "events/reset.sse",
+      "method": "GET",
+      "path": "/api/events",
+      "direction": "event"
+    }
+  ]
+}

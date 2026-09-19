@@ -139,9 +139,8 @@ func TestScanStoresReposAndGroups(t *testing.T) {
 	if s.ScannedAt().IsZero() || s.Scanning() {
 		t.Fatal("scan state not reported")
 	}
-	evs, _ := s.Events.After(bgc, 0, 10)
-	if len(evs) != 1 || evs[0].Type != events.ReposChanged {
-		t.Fatalf("events = %+v", evs)
+	if got := reposEvents(t, s); len(got) != 2 || got[0] != `{"scanning":true}` {
+		t.Fatalf("events = %v", got)
 	}
 }
 
@@ -179,6 +178,9 @@ func TestSearchRanksAndChecksDirty(t *testing.T) {
 	recent, _ := s.Recent(bgc, 5)
 	if !slices.Equal(names(recent), []string{"endurio-app"}) || recent[0].LastUsedAt == 0 {
 		t.Fatalf("recent = %+v", recent)
+	}
+	if none, err := s.Recent(bgc, -1); err != nil || len(none) != 0 {
+		t.Fatalf("Recent(-1) = %+v, %v", none, err)
 	}
 }
 
@@ -316,28 +318,109 @@ func TestLoopLogsFailedScan(t *testing.T) {
 	ctx, cancel := context.WithCancel(bgc)
 	defer cancel()
 	go s.Loop(ctx, func(context.Context) time.Duration { return time.Hour })
-	select {
-	case msg := <-logged:
-		if !strings.HasPrefix(msg, "repos: scheduled scan failed: ") {
-			t.Fatalf("log = %q", msg)
+	deadline := time.After(2 * time.Second)
+	for { // the closed database fails the repos.changed publish first
+		select {
+		case msg := <-logged:
+			if strings.HasPrefix(msg, "repos: scheduled scan failed: ") {
+				return
+			}
+			if !strings.HasPrefix(msg, "repos: publish repos.changed failed: ") {
+				t.Fatalf("log = %q", msg)
+			}
+		case <-deadline:
+			t.Fatal("failed scan was not logged")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("failed scan was not logged")
 	}
 }
 
-func TestScanPublishesEvenIfCallerCancelled(t *testing.T) {
+// Cancelling the service context stops the scan: no walk, no git, nothing stored,
+// and no result frame (the start frame goes out before the cancel lands).
+func TestCancelledScanStopsAndPublishesNoResults(t *testing.T) {
+	home := realTemp(t)
+	for i := range 50 {
+		mkRepo(t, home, fmt.Sprintf("GitHub/r%d", i))
+	}
+	g := &fakeGit{}
+	s := newService(t, home, g)
+	ctx, cancel := context.WithCancel(bgc)
+	s.Ctx = ctx
+	s.Excludes = func(context.Context) []string { cancel(); return nil } // cancels as the scan starts
+	start := time.Now()
+	if _, err := s.Scan(bgc); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("cancelled scan took %v", d)
+	}
+	if n := g.calls.Load(); n != 0 {
+		t.Fatalf("git calls = %d", n)
+	}
+	all, _ := s.All(bgc)
+	evs := reposEvents(t, s)
+	if len(all) != 0 || len(evs) != 1 || evs[0] != `{"scanning":true}` || !s.ScannedAt().IsZero() || s.Scanning() {
+		t.Fatalf("repos = %v events = %v scannedAt = %v", names(all), evs, s.ScannedAt())
+	}
+}
+
+func TestWalkStopsWhenCancelled(t *testing.T) {
+	home := realTemp(t)
+	mkRepo(t, home, "GitHub/a")
+	ctx, cancel := context.WithCancel(bgc)
+	cancel()
+	if w, err := walk(ctx, home, nil); !errors.Is(err, context.Canceled) || len(w.Repos) != 0 {
+		t.Fatalf("walk = %+v %v", w, err)
+	}
+}
+
+// Once results are stored, a late cancel still publishes them (Task 10 ruling).
+func TestScanPublishesStoredResultsDespiteLateCancel(t *testing.T) {
 	home := realTemp(t)
 	mkRepo(t, home, "GitHub/a")
 	s := newService(t, home, &fakeGit{})
 	ctx, cancel := context.WithCancel(bgc)
-	cancel()
-	if _, err := s.Scan(ctx); err != nil {
+	defer cancel()
+	s.Ctx = ctx
+	base, calls := s.Now, 0
+	s.Now = func() time.Time { // 1st call stamps the rows, 2nd follows the commit
+		if calls++; calls == 2 {
+			cancel()
+		}
+		return base()
+	}
+	if _, err := s.Scan(bgc); err != nil {
 		t.Fatal(err)
 	}
-	evs, _ := s.Events.After(bgc, 0, 10)
-	if len(evs) != 1 || evs[0].Type != events.ReposChanged {
-		t.Fatalf("events = %+v", evs)
+	if got := reposEvents(t, s); len(got) != 2 || got[0] != `{"scanning":true}` {
+		t.Fatalf("events = %v", got)
+	}
+}
+
+// The caller that started a scan only stops waiting when it cancels; the scan finishes for everyone.
+func TestLeaderCancelDoesNotStopTheSharedScan(t *testing.T) {
+	home := realTemp(t)
+	mkRepo(t, home, "GitHub/a")
+	g := &fakeGit{gate: make(chan struct{}), start: make(chan struct{})}
+	s := newService(t, home, g)
+	leaderCtx, cancelLeader := context.WithCancel(bgc)
+	leader := make(chan error, 1)
+	go func() { _, err := s.Scan(leaderCtx); leader <- err }()
+	<-g.start
+	joiner := make(chan ScanStats, 1)
+	go func() { st, _ := s.Scan(bgc); joiner <- st }()
+	cancelLeader()
+	if err := <-leader; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader err = %v", err)
+	}
+	close(g.gate)
+	if st := <-joiner; st.Found != 1 {
+		t.Fatalf("joiner stats = %+v", st)
+	}
+	if got := reposEvents(t, s); len(got) != 2 || got[0] != `{"scanning":true}` {
+		t.Fatalf("events = %v", got)
+	}
+	if all, _ := s.All(bgc); len(all) != 1 {
+		t.Fatalf("repos = %v", names(all))
 	}
 }
 
@@ -356,4 +439,68 @@ func TestScanJoinerHonoursItsContext(t *testing.T) {
 	}
 	close(g.gate)
 	<-done
+}
+
+// reposEvents returns the payload of every published repos.changed, in seq order.
+func reposEvents(t *testing.T, s *Service) []string {
+	t.Helper()
+	evs, err := s.Events.After(bgc, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range evs {
+		if e.Type != events.ReposChanged {
+			t.Fatalf("unexpected event %+v", e)
+		}
+		out = append(out, string(e.Payload))
+	}
+	return out
+}
+
+// §17.2 shows "Scanning your home folder…", so a board that is already open
+// has to hear that a scheduled or triggered scan started.
+func TestScanPublishesStartAndEndFrames(t *testing.T) {
+	home := realTemp(t)
+	mkRepo(t, home, "GitHub/a")
+	s := newService(t, home, &fakeGit{})
+	if _, err := s.Scan(bgc); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`{"scanning":true}`, `{"found":1,"scanning":false}`}
+	if got := reposEvents(t, s); !slices.Equal(got, want) {
+		t.Fatalf("frames = %v, want %v", got, want)
+	}
+}
+
+// One repo on an unmounted path must not hold the single SQLite writer (L12).
+func TestScanStatsPathsOutsideTheTransaction(t *testing.T) {
+	home := realTemp(t)
+	mkRepo(t, home, "GitHub/a")
+	s := newService(t, home, &fakeGit{})
+	if _, err := s.Scan(bgc); err != nil { // first scan stores the row to stat
+		t.Fatal(err)
+	}
+	block, entered := make(chan struct{}), make(chan struct{}, 1)
+	s.Stat = func(p string) (os.FileInfo, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-block
+		return os.Stat(p)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := s.Scan(bgc); done <- err }()
+	<-entered
+	ctx, cancel := context.WithTimeout(bgc, 2*time.Second)
+	defer cancel()
+	_, err := s.Events.Publish(ctx, events.ReposChanged, map[string]any{"scanning": true})
+	close(block)
+	if err != nil {
+		t.Fatalf("a write queued behind the stat loop: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }

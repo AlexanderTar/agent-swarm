@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-const ssePing = 25 * time.Second
-
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	cursor := r.Header.Get("Last-Event-ID")
 	if cursor == "" {
@@ -19,7 +17,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if !live {
 		n, err := strconv.ParseInt(cursor, 10, 64)
 		if err != nil || n < 0 {
-			writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "after must be an event sequence number."))
+			s.writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "after must be an event sequence number."))
 			return
 		}
 		after = n
@@ -30,7 +28,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if live { // read before the headers go out, so an event published right after connecting is not skipped
 		var err error
 		if after, err = s.Events.Latest(ctx); err != nil {
-			writeErr(w, err)
+			s.writeErr(w, err)
 			return
 		}
 	}
@@ -46,6 +44,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
+	// storeFailed logs a store error unless the client already left, then ends the stream.
+	storeFailed := func(err error) {
+		if ctx.Err() == nil {
+			s.Log("httpapi: events stream: %v", err)
+		}
+	}
 	flush := func() error {
 		rc.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
 		return rc.Flush()
@@ -53,6 +57,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	expired, err := s.Events.Expired(ctx, after)
 	if err != nil {
+		storeFailed(err)
 		return
 	}
 	if expired {
@@ -60,17 +65,19 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if after, err = s.Events.Latest(ctx); err != nil {
+			storeFailed(err)
 			return
 		}
 	}
 	if flush() != nil {
 		return
 	}
-	ping := time.NewTicker(ssePing)
+	ping := time.NewTicker(s.PingInterval)
 	defer ping.Stop()
 	for {
 		evs, err := s.Events.After(ctx, after, 500)
 		if err != nil {
+			storeFailed(err)
 			return
 		}
 		for _, e := range evs {
@@ -87,6 +94,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 		select {
 		case <-ctx.Done():
+			return
+		case <-s.done: // the daemon is shutting down
 			return
 		case <-wake:
 		case <-ping.C:

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +51,8 @@ func (e *env) stream(t *testing.T, query string, lastID string) (<-chan sseEvent
 				cur.typ = line[7:]
 			case strings.HasPrefix(line, "data: "):
 				cur.data = line[6:]
+			case line == ": ping":
+				ch <- sseEvent{typ: "ping"}
 			case line == "":
 				if cur.typ != "" {
 					ch <- cur
@@ -179,5 +182,59 @@ func TestSlowClientDoesNotBlockOthers(t *testing.T) {
 	_, err = io.Copy(io.Discard, slow)
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		t.Fatal("server kept the stalled stream open")
+	}
+}
+
+// A write after the connection sat idle past WriteTimeout must still go out:
+// each write sets a fresh deadline rather than extending an expired one.
+func TestWritesAfterIdleStillArrive(t *testing.T) {
+	e := newEnv(t, func(d *Deps) { d.WriteTimeout = 50 * time.Millisecond; d.PingInterval = 150 * time.Millisecond })
+	start, _ := e.events.Latest(bg)
+	ch, stop := e.stream(t, fmt.Sprintf("?after=%d", start), "")
+	defer stop()
+	for range 3 { // each ping follows an idle gap three times the write deadline
+		if ev := next(t, ch); ev.typ != "ping" {
+			t.Fatalf("want ping, got %+v", ev)
+		}
+	}
+	e.events.Publish(bg, events.ItemChanged, map[string]string{"key": "LATE-1"})
+	for {
+		ev := next(t, ch)
+		if ev.typ == "ping" {
+			continue
+		}
+		if ev.typ != "item.changed" || !strings.Contains(ev.data, "LATE-1") {
+			t.Fatalf("after idle = %+v", ev)
+		}
+		return
+	}
+}
+
+func TestStoreErrorsAreLoggedAndEndTheStream(t *testing.T) {
+	var mu sync.Mutex
+	var logged []string
+	e := newEnv(t, func(d *Deps) {
+		d.Log = func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			logged = append(logged, fmt.Sprintf(format, args...))
+		}
+	})
+	ch, stop := e.stream(t, "?after=0", "")
+	defer stop()
+	e.s.DB.Close()
+	e.events.Notify()
+	deadline := time.After(3 * time.Second)
+	for open := true; open; {
+		select {
+		case _, open = <-ch:
+		case <-deadline:
+			t.Fatal("stream stayed open after a store error")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logged) == 0 || !strings.Contains(logged[0], "events") {
+		t.Fatalf("logged = %q", logged)
 	}
 }

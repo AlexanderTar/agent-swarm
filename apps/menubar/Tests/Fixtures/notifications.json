@@ -1,0 +1,62 @@
+[
+  {
+    "id": "ntf_05",
+    "level": "action",
+    "kind": "request.question",
+    "title": "Answer needed",
+    "body": "TASK-101: Which validation library?",
+    "agent_name": "login-form-coder",
+    "item_key": "TASK-101",
+    "request_id": "req_question",
+    "read_at": null,
+    "created_at": 1789650120000
+  },
+  {
+    "id": "ntf_04",
+    "level": "attention",
+    "kind": "agent.crashed",
+    "title": "Agent crashed",
+    "body": "docs-fix-coder exited unexpectedly on TASK-7.",
+    "agent_name": "docs-fix-coder",
+    "item_key": "TASK-7",
+    "request_id": null,
+    "read_at": null,
+    "created_at": 1789651620000
+  },
+  {
+    "id": "ntf_03",
+    "level": "action",
+    "kind": "request.approve_section",
+    "title": "Section approval needed",
+    "body": "STORY-40: Review \"Session handling\".",
+    "agent_name": "auth-epic-orchestrator",
+    "item_key": "STORY-40",
+    "request_id": "req_section",
+    "read_at": null,
+    "created_at": 1789649520000
+  },
+  {
+    "id": "ntf_02",
+    "level": "info",
+    "kind": "item.created",
+    "title": "Epic ready",
+    "body": "SPIKE-2 produced EPIC-12: Authentication. Start an orchestrator when you're ready.",
+    "agent_name": null,
+    "item_key": "EPIC-12",
+    "request_id": null,
+    "read_at": null,
+    "created_at": 1789641120000
+  },
+  {
+    "id": "ntf_01",
+    "level": "info",
+    "kind": "agent.accepted",
+    "title": "Task accepted",
+    "body": "login-form-coder started TASK-101: Login form.",
+    "agent_name": "login-form-coder",
+    "item_key": "TASK-101",
+    "request_id": null,
+    "read_at": 1789648320000,
+    "created_at": 1789644720000
+  }
+]

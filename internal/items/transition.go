@@ -55,10 +55,9 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 	if err := s.setStatus(ctx, tx, &it, to); err != nil {
 		return Item{}, err
 	}
-	if to == Ready && (from == Done || from == Cancelled) {
-		// reopen: old acceptances and close approvals no longer count
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE item_id = ?
-			AND state IN ('open', 'approved') AND kind IN ('accept_epic', 'accept_fix', 'close_spike')`, it.ID); err != nil {
+	// reopen: old acceptances and close approvals no longer count; cancel: nothing is left to accept
+	if (to == Ready && (from == Done || from == Cancelled)) || to == Cancelled {
+		if err := s.staleAccepts(ctx, tx, it); err != nil {
 			return Item{}, err
 		}
 	}
@@ -66,6 +65,63 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 		return Item{}, err
 	}
 	return s.getByID(ctx, tx, it.ID)
+}
+
+// staleAccepts stales every live acceptance or approval request on it (P1 carry:
+// the spike approval kinds joined the list when their writers landed in P2).
+func (s *Store) staleAccepts(ctx context.Context, tx *sql.Tx, it Item) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind FROM requests WHERE item_id = ?
+		AND state IN ('open', 'approved') AND kind IN ('accept_epic', 'accept_fix', 'close_spike',
+		'approve_section', 'approve_plan', 'approve_report')`, it.ID)
+	if err != nil {
+		return err
+	}
+	var live [][2]string
+	for rows.Next() {
+		var id, kind string
+		if err := rows.Scan(&id, &kind); err != nil {
+			rows.Close()
+			return err
+		}
+		live = append(live, [2]string{id, kind})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range live {
+		if err := s.resolveStale(ctx, tx, r[0], r[1], it.Key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveStale stales one request and announces it; the board only invalidates
+// its inbox on request.* (contracts §5). Payload per R5: {id, kind, item, state}.
+func (s *Store) resolveStale(ctx context.Context, tx *sql.Tx, id, kind, itemKey string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE id = ?`, id); err != nil {
+		return err
+	}
+	payload, err := s.requestPayload(ctx, tx, id, kind, itemKey, "stale")
+	if err != nil {
+		return err
+	}
+	_, err = s.Events.Append(ctx, tx, events.RequestResolved, payload)
+	return err
+}
+
+// requestPayload prefers the injected full-Request builder (R5) and falls back to
+// the interim shape when it is unset.
+func (s *Store) requestPayload(ctx context.Context, tx *sql.Tx, id, kind, itemKey, state string) (any, error) {
+	if s.RequestPayload != nil {
+		return s.RequestPayload(ctx, tx, id)
+	}
+	m := map[string]string{"id": id, "kind": kind, "item": itemKey}
+	if state != "" {
+		m["state"] = state
+	}
+	return m, nil
 }
 
 func (s *Store) check(ctx context.Context, tx *sql.Tx, it Item, to Status, by Actor) error {
@@ -386,11 +442,7 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 	}
 	rows.Close()
 	for _, id := range staleIDs {
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE id = ?`, id); err != nil {
-			return err
-		}
-		if _, err := s.Events.Append(ctx, tx, events.RequestResolved,
-			map[string]string{"id": id, "kind": kind, "item": it.Key, "state": "stale"}); err != nil {
+		if err := s.resolveStale(ctx, tx, id, kind, it.Key); err != nil {
 			return err
 		}
 	}
@@ -435,8 +487,17 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 		VALUES (?, ?, ?, ?, 'open', ?, ?)`, id, kind, it.ID, prompt, string(binding), db.Millis(s.Now())); err != nil {
 		return err
 	}
-	_, err = s.Events.Append(ctx, tx, events.RequestOpened, map[string]string{"id": id, "kind": kind, "item": it.Key})
-	return err
+	payload, err := s.requestPayload(ctx, tx, id, kind, it.Key, "open")
+	if err != nil {
+		return err
+	}
+	if _, err := s.Events.Append(ctx, tx, events.RequestOpened, payload); err != nil {
+		return err
+	}
+	if s.RequestOpened != nil {
+		return s.RequestOpened(ctx, tx, id)
+	}
+	return nil
 }
 
 func (s *Store) reconcileSpike(ctx context.Context, tx *sql.Tx, it Item) error {

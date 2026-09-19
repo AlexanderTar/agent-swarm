@@ -234,6 +234,10 @@ func TestGet(t *testing.T) {
 	if _, err := x.Get(bg, "specs/missing"); !errors.As(err, &nf) || err.Error() != "No document specs/missing." {
 		t.Fatalf("missing = %v", err)
 	}
+	x.DB.Close()
+	if _, err := x.Get(bg, "specs/alpha"); err == nil || errors.As(err, &nf) {
+		t.Fatalf("db failure must not be NotFoundError: %v", err)
+	}
 }
 
 func TestWatchDebounces(t *testing.T) {

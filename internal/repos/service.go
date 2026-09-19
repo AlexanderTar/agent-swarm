@@ -54,7 +54,9 @@ type Service struct {
 	Now          func() time.Time
 	After        func(time.Duration) <-chan time.Time // nil means time.After
 	DirtyTimeout time.Duration                        // 0 means 2 s
+	Stat         func(string) (os.FileInfo, error)    // nil means os.Stat (missing detection)
 	Log          func(format string, args ...any)     // nil means no logging
+	Ctx          context.Context                      // bounds shared scans (daemon lifetime); nil means Background
 
 	mu        sync.Mutex
 	cur       *scanCall
@@ -68,37 +70,47 @@ type scanCall struct {
 	err   error
 }
 
-// Scan walks the home folder; a call made while a scan runs waits for it.
+// Scan walks the home folder. Scans are shared and run under s.Ctx, so a caller's
+// ctx only bounds its own wait: the scan finishes and publishes for everyone else.
 func (s *Service) Scan(ctx context.Context) (ScanStats, error) {
 	s.mu.Lock()
-	if c := s.cur; c != nil {
-		s.mu.Unlock()
-		select {
-		case <-c.done:
-			return c.stats, c.err
-		case <-ctx.Done():
-			return ScanStats{}, ctx.Err()
-		}
+	c := s.cur
+	if c == nil {
+		c = &scanCall{done: make(chan struct{})}
+		s.cur = c
+		go s.runScan(c)
 	}
-	c := &scanCall{done: make(chan struct{})}
-	s.cur = c
 	s.mu.Unlock()
+	select {
+	case <-c.done:
+		return c.stats, c.err
+	case <-ctx.Done():
+		return ScanStats{}, ctx.Err()
+	}
+}
 
-	ctx = context.WithoutCancel(ctx)
-	c.stats, c.err = s.scan(ctx)
+func (s *Service) runScan(c *scanCall) {
+	ctx := s.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	defer close(c.done)
+	if _, err := s.Events.Publish(ctx, events.ReposChanged, map[string]any{"scanning": true}); err != nil && ctx.Err() == nil {
+		s.logf("repos: publish repos.changed failed: %v", err)
+	}
+	c.stats, c.err = s.scan(ctx) // a cancelled scan stores nothing
 	s.mu.Lock()
 	s.cur = nil
 	if c.err == nil {
 		s.scannedAt = s.Now()
 	}
 	s.mu.Unlock()
-	close(c.done)
-	if c.err == nil {
-		if _, err := s.Events.Publish(ctx, events.ReposChanged, map[string]any{"scanning": false, "found": c.stats.Found}); err != nil {
+	if c.err == nil { // stored results are published even after a late cancel
+		if _, err := s.Events.Publish(context.WithoutCancel(ctx), events.ReposChanged,
+			map[string]any{"scanning": false, "found": c.stats.Found}); err != nil {
 			s.logf("repos: publish repos.changed failed: %v", err)
 		}
 	}
-	return c.stats, c.err
 }
 
 func (s *Service) logf(format string, args ...any) {
@@ -124,17 +136,44 @@ func (s *Service) scan(ctx context.Context) (ScanStats, error) {
 	if s.Excludes != nil {
 		excludes = s.Excludes(ctx)
 	}
-	w := Walk(s.Home, excludes)
+	w, err := walk(ctx, s.Home, excludes)
+	if err != nil {
+		return ScanStats{}, err
+	}
 	infos := map[string]GitInfo{}
 	owners := map[string]string{}
 	for _, p := range w.Repos {
+		if err := ctx.Err(); err != nil {
+			return ScanStats{}, err
+		}
 		infos[p] = ReadGitInfo(ctx, s.Run, p)
 		owners[p] = infos[p].RemoteOwner
 	}
+	if err := ctx.Err(); err != nil { // git calls may have failed from the cancel
+		return ScanStats{}, err
+	}
 	groups := Groups(w, owners)
 	stats := ScanStats{Found: len(w.Repos)}
+	// Missing detection stats known repos before the transaction: one path on an
+	// unmounted mount can block for seconds, and the single SQLite writer must
+	// not be held for that long (L12: short transactions).
+	known, err := s.knownRepos(ctx)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	stat := s.Stat
+	if stat == nil {
+		stat = os.Stat
+	}
+	gone := map[string]bool{}
+	for _, r := range known {
+		if _, err := stat(r.path); err != nil {
+			gone[r.id] = true
+			stats.Missing++
+		}
+	}
 	now := db.Millis(s.Now())
-	err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+	err = s.DB.Tx(ctx, func(tx *sql.Tx) error { // a cancel mid-transaction rolls it back
 		for _, p := range w.Repos {
 			info := infos[p]
 			_, err := tx.ExecContext(ctx, `INSERT INTO repos (id, path, name, remote_url, remote_owner, default_branch,
@@ -158,35 +197,9 @@ func (s *Service) scan(ctx context.Context) (ScanStats, error) {
 				}
 			}
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT id, path, missing FROM repos`)
-		if err != nil {
-			return err
-		}
-		type row struct {
-			id, path string
-			missing  bool
-		}
-		var all []row
-		for rows.Next() {
-			var r row
-			if err := rows.Scan(&r.id, &r.path, &r.missing); err != nil {
-				rows.Close()
-				return err
-			}
-			all = append(all, r)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		for _, r := range all {
-			_, statErr := os.Stat(r.path)
-			gone := statErr != nil
-			if gone {
-				stats.Missing++
-			}
-			if gone != r.missing {
-				if _, err := tx.ExecContext(ctx, `UPDATE repos SET missing = ?, updated_at = ? WHERE id = ?`, gone, now, r.id); err != nil {
+		for _, r := range known {
+			if gone[r.id] != r.missing {
+				if _, err := tx.ExecContext(ctx, `UPDATE repos SET missing = ?, updated_at = ? WHERE id = ?`, gone[r.id], now, r.id); err != nil {
 					return err
 				}
 			}
@@ -194,6 +207,28 @@ func (s *Service) scan(ctx context.Context) (ScanStats, error) {
 		return nil
 	})
 	return stats, err
+}
+
+type repoRow struct {
+	id, path string
+	missing  bool
+}
+
+func (s *Service) knownRepos(ctx context.Context) ([]repoRow, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, path, missing FROM repos`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []repoRow
+	for rows.Next() {
+		var r repoRow
+		if err := rows.Scan(&r.id, &r.path, &r.missing); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (s *Service) triggerChan() chan struct{} {
@@ -221,7 +256,7 @@ func (s *Service) Loop(ctx context.Context, interval func(context.Context) time.
 	}
 	trig := s.triggerChan()
 	for {
-		if _, err := s.Scan(ctx); err != nil {
+		if _, err := s.Scan(ctx); err != nil && ctx.Err() == nil {
 			s.logf("repos: scheduled scan failed: %v", err)
 		}
 		select {
@@ -296,7 +331,11 @@ func (s *Service) query(ctx context.Context, where string, args ...any) ([]Repo,
 
 func (s *Service) All(ctx context.Context) ([]Repo, error) { return s.query(ctx, "") }
 
+// Recent returns up to limit repos, most recently used first; limit <= 0 returns none.
 func (s *Service) Recent(ctx context.Context, limit int) ([]Repo, error) {
+	if limit <= 0 {
+		return []Repo{}, nil
+	}
 	list, err := s.query(ctx, `WHERE r.last_used_at IS NOT NULL`)
 	sort.SliceStable(list, func(i, j int) bool { return list[i].LastUsedAt > list[j].LastUsedAt })
 	if len(list) > limit {

@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -38,13 +39,22 @@ func ExpandHome(p, home string) string {
 
 // Walk scans home without following symlinks (§12.3).
 func Walk(home string, excludes []string) WalkResult {
+	w, _ := walk(context.Background(), home, excludes)
+	return w
+}
+
+// walk is Walk that stops with ctx; a cancelled walk returns ctx's error and no repos.
+func walk(ctx context.Context, home string, excludes []string) (WalkResult, error) {
 	skip := map[string]bool{filepath.Join(home, "Library"): true, filepath.Join(home, ".Trash"): true}
 	for _, e := range excludes {
 		skip[ExpandHome(e, home)] = true
 	}
 	res := WalkResult{LinkDirs: map[string][]string{}}
 	seen := map[string]bool{}
-	filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		if err != nil {
 			res.Errors++
 			if d != nil && d.IsDir() && path != home {
@@ -84,8 +94,11 @@ func Walk(home string, excludes []string) WalkResult {
 		}
 		return nil
 	})
+	if err != nil {
+		return WalkResult{}, err
+	}
 	sort.Strings(res.Repos)
-	return res
+	return res, nil
 }
 
 type Group struct {

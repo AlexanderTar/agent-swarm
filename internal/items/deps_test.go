@@ -1,10 +1,15 @@
 package items_test
 
 import (
+	"database/sql"
 	"fmt"
+	"math"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -46,6 +51,60 @@ func TestAddAndRemoveDeps(t *testing.T) {
 	}
 	if err := s.AddDep(ctx, t2.Key, "TASK-99", user); code(err) != items.CodeNotFound {
 		t.Fatalf("unknown key: %v", err)
+	}
+}
+
+// A cross-root edge changes both trees, so both must get an item.changed.
+func TestCrossRootDepsChangeBothTrees(t *testing.T) {
+	s := newStore(t)
+	e1 := mk(t, s, items.Bug, "", "E1")
+	e2 := mk(t, s, items.Bug, "", "E2")
+	a := mk(t, s, items.Task, e1.Key, "A")
+	b := mk(t, s, items.Task, e2.Key, "B")
+	roots := func() []string {
+		var out []string
+		for _, e := range eventsOfType(t, s, events.ItemChanged) {
+			if e["key"] == a.Key || e["key"] == b.Key {
+				out = append(out, e["root_key"])
+			}
+		}
+		return out
+	}
+	before := len(roots())
+	if err := s.AddDep(ctx, a.Key, b.Key, user); err != nil {
+		t.Fatal(err)
+	}
+	if got := roots()[before:]; !slices.Equal(got, []string{e1.Key, e2.Key}) {
+		t.Fatalf("AddDep announced %v", got)
+	}
+	before = len(roots())
+	if err := s.RemoveDep(ctx, a.Key, b.Key, user); err != nil {
+		t.Fatal(err)
+	}
+	if got := roots()[before:]; !slices.Equal(got, []string{e1.Key, e2.Key}) {
+		t.Fatalf("RemoveDep announced %v", got)
+	}
+}
+
+// An exhausted frontier ends the walk: a huge ?hops= must not spin.
+func TestGraphHopsStopWhenTheFrontierEmpties(t *testing.T) {
+	s := newStore(t)
+	a := mk(t, s, items.Epic, "", "E")
+	done := make(chan items.Graph, 1)
+	go func() {
+		g, err := s.Graph(ctx, a.Key, "neighbourhood", math.MaxInt32)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- g
+	}()
+	select {
+	case g := <-done:
+		if len(g.Nodes) != 1 {
+			t.Fatalf("nodes = %v", g.Nodes)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Graph is still walking an empty frontier")
 	}
 }
 
@@ -176,5 +235,44 @@ func TestGraph(t *testing.T) {
 	}
 	if _, err := s.Graph(ctx, b.Key, "galaxy", 1); code(err) != items.CodeBadRequest {
 		t.Fatalf("bad scope: %v", err)
+	}
+}
+
+// R6: Task 19 materializes a tree inside one transaction and needs the
+// dependency edge written on that same tx, not on a nested one.
+func TestAddDepTxRunsInsideACallersTransaction(t *testing.T) {
+	st := newStore(t)
+	ep := mk(t, st, items.Epic, "", "Ship it")
+	a := mk(t, st, items.Story, ep.Key, "First")
+	b := mk(t, st, items.Story, ep.Key, "Second")
+	err := st.DB.Tx(ctx, func(tx *sql.Tx) error {
+		return st.AddDepTx(ctx, tx, b.Key, a.Key, items.Daemon())
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedBy, _, err := st.Deps(ctx, b.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blockedBy) != 1 || blockedBy[0].Key != a.Key {
+		t.Fatalf("Deps(%s) blockedBy = %v, want [%s]", b.Key, blockedBy, a.Key)
+	}
+}
+
+// And the cycle check must still refuse, on the caller's tx.
+func TestAddDepTxStillRefusesACycle(t *testing.T) {
+	st := newStore(t)
+	ep := mk(t, st, items.Epic, "", "Ship it")
+	a := mk(t, st, items.Story, ep.Key, "First")
+	b := mk(t, st, items.Story, ep.Key, "Second")
+	if err := st.AddDep(ctx, b.Key, a.Key, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+	err := st.DB.Tx(ctx, func(tx *sql.Tx) error {
+		return st.AddDepTx(ctx, tx, a.Key, b.Key, items.Daemon())
+	})
+	if err == nil || !strings.Contains(err.Error(), items.CycleMessage) {
+		t.Fatalf("AddDepTx cycle = %v, want %q", err, items.CycleMessage)
 	}
 }

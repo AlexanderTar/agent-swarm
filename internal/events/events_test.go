@@ -124,3 +124,29 @@ func TestExpiredAndPrune(t *testing.T) {
 		t.Errorf("Latest after prune = %d", n)
 	}
 }
+
+// A clock that regresses (sleep/wake, NTP step) must not punch a hole in the
+// middle of the feed: a reconnecting client would silently miss those events.
+func TestPruneDeletesAPrefixOnly(t *testing.T) {
+	s, c := newStore(t)
+	s.Publish(ctx, events.ItemChanged, nil) // seq 1, day 0
+	c.t = c.t.Add(8 * 24 * time.Hour)
+	s.Publish(ctx, events.ItemChanged, nil) // seq 2, day 8
+	c.t = c.t.Add(-8 * 24 * time.Hour)
+	s.Publish(ctx, events.ItemChanged, nil) // seq 3, back at day 0
+	c.t = c.t.Add(8 * 24 * time.Hour)
+
+	if n, err := s.Prune(ctx, 7*24*time.Hour); err != nil || n != 1 {
+		t.Fatalf("Prune = %d, %v", n, err)
+	}
+	evs, err := s.After(ctx, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 2 || evs[0].Seq != 2 || evs[1].Seq != 3 {
+		t.Fatalf("After(1) = %+v, want seq 2 and 3", evs)
+	}
+	if got, _ := s.Expired(ctx, 1); got {
+		t.Error("cursor 1 is still served, so it is not expired")
+	}
+}
