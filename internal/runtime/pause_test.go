@@ -333,6 +333,181 @@ func TestSubtreePauseNeverWritesADaemonCheckpointForAChildlessWorker(t *testing.
 	if got.State != PauseRequested && got.State != Quiescing {
 		t.Fatalf("worker session = %s, want still pause_requested/quiescing (interrupted, not converted to a fake handoff)", got.State)
 	}
+	if s.getInterrupted(got.ID) == nil {
+		t.Fatal("worker never got its interrupt keys -- the ordinary per-session timeout path must still run")
+	}
+}
+
+// §10.5 step 4 / Ruling A: the daemon's fallback checkpoint for an
+// unresponsive orchestrator is unconditional on child count (the spec text
+// never gates it on having any) -- a childless orchestrator explicitly
+// paused with scope="subtree" must still get it and end 'paused', not
+// silently take the ordinary interrupt-then-kill path (ending 'interrupted')
+// the earlier EXISTS(children) guard sent it down. promotePendingSubtreePauses
+// re-stamps a fresh deadline at promotion time (Important #2), so this needs
+// two advances: one past the original deadline (promotes running ->
+// pause_requested), one past the fresh one (triggers the fallback).
+func TestChildlessSubtreePauseStillGetsTheDaemonFallbackCheckpoint(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pause(ctx, orch.Name, "subtree"); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(200 * time.Second)
+	if err := s.TickPause(ctx); err != nil { // promotes running -> pause_requested, fresh deadline
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != PauseRequested {
+		t.Fatalf("orchestrator session = %s, want pause_requested after promotion", ses.State)
+	}
+	at.Advance(200 * time.Second)
+	if err := s.TickPause(ctx); err != nil { // now past the fresh deadline
+		t.Fatal(err)
+	}
+	var daemonWritten int
+	var summary, blockers string
+	if err := s.DB.QueryRowContext(ctx, `SELECT daemon_written, summary, blockers_json FROM checkpoints
+		WHERE agent_id = ? AND daemon_written = 1`, orch.ID).Scan(&daemonWritten, &summary, &blockers); err != nil {
+		t.Fatalf("no daemon-written checkpoint for a childless orchestrator: %v", err)
+	}
+	if summary != daemonPauseSummary {
+		t.Fatalf("summary = %q", summary)
+	}
+	if blockers != "[]" {
+		t.Fatalf("blockers = %s, want empty -- it has no children", blockers)
+	}
+}
+
+// §10.5 / Ruling A: a mid-tree agent -- has a child of its own, but is
+// itself only a descendant cascaded onto by a higher subtree pause, never
+// the direct target of its own Pause call -- must never independently match
+// overdueSubtreePauses just because it happens to have children. Reproduces
+// the reviewer's hand-built 3-level probe (root -> mid -> leaf) that showed
+// the EXISTS(children) guard let mid race TickPause's own interrupt loop the
+// same way the original worker bug did.
+func TestMidTreeDescendantNeverGetsItsOwnDaemonCheckpoint(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	root, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root.ID, Brief: BriefInput{Objective: "mid"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: mid.ID, Brief: BriefInput{Objective: "leaf"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Pause(ctx, root.Name, "subtree"); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(200 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM checkpoints
+		WHERE agent_id = ? AND daemon_written = 1`, mid.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("mid-tree agent got %d daemon-written checkpoint(s), want 0 -- it is a descendant of this pause, not its target", n)
+	}
+	midSes, err := s.LatestSession(ctx, mid.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if midSes.State != PauseRequested && midSes.State != Quiescing {
+		t.Fatalf("mid-tree session = %s, want still pause_requested/quiescing (interrupted like any other descendant, not faked into stopping)", midSes.State)
+	}
+	if s.getInterrupted(midSes.ID) == nil {
+		t.Fatal("mid-tree agent never got its interrupt keys")
+	}
+}
+
+// Ruling B: PauseAll must route a root with a live child through subtree
+// scope, or DrainQueue's own freeze (rootHasLiveSubtreePause, gated on
+// pause_scope='subtree') never engages, and a queued sibling can be
+// admitted while pause-all is supposedly in effect. This is the same
+// scenario TestDrainQueueSkipsARootUnderALiveSubtreePause covers for a
+// direct scope="subtree" call, driven through PauseAll instead: that
+// indirection is exactly what silently downgraded to session-scope before
+// this fix (confirmed by temporarily reverting PauseAll to its flat
+// per-agent scope="session" loop and re-running this test: it failed with
+// the queued sibling admitted immediately).
+func TestPauseAllFreezesAQueuedSpawnTheSameWayASubtreePauseDoes(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4) // only one non-orchestrator agent globally
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, queued1, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued1 {
+		t.Fatal("the first child should be admitted; the slot is free")
+	}
+	second, queued2, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued2 {
+		t.Fatal("the second child should queue; the global agent limit is 1")
+	}
+
+	if _, err := s.PauseAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var scope string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(pause_scope, '') FROM sessions
+		WHERE agent_id = ?`, orch.ID).Scan(&scope); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "subtree" {
+		t.Fatalf("orchestrator pause_scope = %q after pause-all, want subtree -- it has a live child", scope)
+	}
+
+	// Free the admission slot the way a normal completion would, so DrainQueue
+	// would admit the queued child if pause-all's own freeze didn't stop it.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`,
+		first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Agent(ctx, second.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != AgentQueued {
+		t.Fatalf("state = %s, want still queued -- pause-all must freeze the queue like any subtree pause", got.State)
+	}
 }
 
 // §10.5: a subtree pause freezes a root's queued spawns. DrainQueue must not

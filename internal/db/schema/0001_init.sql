@@ -148,6 +148,7 @@ CREATE TABLE sessions (
   cwd_kind            TEXT NOT NULL CHECK (cwd_kind IN ('neutral','worktree')),
   pause_scope         TEXT CHECK (pause_scope IN ('session','subtree')),
   pause_deadline_at   INTEGER,
+  pause_root          INTEGER NOT NULL DEFAULT 0,
   stop_blocks         INTEGER NOT NULL DEFAULT 0,
   needs_compaction_notice INTEGER NOT NULL DEFAULT 0,
   last_seen_at        INTEGER,
