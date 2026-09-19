@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,6 +43,36 @@ func TestCursorFetchFailsOnANonOKStatus(t *testing.T) {
 		ReadToken: func(context.Context) (string, time.Time, error) { return "jwt", now.Add(time.Hour), nil }}
 	if _, err := src.Fetch(context.Background()); err == nil {
 		t.Fatal("a 401 must be an error")
+	}
+}
+
+// The real endpoint 415s a request with no Content-Type and no body, even for
+// a no-argument RPC (confirmed live against api2.cursor.sh) — this is that
+// exact bug, guarded against reintroduction.
+func TestCursorFetchSendsTheContentTypeAndBodyTheRealEndpointRequires(t *testing.T) {
+	var gotContentType, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		if gotContentType != "application/json" || gotBody == "" {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			return
+		}
+		w.Write([]byte(`{"planUsage":{"autoPercentUsed":1,"apiPercentUsed":1},"billingCycleEnd":"2026-10-01T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	src := &Cursor{BaseURL: srv.URL, HTTP: srv.Client(), Now: func() time.Time { return now },
+		ReadToken: func(context.Context) (string, time.Time, error) { return "jwt", now.Add(time.Hour), nil }}
+	if _, err := src.Fetch(context.Background()); err != nil {
+		t.Fatalf("Fetch failed (Content-Type=%q body=%q): %v", gotContentType, gotBody, err)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+	if gotBody == "" {
+		t.Error("body was empty; the real endpoint 415s an empty body")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -69,12 +70,15 @@ func (c *Cursor) Fetch(ctx context.Context) (Snapshot, error) {
 	if expiresAt.Sub(c.now()) < cursorMinTokenLife {
 		return Snapshot{}, fmt.Errorf("cursor: token has under %s left", cursorMinTokenLife)
 	}
+	// The real endpoint is Connect-RPC-over-JSON: it 415s a request with no
+	// Content-Type and no body, even for a no-argument RPC like this one.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.BaseURL+"/aiserver.v1.DashboardService/GetCurrentPeriodUsage", nil)
+		c.BaseURL+"/aiserver.v1.DashboardService/GetCurrentPeriodUsage", strings.NewReader("{}"))
 	if err != nil {
 		return Snapshot{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := httpClientOrDefault(c.HTTP).Do(req)
 	if err != nil {
 		return Snapshot{}, err
