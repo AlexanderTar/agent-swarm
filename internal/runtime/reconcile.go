@@ -203,8 +203,31 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 	now := s.Now()
 	if !paneKnown {
 		basis := r.StartedAt
-		if last := s.getLastAlive(r.SessionID); last != nil {
+		switch last := s.getLastAlive(r.SessionID); {
+		case last != nil:
 			basis = *last
+		case now.Sub(r.StartedAt) >= spawnGracePeriod:
+			// P0-crash-4 (2026-09-19): a daemon restart (or an external
+			// correction back to a live state) wipes this process's
+			// lastAliveAt memory of an already-long-running session --
+			// confirmed live: the very first reconcile tick after such a
+			// reset saw a single !paneKnown miss on a session that had
+			// been running fine for minutes, and with StartedAt long past
+			// spawnGracePeriod, that one miss immediately fell through to
+			// 'crashed' with no further chance to recover (a crashed
+			// session leaves liveSessionRows() and is never re-evaluated).
+			// Never having confirmed this session alive in THIS process's
+			// lifetime is not evidence it just started, so it gets one
+			// fresh grace window counted from right now instead of the
+			// stale StartedAt. That window is anchored immediately (not
+			// just used for this check) so a session that keeps missing
+			// doesn't get a new "now" -- and therefore infinite grace --
+			// on every subsequent tick too; it still crashes once this one
+			// fresh window elapses, same as any other missing pane. A
+			// session genuinely stuck since birth is still caught
+			// independently by watchStartup's own 30s deadline.
+			basis = now
+			s.setLastAlive(r.SessionID, now)
 		}
 		if now.Sub(basis) < spawnGracePeriod {
 			return nil // give the next tick(s) a chance to see the pane again

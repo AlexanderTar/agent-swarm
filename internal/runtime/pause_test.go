@@ -689,6 +689,14 @@ func TestPauseAllStillReachesALiveChildUnderAFinishedRoot(t *testing.T) {
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The orchestrator's session has never gone through an alive-confirming
+	// Reconcile tick, so this first tick past its grace window grants one
+	// more fresh grace window (P0-crash-4) before a second tick actually
+	// resolves it interrupted.
+	at.Advance(spawnGracePeriod + time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
 	orchSes, err := s.LatestSession(ctx, orch.ID)
 	if err != nil {
 		t.Fatal(err)

@@ -76,7 +76,20 @@ func TestReconcileGivesAFreshSessionAGracePeriodBeforeMarkingItCrashed(t *testin
 	if ses.State == Crashed {
 		t.Fatal("a session inside the grace period must not be marked crashed just because its pane isn't in this tick's snapshot yet")
 	}
-	at.Advance(11 * time.Second) // past spawnGracePeriod
+	at.Advance(11 * time.Second) // past spawnGracePeriod since StartedAt
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// This session has still never been confirmed alive, so this tick grants
+	// one more fresh grace window (P0-crash-4) rather than crashing outright.
+	ses, err = s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State == Crashed {
+		t.Fatal("a session never confirmed alive must get one fresh grace window before crashing, not crash on the first tick past its StartedAt-anchored window")
+	}
+	at.Advance(spawnGracePeriod + time.Second) // past that fresh window too
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +98,7 @@ func TestReconcileGivesAFreshSessionAGracePeriodBeforeMarkingItCrashed(t *testin
 		t.Fatal(err)
 	}
 	if ses.State != Crashed {
-		t.Fatalf("a session whose pane never appears must eventually be marked crashed once the grace period elapses, got %s", ses.State)
+		t.Fatalf("a session whose pane never appears must eventually be marked crashed once every grace window elapses, got %s", ses.State)
 	}
 }
 
@@ -142,6 +155,47 @@ func TestReconcileGivesAnEstablishedSessionTheSameGraceOnALaterMissingTick(t *te
 	}
 }
 
+// P0-crash-4 (2026-09-19): a daemon restart (or an external correction back
+// to a live state) wipes this process's in-memory lastAliveAt, even for a
+// session that has genuinely been running fine for minutes. Confirmed live:
+// right after a daemon restart, the very first reconcile tick for such a
+// session saw a single !paneKnown miss, and because its real StartedAt was
+// long past spawnGracePeriod, that one miss fell straight through to
+// 'crashed' with zero chance to recover -- a crashed session is never
+// re-evaluated by Reconcile again. Never having confirmed a session alive in
+// THIS process's lifetime must not be treated as evidence it just started
+// and is already overdue; it must get one fresh grace window from now.
+func TestReconcileGivesAFreshGraceWindowToAnOldSessionNeverSeenAliveThisProcess(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	w, _ := s.agentByID(ctx, wSes.AgentID)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+
+	// The session is long past its own StartedAt-anchored grace window, and
+	// this Store has never once called resolveAlive on it (no lastAliveAt
+	// entry at all) -- exactly what a fresh daemon process sees for a
+	// session that was already running before it started.
+	at.Advance(spawnGracePeriod + 5*time.Second)
+	panes(tm) // the very first tick this process ever runs already misses it
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ses, _ := s.LatestSession(ctx, w.ID); ses.State == Crashed {
+		t.Fatal("a session never seen alive by this process, but not actually gone, must get a fresh grace window instead of an immediately-expired one")
+	}
+
+	// It keeps missing past that fresh window: now it really is treated as gone.
+	at.Advance(spawnGracePeriod + time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, w.ID)
+	if ses.State != Crashed {
+		t.Fatalf("a session that keeps missing past its fresh grace window must still eventually crash, got %s", ses.State)
+	}
+}
+
 // ReconcileLoop just wraps Reconcile in a ticker and stops on cancel; this
 // only exercises that wiring, not the reconciliation logic itself (covered
 // above).
@@ -184,7 +238,14 @@ func TestDeadPaneWithACompletedCheckpointCompletesTheSession(t *testing.T) {
 	panes(tm) // the pane is gone
 	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
 	// missing pane counts as gone, not just started -- advance past it.
+	// This session has never gone through an alive-confirming Reconcile
+	// tick, so the first tick past that window grants one more fresh grace
+	// window (P0-crash-4) before a second tick actually resolves it dead.
 	at.Advance(11 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(spawnGracePeriod + time.Second)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +316,14 @@ func TestDeadPaneCrashPropagatesANotifyFailure(t *testing.T) {
 	panes(tm)
 	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
 	// missing pane counts as gone, not just started -- advance past it.
+	// This session has never gone through an alive-confirming Reconcile
+	// tick, so the first tick past that window grants one more fresh grace
+	// window (P0-crash-4) before a second tick actually resolves it dead.
 	at.Advance(11 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(spawnGracePeriod + time.Second)
 	if err := s.Reconcile(ctx); err == nil {
 		t.Fatal("a crash notify failure must propagate")
 	}
@@ -272,7 +340,14 @@ func TestDeadPaneWhileStoppingPropagatesANotifyFailure(t *testing.T) {
 	panes(tm)
 	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
 	// missing pane counts as gone, not just started -- advance past it.
+	// This session has never gone through an alive-confirming Reconcile
+	// tick, so the first tick past that window grants one more fresh grace
+	// window (P0-crash-4) before a second tick actually resolves it dead.
 	at.Advance(11 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(spawnGracePeriod + time.Second)
 	if err := s.Reconcile(ctx); err == nil {
 		t.Fatal("a paused notify failure must propagate")
 	}
@@ -287,7 +362,14 @@ func TestDeadPaneCrashWithNoParentSkipsTheRelay(t *testing.T) {
 	panes(tm)
 	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
 	// missing pane counts as gone, not just started -- advance past it.
+	// This session has never gone through an alive-confirming Reconcile
+	// tick, so the first tick past that window grants one more fresh grace
+	// window (P0-crash-4) before a second tick actually resolves it dead.
 	at.Advance(11 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(spawnGracePeriod + time.Second)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +389,14 @@ func TestDeadPaneWithAFailedCheckpointFails(t *testing.T) {
 	panes(tm)
 	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
 	// missing pane counts as gone, not just started -- advance past it.
+	// This session has never gone through an alive-confirming Reconcile
+	// tick, so the first tick past that window grants one more fresh grace
+	// window (P0-crash-4) before a second tick actually resolves it dead.
 	at.Advance(11 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(spawnGracePeriod + time.Second)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -401,6 +490,11 @@ func TestDeadPaneWhileStoppingBecomesPaused(t *testing.T) {
 	panes(tm)
 	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
 	// missing pane counts as gone, not just started -- advance past it.
+	// This session has never gone through an alive-confirming Reconcile
+	// tick, so the first tick past that window grants one more fresh grace
+	// window (P0-crash-4) before a second tick actually resolves it dead.
+	at.Advance(11 * time.Second)
+	s.Reconcile(ctx)
 	at.Advance(11 * time.Second)
 	s.Reconcile(ctx)
 	ses, _ := s.LatestSession(ctx, w.ID)
@@ -602,9 +696,16 @@ func TestFirstSyncMovesToQuiescingAndTheHandoffToStopping(t *testing.T) {
 		t.Fatalf("killed = %v", tm.killed[before:])
 	}
 	// paused only once the pane is dead, and past spawnGracePeriod
-	// (P0-crash-2) since worker() started this session -- 6s so far.
+	// (P0-crash-2) since worker() started this session -- 6s so far. This
+	// session has never gone through an alive-confirming Reconcile tick, so
+	// the first tick past that window grants one more fresh grace window
+	// (P0-crash-4) before a second tick actually resolves it dead.
 	at.Advance(5 * time.Second)
 	tm.panes = nil
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(spawnGracePeriod + time.Second)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -646,7 +747,12 @@ func TestDeadlineInterruptsAndNeverRecordsPaused(t *testing.T) {
 	if len(tm.killed)-before != 1 {
 		t.Fatalf("killed = %v", tm.killed[before:])
 	}
+	// This session has never gone through an alive-confirming Reconcile tick,
+	// so the first tick past spawnGracePeriod grants one more fresh grace
+	// window (P0-crash-4) before a second tick actually resolves it dead.
 	tm.panes = nil
+	s.Reconcile(ctx)
+	at.Advance(spawnGracePeriod + time.Second)
 	s.Reconcile(ctx)
 	ses, _ := s.LatestSession(ctx, w.ID)
 	if ses.State != Interrupted {
