@@ -119,6 +119,9 @@ func itemsTool(s *Server) ToolDef {
 				if in.Priority != nil {
 					p.Priority = in.Priority
 				}
+				if in.TddExempt != "" {
+					p.TddExempt = &in.TddExempt
+				}
 				if in.Status != "" {
 					st := items.Status(in.Status)
 					p.Status = &st

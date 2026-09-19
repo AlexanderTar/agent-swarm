@@ -51,6 +51,7 @@ type Patch struct {
 	Brief      *string
 	Acceptance *[]string
 	Priority   *int
+	TddExempt  *string
 	Status     *Status
 	Revision   int
 }
@@ -344,7 +345,7 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 	if p.Revision != it.Revision {
 		return Item{}, errf(CodeConflict, StaleRevision)
 	}
-	if p.Title != nil || p.Brief != nil || p.Acceptance != nil || p.Priority != nil {
+	if p.Title != nil || p.Brief != nil || p.Acceptance != nil || p.Priority != nil || p.TddExempt != nil {
 		if p.Title != nil {
 			it.Title = strings.TrimSpace(*p.Title)
 		}
@@ -357,15 +358,29 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 		if p.Priority != nil {
 			it.Priority = *p.Priority
 		}
+		if p.TddExempt != nil {
+			it.TddExempt = *p.TddExempt
+		}
 		if err := validateText(it.Title, it.Brief); err != nil {
 			return Item{}, err
 		}
 		if err := validPriority(it.Priority); err != nil {
 			return Item{}, err
 		}
+		if it.TddExempt != "" {
+			if !slices.Contains(tddValues, it.TddExempt) {
+				return Item{}, errf(CodeBadRequest, "tdd_exempt must be one of docs, config, mechanical-rename, spike-research.")
+			}
+			if it.Type != Task {
+				return Item{}, errf(CodeBadRequest, "Only tasks can be TDD-exempt.")
+			}
+			if !by.isOrchestrator() && by.Kind != ActorDaemon {
+				return Item{}, errf(CodeBadRequest, "Only an orchestrator or a plan can set tdd_exempt.")
+			}
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE items SET title = ?, brief = ?, acceptance_json = ?, priority = ?,
-			revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
-			it.Title, it.Brief, jsonList(it.Acceptance), it.Priority, db.Millis(s.Now()), it.ID, p.Revision)
+			tdd_exempt = NULLIF(?, ''), revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
+			it.Title, it.Brief, jsonList(it.Acceptance), it.Priority, it.TddExempt, db.Millis(s.Now()), it.ID, p.Revision)
 		if err != nil {
 			return Item{}, err
 		}

@@ -225,6 +225,29 @@ func TestUpdateUsesRevision(t *testing.T) {
 	}
 }
 
+func TestUpdateTddExempt(t *testing.T) {
+	s := newStore(t)
+	e := mk(t, s, items.Epic, "", "E")
+	st := mk(t, s, items.Story, e.Key, "S")
+	task := mk(t, s, items.Task, st.Key, "T")
+	orch := items.Orchestrator("agt1", e.ID)
+
+	exempt := "docs"
+	got, err := s.Update(ctx, task.Key, items.Patch{TddExempt: &exempt, Revision: task.Revision}, orch)
+	if err != nil || got.TddExempt != "docs" || got.Revision != task.Revision+1 {
+		t.Fatalf("update = %+v, %v", got, err)
+	}
+
+	bad := "true"
+	if _, err := s.Update(ctx, task.Key, items.Patch{TddExempt: &bad, Revision: got.Revision}, orch); code(err) != items.CodeBadRequest {
+		t.Fatalf("invalid value: %v", err)
+	}
+
+	if _, err := s.Update(ctx, task.Key, items.Patch{TddExempt: &exempt, Revision: got.Revision}, user); code(err) != items.CodeBadRequest {
+		t.Fatalf("non-orchestrator: %v", err)
+	}
+}
+
 func TestConcurrentUpdatesOneWins(t *testing.T) {
 	s := newStore(t)
 	e := mk(t, s, items.Epic, "", "Old")
