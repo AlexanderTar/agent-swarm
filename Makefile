@@ -12,7 +12,7 @@ vet:
 fmt:
 	@out=$$($(GOFMT) -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
-test: vet fmt web-test
+test: vet fmt web-build web-test
 	$(GO) test -race ./...
 	GO=$(GO) scripts/cover.sh
 
