@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 // Scenario 6: pause with handoff. The coder is paused (session scope); its
@@ -44,8 +47,8 @@ func TestScenario06PauseWithHandoff(t *testing.T) {
 		t.Fatalf("PreToolUse decision = %+v, want deny", out)
 	}
 	reason, _ := hso["permissionDecisionReason"].(string)
-	if reason == "" {
-		t.Fatalf("PreToolUse denial has no reason: %+v", out)
+	if want := runtime.ControlNotice(coder, task); reason != want {
+		t.Fatalf("PreToolUse denial reason = %q, want %q", reason, want)
 	}
 
 	h.mustTool(t, coder, "swarm_checkpoint", map[string]any{"kind": "handoff", "summary": "pausing, handing off"})
@@ -118,30 +121,49 @@ func handOffAndKill(t *testing.T, h *harness, agentName string) {
 	}
 }
 
+// assertChildrenBeforeOrchestrator drives one root's subtree-scoped pause
+// (already requested via pause-all) to completion, and proves the ordering
+// is daemon-imposed rather than merely permitted: the orchestrator's own
+// session must still be "running" immediately after pause-all (pauseSubtree
+// keeps a root running until every descendant is done, §10.5), it must
+// promote to "pause_requested" only once its child reaches "paused", and the
+// control message that promotion sends must carry the real child checkpoint
+// promotePendingSubtreePauses computed from live DB state (agent name +
+// checkpoint summary) — not anything this harness wrote into the message
+// itself, since the harness never touches the pending control message at
+// all.
+func assertChildrenBeforeOrchestrator(t *testing.T, h *harness, orch, child string) {
+	t.Helper()
+	if got := h.sessionState(t, orch); got != "running" {
+		t.Fatalf("%s session = %s immediately after pause-all, want still running until its child finishes", orch, got)
+	}
+	handOffAndKill(t, h, child)
+	if !h.waitForSessionState(t, orch, "pause_requested", 6*time.Second) {
+		t.Fatalf("%s session = %s, want pause_requested once its child is done (children-first, daemon-imposed)",
+			orch, h.sessionState(t, orch))
+	}
+	var payload string
+	if err := h.db(t).QueryRow(`SELECT m.payload_json FROM messages m JOIN agents a ON a.id = m.to_agent_id
+		WHERE m.kind = 'control' AND a.name = ? ORDER BY m.created_at DESC LIMIT 1`, orch).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, child) || !strings.Contains(payload, "pausing") {
+		t.Fatalf("%s's promoted pause payload does not carry the real child checkpoint: %s", orch, payload)
+	}
+	handOffAndKill(t, h, orch)
+}
+
 // Scenario 8: pause all and resume. PauseAll (internal/runtime/pause.go)
-// requests a plain session-scope pause on every live root and worker alike —
-// TestPauseAllCountsEverySession (internal/runtime/pause_test.go) pins this
-// as deliberate, not the hierarchical subtree pause pauseSubtree/
-// promotePendingSubtreePauses implement — so nothing in PauseAll itself
-// orders children ahead of orchestrators or writes a daemon-combined
-// checkpoint (that machinery is scenario 9's, gated on pause_scope =
-// 'subtree', which pause-all never sets). "Children pause before
-// orchestrators" here is enforced by the harness's own call order below —
-// pause-all requests all four pauses in the same instant, and each of the
-// four agents only actually reaches "paused" once something drives its own
-// PreToolUse-denial-then-handoff cycle, exactly as scenario 6 does — so
-// which one pauses first is a property of when its handoff was written, not
-// of any daemon-side ordering.
+// routes a root with any live descendant through pauseSubtree, the same
+// mechanism a direct POST /agents/{name}/pause {scope:"subtree"} call uses
+// (§10.5's own heading names "Pause all" as subtree pause's other entry
+// point; §23.2 scenario 8 tests pause-all specifically for children-first
+// ordering and combined handoffs) — a root with no live descendant (a
+// standalone spike) gets plain session scope instead, since there is
+// nothing to cascade onto. assertChildrenBeforeOrchestrator below proves
+// the resulting ordering is the daemon's own, not the harness's.
 func TestScenario08PauseAllAndResume(t *testing.T) {
 	h := newHarness(t)
-	// This scenario drives each of its four pauses to completion by hand, one
-	// at a time (up to ~6s apiece) — a short pause_deadline_sec left behind by
-	// scenario 7 or 9 (this package shares one daemon and its settings table
-	// across every test) would let TickPause's own interrupt-then-kill timer
-	// race ahead and kill a later agent's pane out from under this test before
-	// it gets there. Reset it to the production default explicitly rather
-	// than assume a fresh one.
-	h.setPauseDeadlineSec(t, 120)
 	epic1 := h.materializedEpic(t)
 	orch1 := h.startOrchestrator(t, epic1)
 	h.mustTool(t, orch1, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
@@ -162,27 +184,22 @@ func TestScenario08PauseAllAndResume(t *testing.T) {
 		t.Fatalf("pause-all requested = %d, want at least the 4 agents just spawned", n)
 	}
 
-	// Children first, on both roots, before either orchestrator: the
-	// deterministic order this scenario is asserting is that pause-all's
-	// uniform session-scope pause permits (never forbids) a child finishing
-	// before its own orchestrator.
-	handOffAndKill(t, h, child1)
-	handOffAndKill(t, h, child2)
-	handOffAndKill(t, h, orch1)
-	handOffAndKill(t, h, orch2)
+	// Both roots have a live child, so both must have been routed through
+	// subtree scope (never session) by PauseAll.
+	for _, orch := range []string{orch1, orch2} {
+		var scope string
+		if err := h.db(t).QueryRow(`SELECT COALESCE(pause_scope, '') FROM sessions
+			WHERE agent_id = (SELECT id FROM agents WHERE name = ?) ORDER BY generation DESC LIMIT 1`,
+			orch).Scan(&scope); err != nil {
+			t.Fatal(err)
+		}
+		if scope != "subtree" {
+			t.Fatalf("%s pause_scope = %q after pause-all, want subtree", orch, scope)
+		}
+	}
 
-	var childEndedAt, orchEndedAt int64
-	if err := h.db(t).QueryRow(`SELECT s.ended_at FROM sessions s JOIN agents a ON a.id = s.agent_id
-		WHERE a.name = ? ORDER BY s.generation DESC LIMIT 1`, child1).Scan(&childEndedAt); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.db(t).QueryRow(`SELECT s.ended_at FROM sessions s JOIN agents a ON a.id = s.agent_id
-		WHERE a.name = ? ORDER BY s.generation DESC LIMIT 1`, orch1).Scan(&orchEndedAt); err != nil {
-		t.Fatal(err)
-	}
-	if childEndedAt > orchEndedAt {
-		t.Fatalf("child1 paused at %d, after orch1 at %d, want child first", childEndedAt, orchEndedAt)
-	}
+	assertChildrenBeforeOrchestrator(t, h, orch1, child1)
+	assertChildrenBeforeOrchestrator(t, h, orch2, child2)
 
 	// Resume: orch1 gets generation 2 and a new token; the generation-1
 	// token sessionAuth already rejects (internal/httpapi/server.go, proven

@@ -619,26 +619,52 @@ func (h *harness) paneEnv(t *testing.T, agentName, key string) string {
 // setPauseDeadlineSec writes settings.pause_deadline_sec directly, the same
 // bypass-validate raw-SQL pattern setMaxAgents/enableFake already use: PUT
 // /api/settings clamps this to [30, 600] (settings.go's validate), which
-// would make scenarios 6c/7/8/9 wait out the real production default (120s)
+// would make scenarios 7/9 wait out the real production default (120s)
 // instead of the spec's own short test deadlines. Settings.Get applies no
 // such clamp on read (only Put validates), so this is honored as-is by
-// pauseDeadlineSec (internal/runtime/pause.go). It is deliberately never
-// restored: it only affects agents that go through Pause/PauseAll, which no
-// scenario outside this file exercises, and every scenario file in this
-// package runs against one long-lived, shared daemon anyway (see the package
-// doc comment above).
+// pauseDeadlineSec (internal/runtime/pause.go). This package's tests share
+// one long-lived daemon and are order-dependent by construction, so it
+// restores the prior value via t.Cleanup rather than leaving a shorter
+// deadline in place for every scenario that runs after this one.
 func (h *harness) setPauseDeadlineSec(t *testing.T, n int) {
 	t.Helper()
-	d, err := sql.Open("sqlite", "file:"+filepath.Join(h.home, "swarm.db")+"?_pragma=busy_timeout(5000)")
+	dsn := "file:" + filepath.Join(h.home, "swarm.db") + "?_pragma=busy_timeout(5000)"
+	d, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
+	var prev sql.NullString
+	if err := d.QueryRow(`SELECT value_json FROM settings WHERE key = 'pause_deadline_sec'`).Scan(&prev); err != nil && err != sql.ErrNoRows {
+		t.Fatal(err)
+	}
 	if _, err := d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES ('pause_deadline_sec', ?, ?)
 		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
 		strconv.Itoa(n), time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
+	// Best-effort restore: a cleanup failure here should not fail the test
+	// that requested the change, only leave a log line explaining why a
+	// later scenario might see a stale deadline.
+	t.Cleanup(func() {
+		r, err := sql.Open("sqlite", dsn)
+		if err != nil {
+			t.Logf("setPauseDeadlineSec cleanup: %v", err)
+			return
+		}
+		defer r.Close()
+		if prev.Valid {
+			if _, err := r.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES ('pause_deadline_sec', ?, ?)
+				ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+				prev.String, time.Now().UnixMilli()); err != nil {
+				t.Logf("setPauseDeadlineSec cleanup: %v", err)
+			}
+			return
+		}
+		if _, err := r.Exec(`DELETE FROM settings WHERE key = 'pause_deadline_sec'`); err != nil {
+			t.Logf("setPauseDeadlineSec cleanup: %v", err)
+		}
+	})
 }
 
 // pause calls POST /api/agents/{name}/pause with the given scope
