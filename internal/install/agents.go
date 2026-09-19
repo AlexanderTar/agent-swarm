@@ -141,8 +141,10 @@ func (o AgentsOpts) syncPlugins(ctx context.Context, installed []Kind) error {
 			fmt.Fprintf(o.Out, "✗ %s: %s — %v\n", r.Kind, r.Plugin, r.Err)
 		case r.Action == "skip":
 			fmt.Fprintf(o.Out, "  skipped %s for %s: %s\n", r.Plugin, r.Kind, r.Detail)
+		case r.Action == "update":
+			fmt.Fprintf(o.Out, "✓ %s: %s updated\n", r.Kind, r.Plugin)
 		case r.Plugin != "":
-			fmt.Fprintf(o.Out, "✓ %s: %s %sed\n", r.Kind, r.Plugin, r.Action)
+			fmt.Fprintf(o.Out, "✓ %s: %s installed\n", r.Kind, r.Plugin)
 		}
 	}
 	return nil
