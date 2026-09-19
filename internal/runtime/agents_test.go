@@ -489,6 +489,38 @@ func TestSpawnAnswersStartupDialogsOnce(t *testing.T) {
 	}
 }
 
+// P0-crash-1 (2026-09-19): the real incident. Claude 2.1.278 renders a
+// highlighted menu option with a separate color escape around every word
+// ("\x1b[38;5;153mI\x1b[39m \x1b[38;5;153mam\x1b[39m ..."), so the plain
+// multi-word Dialog.Match for the dev-channels warning never matched the raw
+// -e capture and the orchestrator's prompt sat unanswered forever. Dialog
+// matching must strip ANSI codes first.
+func TestSpawnAnswersAStartupDialogSplitByPerWordAnsiCodes(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.Dialogs = []adapter.Dialog{
+		{Match: regexp.MustCompile(`I am using this for local development`), Keys: []string{"Enter"}},
+	}
+	tm.captures["look-into-it"] = []string{
+		"\x1b[38;5;153mI\x1b[39m \x1b[38;5;153mam\x1b[39m \x1b[38;5;153musing\x1b[39m " +
+			"\x1b[38;5;153mthis\x1b[39m \x1b[38;5;153mfor\x1b[39m \x1b[38;5;153mlocal\x1b[39m " +
+			"\x1b[38;5;153mdevelopment\x1b[39m\n",
+		"─────\n❯ \n─────\n",
+	}
+	if _, _, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Look into it",
+		Intent: "feature", Kind: Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	var sent int
+	for _, k := range tm.keys {
+		if k == "look-into-it|Enter" {
+			sent++
+		}
+	}
+	if sent != 1 {
+		t.Fatalf("keys sent %d times, want once (dialog split by per-word ANSI codes must still match): keys=%v", sent, tm.keys)
+	}
+}
+
 // §11.1, §11.5: a Fail dialog fails the spawn with the pane text in the error.
 func TestSpawnFailsOnAFailDialog(t *testing.T) {
 	s, tm, f := newStore(t)
@@ -532,7 +564,10 @@ func TestCancelKillsAndFinishes(t *testing.T) {
 	if len(tm.keys) == 0 || !strings.HasSuffix(tm.keys[len(tm.keys)-1], "|Escape") {
 		t.Fatalf("interrupt keys were not sent: %v", tm.keys)
 	}
-	if len(tm.killed) != 1 || tm.killed[0] != a.Name {
+	// P0-crash-1: startSession now kills any stale pane under this name
+	// before it starts one, so the spawn itself contributes a (harmless,
+	// no-op-on-a-fresh-name) kill too; Cancel's own kill is the second.
+	if len(tm.killed) != 2 || tm.killed[0] != a.Name || tm.killed[1] != a.Name {
 		t.Fatalf("killed = %v", tm.killed)
 	}
 	// the item status does not change (§10.7)
@@ -572,6 +607,55 @@ func TestRetryStartsANewAttemptAndRevokesTheOldToken(t *testing.T) {
 	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'assignment_update'`, a.ID).Scan(&n)
 	if n != 1 {
 		t.Fatalf("assignment_update count = %d", n)
+	}
+}
+
+// P0-crash-1 (2026-09-19): a real incident where a crashed session's tmux
+// pane was never actually dead (reconcile can mark 'crashed' while the pane
+// is still alive, e.g. stuck at an unanswered prompt) -- retrying without
+// killing that stale pane first made tmux new-session fail with "duplicate
+// session", stranding the retry and leaving the original pane orphaned
+// forever. startSession must kill any pane under this agent's name before
+// starting a new one.
+func TestRetryKillsAStalePaneBeforeStartingTheNewOne(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Again", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	first, _ := s.LatestSession(ctx, a.ID)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Retry(ctx, a.Name, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(tm.killed, a.Name) {
+		t.Fatalf("killed = %v, want it to include %q before the new session started", tm.killed, a.Name)
+	}
+}
+
+// Same incident: when the new attempt's own tmux new-session still fails
+// (Kill couldn't save it -- a real "duplicate session" from something else
+// racing this same name, or any other tmux error), the session must be left
+// 'failed' with a reason, not stuck as an orphaned 'spawning' row that only
+// the next reconcile tick resolves into a confusing second 'crashed' state.
+func TestRetryFailsCleanlyWhenTmuxStillRefusesToStart(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Again", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	first, _ := s.LatestSession(ctx, a.ID)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.Tmux = &erroringTmux{fakeTmux: tm, startErr: errors.New("tmux new-session Again: exit status 1: duplicate session: Again")}
+	if _, err := s.Retry(ctx, a.Name, "", "", ""); err == nil {
+		t.Fatal("expected the tmux error back")
+	}
+	next, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.State != Failed {
+		t.Fatalf("state = %s, want failed (not left as an orphaned spawning row)", next.State)
 	}
 }
 

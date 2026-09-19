@@ -287,20 +287,26 @@ func TestControlCancelRequestIDReplaysWithoutKillingTwice(t *testing.T) {
 	ctx := context.Background()
 	worker := spawnWorker(t, s, seed)
 	tm := s.RT.Tmux.(*fakeTmux)
+	// startSession now kills any stale same-name pane before every Start
+	// (P0-crash-1, 2026-09-19), so spawnWorker's own setup already
+	// contributes kill calls unrelated to the cancel under test here —
+	// baseline after setup, like TestControlResumeRequestIDReplaysWithoutStartingASecondSession
+	// already does for tm.started below.
+	killedBefore := len(tm.killed)
 	body := `{"target":"` + worker.Name + `","action":"cancel","request_id":"req-1"}`
 	out1, err := s.call(ctx, seed.Caller, "swarm_control", body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tm.killed) != 1 {
-		t.Fatalf("tmux killed %d times after first call, want 1", len(tm.killed))
+	if len(tm.killed) != killedBefore+1 {
+		t.Fatalf("tmux killed %d times after first call, want %d", len(tm.killed), killedBefore+1)
 	}
 	out2, err := s.call(ctx, seed.Caller, "swarm_control", body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tm.killed) != 1 {
-		t.Fatalf("tmux killed %d times after replayed call, want still 1", len(tm.killed))
+	if len(tm.killed) != killedBefore+1 {
+		t.Fatalf("tmux killed %d times after replayed call, want still %d", len(tm.killed), killedBefore+1)
 	}
 	if string(mustJSON(out1)) != string(mustJSON(out2)) {
 		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))

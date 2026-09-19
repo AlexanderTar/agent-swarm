@@ -314,9 +314,12 @@ func TestAliveWithAnOldCompletedCheckpointIsKilled(t *testing.T) {
 	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"})
 	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
 	at.Advance(61 * time.Second)
+	// P0-crash-1: worker()'s own spawns already recorded their (harmless)
+	// startup kills; only what Reconcile itself adds is what this is about.
+	before := len(tm.killed)
 	s.Reconcile(ctx)
-	if len(tm.killed) != 1 {
-		t.Fatalf("killed = %v", tm.killed)
+	if len(tm.killed)-before != 1 {
+		t.Fatalf("killed = %v", tm.killed[before:])
 	}
 }
 
@@ -481,13 +484,16 @@ func TestFirstSyncMovesToQuiescingAndTheHandoffToStopping(t *testing.T) {
 		t.Fatalf("relay paused count = %d", n)
 	}
 	// the kill comes 5 s later, and only after the SWARM_SESSION check
+	// (P0-crash-1: worker()'s own spawns already recorded their own harmless
+	// startup kills, before that -- only TickPause's kill is new here)
+	before := len(tm.killed)
 	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
 	at.Advance(6 * time.Second)
 	if err := s.TickPause(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(tm.killed) != 1 || tm.killed[0] != w.Name {
-		t.Fatalf("killed = %v", tm.killed)
+	if len(tm.killed)-before != 1 || tm.killed[len(tm.killed)-1] != w.Name {
+		t.Fatalf("killed = %v", tm.killed[before:])
 	}
 	// paused only once the pane is dead
 	tm.panes = nil
@@ -522,12 +528,15 @@ func TestDeadlineInterruptsAndNeverRecordsPaused(t *testing.T) {
 	if len(tm.keys) == 0 || !strings.HasSuffix(tm.keys[len(tm.keys)-1], "|Escape") {
 		t.Fatalf("interrupt keys = %v", tm.keys)
 	}
+	// P0-crash-1: worker()'s own spawn already recorded its harmless startup
+	// kill; only what this second TickPause adds is what this test is about.
+	before := len(tm.killed)
 	at.Advance(11 * time.Second)
 	if err := s.TickPause(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(tm.killed) != 1 {
-		t.Fatalf("killed = %v", tm.killed)
+	if len(tm.killed)-before != 1 {
+		t.Fatalf("killed = %v", tm.killed[before:])
 	}
 	tm.panes = nil
 	s.Reconcile(ctx)

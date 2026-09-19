@@ -101,11 +101,30 @@ func (s *Spawner) Start(ctx context.Context, name, cwd string, env map[string]st
 
 const paneFormat = "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{session_attached}\t#{pane_current_command}"
 
+// noServer reports whether a tmux failure just means there is no server on
+// this socket yet, not a real error. A socket that already had a server but
+// lost its last session says "no server running"; a socket that has never
+// had a session on it at all (a fresh daemon restart, before the first spawn)
+// says "error connecting to <path> (No such file or directory)" instead.
+// Every caller here treats both the same: zero panes / already gone. This
+// must NOT match every "error connecting to" failure (a permission error or
+// a genuinely hung server also says that) -- only the specific "the socket
+// file isn't there" case, or Kill would silently swallow a real failure and
+// let startSession's Kill-before-Start move straight to a misleading
+// "duplicate session" from Start instead.
+func noServer(out []byte, err error) bool {
+	for _, msg := range []string{"no server running", "No such file or directory"} {
+		if strings.Contains(string(out), msg) || strings.Contains(err.Error(), msg) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Spawner) Panes(ctx context.Context) ([]runtime.Pane, error) {
 	out, err := s.run(ctx, "list-panes", "-a", "-F", paneFormat)
 	if err != nil {
-		// no server running means no panes, not an error
-		if strings.Contains(string(out), "no server running") || strings.Contains(err.Error(), "no server running") {
+		if noServer(out, err) {
 			return nil, nil
 		}
 		return nil, err
@@ -167,10 +186,8 @@ func (s *Spawner) Kill(ctx context.Context, name string) error {
 	if err == nil {
 		return nil
 	}
-	for _, msg := range []string{"can't find session", "no server running"} {
-		if strings.Contains(string(out), msg) || strings.Contains(err.Error(), msg) {
-			return nil
-		}
+	if strings.Contains(string(out), "can't find session") || strings.Contains(err.Error(), "can't find session") || noServer(out, err) {
+		return nil
 	}
 	return err
 }

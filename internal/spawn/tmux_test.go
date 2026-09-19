@@ -165,6 +165,54 @@ func TestKillIsIdempotent(t *testing.T) {
 	}
 }
 
+// P0-crash-1 (2026-09-19): a socket that has never had a session on it yet
+// (a fresh daemon restart, before the first spawn) fails "error connecting
+// to <path> (No such file or directory)", not "no server running". Panes and
+// Kill must treat that the same as "no server running": it means the same
+// thing (no live server on this socket), not a real error. Before this fix
+// Reconcile aborted on every tick until the first tmux session existed.
+func fakeSpawner(t *testing.T, msg string) *Spawner {
+	t.Helper()
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"tmux -L swarm list-panes -a -F " + paneFormat: {Err: fmt.Errorf("exit status 1: %s", msg)},
+		"tmux -L swarm kill-session -t ghost":          {Err: fmt.Errorf("exit status 1: %s", msg)},
+	}}
+	return &Spawner{Socket: "swarm", Tmux: "tmux", Run: f.Runner(), Log: func(string, ...any) {}}
+}
+
+func TestPanesTreatsAnUnopenedSocketAsNoPanes(t *testing.T) {
+	s := fakeSpawner(t, "error connecting to /private/tmp/tmux-501/swarm (No such file or directory)")
+	ps, err := s.Panes(context.Background())
+	if err != nil {
+		t.Fatalf("Panes = %v, want nil error (no server yet is not an error)", err)
+	}
+	if ps != nil {
+		t.Fatalf("Panes = %v, want nil", ps)
+	}
+}
+
+func TestKillTreatsAnUnopenedSocketAsAlreadyGone(t *testing.T) {
+	s := fakeSpawner(t, "error connecting to /private/tmp/tmux-501/swarm (No such file or directory)")
+	if err := s.Kill(context.Background(), "ghost"); err != nil {
+		t.Fatalf("Kill = %v, want nil (no server means already gone)", err)
+	}
+}
+
+// noServer must not swallow every "error connecting to" failure -- only the
+// "no such file" one that really means no server exists yet. A permission
+// error (or any other real connect failure) is a genuine problem and must
+// still surface, or Kill would silently no-op ahead of a Start that then
+// fails with a confusing "duplicate session" instead of the real cause.
+func TestPanesAndKillStillReportAGenuineConnectFailure(t *testing.T) {
+	s := fakeSpawner(t, "error connecting to /private/tmp/tmux-501/swarm (Permission denied)")
+	if _, err := s.Panes(context.Background()); err == nil {
+		t.Fatal("Panes swallowed a permission error, want it returned")
+	}
+	if err := s.Kill(context.Background(), "ghost"); err == nil {
+		t.Fatal("Kill swallowed a permission error, want it returned")
+	}
+}
+
 // remain-on-exit keeps a dead pane visible so the reconciler can read its status.
 func TestTmuxConfSetsTitlesFocusEventsAndRemainOnExit(t *testing.T) {
 	conf := string(TmuxConf())

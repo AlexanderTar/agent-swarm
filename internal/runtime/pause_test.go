@@ -18,7 +18,14 @@ import (
 // can fail these calls; the fake alone never does).
 type erroringTmux struct {
 	*fakeTmux
-	envErr, killErr, keysErr, panesErr error
+	envErr, killErr, keysErr, panesErr, startErr error
+}
+
+func (e *erroringTmux) Start(ctx context.Context, name, cwd string, env map[string]string, argv []string) error {
+	if e.startErr != nil {
+		return e.startErr
+	}
+	return e.fakeTmux.Start(ctx, name, cwd, env, argv)
 }
 
 func (e *erroringTmux) Env(ctx context.Context, name, key string) (string, error) {
@@ -206,11 +213,15 @@ func TestTeardownOnlyKillsAMatchingSession(t *testing.T) {
 	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "handing off"})
 	tm.env[w.Name] = map[string]string{"SWARM_SESSION": "ses_newer_generation"}
 	at.Advance(6 * time.Second)
+	// P0-crash-1: spawning the two workers above already recorded their own
+	// (harmless, defensive) startup kills; only what TickPause itself adds
+	// is what this test is about.
+	before := len(tm.killed)
 	if err := s.TickPause(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(tm.killed) != 0 {
-		t.Fatalf("a pane owned by another session must not be killed: %v", tm.killed)
+	if len(tm.killed) != before {
+		t.Fatalf("a pane owned by another session must not be killed: %v", tm.killed[before:])
 	}
 }
 
@@ -1119,21 +1130,28 @@ func TestKillIfOursLogsAnEnvError(t *testing.T) {
 	s.Sync(ctx, wSes.ID, nil, 20)
 	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "handing off"})
 	at.Advance(6 * time.Second)
+	// P0-crash-1: worker()'s own spawns already recorded their (harmless)
+	// startup kills before this env error was even wired up.
+	before := len(tm.killed)
 	if err := s.TickPause(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(tm.killed) != 0 {
-		t.Fatalf("an unreadable env must not be treated as a match: %v", tm.killed)
+	if len(tm.killed) != before {
+		t.Fatalf("an unreadable env must not be treated as a match: %v", tm.killed[before:])
 	}
 }
 
 // A real Kill failure surfaces to the reconciler instead of being swallowed.
 func TestTickPausePropagatesAKillError(t *testing.T) {
 	s, tm, at := clockStore(t)
-	et := &erroringTmux{fakeTmux: tm, killErr: errors.New("tmux kill-session failed")}
+	// P0-crash-1: startSession now kills any stale pane before it starts one,
+	// so killErr must not be set until after worker()'s own spawns are done,
+	// or their own defensive kill would fail spawning, not TickPause's.
+	et := &erroringTmux{fakeTmux: tm}
 	s.Tmux = et
 	ctx := context.Background()
 	_, _, wSes := worker(t, s)
+	et.killErr = errors.New("tmux kill-session failed")
 	w, _ := s.agentByID(ctx, wSes.AgentID)
 	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
 	s.Pause(ctx, w.Name, "session")

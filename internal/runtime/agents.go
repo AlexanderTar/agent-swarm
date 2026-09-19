@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -847,7 +848,20 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		env[k] = v
 	}
 
+	// P0-crash-1 (2026-09-19): a previous attempt's pane can still be alive
+	// under this same tmux name (e.g. reconcile marked it crashed while it
+	// was really just stuck at an unanswered prompt, or a retry raced a slow
+	// spawn). Without this, tmux new-session fails with "duplicate session"
+	// and this attempt is stillborn while the old, orphaned pane runs on
+	// forever. Kill is idempotent, so this is a no-op on the common path
+	// where nothing is there yet.
+	if err := s.Tmux.Kill(ctx, a.Name); err != nil {
+		return Session{}, err
+	}
 	if err := s.Tmux.Start(ctx, a.Name, cwd, env, l.Argv); err != nil {
+		// Leave a clear "failed" row instead of an orphaned "spawning" one
+		// that only the next reconcile tick would (confusingly) resolve.
+		_ = s.failSession(ctx, a, ses, err.Error())
 		return Session{}, err
 	}
 
@@ -887,6 +901,19 @@ func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText 
 	return nil
 }
 
+// ansiEscape strips terminal escape sequences before a StartupDialogs regex
+// sees the capture. P0-crash-1 (2026-09-19): Claude 2.1.278 renders a
+// highlighted menu option (e.g. the dev-channels warning's "1. I am using
+// this for local development") with a separate color escape around every
+// word, so a plain multi-word Dialog.Match like claudeDev never matched the
+// raw -e capture and the prompt sat unanswered forever. Idle/Busy detection
+// and failSession's saved pane text still see the raw capture (P0-4 needs
+// the dim attribute there to tell a placeholder from typed text); only
+// dialog matching needs words to be contiguous.
+var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
+
+func stripANSI(s string) string { return ansiEscape.ReplaceAllString(s, "") }
+
 func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapter.Adapter) error {
 	answered := map[int]bool{}
 	deadline := s.Now().Add(30 * time.Second)
@@ -898,11 +925,12 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 		if err != nil {
 			return err
 		}
+		plain := stripANSI(capture)
 		for i, d := range ad.StartupDialogs() {
-			if answered[i] || !d.Match.MatchString(capture) {
+			if answered[i] || !d.Match.MatchString(plain) {
 				continue
 			}
-			if d.Require != nil && !d.Require.MatchString(capture) {
+			if d.Require != nil && !d.Require.MatchString(plain) {
 				continue // the option line is not drawn yet
 			}
 			if d.Fail {
