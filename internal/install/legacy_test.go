@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -94,6 +95,34 @@ func TestRemoveLegacySharedToleratesAnUnloadedUpdater(t *testing.T) {
 	}}
 	if _, err := install.RemoveLegacyShared(context.Background(), c, f.Runner(), alwaysYes); err != nil {
 		t.Fatalf("a not-loaded updater must not fail the install: %v", err)
+	}
+}
+
+// A genuine bootout failure (not the "already not loaded" shape notLoaded
+// recognizes) must propagate as an error, before anything else is touched.
+func TestRemoveLegacySharedReturnsARealBootoutFailure(t *testing.T) {
+	c := fakeHome(t)
+	seedV1Home(t, c)
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"launchctl bootout gui/501/dev.swarm.updater": {Err: errors.New("Operation not permitted")},
+	}}
+	changed, err := install.RemoveLegacyShared(context.Background(), c, f.Runner(), func(string) bool {
+		t.Fatal("confirm called after a real bootout failure")
+		return false
+	})
+	if err == nil || !strings.Contains(err.Error(), "Operation not permitted") {
+		t.Fatalf("err = %v, want the bootout failure detail", err)
+	}
+	if len(changed) != 0 {
+		t.Errorf("changed = %v, want none", changed)
+	}
+	if _, err := os.Stat(filepath.Join(c.Home, "app")); err != nil {
+		t.Error("~/.swarm/app was removed after a failed bootout")
+	}
+	for _, name := range []string{"swarmd-start.sh", "swarm-update.sh"} {
+		if _, err := os.Stat(filepath.Join(c.Home, "bin", name)); err != nil {
+			t.Errorf("%s was removed after a failed bootout", name)
+		}
 	}
 }
 
