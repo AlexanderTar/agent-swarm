@@ -211,11 +211,15 @@ public final class SettingsModel {
             var models = CatalogRules.modelOptions(entry, advisorOnly: isAdvisor && d.agent == .claude)
             if isAdvisor { models.append(PickerOption(RoleDefault.noAdvisorModel, Copy.noAdvisor)) }
             let model = CatalogRules.resolve(entry, d.model)
+            // A stored model that no longer resolves (and isn't the advisor's own "none" sentinel)
+            // shows the first available model rather than an empty picker; this is display-only, so
+            // it never silently overwrites `settings` — `goneModel` below still flags the mismatch.
+            let displayModel = (model != nil || none) ? d.model : (models.first?.value ?? d.model)
             // `d.effort` is already normalised at the source (`normalizeStoredEfforts`, called from
             // `load()`/`checkAgain()`), so this is a pure projection of `settings`.
             return DefaultsRow(role: role, label: Copy.defaultsRowLabel(role), agent: d.agent.rawValue,
                                agentOptions: CatalogRules.agentOptions(enabled: settings.enabledAgents),
-                               model: d.model, modelOptions: models,
+                               model: displayModel, modelOptions: models,
                                effortOptions: none ? nil : CatalogRules.effortOptions(d.agent, model),
                                effort: d.effort,
                                error: incomplete[role] ?? CatalogRules.goneModel(d, catalog: catalog),

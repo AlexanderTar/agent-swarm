@@ -137,13 +137,19 @@ public enum CatalogRules {
         return (choice, .pair(a.agent, a.model))
     }
 
-    /// Changing Agent keeps the model only if the new agent offers it. Nothing is substituted (§16.3).
+    /// Changing Agent keeps the model if the new agent offers it; otherwise it falls back to the
+    /// new agent's first model rather than leaving the picker empty.
     public static func changeAgent(_ choice: AgentChoice, to agent: AgentKind, catalog: [AgentCatalogEntry]) -> (AgentChoice, FieldErrors) {
-        if let m = resolve(entry(catalog, agent), choice.model) {
+        let e = entry(catalog, agent)
+        if let m = resolve(e, choice.model) {
             return (AgentChoice(agent: agent, model: choice.model, effort: normalizeEffort(agent, m, choice.effort)),
                     FieldErrors())
         }
-        return (AgentChoice(agent: agent, model: ""), FieldErrors(model: Copy.modelUnavailable))
+        guard let first = modelOptions(e).first?.value else {
+            return (AgentChoice(agent: agent, model: ""), FieldErrors(model: Copy.modelUnavailable))
+        }
+        return (AgentChoice(agent: agent, model: first, effort: normalizeEffort(agent, resolve(e, first), "")),
+                FieldErrors())
     }
 
     /// Changing Model keeps a supported level, otherwise resets to Default with a note (§16.4).

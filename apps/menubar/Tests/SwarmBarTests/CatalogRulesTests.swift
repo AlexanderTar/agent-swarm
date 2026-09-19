@@ -116,10 +116,10 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(R.prefill(bare, role: .coder).1, AdvisorChoice.none)
     }
 
-    func testChangingAgentNeverSubstitutes() {
+    func testChangingAgentSubstitutesTheFirstModelWhenIncompatible() {
         let (c, e) = R.changeAgent(AgentChoice(agent: .claude, model: "opus", effort: "high"), to: .codex, catalog: catalog)
-        XCTAssertEqual(c, AgentChoice(agent: .codex, model: ""))
-        XCTAssertEqual(e, FieldErrors(model: "Choose a model available for this agent."))
+        XCTAssertEqual(c, AgentChoice(agent: .codex, model: "gpt-x", effort: ""))
+        XCTAssertTrue(e.isValid)
         let (kept, ok) = R.changeAgent(AgentChoice(agent: .codex, model: "m-opus", effort: "max"), to: .claude, catalog: catalog)
         XCTAssertEqual(kept, AgentChoice(agent: .claude, model: "m-opus", effort: "max"))
         XCTAssertTrue(ok.isValid)

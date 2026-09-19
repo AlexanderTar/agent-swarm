@@ -99,10 +99,8 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(saves, 3)
 
         await m.setAgent(.coder, "codex")
-        XCTAssertEqual(m.defaultsRows[2].error, "Choose a model available for this agent.")
-        XCTAssertEqual(saves, 3, "an incomplete row blocks saving")
-        await m.setModel(.coder, "gpt-6-astra")
-        XCTAssertNil(m.defaultsRows[2].error)
+        XCTAssertNil(m.defaultsRows[2].error, "an incompatible switch substitutes the first model instead of an error")
+        XCTAssertEqual(m.settings[.coder]?.model, "gpt-6-astra")
         XCTAssertEqual(saves, 4)
         await m.setAgent(.coder, "robot")
         XCTAssertEqual(saves, 4)

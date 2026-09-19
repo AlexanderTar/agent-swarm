@@ -82,11 +82,8 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertNil(f.effortNote)
 
         f.setAgent("codex")
-        XCTAssertEqual(f.choice, AgentChoice(agent: .codex, model: ""))
-        XCTAssertEqual(f.errors.model, "Choose a model available for this agent.")
-        XCTAssertFalse(f.canStart)
-        XCTAssertNil(f.effortOptions)
-        f.setModel("gpt-6-astra")
+        XCTAssertEqual(f.choice, AgentChoice(agent: .codex, model: "gpt-6-astra", effort: ""))
+        XCTAssertNil(f.errors.model, "an incompatible switch substitutes the first model instead of an error")
         XCTAssertTrue(f.canStart)
         XCTAssertEqual(f.effortOptions?.first?.label, "Default (medium)")
 
