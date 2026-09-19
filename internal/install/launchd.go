@@ -168,6 +168,10 @@ func Install(ctx context.Context, c Config, run execx.Runner, dryRun bool, w io.
 	return nil
 }
 
+// NotLoaded reports whether a launchctl bootout error only means the job was not
+// loaded. internal/migrate needs the same judgement (§20 step 2).
+func NotLoaded(err error) bool { return notLoaded(err) }
+
 // notLoaded reports whether a bootout error only means the job wasn't loaded
 // (launchctl exits 3 "No such process", or 113 "Could not find service").
 func notLoaded(err error) bool {

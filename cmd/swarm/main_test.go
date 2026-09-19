@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,14 +15,17 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
+	"github.com/AlexanderTar/agent-swarm/internal/migrate"
 	_ "modernc.org/sqlite"
 )
 
@@ -595,5 +599,198 @@ func TestDoctorOutput(t *testing.T) {
 	var got []install.Check
 	if code != 1 || json.Unmarshal([]byte(out), &got) != nil || len(got) != 3 || got[2].OK {
 		t.Fatalf("doctor --json = %d %q", code, out)
+	}
+}
+
+// The usage text is the CLI's help (§19). Every command this branch ships must be
+// in it, and no command it does not ship.
+func TestUsageListsTheP5Commands(t *testing.T) {
+	var out bytes.Buffer
+	if code := run([]string{"help"}, &out, io.Discard); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	for _, want := range []string{
+		"install [--plugins] [--yes]",
+		"uninstall",
+		"doctor [--json] [--legacy]",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("usage is missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestUnknownFlagsAreRejected(t *testing.T) {
+	for _, args := range [][]string{
+		{"install", "--nope"},
+		{"uninstall", "--nope"},
+		{"doctor", "--nope"},
+	} {
+		if code := run(args, io.Discard, io.Discard); code != 2 {
+			t.Errorf("%v exit = %d, want 2", args, code)
+		}
+	}
+}
+
+// doctor --legacy prints the legacy block and nothing else.
+func TestDoctorLegacyPrintsOnlyTheLegacyBlock(t *testing.T) {
+	saved := doctorChecks
+	savedLegacy := doctorLegacyChecks
+	t.Cleanup(func() { doctorChecks, doctorLegacyChecks = saved, savedLegacy })
+	doctorChecks = func(context.Context, install.Doctor) []install.Check {
+		t.Fatal("plain checks must not run with --legacy")
+		return nil
+	}
+	doctorLegacyChecks = func(context.Context, install.Doctor) []install.Check {
+		return []install.Check{{Name: "Agent Swarm 1.x", OK: false, Detail: "leftover at /fake/x"}}
+	}
+	var out bytes.Buffer
+	code := run([]string{"doctor", "--legacy", "--home", t.TempDir()}, &out, io.Discard)
+	if code != 1 {
+		t.Errorf("code = %d, want 1 for a failing check", code)
+	}
+	if !strings.Contains(out.String(), "leftover at /fake/x") {
+		t.Errorf("out = %q", out.String())
+	}
+}
+
+// seedLegacyDB writes a minimal Agent Swarm 1.x database at path (C5).
+func seedLegacyDB(t *testing.T, path string) {
+	t.Helper()
+	d, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := d.Exec(`CREATE TABLE schema_meta (version INTEGER NOT NULL,
+		embed_model TEXT NOT NULL, embed_dimensions INTEGER NOT NULL,
+		migrated_at TEXT NOT NULL DEFAULT (datetime('now')));
+		INSERT INTO schema_meta (version, embed_model, embed_dimensions) VALUES (4, 'nomic-embed-text', 256);`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// swarm install refuses to run while v1 data is present (C5), with §17.3's sentence.
+func TestInstallRefusesWithLegacyData(t *testing.T) {
+	home := t.TempDir()
+	seedLegacyDB(t, filepath.Join(home, "swarm.db"))
+	var errOut bytes.Buffer
+	code := run([]string{"install", "--home", home, "--dry-run"}, io.Discard, &errOut)
+	if code == 0 {
+		t.Fatal("want a non-zero exit")
+	}
+	if want := "Agent Swarm 1.x data found. Run `swarm migrate` first."; !strings.Contains(errOut.String(), want) {
+		t.Errorf("stderr = %q, want %q", errOut.String(), want)
+	}
+}
+
+// --yes answers the release-folder confirmation without reading stdin. This is a
+// real run (not --dry-run), because --dry-run stops before installAgents is called.
+func TestInstallYesDoesNotReadStdin(t *testing.T) {
+	savedAgents, savedLaunchd := installAgents, installLaunchd
+	t.Cleanup(func() { installAgents, installLaunchd = savedAgents, savedLaunchd })
+	installLaunchd = func(context.Context, install.Config, execx.Runner, bool, io.Writer) error { return nil }
+	var gotConfirm bool
+	installAgents = func(ctx context.Context, o install.AgentsOpts) error {
+		gotConfirm = o.Confirm("prompt?")
+		return nil
+	}
+	if code := run([]string{"install", "--yes", "--home", t.TempDir()}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if !gotConfirm {
+		t.Error("--yes must make Confirm return true without a prompt")
+	}
+}
+
+// --plugins sets PluginsOnly and skips the launchd plist entirely.
+func TestInstallPluginsOnlySkipsTheLaunchAgent(t *testing.T) {
+	savedAgents, savedInstall := installAgents, installLaunchd
+	t.Cleanup(func() { installAgents, installLaunchd = savedAgents, savedInstall })
+	installLaunchd = func(context.Context, install.Config, execx.Runner, bool, io.Writer) error {
+		t.Fatal("--plugins must not write the launch agent")
+		return nil
+	}
+	var pluginsOnly bool
+	installAgents = func(ctx context.Context, o install.AgentsOpts) error {
+		pluginsOnly = o.PluginsOnly
+		return nil
+	}
+	if code := run([]string{"install", "--plugins", "--home", t.TempDir()}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if !pluginsOnly {
+		t.Error("PluginsOnly was not set")
+	}
+}
+
+// The four modes are mutually exclusive, and each one calls its own runner method.
+func TestMigrateFlagsAreExclusiveAndDispatch(t *testing.T) {
+	saved := migrateRun
+	t.Cleanup(func() { migrateRun = saved })
+	for _, tc := range []struct {
+		args []string
+		want string
+		code int
+	}{
+		{[]string{"migrate"}, "migrate", 0},
+		{[]string{"migrate", "--dry-run"}, "dry-run", 0},
+		{[]string{"migrate", "--resume"}, "resume", 0},
+		{[]string{"migrate", "--rollback"}, "rollback", 0},
+		{[]string{"migrate", "--resume", "--rollback"}, "", 2},
+		{[]string{"migrate", "--dry-run", "--resume"}, "", 2},
+	} {
+		var got string
+		migrateRun = func(ctx context.Context, r *migrate.Runner, mode string) error { got = mode; return nil }
+		code := run(append(tc.args, "--home", t.TempDir()), io.Discard, io.Discard)
+		if code != tc.code {
+			t.Errorf("%v exit = %d, want %d", tc.args, code, tc.code)
+		}
+		if got != tc.want {
+			t.Errorf("%v mode = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
+// C1(a): Ctrl-C (SIGINT) during swarm migrate must cancel the context migrateRun
+// gets, not hard-kill the process outright — a hard kill has no chance to run
+// anything, including the per-action journal saves the runner relies on. This
+// sends the test process itself a real SIGINT while migrateContext's
+// signal.NotifyContext is armed; that is the documented way to test this pattern
+// (the signal is intercepted for cancellation, not left to its default
+// terminate-the-process disposition).
+func TestMigrateContextCancelsOnSIGINTInsteadOfKillingTheProcess(t *testing.T) {
+	ctx, stop := migrateContext()
+	defer stop()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+		// Good: the signal became a cancellation, and the test process is still here
+		// to observe it — a hard kill would have ended it instead.
+	case <-time.After(3 * time.Second):
+		t.Fatal("context was not canceled after SIGINT")
+	}
+}
+
+func TestUsageListsMigrate(t *testing.T) {
+	var out bytes.Buffer
+	run([]string{"help"}, &out, io.Discard)
+	if !strings.Contains(out.String(), "migrate [--dry-run | --resume | --rollback]") {
+		t.Errorf("usage is missing migrate:\n%s", out.String())
+	}
+}
+
+func TestUninstallCallsTheInstallPackage(t *testing.T) {
+	saved := installUninstall
+	t.Cleanup(func() { installUninstall = saved })
+	var called bool
+	installUninstall = func(context.Context, install.AgentsOpts) error { called = true; return nil }
+	if code := run([]string{"uninstall", "--home", t.TempDir()}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if !called {
+		t.Error("install.Uninstall was not called")
 	}
 }

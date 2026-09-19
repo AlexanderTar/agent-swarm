@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -22,17 +23,75 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 )
 
+// The test seams for the P5 commands. Production values are the real functions.
+var (
+	installLaunchd     = install.Install
+	installAgents      = install.Agents
+	installUninstall   = install.Uninstall
+	doctorLegacyChecks = func(ctx context.Context, d install.Doctor) []install.Check { return d.LegacyChecks(ctx) }
+)
+
+// newConfig is the one place os.UserHomeDir() is consulted for the install
+// package's paths (S-5). Every path in internal/install comes from the struct it
+// returns.
+func newConfig(home string) (install.Config, error) {
+	bin, err := os.Executable()
+	if err != nil {
+		return install.Config{}, err
+	}
+	if real, err := filepath.EvalSymlinks(bin); err == nil {
+		bin = real
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return install.Config{}, err
+	}
+	return install.Config{
+		Bin: bin, Home: home, LaunchAgentsDir: filepath.Join(userHome, "Library", "LaunchAgents"),
+		Path: install.LaunchPath(os.Getenv("PATH"), userHome), UID: os.Getuid(),
+		User: os.Getenv("USER"), UserHome: userHome,
+	}, nil
+}
+
+// agentsOpts builds the AgentsOpts for install and uninstall. §12.4 gives the
+// plugin commands 120 s, which execx.Run's 30 s cap would cut short.
+func agentsOpts(cfg install.Config, yes, pluginsOnly bool, stdin io.Reader, out io.Writer) install.AgentsOpts {
+	confirm := func(prompt string) bool {
+		if yes {
+			return true
+		}
+		if stdin == nil {
+			return false
+		}
+		fmt.Fprint(out, prompt)
+		line, err := bufio.NewReader(stdin).ReadString('\n')
+		if err != nil {
+			return false
+		}
+		answer := strings.ToLower(strings.TrimSpace(line))
+		return answer == "y" || answer == "yes"
+	}
+	return install.AgentsOpts{
+		Cfg: cfg, Run: execx.RunFor(120 * time.Second), HTTP: &http.Client{Timeout: 30 * time.Second},
+		MarketplaceURL: install.MarketplaceURL,
+		Installed:      install.InstalledKinds(exec.LookPath),
+		Confirm:        confirm, PluginsOnly: pluginsOnly, Out: out,
+	}
+}
+
 // newDoctor sets every field: Doctor.Checks calls each one unguarded.
 func newDoctor(home, daemonURL string) install.Doctor {
-	userHome, _ := os.UserHomeDir()
+	cfg, _ := newConfig(home) // a failure leaves the paths empty, and the checks report it
 	return install.Doctor{
-		Run: execx.Run, Home: home, UserHome: userHome,
-		LaunchAgentsDir: filepath.Join(userHome, "Library", "LaunchAgents"),
+		Run: execx.Run, Home: home, UserHome: cfg.UserHome,
+		LaunchAgentsDir: cfg.LaunchAgentsDir,
 		DaemonURL:       strings.TrimRight(daemonURL, "/"),
 		OllamaCheck:     kb.NewOllama().Check,
-		GhosttyApps:     []string{"/Applications/Ghostty.app", filepath.Join(userHome, "Applications", "Ghostty.app")},
+		GhosttyApps:     []string{"/Applications/Ghostty.app", filepath.Join(cfg.UserHome, "Applications", "Ghostty.app")},
 		LookPath:        exec.LookPath,
 		HTTP:            &http.Client{Timeout: 3 * time.Second},
+		Cfg:             cfg,
+		Installed:       install.InstalledKinds(exec.LookPath),
 	}
 }
 
@@ -42,10 +101,17 @@ var doctorChecks = func(ctx context.Context, d install.Doctor) []install.Check {
 func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 	fs, home, base := flags("doctor", stderr, true)
 	asJSON := fs.Bool("json", false, "print JSON")
+	legacy := fs.Bool("legacy", false, "report Agent Swarm 1.x state left on this Mac")
 	if code, done := parse(fs, args); done {
 		return code
 	}
-	checks := doctorChecks(context.Background(), newDoctor(*home, *base))
+	d := newDoctor(*home, *base)
+	var checks []install.Check
+	if *legacy {
+		checks = doctorLegacyChecks(context.Background(), d)
+	} else {
+		checks = doctorChecks(context.Background(), d)
+	}
 	code := 0
 	for _, c := range checks {
 		if !c.OK {
@@ -71,26 +137,49 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	fs, home, _ := flags("install", stderr, false)
 	dry := fs.Bool("dry-run", false, "print what would change")
+	plugins := fs.Bool("plugins", false, "only install or update the superpowers plugins")
+	yes := fs.Bool("yes", false, "answer the Agent Swarm 1.x removal prompt with yes")
 	if code, done := parse(fs, args); done {
 		return code
 	}
-	bin, err := os.Executable()
+	cfg, err := newConfig(*home)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	if real, err := filepath.EvalSymlinks(bin); err == nil {
-		bin = real
+	o := agentsOpts(cfg, *yes, *plugins, os.Stdin, stdout)
+	if *plugins {
+		if err := installAgents(context.Background(), o); err != nil {
+			return fail(stderr, err)
+		}
+		return 0
 	}
-	userHome, err := os.UserHomeDir()
+	if err := installLaunchd(context.Background(), cfg, execx.Run, *dry, stdout); err != nil {
+		return fail(stderr, err)
+	}
+	if *dry {
+		// A dry run reports the plist and stops before touching agent configuration.
+		fmt.Fprintln(stdout, "Would remove the Agent Swarm 1.x integrations and write the agent configuration.")
+		return 0
+	}
+	if err := installAgents(context.Background(), o); err != nil {
+		return fail(stderr, err)
+	}
+	return 0
+}
+
+func cmdUninstall(args []string, stdout, stderr io.Writer) int {
+	fs, home, _ := flags("uninstall", stderr, false)
+	if code, done := parse(fs, args); done {
+		return code
+	}
+	cfg, err := newConfig(*home)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	cfg := install.Config{Bin: bin, Home: *home, LaunchAgentsDir: filepath.Join(userHome, "Library", "LaunchAgents"),
-		Path: install.LaunchPath(os.Getenv("PATH"), userHome), UID: os.Getuid(),
-		User: os.Getenv("USER"), UserHome: userHome}
-	if err := install.Install(context.Background(), cfg, execx.Run, *dry, stdout); err != nil {
+	if err := installUninstall(context.Background(), agentsOpts(cfg, true, false, nil, stdout)); err != nil {
 		return fail(stderr, err)
 	}
+	fmt.Fprintln(stdout, "Removed the launch agent and the Swarm entries in each agent's configuration. Your data in "+cfg.Home+" is untouched.")
 	return 0
 }
 
