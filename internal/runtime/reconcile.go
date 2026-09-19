@@ -169,8 +169,29 @@ func (s *Store) terminalCheckpointKind(ctx context.Context, agentID string, atte
 // resolveDead applies the "pane is dead" half of the §10.6 table. paneKnown is
 // false when there was no matching pane at all (as opposed to one this
 // generation no longer owns, or one tmux still reports as dead).
+// spawnGracePeriod protects a session that has JUST started against a
+// reconcile tick whose Panes() snapshot simply hasn't picked up the new
+// tmux pane yet. P0-crash-2 (2026-09-19): a real, live, actively-working
+// orchestrator session was marked 'crashed' 4.3s after Start() succeeded --
+// confirmed live: the tmux pane was still alive and its SWARM_SESSION env
+// still matched the "crashed" session's own ID, so the pane was never dead;
+// Reconcile's single Panes() snapshot for that tick simply didn't contain
+// it. This is keyed on StartedAt, not on the session still being in the
+// Spawning state: watchStartup can flip a session straight to Running
+// within the same tick it started (a fast Idle match, or a fake adapter in
+// tests), so gating on Spawning alone would still miss the race for any
+// session that happened to become idle quickly. The window is comfortably
+// inside the 30s watchStartup already allows a startup dialog to resolve,
+// so it cannot mask a session that is genuinely stuck. It does NOT apply
+// when tmux reports the pane itself as dead (p.Dead) -- that is real exit
+// signal, not a listing race, and must still be handled immediately.
+const spawnGracePeriod = 10 * time.Second
+
 func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bool) error {
 	now := s.Now()
+	if !paneKnown && now.Sub(r.StartedAt) < spawnGracePeriod {
+		return nil // give the next tick(s) a chance to see the new pane
+	}
 	if r.State == Stopping {
 		return s.tx(ctx, func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'paused', ended_at = ? WHERE id = ?`,

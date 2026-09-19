@@ -54,6 +54,41 @@ func TestResolveAliveStalePropagatesANotifyFailure(t *testing.T) {
 	}
 }
 
+// A session that has JUST started must not be marked crashed just because
+// this tick's Panes() snapshot doesn't yet contain its pane. P0-crash-2
+// (2026-09-19): a real, live, actively-working orchestrator session was
+// marked 'crashed' 4.3s after Start() -- confirmed live, the tmux pane was
+// genuinely still alive and its SWARM_SESSION env still matched. Only after
+// spawnGracePeriod elapses with still no matching pane does Reconcile treat
+// it as really gone.
+func TestReconcileGivesAFreshSessionAGracePeriodBeforeMarkingItCrashed(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Quiet3", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	panes(tm) // no pane at all yet -- simulates a tick whose snapshot raced Start()
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State == Crashed {
+		t.Fatal("a session inside the grace period must not be marked crashed just because its pane isn't in this tick's snapshot yet")
+	}
+	at.Advance(11 * time.Second) // past spawnGracePeriod
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, err = s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Crashed {
+		t.Fatalf("a session whose pane never appears must eventually be marked crashed once the grace period elapses, got %s", ses.State)
+	}
+}
+
 // ReconcileLoop just wraps Reconcile in a ticker and stops on cancel; this
 // only exercises that wiring, not the reconciliation logic itself (covered
 // above).
@@ -85,7 +120,7 @@ func TestReconcileLoopStopsOnContextCancel(t *testing.T) {
 }
 
 func TestDeadPaneWithACompletedCheckpointCompletesTheSession(t *testing.T) {
-	s, tm, _ := clockStore(t)
+	s, tm, at := clockStore(t)
 	ctx := context.Background()
 	_, _, wSes := worker(t, s)
 	w, _ := s.agentByID(ctx, wSes.AgentID)
@@ -94,6 +129,9 @@ func TestDeadPaneWithACompletedCheckpointCompletesTheSession(t *testing.T) {
 		Verification: []Verify{{Cmd: "go test", Phase: "red", OK: false}, {Cmd: "go test", Phase: "green", OK: true}},
 		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}})
 	panes(tm) // the pane is gone
+	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
+	// missing pane counts as gone, not just started -- advance past it.
+	at.Advance(11 * time.Second)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -155,13 +193,16 @@ func TestDeadPaneWithNoTerminalCheckpointCrashes(t *testing.T) {
 // A top-level crash (no parent to relay to) still records crashed.
 // A crashed notify failure must surface too.
 func TestDeadPaneCrashPropagatesANotifyFailure(t *testing.T) {
-	s, tm, _ := clockStore(t)
+	s, tm, at := clockStore(t)
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "WillCrash", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
 	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
 	panes(tm)
+	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
+	// missing pane counts as gone, not just started -- advance past it.
+	at.Advance(11 * time.Second)
 	if err := s.Reconcile(ctx); err == nil {
 		t.Fatal("a crash notify failure must propagate")
 	}
@@ -170,24 +211,30 @@ func TestDeadPaneCrashPropagatesANotifyFailure(t *testing.T) {
 // The "paused" notification on a dead-while-stopping session must also
 // propagate a failure instead of leaving the session's state ambiguous.
 func TestDeadPaneWhileStoppingPropagatesANotifyFailure(t *testing.T) {
-	s, tm, _ := clockStore(t)
+	s, tm, at := clockStore(t)
 	ctx := context.Background()
 	s.Notify = &erroringNotifier{err: errors.New("notify store is down")}
 	_, _, wSes := worker(t, s)
 	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, wSes.ID)
 	panes(tm)
+	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
+	// missing pane counts as gone, not just started -- advance past it.
+	at.Advance(11 * time.Second)
 	if err := s.Reconcile(ctx); err == nil {
 		t.Fatal("a paused notify failure must propagate")
 	}
 }
 
 func TestDeadPaneCrashWithNoParentSkipsTheRelay(t *testing.T) {
-	s, tm, _ := clockStore(t)
+	s, tm, at := clockStore(t)
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Lonely", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
 	panes(tm)
+	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
+	// missing pane counts as gone, not just started -- advance past it.
+	at.Advance(11 * time.Second)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -198,13 +245,16 @@ func TestDeadPaneCrashWithNoParentSkipsTheRelay(t *testing.T) {
 }
 
 func TestDeadPaneWithAFailedCheckpointFails(t *testing.T) {
-	s, tm, _ := clockStore(t)
+	s, tm, at := clockStore(t)
 	ctx := context.Background()
 	_, _, wSes := worker(t, s)
 	w, _ := s.agentByID(ctx, wSes.AgentID)
 	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
 	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: FailedCkp, Summary: "couldn't finish"})
 	panes(tm)
+	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
+	// missing pane counts as gone, not just started -- advance past it.
+	at.Advance(11 * time.Second)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -290,12 +340,15 @@ func TestDeadPaneCrashesEvenWithNoCheckpointAtAll(t *testing.T) {
 }
 
 func TestDeadPaneWhileStoppingBecomesPaused(t *testing.T) {
-	s, tm, _ := clockStore(t)
+	s, tm, at := clockStore(t)
 	ctx := context.Background()
 	_, _, wSes := worker(t, s)
 	w, _ := s.agentByID(ctx, wSes.AgentID)
 	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, wSes.ID)
 	panes(tm)
+	// spawnGracePeriod (P0-crash-2) needs real elapsed time before a
+	// missing pane counts as gone, not just started -- advance past it.
+	at.Advance(11 * time.Second)
 	s.Reconcile(ctx)
 	ses, _ := s.LatestSession(ctx, w.ID)
 	if ses.State != Paused {
@@ -495,7 +548,9 @@ func TestFirstSyncMovesToQuiescingAndTheHandoffToStopping(t *testing.T) {
 	if len(tm.killed)-before != 1 || tm.killed[len(tm.killed)-1] != w.Name {
 		t.Fatalf("killed = %v", tm.killed[before:])
 	}
-	// paused only once the pane is dead
+	// paused only once the pane is dead, and past spawnGracePeriod
+	// (P0-crash-2) since worker() started this session -- 6s so far.
+	at.Advance(5 * time.Second)
 	tm.panes = nil
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
