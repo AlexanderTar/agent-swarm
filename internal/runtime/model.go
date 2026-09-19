@@ -262,6 +262,17 @@ type Advisor interface {
 	Ask(ctx context.Context, sessionID, question string, focus []string, wait time.Duration) (Advice, error)
 }
 
+// UsageReader reports whether an agent kind is confirmed to be out of usage
+// right now (docs/specs/2026-09-19-usage-fallback-agent.md). internal/usage
+// already imports this package (for AgentKind), so this package can never
+// import internal/usage back; internal/usagegate adapts a live
+// *usage.Poller into this interface. A nil Store.Usage disables the
+// usage-triggered fallback feature entirely -- matching every existing test
+// and every environment where usage polling is off (SWARM_USAGE unset).
+type UsageReader interface {
+	Exhausted(ctx context.Context, kind AgentKind) bool
+}
+
 // Store is the single P2 service. Fields are wired once in cmd/swarm/daemon.go.
 // Task 12 adds Tmux/Adapters/Worktree/Notify/Bin/DaemonURL/OSEnv/BaseEnv/After;
 // Task 26 adds Advisor.
@@ -279,6 +290,7 @@ type Store struct {
 	Adapters  map[AgentKind]adapter.Adapter
 	Worktree  *worktree.Service
 	Notify    Notifier
+	Usage     UsageReader                                 // internal/usagegate.Gate; nil means the usage-fallback feature never triggers
 	Advisor   Advisor                                     // internal/advisor.Service (Tasks 25-27); nil means no swarm_advise wiring
 	Exec      execx.Runner                                // runner for prerun commands; nil means execx.Run
 	Bin       string                                      // absolute path to the swarm binary
