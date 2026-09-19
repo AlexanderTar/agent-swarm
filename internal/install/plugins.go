@@ -39,8 +39,16 @@ var pluginSupport = map[string][]Kind{
 var SkipAlways = map[string]string{"superpowers-dev": "it conflicts with superpowers"}
 
 type MarketplacePlugin struct {
-	Name   string `json:"name"`
+	Name   string       `json:"name"`
+	Source PluginSource `json:"source"`
+}
+
+// PluginSource is the marketplace's own nested source descriptor. Only
+// url-sourced plugins are handled — that is the only kind the real
+// marketplace currently publishes for any of §12.4's plugins.
+type PluginSource struct {
 	Source string `json:"source"`
+	URL    string `json:"url"`
 }
 
 // ParseMarketplace reads .claude-plugin/marketplace.json.
@@ -283,7 +291,7 @@ func (p Plugins) apply(ctx context.Context, k Kind, m MarketplacePlugin, action 
 		_, err := p.run(ctx, "codex", "plugin", "add", ref)
 		return err
 	case KindAgy:
-		_, err := p.run(ctx, "agy", "plugin", "install", "https://github.com/"+m.Source)
+		_, err := p.run(ctx, "agy", "plugin", "install", m.Source.URL)
 		return err
 	case KindCursor:
 		return p.vendorForCursor(ctx, m, action)
@@ -304,7 +312,7 @@ func (p Plugins) vendorForCursor(ctx context.Context, m MarketplacePlugin, actio
 		if err := os.MkdirAll(filepath.Dir(vendor), 0o755); err != nil {
 			return err
 		}
-		if _, err := p.run(ctx, "git", "clone", "--depth", "1", "https://github.com/"+m.Source, vendor); err != nil {
+		if _, err := p.run(ctx, "git", "clone", "--depth", "1", m.Source.URL, vendor); err != nil {
 			return err
 		}
 	}
@@ -312,7 +320,7 @@ func (p Plugins) vendorForCursor(ctx context.Context, m MarketplacePlugin, actio
 	manifest := filepath.Join(vendor, ".cursor-plugin", "plugin.json")
 	body, err := os.ReadFile(manifest)
 	if err != nil {
-		return fmt.Errorf("no cursor manifest in %s", m.Source)
+		return fmt.Errorf("no cursor manifest in %s", m.Source.URL)
 	}
 	var any map[string]any
 	if err := json.Unmarshal(body, &any); err != nil {

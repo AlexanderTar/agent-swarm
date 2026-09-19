@@ -2,16 +2,16 @@
   "name": "superpowers-marketplace",
   "owner": {"name": "obra"},
   "plugins": [
-    {"name": "superpowers", "source": "obra/superpowers", "description": "Core skills"},
-    {"name": "superpowers-dev", "source": "obra/superpowers-dev", "description": "Development build"},
-    {"name": "elements-of-style", "source": "obra/elements-of-style", "description": "Writing"},
-    {"name": "episodic-memory", "source": "obra/episodic-memory", "description": "Memory"},
-    {"name": "superpowers-chrome", "source": "obra/superpowers-chrome", "description": "Chrome"},
-    {"name": "superpowers-lab", "source": "obra/superpowers-lab", "description": "Lab"},
-    {"name": "superpowers-developing-for-claude-code", "source": "obra/superpowers-developing-for-claude-code", "description": "CC"},
-    {"name": "claude-session-driver", "source": "obra/claude-session-driver", "description": "Driver"},
-    {"name": "double-shot-latte", "source": "obra/double-shot-latte", "description": "Latte"},
-    {"name": "private-journal-mcp", "source": "obra/private-journal-mcp", "description": "Journal"},
-    {"name": "brand-new-plugin", "source": "obra/brand-new-plugin", "description": "Added after 2026-09-17"}
+    {"name": "superpowers", "source": {"source": "url", "url": "https://github.com/obra/superpowers.git"}, "description": "Core skills"},
+    {"name": "superpowers-dev", "source": {"source": "url", "url": "https://github.com/obra/superpowers-dev.git"}, "description": "Development build"},
+    {"name": "elements-of-style", "source": {"source": "url", "url": "https://github.com/obra/elements-of-style.git"}, "description": "Writing"},
+    {"name": "episodic-memory", "source": {"source": "url", "url": "https://github.com/obra/episodic-memory.git"}, "description": "Memory"},
+    {"name": "superpowers-chrome", "source": {"source": "url", "url": "https://github.com/obra/superpowers-chrome.git"}, "description": "Chrome"},
+    {"name": "superpowers-lab", "source": {"source": "url", "url": "https://github.com/obra/superpowers-lab.git"}, "description": "Lab"},
+    {"name": "superpowers-developing-for-claude-code", "source": {"source": "url", "url": "https://github.com/obra/superpowers-developing-for-claude-code.git"}, "description": "CC"},
+    {"name": "claude-session-driver", "source": {"source": "url", "url": "https://github.com/obra/claude-session-driver.git"}, "description": "Driver"},
+    {"name": "double-shot-latte", "source": {"source": "url", "url": "https://github.com/obra/double-shot-latte.git"}, "description": "Latte"},
+    {"name": "private-journal-mcp", "source": {"source": "url", "url": "https://github.com/obra/private-journal-mcp.git"}, "description": "Journal"},
+    {"name": "brand-new-plugin", "source": {"source": "url", "url": "https://github.com/obra/brand-new-plugin.git"}, "description": "Added after 2026-09-17"}
   ]
 }
