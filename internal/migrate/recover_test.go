@@ -125,6 +125,92 @@ func TestRollbackRestoresV1ExactlyAfterACrashAtEveryStep(t *testing.T) {
 	}
 }
 
+// Follow-up ticket #2 (P5 final review, real end-to-end run): Journal.Begin
+// appends rather than replaces, so a step that crashed and was then completed via
+// --resume leaves two Step records for the same N — a stale one with DoneAt == 0
+// and the resumed one that finished. Rollback's incomplete-step scan must not
+// flag that stale record: the step DID complete, just not on the first try.
+//
+// A genuine mid-step crash needs a step that fails without setting DoneAt (unlike
+// FailAfter, which only injects a failure AFTER the current step's DoneAt is
+// already set — that models a crash BETWEEN steps, not the duplicate-record bug).
+// Step 9's DoInstall is journaled as idempotent by requirement (same seam
+// TestInstallJournalsBeforeDoInstallRunsSoAPartialCrashIsStillRecorded uses), so
+// failing it once and succeeding on --resume reproduces the exact ticket scenario:
+// two Step{N: 9} records, the first with DoneAt == 0.
+func TestRollbackAfterAResumeDoesNotFlagAStepThatActuallyCompleted(t *testing.T) {
+	env := newMigrateEnv(t)
+	before := snapshot(t, env.Cfg)
+
+	calls := 0
+	env.Runner.DoInstall = func(context.Context) error {
+		calls++
+		if calls == 1 {
+			return errors.New("simulated crash mid-install")
+		}
+		env.Installed++
+		return nil
+	}
+	if err := env.Runner.Migrate(context.Background()); err == nil {
+		t.Fatal("want the injected DoInstall failure to surface")
+	}
+	j, err := migrate.LoadJournal(env.Cfg.Home)
+	if err != nil || j == nil || j.Complete {
+		t.Fatalf("journal after the crash = %+v, %v", j, err)
+	}
+	if got := j.LastDone(); got != 8 {
+		t.Fatalf("LastDone = %d, want 8 (step 9 crashed mid-step)", got)
+	}
+
+	if err := env.Runner.Resume(context.Background()); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	j, err = migrate.LoadJournal(env.Cfg.Home)
+	if err != nil || j == nil || !j.Complete {
+		t.Fatalf("journal after resume = %+v, %v", j, err)
+	}
+	// Confirm the duplicate-record setup this test relies on is actually in place:
+	// two records for step 9, the first stale (DoneAt == 0), the second completed.
+	var nine []migrate.Step
+	for _, st := range j.Steps {
+		if st.N == 9 {
+			nine = append(nine, st)
+		}
+	}
+	if len(nine) != 2 || nine[0].DoneAt != 0 || nine[1].DoneAt == 0 {
+		t.Fatalf("want two step-9 records (stale then completed), got %+v", nine)
+	}
+
+	err = env.Runner.Rollback(context.Background())
+	if err != nil {
+		t.Fatalf("rollback after a crash-then-resume must succeed cleanly, got: %v", err)
+	}
+
+	// Same full-set-equality check TestRollbackRestoresV1ExactlyAfterACrashAtEveryStep
+	// uses: the fix must not just suppress the false-positive error, the restore
+	// underneath it must actually be correct.
+	after := snapshot(t, env.Cfg)
+	for path, want := range before {
+		got, ok := after[path]
+		if !ok {
+			t.Errorf("%s is missing after the rollback", path)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s changed: %s → %s", path, want, got)
+		}
+	}
+	for path := range after {
+		if _, ok := before[path]; ok {
+			continue
+		}
+		if strings.HasSuffix(path, "-wal") || strings.HasSuffix(path, "-shm") {
+			continue
+		}
+		t.Errorf("%s exists after the rollback but did not exist before it", path)
+	}
+}
+
 // S-7's blocking case, called out on its own because it is the one that matters
 // most: step 9 overwrites dev.swarm.daemon.plist, so the backup must predate it.
 func TestRollbackAfterStepNineRestoresTheV1PlistByteForByte(t *testing.T) {

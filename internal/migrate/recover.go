@@ -53,10 +53,23 @@ func (r *Runner) Rollback(ctx context.Context) error {
 	// mid-step. Every action that step DID manage to journal is still in j.Undo()
 	// and gets replayed below, but Rollback genuinely does not know what else that
 	// step did before it was cut off, so it must not claim unqualified success (C1).
-	var incomplete []int
+	//
+	// Journal.Begin always appends rather than replacing, so a step that crashed
+	// and was later finished via --resume leaves TWO records for the same N: the
+	// stale crashed one (DoneAt == 0) and the resumed one that completed. Only
+	// flag a step number as incomplete if NO record for it ever completed.
+	completed := map[int]bool{}
 	for _, st := range j.Steps {
-		if st.StartedAt != 0 && st.DoneAt == 0 {
+		if st.DoneAt != 0 {
+			completed[st.N] = true
+		}
+	}
+	var incomplete []int
+	flagged := map[int]bool{}
+	for _, st := range j.Steps {
+		if st.StartedAt != 0 && st.DoneAt == 0 && !completed[st.N] && !flagged[st.N] {
 			incomplete = append(incomplete, st.N)
+			flagged[st.N] = true
 		}
 	}
 
