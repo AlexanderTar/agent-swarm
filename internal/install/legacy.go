@@ -27,6 +27,13 @@ const DeclinedReleaseRemoval = "Left the Agent Swarm 1.x release folders in plac
 // legacyShellScripts are the v1 launcher scripts (§21.3). ~/.swarm/bin/swarm is
 // deliberately not here: ~/.local/bin/swarm may still point at it until LinkBinary
 // repoints the link, and deleting it first would leave a dangling `swarm` on PATH.
+//
+// Leftovers() also never checks for a stray v1 bin/swarm independently of this
+// exclusion. That's only safe because Config.Bin currently *is*
+// ~/.swarm/bin/swarm (v1's path) until LinkBinary/an install moves it: if
+// Config.Bin's location ever changes, a v1 wrapper left at the old path would
+// go permanently unreported. Whoever changes where Config.Bin points needs to
+// revisit Leftovers() then.
 var legacyShellScripts = []string{"swarmd-start.sh", "swarm-update.sh"}
 
 // RemoveLegacyShared does the parts of §20 step 8 and §21.3 that are not tied to a

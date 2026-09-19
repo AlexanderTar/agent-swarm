@@ -4,7 +4,7 @@
   "plugins": [
     {"name": "superpowers", "source": {"source": "url", "url": "https://github.com/obra/superpowers.git"}, "description": "Core skills"},
     {"name": "superpowers-dev", "source": {"source": "url", "url": "https://github.com/obra/superpowers-dev.git"}, "description": "Development build"},
-    {"name": "elements-of-style", "source": {"source": "url", "url": "https://github.com/obra/elements-of-style.git"}, "description": "Writing"},
+    {"name": "elements-of-style", "source": {"source": "url", "url": "https://github.com/obra/the-elements-of-style.git"}, "description": "Writing"},
     {"name": "episodic-memory", "source": {"source": "url", "url": "https://github.com/obra/episodic-memory.git"}, "description": "Memory"},
     {"name": "superpowers-chrome", "source": {"source": "url", "url": "https://github.com/obra/superpowers-chrome.git"}, "description": "Chrome"},
     {"name": "superpowers-lab", "source": {"source": "url", "url": "https://github.com/obra/superpowers-lab.git"}, "description": "Lab"},

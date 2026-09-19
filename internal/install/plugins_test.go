@@ -3,6 +3,7 @@ package install_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -120,6 +121,35 @@ func TestSyncRunsTheExactPerAgentCommands(t *testing.T) {
 	}
 }
 
+// agy has no marketplace step and no test previously ran Sync with KindAgy at
+// all, so a URL-prefix bug at the agy call site (like the one the marketplace-
+// Source blocker fixed at the cursor call site) had zero test discrimination.
+func TestSyncRunsTheExactAgyInstallCommand(t *testing.T) {
+	c := fakeHome(t)
+	srv := marketplaceServer(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy plugin list": {Err: errors.New("agy: not configured")},
+		"agy plugin install https://github.com/obra/superpowers.git": {Out: "ok"},
+	}}
+	p := install.Plugins{Cfg: c, Run: f.Runner(), HTTP: srv.Client(), MarketplaceURL: srv.URL, Log: &bytes.Buffer{}}
+	got := p.Sync(context.Background(), []install.Kind{install.KindAgy})
+
+	calls := strings.Join(f.Calls(), "\n")
+	want := "agy plugin install https://github.com/obra/superpowers.git"
+	if !strings.Contains(calls, want) {
+		t.Errorf("missing call %q; calls =\n%s", want, calls)
+	}
+	var found bool
+	for _, r := range got {
+		if r.Kind == install.KindAgy && r.Plugin == "superpowers" && r.Action == "install" && r.Err == nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no successful agy superpowers install: %+v", got)
+	}
+}
+
 // §12.4 I17: superpowers-dev present means superpowers is NOT installed alongside it.
 func TestSyncSkipsSuperpowersWhenSuperpowersDevIsAlreadyInstalled(t *testing.T) {
 	c := fakeHome(t)
@@ -172,9 +202,9 @@ func TestSyncVendorsCursorPluginsAsRealFoldersNotSymlinks(t *testing.T) {
 		}
 	}
 	f := &execx.Fake{Responses: map[string]execx.Result{
-		"cursor-agent plugin marketplace add https://github.com/obra/superpowers-marketplace":                {Out: "added"},
-		"git clone --depth 1 https://github.com/obra/superpowers.git " + vendor:                              {Out: "cloned"},
-		"git clone --depth 1 https://github.com/obra/elements-of-style.git " + c.Vendor("elements-of-style"): {Out: "cloned"},
+		"cursor-agent plugin marketplace add https://github.com/obra/superpowers-marketplace":                    {Out: "added"},
+		"git clone --depth 1 https://github.com/obra/superpowers.git " + vendor:                                  {Out: "cloned"},
+		"git clone --depth 1 https://github.com/obra/the-elements-of-style.git " + c.Vendor("elements-of-style"): {Out: "cloned"},
 	}}
 	seedClone()
 	p := install.Plugins{Cfg: c, Run: f.Runner(), HTTP: srv.Client(), MarketplaceURL: srv.URL, Log: &bytes.Buffer{}}
