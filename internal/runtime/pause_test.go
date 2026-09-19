@@ -512,6 +512,137 @@ func TestPauseAllFreezesAQueuedSpawnTheSameWayASubtreePauseDoes(t *testing.T) {
 	}
 }
 
+// Fix R-1 (final review): the case above still has a live child (first) at
+// the moment PauseAll runs, so liveDescendants(ds) > 0 was already true and
+// masked the real gap. Here the ONLY descendant left when PauseAll is called
+// is the queued one -- the live sibling was cancelled first, freeing its
+// slot -- so a scope decision keyed on liveDescendants alone computes 0 and
+// leaves the orchestrator at session scope, invisible to DrainQueue's freeze
+// (rootHasLiveSubtreePause is keyed on pause_scope='subtree'). The queued
+// sibling then gets admitted on the very next reconcile-style DrainQueue
+// pass, completely unaffected by the pause-all that just ran. Falsified by
+// reverting hasWaitingDescendant's queued() branch back to liveDescendants:
+// this test then fails with the sibling admitted.
+func TestPauseAllFreezesAQueuedSpawnWithNoLiveSiblingLeft(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4) // only one non-orchestrator agent globally
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, queued1, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued1 {
+		t.Fatal("the first child should be admitted; the slot is free")
+	}
+	second, queued2, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued2 {
+		t.Fatal("the second child should queue; the global agent limit is 1")
+	}
+
+	// Cancel the first child through the real API (§10.5 Cancel, not raw
+	// SQL) to free its slot, leaving the queued sibling as the orchestrator's
+	// only descendant by the time PauseAll runs.
+	if _, err := s.Cancel(ctx, first.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Agent(ctx, first.Name); err != nil || got.State != AgentFinished {
+		t.Fatalf("first.State = %v, err = %v, want finished after Cancel", got.State, err)
+	}
+
+	if _, err := s.PauseAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orchSes.PauseScope != "subtree" {
+		t.Fatalf("orchestrator pause_scope = %q after pause-all, want subtree -- it still has a queued descendant", orchSes.PauseScope)
+	}
+	if !orchSes.PauseRoot {
+		t.Fatal("orchestrator pause_root = false, want true -- pause-all's own target must be the subtree root")
+	}
+	live, err := s.rootHasLiveSubtreePause(ctx, orch.RootItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live {
+		t.Fatal("rootHasLiveSubtreePause = false, want true -- a subtree pause is in flight over the whole root")
+	}
+
+	// The queued sibling must not be admitted by a drain pass while the
+	// pause is still live, even though its slot has been free since Cancel.
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Agent(ctx, second.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != AgentQueued {
+		t.Fatalf("state = %s, want still queued -- pause-all must freeze the queue even with no live descendant left", got.State)
+	}
+
+	// It must not be blocked forever either: once the orchestrator's own
+	// pause resolves (promoted, then handed off/paused -- the same "process
+	// exited" simulation TestSubtreePausePausesChildrenBeforeTheOrchestrator
+	// uses), the freeze thaws and the next drain admits it.
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	orchSes, err = s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orchSes.State != PauseRequested {
+		t.Fatalf("orchestrator state = %s, want pause_requested -- nothing live left to wait on", orchSes.State)
+	}
+	// The combined handoff must not list the queued sibling as a paused
+	// child: it never ran, so it never had a checkpoint to report.
+	var payload string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE to_agent_id = ? AND kind = 'control'
+		ORDER BY created_at DESC LIMIT 1`, orch.ID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(payload, second.Name) {
+		t.Fatalf("combined handoff payload lists the never-ran queued sibling: %s", payload)
+	}
+
+	s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: Handoff, Summary: "handing off"})
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, orchSes.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	live, err = s.rootHasLiveSubtreePause(ctx, orch.RootItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live {
+		t.Fatal("rootHasLiveSubtreePause = true, want false once the root's own session has ended")
+	}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Agent(ctx, second.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != AgentActive {
+		t.Fatalf("state = %s, want active -- the pause resolved, so the queue must thaw and admit it", got.State)
+	}
+}
+
 // Ruling B follow-up (Important #2): a live child whose root's own session
 // has already ended (paused/interrupted/completed/failed/crashed) must not
 // be silently skipped by PauseAll just because its root is no longer live --

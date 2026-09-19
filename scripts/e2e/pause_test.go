@@ -239,6 +239,106 @@ func TestScenario08PauseAllAndResume(t *testing.T) {
 	}
 }
 
+// Scenario 8's missing assertion (Fix R-1, final review): a queued spawn
+// stays queued through a pause-all, and thaws once the pause resolves. The
+// gap PauseAll had was invisible whenever a target still had a live
+// descendant at the moment it ran (liveDescendants(ds) > 0 already picked
+// subtree scope for the right reason) — it only showed up when the ONLY
+// descendant left was a queued one, which liveDescendants cannot see at all
+// (it has no session row). This drives exactly that shape end to end: one
+// admitted child that gets cancelled to free the slot, one queued sibling,
+// then pause-all.
+func TestScenario08bPauseAllFreezesAQueuedSpawn(t *testing.T) {
+	h := newHarness(t)
+	before := h.countActiveAgents(t)
+	h.setMaxAgents(t, before+1)
+	t.Cleanup(func() { h.setMaxAgents(t, 200) })
+
+	epic := h.materializedEpic(t)
+	orch := h.startOrchestrator(t, epic)
+	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	task1 := h.firstTask(t, epic)
+
+	// a second task, sibling of the first, under the same story (scenario 11's
+	// own pattern for a guaranteed-to-queue sibling)
+	storyKey := ""
+	{
+		var list struct {
+			Items []map[string]any `json:"items"`
+		}
+		h.doT(t, "GET", "/api/items?view=flat&root="+epic, nil, &list)
+		for _, it := range list.Items {
+			if it["type"] == "story" {
+				storyKey, _ = it["key"].(string)
+			}
+		}
+	}
+	var task2Resp map[string]any
+	h.doT(t, "POST", "/api/items", map[string]any{"type": "task", "title": "Two", "parent_key": storyKey}, &task2Resp)
+	task2Key, _ := task2Resp["key"].(string)
+	rev, _ := task2Resp["revision"].(float64)
+	h.doT(t, "PATCH", "/api/items/"+task2Key, map[string]any{"status": "ready", "revision": int(rev)}, nil)
+
+	first := h.spawn(t, orch, task1, "coder")
+	if !h.waitForSessionState(t, first, "running", 5*time.Second) {
+		t.Fatalf("%s session = %s, never reached running", first, h.sessionState(t, first))
+	}
+
+	out := h.mustTool(t, orch, "swarm_spawn", map[string]any{
+		"item": task2Key, "role": "coder", "agent": "fake", "model": "fake-1",
+	})
+	if out["queued"] != true {
+		t.Fatalf("second spawn = %+v, want queued:true", out)
+	}
+	second, _ := out["agent"].(string)
+	if second == "" {
+		t.Fatalf("swarm_spawn returned no agent name: %+v", out)
+	}
+
+	// Free first's slot before pause-all runs, so the queued sibling is the
+	// orchestrator's only descendant left at that moment. Cancel's HTTP
+	// response only comes back after RT.Cancel has already committed
+	// state='finished', so there is nothing to wait for here -- waiting would
+	// only widen the window in which the shared daemon's own 5s reconcile
+	// tick could drain the now-free slot on its own, before pause-all runs.
+	h.cancel(t, first)
+
+	n := h.pauseAll(t)
+	if h.agentState(t, second) != "queued" {
+		t.Fatalf("%s was admitted before pause-all ran (a reconcile tick raced the cancel); rerun", second)
+	}
+	if n < 1 {
+		t.Fatalf("pause-all requested = %d, want at least 1 (the orchestrator)", n)
+	}
+
+	var scope string
+	if err := h.db(t).QueryRow(`SELECT COALESCE(pause_scope, '') FROM sessions
+		WHERE agent_id = (SELECT id FROM agents WHERE name = ?) ORDER BY generation DESC LIMIT 1`,
+		orch).Scan(&scope); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "subtree" {
+		t.Fatalf("%s pause_scope = %q after pause-all, want subtree -- it still has a queued descendant", orch, scope)
+	}
+
+	// The orchestrator has nothing live left to wait for, so it promotes to
+	// pause_requested on the very next reconcile tick -- proving the freeze
+	// really is live (rootHasLiveSubtreePause), not just a scope label.
+	if !h.waitForSessionState(t, orch, "pause_requested", 6*time.Second) {
+		t.Fatalf("%s session = %s, want pause_requested", orch, h.sessionState(t, orch))
+	}
+	if h.agentState(t, second) != "queued" {
+		t.Fatalf("%s agent state = %s, want still queued while the pause is live", second, h.agentState(t, second))
+	}
+
+	// Resolve the orchestrator's own pause the way scenario 6 does (handoff,
+	// then the pane exiting on its own) -- once it does, the freeze thaws.
+	handOffAndKill(t, h, orch)
+	if !h.waitForAgentState(t, second, "active", 6*time.Second) {
+		t.Fatalf("%s agent state = %s, want active -- the pause resolved, so the queue must thaw and admit it", second, h.agentState(t, second))
+	}
+}
+
 // Scenario 9: unresponsive orchestrator during a subtree pause. Neither the
 // orchestrator nor its child ever responds — both are left on _default.json,
 // which only ever syncs once then sleeps. pauseSubtree (pause.go) pauses the

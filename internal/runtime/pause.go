@@ -147,8 +147,13 @@ type descendantRole struct {
 
 // descendantRoles returns every descendant of agentID, deepest first (§10.5:
 // children pause before their orchestrator), each with its subtree role. A
-// descendant with no session row at all -- a queued spawn that never started --
-// gets roleNone: nothing to pause, and nothing live to wait for.
+// descendant with no session row at all -- a queued spawn that never started
+// -- gets roleNone: nothing for the cascade to pause. It is still something
+// to WAIT for (Fix R-1: see queued() and hasWaitingDescendant below), which
+// is exactly what role.live() alone cannot see, since it never had a session
+// to be live in. (A preflight failure writes no session either, but only
+// StartSpike's own root-level agent row takes that path with no parent set,
+// so it can never actually surface as anyone's descendant here.)
 func (s *Store) descendantRoles(ctx context.Context, agentID string) ([]descendantRole, error) {
 	ds, err := s.descendantAgents(ctx, agentID)
 	if err != nil {
@@ -176,6 +181,31 @@ func liveDescendants(ds []descendantRole) int {
 		}
 	}
 	return n
+}
+
+// queued reports whether this descendant is a spawn that never started: no
+// session row at all, agent still in state 'queued'. It is always roleNone
+// (never live), but it is not nothing: DrainQueue will admit it the moment a
+// slot frees up, so a pause that ignores it can be defeated by exactly that
+// admission racing the pause it was supposedly subject to (Fix R-1).
+func (d descendantRole) queued() bool {
+	return d.role == roleNone && d.agent.State == AgentQueued
+}
+
+// hasWaitingDescendant reports whether ds has anything a subtree-scope pause
+// still needs to account for: a live descendant (something cascadeSubtreePause
+// can act on, and promotePendingSubtreePauses must wait to go non-live), or a
+// queued spawn that hasn't started yet -- invisible to liveDescendants, since
+// it has no session row, but exactly why DrainQueue's freeze
+// (rootHasLiveSubtreePause, keyed on pause_scope='subtree') exists: without
+// subtree scope here, admission never even asks whether a pause is in the way.
+func hasWaitingDescendant(ds []descendantRole) bool {
+	for _, d := range ds {
+		if d.role.live() || d.queued() {
+			return true
+		}
+	}
+	return false
 }
 
 // getInterrupted and setInterrupted guard Store.interruptedAt, the in-memory
@@ -434,7 +464,7 @@ func (s *Store) pause(ctx context.Context, name, scope string) (Session, int, er
 		}
 		return ses, cascaded, nil
 	}
-	if role == roleSessionPausing && liveDescendants(ds) == 0 {
+	if role == roleSessionPausing && !hasWaitingDescendant(ds) {
 		return ses, 0, nil
 	}
 	ses, cascaded, err := s.pauseSubtree(ctx, a, ses, deadline, ds)
@@ -626,6 +656,14 @@ func (s *Store) promotePendingSubtreePauses(ctx context.Context) error {
 				allDone = false
 				break
 			}
+			// A queued descendant never ran (Fix R-1 lets it into this pause
+			// at all, via hasWaitingDescendant), so it never has a checkpoint
+			// or anything else to report -- it must not appear in the
+			// combined handoff as if it were a paused child that simply left
+			// an empty summary.
+			if d.queued() {
+				continue
+			}
 			var itemKey string
 			_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, d.agent.ItemID).Scan(&itemKey)
 			children = append(children, map[string]string{"agent": d.agent.Name, "item": itemKey,
@@ -750,6 +788,13 @@ func (s *Store) writeDaemonPauseCheckpoint(ctx context.Context, sesID, agentID s
 	}
 	var blockers []string
 	for _, c := range children {
+		// A queued child never started (Fix R-1 lets it be part of a subtree
+		// pause at all now), so it was never in a position to hand off --
+		// listing it as a blocker would blame it for something it never had
+		// a chance to do.
+		if c.State == AgentQueued {
+			continue
+		}
 		var n int
 		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM checkpoints
 			WHERE agent_id = ? AND kind = 'handoff'`, c.ID).Scan(&n); err != nil {
@@ -912,8 +957,12 @@ func (s *Store) PauseAll(ctx context.Context) (int, error) {
 		}
 		// Only a target with something under it gets subtree scope: a
 		// standalone agent's pause has no subtree to freeze or cascade to.
+		// "Something under it" includes a queued spawn with no live session
+		// yet (Fix R-1) -- session scope here would leave DrainQueue free to
+		// admit it mid-pause, since its freeze is keyed on pause_scope, which
+		// a session-scoped pause never sets on anything but the target itself.
 		scope := "session"
-		if liveDescendants(ds) > 0 {
+		if hasWaitingDescendant(ds) {
 			scope = "subtree"
 		}
 		_, k, err := s.pause(ctx, name, scope)

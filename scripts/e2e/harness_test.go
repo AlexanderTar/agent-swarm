@@ -719,6 +719,40 @@ func (h *harness) waitForSessionState(t *testing.T, agentName, want string, time
 	}
 }
 
+// agentState reads an agent's agents.state column directly (queued/active/
+// finished/acknowledged) -- distinct from sessionState, which reads its
+// latest session row and has no 'queued' value at all: a queued spawn has no
+// session row yet.
+func (h *harness) agentState(t *testing.T, agentName string) string {
+	t.Helper()
+	var state string
+	if err := h.db(t).QueryRow(`SELECT state FROM agents WHERE name = ?`, agentName).Scan(&state); err != nil {
+		t.Fatalf("agent state for %s: %v", agentName, err)
+	}
+	return state
+}
+
+// waitForAgentState polls agentState until it equals want.
+func (h *harness) waitForAgentState(t *testing.T, agentName, want string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if h.agentState(t, agentName) == want {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// cancel calls POST /api/agents/{name}/cancel.
+func (h *harness) cancel(t *testing.T, agentName string) {
+	t.Helper()
+	h.doT(t, http.MethodPost, "/api/agents/"+agentName+"/cancel", nil, nil)
+}
+
 // waitForRelay polls the messages table for a 'relay' message addressed to
 // toAgentName carrying the given event, created at or after since — the
 // messages-table counterpart to waitForNotification/waitForEvent.
