@@ -91,39 +91,34 @@ type CheckpointResult struct {
 
 // tddOK is L24. Evidence is every verification entry of this attempt, earlier
 // checkpoints included, so a pause and resume inside one attempt keeps it.
+// It checks exactly what tddMissing promises -- a recorded red run somewhere,
+// and the most recent verification passing -- nothing more. Live incident
+// (2026-09-19): an earlier version paired red/green by exact Cmd string and
+// separately required every distinct Cmd's own last entry to be green. Real
+// TDD practice runs a narrow red (a single test) then a broader green (the
+// whole file or package) to confirm, which is a different Cmd string on
+// purpose -- that version rejected it as "TDD evidence missing" even though
+// the worker had done everything right, three times in one day. Do not
+// reintroduce a same-Cmd requirement or a "no other Cmd's last run may be
+// red" guard: both fire on ordinary scope broadening, not on genuinely
+// unfinished work.
 func tddOK(prior, now []Verify) bool {
 	all := append(append([]Verify{}, prior...), now...)
 	if len(all) == 0 {
 		return false
 	}
-	redAt := map[string]int{}
-	ok := false
-	for i, v := range all {
-		switch v.Phase {
-		case "red":
-			if _, seen := redAt[v.Cmd]; !seen {
-				redAt[v.Cmd] = i
-			}
-		case "green":
-			if r, seen := redAt[v.Cmd]; seen && r < i {
-				ok = true
-			}
+	sawRed := false
+	for _, v := range all {
+		if v.Phase == "red" {
+			sawRed = true
+			break
 		}
 	}
-	if !ok {
+	if !sawRed {
 		return false
 	}
-	// the run must end green: the last entry per command is green and ok
-	last := map[string]Verify{}
-	for _, v := range all {
-		last[v.Cmd] = v
-	}
-	for _, v := range last {
-		if v.Phase != "green" || !v.OK {
-			return false
-		}
-	}
-	return true
+	last := all[len(all)-1]
+	return last.Phase == "green" && last.OK
 }
 
 func jsonArray[T any](v []T) string {

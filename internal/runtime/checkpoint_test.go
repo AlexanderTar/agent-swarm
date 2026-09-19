@@ -123,6 +123,14 @@ func TestTDDGate(t *testing.T) {
 		{"green then red", []Verify{green, red}, false},
 		{"red then failing green", []Verify{red, {Cmd: green.Cmd, Phase: "green", OK: false}}, false},
 		{"nothing at all", nil, false},
+		// Live incident (2026-09-19): a narrow red run (-run TestLogin) followed by
+		// a broader green run (the whole package) is normal TDD practice, but the
+		// two Verify entries have different Cmd strings. The gate must not require
+		// them to match -- it only promises "record the failing test run before
+		// completing," not "re-run the identical command."
+		{"narrow red then broader green", []Verify{red, {Cmd: "go test ./internal/x", Phase: "green", OK: true}}, true},
+		{"red then unrelated failing green ends it", []Verify{red, green,
+			{Cmd: "go test ./internal/y", Phase: "green", OK: false}}, false},
 	}
 	for _, c := range cases {
 		s, _, _ := newStore(t)
