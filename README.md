@@ -43,10 +43,10 @@ ollama pull qwen3-embedding:0.6b
 ```bash
 git clone https://github.com/AlexanderTar/agent-swarm.git
 cd agent-swarm
-make install        # builds swarm into ~/.swarm/bin and Swarm.app into ~/Applications
+make install        # builds swarm into ~/.swarm/bin and Swarm.app into /Applications
 swarm install       # launchd service, tmux config, agent MCP/hooks/skill, first-run checks
 swarm doctor        # verify everything
-open ~/Applications/Swarm.app
+open /Applications/Swarm.app
 ```
 
 `swarm install` does the following:

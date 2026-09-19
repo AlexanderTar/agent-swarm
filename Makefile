@@ -4,7 +4,7 @@ PREFIX ?= $(HOME)/.swarm
 
 .PHONY: build web-build vet fmt test test-go test-web test-menubar e2e dev dev-seed install install-daemon install-app app skills-sync
 
-APP_DIR ?= $(HOME)/Applications
+APP_DIR ?= /Applications
 
 build: web-build
 	$(GO) build -o bin/swarm ./cmd/swarm
@@ -57,7 +57,7 @@ install-daemon: build
 	mkdir -p $(PREFIX)/bin
 	install -m 0755 bin/swarm $(PREFIX)/bin/swarm
 
-# Builds Swarm.app into ~/Applications.
+# Builds Swarm.app into /Applications.
 install-app: app
 	mkdir -p $(APP_DIR)
 	rm -rf $(APP_DIR)/Swarm.app
