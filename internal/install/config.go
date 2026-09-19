@@ -51,6 +51,9 @@ func (c Config) LocalBin() string { return filepath.Join(c.UserHome, ".local", "
 // Work is the neutral-folder parent codex is asked to trust (§11.5).
 func (c Config) Work() string { return filepath.Join(c.Home, "work") }
 
+// Worktrees is the centralized worktree parent codex is asked to trust (§11.5, §12.1).
+func (c Config) Worktrees() string { return filepath.Join(c.Home, "worktrees") }
+
 // Vendor holds the cursor plugin copies (§12.4).
 func (c Config) Vendor(rest ...string) string {
 	return filepath.Join(append([]string{c.Home, "vendor", "plugins"}, rest...)...)

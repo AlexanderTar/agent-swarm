@@ -155,6 +155,83 @@ func TestWriteCodexReplacesAStaleSwarmHookRatherThanAddingASecond(t *testing.T) 
 	}
 }
 
+// §11.5/§12.1: install trusts both the neutral work folder and the centralized
+// worktree folder, in the same pass, and a second run adds neither again.
+func TestWriteCodexTrustsBothWorkAndWorktreesInOnePass(t *testing.T) {
+	c := fakeHome(t)
+	if _, err := install.WriteCodex(c); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(c.Codex("config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	wantWork := "[projects.\"" + c.Work() + "\"]\ntrust_level = \"trusted\""
+	wantWorktrees := "[projects.\"" + c.Worktrees() + "\"]\ntrust_level = \"trusted\""
+	if !strings.Contains(s, wantWork) {
+		t.Errorf("missing work trust entry:\n%s", s)
+	}
+	if !strings.Contains(s, wantWorktrees) {
+		t.Errorf("missing worktrees trust entry:\n%s", s)
+	}
+	if c.Work() == c.Worktrees() {
+		t.Fatal("Work() and Worktrees() must be distinct paths")
+	}
+	changed, err := install.WriteCodex(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range changed {
+		if p == c.Codex("config.toml") {
+			t.Fatalf("second WriteCodex rewrote config.toml; changed = %v", changed)
+		}
+	}
+	body2, _ := os.ReadFile(c.Codex("config.toml"))
+	if string(body2) != s {
+		t.Error("second WriteCodex must be a no-op for both trust entries")
+	}
+}
+
+// Same as above, but with both directories actually on disk: on macOS t.TempDir()
+// resolves through /private, so this exercises the EvalSymlinks branch (not just
+// its not-yet-existing fallback) and proves the two entries are genuinely
+// distinct resolved paths, not a copy-paste of the same one.
+func TestWriteCodexResolvesSymlinksForBothWorkAndWorktrees(t *testing.T) {
+	c := fakeHome(t)
+	if err := os.MkdirAll(c.Work(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(c.Worktrees(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realWork, err := filepath.EvalSymlinks(c.Work())
+	if err != nil {
+		t.Fatal(err)
+	}
+	realWorktrees, err := filepath.EvalSymlinks(c.Worktrees())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if realWork == realWorktrees {
+		t.Fatal("resolved Work() and Worktrees() must be distinct paths")
+	}
+	if _, err := install.WriteCodex(c); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(c.Codex("config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	if !strings.Contains(s, "[projects.\""+realWork+"\"]\ntrust_level = \"trusted\"") {
+		t.Errorf("missing resolved work trust entry:\n%s", s)
+	}
+	if !strings.Contains(s, "[projects.\""+realWorktrees+"\"]\ntrust_level = \"trusted\"") {
+		t.Errorf("missing resolved worktrees trust entry:\n%s", s)
+	}
+}
+
 // §11.5: install trusts the realpath of ~/.swarm/work, once, as a text append.
 func TestCodexTrustAppendsOnceAndKeepsExistingEntries(t *testing.T) {
 	in := "model = \"gpt-5.5\"\n\n[projects.\"/Users/fake/GitHub/agent-swarm\"]\ntrust_level = \"trusted\"\n"

@@ -26,6 +26,7 @@ func TestConfigPathsDeriveFromUserHomeOnly(t *testing.T) {
 		{"gemini hooks", c.Gemini("config", "hooks.json"), "/fake/home/.gemini/config/hooks.json"},
 		{"local bin", c.LocalBin(), "/fake/home/.local/bin/swarm"},
 		{"work", c.Work(), "/fake/home/.swarm/work"},
+		{"worktrees", c.Worktrees(), "/fake/home/.swarm/worktrees"},
 		{"vendor", c.Vendor("superpowers"), "/fake/home/.swarm/vendor/plugins/superpowers"},
 		{"logs", c.Logs("install.log"), "/fake/home/.swarm/logs/install.log"},
 	} {

@@ -88,17 +88,22 @@ func WriteCodex(c Config) ([]string, error) {
 	}
 
 	cfgPath := c.Codex("config.toml")
-	real, err := filepath.EvalSymlinks(c.Work())
-	if err != nil {
-		real = c.Work() // the folder may not exist yet on a first install
-	}
 	old, err := os.ReadFile(cfgPath)
 	if err != nil && !os.IsNotExist(err) {
 		return changed, err
 	}
-	next, added := CodexTrust(string(old), real)
-	if added {
-		if _, err := WriteIfChanged(cfgPath, []byte(next), 0o644); err != nil {
+	text, anyAdded := string(old), false
+	for _, dir := range []string{c.Work(), c.Worktrees()} {
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			real = dir // the folder may not exist yet on a first install
+		}
+		added := false
+		text, added = CodexTrust(text, real)
+		anyAdded = anyAdded || added
+	}
+	if anyAdded {
+		if _, err := WriteIfChanged(cfgPath, []byte(text), 0o644); err != nil {
 			return changed, err
 		}
 		changed = append(changed, cfgPath)
