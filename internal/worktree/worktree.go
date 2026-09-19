@@ -272,6 +272,21 @@ func (s *Service) repoPath(ctx context.Context, repoID string) (string, error) {
 // 'active' if Remove backed off, or 'retained'/'removed' otherwise) and
 // refuses accordingly. Never an in-between state, because Remove holds the
 // lock for its whole guard-check-through-delete sequence.
+//
+// This takes lockFor(wtID) before touching the database at all, not inside a
+// transaction opened around that wait: a transaction acquires SQLite's
+// single writer lock immediately (_txlock=immediate) before its closure
+// runs, so a closure that then blocks on lockFor(wtID) -- held by a
+// concurrent Remove/Sweep still doing its own separate plain DB calls on
+// this same connection pool -- starves those calls on the held writer lock
+// and deadlocks into SQLITE_BUSY. Confirmed empirically: wrapping this body
+// in s.DB.Tx broke TestShareRefusesAConcurrentClaimRace and
+// TestSweepRefusesAConcurrentShareDuringRemoval, both of which exercise
+// exactly this Share-during-Remove race. So Share (and the swarm_worktree
+// "share" MCP op that calls it) is idempotency-guarded the same way
+// create/review are: PeekIdempotent before this side effect runs, a trivial
+// IdemTx to record the result after -- not folded into one transaction with
+// the assignment_update message.
 func (s *Service) Share(ctx context.Context, wtID, agentID, mode string) error {
 	if mode != "rw" && mode != "ro" {
 		return fmt.Errorf("worktree: unknown share mode %q", mode)

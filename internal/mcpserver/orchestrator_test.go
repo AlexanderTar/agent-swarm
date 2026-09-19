@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"slices"
 	"strconv"
@@ -978,6 +979,211 @@ func TestWorktreeCreateAndShareRefuseUnknownIDs(t *testing.T) {
 	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
 		`{"op":"share","worktree":"wt_nope","agent":"no-such-agent","mode":"ro"}`); err == nil {
 		t.Fatal("an unknown agent must be refused")
+	}
+}
+
+func countWorktrees(t *testing.T, s *Server) int {
+	t.Helper()
+	var n int
+	if err := s.RT.DB.QueryRow(`SELECT COUNT(*) FROM worktrees`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// Fix round 1, Important #2: a repeated request_id on swarm_worktree create
+// must not create a second worktree directory on disk. PathFor suffixes a
+// colliding path with -2, -3, ... (internal/worktree/worktree.go:89), so a
+// naive replay (no guard at all) wouldn't error -- it would silently create
+// a second worktree at a different path. Proven here by counting DB rows.
+func TestWorktreeCreateRequestIDReplaysInsteadOfCreatingTwice(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	before := countWorktrees(t, s)
+	body := `{"op":"create","repo":"` + seed.RepoID + `","branch":"task/replay","request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_worktree", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWorktrees(t, s); n != before+1 {
+		t.Fatalf("worktrees after first call = %d, want %d", n, before+1)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_worktree", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWorktrees(t, s); n != before+1 {
+		t.Fatalf("worktrees after replayed call = %d, want still %d", n, before+1)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
+func TestWorktreeCreateWithoutOrDistinctRequestIDsEachCreate(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	before := countWorktrees(t, s)
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"create","repo":"`+seed.RepoID+`","branch":"task/a","request_id":"req-a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"create","repo":"`+seed.RepoID+`","branch":"task/b","request_id":"req-b"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"create","repo":"`+seed.RepoID+`","branch":"task/c"}`); err != nil {
+		t.Fatal(err)
+	}
+	if n := countWorktrees(t, s); n != before+3 {
+		t.Fatalf("worktrees = %d, want %d", n, before+3)
+	}
+}
+
+// review goes through the same two-phase guard as create.
+func TestWorktreeReviewRequestIDReplaysInsteadOfCreatingTwice(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	sha := headSHA(t, seed.RepoPath)
+	before := countWorktrees(t, s)
+	body := `{"op":"review","repo":"` + seed.RepoID + `","sha":"` + sha + `","request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_worktree", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWorktrees(t, s); n != before+1 {
+		t.Fatalf("worktrees after first call = %d, want %d", n, before+1)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_worktree", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWorktrees(t, s); n != before+1 {
+		t.Fatalf("worktrees after replayed call = %d, want still %d", n, before+1)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
+// A repeated request_id on share must not send the assignment_update message
+// twice.
+func TestWorktreeShareRequestIDReplaysWithoutASecondMessage(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"create","repo":"`+seed.RepoID+`","branch":"task/share-replay"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	json.Unmarshal(mustJSON(out), &wt)
+
+	body := `{"op":"share","worktree":"` + wt.WorktreeID + `","agent":"` + worker.Name + `","mode":"ro","request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_worktree", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_worktree", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+	var n int
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE to_agent_id = ? AND kind = 'assignment_update'`, worker.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("assignment_update messages = %d, want 1", n)
+	}
+}
+
+// A repeated request_id on remove must not attempt the git removal (and its
+// DirtyStrict/mergedOrPushed checks against a now-missing path) a second
+// time.
+func TestWorktreeRemoveRequestIDReplays(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"create","repo":"`+seed.RepoID+`","branch":"task/remove-replay"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	json.Unmarshal(mustJSON(out), &wt)
+
+	body := `{"op":"remove","worktree":"` + wt.WorktreeID + `","request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_worktree", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_worktree", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
+// release's own SQL is already a genuine no-op the second time (verified,
+// not assumed): the UPDATE only matches rows where released_at IS NULL, so a
+// second call matches zero rows and leaves released_at exactly as the first
+// call set it. No PeekIdempotent/IdemTx wiring needed or added.
+func TestWorktreeReleaseCalledTwiceIsAGenuineNoOp(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"create","repo":"`+seed.RepoID+`","branch":"task/release-replay"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	json.Unmarshal(mustJSON(out), &wt)
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		`{"op":"share","worktree":"`+wt.WorktreeID+`","agent":"`+worker.Name+`","mode":"ro"}`); err != nil {
+		t.Fatal(err)
+	}
+
+	releaseBody := `{"op":"release","worktree":"` + wt.WorktreeID + `","agent":"` + worker.Name + `"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_worktree", releaseBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var releasedAt1 sql.NullInt64
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT released_at FROM worktree_reservations
+		WHERE worktree_id = ? AND agent_id = ?`, wt.WorktreeID, worker.ID).Scan(&releasedAt1); err != nil {
+		t.Fatal(err)
+	}
+	if !releasedAt1.Valid {
+		t.Fatal("released_at must be set after the first release")
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_worktree", releaseBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("second release result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+	var releasedAt2 sql.NullInt64
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT released_at FROM worktree_reservations
+		WHERE worktree_id = ? AND agent_id = ?`, wt.WorktreeID, worker.ID).Scan(&releasedAt2); err != nil {
+		t.Fatal(err)
+	}
+	if releasedAt2.Int64 != releasedAt1.Int64 {
+		t.Fatalf("released_at changed on the second call: %v -> %v", releasedAt1, releasedAt2)
 	}
 }
 

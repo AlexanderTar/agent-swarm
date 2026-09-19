@@ -282,17 +282,19 @@ func worktreeTool(s *Server) ToolDef {
 		Roles:       orchestratorRole,
 		Schema: objSchema(`"op":{"type":"string","enum":["create","share","review","release","remove"]},
 			"repo":{"type":"string"},"branch":{"type":"string"},"base":{"type":"string"},
-			"sha":{"type":"string"},"worktree":{"type":"string"},"agent":{"type":"string"},"mode":{"type":"string"}`),
+			"sha":{"type":"string"},"worktree":{"type":"string"},"agent":{"type":"string"},"mode":{"type":"string"},
+			"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Op       string `json:"op"`
-				Repo     string `json:"repo"`
-				Branch   string `json:"branch"`
-				Base     string `json:"base"`
-				SHA      string `json:"sha"`
-				Worktree string `json:"worktree"`
-				Agent    string `json:"agent"`
-				Mode     string `json:"mode"`
+				Op        string `json:"op"`
+				Repo      string `json:"repo"`
+				Branch    string `json:"branch"`
+				Base      string `json:"base"`
+				SHA       string `json:"sha"`
+				Worktree  string `json:"worktree"`
+				Agent     string `json:"agent"`
+				Mode      string `json:"mode"`
+				RequestID string `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -305,6 +307,21 @@ func worktreeTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
+			// create/review/share/remove each have a real external side
+			// effect (a git subprocess, or -- for share -- a DB write gated
+			// by a mutex that cannot safely nest inside a shared SQL
+			// transaction; see Share's own doc comment) that cannot live
+			// inside the same transaction as its idempotency record. Each
+			// uses the same two-phase pattern as swarm_control's resume/
+			// cancel/retry: PeekIdempotent before the side effect (a
+			// replay skips it entirely), the side effect runs unchanged on
+			// a miss, then a trivial IdemTx afterward only to record the
+			// result. release is not wired this way: calling it twice is
+			// already a genuine no-op (verified by reading its SQL -- the
+			// second call's UPDATE matches zero rows and returns nil,
+			// exactly as the first call's did if the row was already
+			// released), so gating it would add machinery without adding
+			// safety.
 			switch in.Op {
 			case "create", "review":
 				name, path, err := repoNameAndPath(ctx, s, in.Repo)
@@ -318,15 +335,24 @@ func worktreeTool(s *Server) ToolDef {
 				if !ok {
 					return nil, repoNotConfirmed(name, rootKey)
 				}
+				var wt worktree.Worktree
+				if hit, err := runtime.PeekIdempotent(ctx, s.RT, c.SessionID, in.RequestID, &wt); err != nil {
+					return nil, err
+				} else if hit {
+					return worktreeOut(wt), nil
+				}
 				ci := worktree.CreateInput{RepoID: in.Repo, RepoPath: path, Branch: in.Branch, Base: in.Base,
 					OwnerAgentID: a.ID, RootItemID: a.RootItemID}
-				var wt worktree.Worktree
 				if in.Op == "create" {
 					wt, err = s.RT.Worktree.Create(ctx, ci)
 				} else {
 					wt, err = s.RT.Worktree.Review(ctx, ci, in.SHA)
 				}
 				if err != nil {
+					return nil, err
+				}
+				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_worktree", &wt,
+					func(tx *sql.Tx) error { return nil }); err != nil {
 					return nil, err
 				}
 				return worktreeOut(wt), nil
@@ -339,6 +365,12 @@ func worktreeTool(s *Server) ToolDef {
 				if err != nil {
 					return nil, err
 				}
+				var out worktree.Worktree
+				if hit, err := runtime.PeekIdempotent(ctx, s.RT, c.SessionID, in.RequestID, &out); err != nil {
+					return nil, err
+				} else if hit {
+					return worktreeOut(out), nil
+				}
 				if err := s.RT.Worktree.Share(ctx, in.Worktree, target.ID, in.Mode); err != nil {
 					return nil, err
 				}
@@ -350,7 +382,12 @@ func worktreeTool(s *Server) ToolDef {
 				}
 				// Share doesn't mutate the worktrees row (only a reservation
 				// table), so the pre-share `wt` already reflects the true state.
-				return worktreeOut(wt), nil
+				out = wt
+				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_worktree", &out,
+					func(tx *sql.Tx) error { return nil }); err != nil {
+					return nil, err
+				}
+				return worktreeOut(out), nil
 			case "release":
 				target, err := s.RT.Agent(ctx, in.Agent)
 				if err != nil {
@@ -367,8 +404,18 @@ func worktreeTool(s *Server) ToolDef {
 				}
 				return worktreeOut(wt), nil
 			case "remove":
+				var wt worktree.Worktree
+				if hit, err := runtime.PeekIdempotent(ctx, s.RT, c.SessionID, in.RequestID, &wt); err != nil {
+					return nil, err
+				} else if hit {
+					return worktreeOut(wt), nil
+				}
 				wt, err := s.RT.Worktree.Remove(ctx, in.Worktree, a.ID)
 				if err != nil {
+					return nil, err
+				}
+				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_worktree", &wt,
+					func(tx *sql.Tx) error { return nil }); err != nil {
 					return nil, err
 				}
 				return worktreeOut(wt), nil
