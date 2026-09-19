@@ -2,7 +2,7 @@ GO ?= /opt/homebrew/bin/go
 GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 PREFIX ?= $(HOME)/.swarm
 
-.PHONY: build vet fmt test test-go test-web test-menubar e2e dev dev-seed install app skills-sync
+.PHONY: build web-build vet fmt test test-go test-web test-menubar e2e dev dev-seed install app skills-sync
 
 build: web-build
 	$(GO) build -o bin/swarm ./cmd/swarm
