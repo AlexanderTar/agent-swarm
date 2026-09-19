@@ -47,6 +47,7 @@ final class TerminalsTests: XCTestCase {
         XCTAssertTrue(s.contains("focus t"))
         XCTAssertTrue(s.contains("set cfg to new surface configuration"))
         XCTAssertTrue(s.contains("set command of cfg to cmd"))
+        XCTAssertTrue(s.contains("new tab in window 1 with configuration cfg"))
         XCTAssertTrue(s.contains("new window with configuration cfg"))
     }
 

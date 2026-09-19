@@ -58,7 +58,11 @@ public final class Terminals {
             end repeat
             set cfg to new surface configuration
             set command of cfg to cmd
-            new window with configuration cfg
+            if (count of windows) > 0 then
+                new tab in window 1 with configuration cfg
+            else
+                new window with configuration cfg
+            end if
             activate
             return "opened"
         end tell
