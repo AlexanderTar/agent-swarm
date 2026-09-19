@@ -134,7 +134,7 @@ func TestPauseAndResumePublishAgentChanged(t *testing.T) {
 	}
 	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = 'p1' WHERE id = ?`, wSes.ID)
 	afterPause := countAgentChanged()
-	if _, err := s.Resume(ctx, w.Name); err != nil {
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if countAgentChanged() != afterPause+1 {
@@ -910,12 +910,12 @@ func TestResumePreconditionAndNewGeneration(t *testing.T) {
 	_, _, wSes := worker(t, s)
 	w, _ := s.agentByID(ctx, wSes.AgentID)
 	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, wSes.ID)
-	_, err := s.Resume(ctx, w.Name)
+	_, err := s.Resume(ctx, w.Name, "", "")
 	if err == nil || err.Error() != "Still stopping. Try again in a few seconds." {
 		t.Fatalf("err = %v", err)
 	}
 	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = 'p1' WHERE id = ?`, wSes.ID)
-	if _, err := s.Resume(ctx, w.Name); err != nil {
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	next, _ := s.LatestSession(ctx, w.ID)
@@ -946,7 +946,7 @@ func TestResumeFallsBackToAFreshLaunch(t *testing.T) {
 	w, _ := s.agentByID(ctx, wSes.AgentID)
 	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = NULL WHERE id = ?`, wSes.ID)
 	before := len(tm.started)
-	if _, err := s.Resume(ctx, w.Name); err != nil {
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(tm.started) != before+1 {
@@ -966,7 +966,7 @@ func TestResumeReactivatesAnAcknowledgedAgent(t *testing.T) {
 	w, _ := s.agentByID(ctx, wSes.AgentID)
 	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = 'p1' WHERE id = ?`, wSes.ID)
 	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'acknowledged' WHERE id = ?`, w.ID)
-	if _, err := s.Resume(ctx, w.Name); err != nil {
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.Agent(ctx, w.Name)
@@ -1044,7 +1044,7 @@ func TestPauseAndResumeRefuseAnAgentWithNoSession(t *testing.T) {
 	if _, err := s.Pause(ctx, a.Name, "session"); err == nil {
 		t.Fatal("Pause must refuse an agent with no session")
 	}
-	if _, err := s.Resume(ctx, a.Name); err == nil {
+	if _, err := s.Resume(ctx, a.Name, "", ""); err == nil {
 		t.Fatal("Resume must refuse an agent with no session")
 	}
 }
@@ -1056,7 +1056,7 @@ func TestPauseAndResumeRefuseAnUnknownAgent(t *testing.T) {
 	if _, err := s.Pause(ctx, "no-such-agent", "session"); err == nil {
 		t.Fatal("Pause must refuse an unknown agent")
 	}
-	if _, err := s.Resume(ctx, "no-such-agent"); err == nil {
+	if _, err := s.Resume(ctx, "no-such-agent", "", ""); err == nil {
 		t.Fatal("Resume must refuse an unknown agent")
 	}
 }

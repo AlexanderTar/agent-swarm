@@ -218,7 +218,7 @@ func (s *Server) pauseAgent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) resumeAgent(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	s.doAction(w, r, "resume", func(ctx context.Context) (any, error) {
-		a, err := s.RT.Resume(ctx, name)
+		a, err := s.RT.Resume(ctx, name, "", "")
 		if err != nil {
 			return nil, err
 		}
@@ -229,7 +229,7 @@ func (s *Server) resumeAgent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) cancelAgent(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	s.doAction(w, r, "cancel", func(ctx context.Context) (any, error) {
-		a, err := s.RT.Cancel(ctx, name)
+		a, err := s.RT.Cancel(ctx, name, "", "")
 		if err != nil {
 			return nil, err
 		}
@@ -247,7 +247,7 @@ func (s *Server) retryAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	s.doAction(w, r, "retry", func(ctx context.Context) (any, error) {
-		a, err := s.RT.Retry(ctx, name, body.Note)
+		a, err := s.RT.Retry(ctx, name, body.Note, "", "")
 		if err != nil {
 			return nil, err
 		}

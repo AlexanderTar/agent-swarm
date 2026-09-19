@@ -778,10 +778,24 @@ func (s *Store) writeDaemonPauseCheckpoint(ctx context.Context, sesID, agentID s
 // Resume is swarm's resume action (C3, §10.5). It is refused unless the
 // session is paused or interrupted, and starts generation n+1 with a new
 // token.
-func (s *Store) Resume(ctx context.Context, name string) (Agent, error) {
+// Resume is swarm_control's resume action. sessionID/requestID are I11's
+// idempotency key, scoped to the calling orchestrator's own MCP session (not
+// the resumed agent's); requestID empty means "no idempotency, just run
+// once."
+func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (Agent, error) {
 	a, err := s.Agent(ctx, name)
 	if err != nil {
 		return Agent{}, err
+	}
+	// A genuine replay must not re-evaluate the state guard below: by the
+	// time it replays, the resumed session has moved on (that's the whole
+	// point), so it would spuriously fail here. Must not start a second
+	// session either (see PeekIdempotent's own doc comment).
+	var out Agent
+	if hit, err := PeekIdempotent(ctx, s, sessionID, requestID, &out); err != nil {
+		return Agent{}, err
+	} else if hit {
+		return out, nil
 	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
@@ -795,23 +809,27 @@ func (s *Store) Resume(ctx context.Context, name string) (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
+	if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_control", &out, func(tx *sql.Tx) error {
 		if a.State != AgentActive {
 			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active' WHERE id = ?`, a.ID); err != nil {
 				return err
 			}
 		}
-		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
+			return err
+		}
+		a.State = AgentActive
+		out = a
+		return nil
 	}); err != nil {
 		return Agent{}, err
 	}
-	a.State = AgentActive
 	s.go_(func() {
-		if err := s.watchStartup(context.WithoutCancel(ctx), a, newSes, s.Adapters[a.Kind]); err != nil {
-			s.logf("resume: watchStartup %s: %v", a.Name, err)
+		if err := s.watchStartup(context.WithoutCancel(ctx), out, newSes, s.Adapters[out.Kind]); err != nil {
+			s.logf("resume: watchStartup %s: %v", out.Name, err)
 		}
 	})
-	return a, nil
+	return out, nil
 }
 
 // pauseTarget returns the highest still-live ancestor of a, or a itself if

@@ -518,7 +518,7 @@ func TestCancelKillsAndFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.Cancel(ctx, a.Name)
+	out, err := s.Cancel(ctx, a.Name, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +551,7 @@ func TestRetryStartsANewAttemptAndRevokesTheOldToken(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Retry(ctx, a.Name, "the reviewer found a missing test"); err != nil {
+	if _, err := s.Retry(ctx, a.Name, "the reviewer found a missing test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	next, err := s.LatestSession(ctx, a.ID)
@@ -620,7 +620,7 @@ func TestCancelRetryAndAckPublishAgentChanged(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, ses.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Retry(ctx, a.Name, ""); err != nil {
+	if _, err := s.Retry(ctx, a.Name, "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	afterRetry := countAgentChanged()
@@ -634,7 +634,7 @@ func TestCancelRetryAndAckPublishAgentChanged(t *testing.T) {
 	if afterAck != afterRetry+1 {
 		t.Fatalf("agent.changed count after Ack = %d, want %d", afterAck, afterRetry+1)
 	}
-	if _, err := s.Cancel(ctx, a.Name); err != nil {
+	if _, err := s.Cancel(ctx, a.Name, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	afterCancel := countAgentChanged()
@@ -799,7 +799,7 @@ func TestRetryWithNote(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'failed' WHERE agent_id = ?`, a.ID)
-	retried, err := s.Retry(ctx, a.Name, "please retry with extra care")
+	retried, err := s.Retry(ctx, a.Name, "please retry with extra care", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -914,14 +914,14 @@ func TestCancelFinishedAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Cancel once -> moves to finished
-	if _, err := s.Cancel(ctx, a.Name); err != nil {
+	if _, err := s.Cancel(ctx, a.Name, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	// Cancel again is idempotent
-	if _, err := s.Cancel(ctx, a.Name); err != nil {
+	if _, err := s.Cancel(ctx, a.Name, "", ""); err != nil {
 		t.Fatalf("expected idempotent cancel, got: %v", err)
 	}
-	if _, err := s.Cancel(ctx, "nonexistent-agent"); err == nil {
+	if _, err := s.Cancel(ctx, "nonexistent-agent", "", ""); err == nil {
 		t.Fatal("expected error cancelling nonexistent agent")
 	}
 }
@@ -962,7 +962,7 @@ func TestRetryFromFinished(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	retried, err := s.Retry(ctx, a.Name, "")
+	retried, err := s.Retry(ctx, a.Name, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -987,7 +987,7 @@ func TestRetryRefusesAWrongSessionState(t *testing.T) {
 	}
 	// a freshly-spawned agent's session is live (running/spawning), not
 	// retryable.
-	if _, err := s.Retry(ctx, a.Name, ""); err == nil {
+	if _, err := s.Retry(ctx, a.Name, "", "", ""); err == nil {
 		t.Fatal("expected an error retrying a live session")
 	} else if ie, ok := err.(*items.Error); !ok || ie.Code != items.CodeConflict {
 		t.Fatalf("err = %v, want a CodeConflict items.Error", err)
@@ -995,10 +995,10 @@ func TestRetryRefusesAWrongSessionState(t *testing.T) {
 
 	// Cancelled is explicitly excluded too (§10.7: cancelled agents are
 	// terminal, shown under Finished with no actions).
-	if _, err := s.Cancel(ctx, a.Name); err != nil {
+	if _, err := s.Cancel(ctx, a.Name, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Retry(ctx, a.Name, ""); err == nil {
+	if _, err := s.Retry(ctx, a.Name, "", "", ""); err == nil {
 		t.Fatal("expected an error retrying a cancelled session")
 	} else if ie, ok := err.(*items.Error); !ok || ie.Code != items.CodeConflict {
 		t.Fatalf("err = %v, want a CodeConflict items.Error", err)

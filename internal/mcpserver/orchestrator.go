@@ -484,13 +484,14 @@ func controlTool(s *Server) ToolDef {
 		Roles:       orchestratorRole,
 		Schema: objSchema(`"target":{"type":"string"},
 			"action":{"type":"string","enum":["pause","resume","cancel","retry"]},
-			"scope":{"type":"string"},"note":{"type":"string"}`),
+			"scope":{"type":"string"},"note":{"type":"string"},"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Target string `json:"target"`
-				Action string `json:"action"`
-				Scope  string `json:"scope"`
-				Note   string `json:"note"`
+				Target    string `json:"target"`
+				Action    string `json:"action"`
+				Scope     string `json:"scope"`
+				Note      string `json:"note"`
+				RequestID string `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -522,19 +523,19 @@ func controlTool(s *Server) ToolDef {
 				}
 				state = string(ses.State)
 			case "resume":
-				agent, err := s.RT.Resume(ctx, in.Target)
+				agent, err := s.RT.Resume(ctx, in.Target, c.SessionID, in.RequestID)
 				if err != nil {
 					return nil, err
 				}
 				state = string(agent.State)
 			case "cancel":
-				agent, err := s.RT.Cancel(ctx, in.Target)
+				agent, err := s.RT.Cancel(ctx, in.Target, c.SessionID, in.RequestID)
 				if err != nil {
 					return nil, err
 				}
 				state = string(agent.State)
 			case "retry":
-				agent, err := s.RT.Retry(ctx, in.Target, in.Note)
+				agent, err := s.RT.Retry(ctx, in.Target, in.Note, c.SessionID, in.RequestID)
 				if err != nil {
 					return nil, err
 				}

@@ -222,6 +222,119 @@ func TestControlRetryCarriesTheNote(t *testing.T) {
 	}
 }
 
+// Task 41: a repeated request_id on swarm_control retry must not start a
+// second tmux session or send a second assignment_update note.
+func TestControlRetryRequestIDReplaysWithoutStartingASecondSession(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	s.RT.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, worker.ID)
+	tm := s.RT.Tmux.(*fakeTmux)
+	startedBefore := len(tm.started)
+	body := `{"target":"` + worker.Name + `","action":"retry","note":"reviewer finding","request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_control", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.started) != startedBefore+1 {
+		t.Fatalf("tmux started %d times after first call, want %d", len(tm.started), startedBefore+1)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_control", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.started) != startedBefore+1 {
+		t.Fatalf("tmux started %d times after replayed call, want still %d", len(tm.started), startedBefore+1)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+	var n int
+	s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'assignment_update'`,
+		worker.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("assignment_update messages = %d, want 1", n)
+	}
+}
+
+// A distinct request_id (or none at all) genuinely retries again.
+func TestControlRetryDistinctRequestIDGenuinelyRetries(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	s.RT.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, worker.ID)
+	tm := s.RT.Tmux.(*fakeTmux)
+	if _, err := s.call(ctx, seed.Caller, "swarm_control",
+		`{"target":"`+worker.Name+`","action":"retry","request_id":"req-a"}`); err != nil {
+		t.Fatal(err)
+	}
+	started1 := len(tm.started)
+	s.RT.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE agent_id = ?`, worker.ID)
+	if _, err := s.call(ctx, seed.Caller, "swarm_control",
+		`{"target":"`+worker.Name+`","action":"retry","request_id":"req-b"}`); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.started) != started1+1 {
+		t.Fatalf("a distinct request_id must genuinely retry: tmux started %d, want %d", len(tm.started), started1+1)
+	}
+}
+
+// Task 41: a repeated request_id on swarm_control cancel must not
+// interrupt/kill the tmux session a second time.
+func TestControlCancelRequestIDReplaysWithoutKillingTwice(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	tm := s.RT.Tmux.(*fakeTmux)
+	body := `{"target":"` + worker.Name + `","action":"cancel","request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_control", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != 1 {
+		t.Fatalf("tmux killed %d times after first call, want 1", len(tm.killed))
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_control", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != 1 {
+		t.Fatalf("tmux killed %d times after replayed call, want still 1", len(tm.killed))
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
+// Task 41: a repeated request_id on swarm_control resume must not start a
+// second tmux session.
+func TestControlResumeRequestIDReplaysWithoutStartingASecondSession(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	s.RT.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE agent_id = ?`, worker.ID)
+	tm := s.RT.Tmux.(*fakeTmux)
+	startedBefore := len(tm.started)
+	body := `{"target":"` + worker.Name + `","action":"resume","request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_control", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.started) != startedBefore+1 {
+		t.Fatalf("tmux started %d times after first call, want %d", len(tm.started), startedBefore+1)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_control", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.started) != startedBefore+1 {
+		t.Fatalf("tmux started %d times after replayed call, want still %d", len(tm.started), startedBefore+1)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
 // §8.1: swarm_artifact returns the section list and the stale requests.
 func TestArtifactToolReturnsSectionsAndStaleRequests(t *testing.T) {
 	s, seed := newOrchestratorServer(t)

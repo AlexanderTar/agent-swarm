@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -356,4 +357,32 @@ func IdemTx[T any](ctx context.Context, s *Store, sessionID, requestID, tool str
 		return json.Unmarshal(raw, out)
 	})
 	return ran, err
+}
+
+// PeekIdempotent reports whether (sessionID, requestID) already has a stored
+// I11 result, without running or recording anything. It exists for a
+// mutation whose real effect is an external side effect that cannot live
+// inside a SQL transaction at all (starting or killing a tmux session, e.g.
+// Resume/Cancel/Retry's own startSession/Tmux calls) and whose existing
+// ordering -- perform the side effect, then commit the DB bookkeeping --
+// must not change (committing the bookkeeping first and gating the side
+// effect on the transaction's own "ran" flag, the way Spawn does, would flip
+// a deliberate existing failure-safety property: today, if the side effect
+// fails, the DB row is never touched). Called before that side effect: a hit
+// means a genuine replay, so the side effect and the DB write both skip, and
+// the cached typed result decodes straight into out.
+func PeekIdempotent[T any](ctx context.Context, s *Store, sessionID, requestID string, out *T) (hit bool, err error) {
+	if requestID == "" {
+		return false, nil
+	}
+	var stored string
+	err = s.DB.QueryRowContext(ctx, `SELECT result_json FROM idempotency WHERE caller = ? AND request_id = ?`,
+		sessionID, requestID).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, json.Unmarshal([]byte(stored), out)
 }

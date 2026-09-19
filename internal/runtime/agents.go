@@ -913,10 +913,22 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 	return s.failSession(ctx, a, ses, lastLines(capture, 40))
 }
 
-func (s *Store) Cancel(ctx context.Context, name string) (Agent, error) {
+// Cancel is swarm_control's cancel action. sessionID/requestID are I11's
+// idempotency key, scoped to the calling orchestrator's own MCP session (not
+// the cancelled agent's); requestID empty means "no idempotency, just run
+// once."
+func (s *Store) Cancel(ctx context.Context, name, sessionID, requestID string) (Agent, error) {
 	a, err := s.Agent(ctx, name)
 	if err != nil {
 		return Agent{}, err
+	}
+	// A genuine replay must not send a second interrupt/kill: check before
+	// the side effect, not after (see PeekIdempotent's own doc comment).
+	var out Agent
+	if hit, err := PeekIdempotent(ctx, s, sessionID, requestID, &out); err != nil {
+		return Agent{}, err
+	} else if hit {
+		return out, nil
 	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err == nil && ses.State.Live() {
@@ -930,20 +942,22 @@ func (s *Store) Cancel(ctx context.Context, name string) (Agent, error) {
 
 	nowMs := s.now().UnixMilli()
 	nowTime := s.now()
-	err = s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`, nowMs, a.ID)
-		if err != nil {
+	if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_control", &out, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`, nowMs, a.ID); err != nil {
 			return err
 		}
 		_, _ = tx.ExecContext(ctx, `UPDATE worktree_reservations SET released_at = ? WHERE agent_id = ? AND released_at IS NULL`, nowMs, a.ID)
-		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
-	})
-	if err != nil {
+		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
+			return err
+		}
+		a.State = AgentFinished
+		a.FinishedAt = &nowTime
+		out = a
+		return nil
+	}); err != nil {
 		return Agent{}, err
 	}
-	a.State = AgentFinished
-	a.FinishedAt = &nowTime
-	return a, nil
+	return out, nil
 }
 
 // retryableStates is §8.1's own swarm_control description: "retry starts a
@@ -955,10 +969,25 @@ var retryableStates = []SessionState{Completed, Failed, Crashed, Interrupted}
 
 const notRetryable = "This agent isn't in a state that can be retried."
 
-func (s *Store) Retry(ctx context.Context, name, note string) (Agent, error) {
+// Retry is swarm_control's retry action. sessionID/requestID are I11's
+// idempotency key, scoped to the calling orchestrator's own MCP session (not
+// the retried agent's); requestID empty means "no idempotency, just run
+// once."
+func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID string) (Agent, error) {
 	a, err := s.Agent(ctx, name)
 	if err != nil {
 		return Agent{}, err
+	}
+	// A genuine replay must not re-evaluate the state guard below: by the
+	// time it replays, the retried session has moved on (that's the whole
+	// point), so it would spuriously fail here. Must not send a second note,
+	// flip the agent active a second time, or start a second session either
+	// (see PeekIdempotent's own doc comment).
+	var out Agent
+	if hit, err := PeekIdempotent(ctx, s, sessionID, requestID, &out); err != nil {
+		return Agent{}, err
+	} else if hit {
+		return out, nil
 	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
@@ -996,18 +1025,22 @@ func (s *Store) Retry(ctx context.Context, name, note string) (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
-		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+	if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_control", &out, func(tx *sql.Tx) error {
+		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
+			return err
+		}
+		out = a
+		return nil
 	}); err != nil {
 		return Agent{}, err
 	}
 	s.go_(func() {
-		if err := s.watchStartup(context.WithoutCancel(ctx), a, newSes, s.Adapters[a.Kind]); err != nil {
-			s.logf("spawn: watchStartup %s: %v", a.Name, err)
+		if err := s.watchStartup(context.WithoutCancel(ctx), out, newSes, s.Adapters[out.Kind]); err != nil {
+			s.logf("spawn: watchStartup %s: %v", out.Name, err)
 		}
 	})
 
-	return a, nil
+	return out, nil
 }
 
 func (s *Store) Ack(ctx context.Context, name string) error {
