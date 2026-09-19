@@ -158,7 +158,11 @@ struct SettingsHost: View {
         Group {
             if let settings { SettingsView(model: settings) } else { ProgressView().frame(width: 740, height: 520) }
         }
-        .onAppear { settings = model.makeSettings() }
+        .task {
+            let s = model.makeSettings()
+            settings = s
+            await s.load()
+        }
         .onChange(of: model.connected) { _, up in settings?.connected = up }
         .onChange(of: model.state.agents) { _, agents in settings?.agents = agents }
     }
