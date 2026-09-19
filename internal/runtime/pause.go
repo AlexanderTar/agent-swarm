@@ -411,12 +411,28 @@ func (s *Store) pause(ctx context.Context, name, scope string) (Session, int, er
 		}
 		return ses, 1, nil
 	}
-	if role != roleIdle && role != roleSessionPausing {
+	if role != roleIdle && role != roleSessionPausing && !role.isRoot() {
 		return ses, 0, nil
 	}
 	ds, err := s.descendantRoles(ctx, a.ID)
 	if err != nil {
 		return Session{}, 0, err
+	}
+	if role.isRoot() {
+		// Already this subtree's root: its own row is left exactly as it is
+		// (re-stamping would extend its deadline on every repeat call), but the
+		// cascade still runs, because the set of descendants can have grown
+		// since. Admit is limit-based only -- DrainQueue is the sole caller of
+		// rootHasLiveSubtreePause -- so a direct swarm_spawn under a root that
+		// is still 'running' (nothing gates spawning on a pause that has not
+		// reached the root's own session yet) starts a child immediately.
+		// Without this, a repeated pause-all left that child running and the
+		// root's promotion waiting on it.
+		cascaded, err := s.cascadeSubtreePause(ctx, deadline, ds)
+		if err != nil {
+			return Session{}, 0, err
+		}
+		return ses, cascaded, nil
 	}
 	if role == roleSessionPausing && liveDescendants(ds) == 0 {
 		return ses, 0, nil
@@ -466,27 +482,9 @@ func (s *Store) pauseOne(ctx context.Context, a Agent, ses Session, deadline tim
 // scope is a new pause operation, and the caller has already refused one with
 // nothing to cascade to.
 func (s *Store) pauseSubtree(ctx context.Context, orch Agent, orchSes Session, deadline time.Time, ds []descendantRole) (Session, int, error) {
-	cascaded := 0
-	for _, d := range ds {
-		// roleIdle is the only descendant a cascade may touch. An ended one
-		// has nothing to pause. One already pausing -- under an outer pause
-		// (roleMember), under its own earlier session pause, or at any point
-		// in its own subtree pause -- keeps its deadline and its progress:
-		// pauseOne has no idempotency guard of its own, so a repeated
-		// pause-all would otherwise reset a 'stopping' descendant whose
-		// handoff is already written back to 'pause_requested'. And a
-		// descendant that is itself a subtree-pause ROOT manages its own
-		// subtree: pauseOne'ing it would move it off 'running', dropping it
-		// out of promotePendingSubtreePauses for good and permanently losing
-		// the combined handoff payload §10.5 step 3 promises it. This pause
-		// waits for such a descendant exactly as it waits for any live one.
-		if d.role != roleIdle {
-			continue
-		}
-		if _, err := s.pauseOne(ctx, d.agent, d.ses, deadline, "subtree"); err != nil {
-			return Session{}, 0, err
-		}
-		cascaded++
+	cascaded, err := s.cascadeSubtreePause(ctx, deadline, ds)
+	if err != nil {
+		return Session{}, 0, err
 	}
 	// pause_root = 1 marks this specific session as the literal target of
 	// THIS Pause(scope="subtree") call, not merely "part of a subtree being
@@ -498,7 +496,7 @@ func (s *Store) pauseSubtree(ctx context.Context, orch Agent, orchSes Session, d
 	// descendants -- and never to a plain descendant merely cascaded onto
 	// (a leaf worker, or a nested orchestrator that is itself only a
 	// descendant of this call, not its own target).
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET pause_scope = 'subtree',
 			pause_deadline_at = ?, pause_root = 1 WHERE id = ?`, db.Millis(deadline), orchSes.ID); err != nil {
 			return err
@@ -510,6 +508,33 @@ func (s *Store) pauseSubtree(ctx context.Context, orch Agent, orchSes Session, d
 	}
 	orchSes.PauseScope, orchSes.PauseRoot, orchSes.PauseDeadlineAt = "subtree", true, &deadline
 	return orchSes, cascaded, nil
+}
+
+// cascadeSubtreePause pauses every idle descendant, deepest first, and returns
+// how many it transitioned.
+//
+// roleIdle is the only descendant a cascade may touch. An ended one has nothing
+// to pause. One already pausing -- under an outer pause (roleMember), under its
+// own earlier session pause, or at any point in its own subtree pause -- keeps
+// its deadline and its progress: pauseOne has no idempotency guard of its own,
+// so a repeated pause-all would otherwise reset a 'stopping' descendant whose
+// handoff is already written back to 'pause_requested'. And a descendant that is
+// itself a subtree-pause ROOT manages its own subtree: pauseOne'ing it would
+// move it off 'running', dropping it out of promotePendingSubtreePauses for good
+// and permanently losing the combined handoff payload §10.5 step 3 promises it.
+// The pause waits for such a descendant exactly as it waits for any live one.
+func (s *Store) cascadeSubtreePause(ctx context.Context, deadline time.Time, ds []descendantRole) (int, error) {
+	cascaded := 0
+	for _, d := range ds {
+		if d.role != roleIdle {
+			continue
+		}
+		if _, err := s.pauseOne(ctx, d.agent, d.ses, deadline, "subtree"); err != nil {
+			return 0, err
+		}
+		cascaded++
+	}
+	return cascaded, nil
 }
 
 // descendantAgents returns every agent under rootAgentID, deepest first

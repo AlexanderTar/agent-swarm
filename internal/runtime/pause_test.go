@@ -1668,3 +1668,66 @@ func TestUnactionableSubtreeRowsAreInertButStillFreezeTheQueue(t *testing.T) {
 		})
 	}
 }
+
+// Seventh sibling shape, found while routing PauseAll's count through the
+// predicate: a child can START under a live subtree pause. Admit is purely
+// limit-based and DrainQueue is the only caller of rootHasLiveSubtreePause, so
+// a direct spawn while the root is still 'running' (its own pause has not
+// reached it yet) is admitted immediately. A repeated pause-all must cascade
+// onto that child -- while still leaving the root's own row alone, since
+// re-stamping it on every repeat call is what the deadline-extension guard
+// exists to prevent.
+func TestRepeatedPauseAllCascadesOntoAChildSpawnedUnderAPendingRoot(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 4, 4)
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pause(ctx, orch.Name, "subtree"); err != nil {
+		t.Fatal(err)
+	}
+	orchSes := mustSessionID(t, s, orch.ID)
+	firstSes := mustSessionID(t, s, first.ID)
+	orchBefore, firstBefore := mustPauseCols(t, s, orchSes), mustPauseCols(t, s, firstSes)
+	if orchBefore.state != Running || !orchBefore.root {
+		t.Fatalf("setup: orchestrator = %+v, want a pending root", orchBefore)
+	}
+
+	second, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatal("setup: the second child must be admitted directly (Admit is limit-based, not freeze-gated) for this shape to exist")
+	}
+
+	n, err := s.PauseAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCols := mustPauseCols(t, s, mustSessionID(t, s, second.ID))
+	if secondCols.state != PauseRequested || secondCols.scope != "subtree" || secondCols.root {
+		t.Fatalf("late child = %+v, want pause_requested/subtree/pause_root=0 -- a root's repeat pause must still cascade onto descendants that appeared since", secondCols)
+	}
+	if n != 1 {
+		t.Fatalf("requested = %d, want 1 -- only the late child was transitioned", n)
+	}
+	orchAfter := mustPauseCols(t, s, orchSes)
+	if orchAfter.state != orchBefore.state || orchAfter.scope != orchBefore.scope || orchAfter.root != orchBefore.root ||
+		!orchAfter.deadline.Equal(*orchBefore.deadline) {
+		t.Fatalf("orchestrator = %+v, want untouched at %+v -- a root re-cascades without re-stamping its own row", orchAfter, orchBefore)
+	}
+	firstAfter := mustPauseCols(t, s, firstSes)
+	if firstAfter.state != firstBefore.state || !firstAfter.deadline.Equal(*firstBefore.deadline) {
+		t.Fatalf("the already-paused child = %+v, want untouched at %+v", firstAfter, firstBefore)
+	}
+}
