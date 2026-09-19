@@ -2,7 +2,9 @@ GO ?= /opt/homebrew/bin/go
 GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 PREFIX ?= $(HOME)/.swarm
 
-.PHONY: build web-build vet fmt test test-go test-web test-menubar e2e dev dev-seed install app skills-sync
+.PHONY: build web-build vet fmt test test-go test-web test-menubar e2e dev dev-seed install install-daemon install-app app skills-sync
+
+APP_DIR ?= $(HOME)/Applications
 
 build: web-build
 	$(GO) build -o bin/swarm ./cmd/swarm
@@ -46,10 +48,20 @@ dev-seed:
 e2e:
 	scripts/e2e.sh
 
-# §19: builds swarm into ~/.swarm/bin and Swarm.app into ~/Applications.
-install: build app
+# §19: builds and installs both. Kept as two independent targets below so
+# reinstalling one never rebuilds or touches the other.
+install: install-daemon install-app
+
+# Builds swarm into ~/.swarm/bin.
+install-daemon: build
 	mkdir -p $(PREFIX)/bin
 	install -m 0755 bin/swarm $(PREFIX)/bin/swarm
+
+# Builds Swarm.app into ~/Applications.
+install-app: app
+	mkdir -p $(APP_DIR)
+	rm -rf $(APP_DIR)/Swarm.app
+	cp -R apps/menubar/.build/Swarm.app $(APP_DIR)/Swarm.app
 
 app:
 	apps/menubar/scripts/bundle.sh
