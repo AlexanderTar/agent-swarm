@@ -16,6 +16,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/web"
 )
 
 func samplePath(pattern string) string {
@@ -244,4 +245,31 @@ func TestSessionAuth(t *testing.T) {
 			t.Errorf("session id = %q", rec.Body.String())
 		}
 	}
+}
+
+// The board (Task 29's web.Handler/web.Dist) is mounted at "/" for every
+// non-/api path once Deps.Web is wired (cmd/swarm daemon.go, P3 Task 33).
+func TestBoardServedAtRoot(t *testing.T) {
+	e := newEnv(t, func(d *Deps) { d.Web = web.Handler(web.Dist) })
+	status, body := e.call("GET", "/kanban", nil, "")
+	if status != 200 {
+		t.Fatalf("GET /kanban = %d", status)
+	}
+	if !strings.Contains(string(body), "<!doctype html") && !strings.Contains(string(body), "<!DOCTYPE html") {
+		t.Errorf("GET /kanban body doesn't look like the board's index.html: %s", body)
+	}
+	if ct := e.headOf(t, "/kanban"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("GET /kanban content-type = %q", ct)
+	}
+}
+
+func (e *env) headOf(t *testing.T, path string) string {
+	t.Helper()
+	req, _ := http.NewRequest("GET", e.srv.URL+path, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.Header.Get("Content-Type")
 }
