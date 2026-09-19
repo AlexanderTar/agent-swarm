@@ -5,10 +5,12 @@ package usage
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -66,11 +68,11 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 // only thing exercised is that the slice has four entries (S-4).
 func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, start execx.Starter) []Source {
 	claudeSrc := &Claude{BaseURL: "https://api.anthropic.com", HTTP: hc, Version: "2.1.274",
-		ReadToken: keychainToken(run, "Claude Code-credentials", user), Now: time.Now}
+		ReadToken: claudeKeychainToken(run, "Claude Code-credentials", user), Now: time.Now}
 	codexSrc := &Codex{Start: start, UserHome: userHome, Timeout: 10 * time.Second, Now: time.Now}
 	agySrc := &Agy{BaseURL: "http://127.0.0.1:4315", HTTP: hc, UserHome: userHome, Run: run, Now: time.Now}
 	cursorSrc := &Cursor{BaseURL: "https://api2.cursor.sh", HTTP: hc,
-		ReadToken: keychainToken(run, "cursor-access-token", "cursor-user"), Now: time.Now}
+		ReadToken: cursorKeychainToken(run, "cursor-access-token", "cursor-user"), Now: time.Now}
 	return []Source{
 		{Agent: runtime.Claude, Fetch: func(ctx context.Context) ([]Meter, string, error) {
 			snap, err := claudeSrc.Fetch(ctx)
@@ -92,23 +94,69 @@ func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, st
 // -s <service> -a <account> -w`, run via the injected Runner, and parses the
 // JSON for accessToken/expiresAt. Only DefaultSources calls this, and nothing
 // in this package's tests calls DefaultSources (S-4).
-func keychainToken(run execx.Runner, service, account string) func(context.Context) (string, time.Time, error) {
-	return func(ctx context.Context) (string, time.Time, error) {
+// keychainBytes runs `security find-generic-password`, shared by both real
+// keychain-based token readers below.
+func keychainBytes(run execx.Runner, service, account string) func(context.Context) ([]byte, error) {
+	return func(ctx context.Context) ([]byte, error) {
 		if run == nil {
-			return "", time.Time{}, fmt.Errorf("usage: no runner configured for the %s keychain entry", service)
+			return nil, fmt.Errorf("usage: no runner configured for the %s keychain entry", service)
 		}
-		out, err := run(ctx, "security", "find-generic-password", "-s", service, "-a", account, "-w")
+		return run(ctx, "security", "find-generic-password", "-s", service, "-a", account, "-w")
+	}
+}
+
+// claudeKeychainToken parses the real "Claude Code-credentials" keychain item,
+// which nests everything under "claudeAiOauth" (the same shape
+// internal/catalog.ClaudeFetcher.token already unwraps) — a flat
+// {accessToken, expiresAt} parse silently zero-values expiresAt, which reads
+// as "already expired" forever regardless of the real token's validity.
+func claudeKeychainToken(run execx.Runner, service, account string) func(context.Context) (string, time.Time, error) {
+	read := keychainBytes(run, service, account)
+	return func(ctx context.Context) (string, time.Time, error) {
+		out, err := read(ctx)
 		if err != nil {
 			return "", time.Time{}, err
 		}
 		var parsed struct {
-			AccessToken string `json:"accessToken"`
-			ExpiresAt   int64  `json:"expiresAt"`
+			ClaudeAiOauth struct {
+				AccessToken string `json:"accessToken"`
+				ExpiresAt   int64  `json:"expiresAt"`
+			} `json:"claudeAiOauth"`
 		}
 		if err := json.Unmarshal(out, &parsed); err != nil {
 			return "", time.Time{}, fmt.Errorf("usage: %s credentials: %w", service, err)
 		}
-		return parsed.AccessToken, time.UnixMilli(parsed.ExpiresAt), nil
+		return parsed.ClaudeAiOauth.AccessToken, time.UnixMilli(parsed.ClaudeAiOauth.ExpiresAt), nil
+	}
+}
+
+// cursorKeychainToken parses the real "cursor-access-token" keychain item,
+// which is a bare JWT string, not JSON — json.Unmarshal-ing it directly fails
+// outright. Its expiry comes from the standard "exp" claim (RFC 7519, seconds
+// since epoch) in the token's own payload segment.
+func cursorKeychainToken(run execx.Runner, service, account string) func(context.Context) (string, time.Time, error) {
+	read := keychainBytes(run, service, account)
+	return func(ctx context.Context) (string, time.Time, error) {
+		out, err := read(ctx)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		token := strings.TrimSpace(string(out))
+		parts := strings.Split(token, ".")
+		if len(parts) != 3 {
+			return "", time.Time{}, fmt.Errorf("usage: %s credentials: not a JWT (%d segments)", service, len(parts))
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("usage: %s credentials: %w", service, err)
+		}
+		var claims struct {
+			Exp int64 `json:"exp"`
+		}
+		if err := json.Unmarshal(payload, &claims); err != nil {
+			return "", time.Time{}, fmt.Errorf("usage: %s credentials: %w", service, err)
+		}
+		return token, time.Unix(claims.Exp, 0), nil
 	}
 }
 
