@@ -259,9 +259,11 @@ func (s *Store) notifyItemCreated(ctx context.Context, tx *sql.Tx, spike items.I
 // Materialize turns an approved spike into an epic (feature) or a bug (debug),
 // all inside one transaction (§8.2): every check must pass before anything is
 // created, and any failure rolls the whole tree back.
-func (s *Store) Materialize(ctx context.Context, sessionID, spikeKey, specID, planID, reportID string) (MaterializeResult, error) {
+// requestID is I11's idempotency key, scoped to the calling MCP session
+// (empty means "no idempotency, just run once").
+func (s *Store) Materialize(ctx context.Context, sessionID, spikeKey, specID, planID, reportID, requestID string) (MaterializeResult, error) {
 	var out MaterializeResult
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	_, err := IdemTx(ctx, s, sessionID, requestID, "swarm_materialize", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err

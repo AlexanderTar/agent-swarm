@@ -1080,6 +1080,75 @@ func TestMaterializeToolResultUsesSnakeCaseKeys(t *testing.T) {
 	}
 }
 
+// Task 41: a repeated request_id must not materialize a second tree -- proven
+// here by the fact that a genuine second call would fail outright (the spike
+// is already "done" after the first), not merely produce a duplicate.
+func TestMaterializeRequestIDReplaysInsteadOfMaterializingTwice(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "chat")
+	key, agent, _, err := s.RT.StartSpike(ctx, runtime.SpikeInput{Name: "Ship auth", Intent: "feature",
+		Kind: runtime.Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.RT.LatestSession(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "confirm_repos", Prompt: "chat only",
+		Repos: []runtime.ReposProposal{{Repo: repo, Reason: "it's the only one"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
+		writeSpec(t, "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeSpec(t, materializePlanBody), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sec := range spec.Sections {
+		r, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+			SectionID: sec.ID, Prompt: "Approve " + sec.Title + "."})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RT.Approve(ctx, r.ID, runtime.ApproveInput{SectionSHA256: sec.SHA256,
+			ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "approval", ArtifactID: plan.ArtifactID,
+		Prompt: "Approve the plan."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.Approve(ctx, r.ID, runtime.ApproveInput{ArtifactRevision: plan.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Caller{SessionID: ses.ID, AgentID: agent.ID, AgentName: agent.Name,
+		Role: runtime.RoleOrchestrator, SpikeOrchestrator: true}
+	body := `{"spike":"` + key + `","spec":"` + spec.ArtifactID + `","plan":"` + plan.ArtifactID + `","request_id":"req-1"}`
+	out1, err := s.call(ctx, c, "swarm_materialize", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := s.call(ctx, c, "swarm_materialize", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
 // §8.1: spike is a required input field, not inferred from the caller's own
 // item - passing it explicitly must actually reach Store.Materialize (fix
 // round 2, item 4).

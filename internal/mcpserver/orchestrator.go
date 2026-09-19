@@ -560,13 +560,15 @@ func materializeTool(s *Server) ToolDef {
 		// 2, item 4). RT.Materialize still independently checks the caller is
 		// that spike's orchestrator (a.ItemID != spike.ID), so passing it
 		// explicitly adds no privilege the caller didn't already have.
-		Schema: objSchema(`"spike":{"type":"string"},"spec":{"type":"string"},"plan":{"type":"string"},"report":{"type":"string"}`),
+		Schema: objSchema(`"spike":{"type":"string"},"spec":{"type":"string"},"plan":{"type":"string"},"report":{"type":"string"},
+			"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Spike  string `json:"spike"`
-				Spec   string `json:"spec"`
-				Plan   string `json:"plan"`
-				Report string `json:"report"`
+				Spike     string `json:"spike"`
+				Spec      string `json:"spec"`
+				Plan      string `json:"plan"`
+				Report    string `json:"report"`
+				RequestID string `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -574,7 +576,7 @@ func materializeTool(s *Server) ToolDef {
 			if in.Spike == "" {
 				return nil, errors.New("bad_request: spike is required")
 			}
-			res, err := s.RT.Materialize(ctx, c.SessionID, in.Spike, in.Spec, in.Plan, in.Report)
+			res, err := s.RT.Materialize(ctx, c.SessionID, in.Spike, in.Spec, in.Plan, in.Report, in.RequestID)
 			if err != nil {
 				return nil, err
 			}

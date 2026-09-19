@@ -135,7 +135,7 @@ func TestMaterializeBuildsTheEpicTree(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	ses, specID, planID, _ := approvedFeatureSpike(t, s)
-	res, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "")
+	res, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestMaterializeRefusesAMissingApproval(t *testing.T) {
 	// stale one section's approval by editing it
 	s.DB.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE kind = 'approve_section'
 		AND id = (SELECT id FROM requests WHERE kind = 'approve_section' LIMIT 1)`)
-	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "")
+	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
 	if err == nil || !strings.HasPrefix(err.Error(), "approval_missing: section ") {
 		t.Fatalf("err = %v", err)
 	}
@@ -211,7 +211,7 @@ func TestMaterializeRefusesAFileEditedAfterApproval(t *testing.T) {
 	ctx := context.Background()
 	ses, specID, planID, planPath := approvedFeatureSpike(t, s)
 	os.WriteFile(planPath, []byte(planBody+"\nextra\n"), 0o644)
-	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "")
+	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
 	if err == nil || !strings.HasPrefix(err.Error(), "artifact_changed: ") ||
 		!strings.HasSuffix(err.Error(), " changed after approval. Revise and ask again.") {
 		t.Fatalf("err = %v", err)
@@ -225,7 +225,7 @@ func TestMaterializeRefusesAMissingPlanFile(t *testing.T) {
 	if err := os.Remove(planPath); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, ""); err == nil {
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", ""); err == nil {
 		t.Fatal("a missing file must be refused")
 	}
 }
@@ -238,7 +238,7 @@ func TestMaterializeRefusesAnUnconfirmedRepoInATask(t *testing.T) {
 	other := seedRepo(t, s, "app")
 	s.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = ? WHERE key = 'SPIKE-1'`,
 		`["`+other+`"]`)
-	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "")
+	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
 	if err == nil || !strings.HasPrefix(err.Error(), "tree_invalid: TASK ") ||
 		!strings.HasSuffix(err.Error(), " uses an unconfirmed repo") {
 		t.Fatalf("err = %v", err)
@@ -251,7 +251,7 @@ func TestMaterializeRefusesAnotherAgent(t *testing.T) {
 	_, specID, planID, _ := approvedFeatureSpike(t, s)
 	_, other, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Other", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	oSes, _ := s.LatestSession(ctx, other.ID)
-	if _, err := s.Materialize(ctx, oSes.ID, "SPIKE-1", specID, planID, ""); err == nil {
+	if _, err := s.Materialize(ctx, oSes.ID, "SPIKE-1", specID, planID, "", ""); err == nil {
 		t.Fatal("only the spike's own orchestrator may materialize it")
 	}
 }
@@ -280,7 +280,7 @@ func TestMaterializeIsAllOrNothing(t *testing.T) {
 	if !strings.Contains(raw, `"blocked_by":"nope"`) {
 		t.Fatalf("the mutation did not match tree_json; the test would pass for the wrong reason: %s", raw)
 	}
-	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, ""); err == nil {
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", ""); err == nil {
 		t.Fatal("an unknown ref must be refused")
 	}
 	if got := countItems(t, s); got != before {
@@ -297,7 +297,7 @@ func TestDebugSpikeMaterializesABug(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	ses, reportID := approvedDebugSpike(t, s)
-	res, err := s.Materialize(ctx, ses.ID, "SPIKE-1", "", "", reportID)
+	res, err := s.Materialize(ctx, ses.ID, "SPIKE-1", "", "", reportID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestMaterializeRefusesAPlanNotApprovedAtItsCurrentRevision(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE kind = 'approve_plan'`); err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "")
+	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
 	if err == nil || !strings.HasPrefix(err.Error(), "approval_missing:") {
 		t.Fatalf("err = %v", err)
 	}
@@ -380,7 +380,7 @@ func TestMaterializeRefusesARootTypeMismatch(t *testing.T) {
 	if _, err := s.Approve(ctx, pr.ID, ApproveInput{ArtifactRevision: plan.Revision, Via: "board"}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Materialize(ctx, ses.ID, key, spec.ArtifactID, plan.ArtifactID, "")
+	_, err = s.Materialize(ctx, ses.ID, key, spec.ArtifactID, plan.ArtifactID, "", "")
 	if err == nil || !strings.HasPrefix(err.Error(), "tree_invalid: root must be epic") {
 		t.Fatalf("err = %v", err)
 	}
@@ -434,7 +434,7 @@ func TestMaterializePropagatesTddExempt(t *testing.T) {
 	if _, err := s.Approve(ctx, pr.ID, ApproveInput{ArtifactRevision: planRes.Revision, Via: "board"}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := s.Materialize(ctx, ses.ID, key, spec.ArtifactID, planRes.ArtifactID, "")
+	res, err := s.Materialize(ctx, ses.ID, key, spec.ArtifactID, planRes.ArtifactID, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,10 +449,10 @@ func TestFeatureSpikeNeedsBothArtifacts(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	ses, specID, planID, _ := approvedFeatureSpike(t, s)
-	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, "", ""); err == nil {
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, "", "", ""); err == nil {
 		t.Fatal("a feature spike needs the plan too")
 	}
-	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", "", planID, ""); err == nil {
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", "", planID, "", ""); err == nil {
 		t.Fatal("a feature spike needs the spec too")
 	}
 }
