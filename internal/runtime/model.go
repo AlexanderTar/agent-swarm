@@ -110,6 +110,7 @@ type Session struct {
 	ExitCode                               *int
 	StartedAt                              time.Time
 	EndedAt                                *time.Time
+	FailureText                            *string // full pane text failSession captured; nil unless this session failed
 }
 
 type GitRef struct {
