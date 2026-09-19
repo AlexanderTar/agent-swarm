@@ -228,15 +228,31 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		return "", Agent{}, false, err
 	}
 
+	// origKind is captured before resolveUsageFallback may substitute in.Kind,
+	// so the agent.fallback_used notification below can report what the
+	// caller actually asked for.
+	origKind := in.Kind
+	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
+	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
+
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
-	preflightErr := s.Preflight(ctx, PreflightInput{
-		Kind:      in.Kind,
-		Model:     in.Model,
-		Effort:    in.Effort,
-		Role:      RoleOrchestrator,
-		RepoPaths: in.RepoPaths,
-	})
+	var preflightErr error
+	if ferr != nil {
+		// origKind is confirmed exhausted with no usable fallback: treat
+		// this exactly like a Preflight refusal (spec Locked Decision 6)
+		// rather than call the real Preflight, which would happily approve
+		// origKind (it's installed and signed in -- just out of quota).
+		preflightErr = ferr
+	} else {
+		preflightErr = s.Preflight(ctx, PreflightInput{
+			Kind:      in.Kind,
+			Model:     in.Model,
+			Effort:    in.Effort,
+			Role:      RoleOrchestrator,
+			RepoPaths: in.RepoPaths,
+		})
+	}
 	if preflightErr != nil {
 		agentID := ids.New("agt")
 		nowMs := s.now().UnixMilli()
@@ -344,6 +360,10 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 			s.logf("spawn: watchStartup %s: %v", a.Name, err)
 		}
 	})
+	if substituted && s.Notify != nil {
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name, ItemKey: it.Key,
+			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
+	}
 
 	return it.Key, a, false, nil
 }
@@ -374,6 +394,13 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 			in.Model = models[0].ID
 		}
 	}
+
+	origKind := in.Kind
+	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
+	if ferr != nil {
+		return Agent{}, false, ferr
+	}
+	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
 
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
@@ -461,6 +488,10 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	})
 	if err != nil {
 		return Agent{}, false, err
+	}
+	if substituted && s.Notify != nil {
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name, ItemKey: it.Key,
+			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
 	}
 
 	if queued {
@@ -569,6 +600,13 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		}
 	}
 
+	origKind := in.Kind
+	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
+	if ferr != nil {
+		return Agent{}, false, ferr
+	}
+	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
+
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
 	if err := s.Preflight(ctx, PreflightInput{
@@ -671,6 +709,12 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	})
 	if err != nil {
 		return Agent{}, false, err
+	}
+	// A replay must not re-raise agent.fallback_used: it already went out
+	// on the genuine first call (same rule as agent.queued just below).
+	if ran && substituted && s.Notify != nil {
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: result.Agent.Name, ItemKey: it.Key,
+			Args: map[string]string{"name": result.Agent.Name, "agent": result.Agent.Kind.Display(), "from": origKind.Display()}})
 	}
 
 	if result.Queued {
@@ -1083,6 +1127,33 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		return Agent{}, &items.Error{Code: items.CodeConflict, Message: notRetryable}
 	}
 
+	// origKind is captured before resolveUsageFallback may substitute a.Kind,
+	// so the agent.fallback_used notification below can report what was
+	// actually configured.
+	origKind := a.Kind
+	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, a.Kind, a.Model, a.Effort)
+	if ferr != nil {
+		return Agent{}, ferr
+	}
+	if substituted {
+		// Retry never re-validates the *original* kind -- it trusts the
+		// agent row was already vetted at spawn time -- but a freshly
+		// substituted kind has never been Preflighted, so it must be here,
+		// or a broken substitute (not installed, not signed in) would spawn
+		// a session doomed to fail instead of surfacing a clear refusal.
+		if err := s.Preflight(ctx, PreflightInput{Kind: fbKind, Model: fbModel, Effort: fbEffort, Role: a.Role}); err != nil {
+			return Agent{}, err
+		}
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ? WHERE id = ?`,
+				string(fbKind), fbModel, fbEffort, a.ID)
+			return err
+		}); err != nil {
+			return Agent{}, err
+		}
+		a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
+	}
+
 	if note != "" {
 		payload, _ := json.Marshal(map[string]string{"note": note})
 		nowMs := s.now().UnixMilli()
@@ -1119,6 +1190,12 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		return nil
 	}); err != nil {
 		return Agent{}, err
+	}
+	if substituted && s.Notify != nil {
+		var itemKey string
+		_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, out.ItemID).Scan(&itemKey)
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: out.Name, ItemKey: itemKey,
+			Args: map[string]string{"name": out.Name, "agent": out.Kind.Display(), "from": origKind.Display()}})
 	}
 	s.go_(func() {
 		if err := s.watchStartup(context.WithoutCancel(ctx), out, newSes, s.Adapters[out.Kind]); err != nil {

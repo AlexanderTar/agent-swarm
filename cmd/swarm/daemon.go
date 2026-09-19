@@ -37,6 +37,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/spawn"
 	usagesvc "github.com/AlexanderTar/agent-swarm/internal/usage"
+	"github.com/AlexanderTar/agent-swarm/internal/usagegate"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 	"github.com/AlexanderTar/agent-swarm/web"
 )
@@ -254,6 +255,12 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	up := &usagesvc.Poller{DB: d, Events: ev, Settings: st, Now: now, Log: cfg.Log,
 		Sources: usagesvc.SourcesFromEnv(os.Getenv, userHome, os.Getenv("USER"),
 			&http.Client{Timeout: 10 * time.Second}, execx.Run, execx.Start)}
+	// docs/specs/2026-09-19-usage-fallback-agent.md: rt.Usage lets the
+	// spawn/retry path substitute a configured fallback agent when the
+	// configured one is confirmed out of usage. usagegate depends on both
+	// runtime and usage, so this is the one place that can wire the two
+	// together without either package importing the other.
+	rt.Usage = &usagegate.Gate{Poller: up, Now: now}
 	mcpsrv := &mcpserver.Server{RT: rt, KB: idx, Advisor: adv, Log: cfg.Log, Version: version}
 	hookH := &hook.Handler{DB: d, RT: rt, Adapters: rt.Adapters, Now: now, Log: cfg.Log, Advisor: adv}
 

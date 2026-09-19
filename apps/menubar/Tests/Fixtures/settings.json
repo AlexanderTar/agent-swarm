@@ -39,6 +39,10 @@
       "model": "fable"
     }
   },
+  "fallback_default": {
+    "agent": "claude",
+    "model": "sonnet"
+  },
   "notifications": {
     "info": {
       "center": true,

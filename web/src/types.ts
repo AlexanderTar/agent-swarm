@@ -219,6 +219,11 @@ export interface RoleDefault { agent: AgentKind; model: string; effort?: string 
 export interface Settings {
   enabled_agents: AgentKind[];
   roles: Partial<Record<SettingsRole, RoleDefault>>;
+  // The agent+model substituted when a role's configured agent is confirmed
+  // out of usage (docs/specs/2026-09-19-usage-fallback-agent.md). Read-side
+  // type parity only -- there is no Settings-editing screen in web/ (the
+  // menubar app is the only editor); see the spec's "Web UI" section.
+  fallback_default: RoleDefault;
   notifications: Record<string, { center: boolean; sound: boolean }>;
   max_orchestrators: number;
   max_agents: number;
