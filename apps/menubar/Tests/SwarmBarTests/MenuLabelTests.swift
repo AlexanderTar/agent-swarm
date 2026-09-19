@@ -119,4 +119,26 @@ final class MenuLabelTests: XCTestCase {
         XCTAssertEqual(UsageSection.rows(bare, format: format).map(\.trailing), [""])
         XCTAssertEqual(UsageSection.rows(bare, format: format)[0].fraction, 1)
     }
+
+    func testUsageLevelThresholds() {
+        func level(_ f: Double) -> UsageSection.Level {
+            UsageSection.Row(id: "x", label: "X", used: "", fraction: f, trailing: "").level
+        }
+        XCTAssertEqual(level(0), .normal)
+        XCTAssertEqual(level(0.69), .normal)
+        XCTAssertEqual(level(0.7), .warning)
+        XCTAssertEqual(level(0.89), .warning)
+        XCTAssertEqual(level(0.9), .critical)
+        XCTAssertEqual(level(1), .critical)
+    }
+
+    func testActiveBadgeFollowsLiveAgents() {
+        func badge(active: Int, connected: Bool) -> Bool {
+            MenuLabel.make(activeCount: active, connected: connected, enabled: [.claude], usage: usage,
+                           compact: false, format: format).showsActiveBadge
+        }
+        XCTAssertTrue(badge(active: 1, connected: true))
+        XCTAssertFalse(badge(active: 0, connected: true), "nothing running")
+        XCTAssertFalse(badge(active: 3, connected: false), "stale count while the daemon is down")
+    }
 }

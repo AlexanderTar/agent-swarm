@@ -67,7 +67,7 @@ public enum DisplayState: String, Sendable, CaseIterable {
 }
 
 public enum DotTone: String, Sendable {
-    case green, greenHollow, grey, greyPulse, amber, hollow, red
+    case green, greenPulse, greenHollow, grey, greyPulse, amber, hollow, red
 }
 
 public struct AgentAction: Equatable, Sendable, Identifiable {

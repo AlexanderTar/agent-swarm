@@ -14,6 +14,8 @@ public struct MenuLabel: Equatable, Sendable {
     public var count: String
     public var segments: [Segment]
     public var compact: Bool
+    /// Drives the green corner dot on the menu bar glyph: at least one agent is live right now.
+    public var showsActiveBadge = false
 
     /// Width reserved for each value, so the item never shifts: "100%" or "100%M".
     public static let widestValue = "100%"
@@ -41,7 +43,8 @@ public struct MenuLabel: Equatable, Sendable {
             }
             return Segment(agent: kind, text: text, dimmed: snap.stale, tooltip: tooltip)
         }
-        return MenuLabel(count: connected ? "\(activeCount)" : "?", segments: segments, compact: compact)
+        return MenuLabel(count: connected ? "\(activeCount)" : "?", segments: segments, compact: compact,
+                         showsActiveBadge: connected && activeCount > 0)
     }
 }
 
@@ -86,7 +89,12 @@ public enum UsageSection {
         public var fraction: Double
         /// "Resets in 2h 10m", "Resets Mon 09:00", "Cycle ends 1 Oct" or "Updated 12 min ago".
         public var trailing: String
+
+        /// Bar colour band (§16.2 polish): blue under 70 %, yellow to 90 %, red above.
+        public var level: Level { fraction < 0.7 ? .normal : fraction < 0.9 ? .warning : .critical }
     }
+
+    public enum Level: String, Sendable { case normal, warning, critical }
 
     /// Enabled agents in settings order.
     public static func pickerAgents(enabled: [AgentKind]) -> [AgentKind] {

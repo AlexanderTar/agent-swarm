@@ -32,7 +32,7 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(R.modelOptions(catalog[0]).map(\.label), ["Opus (latest)", "Haiku (latest)", "Opus 5", "Sonnet 4.6", "Haiku 4.5"])
         XCTAssertEqual(R.modelOptions(catalog[0], advisorOnly: true).map(\.value), ["opus", "m-opus", "m-sonnet46"])
         XCTAssertEqual(R.modelOptions(nil), [])
-        XCTAssertEqual(R.agentOptions(enabled: [.agy, .claude, .fake]), [PickerOption("claude", "Claude"), PickerOption("agy", "agy")])
+        XCTAssertEqual(R.agentOptions(enabled: [.agy, .claude, .fake]), [PickerOption("claude", "Claude"), PickerOption("agy", "Antigravity")])
     }
 
     /// The served alias fallback has `id == aliases[0]` (`internal/catalog/parse.go` `ClaudeAliasFallback`),
@@ -164,7 +164,7 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertFalse(notEnabled.isValid)
         XCTAssertEqual(notEnabled.agent, "Choose an agent.")
         XCTAssertEqual(R.validate(AgentChoice(agent: .agy, model: "x"), advisor: .none, catalog: catalog, enabled: [.agy], role: .coder).agent,
-                       "agy isn't installed on this Mac.")
+                       "Antigravity isn't installed on this Mac.")
         XCTAssertEqual(["claude", "codex login", "agy", "cursor-agent login"], AgentKind.selectable.map(Copy.loginCommand))
     }
 

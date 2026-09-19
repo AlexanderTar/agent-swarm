@@ -32,7 +32,7 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertEqual(f.preview, "Agent name: investigate-login-crash")
         XCTAssertNil(f.nameError)
         XCTAssertTrue(f.canStart)
-        XCTAssertEqual(f.agentOptions.map(\.label), ["Claude", "Codex", "agy"])
+        XCTAssertEqual(f.agentOptions.map(\.label), ["Claude", "Codex", "Antigravity"])
         XCTAssertEqual(f.modelOptions.first?.label, "Fable (latest)")
         XCTAssertEqual(f.effortOptions?.first?.label, "Default (high)")
         XCTAssertEqual(f.advisorOptions.first?.label, "Claude · Fable (latest)")
@@ -92,7 +92,7 @@ final class NewOrchestratorFormTests: XCTestCase {
 
         f.setAgent("agy")
         f.setModel("gemini-3.8-flash")
-        XCTAssertEqual(f.errors.agent, "agy isn't signed in. Run `agy` in a terminal.")
+        XCTAssertEqual(f.errors.agent, "Antigravity isn't signed in. Run `agy` in a terminal.")
         f.setAgent("claude")
         f.setModel("claude-haiku-4-5-20251001")
         XCTAssertNil(f.effortOptions, "Effort is hidden for models without it")

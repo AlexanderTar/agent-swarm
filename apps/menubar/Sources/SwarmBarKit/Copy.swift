@@ -40,6 +40,12 @@ public enum Copy {
     public static func modelListsUpdated(_ age: String) -> String { "Model lists updated \(age) ago" }
     public static let advisorCaption = "Claude agents use the built-in advisor. Other agents get a simulated one."
     public static let settings = "Settings"
+    public static let more = "More"
+    public static let quit = "Quit Swarm"
+    /// Header status next to the app title: the daemon stream is up, or it isn't.
+    public static let live = "Live"
+    public static let offline = "Offline"
+    public static let agentsWorking = "Agents are working"
     public static func removeFolder(_ path: String) -> String { "Remove \(path)" }
     /// DisplayState.label returns nil for .running (it's the unlabelled default state); this is
     /// only the accessibility-string fallback for that case, not a DisplayState value.
@@ -140,7 +146,7 @@ public enum Copy {
         switch k {
         case .claude: return "Claude"
         case .codex: return "Codex"
-        case .agy: return "agy"
+        case .agy: return "Antigravity"
         case .cursor: return "Cursor"
         case .fake: return "Fake"
         }
@@ -200,7 +206,7 @@ public enum Copy {
 
     // §17.4
     public static let emptyNeedsYou = "Nothing needs your attention."
-    public static let emptyAgents = "No active agents."
+    public static let emptyAgents = "No active agents. Start one with New orchestrator below."
     public static let emptyUsage = "Usage unavailable."
     public static let emptyNotifications = "No notifications."
 

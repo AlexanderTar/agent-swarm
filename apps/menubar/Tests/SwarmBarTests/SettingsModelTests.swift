@@ -26,7 +26,7 @@ final class SettingsModelTests: XCTestCase {
     func testAgentsTabRows() async {
         let m = await model()
         let rows = m.agentRows
-        XCTAssertEqual(rows.map(\.label), ["Claude", "Codex", "agy", "Cursor"])
+        XCTAssertEqual(rows.map(\.label), ["Claude", "Codex", "Antigravity", "Cursor"])
         XCTAssertEqual(rows.map(\.checked), [true, true, true, false])
         XCTAssertEqual(rows.map(\.checkboxDisabled), [false, false, false, true])
         XCTAssertEqual(rows.map(\.status), [
@@ -71,7 +71,7 @@ final class SettingsModelTests: XCTestCase {
         let m = await model()
         let rows = m.defaultsRows
         XCTAssertEqual(rows.map(\.label), ["Orchestrator", "Advisor", "Coding", "Code review", "UI review", "Research", "Debugging", "Mechanical"])
-        XCTAssertEqual(rows[0].agentOptions.map(\.label), ["Claude", "Codex", "agy"])
+        XCTAssertEqual(rows[0].agentOptions.map(\.label), ["Claude", "Codex", "Antigravity"])
         XCTAssertEqual(rows[0].modelOptions.map(\.label).prefix(4), ["Fable (latest)", "Opus (latest)", "Sonnet (latest)", "Haiku (latest)"])
         XCTAssertEqual(rows[0].effortOptions?.first?.label, "Default (high)")
         XCTAssertEqual(rows[1].modelOptions.map(\.label), [
