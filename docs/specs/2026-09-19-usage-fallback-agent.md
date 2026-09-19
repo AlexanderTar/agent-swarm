@@ -112,20 +112,33 @@ investigation is a separate, already-assigned task; not touched here.
   a primary signal per the task brief, since Claude's real exhaustion
   response now returns valid meters instead of an error), and
 - `len(snapshot.Meters) > 0`, and
-- **any** meter `m` has `m.UsedPct >= 100` **and** (`m.ResetsAt == nil` or
-  `m.ResetsAt.After(now)`).
+- its **headline meter** (`snapshot.Meters[i]` where `Meters[i].ID ==
+  HeadlineID`, or `Meters[0]` when `HeadlineID` is empty or matches nothing
+  — the same fallback the menubar's own `UsageSnapshot.headline` computed
+  property already uses) has `UsedPct >= 100` **and** (`ResetsAt == nil` or
+  `ResetsAt.After(now)`).
 
-Rationale for "any meter", not just the headline meter: reading
-`internal/usage/claude.go`, `codex.go`, `agy.go`, `cursor.go`, every meter
-each source emits (Claude's `five_hour`/`seven_day_<model>` windows, Codex's
-`primary`/`secondary`/named limits, agy's per-window meters, Cursor's
-`cursor_auto`/`cursor_api`) represents an independent hard cap — hitting
-*any* one of them blocks further requests until it resets, regardless of
-what the headline (display) meter shows. Gating on the headline only would
-miss a weekly cap hit while a 5h window still reads low, which is exactly
-the silent-stall case this feature exists to prevent. `HeadlineID` is a
-display concern (`internal/usage`'s own doc comment: "what's shown to the
-user in the widget"), not an availability concern.
+**Revised during implementation** (was originally spec'd as "any meter", per
+an earlier reading of this section) after re-reading `internal/usage/claude.go`
+in full: several meters a real source emits are *not* whole-kind caps.
+Claude's own `seven_day_opus`, `seven_day_fable`, and the per-model
+`seven_day_<model>` entries built from `parsed.Limits` are **per-model**
+weekly caps; Cursor's `cursor_auto` vs `cursor_api` are separate billing
+pools. Under this codebase's own shipped defaults — every role but coder
+defaults to Claude/opus, the fallback also defaults to Claude/sonnet — an
+"any meter" rule would have refused (or, with a different fallback
+configured, silently rerouted) a coder spawn the moment the *Opus* weekly
+cap alone was hit, even though Sonnet still had full capacity. That is a
+regression this feature must never cause: it would make a working spawn
+fail where none was failing before. Headline-only avoids it: `HeadlineID`
+is each source's own choice of "the representative reading" (Claude sets it
+to `five_hour`, a whole-account, not per-model, window), so this is
+source-agnostic and needs no per-kind special-casing in `usagegate`. The
+accepted cost is a false negative when a genuine whole-account cap (e.g.
+Claude's `seven_day`, "all models") is hit while the headline still reads
+low — that reads as "available" when it technically isn't, which is exactly
+today's pre-feature stall behavior, not a new one, and is preferred over the
+false-positive risk above.
 
 Threshold is `>= 100`, not a softer "close to 100" cutoff: this session's
 other work (`internal/usage/claude.go`) confirmed Claude's real
@@ -416,6 +429,10 @@ not built.
   a daemon that predates this field.
 - Any change to `internal/usage/*.go` itself.
 - The unrelated orchestrator-crash bug noted separately this session.
+- **The Notion Specs-database page** this repo's CLAUDE.md asks every spec
+  to get: this worktree has no Notion access from its own sandbox boundary.
+  Not done — the coordinator should publish it (or ask a session that has
+  Notion access to) from this file once the work is reviewed.
 
 ## Verification plan
 
@@ -435,9 +452,14 @@ is off in every test environment by construction):
 
 1. `usagegate.Exhausted` unit tests: fresh snapshot at 100% → true; stale →
    false; `Error != ""` → false; no meters → false; a meter at 99.9% → false;
-   a meter at 100% whose `ResetsAt` is in the past → false; a *non-headline*
-   meter at 100% while the headline meter is low → true (proves "any meter",
-   not "headline only").
+   the headline meter at 100% whose `ResetsAt` is in the past → false; a
+   *non-headline* (per-model) meter at 100% while the headline reads low →
+   false (`TestNonHeadlineMeterAtCapDoesNotCount` — proves the corrected
+   "headline only" contract); the headline meter at 100% while a
+   non-headline meter reads low → true
+   (`TestExhaustedWhenTheHeadlineMeterIsAtCap`); an empty/non-matching
+   `HeadlineID` falls back to the first meter
+   (`TestHeadlineIDMissingFallsBackToFirstMeter`).
 2. `usagegate.Gate.Exhausted` seeded via a real `usage.Poller` +
    `RefreshOne` with a `stubSource`-style 100%-meter source (never touching
    unexported `storeSuccess`) → true; never-refreshed kind → false.
@@ -452,7 +474,11 @@ is off in every test environment by construction):
    `agent.preflight_failed` (not a new kind), no session starts.
 5. Exhausted kind + no `FallbackDefault` configured to a *different*, usable
    agent (e.g. fallback == the exhausted kind itself) → same terminal
-   behavior as (4).
+   behavior as (4). Covered explicitly with the *shipped default* fallback
+   left untouched (`TestStartSpikeDefaultFallbackSameAsExhaustedKindRefuses`)
+   — this is the branch every fresh install actually hits, not a corner
+   case: with the shipped defaults, Claude exhaustion has no escape until
+   the user points the fallback at a second installed agent.
 6. Not exhausted (nil `Store.Usage`, or a fresh low-usage snapshot) → every
    existing test in `agents_test.go`/`limits_test.go` is unaffected (`Usage`
    stays nil in `newStore`, so this is definitionally green — the falsification
