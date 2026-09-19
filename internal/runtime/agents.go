@@ -61,6 +61,11 @@ type SpawnInput struct {
 	Name          string
 	Brief         BriefInput
 	RepoPaths     []string
+	// SessionID is the calling orchestrator's own MCP session, and RequestID
+	// is I11's idempotency key scoped to it (empty means "no idempotency,
+	// just run once"). Neither is the spawned agent's own session.
+	SessionID string
+	RequestID string
 }
 
 type OrchestratorInput struct {
@@ -612,14 +617,13 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
-	var queued bool
-	err = s.tx(ctx, func(tx *sql.Tx) error {
+	var result spawnResult
+	ran, err := IdemTx(ctx, s, in.SessionID, in.RequestID, "swarm_spawn", &result, func(tx *sql.Tx) error {
 		admitted, err := s.Admit(ctx, tx, in.Role, it.RootID)
 		if err != nil {
 			return err
 		}
 		if !admitted {
-			queued = true
 			a.State = AgentQueued
 		} else {
 			a.State = AgentActive
@@ -645,35 +649,55 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		if err != nil {
 			return err
 		}
-		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
+			return err
+		}
+		result.Agent, result.Queued = a, !admitted
+		return nil
 	})
 	if err != nil {
 		return Agent{}, false, err
 	}
 
-	if queued {
-		if s.Notify != nil {
+	if result.Queued {
+		// A replay of an already-queued spawn must not re-raise agent.queued:
+		// the notification already went out on the genuine first call.
+		if ran && s.Notify != nil {
 			_ = s.Notify.Raise(ctx, nil, NotifyInput{
 				Kind:      "agent.queued",
-				AgentName: a.Name,
+				AgentName: result.Agent.Name,
 				ItemKey:   it.Key,
-				Args:      map[string]string{"name": a.Name},
+				Args:      map[string]string{"name": result.Agent.Name},
 			})
 		}
-		return a, true, nil
+		return result.Agent, true, nil
+	}
+	if !ran {
+		// A replay of an already-started (non-queued) spawn: the session and
+		// its tmux process already exist from the genuine first call, so they
+		// must not be started a second time.
+		return result.Agent, false, nil
 	}
 
-	ses, err := s.startSession(ctx, a, 1, 1, false, "")
+	ses, err := s.startSession(ctx, result.Agent, 1, 1, false, "")
 	if err != nil {
 		return Agent{}, false, err
 	}
 	s.go_(func() {
-		if err := s.watchStartup(context.WithoutCancel(ctx), a, ses, s.Adapters[a.Kind]); err != nil {
-			s.logf("spawn: watchStartup %s: %v", a.Name, err)
+		if err := s.watchStartup(context.WithoutCancel(ctx), result.Agent, ses, s.Adapters[result.Agent.Kind]); err != nil {
+			s.logf("spawn: watchStartup %s: %v", result.Agent.Name, err)
 		}
 	})
 
-	return a, false, nil
+	return result.Agent, false, nil
+}
+
+// spawnResult is Spawn's own IdemTx payload: the typed pair a cache hit
+// unmarshals back into, so a replay can tell (without re-running Admit)
+// whether the original call queued the agent or started it immediately.
+type spawnResult struct {
+	Agent  Agent
+	Queued bool
 }
 
 func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID string) (Session, error) {

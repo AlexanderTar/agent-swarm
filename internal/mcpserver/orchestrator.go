@@ -398,7 +398,8 @@ func spawnTool(s *Server) ToolDef {
 			"advisor":{},"cwd":{"type":"string"},
 			"brief":{"type":"object"},
 			"worktrees":{"type":"array","items":{"type":"object","properties":{
-				"worktree":{"type":"string"},"mode":{"type":"string","enum":["rw","ro"]}}}}`),
+				"worktree":{"type":"string"},"mode":{"type":"string","enum":["rw","ro"]}}}},
+			"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Item   string `json:"item"`
@@ -425,6 +426,7 @@ func spawnTool(s *Server) ToolDef {
 					StopWhen   []string `json:"stop_when"`
 				} `json:"brief"`
 				Worktrees []spawnWorktreeRef `json:"worktrees"`
+				RequestID string             `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -449,6 +451,7 @@ func spawnTool(s *Server) ToolDef {
 					ScopeIn: in.Brief.ScopeIn, ScopeOut: in.Brief.ScopeOut,
 					Context: in.Brief.Context, Verify: in.Brief.Verify, StopWhen: in.Brief.StopWhen,
 				},
+				SessionID: c.SessionID, RequestID: in.RequestID,
 			})
 			if err != nil {
 				// ErrBriefTooLong and every Preflight message are already the exact

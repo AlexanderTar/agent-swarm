@@ -1005,6 +1005,115 @@ func TestRetryRefusesAWrongSessionState(t *testing.T) {
 	}
 }
 
+// Task 41: a repeated request_id must not spawn a second agent, and (this is
+// the part a merely-typed-return-cache-hit wouldn't prove on its own) must
+// not start a second tmux session for it either.
+func TestSpawnRequestIDReplaysInsteadOfSpawningTwice(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	in := SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "task"}, SessionID: "ses_caller", RequestID: "req-1"}
+	a1, queued1, err := s.Spawn(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued1 {
+		t.Fatal("this spawn must not queue")
+	}
+	a2, queued2, err := s.Spawn(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued2 || a2.ID != a1.ID {
+		t.Fatalf("replay = %+v/%v, want the same agent, queued=false", a2, queued2)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("agents = %d, want 1", n)
+	}
+	if len(tm.started) != 1 {
+		t.Fatalf("tmux started %d times, want 1: %v", len(tm.started), tm.started)
+	}
+}
+
+func TestSpawnWithoutOrDistinctRequestIDsEachSpawn(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	base := SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "task"}, SessionID: "ses_caller"}
+	a := base
+	a.RequestID = "req-a"
+	if _, _, err := s.Spawn(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	b := base
+	b.RequestID = "req-b"
+	if _, _, err := s.Spawn(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	c := base
+	if _, _, err := s.Spawn(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("agents = %d, want 3", n)
+	}
+	if len(tm.started) != 3 {
+		t.Fatalf("tmux started %d times, want 3: %v", len(tm.started), tm.started)
+	}
+}
+
+// A queued spawn's replay must not re-raise agent.queued, and must not admit
+// a second agent row either.
+func TestSpawnQueuedRequestIDReplaysWithoutDoubleNotify(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	setLimits(t, s, 4, 0, 0) // max_agents=0: every non-orchestrator spawn queues
+	in := SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "task"}, SessionID: "ses_caller", RequestID: "req-1"}
+	a1, queued1, err := s.Spawn(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued1 {
+		t.Fatal("this spawn must queue")
+	}
+	a2, queued2, err := s.Spawn(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued2 || a2.ID != a1.ID {
+		t.Fatalf("replay = %+v/%v, want the same agent, queued=true", a2, queued2)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("agents = %d, want 1", n)
+	}
+	notif := s.Notify.(*fakeNotifier)
+	count := 0
+	for _, k := range notif.kinds() {
+		if k == "agent.queued" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("agent.queued raised %d times, want 1", count)
+	}
+}
+
 func TestSpawnDefaultsKindAndModel(t *testing.T) {
 	s, _, fa := newStore(t)
 	s.Adapters[Claude] = fa
