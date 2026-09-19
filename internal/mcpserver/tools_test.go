@@ -129,6 +129,86 @@ func TestAskQuestionSucceeds(t *testing.T) {
 	}
 }
 
+func countRequests(t *testing.T, s *Server) int {
+	t.Helper()
+	var n int
+	if err := s.RT.DB.QueryRow(`SELECT COUNT(*) FROM requests`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// Task 41: a repeated request_id on swarm_ask must not open a second request.
+func TestAskQuestionRequestIDReplaysInsteadOfAskingTwice(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	body := `{"kind":"question","prompt":"Keep the email field?","request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_ask", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countRequests(t, s); n != 1 {
+		t.Fatalf("requests after first call = %d, want 1", n)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_ask", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countRequests(t, s); n != 1 {
+		t.Fatalf("requests after replayed call = %d, want still 1", n)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
+func TestAskWithoutOrDistinctRequestIDsEachAsk(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"question","prompt":"One?","request_id":"req-a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"question","prompt":"Two?","request_id":"req-b"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_ask", `{"kind":"question","prompt":"Three?"}`); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRequests(t, s); n != 3 {
+		t.Fatalf("requests = %d, want 3", n)
+	}
+}
+
+// withdraw is Ask's fourth branch (kind ignored, Withdraw set) and goes
+// through its own idemTx call; a repeated request_id must not withdraw twice
+// (the second withdraw would otherwise fail with "Already resolved.").
+func TestAskWithdrawRequestIDReplays(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	asked, err := s.call(ctx, seed.Caller, "swarm_ask", `{"kind":"question","prompt":"Keep it?"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		RequestID string `json:"request_id"`
+	}
+	json.Unmarshal(mustJSON(asked), &res)
+	body := `{"withdraw":"` + res.RequestID + `","request_id":"req-w1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_ask", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_ask", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
 // swarm_send refuses a target outside the caller's own top-level item.
 func TestSendRefusesACrossRootTarget(t *testing.T) {
 	s, seed := newServerWithSession(t)

@@ -110,7 +110,7 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 		}
 	}
 	var out Request
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	_, err := idemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err

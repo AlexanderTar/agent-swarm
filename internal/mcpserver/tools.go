@@ -109,7 +109,7 @@ func askTool(s *Server) ToolDef {
 		Description: "Ask a question, request an approval, propose repos to confirm, or withdraw an earlier ask, and block for the answer.",
 		Schema: objSchema(`"kind":{"type":"string"},"prompt":{"type":"string"},"options":{"type":"array"},
 			"artifact":{"type":"string"},"section":{"type":"string"},"withdraw":{"type":"string"},
-			"repos":{"type":"array"},"expansion":{"type":"array"}`),
+			"repos":{"type":"array"},"expansion":{"type":"array"},"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Kind      string                  `json:"kind"`
@@ -120,6 +120,7 @@ func askTool(s *Server) ToolDef {
 				Withdraw  string                  `json:"withdraw"`
 				Repos     []runtime.ReposProposal `json:"repos"`
 				Expansion []runtime.ReposProposal `json:"expansion"`
+				RequestID string                  `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -127,6 +128,7 @@ func askTool(s *Server) ToolDef {
 			req, err := s.RT.Ask(ctx, c.SessionID, runtime.AskInput{
 				Kind: in.Kind, Prompt: in.Prompt, Options: in.Options, ArtifactID: in.Artifact,
 				SectionID: in.Section, Withdraw: in.Withdraw, Repos: in.Repos, Expansion: in.Expansion,
+				RequestID: in.RequestID,
 			})
 			if err != nil {
 				return nil, err

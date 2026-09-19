@@ -48,6 +48,9 @@ type AskInput struct {
 	Withdraw   string // when set, every other field is ignored
 	Repos      []ReposProposal
 	Expansion  []ReposProposal
+	// RequestID is I11's idempotency key, scoped to the calling MCP session
+	// (empty means "no idempotency, just run once").
+	RequestID string
 }
 
 // ReposProposal is one repository the orchestrator proposes (or drops) on a
@@ -349,7 +352,7 @@ func (s *Store) finishOpen(ctx context.Context, tx *sql.Tx, reqID, agentName, it
 // Ask is swarm_ask (§8.1).
 func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request, error) {
 	if in.Withdraw != "" {
-		return s.withdraw(ctx, sessionID, in.Withdraw)
+		return s.withdraw(ctx, sessionID, in.Withdraw, in.RequestID)
 	}
 	if st, err := s.SessionState(ctx, sessionID); err == nil && st.Pausing() {
 		return Request{}, errors.New(pausedTool)
@@ -367,9 +370,9 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 	}
 }
 
-func (s *Store) withdraw(ctx context.Context, sessionID, reqID string) (Request, error) {
+func (s *Store) withdraw(ctx context.Context, sessionID, reqID, requestID string) (Request, error) {
 	var out Request
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	_, err := idemTx(ctx, s, sessionID, requestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -414,7 +417,7 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
 	}
 	var out Request
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	_, err := idemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -444,7 +447,7 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
 	}
 	var out Request
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	_, err := idemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
