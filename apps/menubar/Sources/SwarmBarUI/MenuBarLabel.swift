@@ -13,7 +13,9 @@ public struct MenuBarLabelView: View {
         HStack(spacing: label.compact ? 6 : 10) {
             HStack(spacing: 3) {
                 AgentIcon(.swarm)
-                Text(label.count).monospacedDigit()
+                if !label.count.isEmpty {
+                    Text(label.count).monospacedDigit()
+                }
             }
             ForEach(label.segments, id: \.agent) { s in
                 HStack(spacing: 3) {
@@ -58,23 +60,32 @@ public enum LabelRenderer {
     }
 }
 
-/// The menu bar item: the template label image, plus a green corner dot while agents are live.
-/// The dot has to live outside the template image (see `MenuBarLabelView.badgeOffset`).
+/// The menu bar item: the template label image, plus a colored corner dot — green while an agent
+/// is live, red while the daemon is offline, none while connected but idle. The dot has to live
+/// outside the template image (see `MenuBarLabelView.badgeOffset`).
 public struct MenuBarLabelImage: View {
     let label: MenuLabel
 
     public init(_ label: MenuLabel) { self.label = label }
 
+    private var badgeColor: Color? {
+        switch label.badge {
+        case .none: return nil
+        case .green: return .green
+        case .red: return .red
+        }
+    }
+
     public var body: some View {
         Image(nsImage: LabelRenderer.image(label))
             .overlay(alignment: .topLeading) {
-                if label.showsActiveBadge {
+                if let badgeColor {
                     Circle()
-                        .fill(Color.green)
+                        .fill(badgeColor)
                         .frame(width: MenuBarLabelView.badgeSize, height: MenuBarLabelView.badgeSize)
                         .offset(x: MenuBarLabelView.badgeOffset.x, y: MenuBarLabelView.badgeOffset.y)
                 }
             }
-            .accessibilityLabel(label.showsActiveBadge ? Copy.agentsWorking : Copy.appTitle)
+            .accessibilityLabel(label.badge == .green ? Copy.agentsWorking : Copy.appTitle)
     }
 }

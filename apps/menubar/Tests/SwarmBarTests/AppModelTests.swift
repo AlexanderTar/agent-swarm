@@ -32,7 +32,7 @@ final class AppModelTests: XCTestCase {
 
     func testRefreshFillsTheLabelAndHeader() async {
         let m = make()
-        XCTAssertEqual(m.label.count, "?")
+        XCTAssertEqual(m.label.count, "", "no bare \"?\" before the first refresh")
         await m.refresh()
         XCTAssertTrue(m.connected)
         XCTAssertNil(m.banner)
@@ -57,7 +57,7 @@ final class AppModelTests: XCTestCase {
         await m.refresh()
         XCTAssertFalse(m.connected)
         XCTAssertEqual(m.banner, "Daemon unavailable. Showing last known state from 13:32.")
-        XCTAssertEqual(m.label.count, "?")
+        XCTAssertEqual(m.label.count, "", "no bare \"?\" while the daemon is down")
         XCTAssertEqual(m.activeLine, "? active")
         XCTAssertEqual(runner.calls.count, 6, "every agent with a session")
         let coder = m.state.agents[0].children[0]

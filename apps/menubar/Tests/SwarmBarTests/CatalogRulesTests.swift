@@ -26,10 +26,11 @@ final class CatalogRulesTests: XCTestCase {
     func testAliasesComeFirstAndHiddenModelsAreLeftOut() {
         XCTAssertEqual(R.resolve(catalog[0], "opus")?.id, "m-opus")
         XCTAssertNil(R.resolve(catalog[0], ""))
-        XCTAssertEqual(R.modelLabel(catalog[0], "opus"), "Opus (latest)")
+        XCTAssertEqual(R.modelLabel(catalog[0], "opus"), "Opus 5 (latest)")
         XCTAssertEqual(R.modelLabel(catalog[0], "m-haiku"), "Haiku 4.5")
         XCTAssertEqual(R.modelLabel(nil, "zzz"), "zzz")
-        XCTAssertEqual(R.modelOptions(catalog[0]).map(\.label), ["Opus (latest)", "Haiku (latest)", "Opus 5", "Sonnet 4.6", "Haiku 4.5"])
+        XCTAssertEqual(R.modelOptions(catalog[0]).map(\.label),
+                       ["Opus 5 (latest)", "Haiku 4.5 (latest)", "Opus 5", "Sonnet 4.6", "Haiku 4.5"])
         XCTAssertEqual(R.modelOptions(catalog[0], advisorOnly: true).map(\.value), ["opus", "m-opus", "m-sonnet46"])
         XCTAssertEqual(R.modelOptions(nil), [])
         XCTAssertEqual(R.agentOptions(enabled: [.agy, .claude, .fake]), [PickerOption("claude", "Claude"), PickerOption("agy", "Antigravity")])
@@ -42,7 +43,10 @@ final class CatalogRulesTests: XCTestCase {
             CatalogModel(id: "opus", label: "Opus (latest)", aliases: ["opus"], efforts: ["low", "high"], advisorCapable: true),
             CatalogModel(id: "haiku", label: "Haiku (latest)", aliases: ["haiku"]),
         ], catalogSource: "aliases")
-        XCTAssertEqual(R.modelOptions(fallback), [PickerOption("opus", "Opus (latest)"), PickerOption("haiku", "Haiku (latest)")])
+        XCTAssertEqual(R.modelOptions(fallback), [PickerOption("opus", "Opus 5 (latest)"), PickerOption("haiku", "Haiku 4.5 (latest)")],
+                       "catalog.ClaudeAliasFallback's own unversioned label (no digit) is substituted with the known versioned name, not trusted through")
+        XCTAssertEqual(R.modelLabel(fallback, "opus"), "Opus 5 (latest)",
+                       "modelLabel hits the same substitution, not just modelOptions")
         XCTAssertEqual(R.modelOptions(fallback, advisorOnly: true).map(\.value), ["opus"])
         XCTAssertEqual(R.advisorOptions([fallback], enabled: [.claude]).map(\.value), ["claude:opus", "none"])
     }
@@ -212,7 +216,7 @@ final class CatalogRulesTests: XCTestCase {
 
     func testAdvisorMenuAndPayload() {
         XCTAssertEqual(R.advisorOptions(catalog, enabled: [.codex, .claude]).map(\.label), [
-            "Claude · Opus (latest)", "Claude · Opus 5", "Claude · Sonnet 4.6", "Codex · GPT X", "No advisor",
+            "Claude · Opus 5 (latest)", "Claude · Opus 5", "Claude · Sonnet 4.6", "Codex · GPT X", "No advisor",
         ])
         XCTAssertEqual(AdvisorChoice.pair(.claude, "opus").encoded, "claude:opus")
         XCTAssertEqual(AdvisorChoice.none.encoded, "none")

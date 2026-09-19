@@ -33,9 +33,9 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertNil(f.nameError)
         XCTAssertTrue(f.canStart)
         XCTAssertEqual(f.agentOptions.map(\.label), ["Claude", "Codex", "Antigravity"])
-        XCTAssertEqual(f.modelOptions.first?.label, "Fable (latest)")
+        XCTAssertEqual(f.modelOptions.first?.label, "Fable 5.1 (latest)")
         XCTAssertEqual(f.effortOptions?.first?.label, "Default (high)")
-        XCTAssertEqual(f.advisorOptions.first?.label, "Claude · Fable (latest)")
+        XCTAssertEqual(f.advisorOptions.first?.label, "Claude · Fable 5.1 (latest)")
         XCTAssertEqual(f.advisorOptions.last?.label, "No advisor")
         XCTAssertEqual(f.intentCaption, "Creates a spike to explore this request and turn it into an epic.")
         f.intent = .debug

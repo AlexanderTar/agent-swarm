@@ -120,7 +120,7 @@ public struct OptionPicker: View {
         let onChange = self.onChange
         Picker(title, selection: Binding(get: { value }, set: { v in onChange(v) })) {
             if !options.contains(where: { $0.value == value }) {
-                Text(value.isEmpty ? " " : value).tag(value)
+                Text(value.isEmpty ? " " : (Copy.claudeAliasName(value) ?? value)).tag(value)
             }
             ForEach(options) { option in
                 if let iconName = icon?(option) {
