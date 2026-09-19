@@ -84,27 +84,33 @@ func (s *Store) AddDepTx(ctx context.Context, tx *sql.Tx, key, blockedBy string,
 }
 
 func (s *Store) RemoveDep(ctx context.Context, key, blockedBy string, by Actor) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
-		a, err := s.getTx(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		b, err := s.getTx(ctx, tx, blockedBy)
-		if err != nil {
-			return err
-		}
-		if err := s.orchestratorScope(ctx, tx, by, a); err != nil {
-			return err
-		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM item_deps WHERE item_id = ? AND blocked_by_id = ?`, a.ID, b.ID)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return nil
-		}
-		return s.changedBoth(ctx, tx, a, b)
-	})
+	return s.write(ctx, func(tx *sql.Tx) error { return s.RemoveDepTx(ctx, tx, key, blockedBy, by) })
+}
+
+// RemoveDepTx is RemoveDep on a transaction the caller owns (mirrors
+// AddDepTx). Like AddDepTx, it does not wake SSE subscribers itself: the
+// caller commits its own tx and is responsible for calling Events.Notify()
+// after that commit.
+func (s *Store) RemoveDepTx(ctx context.Context, tx *sql.Tx, key, blockedBy string, by Actor) error {
+	a, err := s.getTx(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	b, err := s.getTx(ctx, tx, blockedBy)
+	if err != nil {
+		return err
+	}
+	if err := s.orchestratorScope(ctx, tx, by, a); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM item_deps WHERE item_id = ? AND blocked_by_id = ?`, a.ID, b.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	return s.changedBoth(ctx, tx, a, b)
 }
 
 // changedBoth announces an edge change on both items; a cross-root edge changes

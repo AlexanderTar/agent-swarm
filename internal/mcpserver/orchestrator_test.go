@@ -537,6 +537,141 @@ func TestItemsToolLinkAndUnlink(t *testing.T) {
 	}
 }
 
+func countItems(t *testing.T, s *Server) int {
+	t.Helper()
+	var n int
+	if err := s.RT.DB.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// Task 41: a repeated request_id must not create a second item.
+func TestItemsCreateRequestIDReplaysInsteadOfCreatingTwice(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	before := countItems(t, s)
+	body := `{"op":"create","type":"task","parent":"` + seed.StoryKey +
+		`","title":"New task","brief":"b","acceptance":["a"],"request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_items", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countItems(t, s); n != before+1 {
+		t.Fatalf("items after first call = %d, want %d", n, before+1)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_items", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countItems(t, s); n != before+1 {
+		t.Fatalf("items after replayed call = %d, want still %d", n, before+1)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
+func TestItemsCreateWithoutOrDistinctRequestIDsEachCreate(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	before := countItems(t, s)
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"A","brief":"b","acceptance":["a"],"request_id":"req-a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"B","brief":"b","acceptance":["a"],"request_id":"req-b"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"C","brief":"b","acceptance":["a"]}`); err != nil {
+		t.Fatal(err)
+	}
+	if n := countItems(t, s); n != before+3 {
+		t.Fatalf("items = %d, want %d", n, before+3)
+	}
+}
+
+// TestItemsUpdateRequestIDReplays proves the guard, not just natural
+// idempotence: Update bumps the item's revision, so a genuine (unguarded)
+// second call with the same stale revision:1 would fail with StaleRevision.
+// A replay must instead return the first call's result untouched.
+func TestItemsUpdateRequestIDReplays(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	body := `{"op":"update","key":"` + seed.TaskKey + `","title":"Renamed","revision":1,"request_id":"req-1"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_items", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_items", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+}
+
+// A distinct request_id genuinely re-applies the mutation (and a stale
+// revision is refused, exactly as before this task's change).
+func TestItemsUpdateDistinctRequestIDGenuinelyMutates(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","title":"First","revision":1,"request_id":"req-a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","title":"Second","revision":1,"request_id":"req-b"}`); err == nil {
+		t.Fatal("a genuinely distinct request_id must still hit StaleRevision against an already-bumped revision")
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","title":"Second","revision":2,"request_id":"req-b"}`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_items", `{"op":"update","key":"`+seed.TaskKey+`","revision":3}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mustJSON(out)), "Second") {
+		t.Fatalf("out = %s", mustJSON(out))
+	}
+}
+
+// Task 41: a repeated request_id on link/unlink must not error the second
+// time (AddDepTx/RemoveDepTx are themselves already no-op-safe on a repeat,
+// but the guard must still short-circuit cleanly).
+func TestItemsLinkUnlinkRequestIDReplays(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	linkBody := `{"op":"link","key":"` + seed.TaskKey + `","blocked_by":"` + seed.OtherTaskKey + `","request_id":"req-link"}`
+	out1, err := s.call(ctx, seed.Caller, "swarm_items", linkBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := s.call(ctx, seed.Caller, "swarm_items", linkBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out1)) != string(mustJSON(out2)) {
+		t.Fatalf("link replay result = %s, want %s", mustJSON(out2), mustJSON(out1))
+	}
+	unlinkBody := `{"op":"unlink","key":"` + seed.TaskKey + `","blocked_by":"` + seed.OtherTaskKey + `","request_id":"req-unlink"}`
+	out3, err := s.call(ctx, seed.Caller, "swarm_items", unlinkBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out4, err := s.call(ctx, seed.Caller, "swarm_items", unlinkBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mustJSON(out3)) != string(mustJSON(out4)) {
+		t.Fatalf("unlink replay result = %s, want %s", mustJSON(out4), mustJSON(out3))
+	}
+}
+
 func TestItemsToolFullUpdate(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()

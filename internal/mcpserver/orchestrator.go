@@ -56,7 +56,7 @@ func itemsTool(s *Server) ToolDef {
 			"title":{"type":"string"},"brief":{"type":"string"},"acceptance":{"type":"array"},
 			"priority":{"type":"integer"},"role_hint":{"type":"string"},"tdd_exempt":{"type":"string"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
-			"blocked_by":{"type":"string"}`),
+			"blocked_by":{"type":"string"},"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Op         string   `json:"op"`
@@ -73,6 +73,7 @@ func itemsTool(s *Server) ToolDef {
 				Revision   int      `json:"revision"`
 				Status     string   `json:"status"`
 				BlockedBy  string   `json:"blocked_by"`
+				RequestID  string   `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -82,13 +83,28 @@ func itemsTool(s *Server) ToolDef {
 				return nil, err
 			}
 			actor := items.Orchestrator(a.ID, a.RootItemID)
+			// Idempotency (I11) is wired here rather than inside internal/items:
+			// that package has no session concept, and runtime already imports it
+			// (the reverse import would cycle), so CreateTx/UpdateTx/AddDepTx/
+			// RemoveDepTx (each already a transaction the caller owns, the same
+			// pattern Task 19's materializer uses) run through runtime.IdemTx
+			// directly at this call site, inside one transaction with the
+			// idempotency record.
 			switch in.Op {
 			case "create":
-				return s.RT.Items.Create(ctx, items.CreateInput{
-					Type: items.Type(in.Type), ParentKey: in.Parent, Title: in.Title, Brief: in.Brief,
-					Acceptance: in.Acceptance, Priority: in.Priority, RoleHint: in.RoleHint,
-					TddExempt: in.TddExempt, Repos: in.Repos,
-				}, actor)
+				var out items.Item
+				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_items", &out,
+					func(tx *sql.Tx) (err error) {
+						out, err = s.RT.Items.CreateTx(ctx, tx, items.CreateInput{
+							Type: items.Type(in.Type), ParentKey: in.Parent, Title: in.Title, Brief: in.Brief,
+							Acceptance: in.Acceptance, Priority: in.Priority, RoleHint: in.RoleHint,
+							TddExempt: in.TddExempt, Repos: in.Repos,
+						}, actor)
+						return err
+					}); err != nil {
+					return nil, err
+				}
+				return out, nil
 			case "update":
 				p := items.Patch{Revision: in.Revision}
 				if in.Title != "" {
@@ -107,14 +123,37 @@ func itemsTool(s *Server) ToolDef {
 					st := items.Status(in.Status)
 					p.Status = &st
 				}
-				return s.RT.Items.Update(ctx, in.Key, p, actor)
+				var out items.Item
+				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_items", &out,
+					func(tx *sql.Tx) (err error) {
+						out, err = s.RT.Items.UpdateTx(ctx, tx, in.Key, p, actor)
+						return err
+					}); err != nil {
+					return nil, err
+				}
+				// Update's own non-Tx wrapper re-reads (enriched) after commit, too
+				// (internal/items/store.go); this mirrors that same convention rather
+				// than duplicating enrich here, and runs whether this call replayed
+				// or genuinely mutated -- it is a plain read of current state either
+				// way.
+				return s.RT.Items.Get(ctx, out.Key)
 			case "link":
-				if err := s.RT.Items.AddDep(ctx, in.Key, in.BlockedBy, actor); err != nil {
+				var ran bool
+				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_items", &ran,
+					func(tx *sql.Tx) error {
+						ran = true
+						return s.RT.Items.AddDepTx(ctx, tx, in.Key, in.BlockedBy, actor)
+					}); err != nil {
 					return nil, err
 				}
 				return s.RT.Items.Get(ctx, in.Key)
 			case "unlink":
-				if err := s.RT.Items.RemoveDep(ctx, in.Key, in.BlockedBy, actor); err != nil {
+				var ran bool
+				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_items", &ran,
+					func(tx *sql.Tx) error {
+						ran = true
+						return s.RT.Items.RemoveDepTx(ctx, tx, in.Key, in.BlockedBy, actor)
+					}); err != nil {
 					return nil, err
 				}
 				return s.RT.Items.Get(ctx, in.Key)
