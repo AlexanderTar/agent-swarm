@@ -16,19 +16,24 @@ import (
 // Every §17.5 row is present with its level, title, body and category.
 func TestRulesCoverSection175(t *testing.T) {
 	want := map[string][4]string{
-		"agent.accepted":          {"info", "Task accepted", "{name} started {KEY}: {title}.", "swarm.info"},
-		"item.completed":          {"info", "Task completed", "{KEY}: {title} is complete.", "swarm.info"},
-		"item.created":            {"info", "Epic ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
-		"item.created.bug":        {"info", "Bug ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
-		"agent.queued":            {"info", "Agent queued", "{name} starts when an agent slot becomes available.", "swarm.info"},
-		"agent.paused":            {"attention", "Agent paused", "{name} is paused on {KEY}.", "swarm.agent"},
-		"agent.interrupted":       {"attention", "Agent stopped", "{name} stopped before {KEY} finished.", "swarm.agent"},
-		"agent.retried":           {"info", "Agent retrying", "{name} started attempt {N} on {KEY}.", "swarm.info"},
-		"agent.failed":            {"attention", "Agent failed", "{name} couldn't finish {KEY}. Review the error.", "swarm.agent"},
-		"agent.crashed":           {"attention", "Agent crashed", "{name} exited unexpectedly on {KEY}.", "swarm.agent"},
-		"agent.stale":             {"attention", "No recent activity", "{name} has been quiet for 30 minutes on {KEY}.", "swarm.agent"},
-		"agent.undeliverable":     {"attention", "Couldn't deliver messages", "{name} hasn't picked up {N} message(s).", "swarm.agent"},
-		"agent.preflight_failed":  {"attention", "Couldn't start agent", "{reason}", "swarm.info"},
+		"agent.accepted":         {"info", "Task accepted", "{name} started {KEY}: {title}.", "swarm.info"},
+		"item.completed":         {"info", "Task completed", "{KEY}: {title} is complete.", "swarm.info"},
+		"item.created":           {"info", "Epic ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
+		"item.created.bug":       {"info", "Bug ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
+		"agent.queued":           {"info", "Agent queued", "{name} starts when an agent slot becomes available.", "swarm.info"},
+		"agent.paused":           {"attention", "Agent paused", "{name} is paused on {KEY}.", "swarm.agent"},
+		"agent.interrupted":      {"attention", "Agent stopped", "{name} stopped before {KEY} finished.", "swarm.agent"},
+		"agent.retried":          {"info", "Agent retrying", "{name} started attempt {N} on {KEY}.", "swarm.info"},
+		"agent.failed":           {"attention", "Agent failed", "{name} couldn't finish {KEY}. Review the error.", "swarm.agent"},
+		"agent.crashed":          {"attention", "Agent crashed", "{name} exited unexpectedly on {KEY}.", "swarm.agent"},
+		"agent.stale":            {"attention", "No recent activity", "{name} has been quiet for 30 minutes on {KEY}.", "swarm.agent"},
+		"agent.undeliverable":    {"attention", "Couldn't deliver messages", "{name} hasn't picked up {N} message(s).", "swarm.agent"},
+		"agent.preflight_failed": {"attention", "Couldn't start agent", "{reason}", "swarm.info"},
+		// Added by docs/specs/2026-09-19-usage-fallback-agent.md, after §17.5
+		// was written: a role's configured agent was confirmed out of usage
+		// and the daemon substituted the configured fallback instead of
+		// stalling.
+		"agent.fallback_used":     {"info", "Fallback agent used", "{name} switched to {agent} because {from} is out of usage.", "swarm.info"},
 		"worktree.retained":       {"attention", "Worktree kept", "The worktree for {ROOT-KEY} has {detail} and was kept.", "swarm.info"},
 		"tmux.unknown":            {"attention", "Unknown tmux session", "{name} is running but Swarm has no record of it.", "swarm.info"},
 		"request.confirm_repos":   {"action", "Confirm repositories", "{KEY}: {name} proposes {N} repositories{expansion}.", "swarm.approval"},
