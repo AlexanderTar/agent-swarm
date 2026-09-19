@@ -426,6 +426,98 @@ func TestRetryNilUsageNeverSubstitutes(t *testing.T) {
 	}
 }
 
+// ---- DrainQueue / startQueued ----
+
+func TestDrainQueueSubstitutesExhaustedFallback(t *testing.T) {
+	s, tm := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4)
+	seedEpicWithTwoTasks(t, s)
+	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "one"}})
+	if err != nil || queued {
+		t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+	}
+	second, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "two"}})
+	if err != nil || !queued {
+		t.Fatalf("second = %v, queued = %v, err = %v", second.Name, queued, err)
+	}
+	// free the slot, then mark Claude exhausted before the drain runs the
+	// decision -- exactly the "quota changed between spawn and drain" case
+	// this call site exists for.
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, first.ID)
+	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID)
+	s.Usage = fakeUsage{Claude: true}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	drained := agentRow(t, s, second.Name)
+	if drained.State != AgentActive {
+		t.Fatalf("state = %s, want active", drained.State)
+	}
+	if drained.Kind != Codex || drained.Model != "gpt-6-astra" {
+		t.Fatalf("drained = %+v, want substituted to codex/gpt-6-astra", drained)
+	}
+	if len(tm.started) != 2 { // TASK-1's session plus the drained TASK-2 one
+		t.Fatalf("started = %v", tm.started)
+	}
+	n := notified(t, s, "agent.fallback_used")
+	if n.Args["agent"] != "Codex" || n.Args["from"] != "Claude" {
+		t.Fatalf("fallback_used args = %+v", n.Args)
+	}
+}
+
+func TestDrainQueueBothExhaustedRelaysToParent(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4)
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "one"}, ParentAgentID: orch.ID})
+	if err != nil || queued {
+		t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+	}
+	second, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "two"}, ParentAgentID: orch.ID})
+	if err != nil || !queued {
+		t.Fatalf("second = %v, queued = %v, err = %v", second.Name, queued, err)
+	}
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, first.ID)
+	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID)
+	s.Usage = fakeUsage{Claude: true, Codex: true}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	drained, err := s.Agent(ctx, second.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drained.State != AgentActive {
+		t.Fatalf("state = %s, want active with a failed session", drained.State)
+	}
+	if drained.Kind != Claude {
+		t.Fatalf("kind = %s, want unchanged (no usable fallback)", drained.Kind)
+	}
+	ses, err := s.LatestSession(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Failed {
+		t.Fatalf("session state = %s, want failed", ses.State)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'`, orch.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("relay message count = %d, err = %v", count, err)
+	}
+}
+
 // ---- Resume: explicitly excluded (spec Locked Decision 2) ----
 
 // TestResumeIgnoresUsageExhaustion proves Resume never substitutes even when

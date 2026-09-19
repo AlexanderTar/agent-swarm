@@ -129,11 +129,6 @@ func (s *Store) nextQueuedAgentID(ctx context.Context, tried, frozen map[string]
 }
 
 func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
-	ad, ok := s.Adapters[a.Kind]
-	if !ok {
-		return false, fmt.Errorf("no adapter for %s", a.Kind)
-	}
-
 	var itemKey string
 	if err := s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey); err != nil {
 		return false, err
@@ -151,13 +146,32 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 		}
 	}
 
-	preflightErr := s.Preflight(ctx, PreflightInput{
-		Kind:      a.Kind,
-		Model:     a.Model,
-		Effort:    a.Effort,
-		Role:      a.Role,
-		RepoPaths: repoPaths,
-	})
+	// origKind is captured before resolveUsageFallback may substitute
+	// a.Kind, so the agent.fallback_used notification below can report what
+	// was actually configured.
+	origKind := a.Kind
+	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, a.Kind, a.Model)
+	var preflightErr error
+	if ferr != nil {
+		// a.Kind is confirmed exhausted with no usable fallback: treat this
+		// exactly like a Preflight refusal (spec Locked Decision 6) rather
+		// than call the real Preflight, which would happily approve a.Kind
+		// (it's installed and signed in -- just out of quota).
+		preflightErr = ferr
+	} else {
+		a.Kind, a.Model = fbKind, fbModel
+		preflightErr = s.Preflight(ctx, PreflightInput{
+			Kind:      a.Kind,
+			Model:     a.Model,
+			Effort:    a.Effort,
+			Role:      a.Role,
+			RepoPaths: repoPaths,
+		})
+	}
+	ad, ok := s.Adapters[a.Kind]
+	if !ok {
+		return false, fmt.Errorf("no adapter for %s", a.Kind)
+	}
 
 	var admitted bool
 	nowMs := s.now().UnixMilli()
@@ -210,7 +224,8 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 			return nil
 		}
 
-		_, err = tx.ExecContext(ctx, `UPDATE agents SET state = 'active' WHERE id = ?`, a.ID)
+		_, err = tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ? WHERE id = ?`,
+			string(a.Kind), a.Model, a.ID)
 		return err
 	})
 	if err != nil {
@@ -237,6 +252,10 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 	ses, err := s.startSession(ctx, a, 1, 1, false, "")
 	if err != nil {
 		return true, err
+	}
+	if substituted && s.Notify != nil {
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name,
+			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
 	}
 
 	s.go_(func() {
