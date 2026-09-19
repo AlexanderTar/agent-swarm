@@ -210,8 +210,16 @@ func agentOut(a runtime.Agent) map[string]any {
 	return map[string]any{"name": a.Name, "kind": a.Kind, "model": a.Model, "role": a.Role, "state": a.State}
 }
 
-func checkpointOut(c runtime.Checkpoint) map[string]any {
-	return map[string]any{"item": c.ItemID, "kind": c.Kind, "summary": c.Summary, "created_at": c.CreatedAt}
+// checkpointOut takes itemKey rather than resolving c.ItemID itself: every
+// other surface returns a KEY in a field named "item" (httpapi's checkpoint
+// wire type resolves one explicitly; the checkpoint.created event already
+// carries one straight from WriteCheckpoint), and both of this function's
+// callers already have the exact key that produced c on hand -- Checkpoints
+// filters by that item's row, so c always belongs to it (Fix R-2: this used
+// to return c.ItemID, the opaque checkpoints.item_id column, leaving an
+// agent unable to correlate its own checkpoint back to the item it was on).
+func checkpointOut(itemKey string, c runtime.Checkpoint) map[string]any {
+	return map[string]any{"item": itemKey, "kind": c.Kind, "summary": c.Summary, "created_at": c.CreatedAt}
 }
 
 func artifactOut(a runtime.Artifact) map[string]any {
@@ -295,7 +303,7 @@ func readTool(s *Server) ToolDef {
 					return nil, err
 				}
 				if len(cps) > 0 {
-					out["checkpoints"] = append(out["checkpoints"].([]any), checkpointOut(cps[0]))
+					out["checkpoints"] = append(out["checkpoints"].([]any), checkpointOut(it.Key, cps[0]))
 				}
 			}
 
@@ -396,7 +404,7 @@ func readTool(s *Server) ToolDef {
 							}
 							if json.Unmarshal(e.Payload, &p) == nil && p.Item != "" {
 								if cps, err := s.RT.Checkpoints(ctx, p.Item, 1, time.Time{}); err == nil && len(cps) > 0 {
-									out["checkpoints"] = append(out["checkpoints"].([]any), checkpointOut(cps[0]))
+									out["checkpoints"] = append(out["checkpoints"].([]any), checkpointOut(p.Item, cps[0]))
 								}
 							}
 						}

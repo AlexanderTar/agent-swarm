@@ -521,6 +521,14 @@ func TestReadToolRefsFilterReposAndSinceSeq(t *testing.T) {
 	if len(res4.Checkpoints) == 0 {
 		t.Fatalf("a checkpoint on the ref'd item must surface: %+v", res4)
 	}
+	// Fix R-2 (final review): "item" must be the item's KEY (seed.TaskKey,
+	// what the worker was spawned on), not checkpoints.item_id -- the opaque
+	// database id checkpointOut used to leak here, which every other reader
+	// of an "item" field (including swarm_read's own refs/filter inputs)
+	// would fail to resolve back to anything.
+	if res4.Checkpoints[0].Item != seed.TaskKey {
+		t.Fatalf("checkpoint item = %q, want the item key %q, not a raw id", res4.Checkpoints[0].Item, seed.TaskKey)
+	}
 
 	out, err = s.call(ctx, seed.Caller, "swarm_read", `{"filter":{"root":"`+seed.RootKey+`"}}`)
 	if err != nil {
@@ -630,6 +638,13 @@ func TestReadToolRefsFilterReposAndSinceSeq(t *testing.T) {
 	}
 	if len(res5.Checkpoints) == 0 {
 		t.Fatalf("a checkpoint.created event since the cursor must surface the checkpoint: %+v", res5)
+	}
+	// Fix R-2, the since_seq/checkpoint.created call site: same pin as the
+	// refs path above, since this one resolves "item" from the event's own
+	// p.Item rather than it.Key -- a different variable, so it needs its own
+	// regression guard.
+	if res5.Checkpoints[0].Item != seed.TaskKey {
+		t.Fatalf("checkpoint item = %q, want the item key %q, not a raw id", res5.Checkpoints[0].Item, seed.TaskKey)
 	}
 	if len(res5.Agents) == 0 {
 		t.Fatalf("an agent.changed event since the cursor must surface the agent: %+v", res5)
