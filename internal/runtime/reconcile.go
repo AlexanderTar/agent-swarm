@@ -12,6 +12,14 @@ import (
 const staleAfter = 30 * time.Minute
 const killCompletedAfter = 60 * time.Second
 
+// ackTimeout is how long a freshly spawned session gets to write its first
+// checkpoint of any kind before the daemon raises agent.no_ack to its parent
+// (§10.6's ack-timeout). A child stuck before its first swarm_sync, or one
+// that crashed at startup in a way that never trips resolveDead because its
+// pane is still alive, otherwise leaves its parent waiting on a wake event
+// that will never come.
+const ackTimeout = 2 * time.Minute
+
 // queryIDs runs a query returning one string column per row. Several callers
 // across pause.go and reconcile.go collect a plain id/name list this way; one
 // shared helper keeps the row-scan-close boilerplate (and its error checks)
@@ -186,6 +194,65 @@ func (s *Store) terminalCheckpointKind(ctx context.Context, agentID string, atte
 		return "", false, err
 	}
 	return CheckpointKind(kind), true, nil
+}
+
+// hasAnyCheckpoint reports whether this attempt has written a checkpoint of
+// any kind yet — the daemon's only signal that a freshly spawned session is
+// alive and talking. Any kind counts, not just "accepted": a session that
+// leads with progress or blocked has still proven it is up, and gating on
+// "accepted" specifically would raise a false no_ack against a live agent
+// that simply did not lead with that one kind.
+func (s *Store) hasAnyCheckpoint(ctx context.Context, agentID string, attempt int) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM checkpoints WHERE agent_id = ? AND attempt = ?`,
+		agentID, attempt).Scan(&n)
+	return n > 0, err
+}
+
+// alreadyRelayed reports whether a relay for this event was already enqueued
+// to toAgentID for this item since sinceStartedAt. Messages are never
+// deleted, so the same LIKE-on-payload check the crashed/interrupted relay
+// tests already use doubles as an idempotency guard here: unlike a state
+// transition (crashed, interrupted) that removes the session from
+// liveSessionRows once handled, a no-ack session stays live and gets
+// reconciled every 5 s until it either checkpoints or actually dies, so
+// without this guard the relay would be enqueued on every tick instead of
+// once. The sinceStartedAt bound scopes that guard to the current attempt: a
+// retry starts a new session (fresh started_at, zero checkpoints), and a
+// retried attempt that also hangs must raise its own no_ack rather than
+// being silenced by the relay a prior, already-handled attempt left behind.
+func (s *Store) alreadyRelayed(ctx context.Context, toAgentID, itemID, event string, sinceStartedAt time.Time) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE to_agent_id = ? AND item_id = ? AND kind = 'relay' AND payload_json LIKE ? AND created_at >= ?`,
+		toAgentID, itemID, `%"event":"`+event+`"%`, db.Millis(sinceStartedAt)).Scan(&n)
+	return n > 0, err
+}
+
+// notifyNoAck is the ack-timeout half of §10.6: a live session that has never
+// written a single checkpoint within ackTimeout of starting. It fires once
+// per session (see alreadyRelayed), not on every reconcile tick.
+func (s *Store) notifyNoAck(ctx context.Context, r liveRow) error {
+	already, err := s.alreadyRelayed(ctx, r.ParentAgentID, r.ItemID, "no_ack", r.StartedAt)
+	if err != nil {
+		return err
+	}
+	if already {
+		return nil
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.no_ack", AgentName: r.AgentName,
+			ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
+			return err
+		}
+		payload, err := json.Marshal(map[string]any{"event": "no_ack", "agent": r.AgentName, "item": r.ItemKey})
+		if err != nil {
+			return err
+		}
+		_, err = s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: r.ParentAgentID,
+			RootItemID: r.RootItemID, ItemID: r.ItemID, Payload: payload})
+		return err
+	})
 }
 
 // resolveDead applies the "pane is dead" half of the §10.6 table. paneKnown is
@@ -385,6 +452,15 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	}
 	if waiting {
 		return nil // M6: a waiting session is never stale
+	}
+	if r.ParentAgentID != "" && s.Now().Sub(r.StartedAt) >= ackTimeout {
+		acked, err := s.hasAnyCheckpoint(ctx, r.AgentID, r.Attempt)
+		if err != nil {
+			return err
+		}
+		if !acked {
+			return s.notifyNoAck(ctx, r)
+		}
 	}
 	if s.Now().Sub(r.lastActivity()) >= staleAfter {
 		return s.notify(ctx, nil, NotifyInput{Kind: "agent.stale", AgentName: r.AgentName, ItemKey: r.ItemKey,

@@ -14,6 +14,7 @@ Follow the `swarm` skill first; these rules add to it.
 - Worktrees: `swarm_worktree create` per repo you touch; give a worker its own worktree for parallel edits, share read-only for reviewers. Remove worktrees when merged.
 - After a worker's `completed`, spawn a `reviewer` (and `ui_reviewer` for UI changes) on a read-only share at that sha. Send fixes back or mark the task done with `swarm_items update status: "done"`.
 - Before spawning, prepare worktrees (`swarm_worktree create`/`share`) and pass them in `worktrees`. Reviewers get `swarm_worktree review` at the completed sha. Fixes after review: `swarm_control retry` with the findings as `note`.
+- A relay with `event: "no_ack"` means a child never wrote a single checkpoint within two minutes of spawning — it may be stuck before its first `swarm_sync` or crashed silently. Check its state with `swarm_read`; if it's `failed` or `crashed`, retry it with `swarm_control retry`.
 - Merge in dependency order, run the plan's verification, then write `integrated` with the merged sha per repo and the verification results. The user's acceptance is requested only after that. Write `completed` when the daemon reports the item accepted.
 - Don't poll. End your turn when waiting; the daemon wakes you.
 

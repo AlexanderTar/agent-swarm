@@ -811,3 +811,172 @@ func TestDeadlineInterruptsAndNeverRecordsPaused(t *testing.T) {
 	// TestEveryRuleKeyIsComplete pins it. Asserting it here would be asserting
 	// against a table this package never writes.
 }
+
+// A freshly spawned child that never writes a single checkpoint — stuck
+// before its first swarm_sync, or crashed silently in a way that never trips
+// resolveDead because its pane is still alive — leaves its parent with no
+// signal at all. Two minutes after spawn with zero checkpoints, the daemon
+// must raise agent.no_ack and relay it to the parent exactly once.
+func TestNoAckAfterTwoMinutesWithNoCheckpointNotifiesAndRelaysOnce(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[w.Name] = []string{"starting up…\n"} // not idle
+	tm.captures[orch.Name] = []string{"working…\n"}
+
+	// under the timeout: nothing yet
+	at.Advance(90 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 0 {
+		t.Fatalf("agent.no_ack count before the timeout = %d", n)
+	}
+
+	// past the timeout: fires once
+	at.Advance(31 * time.Second) // total 121s > ackTimeout (2m)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n := notified(t, s, "agent.no_ack")
+	if n.AgentName != w.Name || n.ItemKey != "TASK-1" {
+		t.Fatalf("notification = %+v", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+	if relays != 1 {
+		t.Fatalf("relay no_ack count = %d, want exactly one", relays)
+	}
+
+	// another tick, still stuck: must not repeat
+	at.Advance(5 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 1 {
+		t.Fatalf("agent.no_ack must fire once, not every tick: count = %d", n)
+	}
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+	if relays != 1 {
+		t.Fatalf("relay no_ack must fire once, not every tick: count = %d", relays)
+	}
+}
+
+// A checkpoint of any kind — not only "accepted" — counts as an ack: the
+// signal the daemon needs is that the child is alive and talking, not that
+// it led with a specific checkpoint kind.
+func TestNoAckNeverFiresOnceAnyCheckpointIsWritten(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[w.Name] = []string{"blocked…\n"}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: BlockedCkp,
+		Summary: "waiting on a decision"}); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 0 {
+		t.Fatalf("a blocked checkpoint already proves the child is alive: count = %d", n)
+	}
+}
+
+// A retry starts a fresh attempt with zero checkpoints and a fresh
+// started_at: if that retried attempt also never checkpoints, no_ack must
+// fire again. Scoping the "already relayed" guard by item alone (rather than
+// by attempt) would silence this — the very retry the orchestrator is told
+// to make after a no_ack.
+func TestNoAckFiresAgainAfterARetryThatAlsoHangs(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"}, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	// No scripted capture: the default idle prompt is fine here — owesNothing
+	// (the un-acked assignment message) already keeps resolveAlive's "waiting"
+	// false regardless of idle, and a scripted busy capture would also feed
+	// the retried session's own synchronous watchStartup below, spinning it
+	// past its 30 s startup deadline and failing the retry before Reconcile
+	// ever runs.
+
+	// first attempt hangs past the timeout: one no_ack
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 1 {
+		t.Fatalf("agent.no_ack count after the first hang = %d", n)
+	}
+
+	// the pane dies; the attempt is recorded crashed and retried
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.LatestSession(ctx, w.ID)
+	if got.State != Crashed {
+		t.Fatalf("state = %s, want crashed before the retry", got.State)
+	}
+	at.Advance(time.Second) // so the retried attempt's started_at strictly follows the prior relay
+	if _, err := s.Retry(ctx, w.Name, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	newSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSes.ID == wSes.ID {
+		t.Fatal("retry must start a new session")
+	}
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"}, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": newSes.ID}
+
+	// the retried attempt also hangs past the timeout: no_ack must fire again
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 2 {
+		t.Fatalf("agent.no_ack must fire again for the retried attempt: count = %d", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+	if relays != 2 {
+		t.Fatalf("relay no_ack must fire again for the retried attempt: count = %d", relays)
+	}
+}
+
+// A root agent with no parent has nobody to relay to, so the ack-timeout
+// never fires for it — mirroring TestDeadPaneCrashWithNoParentSkipsTheRelay
+// for the crash path.
+func TestNoAckWithNoParentNeverFires(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Lonely2", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	tm.captures[a.Name] = []string{"starting up…\n"}
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 0 {
+		t.Fatalf("a parentless agent has nobody to relay to: count = %d", n)
+	}
+}
