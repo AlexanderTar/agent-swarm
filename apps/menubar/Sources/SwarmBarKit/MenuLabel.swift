@@ -10,12 +10,15 @@ public struct MenuLabel: Equatable, Sendable {
         public var tooltip: String
     }
 
-    /// Active sessions, or "?" while the daemon is down.
+    /// Colour of the corner dot on the menu bar glyph: green while connected with a live agent,
+    /// red while the daemon is offline, none while connected but idle.
+    public enum Badge: Equatable, Sendable { case none, green, red }
+
+    /// Active sessions, or "" while the daemon is down (no bare "?" next to the icon).
     public var count: String
     public var segments: [Segment]
     public var compact: Bool
-    /// Drives the green corner dot on the menu bar glyph: at least one agent is live right now.
-    public var showsActiveBadge = false
+    public var badge: Badge = .none
 
     /// Width reserved for each value, so the item never shifts: "100%" or "100%M".
     public static let widestValue = "100%"
@@ -43,8 +46,8 @@ public struct MenuLabel: Equatable, Sendable {
             }
             return Segment(agent: kind, text: text, dimmed: snap.stale, tooltip: tooltip)
         }
-        return MenuLabel(count: connected ? "\(activeCount)" : "?", segments: segments, compact: compact,
-                         showsActiveBadge: connected && activeCount > 0)
+        return MenuLabel(count: connected ? "\(activeCount)" : "", segments: segments, compact: compact,
+                         badge: !connected ? .red : activeCount > 0 ? .green : .none)
     }
 }
 

@@ -10,7 +10,7 @@ struct AgentsSection: View {
             SectionHeader(Copy.agents, open: model.isOpen(.agents),
                           toggle: { model.setSection(.agents, open: !model.isOpen(.agents)) }) {
                 HStack(spacing: 6) {
-                    if model.label.showsActiveBadge {
+                    if model.label.badge == .green {
                         StateDot(.greenPulse).help(Copy.agentsWorking)
                     }
                     Button(model.pauseAllLabel) { Task { await model.pauseAll() } }

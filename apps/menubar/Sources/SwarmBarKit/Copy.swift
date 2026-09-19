@@ -142,6 +142,22 @@ public enum Copy {
         }
     }
 
+    /// Last-resort names for the well-known Claude model aliases, used ONLY by `OptionPicker`'s
+    /// no-match fallback when a stored model slug has no catalog entry to resolve against at all
+    /// (nothing fetched yet, and nothing cached — `AppModel.catalog` is in-memory only, so this is
+    /// the one spot with no live data to derive a label from; see `CatalogRules.aliasLabel` for the
+    /// normal path, which reads the real name straight from the catalog instead of guessing).
+    /// `nil` for anything else; the caller falls back to the raw value.
+    public static func claudeAliasName(_ alias: String) -> String? {
+        switch alias {
+        case "opus": return "Opus 5"
+        case "sonnet": return "Sonnet 5"
+        case "haiku": return "Haiku 4.5"
+        case "fable": return "Fable 5.1"
+        default: return nil
+        }
+    }
+
     public static func agentLabel(_ k: AgentKind) -> String {
         switch k {
         case .claude: return "Claude"

@@ -72,10 +72,11 @@ final class SettingsModelTests: XCTestCase {
         let rows = m.defaultsRows
         XCTAssertEqual(rows.map(\.label), ["Orchestrator", "Advisor", "Coding", "Code review", "UI review", "Research", "Debugging", "Mechanical"])
         XCTAssertEqual(rows[0].agentOptions.map(\.label), ["Claude", "Codex", "Antigravity"])
-        XCTAssertEqual(rows[0].modelOptions.map(\.label).prefix(4), ["Fable (latest)", "Opus (latest)", "Sonnet (latest)", "Haiku (latest)"])
+        XCTAssertEqual(rows[0].modelOptions.map(\.label).prefix(4),
+                       ["Fable 5.1 (latest)", "Opus 5 (latest)", "Sonnet 5 (latest)", "Haiku 4.5 (latest)"])
         XCTAssertEqual(rows[0].effortOptions?.first?.label, "Default (high)")
         XCTAssertEqual(rows[1].modelOptions.map(\.label), [
-            "Fable (latest)", "Opus (latest)", "Sonnet (latest)", "Fable 5.1", "Opus 5", "Sonnet 5", "Sonnet 4.6", "No advisor",
+            "Fable 5.1 (latest)", "Opus 5 (latest)", "Sonnet 5 (latest)", "Fable 5.1", "Opus 5", "Sonnet 5", "Sonnet 4.6", "No advisor",
         ])
         XCTAssertEqual(rows[3].agent, "codex")
         XCTAssertEqual(rows[3].effort, "high")

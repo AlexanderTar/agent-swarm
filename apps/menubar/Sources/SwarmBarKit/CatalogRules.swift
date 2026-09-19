@@ -61,11 +61,19 @@ public enum CatalogRules {
         return entry.models.first { $0.id == value } ?? entry.models.first { $0.aliases.contains(value) }
     }
 
-    private static func aliasLabel(_ alias: String) -> String { alias.prefix(1).uppercased() + alias.dropFirst() + " (latest)" }
+    /// The alias's display text always comes from the model's own catalog label (real backend
+    /// data — the live path's is Anthropic's `display_name`, e.g. "Opus 5"; the offline
+    /// `ClaudeAliasFallback` path already bakes in "Opus (latest)" with no version, since no live
+    /// version info exists then). Never guessed here: just add "(latest)" unless it's already
+    /// there, so the version number the catalog reports carries through and no menubar-side name
+    /// table needs to track model renames.
+    private static func aliasLabel(_ modelLabel: String) -> String {
+        modelLabel.hasSuffix("(latest)") ? modelLabel : "\(modelLabel) (latest)"
+    }
 
     public static func modelLabel(_ entry: AgentCatalogEntry?, _ value: String) -> String {
         guard let m = resolve(entry, value) else { return value }
-        return m.id == value ? m.label : aliasLabel(value)
+        return m.id == value ? m.label : aliasLabel(m.label)
     }
 
     public static func agentOptions(enabled: [AgentKind]) -> [PickerOption] {
@@ -79,7 +87,7 @@ public enum CatalogRules {
         guard let entry else { return [] }
         let visible = entry.models.filter { !$0.hidden && (!advisorOnly || $0.advisorCapable) }
         var seen = Set<String>()
-        return (visible.flatMap { m in m.aliases.map { PickerOption($0, aliasLabel($0)) } }
+        return (visible.flatMap { m in m.aliases.map { PickerOption($0, aliasLabel(m.label)) } }
             + visible.map { PickerOption($0.id, $0.label) }).filter { seen.insert($0.value).inserted }
     }
 

@@ -82,10 +82,12 @@ public struct PopoverView: View {
             Text(Copy.appTitle).font(.headline)
             LiveBadge(connected: model.connected)
             Spacer(minLength: 4)
-            Text(model.activeLine)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+            if model.connected {
+                Text(model.activeLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
             IconButton("gearshape", help: Copy.settings, action: openSettings)
             Menu {
                 Button(Copy.quit) { NSApp.terminate(nil) }

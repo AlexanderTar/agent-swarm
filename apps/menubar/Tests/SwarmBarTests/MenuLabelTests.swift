@@ -28,7 +28,7 @@ final class MenuLabelTests: XCTestCase {
 
     func testNoDataAndDaemonDown() {
         let l = MenuLabel.make(activeCount: 3, connected: false, enabled: [.claude, .fake], usage: [], compact: false, format: format)
-        XCTAssertEqual(l.count, "?")
+        XCTAssertEqual(l.count, "", "no bare \"?\" next to the icon while the daemon is down")
         XCTAssertEqual(texts(l), ["claude --"])
         XCTAssertEqual(l.segments[0].tooltip, "Usage unavailable.")
         var empty = usage[1]
@@ -133,12 +133,13 @@ final class MenuLabelTests: XCTestCase {
     }
 
     func testActiveBadgeFollowsLiveAgents() {
-        func badge(active: Int, connected: Bool) -> Bool {
+        func badge(active: Int, connected: Bool) -> MenuLabel.Badge {
             MenuLabel.make(activeCount: active, connected: connected, enabled: [.claude], usage: usage,
-                           compact: false, format: format).showsActiveBadge
+                           compact: false, format: format).badge
         }
-        XCTAssertTrue(badge(active: 1, connected: true))
-        XCTAssertFalse(badge(active: 0, connected: true), "nothing running")
-        XCTAssertFalse(badge(active: 3, connected: false), "stale count while the daemon is down")
+        XCTAssertEqual(badge(active: 1, connected: true), .green)
+        XCTAssertEqual(badge(active: 0, connected: true), .none, "nothing running")
+        XCTAssertEqual(badge(active: 3, connected: false), .red, "offline, regardless of the stale count")
+        XCTAssertEqual(badge(active: 0, connected: false), .red, "offline with no stale count either")
     }
 }

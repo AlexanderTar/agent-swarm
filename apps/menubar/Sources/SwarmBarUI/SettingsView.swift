@@ -100,7 +100,7 @@ struct DefaultsTab: View {
                         OptionPicker(Copy.model, options: row.modelOptions, value: row.model) { v in
                             Task { await model.setModel(row.role, v) }
                         }
-                        .labelsHidden().frame(width: 200)
+                        .labelsHidden().frame(width: 200, alignment: .leading)
                         if let efforts = row.effortOptions {
                             OptionPicker(Copy.effort, options: efforts, value: row.effort) { v in
                                 Task { await model.setEffort(row.role, v) }
