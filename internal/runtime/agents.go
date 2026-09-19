@@ -891,14 +891,32 @@ func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText 
 	if firstLine != "" {
 		reason = firstLine + " " + reason
 	}
-	if s.Notify != nil {
-		_ = s.Notify.Raise(ctx, nil, NotifyInput{
+	// The orchestrator otherwise never learns a child failed to start: it just
+	// sees no ack and has no event to act on (unlike interrupted/crashed,
+	// which already relay).
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.notify(ctx, tx, NotifyInput{
 			Kind:      "agent.preflight_failed",
 			AgentName: a.Name,
 			Args:      map[string]string{"reason": reason, "output": paneText},
-		})
-	}
-	return nil
+		}); err != nil {
+			return err
+		}
+		if a.ParentAgentID == "" {
+			return nil
+		}
+		itemKey, err := s.itemKey(ctx, tx, a.ItemID)
+		if err != nil {
+			return err
+		}
+		payload, err := json.Marshal(map[string]any{"event": "failed", "agent": a.Name, "item": itemKey})
+		if err != nil {
+			return err
+		}
+		_, err = s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: a.ParentAgentID,
+			RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload})
+		return err
+	})
 }
 
 // ansiEscape strips terminal escape sequences before a StartupDialogs regex

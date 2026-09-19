@@ -597,6 +597,52 @@ func TestUnknownTmuxSessionIsReportedNotKilled(t *testing.T) {
 	}
 }
 
+// A failed/crashed/cancelled session's own leftover pane is not "someone
+// else's" the way TestUnknownTmuxSessionIsReportedNotKilled's is: swarm knows
+// exactly whose it is, so it must never be flagged tmux.unknown. A live one is
+// still left alone for a human to inspect (P0-crash-1).
+func TestReconcileLeavesALiveFailedSessionPaneAloneAndUnflagged(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Failed); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: w.Name, Command: "claude"})
+	before := len(tm.killed) // Spawn's own pre-spawn cleanup kill already ran once
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if notifiedCount(s, "tmux.unknown") != 0 {
+		t.Fatal("a failed session's own pane must not be flagged unknown")
+	}
+	if len(tm.killed) != before {
+		t.Fatalf("a live pane must be left for inspection: %v", tm.killed)
+	}
+}
+
+// A dead pane left behind by a failed session is just leftover tmux
+// bookkeeping (the process already exited) -- safe to clean up, unlike a
+// still-live one.
+func TestReconcileKillsADeadPaneLeftByAFailedSession(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Failed); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: w.Name, Command: "claude", Dead: true})
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if notifiedCount(s, "tmux.unknown") != 0 {
+		t.Fatal("a failed session's own dead pane must not be flagged unknown")
+	}
+	if !slices.Contains(tm.killed, w.Name) {
+		t.Fatalf("killed = %v, want %s among them", tm.killed, w.Name)
+	}
+}
+
 // §12.2: the sweep runs once the root is done and every agent has finished.
 func TestSweepRunsOnlyWhenTheWholeTreeIsFinished(t *testing.T) {
 	s, tm, _ := clockStore(t)

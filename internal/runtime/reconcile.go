@@ -139,11 +139,29 @@ func (s *Store) Reconcile(ctx context.Context) error {
 			return err
 		}
 	}
+	terminalTmux, err := s.terminalTmuxNames(ctx)
+	if err != nil {
+		return err
+	}
 	for _, p := range panes {
-		if !known[p.Session] {
-			if err := s.notifyUnknownTmux(ctx, p.Session); err != nil {
-				return err
+		if known[p.Session] {
+			continue
+		}
+		if terminalTmux[p.Session] {
+			// A failed/crashed/cancelled session's own pane, not some other
+			// process squatting on the name: a dead one is just leftover
+			// tmux bookkeeping, safe to clean up; a live one is deliberately
+			// left running (P0-crash-1's "let a human inspect it"), so it
+			// must not be flagged unknown either.
+			if p.Dead {
+				if err := s.Tmux.Kill(ctx, p.Session); err != nil {
+					return err
+				}
 			}
+			continue
+		}
+		if err := s.notifyUnknownTmux(ctx, p.Session); err != nil {
+			return err
 		}
 	}
 	if err := s.TickPause(ctx); err != nil {
@@ -422,6 +440,23 @@ func (s *Store) owesNothing(ctx context.Context, r liveRow) (bool, error) {
 		return false, err
 	}
 	return treeOpenReq == 0, nil
+}
+
+// terminalTmuxNames returns tmux names whose most recent session ended in a
+// terminal state, so Reconcile's unknown-tmux pass recognizes their leftover
+// pane instead of flagging it forever (§17.5 was only ever meant for a pane
+// swarm never spawned).
+func (s *Store) terminalTmuxNames(ctx context.Context) (map[string]bool, error) {
+	names, err := s.queryIDs(ctx, `SELECT DISTINCT tmux_name FROM sessions
+		WHERE state IN ('failed', 'crashed', 'cancelled')`)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out, nil
 }
 
 // notifyUnknownTmux is §17.5's tmux.unknown: a tmux session with no matching

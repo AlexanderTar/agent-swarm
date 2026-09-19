@@ -396,6 +396,27 @@ func TestSpawnRefusesASecondOrchestratorForTheSameRoot(t *testing.T) {
 	}
 }
 
+// A startup-dialog stall (watchStartup) must tell the parent the same way an
+// interrupted or crashed child does, or the orchestrator never learns the
+// child didn't start and just waits on it forever.
+func TestFailSessionRelaysToParent(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	if err := s.failSession(ctx, w, wSes, "Is this a project you created or one you trust?\n"); err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, w.ID)
+	if err != nil || ses.State != Failed {
+		t.Fatalf("session = %+v, err = %v", ses, err)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'`,
+		orch.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("relay message count = %d, err = %v", count, err)
+	}
+}
+
 // §11.4: preflight order, with the §17.3 copy for each failure.
 func TestPreflightFailures(t *testing.T) {
 	ctx := context.Background()
