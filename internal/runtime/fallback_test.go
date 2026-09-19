@@ -44,11 +44,14 @@ func newStoreWithFallback(t *testing.T) (*Store, *fakeTmux) {
 	seedCatalog(t, s, "claude", "claude-1", `[
 		{"id":"claude-fable-5-1","aliases":["fable"],"label":"Claude Fable 5.1","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":true},
 		{"id":"claude-opus-5","aliases":["opus"],"label":"Claude Opus 5","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":true},
-		{"id":"claude-sonnet-5","aliases":["sonnet"],"label":"Claude Sonnet 5","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":true},
+		{"id":"claude-sonnet-5","aliases":["sonnet"],"label":"Claude Sonnet 5","efforts":["low","medium","high","xhigh","max"],"default_effort":"","effort_encoding":"flag","advisor_capable":true},
 		{"id":"claude-haiku-4-5","aliases":["haiku"],"label":"Claude Haiku 4.5","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}
 	]`, "claude-sonnet-5")
+	// A real effort list (not empty), so a test can prove effort is
+	// substituted along with kind/model rather than carried over from the
+	// original agent (docs/specs/2026-09-19-usage-fallback-agent.md).
 	seedCatalog(t, s, "codex", "codex-1",
-		`[{"id":"gpt-6-astra","label":"GPT-6-Astra","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}]`,
+		`[{"id":"gpt-6-astra","label":"GPT-6-Astra","efforts":["low","medium","high"],"default_effort":"medium","effort_encoding":"flag","advisor_capable":false}]`,
 		"gpt-6-astra")
 	setEnabled(t, s, Claude, Codex)
 	return s, tm
@@ -111,6 +114,55 @@ func TestStartSpikeSubstitutesExhaustedFallback(t *testing.T) {
 	n := notified(t, s, "agent.fallback_used")
 	if n.Args["name"] != a.Name || n.Args["agent"] != "Codex" || n.Args["from"] != "Claude" {
 		t.Fatalf("fallback_used args = %+v", n.Args)
+	}
+}
+
+// TestStartSpikeSubstitutionDropsAnEffortTheFallbackCannotSupport is the
+// regression this fix addresses: the original agent's effort must not be
+// carried over onto the fallback's model when the fallback doesn't support
+// it (Claude's "xhigh" isn't in codex's efforts list) -- before the fix,
+// this refused the spawn outright (Preflight rejected the substituted
+// model/effort pair), defeating the entire feature the moment a role used
+// a non-default effort.
+func TestStartSpikeSubstitutionDropsAnEffortTheFallbackCannotSupport(t *testing.T) {
+	s, tm := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"}) // no Effort configured
+	s.Usage = fakeUsage{Claude: true}
+	ctx := context.Background()
+	_, a, queued, err := s.StartSpike(ctx, SpikeInput{Name: "Investigate crash", Intent: "debug",
+		Kind: Claude, Model: "claude-sonnet-5", Effort: "xhigh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatal("not queued")
+	}
+	if a.PreflightError != "" {
+		t.Fatalf("agent = %+v, want the spawn to succeed (effort must not carry over)", a)
+	}
+	if a.Kind != Codex || a.Model != "gpt-6-astra" || a.Effort != "" {
+		t.Fatalf("agent = %+v, want substituted with effort dropped to the fallback's default", a)
+	}
+	if len(tm.started) != 1 {
+		t.Fatalf("started = %v, want exactly one session", tm.started)
+	}
+}
+
+// TestStartSpikeSubstitutionUsesTheConfiguredFallbackEffort proves a
+// configured FallbackDefault.Effort is actually used, not silently dropped
+// to "" unconditionally.
+func TestStartSpikeSubstitutionUsesTheConfiguredFallbackEffort(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra", Effort: "high"})
+	s.Usage = fakeUsage{Claude: true}
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Investigate crash", Intent: "debug",
+		Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Effort != "high" {
+		t.Fatalf("agent = %+v, want the configured fallback effort", a)
 	}
 }
 
@@ -392,6 +444,33 @@ func TestRetrySubstitutesExhaustedFallbackAndPersistsIt(t *testing.T) {
 	}
 	if len(tm.started) != 2 { // one from StartSpike, one from Retry
 		t.Fatalf("started = %v", tm.started)
+	}
+}
+
+// TestRetrySubstitutionDropsAnEffortTheFallbackCannotSupport is Retry's own
+// coverage of the same effort-carryover regression StartSpike's own test
+// covers: Retry re-Preflights the substituted fallback with its own effort,
+// not the original agent's.
+func TestRetrySubstitutionDropsAnEffortTheFallbackCannotSupport(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"}) // no Effort configured
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Retry me", Intent: "feature",
+		Kind: Claude, Model: "claude-sonnet-5", Effort: "xhigh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashLatestSession(t, s, a)
+	s.Usage = fakeUsage{Claude: true}
+	out, err := s.Retry(ctx, a.Name, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != Codex || out.Effort != "" {
+		t.Fatalf("agent = %+v, want substituted with effort dropped to the fallback's default", out)
+	}
+	if row := agentRow(t, s, a.Name); row.Effort != "" {
+		t.Fatalf("persisted row = %+v, want the effort column updated too", row)
 	}
 }
 

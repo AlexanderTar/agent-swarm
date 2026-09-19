@@ -150,7 +150,7 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 	// a.Kind, so the agent.fallback_used notification below can report what
 	// was actually configured.
 	origKind := a.Kind
-	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, a.Kind, a.Model)
+	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, a.Kind, a.Model, a.Effort)
 	var preflightErr error
 	if ferr != nil {
 		// a.Kind is confirmed exhausted with no usable fallback: treat this
@@ -159,7 +159,7 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 		// (it's installed and signed in -- just out of quota).
 		preflightErr = ferr
 	} else {
-		a.Kind, a.Model = fbKind, fbModel
+		a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
 		preflightErr = s.Preflight(ctx, PreflightInput{
 			Kind:      a.Kind,
 			Model:     a.Model,
@@ -202,8 +202,8 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 			// then) -- persisting them keeps the row consistent with
 			// preflightErr's own text, which names whichever kind Preflight
 			// actually ran against.
-			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ? WHERE id = ?`,
-				string(a.Kind), a.Model, a.ID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ?, effort = ? WHERE id = ?`,
+				string(a.Kind), a.Model, a.Effort, a.ID); err != nil {
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO sessions
@@ -232,8 +232,8 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 			return nil
 		}
 
-		_, err = tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ? WHERE id = ?`,
-			string(a.Kind), a.Model, a.ID)
+		_, err = tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ?, effort = ? WHERE id = ?`,
+			string(a.Kind), a.Model, a.Effort, a.ID)
 		return err
 	})
 	if err != nil {

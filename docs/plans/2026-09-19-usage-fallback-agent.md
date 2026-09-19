@@ -4,6 +4,17 @@ Companion to `docs/specs/2026-09-19-usage-fallback-agent.md`. Each step:
 failing test → run, watch it fail → minimal implementation → run, watch it
 pass → commit. Commits are small and scoped to one step.
 
+**Revised after implementation** (kept for history; do not re-derive from
+this section): Steps 1 and 6 below describe an "any meter" heuristic and a
+4-return `resolveUsageFallback(ctx, kind, model)` signature. Both were
+corrected during review — see `docs/specs/2026-09-19-usage-fallback-agent.md`'s
+"Exhaustion heuristic" and "Locked decisions" §5 for why: "any meter" was a
+regression risk (Claude's per-model weekly meters), and the 4-return
+signature dropped effort on substitution, which broke the exact scenario
+the feature exists for whenever a role used a non-default effort. The real
+heuristic checks only the headline meter, and `resolveUsageFallback` is
+`(ctx, kind, model, effort string) (AgentKind, string, string, bool, error)`.
+
 ## Step 1 — `internal/usagegate`: pure heuristic
 
 Files: `internal/usagegate/usagegate.go` (new), `internal/usagegate/usagegate_test.go` (new).

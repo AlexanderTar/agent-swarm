@@ -60,8 +60,21 @@ investigation is a separate, already-assigned task; not touched here.
    confirmed exhausted, or none is configured/enabled, that's terminal: no
    further search, no infinite loop. See "Terminal behavior" below.
 5. **Substitution is visible**: the spawned/retried agent's `agents.kind`/
-   `agents.model` columns reflect the fallback (not the originally-configured
-   one) once it's used, and a new `agent.fallback_used` notification fires.
+   `agents.model`/`agents.effort` columns reflect the fallback (not the
+   originally-configured one) once it's used, and a new `agent.fallback_used`
+   notification fires. Effort is substituted along with kind/model, never
+   carried over from the original agent: `resolveUsageFallback` returns
+   `fb.Effort` (or `""` when the configured fallback model had to be
+   reassigned because it disappeared from the catalog — `fb.Effort` was
+   only ever validated against the *configured* model, not a substitute for
+   it). Carrying the original effort over was an implementation bug caught
+   during review — an effort valid for the original model (e.g. Claude's
+   "xhigh") is frequently not offered by the fallback's model at all, which
+   made Preflight refuse the very substitution meant to keep the spawn
+   alive, silently defeating the feature for any role using a non-default
+   effort. Fixed before merge; see `resolveUsageFallback`'s five-return
+   signature below and the `TestStartSpikeSubstitutionDropsAnEffortThe...`
+   / `TestRetrySubstitutionDropsAnEffortThe...` tests.
    This mirrors how every other daemon decision the user didn't type
    themselves (`agent.queued`, `agent.preflight_failed`) is already surfaced
    — no new UI concept, no new event type beyond the existing
@@ -206,7 +219,7 @@ type UsageReader interface {
 // returns a non-nil error the caller must treat as a Preflight-style
 // refusal (see Locked Decision 6) — it must NOT use the returned kind/model
 // to spawn.
-func (s *Store) resolveUsageFallback(ctx context.Context, kind AgentKind, model string) (AgentKind, string, bool, error)
+func (s *Store) resolveUsageFallback(ctx context.Context, kind AgentKind, model, effort string) (AgentKind, string, string, bool, error)
 ```
 
 `cmd/swarm/daemon.go` wires it after constructing both `rt` and `up`:
@@ -325,7 +338,7 @@ type UsageReader interface {
 // Store gains: Usage UsageReader
 
 // internal/runtime/fallback.go
-func (s *Store) resolveUsageFallback(ctx context.Context, kind AgentKind, model string) (AgentKind, string, bool, error)
+func (s *Store) resolveUsageFallback(ctx context.Context, kind AgentKind, model, effort string) (AgentKind, string, string, bool, error)
 
 // internal/settings/settings.go
 type Settings struct {

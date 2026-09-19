@@ -231,8 +231,8 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	// so the agent.fallback_used notification below can report what the
 	// caller actually asked for.
 	origKind := in.Kind
-	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model)
-	in.Kind, in.Model = fbKind, fbModel
+	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
+	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
 
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
@@ -395,11 +395,11 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	}
 
 	origKind := in.Kind
-	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model)
+	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
 	if ferr != nil {
 		return Agent{}, false, ferr
 	}
-	in.Kind, in.Model = fbKind, fbModel
+	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
 
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
@@ -600,11 +600,11 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	}
 
 	origKind := in.Kind
-	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model)
+	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
 	if ferr != nil {
 		return Agent{}, false, ferr
 	}
-	in.Kind, in.Model = fbKind, fbModel
+	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
 
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
@@ -1058,7 +1058,7 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	// so the agent.fallback_used notification below can report what was
 	// actually configured.
 	origKind := a.Kind
-	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, a.Kind, a.Model)
+	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, a.Kind, a.Model, a.Effort)
 	if ferr != nil {
 		return Agent{}, ferr
 	}
@@ -1068,16 +1068,17 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		// substituted kind has never been Preflighted, so it must be here,
 		// or a broken substitute (not installed, not signed in) would spawn
 		// a session doomed to fail instead of surfacing a clear refusal.
-		if err := s.Preflight(ctx, PreflightInput{Kind: fbKind, Model: fbModel, Effort: a.Effort, Role: a.Role}); err != nil {
+		if err := s.Preflight(ctx, PreflightInput{Kind: fbKind, Model: fbModel, Effort: fbEffort, Role: a.Role}); err != nil {
 			return Agent{}, err
 		}
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ? WHERE id = ?`, string(fbKind), fbModel, a.ID)
+			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ? WHERE id = ?`,
+				string(fbKind), fbModel, fbEffort, a.ID)
 			return err
 		}); err != nil {
 			return Agent{}, err
 		}
-		a.Kind, a.Model = fbKind, fbModel
+		a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
 	}
 
 	if note != "" {
