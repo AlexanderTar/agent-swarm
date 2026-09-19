@@ -66,12 +66,14 @@ public struct PopoverView: View {
                 }
                 .padding(12)
             }
+            .frame(maxHeight: maxHeight - 120)
+            .fixedSize(horizontal: false, vertical: true)
+            .scrollIndicators(.never)
             .scrollBounceBehavior(.basedOnSize)
             Divider()
             footer
         }
         .frame(width: 360)
-        .frame(maxHeight: maxHeight)
         .controlSize(.small)
         .glassButtons()
         .onAppear { model.popoverShown() }

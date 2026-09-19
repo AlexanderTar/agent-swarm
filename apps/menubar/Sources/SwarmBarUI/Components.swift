@@ -135,7 +135,9 @@ public struct OptionPicker: View {
 
 /// A section body that scrolls on its own once it outgrows `cap`. Section headers stay outside it,
 /// so a long agent list scrolls under its own header instead of shoving Usage off the popover.
-/// The scrollbar is the system's overlay one, which hides itself; nothing is hand-rolled.
+/// The scrollbar is hidden with `.never`, not `.hidden`: `.hidden` is a soft preference that the
+/// system "Show scroll bars: Always" setting overrides right back to the legacy thick `NSScroller`
+/// (confirmed empirically), while `.never` is documented to override that override.
 public struct SectionBody<Content: View>: View {
     let cap: CGFloat
     let spacing: CGFloat
@@ -154,7 +156,7 @@ public struct SectionBody<Content: View>: View {
         }
         .frame(maxHeight: cap)
         .fixedSize(horizontal: false, vertical: true)
-        .scrollIndicators(.automatic)
+        .scrollIndicators(.never)
         .scrollBounceBehavior(.basedOnSize)
     }
 }
