@@ -935,6 +935,14 @@ func TestSpawnMissingItem(t *testing.T) {
 	}
 }
 
+// TestRetryFromFinished proves retry works from a "finished" agent state (as
+// opposed to "active") as long as the session itself ended in a retryable
+// state. It used to reach that scenario via Cancel, whose session lands on
+// Cancelled — but Cancelled is not retryable (§10.7's action table: cancelled
+// agents show under Finished with no actions; §8.1's swarm_control text lists
+// only completed/failed/crashed/interrupted), so this now reaches "finished
+// agent, crashed session" directly, the same way completedCurrent's sibling
+// tests already do.
 func TestRetryFromFinished(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -944,7 +952,14 @@ func TestRetryFromFinished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Cancel(ctx, a.Name); err != nil {
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, a.ID); err != nil {
 		t.Fatal(err)
 	}
 	retried, err := s.Retry(ctx, a.Name, "")
@@ -953,6 +968,40 @@ func TestRetryFromFinished(t *testing.T) {
 	}
 	if retried.State != AgentActive {
 		t.Fatalf("state = %s, want active", retried.State)
+	}
+}
+
+// TestRetryRefusesAWrongSessionState is Task 41's fix: Retry used to have no
+// state guard at all, unlike Pause/Resume/Cancel, so an MCP swarm_control
+// caller could retry a session that was still running, paused, cancelled, or
+// anything else §8.1 doesn't call retryable ("completed, failed, crashed or
+// interrupted").
+func TestRetryRefusesAWrongSessionState(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a freshly-spawned agent's session is live (running/spawning), not
+	// retryable.
+	if _, err := s.Retry(ctx, a.Name, ""); err == nil {
+		t.Fatal("expected an error retrying a live session")
+	} else if ie, ok := err.(*items.Error); !ok || ie.Code != items.CodeConflict {
+		t.Fatalf("err = %v, want a CodeConflict items.Error", err)
+	}
+
+	// Cancelled is explicitly excluded too (§10.7: cancelled agents are
+	// terminal, shown under Finished with no actions).
+	if _, err := s.Cancel(ctx, a.Name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Retry(ctx, a.Name, ""); err == nil {
+		t.Fatal("expected an error retrying a cancelled session")
+	} else if ie, ok := err.(*items.Error); !ok || ie.Code != items.CodeConflict {
+		t.Fatalf("err = %v, want a CodeConflict items.Error", err)
 	}
 }
 

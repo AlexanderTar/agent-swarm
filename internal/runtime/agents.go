@@ -922,6 +922,15 @@ func (s *Store) Cancel(ctx context.Context, name string) (Agent, error) {
 	return a, nil
 }
 
+// retryableStates is §8.1's own swarm_control description: "retry starts a
+// new attempt of a completed, failed, crashed or interrupted agent." Every
+// other live or pausing state (queued, spawning, running, pause_requested,
+// quiescing, stopping, paused) refuses, matching how Pause guards on
+// !role.live() and Resume guards on ses.State being Paused or Interrupted.
+var retryableStates = []SessionState{Completed, Failed, Crashed, Interrupted}
+
+const notRetryable = "This agent isn't in a state that can be retried."
+
 func (s *Store) Retry(ctx context.Context, name, note string) (Agent, error) {
 	a, err := s.Agent(ctx, name)
 	if err != nil {
@@ -930,6 +939,9 @@ func (s *Store) Retry(ctx context.Context, name, note string) (Agent, error) {
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
 		return Agent{}, err
+	}
+	if !slices.Contains(retryableStates, ses.State) {
+		return Agent{}, &items.Error{Code: items.CodeConflict, Message: notRetryable}
 	}
 
 	if note != "" {
