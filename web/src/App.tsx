@@ -117,6 +117,7 @@ export function App() {
             )}
             {outside && <OutsideViewBanner onShowInHierarchy={() => setUrl({ view: "hierarchy" })} onClearFilters={clearFilters} />}
             <Details
+              key={url.item}
               itemKey={url.item}
               focus={focus}
               connected={conn.connected}

@@ -83,7 +83,6 @@ export function Details(p: DetailsProps) {
   const agentsRef = useRef<HTMLElement>(null);
   const patch = useMutation((api, key: string, body: PatchItemBody) => api.patchItem(key, body), ["items", "item:", "graph:"]);
 
-  useEffect(() => setStale(false), [p.itemKey]);
   useEffect(() => {
     if (p.focus === "agents" && detail.data) agentsRef.current?.scrollIntoView?.({ block: "start" });
   }, [p.focus, detail.data]);

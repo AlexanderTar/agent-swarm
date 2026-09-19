@@ -12,6 +12,16 @@ function setup(itemKey: string, p: Partial<DetailsProps> = {}, daemon = createMo
   return { ...renderWithDaemon(<Details {...props} />, { daemon, events: false }), props };
 }
 
+// App.tsx renders `<Details key={url.item} itemKey={url.item} .../>` — the `key` is what forces a
+// full remount (and a clean slate for any open editor) when the viewed item changes. Reproduced
+// directly here rather than through App.tsx, since App.tsx does the identical thing with the same
+// element.
+function detailsFor(itemKey: string) {
+  return (
+    <Details key={itemKey} itemKey={itemKey} connected onClose={vi.fn()} onSelect={vi.fn()} onReview={vi.fn()} onStartOrchestrator={vi.fn()} />
+  );
+}
+
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
@@ -229,5 +239,35 @@ describe("Details panel (§16.9)", () => {
     await user.clear(input);
     await user.type(input, "Reset form{Enter}");
     await waitFor(() => expect(screen.getByRole("button", { name: "Reset form" })).toHaveFocus());
+  });
+
+  // Regression (final review, App.tsx): without `key={url.item}` on <Details>, a failed save left
+  // an editor open holding its draft, and switching to an already-cached item reused the same
+  // component instance instead of remounting — so the stale draft leaked onto the new item's panel
+  // and committing it (Enter/blur) would PATCH the wrong item with the wrong text.
+  it("drops a stale open editor instead of leaking its draft onto the next item", async () => {
+    const d = createMockDaemon();
+    const { user, rerender } = renderWithDaemon(detailsFor("TASK-101"), { daemon: d, events: false });
+    // Load TASK-101 first so its detail is already cached when we switch back to it later —
+    // matching the bug report's "detail already cached, so `!d` doesn't unmount anything".
+    await screen.findByRole("button", { name: "Build login form" });
+
+    rerender(detailsFor("TASK-103"));
+    await user.click(await screen.findByRole("button", { name: "Password reset form" }));
+    const input = screen.getByRole("textbox", { name: "Title" });
+    await user.clear(input);
+    await user.type(input, "Corrupted title");
+    d.override("PATCH /api/items/TASK-103", { status: 409, body: { error: { code: "conflict", message: "stale" } } });
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(d.calls.some((c) => c.path === "/api/items/TASK-103" && c.method === "PATCH")).toBe(true));
+    // Pre-existing, correct behavior: a failed save keeps the editor open with the typed draft.
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Corrupted title");
+
+    rerender(detailsFor("TASK-101"));
+    // TASK-101's own title shows, not a leftover editor holding TASK-103's draft.
+    expect(await screen.findByRole("button", { name: "Build login form" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Title" })).not.toBeInTheDocument();
+    // Nothing must ever PATCH TASK-101 with the stale "Corrupted title" draft.
+    expect(d.calls.some((c) => c.path === "/api/items/TASK-101" && c.method === "PATCH")).toBe(false);
   });
 });
