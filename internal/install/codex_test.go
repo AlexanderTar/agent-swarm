@@ -193,6 +193,42 @@ func TestWriteCodexTrustsBothWorkAndWorktreesInOnePass(t *testing.T) {
 	}
 }
 
+// §11.1, M3: the MCP server is global for codex too, just like cursor's and
+// agy's, written directly into config.toml (codex has no `mcp add` CLI command).
+func TestWriteCodexAddsTheGlobalMCPTableAndReplacesAStaleOne(t *testing.T) {
+	c := fakeHome(t)
+	if _, err := install.WriteCodex(c); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(c.Codex("config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[mcp_servers.swarm]\ncommand = \"" + c.Bin + "\"\nargs = [\"mcp\"]"
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("missing swarm MCP table:\n%s", body)
+	}
+
+	// A stale table (an old binary path) must be replaced, not left alongside a new one.
+	stale := strings.ReplaceAll(string(body), c.Bin, "/old/path/swarm")
+	if err := os.WriteFile(c.Codex("config.toml"), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := install.WriteCodex(c); err != nil {
+		t.Fatal(err)
+	}
+	body2, err := os.ReadFile(c.Codex("config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body2), "/old/path/swarm") {
+		t.Errorf("stale swarm MCP table survived:\n%s", body2)
+	}
+	if n := strings.Count(string(body2), "[mcp_servers.swarm]"); n != 1 {
+		t.Errorf("[mcp_servers.swarm] appears %d times, want exactly 1:\n%s", n, body2)
+	}
+}
+
 // Same as above, but with both directories actually on disk: on macOS t.TempDir()
 // resolves through /private, so this exercises the EvalSymlinks branch (not just
 // its not-yet-existing fallback) and proves the two entries are genuinely

@@ -92,20 +92,23 @@ func WriteCodex(c Config) ([]string, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return changed, err
 	}
-	text, anyAdded := string(old), false
+	text := string(old)
 	for _, dir := range []string{c.Work(), c.Worktrees()} {
 		real, err := filepath.EvalSymlinks(dir)
 		if err != nil {
 			real = dir // the folder may not exist yet on a first install
 		}
-		added := false
-		text, added = CodexTrust(text, real)
-		anyAdded = anyAdded || added
+		text, _ = CodexTrust(text, real)
 	}
-	if anyAdded {
-		if _, err := WriteIfChanged(cfgPath, []byte(text), 0o644); err != nil {
-			return changed, err
-		}
+	// §11.1, M3: the MCP server is also global, registered once here just like
+	// cursor's and agy's. Strip any existing [mcp_servers.swarm...] table first
+	// (a stale binary path, a v1 remnant) and append a fresh one, so this is
+	// idempotent and self-healing by construction rather than by diffing.
+	text, _ = removeCodexSwarmTables(text)
+	text = appendCodexSwarmMCP(text, c.Bin)
+	if wrote, err := WriteIfChanged(cfgPath, []byte(text), 0o644); err != nil {
+		return changed, err
+	} else if wrote {
 		changed = append(changed, cfgPath)
 	}
 
@@ -180,6 +183,17 @@ func CodexTrust(text, realPath string) (string, bool) {
 		return block, true
 	}
 	return strings.TrimRight(text, "\n") + "\n\n" + block, true
+}
+
+// appendCodexSwarmMCP appends codex's [mcp_servers.swarm] table (§11.1, M3): a
+// plain text append, like CodexTrust, so the user's comments and table order
+// survive. The caller strips any existing swarm table first.
+func appendCodexSwarmMCP(text, bin string) string {
+	block := fmt.Sprintf("[mcp_servers.swarm]\ncommand = %q\nargs = [\"mcp\"]\n", bin)
+	if strings.TrimSpace(text) == "" {
+		return block
+	}
+	return strings.TrimRight(text, "\n") + "\n\n" + block
 }
 
 var codexSwarmTable = regexp.MustCompile(`^\[mcp_servers\.swarm(\.[A-Za-z_][A-Za-z0-9_]*)?\]`)

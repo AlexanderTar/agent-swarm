@@ -98,7 +98,7 @@ func Agents(ctx context.Context, o AgentsOpts) error {
 		var err error
 		switch k {
 		case KindClaude:
-			changed, err = WriteClaude(o.Cfg)
+			changed, err = WriteClaude(ctx, o.Cfg, o.Run)
 		case KindCodex:
 			changed, err = WriteCodex(o.Cfg)
 		case KindCursor:

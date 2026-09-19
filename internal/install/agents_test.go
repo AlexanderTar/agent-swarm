@@ -43,6 +43,8 @@ func TestAgentsRemovesTheV1IntegrationsBeforeWritingTheNewOnes(t *testing.T) {
 	}
 	f := &execx.Fake{Responses: map[string]execx.Result{
 		"launchctl bootout gui/501/dev.swarm.updater":                                                          {},
+		"claude mcp remove swarm -s user":                                                                      {},
+		"claude mcp add swarm -s user -- " + c.Bin + " mcp":                                                    {},
 		"claude plugin marketplace list":                                                                       {Out: install.MarketplaceName},
 		"claude plugin list --json":                                                                            {Out: `{"plugins":[]}`},
 		"claude plugin install superpowers@superpowers-marketplace --scope user -y":                            {Out: "ok"},
@@ -124,9 +126,11 @@ func TestAgentsIsIdempotent(t *testing.T) {
 func TestAgentsReportsPluginFailuresWithoutFailing(t *testing.T) {
 	c := fakeHome(t)
 	f := &execx.Fake{Responses: map[string]execx.Result{
-		"launchctl bootout gui/501/dev.swarm.updater": {},
-		"claude plugin marketplace list":              {Out: install.MarketplaceName},
-		"claude plugin list --json":                   {Out: `{"plugins":[]}`},
+		"launchctl bootout gui/501/dev.swarm.updater":       {},
+		"claude mcp remove swarm -s user":                   {},
+		"claude mcp add swarm -s user -- " + c.Bin + " mcp": {},
+		"claude plugin marketplace list":                    {Out: install.MarketplaceName},
+		"claude plugin list --json":                         {Out: `{"plugins":[]}`},
 	}} // every install command is missing → every one fails
 	out := &bytes.Buffer{}
 	o := agentsOpts(t, c, f, install.KindClaude)

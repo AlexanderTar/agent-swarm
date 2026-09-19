@@ -8,18 +8,25 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
 
-// Claude needs no global configuration: its MCP config, hooks and --settings are
-// built per launch by the adapter (§11.1), and its trust state lives in
-// ~/.claude.json, which Claude Code rewrites itself and Swarm never edits (§11.5).
-// So install writes the two skills and nothing else.
+// Claude's own MCP config, hooks and --settings for a SPAWNED session are still
+// built per launch by the adapter (§11.1). Separately, a global "swarm" MCP
+// server is registered via `claude mcp add -s user` (never by hand-editing
+// ~/.claude.json, which Claude Code rewrites on its own and Swarm never edits
+// directly, §11.5), so an interactive, non-swarm-spawned session also gets
+// swarm's tools. Remove-then-add makes this idempotent and self-healing against
+// a stale binary path from an older build.
 //
 // The v1 symlink and the v2 skills folder share the same path
 // (c.Claude("skills", "swarm")): if the v1 link is still there, WriteSkills'
 // MkdirAll/WriteFile/Rename would transparently follow it into the v1 release
 // target instead of creating a real v2 directory. RemoveLegacyClaude must run
 // first so WriteSkills always lands on a real path.
-func WriteClaude(c Config) ([]string, error) {
+func WriteClaude(ctx context.Context, c Config, run execx.Runner) ([]string, error) {
 	if _, err := RemoveLegacyClaude(c); err != nil {
+		return nil, err
+	}
+	_, _ = run(ctx, "claude", "mcp", "remove", "swarm", "-s", "user")
+	if _, err := run(ctx, "claude", "mcp", "add", "swarm", "-s", "user", "--", c.Bin, "mcp"); err != nil {
 		return nil, err
 	}
 	return WriteSkills(c, KindClaude)

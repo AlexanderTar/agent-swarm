@@ -22,6 +22,8 @@ func TestUninstallRemovesSwarmsOwnEntriesAndKeepsEverythingElse(t *testing.T) {
 		"launchctl bootout gui/501/dev.swarm.daemon":                {},
 		"agy mcp add --type stdio swarm " + c.Bin + " mcp":          {},
 		"agy mcp remove swarm":                                      {},
+		"claude mcp remove swarm -s user":                           {},
+		"claude mcp add swarm -s user -- " + c.Bin + " mcp":         {},
 		"agy plugin list":                                           {Out: `{"imports":[]}`},
 		"claude plugin marketplace list":                            {Out: install.MarketplaceName},
 		"claude plugin list --json":                                 {Out: `{"plugins":[]}`},
@@ -33,7 +35,7 @@ func TestUninstallRemovesSwarmsOwnEntriesAndKeepsEverythingElse(t *testing.T) {
 	o.PluginsOnly = true // skip the plugin installs; this test is about config files
 	// Write the configuration directly, so the test does not depend on plugin argv.
 	for _, w := range []func() ([]string, error){
-		func() ([]string, error) { return install.WriteClaude(c) },
+		func() ([]string, error) { return install.WriteClaude(context.Background(), c, f.Runner()) },
 		func() ([]string, error) { return install.WriteCodex(c) },
 		func() ([]string, error) { return install.WriteCursor(c) },
 		func() ([]string, error) { return install.WriteAgy(context.Background(), c, f.Runner()) },
