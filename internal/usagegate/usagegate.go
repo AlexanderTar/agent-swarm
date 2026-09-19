@@ -28,29 +28,49 @@ const exhaustionPct = 100.0
 // Exhausted is the pure heuristic behind the fallback feature, independent
 // of any I/O so it's directly unit-testable. snap is confirmed exhausted
 // iff it is fresh (!Stale), carries no fetch error (a fetch error is not
-// evidence of quota exhaustion), has at least one meter, and any one of its
-// meters is at or above exhaustionPct with a reset time that hasn't already
+// evidence of quota exhaustion), has at least one meter, and its headline
+// meter is at or above exhaustionPct with a reset time that hasn't already
 // passed (a 100% reading whose window already rolled over is a stale
 // display, not a live block).
 //
-// Every meter is checked, not just the headline (display) meter: each
-// meter internal/usage's sources emit represents an independent hard cap,
-// and hitting any one of them blocks further requests regardless of what
-// the headline meter shows.
+// Only the headline meter is checked, not "any meter": reading
+// internal/usage/claude.go, several of the meters a source emits are
+// per-model or per-pool (Claude's seven_day_opus/seven_day_fable/
+// seven_day_<model>, Cursor's cursor_auto vs cursor_api) -- hitting one of
+// those does not block every other model or pool on that same agent kind.
+// Checking any such meter would refuse a spawn that would actually have
+// succeeded (e.g. the default config's Opus-heavy roles hitting their
+// weekly cap must not block the Sonnet-based coder role) -- a regression
+// this feature must never cause. The headline meter is each source's own
+// choice of "the representative reading" (HeadlineID), so treating it as
+// the availability signal is source-agnostic and requires no per-kind
+// special-casing here. A genuine all-models cap that isn't reflected in the
+// headline is a false negative (this kind reads as "available" when it
+// isn't) -- that is the same stall this feature is meant to reduce, not a
+// new one, and is preferred over the false-positive risk above.
 func Exhausted(snap usage.Snapshot, now time.Time) bool {
 	if snap.Stale || snap.Error != "" || len(snap.Meters) == 0 {
 		return false
 	}
-	for _, m := range snap.Meters {
-		if m.UsedPct < exhaustionPct {
-			continue
-		}
-		if m.ResetsAt != nil && !m.ResetsAt.After(now) {
-			continue
-		}
-		return true
+	m := headlineMeter(snap)
+	if m.UsedPct < exhaustionPct {
+		return false
 	}
-	return false
+	return m.ResetsAt == nil || m.ResetsAt.After(now)
+}
+
+// headlineMeter mirrors the menubar's own UsageSnapshot.headline convention
+// (apps/menubar/Sources/SwarmBarKit/Wire.swift): the meter whose ID matches
+// HeadlineID, or the first meter when HeadlineID is empty or matches none
+// (every real source sets it, but a test fixture or a future source might
+// not).
+func headlineMeter(snap usage.Snapshot) usage.Meter {
+	for _, m := range snap.Meters {
+		if m.ID == snap.HeadlineID {
+			return m
+		}
+	}
+	return snap.Meters[0]
 }
 
 // Gate implements runtime.UsageReader against a live *usage.Poller.

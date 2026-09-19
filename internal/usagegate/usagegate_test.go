@@ -60,19 +60,54 @@ func TestNotExhaustedResetAlreadyPassed(t *testing.T) {
 	}
 }
 
-// TestExhaustedOnNonHeadlineMeter proves the heuristic checks every meter,
-// not just HeadlineID's display meter: a weekly cap can be hit while the 5h
-// headline still reads low, and that must still block further work.
-func TestExhaustedOnNonHeadlineMeter(t *testing.T) {
+// TestNonHeadlineMeterAtCapDoesNotCount was originally written the other way
+// (asserting that any meter at 100% -- headline or not -- counts as
+// exhausted). That was wrong for a real source's shape: internal/usage's
+// Claude source (claude.go) emits per-model weekly meters like
+// seven_day_opus and seven_day_<model> alongside the all-models headline;
+// hitting one of those does not block every other model on that same agent
+// kind. Rewritten (not deleted -- see CLAUDE.md's test discipline) to assert
+// the corrected contract: only the headline meter's reading counts, so a
+// per-model cap being hit while the headline reads low must NOT be treated
+// as the whole agent kind being exhausted, or a spawn that would actually
+// succeed (e.g. a Sonnet-based role while only the Opus weekly cap is hit)
+// gets wrongly refused or redirected.
+func TestNonHeadlineMeterAtCapDoesNotCount(t *testing.T) {
 	snap := usage.Snapshot{
 		HeadlineID: "five_hour",
 		Meters: []usage.Meter{
 			{ID: "five_hour", UsedPct: 20},
-			{ID: "seven_day_sonnet", UsedPct: 100},
+			{ID: "seven_day_opus", UsedPct: 100},
+		},
+	}
+	if Exhausted(snap, now) {
+		t.Fatal("a non-headline (per-model) meter at 100%% must not count as the kind being exhausted")
+	}
+}
+
+// TestExhaustedWhenTheHeadlineMeterIsAtCap is the positive counterpart: the
+// headline meter itself at 100%% does count, regardless of other meters.
+func TestExhaustedWhenTheHeadlineMeterIsAtCap(t *testing.T) {
+	snap := usage.Snapshot{
+		HeadlineID: "five_hour",
+		Meters: []usage.Meter{
+			{ID: "five_hour", UsedPct: 100},
+			{ID: "seven_day_opus", UsedPct: 10},
 		},
 	}
 	if !Exhausted(snap, now) {
-		t.Fatal("a non-headline meter at 100%% must still count as exhausted")
+		t.Fatal("the headline meter at 100%% must count as exhausted")
+	}
+}
+
+// TestHeadlineIDMissingFallsBackToFirstMeter mirrors the menubar's own
+// UsageSnapshot.headline convention: an empty or non-matching HeadlineID
+// falls back to the first meter, rather than being treated as "no headline
+// at all".
+func TestHeadlineIDMissingFallsBackToFirstMeter(t *testing.T) {
+	snap := usage.Snapshot{Meters: []usage.Meter{{ID: "only", UsedPct: 100}}}
+	if !Exhausted(snap, now) {
+		t.Fatal("a single meter with no HeadlineID set must still be read as the headline")
 	}
 }
 
