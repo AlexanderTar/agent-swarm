@@ -47,6 +47,7 @@ public struct NewOrchestratorView: View {
             .padding(12)
         }
         .frame(width: 480)
+        .glassButtons()
         .frame(minHeight: 420, idealHeight: 720)
         .task { await form.load() }
         .task(id: form.query) {

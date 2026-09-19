@@ -9,13 +9,16 @@ public struct SettingsView: View {
     public init(model: SettingsModel) { self.model = model }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            TabView {
-                AgentsTab(model: model).tabItem { Text(Copy.tabAgents) }
-                DefaultsTab(model: model).tabItem { Text(Copy.tabDefaults) }
-                NotificationsTab(model: model).tabItem { Text(Copy.tabNotifications) }
-                LimitsTab(model: model).tabItem { Text(Copy.tabLimits) }
-            }
+        // TabView is the top-level view here on purpose: macOS only gives the Settings window its
+        // icon-over-label toolbar tabs when nothing wraps the TabView, so the save-error row rides
+        // in as a bottom safe-area inset instead of a VStack sibling.
+        TabView {
+            AgentsTab(model: model).tabItem { Label(Copy.tabAgents, systemImage: "person.2") }
+            DefaultsTab(model: model).tabItem { Label(Copy.tabDefaults, systemImage: "slider.horizontal.3") }
+            NotificationsTab(model: model).tabItem { Label(Copy.tabNotifications, systemImage: "bell") }
+            LimitsTab(model: model).tabItem { Label(Copy.tabLimits, systemImage: "speedometer") }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if let error = model.saveError {
                 HStack {
                     Text(error).foregroundStyle(.red)
@@ -23,9 +26,11 @@ public struct SettingsView: View {
                     if model.connected { Button(Copy.retry) { Task { await model.save() } } }
                 }
                 .padding(10)
+                .background(.bar)
             }
         }
         .frame(width: 740, height: 520)
+        .glassButtons()
         .task { await model.load() }
     }
 }
@@ -41,7 +46,7 @@ struct AgentsTab: View {
                     Toggle(isOn: Binding(get: { row.checked }, set: { on in Task { await model.setEnabled(row.kind, on) } })) {
                         HStack(spacing: 6) {
                             AgentIcon(row.kind)
-                            Text(row.label).frame(width: 70, alignment: .leading)
+                            Text(row.label).frame(width: 96, alignment: .leading)
                             Text(row.status).foregroundStyle(.secondary)
                         }
                     }
@@ -205,7 +210,9 @@ struct LimitsTab: View {
             .disabled(!model.connected)
             HStack {
                 Text(model.scanLine).font(.caption).foregroundStyle(.secondary)
-                Button(Copy.rescanNow) { Task { await model.rescanNow() } }.disabled(!model.connected)
+                IconButton("arrow.clockwise", help: Copy.rescanNow, disabled: !model.connected) {
+                    Task { await model.rescanNow() }
+                }
             }
             Divider()
             HStack {
