@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -510,6 +511,72 @@ func TestPauseAllFreezesAQueuedSpawnTheSameWayASubtreePauseDoes(t *testing.T) {
 	}
 }
 
+// Ruling B follow-up (Important #2): a live child whose root's own session
+// has already ended (paused/interrupted/completed/failed/crashed) must not
+// be silently skipped by PauseAll just because its root is no longer live --
+// Ruling B's own text already says a session with no live orchestrator
+// above it is "functionally standalone", and this is exactly that case,
+// just discovered after the fact instead of from the start. Reproduces the
+// root's own pause running its full, real course (deadline -> interrupt ->
+// kill -> reconcile, the same sequence TestDeadlineInterruptsAndNeverRecordsPaused
+// exercises on a worker) rather than forcing 'interrupted' via raw SQL, so
+// this is the actual state machine producing a finished root with a still-
+// live child, not a synthetic one.
+func TestPauseAllStillReachesALiveChildUnderAFinishedRoot(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, _ := worker(t, s)
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+
+	s.Pause(ctx, orch.Name, "session")
+	at.Advance(121 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(11 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Only the orchestrator's own pane is gone; the worker's is still very
+	// much alive (tm.panes has no entry for either by default, which would
+	// make Reconcile treat BOTH as dead -- unlike
+	// TestDeadlineInterruptsAndNeverRecordsPaused, which has only the one
+	// live session to worry about).
+	tm.panes = []Pane{{Session: w.Name, Command: "swarm-fake-agent"}}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orchSes.State != Interrupted {
+		t.Fatalf("orchestrator state = %s, want interrupted -- its own pause must have run its full course", orchSes.State)
+	}
+	wBefore, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wBefore.State.Live() {
+		t.Fatalf("worker state = %s, want still live (nothing paused it)", wBefore.State)
+	}
+
+	n, err := s.PauseAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("requested = %d, want 1 -- the still-live worker, standalone now that its root has ended", n)
+	}
+	wAfter, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wAfter.State != PauseRequested {
+		t.Fatalf("worker state = %s, want pause_requested -- pause-all must still reach it", wAfter.State)
+	}
+}
+
 // §10.5: a subtree pause freezes a root's queued spawns. DrainQueue must not
 // admit them while the pause is live, and must go back to admitting them
 // normally once it resolves — otherwise a newly-launched, never-paused agent
@@ -771,5 +838,29 @@ func TestPauseAllCountsAnAlreadyPausingSessionOnce(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("requested = %d, want the orchestrator and the already-pausing coder", n)
+	}
+	// The count alone doesn't catch a pauseSubtree cascade that resets an
+	// already-pausing descendant's own state/deadline back to
+	// pause_requested (Important #1): Pause()'s own idempotency guard ("a
+	// second pause must not extend the deadline") only protects the root
+	// PauseAll calls Pause() on directly, not whatever pauseSubtree cascades
+	// onto underneath it. Confirm the worker's row -- state, pause_scope,
+	// pause_deadline_at -- is untouched by pause-all finding it already
+	// pausing.
+	var state string
+	var scope sql.NullString
+	var deadline sql.NullInt64
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, pause_scope, pause_deadline_at
+		FROM sessions WHERE id = ?`, wSes.ID).Scan(&state, &scope, &deadline); err != nil {
+		t.Fatal(err)
+	}
+	if state != "stopping" {
+		t.Fatalf("already-pausing worker's state = %s, want untouched at stopping", state)
+	}
+	if scope.Valid {
+		t.Fatalf("already-pausing worker's pause_scope = %q, want untouched (never set)", scope.String)
+	}
+	if deadline.Valid {
+		t.Fatalf("already-pausing worker's pause_deadline_at = %d, want untouched (never set)", deadline.Int64)
 	}
 }

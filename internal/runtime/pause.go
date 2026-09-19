@@ -276,7 +276,16 @@ func (s *Store) pauseSubtree(ctx context.Context, orch Agent, orchSes Session, d
 	}
 	for _, d := range descendants {
 		dses, err := s.LatestSession(ctx, d.ID)
-		if err != nil || !dses.State.Live() {
+		// An already-pausing descendant is left alone: pauseOne has no
+		// idempotency guard of its own (Pause's own "a second pause must
+		// not extend the deadline" guard only covers the one session Pause
+		// is called on directly, never what pauseSubtree cascades onto), so
+		// without this check a repeated pause-all -- or one subtree pause
+		// landing on a descendant already mid-pause for any reason -- would
+		// reset its deadline forward every time and could even overwrite a
+		// descendant already 'stopping' with a handoff already written back
+		// to 'pause_requested', discarding real progress.
+		if err != nil || !dses.State.Live() || dses.State.Pausing() {
 			continue
 		}
 		if _, err := s.pauseOne(ctx, d, dses, deadline, "subtree"); err != nil {
@@ -592,16 +601,68 @@ func (s *Store) Resume(ctx context.Context, name string) (Agent, error) {
 // handle it fine either way (an empty descendants loop, then an immediate
 // promotion), but there is no subtree to cascade onto, so there is nothing
 // session-scope doesn't already cover.
+// pauseTarget returns the highest still-live ancestor of a (a itself, if
+// none of its ancestors are live). "Live" here means that ancestor's own
+// latest session is live, not merely that it exists: a live agent whose
+// immediate parent's session already ended is functionally standalone
+// (Ruling B), even if some INTERMEDIATE ancestor further up happens to
+// still be alive and orchestrating a different part of the tree needs its
+// own walk past dead links to find it -- so this walks the whole chain to
+// the structural root, not just one hop, tracking the farthest-up live
+// ancestor seen along the way rather than stopping at the first dead link.
+func (s *Store) pauseTarget(ctx context.Context, a Agent) (Agent, error) {
+	best, cur := a, a
+	for cur.ParentAgentID != "" {
+		parent, err := s.agentByID(ctx, cur.ParentAgentID)
+		if err != nil {
+			return Agent{}, err
+		}
+		if pses, err := s.LatestSession(ctx, parent.ID); err == nil && pses.State.Live() {
+			best = parent
+		}
+		cur = parent
+	}
+	return best, nil
+}
+
+// PauseAll requests a pause on every live session, grouped by pause target
+// (pauseTarget above) so each connected run of live agents is cascaded
+// through pauseSubtree exactly once from its own topmost live point, whether
+// or not that point happens to be a true root (agents.parent_agent_id IS
+// NULL). Gating the original version of this function on live ROOTS only
+// missed a live descendant whose own root had already ended (paused,
+// interrupted, completed, failed, crashed): PauseAll reported
+// requested: 0 for that whole (still very much running) branch. Ruling B's
+// own text already says a session with no live orchestrator above it is
+// "functionally standalone" -- this just recognizes that a descendant can
+// become standalone that way too, not only by being a root from the start.
 func (s *Store) PauseAll(ctx context.Context) (int, error) {
-	roots, err := s.queryIDs(ctx, `SELECT a.name FROM agents a JOIN sessions ses ON ses.agent_id = a.id
-		WHERE a.parent_agent_id IS NULL
-		AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
+	live, err := s.queryIDs(ctx, `SELECT a.name FROM agents a JOIN sessions ses ON ses.agent_id = a.id
+		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
 		AND ses.generation = (SELECT MAX(s2.generation) FROM sessions s2 WHERE s2.agent_id = a.id)`)
 	if err != nil {
 		return 0, err
 	}
+	seen := map[string]bool{}
+	var targets []string
+	for _, name := range live {
+		a, err := s.Agent(ctx, name)
+		if err != nil {
+			s.logf("pause-all: %s: %v", name, err)
+			continue
+		}
+		target, err := s.pauseTarget(ctx, a)
+		if err != nil {
+			s.logf("pause-all: %s: %v", name, err)
+			continue
+		}
+		if !seen[target.ID] {
+			seen[target.ID] = true
+			targets = append(targets, target.Name)
+		}
+	}
 	n := 0
-	for _, name := range roots {
+	for _, name := range targets {
 		a, err := s.Agent(ctx, name)
 		if err != nil {
 			s.logf("pause-all: %s: %v", name, err)
@@ -612,21 +673,21 @@ func (s *Store) PauseAll(ctx context.Context) (int, error) {
 			s.logf("pause-all: %s: %v", name, err)
 			continue
 		}
-		live := 0
+		liveDescendants := 0
 		for _, d := range descendants {
 			if dses, err := s.LatestSession(ctx, d.ID); err == nil && dses.State.Live() {
-				live++
+				liveDescendants++
 			}
 		}
 		scope := "session"
-		if live > 0 {
+		if liveDescendants > 0 {
 			scope = "subtree"
 		}
 		if _, err := s.Pause(ctx, name, scope); err != nil {
 			s.logf("pause-all: %s: %v", name, err)
 			continue
 		}
-		n += 1 + live // the root itself, plus every live descendant it cascades onto
+		n += 1 + liveDescendants // the target itself, plus every live descendant it cascades onto
 	}
 	return n, nil
 }
