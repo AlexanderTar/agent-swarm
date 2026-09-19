@@ -227,15 +227,31 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		return "", Agent{}, false, err
 	}
 
+	// origKind is captured before resolveUsageFallback may substitute in.Kind,
+	// so the agent.fallback_used notification below can report what the
+	// caller actually asked for.
+	origKind := in.Kind
+	fbKind, fbModel, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model)
+	in.Kind, in.Model = fbKind, fbModel
+
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
-	preflightErr := s.Preflight(ctx, PreflightInput{
-		Kind:      in.Kind,
-		Model:     in.Model,
-		Effort:    in.Effort,
-		Role:      RoleOrchestrator,
-		RepoPaths: in.RepoPaths,
-	})
+	var preflightErr error
+	if ferr != nil {
+		// origKind is confirmed exhausted with no usable fallback: treat
+		// this exactly like a Preflight refusal (spec Locked Decision 6)
+		// rather than call the real Preflight, which would happily approve
+		// origKind (it's installed and signed in -- just out of quota).
+		preflightErr = ferr
+	} else {
+		preflightErr = s.Preflight(ctx, PreflightInput{
+			Kind:      in.Kind,
+			Model:     in.Model,
+			Effort:    in.Effort,
+			Role:      RoleOrchestrator,
+			RepoPaths: in.RepoPaths,
+		})
+	}
 	if preflightErr != nil {
 		agentID := ids.New("agt")
 		nowMs := s.now().UnixMilli()
@@ -343,6 +359,10 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 			s.logf("spawn: watchStartup %s: %v", a.Name, err)
 		}
 	})
+	if substituted && s.Notify != nil {
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name,
+			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
+	}
 
 	return it.Key, a, false, nil
 }
