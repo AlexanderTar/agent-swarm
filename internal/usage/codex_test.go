@@ -60,12 +60,21 @@ func failingStarter(t *testing.T) execx.Starter {
 	}
 }
 
+// TestCodexAppServerExchange's fixture is the real request/response shape,
+// live-verified against codex-cli 0.154.0 (`codex app-server` over stdio):
+// an `initialize` response for id 1, then `account/rateLimits/read`'s
+// nested primary/secondary payload for id 2. A prior version of this
+// fixture used a made-up `getRateLimits` method with a flat rateLimits
+// array and no initialize round trip — codex-cli rejects that request
+// outright ("unknown variant `getRateLimits`"), which is the real bug this
+// fixture now guards against.
 func TestCodexAppServerExchange(t *testing.T) {
 	src := &Codex{Start: fakeAppServer(t, []string{
+		`{"jsonrpc":"2.0","id":1,"result":{"userAgent":"test/0.0.0","codexHome":"/tmp","platformFamily":"unix","platformOs":"macos"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/ignore_me","params":{}}`, // a stray notification
-		`{"jsonrpc":"2.0","id":3,"result":{"rateLimits":[
-			{"id":"primary","windowDurationMins":300,"usedPercent":55.5,"resetsAt":1789700000},
-			{"id":"secondary","windowDurationMins":10080,"usedPercent":8,"resetsAt":1790000000}]}}`,
+		`{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{
+			"primary":{"windowDurationMins":300,"usedPercent":55.5,"resetsAt":1789700000},
+			"secondary":{"windowDurationMins":10080,"usedPercent":8,"resetsAt":1790000000}}}}`,
 	}), Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) },
 		Timeout: 10 * time.Second}
 	snap, err := src.Fetch(context.Background())
@@ -80,6 +89,38 @@ func TestCodexAppServerExchange(t *testing.T) {
 	}
 	if snap.Meters[0].ResetsAt == nil || snap.Meters[0].ResetsAt.Unix() != 1789700000 {
 		t.Fatalf("resets_at is unix seconds: %v", snap.Meters[0].ResetsAt)
+	}
+}
+
+// TestCodexAppServerRPCErrorFallsBackFast pins the fix for the second real
+// bug: the read loop used to treat a JSON-RPC error response the same as an
+// untargeted notification (both have a nil Result), so it looped silently
+// until the whole Timeout elapsed. It must now recognize the id-matched
+// error and fail over to the rollout immediately.
+func TestCodexAppServerRPCErrorFallsBackFast(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "17")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "rollout-2026-09-17T10-00-00-abc.jsonl"), []byte(
+		`{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":33,"window_minutes":300}}}}`+"\n"), 0o644)
+
+	src := &Codex{UserHome: home, Start: fakeAppServer(t, []string{
+		`{"jsonrpc":"2.0","id":1,"result":{"userAgent":"test/0.0.0","codexHome":"/tmp","platformFamily":"unix","platformOs":"macos"}}`,
+		`{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"Invalid request: unknown variant ` + "`getRateLimits`" + `"}}`,
+	}), Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) },
+		Timeout: 3 * time.Second}
+
+	start := time.Now()
+	snap, err := src.Fetch(context.Background())
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(snap.Source, "rollout") {
+		t.Fatalf("source = %q, want the rollout fallback", snap.Source)
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("took %s to fail over; the RPC error should short-circuit the %s timeout", elapsed, src.Timeout)
 	}
 }
 

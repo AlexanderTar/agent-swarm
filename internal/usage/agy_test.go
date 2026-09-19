@@ -5,20 +5,23 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
 
-// §13: used_pct = (1 − remainingFraction) × 100, a missing fraction counts as 0 remaining.
+// §13: used_pct = (1 − remainingFraction) × 100, a missing fraction counts
+// as 0 remaining. This is the real, nested
+// google.internal.cloud.code.v1internal.PredictionService
+// RetrieveUserQuotaSummaryResponse shape (confirmed live against
+// daily-cloudcode-pa.googleapis.com on 2026-09-19), not a flat buckets[].
 func TestAgyBuckets(t *testing.T) {
-	body := `{"buckets":[
-	  {"group":"Gemini Models","window":"5h","remainingFraction":0.75,"disabled":false},
-	  {"group":"Gemini Models","window":"weekly","remainingFraction":0.5,"disabled":false},
-	  {"group":"Claude and GPT models","window":"5h","disabled":false},
-	  {"group":"Claude and GPT models","window":"weekly","remainingFraction":0.9,"disabled":true}]}`
+	body := `{"groups":[
+	  {"displayName":"Gemini Models","buckets":[
+	    {"window":"5h","remainingFraction":0.75,"disabled":false},
+	    {"window":"weekly","remainingFraction":0.5,"disabled":false}]},
+	  {"displayName":"Claude and GPT models","buckets":[
+	    {"window":"5h","disabled":false},
+	    {"window":"weekly","remainingFraction":0.9,"disabled":true}]}]}`
 	meters, headline, err := ParseAgyQuota([]byte(body))
 	if err != nil {
 		t.Fatal(err)
@@ -45,31 +48,80 @@ func TestAgyBuckets(t *testing.T) {
 	}
 }
 
-// The refresh command runs once, through the injected runner, and the JSON is
-// read from the stubbed endpoint. Nothing here touches the real agy CLI or Google.
-func TestAgyFetchRefreshesThenReads(t *testing.T) {
-	var got []string
-	fake := &execx.Fake{Responses: map[string]execx.Result{"agy models": {Out: "ok\n"}}}
+// ResetsAt must come through from the real payload's resetTime field, the
+// same way claude.go's meters carry it.
+func TestAgyBucketsCarriesResetsAt(t *testing.T) {
+	body := `{"groups":[{"displayName":"Gemini Models","buckets":[
+	  {"window":"5h","remainingFraction":0.9,"resetTime":"2026-09-19T17:28:18Z"}]}]}`
+	meters, _, err := ParseAgyQuota([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meters) != 1 || meters[0].ResetsAt == nil {
+		t.Fatalf("meters = %+v, want a parsed ResetsAt", meters)
+	}
+	want := time.Date(2026, 9, 19, 17, 28, 18, 0, time.UTC)
+	if !meters[0].ResetsAt.Equal(want) {
+		t.Errorf("ResetsAt = %v, want %v", meters[0].ResetsAt, want)
+	}
+}
+
+// An unrecognized group displayName still produces a meter (falls back to
+// the raw name as both id and label) rather than silently dropping the group.
+func TestAgyBucketsFallsBackForAnUnknownGroup(t *testing.T) {
+	body := `{"groups":[{"displayName":"Something New","buckets":[
+	  {"window":"5h","remainingFraction":1}]}]}`
+	meters, _, err := ParseAgyQuota([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meters) != 1 || meters[0].Label != "Something New 5h" || meters[0].ID != "Something New_5h" {
+		t.Fatalf("meters = %+v", meters)
+	}
+}
+
+// The real endpoint is called directly with the OAuth token from ReadToken —
+// no local agy process, no CSRF token, and no project ID.
+func TestAgyFetchCallsTheRealEndpointShape(t *testing.T) {
+	var gotHeaders http.Header
+	var gotPath, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"buckets":[{"group":"Gemini Models","window":"5h","remainingFraction":0.75,"disabled":false}]}`))
+		gotHeaders = r.Header
+		gotPath = r.URL.Path
+		buf := make([]byte, 64)
+		n, _ := r.Body.Read(buf)
+		gotBody = string(buf[:n])
+		w.Write([]byte(`{"groups":[{"displayName":"Gemini Models","buckets":[
+		  {"window":"5h","remainingFraction":0.75}]}]}`))
 	}))
 	t.Cleanup(srv.Close)
-	a := &Agy{BaseURL: srv.URL, HTTP: srv.Client(), UserHome: t.TempDir(),
-		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			got = append(got, name+" "+strings.Join(args, " "))
-			return fake.Runner()(ctx, name, args...)
+	a := &Agy{BaseURL: srv.URL, HTTP: srv.Client(),
+		ReadToken: func(context.Context) (string, time.Time, error) {
+			return "oauth-secret", time.Date(2026, 9, 19, 18, 0, 0, 0, time.UTC), nil
 		},
-		Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) },
+		Now: func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) },
 		Log: func(string, ...any) {}}
 	meters, headline, err := a.Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != "agy models" {
-		t.Fatalf("commands run = %v, want exactly [agy models]", got)
-	}
 	if len(meters) != 1 || meters[0].UsedPct != 25 || headline != "gemini_5h" {
 		t.Fatalf("meters = %+v, headline = %q", meters, headline)
+	}
+	if gotPath != "/v1internal:retrieveUserQuotaSummary" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if got := gotHeaders.Get("Authorization"); got != "Bearer oauth-secret" {
+		t.Errorf("authorization = %q", got)
+	}
+	if got := gotHeaders.Get("Content-Type"); got != "application/json" {
+		t.Errorf("content-type = %q", got)
+	}
+	if got := gotHeaders.Get("User-Agent"); got != "antigravity" {
+		t.Errorf("user-agent = %q", got)
+	}
+	if gotBody != "{}" {
+		t.Errorf("body = %q, want the empty-object request agy's real endpoint accepts", gotBody)
 	}
 }
 
@@ -79,31 +131,73 @@ func TestAgyFetchFailsOnANonOKStatus(t *testing.T) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(srv.Close)
-	a := &Agy{BaseURL: srv.URL, HTTP: srv.Client(), UserHome: t.TempDir(),
-		Now: func() time.Time { return time.Now() }, Log: func(string, ...any) {}}
+	a := &Agy{BaseURL: srv.URL, HTTP: srv.Client(),
+		ReadToken: func(context.Context) (string, time.Time, error) {
+			return "oauth-secret", time.Date(2026, 9, 19, 18, 0, 0, 0, time.UTC), nil
+		},
+		Now: func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) },
+		Log: func(string, ...any) {}}
 	if _, _, err := a.Fetch(context.Background()); err == nil {
 		t.Fatal("a 503 must be an error")
 	}
 }
 
-// A failing refresh is not fatal: the endpoint may still hold usable numbers, and
-// losing the whole meter set because a CLI hiccuped is worse than stale data.
-func TestAgyFetchSurvivesAFailingRefresh(t *testing.T) {
+// A 401 is agy's real signal that the cached OAuth token was rejected —
+// confirmed live against the real endpoint with a missing/bad token.
+func TestAgyFetchFailsOnA401(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"buckets":[{"group":"Gemini Models","window":"5h","remainingFraction":0.5,"disabled":false}]}`))
+		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(srv.Close)
-	a := &Agy{BaseURL: srv.URL, HTTP: srv.Client(), UserHome: t.TempDir(),
-		Run: func(context.Context, string, ...string) ([]byte, error) {
-			return nil, errors.New("exit 1")
+	a := &Agy{BaseURL: srv.URL, HTTP: srv.Client(),
+		ReadToken: func(context.Context) (string, time.Time, error) {
+			return "oauth-secret", time.Date(2026, 9, 19, 18, 0, 0, 0, time.UTC), nil
 		},
-		Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) },
+		Now: func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) },
 		Log: func(string, ...any) {}}
-	meters, _, err := a.Fetch(context.Background())
-	if err != nil {
-		t.Fatalf("a failing `agy models` must not fail the fetch: %v", err)
+	if _, _, err := a.Fetch(context.Background()); err == nil {
+		t.Fatal("a 401 must be an error")
 	}
-	if len(meters) != 1 {
-		t.Fatalf("meters = %+v", meters)
+}
+
+// An expired token must fail the fetch before any network call is made — the
+// same rule claude.go's Fetch applies to its own cached token.
+func TestAgyFetchFailsOnAnExpiredToken(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	t.Cleanup(srv.Close)
+	a := &Agy{BaseURL: srv.URL, HTTP: srv.Client(),
+		ReadToken: func(context.Context) (string, time.Time, error) {
+			return "oauth-secret", time.Date(2026, 9, 19, 11, 0, 0, 0, time.UTC), nil
+		},
+		Now: func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) },
+		Log: func(string, ...any) {}}
+	if _, _, err := a.Fetch(context.Background()); err == nil {
+		t.Fatal("an expired token must be an error")
+	}
+	if called {
+		t.Error("an expired token must not reach the network")
+	}
+}
+
+// A ReadToken failure (the oauth token file missing, unreadable, or
+// malformed) must propagate rather than being swallowed.
+func TestAgyFetchPropagatesAReadTokenFailure(t *testing.T) {
+	a := &Agy{BaseURL: "http://unused.invalid",
+		ReadToken: func(context.Context) (string, time.Time, error) {
+			return "", time.Time{}, errors.New("agy oauth token: no such file")
+		},
+		Now: func() time.Time { return time.Now() }, Log: func(string, ...any) {}}
+	if _, _, err := a.Fetch(context.Background()); err == nil {
+		t.Fatal("a ReadToken failure must propagate")
+	}
+}
+
+func TestAgyFetchRefusesWithNoReadToken(t *testing.T) {
+	a := &Agy{BaseURL: "http://unused.invalid", Now: func() time.Time { return time.Now() }}
+	if _, _, err := a.Fetch(context.Background()); err == nil {
+		t.Fatal("a nil ReadToken must be an error, not a panic")
 	}
 }

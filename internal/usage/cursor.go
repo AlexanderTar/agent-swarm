@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,6 +46,24 @@ type cursorBody struct {
 	BillingCycleEnd string          `json:"billingCycleEnd"`
 }
 
+// parseCursorResetsAt reads billingCycleEnd, which the real endpoint sends
+// as a quoted epoch-milliseconds string (Connect-RPC's JSON encoding of a
+// protobuf int64), not RFC3339 — confirmed live against api2.cursor.sh:
+// {"billingCycleStart":"1787303346000","billingCycleEnd":"1789981746000",...},
+// where billingCycleEnd decoded to 2 days after the probe and
+// billingCycleStart to 31 days before it, matching a monthly cycle.
+func parseCursorResetsAt(s string) *time.Time {
+	if s == "" {
+		return nil
+	}
+	ms, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return nil
+	}
+	t := time.UnixMilli(ms)
+	return &t
+}
+
 // ParseCursorUsage is §13's rule: one meter for the auto pool, one for API,
 // both resetting at billingCycleEnd.
 func ParseCursorUsage(body []byte) ([]Meter, string, error) {
@@ -52,7 +71,7 @@ func ParseCursorUsage(body []byte) ([]Meter, string, error) {
 	if err := json.Unmarshal(body, &b); err != nil {
 		return nil, "", fmt.Errorf("cursor: %w", err)
 	}
-	resetsAt := parseResetsAt(b.BillingCycleEnd)
+	resetsAt := parseCursorResetsAt(b.BillingCycleEnd)
 	meters := []Meter{
 		{ID: "cursor_auto", Label: "Monthly Auto", Window: "monthly", UsedPct: b.PlanUsage.AutoPercentUsed, ResetsAt: resetsAt},
 		{ID: "cursor_api", Label: "Monthly API", Window: "monthly", UsedPct: b.PlanUsage.APIPercentUsed, ResetsAt: resetsAt},

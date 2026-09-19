@@ -105,6 +105,70 @@ func TestPollerSkipsDisabledAgentsAndKeepsOldMeters(t *testing.T) {
 	}
 }
 
+// A source's own Retry-After (RateLimitError) must be honored: re-fetching
+// before it elapses only extends the real endpoint's penalty further (this
+// is the exact bug that left Claude's usage permanently 429ing — every 300s
+// poll re-tripped a bucket that wanted ~17 minutes to clear). This proves
+// the poller skips the network call until the backoff clears, then resumes.
+func TestPollerHonorsASourcesRetryAfterBackoff(t *testing.T) {
+	d := dbtest.Open(t)
+	at := newClk()
+	calls := map[runtime.AgentKind]int{}
+	rateLimited := true
+	src := Source{Agent: runtime.Claude, Fetch: func(ctx context.Context) ([]Meter, string, error) {
+		calls[runtime.Claude]++
+		if rateLimited {
+			return nil, "", &RateLimitError{Err: errors.New("claude: status 429"), RetryAfter: 10 * time.Minute}
+		}
+		return []Meter{{ID: "five_hour", Label: "5h", Window: "5h", UsedPct: 5}}, "five_hour", nil
+	}}
+	p := &Poller{DB: d, Events: events.New(d, at.Now),
+		Settings: settingsWithEnabled(t, d, runtime.Claude), Now: at.Now,
+		Jitter:  func(d time.Duration) time.Duration { return d },
+		Sources: []Source{src}, Log: func(string, ...any) {}}
+	ctx := context.Background()
+
+	if err := p.pollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if calls[runtime.Claude] != 1 {
+		t.Fatalf("first poll: fetched %d times, want 1", calls[runtime.Claude])
+	}
+
+	// Still inside the 10-minute backoff: must not hit the source again.
+	at.Advance(5 * time.Minute)
+	if err := p.pollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if calls[runtime.Claude] != 1 {
+		t.Fatalf("mid-backoff poll: fetched %d times, want still 1 (no re-fetch before Retry-After elapses)", calls[runtime.Claude])
+	}
+	snaps, err := p.Snapshots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snaps[0].Error == "" || !strings.Contains(snaps[0].Error, "retry in") {
+		t.Fatalf("error = %q, want it to mention the remaining backoff", snaps[0].Error)
+	}
+
+	// Past the backoff, and the source has recovered: fetch resumes and succeeds.
+	rateLimited = false
+	at.Advance(6 * time.Minute)
+	if err := p.pollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if calls[runtime.Claude] != 2 {
+		t.Fatalf("post-backoff poll: fetched %d times, want 2", calls[runtime.Claude])
+	}
+	snaps, err = p.Snapshots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps[0].Meters) == 0 {
+		t.Fatal("the recovered fetch should have stored real meters")
+	}
+}
+
 // S-4: the default must be inert. If this ever returns sources, every `make e2e`
 // run reads the user's login keychain and calls api.anthropic.com.
 func TestSourcesFromEnvIsEmptyUnlessExplicitlyEnabled(t *testing.T) {

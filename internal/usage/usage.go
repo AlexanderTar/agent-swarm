@@ -7,10 +7,14 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -53,6 +57,20 @@ type Error struct{ Code, Message string }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
 
+// RateLimitError is a source-imposed backoff (a 429 with a Retry-After) as
+// opposed to a plain fetch failure — the poller must wait it out rather than
+// retrying on the normal poll/manual-refresh cadence, or every retry before
+// it elapses just extends the real endpoint's penalty further.
+type RateLimitError struct {
+	Err        error
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("%s, retry in %s", e.Err.Error(), e.RetryAfter.Round(time.Second))
+}
+func (e *RateLimitError) Unwrap() error { return e.Err }
+
 func httpClientOrDefault(c *http.Client) *http.Client {
 	if c != nil {
 		return c
@@ -63,14 +81,18 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 // DefaultSources builds the four real sources: Claude and Cursor read their
 // OAuth token from the login keychain via run (`security
 // find-generic-password`); Codex talks to `codex app-server` via start, with
-// UserHome's rollout files as a fallback; Agy refreshes then reads its local
-// quota endpoint. Nothing here is called by any test in this package — the
-// only thing exercised is that the slice has four entries (S-4).
+// UserHome's rollout files as a fallback; Agy reads its own OAuth token
+// cache from disk and calls Antigravity's real remote quota endpoint
+// directly (verified live 2026-09-19 — see agy.go's Agy doc comment for the
+// full trace and why it must be the "daily" host, not "prod"). Nothing here
+// is called by any test in this package — the only thing exercised is that
+// the slice has four entries (S-4).
 func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, start execx.Starter) []Source {
-	claudeSrc := &Claude{BaseURL: "https://api.anthropic.com", HTTP: hc, Version: "2.1.274",
+	claudeSrc := &Claude{BaseURL: "https://api.anthropic.com", HTTP: hc, Version: claudeCLIVersion(run),
 		ReadToken: claudeKeychainToken(run, "Claude Code-credentials", user), Now: time.Now}
 	codexSrc := &Codex{Start: start, UserHome: userHome, Timeout: 10 * time.Second, Now: time.Now}
-	agySrc := &Agy{BaseURL: "http://127.0.0.1:4315", HTTP: hc, UserHome: userHome, Run: run, Now: time.Now}
+	agySrc := &Agy{BaseURL: "https://daily-cloudcode-pa.googleapis.com", HTTP: hc,
+		ReadToken: agyOAuthToken(userHome), Now: time.Now}
 	cursorSrc := &Cursor{BaseURL: "https://api2.cursor.sh", HTTP: hc,
 		ReadToken: cursorKeychainToken(run, "cursor-access-token", "cursor-user"), Now: time.Now}
 	return []Source{
@@ -102,6 +124,61 @@ func keychainBytes(run execx.Runner, service, account string) func(context.Conte
 			return nil, fmt.Errorf("usage: no runner configured for the %s keychain entry", service)
 		}
 		return run(ctx, "security", "find-generic-password", "-s", service, "-a", account, "-w")
+	}
+}
+
+// agyOAuthToken reads agy's own OAuth token cache directly from disk — agy
+// has no keychain entry; it (and the Antigravity app) persist
+// {token: {access_token, expiry}} to
+// UserHome/.gemini/antigravity-cli/antigravity-oauth-token and rewrite it
+// whenever they run. No refresh_token exchange is attempted: that needs
+// Antigravity's own OAuth client secret, which lives only inside the
+// compiled `agy` binary — out of this package's reach. A stale token simply
+// surfaces as the ordinary expired-token fetch error.
+// ponytail: no refresh; the file is rewritten by agy/Antigravity.app itself.
+func agyOAuthToken(userHome string) func(context.Context) (string, time.Time, error) {
+	path := filepath.Join(userHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+	return func(context.Context) (string, time.Time, error) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("usage: agy oauth token: %w", err)
+		}
+		var parsed struct {
+			Token struct {
+				AccessToken string `json:"access_token"`
+				Expiry      string `json:"expiry"`
+			} `json:"token"`
+		}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			return "", time.Time{}, fmt.Errorf("usage: agy oauth token: %w", err)
+		}
+		expiresAt, err := time.Parse(time.RFC3339Nano, parsed.Token.Expiry)
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("usage: agy oauth token: expiry: %w", err)
+		}
+		return parsed.Token.AccessToken, expiresAt, nil
+	}
+}
+
+// claudeCLIVersion runs the real, installed `claude --version` fresh on
+// every call — the same command and the same "first whitespace field" parse
+// as internal/adapter/claude.go's Installed() — so the User-Agent this
+// package sends always matches the CLI actually on this machine instead of
+// a version string that goes stale the next time `claude` updates itself.
+func claudeCLIVersion(run execx.Runner) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		if run == nil {
+			return "", fmt.Errorf("usage: no runner configured to detect the claude CLI version")
+		}
+		out, err := run(ctx, "claude", "--version")
+		if err != nil {
+			return "", err
+		}
+		fields := strings.Fields(string(out))
+		if len(fields) == 0 {
+			return "", fmt.Errorf("usage: claude --version produced no output")
+		}
+		return fields[0], nil
 	}
 }
 
@@ -184,6 +261,18 @@ type Poller struct {
 	Jitter   func(time.Duration) time.Duration
 	Sources  []Source
 	Log      func(format string, args ...any)
+
+	backoffMu sync.Mutex
+	backoff   map[runtime.AgentKind]time.Time
+
+	// fetchMu serializes every fetchAndStore call (pollOnce's loop, plus any
+	// concurrent RefreshOne from an HTTP request) so the automatic poll loop
+	// and a manual refresh can never both pass the backoff check and fire a
+	// real request to the same source at once — confirmed live: exactly that
+	// race sent Claude's oauth/usage endpoint two near-simultaneous requests
+	// right as a backoff cleared, and its own real Retry-After escalated
+	// from ~2m to ~59m in response.
+	fetchMu sync.Mutex
 }
 
 const minManualRefreshGap = 60 * time.Second
@@ -257,12 +346,47 @@ func (p *Poller) pollOnce(ctx context.Context) error {
 	return nil
 }
 
+func (p *Poller) backoffUntil(kind runtime.AgentKind) time.Time {
+	p.backoffMu.Lock()
+	defer p.backoffMu.Unlock()
+	return p.backoff[kind]
+}
+
+func (p *Poller) setBackoff(kind runtime.AgentKind, until time.Time) {
+	p.backoffMu.Lock()
+	defer p.backoffMu.Unlock()
+	if p.backoff == nil {
+		p.backoff = map[runtime.AgentKind]time.Time{}
+	}
+	p.backoff[kind] = until
+}
+
 func (p *Poller) fetchAndStore(ctx context.Context, src Source) error {
+	// Serializes the whole check-fetch-store sequence: without this, the
+	// automatic poll loop and a manual refresh (a concurrent HTTP request)
+	// can both pass the backoff check for the same source in the same
+	// instant and each fire a real network request — the exact race that
+	// hit Claude's real endpoint twice and made its own penalty worse.
+	p.fetchMu.Lock()
+	defer p.fetchMu.Unlock()
 	now := p.now()
+	// A source's own Retry-After (RateLimitError) must be honored: hitting
+	// it again before that elapses only extends its penalty further, so
+	// this skips the network call entirely rather than retrying on the
+	// normal poll/manual-refresh cadence.
+	if until := p.backoffUntil(src.Agent); now.Before(until) {
+		return p.storeFailure(ctx, src.Agent, now,
+			fmt.Errorf("%s: rate limited, retry in %s", src.Agent, until.Sub(now).Round(time.Second)))
+	}
 	meters, headline, err := src.Fetch(ctx)
 	if err != nil {
+		var rl *RateLimitError
+		if errors.As(err, &rl) {
+			p.setBackoff(src.Agent, now.Add(rl.RetryAfter))
+		}
 		return p.storeFailure(ctx, src.Agent, now, err)
 	}
+	p.setBackoff(src.Agent, time.Time{})
 	return p.storeSuccess(ctx, src.Agent, now, meters, headline)
 }
 

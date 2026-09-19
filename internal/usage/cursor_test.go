@@ -11,8 +11,11 @@ import (
 )
 
 func TestCursorMapsAutoAndAPI(t *testing.T) {
+	// billingCycleEnd's real shape, confirmed live against api2.cursor.sh: a
+	// quoted epoch-milliseconds string (Connect-RPC's JSON encoding of a
+	// protobuf int64), not RFC3339. 1790812800000 ms = 2026-10-01T00:00:00Z.
 	body := `{"planUsage":{"autoPercentUsed":63.5,"apiPercentUsed":12},
-	          "billingCycleEnd":"2026-10-01T00:00:00Z"}`
+	          "billingCycleEnd":"1790812800000"}`
 	meters, headline, err := ParseCursorUsage([]byte(body))
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +62,7 @@ func TestCursorFetchSendsTheContentTypeAndBodyTheRealEndpointRequires(t *testing
 			w.WriteHeader(http.StatusUnsupportedMediaType)
 			return
 		}
-		w.Write([]byte(`{"planUsage":{"autoPercentUsed":1,"apiPercentUsed":1},"billingCycleEnd":"2026-10-01T00:00:00Z"}`))
+		w.Write([]byte(`{"planUsage":{"autoPercentUsed":1,"apiPercentUsed":1},"billingCycleEnd":"1790812800000"}`))
 	}))
 	defer srv.Close()
 	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
@@ -81,7 +84,7 @@ func TestCursorNeverCallsTheForbiddenEndpointAndChecksTheJWT(t *testing.T) {
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		w.Write([]byte(`{"planUsage":{"autoPercentUsed":1,"apiPercentUsed":1},"billingCycleEnd":"2026-10-01T00:00:00Z"}`))
+		w.Write([]byte(`{"planUsage":{"autoPercentUsed":1,"apiPercentUsed":1},"billingCycleEnd":"1790812800000"}`))
 	}))
 	defer srv.Close()
 	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)

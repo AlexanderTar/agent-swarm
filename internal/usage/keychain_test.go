@@ -3,6 +3,8 @@ package usage
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -75,6 +77,38 @@ func TestClaudeKeychainTokenRefusesWithNoRunner(t *testing.T) {
 	}
 }
 
+// claudeCLIVersion must read the real, currently-installed CLI, not a
+// hardcoded string — this is that real shape, "<version> (Claude Code)",
+// confirmed live via `claude --version` (2.1.278 (Claude Code)).
+func TestClaudeCLIVersionParsesTheRealOutputShape(t *testing.T) {
+	fake := &execx.Fake{Responses: map[string]execx.Result{
+		`claude --version`: {Out: "2.1.278 (Claude Code)"},
+	}}
+	v, err := claudeCLIVersion(fake.Runner())(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != "2.1.278" {
+		t.Fatalf("version = %q, want 2.1.278", v)
+	}
+}
+
+func TestClaudeCLIVersionPropagatesARunnerFailure(t *testing.T) {
+	_, err := claudeCLIVersion(func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("exec: \"claude\": executable file not found in $PATH")
+	})(context.Background())
+	if err == nil {
+		t.Fatal("a runner failure must propagate, not fall back to a guess")
+	}
+}
+
+func TestClaudeCLIVersionRefusesWithNoRunner(t *testing.T) {
+	_, err := claudeCLIVersion(nil)(context.Background())
+	if err == nil {
+		t.Fatal("a nil runner must be an error, not a panic")
+	}
+}
+
 // Real "cursor-access-token" keychain items are a bare JWT string, not JSON.
 // This is a real, valid three-segment JWT whose payload segment decodes to
 // {"exp": 1789900000} (unrelated header/signature segments, ignored).
@@ -122,5 +156,62 @@ func TestCursorKeychainTokenRefusesWithNoRunner(t *testing.T) {
 	read := cursorKeychainToken(nil, "cursor-access-token", "cursor-user")
 	if _, _, err := read(context.Background()); err == nil {
 		t.Fatal("a nil runner must be an error, not a panic")
+	}
+}
+
+func writeAgyOAuthFile(t *testing.T, home, body string) {
+	t.Helper()
+	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "antigravity-oauth-token"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Real antigravity-oauth-token files nest the access token and expiry under
+// "token" (confirmed live: {token: {access_token, refresh_token, expiry,
+// token_type}, auth_method, id_token}), with expiry as an RFC3339 timestamp
+// carrying fractional seconds and a zone offset, e.g.
+// "2026-09-19T14:16:07.847113+01:00" — not epoch millis like Claude's.
+func TestAgyOAuthTokenParsesTheRealNestedShape(t *testing.T) {
+	home := t.TempDir()
+	writeAgyOAuthFile(t, home, `{"token":{"access_token":"ya29.fake",
+	  "refresh_token":"1//fake","expiry":"2026-09-19T14:16:07.847113+01:00",
+	  "token_type":"Bearer"},"auth_method":"consumer","id_token":"eyFake"}`)
+	token, expiresAt, err := agyOAuthToken(home)(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "ya29.fake" {
+		t.Fatalf("token = %q", token)
+	}
+	want, _ := time.Parse(time.RFC3339Nano, "2026-09-19T14:16:07.847113+01:00")
+	if !expiresAt.Equal(want) {
+		t.Fatalf("expiresAt = %v, want %v", expiresAt, want)
+	}
+}
+
+func TestAgyOAuthTokenPropagatesAMissingFile(t *testing.T) {
+	_, _, err := agyOAuthToken(t.TempDir())(context.Background())
+	if err == nil {
+		t.Fatal("a missing token file must be an error")
+	}
+}
+
+func TestAgyOAuthTokenRejectsBadJSON(t *testing.T) {
+	home := t.TempDir()
+	writeAgyOAuthFile(t, home, "not json")
+	if _, _, err := agyOAuthToken(home)(context.Background()); err == nil {
+		t.Fatal("malformed token file contents must be an error")
+	}
+}
+
+func TestAgyOAuthTokenRejectsAnUnparsableExpiry(t *testing.T) {
+	home := t.TempDir()
+	writeAgyOAuthFile(t, home, `{"token":{"access_token":"ya29.fake","expiry":"not-a-timestamp"}}`)
+	if _, _, err := agyOAuthToken(home)(context.Background()); err == nil {
+		t.Fatal("an unparsable expiry must be an error, not a silently zero-valued (forever-expired-looking) time")
 	}
 }
