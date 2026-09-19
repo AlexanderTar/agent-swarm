@@ -847,10 +847,13 @@ func TestNoAckAfterTwoMinutesWithNoCheckpointNotifiesAndRelaysOnce(t *testing.T)
 		t.Fatalf("notification = %+v", n)
 	}
 	var relays int
+	// wake_class = 'immediate' matters as much as the row existing: a
+	// deferred relay just sits in the inbox until the parent happens to
+	// sync, which the orchestrator skill tells it never to do on its own.
 	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
-		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+		AND payload_json LIKE '%"event":"no_ack"%' AND wake_class = 'immediate'`, orch.ID).Scan(&relays)
 	if relays != 1 {
-		t.Fatalf("relay no_ack count = %d, want exactly one", relays)
+		t.Fatalf("relay no_ack count = %d, want exactly one immediate relay", relays)
 	}
 
 	// another tick, still stuck: must not repeat
