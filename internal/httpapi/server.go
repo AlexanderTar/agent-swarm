@@ -16,29 +16,59 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/hook"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
+	"github.com/AlexanderTar/agent-swarm/internal/mcpserver"
+	"github.com/AlexanderTar/agent-swarm/internal/notify"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/usage"
 )
 
 type Deps struct {
-	Version      string
-	Token        string // daemon token (~/.swarm/run/daemon.token)
-	DB           *db.DB
-	Events       *events.Store
-	Items        *items.Store
-	Repos        *repos.Service
-	Settings     *settings.Store
-	Catalog      *catalog.Service
-	KB           *kb.Index
+	Version  string
+	Token    string // daemon token (~/.swarm/run/daemon.token)
+	DB       *db.DB
+	Events   *events.Store
+	Items    *items.Store
+	Repos    *repos.Service
+	Settings *settings.Store
+	Catalog  *catalog.Service
+	KB       *kb.Index
+	RT       *runtime.Store
+	Notify   *notify.Service
+	Usage    *usage.Poller
+	Advisor  *advisor.Service
+	MCP      *mcpserver.Server
+	// Hook is the daemon-side /hook/{agent}/{event} decision handler (P2 T34).
+	// The brief's Task 31 field list for Deps didn't name this one, but the
+	// hook route has no other way to reach it; noted in the batch report.
+	Hook *hook.Handler
+	// Dev enables POST /api/dev/seed (Task 39). Set from daemonConfig.Dev,
+	// which only `make dev --dev` and a test's devDaemon pass; the launchd
+	// job never does. It gates nothing else.
+	Dev          bool
 	WriteTimeout time.Duration                    // per SSE write; 0 means 10 s
 	PingInterval time.Duration                    // SSE keep-alive; 0 means 25 s
 	Log          func(format string, args ...any) // nil means log.Printf
 	Web          http.Handler                     // board for non-/api paths; nil means not built yet
+
+	// Run is how this package starts a process. The only one it starts is the
+	// Ghostty fallback for POST /api/agents/{name}/terminal (§10.4), and without
+	// an injected runner that test launches the real Ghostty against the real
+	// tmux server (R11). Nil is a programming error, like runtime.Store.BaseEnv:
+	// New panics with "httpapi: Run is not wired" rather than defaulting to
+	// execx.Run.
+	Run execx.Runner
+	// After is the 1.5 s menubar-reply timer, injected so the test does not sleep.
+	After func(time.Duration) <-chan time.Time
 }
 
 type authMode int
@@ -63,6 +93,17 @@ type Server struct {
 	idemMu    sync.Mutex
 	done      chan struct{} // closed by Close: ends the SSE streams
 	closeOnce sync.Once
+
+	// termMu guards termWait (the pending Ghostty-fallback cancel channel per
+	// agent name) and termFallback (agents that already needed the fallback
+	// once, so later opens skip straight to it, P0-6).
+	termMu       sync.Mutex
+	termWait     map[string]chan struct{}
+	termFallback map[string]bool
+
+	// mcpHandler is built once in New from Deps.MCP (P2 T34): /mcp resolves the
+	// caller itself (session token or daemon token) and delegates to it.
+	mcpHandler http.Handler
 }
 
 // Close ends every open SSE stream. They never go idle on their own, so
@@ -74,6 +115,12 @@ func New(d Deps) *Server {
 	if d.Token == "" {
 		panic("httpapi: empty daemon token")
 	}
+	if d.Run == nil {
+		panic("httpapi: Run is not wired")
+	}
+	if d.After == nil {
+		d.After = time.After
+	}
 	if d.WriteTimeout == 0 {
 		d.WriteTimeout = 10 * time.Second
 	}
@@ -84,7 +131,11 @@ func New(d Deps) *Server {
 		d.Log = log.Printf
 	}
 	s := &Server{Deps: d, mux: http.NewServeMux(), done: make(chan struct{})}
-	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes())
+	if d.MCP != nil {
+		s.mcpHandler = d.MCP.Handler(s.resolveMCPCaller)
+	}
+	s.routes = slices.Concat(s.baseRoutes(), s.itemRoutes(), s.configRoutes(),
+		s.runtimeRoutes(), s.spawnRoutes(), s.requestRoutes(), s.agentIORoutes(), s.devRoutes())
 	for _, rt := range s.routes {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.wrap(rt))
 	}
@@ -157,17 +208,37 @@ func isLocal(r *http.Request) bool {
 	return h == "127.0.0.1" || h == "localhost" || h == "::1"
 }
 
-// sessionAuth maps a session bearer token to a live session id (Phase 2 /hook routes).
-func (s *Server) sessionAuth(r *http.Request) (string, bool) {
+// sessionCaller is what a session token resolves to (P2 T34).
+type sessionCaller struct {
+	SessionID, AgentID, AgentName string
+	Kind                          runtime.AgentKind
+	Role                          runtime.Role
+	AdvisorMode                   string
+	SpikeOrchestrator             bool
+}
+
+// sessionAuth maps a session bearer token to its live session. An older
+// generation's token is not live (§10.5, P0-10): the generation check is what
+// makes a token a resumed/retried session left behind fail closed, not just a
+// session whose row happens to still say "running".
+func (s *Server) sessionAuth(r *http.Request) (sessionCaller, bool) {
 	tok := bearer(r)
 	if tok == "" {
-		return "", false
+		return sessionCaller{}, false
 	}
 	sum := sha256.Sum256([]byte(tok))
-	var id string
-	err := s.DB.QueryRowContext(r.Context(), `SELECT id FROM sessions WHERE token_hash = ?
-		AND state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`, hex.EncodeToString(sum[:])).Scan(&id)
-	return id, err == nil
+	var c sessionCaller
+	var itemType string
+	err := s.DB.QueryRowContext(r.Context(), `SELECT ses.id, a.id, a.name, a.kind, a.role, COALESCE(a.advisor_mode, ''), i.type
+		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
+		WHERE ses.token_hash = ? AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
+		AND ses.generation = (SELECT MAX(s2.generation) FROM sessions s2 WHERE s2.agent_id = ses.agent_id)`,
+		hex.EncodeToString(sum[:])).Scan(&c.SessionID, &c.AgentID, &c.AgentName, &c.Kind, &c.Role, &c.AdvisorMode, &itemType)
+	if err != nil {
+		return sessionCaller{}, false
+	}
+	c.SpikeOrchestrator = c.Role == runtime.RoleOrchestrator && itemType == "spike"
+	return c, true
 }
 
 type apiError struct {

@@ -1,0 +1,49 @@
+
+[38;5;3m⚠ MCP startup incomplete (failed: notion)[39m
+
+[2m• [0mI’ll do the requested tool/command sequence, then I’ll keep the reply brief.
+
+[1m[38;5;2m•[0m [1mCalled[0m [38;5;6mswarm[39m.[38;5;6mswarm_ping[39m([2m{}[0m)
+[2m  └ pong session=ses_codex token_file_set=True[0m
+
+[1m[38;5;2m•[0m [1mRan[0m [38;2;137;180;250mecho[38;2;205;214;244m hi[39m
+[2m  └ hi[0m
+
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• [0mREADY
+
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+[1m› [0mRun the shell command: echo deny-test. Report what happened in one line.
+
+
+[2m• [0mRunning that quick shell check now.
+
+[1m[38;5;1m•[0m Blocked by hook
+  └ Swarm P0: shell blocked. Say BLOCKED-SEEN.
+
+[2m• [0mThe shell command was blocked by a PreToolUse hook: [38;5;6mSwarm P0: shell blocked[39m; BLOCKED-SEEN.
+
+[1m[38;5;1m•[0m Blocked by hook
+  └ Swarm P0: before stopping, reply with STOP-CONTINUE-42.
+
+[2m• [0mSTOP-CONTINUE-42
+
+
+[1;2m› [0mSwarm has 1 pending message for you. Please reply with a one-line acknowledgement that mentions the word inbox.
+
+
+[2m• [0mAcknowledged: I see there is one pending message in the inbox.
+
+
+[1;2m› [0mswarm: inbox
+
+
+[2m• [0mAcknowledged: one pending Swarm message is in the inbox.
+
+
+[1m›[0m [2mAsk Codex to do anything[0m
+
+  [38;2;246;226;183mgpt-5.5 low[2m[39m · [0m[38;2;171;223;167m/private/tmp/claude-p0-repos/codex/r1[2m[39m · [0m[38;2;156;222;211mRun ping and echo command[39m

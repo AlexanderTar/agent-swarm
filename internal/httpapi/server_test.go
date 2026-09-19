@@ -10,11 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/web"
 )
 
 func samplePath(pattern string) string {
@@ -130,7 +132,8 @@ func TestErrorEnvelope(t *testing.T) {
 		{errors.New("disk on fire"), 500, "internal", "Something went wrong.", ""},
 	}
 	var logged []string
-	s := New(Deps{Token: "t", Log: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }})
+	s := New(Deps{Token: "t", Run: (&execx.Fake{}).Runner(),
+		Log: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }})
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
 		s.writeErr(rec, c.err)
@@ -225,8 +228,8 @@ func TestSessionAuth(t *testing.T) {
 	live := seedSessionToken(t, e, "live-token", "running")
 	seedSessionToken(t, e, "old-token", "completed")
 	h := e.s.wrap(route{method: "GET", pattern: "/hook/x", auth: authSession, h: func(w http.ResponseWriter, r *http.Request) {
-		id, _ := e.s.sessionAuth(r)
-		w.Write([]byte(id))
+		c, _ := e.s.sessionAuth(r)
+		w.Write([]byte(c.SessionID))
 	}})
 	for token, want := range map[string]int{"live-token": 200, "old-token": 401, daemonToken: 401, "": 401} {
 		req := httptest.NewRequest("POST", "/hook/x", nil)
@@ -242,4 +245,31 @@ func TestSessionAuth(t *testing.T) {
 			t.Errorf("session id = %q", rec.Body.String())
 		}
 	}
+}
+
+// The board (Task 29's web.Handler/web.Dist) is mounted at "/" for every
+// non-/api path once Deps.Web is wired (cmd/swarm daemon.go, P3 Task 33).
+func TestBoardServedAtRoot(t *testing.T) {
+	e := newEnv(t, func(d *Deps) { d.Web = web.Handler(web.Dist) })
+	status, body := e.call("GET", "/kanban", nil, "")
+	if status != 200 {
+		t.Fatalf("GET /kanban = %d", status)
+	}
+	if !strings.Contains(string(body), "<!doctype html") && !strings.Contains(string(body), "<!DOCTYPE html") {
+		t.Errorf("GET /kanban body doesn't look like the board's index.html: %s", body)
+	}
+	if ct := e.headOf(t, "/kanban"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("GET /kanban content-type = %q", ct)
+	}
+}
+
+func (e *env) headOf(t *testing.T, path string) string {
+	t.Helper()
+	req, _ := http.NewRequest("GET", e.srv.URL+path, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.Header.Get("Content-Type")
 }

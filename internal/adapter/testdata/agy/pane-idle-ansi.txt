@@ -1,0 +1,50 @@
+
+
+      [38;5;179m▄[38;5;208m[48;5;208m▀[38;5;203m[48;5;209m▀[49m▄[39m        [1m[38;5;111mAntigravity CLI 1.2.5[0m
+     [38;5;149m[48;5;113m▀[38;5;143m[48;5;107m▀[38;5;173m[48;5;173m▀[38;5;209m[48;5;209m▀[38;5;203m[48;5;167m▀▀[39m[49m       [38;5;<email> (Google AI Pro)[39m
+    [38;5;107m[48;5;113m▀[38;5;71m[48;5;72m▀[38;5;72m[48;5;68m▀[38;5;67m[49m▀[38;5;103m▀[38;5;98m[48;5;68m▀[38;5;97m[48;5;62m▀[38;5;132m[48;5;97m▀[39m[49m      [38;5;109mGemini 3.8 Flash (Low)[39m
+   [38;5;78m▄[48;5;74m▀[38;5;73m▀[39m[49m    [38;5;68m[48;5;69m▀▀[49m▄[39m     [38;5;109m/tmp/claude-p0-repos/agy/r1[39m
+  [38;5;75m▄[38;5;79m[48;5;75m▀[38;5;75m[49m▀[39m      [38;5;69m▀[48;5;69m▀[49m▄[39m
+
+[38;5;238m────────────────────────────────────────────────────────────[39m
+[1m[38;5;111m> Call the swarm_ping MCP tool (server swarmp0), then run the shell command: echo hi. Then reply READY plus any secret word you were told, and wait.[0m
+
+[38;5;114m●[39m [1m[38;5;221mRead[0m[38;5;146m(~/.gemini/antigravity-cli/mcp/swarmp0/swarm_ping.json)[39m
+[38;5;114m●[39m [1m[38;5;221mswarmp0/swarm_ping[0m[38;5;146m(Ping swarmp0)[39m
+[38;5;114m●[39m [1m[38;5;221mBash[0m[38;5;146m(echo hi)[39m [38;5;146m(ctrl+o to expand)[39m
+
+  [38;5;189mREADY[39m
+
+[38;5;238m────────────────────────────────────────────────────────────[39m
+[1m[38;5;111m> What secret word were you told earlier (if any)? Then run the shell command: echo deny-test and report what happened in one line.[0m
+
+[38;5;210m●[39m [1m[38;5;221mBash[0m[38;5;146m(echo deny-test)[39m [38;5;146m(ctrl+o to expand)[39m
+
+  [38;5;189mI was not told[39m [38;5;189many secret[39m [38;5;189mword earlier; running [38;5;111m[48;5;236mecho deny-test[38;5;189m[49m was denied by the pre-tool hook with the message: "Swarm[39m [38;5;189mP0: shell blocked. Say BLOCKED-SEEN."[39m
+
+  [38;5;189mSTOP-CONTINUE-42[39m
+
+[38;5;238m────────────────────────────────────────────────────────────[39m
+[1m[38;5;111m> What code word were you given, if any? One line.[0m
+
+[38;5;238m────────────────────────────────────────────────────────────[39m
+[1m[38;5;111m> P0 marker (userMessage): the code word is WALRUS.[0m
+
+  [38;5;189mThe code word is WALRUS.[39m
+
+[38;5;238m────────────────────────────────────────────────────────────[39m
+[1m[38;5;111m> Is there a Swarm note in your context right now? If so quote its harbor word. One line.[0m
+
+  [38;5;189mThe harbor word is HERON.[39m
+
+[38;5;238m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;5;111m>[39m
+[38;5;238m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;5;109m? for shortcuts[39m                                                                                                                                                                   [38;5;109mGemini 3.8 Flash · low
+
+
+
+
+
+
+

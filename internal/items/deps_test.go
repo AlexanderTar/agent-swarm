@@ -1,9 +1,11 @@
 package items_test
 
 import (
+	"database/sql"
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -233,5 +235,44 @@ func TestGraph(t *testing.T) {
 	}
 	if _, err := s.Graph(ctx, b.Key, "galaxy", 1); code(err) != items.CodeBadRequest {
 		t.Fatalf("bad scope: %v", err)
+	}
+}
+
+// R6: Task 19 materializes a tree inside one transaction and needs the
+// dependency edge written on that same tx, not on a nested one.
+func TestAddDepTxRunsInsideACallersTransaction(t *testing.T) {
+	st := newStore(t)
+	ep := mk(t, st, items.Epic, "", "Ship it")
+	a := mk(t, st, items.Story, ep.Key, "First")
+	b := mk(t, st, items.Story, ep.Key, "Second")
+	err := st.DB.Tx(ctx, func(tx *sql.Tx) error {
+		return st.AddDepTx(ctx, tx, b.Key, a.Key, items.Daemon())
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedBy, _, err := st.Deps(ctx, b.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blockedBy) != 1 || blockedBy[0].Key != a.Key {
+		t.Fatalf("Deps(%s) blockedBy = %v, want [%s]", b.Key, blockedBy, a.Key)
+	}
+}
+
+// And the cycle check must still refuse, on the caller's tx.
+func TestAddDepTxStillRefusesACycle(t *testing.T) {
+	st := newStore(t)
+	ep := mk(t, st, items.Epic, "", "Ship it")
+	a := mk(t, st, items.Story, ep.Key, "First")
+	b := mk(t, st, items.Story, ep.Key, "Second")
+	if err := st.AddDep(ctx, b.Key, a.Key, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+	err := st.DB.Tx(ctx, func(tx *sql.Tx) error {
+		return st.AddDepTx(ctx, tx, a.Key, b.Key, items.Daemon())
+	})
+	if err == nil || !strings.Contains(err.Error(), items.CycleMessage) {
+		t.Fatalf("AddDepTx cycle = %v, want %q", err, items.CycleMessage)
 	}
 }

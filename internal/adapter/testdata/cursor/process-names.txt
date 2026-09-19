@@ -1,0 +1,1 @@
+pane_current_command=node ps_comm=/Users/alexandertar/.local/bin/cursor-agent

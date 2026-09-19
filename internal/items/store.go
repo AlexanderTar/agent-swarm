@@ -20,6 +20,12 @@ type Store struct {
 	DB     *db.DB
 	Events *events.Store
 	Now    func() time.Time
+
+	// RequestPayload builds the request.* SSE payload (contracts R5). nil keeps the
+	// interim {id, kind, item, state} form.
+	RequestPayload func(ctx context.Context, tx *sql.Tx, id string) (any, error)
+	// RequestOpened raises the §17.5 notification for a request the daemon opened.
+	RequestOpened func(ctx context.Context, tx *sql.Tx, id string) error
 }
 
 type CreateInput struct {
@@ -122,6 +128,11 @@ func (s *Store) getTx(ctx context.Context, q querier, key string) (Item, error) 
 		return it, errf(CodeNotFound, "No item %s.", key)
 	}
 	return it, err
+}
+
+// GetTx reads an item inside the caller's own write transaction (D48).
+func (s *Store) GetTx(ctx context.Context, tx *sql.Tx, key string) (Item, error) {
+	return s.getTx(ctx, tx, key)
 }
 
 func (s *Store) getByID(ctx context.Context, q querier, id string) (Item, error) {
@@ -308,63 +319,71 @@ func (s *Store) Get(ctx context.Context, key string) (Item, error) {
 
 func (s *Store) Update(ctx context.Context, key string, p Patch, by Actor) (Item, error) {
 	var out Item
-	err := s.write(ctx, func(tx *sql.Tx) error {
-		it, err := s.getTx(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		if err := s.orchestratorScope(ctx, tx, by, it); err != nil {
-			return err
-		}
-		if p.Revision != it.Revision {
-			return errf(CodeConflict, StaleRevision)
-		}
-		if p.Title != nil || p.Brief != nil || p.Acceptance != nil || p.Priority != nil {
-			if p.Title != nil {
-				it.Title = strings.TrimSpace(*p.Title)
-			}
-			if p.Brief != nil {
-				it.Brief = *p.Brief
-			}
-			if p.Acceptance != nil {
-				it.Acceptance = *p.Acceptance
-			}
-			if p.Priority != nil {
-				it.Priority = *p.Priority
-			}
-			if err := validateText(it.Title, it.Brief); err != nil {
-				return err
-			}
-			if err := validPriority(it.Priority); err != nil {
-				return err
-			}
-			res, err := tx.ExecContext(ctx, `UPDATE items SET title = ?, brief = ?, acceptance_json = ?, priority = ?,
-				revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
-				it.Title, it.Brief, jsonList(it.Acceptance), it.Priority, db.Millis(s.Now()), it.ID, p.Revision)
-			if err != nil {
-				return err
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				return errf(CodeConflict, StaleRevision)
-			}
-			if err := s.changed(ctx, tx, it); err != nil {
-				return err
-			}
-		}
-		if p.Status != nil {
-			if _, err := s.TransitionTx(ctx, tx, it.Key, *p.Status, by); err != nil {
-				return err
-			}
-		} else if err := s.ReconcileTx(ctx, tx, it.Key); err != nil {
-			return err
-		}
-		out, err = s.getByID(ctx, tx, it.ID)
+	err := s.write(ctx, func(tx *sql.Tx) (err error) {
+		out, err = s.UpdateTx(ctx, tx, key, p, by)
 		return err
 	})
 	if err != nil {
 		return Item{}, err
 	}
 	return s.Get(ctx, out.Key)
+}
+
+// UpdateTx is Update on a transaction the caller owns (mirrors CreateTx and
+// AddDepTx). Like AddDepTx, it does not wake SSE subscribers itself: the
+// caller commits its own tx and is responsible for calling Events.Notify()
+// after that commit.
+func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, by Actor) (Item, error) {
+	it, err := s.getTx(ctx, tx, key)
+	if err != nil {
+		return Item{}, err
+	}
+	if err := s.orchestratorScope(ctx, tx, by, it); err != nil {
+		return Item{}, err
+	}
+	if p.Revision != it.Revision {
+		return Item{}, errf(CodeConflict, StaleRevision)
+	}
+	if p.Title != nil || p.Brief != nil || p.Acceptance != nil || p.Priority != nil {
+		if p.Title != nil {
+			it.Title = strings.TrimSpace(*p.Title)
+		}
+		if p.Brief != nil {
+			it.Brief = *p.Brief
+		}
+		if p.Acceptance != nil {
+			it.Acceptance = *p.Acceptance
+		}
+		if p.Priority != nil {
+			it.Priority = *p.Priority
+		}
+		if err := validateText(it.Title, it.Brief); err != nil {
+			return Item{}, err
+		}
+		if err := validPriority(it.Priority); err != nil {
+			return Item{}, err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE items SET title = ?, brief = ?, acceptance_json = ?, priority = ?,
+			revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
+			it.Title, it.Brief, jsonList(it.Acceptance), it.Priority, db.Millis(s.Now()), it.ID, p.Revision)
+		if err != nil {
+			return Item{}, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return Item{}, errf(CodeConflict, StaleRevision)
+		}
+		if err := s.changed(ctx, tx, it); err != nil {
+			return Item{}, err
+		}
+	}
+	if p.Status != nil {
+		if _, err := s.TransitionTx(ctx, tx, it.Key, *p.Status, by); err != nil {
+			return Item{}, err
+		}
+	} else if err := s.ReconcileTx(ctx, tx, it.Key); err != nil {
+		return Item{}, err
+	}
+	return s.getByID(ctx, tx, it.ID)
 }
 
 // Ancestors returns the chain from the top-level item down to the parent.

@@ -90,17 +90,23 @@ public struct IconButton: View {
     }
 }
 
-/// A Picker bound to a String value with PickerOption choices.
+/// A Picker bound to a String value with PickerOption choices. Pass `icon` to render an
+/// `AgentIcon` next to each option's label (used for agent pickers); other pickers leave it nil.
 public struct OptionPicker: View {
     let title: String
     let options: [PickerOption]
     let value: String
+    let icon: ((PickerOption) -> IconName?)?
     let onChange: (String) -> Void
 
-    public init(_ title: String, options: [PickerOption], value: String, onChange: @escaping (String) -> Void) {
+    public init(
+        _ title: String, options: [PickerOption], value: String,
+        icon: ((PickerOption) -> IconName?)? = nil, onChange: @escaping (String) -> Void
+    ) {
         self.title = title
         self.options = options
         self.value = value
+        self.icon = icon
         self.onChange = onChange
     }
 
@@ -110,7 +116,13 @@ public struct OptionPicker: View {
             if !options.contains(where: { $0.value == value }) {
                 Text(value.isEmpty ? " " : value).tag(value)
             }
-            ForEach(options) { Text($0.label).tag($0.value) }
+            ForEach(options) { option in
+                if let iconName = icon?(option) {
+                    Label { Text(option.label) } icon: { AgentIcon(iconName) }.tag(option.value)
+                } else {
+                    Text(option.label).tag(option.value)
+                }
+            }
         }
     }
 }

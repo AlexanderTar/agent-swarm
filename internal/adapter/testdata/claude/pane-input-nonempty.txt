@@ -1,0 +1,49 @@
+
+ ▐▛███▛█   Claude Code v2.1.274
+▝▜██████▀  Haiku 4.5 · Claude Max
+  ▝▝ ▝▝    /private/tmp/claude-p0-repos/claude/r1
+
+▎ Channels (experimental) messages from server:swarm inject directly in this session · restart without --dangerously-load-development-channels to stop
+
+❯ Call the swarm_ping MCP tool, then run the shell command: echo hi. Then reply READY plus any secret or second words you were told, and wait.
+
+⏺ I'll search for the swarm_ping tool and then run the echo command.
+
+  Called swarm, ran 1 shell command
+
+⏺ READY PELICAN WALRUS
+
+  Waiting.
+
+✻ Worked for 9s · done 12:33
+
+← swarm: Swarm: you have 1 pending message. Reply with the exact phr…
+
+⏺ CHANNEL-OK-7731
+
+✻ Cogitated for 1s · done 12:33
+
+❯ Run the shell command: echo deny-test. Report what happened in one line.
+
+  Ran 1 shell command
+
+⏺ BLOCKED-SEEN
+
+⏺ Ran 2 stop hooks
+  ⎿  Stop hook error: Swarm P0: before stopping, reply with STOP-CONTINUE-42.
+
+⏺ STOP-CONTINUE-42
+
+✻ Sautéed for 4s · done 12:34
+
+❯ swarm: inbox
+
+⏺ INBOX-ACK
+
+✻ Churned for 1s · done 12:34
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Agent swarm big refactor ─
+❯ half typed by human
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 4.5 high | none | (no PR) | /private/tmp/claude-p0-repos/claude/r1 | ▓▓░░░░░░░░ 49k/200k (24%)                 Session: 66.0% 25m | Weekly: 53.0% 1d10h25m
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

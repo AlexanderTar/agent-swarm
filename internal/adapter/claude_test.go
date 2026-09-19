@@ -1,0 +1,380 @@
+package adapter
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
+)
+
+// pane and anyMatch are shared by all four adapter test files (R2). They are
+// declared here, in a file this task owns; Tasks 7, 8 and 9 use them and declare
+// the dependency. They are not in adapter_test.go because Task 3 has no fixtures.
+func pane(t *testing.T, agent, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", agent, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// anyMatch reports whether any of res matches s. §11.3's process-name check is
+// "does any of these patterns appear", which RE2 cannot express as one pattern
+// without alternation over user-supplied strings.
+func anyMatch(res []*regexp.Regexp, s string) bool {
+	for _, re := range res {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeSpec(t *testing.T, d Deps) Spec {
+	t.Helper()
+	return Spec{AgentName: "login-form-coder", SessionID: "ses_01", Token: "tok",
+		// Never :7777 in a fixture, even one that only asserts an argv string (F3):
+		// the day someone writes a test that dials Store.DaemonURL, it must not be
+		// the user's live daemon. 17778 is the e2e port, which is never up in a unit test.
+		DaemonURL: "http://127.0.0.1:17778", Model: "claude-sonnet-5", Effort: "high",
+		Cwd: t.TempDir(), Kickoff: "You are swarm agent login-form-coder (coder) for TASK-101: x.",
+		Bin: "/usr/local/bin/swarm"}
+}
+
+// §11.1: the -- is required, or the variadic channels flag swallows the prompt.
+func TestClaudeLaunchArgv(t *testing.T) {
+	d := testDeps(t)
+	a := newClaude(d)
+	l, err := a.Launch(claudeSpec(t, d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(l.Argv, " ")
+	for _, want := range []string{
+		"claude", "--session-id", "-n login-form-coder", "--model claude-sonnet-5",
+		"--effort high", "--dangerously-skip-permissions", "--mcp-config",
+		"--settings", "--dangerously-load-development-channels server:swarm",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv is missing %q:\n%s", want, joined)
+		}
+	}
+	if l.Argv[len(l.Argv)-2] != "--" {
+		t.Fatalf("-- must come right before the kickoff text: %v", l.Argv[len(l.Argv)-3:])
+	}
+	if l.Argv[len(l.Argv)-1] != claudeSpec(t, d).Kickoff {
+		t.Fatalf("last argument = %q", l.Argv[len(l.Argv)-1])
+	}
+	// the session token never appears in argv (§6.4)
+	if strings.Contains(joined, "tok") {
+		t.Fatalf("the token leaked into argv: %s", joined)
+	}
+	// a valid UUID is preassigned
+	uuid := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	for i, v := range l.Argv {
+		if v == "--session-id" && !uuid.MatchString(l.Argv[i+1]) {
+			t.Fatalf("--session-id %q is not a UUIDv4", l.Argv[i+1])
+		}
+	}
+}
+
+func TestClaudeLaunchOmitsEffortWhenUnset(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	s.Effort = ""
+	l, err := newClaude(d).Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(l.Argv, " "), "--effort") {
+		t.Fatal("no --effort flag when the level is the agent default (L27)")
+	}
+}
+
+func TestClaudeSettingsJSONTurnsAttributionOffAndListsEveryHook(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	s.AdvisorModel = "fable"
+	l, err := newClaude(d).Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	for i, v := range l.Argv {
+		if v == "--settings" {
+			path = l.Argv[i+1]
+		}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Attribution struct {
+			Commit string `json:"commit"`
+			PR     string `json:"pr"`
+		} `json:"attribution"`
+		IncludeCoAuthoredBy *bool          `json:"includeCoAuthoredBy"`
+		AdvisorModel        string         `json:"advisorModel"`
+		Hooks               map[string]any `json:"hooks"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("settings JSON does not parse: %v\n%s", err, b)
+	}
+	if cfg.Attribution.Commit != "" || cfg.Attribution.PR != "" {
+		t.Errorf("attribution must be empty strings (L23): %s", b)
+	}
+	if cfg.IncludeCoAuthoredBy == nil || *cfg.IncludeCoAuthoredBy {
+		t.Errorf("includeCoAuthoredBy must be false: %s", b)
+	}
+	if cfg.AdvisorModel != "fable" {
+		t.Errorf("advisorModel = %q", cfg.AdvisorModel)
+	}
+	for _, e := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "Stop"} {
+		if _, ok := cfg.Hooks[e]; !ok {
+			t.Errorf("hook %s missing: %s", e, b)
+		}
+	}
+	if strings.Contains(string(b), "advisorModel\": \"\"") {
+		t.Error("advisorModel must be left out when there is no native advisor")
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("settings file mode = %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestClaudeMCPConfigJSON(t *testing.T) {
+	d := testDeps(t)
+	l, err := newClaude(d).Launch(claudeSpec(t, d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	for i, v := range l.Argv {
+		if v == "--mcp-config" {
+			path = l.Argv[i+1]
+		}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Servers map[string]struct {
+			Type    string            `json:"type"`
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	sw := cfg.Servers["swarm"]
+	if sw.Type != "stdio" || sw.Command != "/usr/local/bin/swarm" || strings.Join(sw.Args, " ") != "mcp" {
+		t.Fatalf("mcp config = %s", b)
+	}
+	if len(sw.Env) != 0 {
+		t.Fatalf("claude inherits the environment; no env block belongs here (P0-1): %s", b)
+	}
+}
+
+// §11.1 resume: the same flags, --resume <uuid>, and no --session-id.
+// UNVERIFIED: no probe ran a claude resume (see the Phase 0 note in the header).
+func TestClaudeResumeUsesTheProviderID(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	s.ProviderSessionID = "11111111-2222-4333-8444-555555555555"
+	s.Kickoff = "resuming"
+	l, err := newClaude(d).Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(l.Argv, " ")
+	if !strings.Contains(joined, "--resume "+s.ProviderSessionID) {
+		t.Fatalf("argv = %s", joined)
+	}
+	if strings.Contains(joined, "--session-id") {
+		t.Fatal("--resume and --session-id are mutually exclusive")
+	}
+	if l.Argv[len(l.Argv)-2] != "--" || l.Argv[len(l.Argv)-1] != "resuming" {
+		t.Fatalf("tail = %v", l.Argv[len(l.Argv)-2:])
+	}
+}
+
+// P0-4: the native binary's pane command is its version; a shell is rejected (I2).
+func TestClaudeProcessNames(t *testing.T) {
+	a := newClaude(testDeps(t))
+	accept := []string{"2.1.274", "claude"}
+	reject := []string{"zsh", "bash", "node", "", "claude-code"}
+	for _, s := range accept {
+		if !anyMatch(a.ProcessNames(), s) {
+			t.Errorf("%q should be accepted", s)
+		}
+	}
+	for _, s := range reject {
+		if anyMatch(a.ProcessNames(), s) {
+			t.Errorf("%q should be rejected", s)
+		}
+	}
+}
+
+// P0-4: claude keeps drawing the empty prompt while busy, so the spinner decides.
+func TestClaudeIdleAgainstTheCapturedPanes(t *testing.T) {
+	a := newClaude(testDeps(t))
+	if !a.Idle(pane(t, "claude", "pane-idle.txt")) {
+		t.Error("pane-idle.txt should be idle")
+	}
+	if a.Idle(pane(t, "claude", "pane-busy.txt")) {
+		t.Error("pane-busy.txt draws the empty prompt but must not count as idle")
+	}
+	if a.Idle(pane(t, "claude", "pane-input-nonempty.txt")) {
+		t.Error("typed input is not idle")
+	}
+}
+
+// §11.1, P0-4: trust defaults to "No, exit", so the keys are Down then Enter, and
+// they are only sent when the trust line is on screen.
+func TestClaudeStartupDialogs(t *testing.T) {
+	a := newClaude(testDeps(t))
+	ds := a.StartupDialogs()
+	if len(ds) != 2 {
+		t.Fatalf("want 2 dialogs, got %d", len(ds))
+	}
+	trust, dev := ds[0], ds[1]
+	screen := pane(t, "claude", "pane-dialog-trust.txt")
+	if !trust.Match.MatchString(screen) {
+		t.Error("the trust dialog pattern does not match its screen")
+	}
+	if trust.Require == nil || !trust.Require.MatchString(screen) {
+		t.Error("the trust dialog must require the 'Yes, I trust this folder' line")
+	}
+	if strings.Join(trust.Keys, ",") != "Down,Enter" {
+		t.Fatalf("trust keys = %v", trust.Keys)
+	}
+	if trust.Fail {
+		t.Error("the trust dialog is answered, not failed")
+	}
+	devScreen := pane(t, "claude", "pane-dialog-devchannels.txt")
+	if !dev.Match.MatchString(devScreen) || strings.Join(dev.Keys, ",") != "Enter" {
+		t.Fatalf("dev-channels dialog = %+v", dev)
+	}
+	// neither pattern fires on an idle screen or on a child of a trusted folder
+	for _, f := range []string{"pane-idle.txt", "pane-child-of-trusted-no-dialog.txt"} {
+		s := pane(t, "claude", f)
+		if trust.Match.MatchString(s) || dev.Match.MatchString(s) {
+			t.Errorf("a dialog pattern matched %s", f)
+		}
+	}
+}
+
+func TestClaudeHookOutputShapes(t *testing.T) {
+	a := newClaude(testDeps(t))
+	ctxOut, _ := a.HookOutput("SessionStart", HookDecision{Context: "T"})
+	if string(ctxOut) != `{"hookSpecificOutput":{"additionalContext":"T","hookEventName":"SessionStart"}}` {
+		t.Errorf("context output = %s", ctxOut)
+	}
+	deny, _ := a.HookOutput("PreToolUse", HookDecision{Block: true, Reason: "R"})
+	var m map[string]map[string]string
+	json.Unmarshal(deny, &m)
+	if m["hookSpecificOutput"]["permissionDecision"] != "deny" ||
+		m["hookSpecificOutput"]["permissionDecisionReason"] != "R" ||
+		m["hookSpecificOutput"]["hookEventName"] != "PreToolUse" {
+		t.Errorf("deny output = %s", deny)
+	}
+	stop, _ := a.HookOutput("Stop", HookDecision{Block: true, Reason: "R"})
+	if string(stop) != `{"decision":"block","reason":"R"}` {
+		t.Errorf("stop output = %s", stop)
+	}
+	empty, _ := a.HookOutput("PostToolUse", HookDecision{})
+	if len(empty) != 0 {
+		t.Errorf("an empty decision prints nothing, got %s", empty)
+	}
+}
+
+func TestClaudeParseHook(t *testing.T) {
+	a := newClaude(testDeps(t))
+	in, err := a.ParseHook("SessionStart", []byte(`{"session_id":"abc","source":"compact","cwd":"/w","transcript_path":"/t.jsonl","hook_event_name":"SessionStart"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ProviderSessionID != "abc" || in.Source != "compact" || in.Cwd != "/w" || in.TranscriptPath != "/t.jsonl" {
+		t.Fatalf("parsed = %+v", in)
+	}
+	tool, _ := a.ParseHook("PreToolUse", []byte(`{"session_id":"abc","tool_name":"mcp__swarm__swarm_sync"}`))
+	if !tool.IsSwarmTool {
+		t.Error("mcp__swarm__* is a swarm tool")
+	}
+	sh, _ := a.ParseHook("PreToolUse", []byte(`{"session_id":"abc","tool_name":"Bash","tool_input":{"command":"git commit -m x"}}`))
+	if sh.IsSwarmTool || sh.Command != "git commit -m x" || sh.ToolName != "Bash" {
+		t.Fatalf("shell parse = %+v", sh)
+	}
+}
+
+// The native wake goes through the channel bridge: the daemon publishes, the shim delivers.
+func TestClaudeWakePublishes(t *testing.T) {
+	d := testDeps(t)
+	var got string
+	d.PublishWake = func(ctx context.Context, sessionID, notice string) error {
+		got = sessionID + "|" + notice
+		return nil
+	}
+	ok, err := newClaude(d).Wake(context.Background(), WakeTarget{SessionID: "ses_1", Notice: "N"})
+	if err != nil || !ok {
+		t.Fatalf("Wake = %v, %v", ok, err)
+	}
+	if got != "ses_1|N" {
+		t.Fatalf("published %q", got)
+	}
+}
+
+// UNVERIFIED: §11.1 states `claude auth status --json` with `.loggedIn`; no probe
+// ran it. Preflight treats an unparseable result as "not signed in" (fail safe).
+func TestClaudeChecks(t *testing.T) {
+	d := testDeps(t)
+	fake := &execx.Fake{Responses: map[string]execx.Result{
+		"claude --version":          {Out: "2.1.274 (Claude Code)\n"},
+		"claude auth status --json": {Out: `{"loggedIn":true}`},
+	}}
+	d.Run = fake.Runner()
+	a := newClaude(d)
+	if v, ok := a.Installed(context.Background()); !ok || v != "2.1.274" {
+		t.Fatalf("Installed = %q, %v", v, ok)
+	}
+	if err := a.AuthOK(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fake.Responses["claude auth status --json"] = execx.Result{Out: `{"loggedIn":false}`}
+	err := a.AuthOK(context.Background())
+	if err == nil || err.Error() != "Claude isn't signed in. Run `claude /login` in a terminal." {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestClaudeSuperpowersCheckNeedsBrainstormingAndTDD(t *testing.T) {
+	d := testDeps(t)
+	base := filepath.Join(d.UserHome, ".claude", "plugins", "cache", "obra", "superpowers", "6.3.0", "skills")
+	if err := os.MkdirAll(filepath.Join(base, "brainstorming"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(base, "brainstorming", "SKILL.md"), []byte("x"), 0o644)
+	a := newClaude(d)
+	if a.SuperpowersInstalled() {
+		t.Fatal("the TDD skill is also required (§23.3 install coverage)")
+	}
+	os.MkdirAll(filepath.Join(base, "test-driven-development"), 0o755)
+	os.WriteFile(filepath.Join(base, "test-driven-development", "SKILL.md"), []byte("x"), 0o644)
+	if !a.SuperpowersInstalled() {
+		t.Fatal("both skills present should pass")
+	}
+}

@@ -67,11 +67,12 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 	return s.getByID(ctx, tx, it.ID)
 }
 
-// staleAccepts stales every live acceptance or close approval on it. The kinds
-// only exist on roots and spikes, so no type check is needed.
+// staleAccepts stales every live acceptance or approval request on it (P1 carry:
+// the spike approval kinds joined the list when their writers landed in P2).
 func (s *Store) staleAccepts(ctx context.Context, tx *sql.Tx, it Item) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id, kind FROM requests WHERE item_id = ?
-		AND state IN ('open', 'approved') AND kind IN ('accept_epic', 'accept_fix', 'close_spike')`, it.ID)
+		AND state IN ('open', 'approved') AND kind IN ('accept_epic', 'accept_fix', 'close_spike',
+		'approve_section', 'approve_plan', 'approve_report')`, it.ID)
 	if err != nil {
 		return err
 	}
@@ -102,9 +103,25 @@ func (s *Store) resolveStale(ctx context.Context, tx *sql.Tx, id, kind, itemKey 
 	if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE id = ?`, id); err != nil {
 		return err
 	}
-	_, err := s.Events.Append(ctx, tx, events.RequestResolved,
-		map[string]string{"id": id, "kind": kind, "item": itemKey, "state": "stale"})
+	payload, err := s.requestPayload(ctx, tx, id, kind, itemKey, "stale")
+	if err != nil {
+		return err
+	}
+	_, err = s.Events.Append(ctx, tx, events.RequestResolved, payload)
 	return err
+}
+
+// requestPayload prefers the injected full-Request builder (R5) and falls back to
+// the interim shape when it is unset.
+func (s *Store) requestPayload(ctx context.Context, tx *sql.Tx, id, kind, itemKey, state string) (any, error) {
+	if s.RequestPayload != nil {
+		return s.RequestPayload(ctx, tx, id)
+	}
+	m := map[string]string{"id": id, "kind": kind, "item": itemKey}
+	if state != "" {
+		m["state"] = state
+	}
+	return m, nil
 }
 
 func (s *Store) check(ctx context.Context, tx *sql.Tx, it Item, to Status, by Actor) error {
@@ -470,8 +487,17 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 		VALUES (?, ?, ?, ?, 'open', ?, ?)`, id, kind, it.ID, prompt, string(binding), db.Millis(s.Now())); err != nil {
 		return err
 	}
-	_, err = s.Events.Append(ctx, tx, events.RequestOpened, map[string]string{"id": id, "kind": kind, "item": it.Key})
-	return err
+	payload, err := s.requestPayload(ctx, tx, id, kind, it.Key, "open")
+	if err != nil {
+		return err
+	}
+	if _, err := s.Events.Append(ctx, tx, events.RequestOpened, payload); err != nil {
+		return err
+	}
+	if s.RequestOpened != nil {
+		return s.RequestOpened(ctx, tx, id)
+	}
+	return nil
 }
 
 func (s *Store) reconcileSpike(ctx context.Context, tx *sql.Tx, it Item) error {

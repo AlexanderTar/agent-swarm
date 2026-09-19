@@ -11,7 +11,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
 const MaxAge = 24 * time.Hour
@@ -20,18 +20,18 @@ const MaxAge = 24 * time.Hour
 const notInstalled = "not installed"
 
 type AgentCatalogEntry struct {
-	Kind             runtime.AgentKind `json:"kind"`
-	Installed        bool              `json:"installed"`
-	Version          string            `json:"version"`
-	AuthOK           bool              `json:"auth_ok"`
-	AuthError        string            `json:"auth_error"`
-	Superpowers      bool              `json:"superpowers"`
-	Models           []CatalogModel    `json:"models"`
-	DefaultModel     string            `json:"default_model"`
-	CatalogSource    string            `json:"catalog_source"`
-	CatalogFetchedAt time.Time         `json:"catalog_fetched_at"`
-	CatalogStale     bool              `json:"catalog_stale"`
-	CatalogError     string            `json:"catalog_error"`
+	Kind             kinds.AgentKind `json:"kind"`
+	Installed        bool            `json:"installed"`
+	Version          string          `json:"version"`
+	AuthOK           bool            `json:"auth_ok"`
+	AuthError        string          `json:"auth_error"`
+	Superpowers      bool            `json:"superpowers"`
+	Models           []CatalogModel  `json:"models"`
+	DefaultModel     string          `json:"default_model"`
+	CatalogSource    string          `json:"catalog_source"`
+	CatalogFetchedAt time.Time       `json:"catalog_fetched_at"`
+	CatalogStale     bool            `json:"catalog_stale"`
+	CatalogError     string          `json:"catalog_error"`
 }
 
 // MarshalJSON emits catalog_fetched_at as integer ms (0 when never fetched) and models as [] rather than null.
@@ -62,7 +62,7 @@ type row struct {
 	fetched, attempted                int64
 }
 
-func (s *Service) load(ctx context.Context, kind runtime.AgentKind) (row, bool, error) {
+func (s *Service) load(ctx context.Context, kind kinds.AgentKind) (row, bool, error) {
 	var r row
 	err := s.DB.QueryRowContext(ctx, `SELECT agent_version, models_json, COALESCE(default_model, ''), source,
 		COALESCE(error, ''), fetched_at, attempted_at FROM model_catalog WHERE agent_kind = ?`, kind).
@@ -73,7 +73,7 @@ func (s *Service) load(ctx context.Context, kind runtime.AgentKind) (row, bool, 
 	return r, err == nil, err
 }
 
-func (s *Service) save(ctx context.Context, kind runtime.AgentKind, r row) error {
+func (s *Service) save(ctx context.Context, kind kinds.AgentKind, r row) error {
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO model_catalog (agent_kind, agent_version, models_json, default_model,
 		source, error, fetched_at, attempted_at) VALUES (?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, ?)
 		ON CONFLICT(agent_kind) DO UPDATE SET agent_version = excluded.agent_version, models_json = excluded.models_json,
@@ -162,7 +162,7 @@ func (s *Service) refreshOne(ctx context.Context, f Fetcher, force bool) error {
 	}
 	next := old
 	next.version, next.err, next.attempted = version, ferr.Error(), now
-	if next.models == "[]" && f.Kind() == runtime.Claude {
+	if next.models == "[]" && f.Kind() == kinds.Claude {
 		next.models, next.source = modelsJSON(ClaudeAliasFallback()), "aliases"
 	}
 	return s.save(ctx, f.Kind(), next)
@@ -175,7 +175,7 @@ func (s *Service) logf(format string, args ...any) {
 }
 
 // ModelsFor returns the cached models and default for kind (nil when never fetched).
-func (s *Service) ModelsFor(ctx context.Context, kind runtime.AgentKind) ([]CatalogModel, string, error) {
+func (s *Service) ModelsFor(ctx context.Context, kind kinds.AgentKind) ([]CatalogModel, string, error) {
 	r, found, err := s.load(ctx, kind)
 	if err != nil || !found {
 		return nil, "", err
@@ -189,8 +189,8 @@ func (s *Service) ModelsFor(ctx context.Context, kind runtime.AgentKind) ([]Cata
 }
 
 // Installed lists agents whose binary was found at the last refresh, in fetcher order.
-func (s *Service) Installed(ctx context.Context) []runtime.AgentKind {
-	var out []runtime.AgentKind
+func (s *Service) Installed(ctx context.Context) []kinds.AgentKind {
+	var out []kinds.AgentKind
 	for _, f := range s.Fetchers {
 		if r, found, _ := s.load(ctx, f.Kind()); found && r.err != notInstalled {
 			out = append(out, f.Kind())

@@ -1,0 +1,8 @@
+{
+  "name": "_default",
+  "draw": "idle",
+  "steps": [
+    {"tool": "swarm_sync", "args": {}},
+    {"sleep_ms": 600000}
+  ]
+}

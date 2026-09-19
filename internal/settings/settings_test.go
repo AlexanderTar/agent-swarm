@@ -10,35 +10,35 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
 var ctx = context.Background()
 
 var all5 = []string{"low", "medium", "high", "xhigh", "max"}
 
-var catalogs = map[runtime.AgentKind][]catalog.CatalogModel{
-	runtime.Claude: {
+var catalogs = map[kinds.AgentKind][]catalog.CatalogModel{
+	kinds.Claude: {
 		{ID: "claude-fable-5-1", Aliases: []string{"fable"}, Label: "Claude Fable 5.1", Efforts: all5, AdvisorCapable: true},
 		{ID: "claude-opus-5", Aliases: []string{"opus"}, Label: "Claude Opus 5", Efforts: all5, AdvisorCapable: true},
 		{ID: "claude-sonnet-5", Aliases: []string{"sonnet"}, Label: "Claude Sonnet 5", Efforts: all5, AdvisorCapable: true},
 		{ID: "claude-haiku-4-5-20251001", Aliases: []string{"haiku"}, Label: "Claude Haiku 4.5", Efforts: []string{}},
 	},
-	runtime.Codex: {{ID: "gpt-6-astra", Label: "GPT-6-Astra", Efforts: []string{"low", "medium", "high"}, DefaultEffort: "medium"}},
+	kinds.Codex: {{ID: "gpt-6-astra", Label: "GPT-6-Astra", Efforts: []string{"low", "medium", "high"}, DefaultEffort: "medium"}},
 }
 
-func newStore(t *testing.T, installed ...runtime.AgentKind) *Store {
+func newStore(t *testing.T, installed ...kinds.AgentKind) *Store {
 	d := dbtest.Open(t)
 	now := func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }
 	return &Store{DB: d, Events: events.New(d, now), Now: now,
-		ModelsFor: func(_ context.Context, k runtime.AgentKind) ([]catalog.CatalogModel, string, error) {
+		ModelsFor: func(_ context.Context, k kinds.AgentKind) ([]catalog.CatalogModel, string, error) {
 			def := ""
-			if k == runtime.Codex {
+			if k == kinds.Codex {
 				def = "gpt-6-astra"
 			}
 			return catalogs[k], def, nil
 		},
-		Installed: func(context.Context) []runtime.AgentKind { return installed },
+		Installed: func(context.Context) []kinds.AgentKind { return installed },
 	}
 }
 
@@ -52,22 +52,22 @@ func verr(t *testing.T, err error, msg string) {
 
 func TestDefaults(t *testing.T) {
 	d := Defaults(nil)
-	if !slices.Equal(d.EnabledAgents, []runtime.AgentKind{runtime.Claude}) {
+	if !slices.Equal(d.EnabledAgents, []kinds.AgentKind{kinds.Claude}) {
 		t.Errorf("enabled = %v", d.EnabledAgents)
 	}
-	d = Defaults([]runtime.AgentKind{runtime.Agy, runtime.Claude, runtime.Codex})
-	if !slices.Equal(d.EnabledAgents, []runtime.AgentKind{runtime.Claude, runtime.Codex, runtime.Agy}) {
+	d = Defaults([]kinds.AgentKind{kinds.Agy, kinds.Claude, kinds.Codex})
+	if !slices.Equal(d.EnabledAgents, []kinds.AgentKind{kinds.Claude, kinds.Codex, kinds.Agy}) {
 		t.Errorf("enabled = %v", d.EnabledAgents)
 	}
-	want := map[runtime.Role]RoleDefault{
-		runtime.RoleOrchestrator: {runtime.Claude, "opus", ""},
-		runtime.RoleCoder:        {runtime.Claude, "sonnet", ""},
-		runtime.RoleReviewer:     {runtime.Claude, "opus", ""},
-		runtime.RoleUIReviewer:   {runtime.Claude, "opus", ""},
-		runtime.RoleResearcher:   {runtime.Claude, "sonnet", ""},
-		runtime.RoleDebugger:     {runtime.Claude, "opus", ""},
-		runtime.RoleMechanical:   {runtime.Claude, "haiku", ""},
-		runtime.RoleAdvisor:      {runtime.Claude, "fable", ""},
+	want := map[kinds.Role]RoleDefault{
+		kinds.RoleOrchestrator: {kinds.Claude, "opus", ""},
+		kinds.RoleCoder:        {kinds.Claude, "sonnet", ""},
+		kinds.RoleReviewer:     {kinds.Claude, "opus", ""},
+		kinds.RoleUIReviewer:   {kinds.Claude, "opus", ""},
+		kinds.RoleResearcher:   {kinds.Claude, "sonnet", ""},
+		kinds.RoleDebugger:     {kinds.Claude, "opus", ""},
+		kinds.RoleMechanical:   {kinds.Claude, "haiku", ""},
+		kinds.RoleAdvisor:      {kinds.Claude, "fable", ""},
 	}
 	if len(d.Roles) != 8 {
 		t.Fatalf("roles = %v", d.Roles)
@@ -90,22 +90,22 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestGetPutRoundTrip(t *testing.T) {
-	s := newStore(t, runtime.Claude, runtime.Codex)
+	s := newStore(t, kinds.Claude, kinds.Codex)
 	got, err := s.Get(ctx)
-	if err != nil || !slices.Equal(got.EnabledAgents, []runtime.AgentKind{runtime.Claude, runtime.Codex}) {
+	if err != nil || !slices.Equal(got.EnabledAgents, []kinds.AgentKind{kinds.Claude, kinds.Codex}) {
 		t.Fatalf("Get = %+v, %v", got, err)
 	}
 	got.MaxAgents = 12
-	got.Roles[runtime.RoleCoder] = RoleDefault{runtime.Codex, "gpt-6-astra", "high"}
-	got.Roles[runtime.RoleAdvisor] = RoleDefault{Model: NoAdvisor}
+	got.Roles[kinds.RoleCoder] = RoleDefault{kinds.Codex, "gpt-6-astra", "high"}
+	got.Roles[kinds.RoleAdvisor] = RoleDefault{Model: NoAdvisor}
 	got.ScanExcludes = []string{"~/Downloads", "~/Movies"}
 	saved, err := s.Put(ctx, got)
 	if err != nil {
 		t.Fatal(err)
 	}
 	again, _ := s.Get(ctx)
-	if again.MaxAgents != 12 || again.Roles[runtime.RoleCoder] != saved.Roles[runtime.RoleCoder] ||
-		again.Roles[runtime.RoleAdvisor].Model != NoAdvisor || !slices.Equal(again.ScanExcludes, []string{"~/Downloads", "~/Movies"}) {
+	if again.MaxAgents != 12 || again.Roles[kinds.RoleCoder] != saved.Roles[kinds.RoleCoder] ||
+		again.Roles[kinds.RoleAdvisor].Model != NoAdvisor || !slices.Equal(again.ScanExcludes, []string{"~/Downloads", "~/Movies"}) {
 		t.Fatalf("after put = %+v", again)
 	}
 	evs, _ := s.Events.After(ctx, 0, 10)
@@ -115,17 +115,17 @@ func TestGetPutRoundTrip(t *testing.T) {
 	// a partial table still yields defaults for the rest
 	s.DB.Exec(`DELETE FROM settings WHERE key <> 'max_agents'`)
 	partial, _ := s.Get(ctx)
-	if partial.MaxAgents != 12 || partial.MaxOrchestrators != 3 || partial.Roles[runtime.RoleCoder].Agent != runtime.Claude {
+	if partial.MaxAgents != 12 || partial.MaxOrchestrators != 3 || partial.Roles[kinds.RoleCoder].Agent != kinds.Claude {
 		t.Fatalf("partial = %+v", partial)
 	}
 }
 
 func TestPutValidation(t *testing.T) {
-	s := newStore(t, runtime.Claude, runtime.Codex)
+	s := newStore(t, kinds.Claude, kinds.Codex)
 	base, _ := s.Get(ctx)
 	clone := func(edit func(*Settings)) Settings {
 		c := base
-		c.Roles = map[runtime.Role]RoleDefault{}
+		c.Roles = map[kinds.Role]RoleDefault{}
 		for k, v := range base.Roles {
 			c.Roles[k] = v
 		}
@@ -137,14 +137,14 @@ func TestPutValidation(t *testing.T) {
 		edit func(*Settings)
 		msg  string
 	}{
-		{func(c *Settings) { c.Roles[runtime.RoleCoder] = RoleDefault{runtime.Claude, "claude-9", ""} }, "Choose a model available for this agent."},
-		{func(c *Settings) { c.Roles[runtime.RoleCoder] = RoleDefault{runtime.Claude, "sonnet", "ultra"} }, "ultra isn't available for Claude Sonnet 5."},
-		{func(c *Settings) { c.Roles[runtime.RoleMechanical] = RoleDefault{runtime.Claude, "haiku", "low"} }, "low isn't available for Claude Haiku 4.5."},
-		{func(c *Settings) { c.Roles[runtime.RoleAdvisor] = RoleDefault{runtime.Claude, "haiku", ""} }, "Choose a model available for this agent."},
-		{func(c *Settings) { c.Roles[runtime.RoleCoder] = RoleDefault{runtime.Agy, "gemini", ""} }, "agy isn't enabled. Choose an enabled agent."},
+		{func(c *Settings) { c.Roles[kinds.RoleCoder] = RoleDefault{kinds.Claude, "claude-9", ""} }, "Choose a model available for this agent."},
+		{func(c *Settings) { c.Roles[kinds.RoleCoder] = RoleDefault{kinds.Claude, "sonnet", "ultra"} }, "ultra isn't available for Claude Sonnet 5."},
+		{func(c *Settings) { c.Roles[kinds.RoleMechanical] = RoleDefault{kinds.Claude, "haiku", "low"} }, "low isn't available for Claude Haiku 4.5."},
+		{func(c *Settings) { c.Roles[kinds.RoleAdvisor] = RoleDefault{kinds.Claude, "haiku", ""} }, "Choose a model available for this agent."},
+		{func(c *Settings) { c.Roles[kinds.RoleCoder] = RoleDefault{kinds.Agy, "gemini", ""} }, "agy isn't enabled. Choose an enabled agent."},
 		{func(c *Settings) { c.EnabledAgents = append(c.EnabledAgents, "opencode") }, "Unknown agent opencode."},
 		{func(c *Settings) { c.EnabledAgents = nil }, "At least one agent must stay enabled."},
-		{func(c *Settings) { c.Roles["janitor"] = RoleDefault{runtime.Claude, "opus", ""} }, "Unknown role janitor."},
+		{func(c *Settings) { c.Roles["janitor"] = RoleDefault{kinds.Claude, "opus", ""} }, "Unknown role janitor."},
 		{func(c *Settings) { c.MaxOrchestrators = 9 }, "Maximum concurrent orchestrators must be between 1 and 8."},
 		{func(c *Settings) { c.MaxOrchestrators = 0 }, "Maximum concurrent orchestrators must be between 1 and 8."},
 		{func(c *Settings) { c.MaxAgents = 33 }, "Maximum concurrent agents must be between 1 and 32."},
@@ -162,8 +162,8 @@ func TestPutValidation(t *testing.T) {
 		t.Fatalf("failed puts wrote %d rows", n)
 	}
 	ok := clone(func(c *Settings) {
-		c.Roles[runtime.RoleCoder] = RoleDefault{runtime.Claude, "claude-sonnet-5", "xhigh"}
-		c.Roles[runtime.RoleAdvisor] = RoleDefault{runtime.Claude, "opus", ""}
+		c.Roles[kinds.RoleCoder] = RoleDefault{kinds.Claude, "claude-sonnet-5", "xhigh"}
+		c.Roles[kinds.RoleAdvisor] = RoleDefault{kinds.Claude, "opus", ""}
 		c.MaxOrchestrators, c.MaxAgents, c.MaxAgentsPerRoot, c.PauseDeadlineSec = 1, 32, 16, 600
 	})
 	if _, err := s.Put(ctx, ok); err != nil {
@@ -178,15 +178,15 @@ func countRows(t *testing.T, s *Store) int {
 }
 
 func TestModelGoneFromCatalog(t *testing.T) {
-	s := newStore(t, runtime.Claude)
+	s := newStore(t, kinds.Claude)
 	cur, _ := s.Get(ctx)
-	cur.Roles[runtime.RoleCoder] = RoleDefault{runtime.Claude, "claude-sonnet-5", ""}
+	cur.Roles[kinds.RoleCoder] = RoleDefault{kinds.Claude, "claude-sonnet-5", ""}
 	if _, err := s.Put(ctx, cur); err != nil {
 		t.Fatal(err)
 	}
-	saved := catalogs[runtime.Claude]
-	catalogs[runtime.Claude] = saved[:2] // sonnet and haiku disappear
-	defer func() { catalogs[runtime.Claude] = saved }()
+	saved := catalogs[kinds.Claude]
+	catalogs[kinds.Claude] = saved[:2] // sonnet and haiku disappear
+	defer func() { catalogs[kinds.Claude] = saved }()
 	cur, _ = s.Get(ctx)
 	cur.MaxAgents = 9
 	_, err := s.Put(ctx, cur)
@@ -194,31 +194,31 @@ func TestModelGoneFromCatalog(t *testing.T) {
 }
 
 func TestDisablingAnAgentSwitchesDefaults(t *testing.T) {
-	s := newStore(t, runtime.Claude, runtime.Codex)
+	s := newStore(t, kinds.Claude, kinds.Codex)
 	cur, _ := s.Get(ctx)
-	cur.Roles[runtime.RoleCoder] = RoleDefault{runtime.Codex, "gpt-6-astra", "high"}
+	cur.Roles[kinds.RoleCoder] = RoleDefault{kinds.Codex, "gpt-6-astra", "high"}
 	cur, err := s.Put(ctx, cur)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cur.EnabledAgents = []runtime.AgentKind{runtime.Claude}
+	cur.EnabledAgents = []kinds.AgentKind{kinds.Claude}
 	got, err := s.Put(ctx, cur)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Roles[runtime.RoleCoder] != (RoleDefault{runtime.Claude, "sonnet", ""}) {
-		t.Fatalf("coder = %+v", got.Roles[runtime.RoleCoder])
+	if got.Roles[kinds.RoleCoder] != (RoleDefault{kinds.Claude, "sonnet", ""}) {
+		t.Fatalf("coder = %+v", got.Roles[kinds.RoleCoder])
 	}
 
-	got.EnabledAgents = []runtime.AgentKind{runtime.Codex, runtime.Claude}
+	got.EnabledAgents = []kinds.AgentKind{kinds.Codex, kinds.Claude}
 	got, _ = s.Put(ctx, got)
-	got.EnabledAgents = []runtime.AgentKind{runtime.Codex}
+	got.EnabledAgents = []kinds.AgentKind{kinds.Codex}
 	got, err = s.Put(ctx, got)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range runtime.SettingsRoles {
-		want := RoleDefault{runtime.Codex, "gpt-6-astra", ""}
+	for _, r := range kinds.SettingsRoles {
+		want := RoleDefault{kinds.Codex, "gpt-6-astra", ""}
 		if got.Roles[r] != want {
 			t.Errorf("%s = %+v, want %+v", r, got.Roles[r], want)
 		}
@@ -226,26 +226,26 @@ func TestDisablingAnAgentSwitchesDefaults(t *testing.T) {
 }
 
 func TestEmptyCatalogSkipsModelChecks(t *testing.T) {
-	s := newStore(t, runtime.Claude, runtime.Agy)
+	s := newStore(t, kinds.Claude, kinds.Agy)
 	cur, _ := s.Get(ctx)
-	cur.Roles[runtime.RoleResearcher] = RoleDefault{runtime.Agy, "gemini-3.8-flash", "high"}
+	cur.Roles[kinds.RoleResearcher] = RoleDefault{kinds.Agy, "gemini-3.8-flash", "high"}
 	if _, err := s.Put(ctx, cur); err != nil {
 		t.Fatalf("agy has no cached models yet: %v", err)
 	}
-	cur.Roles[runtime.RoleResearcher] = RoleDefault{runtime.Agy, "", ""}
+	cur.Roles[kinds.RoleResearcher] = RoleDefault{kinds.Agy, "", ""}
 	_, err := s.Put(ctx, cur)
 	verr(t, err, "Choose a model available for this agent.")
 }
 
 func TestPutDoesNotMutateCallerMaps(t *testing.T) {
-	s := newStore(t, runtime.Claude)
+	s := newStore(t, kinds.Claude)
 	cur, _ := s.Get(ctx)
-	delete(cur.Roles, runtime.RoleDebugger)
+	delete(cur.Roles, kinds.RoleDebugger)
 	delete(cur.Notifications, "info")
 	if _, err := s.Put(ctx, cur); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cur.Roles[runtime.RoleDebugger]; ok {
+	if _, ok := cur.Roles[kinds.RoleDebugger]; ok {
 		t.Error("Put wrote into the caller's roles map")
 	}
 	if _, ok := cur.Notifications["info"]; ok {
