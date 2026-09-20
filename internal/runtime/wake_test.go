@@ -279,3 +279,37 @@ func TestPublishWakeReachesOnlyItsOwnSession(t *testing.T) {
 	default:
 	}
 }
+
+func TestWakeOnQuotaReset(t *testing.T) {
+	s, tm, _ := newStore(t)
+	at := tm.clk
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "RateLimited", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"} // idle
+
+	// Mark session waiting
+	s.DB.ExecContext(ctx, `UPDATE sessions SET waiting = 1 WHERE id = ?`, ses.ID)
+
+	cutoff := at.Now().Add(-2 * time.Minute)
+	n, err := s.WakeOnQuotaReset(ctx, Fake, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("woken count = %d, want 1", n)
+	}
+	if len(tm.pasted) == 0 || !strings.HasSuffix(tm.pasted[0], "|"+IdleToken) {
+		t.Fatalf("pasted = %v, want idle token", tm.pasted)
+	}
+
+	// Debounce: calling again with same cutoff must NOT wake again
+	n2, err := s.WakeOnQuotaReset(ctx, Fake, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second call: woken count = %d, want 0 (debounced)", n2)
+	}
+}

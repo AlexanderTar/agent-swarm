@@ -317,6 +317,7 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 			func(ctx context.Context) { dm.rt.ReconcileLoop(ctx, 5*time.Second) }, // §10.6
 			func(ctx context.Context) { dm.rt.WakeLoop(ctx, 5*time.Second) },      // §11.3
 			func(ctx context.Context) { dm.up.Loop(ctx, nil) },                    // §13 (a no-op with no sources, S-4)
+			func(ctx context.Context) { quotaResetLoop(ctx, dm.up, dm.rt, cfg.Log) },
 		)
 	}
 	var bg sync.WaitGroup
@@ -400,3 +401,42 @@ func prune(ctx context.Context, ev *events.Store, d *db.DB, now time.Time, log l
 		log("prune idempotency: %v", err)
 	}
 }
+
+// quotaResetLoop periodically checks agent quota reset timestamps and pings
+// idle/live sessions 1 minute after their quota resets.
+func quotaResetLoop(ctx context.Context, up *usagesvc.Poller, rt *runtime.Store, log logf) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			checkQuotaResets(ctx, up, rt, time.Now(), log)
+		}
+	}
+}
+
+func checkQuotaResets(ctx context.Context, up *usagesvc.Poller, rt *runtime.Store, now time.Time, log logf) {
+	snaps, err := up.Snapshots(ctx)
+	if err != nil {
+		return
+	}
+	for _, snap := range snaps {
+		for _, m := range snap.Meters {
+			if m.ResetsAt == nil {
+				continue
+			}
+			cutoff := *m.ResetsAt
+			// Check if a minute has passed since reset cutoff, within a 1-hour window
+			if now.After(cutoff.Add(time.Minute)) && now.Sub(cutoff) < time.Hour {
+				if n, err := rt.WakeOnQuotaReset(ctx, snap.Agent, cutoff); err != nil {
+					log("quota reset wake %s: %v", snap.Agent, err)
+				} else if n > 0 {
+					log("quota reset wake %s: woke %d session(s)", snap.Agent, n)
+				}
+			}
+		}
+	}
+}
+

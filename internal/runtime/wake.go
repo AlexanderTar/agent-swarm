@@ -286,3 +286,46 @@ func (s *Store) WakeLoop(ctx context.Context, every time.Duration) {
 		}
 	}
 }
+
+// WakeOnQuotaReset wakes all live or waiting sessions belonging to kind that have
+// not already been woken for this cutoff cycle (last_wake_at < cutoff).
+func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff time.Time) (int, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.tmux_name, ses.state, ses.waiting
+		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
+		WHERE a.kind = ? AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
+		AND (ses.last_wake_at IS NULL OR ses.last_wake_at < ?)`,
+		string(kind), db.Millis(cutoff))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	ad, ok := s.Adapters[kind]
+	woken := 0
+	for rows.Next() {
+		var sessionID, tmuxName, state string
+		var waiting bool
+		if err := rows.Scan(&sessionID, &tmuxName, &state, &waiting); err != nil {
+			return woken, err
+		}
+		// Attempt native wake or paste idle token if pane is idle
+		if ok {
+			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, TmuxName: tmuxName, Notice: "[swarm] Quota reset window passed. Resuming."})
+			if delivered {
+				s.markWoken(ctx, sessionID, true)
+				woken++
+				continue
+			}
+		}
+		// Fallback to idle paste if pane is alive
+		capture, err := s.Tmux.Capture(ctx, tmuxName, 15)
+		if err == nil && ok && ad.Idle(capture) {
+			if err := s.Tmux.PasteLine(ctx, tmuxName, IdleToken); err == nil {
+				s.markWoken(ctx, sessionID, false)
+				woken++
+			}
+		}
+	}
+	return woken, rows.Err()
+}
+
