@@ -925,8 +925,11 @@ func TestNoAckFiresAgainAfterARetryThatAlsoHangs(t *testing.T) {
 		t.Fatalf("agent.no_ack count after the first hang = %d", n)
 	}
 
-	// the pane dies; the attempt is recorded crashed and retried
+	// the pane dies; the attempt is recorded crashed and retried. spawnGracePeriod
+	// (10s) must elapse from this session's last confirmed-alive tick before a
+	// missing pane counts as crashed rather than a transient miss (P0-crash-4).
 	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	at.Advance(spawnGracePeriod)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
