@@ -68,6 +68,39 @@ func TestStaleAcceptsCoversApprovalKinds(t *testing.T) {
 	}
 }
 
+// DepUnblocked fires exactly when an item reaches Done or Cancelled -- never
+// on an ordinary in-flight move -- so runtime's relay can be wired straight
+// into the one place items.status actually gets written (setStatus), instead
+// of duplicating the terminal-status check at every caller.
+func TestDepUnblockedFiresOnlyOnDoneOrCancelled(t *testing.T) {
+	st := newStore(t)
+	var got []string
+	st.DepUnblocked = func(ctx context.Context, tx *sql.Tx, id string) error {
+		got = append(got, id)
+		return nil
+	}
+	_, _, task := tree(t, st)
+	seedCheckpoint(t, st.DB, task, "accepted", 1, later(st), "")
+	if err := move(t, st, task.Key, items.InProgress, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("DepUnblocked must not fire on in_progress: got %v", got)
+	}
+	if err := move(t, st, task.Key, items.Blocked, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("DepUnblocked must not fire on blocked: got %v", got)
+	}
+	if err := move(t, st, task.Key, items.Cancelled, user); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != task.ID {
+		t.Fatalf("DepUnblocked calls after cancel = %v, want [%s]", got, task.ID)
+	}
+}
+
 // RequestOpened fires for the accept request the reconciler opens.
 func TestReconcileRootCallsRequestOpened(t *testing.T) {
 	st := newStore(t)
