@@ -303,6 +303,43 @@ func TestSendResolvesParentAndRefusesCrossRoot(t *testing.T) {
 	}
 }
 
+// A send to a target with no live session must be refused synchronously,
+// not silently enqueued into a black hole nobody will ever ack (the
+// production incident this covers: an orchestrator relayed to a child whose
+// session had already crashed/completed/failed).
+func TestSendRefusesATargetWithNoLiveSession(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+
+	var before int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ?`, w.ID).Scan(&before)
+
+	// the worker's only session ends without ever being retried or replaced
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Send(ctx, orchSes, w.Name, "finding", "still there?", "", ""); err == nil {
+		t.Fatal("a send to a target with no live session must be refused")
+	} else if !strings.Contains(err.Error(), w.Name) {
+		t.Fatalf("error should name the unreachable target, got %q", err.Error())
+	}
+
+	var after int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ?`, w.ID).Scan(&after)
+	if after != before {
+		t.Fatalf("a refused send must not enqueue anything: before=%d after=%d", before, after)
+	}
+
+	// the reverse direction (dead session sending) still resolves fine —
+	// only the TARGET's liveness is checked, not the sender's.
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "hello", "", ""); err != nil {
+		t.Fatalf("a live target must still accept a send from an ended session: %v", err)
+	}
+}
+
 // I11: a replayed request_id returns the first result, also after a restart.
 func TestIdempotentReplaysTheStoredResult(t *testing.T) {
 	s, _, _ := newStore(t)

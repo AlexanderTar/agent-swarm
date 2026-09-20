@@ -986,3 +986,159 @@ func TestNoAckWithNoParentNeverFires(t *testing.T) {
 		t.Fatalf("a parentless agent has nobody to relay to: count = %d", n)
 	}
 }
+
+// The target's session can end after Send() already validated it live and
+// enqueued the message — the exact race Send()'s own synchronous check
+// (inbox.go) cannot catch, since the target was alive at send time and only
+// died afterward. Reconcile must notice the message is still un-acked with
+// no live recipient after ackTimeout and relay word back to the FROM agent,
+// once, mirroring notifyNoAck's own once-per-stuck-thing guard.
+func TestUndeliveredMessageRelaysToSenderOnceAfterGracePeriod(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.captures[w.Name] = []string{"working…\n"}
+
+	// the worker sends a finding to its parent while the parent is still live
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "found a bug", "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// the orchestrator's session ends before it ever acks
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, orchSes); err != nil {
+		t.Fatal(err)
+	}
+
+	// under the timeout: nothing yet
+	at.Advance(90 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 0 {
+		t.Fatalf("agent.no_recipient count before the timeout = %d", n)
+	}
+
+	// past the timeout: fires once, naming the unreachable target
+	at.Advance(31 * time.Second) // total 121s > ackTimeout (2m)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n := notified(t, s, "agent.no_recipient")
+	if n.AgentName != orch.Name {
+		t.Fatalf("notification = %+v, want it to name the unreachable target %q", n, orch.Name)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_recipient"%' AND wake_class = 'immediate'`, w.ID).Scan(&relays)
+	if relays != 1 {
+		t.Fatalf("relay no_recipient count to the sender = %d, want exactly one immediate relay", relays)
+	}
+
+	// another tick, still stuck: must not repeat
+	at.Advance(5 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 1 {
+		t.Fatalf("agent.no_recipient must fire once, not every tick: count = %d", n)
+	}
+}
+
+// When the FROM agent's own session has also ended by the time Reconcile
+// notices the stuck message, a relay addressed to it would never be seen
+// either — so the escalation falls back to its parent, mirroring how
+// notifyNoAck already decides who hears about a stuck child.
+func TestUndeliveredMessageFallsBackToTheSendersParentWhenTheSenderIsAlsoDead(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 5, 5, 5)
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderSes, _ := s.LatestSession(ctx, sender.ID)
+	target, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSes, _ := s.LatestSession(ctx, target.ID)
+	orchSes := mustSessionID(t, s, orch.ID)
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": orchSes}
+	tm.captures[orch.Name] = []string{"working…\n"}
+
+	if _, err := s.Send(ctx, senderSes.ID, target.Name, "finding", "need a hand", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// both the sender and the target end before the grace period elapses
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id IN (?, ?)`,
+		senderSes.ID, targetSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n := notified(t, s, "agent.no_recipient")
+	if n.AgentName != target.Name {
+		t.Fatalf("notification = %+v, want it to name the unreachable target %q", n, target.Name)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_recipient"%'`, orch.ID).Scan(&relays)
+	if relays != 1 {
+		t.Fatalf("relay must fall back to the sender's parent when the sender has no live session either: count = %d", relays)
+	}
+	var toDeadSender int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_recipient"%'`, sender.ID).Scan(&toDeadSender)
+	if toDeadSender != 0 {
+		t.Fatal("must not relay to a sender that has no live session")
+	}
+}
+
+// A parentless sender that has also died has nobody left to escalate to,
+// mirroring TestNoAckWithNoParentNeverFires for the ack-timeout path.
+func TestUndeliveredMessageWithNoLiveSenderAndNoParentNeverFires(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 5, 5, 5)
+	seedEpicWithTwoTasks(t, s)
+	sender, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderSes, _ := s.LatestSession(ctx, sender.ID)
+	target, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSes, _ := s.LatestSession(ctx, target.ID)
+
+	if _, err := s.Send(ctx, senderSes.ID, target.Name, "finding", "hello", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id IN (?, ?)`,
+		senderSes.ID, targetSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 0 {
+		t.Fatalf("a parentless, also-dead sender has nobody to relay to: count = %d", n)
+	}
+}

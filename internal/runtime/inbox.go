@@ -20,7 +20,7 @@ var ImmediateKinds = []MessageKind{"assignment", "control", "question", "answer"
 // ImmediateRelayEvents are the relay events that wake (I19). progress and handoff
 // are deferred and arrive folded into a digest.
 var ImmediateRelayEvents = []string{"accepted", "completed", "failed", "blocked", "crashed",
-	"interrupted", "paused", "dependency_added", "spawn_failed", "no_ack"}
+	"interrupted", "paused", "dependency_added", "spawn_failed", "no_ack", "no_recipient"}
 
 func WakeClassFor(kind MessageKind, relayEvent string) WakeClass {
 	if kind == "relay" {
@@ -377,6 +377,19 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 		if target.RootItemID != a.RootItemID {
 			return &items.Error{Code: items.CodeBadRequest,
 				Message: "A message can only go to an agent inside the same top-level item."}
+		}
+		// A target with no live session will never sync/ack: without this check
+		// the message just sits in `messages` as pending forever, and the sender
+		// has no way to know delivery is impossible (the production incident
+		// this guards against — see docs/specs and notifyUndeliveredMessages in
+		// reconcile.go for the race where the target dies AFTER this check).
+		live, err := s.agentHasLiveSession(ctx, tx, target.ID)
+		if err != nil {
+			return err
+		}
+		if !live {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
 		}
 		payload, err := json.Marshal(map[string]string{"body": body})
 		if err != nil {

@@ -178,6 +178,9 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.DrainQueue(ctx); err != nil {
 		return err
 	}
+	if err := s.notifyUndeliveredMessages(ctx); err != nil {
+		return err
+	}
 	return s.sweepFinishedRoots(ctx)
 }
 
@@ -639,4 +642,122 @@ func (s *Store) ReconcileLoop(ctx context.Context, every time.Duration) {
 			s.logf("reconcile: %v", err)
 		}
 	}
+}
+
+// agentHasLiveSession reports whether agentID currently has any session in a
+// live state -- the same session.state list wakeCandidates (wake.go) and
+// liveSessionRows above already use to decide who gets woken or reconciled,
+// so this asks the exact question the rest of the runtime already asks
+// rather than inventing a new definition of liveness. q is either s.DB or a
+// caller's own tx (txQuerier, from requests.go): Send() (inbox.go) checks
+// inside its existing transaction before enqueuing, and
+// notifyUndeliveredMessages below checks outside one.
+func (s *Store) agentHasLiveSession(ctx context.Context, q txQuerier, agentID string) (bool, error) {
+	var n int
+	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ? AND state IN
+		('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`, agentID).Scan(&n)
+	return n > 0, err
+}
+
+// undeliveredAgentMessage is one un-acked, agent-originated message whose
+// recipient has had no live session for at least ackTimeout: the race
+// Send()'s own liveness check cannot catch synchronously, because the
+// target was alive when Send() validated it and only died afterward.
+type undeliveredAgentMessage struct {
+	MessageID, FromAgentID, FromParentAgentID string
+	ToAgentName, RootItemID, ItemKey          string
+}
+
+// undeliveredAgentMessages finds every message matching undeliveredAgentMessage
+// above, created at or before cutoff. Daemon-originated relays (from_agent_id
+// NULL, e.g. the no_ack/crashed relays this same file already enqueues) are
+// excluded: those already have their own, separate liveness gaps and are out
+// of scope here (this covers agent-to-agent swarm_send traffic only).
+func (s *Store) undeliveredAgentMessages(ctx context.Context, cutoff time.Time) ([]undeliveredAgentMessage, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT m.id, m.from_agent_id, COALESCE(fa.parent_agent_id, ''),
+		ta.name, m.root_item_id, ti.key
+		FROM messages m
+		JOIN agents fa ON fa.id = m.from_agent_id
+		JOIN agents ta ON ta.id = m.to_agent_id
+		JOIN items ti ON ti.id = ta.item_id
+		WHERE m.state != 'acked' AND m.from_agent_id IS NOT NULL AND m.created_at <= ?
+		AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.agent_id = m.to_agent_id AND se.state IN
+			('spawning', 'running', 'pause_requested', 'quiescing', 'stopping'))`, db.Millis(cutoff))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []undeliveredAgentMessage
+	for rows.Next() {
+		var r undeliveredAgentMessage
+		if err := rows.Scan(&r.MessageID, &r.FromAgentID, &r.FromParentAgentID,
+			&r.ToAgentName, &r.RootItemID, &r.ItemKey); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// alreadyRelayedForMessage reports whether a no_recipient relay for this
+// specific stuck message was already enqueued -- undeliveredAgentMessages'
+// idempotency guard, keyed by the message's own id (a message has no retry
+// "attempt" the way a session does, so alreadyRelayed's sinceStartedAt
+// window doesn't apply here).
+func (s *Store) alreadyRelayedForMessage(ctx context.Context, messageID string) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE kind = 'relay' AND payload_json LIKE ?`, `%"message_id":"`+messageID+`"%`).Scan(&n)
+	return n > 0, err
+}
+
+// notifyUndeliveredMessages is the race half of Send()'s liveness check
+// (inbox.go): a target's session can end after a message was already
+// validated live and enqueued to it. Each tick, any such message still
+// un-acked after ackTimeout gets relayed back to the FROM agent so it can
+// react (re-check the target, respawn it, or pick someone else) -- or, if
+// the FROM agent no longer has a live session either, to its parent,
+// mirroring how notifyNoAck decides who hears about a stuck child.
+func (s *Store) notifyUndeliveredMessages(ctx context.Context) error {
+	rows, err := s.undeliveredAgentMessages(ctx, s.Now().Add(-ackTimeout))
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		already, err := s.alreadyRelayedForMessage(ctx, r.MessageID)
+		if err != nil {
+			return err
+		}
+		if already {
+			continue
+		}
+		notifyTo := r.FromAgentID
+		live, err := s.agentHasLiveSession(ctx, s.DB, notifyTo)
+		if err != nil {
+			return err
+		}
+		if !live {
+			if r.FromParentAgentID == "" {
+				continue // nobody left to tell
+			}
+			notifyTo = r.FromParentAgentID
+		}
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.no_recipient", AgentName: r.ToAgentName,
+				ItemKey: r.ItemKey, Args: map[string]string{"name": r.ToAgentName, "KEY": r.ItemKey}}); err != nil {
+				return err
+			}
+			payload, err := json.Marshal(map[string]any{"event": "no_recipient",
+				"message_id": r.MessageID, "agent": r.ToAgentName, "item": r.ItemKey})
+			if err != nil {
+				return err
+			}
+			_, err = s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: notifyTo,
+				RootItemID: r.RootItemID, Payload: payload})
+			return err
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
