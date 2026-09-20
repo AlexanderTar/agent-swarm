@@ -27,6 +27,7 @@ func TestRulesCoverSection175(t *testing.T) {
 		"agent.failed":           {"attention", "Agent failed", "{name} couldn't finish {KEY}. Review the error.", "swarm.agent"},
 		"agent.crashed":          {"attention", "Agent crashed", "{name} exited unexpectedly on {KEY}.", "swarm.agent"},
 		"agent.stale":            {"attention", "No recent activity", "{name} has been quiet for 30 minutes on {KEY}.", "swarm.agent"},
+		"agent.no_ack":           {"attention", "No response from agent", "{name} hasn't checkpointed in 2 minutes on {KEY}.", "swarm.agent"},
 		"agent.undeliverable":    {"attention", "Couldn't deliver messages", "{name} hasn't picked up {N} message(s).", "swarm.agent"},
 		"agent.preflight_failed": {"attention", "Couldn't start agent", "{reason}", "swarm.info"},
 		// Added by docs/specs/2026-09-19-usage-fallback-agent.md, after §17.5
