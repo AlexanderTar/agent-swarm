@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 // `net/http` and `net/http/httptest` are not needed here: every request goes
@@ -175,5 +179,79 @@ func TestAgentsRoutesRequireTheDaemonToken(t *testing.T) {
 		if rec.Code != 401 {
 			t.Errorf("%s without a token = %d", p, rec.Code)
 		}
+	}
+}
+
+// paneTestTmux lets one test control Capture's return/error and Panes's
+// liveness, without changing what every other test in this package gets from
+// the shared testTmux (agent-hover-preview spec, decision 1).
+type paneTestTmux struct {
+	testTmux
+	captureText string
+	captureErr  error
+}
+
+func (f *paneTestTmux) Capture(_ context.Context, _ string, _ int) (string, error) {
+	if f.captureErr != nil {
+		return "", f.captureErr
+	}
+	return f.captureText, nil
+}
+
+// contracts: GET /api/agents/{name}/pane (agent-hover-preview spec, decision 1).
+func TestAgentPaneReturnsANSIStrippedTextAndTmuxAlive(t *testing.T) {
+	s, running := newServerWithSessionState(t, "running")
+	tm := &paneTestTmux{captureText: "\x1b[32mgreen\x1b[0m plain\n"}
+	tm.panes = []runtime.Pane{{Session: running}}
+	s.RT.Tmux = tm
+	rec := s.get(t, "/api/agents/"+running+"/pane?lines=10")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	body := decode[paneWire](t, rec.Body.Bytes())
+	if body.Text != "green plain\n" {
+		t.Fatalf("text = %q, want ANSI stripped", body.Text)
+	}
+	if !body.TmuxAlive {
+		t.Fatal("tmux_alive = false, want true (a live pane is seeded)")
+	}
+	if body.Lines != 10 {
+		t.Fatalf("lines = %d, want 10", body.Lines)
+	}
+}
+
+func TestAgentPaneUnknownAgentIs404(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	rec := s.get(t, "/api/agents/totally-unknown-agent/pane")
+	wantErr(t, rec.Code, rec.Body.Bytes(), 404, "not_found", "")
+}
+
+func TestAgentPaneNoSessionIs409(t *testing.T) {
+	s, queued := newServerWithSessionState(t, "queued")
+	rec := s.get(t, "/api/agents/"+queued+"/pane")
+	wantErr(t, rec.Code, rec.Body.Bytes(), 409, "conflict", "That agent has no session.")
+}
+
+func TestAgentPaneCaptureFailureIs502(t *testing.T) {
+	s, running := newServerWithSessionState(t, "running")
+	s.RT.Tmux = &paneTestTmux{captureErr: errors.New("tmux: no such session")}
+	rec := s.get(t, "/api/agents/"+running+"/pane")
+	wantErr(t, rec.Code, rec.Body.Bytes(), 502, "tmux_unreachable", "Can't reach tmux.")
+}
+
+func TestAgentPaneLinesClamping(t *testing.T) {
+	s, running := newServerWithSessionState(t, "running")
+	s.RT.Tmux = &paneTestTmux{captureText: "x"}
+	rec := s.get(t, "/api/agents/"+running+"/pane?lines=9999")
+	if got := decode[paneWire](t, rec.Body.Bytes()).Lines; got != 200 {
+		t.Fatalf("lines=9999 clamped to %d, want 200 (maxPaneLines)", got)
+	}
+	rec = s.get(t, "/api/agents/"+running+"/pane?lines=abc")
+	if got := decode[paneWire](t, rec.Body.Bytes()).Lines; got != 40 {
+		t.Fatalf("lines=abc fell back to %d, want 40 (defaultPaneLines)", got)
+	}
+	rec = s.get(t, "/api/agents/"+running+"/pane?lines=0")
+	if got := decode[paneWire](t, rec.Body.Bytes()).Lines; got != 1 {
+		t.Fatalf("lines=0 clamped to %d, want 1", got)
 	}
 }
