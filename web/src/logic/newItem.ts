@@ -15,7 +15,6 @@ export const PARENT_TYPES: Record<NewType, ItemType[]> = {
   task: TREE_PARENT_TYPES.task ?? [],
 };
 export const TITLE_MAX = 200;
-export const BRIEF_MAX = 600;
 
 export interface NewItemForm { type: NewType; parentKey: string; title: string; brief: string; acceptance: string[] }
 
@@ -31,7 +30,7 @@ export function initialParent(items: Item[], type: NewType, hint?: string): stri
 
 export function canCreate(f: NewItemForm): boolean {
   const title = f.title.trim();
-  if (title.length === 0 || title.length > TITLE_MAX || f.brief.length > BRIEF_MAX) return false;
+  if (title.length === 0 || title.length > TITLE_MAX) return false;
   return PARENT_TYPES[f.type].length === 0 || f.parentKey !== "";
 }
 
