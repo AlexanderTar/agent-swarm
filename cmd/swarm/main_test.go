@@ -165,7 +165,7 @@ func TestDaemonAndClientCommands(t *testing.T) {
 	}
 
 	code, out, _ = cli("status")
-	for _, want := range []string{"Daemon: running at " + url + " (version dev, schema 1)", "Items: 2 (draft 2)",
+	for _, want := range []string{fmt.Sprintf("Daemon: running at %s (version dev, schema %d)", url, db.SchemaVersion), "Items: 2 (draft 2)",
 		"Repositories: 0 (not scanned yet)", "Knowledge base: 0 documents, 0 chunks, 0 embedded",
 		"Search unavailable: run `ollama pull qwen3-embedding:0.6b`"} {
 		if !strings.Contains(out, want) {
