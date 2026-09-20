@@ -9,15 +9,8 @@ struct AgentsSection: View {
         VStack(alignment: .leading, spacing: 2) {
             SectionHeader(Copy.agents, open: model.isOpen(.agents),
                           toggle: { model.setSection(.agents, open: !model.isOpen(.agents)) }) {
-                HStack(spacing: 6) {
-                    if model.label.badge == .green {
-                        StateDot(.greenPulse)
-                            .help(Copy.agentsWorking)
-                            .transition(.identity)
-                    }
-                    Button(model.pauseAllLabel) { Task { await model.pauseAll() } }
-                        .disabled(model.pauseAllDisabled)
-                }
+                Button(model.pauseAllLabel) { Task { await model.pauseAll() } }
+                    .disabled(model.pauseAllDisabled)
             }
             if let error = model.actionError {
                 Text(error).font(.caption).foregroundStyle(.red)

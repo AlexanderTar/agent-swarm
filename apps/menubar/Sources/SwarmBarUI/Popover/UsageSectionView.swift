@@ -3,7 +3,6 @@ import SwiftUI
 
 struct UsageSectionView: View {
     @Bindable var model: AppModel
-    let cap: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -23,7 +22,7 @@ struct UsageSectionView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                 }
-                SectionBody(cap: cap) {
+                VStack(alignment: .leading, spacing: 6) {
                     if model.usageRows.isEmpty {
                         HStack {
                             Text(Copy.emptyUsage).font(.callout).foregroundStyle(.secondary)

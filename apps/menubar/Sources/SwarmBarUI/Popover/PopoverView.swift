@@ -17,14 +17,14 @@ public struct PopoverView: View {
         self.openSettings = openSettings
     }
 
-    /// Two thirds of the usable screen, so the popover never swallows the desktop.
-    private var maxHeight: CGFloat { (NSScreen.main?.visibleFrame.height ?? 800) * 2 / 3 }
+    /// The full usable screen height if needed, so the popover never exceeds the desktop.
+    private var maxHeight: CGFloat { NSScreen.main?.visibleFrame.height ?? 800 }
 
     /// How the scrolling room is split between sections. Relative, not absolute: the budget is
     /// shared out among the sections that are actually open, so closing Notifications gives its
     /// room to the others instead of wasting it.
     private static let weights: [AppModel.Section: CGFloat] =
-        [.needsYou: 26, .agents: 40, .usage: 18, .notifications: 16]
+        [.needsYou: 26, .agents: 44, .notifications: 30]
 
     /// What's left for the scrolling lists themselves. Everything that shares the popover with
     /// them is subtracted first: the popover header and footer (120), every section's own header
@@ -60,7 +60,7 @@ public struct PopoverView: View {
                     Divider()
                     AgentsSection(model: model, cap: cap(.agents))
                     Divider()
-                    UsageSectionView(model: model, cap: cap(.usage))
+                    UsageSectionView(model: model)
                     Divider()
                     NotificationsSection(model: model, cap: cap(.notifications))
                 }

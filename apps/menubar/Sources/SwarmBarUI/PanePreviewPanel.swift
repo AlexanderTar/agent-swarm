@@ -77,29 +77,6 @@ public struct PanePreviewPanel: View {
     }
 }
 
-/// Configures the enclosing NSScrollView to use a subtle overlay scrollbar:
-/// hidden by default, thin (.small), with a transparent background.
-struct SubtleScrollerConfig: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let v = NSView(frame: .zero)
-        DispatchQueue.main.async { [weak v] in
-            guard let scrollView = v?.enclosingScrollView else { return }
-            scrollView.scrollerStyle = .overlay
-            scrollView.autohidesScrollers = true
-            scrollView.verticalScroller?.controlSize = .small
-        }
-        return v
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { [weak nsView] in
-            guard let scrollView = nsView?.enclosingScrollView else { return }
-            scrollView.scrollerStyle = .overlay
-            scrollView.autohidesScrollers = true
-            scrollView.verticalScroller?.controlSize = .small
-        }
-    }
-}
 
 /// Liquid Glass where the OS has it, a vibrancy material where it doesn't -- the same
 /// availability shape as `Components.glassButtons()`.

@@ -34,7 +34,7 @@ final class PopoverRenderTests: XCTestCase {
         let sections = VStack {
             NeedsYouSection(model: m, cap: cap)
             AgentsSection(model: m, cap: cap)
-            UsageSectionView(model: m, cap: cap)
+            UsageSectionView(model: m)
             NotificationsSection(model: m, cap: cap)
         }
         let height = renderedSize(sections.frame(width: 360)).height

@@ -1,3 +1,4 @@
+import AppKit
 import SwarmBarKit
 import SwiftUI
 
@@ -145,11 +146,33 @@ public struct OptionPicker: View {
     }
 }
 
+/// Configures the enclosing NSScrollView to use a subtle overlay scrollbar:
+/// hidden by default, thin (.small), with a transparent background.
+struct SubtleScrollerConfig: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView(frame: .zero)
+        DispatchQueue.main.async { [weak v] in
+            guard let scrollView = v?.enclosingScrollView else { return }
+            scrollView.scrollerStyle = .overlay
+            scrollView.autohidesScrollers = true
+            scrollView.verticalScroller?.controlSize = .small
+        }
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { [weak nsView] in
+            guard let scrollView = nsView?.enclosingScrollView else { return }
+            scrollView.scrollerStyle = .overlay
+            scrollView.autohidesScrollers = true
+            scrollView.verticalScroller?.controlSize = .small
+        }
+    }
+}
+
 /// A section body that scrolls on its own once it outgrows `cap`. Section headers stay outside it,
-/// so a long agent list scrolls under its own header instead of shoving Usage off the popover.
-/// The scrollbar is hidden with `.never`, not `.hidden`: `.hidden` is a soft preference that the
-/// system "Show scroll bars: Always" setting overrides right back to the legacy thick `NSScroller`
-/// (confirmed empirically), while `.never` is documented to override that override.
+/// so a long agent list scrolls under its own header instead of shoving other sections off the popover.
+/// Uses a subtle overlay scrollbar that is hidden by default and only shows when scrolling.
 public struct SectionBody<Content: View>: View {
     let cap: CGFloat
     let spacing: CGFloat
@@ -165,10 +188,11 @@ public struct SectionBody<Content: View>: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: spacing) { content }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(SubtleScrollerConfig())
         }
         .frame(maxHeight: cap)
         .fixedSize(horizontal: false, vertical: true)
-        .scrollIndicators(.never)
+        .scrollIndicators(.automatic)
         .scrollBounceBehavior(.basedOnSize)
     }
 }
