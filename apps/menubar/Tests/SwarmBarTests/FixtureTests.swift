@@ -72,6 +72,10 @@ final class FixtureTests: XCTestCase {
                        TerminalOpen(name: "login-form-coder", tmux: "login-form-coder"))
         XCTAssertEqual(try Fixture.decode("error-conflict.json", as: APIErrorBody.self).error.code, "conflict")
         XCTAssertEqual(try Fixture.decode("error-not-repo.json", as: APIErrorBody.self).error.code, "bad_request")
+        let pane = try Fixture.decode("pane.json", as: PaneCapture.self)
+        XCTAssertTrue(pane.tmuxAlive)
+        XCTAssertEqual(pane.lines, 40)
+        XCTAssertFalse(pane.text.contains("\u{1b}"), "the fixture is already ANSI-stripped, like the daemon's response")
     }
 
     func testRequestBodiesEncodeExactlyLikeTheFixtures() throws {

@@ -1,13 +1,87 @@
 import AppKit
+import Observation
 import SwarmBarKit
 import SwarmBarUI
 import SwiftUI
+
+/// The preview's floating window: borderless, non-activating, mouse-transparent,
+/// above the MenuBarExtra window, never key. Ordered front with orderFront(nil);
+/// makeKeyAndOrderFront would dismiss the popover it is meant to sit beside.
+@MainActor
+final class PanePreviewWindow {
+    private let preview: PanePreviewModel
+    private let lookup: (String) -> (kind: String, itemKey: String)?
+    private var panel: NSPanel?
+
+    init(preview: PanePreviewModel, lookup: @escaping (String) -> (kind: String, itemKey: String)? = { _ in nil }) {
+        self.preview = preview
+        self.lookup = lookup
+        observe()
+    }
+
+    /// Re-registers itself after every fire: `withObservationTracking`'s `onChange` is one-shot.
+    private func observe() {
+        withObservationTracking {
+            _ = preview.anchor
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.preview.anchor == .none { self.hide() } else { self.show(self.preview.anchor) }
+                self.observe()
+            }
+        }
+    }
+
+    /// Moves and orders front using PanePreviewGeometry.frame(anchor, …).
+    /// `anchor.screen` is the popover's own screen: NSScreen.main is the screen
+    /// with keyboard focus, which on a two-display setup is regularly not the
+    /// one the menu bar popover is on.
+    func show(_ anchor: PanePreviewModel.Anchor) {
+        let panel = self.panel ?? makePanel()
+        self.panel = panel
+        panel.level = NSWindow.Level(rawValue: Self.menuBarExtraLevel().rawValue + 1)
+        let frame = PanePreviewGeometry.frame(anchor, size: PanePreviewPanel.size)
+        panel.setFrame(frame, display: false)
+        panel.orderFront(nil)
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+    }
+
+    private func makePanel() -> NSPanel {
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: PanePreviewPanel.size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.isFloatingPanel = true
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true // read-only: never steals hover or clicks
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        panel.animationBehavior = .utilityWindow
+        panel.contentView = NSHostingView(rootView: PanePreviewPanel(preview: preview, lookup: lookup))
+        return panel
+    }
+
+    /// One level above the MenuBarExtra window's own level, read fresh at show() time (Task 1's
+    /// spike confirmed a non-activating panel ordered above it leaves the popover open; the
+    /// window's own level was 101 there, never assumed to be .statusBar).
+    private static func menuBarExtraLevel() -> NSWindow.Level {
+        for w in NSApp.windows where String(describing: type(of: w)).contains("MenuBarExtraWindow") {
+            return w.level
+        }
+        return .statusBar
+    }
+}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model: AppModel
     private let poster: NotificationPosting
     private var watcher: StatusItemWatcher?
+    private var previewWindow: PanePreviewWindow?
 
     /// `SWARM_MOCK_FIXTURES=<dir> swift run SwarmBar` shows fixture data with no daemon, no event
     /// stream, in-memory preferences, a temporary cache, and no real terminal/notification side
@@ -51,6 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         watcher = StatusItemWatcher { [weak self] visible in self?.model.labelVisible(visible) }
         watcher?.start()
+        previewWindow = PanePreviewWindow(preview: model.preview) { [weak model] name in
+            guard let a = model.flatMap({ AgentTree.flatten($0.state.agents).first { $0.name == name } }) else { return nil }
+            return (a.kind.rawValue, a.itemKey)
+        }
         Task {
             await model.start()
             if ProcessInfo.processInfo.environment["SWARM_SMOKE"] != nil {

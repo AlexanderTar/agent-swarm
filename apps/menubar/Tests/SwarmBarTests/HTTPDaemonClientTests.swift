@@ -104,6 +104,16 @@ final class HTTPDaemonClientTests: XCTestCase {
         XCTAssertTrue(seen.filter { $0.timeout != 120 }.allSatisfy { $0.timeout == 10 })
     }
 
+    func testPaneSendsLinesAndUsesTheFiveSecondTimeout() async throws {
+        let session = StubURLProtocol.install { _ in (200, try Fixture.data("pane.json")) }
+        let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)
+        let pane = try await client.pane("login-form-coder", lines: 40)
+        XCTAssertEqual(pane, try Fixture.decode("pane.json"))
+        let seen = StubURLProtocol.seen
+        XCTAssertEqual(seen.map(\.path), ["/api/agents/login-form-coder/pane?lines=40"])
+        XCTAssertEqual(seen[0].timeout, 5)
+    }
+
     func testTimeoutsAreNotOutages() async throws {
         let session = StubURLProtocol.install { req in
             if req.url!.path == "/api/repos/rescan" { throw URLError(.timedOut) }

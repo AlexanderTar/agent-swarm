@@ -124,6 +124,8 @@ func typeFor(key string) (any, bool) {
 		return &spikeResponseWire{}, true
 	case "response POST /api/agents/{name}/terminal":
 		return &terminalWire{}, true
+	case "response GET /api/agents/{name}/pane":
+		return &paneWire{}, true
 	case "response POST /api/pause-all":
 		return &pauseAllWire{}, true
 	case "response POST /api/notifications/read-all":

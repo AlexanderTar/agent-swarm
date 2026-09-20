@@ -216,6 +216,17 @@ func TestPauseAllReportsTheCount(t *testing.T) {
 	}
 }
 
+// loadAgentStatus maps sql.ErrNoRows to 404 (agent-hover-preview spec's pane
+// route needed this; every other action route shares loadAgentStatus, so an
+// unknown agent name must not fall through to a bare 500 on any of them).
+func TestUnknownAgentNameIs404OnEveryActionRoute(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	for _, p := range []string{"pause", "resume", "cancel", "retry", "ack", "terminal"} {
+		rec := s.post(t, "/api/agents/totally-unknown-agent/"+p, `{}`)
+		wantErr(t, rec.Code, rec.Body.Bytes(), 404, "not_found", "")
+	}
+}
+
 func TestAckReturns204AndTerminalReturnsTheTmuxName(t *testing.T) {
 	s, name := newServerWithSessionState(t, "crashed")
 	if rec := s.post(t, "/api/agents/"+name+"/ack", `{}`); rec.Code != 204 {

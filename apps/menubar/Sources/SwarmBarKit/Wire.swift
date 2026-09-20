@@ -560,6 +560,25 @@ public struct TerminalOpen: Codable, Sendable, Equatable {
     public var tmux: String
 }
 
+/// GET /api/agents/{name}/pane (agent-hover-preview spec). Text is already
+/// ANSI-stripped by the daemon.
+public struct PaneCapture: Codable, Sendable, Equatable {
+    public var text: String
+    public var tmuxAlive: Bool
+    public var lines: Int
+
+    enum CodingKeys: String, CodingKey {
+        case text, lines
+        case tmuxAlive = "tmux_alive"
+    }
+
+    public init(text: String, tmuxAlive: Bool = true, lines: Int = 40) {
+        self.text = text
+        self.tmuxAlive = tmuxAlive
+        self.lines = lines
+    }
+}
+
 public struct APIErrorBody: Codable, Sendable, Equatable {
     public struct Detail: Codable, Sendable, Equatable {
         public var code: String

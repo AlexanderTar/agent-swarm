@@ -168,6 +168,13 @@
       "status": 200
     },
     {
+      "file": "pane.json",
+      "method": "GET",
+      "path": "/api/agents/{name}/pane?lines=40",
+      "direction": "response",
+      "status": 200
+    },
+    {
       "file": "empty-request.json",
       "method": "POST",
       "path": "/api/agents/{name}/resume",

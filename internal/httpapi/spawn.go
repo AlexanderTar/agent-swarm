@@ -3,6 +3,7 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"time"
@@ -112,6 +113,9 @@ func (s *Server) startOrchestrator(w http.ResponseWriter, r *http.Request) {
 // or a nil session when the agent never spawned (queued, or failed at preflight).
 func (s *Server) loadAgentStatus(ctx context.Context, name string) (runtime.Agent, *runtime.Session, error) {
 	a, err := s.RT.Agent(ctx, name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return a, nil, apiErr(http.StatusNotFound, "not_found", "No agent named "+name+".")
+	}
 	if err != nil {
 		return a, nil, err
 	}
