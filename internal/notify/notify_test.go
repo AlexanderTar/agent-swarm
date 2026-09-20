@@ -20,6 +20,7 @@ func TestRulesCoverSection175(t *testing.T) {
 		"item.completed":         {"info", "Task completed", "{KEY}: {title} is complete.", "swarm.info"},
 		"item.created":           {"info", "Epic ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
 		"item.created.bug":       {"info", "Bug ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
+		"item.created.chore":     {"info", "Chore ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
 		"agent.queued":           {"info", "Agent queued", "{name} starts when an agent slot becomes available.", "swarm.info"},
 		"agent.paused":           {"attention", "Agent paused", "{name} is paused on {KEY}.", "swarm.agent"},
 		"agent.interrupted":      {"attention", "Agent stopped", "{name} stopped before {KEY} finished.", "swarm.agent"},

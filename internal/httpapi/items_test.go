@@ -47,7 +47,7 @@ func TestCreateItem(t *testing.T) {
 	}{
 		{map[string]any{"type": "spike", "title": "Explore"}, 400, "bad_request", "Spikes start with an intent. Use New spike."},
 		{map[string]any{"type": "story", "title": "Orphan"}, 400, "bad_request", "A story needs a parent epic."},
-		{map[string]any{"type": "task", "title": "Orphan"}, 400, "bad_request", "A task needs a parent story, bug or spike."},
+		{map[string]any{"type": "task", "title": "Orphan"}, 400, "bad_request", "A task needs a parent story, bug, spike or chore."},
 		{map[string]any{"type": "saga", "title": "x"}, 400, "bad_request", `Unknown item type "saga".`},
 		{map[string]any{"type": "task", "title": "x", "parent_key": "STORY-9"}, 404, "not_found", "No item STORY-9."},
 		{map[string]any{"type": "epic", "title": ""}, 400, "bad_request", "Title must be 1–200 characters."},

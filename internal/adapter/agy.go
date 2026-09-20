@@ -87,7 +87,12 @@ func (a *Agy) ParseHook(event string, stdin []byte) (HookInput, error) {
 			return HookInput{}, err
 		}
 	}
-	isSwarm := raw.ToolCall.Name == "call_mcp_tool" && raw.ToolCall.Args.ServerName == "swarm"
+	isSwarm := (raw.ToolCall.Name == "call_mcp_tool" && raw.ToolCall.Args.ServerName == "swarm") ||
+		strings.HasPrefix(raw.ToolCall.Name, "mcp_swarm_")
+	toolName := raw.ToolCall.Name
+	if raw.ToolCall.Name == "call_mcp_tool" && raw.ToolCall.Args.ToolName != "" {
+		toolName = raw.ToolCall.Args.ToolName
+	}
 	var cmd string
 	if raw.ToolCall.Name == "run_command" {
 		cmd = raw.ToolCall.Args.CommandLine
@@ -95,7 +100,7 @@ func (a *Agy) ParseHook(event string, stdin []byte) (HookInput, error) {
 	return HookInput{
 		ProviderSessionID: raw.ConversationID,
 		Event:             event,
-		ToolName:          raw.ToolCall.Name,
+		ToolName:          toolName,
 		Command:           cmd,
 		TranscriptPath:    raw.TranscriptPath,
 		IsSwarmTool:       isSwarm,

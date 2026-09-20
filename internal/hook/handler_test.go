@@ -3,6 +3,7 @@ package hook
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/settings"
 )
 
 func now() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }
@@ -23,6 +25,7 @@ func seed(t *testing.T, pending int, state runtime.SessionState) (*Handler, stri
 	ctx := context.Background()
 	ev := events.New(d, now)
 	st := &runtime.Store{DB: d, Events: ev, Items: &items.Store{DB: d, Events: ev, Now: now},
+		Settings: &settings.Store{DB: d, Events: ev, Now: now},
 		Now: now, Log: func(string, ...any) {}}
 	_, err := d.ExecContext(ctx, `
 		INSERT INTO items (id, key, type, root_id, title, status, created_at, updated_at)
@@ -357,3 +360,164 @@ func TestHandlerEdgeCases(t *testing.T) {
 		t.Fatalf("default now: out=%s, err=%v", out, err)
 	}
 }
+
+func TestPreToolUseBlocksSubagentsWhenBudgetExceeded(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	wantReason := "[swarm] Subagent budget exceeded (max 3 active). Run sequentially or wait for active subagents to finish."
+
+	cases := []struct {
+		kind  runtime.AgentKind
+		tools []struct {
+			name  string
+			stdin []byte
+		}
+		verifyDeny func(t *testing.T, tool string, out []byte)
+	}{
+		{
+			kind: runtime.Claude,
+			tools: []struct {
+				name  string
+				stdin []byte
+			}{
+				{"mcp__swarm__swarm_spawn", []byte(`{"session_id":"p1","tool_name":"mcp__swarm__swarm_spawn","tool_input":{}}`)},
+				{"Task", []byte(`{"session_id":"p1","tool_name":"Task","tool_input":{}}`)},
+			},
+			verifyDeny: func(t *testing.T, tool string, out []byte) {
+				var m map[string]map[string]string
+				if err := json.Unmarshal(out, &m); err != nil {
+					t.Fatalf("claude %s: %v", tool, err)
+				}
+				if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
+					t.Fatalf("claude %s: want deny, got %s", tool, out)
+				}
+				if m["hookSpecificOutput"]["permissionDecisionReason"] != wantReason {
+					t.Fatalf("claude %s: reason = %q, want %q", tool, m["hookSpecificOutput"]["permissionDecisionReason"], wantReason)
+				}
+			},
+		},
+		{
+			kind: runtime.Agy,
+			tools: []struct {
+				name  string
+				stdin []byte
+			}{
+				{"invoke_subagent", []byte(`{"conversationId":"p1","toolCall":{"name":"invoke_subagent"}}`)},
+				{"call_mcp_tool:swarm_spawn", []byte(`{"conversationId":"p1","toolCall":{"name":"call_mcp_tool","args":{"ServerName":"swarm","ToolName":"swarm_spawn"}}}`)},
+			},
+			verifyDeny: func(t *testing.T, tool string, out []byte) {
+				var m map[string]string
+				if err := json.Unmarshal(out, &m); err != nil {
+					t.Fatalf("agy %s: %v", tool, err)
+				}
+				if m["decision"] != "deny" {
+					t.Fatalf("agy %s: want deny, got %s", tool, out)
+				}
+				if m["reason"] != wantReason {
+					t.Fatalf("agy %s: reason = %q, want %q", tool, m["reason"], wantReason)
+				}
+			},
+		},
+		{
+			kind: runtime.Cursor,
+			tools: []struct {
+				name  string
+				stdin []byte
+			}{
+				{"MCP:swarm_spawn", []byte(`{"conversation_id":"p1","tool_name":"MCP:swarm_spawn","tool_input":{}}`)},
+				{"subagent", []byte(`{"conversation_id":"p1","tool_name":"subagent","tool_input":{}}`)},
+				{"dispatch_agent", []byte(`{"conversation_id":"p1","tool_name":"dispatch_agent","tool_input":{}}`)},
+			},
+			verifyDeny: func(t *testing.T, tool string, out []byte) {
+				var m map[string]string
+				if err := json.Unmarshal(out, &m); err != nil {
+					t.Fatalf("cursor %s: %v", tool, err)
+				}
+				if m["permission"] != "deny" {
+					t.Fatalf("cursor %s: want deny, got %s", tool, out)
+				}
+				if m["user_message"] != wantReason {
+					t.Fatalf("cursor %s: reason = %q, want %q", tool, m["user_message"], wantReason)
+				}
+			},
+		},
+		{
+			kind: runtime.Codex,
+			tools: []struct {
+				name  string
+				stdin []byte
+			}{
+				{"mcp__swarm__swarm_spawn", []byte(`{"session_id":"p1","tool_name":"mcp__swarm__swarm_spawn","tool_input":{}}`)},
+				{"spawn_agent", []byte(`{"session_id":"p1","tool_name":"spawn_agent","tool_input":{}}`)},
+				{"subagent", []byte(`{"session_id":"p1","tool_name":"subagent","tool_input":{}}`)},
+			},
+			verifyDeny: func(t *testing.T, tool string, out []byte) {
+				var m map[string]string
+				if err := json.Unmarshal(out, &m); err != nil {
+					t.Fatalf("codex %s: %v", tool, err)
+				}
+				if m["decision"] != "block" {
+					t.Fatalf("codex %s: want block, got %s", tool, out)
+				}
+				if m["reason"] != wantReason {
+					t.Fatalf("codex %s: reason = %q, want %q", tool, m["reason"], wantReason)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = ? WHERE id = 'agt_1'`, string(tc.kind)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.DB.ExecContext(ctx, `DELETE FROM agents WHERE parent_agent_id = 'agt_1'`); err != nil {
+				t.Fatal(err)
+			}
+
+			// Under budget: all tools allowed
+			for _, tool := range tc.tools {
+				out, err := h.Handle(ctx, tc.kind, "PreToolUse", ses, tool.stdin)
+				if err != nil {
+					t.Fatalf("%s: %v", tool.name, err)
+				}
+				if len(out) != 0 {
+					t.Fatalf("%s: under budget must be allowed, got %s", tool.name, out)
+				}
+			}
+
+			// Insert 3 active children
+			for i := 1; i <= 3; i++ {
+				_, err := h.DB.ExecContext(ctx, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+					VALUES (?, ?, ?, 'model', 'coder', 'itm_1', 'itm_1', 'agt_1', '', 'active', 1)`,
+					fmt.Sprintf("%s_child_%d", tc.kind, i), fmt.Sprintf("child-%s-%d", tc.kind, i), string(tc.kind))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// At budget: all tools denied
+			for _, tool := range tc.tools {
+				out, err := h.Handle(ctx, tc.kind, "PreToolUse", ses, tool.stdin)
+				if err != nil {
+					t.Fatalf("%s: %v", tool.name, err)
+				}
+				tc.verifyDeny(t, tool.name, out)
+			}
+
+			// One child finishes: active becomes 2 -> allowed again
+			if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, fmt.Sprintf("%s_child_1", tc.kind)); err != nil {
+				t.Fatal(err)
+			}
+			out, err := h.Handle(ctx, tc.kind, "PreToolUse", ses, tc.tools[0].stdin)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.tools[0].name, err)
+			}
+			if len(out) != 0 {
+				t.Fatalf("%s: after child finishes must be allowed, got %s", tc.tools[0].name, out)
+			}
+		})
+	}
+}
+

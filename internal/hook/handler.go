@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -237,6 +238,42 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
 			}, nil
 		}
+
+		// Detect subagent dispatch tools across all supported agents
+		isSpawn := (in.IsSwarmTool && strings.Contains(in.ToolName, "swarm_spawn")) ||
+			strings.Contains(in.ToolName, "swarm_spawn") ||
+			in.ToolName == "Task" ||
+			in.ToolName == "invoke_subagent" ||
+			in.ToolName == "subagent" ||
+			in.ToolName == "dispatch_agent" ||
+			in.ToolName == "spawn_agent"
+
+		if isSpawn && s.AgentID != "" && h.RT != nil && h.RT.Settings != nil {
+			cfg, err := h.RT.Settings.Get(ctx)
+			if err != nil {
+				return adapter.HookDecision{}, err
+			}
+
+			maxSubagents := cfg.MaxConcurrentSubagents
+			if maxSubagents <= 0 {
+				maxSubagents = 3
+			}
+
+			var active int
+			err = h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents
+				WHERE parent_agent_id = ? AND state IN ('queued', 'active')`, s.AgentID).Scan(&active)
+			if err != nil {
+				return adapter.HookDecision{}, err
+			}
+
+			if active >= maxSubagents {
+				return adapter.HookDecision{
+					Block:  true,
+					Reason: fmt.Sprintf("[swarm] Subagent budget exceeded (max %d active). Run sequentially or wait for active subagents to finish.", maxSubagents),
+				}, nil
+			}
+		}
+
 		if in.Command != "" {
 			if blocked, reason := (AttrCheck{ReadFile: h.readFile}).Block(in.Command, in.Cwd); blocked {
 				return adapter.HookDecision{

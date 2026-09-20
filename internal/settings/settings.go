@@ -40,12 +40,13 @@ type Settings struct {
 	Notifications    map[string]NotifyPref `json:"notifications"`
 	MaxOrchestrators int                   `json:"max_orchestrators"`
 	MaxAgents        int                   `json:"max_agents"`
-	MaxAgentsPerRoot int                   `json:"max_agents_per_root"`
-	ScanExcludes     []string              `json:"scan_excludes"`
-	ScanIntervalSec  int                   `json:"scan_interval_sec"`
-	MenubarCompact   bool                  `json:"menubar_compact"`
-	UsagePollSec     int                   `json:"usage_poll_sec"`
-	PauseDeadlineSec int                   `json:"pause_deadline_sec"`
+	MaxAgentsPerRoot       int                   `json:"max_agents_per_root"`
+	MaxConcurrentSubagents int                   `json:"max_concurrent_subagents"`
+	ScanExcludes           []string              `json:"scan_excludes"`
+	ScanIntervalSec        int                   `json:"scan_interval_sec"`
+	MenubarCompact         bool                  `json:"menubar_compact"`
+	UsagePollSec           int                   `json:"usage_poll_sec"`
+	PauseDeadlineSec       int                   `json:"pause_deadline_sec"`
 }
 
 // roleDefaults is §2.1 A3; "default" effort is "".
@@ -70,17 +71,18 @@ func Defaults(installed []kinds.AgentKind) Settings {
 	}
 	on := NotifyPref{Center: true, Sound: true}
 	return Settings{
-		EnabledAgents:    enabled,
-		Roles:            maps.Clone(roleDefaults),
-		FallbackDefault:  RoleDefault{Agent: kinds.Claude, Model: "sonnet"},
-		Notifications:    map[string]NotifyPref{"info": on, "attention": on, "action": on},
-		MaxOrchestrators: 3,
-		MaxAgents:        8,
-		MaxAgentsPerRoot: 4,
-		ScanExcludes:     []string{"~/Library", "~/.Trash", "~/Downloads"},
-		ScanIntervalSec:  21600,
-		UsagePollSec:     300,
-		PauseDeadlineSec: 120,
+		EnabledAgents:          enabled,
+		Roles:                  maps.Clone(roleDefaults),
+		FallbackDefault:        RoleDefault{Agent: kinds.Claude, Model: "sonnet"},
+		Notifications:          map[string]NotifyPref{"info": on, "attention": on, "action": on},
+		MaxOrchestrators:       3,
+		MaxAgents:              8,
+		MaxAgentsPerRoot:       4,
+		MaxConcurrentSubagents: 3,
+		ScanExcludes:           []string{"~/Library", "~/.Trash", "~/Downloads"},
+		ScanIntervalSec:        21600,
+		UsagePollSec:           300,
+		PauseDeadlineSec:       120,
 	}
 }
 
@@ -324,6 +326,8 @@ func (s *Store) validate(ctx context.Context, prev, next Settings) error {
 		return invalid("Maximum concurrent agents must be between 1 and 32.")
 	case next.MaxAgentsPerRoot < 1 || next.MaxAgentsPerRoot > 16:
 		return invalid("Maximum concurrent agents per item must be between 1 and 16.")
+	case next.MaxConcurrentSubagents < 1 || next.MaxConcurrentSubagents > 16:
+		return invalid("Maximum concurrent subagents per parent must be between 1 and 16.")
 	case next.PauseDeadlineSec < 30 || next.PauseDeadlineSec > 600:
 		return invalid("Pause deadline must be between 30 and 600 seconds.")
 	case next.ScanIntervalSec < 3600:
