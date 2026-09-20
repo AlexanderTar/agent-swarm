@@ -34,6 +34,14 @@ public struct PanePreviewPanel: View {
         .padding(12)
         .frame(width: Self.size.width, height: Self.size.height, alignment: .leading)
         .glassPanel(cornerRadius: 12)
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .onHover { inside in
+            if inside {
+                preview.enterPanel()
+            } else {
+                preview.leavePanel()
+            }
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -49,15 +57,16 @@ public struct PanePreviewPanel: View {
                 if !tmuxAlive {
                     Text("⚠ " + Copy.paneDead).font(.system(size: 10)).foregroundStyle(.orange)
                 }
-                Spacer(minLength: 0)
-                Text(text)
-                    .font(.system(size: 11, design: .monospaced))
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ScrollView(.vertical) {
+                    Text(text)
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(nil)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .defaultScrollAnchor(.bottom)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            .clipped()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         case let .failed(message):
             Text(message).font(.callout).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)

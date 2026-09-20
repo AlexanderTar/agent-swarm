@@ -64,6 +64,8 @@ public enum DisplayState: String, Sendable, CaseIterable {
     public var isPausing: Bool { [.pauseRequested, .quiescing, .stopping].contains(self) }
     /// Something "Pause all" can pause.
     public var isPausable: Bool { [.spawning, .running, .waiting, .stale].contains(self) }
+    /// Whether this agent is running (active) or waiting/stale (idle) with a live session for hover preview.
+    public var isActiveOrIdle: Bool { [.spawning, .running, .waiting, .stale].contains(self) }
 }
 
 public enum DotTone: String, Sendable {

@@ -207,6 +207,78 @@ final class PanePreviewModelTests: XCTestCase {
         XCTAssertEqual(model.anchor, .none)
         XCTAssertEqual(mock.calls, [])
     }
+
+    // MARK: - panel hover & dismiss delay
+
+    func testLeaveWhileLoadedDelaysDismissal() async throws {
+        let mock = MockDaemonClient()
+        let rec = SleepRecorder()
+        rec.stopAfter = 2
+        let model = PanePreviewModel(client: mock, connected: { true }, sleep: rec.sleep)
+        model.hover("a", anchor: anchor(0))
+        await model.pollTask?.value
+        XCTAssertEqual(model.agent, "a")
+
+        // Leave while loaded: dismissTask is started, agent is NOT immediately cleared
+        rec.stopAfter = Int.max
+        model.leave("a")
+        XCTAssertEqual(model.agent, "a")
+        XCTAssertNotNil(model.dismissTask)
+
+        // Once dismissTask finishes, hover is cleared
+        await model.dismissTask?.value
+        XCTAssertNil(model.agent)
+        XCTAssertEqual(model.anchor, .none)
+    }
+
+    func testEnterPanelCancelsDismissAndLeavesPanelRestartsDismiss() async throws {
+        let mock = MockDaemonClient()
+        let rec = SleepRecorder()
+        rec.stopAfter = 2
+        let model = PanePreviewModel(client: mock, connected: { true }, sleep: rec.sleep)
+        model.hover("a", anchor: anchor(0))
+        await model.pollTask?.value
+
+        // Leave row: dismiss started
+        rec.stopAfter = Int.max
+        model.leave("a")
+        XCTAssertNotNil(model.dismissTask)
+
+        // Enter panel: dismiss cancelled
+        model.enterPanel()
+        XCTAssertTrue(model.isInsidePanel)
+        XCTAssertNil(model.dismissTask)
+        XCTAssertEqual(model.agent, "a")
+
+        // Leave panel: dismiss restarted
+        model.leavePanel()
+        XCTAssertFalse(model.isInsidePanel)
+        XCTAssertNotNil(model.dismissTask)
+
+        await model.dismissTask?.value
+        XCTAssertNil(model.agent)
+    }
+
+    func testHoverSameAgentWhileLoadedPreservesStatusAndCancelsDismiss() async throws {
+        let mock = MockDaemonClient()
+        mock.paneResult = .success(PaneCapture(text: "capture for a", tmuxAlive: true, lines: 40))
+        let rec = SleepRecorder()
+        rec.stopAfter = 2
+        let model = PanePreviewModel(client: mock, connected: { true }, sleep: rec.sleep)
+        model.hover("a", anchor: anchor(0))
+        await model.pollTask?.value
+        XCTAssertEqual(model.status, .text("capture for a", tmuxAlive: true))
+
+        rec.stopAfter = Int.max
+        model.leave("a")
+        XCTAssertNotNil(model.dismissTask)
+
+        // Re-hovering same agent cancels dismiss and preserves status
+        model.hover("a", anchor: anchor(10))
+        XCTAssertNil(model.dismissTask)
+        XCTAssertEqual(model.anchor, anchor(10))
+        XCTAssertEqual(model.status, .text("capture for a", tmuxAlive: true))
+    }
 }
 
 final class PanePreviewGeometryTests: XCTestCase {

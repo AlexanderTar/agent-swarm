@@ -56,7 +56,7 @@ final class PanePreviewWindow {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.ignoresMouseEvents = true // read-only: never steals hover or clicks
+        panel.ignoresMouseEvents = false // interactive: allows hover and scrolling inside preview
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]

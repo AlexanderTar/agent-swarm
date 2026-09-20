@@ -19,6 +19,7 @@ public final class PanePreviewModel {
     /// the list never spends a single capture. Skipped while a hover is
     /// already active (decision 6).
     public static let firstCaptureDelay: Duration = .milliseconds(400)
+    public static let dismissDelay: Duration = .milliseconds(300)
     public static let pollInterval: Duration = .seconds(1)
     public static let lines = 40
 
@@ -27,6 +28,7 @@ public final class PanePreviewModel {
     /// Where to put the panel: the hovered row, its host window and its screen,
     /// all in screen points, captured at hover time. `.zero` means no hover.
     public private(set) var anchor: Anchor = .none
+    public private(set) var isInsidePanel = false
 
     public struct Anchor: Equatable, Sendable {
         public var row: CGRect
@@ -48,6 +50,7 @@ public final class PanePreviewModel {
     /// The current hover's poll loop. Internal (not private) so tests can await
     /// it directly, the same reason `EventStream.run()` is public.
     private(set) var pollTask: Task<Void, Never>?
+    private(set) var dismissTask: Task<Void, Never>?
 
     /// Bumped on every hover start/end. A response is only applied if the generation it was
     /// issued under still matches — the name alone isn't enough: hovering A, then B, then A
@@ -66,6 +69,12 @@ public final class PanePreviewModel {
     /// Hover began (or moved) onto `name`. All three rects are screen points,
     /// measured when the hover fired.
     public func hover(_ name: String, anchor: Anchor) {
+        dismissTask?.cancel()
+        dismissTask = nil
+        if agent == name && status != .loading {
+            self.anchor = anchor
+            return
+        }
         let skipDelay = agent != nil // decision 6: a hover already active means the panel is on screen
         pollTask?.cancel()
         agent = name
@@ -87,7 +96,32 @@ public final class PanePreviewModel {
     /// cannot cancel the row you just entered.
     public func leave(_ name: String) {
         guard agent == name else { return }
-        clear()
+        if status == .loading {
+            clear()
+            return
+        }
+        if isInsidePanel { return }
+        startDismiss()
+    }
+
+    public func enterPanel() {
+        dismissTask?.cancel()
+        dismissTask = nil
+        isInsidePanel = true
+    }
+
+    public func leavePanel() {
+        isInsidePanel = false
+        startDismiss()
+    }
+
+    private func startDismiss() {
+        dismissTask?.cancel()
+        dismissTask = Task { [weak self] in
+            guard let self else { return }
+            do { try await self.sleep(Self.dismissDelay) } catch { return }
+            self.clear()
+        }
     }
 
     /// Popover closed, or the app is tearing down.
@@ -98,9 +132,12 @@ public final class PanePreviewModel {
     private func clear() {
         pollTask?.cancel()
         pollTask = nil
+        dismissTask?.cancel()
+        dismissTask = nil
         agent = nil
         anchor = .none
         status = .loading
+        isInsidePanel = false
         generation += 1
     }
 
@@ -116,18 +153,30 @@ public final class PanePreviewModel {
     /// still the model's current generation, on top of the name check — see `generation`'s doc.
     private func capture(_ name: String, generation: Int) async {
         guard connected() else {
-            if agent == name, self.generation == generation { status = .failed(DaemonError.unreachable.message) }
+            if agent == name, self.generation == generation {
+                let next = Status.failed(DaemonError.unreachable.message)
+                if status != next { status = next }
+            }
             return
         }
         do {
             let cap = try await client.pane(name, lines: Self.lines)
-            if agent == name, self.generation == generation { status = .text(cap.text, tmuxAlive: cap.tmuxAlive) }
+            if agent == name, self.generation == generation {
+                let next = Status.text(cap.text, tmuxAlive: cap.tmuxAlive)
+                if status != next { status = next }
+            }
         } catch is CancellationError {
             // The hover moved on; drop it silently (decision 9's error table).
         } catch let e as DaemonError {
-            if agent == name, self.generation == generation { status = .failed(Self.copy(for: e)) }
+            if agent == name, self.generation == generation {
+                let next = Status.failed(Self.copy(for: e))
+                if status != next { status = next }
+            }
         } catch {
-            if agent == name, self.generation == generation { status = .failed(DaemonError.unreachable.message) }
+            if agent == name, self.generation == generation {
+                let next = Status.failed(DaemonError.unreachable.message)
+                if status != next { status = next }
+            }
         }
     }
 

@@ -50,7 +50,7 @@ struct AgentsSection: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: row.expanded == true ? "chevron.down" : "chevron.right").frame(width: 12)
-                                Text(Copy.failed(count)).foregroundStyle(.red)
+                                Text(Copy.failed(count)).foregroundStyle(.secondary)
                             }
                         }
                         .buttonStyle(.plain)
@@ -71,6 +71,10 @@ struct AgentRowView: View {
     let expanded: Bool?
     @State private var confirming: AgentAction?
     @State private var anchor = ScreenAnchor()
+
+    private var canHover: Bool {
+        !AgentTree.isFinished(agent) && DisplayState(agent).isActiveOrIdle
+    }
 
     var body: some View {
         let state = DisplayState(agent)
@@ -97,10 +101,13 @@ struct AgentRowView: View {
             .contentShape(Rectangle())
             .background(ScreenAnchorReader(anchor: anchor))
             .onHover { inside in
+                guard canHover else { return }
                 if inside, let a = anchor.measure() { model.preview.hover(agent.name, anchor: a) }
                 else { model.preview.leave(agent.name) }
             }
-            .onDisappear { model.preview.leave(agent.name) }
+            .onDisappear {
+                if canHover { model.preview.leave(agent.name) }
+            }
             Spacer(minLength: 4)
             ForEach(actions.filter { $0.placement == .button }) { a in
                 IconButton(symbol(a), help: a.label, disabled: a.disabled) { run(a) }
