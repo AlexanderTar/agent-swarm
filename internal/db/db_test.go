@@ -143,7 +143,6 @@ func TestCheckConstraints(t *testing.T) {
 		"bad status":  insertItem(d, "itm_2", "EPIC-2", "epic", "t", "", "doing"),
 		"empty title": insertItem(d, "itm_3", "EPIC-3", "epic", "", "", "ready"),
 		"long title":  insertItem(d, "itm_4", "EPIC-4", "epic", strings.Repeat("t", 201), "", "ready"),
-		"long brief":  insertItem(d, "itm_5", "EPIC-5", "epic", "t", strings.Repeat("b", 601), "ready"),
 	}
 	for name, err := range cases {
 		if err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
@@ -152,6 +151,9 @@ func TestCheckConstraints(t *testing.T) {
 	}
 	if err := insertItem(d, "itm_ok", "EPIC-9", "epic", strings.Repeat("t", 200), strings.Repeat("b", 600), "ready"); err != nil {
 		t.Fatalf("boundary values rejected: %v", err)
+	}
+	if err := insertItem(d, "itm_long_brief", "EPIC-10", "epic", "Title", strings.Repeat("b", 2000), "ready"); err != nil {
+		t.Fatalf("long brief rejected: %v", err)
 	}
 	_, err := d.Exec(`INSERT INTO item_deps (item_id, blocked_by_id, created_at) VALUES ('itm_ok', 'itm_ok', 1)`)
 	if err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {

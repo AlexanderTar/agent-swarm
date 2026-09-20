@@ -25,8 +25,7 @@ describe("NewItemSheet (§16.5)", () => {
     expect(create).toBeDisabled();
     await user.selectOptions(await screen.findByRole("combobox", { name: "Parent" }), "STORY-40");
     expect(create).toBeEnabled();
-    expect(screen.getByRole("textbox", { name: "Brief" })).toHaveAttribute("maxLength", "600");
-    expect(screen.getByText("0/600")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Brief" })).toBeInTheDocument();
   });
 
   it("creates exactly one item on a double click with acceptance criteria", async () => {

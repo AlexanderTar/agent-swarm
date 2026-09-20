@@ -6,7 +6,7 @@ import { C, TYPE_LABEL } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
 import { useItems } from "../data/queries";
 import {
-  BRIEF_MAX, type NewItemForm, type NewType, PARENT_TYPES, TITLE_MAX, canCreate, initialParent, newItemPayload, parentOptions,
+  type NewItemForm, type NewType, PARENT_TYPES, TITLE_MAX, canCreate, initialParent, newItemPayload, parentOptions,
 } from "../logic/newItem";
 import type { CreateItemBody } from "../types";
 
@@ -89,8 +89,7 @@ export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): 
       </label>
       <label className="block">
         <span>{C.brief}</span>
-        <textarea aria-label={C.brief} rows={4} maxLength={BRIEF_MAX} value={form.brief} onChange={(e) => set({ brief: e.target.value })} className={input} />
-        <span className="text-muted">{`${form.brief.length}/${BRIEF_MAX}`}</span>
+        <textarea aria-label={C.brief} rows={4} value={form.brief} onChange={(e) => set({ brief: e.target.value })} className={input} />
       </label>
       <fieldset className="space-y-1">
         <legend>{C.acceptance}</legend>

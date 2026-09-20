@@ -287,7 +287,7 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
       if (agent(name)) return fail(409, "conflict", C.nameTaken);
       const key = `SPIKE-${++counter}`;
       const it = makeItem({
-        key, title: body.name, brief: String(body.request ?? "").slice(0, 600), status: "draft",
+        key, title: body.name, brief: String(body.request ?? ""), status: "draft",
         spike_intent: body.intent, repos: body.repos ?? [], created_at: NOW,
       });
       db.items.push(it);

@@ -16,7 +16,7 @@ import { checkMove, failureMessage } from "../logic/transitions";
 import type { Item, ItemStatus, PatchItemBody, Priority } from "../types";
 import type { DetailsProps } from "../views/props";
 
-function Editable(p: { label: string; value: string; multiline?: boolean; maxLength: number; disabled: boolean; onSave(v: string): Promise<boolean>; className?: string }) {
+function Editable(p: { label: string; value: string; multiline?: boolean; maxLength?: number; disabled: boolean; onSave(v: string): Promise<boolean>; className?: string }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(p.value);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -200,7 +200,7 @@ export function Details(p: DetailsProps) {
         <div className="space-y-3">
           <div>
             <h4 className="text-muted">{C.brief}</h4>
-            <Editable label={C.brief} value={item.brief} multiline maxLength={600} disabled={!p.connected || patch.pending} onSave={(brief) => save({ brief })} />
+            <Editable label={C.brief} value={item.brief} multiline disabled={!p.connected || patch.pending} onSave={(brief) => save({ brief })} />
           </div>
           {item.acceptance.length > 0 && (
             <div>

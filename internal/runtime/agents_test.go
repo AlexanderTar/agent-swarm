@@ -316,6 +316,35 @@ func TestStartSpikeCreatesTheItemTheAgentAndTheSession(t *testing.T) {
 	}
 }
 
+func TestStartSpikeWithChoreIntentAndLongBrief(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	longBrief := strings.Repeat("Detailed maintenance instructions. ", 60) // ~2160 chars (> 600)
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{
+		Name:    "First pass cleanup",
+		Intent:  "chore",
+		Kind:    Fake,
+		Model:   "fake-1",
+		Request: longBrief,
+	})
+	if err != nil {
+		t.Fatalf("expected chore spike with long brief to succeed, got: %v", err)
+	}
+	it, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.SpikeIntent != "chore" {
+		t.Fatalf("expected spike_intent 'chore', got: %q", it.SpikeIntent)
+	}
+	if it.Brief != longBrief {
+		t.Fatalf("expected brief to match longBrief exactly, got len %d vs %d", len(it.Brief), len(longBrief))
+	}
+	if a.Name != "first-pass-cleanup" {
+		t.Fatalf("name = %q", a.Name)
+	}
+}
+
 // §17.3: a user-typed name that is taken is refused, not silently suffixed (P4 carry).
 func TestStartSpikeRefusesADuplicateUserTypedName(t *testing.T) {
 	s, _, _ := newStore(t)

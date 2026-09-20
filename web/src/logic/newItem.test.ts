@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { seed } from "../mock/fixtures";
-import { BRIEF_MAX, PARENT_TYPES, TITLE_MAX, canCreate, initialParent, newItemPayload, parentOptions } from "./newItem";
+import { PARENT_TYPES, TITLE_MAX, canCreate, initialParent, newItemPayload, parentOptions } from "./newItem";
 
 const items = seed().items;
 const base = { type: "task" as const, parentKey: "STORY-40", title: "Add tests", brief: "", acceptance: ["", " A works ", "B works"] };
@@ -24,12 +24,11 @@ describe("new item rules (§16.5, I15)", () => {
 
   it("validates and builds the payload", () => {
     expect(TITLE_MAX).toBe(200);
-    expect(BRIEF_MAX).toBe(600);
     expect(canCreate(base)).toBe(true);
     expect(canCreate({ ...base, title: "  " })).toBe(false);
     expect(canCreate({ ...base, parentKey: "" })).toBe(false);
     expect(canCreate({ ...base, type: "epic", parentKey: "" })).toBe(true);
-    expect(canCreate({ ...base, brief: "x".repeat(601) })).toBe(false);
+    expect(canCreate({ ...base, brief: "x".repeat(2000) })).toBe(true);
     expect(newItemPayload(base, "r1")).toEqual({
       request_id: "r1", type: "task", title: "Add tests", brief: "", acceptance: ["A works", "B works"], parent_key: "STORY-40",
     });
