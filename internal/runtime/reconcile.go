@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -402,8 +403,15 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 				db.Millis(now), r.SessionID); err != nil {
 				return err
 			}
-			return s.notify(ctx, tx, NotifyInput{Kind: "agent.paused", AgentName: r.AgentName, ItemKey: r.ItemKey,
-				Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}})
+			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.paused", AgentName: r.AgentName, ItemKey: r.ItemKey,
+				Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
+				return err
+			}
+			already, err := s.alreadyRelayed(ctx, r.ParentAgentID, r.ItemID, "paused", r.StartedAt)
+			if err == nil && !already {
+				_ = s.relayPaused(ctx, tx, r.AgentID)
+			}
+			return nil
 		})
 	}
 	var exitCode *int
@@ -457,6 +465,12 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 			return err
 		})
 	default: // crashed: no terminal checkpoint in this attempt (§10.6)
+		var tail string
+		if capture, err := s.Tmux.Capture(ctx, r.TmuxName, 10); err == nil {
+			tail = strings.TrimSpace(capture)
+		}
+		ancestor, ancestorOk, _ := s.nearestLiveAncestor(ctx, r.AgentID)
+
 		return s.tx(ctx, func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'crashed', exit_code = ?,
 				ended_at = ? WHERE id = ?`, exitCode, db.Millis(now), r.SessionID); err != nil {
@@ -466,16 +480,23 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 				ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
 				return err
 			}
-			if r.ParentAgentID == "" {
-				return nil
+			if ancestorOk {
+				payload, err := json.Marshal(map[string]any{
+					"event":     "crashed",
+					"agent":     r.AgentName,
+					"item":      r.ItemKey,
+					"exit_code": exitCode,
+					"tail":      tail,
+				})
+				if err == nil {
+					_, err = s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: ancestor.ID,
+						RootItemID: r.RootItemID, ItemID: r.ItemID, Payload: payload})
+					if err != nil {
+						return err
+					}
+				}
 			}
-			payload, err := json.Marshal(map[string]any{"event": "crashed", "agent": r.AgentName, "item": r.ItemKey})
-			if err != nil {
-				return err
-			}
-			_, err = s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: r.ParentAgentID,
-				RootItemID: r.RootItemID, ItemID: r.ItemID, Payload: payload})
-			return err
+			return nil
 		})
 	}
 }

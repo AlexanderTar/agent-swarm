@@ -219,9 +219,6 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		if ses.State.Pausing() && !slices.Contains(pauseAllowedKinds, in.Kind) {
 			return errors.New(pausedTool)
 		}
-		if err := s.onPausingCheckpoint(ctx, tx, ses, in.Kind); err != nil {
-			return err
-		}
 
 		assignmentKey, err := s.itemKey(ctx, tx, a.ItemID)
 		if err != nil {
@@ -302,6 +299,9 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			return err
 		}
 		out.CheckpointID = ckpID
+		if err := s.onPausingCheckpoint(ctx, tx, ses, in.Kind); err != nil {
+			return err
+		}
 
 		for _, id := range in.Processed {
 			if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = 'acked', acked_at = ?

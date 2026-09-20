@@ -360,21 +360,37 @@ func (s *Store) onPausingCheckpoint(ctx context.Context, tx *sql.Tx, ses Session
 	return s.relayPaused(ctx, tx, ses.AgentID)
 }
 
-// relayPaused tells agentID's parent, if it has one, that it is paused.
+// relayPaused tells agentID's nearest live ancestor, if it has one, that it is paused.
 func (s *Store) relayPaused(ctx context.Context, tx *sql.Tx, agentID string) error {
+	ancestor, ok, err := s.nearestLiveAncestor(ctx, agentID)
+	if err != nil || !ok {
+		return err
+	}
 	a, err := s.agentByIDTx(ctx, tx, agentID)
 	if err != nil {
 		return err
 	}
-	if a.ParentAgentID == "" {
-		return nil
-	}
-	payload, err := json.Marshal(map[string]any{"event": "paused", "agent": a.Name})
+	var itemKey, summary string
+	_ = tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey)
+	_ = tx.QueryRowContext(ctx, `SELECT summary FROM checkpoints WHERE agent_id = ?
+		ORDER BY created_at DESC, rowid DESC LIMIT 1`, a.ID).Scan(&summary)
+	payload, err := json.Marshal(map[string]any{
+		"event":   "paused",
+		"agent":   a.Name,
+		"item":    itemKey,
+		"summary": summary,
+	})
 	if err != nil {
 		return err
 	}
-	_, err = s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: a.ParentAgentID,
-		RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload})
+	_, err = s.enqueue(ctx, tx, Message{
+		Kind:       "relay",
+		Origin:     "daemon",
+		ToAgentID:  ancestor.ID,
+		RootItemID: a.RootItemID,
+		ItemID:     a.ItemID,
+		Payload:    payload,
+	})
 	return err
 }
 
@@ -854,6 +870,7 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 	if err != nil {
 		return Agent{}, err
 	}
+	ancestor, ancestorOk, _ := s.nearestLiveAncestor(ctx, a.ID)
 	if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_control", &out, func(tx *sql.Tx) error {
 		if a.State != AgentActive {
 			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active' WHERE id = ?`, a.ID); err != nil {
@@ -865,6 +882,26 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 		}
 		a.State = AgentActive
 		out = a
+
+		if ancestorOk {
+			var itemKey string
+			_ = tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey)
+			payload, err := json.Marshal(map[string]any{
+				"event": "resumed",
+				"agent": a.Name,
+				"item":  itemKey,
+			})
+			if err == nil {
+				_, _ = s.enqueue(ctx, tx, Message{
+					Kind:       "relay",
+					Origin:     "daemon",
+					ToAgentID:  ancestor.ID,
+					RootItemID: a.RootItemID,
+					ItemID:     a.ItemID,
+					Payload:    payload,
+				})
+			}
+		}
 		return nil
 	}); err != nil {
 		return Agent{}, err
