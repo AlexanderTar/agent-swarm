@@ -48,8 +48,9 @@ final class PanePreviewModelTests: XCTestCase {
         let rec = SleepRecorder()
         let model = PanePreviewModel(client: mock, connected: { true }, sleep: rec.sleep)
         model.hover("a", anchor: anchor(0))
+        let t = model.pollTask
         model.leave("a") // cancels the task before its Task body ever runs
-        await model.pollTask?.value
+        await t?.value // model.pollTask is already nil after leave(); await the captured task itself
         XCTAssertEqual(mock.calls, [])
         XCTAssertNil(model.agent)
     }
@@ -83,6 +84,37 @@ final class PanePreviewModelTests: XCTestCase {
         await model.pollTask?.value
         XCTAssertEqual(mock.calls, ["pane b 40"], "a's pending hover never captured; b did, with no delay")
         XCTAssertEqual(rec.durations, [PanePreviewModel.pollInterval], "no firstCaptureDelay: a hover was already active")
+    }
+
+    /// Hovering A, then B, then A again reuses the name "A", so a name-only guard on a stale
+    /// in-flight response from the *first* A hover would wrongly pass once the cursor returns
+    /// to A. The mock parks that first capture at a gate; by the time it's released, a second
+    /// A hover has already started and completed its own capture — the generation guard must
+    /// keep the stale one from overwriting it (agent-hover-preview spec review, item 3).
+    func testStaleResponseFromAnEarlierHoverOfTheSameAgentNeverOverwritesALaterOne() async throws {
+        let mock = MockDaemonClient()
+        let rec = SleepRecorder()
+        let model = PanePreviewModel(client: mock, connected: { true }, sleep: rec.sleep)
+
+        mock.paneResult = .success(PaneCapture(text: "stale-a", tmuxAlive: true, lines: 40))
+        mock.holdPane = ["a"]
+        model.hover("a", anchor: anchor(0))
+        let staleTask = model.pollTask
+        while mock.calls.isEmpty { await Task.yield() } // wait until the first a's capture is parked at the gate
+        XCTAssertEqual(mock.calls, ["pane a 40"])
+
+        mock.holdPane = [] // only that in-flight call is held; later pane calls resolve immediately
+        model.hover("b", anchor: anchor(5))
+        mock.paneResult = .success(PaneCapture(text: "fresh-a", tmuxAlive: true, lines: 40))
+        rec.stopAfter = 2 // stop the second a hover's loop right after its own capture
+        model.hover("a", anchor: anchor(10)) // revisits "a" while the first a's response is still parked
+        await model.pollTask?.value
+        XCTAssertEqual(model.status, .text("fresh-a", tmuxAlive: true), "the second a hover's own capture")
+
+        mock.releasePane("a") // now let the stale first-a response land
+        await staleTask?.value
+        XCTAssertEqual(model.status, .text("fresh-a", tmuxAlive: true),
+                       "a stale response from a superseded hover generation must not overwrite the current one")
     }
 
     func testLeaveIsANoOpWhenItArrivesForARowThatIsNoLongerHovered() async throws {
@@ -168,8 +200,9 @@ final class PanePreviewModelTests: XCTestCase {
         let rec = SleepRecorder()
         let model = PanePreviewModel(client: mock, connected: { true }, sleep: rec.sleep)
         model.hover("a", anchor: anchor(0))
+        let t = model.pollTask
         model.cancel()
-        await model.pollTask?.value
+        await t?.value // model.pollTask is already nil after cancel(); await the captured task itself
         XCTAssertNil(model.agent)
         XCTAssertEqual(model.anchor, .none)
         XCTAssertEqual(mock.calls, [])

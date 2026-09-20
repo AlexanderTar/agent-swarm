@@ -127,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watcher?.start()
         previewWindow = PanePreviewWindow(preview: model.preview) { [weak model] name in
             guard let a = model.flatMap({ AgentTree.flatten($0.state.agents).first { $0.name == name } }) else { return nil }
-            return (Copy.roleLabel(a.role), a.itemKey)
+            return (a.kind.rawValue, a.itemKey)
         }
         Task {
             await model.start()

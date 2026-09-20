@@ -232,9 +232,22 @@ func TestAgentPaneNoSessionIs409(t *testing.T) {
 	wantErr(t, rec.Code, rec.Body.Bytes(), 409, "conflict", "That agent has no session.")
 }
 
-func TestAgentPaneCaptureFailureIs502(t *testing.T) {
+// The pane is confirmed gone (absent from Panes(), not just erroring): same dead-session
+// shape as TestAgentPaneNoSessionIs409, not a generic tmux_unreachable (scenario 8).
+func TestAgentPaneCaptureFailureWithAConfirmedDeadPaneIs409(t *testing.T) {
 	s, running := newServerWithSessionState(t, "running")
-	s.RT.Tmux = &paneTestTmux{captureErr: errors.New("tmux: no such session")}
+	s.RT.Tmux = &paneTestTmux{captureErr: errors.New("tmux: no such session")} // panes left empty: gone
+	rec := s.get(t, "/api/agents/"+running+"/pane")
+	wantErr(t, rec.Code, rec.Body.Bytes(), 409, "conflict", "That agent has no session.")
+}
+
+// The pane still shows up as live (a transient Capture error, e.g. tmux itself is down) —
+// this is the genuine tmux_unreachable case, distinct from the confirmed-dead-pane 409 above.
+func TestAgentPaneCaptureFailureWithALivePaneIs502(t *testing.T) {
+	s, running := newServerWithSessionState(t, "running")
+	tm := &paneTestTmux{captureErr: errors.New("tmux: no such session")}
+	tm.panes = []runtime.Pane{{Session: running}}
+	s.RT.Tmux = tm
 	rec := s.get(t, "/api/agents/"+running+"/pane")
 	wantErr(t, rec.Code, rec.Body.Bytes(), 502, "tmux_unreachable", "Can't reach tmux.")
 }

@@ -171,8 +171,27 @@ public final class MockDaemonClient: DaemonClient {
         try record("terminal-opened \(name)")
     }
 
+    /// Names whose next `pane` call parks at `releasePane` instead of returning immediately —
+    /// lets a test hold a stale capture in flight while a newer hover's own capture completes,
+    /// to reproduce the A→B→A race PanePreviewModel's hover generation guard exists for.
+    public var holdPane: Set<String> = []
+    private var paneGates: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    public func releasePane(_ name: String) {
+        guard var list = paneGates[name], !list.isEmpty else { return }
+        let cont = list.removeFirst()
+        paneGates[name] = list
+        cont.resume()
+    }
+
     public func pane(_ name: String, lines: Int) async throws -> PaneCapture {
         try record("pane \(name) \(lines)")
-        return try paneResult.get()
+        let snapshot = paneResult // capture now: a later mutation must not affect a parked call
+        if holdPane.contains(name) {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                paneGates[name, default: []].append(cont)
+            }
+        }
+        return try snapshot.get()
     }
 }

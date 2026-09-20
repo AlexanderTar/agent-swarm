@@ -1,9 +1,14 @@
 # Agent hover preview: live tmux pane snapshot beside the menubar popover
 
-> **AWAITING HUMAN APPROVAL, NOT YET IMPLEMENTED.**
-> Design only. No Swift or Go implementation code has been written. Do not
-> start Task 1 of the implementation order below until a human approves this
-> document.
+> **IMPLEMENTED.** Swift and Go code for this spec has landed. Two deliberate
+> deviations from the design below:
+> - The header spinner during a background re-poll (the "Loaded" screen's
+>   refreshing state) was not implemented — `PanePreviewModel.Status` has no
+>   `refreshing` case, and adding one wasn't judged worth the risk to its
+>   already-well-tested state machine.
+> - The anchor rect is captured once at hover time and is not re-measured on
+>   scroll, so the panel doesn't follow if the popover scrolls under a
+>   resting cursor.
 
 ## Context
 

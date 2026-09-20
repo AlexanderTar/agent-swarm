@@ -688,14 +688,22 @@ func (s *Server) agentPane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lines := paneLinesParam(r)
+	live := s.livePanes(ctx)
 	capture, err := s.RT.Tmux.Capture(ctx, ses.TmuxName, lines)
 	if err != nil {
+		if !live[ses.TmuxName] {
+			// The session row is still here but its pane is confirmed gone (not just a
+			// Capture error) — same dead-session shape as the ses == nil case above,
+			// not a generic "can't reach tmux" (agent-hover-preview spec, scenario 8).
+			s.writeErr(w, apiErr(http.StatusConflict, "conflict", "That agent has no session."))
+			return
+		}
 		s.writeErr(w, apiErr(http.StatusBadGateway, "tmux_unreachable", "Can't reach tmux."))
 		return
 	}
 	writeJSON(w, http.StatusOK, paneWire{
 		Text:      adapter.StripANSI(capture),
-		TmuxAlive: s.livePanes(ctx)[ses.TmuxName],
+		TmuxAlive: live[ses.TmuxName],
 		Lines:     lines,
 	})
 }

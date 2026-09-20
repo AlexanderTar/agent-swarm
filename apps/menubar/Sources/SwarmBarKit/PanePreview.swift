@@ -49,6 +49,13 @@ public final class PanePreviewModel {
     /// it directly, the same reason `EventStream.run()` is public.
     private(set) var pollTask: Task<Void, Never>?
 
+    /// Bumped on every hover start/end. A response is only applied if the generation it was
+    /// issued under still matches — the name alone isn't enough: hovering A, then B, then A
+    /// again reuses the name "A", and a stale response from the *first* A hover would pass a
+    /// name-only guard even though a newer A hover has since started (agent-hover-preview
+    /// spec review, item 3).
+    private var generation = 0
+
     public init(client: DaemonClient, connected: @escaping @MainActor () -> Bool,
                 sleep: @escaping EventStream.Sleep = { try await Task.sleep(for: $0) }) {
         self.client = client
@@ -64,12 +71,14 @@ public final class PanePreviewModel {
         agent = name
         self.anchor = anchor
         status = .loading
+        generation += 1
+        let gen = generation
         pollTask = Task { [weak self] in
             guard let self else { return }
             if !skipDelay {
                 do { try await self.sleep(Self.firstCaptureDelay) } catch { return }
             }
-            await self.pollLoop(for: name)
+            await self.pollLoop(for: name, generation: gen)
         }
     }
 
@@ -92,30 +101,33 @@ public final class PanePreviewModel {
         agent = nil
         anchor = .none
         status = .loading
+        generation += 1
     }
 
-    private func pollLoop(for name: String) async {
+    private func pollLoop(for name: String, generation: Int) async {
         while !Task.isCancelled {
-            await capture(name)
+            await capture(name, generation: generation)
             if Task.isCancelled { return }
             do { try await sleep(Self.pollInterval) } catch { return }
         }
     }
 
-    private func capture(_ name: String) async {
+    /// A response only lands if `generation` (the one active when this call was issued) is
+    /// still the model's current generation, on top of the name check — see `generation`'s doc.
+    private func capture(_ name: String, generation: Int) async {
         guard connected() else {
-            if agent == name { status = .failed(DaemonError.unreachable.message) }
+            if agent == name, self.generation == generation { status = .failed(DaemonError.unreachable.message) }
             return
         }
         do {
             let cap = try await client.pane(name, lines: Self.lines)
-            if agent == name { status = .text(cap.text, tmuxAlive: cap.tmuxAlive) }
+            if agent == name, self.generation == generation { status = .text(cap.text, tmuxAlive: cap.tmuxAlive) }
         } catch is CancellationError {
             // The hover moved on; drop it silently (decision 9's error table).
         } catch let e as DaemonError {
-            if agent == name { status = .failed(Self.copy(for: e)) }
+            if agent == name, self.generation == generation { status = .failed(Self.copy(for: e)) }
         } catch {
-            if agent == name { status = .failed(DaemonError.unreachable.message) }
+            if agent == name, self.generation == generation { status = .failed(DaemonError.unreachable.message) }
         }
     }
 
@@ -145,6 +157,7 @@ public enum PanePreviewGeometry {
         var x = a.host.minX - gap - size.width
         if x < a.screen.minX { x = a.host.maxX + gap }
         x = min(x, a.screen.maxX - size.width)
+        x = max(x, a.screen.minX)
         var y = min(a.row.maxY - size.height, a.screen.maxY - size.height)
         y = max(y, a.screen.minY)
         return CGRect(x: x, y: y, width: size.width, height: size.height)

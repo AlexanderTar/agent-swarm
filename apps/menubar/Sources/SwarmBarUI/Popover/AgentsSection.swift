@@ -98,6 +98,7 @@ struct AgentRowView: View {
                 if inside, let a = anchor.measure() { model.preview.hover(agent.name, anchor: a) }
                 else { model.preview.leave(agent.name) }
             }
+            .onDisappear { model.preview.leave(agent.name) }
             Spacer(minLength: 4)
             ForEach(actions.filter { $0.placement == .button }) { a in
                 IconButton(symbol(a), help: a.label, disabled: a.disabled) { run(a) }
