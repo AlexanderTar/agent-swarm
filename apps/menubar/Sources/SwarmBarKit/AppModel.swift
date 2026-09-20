@@ -93,6 +93,9 @@ public final class AppModel {
     private let openURL: @MainActor (URL) -> Void
     private var notifier: Notifier!
     private var stream: EventStream!
+    /// The Agents row hover preview (agent-hover-preview spec). Public: the floating panel
+    /// window lives in the SwarmBar target and observes this directly.
+    public private(set) var preview: PanePreviewModel!
 
     public init(client: DaemonClient, endpoint: DaemonEndpoint, terminals: Terminals, poster: NotificationPosting,
                 defaults: KeyValueStore, cache: StateCache, connect: @escaping EventStream.Connect,
@@ -123,6 +126,7 @@ public final class AppModel {
                              onConnected: { [weak self] up in
                                  Task { up ? await self?.refresh() : await self?.markDisconnected() }
                              })
+        preview = PanePreviewModel(client: client, connected: { [weak self] in self?.connected ?? false }, sleep: sleep)
     }
 
     public var format: Format { Format(now: now(), timeZone: timeZone) }

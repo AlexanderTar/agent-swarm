@@ -180,3 +180,21 @@ func TestDepsLaunchDirAndWriteLaunchFile(t *testing.T) {
 		t.Fatalf("launch dir mode = %v, want 0700", dfi.Mode().Perm())
 	}
 }
+
+// StripANSI removes SGR/CSI escape sequences so the menubar's hover-preview
+// panel (agent-hover-preview spec, decision 5) can render plain monospaced
+// text with no ANSI renderer of its own.
+func TestStripANSIRemovesEscapeSequencesButKeepsPlainText(t *testing.T) {
+	in := "\x1b[32mgreen\x1b[0m plain\r\n\x1b[1;31mbold red\x1b[0m\n\x1b[?25l\x1b[2K\x1b[Kcursor stuff"
+	want := "green plain\r\nbold red\ncursor stuff"
+	if got := StripANSI(in); got != want {
+		t.Fatalf("StripANSI() = %q, want %q", got, want)
+	}
+}
+
+func TestStripANSIOnPlainTextIsUnchanged(t *testing.T) {
+	in := "no escapes here\nsecond line\n"
+	if got := StripANSI(in); got != in {
+		t.Fatalf("StripANSI() = %q, want unchanged %q", got, in)
+	}
+}

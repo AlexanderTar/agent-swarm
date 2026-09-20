@@ -156,4 +156,8 @@ public final class HTTPDaemonClient: DaemonClient {
     public func terminalOpened(name: String) async throws {
         _ = try await call("POST", "/api/agents/\(Self.segment(name))/terminal-opened", as: Empty.self)
     }
+
+    public func pane(_ name: String, lines: Int) async throws -> PaneCapture {
+        try await call("GET", "/api/agents/\(Self.segment(name))/pane?lines=\(lines)", timeout: 5)
+    }
 }

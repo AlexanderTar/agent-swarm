@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/notify"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
@@ -638,7 +639,73 @@ func (s *Server) runtimeRoutes() []route {
 		{"GET", "/api/state", authDaemon, s.state},
 		{"GET", "/api/agents", authDaemon, s.agents},
 		{"GET", "/api/items/{key}/checkpoints", authDaemon, s.checkpoints},
+		{"GET", "/api/agents/{name}/pane", authDaemon, s.agentPane},
 	}
+}
+
+// paneWire is GET /api/agents/{name}/pane. Text is ANSI-stripped
+// (adapter.StripANSI): the menubar renders it as plain monospaced text.
+type paneWire struct {
+	Text      string `json:"text"`
+	TmuxAlive bool   `json:"tmux_alive"`
+	Lines     int    `json:"lines"`
+}
+
+// defaultPaneLines is the preview panel's height in rows; maxPaneLines caps
+// what a caller can ask for, so one query parameter cannot pull 20 000 lines
+// of scrollback (history-limit in spawn.TmuxConf) through the daemon.
+const (
+	defaultPaneLines = 40
+	maxPaneLines     = 200
+)
+
+func paneLinesParam(r *http.Request) int {
+	n, err := strconv.Atoi(r.URL.Query().Get("lines"))
+	if err != nil {
+		return defaultPaneLines
+	}
+	if n < 1 {
+		return 1
+	}
+	if n > maxPaneLines {
+		return maxPaneLines
+	}
+	return n
+}
+
+func (s *Server) agentPane(w http.ResponseWriter, r *http.Request) {
+	if s.notWired(w, s.RT != nil && s.RT.Tmux != nil) {
+		return
+	}
+	ctx, name := r.Context(), r.PathValue("name")
+	_, ses, err := s.loadAgentStatus(ctx, name)
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	if ses == nil {
+		s.writeErr(w, apiErr(http.StatusConflict, "conflict", "That agent has no session."))
+		return
+	}
+	lines := paneLinesParam(r)
+	live := s.livePanes(ctx)
+	capture, err := s.RT.Tmux.Capture(ctx, ses.TmuxName, lines)
+	if err != nil {
+		if !live[ses.TmuxName] {
+			// The session row is still here but its pane is confirmed gone (not just a
+			// Capture error) — same dead-session shape as the ses == nil case above,
+			// not a generic "can't reach tmux" (agent-hover-preview spec, scenario 8).
+			s.writeErr(w, apiErr(http.StatusConflict, "conflict", "That agent has no session."))
+			return
+		}
+		s.writeErr(w, apiErr(http.StatusBadGateway, "tmux_unreachable", "Can't reach tmux."))
+		return
+	}
+	writeJSON(w, http.StatusOK, paneWire{
+		Text:      adapter.StripANSI(capture),
+		TmuxAlive: live[ses.TmuxName],
+		Lines:     lines,
+	})
 }
 
 // agentIORoutes is filled by Task 34, in agentio.go. spawnRoutes and
