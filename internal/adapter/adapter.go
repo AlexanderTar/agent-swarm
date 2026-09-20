@@ -121,7 +121,12 @@ func (b base) Kind() kinds.AgentKind { return b.kind }
 // prompt's dim placeholder text (wrapped in its own escape codes) apart from
 // a real human draft (plain, unescaped) -- stripping first would erase that
 // distinction.
-var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
+// The char class includes '?' for CSI private-mode sequences (e.g.
+// "\x1b[?25l" to hide the cursor, "\x1b[?1049h" for the alt screen) --
+// common in real tmux captures and missed by earlier versions of this regex
+// (agent-hover-preview implementation, 2026-09-20: caught by a test feeding
+// a raw capture containing "\x1b[?25l", which leaked through unstripped).
+var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
 
 // StripANSI removes terminal escape sequences from a tmux capture.
 func StripANSI(s string) string { return ansiEscape.ReplaceAllString(s, "") }
@@ -140,19 +145,6 @@ func idle(a Adapter, capture string) bool {
 
 func (b base) TrustFolder(context.Context, string) error  { return nil }
 func (b base) ForgetFolder(context.Context, string) error { return nil }
-
-// ansiEscape matches CSI sequences (ESC '[' ... final byte) and lone
-// single-character ESC sequences (e.g. ESC ']' OSC would need a different
-// terminator, but tmux capture-pane -e output only ever emits CSI/SGR here).
-var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
-
-// StripANSI removes terminal escape sequences from a tmux capture, so a
-// caller that renders plain text (the menubar hover-preview panel) never
-// shows raw SGR codes. It is not a full ANSI parser: no SGR -> color mapping,
-// just deletion (agent-hover-preview spec, decision 5).
-func StripANSI(s string) string {
-	return ansiEscape.ReplaceAllString(s, "")
-}
 
 // errNotImplemented is what Models returns from every real adapter: P1's
 // internal/catalog already owns model fetching, and duplicating it here would be

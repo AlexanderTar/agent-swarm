@@ -10,10 +10,12 @@ import SwiftUI
 @MainActor
 final class PanePreviewWindow {
     private let preview: PanePreviewModel
+    private let lookup: (String) -> (kind: String, itemKey: String)?
     private var panel: NSPanel?
 
-    init(preview: PanePreviewModel) {
+    init(preview: PanePreviewModel, lookup: @escaping (String) -> (kind: String, itemKey: String)? = { _ in nil }) {
         self.preview = preview
+        self.lookup = lookup
         observe()
     }
 
@@ -59,7 +61,7 @@ final class PanePreviewWindow {
         panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.animationBehavior = .utilityWindow
-        panel.contentView = NSHostingView(rootView: PanePreviewPanel(preview: preview))
+        panel.contentView = NSHostingView(rootView: PanePreviewPanel(preview: preview, lookup: lookup))
         return panel
     }
 
@@ -123,7 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         watcher = StatusItemWatcher { [weak self] visible in self?.model.labelVisible(visible) }
         watcher?.start()
-        previewWindow = PanePreviewWindow(preview: model.preview)
+        previewWindow = PanePreviewWindow(preview: model.preview) { [weak model] name in
+            guard let a = model.flatMap({ AgentTree.flatten($0.state.agents).first { $0.name == name } }) else { return nil }
+            return (Copy.roleLabel(a.role), a.itemKey)
+        }
         Task {
             await model.start()
             if ProcessInfo.processInfo.environment["SWARM_SMOKE"] != nil {
