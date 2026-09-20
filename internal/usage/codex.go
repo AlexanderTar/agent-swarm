@@ -201,7 +201,6 @@ func (c *Codex) callAppServer(proc *execx.Proc, msgs <-chan codexRPCEnvelope, re
 
 func codexSnapshotFromRPC(rl codexRPCRateLimits) Snapshot {
 	var meters []Meter
-	headline := ""
 	add := func(id string, w *codexRPCRateLimitWindow) {
 		if w == nil {
 			return
@@ -214,12 +213,20 @@ func codexSnapshotFromRPC(rl codexRPCRateLimits) Snapshot {
 		}
 		meters = append(meters, Meter{ID: id, Label: label, Window: window,
 			UsedPct: w.UsedPercent, ResetsAt: resetsAt})
-		if headline == "" {
-			headline = id
-		}
 	}
 	add("primary", rl.Primary)
 	add("secondary", rl.Secondary)
+
+	headline := ""
+	for _, m := range meters {
+		if m.Window == "5h" {
+			headline = m.ID
+			break
+		}
+	}
+	if headline == "" && len(meters) > 0 {
+		headline = meters[0].ID
+	}
 	return Snapshot{Meters: meters, HeadlineID: headline, Source: "app-server"}
 }
 
@@ -283,21 +290,26 @@ func (c *Codex) fetchViaRollout(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("codex: no usage recorded in today's rollouts")
 	}
 	var meters []Meter
-	headline := ""
 	if p := latest.RateLimits.Primary; p != nil {
 		label, window := codexWindow(p.WindowMinutes)
 		meters = append(meters, Meter{ID: "primary", Label: label, Window: window, UsedPct: p.UsedPercent})
-		headline = "primary"
 	}
 	if s := latest.RateLimits.Secondary; s != nil {
 		label, window := codexWindow(s.WindowMinutes)
 		meters = append(meters, Meter{ID: "secondary", Label: label, Window: window, UsedPct: s.UsedPercent})
-		if headline == "" {
-			headline = "secondary"
-		}
 	}
 	if len(meters) == 0 {
 		return Snapshot{}, fmt.Errorf("codex: today's rollouts have no rate limits")
+	}
+	headline := ""
+	for _, m := range meters {
+		if m.Window == "5h" {
+			headline = m.ID
+			break
+		}
+	}
+	if headline == "" {
+		headline = meters[0].ID
 	}
 	return Snapshot{Meters: meters, HeadlineID: headline, Source: "rollout"}, nil
 }

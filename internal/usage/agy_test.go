@@ -48,6 +48,24 @@ func TestAgyBuckets(t *testing.T) {
 	}
 }
 
+// Even when a weekly bucket has higher utilization, the headline must be the 5h bucket.
+func TestAgyBucketsPrioritizesFiveHourOverWeekly(t *testing.T) {
+	body := `{"groups":[
+	  {"displayName":"Gemini Models","buckets":[
+	    {"window":"5h","remainingFraction":0.8,"disabled":false},
+	    {"window":"weekly","remainingFraction":0.1,"disabled":false}]}]}`
+	meters, headline, err := ParseAgyQuota([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meters) != 2 {
+		t.Fatalf("meters = %+v", meters)
+	}
+	if headline != "gemini_5h" {
+		t.Fatalf("headline = %q, want gemini_5h (5h prioritized over weekly)", headline)
+	}
+}
+
 // ResetsAt must come through from the real payload's resetTime field, the
 // same way claude.go's meters carry it.
 func TestAgyBucketsCarriesResetsAt(t *testing.T) {

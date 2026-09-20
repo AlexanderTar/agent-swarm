@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,12 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
+
+var claudeCmdRe = regexp.MustCompile(`(?m)(?:^|[;&|()` + "`" + `]|\$\()\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:(?:exec|nohup|sudo|env)\s+)*(?:[\w./]*\/)?claude(\s|[;&|)` + "`" + `]|$)`)
+
+func isClaudeCommand(cmd string) bool {
+	return claudeCmdRe.MatchString(cmd)
+}
 
 const noticeGap = 60 * time.Second
 const maxStopBlocks = 3
@@ -193,6 +200,13 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.Adapter, s *sessionRow, ev string, in adapter.HookInput) (adapter.HookDecision, error) {
 	switch ev {
 	case "SessionStart":
+		if in.Source == "fork" {
+			return adapter.HookDecision{
+				Block:  true,
+				Reason: "[swarm] Forked sessions are disabled. Work must run within the assigned Swarm session.",
+			}, nil
+		}
+
 		var parts []string
 		if in.Source == "compact" || s.NeedsCompaction {
 			parts = append(parts, runtime.CompactionNotice())
@@ -239,14 +253,39 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}, nil
 		}
 
-		// Detect subagent dispatch tools across all supported agents
-		isSpawn := (in.IsSwarmTool && strings.Contains(in.ToolName, "swarm_spawn")) ||
-			strings.Contains(in.ToolName, "swarm_spawn") ||
+		isNativeFork := in.ToolName == "Agent" ||
 			in.ToolName == "Task" ||
+			in.ToolName == "Fork" ||
+			in.ToolName == "fork" ||
 			in.ToolName == "invoke_subagent" ||
 			in.ToolName == "subagent" ||
 			in.ToolName == "dispatch_agent" ||
 			in.ToolName == "spawn_agent"
+
+		if isNativeFork {
+			return adapter.HookDecision{
+				Block:  true,
+				Reason: "[swarm] Native forks and subagents are disabled. Use swarm_spawn to delegate work to Swarm-managed agents, or execute tasks sequentially in this session.",
+			}, nil
+		}
+
+		if in.Command != "" {
+			if isClaudeCommand(in.Command) {
+				return adapter.HookDecision{
+					Block:  true,
+					Reason: "[swarm] Nested agent invocations via shell are disabled. Use swarm_spawn to delegate work.",
+				}, nil
+			}
+			if blocked, reason := (AttrCheck{ReadFile: h.readFile}).Block(in.Command, in.Cwd); blocked {
+				return adapter.HookDecision{
+					Block:  true,
+					Reason: reason,
+				}, nil
+			}
+		}
+
+		// For Swarm's own swarm_spawn tool: enforce max_concurrent_subagents
+		isSpawn := (in.IsSwarmTool && strings.Contains(in.ToolName, "swarm_spawn")) || strings.Contains(in.ToolName, "swarm_spawn")
 
 		if isSpawn && s.AgentID != "" && h.RT != nil && h.RT.Settings != nil {
 			cfg, err := h.RT.Settings.Get(ctx)
@@ -274,14 +313,6 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 		}
 
-		if in.Command != "" {
-			if blocked, reason := (AttrCheck{ReadFile: h.readFile}).Block(in.Command, in.Cwd); blocked {
-				return adapter.HookDecision{
-					Block:  true,
-					Reason: reason,
-				}, nil
-			}
-		}
 		return adapter.HookDecision{}, nil
 
 	case "PostToolUse":

@@ -156,3 +156,37 @@ func TestCodexFallsBackToTheRollout(t *testing.T) {
 		t.Fatalf("source = %q", snap.Source)
 	}
 }
+
+func TestCodexAppServerPrioritizesFiveHourHeadline(t *testing.T) {
+	src := &Codex{Start: fakeAppServer(t, []string{
+		`{"jsonrpc":"2.0","id":1,"result":{"userAgent":"test/0.0.0","codexHome":"/tmp","platformFamily":"unix","platformOs":"macos"}}`,
+		`{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{
+			"primary":{"windowDurationMins":10080,"usedPercent":10,"resetsAt":1790000000},
+			"secondary":{"windowDurationMins":300,"usedPercent":42,"resetsAt":1789700000}}}}`,
+	}), Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) },
+		Timeout: 10 * time.Second}
+	snap, err := src.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.HeadlineID != "secondary" {
+		t.Fatalf("snap.HeadlineID = %q, want secondary (5h window)", snap.HeadlineID)
+	}
+}
+
+func TestCodexRolloutPrioritizesFiveHourHeadline(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "17")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "rollout-2026-09-17T10-00-00-abc.jsonl"), []byte(
+		`{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":10,"window_minutes":10080},"secondary":{"used_percent":42,"window_minutes":300}}}}`+"\n"), 0o644)
+	src := &Codex{UserHome: home, Start: failingStarter(t),
+		Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }, Timeout: time.Second}
+	snap, err := src.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.HeadlineID != "secondary" {
+		t.Fatalf("snap.HeadlineID = %q, want secondary (5h window)", snap.HeadlineID)
+	}
+}

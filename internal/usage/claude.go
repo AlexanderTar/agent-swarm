@@ -129,9 +129,18 @@ func claudeSnapshotFromHeaders(h http.Header) (Snapshot, bool) {
 	if len(meters) == 0 {
 		return Snapshot{}, false
 	}
-	headline := h.Get("anthropic-ratelimit-unified-representative-claim")
-	if headline != "five_hour" && headline != "seven_day" {
-		headline = meters[0].ID
+	headline := ""
+	for _, m := range meters {
+		if m.ID == "five_hour" {
+			headline = "five_hour"
+			break
+		}
+	}
+	if headline == "" {
+		headline = h.Get("anthropic-ratelimit-unified-representative-claim")
+		if headline != "five_hour" && headline != "seven_day" {
+			headline = meters[0].ID
+		}
 	}
 	return Snapshot{Meters: meters, HeadlineID: headline}, true
 }

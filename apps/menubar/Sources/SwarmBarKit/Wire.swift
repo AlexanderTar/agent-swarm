@@ -282,6 +282,7 @@ public struct Settings: Codable, Sendable, Equatable {
     /// compiling unchanged.
     public var fallbackDefault: RoleDefault = RoleDefault(agent: .claude, model: "sonnet")
     public var notifications: [String: NotifyPref]
+    public var maxConcurrentSubagents: Int = 3
     public var maxOrchestrators: Int
     public var maxAgents: Int
     public var maxAgentsPerRoot: Int
@@ -296,6 +297,7 @@ public struct Settings: Codable, Sendable, Equatable {
         case fallbackDefault = "fallback_default"
         case enabledAgents = "enabled_agents", maxOrchestrators = "max_orchestrators"
         case maxAgents = "max_agents", maxAgentsPerRoot = "max_agents_per_root"
+        case maxConcurrentSubagents = "max_concurrent_subagents"
         case scanExcludes = "scan_excludes", scanIntervalSec = "scan_interval_sec"
         case menubarCompact = "menubar_compact", usagePollSec = "usage_poll_sec"
         case pauseDeadlineSec = "pause_deadline_sec"
@@ -316,6 +318,7 @@ public struct Settings: Codable, Sendable, Equatable {
         ],
         fallbackDefault: RoleDefault(agent: .claude, model: "sonnet"),
         notifications: ["info": NotifyPref(), "attention": NotifyPref(), "action": NotifyPref()],
+        maxConcurrentSubagents: 3,
         maxOrchestrators: 3, maxAgents: 8, maxAgentsPerRoot: 4,
         scanExcludes: ["~/Library", "~/.Trash", "~/Downloads"], scanIntervalSec: 21600,
         menubarCompact: false, usagePollSec: 300, pauseDeadlineSec: 120)
@@ -333,6 +336,44 @@ public struct Settings: Codable, Sendable, Equatable {
                 roles[role.rawValue] = newValue
             }
         }
+    }
+
+    public init(enabledAgents: [AgentKind] = [.claude], roles: [String: RoleDefault] = [:],
+                fallbackDefault: RoleDefault = RoleDefault(agent: .claude, model: "sonnet"),
+                notifications: [String: NotifyPref] = [:], maxConcurrentSubagents: Int = 3,
+                maxOrchestrators: Int = 3, maxAgents: Int = 8, maxAgentsPerRoot: Int = 4,
+                scanExcludes: [String] = [], scanIntervalSec: Int = 21600,
+                menubarCompact: Bool = false, usagePollSec: Int = 300, pauseDeadlineSec: Int = 120) {
+        self.enabledAgents = enabledAgents
+        self.roles = roles
+        self.fallbackDefault = fallbackDefault
+        self.notifications = notifications
+        self.maxConcurrentSubagents = maxConcurrentSubagents
+        self.maxOrchestrators = maxOrchestrators
+        self.maxAgents = maxAgents
+        self.maxAgentsPerRoot = maxAgentsPerRoot
+        self.scanExcludes = scanExcludes
+        self.scanIntervalSec = scanIntervalSec
+        self.menubarCompact = menubarCompact
+        self.usagePollSec = usagePollSec
+        self.pauseDeadlineSec = pauseDeadlineSec
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabledAgents = try c.decode([AgentKind].self, forKey: .enabledAgents)
+        roles = try c.decode([String: RoleDefault].self, forKey: .roles)
+        fallbackDefault = try c.decodeIfPresent(RoleDefault.self, forKey: .fallbackDefault) ?? RoleDefault(agent: .claude, model: "sonnet")
+        notifications = try c.decode([String: NotifyPref].self, forKey: .notifications)
+        maxConcurrentSubagents = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentSubagents) ?? 3
+        maxOrchestrators = try c.decode(Int.self, forKey: .maxOrchestrators)
+        maxAgents = try c.decode(Int.self, forKey: .maxAgents)
+        maxAgentsPerRoot = try c.decode(Int.self, forKey: .maxAgentsPerRoot)
+        scanExcludes = try c.decode([String].self, forKey: .scanExcludes)
+        scanIntervalSec = try c.decode(Int.self, forKey: .scanIntervalSec)
+        menubarCompact = try c.decode(Bool.self, forKey: .menubarCompact)
+        usagePollSec = try c.decode(Int.self, forKey: .usagePollSec)
+        pauseDeadlineSec = try c.decode(Int.self, forKey: .pauseDeadlineSec)
     }
 
     public func pref(_ level: NotificationLevel) -> NotifyPref {

@@ -57,6 +57,7 @@
       "sound": true
     }
   },
+  "max_concurrent_subagents": 3,
   "max_orchestrators": 3,
   "max_agents": 8,
   "max_agents_per_root": 4,

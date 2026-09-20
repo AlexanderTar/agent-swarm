@@ -94,6 +94,27 @@ func TestClaudeMapsEveryMeterFromTheRealHeaders(t *testing.T) {
 	}
 }
 
+func TestClaudeHeadlinePrioritizesFiveHourEvenWhenClaimIsSevenDay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claudeRealHeaders(w)
+		w.Header().Set("anthropic-ratelimit-unified-representative-claim", "seven_day")
+		w.Write([]byte(`{"id":"msg_1","type":"message","content":[{"type":"text","text":"Hello"}]}`))
+	}))
+	defer srv.Close()
+	src := &Claude{BaseURL: srv.URL, HTTP: srv.Client(), Version: func(context.Context) (string, error) { return "2.1.278", nil },
+		ReadToken: func(context.Context) (string, time.Time, error) {
+			return "oauth-secret", time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC), nil
+		},
+		Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }}
+	snap, err := src.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.HeadlineID != "five_hour" {
+		t.Errorf("headline = %q, want five_hour", snap.HeadlineID)
+	}
+}
+
 // A quota-exhausted 429 is real usage data, not a fetch failure — the real
 // CLI's own extractQuotaStatusFromError reads headers off error responses
 // the same way it reads them off a 200. This must not be treated as a

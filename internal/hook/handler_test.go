@@ -382,7 +382,6 @@ func TestPreToolUseBlocksSubagentsWhenBudgetExceeded(t *testing.T) {
 				stdin []byte
 			}{
 				{"mcp__swarm__swarm_spawn", []byte(`{"session_id":"p1","tool_name":"mcp__swarm__swarm_spawn","tool_input":{}}`)},
-				{"Task", []byte(`{"session_id":"p1","tool_name":"Task","tool_input":{}}`)},
 			},
 			verifyDeny: func(t *testing.T, tool string, out []byte) {
 				var m map[string]map[string]string
@@ -403,7 +402,6 @@ func TestPreToolUseBlocksSubagentsWhenBudgetExceeded(t *testing.T) {
 				name  string
 				stdin []byte
 			}{
-				{"invoke_subagent", []byte(`{"conversationId":"p1","toolCall":{"name":"invoke_subagent"}}`)},
 				{"call_mcp_tool:swarm_spawn", []byte(`{"conversationId":"p1","toolCall":{"name":"call_mcp_tool","args":{"ServerName":"swarm","ToolName":"swarm_spawn"}}}`)},
 			},
 			verifyDeny: func(t *testing.T, tool string, out []byte) {
@@ -426,8 +424,6 @@ func TestPreToolUseBlocksSubagentsWhenBudgetExceeded(t *testing.T) {
 				stdin []byte
 			}{
 				{"MCP:swarm_spawn", []byte(`{"conversation_id":"p1","tool_name":"MCP:swarm_spawn","tool_input":{}}`)},
-				{"subagent", []byte(`{"conversation_id":"p1","tool_name":"subagent","tool_input":{}}`)},
-				{"dispatch_agent", []byte(`{"conversation_id":"p1","tool_name":"dispatch_agent","tool_input":{}}`)},
 			},
 			verifyDeny: func(t *testing.T, tool string, out []byte) {
 				var m map[string]string
@@ -449,8 +445,6 @@ func TestPreToolUseBlocksSubagentsWhenBudgetExceeded(t *testing.T) {
 				stdin []byte
 			}{
 				{"mcp__swarm__swarm_spawn", []byte(`{"session_id":"p1","tool_name":"mcp__swarm__swarm_spawn","tool_input":{}}`)},
-				{"spawn_agent", []byte(`{"session_id":"p1","tool_name":"spawn_agent","tool_input":{}}`)},
-				{"subagent", []byte(`{"session_id":"p1","tool_name":"subagent","tool_input":{}}`)},
 			},
 			verifyDeny: func(t *testing.T, tool string, out []byte) {
 				var m map[string]string
@@ -518,6 +512,177 @@ func TestPreToolUseBlocksSubagentsWhenBudgetExceeded(t *testing.T) {
 				t.Fatalf("%s: after child finishes must be allowed, got %s", tc.tools[0].name, out)
 			}
 		})
+	}
+}
+
+func TestPreToolUseBlocksNativeForksAndSubagents(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	wantReason := "[swarm] Native forks and subagents are disabled. Use swarm_spawn to delegate work to Swarm-managed agents, or execute tasks sequentially in this session."
+
+	tools := []string{
+		"Agent",
+		"Task",
+		"Fork",
+		"fork",
+		"invoke_subagent",
+		"subagent",
+		"dispatch_agent",
+		"spawn_agent",
+	}
+
+	for _, tool := range tools {
+		t.Run(tool, func(t *testing.T) {
+			stdin := []byte(fmt.Sprintf(`{"session_id":"p1","tool_name":"%s","tool_input":{}}`, tool))
+			out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, stdin)
+			if err != nil {
+				t.Fatalf("claude %s: %v", tool, err)
+			}
+			var m map[string]map[string]string
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatalf("claude %s unmarshal: %v", tool, err)
+			}
+			if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
+				t.Fatalf("claude %s: want deny, got %s", tool, out)
+			}
+			if m["hookSpecificOutput"]["permissionDecisionReason"] != wantReason {
+				t.Fatalf("claude %s: reason = %q, want %q", tool, m["hookSpecificOutput"]["permissionDecisionReason"], wantReason)
+			}
+		})
+	}
+}
+
+func TestPreToolUseBlocksNestedClaudeShellCommand(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	wantReason := "[swarm] Nested agent invocations via shell are disabled. Use swarm_spawn to delegate work."
+
+	blockedCmds := []string{
+		`claude -p "do something"`,
+		`claude`,
+		"claude\n",
+		`claude --fork`,
+		`echo hello && claude -p "nested"`,
+		`foo; claude`,
+		`cat file | claude`,
+		`$(claude -p "subshell")`,
+	}
+
+	for _, cmd := range blockedCmds {
+		t.Run("block_"+cmd, func(t *testing.T) {
+			input, _ := json.Marshal(map[string]any{
+				"session_id": "p1",
+				"tool_name":  "Bash",
+				"tool_input": map[string]string{"command": cmd},
+			})
+			out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, input)
+			if err != nil {
+				t.Fatalf("%q: %v", cmd, err)
+			}
+			var m map[string]map[string]string
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatalf("%q unmarshal: %v", cmd, err)
+			}
+			if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
+				t.Fatalf("%q: want deny, got %s", cmd, out)
+			}
+			if m["hookSpecificOutput"]["permissionDecisionReason"] != wantReason {
+				t.Fatalf("%q: reason = %q, want %q", cmd, m["hookSpecificOutput"]["permissionDecisionReason"], wantReason)
+			}
+		})
+	}
+
+	allowedCmds := []string{
+		`echo claude`,
+		`echo "claude"`,
+		`cat claude.txt`,
+		`git commit -m "update claude docs"`,
+		`echo claude_something`,
+	}
+
+	for _, cmd := range allowedCmds {
+		t.Run("allow_"+cmd, func(t *testing.T) {
+			input, _ := json.Marshal(map[string]any{
+				"session_id": "p1",
+				"tool_name":  "Bash",
+				"tool_input": map[string]string{"command": cmd},
+			})
+			out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, input)
+			if err != nil {
+				t.Fatalf("%q: %v", cmd, err)
+			}
+			if len(out) != 0 {
+				t.Fatalf("%q: want allowed (empty output), got %s", cmd, out)
+			}
+		})
+	}
+}
+
+func TestSessionStartBlocksForkSource(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	wantReason := "[swarm] Forked sessions are disabled. Work must run within the assigned Swarm session."
+
+	out, err := h.Handle(ctx, runtime.Claude, "SessionStart", ses, []byte(`{"session_id":"p1","source":"fork"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var m map[string]map[string]string
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
+		t.Fatalf("want deny, got %s", out)
+	}
+	if m["hookSpecificOutput"]["permissionDecisionReason"] != wantReason {
+		t.Fatalf("reason = %q, want %q", m["hookSpecificOutput"]["permissionDecisionReason"], wantReason)
+	}
+}
+
+func TestIsClaudeCommand(t *testing.T) {
+	positives := []string{
+		"claude",
+		"claude ",
+		"claude\n",
+		"claude -p 'test'",
+		"claude --fork",
+		"  claude -p test",
+		"VAR=1 claude",
+		"foo && claude",
+		"foo; claude",
+		"foo | claude",
+		"$(claude)",
+		"`claude`",
+		"/usr/local/bin/claude -p foo",
+		"./claude",
+		"sudo claude -p foo",
+		"env claude -p foo",
+	}
+	for _, s := range positives {
+		if !isClaudeCommand(s) {
+			t.Errorf("isClaudeCommand(%q) = false, want true", s)
+		}
+	}
+
+	negatives := []string{
+		"",
+		"echo claude",
+		`echo "claude"`,
+		"echo claude -p",
+		"cat claude.txt",
+		"grep claude file",
+		`git commit -m "update claude"`,
+		"claude_tools",
+		"myclaude",
+	}
+	for _, s := range negatives {
+		if isClaudeCommand(s) {
+			t.Errorf("isClaudeCommand(%q) = true, want false", s)
+		}
 	}
 }
 
