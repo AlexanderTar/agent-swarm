@@ -3,7 +3,6 @@ import SwiftUI
 
 public struct StateDot: View {
     let tone: DotTone
-    @State private var pulse = false
 
     public init(_ tone: DotTone) { self.tone = tone }
 
@@ -20,6 +19,24 @@ public struct StateDot: View {
     }
 
     public var body: some View {
+        Group {
+            if pulses {
+                PhaseAnimator([1.0, 0.3]) { opacity in
+                    dotShape
+                        .opacity(opacity)
+                } animation: { _ in
+                    .easeInOut(duration: 0.8)
+                }
+            } else {
+                dotShape
+            }
+        }
+        .frame(width: 8, height: 8)
+        .transition(.identity)
+        .accessibilityHidden(true)
+    }
+
+    private var dotShape: some View {
         ZStack {
             if tone == .hollow {
                 Circle().strokeBorder(color, lineWidth: 1.5)
@@ -28,11 +45,6 @@ public struct StateDot: View {
                 if tone == .greenHollow { Circle().fill(Color(nsColor: .windowBackgroundColor)).padding(2.5) }
             }
         }
-        .frame(width: 8, height: 8)
-        .opacity(pulses && pulse ? 0.3 : 1)
-        .animation(pulses ? .easeInOut(duration: 0.8).repeatForever() : nil, value: pulse)
-        .onAppear { pulse = pulses }
-        .accessibilityHidden(true)
     }
 }
 
