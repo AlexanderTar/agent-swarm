@@ -1,6 +1,7 @@
 package items_test
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -121,7 +122,6 @@ func TestCreateValidation(t *testing.T) {
 	}{
 		{items.CreateInput{Type: items.Epic, Title: "   "}, "Title must be 1–200 characters.", items.CodeBadRequest},
 		{items.CreateInput{Type: items.Epic, Title: strings.Repeat("é", 201)}, "Title must be 1–200 characters.", items.CodeBadRequest},
-		{items.CreateInput{Type: items.Epic, Title: "t", Brief: strings.Repeat("b", 601)}, "Brief must be at most 600 characters.", items.CodeBadRequest},
 		{items.CreateInput{Type: items.Epic, Title: "t", Priority: p(4)}, "Priority must be between 0 and 3.", items.CodeBadRequest},
 		{items.CreateInput{Type: items.Spike, Title: "t"}, "Spikes start with an intent. Use New spike.", items.CodeBadRequest},
 		{items.CreateInput{Type: items.Spike, Title: "t", SpikeIntent: "vibes"}, "Spikes start with an intent. Use New spike.", items.CodeBadRequest},
@@ -137,6 +137,9 @@ func TestCreateValidation(t *testing.T) {
 	}
 	if _, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: strings.Repeat("é", 200)}, user); err != nil {
 		t.Errorf("200 runes must be accepted: %v", err)
+	}
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "t", Brief: strings.Repeat("b", 2000)}, user); err != nil {
+		t.Errorf("2000 runes brief must be accepted: %v", err)
 	}
 }
 
@@ -360,3 +363,18 @@ func TestChoreItemLifecycleAndChildren(t *testing.T) {
 	}
 }
 
+func TestCreateSpikeWithChoreIntent(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	it, err := s.Create(ctx, items.CreateInput{
+		Type:        items.Spike,
+		Title:       "Maintenance chore",
+		SpikeIntent: "chore",
+	}, items.User("test"))
+	if err != nil {
+		t.Fatalf("expected chore spike creation to succeed, got: %v", err)
+	}
+	if it.SpikeIntent != "chore" {
+		t.Fatalf("expected spike_intent 'chore', got: %q", it.SpikeIntent)
+	}
+}

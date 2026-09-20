@@ -169,9 +169,6 @@ func validateText(title, brief string) error {
 	if n := utf8.RuneCountInString(title); n < 1 || n > 200 {
 		return errf(CodeBadRequest, "Title must be 1–200 characters.")
 	}
-	if utf8.RuneCountInString(brief) > 600 {
-		return errf(CodeBadRequest, "Brief must be at most 600 characters.")
-	}
 	return nil
 }
 
@@ -214,7 +211,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	if in.Status != Draft && in.Status != Ready {
 		return Item{}, errf(CodeBadRequest, "New items start as Draft or Ready.")
 	}
-	if in.Type == Spike && in.SpikeIntent != "feature" && in.SpikeIntent != "debug" {
+	if in.Type == Spike && in.SpikeIntent != "feature" && in.SpikeIntent != "debug" && in.SpikeIntent != "chore" {
 		return Item{}, errf(CodeBadRequest, "Spikes start with an intent. Use New spike.")
 	}
 	if in.TddExempt != "" {
