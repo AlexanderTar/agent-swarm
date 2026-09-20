@@ -92,6 +92,132 @@ func TestBlockedThenProgressBlocksAndUnblocksTheItem(t *testing.T) {
 	}
 }
 
+// Live incident (2026-09-20): s1-lane-a wrote a `blocked` checkpoint waiting
+// on s1-lane-b's item; lane-b's item finished hours later and nothing ever
+// told lane-a -- it sat blocked until a human typed into the orchestrator's
+// pane. TASK-2 depends on TASK-1 (item_deps); lane A blocks on TASK-2 while
+// TASK-1 is still open, then lane B finishes TASK-1. The daemon must relay
+// "dependency_added" to their shared orchestrator (mirroring the no_ack/
+// crashed relay shape exactly) the moment TASK-1 actually reaches Done, not
+// before.
+func TestDependencyDoneRelaysToTheOrchestrator(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Items.DepUnblocked = s.OnDepUnblocked // cmd/swarm/daemon.go wires this in production
+	ctx := context.Background()
+	seedEpicWithTwoTasks(t, s)
+	if err := s.Items.AddDep(ctx, "TASK-2", "TASK-1", items.User("board")); err != nil {
+		t.Fatal(err)
+	}
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneB, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "unblock TASK-2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneBSes, err := s.LatestSession(ctx, laneB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneA, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "wait on TASK-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneASes, err := s.LatestSession(ctx, laneA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, laneASes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneASes.ID, CheckpointInput{Kind: BlockedCkp,
+		Summary: "waiting on TASK-1", Blockers: []string{"TASK-1 isn't done yet"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: Progress, Summary: "red",
+		Verification: []Verify{{Cmd: "go test ./x", Phase: "red", OK: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./x", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	relayCount := func() int {
+		var n int
+		s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+			AND payload_json LIKE '%"event":"dependency_added"%'`).Scan(&n)
+		return n
+	}
+	if n := relayCount(); n != 0 {
+		t.Fatalf("dependency_added must not fire before TASK-1 actually reaches done: count = %d", n)
+	}
+
+	// TASK-1 is only InReview so far (a completed checkpoint on a task moves it
+	// to in_review, not done); the daemon/orchestrator still has to accept it.
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"dependency_added"%' AND payload_json LIKE '%"item":"TASK-2"%'
+		AND wake_class = 'immediate'`, orch.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("dependency_added relay to the orchestrator = %d, want exactly 1", n)
+	}
+}
+
+// TASK-2 has no dependency on TASK-1 here, so finishing TASK-1 must not relay
+// anything: the fix must key off item_deps, not "some sibling item finished."
+func TestDependencyDoneDoesNothingWithoutADependencyEdge(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Items.DepUnblocked = s.OnDepUnblocked // cmd/swarm/daemon.go wires this in production
+	ctx := context.Background()
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneB, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "finish TASK-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneBSes, err := s.LatestSession(ctx, laneB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: Progress, Summary: "red",
+		Verification: []Verify{{Cmd: "go test ./x", Phase: "red", OK: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./x", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+		AND payload_json LIKE '%"event":"dependency_added"%'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("dependency_added count = %d, want 0 with no item_deps edge", n)
+	}
+}
+
 // Ported from writeHandoff: a handoff never changes the item status.
 func TestHandoffLeavesTheItemStatusAlone(t *testing.T) {
 	s, _, _ := newStore(t)

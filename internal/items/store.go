@@ -26,6 +26,13 @@ type Store struct {
 	RequestPayload func(ctx context.Context, tx *sql.Tx, id string) (any, error)
 	// RequestOpened raises the §17.5 notification for a request the daemon opened.
 	RequestOpened func(ctx context.Context, tx *sql.Tx, id string) error
+	// DepUnblocked fires whenever an item reaches Done or Cancelled -- the two
+	// statuses that stop it from blocking anything else (deriveStory and
+	// reconcileRoot already treat this same pair as "finished"). doneItemID is
+	// that item's id; the hook is responsible for waking whatever was waiting
+	// on it (item_deps, blocked_by_id = doneItemID). nil does nothing, same as
+	// the other hooks.
+	DepUnblocked func(ctx context.Context, tx *sql.Tx, doneItemID string) error
 }
 
 type CreateInput struct {

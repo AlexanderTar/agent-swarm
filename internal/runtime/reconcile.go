@@ -255,6 +255,68 @@ func (s *Store) notifyNoAck(ctx context.Context, r liveRow) error {
 	})
 }
 
+// OnDepUnblocked is the items.Store.DepUnblocked hook (wired in
+// cmd/swarm/daemon.go): doneID just reached Done or Cancelled. Anything still
+// sitting `blocked` because it lists doneID in item_deps.blocked_by_id has an
+// agent that wrote a `blocked` checkpoint and then ended its turn to wait --
+// nothing before this told it, or its orchestrator, that the wait was over
+// (live incident 2026-09-20: s1-lane-a sat blocked ~8h after s1-lane-b's
+// dependency finished, until a human typed into the orchestrator's pane).
+// This mirrors notifyNoAck's relay exactly -- same enqueue call, same
+// {event, agent, item} payload, same target (the blocked agent's own
+// parent) -- rather than inventing a new channel: the woken orchestrator can
+// then swarm_send the still-live child directly to resume it, exactly as
+// skills/swarm-orchestrator/SKILL.md already tells it to act on a no_ack
+// relay. "dependency_added" was already reserved as an immediate wake in
+// ImmediateRelayEvents (inbox.go) since the message-inbox design landed, but
+// nothing ever raised it until now.
+func (s *Store) OnDepUnblocked(ctx context.Context, tx *sql.Tx, doneID string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT i.id, i.key FROM items i
+		JOIN item_deps d ON d.item_id = i.id
+		WHERE d.blocked_by_id = ? AND i.status = 'blocked'`, doneID)
+	if err != nil {
+		return err
+	}
+	type dependant struct{ id, key string }
+	var waiting []dependant
+	for rows.Next() {
+		var d dependant
+		if err := rows.Scan(&d.id, &d.key); err != nil {
+			rows.Close()
+			return err
+		}
+		waiting = append(waiting, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, d := range waiting {
+		var agentName, parentAgentID, rootItemID string
+		err := tx.QueryRowContext(ctx, `SELECT name, COALESCE(parent_agent_id, ''), root_item_id
+			FROM agents WHERE item_id = ? AND state = 'active'`, d.id).
+			Scan(&agentName, &parentAgentID, &rootItemID)
+		if err == sql.ErrNoRows {
+			continue // nobody currently assigned to the blocked item: nothing to wake
+		}
+		if err != nil {
+			return err
+		}
+		if parentAgentID == "" {
+			continue // a top-level orchestrator itself: nothing above it to relay to
+		}
+		payload, err := json.Marshal(map[string]any{"event": "dependency_added", "agent": agentName, "item": d.key})
+		if err != nil {
+			return err
+		}
+		if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: parentAgentID,
+			RootItemID: rootItemID, ItemID: d.id, Payload: payload}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // resolveDead applies the "pane is dead" half of the §10.6 table. paneKnown is
 // false when there was no matching pane at all (as opposed to one this
 // generation no longer owns, or one tmux still reports as dead).

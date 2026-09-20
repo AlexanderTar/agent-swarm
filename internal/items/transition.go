@@ -332,7 +332,13 @@ func (s *Store) setStatus(ctx context.Context, tx *sql.Tx, it *Item, to Status) 
 	if to != Blocked {
 		it.StatusBeforeBlock = ""
 	}
-	return s.changed(ctx, tx, *it)
+	if err := s.changed(ctx, tx, *it); err != nil {
+		return err
+	}
+	if (to == Done || to == Cancelled) && s.DepUnblocked != nil {
+		return s.DepUnblocked(ctx, tx, it.ID)
+	}
+	return nil
 }
 
 // Reconcile recomputes daemon-owned state for key and every ancestor.
