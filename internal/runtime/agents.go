@@ -1031,7 +1031,18 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 			}
 			answered[i] = true
 		}
-		if ad.Idle(capture) {
+		// A session that clears its startup dialogs and launches straight into
+		// continuous, genuinely busy work (2026-09-20, live incident: "s1-review-2"
+		// showed "✻ Twisting… (6m 40s · ↓ 15.3k tokens)" for its whole run) never
+		// once matches IdlePrompt, and its ever-changing spinner/token-count text
+		// also defeats the stall check above -- so without this it would run the
+		// full startupCeiling and then get false-failed despite doing real work.
+		// ad.Busy() matching is just as much proof the startup phase is over as
+		// ad.Idle() becoming true: it is the adapter's own signal for "actively
+		// doing agent work", already trusted everywhere idle() uses it to rule out
+		// a false idle read, so reusing it here to rule in "done starting" is the
+		// same signal, not a new one.
+		if ad.Idle(capture) || (ad.Busy() != nil && ad.Busy().MatchString(stripANSI(capture))) {
 			return s.SetSessionState(ctx, ses.ID, Running)
 		}
 		select {
