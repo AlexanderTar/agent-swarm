@@ -46,6 +46,13 @@ type Dialog struct {
 	Require *regexp.Regexp
 }
 
+// PromptMatcher describes an interactive CLI prompt to be detected in live sessions.
+type PromptMatcher struct {
+	Match  *regexp.Regexp
+	Title  string
+	Action string // e.g. "Enter", "Down+Enter", "y"
+}
+
 // HookDecision is what the daemon's hook handler decided; HookOutput renders it
 // into the agent's own hook JSON shape.
 type HookDecision struct {
@@ -96,6 +103,7 @@ type Adapter interface {
 	IdlePrompt() *regexp.Regexp
 	Busy() *regexp.Regexp
 	StartupDialogs() []Dialog
+	PromptPatterns() []PromptMatcher
 	InterruptKeys() []string
 	Wake(ctx context.Context, sess WakeTarget) (delivered bool, err error)
 	HookOutput(event string, d HookDecision) ([]byte, error)

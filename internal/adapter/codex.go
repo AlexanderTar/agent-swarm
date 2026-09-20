@@ -74,6 +74,13 @@ func (c *Codex) StartupDialogs() []Dialog {
 	}
 }
 
+func (c *Codex) PromptPatterns() []PromptMatcher {
+	return []PromptMatcher{
+		{Match: codexTrust, Title: "Trust this directory", Action: "Enter"},
+		{Match: codexHookTrust, Title: "Hook sandbox approval", Action: "Enter"},
+	}
+}
+
 func (c *Codex) InterruptKeys() []string { return []string{"Escape"} }
 
 func (c *Codex) HookOutput(event string, d HookDecision) ([]byte, error) {

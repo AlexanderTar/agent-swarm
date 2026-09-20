@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
@@ -1460,5 +1462,50 @@ func TestOnDepUnblockedEscalatesPastADeadParentToTheNearestLiveAncestor(t *testi
 		root.ID).Scan(&toRoot)
 	if toRoot != 1 {
 		t.Fatalf("must escalate dependency_added past the dead parent to the nearest live ancestor: count = %d", toRoot)
+	}
+}
+
+func TestPromptDetectedInRunningSessionOpensHITLRequest(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "PromptSpy", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+
+	// Set prompt pattern on Fake adapter
+	fakeAd := s.Adapters[Fake].(*adapter.Fake)
+	fakeAd.PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+
+	// Set capture containing prompt
+	tm.captures[a.Name] = []string{"Some output\nDo you trust this? [y/n]\n"}
+
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var count, isHITL int
+	var prompt, kind string
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*), is_hitl, prompt, kind FROM requests WHERE session_id = ?`, ses.ID).
+		Scan(&count, &isHITL, &prompt, &kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || isHITL != 1 || prompt != "Trust prompt" || kind != "prompt" {
+		t.Fatalf("expected 1 hitl prompt request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
+	}
+
+	// Reconcile again: must not duplicate
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses.ID).Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reconcile should not duplicate open prompt request, got count=%d", count)
 	}
 }

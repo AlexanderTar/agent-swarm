@@ -50,6 +50,11 @@ func (a *Agy) Busy() *regexp.Regexp           { return agyBusy }
 func (a *Agy) Idle(capture string) bool { return idle(a, capture) && agyReady.MatchString(capture) }
 
 func (a *Agy) StartupDialogs() []Dialog { return []Dialog{{Match: agyTrust, Keys: []string{"Enter"}}} }
+func (a *Agy) PromptPatterns() []PromptMatcher {
+	return []PromptMatcher{
+		{Match: agyTrust, Title: "Trust this project", Action: "Enter"},
+	}
+}
 func (a *Agy) InterruptKeys() []string  { return []string{"Escape"} }
 
 func (a *Agy) HookOutput(event string, d HookDecision) ([]byte, error) {

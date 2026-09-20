@@ -520,6 +520,24 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			return err
 		}
 		idle = ad.Idle(capture)
+		if !idle {
+			for _, matcher := range ad.PromptPatterns() {
+				if matcher.Match != nil && matcher.Match.MatchString(capture) {
+					var openPrompt int
+					err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests
+						WHERE session_id = ? AND kind = 'prompt' AND state = 'open' AND prompt = ?`,
+						r.SessionID, matcher.Title).Scan(&openPrompt)
+					if err == nil && openPrompt == 0 {
+						var opts []string
+						if matcher.Action != "" {
+							opts = []string{matcher.Action}
+						}
+						_, _ = s.AskPrompt(ctx, r.SessionID, matcher.Title, opts)
+					}
+					break
+				}
+			}
+		}
 	}
 	waiting := idle && owesNothing
 	if waiting != r.Waiting {

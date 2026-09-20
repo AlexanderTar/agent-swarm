@@ -66,7 +66,18 @@ func (c *Cursor) IdlePrompt() *regexp.Regexp     { return cursorIdle }
 func (c *Cursor) Busy() *regexp.Regexp           { return cursorBusy }
 func (c *Cursor) Idle(capture string) bool       { return idle(c, capture) }
 
+var (
+	cursorAllowDeny = regexp.MustCompile(`(?i)allow\s*/\s*deny`)
+	cursorContinue  = regexp.MustCompile(`(?i)do you want to continue\?`)
+)
+
 func (c *Cursor) StartupDialogs() []Dialog { return nil } // --yolo --trust --approve-mcps
+func (c *Cursor) PromptPatterns() []PromptMatcher {
+	return []PromptMatcher{
+		{Match: cursorAllowDeny, Title: "Permission prompt (Allow/Deny)", Action: "Enter"},
+		{Match: cursorContinue, Title: "Continue confirmation", Action: "y"},
+	}
+}
 func (c *Cursor) InterruptKeys() []string  { return []string{"C-c"} }
 
 func (c *Cursor) HookOutput(event string, d HookDecision) ([]byte, error) {

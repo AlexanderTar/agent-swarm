@@ -126,6 +126,13 @@ func (c *Claude) StartupDialogs() []Dialog {
 	}
 }
 
+func (c *Claude) PromptPatterns() []PromptMatcher {
+	return []PromptMatcher{
+		{Match: claudeTrust, Title: "Trust this project", Action: "Down+Enter"},
+		{Match: claudeDev, Title: "Confirm local development", Action: "Enter"},
+	}
+}
+
 func (c *Claude) InterruptKeys() []string { return []string{"Escape"} }
 
 // Wake goes through the shim's channel bridge (§11.3 step 1): the daemon
