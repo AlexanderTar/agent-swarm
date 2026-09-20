@@ -211,7 +211,11 @@ func notified(t *testing.T, s *Store, kind string) NotifyInput {
 			return n
 		}
 	}
-	t.Fatalf("no %s notification; raised %v", kind, f.kinds())
+	kinds := make([]string, 0, len(f.raised))
+	for _, n := range f.raised {
+		kinds = append(kinds, n.Kind)
+	}
+	t.Fatalf("no %s notification; raised %v", kind, kinds)
 	return NotifyInput{}
 }
 

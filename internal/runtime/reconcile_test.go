@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
 // A real tmux failure to list panes at all must surface, not be treated as
@@ -1140,5 +1141,279 @@ func TestUndeliveredMessageWithNoLiveSenderAndNoParentNeverFires(t *testing.T) {
 	}
 	if n := notifiedCount(s, "agent.no_recipient"); n != 0 {
 		t.Fatalf("a parentless, also-dead sender has nobody to relay to: count = %d", n)
+	}
+}
+
+// Bug 2: a message envelopes() already handed to the recipient's Sync
+// (state = 'delivered') must never fire no_recipient just because the
+// recipient never explicitly acked it -- ack is a separate step many
+// otherwise-successful exchanges simply never take.
+func TestUndeliveredMessageDoesNotFireForAnAlreadyDeliveredMessage(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "found a bug", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// the parent receives it -- Sync marks it 'delivered' -- but this test
+	// never acks it, the normal case for plenty of real exchanges.
+	if _, err := s.Sync(ctx, orchSes, nil, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, orchSes); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 0 {
+		t.Fatalf("a delivered-but-unacked message must not fire no_recipient: count = %d", n)
+	}
+}
+
+// Bug 3: the grace period is anchored to when the target actually died, not
+// to when the message was sent. A message that sat un-acked for a long time
+// while its target was still alive must still get the FULL ackTimeout grace
+// period counted from the moment of death, not zero.
+func TestUndeliveredMessageGetsFullGraceFromDeathTimeNotSendTime(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.captures[w.Name] = []string{"working…\n"}
+
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "found a bug", "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// the message sits un-acked for a long time while the target is still
+	// perfectly alive -- under the old created_at-anchored cutoff this alone
+	// would already be enough to fire.
+	at.Advance(20 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 0 {
+		t.Fatalf("a live target must never fire no_recipient regardless of message age: count = %d", n)
+	}
+
+	// the target dies now
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed', ended_at = ? WHERE id = ?`,
+		db.Millis(s.now()), orchSes); err != nil {
+		t.Fatal(err)
+	}
+
+	// just under the FULL grace period measured from death: not yet
+	at.Advance(ackTimeout - time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 0 {
+		t.Fatalf("must still get the full grace period measured from death, not send time: count = %d", n)
+	}
+
+	// past the full grace period measured from death: fires
+	at.Advance(2 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 1 {
+		t.Fatalf("must fire once the full grace period has elapsed since death: count = %d", n)
+	}
+}
+
+// Bug 3's exact SQL boundary, tested directly against undeliveredAgentMessages
+// so a millisecond either side of the cutoff is unambiguous (a full Reconcile
+// tick also advances the clock for unrelated bookkeeping, which would make a
+// millisecond-precise assertion flaky for reasons having nothing to do with
+// this boundary).
+func TestUndeliveredMessagesCutoffBoundaryIsInclusive(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "found a bug", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	deathAt := s.now()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed', ended_at = ? WHERE id = ?`,
+		db.Millis(deathAt), orchSes); err != nil {
+		t.Fatal(err)
+	}
+
+	// one millisecond short of the death-anchored grace period: not stuck yet
+	rows, err := s.undeliveredAgentMessages(ctx, deathAt.Add(-time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("one millisecond before the cutoff must not be stuck yet: got %d rows", len(rows))
+	}
+
+	// exactly at the death-anchored grace period: stuck
+	rows, err = s.undeliveredAgentMessages(ctx, deathAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("exactly at the cutoff the message must be stuck: got %d rows", len(rows))
+	}
+}
+
+// Bug 5: when the FROM agent is dead AND its immediate parent is also dead,
+// the relay must climb past the dead parent to the nearest still-live
+// ancestor -- not silently address the dead parent, which would recreate
+// the exact black-hole bug this function exists to fix, one level up.
+func TestUndeliveredMessageEscalatesPastADeadParentToTheNearestLiveAncestor(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 5, 5, 5)
+	seedEpicWithTwoTasks(t, s)
+	root, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: root.ID, Brief: BriefInput{Objective: "mid"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	midSes, _ := s.LatestSession(ctx, mid.ID)
+	sender, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: mid.ID, Brief: BriefInput{Objective: "sender"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderSes, _ := s.LatestSession(ctx, sender.ID)
+	target, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: root.ID, Brief: BriefInput{Objective: "target"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSes, _ := s.LatestSession(ctx, target.ID)
+	rootSes := mustSessionID(t, s, root.ID)
+	panes(tm, Pane{Session: root.Name, Command: "swarm-fake-agent"})
+	tm.env[root.Name] = map[string]string{"SWARM_SESSION": rootSes}
+	tm.captures[root.Name] = []string{"working…\n"}
+
+	if _, err := s.Send(ctx, senderSes.ID, target.Name, "finding", "need a hand", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// the sender, its parent, and the target all die -- only the root stays live
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id IN (?, ?, ?)`,
+		senderSes.ID, midSes.ID, targetSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n := notified(t, s, "agent.no_recipient")
+	if n.AgentName != target.Name {
+		t.Fatalf("notification = %+v, want it to name the unreachable target %q", n, target.Name)
+	}
+	var toMid int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_recipient"%'`, mid.ID).Scan(&toMid)
+	if toMid != 0 {
+		t.Fatal("must not relay to the dead immediate parent")
+	}
+	var toRoot int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_recipient"%'`, root.ID).Scan(&toRoot)
+	if toRoot != 1 {
+		t.Fatalf("must escalate past the dead parent to the nearest live ancestor: count = %d", toRoot)
+	}
+}
+
+// Bug 5's parallel fix in OnDepUnblocked: the blocked agent's own immediate
+// parent is also dead, so the "dependency_added" relay must climb to the
+// nearest live ancestor above it instead of addressing the dead parent.
+func TestOnDepUnblockedEscalatesPastADeadParentToTheNearestLiveAncestor(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Items.DepUnblocked = s.OnDepUnblocked // cmd/swarm/daemon.go wires this in production
+	ctx := context.Background()
+	seedEpicWithTwoTasks(t, s)
+	if err := s.Items.AddDep(ctx, "TASK-2", "TASK-1", items.User("board")); err != nil {
+		t.Fatal(err)
+	}
+	root, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneB, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root.ID, Brief: BriefInput{Objective: "unblock TASK-2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneBSes, err := s.LatestSession(ctx, laneB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root.ID, Brief: BriefInput{Objective: "mid"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	midSes, err := s.LatestSession(ctx, mid.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneA, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: mid.ID, Brief: BriefInput{Objective: "wait on TASK-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneASes, err := s.LatestSession(ctx, laneA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, laneASes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneASes.ID, CheckpointInput{Kind: BlockedCkp,
+		Summary: "waiting on TASK-1", Blockers: []string{"TASK-1 isn't done yet"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// mid (laneA's immediate parent) is dead; only root stays live
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE id = ?`, midSes.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	var toMid int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"dependency_added"%'`, mid.ID).Scan(&toMid)
+	if toMid != 0 {
+		t.Fatal("must not relay dependency_added to the dead immediate parent")
+	}
+	var toRoot int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"dependency_added"%' AND payload_json LIKE '%"item":"TASK-2"%'`,
+		root.ID).Scan(&toRoot)
+	if toRoot != 1 {
+		t.Fatalf("must escalate dependency_added past the dead parent to the nearest live ancestor: count = %d", toRoot)
 	}
 }

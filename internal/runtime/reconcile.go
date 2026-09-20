@@ -295,10 +295,10 @@ func (s *Store) OnDepUnblocked(ctx context.Context, tx *sql.Tx, doneID string) e
 		return err
 	}
 	for _, d := range waiting {
-		var agentName, parentAgentID, rootItemID string
-		err := tx.QueryRowContext(ctx, `SELECT name, COALESCE(parent_agent_id, ''), root_item_id
+		var agentID, agentName, parentAgentID, rootItemID string
+		err := tx.QueryRowContext(ctx, `SELECT id, name, COALESCE(parent_agent_id, ''), root_item_id
 			FROM agents WHERE item_id = ? AND state = 'active'`, d.id).
-			Scan(&agentName, &parentAgentID, &rootItemID)
+			Scan(&agentID, &agentName, &parentAgentID, &rootItemID)
 		if err == sql.ErrNoRows {
 			continue // nobody currently assigned to the blocked item: nothing to wake
 		}
@@ -308,11 +308,23 @@ func (s *Store) OnDepUnblocked(ctx context.Context, tx *sql.Tx, doneID string) e
 		if parentAgentID == "" {
 			continue // a top-level orchestrator itself: nothing above it to relay to
 		}
+		// The unguarded relay straight to parentAgentID used to assume the
+		// parent was alive to receive it -- the identical no-liveness-check
+		// bug notifyUndeliveredMessages' own parent fallback had (Bug 5):
+		// walk up to the nearest live ancestor instead, and skip the relay
+		// entirely if the whole chain above is dead.
+		ancestor, ok, err := s.nearestLiveAncestor(ctx, agentID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue // nobody live left above this agent to relay to
+		}
 		payload, err := json.Marshal(map[string]any{"event": "dependency_added", "agent": agentName, "item": d.key})
 		if err != nil {
 			return err
 		}
-		if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: parentAgentID,
+		if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: ancestor.ID,
 			RootItemID: rootItemID, ItemID: d.id, Payload: payload}); err != nil {
 			return err
 		}
@@ -659,30 +671,102 @@ func (s *Store) agentHasLiveSession(ctx context.Context, q txQuerier, agentID st
 	return n > 0, err
 }
 
-// undeliveredAgentMessage is one un-acked, agent-originated message whose
-// recipient has had no live session for at least ackTimeout: the race
-// Send()'s own liveness check cannot catch synchronously, because the
-// target was alive when Send() validated it and only died afterward.
+// agentCanReceive reports whether a message enqueued to agentID now will
+// ever actually be delivered: a live session now, a resumable one (Resume
+// starts generation n+1 on the same agent's inbox -- pause.go), or an agent
+// still queued for its first session (DrainQueue admits it later --
+// limits.go). Only a terminal latest session (or a finished/acknowledged
+// agent) is genuinely undeliverable. Both Send() (inbox.go) and
+// undeliveredAgentMessages below use this exact question instead of each
+// asking a narrower one of their own -- that mismatch (checking only
+// LiveStates) is what let a paused/interrupted/queued target read as
+// unreachable when it was not.
+func (s *Store) agentCanReceive(ctx context.Context, q txQuerier, agentID string) (bool, error) {
+	var agentState, sesState string
+	if err := q.QueryRowContext(ctx, `SELECT a.state, COALESCE((SELECT state FROM sessions
+		WHERE agent_id = a.id ORDER BY generation DESC, attempt DESC LIMIT 1), '')
+		FROM agents a WHERE a.id = ?`, agentID).Scan(&agentState, &sesState); err != nil {
+		return false, err
+	}
+	if agentState == string(AgentFinished) || agentState == string(AgentAcknowledged) {
+		return false, nil
+	}
+	if agentState == string(AgentQueued) {
+		return true, nil
+	}
+	st := SessionState(sesState)
+	return st.Live() || st == Paused || st == Interrupted, nil
+}
+
+// nearestLiveAncestor walks from agentID's parent upward -- the same
+// agentByID/LatestSession ancestor walk pauseTarget uses (pause.go ~888), so
+// a dead intermediate never hides a live ancestor further up -- and returns
+// the first ancestor whose own latest session is live. Unlike pauseTarget,
+// which keeps climbing to report the topmost live ancestor (the right point
+// to cascade a pause from), this stops at the closest one: a relay just
+// needs somebody still around to receive it. ok is false when the walk
+// reaches the top with nobody live at all.
+func (s *Store) nearestLiveAncestor(ctx context.Context, agentID string) (Agent, bool, error) {
+	cur, err := s.agentByID(ctx, agentID)
+	if err != nil {
+		return Agent{}, false, err
+	}
+	for cur.ParentAgentID != "" {
+		parent, err := s.agentByID(ctx, cur.ParentAgentID)
+		if err != nil {
+			return Agent{}, false, err
+		}
+		if pses, err := s.LatestSession(ctx, parent.ID); err == nil && pses.State.Live() {
+			return parent, true, nil
+		}
+		cur = parent
+	}
+	return Agent{}, false, nil
+}
+
+// undeliveredAgentMessage is one message, still pending, whose recipient
+// cannot receive it (agentCanReceive above): the race Send()'s own liveness
+// check cannot catch synchronously, because the target was alive when Send()
+// validated it and only died afterward.
 type undeliveredAgentMessage struct {
-	MessageID, FromAgentID, FromParentAgentID string
-	ToAgentName, RootItemID, ItemKey          string
+	MessageID, FromAgentID, FromParentAgentID   string
+	ToAgentID, ToAgentName, RootItemID, ItemKey string
 }
 
 // undeliveredAgentMessages finds every message matching undeliveredAgentMessage
-// above, created at or before cutoff. Daemon-originated relays (from_agent_id
-// NULL, e.g. the no_ack/crashed relays this same file already enqueues) are
-// excluded: those already have their own, separate liveness gaps and are out
-// of scope here (this covers agent-to-agent swarm_send traffic only).
+// above, whose target died at or before cutoff. Daemon-originated relays
+// (from_agent_id NULL, e.g. the no_ack/crashed relays this same file already
+// enqueues) are excluded: those already have their own, separate liveness
+// gaps and are out of scope here (this covers agent-to-agent swarm_send
+// traffic only).
+//
+// Two things the naive version of this query got wrong:
+//   - it matched any un-acked message (state IN delivered, acked-pending,
+//     etc.), so a message envelopes() had already handed the recipient's
+//     Sync (state = 'delivered') fired a false no_recipient even on a fully
+//     successful exchange the recipient simply never explicitly acked. Only
+//     'pending' -- never even delivered -- belongs here.
+//   - it measured the grace period from the message's own created_at, so a
+//     message sent 30 minutes before its target died got zero grace while
+//     one sent 10 seconds before the same death got the full window. The
+//     cutoff below is anchored to the target's actual death (MAX(ended_at)
+//     across its sessions), falling back to created_at only when the target
+//     has never had a session end at all.
+//
+// The live-state predicate itself is applied in Go (agentCanReceive) rather
+// than as a subquery here: the same ordering-by-generation-then-attempt
+// question Send() and agentCanReceive already ask, asked once per candidate
+// row instead of re-encoded a second way in SQL.
 func (s *Store) undeliveredAgentMessages(ctx context.Context, cutoff time.Time) ([]undeliveredAgentMessage, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT m.id, m.from_agent_id, COALESCE(fa.parent_agent_id, ''),
-		ta.name, m.root_item_id, ti.key
+		ta.id, ta.name, m.root_item_id, ti.key
 		FROM messages m
 		JOIN agents fa ON fa.id = m.from_agent_id
 		JOIN agents ta ON ta.id = m.to_agent_id
 		JOIN items ti ON ti.id = ta.item_id
-		WHERE m.state != 'acked' AND m.from_agent_id IS NOT NULL AND m.created_at <= ?
-		AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.agent_id = m.to_agent_id AND se.state IN
-			('spawning', 'running', 'pause_requested', 'quiescing', 'stopping'))`, db.Millis(cutoff))
+		WHERE m.state = 'pending' AND m.from_agent_id IS NOT NULL
+		AND COALESCE((SELECT MAX(se.ended_at) FROM sessions se WHERE se.agent_id = m.to_agent_id), m.created_at) <= ?`,
+		db.Millis(cutoff))
 	if err != nil {
 		return nil, err
 	}
@@ -691,23 +775,39 @@ func (s *Store) undeliveredAgentMessages(ctx context.Context, cutoff time.Time) 
 	for rows.Next() {
 		var r undeliveredAgentMessage
 		if err := rows.Scan(&r.MessageID, &r.FromAgentID, &r.FromParentAgentID,
-			&r.ToAgentName, &r.RootItemID, &r.ItemKey); err != nil {
+			&r.ToAgentID, &r.ToAgentName, &r.RootItemID, &r.ItemKey); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	filtered := out[:0]
+	for _, r := range out {
+		can, err := s.agentCanReceive(ctx, s.DB, r.ToAgentID)
+		if err != nil {
+			return nil, err
+		}
+		if !can {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered, nil
 }
 
 // alreadyRelayedForMessage reports whether a no_recipient relay for this
 // specific stuck message was already enqueued -- undeliveredAgentMessages'
 // idempotency guard, keyed by the message's own id (a message has no retry
 // "attempt" the way a session does, so alreadyRelayed's sinceStartedAt
-// window doesn't apply here).
+// window doesn't apply here). Uses the messages.reply_to FK (an indexed
+// equality check) rather than an unbounded LIKE scan of payload_json, which
+// had no to_agent_id/event/time bound at all against the append-only
+// messages table.
 func (s *Store) alreadyRelayedForMessage(ctx context.Context, messageID string) (bool, error) {
 	var n int
 	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
-		WHERE kind = 'relay' AND payload_json LIKE ?`, `%"message_id":"`+messageID+`"%`).Scan(&n)
+		WHERE kind = 'relay' AND reply_to = ?`, messageID).Scan(&n)
 	return n > 0, err
 }
 
@@ -737,12 +837,40 @@ func (s *Store) notifyUndeliveredMessages(ctx context.Context) error {
 			return err
 		}
 		if !live {
-			if r.FromParentAgentID == "" {
+			// The FROM agent is dead too: escalate to the nearest live
+			// ancestor above it rather than blindly relaying to its parent,
+			// which may itself be dead (a crashed subtree, PauseAll, etc.) --
+			// the same black-hole bug this function exists to fix, one level
+			// up. No live ancestor anywhere in the chain means nobody is left
+			// to tell, same as before.
+			ancestor, ok, err := s.nearestLiveAncestor(ctx, r.FromAgentID)
+			if err != nil {
+				return err
+			}
+			if !ok {
 				continue // nobody left to tell
 			}
-			notifyTo = r.FromParentAgentID
+			notifyTo = ancestor.ID
 		}
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			// Re-check under the transaction, immediately before writing: the
+			// select above and the idempotency guard both ran outside this
+			// tx, so the target's Sync/ack could have landed in that gap.
+			// Without this re-check a race there produces one spurious relay.
+			var state string
+			if err := tx.QueryRowContext(ctx, `SELECT state FROM messages WHERE id = ?`, r.MessageID).Scan(&state); err != nil {
+				return err
+			}
+			if state != "pending" {
+				return nil
+			}
+			can, err := s.agentCanReceive(ctx, tx, r.ToAgentID)
+			if err != nil {
+				return err
+			}
+			if can {
+				return nil
+			}
 			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.no_recipient", AgentName: r.ToAgentName,
 				ItemKey: r.ItemKey, Args: map[string]string{"name": r.ToAgentName, "KEY": r.ItemKey}}); err != nil {
 				return err
@@ -753,7 +881,7 @@ func (s *Store) notifyUndeliveredMessages(ctx context.Context) error {
 				return err
 			}
 			_, err = s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: notifyTo,
-				RootItemID: r.RootItemID, Payload: payload})
+				RootItemID: r.RootItemID, ReplyTo: r.MessageID, Payload: payload})
 			return err
 		}); err != nil {
 			return err

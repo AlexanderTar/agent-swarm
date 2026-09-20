@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
 // enq is a shortcut for the test cases below.
@@ -337,6 +340,65 @@ func TestSendRefusesATargetWithNoLiveSession(t *testing.T) {
 	// only the TARGET's liveness is checked, not the sender's.
 	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "hello", "", ""); err != nil {
 		t.Fatalf("a live target must still accept a send from an ended session: %v", err)
+	}
+}
+
+// Bugs 1 & 4: a paused or interrupted target's latest session is not "live"
+// by SessionState.Live()'s narrow definition, but Resume (pause.go) delivers
+// to it on the very next generation, and a queued agent's first session is
+// delivered once DrainQueue admits it (limits.go) -- none of these three are
+// the "no live session" black hole Send()'s check exists to catch, so all
+// three must succeed, and Reconcile must never raise no_recipient for them.
+func TestSendSucceedsToPausedInterruptedAndQueuedTargets(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": orchSes}
+	tm.captures[orch.Name] = []string{"working…\n"}
+
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(ctx, orchSes, w.Name, "finding", "still there?", "", ""); err != nil {
+		t.Fatalf("send to a paused target must succeed: %v", err)
+	}
+
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'interrupted' WHERE id = ?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(ctx, orchSes, w.Name, "finding", "hello again", "", ""); err != nil {
+		t.Fatalf("send to an interrupted target must succeed: %v", err)
+	}
+
+	setLimits(t, s, 5, 1, 5) // one non-orchestrator slot total, already held by w
+	t2, err := s.Items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: "STORY-1",
+		Title: "Second task"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id = ?`, t2.ID); err != nil {
+		t.Fatal(err)
+	}
+	queued, isQueued, err := s.Spawn(ctx, SpawnInput{ItemKey: t2.Key, Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isQueued || queued.State != AgentQueued {
+		t.Fatalf("second worker must queue: queued=%v state=%s", isQueued, queued.State)
+	}
+	if _, err := s.Send(ctx, orchSes, queued.Name, "finding", "you're up next", "", ""); err != nil {
+		t.Fatalf("send to a queued target must succeed: %v", err)
+	}
+
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 0 {
+		t.Fatalf("no_recipient must not fire for a paused/interrupted/queued target: count = %d", n)
 	}
 }
 

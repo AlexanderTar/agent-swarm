@@ -378,16 +378,21 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 			return &items.Error{Code: items.CodeBadRequest,
 				Message: "A message can only go to an agent inside the same top-level item."}
 		}
-		// A target with no live session will never sync/ack: without this check
-		// the message just sits in `messages` as pending forever, and the sender
-		// has no way to know delivery is impossible (the production incident
-		// this guards against — see docs/specs and notifyUndeliveredMessages in
-		// reconcile.go for the race where the target dies AFTER this check).
-		live, err := s.agentHasLiveSession(ctx, tx, target.ID)
+		// A target this message will never reach will never sync/ack: without
+		// this check the message just sits in `messages` as pending forever,
+		// and the sender has no way to know delivery is impossible (the
+		// production incident this guards against — see docs/specs and
+		// notifyUndeliveredMessages in reconcile.go for the race where the
+		// target dies AFTER this check). A paused or interrupted target still
+		// gets it once Resume starts its next generation, and a queued one
+		// once DrainQueue admits it — only a target whose latest session is
+		// terminal (or that has finished/been acknowledged) is genuinely
+		// unreachable, hence agentCanReceive rather than a bare live check.
+		can, err := s.agentCanReceive(ctx, tx, target.ID)
 		if err != nil {
 			return err
 		}
-		if !live {
+		if !can {
 			return &items.Error{Code: items.CodeBadRequest,
 				Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
 		}
