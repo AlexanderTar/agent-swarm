@@ -56,6 +56,8 @@ public enum Copy {
     public static func agentName(_ kebab: String) -> String { "Agent name: \(kebab)" }
     public static let name = "Name"
     public static let intent = "Intent"
+    public static let choreIntent = "Chore"
+    public static let choreCaption = "Creates a top-level chore orchestrator for maintenance, refactoring, or general work."
     public static let featureSpike = "Feature spike"
     public static let debugSpike = "Debug spike"
     public static let featureCaption = "Creates a spike to explore this request and turn it into an epic."

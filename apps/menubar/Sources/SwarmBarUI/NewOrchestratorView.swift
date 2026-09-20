@@ -71,6 +71,7 @@ public struct NewOrchestratorView: View {
     private var intentField: some View {
         VStack(alignment: .leading, spacing: 4) {
             Picker(Copy.intent, selection: $form.intent) {
+                Text(Copy.choreIntent).tag(SpikeIntent.chore)
                 Text(Copy.featureSpike).tag(SpikeIntent.feature)
                 Text(Copy.debugSpike).tag(SpikeIntent.debug)
             }

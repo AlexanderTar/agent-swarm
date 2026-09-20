@@ -63,8 +63,8 @@ type Patch struct {
 	Revision   int
 }
 
-var allowedParents = map[Type][]Type{Story: {Epic}, Task: {Story, Bug, Spike}}
-var parentHint = map[Type]string{Story: "A story needs a parent epic.", Task: "A task needs a parent story, bug or spike."}
+var allowedParents = map[Type][]Type{Story: {Epic}, Task: {Story, Bug, Spike, Chore}}
+var parentHint = map[Type]string{Story: "A story needs a parent epic.", Task: "A task needs a parent story, bug, spike or chore."}
 var tddValues = []string{"docs", "config", "mechanical-rename", "spike-research"}
 
 type querier interface {
@@ -194,7 +194,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput, by Actor) (Item, err
 func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Actor) (Item, error) {
 	in.Title = strings.TrimSpace(in.Title)
 	switch in.Type {
-	case Epic, Story, Task, Bug, Spike:
+	case Epic, Story, Task, Bug, Spike, Chore:
 	default:
 		return Item{}, errf(CodeBadRequest, "Unknown item type %q.", in.Type)
 	}

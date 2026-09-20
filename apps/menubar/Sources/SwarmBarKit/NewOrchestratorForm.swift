@@ -6,7 +6,7 @@ import Observation
 @Observable
 public final class NewOrchestratorForm {
     public var name = ""
-    public var intent: SpikeIntent = .feature
+    public var intent: SpikeIntent = .chore
     public var query = ""
     public var repos = ReposResponse()
     public var selection: [String] = []
@@ -80,7 +80,13 @@ public final class NewOrchestratorForm {
         return takenNames.contains(k) ? Copy.nameTaken : nil
     }
 
-    public var intentCaption: String { intent == .feature ? Copy.featureCaption : Copy.debugCaption }
+    public var intentCaption: String {
+        switch intent {
+        case .chore: return Copy.choreCaption
+        case .feature: return Copy.featureCaption
+        case .debug: return Copy.debugCaption
+        }
+    }
 
     public var errors: FieldErrors {
         var e = CatalogRules.validate(choice, advisor: advisor, catalog: catalog, enabled: settings.enabledAgents, role: .orchestrator)

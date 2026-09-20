@@ -47,7 +47,7 @@ func TestHierarchyMatrix(t *testing.T) {
 	}
 	for typ, msg := range map[items.Type]string{
 		items.Story: "A story needs a parent epic.",
-		items.Task:  "A task needs a parent story, bug or spike.",
+		items.Task:  "A task needs a parent story, bug, spike or chore.",
 	} {
 		_, err := s.Create(ctx, items.CreateInput{Type: typ, Title: "top"}, user)
 		if err == nil || err.Error() != msg {
@@ -332,3 +332,31 @@ func TestCorruptListColumnIsAnError(t *testing.T) {
 		t.Fatal("Children succeeded on a corrupt parent row")
 	}
 }
+
+func TestChoreItemLifecycleAndChildren(t *testing.T) {
+	s := newStore(t)
+	// Top-level chore
+	ch, err := s.Create(ctx, items.CreateInput{Type: items.Chore, Title: "Upgrade dependencies"}, user)
+	if err != nil {
+		t.Fatalf("create chore: %v", err)
+	}
+	if !strings.HasPrefix(ch.Key, "CHORE-") {
+		t.Fatalf("key = %s, want CHORE- prefix", ch.Key)
+	}
+
+	// Task under chore
+	task, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: ch.Key, Title: "Update go.mod"}, user)
+	if err != nil {
+		t.Fatalf("create task under chore: %v", err)
+	}
+	if task.ParentKey != ch.Key {
+		t.Fatalf("task parent = %s, want %s", task.ParentKey, ch.Key)
+	}
+
+	// Chore cannot have a parent
+	_, err = s.Create(ctx, items.CreateInput{Type: items.Chore, ParentKey: ch.Key, Title: "Nested chore"}, user)
+	if err == nil {
+		t.Fatal("nested chore must be rejected")
+	}
+}
+

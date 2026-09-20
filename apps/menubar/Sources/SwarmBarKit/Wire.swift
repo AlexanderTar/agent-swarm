@@ -515,7 +515,7 @@ public enum AdvisorPayload: Codable, Sendable, Equatable {
 }
 
 public enum SpikeIntent: String, Codable, Sendable, CaseIterable {
-    case feature, debug
+    case chore, feature, debug
 }
 
 public struct CreateSpikeBody: Codable, Sendable, Equatable {

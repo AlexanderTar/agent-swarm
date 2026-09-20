@@ -14,6 +14,7 @@ const (
 	Task  Type = "task"
 	Bug   Type = "bug"
 	Spike Type = "spike"
+	Chore Type = "chore"
 )
 
 type Status string

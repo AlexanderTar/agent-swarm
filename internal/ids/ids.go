@@ -78,7 +78,7 @@ func Unique(base string, taken func(string) bool) string {
 	}
 }
 
-var keyTypes = map[string]bool{"epic": true, "story": true, "task": true, "bug": true, "spike": true}
+var keyTypes = map[string]bool{"epic": true, "story": true, "task": true, "bug": true, "spike": true, "chore": true}
 
 // NextKey allocates the next "<TYPE>-<n>" inside the caller's transaction.
 func NextKey(ctx context.Context, tx *sql.Tx, typ string) (string, error) {

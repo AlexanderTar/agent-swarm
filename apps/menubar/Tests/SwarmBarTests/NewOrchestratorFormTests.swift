@@ -37,6 +37,9 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertEqual(f.effortOptions?.first?.label, "Default (high)")
         XCTAssertEqual(f.advisorOptions.first?.label, "Claude · Fable 5.1 (latest)")
         XCTAssertEqual(f.advisorOptions.last?.label, "No advisor")
+        XCTAssertEqual(f.intent, .chore)
+        XCTAssertEqual(f.intentCaption, Copy.choreCaption)
+        f.intent = .feature
         XCTAssertEqual(f.intentCaption, "Creates a spike to explore this request and turn it into an epic.")
         f.intent = .debug
         XCTAssertEqual(f.intentCaption, "Creates a spike to find the root cause and turn it into a bug with a fix plan.")

@@ -150,7 +150,7 @@ func parentTypesFor(parentType string) []string {
 	switch parentType {
 	case "epic":
 		return []string{"story"}
-	case "story", "bug", "spike":
+	case "story", "bug", "spike", "chore":
 		return []string{"task"}
 	}
 	return nil
@@ -158,8 +158,8 @@ func parentTypesFor(parentType string) []string {
 
 // validateTreeShape is L4 (hierarchy) and I12 (no cycle, no hierarchy edge).
 func validateTreeShape(t Tree) error {
-	if t.Root.Type != "epic" && t.Root.Type != "bug" {
-		return fmt.Errorf("tree_invalid: root must be an epic or a bug, got %q", t.Root.Type)
+	if t.Root.Type != "epic" && t.Root.Type != "bug" && t.Root.Type != "chore" {
+		return fmt.Errorf("tree_invalid: root must be an epic, a bug or a chore, got %q", t.Root.Type)
 	}
 	refs := map[string]bool{}
 	parentOf := map[string]string{}

@@ -251,6 +251,8 @@ func (s *Store) notifyItemCreated(ctx context.Context, tx *sql.Tx, spike items.I
 	kind := "item.created"
 	if rootType == items.Bug {
 		kind = "item.created.bug"
+	} else if rootType == items.Chore {
+		kind = "item.created.chore"
 	}
 	return s.notify(ctx, tx, NotifyInput{Kind: kind, ItemKey: rootKey,
 		Args: map[string]string{"SPIKE-KEY": spike.Key, "ROOT-KEY": rootKey, "title": rootTitle}})
@@ -282,6 +284,11 @@ func (s *Store) Materialize(ctx context.Context, sessionID, spikeKey, specID, pl
 				return errors.New("A debug spike materializes from its report.")
 			}
 			treeSource, rootType = reportID, items.Bug
+		} else if spike.SpikeIntent == "chore" {
+			if planID == "" {
+				return errors.New("A chore spike materializes from its plan.")
+			}
+			treeSource, rootType = planID, items.Chore
 		} else if specID == "" || planID == "" {
 			return errors.New("A feature spike materializes from its spec and plan.")
 		}

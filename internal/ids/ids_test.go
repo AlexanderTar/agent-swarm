@@ -132,8 +132,8 @@ func nextKey(t *testing.T, d *sql.DB, typ string) string {
 
 func TestNextKeySeparateCounters(t *testing.T) {
 	d := openCounters(t)
-	got := []string{nextKey(t, d, "task"), nextKey(t, d, "task"), nextKey(t, d, "epic"), nextKey(t, d, "spike")}
-	want := []string{"TASK-1", "TASK-2", "EPIC-1", "SPIKE-1"}
+	got := []string{nextKey(t, d, "task"), nextKey(t, d, "task"), nextKey(t, d, "epic"), nextKey(t, d, "spike"), nextKey(t, d, "chore")}
+	want := []string{"TASK-1", "TASK-2", "EPIC-1", "SPIKE-1", "CHORE-1"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %v", got)
 	}

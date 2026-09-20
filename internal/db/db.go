@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 var (
 	ErrLegacy = errors.New("Agent Swarm 1.x data found. Run `swarm migrate` first.")
@@ -71,19 +71,41 @@ func (d *DB) migrate(ctx context.Context) error {
 	if version > len(files) {
 		return ErrTooNew
 	}
+	if version == len(files) {
+		return nil
+	}
+
+	conn, err := d.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	// Disable foreign keys on this connection during migration so table recreations
+	// (e.g. 0003_add_chore.sql) can drop and rename tables without foreign key violations.
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return err
+	}
+	defer conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
+
 	for i := version; i < len(files); i++ {
 		body, err := schemaFS.ReadFile(files[i])
 		if err != nil {
 			return err
 		}
-		err = d.Tx(ctx, func(tx *sql.Tx) error {
-			if _, err := tx.ExecContext(ctx, string(body)); err != nil {
-				return fmt.Errorf("%s: %w", files[i], err)
-			}
-			_, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", i+1))
-			return err
-		})
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, string(body)); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("%s: %w", files[i], err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", i+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}
