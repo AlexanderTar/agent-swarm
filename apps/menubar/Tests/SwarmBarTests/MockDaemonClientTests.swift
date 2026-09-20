@@ -23,16 +23,18 @@ final class MockDaemonClientTests: XCTestCase {
         let added = try await mock.addRepo(path: "/tmp/notes")
         let scan = try await mock.rescanRepos()
         try await mock.terminalOpened(name: "login-form-coder")
+        let pane = try await mock.pane("login-form-coder", lines: 40)
         XCTAssertEqual(paused, 1)
         XCTAssertEqual(firstTwo.count, 2)
         XCTAssertEqual([catalog.count, refreshed.count, repos.recent.count], [4, 4, 1])
         XCTAssertEqual(added.name, "notes")
         XCTAssertEqual(scan, ScanStats(found: 5, missing: 0))
+        XCTAssertEqual(pane, try Fixture.decode("pane.json"))
         XCTAssertEqual(mock.calls, [
             "state", "agent pause login-form-coder subtree", "agent ack docs-fix-coder",
             "answer req_question Use zod.", "pause-all", "notifications 2", "read ntf_05", "read-all",
             "usage-refresh claude", "usage-refresh all", "catalog", "catalog-refresh", "repos endurio",
-            "repo-add /tmp/notes", "rescan", "terminal-opened login-form-coder",
+            "repo-add /tmp/notes", "rescan", "terminal-opened login-form-coder", "pane login-form-coder 40",
         ])
     }
 

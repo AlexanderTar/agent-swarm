@@ -39,6 +39,7 @@ public protocol DaemonClient: Sendable {
     func rescanRepos() async throws -> ScanStats
     func createSpike(_ body: CreateSpikeBody) async throws -> CreateSpikeResponse
     func terminalOpened(name: String) async throws
+    func pane(_ name: String, lines: Int) async throws -> PaneCapture
 }
 
 /// In-memory daemon used by the tests and by `SWARM_MOCK_FIXTURES=<dir> swift run SwarmBar`.
@@ -50,20 +51,24 @@ public final class MockDaemonClient: DaemonClient {
     public var reposResponse: ReposResponse
     public var notificationList: [SwarmNotification]
     public var spikeResult: Result<CreateSpikeResponse, DaemonError>?
+    public var paneResult: Result<PaneCapture, DaemonError>
     public var failNext: DaemonError?
     /// Any error for the next call, e.g. `CancellationError()`.
     public var failNextWith: Error?
     public private(set) var calls: [String] = []
 
     public init(state: StateResponse = StateResponse(), catalog: [AgentCatalogEntry] = [],
-                repos: ReposResponse = ReposResponse(), notifications: [SwarmNotification] = []) {
+                repos: ReposResponse = ReposResponse(), notifications: [SwarmNotification] = [],
+                pane: PaneCapture = PaneCapture(text: "")) {
         stateResult = .success(state)
         catalogEntries = catalog
         reposResponse = repos
         notificationList = notifications
+        paneResult = .success(pane)
     }
 
-    /// Loads `state.json`, `catalog.json`, `repos.json` and `notifications.json` from a fixture folder.
+    /// Loads `state.json`, `catalog.json`, `repos.json`, `notifications.json` and `pane.json`
+    /// from a fixture folder.
     public convenience init(fixtures dir: URL) throws {
         func load<T: Decodable>(_ name: String, _ type: T.Type) throws -> T {
             try SwarmJSON.decode(type, from: Data(contentsOf: dir.appendingPathComponent(name)))
@@ -71,7 +76,8 @@ public final class MockDaemonClient: DaemonClient {
         self.init(state: try load("state.json", StateResponse.self),
                   catalog: try load("catalog.json", [AgentCatalogEntry].self),
                   repos: try load("repos.json", ReposResponse.self),
-                  notifications: try load("notifications.json", [SwarmNotification].self))
+                  notifications: try load("notifications.json", [SwarmNotification].self),
+                  pane: try load("pane.json", PaneCapture.self))
     }
 
     private func record(_ call: String) throws {
@@ -163,5 +169,10 @@ public final class MockDaemonClient: DaemonClient {
 
     public func terminalOpened(name: String) async throws {
         try record("terminal-opened \(name)")
+    }
+
+    public func pane(_ name: String, lines: Int) async throws -> PaneCapture {
+        try record("pane \(name) \(lines)")
+        return try paneResult.get()
     }
 }
