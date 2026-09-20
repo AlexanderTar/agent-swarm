@@ -147,6 +147,36 @@ func requestOut(r runtime.Request) map[string]any {
 	return map[string]any{"request_id": r.ID, "state": r.State}
 }
 
+// ---------- swarm_blocker ----------
+
+func blockerTool(s *Server) ToolDef {
+	return ToolDef{
+		Name:        "swarm_blocker",
+		Description: "Log a genuine blocker that requires user or orchestrator intervention to proceed.",
+		Schema:      objSchema(`"reason":{"type":"string"},"options":{"type":"array","items":{"type":"string"}}`),
+		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
+			var in struct {
+				Reason  string   `json:"reason"`
+				Options []string `json:"options"`
+			}
+			if err := decode(args, &in); err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(in.Reason) == "" {
+				return nil, &items.Error{Code: items.CodeBadRequest, Message: "reason is required."}
+			}
+			req, err := s.RT.AskBlocker(ctx, c.SessionID, in.Reason, in.Options)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"request_id": req.ID,
+				"status":     "blocked",
+			}, nil
+		},
+	}
+}
+
 // ---------- swarm_send ----------
 
 func sendTool(s *Server) ToolDef {

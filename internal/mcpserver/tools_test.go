@@ -502,3 +502,36 @@ func TestAdvisorToolRefusesWithNoAdvisorConfigured(t *testing.T) {
 		t.Fatal("swarm_advise with no advisor configured must be refused")
 	}
 }
+
+func TestSwarmBlockerOpensHITLRequest(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+
+	out, err := s.call(ctx, seed.Caller, "swarm_blocker", `{"reason":"Need AWS credentials to deploy","options":["Provide credentials","Deploy locally"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res["status"] != "blocked" {
+		t.Fatalf("status = %v, want blocked", res["status"])
+	}
+	reqID, ok := res["request_id"].(string)
+	if !ok || reqID == "" {
+		t.Fatalf("request_id missing in %v", res)
+	}
+
+	var isHITL int
+	var kind, prompt string
+	err = s.RT.DB.QueryRowContext(ctx, `SELECT is_hitl, kind, prompt FROM requests WHERE id = ?`, reqID).
+		Scan(&isHITL, &kind, &prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isHITL != 1 || kind != "blocker" || prompt != "Need AWS credentials to deploy" {
+		t.Fatalf("request not recorded properly: isHITL=%d kind=%s prompt=%s", isHITL, kind, prompt)
+	}
+}

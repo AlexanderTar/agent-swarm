@@ -30,7 +30,7 @@ var pauseAllowedTools = []string{"swarm_sync", "swarm_read"}
 // failed checkpoints, and only a withdraw ask.
 func PauseAllowed(state SessionState, tool string) error {
 	if !state.Pausing() || slices.Contains(pauseAllowedTools, tool) ||
-		tool == "swarm_checkpoint" || tool == "swarm_ask" {
+		tool == "swarm_checkpoint" || tool == "swarm_ask" || tool == "swarm_blocker" {
 		return nil
 	}
 	return &items.Error{Code: items.CodeConflict, Message: pausedTool}

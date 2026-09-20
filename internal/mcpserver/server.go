@@ -88,7 +88,7 @@ func (s *Server) ToolsFor(c Caller) []ToolDef {
 // ToolsFor overwrites it in place above.
 func sharedTools(s *Server) []ToolDef {
 	return []ToolDef{
-		syncTool(s), checkpointTool(s), askTool(s), sendTool(s), readTool(s), kbReadOnlyTool(s),
+		syncTool(s), checkpointTool(s), askTool(s), blockerTool(s), sendTool(s), readTool(s), kbReadOnlyTool(s),
 	}
 }
 
