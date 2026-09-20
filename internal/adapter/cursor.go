@@ -85,12 +85,10 @@ func (c *Cursor) HookOutput(event string, d HookDecision) ([]byte, error) {
 
 func (c *Cursor) ParseHook(event string, stdin []byte) (HookInput, error) {
 	var raw struct {
-		ConversationID string  `json:"conversation_id"`
-		TranscriptPath *string `json:"transcript_path"`
-		ToolName       string  `json:"tool_name"`
-		ToolInput      struct {
-			Command string `json:"command"`
-		} `json:"tool_input"`
+		ConversationID string          `json:"conversation_id"`
+		TranscriptPath *string         `json:"transcript_path"`
+		ToolName       string          `json:"tool_name"`
+		ToolInput      json.RawMessage `json:"tool_input"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
@@ -101,12 +99,21 @@ func (c *Cursor) ParseHook(event string, stdin []byte) (HookInput, error) {
 	if raw.TranscriptPath != nil {
 		tp = *raw.TranscriptPath
 	}
+	var cmd string
+	if len(raw.ToolInput) > 0 {
+		var inputWithCmd struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(raw.ToolInput, &inputWithCmd)
+		cmd = inputWithCmd.Command
+	}
 	return HookInput{
 		ProviderSessionID: raw.ConversationID,
 		Event:             event,
 		ToolName:          raw.ToolName,
-		Command:           raw.ToolInput.Command,
+		Command:           cmd,
 		TranscriptPath:    tp,
+		RawToolInput:      raw.ToolInput,
 		IsSwarmTool:       strings.HasPrefix(raw.ToolName, "MCP:swarm_"),
 	}, nil
 }

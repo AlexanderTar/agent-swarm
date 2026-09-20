@@ -686,3 +686,110 @@ func TestIsClaudeCommand(t *testing.T) {
 	}
 }
 
+func TestQuestionToolInterceptionCreatesHITLRequest(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("claude AskUserQuestion", func(t *testing.T) {
+		h, ses := seed(t, 0, runtime.Running)
+		input, _ := json.Marshal(map[string]any{
+			"session_id": "p1",
+			"tool_name":  "AskUserQuestion",
+			"tool_input": map[string]any{
+				"question": "Deploy to staging?",
+				"options":  []string{"yes", "no"},
+			},
+		})
+		out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("question tool must not be blocked, got %s", out)
+		}
+
+		var count, isHITL int
+		var prompt, kind string
+		err = h.DB.QueryRowContext(ctx, `SELECT COUNT(*), is_hitl, prompt, kind FROM requests WHERE session_id = ?`, ses).
+			Scan(&count, &isHITL, &prompt, &kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 || isHITL != 1 || prompt != "Deploy to staging?" || kind != "question" {
+			t.Fatalf("expected 1 hitl question request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
+		}
+	})
+
+	t.Run("agy ask_question", func(t *testing.T) {
+		h, ses := seed(t, 0, runtime.Running)
+		_, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'agy' WHERE id = 'agt_1'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		input, _ := json.Marshal(map[string]any{
+			"conversationId": "p1",
+			"toolCall": map[string]any{
+				"name": "ask_question",
+				"args": map[string]any{
+					"questions": []map[string]any{
+						{
+							"question": "Which database engine?",
+							"options":  []string{"postgres", "sqlite"},
+						},
+					},
+				},
+			},
+		})
+		out, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("question tool must not be blocked, got %s", out)
+		}
+
+		var count, isHITL int
+		var prompt, kind string
+		err = h.DB.QueryRowContext(ctx, `SELECT COUNT(*), is_hitl, prompt, kind FROM requests WHERE session_id = ?`, ses).
+			Scan(&count, &isHITL, &prompt, &kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 || isHITL != 1 || prompt != "Which database engine?" || kind != "question" {
+			t.Fatalf("expected 1 hitl question request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
+		}
+	})
+}
+
+func TestPermissionRequestCreatesHITLRequest(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	_, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'codex' WHERE id = 'agt_1'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input, _ := json.Marshal(map[string]any{
+		"command": "terraform apply",
+	})
+	out, err := h.Handle(ctx, runtime.Codex, "PermissionRequest", ses, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("permission request hook should return empty, got %s", out)
+	}
+
+	var count, isHITL int
+	var prompt, kind string
+	err = h.DB.QueryRowContext(ctx, `SELECT COUNT(*), is_hitl, prompt, kind FROM requests WHERE session_id = ?`, ses).
+		Scan(&count, &isHITL, &prompt, &kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || isHITL != 1 || prompt != "terraform apply" || kind != "prompt" {
+		t.Fatalf("expected 1 hitl prompt request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
+	}
+}
+
+

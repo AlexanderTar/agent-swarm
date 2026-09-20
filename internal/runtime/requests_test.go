@@ -55,6 +55,47 @@ func TestAskQuestionOpensARequestAndNotifies(t *testing.T) {
 	}
 }
 
+func TestHITLRequestWire(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Ask me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+
+	// 1. Question has is_hitl = true
+	q, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "A question?", Options: []string{"Yes", "No"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !q.IsHITL {
+		t.Fatalf("expected question to have IsHITL=true, got %+v", q)
+	}
+	qw, err := s.RequestWireByID(ctx, q.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !qw.IsHITL {
+		t.Fatalf("expected wire question to have IsHITL=true, got %+v", qw)
+	}
+
+	// 2. Blocker has is_hitl = true
+	b, err := s.AskBlocker(ctx, ses.ID, "Missing API key", []string{"Provide key", "Skip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b.IsHITL || b.Kind != KindBlocker {
+		t.Fatalf("expected blocker to have IsHITL=true and Kind=blocker, got %+v", b)
+	}
+
+	// 3. Prompt has is_hitl = true
+	p, err := s.AskPrompt(ctx, ses.ID, "Do you trust this folder?", []string{"Yes", "No"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.IsHITL || p.Kind != KindPrompt {
+		t.Fatalf("expected prompt to have IsHITL=true and Kind=prompt, got %+v", p)
+	}
+}
+
 func TestAnswerSendsAUserAnswerAndClosesTheRequest(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

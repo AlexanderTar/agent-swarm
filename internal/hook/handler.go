@@ -3,12 +3,14 @@ package hook
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -19,6 +21,75 @@ var claudeCmdRe = regexp.MustCompile(`(?m)(?:^|[;&|()` + "`" + `]|\$\()\s*(?:[A-
 
 func isClaudeCommand(cmd string) bool {
 	return claudeCmdRe.MatchString(cmd)
+}
+
+func extractQuestion(toolName string, raw []byte) (string, []string) {
+	if len(raw) == 0 {
+		return fmt.Sprintf("%s called", toolName), nil
+	}
+
+	var payload struct {
+		Question  string `json:"question"`
+		Prompt    string `json:"prompt"`
+		Message   string `json:"message"`
+		Options   []any  `json:"options"`
+		Choices   []any  `json:"choices"`
+		Questions []struct {
+			Question string `json:"question"`
+			Options  []any  `json:"options"`
+		} `json:"questions"`
+	}
+
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return fmt.Sprintf("%s called", toolName), nil
+	}
+
+	var prompt string
+	var rawOptions []any
+
+	if len(payload.Questions) > 0 {
+		prompt = payload.Questions[0].Question
+		rawOptions = payload.Questions[0].Options
+	} else {
+		if payload.Question != "" {
+			prompt = payload.Question
+		} else if payload.Prompt != "" {
+			prompt = payload.Prompt
+		} else if payload.Message != "" {
+			prompt = payload.Message
+		}
+		if len(payload.Options) > 0 {
+			rawOptions = payload.Options
+		} else if len(payload.Choices) > 0 {
+			rawOptions = payload.Choices
+		}
+	}
+
+	if prompt == "" {
+		prompt = fmt.Sprintf("%s called", toolName)
+	}
+
+	if n := utf8.RuneCountInString(prompt); n > 1000 {
+		prompt = string([]rune(prompt)[:997]) + "..."
+	}
+
+	var options []string
+	for _, opt := range rawOptions {
+		switch v := opt.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				options = append(options, v)
+			}
+		case map[string]any:
+			if label, ok := v["label"].(string); ok && label != "" {
+				options = append(options, label)
+			} else if text, ok := v["text"].(string); ok && text != "" {
+				options = append(options, text)
+			}
+		}
+	}
+
+	return prompt, options
 }
 
 const noticeGap = 60 * time.Second
@@ -40,6 +111,8 @@ func normalize(kind runtime.AgentKind, event string) string {
 		return "PreToolUse"
 	case "posttooluse", "postinvocation":
 		return "PostToolUse"
+	case "permissionrequest":
+		return "PermissionRequest"
 	case "precompact":
 		return "PreCompact"
 	case "postcompact":
@@ -313,6 +386,27 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 		}
 
+		// Intercept native question tools to record HITL request in Swarm without blocking
+		isQuestionTool := in.ToolName == "ask_question" ||
+			in.ToolName == "AskUserQuestion" ||
+			in.ToolName == "request_user_input" ||
+			in.ToolName == "experimental_request_user_input"
+
+		if isQuestionTool && h.RT != nil && s.ID != "" {
+			prompt, options := extractQuestion(in.ToolName, in.RawToolInput)
+			_, _ = h.RT.AskQuestion(ctx, s.ID, prompt, options)
+		}
+
+		return adapter.HookDecision{}, nil
+
+	case "PermissionRequest":
+		if h.RT != nil && s.ID != "" {
+			prompt := in.Command
+			if prompt == "" {
+				prompt = "Permission requested"
+			}
+			_, _ = h.RT.AskPrompt(ctx, s.ID, prompt, nil)
+		}
 		return adapter.HookDecision{}, nil
 
 	case "PostToolUse":

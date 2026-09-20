@@ -27,6 +27,20 @@ type SessionState string
 type CheckpointKind string
 type MessageKind string
 type RequestKind string
+
+const (
+	KindQuestion       RequestKind = "question"
+	KindPrompt         RequestKind = "prompt"
+	KindBlocker        RequestKind = "blocker"
+	KindConfirmRepos   RequestKind = "confirm_repos"
+	KindApproveSection RequestKind = "approve_section"
+	KindApprovePlan    RequestKind = "approve_plan"
+	KindApproveReport  RequestKind = "approve_report"
+	KindAcceptEpic     RequestKind = "accept_epic"
+	KindAcceptFix      RequestKind = "accept_fix"
+	KindCloseSpike     RequestKind = "close_spike"
+)
+
 type RequestState string
 type WakeClass string
 
@@ -199,6 +213,7 @@ type Artifact struct {
 type Request struct {
 	ID                               string
 	Kind                             RequestKind
+	IsHITL                           bool
 	AgentID, SessionID, ItemID       string
 	ArtifactID                       string
 	SectionID, SectionSHA256, Prompt string

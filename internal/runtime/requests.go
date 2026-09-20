@@ -74,6 +74,7 @@ type ApproveInput struct {
 type RequestWire struct {
 	ID               string          `json:"id"`
 	Kind             RequestKind     `json:"kind"`
+	IsHITL           bool            `json:"is_hitl"`
 	AgentName        *string         `json:"agent_name"`
 	ItemKey          string          `json:"item_key"`
 	ItemTitle        string          `json:"item_title"`
@@ -111,15 +112,16 @@ func (s *Store) notify(ctx context.Context, tx *sql.Tx, n NotifyInput) error {
 func (s *Store) requestTx(ctx context.Context, q txQuerier, id string) (Request, error) {
 	var r Request
 	var kind, state string
+	var isHITL int
 	var options, confirmed, binding string
 	var artifactRevision sql.NullInt64
 	var respondedAt sql.NullInt64
 	var created int64
-	err := q.QueryRowContext(ctx, `SELECT id, kind, COALESCE(agent_id,''), COALESCE(session_id,''), item_id,
+	err := q.QueryRowContext(ctx, `SELECT id, kind, is_hitl, COALESCE(agent_id,''), COALESCE(session_id,''), item_id,
 		COALESCE(artifact_id,''), COALESCE(section_id,''), COALESCE(section_sha256,''), prompt, options_json,
 		state, COALESCE(confirmed_json,'[]'), artifact_revision, COALESCE(binding_json,''),
 		COALESCE(response_text,''), COALESCE(responded_via,''), responded_at, created_at
-		FROM requests WHERE id = ?`, id).Scan(&r.ID, &kind, &r.AgentID, &r.SessionID, &r.ItemID, &r.ArtifactID,
+		FROM requests WHERE id = ?`, id).Scan(&r.ID, &kind, &isHITL, &r.AgentID, &r.SessionID, &r.ItemID, &r.ArtifactID,
 		&r.SectionID, &r.SectionSHA256, &r.Prompt, &options, &state, &confirmed, &artifactRevision, &binding,
 		&r.ResponseText, &r.RespondedVia, &respondedAt, &created)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -129,6 +131,7 @@ func (s *Store) requestTx(ctx context.Context, q txQuerier, id string) (Request,
 		return r, err
 	}
 	r.Kind, r.State = RequestKind(kind), RequestState(state)
+	r.IsHITL = (isHITL != 0)
 	r.Options = json.RawMessage(options)
 	json.Unmarshal([]byte(confirmed), &r.Confirmed)
 	if artifactRevision.Valid {
@@ -231,7 +234,7 @@ func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (Reque
 	if confirmed == nil {
 		confirmed = []string{}
 	}
-	w := RequestWire{ID: r.ID, Kind: r.Kind, ItemKey: key, ItemTitle: it.Title, RootKey: it.RootKey,
+	w := RequestWire{ID: r.ID, Kind: r.Kind, IsHITL: r.IsHITL, ItemKey: key, ItemTitle: it.Title, RootKey: it.RootKey,
 		Prompt: r.Prompt, Options: r.Options, State: r.State, Confirmed: confirmed, Binding: r.Binding,
 		CreatedAt: db.Millis(r.CreatedAt)}
 	if r.AgentID != "" {
@@ -423,9 +426,9 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 			return err
 		}
 		id := ids.New("req")
-		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, agent_id, session_id, item_id,
+		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
 			prompt, options_json, state, created_at)
-			VALUES (?, 'question', ?, ?, ?, ?, ?, 'open', ?)`,
+			VALUES (?, 'question', 1, ?, ?, ?, ?, ?, 'open', ?)`,
 			id, a.ID, sessionID, a.ItemID, in.Prompt, jsonArray(in.Options), db.Millis(s.Now())); err != nil {
 			return err
 		}
@@ -434,6 +437,72 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 			return err
 		}
 		out, err = s.finishOpen(ctx, tx, id, a.Name, key, map[string]string{"prompt": in.Prompt})
+		return err
+	})
+	return out, err
+}
+
+// AskQuestion opens an open question request with is_hitl=1.
+func (s *Store) AskQuestion(ctx context.Context, sessionID, prompt string, options []string) (Request, error) {
+	return s.askQuestion(ctx, sessionID, AskInput{
+		Kind:    "question",
+		Prompt:  prompt,
+		Options: options,
+	})
+}
+
+// AskBlocker opens an open blocker request with is_hitl=1 and transitions the item to blocked.
+func (s *Store) AskBlocker(ctx context.Context, sessionID, prompt string, options []string) (Request, error) {
+	if n := utf8.RuneCountInString(prompt); n < 1 || n > 1000 {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
+	}
+	var out Request
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		id := ids.New("req")
+		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+			prompt, options_json, state, created_at)
+			VALUES (?, 'blocker', 1, ?, ?, ?, ?, ?, 'open', ?)`,
+			id, a.ID, sessionID, a.ItemID, prompt, jsonArray(options), db.Millis(s.Now())); err != nil {
+			return err
+		}
+		key, err := s.itemKey(ctx, tx, a.ItemID)
+		if err != nil {
+			return err
+		}
+		_ = s.tryTransition(ctx, tx, key, items.Blocked)
+		out, err = s.finishOpen(ctx, tx, id, a.Name, key, map[string]string{"prompt": prompt})
+		return err
+	})
+	return out, err
+}
+
+// AskPrompt opens an open terminal prompt request with is_hitl=1.
+func (s *Store) AskPrompt(ctx context.Context, sessionID, prompt string, options []string) (Request, error) {
+	if n := utf8.RuneCountInString(prompt); n < 1 || n > 1000 {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
+	}
+	var out Request
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		id := ids.New("req")
+		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+			prompt, options_json, state, created_at)
+			VALUES (?, 'prompt', 1, ?, ?, ?, ?, ?, 'open', ?)`,
+			id, a.ID, sessionID, a.ItemID, prompt, jsonArray(options), db.Millis(s.Now())); err != nil {
+			return err
+		}
+		key, err := s.itemKey(ctx, tx, a.ItemID)
+		if err != nil {
+			return err
+		}
+		out, err = s.finishOpen(ctx, tx, id, a.Name, key, map[string]string{"prompt": prompt})
 		return err
 	})
 	return out, err

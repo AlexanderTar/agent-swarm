@@ -573,3 +573,35 @@ func TestChangedFilesCountsShortstatOutputAndIsLenientOnErrors(t *testing.T) {
 		t.Fatalf("unknown repo = %d, want 0", n)
 	}
 }
+
+func TestBlockedCheckpointOpensHITLRequest(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "BlockMe", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+
+	// Writing Blocked checkpoint with blockers opens a HITL request
+	_, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{
+		Kind:     BlockedCkp,
+		Summary:  "Database migration failed",
+		Blockers: []string{"Need manual DB password", "Schema mismatch"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var reqID, kind string
+	var isHITL int
+	var options string
+	err = s.DB.QueryRowContext(ctx, `SELECT id, kind, is_hitl, options_json FROM requests WHERE item_id = ?`, a.ItemID).
+		Scan(&reqID, &kind, &isHITL, &options)
+	if err != nil {
+		t.Fatalf("expected request to be created: %v", err)
+	}
+	if kind != "blocker" || isHITL != 1 {
+		t.Fatalf("expected kind=blocker, is_hitl=1; got kind=%s, is_hitl=%d", kind, isHITL)
+	}
+	if !strings.Contains(options, "Need manual DB password") {
+		t.Fatalf("expected options to contain blocker, got %s", options)
+	}
+}

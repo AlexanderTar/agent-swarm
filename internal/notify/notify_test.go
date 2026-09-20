@@ -42,6 +42,8 @@ func TestRulesCoverSection175(t *testing.T) {
 		"request.confirm_repos":   {"action", "Confirm repositories", "{KEY}: {name} proposes {N} repositories{expansion}.", "swarm.approval"},
 		"request.close_spike":     {"action", "Close spike?", "{KEY}: {name} found nothing to build ({resolution}).", "swarm.approval"},
 		"request.question":        {"action", "Answer needed", "{KEY}: {prompt}", "swarm.question"},
+		"request.prompt":          {"action", "Approval needed", "{KEY}: {name} is waiting on approval: {prompt}", "swarm.approval"},
+		"request.blocker":         {"action", "Blocker reported", "{KEY}: {name} is blocked: {prompt}", "swarm.agent"},
 		"request.approve_section": {"action", "Section approval needed", `{KEY}: Review "{section}".`, "swarm.approval"},
 		"request.approve_plan":    {"action", "Plan approval needed", "{KEY}: Review the proposed implementation plan.", "swarm.approval"},
 		"request.approve_report":  {"action", "Report approval needed", "{KEY}: Review the root cause and fix plan.", "swarm.approval"},

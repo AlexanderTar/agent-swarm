@@ -64,6 +64,7 @@ type HookInput struct {
 	Source            string
 	TranscriptPath    string
 	Cwd               string
+	RawToolInput      []byte
 }
 
 // WakeTarget is what Wake needs to deliver a native or pasted notice.

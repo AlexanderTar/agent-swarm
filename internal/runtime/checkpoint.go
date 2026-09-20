@@ -363,6 +363,35 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
+		if in.Kind == BlockedCkp && len(in.Blockers) > 0 {
+			reqID := ids.New("req")
+			prompt := in.Summary
+			if prompt == "" {
+				prompt = fmt.Sprintf("%s reported blockers on %s.", a.Name, itemKey)
+			}
+			if len(prompt) > 1000 {
+				prompt = prompt[:1000]
+			}
+			optionsJSON := jsonArray(in.Blockers)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+				prompt, options_json, state, created_at)
+				VALUES (?, 'blocker', 1, ?, ?, ?, ?, ?, 'open', ?)`,
+				reqID, a.ID, sessionID, it.ID, prompt, optionsJSON, db.Millis(now)); err != nil {
+				return err
+			}
+			if _, err := s.Events.Append(ctx, tx, events.RequestOpened,
+				map[string]string{"id": reqID, "kind": "blocker", "item": itemKey, "state": "open"}); err != nil {
+				return err
+			}
+			if s.Notify != nil {
+				if err := s.Notify.Raise(ctx, tx, NotifyInput{Kind: "request.blocker",
+					AgentName: a.Name, ItemKey: itemKey, RequestID: reqID,
+					Args: map[string]string{"KEY": itemKey, "name": a.Name, "prompt": prompt}}); err != nil {
+					return err
+				}
+			}
+		}
+
 		if a.ParentAgentID != "" {
 			body, err := json.Marshal(map[string]any{
 				"event": string(in.Kind), "agent": a.Name, "item": itemKey,

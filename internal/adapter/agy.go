@@ -74,12 +74,8 @@ func (a *Agy) ParseHook(event string, stdin []byte) (HookInput, error) {
 		TranscriptPath string `json:"transcriptPath"`
 		ModelName      string `json:"modelName"`
 		ToolCall       struct {
-			Name string `json:"name"`
-			Args struct {
-				ServerName  string `json:"ServerName"`
-				ToolName    string `json:"ToolName"`
-				CommandLine string `json:"CommandLine"`
-			} `json:"args"`
+			Name string          `json:"name"`
+			Args json.RawMessage `json:"args"`
 		} `json:"toolCall"`
 	}
 	if len(stdin) > 0 {
@@ -87,15 +83,23 @@ func (a *Agy) ParseHook(event string, stdin []byte) (HookInput, error) {
 			return HookInput{}, err
 		}
 	}
-	isSwarm := (raw.ToolCall.Name == "call_mcp_tool" && raw.ToolCall.Args.ServerName == "swarm") ||
+	var parsedArgs struct {
+		ServerName  string `json:"ServerName"`
+		ToolName    string `json:"ToolName"`
+		CommandLine string `json:"CommandLine"`
+	}
+	if len(raw.ToolCall.Args) > 0 {
+		_ = json.Unmarshal(raw.ToolCall.Args, &parsedArgs)
+	}
+	isSwarm := (raw.ToolCall.Name == "call_mcp_tool" && parsedArgs.ServerName == "swarm") ||
 		strings.HasPrefix(raw.ToolCall.Name, "mcp_swarm_")
 	toolName := raw.ToolCall.Name
-	if raw.ToolCall.Name == "call_mcp_tool" && raw.ToolCall.Args.ToolName != "" {
-		toolName = raw.ToolCall.Args.ToolName
+	if raw.ToolCall.Name == "call_mcp_tool" && parsedArgs.ToolName != "" {
+		toolName = parsedArgs.ToolName
 	}
 	var cmd string
 	if raw.ToolCall.Name == "run_command" {
-		cmd = raw.ToolCall.Args.CommandLine
+		cmd = parsedArgs.CommandLine
 	}
 	return HookInput{
 		ProviderSessionID: raw.ConversationID,
@@ -103,6 +107,7 @@ func (a *Agy) ParseHook(event string, stdin []byte) (HookInput, error) {
 		ToolName:          toolName,
 		Command:           cmd,
 		TranscriptPath:    raw.TranscriptPath,
+		RawToolInput:      raw.ToolCall.Args,
 		IsSwarmTool:       isSwarm,
 	}, nil
 }

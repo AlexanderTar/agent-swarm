@@ -90,29 +90,37 @@ func (c *Codex) HookOutput(event string, d HookDecision) ([]byte, error) {
 
 func (c *Codex) ParseHook(event string, stdin []byte) (HookInput, error) {
 	var raw struct {
-		SessionID      string `json:"session_id"`
-		TurnID         string `json:"turn_id"`
-		ToolName       string `json:"tool_name"`
-		Source         string `json:"source"`
-		Cwd            string `json:"cwd"`
-		TranscriptPath string `json:"transcript_path"`
-		ToolInput      struct {
-			Command string `json:"command"`
-		} `json:"tool_input"`
+		SessionID      string          `json:"session_id"`
+		TurnID         string          `json:"turn_id"`
+		ToolName       string          `json:"tool_name"`
+		Command        string          `json:"command"`
+		Source         string          `json:"source"`
+		Cwd            string          `json:"cwd"`
+		TranscriptPath string          `json:"transcript_path"`
+		ToolInput      json.RawMessage `json:"tool_input"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
 			return HookInput{}, err
 		}
 	}
+	cmd := raw.Command
+	if cmd == "" && len(raw.ToolInput) > 0 {
+		var inputWithCmd struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(raw.ToolInput, &inputWithCmd)
+		cmd = inputWithCmd.Command
+	}
 	return HookInput{
 		ProviderSessionID: raw.SessionID,
 		Event:             event,
 		ToolName:          raw.ToolName,
-		Command:           raw.ToolInput.Command,
+		Command:           cmd,
 		Source:            raw.Source,
 		Cwd:               raw.Cwd,
 		TranscriptPath:    raw.TranscriptPath,
+		RawToolInput:      raw.ToolInput,
 		IsSwarmTool:       strings.HasPrefix(raw.ToolName, "mcp__swarm__"),
 	}, nil
 }
