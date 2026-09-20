@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
@@ -72,7 +73,7 @@ func TestHealthNeedsNoToken(t *testing.T) {
 	e := newEnv(t)
 	status, body := e.call("GET", "/api/health", nil, "")
 	h := decode[map[string]any](t, body)
-	if status != 200 || h["ok"] != true || h["version"] != "test" || h["schema"] != float64(1) {
+	if status != 200 || h["ok"] != true || h["version"] != "test" || h["schema"] != float64(db.SchemaVersion) {
 		t.Fatalf("health = %d %s", status, body)
 	}
 }

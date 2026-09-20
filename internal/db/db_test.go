@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,13 +41,61 @@ func TestFreshDBMigratesOnceAndReopens(t *testing.T) {
 	}
 }
 
+// Live incident (2026-09-20): failure_text was first added by editing
+// 0001_init.sql in place, so a database that had already run migration 1
+// never got the column. This proves both halves of the real fix: a fresh
+// database ends up with the column, and one already parked at version 1
+// (this repo's actual production shape until today) picks it up on its next
+// open, without a manual ALTER TABLE.
+func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swarm.db")
+	d, err := db.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHasFailureText := func() {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT failure_text FROM sessions LIMIT 0`).Scan(&n); err != sql.ErrNoRows {
+			t.Fatalf("sessions.failure_text: %v", err)
+		}
+	}
+	assertHasFailureText()
+	d.Close()
+
+	// Simulate a database that only ever ran migration 1 (pre-2026-09-20 production).
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec("PRAGMA user_version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`ALTER TABLE sessions DROP COLUMN failure_text`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+
+	d, err = db.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("reopen must apply the pending migration, not fail: %v", err)
+	}
+	defer d.Close()
+	assertHasFailureText()
+	var v int
+	d.QueryRow("PRAGMA user_version").Scan(&v)
+	if v != db.SchemaVersion {
+		t.Fatalf("user_version = %d, want %d after catching up", v, db.SchemaVersion)
+	}
+}
+
 func TestNewerDatabaseIsRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.db")
 	d, err := db.Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.Exec("PRAGMA user_version = 2")
+	d.Exec(fmt.Sprintf("PRAGMA user_version = %d", db.SchemaVersion+1))
 	d.Close()
 	_, err = db.Open(ctx, path)
 	if !errors.Is(err, db.ErrTooNew) || err.Error() != "database is newer than this build" {
