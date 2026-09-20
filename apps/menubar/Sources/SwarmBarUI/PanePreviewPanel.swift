@@ -63,7 +63,9 @@ public struct PanePreviewPanel: View {
                         .lineLimit(nil)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
+                        .background(SubtleScrollerConfig())
                 }
+                .scrollIndicators(.automatic)
                 .defaultScrollAnchor(.bottom)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -71,6 +73,30 @@ public struct PanePreviewPanel: View {
             Text(message).font(.callout).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .multilineTextAlignment(.center)
+        }
+    }
+}
+
+/// Configures the enclosing NSScrollView to use a subtle overlay scrollbar:
+/// hidden by default, thin (.small), with a transparent background.
+struct SubtleScrollerConfig: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView(frame: .zero)
+        DispatchQueue.main.async { [weak v] in
+            guard let scrollView = v?.enclosingScrollView else { return }
+            scrollView.scrollerStyle = .overlay
+            scrollView.autohidesScrollers = true
+            scrollView.verticalScroller?.controlSize = .small
+        }
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { [weak nsView] in
+            guard let scrollView = nsView?.enclosingScrollView else { return }
+            scrollView.scrollerStyle = .overlay
+            scrollView.autohidesScrollers = true
+            scrollView.verticalScroller?.controlSize = .small
         }
     }
 }
