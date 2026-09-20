@@ -24,14 +24,20 @@ function Host(p: { initial?: string; onViewItem?: (k: string) => void }) {
 
 describe("NeedsYou inbox (§16.11)", () => {
   it("lists requests oldest first and shows the first one", async () => {
-    renderWithDaemon(<Host />, { events: false });
+    const { user } = renderWithDaemon(<Host />, { events: false });
     const list = await screen.findByRole("list", { name: "Needs you" });
     const rows = within(list).getAllByRole("button");
-    expect(rows[0]).toHaveTextContent("Accept epic");
-    expect(rows[0]).toHaveTextContent(/EPIC-12 · \d+[mhd]/);
-    expect(rows[3]).toHaveTextContent('Approve "Data model"');
+    expect(rows[0]).toHaveTextContent("Which sync strategy?");
+    expect(rows[0]).toHaveTextContent(/SPIKE-3 · \d+[mhd]/);
+    expect(rows[1]).toHaveTextContent("Which validation library?");
     expect(rows[0]).toHaveAttribute("aria-current", "true");
-    expect(screen.getByText("review:req_accept")).toBeInTheDocument();
+    expect(screen.getByText("review:req_question")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Approvals" }));
+    const appRows = within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button");
+    expect(appRows[0]).toHaveTextContent("Accept epic");
+    expect(appRows[0]).toHaveTextContent(/EPIC-12 · \d+[mhd]/);
+    expect(appRows[1]).toHaveTextContent('Approve "Data model"');
   });
 
   it("filters questions and approvals and selects a row", async () => {

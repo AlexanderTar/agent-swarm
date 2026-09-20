@@ -33,9 +33,13 @@ export function NeedsYou(p: {
     );
   }
 
-  const list = filterRequests(requests.data ?? [], p.filter);
-  const current = p.selected ? list.find((r) => r.id === p.selected) : pickRequest(list, "");
-  const resolved = p.selected !== "" && !current && requests.data !== undefined;
+  const filtered = filterRequests(requests.data ?? [], p.filter);
+  const selectedReq = p.selected ? (requests.data ?? []).find((r) => r.id === p.selected) : undefined;
+  const list = (p.filter === "all" && selectedReq && !filtered.some((r) => r.id === selectedReq.id))
+    ? [selectedReq, ...filtered]
+    : filtered;
+  const current = (p.filter === "all" ? selectedReq : undefined) ?? list.find((r) => r.id === p.selected) ?? pickRequest(list, "");
+  const resolved = p.selected !== "" && !selectedReq && requests.data !== undefined;
   const known = seen.current.get(p.selected);
 
   return (
@@ -46,7 +50,12 @@ export function NeedsYou(p: {
           label={C.needsYou}
           value={p.filter}
           onChange={p.onFilter}
-          options={[{ value: "all", label: C.all }, { value: "questions", label: C.questions }, { value: "approvals", label: C.approvals }]}
+          options={[
+            { value: "all", label: C.all },
+            { value: "questions", label: C.questions },
+            { value: "approvals", label: C.approvals },
+            { value: "reviews", label: C.reviews },
+          ]}
         />
         {requests.data && list.length === 0 && <p className="text-muted">{C.inboxEmpty}</p>}
         <ul aria-label={C.needsYou} className="space-y-1">

@@ -148,7 +148,7 @@ export interface AgentNode {
 }
 
 export type RequestKind =
-  | "question" | "confirm_repos" | "approve_section" | "approve_plan" | "approve_report"
+  | "question" | "prompt" | "blocker" | "confirm_repos" | "approve_section" | "approve_plan" | "approve_report"
   | "accept_epic" | "accept_fix" | "close_spike";
 export type RequestState = "open" | "approved" | "changes_requested" | "answered" | "withdrawn" | "stale";
 export interface RepoProposal { repo: string; reason: string; source: "user" | "agent" }
@@ -159,6 +159,7 @@ export type RequestBinding = AcceptBinding | { repos_version: number } | { resol
 export interface Request {
   id: string;
   kind: RequestKind;
+  is_hitl: boolean;
   agent_name: string | null;
   item_key: string;
   item_title: string;
@@ -321,5 +322,5 @@ export type ConnState = "connecting" | "open" | "closed";
 export type View = "hierarchy" | "kanban" | "dependencies" | "inbox";
 export type CardLevel = "tasks" | "stories" | "top";
 export type Grouping = "root" | "flat";
-export type InboxFilter = "all" | "questions" | "approvals";
+export type InboxFilter = "all" | "questions" | "approvals" | "reviews";
 export interface Filter { q: string; type: ItemType | ""; status: ItemStatus | "" }

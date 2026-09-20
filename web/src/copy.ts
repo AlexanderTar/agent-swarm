@@ -156,6 +156,7 @@ export const C = {
   commentOptional: "Comment (optional)",
   questions: "Questions",
   approvals: "Approvals",
+  reviews: "Reviews",
   noChangeNeeded: "No change needed",
   viewSpike: "View spike",
   viewItem: "View item",

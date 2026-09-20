@@ -22,7 +22,7 @@ const VIEWS: readonly View[] = ["hierarchy", "kanban", "dependencies", "inbox"];
 const TYPES: readonly ItemType[] = ["epic", "story", "task", "bug", "spike"];
 const LEVELS: readonly CardLevel[] = ["tasks", "stories", "top"];
 const GROUPS: readonly Grouping[] = ["root", "flat"];
-const FILTERS: readonly InboxFilter[] = ["all", "questions", "approvals"];
+const FILTERS: readonly InboxFilter[] = ["all", "questions", "approvals", "reviews"];
 
 function pick<T extends string>(allowed: readonly T[], v: string | null, fallback: T): T {
   return v !== null && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;

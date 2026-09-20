@@ -4,7 +4,12 @@ import { requestTitle } from "./requestTitle";
 
 export function filterRequests(reqs: Request[], f: InboxFilter): Request[] {
   return reqs
-    .filter((r) => f === "all" || (f === "questions" ? r.kind === "question" : r.kind !== "question"))
+    .filter((r) => {
+      if (f === "all") return r.is_hitl;
+      if (f === "questions") return r.is_hitl && (r.kind === "question" || r.kind === "prompt" || r.kind === "blocker");
+      if (f === "approvals" || f === "reviews") return !r.is_hitl;
+      return true;
+    })
     .sort((a, b) => a.created_at - b.created_at);
 }
 

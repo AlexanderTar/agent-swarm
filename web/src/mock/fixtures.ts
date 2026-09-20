@@ -77,7 +77,9 @@ function agents(): AgentNode[] {
 }
 
 function request(p: Partial<Request> & Pick<Request, "id" | "kind" | "item_key" | "item_title" | "root_key">): Request {
+  const is_hitl = p.is_hitl ?? (p.kind === "question" || p.kind === "prompt" || p.kind === "blocker");
   return {
+    is_hitl,
     agent_name: null, artifact_id: null, artifact_revision: null, section_id: null, section_title: null, section_sha256: null,
     prompt: "", options: [], state: "open", confirmed: null, binding: null, response_text: null, responded_via: null,
     responded_at: null, created_at: NOW, ...p,
