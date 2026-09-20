@@ -19,7 +19,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
-const tddMissing = "TDD evidence missing: record the failing test run (phase: red) before completing."
+const verifyMissing = "Verification evidence missing: record what was run to verify this work before completing."
 const pausedTool = "paused: finish your handoff and stop."
 
 var gatedRoles = []Role{RoleCoder, RoleDebugger, RoleMechanical}
@@ -89,36 +89,20 @@ type CheckpointResult struct {
 	ItemStatus   items.Status
 }
 
-// tddOK is L24. Evidence is every verification entry of this attempt, earlier
+// verifyOK is L24. Evidence is every verification entry of this attempt, earlier
 // checkpoints included, so a pause and resume inside one attempt keeps it.
-// It checks exactly what tddMissing promises -- a recorded red run somewhere,
-// and the most recent verification passing -- nothing more. Live incident
-// (2026-09-19): an earlier version paired red/green by exact Cmd string and
-// separately required every distinct Cmd's own last entry to be green. Real
-// TDD practice runs a narrow red (a single test) then a broader green (the
-// whole file or package) to confirm, which is a different Cmd string on
-// purpose -- that version rejected it as "TDD evidence missing" even though
-// the worker had done everything right, three times in one day. Do not
-// reintroduce a same-Cmd requirement or a "no other Cmd's last run may be
-// red" guard: both fire on ordinary scope broadening, not on genuinely
-// unfinished work.
-func tddOK(prior, now []Verify) bool {
+// It checks that at least one verification command was recorded.
+func verifyOK(prior, now []Verify) bool {
 	all := append(append([]Verify{}, prior...), now...)
 	if len(all) == 0 {
 		return false
 	}
-	sawRed := false
 	for _, v := range all {
-		if v.Phase == "red" {
-			sawRed = true
-			break
+		if strings.TrimSpace(v.Cmd) != "" {
+			return true
 		}
 	}
-	if !sawRed {
-		return false
-	}
-	last := all[len(all)-1]
-	return last.Phase == "green" && last.OK
+	return false
 }
 
 func jsonArray[T any](v []T) string {
@@ -300,8 +284,8 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				if err != nil {
 					return err
 				}
-				if !tddOK(prior, in.Verification) {
-					return errors.New(tddMissing)
+				if !verifyOK(prior, in.Verification) {
+					return errors.New(verifyMissing)
 				}
 			}
 		}

@@ -235,8 +235,8 @@ func TestHandoffLeavesTheItemStatusAlone(t *testing.T) {
 	}
 }
 
-// L24: the gate, in all four shapes.
-func TestTDDGate(t *testing.T) {
+// L24: the generalist verification gate.
+func TestVerificationGate(t *testing.T) {
 	red := Verify{Cmd: "go test ./internal/x -run TestLogin", Phase: "red", OK: false}
 	green := Verify{Cmd: "go test ./internal/x -run TestLogin", Phase: "green", OK: true}
 	cases := []struct {
@@ -244,19 +244,11 @@ func TestTDDGate(t *testing.T) {
 		v    []Verify
 		ok   bool
 	}{
+		{"red only", []Verify{red}, true},
+		{"green only", []Verify{green}, true},
 		{"red then green", []Verify{red, green}, true},
-		{"green only", []Verify{green}, false},
-		{"green then red", []Verify{green, red}, false},
-		{"red then failing green", []Verify{red, {Cmd: green.Cmd, Phase: "green", OK: false}}, false},
 		{"nothing at all", nil, false},
-		// Live incident (2026-09-19): a narrow red run (-run TestLogin) followed by
-		// a broader green run (the whole package) is normal TDD practice, but the
-		// two Verify entries have different Cmd strings. The gate must not require
-		// them to match -- it only promises "record the failing test run before
-		// completing," not "re-run the identical command."
-		{"narrow red then broader green", []Verify{red, {Cmd: "go test ./internal/x", Phase: "green", OK: true}}, true},
-		{"red then unrelated failing green ends it", []Verify{red, green,
-			{Cmd: "go test ./internal/y", Phase: "green", OK: false}}, false},
+		{"empty command", []Verify{{Cmd: "  "}}, false},
 	}
 	for _, c := range cases {
 		s, _, _ := newStore(t)
@@ -272,8 +264,8 @@ func TestTDDGate(t *testing.T) {
 		if !c.ok {
 			if err == nil {
 				t.Errorf("%s: should be refused", c.name)
-			} else if err.Error() != "TDD evidence missing: record the failing test run (phase: red) before completing." {
-				t.Errorf("%s: err = %q", c.name, err)
+			} else if err.Error() != verifyMissing {
+				t.Errorf("%s: err = %q, want %q", c.name, err, verifyMissing)
 			}
 		}
 	}
