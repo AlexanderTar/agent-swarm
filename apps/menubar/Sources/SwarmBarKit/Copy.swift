@@ -244,4 +244,15 @@ public enum Copy {
     // §14 notification actions
     public static let openItem = "Open item"
     public static let viewAgent = "View agent"
+
+    // hover preview
+    public static let paneLoading = "Reading the pane…"
+    public static let paneNoSession = "No session yet."
+    public static let paneDead = "Session ended. Last screen."
+    public static let paneTmuxUnreachable = "Can't reach tmux."
+    public static let paneUnknownAgent = "That agent is gone."
+    public static let paneSlow = "The pane didn't answer in time."
+    public static func paneHeader(_ name: String, _ kind: String, _ itemKey: String) -> String {
+        "\(name) · \(kind) · \(itemKey)"
+    }
 }
