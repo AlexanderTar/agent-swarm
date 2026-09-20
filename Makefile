@@ -8,6 +8,7 @@ APP_DIR ?= /Applications
 
 build: web-build
 	$(GO) build -o bin/swarm ./cmd/swarm
+	codesign --force --sign "$${SWARM_SIGN_IDENTITY:--}" --identifier dev.swarm.daemon bin/swarm
 
 web-build:
 	cd web && pnpm install --frozen-lockfile && pnpm build
@@ -56,6 +57,7 @@ install: install-daemon install-app
 install-daemon: build
 	mkdir -p $(PREFIX)/bin
 	install -m 0755 bin/swarm $(PREFIX)/bin/swarm
+	codesign --force --sign "$${SWARM_SIGN_IDENTITY:--}" --identifier dev.swarm.daemon $(PREFIX)/bin/swarm
 
 # Builds Swarm.app into /Applications.
 install-app: app
