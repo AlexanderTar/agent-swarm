@@ -149,25 +149,43 @@ final class AppModelTests: XCTestCase {
     func testNeedsYouRowsAndViewAll() async throws {
         let m = make()
         await m.refresh()
-        XCTAssertEqual(m.visibleRequests.map(\.id), ["req_section", "req_question", "req_plan"])
+        // Only HITL requests appear in openRequests
+        XCTAssertEqual(m.openRequests.map(\.id), ["req_question"])
+        XCTAssertEqual(m.visibleRequests.map(\.id), ["req_question"])
+        XCTAssertNil(m.viewAllRequests)
+        XCTAssertEqual(m.visibleRequests.map(RequestLine.text), ["Which validation library?"])
+        XCTAssertEqual(m.requestTerminal(m.visibleRequests[0]), "login-form-coder")
+
+        // Test with 4 HITL requests to verify prefix(3) and viewAllRequests
+        var four: StateResponse = try Fixture.decode("state.json")
+        four.requests = [
+            SwarmRequest(id: "req_1", kind: .question, isHITL: true, prompt: "Question 1", createdAt: Timestamp(ms: 1)),
+            SwarmRequest(id: "req_2", kind: .prompt, isHITL: true, prompt: "Trust directory", createdAt: Timestamp(ms: 2)),
+            SwarmRequest(id: "req_3", kind: .blocker, isHITL: true, prompt: "Need token", createdAt: Timestamp(ms: 3)),
+            SwarmRequest(id: "req_4", kind: .question, isHITL: true, prompt: "Question 2", createdAt: Timestamp(ms: 4)),
+            SwarmRequest(id: "req_5", kind: .approveSection, isHITL: false, prompt: "Approve section", createdAt: Timestamp(ms: 5)),
+        ]
+        client.stateResult = .success(four)
+        await m.refresh()
+        XCTAssertEqual(m.visibleRequests.map(\.id), ["req_1", "req_2", "req_3"])
         XCTAssertEqual(m.viewAllRequests, "View all 4 requests")
-        XCTAssertEqual(m.visibleRequests.map(RequestLine.text), [
-            "Approve \"Session handling\"", "Which validation library?", "Approve plan",
-        ])
-        let lines = [RequestKind.approveReport, .acceptEpic, .acceptFix, .confirmRepos, .closeSpike]
-            .map { RequestLine.text(SwarmRequest(id: "r", kind: $0)) }
-        XCTAssertEqual(lines, ["Approve report", "Accept epic", "Accept fix", "Confirm repositories", "Close spike?"])
-        let repos = try XCTUnwrap(m.openRequests.last)
+
+        let lines = [RequestKind.approveReport, .acceptEpic, .acceptFix, .confirmRepos, .closeSpike, .prompt, .blocker]
+            .map { RequestLine.text(SwarmRequest(id: "r", kind: $0, prompt: "Sample prompt")) }
+        XCTAssertEqual(lines, ["Approve report", "Accept epic", "Accept fix", "Confirm repositories", "Close spike?", "Sample prompt", "Sample prompt"])
+        let repos = SwarmRequest(id: "r", kind: .confirmRepos, proposedRepos: 2)
         XCTAssertEqual(RequestLine.text(repos), "Confirm 2 repositories")
         XCTAssertEqual(RequestLine.text(SwarmRequest(id: "r", kind: .approveSection, prompt: "Fallback")), "Approve \"Fallback\"")
-        XCTAssertEqual(m.requestTerminal(m.visibleRequests[1]), "login-form-coder")
-        XCTAssertNil(m.requestTerminal(m.visibleRequests[0]), "approval rows show Review only")
-        m.review(m.visibleRequests[0])
+        m.review(SwarmRequest(id: "req_section", kind: .approveSection))
         m.openInbox()
         XCTAssertEqual(opened, ["http://127.0.0.1:7777/#/inbox?req=req_section", "http://127.0.0.1:7777/#/inbox"])
 
         var three: StateResponse = try Fixture.decode("state.json")
-        three.requests.removeLast()
+        three.requests = [
+            SwarmRequest(id: "req_1", kind: .question, isHITL: true, prompt: "Question 1", createdAt: Timestamp(ms: 1)),
+            SwarmRequest(id: "req_2", kind: .prompt, isHITL: true, prompt: "Trust directory", createdAt: Timestamp(ms: 2)),
+            SwarmRequest(id: "req_3", kind: .blocker, isHITL: true, prompt: "Need token", createdAt: Timestamp(ms: 3)),
+        ]
         client.stateResult = .success(three)
         await m.refresh()
         XCTAssertNil(m.viewAllRequests)

@@ -44,7 +44,7 @@ public final class MemoryStore: KeyValueStore {
 public enum RequestLine {
     public static func text(_ r: SwarmRequest) -> String {
         switch r.kind {
-        case .question: return r.prompt
+        case .question, .prompt, .blocker: return r.prompt
         case .approveSection: return Copy.approveSection(r.sectionTitle ?? r.prompt)
         case .approvePlan: return Copy.approvePlan
         case .approveReport: return Copy.approveReport
@@ -286,7 +286,7 @@ public final class AppModel {
     // MARK: Needs you
 
     public var openRequests: [SwarmRequest] {
-        state.requests.filter { $0.state == "open" }.sorted { $0.createdAt < $1.createdAt }
+        state.requests.filter { $0.state == "open" && $0.isHITL }.sorted { $0.createdAt < $1.createdAt }
     }
 
     public var visibleRequests: [SwarmRequest] { Array(openRequests.prefix(3)) }

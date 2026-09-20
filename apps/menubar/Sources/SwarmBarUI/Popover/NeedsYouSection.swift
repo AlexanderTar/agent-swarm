@@ -42,7 +42,7 @@ struct RequestRow: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(request.itemKey) · \(request.itemTitle)").font(.caption).foregroundStyle(.secondary)
             Text(RequestLine.text(request)).lineLimit(3)
-            if request.kind == .question {
+            if request.kind == .question || request.kind == .prompt || request.kind == .blocker {
                 if model.answering == request.id {
                     HStack(spacing: 4) {
                         TextField(Copy.answer, text: draft).textFieldStyle(.roundedBorder)

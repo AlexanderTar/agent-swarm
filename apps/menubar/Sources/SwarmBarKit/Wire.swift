@@ -96,7 +96,8 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
 }
 
 public enum RequestKind: String, Codable, Sendable {
-    case question, confirmRepos = "confirm_repos", approveSection = "approve_section"
+    case question, prompt, blocker
+    case confirmRepos = "confirm_repos", approveSection = "approve_section"
     case approvePlan = "approve_plan", approveReport = "approve_report"
     case acceptEpic = "accept_epic", acceptFix = "accept_fix", closeSpike = "close_spike"
 }
@@ -104,6 +105,7 @@ public enum RequestKind: String, Codable, Sendable {
 public struct SwarmRequest: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var kind: RequestKind
+    public var isHITL: Bool
     public var agentName: String?
     public var itemKey: String
     public var itemTitle: String
@@ -113,27 +115,31 @@ public struct SwarmRequest: Codable, Sendable, Equatable, Identifiable {
     public var createdAt: Timestamp
     /// `confirm_repos` only: how many repos the agent proposes (`options.proposed`).
     public var proposedRepos: Int?
+    public var options: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id, kind, prompt, state, options
+        case isHITL = "is_hitl"
         case agentName = "agent_name", itemKey = "item_key", itemTitle = "item_title"
         case sectionTitle = "section_title", createdAt = "created_at"
     }
 
     private struct RepoOptions: Codable { var proposed: [Proposal]; struct Proposal: Codable { var repo: String } }
 
-    public init(id: String, kind: RequestKind, agentName: String? = nil, itemKey: String = "TASK-1",
+    public init(id: String, kind: RequestKind, isHITL: Bool = false, agentName: String? = nil, itemKey: String = "TASK-1",
                 itemTitle: String = "Task", sectionTitle: String? = nil, prompt: String = "",
-                state: String = "open", createdAt: Timestamp = Timestamp(ms: 0), proposedRepos: Int? = nil) {
-        self.id = id; self.kind = kind; self.agentName = agentName; self.itemKey = itemKey
+                state: String = "open", createdAt: Timestamp = Timestamp(ms: 0), proposedRepos: Int? = nil,
+                options: [String]? = nil) {
+        self.id = id; self.kind = kind; self.isHITL = isHITL; self.agentName = agentName; self.itemKey = itemKey
         self.itemTitle = itemTitle; self.sectionTitle = sectionTitle; self.prompt = prompt
-        self.state = state; self.createdAt = createdAt; self.proposedRepos = proposedRepos
+        self.state = state; self.createdAt = createdAt; self.proposedRepos = proposedRepos; self.options = options
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         kind = try c.decode(RequestKind.self, forKey: .kind)
+        isHITL = try c.decodeIfPresent(Bool.self, forKey: .isHITL) ?? (kind == .question || kind == .prompt || kind == .blocker)
         agentName = try c.decodeIfPresent(String.self, forKey: .agentName)
         itemKey = try c.decode(String.self, forKey: .itemKey)
         itemTitle = try c.decode(String.self, forKey: .itemTitle)
@@ -143,12 +149,14 @@ public struct SwarmRequest: Codable, Sendable, Equatable, Identifiable {
         createdAt = try c.decode(Timestamp.self, forKey: .createdAt)
         proposedRepos = kind == .confirmRepos
             ? (try? c.decode(RepoOptions.self, forKey: .options))?.proposed.count : nil
+        options = try? c.decodeIfPresent([String].self, forKey: .options)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(kind, forKey: .kind)
+        try c.encode(isHITL, forKey: .isHITL)
         try c.encode(agentName, forKey: .agentName)
         try c.encode(itemKey, forKey: .itemKey)
         try c.encode(itemTitle, forKey: .itemTitle)
@@ -156,7 +164,9 @@ public struct SwarmRequest: Codable, Sendable, Equatable, Identifiable {
         try c.encode(prompt, forKey: .prompt)
         try c.encode(state, forKey: .state)
         try c.encode(createdAt, forKey: .createdAt)
-        if let n = proposedRepos {
+        if let opts = options {
+            try c.encode(opts, forKey: .options)
+        } else if let n = proposedRepos {
             try c.encode(RepoOptions(proposed: Array(repeating: .init(repo: ""), count: n)), forKey: .options)
         }
     }
