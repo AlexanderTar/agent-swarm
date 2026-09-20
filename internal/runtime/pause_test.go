@@ -1888,3 +1888,70 @@ func TestRepeatedPauseAllCascadesOntoAChildSpawnedUnderAPendingRoot(t *testing.T
 		t.Fatalf("the already-paused child = %+v, want untouched at %+v", firstAfter, firstBefore)
 	}
 }
+
+func TestResumeEmitsRelayToParent(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = 'p1' WHERE id = ?`, wSes.ID)
+
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	var itemKey string
+	if err := s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, w.ItemID).Scan(&itemKey); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	var payloadStr string
+	var wakeClass string
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(payload_json, ''), COALESCE(wake_class, '')
+		FROM messages WHERE to_agent_id = ? AND kind = 'relay' AND payload_json LIKE '%"event":"resumed"%'`,
+		orch.ID).Scan(&count, &payloadStr, &wakeClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 resumed relay, got %d", count)
+	}
+	if wakeClass != "immediate" {
+		t.Fatalf("expected wake_class immediate, got %s", wakeClass)
+	}
+	if !strings.Contains(payloadStr, w.Name) {
+		t.Fatalf("expected payload to contain agent name %s: %s", w.Name, payloadStr)
+	}
+	if !strings.Contains(payloadStr, `"`+itemKey+`"`) {
+		t.Fatalf("expected payload to contain item key %s: %s", itemKey, payloadStr)
+	}
+}
+
+func TestRelayPausedIncludesItemAndSummary(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'pause_requested' WHERE id = ?`, wSes.ID)
+	_, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{
+		Kind:    Handoff,
+		Summary: "Holding for review",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payloadStr string
+	err = s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages
+		WHERE to_agent_id = ? AND kind = 'relay' AND payload_json LIKE '%"event":"paused"%'`,
+		orch.ID).Scan(&payloadStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payloadStr, `"item":`) || !strings.Contains(payloadStr, "Holding for review") {
+		t.Fatalf("expected payload to contain item and summary: %s", payloadStr)
+	}
+}
+
+

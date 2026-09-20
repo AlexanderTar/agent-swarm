@@ -17,6 +17,12 @@ Follow the `swarm` skill first; these rules add to it.
 - A relay with `event: "no_ack"` means a child never wrote a single checkpoint within two minutes of spawning — it may be stuck before its first `swarm_sync` or crashed silently. Check its state with `swarm_read`; if it's `failed` or `crashed`, retry it with `swarm_control retry`.
 - A relay with `event: "dependency_added"` means a child that wrote a `blocked` checkpoint waiting on another item can now resume — that item just finished. Its own session is still live, just idling on the wait, so `swarm_control retry` doesn't apply; instead nudge it directly with `swarm_send` (e.g. `to: <its name>, kind: "finding", body: "<KEY> is done; you can resume."`). Don't wait for it to notice on its own.
 - `swarm_send` refuses synchronously only when the target's latest session is a terminal state it can't come back from on its own (`failed`/`crashed`/`completed`/`cancelled`) — a paused, interrupted, or still-queued target still accepts mail, since resuming or admitting it delivers what's already waiting. A relay with `event: "no_recipient"` means a message you already sent got stuck because its target reached one of those terminal states before ever acking it: `swarm_read` the target, `swarm_control retry` if that's the right move, or reassign the work to someone else, then resend.
+- Answering child questions: When a child sends a question (`kind: "question"`), answer with `swarm_send(to: <child>, kind: "answer", reply_to: <msg_id>, body: "...")`. If user clarification is needed, ask the user (via `swarm_ask` or native question tool) and forward the response.
+- Child lifecycle relays:
+  - `event: "paused"`: Child has paused; read handoff checkpoint via `swarm_read`.
+  - `event: "resumed"`: Child has resumed work; session is active.
+  - `event: "crashed"`: Child crashed; inspect `exit_code` and `tail` in the relay payload before deciding to retry (`swarm_control retry`) or reassign.
+  - `swarm_control cancel`: Use `action: "cancel"` to abort a runaway or obsolete child agent.
 - Merge in dependency order, run the plan's verification, then write `integrated` with the merged sha per repo and the verification results. The user's acceptance is requested only after that. Write `completed` when the daemon reports the item accepted.
 - Don't poll. End your turn when waiting; the daemon wakes you.
 

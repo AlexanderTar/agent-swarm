@@ -20,7 +20,7 @@ var ImmediateKinds = []MessageKind{"assignment", "control", "question", "answer"
 // ImmediateRelayEvents are the relay events that wake (I19). progress and handoff
 // are deferred and arrive folded into a digest.
 var ImmediateRelayEvents = []string{"accepted", "completed", "failed", "blocked", "crashed",
-	"interrupted", "paused", "dependency_added", "spawn_failed", "no_ack", "no_recipient"}
+	"interrupted", "paused", "resumed", "dependency_added", "spawn_failed", "no_ack", "no_recipient"}
 
 func WakeClassFor(kind MessageKind, relayEvent string) WakeClass {
 	if kind == "relay" {

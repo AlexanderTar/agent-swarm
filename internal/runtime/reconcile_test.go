@@ -1509,3 +1509,31 @@ func TestPromptDetectedInRunningSessionOpensHITLRequest(t *testing.T) {
 		t.Fatalf("reconcile should not duplicate open prompt request, got count=%d", count)
 	}
 }
+
+func TestCrashedRelayIncludesExitCodeAndTail(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+
+	panes(tm, Pane{Session: w.Name, Dead: true, DeadStatus: 137, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[w.Name] = []string{"line 1\nline 2\nfatal: out of memory"}
+
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var payloadStr string
+	err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages
+		WHERE to_agent_id = ? AND kind = 'relay' AND payload_json LIKE '%"event":"crashed"%'`,
+		orch.ID).Scan(&payloadStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payloadStr, `"exit_code":137`) || !strings.Contains(payloadStr, "fatal: out of memory") {
+		t.Fatalf("expected exit_code and tail in crashed relay payload: %s", payloadStr)
+	}
+}
+
