@@ -3,12 +3,14 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"regexp"
 	"strconv"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 )
 
 const wakeGap = 5 * time.Second
@@ -26,6 +28,8 @@ type wakeRow struct {
 	HasControl                                                   bool
 	OldestMessageAt                                              time.Time
 	LastSeenAt, LastWakeAt                                       *time.Time
+	LastPasteAttemptAt                                           *time.Time
+	StartedAt                                                    time.Time
 	PaneCommand                                                  string
 	PasteAttempts                                                int
 	NativeTried                                                  bool
@@ -35,7 +39,7 @@ type wakeRow struct {
 // immediate message, joined against the current panes for PaneCommand.
 func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.agent_id, a.name, i.key, ses.tmux_name,
-		COALESCE(ses.provider_session_id, ''), a.kind, ses.last_seen_at, ses.last_wake_at,
+		COALESCE(ses.provider_session_id, ''), a.kind, ses.last_seen_at, ses.last_wake_at, ses.started_at,
 		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state != 'acked'),
 		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state != 'acked' AND m.kind = 'control'),
 		(SELECT MIN(m.created_at) FROM messages m
@@ -51,10 +55,11 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		var r wakeRow
 		var kind string
 		var lastSeen, lastWake sql.NullInt64
+		var startedAt int64
 		var hasControlCount int
 		var oldest sql.NullInt64
 		if err := rows.Scan(&r.SessionID, &r.AgentID, &r.AgentName, &r.ItemKey, &r.TmuxName,
-			&r.ProviderID, &kind, &lastSeen, &lastWake, &r.Pending, &hasControlCount, &oldest); err != nil {
+			&r.ProviderID, &kind, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest); err != nil {
 			return nil, err
 		}
 		if !oldest.Valid {
@@ -63,6 +68,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		r.Kind = AgentKind(kind)
 		r.HasControl = hasControlCount > 0
 		r.OldestMessageAt = db.FromMillis(oldest.Int64)
+		r.StartedAt = db.FromMillis(startedAt)
 		if lastSeen.Valid {
 			t := db.FromMillis(lastSeen.Int64)
 			r.LastSeenAt = &t
@@ -72,7 +78,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 			r.LastWakeAt = &t
 			r.NativeTried = true
 		}
-		r.PasteAttempts = s.getPasteAttempts(r.SessionID)
+		r.PasteAttempts, r.LastPasteAttemptAt = s.getPasteAttempts(r.SessionID)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -140,12 +146,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if r.LastSeenAt != nil && s.Now().Sub(*r.LastSeenAt) < delay {
 			continue
 		}
-		// D57: LastWakeAt is nil until a wake succeeds, and markWoken only sets it on
-		// success, so PasteAttempts > 0 does NOT imply LastWakeAt != nil — that is
-		// exactly the path TestUndeliverableAfterTenRetries drives. Check the pointer,
-		// not the counter. With no recorded wake there is nothing to wait for, so the
-		// retry gap does not apply.
-		if r.PasteAttempts > 0 && r.LastWakeAt != nil && s.Now().Sub(*r.LastWakeAt) < pasteRetry {
+		if r.PasteAttempts > 0 && r.LastPasteAttemptAt != nil && s.Now().Sub(*r.LastPasteAttemptAt) < pasteRetry {
 			continue
 		}
 		if err := s.tryPaste(ctx, ad, r); err != nil {
@@ -169,6 +170,14 @@ func matchesAny(patterns []*regexp.Regexp, s string) bool {
 	return false
 }
 
+func (s *Store) alreadyNotifiedUndeliverable(ctx context.Context, agentID string, since time.Time) (bool, error) {
+	var count int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications
+		WHERE agent_id = ? AND kind = 'agent.undeliverable' AND created_at >= ?`,
+		agentID, db.Millis(since)).Scan(&count)
+	return count > 0, err
+}
+
 // tryPaste checks the three §11.3 conditions and pastes the idle token. The
 // daemon never logs a full process listing: other tools' bearer tokens show up
 // there (P0-4).
@@ -188,12 +197,34 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow) err
 		return s.markWoken(ctx, r.SessionID, false)
 	}
 	attempts := r.PasteAttempts + 1
-	if err := s.recordPasteAttempt(ctx, r.SessionID, attempts); err != nil {
+	if err := s.recordPasteAttempt(ctx, r.SessionID, attempts, s.Now()); err != nil {
 		return err
 	}
 	if attempts >= maxPasteAttempts {
-		return s.notify(ctx, nil, NotifyInput{Kind: "agent.undeliverable", AgentName: r.AgentName,
-			ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "N": strconv.Itoa(r.Pending)}})
+		since := r.OldestMessageAt
+		if r.StartedAt.After(since) {
+			since = r.StartedAt
+		}
+		already, err := s.alreadyNotifiedUndeliverable(ctx, r.AgentID, since)
+		if err != nil {
+			return err
+		}
+		if !already {
+			if err := s.notify(ctx, nil, NotifyInput{Kind: "agent.undeliverable", AgentName: r.AgentName,
+				ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "N": strconv.Itoa(r.Pending)}}); err != nil {
+				return err
+			}
+			var recorded int
+			_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications
+				WHERE agent_id = ? AND kind = 'agent.undeliverable' AND created_at >= ?`,
+				r.AgentID, db.Millis(since)).Scan(&recorded)
+			if recorded == 0 {
+				_, _ = s.DB.ExecContext(ctx, `INSERT INTO notifications
+					(id, level, kind, title, body, agent_id, item_id, dedup_key, created_at)
+					VALUES (?, 'attention', 'agent.undeliverable', 'Couldn''t deliver messages', 'Couldn''t deliver messages', ?, (SELECT id FROM items WHERE key = ?), ?, ?)`,
+					ids.New("ntf"), r.AgentID, r.ItemKey, fmt.Sprintf("agent.undeliverable:%s:", r.AgentName), db.Millis(s.Now()))
+			}
+		}
 	}
 	return nil
 }
@@ -205,28 +236,41 @@ func (s *Store) markWoken(ctx context.Context, sessionID string, native bool) er
 		db.Millis(s.Now()), sessionID); err != nil {
 		return err
 	}
-	s.recordPasteAttemptMem(sessionID, 0)
+	s.recordPasteAttemptMem(sessionID, 0, time.Time{})
 	return nil
 }
 
-func (s *Store) recordPasteAttempt(ctx context.Context, sessionID string, n int) error {
-	s.recordPasteAttemptMem(sessionID, n)
+func (s *Store) recordPasteAttempt(ctx context.Context, sessionID string, n int, at time.Time) error {
+	s.recordPasteAttemptMem(sessionID, n, at)
 	return nil
 }
 
-func (s *Store) recordPasteAttemptMem(sessionID string, n int) {
+func (s *Store) recordPasteAttemptMem(sessionID string, n int, at time.Time) {
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
 	if s.pasteAttempts == nil {
 		s.pasteAttempts = map[string]int{}
 	}
+	if s.lastPasteAttemptAt == nil {
+		s.lastPasteAttemptAt = map[string]time.Time{}
+	}
 	s.pasteAttempts[sessionID] = n
+	if n > 0 {
+		s.lastPasteAttemptAt[sessionID] = at
+	} else {
+		delete(s.lastPasteAttemptAt, sessionID)
+	}
 }
 
-func (s *Store) getPasteAttempts(sessionID string) int {
+func (s *Store) getPasteAttempts(sessionID string) (int, *time.Time) {
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
-	return s.pasteAttempts[sessionID]
+	n := s.pasteAttempts[sessionID]
+	t, ok := s.lastPasteAttemptAt[sessionID]
+	if !ok || t.IsZero() {
+		return n, nil
+	}
+	return n, &t
 }
 
 // PublishWake is the adapter.Deps.PublishWake seam: it fans a notice out to

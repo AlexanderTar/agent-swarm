@@ -317,8 +317,9 @@ type Store struct {
 	// stuck delivery either way.
 	bookkeepingMu sync.Mutex
 	interruptedAt map[string]time.Time
-	pasteAttempts map[string]int
-	wakeSubs      map[string][]chan string
+	pasteAttempts      map[string]int
+	lastPasteAttemptAt map[string]time.Time
+	wakeSubs           map[string][]chan string
 	// lastAliveAt is P0-crash-3 (2026-09-19): the last reconcile tick that saw
 	// each live session's pane present and correctly owned (§10.6's resolveDead
 	// doc comment has the incident). Same D57 reasoning as the rest of this

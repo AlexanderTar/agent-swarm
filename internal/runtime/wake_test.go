@@ -313,3 +313,75 @@ func TestWakeOnQuotaReset(t *testing.T) {
 		t.Fatalf("second call: woken count = %d, want 0 (debounced)", n2)
 	}
 }
+
+func TestPasteRetryIntervalEnforced(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "RetryGap", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "zsh"}) // never pasteable
+
+	// First attempt after delay
+	at.Advance(25 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempts, _ := s.getPasteAttempts(ses.ID)
+	if attempts != 1 {
+		t.Fatalf("first attempt: expected 1, got %d", attempts)
+	}
+
+	// 5 seconds later (within pasteRetry 30s): must be skipped
+	at.Advance(5 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempts, _ = s.getPasteAttempts(ses.ID)
+	if attempts != 1 {
+		t.Fatalf("within 30s: expected 1 attempt, got %d", attempts)
+	}
+
+	// 26 seconds later (total 31s > 30s): second attempt fires
+	at.Advance(26 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempts, _ = s.getPasteAttempts(ses.ID)
+	if attempts != 2 {
+		t.Fatalf("after 31s: expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestUndeliverableNotificationOnlyFiresOncePerBatch(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "DedupUndeliverable", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "zsh"}) // never pasteable
+
+	// 15 cycles of 31s: reaches 10 attempts and continues for 5 more
+	for i := 0; i < 15; i++ {
+		at.Advance(31 * time.Second)
+		if err := s.WakeDue(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f := s.Notify.(*fakeNotifier)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	undeliverableCount := 0
+	for _, n := range f.raised {
+		if n.Kind == "agent.undeliverable" {
+			undeliverableCount++
+		}
+	}
+	if undeliverableCount != 1 {
+		t.Fatalf("expected exactly 1 undeliverable notification, got %d", undeliverableCount)
+	}
+}
+
