@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -525,10 +526,40 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 		}
 	}
 	if s.Now().Sub(r.lastActivity()) >= staleAfter {
-		return s.notify(ctx, nil, NotifyInput{Kind: "agent.stale", AgentName: r.AgentName, ItemKey: r.ItemKey,
-			Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}})
+		already, err := s.alreadyNotifiedStale(ctx, r.AgentID, r.lastActivity())
+		if err != nil {
+			return err
+		}
+		if !already {
+			if err := s.notify(ctx, nil, NotifyInput{Kind: "agent.stale", AgentName: r.AgentName, ItemKey: r.ItemKey,
+				Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
+				return err
+			}
+			// When Notifier does not write to the notifications table (such as fakeNotifier in unit tests),
+			// record a row so alreadyNotifiedStale suppresses duplicate notifications within the same silence period.
+			var recorded int
+			_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications
+				WHERE agent_id = ? AND kind = 'agent.stale' AND created_at >= ?`,
+				r.AgentID, db.Millis(r.lastActivity())).Scan(&recorded)
+			if recorded == 0 {
+				_, _ = s.DB.ExecContext(ctx, `INSERT INTO notifications
+					(id, level, kind, title, body, agent_id, item_id, dedup_key, created_at)
+					VALUES (?, 'attention', 'agent.stale', 'Agent stale', 'Agent stale', ?, ?, ?, ?)`,
+					fmt.Sprintf("ntf-%s-%d", r.SessionID, db.Millis(s.Now())),
+					r.AgentID, r.ItemID, "agent.stale:"+r.AgentName, db.Millis(s.Now()))
+			}
+			return nil
+		}
 	}
 	return nil
+}
+
+func (s *Store) alreadyNotifiedStale(ctx context.Context, agentID string, since time.Time) (bool, error) {
+	var count int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications
+		WHERE agent_id = ? AND kind = 'agent.stale' AND created_at >= ?`,
+		agentID, db.Millis(since)).Scan(&count)
+	return count > 0, err
 }
 
 func boolToInt(b bool) int {

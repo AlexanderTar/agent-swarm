@@ -579,6 +579,51 @@ func TestStaleAfterThirtyMinutesOfSilence(t *testing.T) {
 	}
 }
 
+func TestStaleNotificationOnlyFiresOncePerSilencePeriod(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Quiet", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	tm.captures[a.Name] = []string{"working on it…\n"} // not idle, so not waiting
+
+	// Advance past 30 min -> 1 notification
+	at.Advance(31 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.stale"); n != 1 {
+		t.Fatalf("first stale check: count = %d, want 1", n)
+	}
+
+	// Advance past dedupWindow (35s) and another 30 min without new activity -> STILL 1 notification
+	at.Advance(35 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(30 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.stale"); n != 1 {
+		t.Fatalf("subsequent stale checks without activity: count = %d, want 1", n)
+	}
+
+	// New activity clears the silence period
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`,
+		db.Millis(at.Now()), ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(31 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.stale"); n != 2 {
+		t.Fatalf("after new activity and 30 min silence: count = %d, want 2", n)
+	}
+}
+
 // §10.6: a tmux session with no row is reported and never killed.
 func TestUnknownTmuxSessionIsReportedNotKilled(t *testing.T) {
 	s, tm, _ := clockStore(t)
