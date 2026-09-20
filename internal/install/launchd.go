@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -160,6 +161,10 @@ func Install(ctx context.Context, c Config, run execx.Runner, dryRun bool, w io.
 	}
 	if _, err := run(ctx, bootout[0], bootout[1:]...); err != nil && !notLoaded(err) {
 		return fmt.Errorf("launchctl bootout: %w", err)
+	} else if err == nil {
+		// launchd teardown of the old service registration is asynchronous.
+		// A brief pause prevents bootstrap from racing with teardown and failing with exit status 5.
+		time.Sleep(300 * time.Millisecond)
 	}
 	if _, err := run(ctx, bootstrap[0], bootstrap[1:]...); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %w", err)
