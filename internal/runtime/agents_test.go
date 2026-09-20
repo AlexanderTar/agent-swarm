@@ -845,6 +845,36 @@ func TestStartupSurvivesBusyOutputPastThirtySeconds(t *testing.T) {
 	}
 }
 
+// §11.5 (2026-09-20, live incident): a session that clears its startup
+// dialogs and launches straight into continuous, genuinely busy work (never
+// once matching IdlePrompt) must be recognized as done starting the moment
+// the pane shows real busy output -- not left reporting Spawning for its
+// entire work duration and eventually false-failed by startupCeiling. Observed
+// live: "s1-review-2" (Claude/Opus) sat mid-tmux showing "✻ Twisting… (6m
+// 40s · ↓ 15.3k tokens)" -- clearly busy and productive -- while session.state
+// still read "spawning". ad.Busy() matching is just as much proof the startup
+// phase is over as ad.Idle() becoming true.
+func TestStartupTransitionsToRunningWhenBusyWithoutEverGoingIdle(t *testing.T) {
+	s, tm, _ := newStore(t)
+	// Every poll shows the same busy spinner line: never idle, matches no
+	// dialog. Repeating (rather than varying) the capture also proves the fix
+	// doesn't rely on the stall-timeout's "changing output" reset -- it must
+	// end the spawning phase on the very first busy poll.
+	tm.captures["s1-review-2"] = []string{"✻ Twisting… (6m 40s · ↓ 15.3k tokens)\n"}
+	_, a, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "s1-review-2",
+		Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Running {
+		t.Fatalf("session state = %s, want running: a busy pane that never idles must still end the spawning phase", ses.State)
+	}
+}
+
 func TestSessionByToken(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
