@@ -77,6 +77,7 @@ public struct PopoverView: View {
         .controlSize(.small)
         .glassButtons()
         .onAppear { model.popoverShown() }
+        .onDisappear { model.preview.cancel() }
     }
 
     private var header: some View {

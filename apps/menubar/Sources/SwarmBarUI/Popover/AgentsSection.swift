@@ -68,6 +68,7 @@ struct AgentRowView: View {
     let depth: Int
     let expanded: Bool?
     @State private var confirming: AgentAction?
+    @State private var anchor = ScreenAnchor()
 
     var body: some View {
         let state = DisplayState(agent)
@@ -81,13 +82,21 @@ struct AgentRowView: View {
             } else {
                 Color.clear.frame(width: 12)
             }
-            AgentIcon(agent.kind)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(agent.name).lineLimit(1).truncationMode(.middle).help(agent.name)
-                    StateDot(state.tone)
+            Group {
+                AgentIcon(agent.kind)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(agent.name).lineLimit(1).truncationMode(.middle)
+                        StateDot(state.tone)
+                    }
+                    Text(AgentTree.subtitle(agent)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Text(AgentTree.subtitle(agent)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .contentShape(Rectangle())
+            .background(ScreenAnchorReader(anchor: anchor))
+            .onHover { inside in
+                if inside, let a = anchor.measure() { model.preview.hover(agent.name, anchor: a) }
+                else { model.preview.leave(agent.name) }
             }
             Spacer(minLength: 4)
             ForEach(actions.filter { $0.placement == .button }) { a in
