@@ -42,6 +42,18 @@ struct AgentsSection: View {
                         .buttonStyle(.plain)
                         .padding(.leading, CGFloat(row.depth) * 16)
                         .frame(minHeight: 28)
+                    case let .failed(parent, count):
+                        Button {
+                            model.toggleFailed(parent)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: row.expanded == true ? "chevron.down" : "chevron.right").frame(width: 12)
+                                Text(Copy.failed(count)).foregroundStyle(.red)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.leading, CGFloat(row.depth) * 16)
+                        .frame(minHeight: 28)
                     }
                 }
                 }

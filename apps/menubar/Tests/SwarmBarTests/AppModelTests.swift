@@ -194,14 +194,17 @@ final class AppModelTests: XCTestCase {
     func testAgentRowsAndActions() async {
         let m = make()
         await m.refresh()
-        XCTAssertEqual(m.agentRows.count, 8)
+        // docs-fix-coder (crashed) and search-spike-orchestrator (preflight-failed) collapse into
+        // one root "Failed (n)" row instead of two bare agent rows (§ failed-spoiler), so every
+        // count here is one less than before that grouping existed.
+        XCTAssertEqual(m.agentRows.count, 7)
         m.toggleAgent("auth-epic-orchestrator")
-        XCTAssertEqual(m.agentRows.count, 5)
+        XCTAssertEqual(m.agentRows.count, 4)
         m.toggleAgent("auth-epic-orchestrator")
         m.toggleFinished("auth-epic-orchestrator")
-        XCTAssertEqual(m.agentRows.count, 9)
-        m.toggleFinished("auth-epic-orchestrator")
         XCTAssertEqual(m.agentRows.count, 8)
+        m.toggleFinished("auth-epic-orchestrator")
+        XCTAssertEqual(m.agentRows.count, 7)
 
         let orch = m.state.agents[0]
         let pause = m.actions(orch)[1]

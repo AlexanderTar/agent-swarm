@@ -84,6 +84,11 @@ public struct AgentAction: Equatable, Sendable, Identifiable {
 public enum AgentTree {
     public static func isFinished(_ a: AgentNode) -> Bool { a.state == .finished || a.state == .acknowledged }
 
+    /// Retryable-but-broken: still agent-level `active`, but its session ended badly (§16.2).
+    public static func isFailed(_ a: AgentNode) -> Bool {
+        [.crashed, .failed, .preflightFailed].contains(DisplayState(a))
+    }
+
     /// Live descendants (children, recursively; finished ones excluded).
     public static func countLive(_ a: AgentNode) -> Int {
         a.children.reduce(0) { $0 + 1 + countLive($1) }
@@ -136,6 +141,8 @@ public enum AgentTree {
             case agent(AgentNode)
             /// "Finished (n)" under `parent` ("" for top-level).
             case finished(parent: String, count: Int)
+            /// "Failed (n)" under `parent` ("" for top-level); always rendered below `finished`.
+            case failed(parent: String, count: Int)
         }
         public var kind: Kind
         public var depth: Int
@@ -146,16 +153,22 @@ public enum AgentTree {
             switch kind {
             case let .agent(a): return "agent:" + a.name
             case let .finished(parent, _): return "finished:" + parent
+            case let .failed(parent, _): return "failed:" + parent
             }
         }
     }
 
     /// Visible rows. Orchestrators start expanded (`collapsed` holds the user's closes);
-    /// "Finished (n)" groups start closed (`openFinished` holds opened parents, "" = top level).
-    public static func rows(_ roots: [AgentNode], collapsed: Set<String>, openFinished: Set<String>) -> [Row] {
+    /// "Finished (n)" / "Failed (n)" groups start closed (`openFinished`/`openFailed` hold
+    /// opened parents, "" = top level). Failed agents are still agent-level `active`
+    /// (retryable), so unlike `finished` they come out of `children`, not a pre-split list.
+    public static func rows(_ roots: [AgentNode], collapsed: Set<String>, openFinished: Set<String>,
+                             openFailed: Set<String> = []) -> [Row] {
         var out: [Row] = []
         func add(_ nodes: [AgentNode], finished: [AgentNode], parent: String, depth: Int) {
-            for n in nodes {
+            let live = nodes.filter { !isFailed($0) }
+            let failed = nodes.filter(isFailed)
+            for n in live {
                 let disclosable = !n.children.isEmpty || !n.finished.isEmpty
                 let open = !collapsed.contains(n.name)
                 out.append(Row(kind: .agent(n), depth: depth, expanded: disclosable ? open : nil))
@@ -168,6 +181,13 @@ public enum AgentTree {
                 out.append(Row(kind: .finished(parent: parent, count: finished.count), depth: depth, expanded: open))
                 if open {
                     for f in finished { out.append(Row(kind: .agent(f), depth: depth, expanded: nil)) }
+                }
+            }
+            if !failed.isEmpty {
+                let open = openFailed.contains(parent)
+                out.append(Row(kind: .failed(parent: parent, count: failed.count), depth: depth, expanded: open))
+                if open {
+                    for f in failed { out.append(Row(kind: .agent(f), depth: depth, expanded: nil)) }
                 }
             }
         }

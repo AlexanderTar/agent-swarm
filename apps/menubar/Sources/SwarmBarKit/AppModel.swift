@@ -79,6 +79,7 @@ public final class AppModel {
     public private(set) var openSections: Set<Section>
     public private(set) var collapsedAgents: Set<String> = []
     public private(set) var openFinished: Set<String> = []
+    public private(set) var openFailed: Set<String> = []
     public private(set) var compactSwitch: CompactSwitch
     private var seenRequests: Set<String>
 
@@ -274,6 +275,10 @@ public final class AppModel {
         if openFinished.contains(parent) { openFinished.remove(parent) } else { openFinished.insert(parent) }
     }
 
+    public func toggleFailed(_ parent: String) {
+        if openFailed.contains(parent) { openFailed.remove(parent) } else { openFailed.insert(parent) }
+    }
+
     // MARK: Needs you
 
     public var openRequests: [SwarmRequest] {
@@ -307,7 +312,7 @@ public final class AppModel {
     // MARK: agents
 
     public var agentRows: [AgentTree.Row] {
-        AgentTree.rows(state.agents, collapsed: collapsedAgents, openFinished: openFinished)
+        AgentTree.rows(state.agents, collapsed: collapsedAgents, openFinished: openFinished, openFailed: openFailed)
     }
 
     public func tmuxAlive(_ a: AgentNode) -> Bool {

@@ -122,30 +122,66 @@ final class AgentActionsTests: XCTestCase {
     func testRowsGroupFinishedAgentsUnderTheirParent() throws {
         let state: StateResponse = try Fixture.decode("state.json")
         let ids = { (rows: [AgentTree.Row]) in rows.map { "\($0.depth) \($0.id) \($0.expanded.map { $0 ? "open" : "closed" } ?? "-")" } }
+        // docs-fix-coder (crashed) and search-spike-orchestrator (preflight-failed) are both
+        // isFailed, so they land in the root "failed" group, not as bare agent rows (§ failed-spoiler).
         XCTAssertEqual(ids(AgentTree.rows(state.agents, collapsed: [], openFinished: [])), [
             "0 agent:auth-epic-orchestrator open",
             "1 agent:login-form-coder -",
             "1 agent:login-review -",
             "1 finished:auth-epic-orchestrator closed",
             "0 agent:crash-debug-orchestrator -",
-            "0 agent:docs-fix-coder -",
             "0 agent:billing-spike-orchestrator -",
-            "0 agent:search-spike-orchestrator -",
+            "0 failed: closed",
         ])
         XCTAssertEqual(ids(AgentTree.rows(state.agents, collapsed: [], openFinished: ["auth-epic-orchestrator"]))[3...4],
                        ["1 finished:auth-epic-orchestrator open", "1 agent:session-coder -"])
         XCTAssertEqual(ids(AgentTree.rows(state.agents, collapsed: ["auth-epic-orchestrator"], openFinished: [])).first,
                        "0 agent:auth-epic-orchestrator closed")
-        XCTAssertEqual(AgentTree.rows(state.agents, collapsed: ["auth-epic-orchestrator"], openFinished: []).count, 5)
+        // auth-epic (closed) + crash-debug + billing-spike + one failed-group row (docs-fix-coder,
+        // search-spike-orchestrator collapsed into it) = 4, down from the pre-grouping 5.
+        XCTAssertEqual(AgentTree.rows(state.agents, collapsed: ["auth-epic-orchestrator"], openFinished: []).count, 4)
+        XCTAssertEqual(ids(AgentTree.rows(state.agents, collapsed: ["auth-epic-orchestrator"], openFinished: [], openFailed: [""])).last,
+                       "0 agent:search-spike-orchestrator -")
 
         var roots = state.agents
         roots[1].state = .finished
         let rows = AgentTree.rows(roots, collapsed: ["auth-epic-orchestrator"], openFinished: [""])
-        XCTAssertEqual(ids(rows).suffix(2), ["0 finished: open", "0 agent:crash-debug-orchestrator -"])
-        guard case let .finished(parent, count) = rows[rows.count - 2].kind else { return XCTFail("finished row") }
+        // finished group (crash-debug-orchestrator) comes before the failed group (docs-fix-coder,
+        // search-spike-orchestrator), closed by default.
+        XCTAssertEqual(ids(rows).suffix(3), ["0 finished: open", "0 agent:crash-debug-orchestrator -", "0 failed: closed"])
+        guard case let .finished(parent, count) = rows[rows.count - 3].kind else { return XCTFail("finished row") }
         XCTAssertEqual(parent, "")
         XCTAssertEqual(count, 1)
+        guard case let .failed(failedParent, failedCount) = rows[rows.count - 1].kind else { return XCTFail("failed row") }
+        XCTAssertEqual(failedParent, "")
+        XCTAssertEqual(failedCount, 2)
         XCTAssertEqual(AgentTree.flatten(state.agents).count, 8)
+    }
+
+    func testRowsGroupFailedAgentsUnderTheirParentAndBelowFinished() {
+        let live = agent(.running, name: "live-coder")
+        let crashed = agent(.crashed, name: "crashed-coder")
+        let preflightFailed = agent(nil, preflight: "x", name: "preflight-coder")
+        let o = agent(.running, role: .orchestrator, children: [live, crashed, preflightFailed], name: "o")
+        let ids = { (rows: [AgentTree.Row]) in rows.map { "\($0.depth) \($0.id) \($0.expanded.map { $0 ? "open" : "closed" } ?? "-")" } }
+
+        XCTAssertEqual(ids(AgentTree.rows([o], collapsed: [], openFinished: [])), [
+            "0 agent:o open",
+            "1 agent:live-coder -",
+            "1 failed:o closed",
+        ])
+
+        let opened = AgentTree.rows([o], collapsed: [], openFinished: [], openFailed: ["o"])
+        XCTAssertEqual(ids(opened), [
+            "0 agent:o open",
+            "1 agent:live-coder -",
+            "1 failed:o open",
+            "1 agent:crashed-coder -",
+            "1 agent:preflight-coder -",
+        ])
+        guard case let .failed(parent, count) = opened[2].kind else { return XCTFail("failed row") }
+        XCTAssertEqual(parent, "o")
+        XCTAssertEqual(count, 2)
     }
 
     func testSubtitle() throws {

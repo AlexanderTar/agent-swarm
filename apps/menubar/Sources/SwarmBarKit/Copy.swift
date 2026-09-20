@@ -28,6 +28,7 @@ public enum Copy {
     public static let retry = "Retry"
     public static let cancel = "Cancel"
     public static func finished(_ n: Int) -> String { "Finished (\(n))" }
+    public static func failed(_ n: Int) -> String { "Failed (\(n))" }
     public static func viewAllRequests(_ n: Int) -> String { "View all \(n) requests" }
     public static let viewAllNotifications = "View all notifications"
     public static let refresh = "Refresh"
