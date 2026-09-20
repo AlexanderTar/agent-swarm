@@ -8,7 +8,7 @@ const req = (id: string) => seed().requests.find((r) => r.id === id) as Request;
 describe("review rules (§16.11)", () => {
   it("labels scopes", () => {
     expect(SCOPE_LABEL).toEqual({
-      question: "Answer", confirm_repos: "Confirm repositories", approve_section: "Approve section", approve_plan: "Approve plan",
+      question: "Answer", prompt: "Prompt", blocker: "Blocker", confirm_repos: "Confirm repositories", approve_section: "Approve section", approve_plan: "Approve plan",
       approve_report: "Approve report", accept_epic: "Accept epic", accept_fix: "Accept fix", close_spike: "Close spike",
     });
     expect(isApprovalKind("accept_fix")).toBe(true);

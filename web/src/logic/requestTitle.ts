@@ -5,6 +5,8 @@ import { truncate } from "./format";
 export function requestTitle(r: Request): string {
   switch (r.kind) {
     case "question":
+    case "prompt":
+    case "blocker":
       return truncate(r.prompt, 80);
     case "approve_section":
       return T.approveSectionRow(r.section_title ?? "");

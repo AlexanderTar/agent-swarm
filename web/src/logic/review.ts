@@ -4,6 +4,8 @@ import { ageAgo, sha7 } from "./format";
 
 export const SCOPE_LABEL: Record<RequestKind, string> = {
   question: C.answer,
+  prompt: C.prompt,
+  blocker: C.blocker,
   confirm_repos: C.confirmRepositories,
   approve_section: C.approveSection,
   approve_plan: C.approvePlan,
@@ -35,7 +37,8 @@ function revisionLine(r: Request): string | null {
 }
 
 export function reviewHeader(r: Request, now = Date.now()) {
-  const title = r.kind === "question" ? reviewPath(r) : `${SCOPE_LABEL[r.kind]} · ${reviewPath(r)}`;
+  const isQuestionOrPrompt = r.kind === "question" || r.kind === "prompt" || r.kind === "blocker";
+  const title = isQuestionOrPrompt ? reviewPath(r) : `${SCOPE_LABEL[r.kind]} · ${reviewPath(r)}`;
   const age = ageAgo(r.created_at, now);
   const by = r.agent_name ? (r.kind === "confirm_repos" ? T.proposedBy : T.requestedBy)(r.agent_name, age) : null;
   return { title, by, revision: revisionLine(r) };

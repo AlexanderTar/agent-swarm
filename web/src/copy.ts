@@ -115,6 +115,8 @@ export const C = {
   review: "Review",
   sendAnswer: "Send answer",
   answer: "Answer",
+  prompt: "Prompt",
+  blocker: "Blocker",
   comment: "Comment",
   pause: "Pause",
   pauseGroup: "Pause group",
