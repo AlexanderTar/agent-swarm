@@ -31,6 +31,9 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 	cfg := map[string]any{
 		"attribution":         map[string]string{"commit": "", "pr": ""},
 		"includeCoAuthoredBy": &no,
+		// Blank the user's global status line (e.g. ccstatusline via npx every 10s)
+		// in agent panes. A no-output command, not null: null is rejected by Claude Code.
+		"statusLine": map[string]any{"type": "command", "command": "true"},
 		"hooks": map[string]any{
 			"SessionStart": hook("SessionStart"), "UserPromptSubmit": hook("UserPromptSubmit"),
 			"PreToolUse": hook("PreToolUse"), "PostToolUse": hook("PostToolUse"),
