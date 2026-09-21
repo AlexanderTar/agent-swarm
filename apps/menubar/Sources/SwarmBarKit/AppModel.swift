@@ -313,6 +313,18 @@ public final class AppModel {
         await refresh()
     }
 
+    public func resolvePrompt(_ id: String, action: String? = nil) async {
+        guard connected else { return }
+        do {
+            try await client.resolvePrompt(id, action: action, via: "menubar")
+            state.requests.removeAll { $0.id == id }
+            actionError = nil
+        } catch let e as DaemonError {
+            actionError = e.message
+        } catch {}
+        await refresh()
+    }
+
     // MARK: agents
 
     public var agentRows: [AgentTree.Row] {
@@ -327,9 +339,9 @@ public final class AppModel {
         AgentTree.actions(a, tmuxAlive: tmuxAlive(a), connected: connected)
     }
 
-    /// The terminal button on a request row (question from a live agent).
+    /// The terminal button on a request row (question or prompt from a live agent).
     public func requestTerminal(_ r: SwarmRequest) -> String? {
-        guard r.kind == .question, let name = r.agentName,
+        guard (r.kind == .question || r.kind == .prompt), let name = r.agentName,
               let a = AgentTree.flatten(state.agents).first(where: { $0.name == name }), tmuxAlive(a) else { return nil }
         return name
     }

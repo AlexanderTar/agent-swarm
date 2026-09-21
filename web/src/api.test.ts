@@ -102,6 +102,7 @@ describe("createApi", () => {
       "POST /api/requests/req_1/answer": () => json({}),
       "POST /api/requests/req_1/approve": () => json({}),
       "POST /api/requests/req_1/close-spike": () => json({}),
+      "POST /api/requests/req_1/resolve": () => json({}),
     });
     const api = createApi({ fetchFn: f.fn });
     await api.graph("EPIC-1", "root", 3);
@@ -113,11 +114,13 @@ describe("createApi", () => {
     await api.answer("req_1", "Use CRDTs");
     await api.approve("req_1", { section_sha256: "abc", artifact_revision: 3 });
     await api.closeSpike("req_1");
+    await api.resolvePrompt("req_1", { action: "Enter" });
     const bodies = f.calls.filter((c) => c.init?.method === "POST").map((c) => JSON.parse(String(c.init?.body)));
     expect(bodies).toEqual([
       { text: "Use CRDTs", via: "board" },
       { section_sha256: "abc", artifact_revision: 3, via: "board" },
       { via: "board" },
+      { action: "Enter", via: "board" },
     ]);
   });
 

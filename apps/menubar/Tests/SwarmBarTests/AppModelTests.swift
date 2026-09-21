@@ -209,6 +209,35 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.answerDrafts["req_question"], "again", "unsent text is kept")
     }
 
+    func testResolvePromptCallsAPIAndUpdatesState() async {
+        let m = make()
+        await m.refresh()
+
+        let promptReq = SwarmRequest(id: "req_prompt", kind: .prompt, isHITL: true, agentName: "login-form-coder", prompt: "Trust folder?", options: ["Enter"])
+        XCTAssertEqual(m.requestTerminal(promptReq), "login-form-coder")
+
+        var s = m.state
+        s.requests.append(promptReq)
+        client.stateResult = .success(s)
+        await m.refresh()
+        XCTAssertTrue(m.state.requests.contains { $0.id == "req_prompt" })
+
+        await m.resolvePrompt("req_prompt", action: "Enter")
+        XCTAssertTrue(client.resolvedPrompts.contains("req_prompt"))
+        XCTAssertFalse(m.state.requests.contains { $0.id == "req_prompt" })
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("resolve") }, ["resolve req_prompt Enter"])
+
+        client.failNext = .api(status: 409, code: "conflict", message: "Already resolved.")
+        await m.resolvePrompt("req_prompt", action: "Enter")
+        XCTAssertEqual(m.actionError, "Already resolved.")
+
+        client.stateResult = .failure(.unreachable)
+        await m.refresh()
+        let countBefore = client.calls.count
+        await m.resolvePrompt("req_other", action: "Enter")
+        XCTAssertEqual(client.calls.count, countBefore)
+    }
+
     func testAgentRowsAndActions() async {
         let m = make()
         await m.refresh()

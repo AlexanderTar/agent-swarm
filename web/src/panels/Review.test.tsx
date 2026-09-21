@@ -111,6 +111,51 @@ describe("Review (§16.11)", () => {
     expect(await screen.findByRole("group", { name: "Proposed" })).toBeInTheDocument();
   });
 
+  it("renders Approve button for prompt requests and resolves on click", async () => {
+    const d = createMockDaemon();
+    const promptReq = {
+      ...d.db.requests[0]!,
+      id: "req_prompt",
+      kind: "prompt" as const,
+      prompt: "Trust folder?",
+      options: ["Enter"],
+      agent_name: "test-agent",
+    };
+    d.db.requests.push(promptReq);
+    const { user } = renderWithDaemon(<Review request={promptReq} connected={true} />, { daemon: d, events: false });
+    const approveBtn = screen.getByRole("button", { name: "Approve" });
+    expect(approveBtn).toBeInTheDocument();
+    await user.click(approveBtn);
+    await waitFor(() => expect(lastPost(d)).toMatchObject({
+      path: "/api/requests/req_prompt/resolve",
+      body: { action: "Enter", via: "board" },
+    }));
+  });
+
+  it("launches terminal from prompt request and disables buttons when disconnected", async () => {
+    const d = createMockDaemon();
+    const promptReq = {
+      ...d.db.requests[0]!,
+      id: "req_prompt",
+      kind: "prompt" as const,
+      prompt: "Trust folder?",
+      options: ["Enter"],
+      agent_name: "test-agent",
+    };
+    d.db.requests.push(promptReq);
+    const { user, rerender } = renderWithDaemon(<Review request={promptReq} connected={true} />, { daemon: d, events: false });
+    const termBtn = screen.getByRole("button", { name: "Open terminal" });
+    expect(termBtn).toBeInTheDocument();
+    await user.click(termBtn);
+    await waitFor(() => expect(lastPost(d)).toMatchObject({
+      path: "/api/agents/test-agent/terminal",
+    }));
+
+    rerender(<Review request={promptReq} connected={false} />);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Open terminal" })).toBeDisabled();
+  });
+
   it("disables decisions while disconnected", async () => {
     setup("req_plan", createMockDaemon(), false);
     expect(screen.getByRole("button", { name: "Approve plan" })).toBeDisabled();

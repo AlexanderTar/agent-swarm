@@ -18,6 +18,7 @@ public enum Copy {
     public static let newOrchestrator = "New orchestrator"
     public static let openBoard = "Open board"
     public static let review = "Review"
+    public static let approve = "Approve"
     public static let answer = "Answer"
     public static let sendAnswer = "Send answer"
     public static let openTerminal = "Open terminal"

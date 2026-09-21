@@ -381,6 +381,8 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
         if (spike) { spike.status = "done"; itemChanged(spike); }
         return resolve(r, "approved", null);
       }
+      case "resolve":
+        return resolve(r, "approved", body.action ? String(body.action) : null);
     }
     return fail(404, "not_found", action);
   }
@@ -455,7 +457,7 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
     ["POST", /^\/api\/agents\/(?<name>[^/]+)\/(?<action>pause|resume|cancel|ack|retry|terminal)$/, (c) => agentAction(c.p.name as string, c.p.action as AgentEndpoint)],
     ["GET", /^\/api\/agents\/(?<name>[^/]+)\/advice$/, (c) => ok(db.advice[c.p.name as string] ?? [])],
     ["GET", /^\/api\/requests$/, () => ok(db.requests.filter((r) => r.state === "open"))],
-    ["POST", /^\/api\/requests\/(?<id>[^/]+)\/(?<action>answer|approve|request-changes|confirm-repos|close-spike)$/, (c) => requestAction(c.p.id as string, c.p.action as string, c.body)],
+    ["POST", /^\/api\/requests\/(?<id>[^/]+)\/(?<action>answer|approve|request-changes|confirm-repos|close-spike|resolve)$/, (c) => requestAction(c.p.id as string, c.p.action as string, c.body)],
     ["GET", /^\/api\/artifacts\/(?<id>[^/]+)$/, (c) => artifact(c.p.id as string, c.q)],
     ["GET", /^\/api\/settings$/, () => ok(db.settings)],
     ["GET", /^\/api\/catalog$/, () => ok(db.catalog)],

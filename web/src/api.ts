@@ -108,6 +108,8 @@ export function createApi({ base = "", fetchFn = (...a) => fetch(...a) }: ApiOpt
     confirmRepos: (id: string, b: ConfirmReposBody) =>
       call<Request>("POST", `/api/requests/${enc(id)}/confirm-repos`, { ...b, ...via }),
     closeSpike: (id: string) => call<Request>("POST", `/api/requests/${enc(id)}/close-spike`, { ...via }),
+    resolvePrompt: (id: string, body: { action?: string; via?: string } = {}) =>
+      call<Request>("POST", `/api/requests/${enc(id)}/resolve`, { ...via, ...body }),
     artifact: (id: string, o: { revision?: number; section?: string } = {}) =>
       call<ArtifactResponse>("GET", `/api/artifacts/${enc(id)}${query({ revision: o.revision, section: o.section })}`),
     settings: () => call<Settings>("GET", "/api/settings"),

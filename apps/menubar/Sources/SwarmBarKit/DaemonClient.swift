@@ -28,6 +28,7 @@ public protocol DaemonClient: Sendable {
     func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?) async throws
     func pauseAll() async throws -> Int
     func answer(requestID: String, text: String) async throws
+    func resolvePrompt(_ id: String, action: String?, via: String) async throws
     func markRead(notificationID: String) async throws
     func readAll() async throws
     func refreshUsage(agent: AgentKind?) async throws
@@ -56,6 +57,7 @@ public final class MockDaemonClient: DaemonClient {
     /// Any error for the next call, e.g. `CancellationError()`.
     public var failNextWith: Error?
     public private(set) var calls: [String] = []
+    public var resolvedPrompts: [String] = []
 
     public init(state: StateResponse = StateResponse(), catalog: [AgentCatalogEntry] = [],
                 repos: ReposResponse = ReposResponse(), notifications: [SwarmNotification] = [],
@@ -113,6 +115,15 @@ public final class MockDaemonClient: DaemonClient {
 
     public func answer(requestID: String, text: String) async throws {
         try record("answer \(requestID) \(text)")
+    }
+
+    public func resolvePrompt(_ id: String, action: String?, via: String = "menubar") async throws {
+        try record("resolve \(id) \(action ?? "")")
+        resolvedPrompts.append(id)
+        if case var .success(s) = stateResult {
+            s.requests.removeAll { $0.id == id }
+            stateResult = .success(s)
+        }
     }
 
     public func markRead(notificationID: String) async throws {

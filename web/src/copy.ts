@@ -94,6 +94,7 @@ export const C = {
   terminal: "Terminal",
   openTerminal: "Open terminal",
   writtenBySwarm: "Written by Swarm",
+  approve: "Approve",
   approveSection: "Approve section",
   approvePlan: "Approve plan",
   approveReport: "Approve report",
