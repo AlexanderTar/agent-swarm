@@ -133,4 +133,4 @@ C2. Web.
 
 ## Final gate
 
-`make test-go && make test-web && make test-menubar`. Then Sonnet review (repo policy), then publish the spec to Notion (Endurio HQ, Document Hub, less-claudish register, per the standing guidelines).
+`make test-go && make test-web && make test-menubar`. Then Sonnet review (repo policy). No Notion page for this spec (user opted out on 2026-09-21).
