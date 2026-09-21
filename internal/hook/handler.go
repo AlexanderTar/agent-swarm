@@ -162,6 +162,26 @@ func normalize(kind runtime.AgentKind, event string) string {
 	return event
 }
 
+// isQuestionTool is the one list of native "ask the human" tools.
+// Per-adapter status (spec section 5): names and hook block shapes are read from
+// code and vendor docs only; nothing here was run against a live agent.
+//   claude AskUserQuestion: PreToolUse deny documented (code + docs VERIFIED, live UNVERIFIED).
+//   codex request_user_input, experimental_request_user_input: UNVERIFIED that PreToolUse
+//     reaches these tools (docs say some tool paths opt out) and that the block is honored.
+//   cursor ask_question: tool name from the user's brief, UNVERIFIED (docs name no question tool).
+//   agy ask_question: name from an existing test, block shape UNVERIFIED.
+// Where a block is ignored, a parented agent's question opens no row and nothing else happens.
+func isQuestionTool(name string) bool {
+	switch name {
+	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input":
+		return true
+	}
+	return false
+}
+
+// nativeQuestionRelay is the PreToolUse block reason for a parented agent.
+const nativeQuestionRelay = "[swarm] You report to an orchestrator, not the user. Send this question to it with swarm_send (to: \"parent\", kind: \"question\") instead of a question tool."
+
 type sessionRow struct {
 	ID, AgentID, AgentName, ItemKey, ProviderID string
 	State                                       runtime.SessionState
@@ -171,6 +191,7 @@ type sessionRow struct {
 	Pending                                     int
 	HasHandoff                                  bool
 	Kind                                        runtime.AgentKind
+	ParentAgentID                               string
 }
 
 type Handler struct {
@@ -213,6 +234,7 @@ func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, erro
 			s.stop_blocks,
 			s.needs_compaction_notice,
 			a.kind,
+			COALESCE(a.parent_agent_id, ''),
 			(SELECT COUNT(*) FROM messages WHERE to_agent_id = s.agent_id AND state <> 'acked'),
 			EXISTS (SELECT 1 FROM checkpoints WHERE session_id = s.id AND kind = 'handoff')
 		FROM sessions s
@@ -228,6 +250,7 @@ func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, erro
 		&s.StopBlocks,
 		&needsCompaction,
 		&s.Kind,
+		&s.ParentAgentID,
 		&s.Pending,
 		&hasHandoff,
 	)
@@ -396,6 +419,12 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 		}
 
+		// A parented agent reports to its orchestrator, never to the user: block the
+		// native question tool. Top-level agents fall through to the intercept below.
+		if isQuestionTool(in.ToolName) && s.ParentAgentID != "" {
+			return adapter.HookDecision{Block: true, Reason: nativeQuestionRelay}, nil
+		}
+
 		// For Swarm's own swarm_spawn tool: enforce max_concurrent_subagents
 		isSpawn := (in.IsSwarmTool && strings.Contains(in.ToolName, "swarm_spawn")) || strings.Contains(in.ToolName, "swarm_spawn")
 
@@ -426,12 +455,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		}
 
 		// Intercept native question tools to record HITL request in Swarm without blocking
-		isQuestionTool := in.ToolName == "ask_question" ||
-			in.ToolName == "AskUserQuestion" ||
-			in.ToolName == "request_user_input" ||
-			in.ToolName == "experimental_request_user_input"
-
-		if isQuestionTool && h.RT != nil && s.ID != "" {
+		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
 			prompt, options := extractQuestion(in.ToolName, in.RawToolInput)
 			_, _ = h.RT.AskQuestion(ctx, s.ID, prompt, options)
 		}
@@ -449,21 +473,19 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{}, nil
 
 	case "PostToolUse":
-		isQuestionTool := in.ToolName == "ask_question" ||
-			in.ToolName == "AskUserQuestion" ||
-			in.ToolName == "request_user_input" ||
-			in.ToolName == "experimental_request_user_input"
-
-		if isQuestionTool && h.RT != nil && s.ID != "" {
-			var reqID string
-			if err := h.DB.QueryRowContext(ctx, `SELECT id FROM requests
-				WHERE session_id = ? AND kind = 'question' AND state = 'open'
-				ORDER BY created_at DESC LIMIT 1`, s.ID).Scan(&reqID); err == nil && reqID != "" {
-				answer := extractToolResponseText(in.ToolResponse)
-				if answer == "" {
-					answer = "Resolved in terminal"
-				}
-				_, _ = h.RT.ResolveQuestion(ctx, reqID, answer, "terminal")
+		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
+			prompt, _ := extractQuestion(in.ToolName, in.RawToolInput)
+			answer := extractToolResponseText(in.ToolResponse)
+			if answer == "" {
+				answer = "Resolved in terminal"
+			}
+			if err := h.RT.ResolveQuestionByPrompt(ctx, s.ID, prompt, answer); err != nil {
+				h.logf("hook: resolve question for %s: %v", s.ID, err)
+			}
+		}
+		if h.RT != nil && s.ID != "" {
+			if err := h.RT.ResolveSessionPrompts(ctx, s.ID, in.Command); err != nil {
+				h.logf("hook: resolve prompts for %s: %v", s.ID, err)
 			}
 		}
 

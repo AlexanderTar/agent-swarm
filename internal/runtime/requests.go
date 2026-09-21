@@ -813,6 +813,42 @@ func (s *Store) ResolvePrompt(ctx context.Context, id, action, via string) (Requ
 	return out, err
 }
 
+// ResolveQuestionByPrompt closes the session's open native-question row whose
+// prompt equals the one this tool call asked, answered via terminal. No match
+// is not an error (the tool may have been blocked, or the row swept).
+func (s *Store) ResolveQuestionByPrompt(ctx context.Context, sessionID, prompt, answer string) error {
+	ids, err := s.queryIDs(ctx, `SELECT id FROM requests
+		WHERE session_id = ? AND kind = 'question' AND state = 'open' AND prompt = ?
+		ORDER BY created_at DESC LIMIT 1`, sessionID, prompt)
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	_, err = s.ResolveQuestion(ctx, ids[0], answer, "terminal")
+	return err
+}
+
+// ResolveSessionPrompts resolves open prompt requests of one session once a
+// PostToolUse proves the permission dialog was answered. Rows whose prompt
+// equals command, or the fallback "Permission requested", match;
+// command == "" resolves all of the session's open prompts.
+// ponytail: an empty command resolves every open prompt of the session; only
+// adapters that send no command on PostToolUse hit it. Add a per-tool match if
+// a live run shows a wrong close.
+func (s *Store) ResolveSessionPrompts(ctx context.Context, sessionID, command string) error {
+	ids, err := s.queryIDs(ctx, `SELECT id FROM requests
+		WHERE session_id = ? AND kind = 'prompt' AND state = 'open'
+		  AND (? = '' OR prompt = ? OR prompt = 'Permission requested')`, sessionID, command, command)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := s.ResolvePrompt(ctx, id, "", "terminal"); err != nil {
+			s.logf("resolve prompt %s: %v", id, err)
+		}
+	}
+	return nil
+}
+
 // ResolveQuestion resolves an open question request with response text and via attribution.
 func (s *Store) ResolveQuestion(ctx context.Context, id, answer, via string) (Request, error) {
 	var out Request
