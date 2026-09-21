@@ -8,11 +8,17 @@ import { useLocalSet } from "../state/local";
 import type { HierarchyProps } from "./props";
 
 export function Hierarchy(p: HierarchyProps) {
-  const [collapsed, toggle] = useLocalSet("swarm.hierarchy.collapsed", []);
+  const [collapsed, toggleCollapsed] = useLocalSet("swarm.hierarchy.collapsed", []);
+  const [opened, toggleOpened] = useLocalSet("swarm.hierarchy.opened", []);
   const [menu, setMenu] = useState<{ key: string; type: "story" | "task" } | null>(null);
-  const rows = hierarchyRows(p.items, p.filter, collapsed);
+  const rows = hierarchyRows(p.items, p.filter, collapsed, opened);
   const tree = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  // Store the outcome, not a flip: a fold survives a status change, and old collapsed keys stay collapsed.
+  const toggle = (key: string, expanded: boolean) => {
+    if (collapsed.has(key) === expanded) toggleCollapsed(key);
+    if (opened.has(key) !== expanded) toggleOpened(key);
+  };
 
   // Standing rule: transient UI (the add-child context menu) takes focus on open and restores it
   // to its trigger on close. A context menu has no single trigger button, so "the trigger" here is
@@ -52,8 +58,8 @@ export function Hierarchy(p: HierarchyProps) {
     };
     if (e.key === "ArrowDown") go(idx + 1);
     else if (e.key === "ArrowUp") go(idx < 0 ? 0 : idx - 1);
-    else if (e.key === "ArrowLeft" && cur?.hasChildren && cur.expanded && !cur.context) toggle(cur.item.key);
-    else if (e.key === "ArrowRight" && cur?.hasChildren && !cur.expanded) toggle(cur.item.key);
+    else if (e.key === "ArrowLeft" && cur?.hasChildren && cur.expanded && !cur.context) toggle(cur.item.key, false);
+    else if (e.key === "ArrowRight" && cur?.hasChildren && !cur.expanded) toggle(cur.item.key, true);
     else if (e.key === "Enter" && cur) p.onSelect(cur.item.key);
     else return;
     e.preventDefault();
@@ -101,7 +107,7 @@ export function Hierarchy(p: HierarchyProps) {
                     aria-label={`${r.expanded ? "Collapse" : "Expand"} ${it.key}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      toggle(it.key);
+                      toggle(it.key, !r.expanded);
                     }}
                   >
                     {r.expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}

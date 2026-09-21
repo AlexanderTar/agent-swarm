@@ -84,7 +84,16 @@ export function filterItems(items: Item[], f: Filter): FilterResult {
 
 export interface TreeRow { item: Item; depth: number; context: boolean; hasChildren: boolean; expanded: boolean }
 
-export function hierarchyRows(items: Item[], f: Filter, collapsed: ReadonlySet<string>): TreeRow[] {
+const isFinal = (s: Item["status"]) => s === "done" || s === "cancelled";
+
+// Done/cancelled items start folded, unless a filter is active (so matches are never hidden inside
+// a fold). `collapsed` and `opened` are the user's explicit overrides; collapsed wins.
+export function hierarchyRows(
+  items: Item[],
+  f: Filter,
+  collapsed: ReadonlySet<string>,
+  opened: ReadonlySet<string> = new Set(),
+): TreeRow[] {
   const idx = buildIndex(items);
   const fr = isFilterActive(f) ? filterItems(items, f) : null;
   const rows: TreeRow[] = [];
@@ -93,7 +102,7 @@ export function hierarchyRows(items: Item[], f: Filter, collapsed: ReadonlySet<s
     if (fr && !fr.matched.has(it.key) && !context) return;
     const kids = idx.children.get(it.key) ?? [];
     // Context rows stay open so matches are visible; the stored collapse state is untouched.
-    const expanded = context || !collapsed.has(it.key);
+    const expanded = context || (!collapsed.has(it.key) && (opened.has(it.key) || fr !== null || !isFinal(it.status)));
     rows.push({ item: it, depth, context, hasChildren: kids.length > 0, expanded });
     if (expanded) for (const k of kids) visit(k, depth + 1);
   };

@@ -74,6 +74,21 @@ describe("tree logic (§16.5, §16.6)", () => {
     expect(filtered[2]?.hasChildren).toBe(false);
   });
 
+  it("folds done and cancelled items by default; opened opens them, collapsed wins", () => {
+    const fin = [
+      makeItem({ key: "EPIC-1", status: "done" }),
+      makeItem({ key: "STORY-1", parent_key: "EPIC-1", root_key: "EPIC-1", status: "done" }),
+      makeItem({ key: "EPIC-2", status: "cancelled", priority: 3 }),
+      makeItem({ key: "STORY-2", parent_key: "EPIC-2", root_key: "EPIC-2", status: "cancelled" }),
+    ];
+    const keys = (c: string[], o: string[], f = none) => hierarchyRows(fin, f, new Set(c), new Set(o)).map((r) => r.item.key);
+    expect(keys([], [])).toEqual(["EPIC-1", "EPIC-2"]);
+    expect(keys(["EPIC-1"], [])).toEqual(["EPIC-1", "EPIC-2"]);
+    expect(keys([], ["EPIC-1"])).toEqual(["EPIC-1", "STORY-1", "EPIC-2"]);
+    expect(keys(["EPIC-1"], ["EPIC-1"])).toEqual(["EPIC-1", "EPIC-2"]);
+    expect(keys([], [], { ...none, status: "done" })).toEqual(["EPIC-1", "STORY-1"]);
+  });
+
   it("detects a selection outside the current view", () => {
     expect(outsideView("TASK-102", items, none, "kanban", "tasks")).toBe(false);
     expect(outsideView("EPIC-12", items, none, "kanban", "tasks")).toBe(true);
