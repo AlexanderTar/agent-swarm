@@ -181,8 +181,9 @@ func TestAtMostOneWakeEveryFiveSeconds(t *testing.T) {
 	}
 }
 
-// §11.3: after ten failed attempts the user is told.
-func TestUndeliverableAfterTenRetries(t *testing.T) {
+// §11.3: once a pending immediate message is five minutes old (11 x 31 s = 341 s
+// here) the user is told, regardless of how many paste attempts were made.
+func TestUndeliverableAfterFiveMinutesUnsynced(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
 	at := tm.clk
@@ -385,3 +386,160 @@ func TestUndeliverableNotificationOnlyFiresOncePerBatch(t *testing.T) {
 	}
 }
 
+
+// 2026-09-21: wakeCandidates counted state != 'acked', which includes messages
+// the agent had already synced, so agents that read but never acked were
+// reported as "hasn't picked up N message(s)" (four false alerts that day).
+func TestReadButUnackedMessageIsNeverUndeliverable(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "ReadNotAcked", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "zsh"}) // never pasteable
+	if _, err := s.Sync(ctx, ses.ID, nil, 20); err != nil { // read, never acked
+		t.Fatal(err)
+	}
+	for i := 0; i < 11; i++ {
+		at.Advance(31 * time.Second)
+		if err := s.WakeDue(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := notifiedCount(s, "agent.undeliverable"); n != 0 {
+		t.Fatalf("undeliverable raised %d times for a message the agent had already read", n)
+	}
+	if len(tm.pasted) != 0 {
+		t.Fatalf("nothing should be pasted for a read message: %v", tm.pasted)
+	}
+}
+
+// The alert is derived from the database: a pending immediate message older
+// than undeliverableAfter on a live session. Not from paste-attempt counts.
+func TestUndeliverableFiresAtFiveMinutesOfPendingNotBefore(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "FiveMinutes", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "zsh"})
+
+	at.Advance(299 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.undeliverable"); n != 0 {
+		t.Fatalf("at 299 s: %d alerts, want 0", n)
+	}
+	at.Advance(2 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.undeliverable"); n != 1 {
+		t.Fatalf("at 301 s: %d alerts, want 1", n)
+	}
+	for i := 0; i < 15; i++ {
+		at.Advance(31 * time.Second)
+		if err := s.WakeDue(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := notifiedCount(s, "agent.undeliverable"); n != 1 {
+		t.Fatalf("after 15 more ticks: %d alerts, want exactly 1", n)
+	}
+}
+
+// Losing the in-memory paste counters (a daemon restart) must not change the
+// alert: it lives in the database.
+func TestUndeliverableSurvivesLosingTheAttemptCounters(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Restart", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "zsh"})
+	at.Advance(301 * time.Second)
+	s.WakeDue(ctx)
+	s.bookkeepingMu.Lock()
+	s.pasteAttempts, s.lastPasteAttemptAt = nil, nil
+	s.bookkeepingMu.Unlock()
+	for i := 0; i < 3; i++ {
+		at.Advance(31 * time.Second)
+		s.WakeDue(ctx)
+	}
+	if n := notifiedCount(s, "agent.undeliverable"); n != 1 {
+		t.Fatalf("%d alerts after a counter reset, want exactly 1", n)
+	}
+}
+
+// Failed paste attempts on message 1 must not carry into message 2: the second
+// batch alerts only once its own oldest pending message is five minutes old.
+func TestUndeliverableSecondBatchStartsItsOwnClock(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "TwoBatches", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "zsh"})
+	for i := 0; i < 9; i++ { // 9 failed paste attempts, still under five minutes of pending
+		at.Advance(31 * time.Second)
+		s.WakeDue(ctx)
+	}
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, a.ID)
+	enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"second"}`, 1)
+	at.Advance(31 * time.Second)
+	s.WakeDue(ctx)
+	if n := notifiedCount(s, "agent.undeliverable"); n != 0 {
+		t.Fatalf("a fresh message raised %d alerts", n)
+	}
+	at.Advance(301 * time.Second)
+	s.WakeDue(ctx)
+	if n := notifiedCount(s, "agent.undeliverable"); n != 1 {
+		t.Fatalf("second batch: %d alerts, want 1", n)
+	}
+}
+
+// After a successful paste the agent gets pasteRetry (30 s) to respond before
+// it is pasted again, unless a newer pending message arrived. Previously only
+// the 5 s wakeGap applied, so a mid-turn agent got a paste every ~20 s.
+func TestNoRepasteWithinTheCooldownUnlessAMessageIsNewer(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Cooldown", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"}) // default capture is idle
+
+	at.Advance(25 * time.Second)
+	s.WakeDue(ctx)
+	if len(tm.pasted) != 1 {
+		t.Fatalf("first paste: %d", len(tm.pasted))
+	}
+	for _, step := range []time.Duration{6, 14, 9} { // +6 s, +20 s, +29 s
+		at.Advance(step * time.Second)
+		s.WakeDue(ctx)
+		if len(tm.pasted) != 1 {
+			t.Fatalf("re-pasted inside the cooldown: %d pastes", len(tm.pasted))
+		}
+	}
+	at.Advance(2 * time.Second) // +31 s
+	s.WakeDue(ctx)
+	if len(tm.pasted) != 2 {
+		t.Fatalf("after the cooldown: %d pastes, want 2", len(tm.pasted))
+	}
+
+	// A message created after the last wake is woken for at the next tick, not
+	// after the cooldown. (It must be strictly newer than last_wake_at.)
+	at.Advance(time.Second)
+	enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"newer"}`, 1)
+	at.Advance(6 * time.Second)
+	s.WakeDue(ctx)
+	if len(tm.pasted) != 3 {
+		t.Fatalf("a newer message must be woken at the next tick: %d pastes", len(tm.pasted))
+	}
+}

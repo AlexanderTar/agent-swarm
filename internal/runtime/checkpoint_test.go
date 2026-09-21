@@ -605,3 +605,43 @@ func TestBlockedCheckpointOpensHITLRequest(t *testing.T) {
 		t.Fatalf("expected options to contain blocker, got %s", options)
 	}
 }
+
+// The assignment duplicates the kickoff brief, and SKILL.md rule 1 makes the
+// agent write `accepted` right after its first sync, so accepting acks it.
+// Only a delivered assignment: one the agent never synced stays pending.
+func TestAcceptedAcksADeliveredAssignmentOnly(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	state := func() string {
+		var st string
+		s.DB.QueryRowContext(ctx, `SELECT state FROM messages WHERE to_agent_id = ? AND kind = 'assignment'`, w.ID).Scan(&st)
+		return st
+	}
+	if _, err := s.Sync(ctx, wSes.ID, nil, 20); err != nil {
+		t.Fatal(err)
+	}
+	if got := state(); got != "delivered" {
+		t.Fatalf("assignment after sync = %q, want delivered", got)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := state(); got != "acked" {
+		t.Fatalf("assignment after accepted = %q, want acked", got)
+	}
+}
+
+func TestAcceptedLeavesAnUnreadAssignmentPending(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	var st string
+	s.DB.QueryRowContext(ctx, `SELECT state FROM messages WHERE to_agent_id = ? AND kind = 'assignment'`, w.ID).Scan(&st)
+	if st != "pending" {
+		t.Fatalf("an assignment the agent never synced must stay pending, got %q", st)
+	}
+}

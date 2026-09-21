@@ -106,7 +106,12 @@ var (
 	// a real human draft typed into the box (pane-input-nonempty.txt) renders
 	// in the default color with no escape prefix at all, so it still
 	// correctly fails to match.
-	claudeIdle = regexp.MustCompile("(?m)^(?:\x1b\\[[0-9;]*m)*\u276f[\u00a0 ](?:\x1b\\[2m.*)?\\s*$")
+	//
+	// 2026-09-21: Claude 2.1.278 also draws an empty prompt as "❯ NBSP" + SGR 7
+	// + one space (the cursor cell); that cell must be a space so a draft with
+	// the cursor on a character still fails.
+	claudeIdle = regexp.MustCompile("(?m)^(?:\x1b\\[[0-9;]*m)*\u276f[\u00a0 ]" +
+		"(?:\x1b\\[2m.*|(?:\x1b\\[[0-9;]*m)*\x1b\\[7m(?:\x1b\\[[0-9;]*m)*[ \u00a0]?(?:\x1b\\[[0-9;]*m)*)?\\s*$")
 	// P0-4: the spinner, e.g. "✽ Beboppin'… (48s · ↓ 114 tokens)".
 	claudeBusy     = regexp.MustCompile("(?m)^[\u273b\u273d\u2736\u2722\u00b7*] \\S+\u2026 \\(")
 	claudeTrust    = regexp.MustCompile(`Is this a project you created or one you trust\?`)

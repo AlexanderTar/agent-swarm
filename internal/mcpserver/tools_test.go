@@ -584,3 +584,14 @@ func TestSwarmReadIncludesParentAgent(t *testing.T) {
 	}
 }
 
+
+func TestSyncToolReturnsAnUnackedListEvenWhenEmpty(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	out, err := s.call(context.Background(), seed.Caller, "swarm_sync", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mustJSON(out)), `"unacked":[]`) {
+		t.Fatalf("out = %s", mustJSON(out))
+	}
+}

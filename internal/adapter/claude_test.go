@@ -412,3 +412,43 @@ func TestClaudeSuperpowersCheckNeedsBrainstormingAndTDD(t *testing.T) {
 		t.Fatal("both skills present should pass")
 	}
 }
+
+// 2026-09-21, live: Claude 2.1.278 draws an idle, empty, suggestion-less
+// prompt as "❯ NBSP + reverse-video cursor cell". claudeIdle only allowed an
+// SGR-2 suggestion after the prompt, so idle agents were never pasted and a
+// message sat pending for 11+ minutes (msg_01M31G7G6PT7G7DKKPH91EZK5H). The
+// three captures come from three live agents via
+// `tmux capture-pane -p -e -J`.
+func TestClaudeIdleAcceptsTheReverseVideoCursorCell(t *testing.T) {
+	a := newClaude(testDeps(t))
+	for _, f := range []string{
+		"pane-idle-cursor-default-fg.txt",
+		"pane-idle-cursor-grey-prompt.txt",
+		"pane-idle-cursor-reset-fg.txt",
+	} {
+		if !a.Idle(pane(t, "claude", f)) {
+			t.Errorf("%s: idle prompt with a cursor cell must count as idle", f)
+		}
+	}
+	for _, s := range []string{
+		"\x1b[39m❯ \x1b[7m \x1b[0m",        // bare cursor cell
+		"\x1b[39m❯ \x1b[7m \x1b[0m   ",     // padded by tmux
+		"\x1b[38;5;246m❯ \x1b[7m\x1b[39m ", // SGR between the cell attribute and the space
+	} {
+		if !claudeIdle.MatchString(s) {
+			t.Errorf("expected idle: %q", s)
+		}
+	}
+	for _, s := range []string{
+		"\x1b[39m❯ half typed",                // draft
+		"\x1b[39m❯ \x1b[7mh\x1b[0malf typed",  // cursor on the first character
+		"\x1b[39m❯ half typed\x1b[7m \x1b[0m", // cursor after the draft
+	} {
+		if claudeIdle.MatchString(s) {
+			t.Errorf("a human draft must not count as idle: %q", s)
+		}
+	}
+	if a.Idle(pane(t, "claude", "pane-input-nonempty.txt")) {
+		t.Error("pane-input-nonempty.txt must stay non-idle")
+	}
+}
