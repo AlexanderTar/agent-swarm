@@ -51,6 +51,8 @@ type PromptMatcher struct {
 	Match  *regexp.Regexp
 	Title  string
 	Action string // e.g. "Enter", "Down+Enter", "y"
+	// Require, if non-nil, must also match the capture before the keys are pressed.
+	Require *regexp.Regexp
 }
 
 // HookDecision is what the daemon's hook handler decided; HookOutput renders it
@@ -73,6 +75,7 @@ type HookInput struct {
 	Cwd               string
 	RawToolInput      []byte
 	ToolResponse      []byte
+	Prompt            string // UserPromptSubmit text; empty for adapters that don't send it
 }
 
 // WakeTarget is what Wake needs to deliver a native or pasted notice.

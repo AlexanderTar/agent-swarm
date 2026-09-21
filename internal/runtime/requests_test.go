@@ -8,7 +8,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 
@@ -495,7 +494,7 @@ func TestPromptLengthIsEnforced(t *testing.T) {
 	}
 }
 
-func TestResolvePromptTransmitsKeysAndResolves(t *testing.T) {
+func TestResolvePromptResolvesAndSendsNoKeys(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Prompt spike", Intent: "feature", Kind: Fake, Model: "fake-1"})
@@ -509,7 +508,7 @@ func TestResolvePromptTransmitsKeysAndResolves(t *testing.T) {
 		t.Fatalf("AskPrompt failed: %v", err)
 	}
 
-	resolved, err := s.ResolvePrompt(ctx, req.ID, "Enter", "menubar")
+	resolved, err := s.ResolvePrompt(ctx, req.ID, "menubar")
 	if err != nil {
 		t.Fatalf("ResolvePrompt failed: %v", err)
 	}
@@ -519,14 +518,15 @@ func TestResolvePromptTransmitsKeysAndResolves(t *testing.T) {
 	if resolved.RespondedVia != "menubar" {
 		t.Fatalf("expected responded_via menubar, got %s", resolved.RespondedVia)
 	}
-	// Verify keys were sent to tmux
-	wantKey := ses.TmuxName + "|Enter"
-	if !slices.Contains(tm.keys, wantKey) {
-		t.Fatalf("expected %q sent to tmux, got %v", wantKey, tm.keys)
+	// Resolving is bookkeeping only: nothing is typed into the pane.
+	for _, k := range tm.keys {
+		if strings.HasPrefix(k, ses.TmuxName+"|") {
+			t.Fatalf("expected no keys sent to tmux, got %v", tm.keys)
+		}
 	}
 
 	// Verify resolving again fails with conflict
-	if _, err := s.ResolvePrompt(ctx, req.ID, "Enter", "menubar"); err == nil {
+	if _, err := s.ResolvePrompt(ctx, req.ID, "menubar"); err == nil {
 		t.Fatal("expected conflict on already resolved prompt, got nil")
 	}
 }
@@ -579,7 +579,7 @@ func TestResolvePromptEmptyActionDoesNotSendKeys(t *testing.T) {
 		t.Fatalf("AskPrompt failed: %v", err)
 	}
 
-	resolved, err := s.ResolvePrompt(ctx, req.ID, "", "terminal")
+	resolved, err := s.ResolvePrompt(ctx, req.ID, "terminal")
 	if err != nil {
 		t.Fatalf("ResolvePrompt failed: %v", err)
 	}
@@ -600,4 +600,102 @@ func TestResolvePromptEmptyActionDoesNotSendKeys(t *testing.T) {
 	}
 }
 
+func TestParentedAgentCannotOpenQuestionOrBlocker(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
 
+	if _, err := s.Ask(ctx, wSes.ID, AskInput{Kind: "question", Prompt: "which db?"}); err == nil ||
+		!strings.Contains(err.Error(), errRelayToParent) {
+		t.Fatalf("Ask err = %v, want %q", err, errRelayToParent)
+	}
+	if _, err := s.AskBlocker(ctx, wSes.ID, "need a key", nil); err == nil ||
+		!strings.Contains(err.Error(), errRelayToParent) {
+		t.Fatalf("AskBlocker err = %v, want %q", err, errRelayToParent)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE is_hitl = 1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("HITL rows = %d, want 0", n)
+	}
+}
+
+func TestResolveAnsweredInTerminalClosesQuestionAndBlockerButNotPrompt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Human", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	q, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which?"})
+	b, err := s.AskBlocker(ctx, ses.ID, "need a key", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.AskPrompt(ctx, ses.ID, "terraform apply", nil)
+	if err := s.ResolveAnsweredInTerminal(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{q.ID: "answered", b.ID: "answered", p.ID: "open"} {
+		if got := stateOfRequest(t, s, id); got != want {
+			t.Errorf("%s = %s, want %s", id, got, want)
+		}
+	}
+	var text, via string
+	if err := s.DB.QueryRow(`SELECT response_text, responded_via FROM requests WHERE id = ?`, q.ID).Scan(&text, &via); err != nil {
+		t.Fatal(err)
+	}
+	if text != "Answered in terminal" || via != "terminal" {
+		t.Fatalf("response = %q via %q", text, via)
+	}
+}
+
+func TestRequestWireTerminalAgent(t *testing.T) {
+	ctx := context.Background()
+	want := func(t *testing.T, s *Store, id string, name *string) {
+		t.Helper()
+		w, err := s.RequestWireByID(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (w.TerminalAgent == nil) != (name == nil) || (name != nil && *w.TerminalAgent != *name) {
+			t.Fatalf("terminal_agent = %v, want %v", w.TerminalAgent, name)
+		}
+	}
+	t.Run("top-level question is its own terminal", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Top", Intent: "feature", Kind: Fake, Model: "fake-1"})
+		ses, _ := s.LatestSession(ctx, a.ID)
+		req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which?"})
+		want(t, s, req.ID, &a.Name)
+	})
+	t.Run("legacy parented question points at the root orchestrator", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		orch, w, wSes := worker(t, s)
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+			prompt, options_json, state, created_at) VALUES ('req_legacy','question',1,?,?,?,'which?','[]','open',1)`,
+			w.ID, wSes.ID, w.ItemID); err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, "req_legacy", &orch.Name)
+	})
+	t.Run("permission prompt points at the asking agent", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		_, w, wSes := worker(t, s)
+		req, err := s.AskPrompt(ctx, wSes.ID, "terraform apply", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, req.ID, &w.Name)
+	})
+	t.Run("approval kinds have none", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		_, w, wSes := worker(t, s)
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+			prompt, options_json, state, created_at) VALUES ('req_close','close_spike',0,?,?,?,'x','[]','open',1)`,
+			w.ID, wSes.ID, w.ItemID); err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, "req_close", nil)
+	})
+}

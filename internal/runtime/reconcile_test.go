@@ -1465,7 +1465,9 @@ func TestOnDepUnblockedEscalatesPastADeadParentToTheNearestLiveAncestor(t *testi
 	}
 }
 
-func TestPromptDetectedInRunningSessionOpensHITLRequest(t *testing.T) {
+// Rewritten from TestPromptDetectedInRunningSessionOpensHITLRequest (spec 8.3): a scraped
+// prompt no longer becomes a row; the daemon presses the matcher's keys once instead.
+func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "PromptSpy", Intent: "feature", Kind: Fake, Model: "fake-1"})
@@ -1473,40 +1475,92 @@ func TestPromptDetectedInRunningSessionOpensHITLRequest(t *testing.T) {
 	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
 	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
 
-	// Set prompt pattern on Fake adapter
 	fakeAd := s.Adapters[Fake].(*adapter.Fake)
 	fakeAd.PromptMatchers = []adapter.PromptMatcher{
-		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Down+Enter"},
 	}
-
-	// Set capture containing prompt
 	tm.captures[a.Name] = []string{"Some output\nDo you trust this? [y/n]\n"}
 
-	if err := s.Reconcile(ctx); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 3; i++ {
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	var count, isHITL int
-	var prompt, kind string
-	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*), is_hitl, prompt, kind FROM requests WHERE session_id = ?`, ses.ID).
-		Scan(&count, &isHITL, &prompt, &kind)
-	if err != nil {
+	var pressed int
+	for _, k := range tm.keys {
+		if k == a.Name+"|Down,Enter" {
+			pressed++
+		}
+	}
+	if pressed != 1 {
+		t.Fatalf("auto-answer keys pressed %d times (keys=%v), want exactly 1", pressed, tm.keys)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses.ID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 || isHITL != 1 || prompt != "Trust prompt" || kind != "prompt" {
-		t.Fatalf("expected 1 hitl prompt request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
+	if count != 0 {
+		t.Fatalf("requests = %d, want 0", count)
+	}
+}
+
+// The scrape must honor PromptMatcher.Require like watchStartup honors Dialog.Require: a
+// frame where the dialog title matches but the guarded option line is absent (a variant
+// or mid-render frame) must not get a blind key press.
+func TestPromptPatternRequireGuardsAutoAnswer(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "GuardSpy", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+
+	fakeAd := s.Adapters[Fake].(*adapter.Fake)
+	fakeAd.PromptMatchers = []adapter.PromptMatcher{{
+		Match:   regexp.MustCompile(`Do you trust this\?`),
+		Require: regexp.MustCompile(`Yes, trust it`),
+		Title:   "Trust prompt", Action: "Down+Enter",
+	}}
+	pressedCount := func() int {
+		n := 0
+		for _, k := range tm.keys {
+			if k == a.Name+"|Down,Enter" {
+				n++
+			}
+		}
+		return n
 	}
 
-	// Reconcile again: must not duplicate
-	if err := s.Reconcile(ctx); err != nil {
+	// Title matches, guarded option line absent: no keys, no rows.
+	tm.captures[a.Name] = []string{"Do you trust this?\n  1. (rendering...)\n"}
+	for i := 0; i < 2; i++ {
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := pressedCount(); got != 0 {
+		t.Fatalf("keys pressed %d times without the Require line on screen (keys=%v), want 0", got, tm.keys)
+	}
+
+	// Same dialog with the Require line present: pressed exactly once, and the earlier
+	// guarded-out frames must not have burned the once-per-title budget.
+	tm.captures[a.Name] = []string{"Do you trust this?\n  1. Yes, trust it\n  2. No, exit\n"}
+	tm.n[a.Name] = 0
+	for i := 0; i < 3; i++ {
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := pressedCount(); got != 1 {
+		t.Fatalf("keys pressed %d times with the Require line on screen (keys=%v), want exactly 1", got, tm.keys)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses.ID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses.ID).Scan(&count)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatalf("reconcile should not duplicate open prompt request, got count=%d", count)
+	if count != 0 {
+		t.Fatalf("requests = %d, want 0", count)
 	}
 }
 
@@ -1537,51 +1591,125 @@ func TestCrashedRelayIncludesExitCodeAndTail(t *testing.T) {
 	}
 }
 
-func TestReconcileAutoResolvesPromptWhenDismissedInTerminal(t *testing.T) {
-	s, tm, ad := newStore(t)
+// Rewritten from TestReconcileAutoResolvesPromptWhenDismissedInTerminal (spec 8.3):
+// pattern absence no longer resolves anything.
+func TestReconcileNeverResolvesAPromptRowByPatternAbsence(t *testing.T) {
+	s, tm, _ := newStore(t)
 	ctx := context.Background()
-	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Prompt auto resolve", Intent: "feature", Kind: Fake, Model: "fake-1"})
-	if err != nil {
-		t.Fatalf("StartSpike failed: %v", err)
-	}
-	ses, err := s.LatestSession(ctx, a.ID)
-	if err != nil {
-		t.Fatalf("LatestSession failed: %v", err)
-	}
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Perm", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
 	panes(tm, Pane{Session: ses.TmuxName, Command: "swarm-fake-agent"})
 	tm.env[ses.TmuxName] = map[string]string{"SWARM_SESSION": ses.ID}
 
-	ad.PromptMatchers = []adapter.PromptMatcher{
-		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	// A permission dialog row (raised by the PermissionRequest hook) whose text is a raw command.
+	req, err := s.AskPrompt(ctx, ses.ID, "terraform apply", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Initial capture has the prompt
-	tm.captures[ses.TmuxName] = []string{"Do you trust this? [y/n]\n"}
-
-	if err := s.Reconcile(ctx); err != nil {
-		t.Fatalf("first reconcile: %v", err)
+	tm.captures[ses.TmuxName] = []string{"nothing matching here\n"}
+	for i := 0; i < 2; i++ {
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
-
-	var reqID, state string
-	err = s.DB.QueryRowContext(ctx, `SELECT id, state FROM requests WHERE session_id = ? AND kind = 'prompt'`,
-		ses.ID).Scan(&reqID, &state)
-	if err != nil || state != "open" {
-		t.Fatalf("expected open prompt request, got err=%v, state=%s", err, state)
-	}
-
-	// User approved in terminal; prompt is gone from capture
-	tm.captures[ses.TmuxName] = []string{"Folder trusted. Proceeding...\n"}
-
-	if err := s.Reconcile(ctx); err != nil {
-		t.Fatalf("second reconcile: %v", err)
-	}
-
-	var via string
-	err = s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(responded_via, '') FROM requests WHERE id = ?`, reqID).Scan(&state, &via)
-	if err != nil || state != "answered" {
-		t.Fatalf("expected state answered, got err=%v, state=%s", err, state)
-	}
-	if via != "terminal" {
-		t.Fatalf("expected responded_via terminal, got %s", via)
+	if got := stateOfRequest(t, s, req.ID); got != "open" {
+		t.Fatalf("prompt row state = %s, want open (only PostToolUse or a human may close it)", got)
 	}
 }
 
+
+func stateOfRequest(t *testing.T, s *Store, id string) string {
+	t.Helper()
+	var st string
+	if err := s.DB.QueryRow(`SELECT state FROM requests WHERE id = ?`, id).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestSweepWithdrawsOpenHITLRequestsOfEndedSessions(t *testing.T) {
+	cases := []struct {
+		state SessionState
+		want  string
+	}{
+		{Completed, "withdrawn"}, {Failed, "withdrawn"}, {Crashed, "withdrawn"}, {Cancelled, "withdrawn"},
+		{Paused, "open"}, {Interrupted, "open"}, {Running, "open"},
+	}
+	for _, c := range cases {
+		t.Run(string(c.state), func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Ask me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+			ses, _ := s.LatestSession(ctx, a.ID)
+			req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which one?"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetSessionState(ctx, ses.ID, c.state); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.withdrawOrphanedRequests(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := stateOfRequest(t, s, req.ID); got != c.want {
+				t.Fatalf("session %s: request state = %s, want %s", c.state, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSweepKeepsRowWhenNewerAttemptIsRunning(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Retry me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses1, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses1.ID, AskInput{Kind: "question", Prompt: "which one?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, ses1.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	// generation 2: UNIQUE(agent_id, generation) forbids a second generation-1 row.
+	ses2, err := s.startSessionForTest(ctx, a, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, ses2.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.withdrawOrphanedRequests(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOfRequest(t, s, req.ID); got != "open" {
+		t.Fatalf("request state = %s, want open (newest attempt is running)", got)
+	}
+}
+
+func TestSweepWithdrawsRowsOfFinishedAgentEvenIfSessionPaused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Done", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which one?"})
+	_ = s.SetSessionState(ctx, ses.ID, Paused)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.withdrawOrphanedRequests(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOfRequest(t, s, req.ID); got != "withdrawn" {
+		t.Fatalf("request state = %s, want withdrawn", got)
+	}
+	evs, _ := s.Events.After(ctx, 0, 200)
+	var resolved int
+	for _, e := range evs {
+		if e.Type == "request.resolved" {
+			resolved++
+		}
+	}
+	if resolved != 1 {
+		t.Fatalf("request.resolved events = %d, want 1", resolved)
+	}
+}

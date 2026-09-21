@@ -822,7 +822,7 @@ func TestPostToolUseResolvesOpenQuestionRequest(t *testing.T) {
 	}
 
 	// Tool finishes; PostToolUse fires
-	postInput := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_response":{"answer":"PostgreSQL"}}`)
+	postInput := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"Which database?"}]},"tool_response":{"answer":"PostgreSQL"}}`)
 	_, _ = h.Handle(ctx, runtime.Agy, "PostToolUse", ses.ID, postInput)
 
 	var responseText, respondedVia sql.NullString
@@ -852,7 +852,7 @@ func TestPostToolUseResolvesOpenQuestionRequestFallbackWhenEmptyResponse(t *test
 	}
 
 	// Tool finishes without explicit answer
-	postInput := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question"}`)
+	postInput := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"Which database?"}]}}`)
 	_, _ = h.Handle(ctx, runtime.Agy, "PostToolUse", ses.ID, postInput)
 
 	var responseText, respondedVia sql.NullString
@@ -891,6 +891,10 @@ func TestPostToolUseClaudeResolvesOpenQuestionRequest(t *testing.T) {
 	postInput, _ := json.Marshal(map[string]any{
 		"session_id": "p1",
 		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"question": "Deploy to staging?",
+			"options":  []string{"yes", "no"},
+		},
 		"tool_response": map[string]any{
 			"answer": "yes",
 		},
@@ -957,5 +961,191 @@ func TestReadButUnackedMessagesNeitherNudgeNorBlockStop(t *testing.T) {
 	}
 	if len(stop) != 0 {
 		t.Fatalf("a delivered message must not block Stop: %s", stop)
+	}
+}
+
+func TestParentedAgentQuestionToolIsBlockedAndOpensNoRequest(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		kind runtime.AgentKind
+		tool string
+	}{{runtime.Claude, "AskUserQuestion"}, {runtime.Codex, "request_user_input"}, {runtime.Cursor, "ask_question"}, {runtime.Agy, "ask_question"}} {
+		t.Run(string(c.kind)+" "+c.tool, func(t *testing.T) {
+			h, ses := seed(t, 0, runtime.Running)
+			// The seeded agent "has a parent" via its own id: the FK is satisfied and the
+			// hook only tests for a non-empty parent_agent_id.
+			if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET parent_agent_id = 'agt_1', kind = ? WHERE id = 'agt_1'`, string(c.kind)); err != nil {
+				t.Fatal(err)
+			}
+			in, _ := json.Marshal(map[string]any{"session_id": "p1", "tool_name": c.tool,
+				"tool_input": map[string]any{"question": "Deploy?"}})
+			out, err := h.Handle(ctx, c.kind, "PreToolUse", ses, in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(out), "swarm_send") {
+				t.Fatalf("a parented agent's question tool must be blocked with the relay text, got %s", out)
+			}
+			var n int
+			if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Fatalf("requests = %d, want 0", n)
+			}
+		})
+	}
+}
+
+func TestQuestionToolPostToolUseClosesOnlyTheMatchingRow(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	// B? is opened by the tool call first; A? (a swarm_ask) is opened later, so A? is
+	// the newest open question and the old "newest open question" logic would close it.
+	pre, _ := json.Marshal(map[string]any{"session_id": "p1", "tool_name": "AskUserQuestion", "tool_input": map[string]any{"question": "B?"}})
+	if _, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, pre); err != nil {
+		t.Fatal(err)
+	}
+	h.RT.Now = func() time.Time { return now().Add(time.Minute) }
+	a, err := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "A?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	post, _ := json.Marshal(map[string]any{"session_id": "p1", "tool_name": "AskUserQuestion",
+		"tool_input": map[string]any{"question": "B?"}, "tool_response": map[string]any{"answer": "yes"}})
+	if _, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, post); err != nil {
+		t.Fatal(err)
+	}
+	state := func(prompt string) (s string) {
+		if err := h.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE prompt = ?`, prompt).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if got := state("B?"); got != "answered" {
+		t.Fatalf("B? = %s, want answered", got)
+	}
+	if got := state("A?"); got != "open" {
+		t.Fatalf("A? = %s, want open (%s)", got, a.ID)
+	}
+}
+
+func TestQuestionToolPostToolUseWithoutToolInputClosesNothing(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "A?"}); err != nil {
+		t.Fatal(err)
+	}
+	post, _ := json.Marshal(map[string]any{"session_id": "p1", "tool_name": "AskUserQuestion", "tool_response": map[string]any{"answer": "yes"}})
+	if _, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, post); err != nil {
+		t.Fatal(err)
+	}
+	var st string
+	if err := h.DB.QueryRowContext(ctx, `SELECT state FROM requests`).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st != "open" {
+		t.Fatalf("state = %s, want open (no tool_input, no match)", st)
+	}
+}
+
+func TestPostToolUseResolvesOnlyTheMatchingPermissionPrompt(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'codex' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	perm, _ := json.Marshal(map[string]any{"command": "terraform apply"})
+	if _, err := h.Handle(ctx, runtime.Codex, "PermissionRequest", ses, perm); err != nil {
+		t.Fatal(err)
+	}
+	stateOf := func() (state, via string) {
+		if err := h.DB.QueryRowContext(ctx, `SELECT state, COALESCE(responded_via, '') FROM requests
+			WHERE session_id = ? AND kind = 'prompt'`, ses).Scan(&state, &via); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	other, _ := json.Marshal(map[string]any{"command": "ls"})
+	if _, err := h.Handle(ctx, runtime.Codex, "PostToolUse", ses, other); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := stateOf(); st != "open" {
+		t.Fatalf("state after unrelated tool = %s, want open", st)
+	}
+	if _, err := h.Handle(ctx, runtime.Codex, "PostToolUse", ses, perm); err != nil {
+		t.Fatal(err)
+	}
+	if st, via := stateOf(); st != "answered" || via != "terminal" {
+		t.Fatalf("state after matching tool = %s via %s, want answered via terminal", st, via)
+	}
+}
+
+func TestHumanPromptClosesOpenRowsButDaemonPromptsDoNot(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	q, _ := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "which?"})
+	submit := func(prompt string) {
+		t.Helper()
+		in, _ := json.Marshal(map[string]any{"session_id": "p1", "prompt": prompt})
+		if _, err := h.Handle(ctx, runtime.Claude, "UserPromptSubmit", ses, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := func() (s string) {
+		if err := h.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE id = ?`, q.ID).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	for _, daemon := range []string{runtime.IdleToken, runtime.Kickoff("login-form-coder", runtime.RoleCoder, "TASK-101", "T"),
+		runtime.PendingNotice(1, "login-form-coder", "TASK-101"), ""} {
+		submit(daemon)
+		if got := state(); got != "open" {
+			t.Fatalf("after daemon prompt %q the row is %s, want open", daemon, got)
+		}
+	}
+	submit("Use zod")
+	if got := state(); got != "answered" {
+		t.Fatalf("after a human prompt the row is %s, want answered", got)
+	}
+}
+
+func TestAgyPromptlessSubmitNeverClosesRows(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	q, _ := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "which?"})
+	in, _ := json.Marshal(map[string]any{"conversationId": "c1"})
+	if _, err := h.Handle(ctx, runtime.Agy, "PreInvocation", ses, in); err != nil {
+		t.Fatal(err)
+	}
+	var st string
+	if err := h.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE id = ?`, q.ID).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st != "open" {
+		t.Fatalf("row = %s, want open (agy sends no prompt text)", st)
+	}
+}
+
+func TestHumanPromptInANewSessionClosesTheRowOfTheOldOne(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	q, _ := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "which?"})
+	if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = 'ses_1';
+		INSERT INTO sessions (id,agent_id,attempt,generation,token_hash,tmux_name,cwd,state,cwd_kind,started_at)
+		VALUES ('ses_2','agt_1',1,2,'hash2','login-form-coder-2','/tmp/w','running','neutral',2)`); err != nil {
+		t.Fatal(err)
+	}
+	in, _ := json.Marshal(map[string]any{"session_id": "p2", "prompt": "Use zod"})
+	if _, err := h.Handle(ctx, runtime.Claude, "UserPromptSubmit", "ses_2", in); err != nil {
+		t.Fatal(err)
+	}
+	var st string
+	if err := h.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE id = ?`, q.ID).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st != "answered" {
+		t.Fatalf("row = %s, want answered (rows are keyed by agent, not session)", st)
 	}
 }

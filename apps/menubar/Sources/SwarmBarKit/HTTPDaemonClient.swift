@@ -50,8 +50,6 @@ public final class HTTPDaemonClient: DaemonClient {
 
     private struct Empty: Codable {}
     private struct Scope: Encodable { let scope: PauseScope }
-    private struct Answer: Encodable { let text: String; let via = "menubar" }
-    private struct ResolvePromptBody: Codable, Sendable { let action: String?; let via: String }
     private struct PauseAll: Decodable { let requested: Int }
     private struct UsageRefresh: Encodable { let agent: AgentKind? }
     private struct AddRepo: Encodable { let path: String }
@@ -113,14 +111,6 @@ public final class HTTPDaemonClient: DaemonClient {
 
     public func pauseAll() async throws -> Int {
         try await call("POST", "/api/pause-all", as: PauseAll.self).requested
-    }
-
-    public func answer(requestID: String, text: String) async throws {
-        _ = try await call("POST", "/api/requests/\(Self.segment(requestID))/answer", body: Answer(text: text), as: Empty.self)
-    }
-
-    public func resolvePrompt(_ id: String, action: String?, via: String) async throws {
-        _ = try await call("POST", "/api/requests/\(Self.segment(id))/resolve", body: ResolvePromptBody(action: action, via: via), as: Empty.self)
     }
 
     public func markRead(notificationID: String) async throws {

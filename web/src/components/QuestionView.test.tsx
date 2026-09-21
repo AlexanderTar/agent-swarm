@@ -6,32 +6,33 @@ import { QuestionView } from "./QuestionView";
 
 const question = () => createMockDaemon().db.requests.find((r) => r.id === "req_question")!;
 
-describe("QuestionView (§16.11)", () => {
-  it("answers with an option", async () => {
-    const d = createMockDaemon();
-    const { user } = renderWithDaemon(<QuestionView request={question()} connected />, { daemon: d, events: false });
+describe("QuestionView (read-only, §16.11)", () => {
+  it("shows the prompt and options as text, with no input and no submit button", () => {
+    renderWithDaemon(<QuestionView request={question()} connected />, { events: false });
     expect(screen.getByText("Which sync strategy?")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "CRDT" }));
-    await waitFor(() => expect(d.calls.at(-1)).toMatchObject({ path: "/api/requests/req_question/answer", body: { text: "CRDT", via: "board" } }));
+    expect(screen.getByText("CRDT")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "CRDT" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send answer" })).not.toBeInTheDocument();
   });
 
-  it("answers with typed text, keeps the draft and opens the terminal", async () => {
+  it("opens the terminal of terminal_agent", async () => {
     const d = createMockDaemon();
-    const first = renderWithDaemon(<QuestionView request={question()} connected />, { daemon: d, events: false });
-    await first.user.type(screen.getByRole("textbox", { name: "Answer" }), "Use last write wins");
-    first.unmount();
     const { user } = renderWithDaemon(<QuestionView request={question()} connected />, { daemon: d, events: false });
-    expect(screen.getByRole("textbox", { name: "Answer" })).toHaveValue("Use last write wins");
-    await user.click(screen.getByRole("button", { name: "Open terminal" }));
+    await user.click(await screen.findByRole("button", { name: "Open orchestrator terminal" }));
     await waitFor(() => expect(d.calls.some((c) => c.path === "/api/agents/offline-spike-orchestrator/terminal")).toBe(true));
-    await user.click(screen.getByRole("button", { name: "Send answer" }));
-    await waitFor(() => expect(d.calls.at(-1)?.body).toMatchObject({ text: "Use last write wins" }));
-    expect(sessionStorage.getItem("swarm.draft.req_question.answer")).toBeNull();
+    expect(d.calls.some((c) => c.path.includes("/answer") || c.path.includes("/resolve"))).toBe(false);
   });
 
-  it("disables sending while disconnected or empty", () => {
+  it("is disabled and explains when the orchestrator is paused, or the daemon is disconnected", async () => {
+    const paused = { ...question(), terminal_agent: "crash-debug-orchestrator" };
+    renderWithDaemon(<QuestionView request={paused} connected />, { events: false });
+    expect(await screen.findByText("Orchestrator is paused. Resume it to continue.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open orchestrator terminal" })).toBeDisabled();
+  });
+
+  it("disables the terminal button while disconnected", async () => {
     renderWithDaemon(<QuestionView request={question()} connected={false} />, { events: false });
-    expect(screen.getByRole("button", { name: "Send answer" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "CRDT" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Open orchestrator terminal" })).toBeDisabled();
   });
 });

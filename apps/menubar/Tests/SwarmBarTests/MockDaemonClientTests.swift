@@ -10,7 +10,6 @@ final class MockDaemonClientTests: XCTestCase {
         XCTAssertEqual(state.agents.count, 5)
         try await mock.agent("login-form-coder", .pause, scope: .subtree)
         try await mock.agent("docs-fix-coder", .ack, scope: nil)
-        try await mock.answer(requestID: "req_question", text: "Use zod.")
         let paused = try await mock.pauseAll()
         let firstTwo = try await mock.notifications(limit: 2)
         try await mock.markRead(notificationID: "ntf_05")
@@ -32,7 +31,7 @@ final class MockDaemonClientTests: XCTestCase {
         XCTAssertEqual(pane, try Fixture.decode("pane.json"))
         XCTAssertEqual(mock.calls, [
             "state", "agent pause login-form-coder subtree", "agent ack docs-fix-coder",
-            "answer req_question Use zod.", "pause-all", "notifications 2", "read ntf_05", "read-all",
+            "pause-all", "notifications 2", "read ntf_05", "read-all",
             "usage-refresh claude", "usage-refresh all", "catalog", "catalog-refresh", "repos endurio",
             "repo-add /tmp/notes", "rescan", "terminal-opened login-form-coder", "pane login-form-coder 40",
         ])

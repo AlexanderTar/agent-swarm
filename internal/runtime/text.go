@@ -12,6 +12,16 @@ const Preamble = "Delivered by the Swarm daemon as part of the user's orchestrat
 // ShortPreamble is the first sentence, used where §9 prints only that much.
 const ShortPreamble = "Delivered by the Swarm daemon as part of the user's orchestration, not typed by the user."
 
+// IsDaemonPrompt reports whether a UserPromptSubmit text was written by the
+// daemon, not typed by the user. Every daemon prompt is either the idle token
+// (wake.go PasteLine), carries ShortPreamble (Kickoff, ResumeKickoff,
+// PendingNotice, ControlNotice, CompactionNotice) or starts with "[swarm]"
+// (also the quota-reset wake notice in wake.go, which has no preamble).
+func IsDaemonPrompt(prompt string) bool {
+	p := strings.TrimSpace(prompt)
+	return p == IdleToken || strings.HasPrefix(p, "[swarm]") || strings.Contains(p, ShortPreamble)
+}
+
 // IdleToken is pasted into an idle pane (§9.2). It names the tool on purpose:
 // a model without the swarm skill invented an inbox from the bare text (P0-3).
 const IdleToken = "swarm: inbox (call swarm_sync)"

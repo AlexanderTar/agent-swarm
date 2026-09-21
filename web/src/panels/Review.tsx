@@ -105,49 +105,6 @@ function CloseBody({ r }: { r: Request }) {
   );
 }
 
-function PromptView({ r, connected }: { r: Request; connected: boolean }) {
-  const toast = useToast();
-  const resolve = useMutation(
-    (api, action?: string) => api.resolvePrompt(r.id, { action, via: "board" }),
-    ["requests", "items", "item:"],
-  );
-  const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
-  const options = Array.isArray(r.options) ? r.options : [];
-  const firstOption = options[0];
-
-  const onApprove = async () => {
-    try {
-      await resolve.run(firstOption);
-    } catch (e) {
-      toast({ message: errorText(e) });
-    }
-  };
-
-  return (
-    <div className="space-y-3">
-      <p className="whitespace-pre-wrap text-base">{r.prompt}</p>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          disabled={!connected || resolve.pending}
-          onClick={() => void onApprove()}
-          className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
-        >
-          {C.approve}
-        </button>
-        <button
-          type="button"
-          disabled={!connected || !r.agent_name}
-          onClick={() => r.agent_name && void terminal.run(r.agent_name).catch(() => undefined)}
-          className="rounded border border-line px-3 py-1"
-        >
-          {C.openTerminal}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export function Review({ request: r, connected }: { request: Request; connected: boolean }) {
   const head = reviewHeader(r);
   const [stale, setStale] = useState(false);
@@ -177,8 +134,7 @@ export function Review({ request: r, connected }: { request: Request; connected:
       </header>
       {stale && <p role="alert" className="rounded bg-warn/10 p-2 text-warn">{C.staleApproval}</p>}
 
-      {r.kind === "question" && <QuestionView request={r} connected={connected} />}
-      {r.kind === "prompt" && <PromptView r={r} connected={connected} />}
+      {(r.kind === "question" || r.kind === "prompt" || r.kind === "blocker") && <QuestionView request={r} connected={connected} />}
       {r.kind === "confirm_repos" && <ConfirmRepos key={r.id} request={r} connected={connected} />}
       {(r.kind === "approve_section" || r.kind === "approve_plan" || r.kind === "approve_report") && <Snapshot r={r} />}
       {(r.kind === "accept_epic" || r.kind === "accept_fix") && <AcceptBody r={r} />}

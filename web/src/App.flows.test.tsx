@@ -93,6 +93,6 @@ describe("App flows", () => {
     expect(window.location.hash).toBe("#/inbox?filter=questions");
     await user.click(screen.getByRole("button", { name: /Which validation library\?/ }));
     expect(window.location.hash).toBe("#/inbox?req=req_q2&filter=questions");
-    expect(screen.getByRole("textbox", { name: "Answer" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Answer" })).not.toBeInTheDocument();
   });
 });

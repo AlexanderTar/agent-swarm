@@ -198,3 +198,27 @@ func TestStripANSIOnPlainTextIsUnchanged(t *testing.T) {
 		t.Fatalf("StripANSI() = %q, want unchanged %q", got, in)
 	}
 }
+
+func TestParseHookReadsThePromptField(t *testing.T) {
+	d := testDeps(t)
+	cases := []struct {
+		name  string
+		parse func(event string, stdin []byte) (HookInput, error)
+		event string
+		stdin string
+	}{
+		{"claude", newClaude(d).ParseHook, "UserPromptSubmit", `{"session_id":"s","prompt":"Use zod"}`},
+		{"codex", newCodex(d).ParseHook, "UserPromptSubmit", `{"session_id":"s","turn_id":"t","prompt":"Use zod"}`},
+		{"cursor", newCursor(d).ParseHook, "beforeSubmitPrompt", `{"conversation_id":"c","prompt":"Use zod"}`},
+	}
+	for _, c := range cases {
+		in, err := c.parse(c.event, []byte(c.stdin))
+		if err != nil || in.Prompt != "Use zod" {
+			t.Errorf("%s: Prompt = %q, err = %v", c.name, in.Prompt, err)
+		}
+	}
+	in, _ := newAgy(d).ParseHook("PreInvocation", []byte(`{"conversationId":"c"}`))
+	if in.Prompt != "" {
+		t.Errorf("agy Prompt = %q, want empty", in.Prompt)
+	}
+}
