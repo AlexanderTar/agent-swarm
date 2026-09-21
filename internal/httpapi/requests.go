@@ -180,6 +180,9 @@ type resolvePromptBody struct {
 }
 
 func (s *Server) handleResolvePrompt(w http.ResponseWriter, r *http.Request) {
+	if s.notWired(w, s.RT != nil) {
+		return
+	}
 	var body resolvePromptBody
 	if err := readJSON(r, &body); err != nil {
 		s.writeErr(w, err)

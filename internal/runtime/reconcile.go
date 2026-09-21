@@ -553,7 +553,9 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 						if matcher.Action != "" {
 							opts = []string{matcher.Action}
 						}
-						_, _ = s.AskPrompt(ctx, r.SessionID, matcher.Title, opts)
+						if _, err := s.AskPrompt(ctx, r.SessionID, matcher.Title, opts); err != nil {
+							s.logf("reconcile: AskPrompt for %s: %v", r.SessionID, err)
+						}
 					}
 					break
 				}
