@@ -590,6 +590,9 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 				if m.Match == nil || m.Action == "" || !m.Match.MatchString(capture) {
 					continue
 				}
+				if m.Require != nil && !m.Require.MatchString(capture) {
+					continue // guarded option not on screen: a blind key press could pick the wrong answer
+				}
 				if s.markPromptAnswered(r.SessionID, m.Title) {
 					if err := s.Tmux.Keys(ctx, r.TmuxName, strings.Split(m.Action, "+")...); err != nil {
 						s.logf("reconcile: auto-answer %q for %s: %v", m.Title, r.SessionID, err)

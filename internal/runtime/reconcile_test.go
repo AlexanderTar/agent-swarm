@@ -1505,6 +1505,65 @@ func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {
 	}
 }
 
+// The scrape must honor PromptMatcher.Require like watchStartup honors Dialog.Require: a
+// frame where the dialog title matches but the guarded option line is absent (a variant
+// or mid-render frame) must not get a blind key press.
+func TestPromptPatternRequireGuardsAutoAnswer(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "GuardSpy", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+
+	fakeAd := s.Adapters[Fake].(*adapter.Fake)
+	fakeAd.PromptMatchers = []adapter.PromptMatcher{{
+		Match:   regexp.MustCompile(`Do you trust this\?`),
+		Require: regexp.MustCompile(`Yes, trust it`),
+		Title:   "Trust prompt", Action: "Down+Enter",
+	}}
+	pressedCount := func() int {
+		n := 0
+		for _, k := range tm.keys {
+			if k == a.Name+"|Down,Enter" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Title matches, guarded option line absent: no keys, no rows.
+	tm.captures[a.Name] = []string{"Do you trust this?\n  1. (rendering...)\n"}
+	for i := 0; i < 2; i++ {
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := pressedCount(); got != 0 {
+		t.Fatalf("keys pressed %d times without the Require line on screen (keys=%v), want 0", got, tm.keys)
+	}
+
+	// Same dialog with the Require line present: pressed exactly once, and the earlier
+	// guarded-out frames must not have burned the once-per-title budget.
+	tm.captures[a.Name] = []string{"Do you trust this?\n  1. Yes, trust it\n  2. No, exit\n"}
+	tm.n[a.Name] = 0
+	for i := 0; i < 3; i++ {
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := pressedCount(); got != 1 {
+		t.Fatalf("keys pressed %d times with the Require line on screen (keys=%v), want exactly 1", got, tm.keys)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("requests = %d, want 0", count)
+	}
+}
+
 func TestCrashedRelayIncludesExitCodeAndTail(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()

@@ -128,7 +128,7 @@ func (c *Claude) StartupDialogs() []Dialog {
 
 func (c *Claude) PromptPatterns() []PromptMatcher {
 	return []PromptMatcher{
-		{Match: claudeTrust, Title: "Trust this project", Action: "Down+Enter"},
+		{Match: claudeTrust, Require: claudeTrustYes, Title: "Trust this project", Action: "Down+Enter"},
 		{Match: claudeDev, Title: "Confirm local development", Action: "Enter"},
 	}
 }
