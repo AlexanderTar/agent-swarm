@@ -17,7 +17,7 @@ const wakeGap = 5 * time.Second
 const pasteDelay = 20 * time.Second
 const controlPasteDelay = 5 * time.Second
 const pasteRetry = 30 * time.Second
-const maxPasteAttempts = 10
+const undeliverableAfter = 5 * time.Minute
 
 // wakeRow is one live session with at least one pending immediate message,
 // enough to decide the §11.3 wake order for it.
@@ -26,12 +26,12 @@ type wakeRow struct {
 	Kind                                                         AgentKind
 	Pending                                                      int
 	HasControl                                                   bool
-	OldestMessageAt                                              time.Time
+	OldestMessageAt, NewestPendingAt                             time.Time
 	LastSeenAt, LastWakeAt                                       *time.Time
 	LastPasteAttemptAt                                           *time.Time
 	StartedAt                                                    time.Time
 	PaneCommand                                                  string
-	PasteAttempts                                                int
+	PasteAttempts                                                int // only spaces paste retries; the alert is database-derived (undeliverableAfter)
 	NativeTried                                                  bool
 }
 
@@ -43,6 +43,8 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state = 'pending'),
 		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.kind = 'control'),
 		(SELECT MIN(m.created_at) FROM messages m
+			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate'),
+		(SELECT MAX(m.created_at) FROM messages m
 			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate')
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
 		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
@@ -57,9 +59,9 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		var lastSeen, lastWake sql.NullInt64
 		var startedAt int64
 		var hasControlCount int
-		var oldest sql.NullInt64
+		var oldest, newest sql.NullInt64
 		if err := rows.Scan(&r.SessionID, &r.AgentID, &r.AgentName, &r.ItemKey, &r.TmuxName,
-			&r.ProviderID, &kind, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest); err != nil {
+			&r.ProviderID, &kind, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest, &newest); err != nil {
 			return nil, err
 		}
 		if !oldest.Valid {
@@ -68,6 +70,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		r.Kind = AgentKind(kind)
 		r.HasControl = hasControlCount > 0
 		r.OldestMessageAt = db.FromMillis(oldest.Int64)
+		r.NewestPendingAt = db.FromMillis(newest.Int64)
 		r.StartedAt = db.FromMillis(startedAt)
 		if lastSeen.Valid {
 			t := db.FromMillis(lastSeen.Int64)
@@ -109,6 +112,11 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		return err
 	}
 	for _, r := range rows {
+		if s.Now().Sub(r.OldestMessageAt) >= undeliverableAfter {
+			if err := s.raiseUndeliverable(ctx, r); err != nil {
+				return err
+			}
+		}
 		if r.LastWakeAt != nil && s.Now().Sub(*r.LastWakeAt) < wakeGap {
 			continue
 		}
@@ -196,35 +204,34 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow) err
 		}
 		return s.markWoken(ctx, r.SessionID, false)
 	}
-	attempts := r.PasteAttempts + 1
-	if err := s.recordPasteAttempt(ctx, r.SessionID, attempts, s.Now()); err != nil {
+	return s.recordPasteAttempt(ctx, r.SessionID, r.PasteAttempts+1, s.Now())
+}
+
+// raiseUndeliverable raises agent.undeliverable once per batch. A notification
+// for this agent created at or after the oldest pending message (or the
+// session start, whichever is later) means the batch was already reported.
+func (s *Store) raiseUndeliverable(ctx context.Context, r wakeRow) error {
+	since := r.OldestMessageAt
+	if r.StartedAt.After(since) {
+		since = r.StartedAt
+	}
+	already, err := s.alreadyNotifiedUndeliverable(ctx, r.AgentID, since)
+	if err != nil || already {
 		return err
 	}
-	if attempts >= maxPasteAttempts {
-		since := r.OldestMessageAt
-		if r.StartedAt.After(since) {
-			since = r.StartedAt
-		}
-		already, err := s.alreadyNotifiedUndeliverable(ctx, r.AgentID, since)
-		if err != nil {
-			return err
-		}
-		if !already {
-			if err := s.notify(ctx, nil, NotifyInput{Kind: "agent.undeliverable", AgentName: r.AgentName,
-				ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "N": strconv.Itoa(r.Pending)}}); err != nil {
-				return err
-			}
-			var recorded int
-			_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications
-				WHERE agent_id = ? AND kind = 'agent.undeliverable' AND created_at >= ?`,
-				r.AgentID, db.Millis(since)).Scan(&recorded)
-			if recorded == 0 {
-				_, _ = s.DB.ExecContext(ctx, `INSERT INTO notifications
-					(id, level, kind, title, body, agent_id, item_id, dedup_key, created_at)
-					VALUES (?, 'attention', 'agent.undeliverable', 'Couldn''t deliver messages', 'Couldn''t deliver messages', ?, (SELECT id FROM items WHERE key = ?), ?, ?)`,
-					ids.New("ntf"), r.AgentID, r.ItemKey, fmt.Sprintf("agent.undeliverable:%s:", r.AgentName), db.Millis(s.Now()))
-			}
-		}
+	if err := s.notify(ctx, nil, NotifyInput{Kind: "agent.undeliverable", AgentName: r.AgentName,
+		ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "N": strconv.Itoa(r.Pending)}}); err != nil {
+		return err
+	}
+	var recorded int
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications
+		WHERE agent_id = ? AND kind = 'agent.undeliverable' AND created_at >= ?`,
+		r.AgentID, db.Millis(since)).Scan(&recorded)
+	if recorded == 0 {
+		_, _ = s.DB.ExecContext(ctx, `INSERT INTO notifications
+			(id, level, kind, title, body, agent_id, item_id, dedup_key, created_at)
+			VALUES (?, 'attention', 'agent.undeliverable', 'Couldn''t deliver messages', 'Couldn''t deliver messages', ?, (SELECT id FROM items WHERE key = ?), ?, ?)`,
+			ids.New("ntf"), r.AgentID, r.ItemKey, fmt.Sprintf("agent.undeliverable:%s:", r.AgentName), db.Millis(s.Now()))
 	}
 	return nil
 }
