@@ -1,9 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 func TestAnswerApproveAndRequestChanges(t *testing.T) {
@@ -216,3 +220,128 @@ func TestRequestsListFilters(t *testing.T) {
 		}
 	}
 }
+
+type mockTmux struct {
+	runtime.Tmux
+	keys map[string][]string
+}
+
+func (m *mockTmux) Keys(ctx context.Context, name string, keys ...string) error {
+	if m.keys == nil {
+		m.keys = make(map[string][]string)
+	}
+	m.keys[name] = append(m.keys[name], keys...)
+	return nil
+}
+
+type testAPI struct {
+	*runtimeEnv
+}
+
+type testResponse struct {
+	StatusCode int
+	Body       []byte
+}
+
+func (a *testAPI) post(t *testing.T, path, body string) testResponse {
+	t.Helper()
+	rec := a.runtimeEnv.post(t, path, body)
+	return testResponse{StatusCode: rec.Code, Body: rec.Body.Bytes()}
+}
+
+type testRT struct {
+	*runtime.Store
+}
+
+func (r *testRT) RequestWire(ctx context.Context, id string) (runtime.RequestWire, error) {
+	return r.Store.RequestWireByID(ctx, id)
+}
+
+func newTestAPI(t *testing.T) (*testAPI, *testRT, *mockTmux) {
+	t.Helper()
+	e, _ := newRuntimeServer(t)
+	tm := &mockTmux{Tmux: e.RT.Tmux, keys: make(map[string][]string)}
+	e.RT.Tmux = tm
+	return &testAPI{runtimeEnv: e}, &testRT{Store: e.RT}, tm
+}
+
+func TestResolvePromptRouteSendsKeysAndResolves(t *testing.T) {
+	api, rt, tm := newTestAPI(t)
+	ctx := context.Background()
+	_, a, _, err := rt.StartSpike(ctx, runtime.SpikeInput{Name: "HTTP prompt", Intent: "feature", Kind: runtime.Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatalf("StartSpike failed: %v", err)
+	}
+	ses, err := rt.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("LatestSession failed: %v", err)
+	}
+	req, err := rt.AskPrompt(ctx, ses.ID, "Confirm delete?", []string{"y"})
+	if err != nil {
+		t.Fatalf("AskPrompt failed: %v", err)
+	}
+
+	body := `{"action":"y","via":"board"}`
+	resp := api.post(t, "/api/requests/"+req.ID+"/resolve", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	wire, err := rt.RequestWire(ctx, req.ID)
+	if err != nil {
+		t.Fatalf("RequestWire failed: %v", err)
+	}
+	if wire.State != "answered" || wire.RespondedVia == nil || *wire.RespondedVia != "board" {
+		t.Fatalf("expected state=answered, via=board, got state=%s, via=%v", wire.State, wire.RespondedVia)
+	}
+	if len(tm.keys[ses.TmuxName]) == 0 || tm.keys[ses.TmuxName][0] != "y" {
+		t.Fatalf("expected 'y' sent to tmux, got %v", tm.keys[ses.TmuxName])
+	}
+}
+
+func TestResolvePromptRouteConflictAlreadyResolved(t *testing.T) {
+	api, rt, _ := newTestAPI(t)
+	ctx := context.Background()
+	_, a, _, err := rt.StartSpike(ctx, runtime.SpikeInput{Name: "HTTP prompt conflict", Intent: "feature", Kind: runtime.Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatalf("StartSpike failed: %v", err)
+	}
+	ses, err := rt.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("LatestSession failed: %v", err)
+	}
+	req, err := rt.AskPrompt(ctx, ses.ID, "Confirm delete?", []string{"y"})
+	if err != nil {
+		t.Fatalf("AskPrompt failed: %v", err)
+	}
+
+	body := `{"action":"y","via":"board"}`
+	resp := api.post(t, "/api/requests/"+req.ID+"/resolve", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	// Second resolve should return 409 Conflict
+	resp2 := api.post(t, "/api/requests/"+req.ID+"/resolve", body)
+	if resp2.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d", resp2.StatusCode)
+	}
+}
+
+func TestResolvePromptRouteNotFound(t *testing.T) {
+	api, _, _ := newTestAPI(t)
+	body := `{"action":"y","via":"board"}`
+	resp := api.post(t, "/api/requests/req_nonexistent/resolve", body)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found, got %d", resp.StatusCode)
+	}
+}
+
+func TestResolvePromptRouteInvalidJSON(t *testing.T) {
+	api, _, _ := newTestAPI(t)
+	resp := api.post(t, "/api/requests/req_some/resolve", `"not-an-object"`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d: %s", resp.StatusCode, string(resp.Body))
+	}
+}
+
