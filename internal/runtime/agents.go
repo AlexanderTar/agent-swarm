@@ -635,9 +635,9 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		parentID = p.ID
 	}
 	var parentParam *string
+	var parentName string
 	if parentID != "" {
-		var one int
-		if s.DB.QueryRowContext(ctx, `SELECT 1 FROM agents WHERE id = ?`, parentID).Scan(&one) == nil {
+		if s.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, parentID).Scan(&parentName) == nil {
 			parentParam = &parentID
 		}
 	}
@@ -647,6 +647,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	in.Brief.Name = name
 	in.Brief.Role = in.Role
 	in.Brief.RootKey = it.RootKey
+	in.Brief.ParentName = parentName
 	briefText, err := RenderBrief(in.Brief)
 	if err != nil {
 		return Agent{}, false, err
@@ -1422,6 +1423,11 @@ func (s *Store) agentByID(ctx context.Context, id string) (Agent, error) {
 		FROM agents WHERE id = ?`, id)
 	return scanAgent(row)
 }
+
+func (s *Store) AgentByID(ctx context.Context, id string) (Agent, error) {
+	return s.agentByID(ctx, id)
+}
+
 
 func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, error) {
 	it, err := s.Items.Get(ctx, rootItemKey)

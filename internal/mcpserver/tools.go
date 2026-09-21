@@ -236,8 +236,18 @@ type readInput struct {
 	Fields   []string `json:"fields"`
 }
 
-func agentOut(a runtime.Agent) map[string]any {
-	return map[string]any{"name": a.Name, "kind": a.Kind, "model": a.Model, "role": a.Role, "state": a.State}
+func (s *Server) agentOut(ctx context.Context, a runtime.Agent) map[string]any {
+	out := map[string]any{"name": a.Name, "kind": a.Kind, "model": a.Model, "role": a.Role, "state": a.State}
+	if a.ParentAgentID != "" {
+		if parent, err := s.RT.AgentByID(ctx, a.ParentAgentID); err == nil {
+			out["parent"] = parent.Name
+		} else {
+			out["parent"] = nil
+		}
+	} else {
+		out["parent"] = nil
+	}
+	return out
 }
 
 // checkpointOut takes itemKey rather than resolving c.ItemID itself: every
@@ -312,7 +322,7 @@ func readTool(s *Server) ToolDef {
 				if err != nil {
 					return nil, err
 				}
-				out["agents"] = append(out["agents"].([]any), agentOut(a))
+				out["agents"] = append(out["agents"].([]any), s.agentOut(ctx, a))
 			}
 			if in.Filter != nil {
 				list, _, err := s.RT.Items.List(ctx, items.ListFilter{
@@ -425,7 +435,7 @@ func readTool(s *Server) ToolDef {
 							}
 							if json.Unmarshal(e.Payload, &p) == nil && p.Name != "" {
 								if a, err := s.RT.Agent(ctx, p.Name); err == nil {
-									out["agents"] = append(out["agents"].([]any), agentOut(a))
+									out["agents"] = append(out["agents"].([]any), s.agentOut(ctx, a))
 								}
 							}
 						case events.CheckpointCreated:

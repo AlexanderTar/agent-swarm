@@ -535,3 +535,52 @@ func TestSwarmBlockerOpensHITLRequest(t *testing.T) {
 		t.Fatalf("request not recorded properly: isHITL=%d kind=%s prompt=%s", isHITL, kind, prompt)
 	}
 }
+
+func TestSwarmReadIncludesParentAgent(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	worker := spawnWorker(t, s, seed)
+	out, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["`+worker.Name+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var res struct {
+		Agents []struct {
+			Name   string  `json:"name"`
+			Parent *string `json:"parent"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(res.Agents))
+	}
+	if res.Agents[0].Parent == nil || *res.Agents[0].Parent != seed.Caller.AgentName {
+		t.Fatalf("expected agent parent to be %q, got %v", seed.Caller.AgentName, res.Agents[0].Parent)
+	}
+
+	// Also verify orchestrator itself has nil parent in swarm_read
+	outOrch, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["`+seed.Caller.AgentName+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resOrch struct {
+		Agents []struct {
+			Name   string  `json:"name"`
+			Parent *string `json:"parent"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(mustJSON(outOrch), &resOrch); err != nil {
+		t.Fatal(err)
+	}
+	if len(resOrch.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(resOrch.Agents))
+	}
+	if resOrch.Agents[0].Parent != nil {
+		t.Fatalf("expected orchestrator parent to be nil, got %v", *resOrch.Agents[0].Parent)
+	}
+}
+

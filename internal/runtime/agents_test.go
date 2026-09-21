@@ -1601,3 +1601,32 @@ func TestStartSpikeUsesSettingsAdvisorDefault(t *testing.T) {
 		t.Fatalf("advisor kind/model/mode = %q/%q/%q, want claude/fable/simulated", kind, model, mode)
 	}
 }
+
+func TestSpawnWorkerPopulatesParentNameInBrief(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, orch, _, err := s.StartSpike(ctx, SpikeInput{
+		Name:   "Parent Spike",
+		Intent: "feature",
+		Kind:   Fake,
+		Model:  "fake-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey:       key,
+		Role:          RoleCoder,
+		Kind:          Fake,
+		Model:         "fake-1",
+		ParentAgentID: orch.ID,
+		Name:          "child-coder",
+		Brief:         BriefInput{Objective: "Implement feature"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(worker.Brief, fmt.Sprintf("parent: %s", orch.Name)) {
+		t.Fatalf("expected brief to contain 'parent: %s', got:\n%s", orch.Name, worker.Brief)
+	}
+}
