@@ -153,6 +153,38 @@ func TestClaudeSettingsJSONTurnsAttributionOffAndListsEveryHook(t *testing.T) {
 	}
 }
 
+func TestClaudeSettingsJSONBlanksTheUserStatusLine(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	l, err := newClaude(d).Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	for i, v := range l.Argv {
+		if v == "--settings" {
+			path = l.Argv[i+1]
+		}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		StatusLine *struct {
+			Type    string `json:"type"`
+			Command string `json:"command"`
+		} `json:"statusLine"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("settings JSON does not parse: %v\n%s", err, b)
+	}
+	// An object, never null: Claude Code rejects "statusLine": null with a blocking settings-error dialog.
+	if cfg.StatusLine == nil || cfg.StatusLine.Type != "command" || cfg.StatusLine.Command != "true" {
+		t.Errorf("statusLine must be {type:command, command:true} to blank the user's status line: %s", b)
+	}
+}
+
 func TestClaudeMCPConfigJSON(t *testing.T) {
 	d := testDeps(t)
 	l, err := newClaude(d).Launch(claudeSpec(t, d))

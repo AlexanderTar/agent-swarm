@@ -62,8 +62,11 @@ install-daemon: build
 # Builds Swarm.app into /Applications.
 install-app: app
 	mkdir -p $(APP_DIR)
+	-osascript -e 'quit app id "dev.swarm.menubar"'
+	@for i in 1 2 3 4 5; do pgrep -x Swarm >/dev/null || break; sleep 1; done; pkill -x Swarm 2>/dev/null; true
 	rm -rf $(APP_DIR)/Swarm.app
 	cp -R apps/menubar/.build/Swarm.app $(APP_DIR)/Swarm.app
+	open $(APP_DIR)/Swarm.app
 
 app:
 	apps/menubar/scripts/bundle.sh
