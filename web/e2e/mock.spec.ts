@@ -63,10 +63,11 @@ test("Move to… works from the keyboard", async ({ page }) => {
   await expect(page.getByTestId("cell-BUG-7-cancelled").getByTestId("card-TASK-110")).toBeVisible();
 });
 
-test("the inbox answers a question and approves a section", async ({ page }) => {
+test("the inbox shows a question read-only and approves a section", async ({ page }) => {
   await page.goto("/#/inbox?req=req_question");
-  await page.getByRole("button", { name: "CRDT" }).click();
-  await expect(page.getByRole("button", { name: /Which sync strategy\?/ })).toHaveCount(0);
+  await expect(page.getByRole("textbox")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "CRDT" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open orchestrator terminal" })).toBeVisible();
   await page.getByRole("button", { name: /Approve "Data model"/ }).click();
   await expect(page.getByText("A local queue of pending messages.")).toBeVisible();
   await page.getByRole("button", { name: "Approve section" }).click();

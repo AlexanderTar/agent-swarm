@@ -2,8 +2,9 @@ import { type ReactNode, useRef } from "react";
 import { errorText } from "../api";
 import { Segmented } from "../components/Segmented";
 import { C } from "../copy";
-import { useRequests } from "../data/queries";
-import { filterRequests, inboxRow, pickRequest } from "../logic/inbox";
+import { useMutation } from "../data/hooks";
+import { useAgents, useRequests } from "../data/queries";
+import { filterRequests, inboxRow, pickRequest, requestTarget } from "../logic/inbox";
 import type { InboxFilter, Request } from "../types";
 
 export function NeedsYou(p: {
@@ -16,6 +17,8 @@ export function NeedsYou(p: {
   renderReview(r: Request): ReactNode;
 }) {
   const requests = useRequests();
+  const agents = useAgents();
+  const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
   const seen = useRef(new Map<string, Request>());
   for (const r of requests.data ?? []) seen.current.set(r.id, r);
 
@@ -66,7 +69,11 @@ export function NeedsYou(p: {
                 <button
                   type="button"
                   aria-current={r.id === current?.id}
-                  onClick={() => p.onSelectRequest(r.id)}
+                  onClick={() => {
+                    p.onSelectRequest(r.id);
+                    const t = requestTarget(r, agents.data ?? []);
+                    if (t?.kind === "terminal") void terminal.run(t.agent).catch(() => undefined);
+                  }}
                   className={`w-full rounded px-2 py-1 text-left hover:bg-raised ${r.id === current?.id ? "bg-raised" : ""}`}
                 >
                   <span className="block truncate">● {row.title}</span>

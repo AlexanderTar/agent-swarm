@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { makeAgent } from "../logic/agentActions";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import { Review } from "./Review";
@@ -105,55 +106,58 @@ describe("Review (§16.11)", () => {
 
   it("delegates questions and repo confirmation", async () => {
     const a = setup("req_question");
-    expect(screen.getByRole("button", { name: "Send answer" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send answer" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open orchestrator terminal" })).toBeInTheDocument();
     a.unmount();
     setup("req_repos");
     expect(await screen.findByRole("group", { name: "Proposed" })).toBeInTheDocument();
   });
 
-  it("renders Approve button for prompt requests and resolves on click", async () => {
+  it("does not render Approve for prompt requests", async () => {
     const d = createMockDaemon();
     const promptReq = {
       ...d.db.requests[0]!,
       id: "req_prompt",
       kind: "prompt" as const,
+      is_hitl: true,
       prompt: "Trust folder?",
       options: ["Enter"],
       agent_name: "test-agent",
+      terminal_agent: "test-agent",
     };
     d.db.requests.push(promptReq);
-    const { user } = renderWithDaemon(<Review request={promptReq} connected={true} />, { daemon: d, events: false });
-    const approveBtn = screen.getByRole("button", { name: "Approve" });
-    expect(approveBtn).toBeInTheDocument();
-    await user.click(approveBtn);
-    await waitFor(() => expect(lastPost(d)).toMatchObject({
-      path: "/api/requests/req_prompt/resolve",
-      body: { action: "Enter", via: "board" },
-    }));
+    renderWithDaemon(<Review request={promptReq} connected={true} />, { daemon: d, events: false });
+    expect(screen.getByText("Trust folder?")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(d.calls.some((c) => c.path.includes("/resolve"))).toBe(false);
   });
 
   it("launches terminal from prompt request and disables buttons when disconnected", async () => {
     const d = createMockDaemon();
+    // The prompt row's terminal is the asking agent itself (spec decision 5): give it a live session.
+    d.db.agents.push(makeAgent({ name: "test-agent", role: "coder" }));
     const promptReq = {
       ...d.db.requests[0]!,
       id: "req_prompt",
       kind: "prompt" as const,
+      is_hitl: true,
       prompt: "Trust folder?",
       options: ["Enter"],
       agent_name: "test-agent",
+      terminal_agent: "test-agent",
     };
     d.db.requests.push(promptReq);
     const { user, rerender } = renderWithDaemon(<Review request={promptReq} connected={true} />, { daemon: d, events: false });
-    const termBtn = screen.getByRole("button", { name: "Open terminal" });
-    expect(termBtn).toBeInTheDocument();
+    const termBtn = await screen.findByRole("button", { name: "Open orchestrator terminal" });
+    await waitFor(() => expect(termBtn).toBeEnabled());
     await user.click(termBtn);
     await waitFor(() => expect(lastPost(d)).toMatchObject({
       path: "/api/agents/test-agent/terminal",
     }));
 
     rerender(<Review request={promptReq} connected={false} />);
-    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Open terminal" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open orchestrator terminal" })).toBeDisabled();
   });
 
   it("disables decisions while disconnected", async () => {
