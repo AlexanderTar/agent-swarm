@@ -84,7 +84,11 @@ export function filterItems(items: Item[], f: Filter): FilterResult {
 
 export interface TreeRow { item: Item; depth: number; context: boolean; hasChildren: boolean; expanded: boolean }
 
-export function hierarchyRows(items: Item[], f: Filter, collapsed: ReadonlySet<string>): TreeRow[] {
+const isFinal = (s: Item["status"]) => s === "done" || s === "cancelled";
+
+// `toggled` holds keys the user flipped from their default: open, except done/cancelled items,
+// which start folded (unless a filter is active, so filter matches are never hidden inside a fold).
+export function hierarchyRows(items: Item[], f: Filter, toggled: ReadonlySet<string>): TreeRow[] {
   const idx = buildIndex(items);
   const fr = isFilterActive(f) ? filterItems(items, f) : null;
   const rows: TreeRow[] = [];
@@ -93,7 +97,8 @@ export function hierarchyRows(items: Item[], f: Filter, collapsed: ReadonlySet<s
     if (fr && !fr.matched.has(it.key) && !context) return;
     const kids = idx.children.get(it.key) ?? [];
     // Context rows stay open so matches are visible; the stored collapse state is untouched.
-    const expanded = context || !collapsed.has(it.key);
+    const foldedByDefault = !fr && isFinal(it.status);
+    const expanded = context || foldedByDefault === toggled.has(it.key);
     rows.push({ item: it, depth, context, hasChildren: kids.length > 0, expanded });
     if (expanded) for (const k of kids) visit(k, depth + 1);
   };
