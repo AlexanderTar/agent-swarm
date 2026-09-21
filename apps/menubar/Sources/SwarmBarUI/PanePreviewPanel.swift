@@ -17,7 +17,7 @@ public struct PanePreviewPanel: View {
         self.lookup = lookup
     }
 
-    public static let size = CGSize(width: 520, height: 320)
+    public static let size = CGSize(width: 760, height: 320)
 
     private var header: String {
         guard let name = preview.agent else { return "" }
@@ -57,16 +57,18 @@ public struct PanePreviewPanel: View {
                 if !tmuxAlive {
                     Text("⚠ " + Copy.paneDead).font(.system(size: 10)).foregroundStyle(.orange)
                 }
-                ScrollView(.vertical) {
-                    Text(text)
-                        .font(.system(size: 11, design: .monospaced))
-                        .lineLimit(nil)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .background(SubtleScrollerConfig())
+                GeometryReader { geo in
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(text)
+                            .font(.system(size: 11, design: .monospaced))
+                            .fixedSize(horizontal: true, vertical: false)
+                            .frame(minWidth: geo.size.width, minHeight: geo.size.height, alignment: .bottomLeading)
+                            .textSelection(.enabled)
+                            .background(SubtleScrollerConfig())
+                    }
+                    .scrollIndicators(.automatic)
+                    .defaultScrollAnchor(.bottomLeading)
                 }
-                .scrollIndicators(.automatic)
-                .defaultScrollAnchor(.bottom)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         case let .failed(message):

@@ -156,6 +156,7 @@ struct SubtleScrollerConfig: NSViewRepresentable {
             scrollView.scrollerStyle = .overlay
             scrollView.autohidesScrollers = true
             scrollView.verticalScroller?.controlSize = .small
+            scrollView.horizontalScroller?.controlSize = .small
         }
         return v
     }
@@ -166,6 +167,7 @@ struct SubtleScrollerConfig: NSViewRepresentable {
             scrollView.scrollerStyle = .overlay
             scrollView.autohidesScrollers = true
             scrollView.verticalScroller?.controlSize = .small
+            scrollView.horizontalScroller?.controlSize = .small
         }
     }
 }
