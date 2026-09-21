@@ -449,3 +449,83 @@ func TestIdempotentReplaysTheStoredResult(t *testing.T) {
 		t.Fatalf("the second caller must run the body, calls = %d", calls)
 	}
 }
+
+func TestSyncStopsReturningABodyAfterThreeDeliveries(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Bounded", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	first, _ := s.Sync(ctx, ses.ID, nil, 20)
+	n := len(first.Messages)
+	id := first.Messages[0].MsgID
+	for i := 2; i <= 3; i++ {
+		res, _ := s.Sync(ctx, ses.ID, nil, 20)
+		if len(res.Messages) != n || len(res.Unacked) != 0 {
+			t.Fatalf("sync %d: %d messages, %d unacked; want %d, 0", i, len(res.Messages), len(res.Unacked), n)
+		}
+	}
+	fourth, _ := s.Sync(ctx, ses.ID, nil, 20)
+	if len(fourth.Messages) != 0 || len(fourth.Unacked) != n {
+		t.Fatalf("sync 4: %d messages, %d unacked; want 0, %d", len(fourth.Messages), len(fourth.Unacked), n)
+	}
+	var ref *UnackedRef
+	for i := range fourth.Unacked {
+		if fourth.Unacked[i].MsgID == id {
+			ref = &fourth.Unacked[i]
+		}
+	}
+	if ref == nil || ref.DeliveryCount != 3 || ref.Kind == "" {
+		t.Fatalf("unacked ref = %+v", ref)
+	}
+	var count int
+	s.DB.QueryRowContext(ctx, `SELECT delivery_count FROM messages WHERE id = ?`, id).Scan(&count)
+	if count != 3 {
+		t.Fatalf("delivery_count = %d, want it capped at 3", count)
+	}
+	fifth, _ := s.Sync(ctx, ses.ID, []string{id}, 20)
+	for _, u := range fifth.Unacked {
+		if u.MsgID == id {
+			t.Fatal("an acked message must leave the unacked list")
+		}
+	}
+}
+
+func TestSyncAlwaysReturnsControlMessagesInFull(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "ControlFull", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	enq(t, s, a.ID, a.RootItemID, "control", `{"action":"pause"}`, 0)
+	for i := 1; i <= 6; i++ {
+		res, _ := s.Sync(ctx, ses.ID, nil, 20)
+		found := false
+		for _, m := range res.Messages {
+			found = found || m.Kind == "control"
+		}
+		if !found {
+			t.Fatalf("sync %d dropped the control message", i)
+		}
+	}
+}
+
+// Stale unacked messages must not eat the limit and hide new work.
+func TestStaleUnackedMessagesDoNotStarveNewOnes(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "NoStarve", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	for i := 0; i < 25; i++ {
+		enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"old"}`, 1)
+	}
+	for i := 0; i < 3; i++ {
+		s.Sync(ctx, ses.ID, nil, 50)
+	}
+	fresh := enq(t, s, a.ID, a.RootItemID, "answer", `{"body":"new"}`, 1)
+	res, _ := s.Sync(ctx, ses.ID, nil, 20)
+	if len(res.Messages) != 1 || res.Messages[0].MsgID != fresh.ID {
+		t.Fatalf("messages = %+v, want only the new one", res.Messages)
+	}
+	if len(res.Unacked) < 25 {
+		t.Fatalf("unacked = %d, want the 25 stale findings listed", len(res.Unacked))
+	}
+}

@@ -172,16 +172,30 @@ func (s *Store) agentByNameTx(ctx context.Context, tx *sql.Tx, name string) (Age
 // SyncResult is swarm_sync's result (§6.2, §8.1).
 type SyncResult struct {
 	Messages     []Envelope
+	Unacked      []UnackedRef
 	More         bool
 	SessionState SessionState
 }
 
 const defaultSyncLimit = 20
+const maxFullDeliveries = 3
+const maxUnackedRefs = 50
+
+// UnackedRef is a delivered, non-control message that has used its full
+// deliveries: the agent sees its id and kind, never the body again, and must ack.
+type UnackedRef struct {
+	MsgID         string      `json:"msg_id"`
+	Seq           int64       `json:"seq"`
+	Kind          MessageKind `json:"kind"`
+	DeliveryCount int         `json:"delivery_count"`
+}
+
 const maxDigest = 1500
 
-// Sync is swarm_sync (§8.1). ack is applied first; then every un-acked message is
-// returned by priority then seq, with delivery_count + 1. Deferred relays are
-// folded into one digest (I19).
+// Sync is swarm_sync (§8.1). ack is applied first; un-acked messages are
+// returned by priority then seq until delivered three times, after which they
+// are listed in Unacked (id and kind only). Deferred relays are folded into one
+// digest (I19).
 func (s *Store) Sync(ctx context.Context, sessionID string, ack []string, limit int) (SyncResult, error) {
 	if limit <= 0 {
 		limit = defaultSyncLimit
@@ -207,6 +221,11 @@ func (s *Store) Sync(ctx context.Context, sessionID string, ack []string, limit 
 					Message: fmt.Sprintf("Unknown message %s.", id)}
 			}
 		}
+		// Before envelopes: a message reaching its third delivery in this very
+		// sync must not be listed twice.
+		if out.Unacked, err = s.staleUnackedFor(ctx, tx, a.ID); err != nil {
+			return err
+		}
 		rows, err := s.unackedFor(ctx, tx, a.ID, limit+1)
 		if err != nil {
 			return err
@@ -229,15 +248,40 @@ func (s *Store) Sync(ctx context.Context, sessionID string, ack []string, limit 
 	return out, err
 }
 
-// unackedFor returns up to limit un-acked messages (pending or delivered) for
-// agentID, ordered by priority then seq.
+// staleUnackedFor lists delivered non-control messages that have used their
+// maxFullDeliveries, oldest first, at most maxUnackedRefs.
+func (s *Store) staleUnackedFor(ctx context.Context, tx *sql.Tx, agentID string) ([]UnackedRef, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, seq, kind, delivery_count FROM messages
+		WHERE to_agent_id = ? AND state = 'delivered' AND kind <> 'control' AND delivery_count >= ?
+		ORDER BY seq LIMIT ?`, agentID, maxFullDeliveries, maxUnackedRefs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UnackedRef
+	for rows.Next() {
+		var u UnackedRef
+		var kind string
+		if err := rows.Scan(&u.MsgID, &u.Seq, &kind, &u.DeliveryCount); err != nil {
+			return nil, err
+		}
+		u.Kind = MessageKind(kind)
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// unackedFor returns up to limit un-acked messages for agentID (pending, or
+// delivered fewer than maxFullDeliveries times, or control), ordered by
+// priority then seq.
 func (s *Store) unackedFor(ctx context.Context, tx *sql.Tx, agentID string, limit int) ([]Message, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id, seq, kind, wake_class, priority, origin,
 		COALESCE(from_agent_id, ''), COALESCE(from_session_id, ''), to_agent_id, root_item_id,
 		COALESCE(item_id, ''), COALESCE(correlation_id, ''), COALESCE(reply_to, ''),
 		COALESCE(request_id, ''), payload_json, state, delivery_count, created_at
 		FROM messages WHERE to_agent_id = ? AND state <> 'acked'
-		ORDER BY priority, seq LIMIT ?`, agentID, limit)
+		AND NOT (state = 'delivered' AND kind <> 'control' AND delivery_count >= ?)
+		ORDER BY priority, seq LIMIT ?`, agentID, maxFullDeliveries, limit)
 	if err != nil {
 		return nil, err
 	}

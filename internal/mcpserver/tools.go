@@ -34,7 +34,7 @@ func decode(args json.RawMessage, v any) error {
 func syncTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_sync",
-		Description: "Acknowledge delivered messages and fetch the agent's inbox: assignments, questions, control notices and advice, newest-priority first.",
+		Description: "Acknowledge handled messages (`ack`) and fetch the agent's inbox: assignments, questions, control notices and advice, newest-priority first. Messages delivered three times without an ack are listed in `unacked` by id and kind only.",
 		Schema: objSchema(`"ack":{"type":"array","items":{"type":"string"}},
 			"limit":{"type":"integer"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -52,8 +52,12 @@ func syncTool(s *Server) ToolDef {
 			if res.Messages == nil {
 				res.Messages = []runtime.Envelope{}
 			}
+			if res.Unacked == nil {
+				res.Unacked = []runtime.UnackedRef{}
+			}
 			return map[string]any{
 				"messages":      res.Messages,
+				"unacked":       res.Unacked,
 				"more":          res.More,
 				"session_state": res.SessionState,
 			}, nil
