@@ -935,3 +935,27 @@ func TestPostToolUseNonQuestionToolDoesNotResolveOpenQuestionRequest(t *testing.
 
 
 
+
+// A message the agent has already synced (state 'delivered') is not "new": no
+// nudge on PostToolUse and no Stop block. Only 'pending' counts.
+func TestReadButUnackedMessagesNeitherNudgeNorBlockStop(t *testing.T) {
+	h, ses := seed(t, 2, runtime.Running)
+	ctx := context.Background()
+	if _, err := h.DB.ExecContext(ctx, `UPDATE messages SET state = 'delivered', delivery_count = 1`); err != nil {
+		t.Fatal(err)
+	}
+	post, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, []byte(`{"session_id":"p1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := contextOf(t, post); got != "" {
+		t.Fatalf("a delivered message must not nudge: %q", got)
+	}
+	stop, err := h.Handle(ctx, runtime.Claude, "Stop", ses, []byte(`{"session_id":"p1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stop) != 0 {
+		t.Fatalf("a delivered message must not block Stop: %s", stop)
+	}
+}

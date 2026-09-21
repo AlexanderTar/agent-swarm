@@ -19,7 +19,7 @@ const controlPasteDelay = 5 * time.Second
 const pasteRetry = 30 * time.Second
 const maxPasteAttempts = 10
 
-// wakeRow is one live session with at least one un-acked immediate message,
+// wakeRow is one live session with at least one pending immediate message,
 // enough to decide the §11.3 wake order for it.
 type wakeRow struct {
 	SessionID, AgentID, AgentName, ItemKey, TmuxName, ProviderID string
@@ -35,15 +35,15 @@ type wakeRow struct {
 	NativeTried                                                  bool
 }
 
-// wakeCandidates loads every live session with at least one un-acked
+// wakeCandidates loads every live session with at least one pending
 // immediate message, joined against the current panes for PaneCommand.
 func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.agent_id, a.name, i.key, ses.tmux_name,
 		COALESCE(ses.provider_session_id, ''), a.kind, ses.last_seen_at, ses.last_wake_at, ses.started_at,
-		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state != 'acked'),
-		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state != 'acked' AND m.kind = 'control'),
+		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state = 'pending'),
+		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.kind = 'control'),
 		(SELECT MIN(m.created_at) FROM messages m
-			WHERE m.to_agent_id = a.id AND m.state != 'acked' AND m.wake_class = 'immediate')
+			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate')
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
 		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {
@@ -101,7 +101,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 	return out, nil
 }
 
-// WakeDue wakes every live session with an un-acked immediate message, in the
+// WakeDue wakes every live session with a pending immediate message, in the
 // §11.3 order. The daemon runs it every 5 s.
 func (s *Store) WakeDue(ctx context.Context) error {
 	rows, err := s.wakeCandidates(ctx)

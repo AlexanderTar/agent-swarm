@@ -213,7 +213,7 @@ func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, erro
 			s.stop_blocks,
 			s.needs_compaction_notice,
 			a.kind,
-			(SELECT COUNT(*) FROM messages WHERE to_agent_id = s.agent_id AND state <> 'acked'),
+			(SELECT COUNT(*) FROM messages WHERE to_agent_id = s.agent_id AND state = 'pending'),
 			EXISTS (SELECT 1 FROM checkpoints WHERE session_id = s.id AND kind = 'handoff')
 		FROM sessions s
 		JOIN agents a ON s.agent_id = a.id
