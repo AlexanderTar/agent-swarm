@@ -92,6 +92,45 @@ func extractQuestion(toolName string, raw []byte) (string, []string) {
 	return prompt, options
 }
 
+func extractToolResponseText(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return strings.TrimSpace(str)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		for _, key := range []string{"answer", "response", "text", "output", "result"} {
+			if v, ok := obj[key]; ok {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+		if content, ok := obj["content"]; ok {
+			if s, ok := content.(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+			if list, ok := content.([]any); ok {
+				var parts []string
+				for _, item := range list {
+					if m, ok := item.(map[string]any); ok {
+						if t, ok := m["text"].(string); ok && strings.TrimSpace(t) != "" {
+							parts = append(parts, strings.TrimSpace(t))
+						}
+					}
+				}
+				if len(parts) > 0 {
+					return strings.Join(parts, "\n")
+				}
+			}
+		}
+	}
+	return ""
+}
+
 const noticeGap = 60 * time.Second
 const maxStopBlocks = 3
 
@@ -410,6 +449,24 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{}, nil
 
 	case "PostToolUse":
+		isQuestionTool := in.ToolName == "ask_question" ||
+			in.ToolName == "AskUserQuestion" ||
+			in.ToolName == "request_user_input" ||
+			in.ToolName == "experimental_request_user_input"
+
+		if isQuestionTool && h.RT != nil && s.ID != "" {
+			var reqID string
+			if err := h.DB.QueryRowContext(ctx, `SELECT id FROM requests
+				WHERE session_id = ? AND kind = 'question' AND state = 'open'
+				ORDER BY created_at DESC LIMIT 1`, s.ID).Scan(&reqID); err == nil && reqID != "" {
+				answer := extractToolResponseText(in.ToolResponse)
+				if answer == "" {
+					answer = "Resolved in terminal"
+				}
+				_, _ = h.RT.ResolveQuestion(ctx, reqID, answer, "terminal")
+			}
+		}
+
 		var parts []string
 		if s.NeedsCompaction {
 			parts = append(parts, runtime.CompactionNotice())

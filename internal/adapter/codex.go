@@ -105,6 +105,7 @@ func (c *Codex) ParseHook(event string, stdin []byte) (HookInput, error) {
 		Cwd            string          `json:"cwd"`
 		TranscriptPath string          `json:"transcript_path"`
 		ToolInput      json.RawMessage `json:"tool_input"`
+		ToolResponse   json.RawMessage `json:"tool_response"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
@@ -128,6 +129,7 @@ func (c *Codex) ParseHook(event string, stdin []byte) (HookInput, error) {
 		Cwd:               raw.Cwd,
 		TranscriptPath:    raw.TranscriptPath,
 		RawToolInput:      raw.ToolInput,
+		ToolResponse:      raw.ToolResponse,
 		IsSwarmTool:       strings.HasPrefix(raw.ToolName, "mcp__swarm__"),
 	}, nil
 }

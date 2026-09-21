@@ -75,13 +75,17 @@ func (a *Agy) HookOutput(event string, d HookDecision) ([]byte, error) {
 
 func (a *Agy) ParseHook(event string, stdin []byte) (HookInput, error) {
 	var raw struct {
-		ConversationID string `json:"conversationId"`
-		TranscriptPath string `json:"transcriptPath"`
-		ModelName      string `json:"modelName"`
+		ConversationID string          `json:"conversationId"`
+		SessionID      string          `json:"session_id"`
+		TranscriptPath string          `json:"transcriptPath"`
+		ModelName      string          `json:"modelName"`
+		ToolName       string          `json:"tool_name"`
 		ToolCall       struct {
 			Name string          `json:"name"`
 			Args json.RawMessage `json:"args"`
 		} `json:"toolCall"`
+		ToolInput    json.RawMessage `json:"tool_input"`
+		ToolResponse json.RawMessage `json:"tool_response"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
@@ -93,26 +97,39 @@ func (a *Agy) ParseHook(event string, stdin []byte) (HookInput, error) {
 		ToolName    string `json:"ToolName"`
 		CommandLine string `json:"CommandLine"`
 	}
-	if len(raw.ToolCall.Args) > 0 {
-		_ = json.Unmarshal(raw.ToolCall.Args, &parsedArgs)
+	toolArgs := raw.ToolCall.Args
+	if len(toolArgs) == 0 && len(raw.ToolInput) > 0 {
+		toolArgs = raw.ToolInput
 	}
-	isSwarm := (raw.ToolCall.Name == "call_mcp_tool" && parsedArgs.ServerName == "swarm") ||
-		strings.HasPrefix(raw.ToolCall.Name, "mcp_swarm_")
+	if len(toolArgs) > 0 {
+		_ = json.Unmarshal(toolArgs, &parsedArgs)
+	}
 	toolName := raw.ToolCall.Name
-	if raw.ToolCall.Name == "call_mcp_tool" && parsedArgs.ToolName != "" {
+	if toolName == "" && raw.ToolName != "" {
+		toolName = raw.ToolName
+	}
+	isSwarm := (toolName == "call_mcp_tool" && parsedArgs.ServerName == "swarm") ||
+		strings.HasPrefix(toolName, "mcp_swarm_") ||
+		(parsedArgs.ServerName == "swarm")
+	if toolName == "call_mcp_tool" && parsedArgs.ToolName != "" {
 		toolName = parsedArgs.ToolName
 	}
 	var cmd string
-	if raw.ToolCall.Name == "run_command" {
+	if toolName == "run_command" {
 		cmd = parsedArgs.CommandLine
 	}
+	provSessionID := raw.ConversationID
+	if provSessionID == "" && raw.SessionID != "" {
+		provSessionID = raw.SessionID
+	}
 	return HookInput{
-		ProviderSessionID: raw.ConversationID,
+		ProviderSessionID: provSessionID,
 		Event:             event,
 		ToolName:          toolName,
 		Command:           cmd,
 		TranscriptPath:    raw.TranscriptPath,
-		RawToolInput:      raw.ToolCall.Args,
+		RawToolInput:      toolArgs,
+		ToolResponse:      raw.ToolResponse,
 		IsSwarmTool:       isSwarm,
 	}, nil
 }

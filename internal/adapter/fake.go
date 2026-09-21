@@ -102,6 +102,7 @@ func (f *Fake) ParseHook(event string, stdin []byte) (HookInput, error) {
 		ToolInput      struct {
 			Command string `json:"command"`
 		} `json:"tool_input"`
+		ToolResponse json.RawMessage `json:"tool_response"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
@@ -111,5 +112,6 @@ func (f *Fake) ParseHook(event string, stdin []byte) (HookInput, error) {
 	return HookInput{ProviderSessionID: raw.SessionID, Event: event, ToolName: raw.ToolName,
 		Command: raw.ToolInput.Command, Source: raw.Source, Cwd: raw.Cwd,
 		TranscriptPath: raw.TranscriptPath,
+		ToolResponse:   raw.ToolResponse,
 		IsSwarmTool:    strings.HasPrefix(raw.ToolName, "mcp__swarm__")}, nil
 }

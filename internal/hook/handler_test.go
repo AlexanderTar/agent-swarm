@@ -2,6 +2,7 @@ package hook
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -791,5 +792,146 @@ func TestPermissionRequestCreatesHITLRequest(t *testing.T) {
 		t.Fatalf("expected 1 hitl prompt request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
 	}
 }
+
+type testSession struct {
+	ID string
+}
+
+func newTestHandler(t *testing.T) (*Handler, *runtime.Store, testSession) {
+	t.Helper()
+	h, ses := seed(t, 0, runtime.Running)
+	_, err := h.DB.ExecContext(context.Background(), `UPDATE agents SET kind = 'agy' WHERE id = 'agt_1'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, h.RT, testSession{ID: ses}
+}
+
+func TestPostToolUseResolvesOpenQuestionRequest(t *testing.T) {
+	h, rt, ses := newTestHandler(t)
+	ctx := context.Background()
+
+	// Intercept ask_question in PreToolUse opens request
+	input := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"Which database?"}]}}`)
+	_, _ = h.Handle(ctx, runtime.Agy, "PreToolUse", ses.ID, input)
+
+	var reqID, state string
+	err := rt.DB.QueryRowContext(ctx, `SELECT id, state FROM requests WHERE session_id = ? AND kind = 'question'`, ses.ID).Scan(&reqID, &state)
+	if err != nil || state != "open" {
+		t.Fatalf("expected open question request, got err=%v, state=%s", err, state)
+	}
+
+	// Tool finishes; PostToolUse fires
+	postInput := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_response":{"answer":"PostgreSQL"}}`)
+	_, _ = h.Handle(ctx, runtime.Agy, "PostToolUse", ses.ID, postInput)
+
+	var responseText, respondedVia sql.NullString
+	err = rt.DB.QueryRowContext(ctx, `SELECT state, response_text, responded_via FROM requests WHERE id = ?`, reqID).Scan(&state, &responseText, &respondedVia)
+	if err != nil || state != "answered" {
+		t.Fatalf("expected request answered, got err=%v, state=%s", err, state)
+	}
+	if responseText.String != "PostgreSQL" {
+		t.Fatalf("expected response_text 'PostgreSQL', got %q", responseText.String)
+	}
+	if respondedVia.String != "terminal" {
+		t.Fatalf("expected responded_via 'terminal', got %q", respondedVia.String)
+	}
+}
+
+func TestPostToolUseResolvesOpenQuestionRequestFallbackWhenEmptyResponse(t *testing.T) {
+	h, rt, ses := newTestHandler(t)
+	ctx := context.Background()
+
+	input := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"Which database?"}]}}`)
+	_, _ = h.Handle(ctx, runtime.Agy, "PreToolUse", ses.ID, input)
+
+	var reqID, state string
+	err := rt.DB.QueryRowContext(ctx, `SELECT id, state FROM requests WHERE session_id = ? AND kind = 'question'`, ses.ID).Scan(&reqID, &state)
+	if err != nil || state != "open" {
+		t.Fatalf("expected open question request, got err=%v, state=%s", err, state)
+	}
+
+	// Tool finishes without explicit answer
+	postInput := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question"}`)
+	_, _ = h.Handle(ctx, runtime.Agy, "PostToolUse", ses.ID, postInput)
+
+	var responseText, respondedVia sql.NullString
+	err = rt.DB.QueryRowContext(ctx, `SELECT state, response_text, responded_via FROM requests WHERE id = ?`, reqID).Scan(&state, &responseText, &respondedVia)
+	if err != nil || state != "answered" {
+		t.Fatalf("expected request answered, got err=%v, state=%s", err, state)
+	}
+	if responseText.String != "Resolved in terminal" {
+		t.Fatalf("expected fallback 'Resolved in terminal', got %q", responseText.String)
+	}
+	if respondedVia.String != "terminal" {
+		t.Fatalf("expected responded_via 'terminal', got %q", respondedVia.String)
+	}
+}
+
+func TestPostToolUseClaudeResolvesOpenQuestionRequest(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"question": "Deploy to staging?",
+			"options":  []string{"yes", "no"},
+		},
+	})
+	_, _ = h.Handle(ctx, runtime.Claude, "PreToolUse", ses, input)
+
+	var reqID, state string
+	err := h.DB.QueryRowContext(ctx, `SELECT id, state FROM requests WHERE session_id = ? AND kind = 'question'`, ses).Scan(&reqID, &state)
+	if err != nil || state != "open" {
+		t.Fatalf("expected open question request, got err=%v, state=%s", err, state)
+	}
+
+	postInput, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_response": map[string]any{
+			"answer": "yes",
+		},
+	})
+	_, _ = h.Handle(ctx, runtime.Claude, "PostToolUse", ses, postInput)
+
+	var responseText, respondedVia sql.NullString
+	err = h.DB.QueryRowContext(ctx, `SELECT state, response_text, responded_via FROM requests WHERE id = ?`, reqID).Scan(&state, &responseText, &respondedVia)
+	if err != nil || state != "answered" {
+		t.Fatalf("expected request answered, got err=%v, state=%s", err, state)
+	}
+	if responseText.String != "yes" {
+		t.Fatalf("expected response_text 'yes', got %q", responseText.String)
+	}
+	if respondedVia.String != "terminal" {
+		t.Fatalf("expected responded_via 'terminal', got %q", respondedVia.String)
+	}
+}
+
+func TestPostToolUseNonQuestionToolDoesNotResolveOpenQuestionRequest(t *testing.T) {
+	h, rt, ses := newTestHandler(t)
+	ctx := context.Background()
+
+	input := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"Which database?"}]}}`)
+	_, _ = h.Handle(ctx, runtime.Agy, "PreToolUse", ses.ID, input)
+
+	var reqID, state string
+	err := rt.DB.QueryRowContext(ctx, `SELECT id, state FROM requests WHERE session_id = ? AND kind = 'question'`, ses.ID).Scan(&reqID, &state)
+	if err != nil || state != "open" {
+		t.Fatalf("expected open question request, got err=%v, state=%s", err, state)
+	}
+
+	// Non-question tool finishes
+	postInput := []byte(`{"session_id":"` + ses.ID + `","tool_name":"run_command","tool_response":{"output":"done"}}`)
+	_, _ = h.Handle(ctx, runtime.Agy, "PostToolUse", ses.ID, postInput)
+
+	err = rt.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE id = ?`, reqID).Scan(&state)
+	if err != nil || state != "open" {
+		t.Fatalf("expected request to remain open, got err=%v, state=%s", err, state)
+	}
+}
+
 
 
