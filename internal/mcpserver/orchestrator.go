@@ -120,7 +120,7 @@ func itemsTool(s *Server) ToolDef {
 						out, err = s.RT.Items.CreateTx(ctx, tx, items.CreateInput{
 							Type: items.Type(in.Type), ParentKey: in.Parent, Title: in.Title, Brief: in.Brief,
 							Acceptance: in.Acceptance, Priority: in.Priority, RoleHint: in.RoleHint,
-							TddExempt: in.TddExempt, Repos: in.Repos,
+							TddExempt: in.TddExempt, Repos: in.Repos, Status: items.Status(in.Status),
 						}, actor)
 						return err
 					}); err != nil {

@@ -1450,3 +1450,27 @@ func TestSpawnOnReadyTaskChangesNothing(t *testing.T) {
 		t.Fatalf("revision %d -> %d: a second spawn must not re-promote", before.Revision, after.Revision)
 	}
 }
+
+func TestItemsCreateStatusReady(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	out, err := s.call(context.Background(), seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Ready task","status":"ready"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var it struct {
+		Status string `json:"status"`
+	}
+	json.Unmarshal(mustJSON(out), &it)
+	if it.Status != "ready" {
+		t.Fatalf("status = %q, want ready", it.Status)
+	}
+}
+
+func TestItemsCreateRejectsInProgressStatus(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	if _, err := s.call(context.Background(), seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"x","status":"in_progress"}`); err == nil {
+		t.Fatal("a new item can only start draft or ready")
+	}
+}
