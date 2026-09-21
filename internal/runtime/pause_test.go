@@ -1954,4 +1954,48 @@ func TestRelayPausedIncludesItemAndSummary(t *testing.T) {
 	}
 }
 
+func TestHandoffCheckpointMovesRunningSessionToStopping(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{
+		Name:   "HandoffReap",
+		Intent: "feature",
+		Kind:   Fake,
+		Model:  "fake-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Running {
+		t.Fatalf("expected running, got %s", ses.State)
+	}
+	// Agent pauses itself by writing a handoff checkpoint
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{
+		Kind:    Handoff,
+		Summary: "pausing myself",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ses, err = s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Stopping {
+		t.Fatalf("expected stopping, got %s", ses.State)
+	}
+	// Advance past killAfterHandoff (5s): TickPause reaps pane
+	tm.clk.Advance(6 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Verify tmux Kill was invoked
+	if len(tm.killed) == 0 || tm.killed[len(tm.killed)-1] != a.Name {
+		t.Fatalf("expected tmux kill on %s, got %v", a.Name, tm.killed)
+	}
+}
+
 

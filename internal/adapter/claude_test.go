@@ -260,6 +260,23 @@ func TestClaudeIdleAgainstTheCapturedPanes(t *testing.T) {
 	}
 }
 
+func TestClaudeIdle(t *testing.T) {
+	promptWithTrailingSpaces := "\x1b[39m❯\u00a0                                        "
+	if !claudeIdle.MatchString(promptWithTrailingSpaces) {
+		t.Errorf("expected prompt with trailing spaces to match claudeIdle: %q", promptWithTrailingSpaces)
+	}
+
+	promptWithSuggestionAndTrailing := "\x1b[39m❯\u00a0\x1b[2mcheck on s0.1 progress\x1b[0m   "
+	if !claudeIdle.MatchString(promptWithSuggestionAndTrailing) {
+		t.Errorf("expected prompt with dim suggestion and trailing spaces to match claudeIdle: %q", promptWithSuggestionAndTrailing)
+	}
+
+	promptWithHumanInput := "❯\u00a0half typed by human"
+	if claudeIdle.MatchString(promptWithHumanInput) {
+		t.Errorf("expected prompt with human input to fail matching claudeIdle: %q", promptWithHumanInput)
+	}
+}
+
 // §11.1, P0-4: trust defaults to "No, exit", so the keys are Down then Enter, and
 // they are only sent when the trust line is on screen.
 func TestClaudeStartupDialogs(t *testing.T) {
