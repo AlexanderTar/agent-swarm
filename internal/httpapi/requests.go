@@ -20,7 +20,6 @@ func (s *Server) requestRoutes() []route {
 		{"POST", "/api/requests/{id}/request-changes", authDaemon, s.requestChanges},
 		{"POST", "/api/requests/{id}/confirm-repos", authDaemon, s.confirmRepos},
 		{"POST", "/api/requests/{id}/close-spike", authDaemon, s.closeSpike},
-		{"POST", "/api/requests/{id}/resolve", authDaemon, s.handleResolvePrompt},
 		{"GET", "/api/artifacts/{id}", authDaemon, s.getArtifact},
 		{"GET", "/api/notifications", authDaemon, s.listNotifications},
 		{"POST", "/api/notifications/read-all", authDaemon, s.readAllNotifications},
@@ -162,36 +161,6 @@ func (s *Server) closeSpike(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, id := r.Context(), r.PathValue("id")
 	req, err := s.RT.CloseSpike(ctx, id, viaFromBody(body.Via))
-	if err != nil {
-		s.writeErr(w, err)
-		return
-	}
-	wire, err := s.RT.RequestWireByID(ctx, req.ID)
-	if err != nil {
-		s.writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, wire)
-}
-
-type resolvePromptBody struct {
-	Action string `json:"action"`
-	Via    string `json:"via"`
-}
-
-func (s *Server) handleResolvePrompt(w http.ResponseWriter, r *http.Request) {
-	if s.notWired(w, s.RT != nil) {
-		return
-	}
-	var body resolvePromptBody
-	if err := readJSON(r, &body); err != nil {
-		s.writeErr(w, err)
-		return
-	}
-	ctx, id := r.Context(), r.PathValue("id")
-	via := viaFromBody(body.Via)
-
-	req, err := s.RT.ResolvePrompt(ctx, id, body.Action, via)
 	if err != nil {
 		s.writeErr(w, err)
 		return

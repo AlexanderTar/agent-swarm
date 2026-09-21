@@ -8,7 +8,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 
@@ -495,7 +494,7 @@ func TestPromptLengthIsEnforced(t *testing.T) {
 	}
 }
 
-func TestResolvePromptTransmitsKeysAndResolves(t *testing.T) {
+func TestResolvePromptResolvesAndSendsNoKeys(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Prompt spike", Intent: "feature", Kind: Fake, Model: "fake-1"})
@@ -509,7 +508,7 @@ func TestResolvePromptTransmitsKeysAndResolves(t *testing.T) {
 		t.Fatalf("AskPrompt failed: %v", err)
 	}
 
-	resolved, err := s.ResolvePrompt(ctx, req.ID, "Enter", "menubar")
+	resolved, err := s.ResolvePrompt(ctx, req.ID, "menubar")
 	if err != nil {
 		t.Fatalf("ResolvePrompt failed: %v", err)
 	}
@@ -519,14 +518,15 @@ func TestResolvePromptTransmitsKeysAndResolves(t *testing.T) {
 	if resolved.RespondedVia != "menubar" {
 		t.Fatalf("expected responded_via menubar, got %s", resolved.RespondedVia)
 	}
-	// Verify keys were sent to tmux
-	wantKey := ses.TmuxName + "|Enter"
-	if !slices.Contains(tm.keys, wantKey) {
-		t.Fatalf("expected %q sent to tmux, got %v", wantKey, tm.keys)
+	// Resolving is bookkeeping only: nothing is typed into the pane.
+	for _, k := range tm.keys {
+		if strings.HasPrefix(k, ses.TmuxName+"|") {
+			t.Fatalf("expected no keys sent to tmux, got %v", tm.keys)
+		}
 	}
 
 	// Verify resolving again fails with conflict
-	if _, err := s.ResolvePrompt(ctx, req.ID, "Enter", "menubar"); err == nil {
+	if _, err := s.ResolvePrompt(ctx, req.ID, "menubar"); err == nil {
 		t.Fatal("expected conflict on already resolved prompt, got nil")
 	}
 }
@@ -579,7 +579,7 @@ func TestResolvePromptEmptyActionDoesNotSendKeys(t *testing.T) {
 		t.Fatalf("AskPrompt failed: %v", err)
 	}
 
-	resolved, err := s.ResolvePrompt(ctx, req.ID, "", "terminal")
+	resolved, err := s.ResolvePrompt(ctx, req.ID, "terminal")
 	if err != nil {
 		t.Fatalf("ResolvePrompt failed: %v", err)
 	}

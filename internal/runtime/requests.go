@@ -793,9 +793,10 @@ func (s *Store) RequestChanges(ctx context.Context, id, comment, via string) (Re
 		})
 }
 
-// ResolvePrompt resolves an open prompt request. If action is specified and tmux is present,
-// it transmits the keystrokes to the session's tmux pane.
-func (s *Store) ResolvePrompt(ctx context.Context, id, action, via string) (Request, error) {
+// ResolvePrompt marks an open prompt request answered. It only records the
+// resolution: the permission dialog is answered in the terminal, so no keys are
+// sent to the pane.
+func (s *Store) ResolvePrompt(ctx context.Context, id, via string) (Request, error) {
 	var out Request
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		req, err := s.requestTx(ctx, tx, id)
@@ -805,17 +806,10 @@ func (s *Store) ResolvePrompt(ctx context.Context, id, action, via string) (Requ
 		if req.State != "open" {
 			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
 		}
-		// Transmit keys to tmux if action specified
-		if action != "" && req.SessionID != "" && s.Tmux != nil {
-			var tmuxName string
-			if err := tx.QueryRowContext(ctx, `SELECT tmux_name FROM sessions WHERE id = ?`, req.SessionID).Scan(&tmuxName); err == nil && tmuxName != "" {
-				_ = s.Tmux.Keys(ctx, tmuxName, action)
-			}
-		}
 		now := s.Now()
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'answered', response_text = ?,
+		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'answered', response_text = NULL,
 			responded_via = ?, responded_at = ? WHERE id = ?`,
-			nullIf(action), nullIf(via), db.Millis(now), id); err != nil {
+			nullIf(via), db.Millis(now), id); err != nil {
 			return err
 		}
 		key, err := s.itemKey(ctx, tx, req.ItemID)
@@ -867,7 +861,7 @@ func (s *Store) ResolveSessionPrompts(ctx context.Context, sessionID, command st
 		return err
 	}
 	for _, id := range ids {
-		if _, err := s.ResolvePrompt(ctx, id, "", "terminal"); err != nil {
+		if _, err := s.ResolvePrompt(ctx, id, "terminal"); err != nil {
 			s.logf("resolve prompt %s: %v", id, err)
 		}
 	}
