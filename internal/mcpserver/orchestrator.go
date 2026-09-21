@@ -43,9 +43,6 @@ func rootKeyFor(ctx context.Context, s *Server, rootID string) (string, error) {
 
 // ---------- swarm_items ----------
 
-// itemsTool is §8.1, read directly from the real spec (fix round 1): op is
-// exactly create|update|link|unlink — reading and listing items is
-// swarm_read's job (its refs/filter cover exactly that), not swarm_items'.
 // promoteDraft moves a Draft task, and its Draft parent story, to Ready as the
 // caller's orchestrator so the daemon may later move them to In progress.
 func promoteDraft(ctx context.Context, s *Server, it items.Item, actor items.Actor) error {
@@ -68,6 +65,9 @@ func promoteDraft(ctx context.Context, s *Server, it items.Item, actor items.Act
 	return err
 }
 
+// itemsTool is §8.1, read directly from the real spec (fix round 1): op is
+// exactly create|update|link|unlink — reading and listing items is
+// swarm_read's job (its refs/filter cover exactly that), not swarm_items'.
 func itemsTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_items",
