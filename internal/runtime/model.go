@@ -341,6 +341,9 @@ type Store struct {
 	// block: a daemon restart just resets a session's grace window back to
 	// counting from its own StartedAt, exactly like a session on its first tick.
 	lastAliveAt map[string]time.Time
+	// promptAnswered marks (sessionID|title) pairs whose PromptPattern keys were
+	// already pressed, so a dialog still on screen is answered once, not every tick.
+	promptAnswered map[string]bool
 }
 
 // TmuxBin and TmuxSocket are the two readers httpapi's Ghostty fallback uses
