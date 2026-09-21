@@ -373,6 +373,34 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 	}
 }
 
+// closeRequestTx withdraws one open request inside the caller's tx: UPDATE,
+// request.resolved event, item reconcile. withdraw() and the orphan sweep share it.
+func (s *Store) closeRequestTx(ctx context.Context, tx *sql.Tx, reqID string) error {
+	req, err := s.requestTx(ctx, tx, reqID)
+	if err != nil {
+		return err
+	}
+	if req.State != "open" {
+		return nil // resolved between the caller's query and this tx: nothing to close, no event
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'withdrawn', responded_at = ?
+		WHERE id = ? AND state = 'open'`, db.Millis(s.Now()), reqID); err != nil {
+		return err
+	}
+	key, err := s.itemKey(ctx, tx, req.ItemID)
+	if err != nil {
+		return err
+	}
+	w, err := s.RequestWireTx(ctx, tx, reqID)
+	if err != nil {
+		return err
+	}
+	if _, err := s.Events.Append(ctx, tx, events.RequestResolved, w); err != nil {
+		return err
+	}
+	return s.Items.ReconcileTx(ctx, tx, key)
+}
+
 func (s *Store) withdraw(ctx context.Context, sessionID, reqID, requestID string) (Request, error) {
 	var out Request
 	_, err := IdemTx(ctx, s, sessionID, requestID, "swarm_ask", &out, func(tx *sql.Tx) error {
@@ -391,22 +419,7 @@ func (s *Store) withdraw(ctx context.Context, sessionID, reqID, requestID string
 		if req.State != "open" {
 			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'withdrawn', responded_at = ?
-			WHERE id = ?`, db.Millis(s.Now()), reqID); err != nil {
-			return err
-		}
-		key, err := s.itemKey(ctx, tx, req.ItemID)
-		if err != nil {
-			return err
-		}
-		w, err := s.RequestWireTx(ctx, tx, reqID)
-		if err != nil {
-			return err
-		}
-		if _, err := s.Events.Append(ctx, tx, events.RequestResolved, w); err != nil {
-			return err
-		}
-		if err := s.Items.ReconcileTx(ctx, tx, key); err != nil {
+		if err := s.closeRequestTx(ctx, tx, reqID); err != nil {
 			return err
 		}
 		out, err = s.requestTx(ctx, tx, reqID)
