@@ -649,3 +649,53 @@ func TestResolveAnsweredInTerminalClosesQuestionAndBlockerButNotPrompt(t *testin
 		t.Fatalf("response = %q via %q", text, via)
 	}
 }
+
+func TestRequestWireTerminalAgent(t *testing.T) {
+	ctx := context.Background()
+	want := func(t *testing.T, s *Store, id string, name *string) {
+		t.Helper()
+		w, err := s.RequestWireByID(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (w.TerminalAgent == nil) != (name == nil) || (name != nil && *w.TerminalAgent != *name) {
+			t.Fatalf("terminal_agent = %v, want %v", w.TerminalAgent, name)
+		}
+	}
+	t.Run("top-level question is its own terminal", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Top", Intent: "feature", Kind: Fake, Model: "fake-1"})
+		ses, _ := s.LatestSession(ctx, a.ID)
+		req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which?"})
+		want(t, s, req.ID, &a.Name)
+	})
+	t.Run("legacy parented question points at the root orchestrator", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		orch, w, wSes := worker(t, s)
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+			prompt, options_json, state, created_at) VALUES ('req_legacy','question',1,?,?,?,'which?','[]','open',1)`,
+			w.ID, wSes.ID, w.ItemID); err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, "req_legacy", &orch.Name)
+	})
+	t.Run("permission prompt points at the asking agent", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		_, w, wSes := worker(t, s)
+		req, err := s.AskPrompt(ctx, wSes.ID, "terraform apply", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, req.ID, &w.Name)
+	})
+	t.Run("approval kinds have none", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		_, w, wSes := worker(t, s)
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+			prompt, options_json, state, created_at) VALUES ('req_close','close_spike',0,?,?,?,'x','[]','open',1)`,
+			w.ID, wSes.ID, w.ItemID); err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, "req_close", nil)
+	})
+}

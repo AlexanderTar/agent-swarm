@@ -76,6 +76,7 @@ type RequestWire struct {
 	Kind             RequestKind     `json:"kind"`
 	IsHITL           bool            `json:"is_hitl"`
 	AgentName        *string         `json:"agent_name"`
+	TerminalAgent    *string         `json:"terminal_agent"`
 	ItemKey          string          `json:"item_key"`
 	ItemTitle        string          `json:"item_title"`
 	RootKey          string          `json:"root_key"`
@@ -215,6 +216,29 @@ func (s *Store) sectionTitle(ctx context.Context, tx *sql.Tx, artifactID string,
 	return "", nil
 }
 
+// terminalAgent is the tmux session the user answers a HITL row in: the asking
+// agent for a permission dialog (the dialog lives in its pane), the root
+// orchestrator of its tree for a question or blocker. nil for non-HITL kinds
+// and for a row with no agent.
+func (s *Store) terminalAgent(ctx context.Context, tx *sql.Tx, r Request) *string {
+	if !r.IsHITL || r.AgentID == "" {
+		return nil
+	}
+	q := `WITH RECURSIVE up(name, parent) AS (
+		SELECT name, parent_agent_id FROM agents WHERE id = ?
+		UNION ALL
+		SELECT a.name, a.parent_agent_id FROM agents a JOIN up ON a.id = up.parent)
+		SELECT name FROM up WHERE parent IS NULL LIMIT 1`
+	if r.Kind == "prompt" {
+		q = `SELECT name FROM agents WHERE id = ?`
+	}
+	var name string
+	if err := tx.QueryRowContext(ctx, q, r.AgentID).Scan(&name); err != nil {
+		return nil
+	}
+	return &name
+}
+
 // RequestWireTx builds the full §3.3 Request for the SSE feed and for
 // items.Store.RequestPayload (R5).
 func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (RequestWire, error) {
@@ -242,6 +266,7 @@ func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (Reque
 			w.AgentName = &a.Name
 		}
 	}
+	w.TerminalAgent = s.terminalAgent(ctx, tx, r)
 	if r.ArtifactID != "" {
 		id := r.ArtifactID
 		w.ArtifactID = &id
