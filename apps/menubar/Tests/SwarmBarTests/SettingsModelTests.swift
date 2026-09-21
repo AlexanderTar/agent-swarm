@@ -240,32 +240,28 @@ final class SettingsModelTests: XCTestCase {
 
     func testLimitsTab() async {
         let m = await model()
-        XCTAssertEqual([m.value(.orchestrators), m.value(.agents), m.value(.agentsPerRoot), m.value(.pauseDeadline)], [3, 8, 4, 120])
-        // fixture: live orchestrators auth-epic (running) and none else; workers login-form-coder, login-review under EPIC-12
-        XCTAssertEqual(m.overLimit(.agents, 1), 1)
-        XCTAssertEqual(m.overLimit(.agentsPerRoot, 1), 1)
-        XCTAssertEqual(m.overLimit(.orchestrators, 1), 0)
+        XCTAssertEqual([m.value(.subagents), m.value(.pauseDeadline)], [3, 120])
+        // fixture: 2 live subagents login-form-coder, login-review under auth-epic-orchestrator
+        XCTAssertEqual(m.overLimit(.subagents, 1), 1)
         XCTAssertEqual(m.overLimit(.pauseDeadline, 30), 0)
 
-        await m.setLimit(.agents, 1)
+        await m.setLimit(.subagents, 1)
         XCTAssertEqual(m.limitNotice, "1 agents are running above the new limit. They keep running; new agents wait for a free slot.")
         XCTAssertEqual(saves, 0)
         await m.applyLimit()
-        XCTAssertEqual(m.settings.maxAgents, 1)
+        XCTAssertEqual(m.settings.maxConcurrentSubagents, 1)
         XCTAssertNil(m.limitNotice)
         await m.applyLimit()
         XCTAssertEqual(saves, 1)
 
-        await m.setLimit(.orchestrators, 99)
-        XCTAssertEqual(m.settings.maxOrchestrators, 8)
+        await m.setLimit(.subagents, 99)
+        XCTAssertEqual(m.settings.maxConcurrentSubagents, 16)
         await m.setLimit(.pauseDeadline, 5)
         XCTAssertEqual(m.settings.pauseDeadlineSec, 30)
-        await m.setLimit(.agentsPerRoot, 16)
-        XCTAssertEqual(m.settings.maxAgentsPerRoot, 16)
-        await m.setLimit(.agentsPerRoot, 16)
-        XCTAssertEqual(saves, 4)
-        XCTAssertEqual([SettingsModel.Limit.orchestrators, .agents, .agentsPerRoot, .pauseDeadline].map(\.range),
-                       [1...8, 1...32, 1...16, 30...600])
+        await m.setLimit(.subagents, 16)
+        XCTAssertEqual(saves, 3)
+        XCTAssertEqual([SettingsModel.Limit.subagents, .pauseDeadline].map(\.range),
+                       [1...16, 30...600])
     }
 
     func testDiscoveryAndCompact() async {

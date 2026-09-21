@@ -42,14 +42,12 @@ public final class SettingsModel {
         public var id: NotificationLevel { level }
     }
 
-    public enum Limit: Sendable {
-        case orchestrators, agents, agentsPerRoot, pauseDeadline
+    public enum Limit: CaseIterable, Sendable {
+        case subagents, pauseDeadline
 
         public var range: ClosedRange<Int> {
             switch self {
-            case .orchestrators: return 1...8
-            case .agents: return 1...32
-            case .agentsPerRoot: return 1...16
+            case .subagents: return 1...16
             case .pauseDeadline: return 30...600
             }
         }
@@ -304,33 +302,29 @@ public final class SettingsModel {
 
     public func value(_ limit: Limit) -> Int {
         switch limit {
-        case .orchestrators: return settings.maxOrchestrators
-        case .agents: return settings.maxAgents
-        case .agentsPerRoot: return settings.maxAgentsPerRoot
+        case .subagents: return settings.maxConcurrentSubagents
         case .pauseDeadline: return settings.pauseDeadlineSec
         }
     }
 
     private func store(_ limit: Limit, _ v: Int) {
         switch limit {
-        case .orchestrators: settings.maxOrchestrators = v
-        case .agents: settings.maxAgents = v
-        case .agentsPerRoot: settings.maxAgentsPerRoot = v
+        case .subagents: settings.maxConcurrentSubagents = v
         case .pauseDeadline: settings.pauseDeadlineSec = v
         }
     }
 
-    /// How many running agents a lower limit leaves above it (orchestrators count only toward their own limit).
+    /// How many running agents a lower limit leaves above it.
     public func overLimit(_ limit: Limit, _ value: Int) -> Int {
-        let live = AgentTree.flatten(agents).filter {
-            !AgentTree.isFinished($0) && [.spawning, .running, .waiting, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
-        }
-        let workers = live.filter { $0.role != .orchestrator }
         switch limit {
-        case .orchestrators: return live.count - workers.count - value
-        case .agents: return workers.count - value
-        case .agentsPerRoot: return Dictionary(grouping: workers, by: \.rootKey).values.map(\.count).max().map { $0 - value } ?? 0
-        case .pauseDeadline: return 0
+        case .subagents:
+            let subagents = AgentTree.flatten(agents).filter {
+                $0.parentName != nil && !AgentTree.isFinished($0) &&
+                [.spawning, .running, .waiting, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
+            }
+            return subagents.count - value
+        case .pauseDeadline:
+            return 0
         }
     }
 

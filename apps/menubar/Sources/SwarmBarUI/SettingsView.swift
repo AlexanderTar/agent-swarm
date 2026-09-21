@@ -176,10 +176,8 @@ struct LimitsTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            LimitField(model: model, title: Copy.maxOrchestrators, limit: .orchestrators)
-            LimitField(model: model, title: Copy.maxAgents, limit: .agents)
-            LimitField(model: model, title: Copy.maxAgentsPerItem, limit: .agentsPerRoot)
-            Text(Copy.orchestratorLimitCaption).font(.caption).foregroundStyle(.secondary)
+            LimitField(model: model, title: Copy.maxSubagents, limit: .subagents)
+            Text(Copy.subagentsLimitCaption).font(.caption).foregroundStyle(.secondary)
             if let notice = model.limitNotice {
                 HStack {
                     Text(notice).font(.caption)
@@ -260,7 +258,6 @@ struct LimitField: View {
         }
         Task {
             await model.setLimit(limit, v)
-            text = String(model.value(limit))
         }
     }
 }
