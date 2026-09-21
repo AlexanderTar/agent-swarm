@@ -138,6 +138,13 @@ final class AnsiTextTests: XCTestCase {
         XCTAssertNil(intent("\(esc)[59mX"))
     }
 
+    func testEscFollowedByEscOrControlKeepsThatByte() {
+        let a = AnsiText.attributed("a\(esc)\(esc)[31mb")
+        XCTAssertEqual(String(a.characters), "ab")
+        XCTAssertEqual(pieces("a\(esc)\(esc)[31mb"), [Piece(text: "a", fg: nil, bg: nil), Piece(text: "b", fg: hex(0xCD3131), bg: nil)])
+        XCTAssertEqual(String(AnsiText.attributed("a\(esc)\nb").characters), "a\nb")
+    }
+
     func testNonSGRSequencesAreDroppedWithoutGarbage() {
         XCTAssertEqual(String(AnsiText.attributed("a\(esc)[?25lb\(esc)[2Kc\(esc)]0;title\u{07}d").characters), "abcd")
         XCTAssertEqual(String(AnsiText.attributed("a\(esc)]0;title\(esc)\\b").characters), "ab", "OSC ended by ST")

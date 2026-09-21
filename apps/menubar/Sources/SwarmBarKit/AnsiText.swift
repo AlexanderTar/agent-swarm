@@ -75,6 +75,8 @@ public enum AnsiText {
                     }
                 }
             default:
+                // A control (a fresh ESC, a newline) is not part of this escape: re-read it as input.
+                if next.value < 0x20 { i -= 1; break }
                 // ESC <intermediates> <final>, e.g. ESC ( B; or ESC <single>, e.g. ESC 7, ESC M.
                 if (0x20...0x2F).contains(next.value) {
                     while i < s.count, (0x20...0x2F).contains(s[i].value) { i += 1 }
