@@ -132,3 +132,40 @@ Then `git add skills/swarm-orchestrator/SKILL.md && git commit -m "docs(skills):
 
 ## Task 4: full verification
 `go build ./... && go vet ./... && go test ./internal/mcpserver/ ./internal/items/ ./internal/runtime/ ./internal/httpapi/` — all green. Report the outputs.
+
+## Task 5 (addendum): promote the story even when the task is already Ready
+Test first, in `orchestrator_test.go`: create a Ready task under a Draft story (`swarm_items create ... status:"ready"` on the seeded story, or `s.RT.Items.Transition(ctx, seed.TaskKey, items.Ready, items.Orchestrator(...))` directly), spawn on it, assert the story is `ready`. Run it and watch it FAIL (story stays `draft`).
+Then change `promoteDraft` so only the task transition is conditional:
+```go
+func promoteDraft(ctx context.Context, s *Server, it items.Item, actor items.Actor) error {
+	if it.Type != items.Task {
+		return nil
+	}
+	if it.Status == items.Draft {
+		if _, err := s.RT.Items.Transition(ctx, it.Key, items.Ready, actor); err != nil {
+			return err
+		}
+	}
+	if it.ParentKey == "" {
+		return nil
+	}
+	parent, err := s.RT.Items.Get(ctx, it.ParentKey)
+	if err != nil {
+		return err
+	}
+	if parent.Type == items.Story && parent.Status == items.Draft {
+		_, err = s.RT.Items.Transition(ctx, parent.Key, items.Ready, actor)
+	}
+	return err
+}
+```
+Existing tests `TestSpawnPromotesDraftTaskAndParentStory` and `TestSpawnOnReadyTaskChangesNothing` must still pass (the second spawn finds task and story already Ready, so no revision change). Commit: `fix(mcpserver): promote draft parent story when the spawned task is already ready`.
+
+## Task 6 (addendum): skill text
+In `skills/swarm-orchestrator/SKILL.md` replace the two bullets added in Task 3 with:
+- `- Break every story into tasks, even if it has only one. Spawn implementation workers (`coder`) on **task** keys: a worker's checkpoints attach to its assigned item, and stories only derive their status from their tasks. If one worker covers several tasks, tell it to checkpoint each with `item: "<TASK-KEY>"`. Spawn on a story only for story-wide work such as a review spanning all its tasks.`
+- `- Items you create with `swarm_items create` start as Draft. Pass `status: "ready"` for stories and tasks you are about to delegate; `swarm_spawn` also moves a Draft task and its Draft story to Ready. After a task's review passes, mark it done with `swarm_items update status: "done"`. Do not mark stories done by hand: a story becomes Done when all its tasks are Done.`
+Then run `make skills-sync` and commit both skill files: `docs(skills): coders on tasks, story spawns for story-wide review, stories close from their tasks`.
+
+## Task 7 (addendum): verify
+`go build ./... && go vet ./... && go test -count=1 ./internal/mcpserver/ ./internal/items/ ./internal/runtime/ ./internal/install/`. `httpapi` needs `web/dist`; skip `TestBoardServedAtRoot` in the worktree.

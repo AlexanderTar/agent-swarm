@@ -67,3 +67,11 @@ None new. Existing denial copy is unchanged.
 - Promoting or repairing the 37 draft tasks / 13 draft stories currently in EPIC-2.
 - Surfacing swallowed denials in `tryTransition` as a user-visible warning.
 - Redeploying `~/.swarm/bin`.
+
+## Addendum (2026-09-21, after review)
+Decisions from the user, superseding the earlier "out of scope" line about story spawns:
+- `swarm_spawn` **keeps allowing** spawns on stories. Story-level agents (notably reviewers spanning a whole story) are legitimate. No refusal is added.
+- Every story is broken down into tasks, even if there is only one. Implementation (`coder`) agents are spawned on **tasks**; a story-level spawn is for story-wide review.
+- When all of a story's tasks are Done, the story becomes Done. This is already automatic (`deriveStory`, `internal/items/transition_test.go:220`); the orchestrator does not mark stories done by hand. It marks each task done after review (`swarm_items update status: "done"`).
+- Bug found in `promoteDraft`: it returned early when the task was already Ready, so a Ready task under a Draft story never got the story promoted, and the story never derived. Fixed: promote the parent story whenever it is Draft and a task is being spawned, independent of the task's own status.
+- The embedded skill copy `internal/install/skills/swarm-orchestrator/SKILL.md` must match `skills/` (`make skills-sync`, enforced by `internal/install/skills_test.go`).
