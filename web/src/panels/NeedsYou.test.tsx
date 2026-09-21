@@ -51,6 +51,18 @@ describe("NeedsYou inbox (§16.11)", () => {
     expect(within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button")).toHaveLength(7);
   });
 
+  it("opens the orchestrator terminal when a question row is clicked, and only selects an approval row", async () => {
+    const d = createMockDaemon();
+    const { user } = renderWithDaemon(<Host />, { daemon: d, events: false });
+    await screen.findByRole("list", { name: "Needs you" });
+    await user.click(screen.getByRole("button", { name: /Which sync strategy\?/ }));
+    await waitFor(() => expect(d.calls.some((c) => c.path === "/api/agents/offline-spike-orchestrator/terminal")).toBe(true));
+    const before = d.calls.length;
+    await user.click(screen.getByRole("radio", { name: "Approvals" }));
+    await user.click(screen.getAllByRole("button", { name: /Accept epic/ })[0]!);
+    expect(d.calls.slice(before).some((c) => c.path.endsWith("/terminal"))).toBe(false);
+  });
+
   it("shows Already resolved for a request that closed", async () => {
     const d = createMockDaemon();
     const onViewItem = vi.fn();

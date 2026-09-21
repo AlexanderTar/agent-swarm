@@ -116,3 +116,22 @@ func TestRenderBriefOmitsEmptySections(t *testing.T) {
 		t.Errorf("missing stop-when section:\n%s", got)
 	}
 }
+
+func TestIsDaemonPrompt(t *testing.T) {
+	for _, p := range []string{
+		IdleToken, " " + IdleToken + "\n",
+		Kickoff("a", RoleOrchestrator, "EPIC-1", "T"), ResumeKickoff("a", RoleOrchestrator, "EPIC-1", "T"),
+		PendingNotice(2, "a", "EPIC-1"), ControlNotice("a", "EPIC-1"), CompactionNotice(),
+		"[swarm] Quota reset window passed. Resuming.", // wake.go quota notice: no preamble
+		"typed by a human, merged with " + IdleToken + " " + ShortPreamble,
+	} {
+		if !IsDaemonPrompt(p) {
+			t.Errorf("IsDaemonPrompt(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"Use zod", "yes", "  the second one  ", "swarm: what is inbox?", ""} {
+		if IsDaemonPrompt(p) {
+			t.Errorf("IsDaemonPrompt(%q) = true, want false", p)
+		}
+	}
+}

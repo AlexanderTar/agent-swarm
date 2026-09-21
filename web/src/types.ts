@@ -161,6 +161,7 @@ export interface Request {
   kind: RequestKind;
   is_hitl: boolean;
   agent_name: string | null;
+  terminal_agent: string | null;
   item_key: string;
   item_title: string;
   root_key: string;

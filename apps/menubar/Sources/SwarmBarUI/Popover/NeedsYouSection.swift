@@ -34,43 +34,33 @@ struct RequestRow: View {
     @Bindable var model: AppModel
     let request: SwarmRequest
 
-    private var draft: Binding<String> {
-        Binding(get: { model.answerDrafts[request.id] ?? "" }, set: { model.answerDrafts[request.id] = $0 })
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("\(request.itemKey) · \(request.itemTitle)").font(.caption).foregroundStyle(.secondary)
-            Text(RequestLine.text(request)).lineLimit(3)
-            if request.kind == .question || request.kind == .prompt || request.kind == .blocker {
-                if request.kind != .prompt, model.answering == request.id {
-                    HStack(spacing: 4) {
-                        TextField(Copy.answer, text: draft).textFieldStyle(.roundedBorder)
-                            .onSubmit { Task { await model.sendAnswer(request.id) } }
-                        IconButton("paperplane.fill", help: Copy.sendAnswer,
-                                   disabled: !model.connected || draft.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty) {
-                            Task { await model.sendAnswer(request.id) }
-                        }
+        if request.isHITL {
+            let target = model.requestTarget(request)
+            let card = VStack(alignment: .leading, spacing: 4) {
+                Text("\(request.itemKey) · \(request.itemTitle)").font(.caption).foregroundStyle(.secondary)
+                Text(RequestLine.text(request)).lineLimit(3)
+                if case let .unavailable(hint)? = target {
+                    Text(hint).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if case .terminal? = target {
+                Button { Task { await model.openRequest(request) } } label: {
+                    HStack(alignment: .top) {
+                        card
+                        Spacer()
+                        Image(systemName: "terminal").foregroundStyle(.secondary)
                     }
                 }
-                HStack(spacing: 2) {
-                    if request.kind == .prompt {
-                        if let action = request.options?.first {
-                            Button(Copy.approve) {
-                                Task { await model.resolvePrompt(request.id, action: action) }
-                            }
-                            .disabled(!model.connected)
-                        }
-                    } else {
-                        Button(Copy.answer) { model.answering = model.answering == request.id ? nil : request.id }
-                            .disabled(!model.connected)
-                    }
-                    Spacer()
-                    if let name = model.requestTerminal(request) {
-                        IconButton("terminal", help: Copy.openTerminal) { Task { await model.openTerminal(name) } }
-                    }
-                }
+                .buttonStyle(.plain)
+                .help(Copy.openOrchestratorTerminal)
             } else {
+                card
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(request.itemKey) · \(request.itemTitle)").font(.caption).foregroundStyle(.secondary)
+                Text(RequestLine.text(request)).lineLimit(3)
                 HStack {
                     Spacer()
                     IconButton("doc.text.magnifyingglass", help: Copy.review) { model.review(request) }

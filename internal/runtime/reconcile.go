@@ -183,7 +183,35 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.notifyUndeliveredMessages(ctx); err != nil {
 		return err
 	}
+	if err := s.withdrawOrphanedRequests(ctx); err != nil {
+		return err
+	}
 	return s.sweepFinishedRoots(ctx)
+}
+
+// withdrawOrphanedRequests closes every open HITL request whose owning agent
+// is done: agents.state = 'finished', or its newest session (same order as
+// LatestSession) is completed/failed/crashed/cancelled. paused/interrupted
+// keep their rows: the answer is delivered as a message on resume. Runs before
+// sweepFinishedRoots, which reads open requests in a tree.
+func (s *Store) withdrawOrphanedRequests(ctx context.Context) error {
+	ids, err := s.queryIDs(ctx, `SELECT r.id FROM requests r
+		JOIN agents a ON a.id = r.agent_id
+		WHERE r.state = 'open' AND r.is_hitl = 1
+		  AND (a.state = 'finished'
+		    OR (SELECT se.state FROM sessions se WHERE se.agent_id = r.agent_id
+		        ORDER BY se.generation DESC, se.attempt DESC LIMIT 1)
+		       IN ('completed', 'failed', 'crashed', 'cancelled'))
+		ORDER BY r.created_at`)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := s.tx(ctx, func(tx *sql.Tx) error { return s.closeRequestTx(ctx, tx, id) }); err != nil {
+			s.logf("reconcile: withdraw orphaned request %s: %v", id, err)
+		}
+	}
+	return nil
 }
 
 // terminalCheckpointKind is the most recent completed/failed checkpoint for
@@ -501,6 +529,22 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 	}
 }
 
+// markPromptAnswered reports true the first time it sees a (session, title) pair,
+// so a dialog still on screen is answered once, not every tick. In-memory like lastAliveAt.
+func (s *Store) markPromptAnswered(sessionID, title string) bool {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.promptAnswered == nil {
+		s.promptAnswered = map[string]bool{}
+	}
+	k := sessionID + "|" + title
+	if s.promptAnswered[k] {
+		return false
+	}
+	s.promptAnswered[k] = true
+	return true
+}
+
 // getLastAlive and setLastAlive guard Store.lastAliveAt (P0-crash-3), the
 // in-memory record of the last reconcile tick that saw each session's pane
 // present and correctly owned. Same style as pause.go's getInterrupted /
@@ -542,63 +586,19 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 		}
 		idle = ad.Idle(capture)
 		if !idle {
-			for _, matcher := range ad.PromptPatterns() {
-				if matcher.Match != nil && matcher.Match.MatchString(capture) {
-					var openPrompt int
-					err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests
-						WHERE session_id = ? AND kind = 'prompt' AND state = 'open' AND prompt = ?`,
-						r.SessionID, matcher.Title).Scan(&openPrompt)
-					if err == nil && openPrompt == 0 {
-						var opts []string
-						if matcher.Action != "" {
-							opts = []string{matcher.Action}
-						}
-						if _, err := s.AskPrompt(ctx, r.SessionID, matcher.Title, opts); err != nil {
-							s.logf("reconcile: AskPrompt for %s: %v", r.SessionID, err)
-						}
-					}
-					break
+			for _, m := range ad.PromptPatterns() {
+				if m.Match == nil || m.Action == "" || !m.Match.MatchString(capture) {
+					continue
 				}
-			}
-		}
-
-		// Auto-resolve any open prompt request whose pattern is no longer present in capture
-		rows, err := s.DB.QueryContext(ctx, `SELECT id, prompt FROM requests
-			WHERE session_id = ? AND kind = 'prompt' AND state = 'open'`, r.SessionID)
-		if err != nil {
-			s.logf("reconcile: query open prompts for %s: %v", r.SessionID, err)
-		} else {
-			defer rows.Close()
-			var toResolve []string
-			for rows.Next() {
-				var reqID, pText string
-				if err := rows.Scan(&reqID, &pText); err == nil {
-					stillActive := false
-					for _, matcher := range ad.PromptPatterns() {
-						if matcher.Title == pText && matcher.Match != nil && matcher.Match.MatchString(capture) {
-							stillActive = true
-							break
-						}
-					}
-					if !stillActive {
-						toResolve = append(toResolve, reqID)
+				if m.Require != nil && !m.Require.MatchString(capture) {
+					continue // guarded option not on screen: a blind key press could pick the wrong answer
+				}
+				if s.markPromptAnswered(r.SessionID, m.Title) {
+					if err := s.Tmux.Keys(ctx, r.TmuxName, strings.Split(m.Action, "+")...); err != nil {
+						s.logf("reconcile: auto-answer %q for %s: %v", m.Title, r.SessionID, err)
 					}
 				}
-			}
-			if err := rows.Err(); err != nil {
-				s.logf("reconcile: iterate open prompts for %s: %v", r.SessionID, err)
-			}
-			rows.Close()
-			for _, reqID := range toResolve {
-				if _, err := s.ResolvePrompt(ctx, reqID, "", "terminal"); err != nil {
-					s.logf("reconcile: resolve prompt %s: %v", reqID, err)
-				}
-			}
-			if len(toResolve) > 0 {
-				owesNothing, err = s.owesNothing(ctx, r)
-				if err != nil {
-					return err
-				}
+				break
 			}
 		}
 	}

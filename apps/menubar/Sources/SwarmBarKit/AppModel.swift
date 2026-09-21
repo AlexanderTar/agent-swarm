@@ -70,8 +70,6 @@ public final class AppModel {
     public private(set) var lastSync: Date?
     public private(set) var catalog: [AgentCatalogEntry] = []
     public var usageAgent: AgentKind?
-    public var answerDrafts: [String: String] = [:]
-    public var answering: String?
     public private(set) var pauseAllPending = false
     public private(set) var allNotifications: [SwarmNotification]?
     public private(set) var tmuxSessions: [String: Bool] = [:]
@@ -120,7 +118,11 @@ public final class AppModel {
         }
         notifier = Notifier(poster: poster, client: client,
                             openBoard: { [weak self] in self?.openBoard($0) },
-                            openTerminal: { [weak self] in await self?.openTerminal($0) })
+                            openTerminal: { [weak self] in await self?.openTerminal($0) },
+                            openRequestTerminal: { [weak self] id in
+                                guard let self, let r = self.state.requests.first(where: { $0.id == id }) else { return }
+                                await self.openRequest(r)
+                            })
         stream = EventStream(endpoint: endpoint, connect: connect, sleep: sleep,
                              onEvent: { [weak self] e in Task { await self?.handle(e) } },
                              onConnected: { [weak self] up in
@@ -212,12 +214,6 @@ public final class AppModel {
     }
 
     public func handleNotificationAction(_ action: String, userInfo: [String: String], text: String?) async {
-        // A failed answer's own notification comes back with kind "answer.failed": before whatever this
-        // action does next reopens the popover, the typed text must already be sitting in the draft, or
-        // a retry from Notification Center loses it a second time.
-        if userInfo["kind"] == "answer.failed", let req = userInfo["request"] {
-            answerDrafts[req] = userInfo["text"]
-        }
         await notifier.handle(action: action, userInfo: userInfo, text: text)
     }
 
@@ -299,30 +295,23 @@ public final class AppModel {
 
     public func openInbox() { openBoard(BoardLink.inbox) }
 
-    public func sendAnswer(_ requestID: String) async {
-        let text = (answerDrafts[requestID] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard connected, !text.isEmpty else { return }
-        do {
-            try await client.answer(requestID: requestID, text: text)
-            answerDrafts[requestID] = nil
-            answering = nil
-            actionError = nil
-        } catch let e as DaemonError {
-            actionError = e.message
-        } catch {}
-        await refresh()
+    public enum RequestTarget: Equatable { case terminal(String), unavailable(String) }
+
+    /// What tapping a Needs-you row does. nil for a request with no terminal agent (approvals).
+    public func requestTarget(_ r: SwarmRequest) -> RequestTarget? {
+        guard r.isHITL, let name = r.terminalAgent else { return nil }
+        guard let a = AgentTree.flatten(state.agents).first(where: { $0.name == name }) else {
+            return .unavailable(Copy.orchestratorNotRunning)
+        }
+        if tmuxAlive(a) { return .terminal(name) }
+        switch a.session?.state {
+        case .paused, .interrupted: return .unavailable(Copy.orchestratorPaused)
+        default: return .unavailable(Copy.orchestratorNotRunning)
+        }
     }
 
-    public func resolvePrompt(_ id: String, action: String? = nil) async {
-        guard connected else { return }
-        do {
-            try await client.resolvePrompt(id, action: action, via: "menubar")
-            state.requests.removeAll { $0.id == id }
-            actionError = nil
-        } catch let e as DaemonError {
-            actionError = e.message
-        } catch {}
-        await refresh()
+    public func openRequest(_ r: SwarmRequest) async {
+        if case let .terminal(name)? = requestTarget(r) { await openTerminal(name) }
     }
 
     // MARK: agents
@@ -337,13 +326,6 @@ public final class AppModel {
 
     public func actions(_ a: AgentNode) -> [AgentAction] {
         AgentTree.actions(a, tmuxAlive: tmuxAlive(a), connected: connected)
-    }
-
-    /// The terminal button on a request row (question or prompt from a live agent).
-    public func requestTerminal(_ r: SwarmRequest) -> String? {
-        guard (r.kind == .question || r.kind == .prompt), let name = r.agentName,
-              let a = AgentTree.flatten(state.agents).first(where: { $0.name == name }), tmuxAlive(a) else { return nil }
-        return name
     }
 
     public func perform(_ action: AgentAction, on agent: AgentNode) async {

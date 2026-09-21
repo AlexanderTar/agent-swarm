@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { NOW, seed } from "../mock/fixtures";
-import { filterRequests, inboxRow, pickRequest } from "./inbox";
+import type { Request, SessionInfo } from "../types";
+import { makeAgent } from "./agentActions";
+import { filterRequests, inboxRow, pickRequest, requestTarget } from "./inbox";
 
 const reqs = [...seed().requests].reverse();
 
@@ -24,5 +26,26 @@ describe("inbox rules (§16.11)", () => {
     expect(pickRequest(filterRequests(reqs, "reviews"), "req_plan")?.id).toBe("req_plan");
     expect(pickRequest(filterRequests(reqs, "reviews"), "")?.id).toBe("req_accept");
     expect(pickRequest([], "x")).toBeUndefined();
+  });
+});
+
+describe("requestTarget", () => {
+  const q = { ...reqs.find((r) => r.id === "req_question")!, kind: "question", is_hitl: true, terminal_agent: "orch" } as Request;
+  const orch = (session: Partial<SessionInfo> | null) =>
+    makeAgent({ name: "orch", role: "orchestrator", session: session && { ...makeAgent().session!, ...session } });
+  it("opens the terminal when the tmux session is alive", () => {
+    expect(requestTarget(q, [orch({ tmux_alive: true, state: "running" })])).toEqual({ kind: "terminal", agent: "orch" });
+  });
+  it("says paused for a paused or interrupted orchestrator", () => {
+    expect(requestTarget(q, [orch({ tmux_alive: false, state: "paused" })])).toEqual({ kind: "unavailable", hint: "Orchestrator is paused. Resume it to continue." });
+    expect(requestTarget(q, [orch({ tmux_alive: false, state: "interrupted" })])).toEqual({ kind: "unavailable", hint: "Orchestrator is paused. Resume it to continue." });
+  });
+  it("says not running otherwise, including an unknown agent", () => {
+    expect(requestTarget(q, [orch({ tmux_alive: false, state: "crashed" })])).toMatchObject({ kind: "unavailable", hint: "Orchestrator isn't running." });
+    expect(requestTarget(q, [])).toMatchObject({ kind: "unavailable", hint: "Orchestrator isn't running." });
+  });
+  it("is null without a terminal agent or for approvals", () => {
+    expect(requestTarget({ ...q, terminal_agent: null }, [])).toBeNull();
+    expect(requestTarget({ ...q, kind: "approve_plan", is_hitl: false }, [])).toBeNull();
   });
 });

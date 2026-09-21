@@ -18,11 +18,13 @@ final class NotifierTests: XCTestCase {
     var client = MockDaemonClient()
     var opened: [String] = []
     var terminals: [String] = []
+    var requestTerminals: [String] = []
 
     private func make() -> Notifier {
         Notifier(poster: poster, client: client,
                  openBoard: { [unowned self] in self.opened.append($0) },
-                 openTerminal: { [unowned self] in self.terminals.append($0) })
+                 openTerminal: { [unowned self] in self.terminals.append($0) },
+                 openRequestTerminal: { [unowned self] in self.requestTerminals.append($0) })
     }
 
     func testCategoriesAndActions() async {
@@ -31,9 +33,9 @@ final class NotifierTests: XCTestCase {
         XCTAssertTrue(poster.authorized)
         XCTAssertEqual(poster.registered.map(\.id), ["swarm.info", "swarm.agent", "swarm.question", "swarm.approval", "swarm.item"])
         XCTAssertEqual(poster.registered.map { $0.actions.map(\.title) }, [
-            ["Open item"], ["Open terminal", "View agent"], ["Answer", "Open terminal"], ["Review"], ["Start orchestrator", "Open item"],
+            ["Open item"], ["Open terminal", "View agent"], ["Open orchestrator terminal"], ["Review"], ["Start orchestrator", "Open item"],
         ])
-        XCTAssertEqual(poster.registered[2].actions.map(\.textInput), [true, false])
+        XCTAssertEqual(poster.registered[2].actions.map(\.id), ["open_orchestrator"])
     }
 
     func testEveryKindMapsToItsCategory() {
@@ -73,33 +75,33 @@ final class NotifierTests: XCTestCase {
         XCTAssertEqual(poster.posted.map(\.id), ["ntf_05", "ntf_04", "ntf_03"])
     }
 
-    func testAnswerActionPostsTheAnswer() async {
+    func testOpenOrchestratorActionOpensTheRequestTerminalAndNeverAnswers() async {
         let n = make()
+        await n.handle(action: "open_orchestrator", userInfo: ["request": "req_question"], text: nil)
+        await n.handle(action: "open_orchestrator", userInfo: [:], text: nil)
+        XCTAssertEqual(requestTerminals, ["req_question"])
+        XCTAssertEqual(terminals, [])
+        XCTAssertEqual(opened, [])
+        XCTAssertEqual(client.calls, [], "no answer or other mutation from a notification")
+        XCTAssertEqual(poster.posted, [])
+
+        // An old delivered notification can still fire the removed text-input action: it must do nothing.
         await n.handle(action: "answer", userInfo: ["request": "req_question"], text: "Use zod.")
-        await n.handle(action: "answer", userInfo: ["request": "req_question"], text: "   ")
-        await n.handle(action: "answer", userInfo: [:], text: "lost")
-        XCTAssertEqual(client.calls, ["answer req_question Use zod."])
-        XCTAssertEqual(poster.posted, [], "nothing to say when the answer went through")
+        XCTAssertEqual(client.calls, [], "there is no answer path left")
     }
 
-    /// A failed answer is the one case where the user has typed something that can be lost, and the
-    /// notification is the only channel left when the daemon is what failed.
-    func testAFailedAnswerIsReportedBackWithTheTypedText() async {
-        let n = make()
-        client.failNext = .unreachable
-        await n.handle(action: "answer", userInfo: ["request": "req_question", "item": "TASK-101"], text: "Use zod.")
-        XCTAssertEqual(client.calls, ["answer req_question Use zod."])
-        XCTAssertEqual(poster.posted, [PostedNotification(
-            id: "answer-failed:req_question", title: "Couldn't send your answer. Answer again to retry.",
-            body: "Use zod.", category: "swarm.question", sound: true,
-            userInfo: ["id": "answer-failed:req_question", "kind": "answer.failed",
-                       "request": "req_question", "item": "TASK-101", "text": "Use zod."])])
+    func testNoNotificationCategoryHasATextInputAction() {
+        let actions = Notifier.categories.flatMap(\.actions)
+        XCTAssertFalse(actions.contains { $0.title == "Answer" }, "no Answer action in any category")
+        XCTAssertFalse(actions.contains { $0.id == "answer" })
+        XCTAssertEqual(Notifier.categories.first { $0.id == "swarm.question" }?.actions.map(\.id), ["open_orchestrator"])
+    }
 
-        // The retry goes through the same Answer action, so the text is never stranded.
-        poster.posted = []
-        await n.handle(action: "answer", userInfo: ["request": "req_question"], text: "Use zod.")
-        XCTAssertEqual(client.calls, ["answer req_question Use zod.", "answer req_question Use zod."])
-        XCTAssertEqual(poster.posted, [])
+    func testHITLRequestKindsShareTheQuestionCategory() {
+        for kind in ["request.question", "request.prompt", "request.blocker"] {
+            XCTAssertEqual(Notifier.category(forKind: kind), "swarm.question", kind)
+        }
+        XCTAssertEqual(Notifier.category(forKind: "request.approve_plan"), "swarm.approval")
     }
 
     func testOtherActionsOpenTheBoardOrTerminal() async {
@@ -115,10 +117,15 @@ final class NotifierTests: XCTestCase {
         await n.handle(action: NotificationAction.default, userInfo: ["item": "TASK-7"], text: nil)
         await n.handle(action: NotificationAction.default, userInfo: [:], text: nil)
         await n.handle(action: "open_item", userInfo: [:], text: nil)
+        await n.handle(action: NotificationAction.default, userInfo: ["kind": "request.question", "request": "req_q"], text: nil)
+        await n.handle(action: NotificationAction.default, userInfo: ["kind": "request.prompt", "request": "req_p"], text: nil)
+        await n.handle(action: NotificationAction.default, userInfo: ["kind": "request.blocker", "request": "req_b"], text: nil)
+        await n.handle(action: NotificationAction.default, userInfo: ["kind": "request.approve_plan", "request": "req_plan"], text: nil)
         XCTAssertEqual(terminals, ["login-form-coder"])
+        XCTAssertEqual(requestTerminals, ["req_q", "req_p", "req_b"], "a HITL banner tap opens the terminal, not the board")
         XCTAssertEqual(opened, [
             "/inbox?req=req_section", "/hierarchy?item=EPIC-12", "/hierarchy?item=TASK-101", "/hierarchy?item=EPIC-12",
-            "/inbox?req=req_plan", "/hierarchy?item=TASK-7", "", "",
+            "/inbox?req=req_plan", "/hierarchy?item=TASK-7", "", "", "/inbox?req=req_plan",
         ])
         XCTAssertEqual(client.calls, [], "no approval or other mutation from a notification")
     }

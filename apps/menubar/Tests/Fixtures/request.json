@@ -2,6 +2,7 @@
   "id": "req_question",
   "kind": "question",
   "agent_name": "login-form-coder",
+  "terminal_agent": "login-form-coder",
   "item_key": "TASK-101",
   "item_title": "Login form",
   "root_key": "EPIC-12",

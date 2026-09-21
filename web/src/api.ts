@@ -101,15 +101,12 @@ export function createApi({ base = "", fetchFn = (...a) => fetch(...a) }: ApiOpt
       call<unknown>("POST", `/api/agents/${enc(name)}/${action}`, body ?? {}),
     advice: (name: string) => call<Advice[]>("GET", `/api/agents/${enc(name)}/advice`),
     requests: () => call<Request[]>("GET", "/api/requests?state=open"),
-    answer: (id: string, text: string) => call<Request>("POST", `/api/requests/${enc(id)}/answer`, { text, ...via }),
     approve: (id: string, b: ApproveBody) => call<Request>("POST", `/api/requests/${enc(id)}/approve`, { ...b, ...via }),
     requestChanges: (id: string, comment: string) =>
       call<Request>("POST", `/api/requests/${enc(id)}/request-changes`, { comment, ...via }),
     confirmRepos: (id: string, b: ConfirmReposBody) =>
       call<Request>("POST", `/api/requests/${enc(id)}/confirm-repos`, { ...b, ...via }),
     closeSpike: (id: string) => call<Request>("POST", `/api/requests/${enc(id)}/close-spike`, { ...via }),
-    resolvePrompt: (id: string, body: { action?: string; via?: string } = {}) =>
-      call<Request>("POST", `/api/requests/${enc(id)}/resolve`, { ...via, ...body }),
     artifact: (id: string, o: { revision?: number; section?: string } = {}) =>
       call<ArtifactResponse>("GET", `/api/artifacts/${enc(id)}${query({ revision: o.revision, section: o.section })}`),
     settings: () => call<Settings>("GET", "/api/settings"),

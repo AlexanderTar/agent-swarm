@@ -309,6 +309,30 @@ func TestClaudeIdle(t *testing.T) {
 	}
 }
 
+// The scrape-side trust matcher carries the same guard as the startup dialog: the keys
+// (Down+Enter, which would pick "No, exit" if the list order differed) are only pressed
+// when the "Yes, I trust this folder" line is on screen. The dev-channels one has none.
+func TestClaudePromptPatternsGuardTrustWithYesLine(t *testing.T) {
+	ps := newClaude(testDeps(t)).PromptPatterns()
+	if len(ps) != 2 {
+		t.Fatalf("want 2 prompt patterns, got %d", len(ps))
+	}
+	trust, dev := ps[0], ps[1]
+	screen := pane(t, "claude", "pane-dialog-trust.txt")
+	if !trust.Match.MatchString(screen) {
+		t.Error("the trust matcher does not match its screen")
+	}
+	if trust.Require == nil || !trust.Require.MatchString(screen) {
+		t.Error("the trust matcher must require the 'Yes, I trust this folder' line")
+	}
+	if trust.Action != "Down+Enter" {
+		t.Errorf("trust action = %q", trust.Action)
+	}
+	if dev.Require != nil {
+		t.Error("the dev-channels matcher has no Require, like its startup dialog")
+	}
+}
+
 // §11.1, P0-4: trust defaults to "No, exit", so the keys are Down then Enter, and
 // they are only sent when the trust line is on screen.
 func TestClaudeStartupDialogs(t *testing.T) {

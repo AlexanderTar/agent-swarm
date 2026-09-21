@@ -76,6 +76,7 @@ type RequestWire struct {
 	Kind             RequestKind     `json:"kind"`
 	IsHITL           bool            `json:"is_hitl"`
 	AgentName        *string         `json:"agent_name"`
+	TerminalAgent    *string         `json:"terminal_agent"`
 	ItemKey          string          `json:"item_key"`
 	ItemTitle        string          `json:"item_title"`
 	RootKey          string          `json:"root_key"`
@@ -215,6 +216,29 @@ func (s *Store) sectionTitle(ctx context.Context, tx *sql.Tx, artifactID string,
 	return "", nil
 }
 
+// terminalAgent is the tmux session the user answers a HITL row in: the asking
+// agent for a permission dialog (the dialog lives in its pane), the root
+// orchestrator of its tree for a question or blocker. nil for non-HITL kinds
+// and for a row with no agent.
+func (s *Store) terminalAgent(ctx context.Context, tx *sql.Tx, r Request) *string {
+	if !r.IsHITL || r.AgentID == "" {
+		return nil
+	}
+	q := `WITH RECURSIVE up(name, parent) AS (
+		SELECT name, parent_agent_id FROM agents WHERE id = ?
+		UNION ALL
+		SELECT a.name, a.parent_agent_id FROM agents a JOIN up ON a.id = up.parent)
+		SELECT name FROM up WHERE parent IS NULL LIMIT 1`
+	if r.Kind == "prompt" {
+		q = `SELECT name FROM agents WHERE id = ?`
+	}
+	var name string
+	if err := tx.QueryRowContext(ctx, q, r.AgentID).Scan(&name); err != nil {
+		return nil
+	}
+	return &name
+}
+
 // RequestWireTx builds the full §3.3 Request for the SSE feed and for
 // items.Store.RequestPayload (R5).
 func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (RequestWire, error) {
@@ -242,6 +266,7 @@ func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (Reque
 			w.AgentName = &a.Name
 		}
 	}
+	w.TerminalAgent = s.terminalAgent(ctx, tx, r)
 	if r.ArtifactID != "" {
 		id := r.ArtifactID
 		w.ArtifactID = &id
@@ -373,6 +398,34 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 	}
 }
 
+// closeRequestTx withdraws one open request inside the caller's tx: UPDATE,
+// request.resolved event, item reconcile. withdraw() and the orphan sweep share it.
+func (s *Store) closeRequestTx(ctx context.Context, tx *sql.Tx, reqID string) error {
+	req, err := s.requestTx(ctx, tx, reqID)
+	if err != nil {
+		return err
+	}
+	if req.State != "open" {
+		return nil // resolved between the caller's query and this tx: nothing to close, no event
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'withdrawn', responded_at = ?
+		WHERE id = ? AND state = 'open'`, db.Millis(s.Now()), reqID); err != nil {
+		return err
+	}
+	key, err := s.itemKey(ctx, tx, req.ItemID)
+	if err != nil {
+		return err
+	}
+	w, err := s.RequestWireTx(ctx, tx, reqID)
+	if err != nil {
+		return err
+	}
+	if _, err := s.Events.Append(ctx, tx, events.RequestResolved, w); err != nil {
+		return err
+	}
+	return s.Items.ReconcileTx(ctx, tx, key)
+}
+
 func (s *Store) withdraw(ctx context.Context, sessionID, reqID, requestID string) (Request, error) {
 	var out Request
 	_, err := IdemTx(ctx, s, sessionID, requestID, "swarm_ask", &out, func(tx *sql.Tx) error {
@@ -391,28 +444,26 @@ func (s *Store) withdraw(ctx context.Context, sessionID, reqID, requestID string
 		if req.State != "open" {
 			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'withdrawn', responded_at = ?
-			WHERE id = ?`, db.Millis(s.Now()), reqID); err != nil {
-			return err
-		}
-		key, err := s.itemKey(ctx, tx, req.ItemID)
-		if err != nil {
-			return err
-		}
-		w, err := s.RequestWireTx(ctx, tx, reqID)
-		if err != nil {
-			return err
-		}
-		if _, err := s.Events.Append(ctx, tx, events.RequestResolved, w); err != nil {
-			return err
-		}
-		if err := s.Items.ReconcileTx(ctx, tx, key); err != nil {
+		if err := s.closeRequestTx(ctx, tx, reqID); err != nil {
 			return err
 		}
 		out, err = s.requestTx(ctx, tx, reqID)
 		return err
 	})
 	return out, err
+}
+
+// errRelayToParent is the refusal a parented agent gets from swarm_ask
+// (kind question) and swarm_blocker. "parent" is swarm_send's alias for the
+// caller's parent (skills/swarm/SKILL.md rule 5), so no parent lookup is needed.
+const errRelayToParent = "You report to an orchestrator, not the user. Send this to it with swarm_send (to: \"parent\", kind: \"question\") and keep working on anything you are not blocked on."
+
+// requireTopLevel returns the refusal for an agent that has a parent, nil otherwise.
+func requireTopLevel(a Agent) error {
+	if a.ParentAgentID == "" {
+		return nil
+	}
+	return &items.Error{Code: items.CodeBadRequest, Message: errRelayToParent}
 }
 
 func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) (Request, error) {
@@ -423,6 +474,9 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
+			return err
+		}
+		if err := requireTopLevel(a); err != nil {
 			return err
 		}
 		id := ids.New("req")
@@ -460,6 +514,9 @@ func (s *Store) AskBlocker(ctx context.Context, sessionID, prompt string, option
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
+			return err
+		}
+		if err := requireTopLevel(a); err != nil {
 			return err
 		}
 		id := ids.New("req")
@@ -736,9 +793,10 @@ func (s *Store) RequestChanges(ctx context.Context, id, comment, via string) (Re
 		})
 }
 
-// ResolvePrompt resolves an open prompt request. If action is specified and tmux is present,
-// it transmits the keystrokes to the session's tmux pane.
-func (s *Store) ResolvePrompt(ctx context.Context, id, action, via string) (Request, error) {
+// ResolvePrompt marks an open prompt request answered. It only records the
+// resolution: the permission dialog is answered in the terminal, so no keys are
+// sent to the pane.
+func (s *Store) ResolvePrompt(ctx context.Context, id, via string) (Request, error) {
 	var out Request
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		req, err := s.requestTx(ctx, tx, id)
@@ -748,17 +806,10 @@ func (s *Store) ResolvePrompt(ctx context.Context, id, action, via string) (Requ
 		if req.State != "open" {
 			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
 		}
-		// Transmit keys to tmux if action specified
-		if action != "" && req.SessionID != "" && s.Tmux != nil {
-			var tmuxName string
-			if err := tx.QueryRowContext(ctx, `SELECT tmux_name FROM sessions WHERE id = ?`, req.SessionID).Scan(&tmuxName); err == nil && tmuxName != "" {
-				_ = s.Tmux.Keys(ctx, tmuxName, action)
-			}
-		}
 		now := s.Now()
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'answered', response_text = ?,
+		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'answered', response_text = NULL,
 			responded_via = ?, responded_at = ? WHERE id = ?`,
-			nullIf(action), nullIf(via), db.Millis(now), id); err != nil {
+			nullIf(via), db.Millis(now), id); err != nil {
 			return err
 		}
 		key, err := s.itemKey(ctx, tx, req.ItemID)
@@ -779,6 +830,59 @@ func (s *Store) ResolvePrompt(ctx context.Context, id, action, via string) (Requ
 		return err
 	})
 	return out, err
+}
+
+// ResolveQuestionByPrompt closes the session's open native-question row whose
+// prompt equals the one this tool call asked, answered via terminal. No match
+// is not an error (the tool may have been blocked, or the row swept).
+func (s *Store) ResolveQuestionByPrompt(ctx context.Context, sessionID, prompt, answer string) error {
+	ids, err := s.queryIDs(ctx, `SELECT id FROM requests
+		WHERE session_id = ? AND kind = 'question' AND state = 'open' AND prompt = ?
+		ORDER BY created_at DESC LIMIT 1`, sessionID, prompt)
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	_, err = s.ResolveQuestion(ctx, ids[0], answer, "terminal")
+	return err
+}
+
+// ResolveSessionPrompts resolves open prompt requests of one session once a
+// PostToolUse proves the permission dialog was answered. Rows whose prompt
+// equals command, or the fallback "Permission requested", match;
+// command == "" resolves all of the session's open prompts.
+// ponytail: an empty command resolves every open prompt of the session; only
+// adapters that send no command on PostToolUse hit it. Add a per-tool match if
+// a live run shows a wrong close.
+func (s *Store) ResolveSessionPrompts(ctx context.Context, sessionID, command string) error {
+	ids, err := s.queryIDs(ctx, `SELECT id FROM requests
+		WHERE session_id = ? AND kind = 'prompt' AND state = 'open'
+		  AND (? = '' OR prompt = ? OR prompt = 'Permission requested')`, sessionID, command, command)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := s.ResolvePrompt(ctx, id, "terminal"); err != nil {
+			s.logf("resolve prompt %s: %v", id, err)
+		}
+	}
+	return nil
+}
+
+// ResolveAnsweredInTerminal closes every open question/blocker row of an agent
+// after a human-typed prompt: answered, via terminal. Keyed by agent, not
+// session: after a pause and resume the row belongs to the old session.
+func (s *Store) ResolveAnsweredInTerminal(ctx context.Context, agentID string) error {
+	ids, err := s.queryIDs(ctx, `SELECT id FROM requests
+		WHERE agent_id = ? AND is_hitl = 1 AND kind IN ('question', 'blocker') AND state = 'open'`, agentID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := s.ResolveQuestion(ctx, id, "Answered in terminal", "terminal"); err != nil {
+			s.logf("resolve %s after human prompt: %v", id, err)
+		}
+	}
+	return nil
 }
 
 // ResolveQuestion resolves an open question request with response text and via attribution.

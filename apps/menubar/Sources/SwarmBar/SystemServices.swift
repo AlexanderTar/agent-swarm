@@ -36,10 +36,7 @@ final class UserNotificationPoster: NSObject, NotificationPosting, UNUserNotific
     func register(_ categories: [NotificationCategorySpec]) {
         center.setNotificationCategories(Set(categories.map { spec in
             UNNotificationCategory(identifier: spec.id, actions: spec.actions.map { a in
-                a.textInput
-                    ? UNTextInputNotificationAction(identifier: a.id, title: a.title, options: [],
-                                                    textInputButtonTitle: Copy.sendAnswer, textInputPlaceholder: "")
-                    : UNNotificationAction(identifier: a.id, title: a.title, options: [.foreground])
+                UNNotificationAction(identifier: a.id, title: a.title, options: [.foreground])
             }, intentIdentifiers: [])
         }))
     }

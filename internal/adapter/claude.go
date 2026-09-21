@@ -136,7 +136,7 @@ func (c *Claude) StartupDialogs() []Dialog {
 
 func (c *Claude) PromptPatterns() []PromptMatcher {
 	return []PromptMatcher{
-		{Match: claudeTrust, Title: "Trust this project", Action: "Down+Enter"},
+		{Match: claudeTrust, Require: claudeTrustYes, Title: "Trust this project", Action: "Down+Enter"},
 		{Match: claudeDev, Title: "Confirm local development", Action: "Enter"},
 	}
 }
@@ -188,6 +188,7 @@ func (c *Claude) ParseHook(event string, stdin []byte) (HookInput, error) {
 		TranscriptPath string          `json:"transcript_path"`
 		ToolInput      json.RawMessage `json:"tool_input"`
 		ToolResponse   json.RawMessage `json:"tool_response"`
+		Prompt         string          `json:"prompt"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
@@ -212,6 +213,7 @@ func (c *Claude) ParseHook(event string, stdin []byte) (HookInput, error) {
 		TranscriptPath:    raw.TranscriptPath,
 		RawToolInput:      raw.ToolInput,
 		ToolResponse:      raw.ToolResponse,
+		Prompt:            raw.Prompt,
 		IsSwarmTool:       strings.HasPrefix(raw.ToolName, "mcp__swarm__"),
 	}, nil
 }

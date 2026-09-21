@@ -80,7 +80,7 @@ function request(p: Partial<Request> & Pick<Request, "id" | "kind" | "item_key" 
   const is_hitl = p.is_hitl ?? (p.kind === "question" || p.kind === "prompt" || p.kind === "blocker");
   return {
     is_hitl,
-    agent_name: null, artifact_id: null, artifact_revision: null, section_id: null, section_title: null, section_sha256: null,
+    agent_name: null, terminal_agent: null, artifact_id: null, artifact_revision: null, section_id: null, section_title: null, section_sha256: null,
     prompt: "", options: [], state: "open", confirmed: null, binding: null, response_text: null, responded_via: null,
     responded_at: null, created_at: NOW, ...p,
   };
@@ -89,8 +89,8 @@ function request(p: Partial<Request> & Pick<Request, "id" | "kind" | "item_key" 
 function requests(): Request[] {
   return [
     request({ id: "req_accept", kind: "accept_epic", item_key: "EPIC-12", item_title: "Authentication", root_key: "EPIC-12", prompt: "Review completed work and accept the epic.", created_at: NOW - 60 * MIN, binding: { item_revision: 7, integrated_checkpoint: "ckp_int", git: [{ repo: "endurio-chat", branch: "epic/epic-12-authentication", sha: "a1b2c3d4e5f6a7b8" }] } }),
-    request({ id: "req_question", kind: "question", agent_name: "offline-spike-orchestrator", item_key: "SPIKE-3", item_title: "Offline mode", root_key: "SPIKE-3", prompt: "Which sync strategy?", options: ["CRDT", "Last write wins"], created_at: NOW - 20 * MIN }),
-    request({ id: "req_q2", kind: "question", agent_name: "login-review", item_key: "TASK-104", item_title: "Validate inputs", root_key: "EPIC-12", prompt: "Which validation library?", created_at: NOW - 15 * MIN }),
+    request({ id: "req_question", kind: "question", agent_name: "offline-spike-orchestrator", terminal_agent: "offline-spike-orchestrator", item_key: "SPIKE-3", item_title: "Offline mode", root_key: "SPIKE-3", prompt: "Which sync strategy?", options: ["CRDT", "Last write wins"], created_at: NOW - 20 * MIN }),
+    request({ id: "req_q2", kind: "question", agent_name: "login-review", terminal_agent: "auth-epic-orchestrator", item_key: "TASK-104", item_title: "Validate inputs", root_key: "EPIC-12", prompt: "Which validation library?", created_at: NOW - 15 * MIN }),
     request({ id: "req_section", kind: "approve_section", agent_name: "offline-spike-orchestrator", item_key: "SPIKE-3", item_title: "Offline mode", root_key: "SPIKE-3", artifact_id: "art_spec", artifact_revision: 3, section_id: "data-model", section_title: "Data model", section_sha256: "sha-dm-3", prompt: "Approve the data model.", created_at: NOW - 12 * MIN }),
     request({ id: "req_plan", kind: "approve_plan", agent_name: "offline-spike-orchestrator", item_key: "SPIKE-3", item_title: "Offline mode", root_key: "SPIKE-3", artifact_id: "art_plan", artifact_revision: 1, section_sha256: "sha-plan-1", prompt: "Approve the plan.", created_at: NOW - 10 * MIN }),
     request({ id: "req_report", kind: "approve_report", item_key: "SPIKE-5", item_title: "Crash on resume", root_key: "SPIKE-5", artifact_id: "art_report", artifact_revision: 2, section_sha256: "sha-report-2", prompt: "Approve the report.", created_at: NOW - 8 * MIN }),
