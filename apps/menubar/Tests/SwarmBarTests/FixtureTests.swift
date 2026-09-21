@@ -17,6 +17,7 @@ final class FixtureTests: XCTestCase {
         XCTAssertEqual(s.requests.map(\.kind), [.approveSection, .question, .approvePlan, .confirmRepos])
         XCTAssertEqual(s.requests[0].sectionTitle, "Session handling")
         XCTAssertEqual(s.requests.map(\.proposedRepos), [nil, nil, nil, 2])
+        XCTAssertEqual(s.requests.map(\.terminalAgent), [nil, "login-form-coder", nil, nil], "terminal_agent is null for approvals")
         XCTAssertEqual(s.usage[0].error, "HTTP 429")
         XCTAssertNil(s.usage[1].error)
         XCTAssertEqual(s.notifications.unread, 4)

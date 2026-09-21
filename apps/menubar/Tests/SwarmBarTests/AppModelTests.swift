@@ -67,8 +67,6 @@ final class AppModelTests: XCTestCase {
         await m.pauseAll()
         await m.readAll()
         await m.refreshUsage()
-        m.answerDrafts["req_question"] = "zod"
-        await m.sendAnswer("req_question")
         XCTAssertEqual(client.calls.filter { $0 != "state" && $0 != "catalog" }, [], "no mutation while down")
         XCTAssertTrue(m.pauseAllDisabled)
 
@@ -154,7 +152,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.visibleRequests.map(\.id), ["req_question"])
         XCTAssertNil(m.viewAllRequests)
         XCTAssertEqual(m.visibleRequests.map(RequestLine.text), ["Which validation library?"])
-        XCTAssertEqual(m.requestTerminal(m.visibleRequests[0]), "login-form-coder")
+        XCTAssertEqual(m.requestTarget(m.visibleRequests[0]), .terminal("login-form-coder"))
 
         // Test with 4 HITL requests to verify prefix(3) and viewAllRequests
         var four: StateResponse = try Fixture.decode("state.json")
@@ -191,30 +189,24 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(m.viewAllRequests)
     }
 
-    func testAnswerInline() async {
+    func testNeedsYouRowsAreReadOnlyAndOpenTheOrchestratorTerminal() async {
         let m = make()
         await m.refresh()
-        m.answering = "req_question"
-        m.answerDrafts["req_question"] = "  Use zod. "
-        await m.sendAnswer("req_question")
-        XCTAssertEqual(client.calls.filter { $0.hasPrefix("answer") }, ["answer req_question Use zod."])
-        XCTAssertNil(m.answering)
-        XCTAssertNil(m.answerDrafts["req_question"])
-        await m.sendAnswer("req_question")
-        XCTAssertEqual(client.calls.filter { $0.hasPrefix("answer") }.count, 1, "empty answers aren't sent")
-        m.answerDrafts["req_question"] = "again"
-        client.failNext = .api(status: 409, code: "conflict", message: "Already resolved.")
-        await m.sendAnswer("req_question")
-        XCTAssertEqual(m.actionError, "Already resolved.")
-        XCTAssertEqual(m.answerDrafts["req_question"], "again", "unsent text is kept")
+        let r = SwarmRequest(id: "req_o", kind: .question, isHITL: true, agentName: "login-form-coder", prompt: "Which?",
+                             terminalAgent: "login-form-coder")
+        XCTAssertEqual(m.requestTarget(r), .terminal("login-form-coder"))
+        await m.openRequest(r)
+        XCTAssertEqual(script.sources.count, 1, "the terminal opened")
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("answer") || $0.hasPrefix("resolve") }, [], "no answer or resolve call exists")
+        XCTAssertNil(m.requestTarget(SwarmRequest(id: "req_a", kind: .approvePlan, terminalAgent: nil)))
     }
 
-    func testResolvePromptCallsAPIAndUpdatesState() async {
+    func testPromptRowTargetsTheAskingAgentsTerminal() async {
         let m = make()
         await m.refresh()
-
-        let promptReq = SwarmRequest(id: "req_prompt", kind: .prompt, isHITL: true, agentName: "login-form-coder", prompt: "Trust folder?", options: ["Enter"])
-        XCTAssertEqual(m.requestTerminal(promptReq), "login-form-coder")
+        let promptReq = SwarmRequest(id: "req_prompt", kind: .prompt, isHITL: true, agentName: "login-form-coder",
+                                     prompt: "Trust folder?", options: ["Enter"], terminalAgent: "login-form-coder")
+        XCTAssertEqual(m.requestTarget(promptReq), .terminal("login-form-coder"))
 
         var s = m.state
         s.requests.append(promptReq)
@@ -222,20 +214,37 @@ final class AppModelTests: XCTestCase {
         await m.refresh()
         XCTAssertTrue(m.state.requests.contains { $0.id == "req_prompt" })
 
-        await m.resolvePrompt("req_prompt", action: "Enter")
-        XCTAssertTrue(client.resolvedPrompts.contains("req_prompt"))
-        XCTAssertFalse(m.state.requests.contains { $0.id == "req_prompt" })
-        XCTAssertEqual(client.calls.filter { $0.hasPrefix("resolve") }, ["resolve req_prompt Enter"])
+        await m.openRequest(promptReq)
+        XCTAssertEqual(script.sources.count, 1, "the asking agent's terminal opened")
+        XCTAssertTrue(m.state.requests.contains { $0.id == "req_prompt" }, "opening the terminal never resolves the row")
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("resolve") || $0.hasPrefix("approve") || $0.hasPrefix("answer") }, [],
+                       "there is no Approve call")
+    }
 
-        client.failNext = .api(status: 409, code: "conflict", message: "Already resolved.")
-        await m.resolvePrompt("req_prompt", action: "Enter")
-        XCTAssertEqual(m.actionError, "Already resolved.")
-
-        client.stateResult = .failure(.unreachable)
+    func testRequestTargetExplainsAPausedInterruptedOrMissingOrchestrator() async {
+        let m = make()
         await m.refresh()
-        let countBefore = client.calls.count
-        await m.resolvePrompt("req_other", action: "Enter")
-        XCTAssertEqual(client.calls.count, countBefore)
+        func target(_ agent: String?, hitl: Bool = true) -> AppModel.RequestTarget? {
+            m.requestTarget(SwarmRequest(id: "r", kind: .question, isHITL: hitl, terminalAgent: agent))
+        }
+        XCTAssertEqual(target("crash-debug-orchestrator"), .unavailable("Orchestrator is paused. Resume it to continue."))
+        XCTAssertEqual(target("search-spike-orchestrator"), .unavailable("Orchestrator isn't running."), "no session")
+        XCTAssertEqual(target("no-such-agent"), .unavailable("Orchestrator isn't running."))
+        XCTAssertNil(target(nil), "no terminal agent, no target")
+        XCTAssertNil(target("login-form-coder", hitl: false), "approval rows keep the Review button, not a terminal target")
+        await m.openRequest(SwarmRequest(id: "r", kind: .question, isHITL: true, terminalAgent: "crash-debug-orchestrator"))
+        XCTAssertEqual(script.sources.count, 0, "an unavailable target opens nothing")
+
+        var s = m.state
+        s.agents[1].session?.state = .interrupted
+        client.stateResult = .success(s)
+        await m.refresh()
+        XCTAssertEqual(target("crash-debug-orchestrator"), .unavailable("Orchestrator is paused. Resume it to continue."),
+                       "interrupted reads as paused")
+        s.agents[1].session?.state = .crashed
+        client.stateResult = .success(s)
+        await m.refresh()
+        XCTAssertEqual(target("crash-debug-orchestrator"), .unavailable("Orchestrator isn't running."))
     }
 
     func testAgentRowsAndActions() async {
@@ -364,11 +373,12 @@ final class AppModelTests: XCTestCase {
         let n = many.notifications.items[0]
         await m.handle(.notification(n))
         XCTAssertEqual(poster.posted.map(\.id), ["ntf_05"])
-        await m.handleNotificationAction("answer", userInfo: ["request": "req_question"], text: "zod")
-        XCTAssertEqual(client.calls.filter { $0.hasPrefix("answer") }, ["answer req_question zod"])
+        await m.handleNotificationAction("open_orchestrator", userInfo: ["request": "req_question"], text: nil)
+        XCTAssertEqual(script.sources.count, 1, "the question's terminal opened")
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("answer") }, [], "a notification never answers")
         await m.handleNotificationAction("open_terminal", userInfo: ["agent": "login-form-coder"], text: nil)
         await m.handleNotificationAction("review", userInfo: ["request": "req_plan"], text: nil)
-        XCTAssertEqual(script.sources.count, 1)
+        XCTAssertEqual(script.sources.count, 2)
         XCTAssertEqual(opened.last, "http://127.0.0.1:7777/#/inbox?req=req_plan")
     }
 
@@ -393,20 +403,29 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.visibleNotifications.count, 5, "collapsing drops the cached expanded list, falling back to the state's own trimmed 5")
     }
 
-    /// Carry-in: a failed answer's own notification comes back with `kind: "answer.failed"`; before the
-    /// popover reopens (whichever action fired it), the typed text must already be sitting in the draft,
-    /// or a retry from Notification Center loses it a second time.
-    func testAnswerFailedNotificationActionSeedsTheDraft() async {
+    /// A request notification (its action button or a banner tap) opens the terminal the daemon named for the
+    /// request, and does nothing the user could mistake for an answer.
+    func testRequestNotificationActionOpensTheOrchestratorTerminal() async {
         let m = make()
-        await m.handleNotificationAction(NotificationAction.default,
-                                         userInfo: ["kind": "answer.failed", "request": "req_question", "text": "Use zod."],
-                                         text: nil)
-        XCTAssertEqual(m.answerDrafts["req_question"], "Use zod.")
+        await m.refresh()
+        await m.handleNotificationAction("open_orchestrator",
+                                         userInfo: ["kind": "request.question", "request": "req_question"], text: nil)
+        XCTAssertEqual(script.sources.count, 1, "the request's terminal_agent opened")
 
-        // A normal delivered notification (no "answer.failed" kind) never touches the drafts.
-        m.answerDrafts["req_plan"] = nil
-        await m.handleNotificationAction(NotificationAction.default, userInfo: ["kind": "request.question", "request": "req_plan"], text: nil)
-        XCTAssertNil(m.answerDrafts["req_plan"])
+        await m.handleNotificationAction(NotificationAction.default,
+                                         userInfo: ["kind": "request.question", "request": "req_question"], text: nil)
+        XCTAssertEqual(script.sources.count, 2, "a banner tap does the same")
+
+        await m.handleNotificationAction("open_orchestrator",
+                                         userInfo: ["kind": "request.question", "request": "req_gone"], text: nil)
+        XCTAssertEqual(script.sources.count, 2, "a request that is no longer open opens nothing")
+        XCTAssertTrue(opened.isEmpty, "the board is not opened for a question")
+
+        await m.handleNotificationAction(NotificationAction.default,
+                                         userInfo: ["kind": "request.approve_plan", "request": "req_plan"], text: nil)
+        XCTAssertEqual(script.sources.count, 2, "approvals never open a terminal")
+        XCTAssertEqual(opened, ["http://127.0.0.1:7777/#/inbox?req=req_plan"], "approvals still open the board")
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("answer") || $0.hasPrefix("resolve") }, [])
     }
 
     func testTerminalOpenEventRepliesToTheDaemon() async {

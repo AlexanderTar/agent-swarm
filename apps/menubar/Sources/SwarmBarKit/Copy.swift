@@ -18,10 +18,10 @@ public enum Copy {
     public static let newOrchestrator = "New orchestrator"
     public static let openBoard = "Open board"
     public static let review = "Review"
-    public static let approve = "Approve"
-    public static let answer = "Answer"
-    public static let sendAnswer = "Send answer"
     public static let openTerminal = "Open terminal"
+    public static let openOrchestratorTerminal = "Open orchestrator terminal"
+    public static let orchestratorPaused = "Orchestrator is paused. Resume it to continue."
+    public static let orchestratorNotRunning = "Orchestrator isn't running."
     public static let pause = "Pause"
     public static let pauseGroup = "Pause group"
     public static let resume = "Resume"
@@ -203,7 +203,6 @@ public enum Copy {
     public static let modelUnavailable = "Choose a model available for this agent."
     public static func superpowersMissing(_ agent: String) -> String { "Install the superpowers plugin for \(agent) to run orchestrators." }
     public static let launchFailed = "Couldn't start orchestrator. Your entries are saved."
-    public static let answerNotSent = "Couldn't send your answer. Answer again to retry."
     public static let queuedCaption = "Starts when an agent slot becomes available."
     /// An empty error (nothing to report) drops the sentence instead of leaving a dangling
     /// "Couldn't refresh: " — the same twin bug `catalogNeverFetched` had.
