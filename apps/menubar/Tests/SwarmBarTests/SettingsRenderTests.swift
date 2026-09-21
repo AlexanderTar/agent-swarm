@@ -18,7 +18,7 @@ final class SettingsRenderTests: XCTestCase {
             XCTAssertGreaterThan(renderedSize(tab.frame(width: 740)).height, 0)
         }
         await settings.setEnabled(.codex, false)
-        await settings.setLimit(.agents, 1)
+        await settings.setLimit(.subagents, 1)
         settings.connected = false
         await settings.save()
         XCTAssertEqual(renderedSize(SettingsView(model: settings)), CGSize(width: 740, height: 520))
