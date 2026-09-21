@@ -17,8 +17,9 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
   );
   // `act.pending` clears before the refetch lands, so remember the click until the agent's state moves.
   const [requested, setRequested] = useState<AgentEndpoint | null>(null);
-  const state = displayState(agent);
-  useEffect(() => setRequested(null), [state]);
+  // Keyed on the raw session state: displayState also flips on waiting/stale flags without the pause landing.
+  const sessionState = agent.session?.state;
+  useEffect(() => setRequested(null), [sessionState]);
   const onAction = async (a: AgentAction) => {
     if (a.confirm && !window.confirm(a.confirm)) return;
     if (a.endpoint === "pause" || a.endpoint === "resume") setRequested(a.endpoint);

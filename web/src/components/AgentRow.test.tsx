@@ -87,6 +87,24 @@ describe("AgentRow (§10.7 on the board)", () => {
     }
   });
 
+  it("keeps pause disabled when the display state flips to waiting without the pause landing", async () => {
+    const name = "req-flip";
+    const d = daemon0();
+    d.override(`POST /api/agents/${name}/pause`, { status: 200, body: {} });
+    const { user, rerender } = renderWithDaemon(<AgentRow agent={makeAgent({ name, session: ses("running") })} />, { daemon: d, events: false });
+    const btn = () => within(screen.getByTestId(`agent-${name}`)).getByRole("button", { name: /^(Pause|Pausing…)$/ });
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(btn()).toHaveTextContent("Pausing…"));
+    // running -> waiting is a flag flip, not the pause landing: the raw session state is still "running".
+    rerender(<AgentRow agent={makeAgent({ name, session: { ...ses("running"), waiting: true } })} />);
+    expect(btn()).toBeDisabled();
+    expect(btn()).toHaveTextContent("Pausing…");
+    // The daemon's own state takes over once the pause is requested.
+    rerender(<AgentRow agent={makeAgent({ name, session: ses("pause_requested") })} />);
+    expect(btn()).toBeDisabled();
+    expect(btn()).toHaveTextContent("Pausing…");
+  });
+
   it("re-enables the button and toasts when the pause request fails", async () => {
     const d = daemon0();
     d.override("POST /api/agents/req-fail/pause", { status: 409, body: { error: { code: "conflict", message: "Still stopping. Try again in a few seconds." } } });
