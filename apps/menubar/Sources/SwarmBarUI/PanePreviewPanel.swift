@@ -17,7 +17,9 @@ public struct PanePreviewPanel: View {
         self.lookup = lookup
     }
 
-    public static let size = CGSize(width: 520, height: 320)
+    public static let size = CGSize(width: 760, height: 320)
+    /// Air between the dark fill's edge and the text.
+    private static let textInset: CGFloat = 6
 
     private var header: String {
         guard let name = preview.agent else { return "" }
@@ -57,16 +59,23 @@ public struct PanePreviewPanel: View {
                 if !tmuxAlive {
                     Text("⚠ " + Copy.paneDead).font(.system(size: 10)).foregroundStyle(.orange)
                 }
-                ScrollView(.vertical) {
-                    Text(text)
-                        .font(.system(size: 11, design: .monospaced))
-                        .lineLimit(nil)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .background(SubtleScrollerConfig())
+                GeometryReader { geo in
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(AnsiText.attributed(text))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(AnsiText.defaultFG)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(Self.textInset)
+                            .frame(minWidth: geo.size.width, minHeight: geo.size.height, alignment: .bottomLeading)
+                            .textSelection(.enabled)
+                            .background(SubtleScrollerConfig())
+                    }
+                    .scrollIndicators(.automatic)
+                    .defaultScrollAnchor(.bottomLeading)
                 }
-                .scrollIndicators(.automatic)
-                .defaultScrollAnchor(.bottom)
+                // TUI palettes assume a dark screen, so the fill is the same in light and dark mode.
+                .background(AnsiText.defaultBG, in: RoundedRectangle(cornerRadius: 6))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         case let .failed(message):

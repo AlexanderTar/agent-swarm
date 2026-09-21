@@ -193,6 +193,27 @@ final class PanePreviewModelTests: XCTestCase {
         XCTAssertEqual(status, .text("hello", tmuxAlive: false))
     }
 
+    func testCaptureWithAnsiShowsTheRawAnsi() async {
+        let mock = MockDaemonClient()
+        mock.paneResult = .success(PaneCapture(text: "plain", ansi: "\u{1B}[31mred\u{1B}[0m"))
+        let status = await statusAfterOneCapture(client: mock)
+        XCTAssertEqual(status, .text("\u{1B}[31mred\u{1B}[0m", tmuxAlive: true))
+    }
+
+    func testCaptureWithoutAnsiFallsBackToPlainText() async {
+        let mock = MockDaemonClient()
+        mock.paneResult = .success(PaneCapture(text: "plain", ansi: nil))
+        let status = await statusAfterOneCapture(client: mock)
+        XCTAssertEqual(status, .text("plain", tmuxAlive: true))
+    }
+
+    func testPaneCaptureDecodesWithAndWithoutTheAnsiField() throws {
+        let old = try SwarmJSON.decode(PaneCapture.self, from: Data(#"{"text":"a","tmux_alive":true,"lines":40}"#.utf8))
+        XCTAssertNil(old.ansi)
+        let new = try SwarmJSON.decode(PaneCapture.self, from: Data(#"{"text":"a","ansi":"\u001b[1ma","tmux_alive":true,"lines":40}"#.utf8))
+        XCTAssertEqual(new.ansi, "\u{1B}[1ma")
+    }
+
     // MARK: - teardown
 
     func testCancelStopsThePollLoopAndClearsTheHover() async throws {

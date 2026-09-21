@@ -33,6 +33,10 @@ describe("copy (§17)", () => {
     expect(T.catalogNeverFetched("timeout")).toBe("Never fetched. Couldn't refresh: timeout");
   });
 
+  it("has the in-flight pause/resume labels", () => {
+    expect(C).toMatchObject({ pausing: "Pausing…", resuming: "Resuming…" });
+  });
+
   it("has the §17.3 and §17.4 static copy", () => {
     expect(C).toMatchObject({
       search: "Search name or key…",

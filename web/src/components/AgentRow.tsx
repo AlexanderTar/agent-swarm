@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { errorText } from "../api";
-import { ROLE_LABEL, T } from "../copy";
+import { C, ROLE_LABEL, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
 import { type AgentAction, agentActions, displayState, isFinished } from "../logic/agentActions";
 import type { AgentEndpoint, AgentNode } from "../types";
@@ -14,11 +15,18 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
     (api, action: AgentEndpoint, body?: object) => api.agentAction(agent.name, action, body),
     ["agents", "item:"],
   );
+  // `act.pending` clears before the refetch lands, so remember the click until the agent's state moves.
+  const [requested, setRequested] = useState<AgentEndpoint | null>(null);
+  // Keyed on the raw session state: displayState also flips on waiting/stale flags without the pause landing.
+  const sessionState = agent.session?.state;
+  useEffect(() => setRequested(null), [sessionState]);
   const onAction = async (a: AgentAction) => {
     if (a.confirm && !window.confirm(a.confirm)) return;
+    if (a.endpoint === "pause" || a.endpoint === "resume") setRequested(a.endpoint);
     try {
       await act.run(a.endpoint, a.body);
     } catch (e) {
+      setRequested(null);
       // F20 / contracts §2: reuse errorText rather than an inline `instanceof ApiError` ternary.
       toast({ message: errorText(e) });
     }
@@ -38,17 +46,20 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
         <StateDot state={displayState(agent)} withLabel />
       </div>
       <div className="flex shrink-0 gap-1">
-        {agentActions(agent).map((a) => (
-          <button
-            key={a.endpoint}
-            type="button"
-            disabled={a.disabled || !connected || act.pending}
-            onClick={() => void onAction(a)}
-            className="rounded border border-line px-1.5 py-0.5 hover:bg-raised disabled:opacity-50"
-          >
-            {a.label}
-          </button>
-        ))}
+        {agentActions(agent).map((a) => {
+          const inFlight = a.endpoint === requested;
+          return (
+            <button
+              key={a.endpoint}
+              type="button"
+              disabled={a.disabled || inFlight || !connected || act.pending}
+              onClick={() => void onAction(a)}
+              className="rounded border border-line px-1.5 py-0.5 hover:bg-raised disabled:opacity-50"
+            >
+              {inFlight ? (requested === "pause" ? C.pausing : C.resuming) : a.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
