@@ -162,7 +162,7 @@ public final class PanePreviewModel {
         do {
             let cap = try await client.pane(name, lines: Self.lines)
             if agent == name, self.generation == generation {
-                let next = Status.text(cap.text, tmuxAlive: cap.tmuxAlive)
+                let next = Status.text(cap.ansi ?? cap.text, tmuxAlive: cap.tmuxAlive)
                 if status != next { status = next }
             }
         } catch is CancellationError {

@@ -611,20 +611,22 @@ public struct TerminalOpen: Codable, Sendable, Equatable {
     public var tmux: String
 }
 
-/// GET /api/agents/{name}/pane (agent-hover-preview spec). Text is already
-/// ANSI-stripped by the daemon.
+/// GET /api/agents/{name}/pane (agent-hover-preview spec). `text` is already ANSI-stripped by
+/// the daemon; `ansi` is the raw capture with SGR kept (nil from daemons that predate it).
 public struct PaneCapture: Codable, Sendable, Equatable {
     public var text: String
+    public var ansi: String?
     public var tmuxAlive: Bool
     public var lines: Int
 
     enum CodingKeys: String, CodingKey {
-        case text, lines
+        case text, ansi, lines
         case tmuxAlive = "tmux_alive"
     }
 
-    public init(text: String, tmuxAlive: Bool = true, lines: Int = 40) {
+    public init(text: String, ansi: String? = nil, tmuxAlive: Bool = true, lines: Int = 40) {
         self.text = text
+        self.ansi = ansi
         self.tmuxAlive = tmuxAlive
         self.lines = lines
     }
