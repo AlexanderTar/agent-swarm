@@ -220,6 +220,27 @@ func TestAgentPaneReturnsANSIStrippedTextAndTmuxAlive(t *testing.T) {
 	}
 }
 
+// The raw capture rides beside the stripped text so the menubar can render SGR colours;
+// old clients keep reading text (pane-preview-ux spec, locked decisions).
+func TestAgentPaneAlsoReturnsRawANSICapture(t *testing.T) {
+	s, running := newServerWithSessionState(t, "running")
+	raw := "\x1b[31mred\x1b[0m plain"
+	tm := &paneTestTmux{captureText: raw}
+	tm.panes = []runtime.Pane{{Session: running}}
+	s.RT.Tmux = tm
+	rec := s.get(t, "/api/agents/"+running+"/pane")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	body := decode[paneWire](t, rec.Body.Bytes())
+	if body.Text != "red plain" {
+		t.Fatalf("text = %q, want ANSI stripped", body.Text)
+	}
+	if body.ANSI != raw {
+		t.Fatalf("ansi = %q, want raw capture %q", body.ANSI, raw)
+	}
+}
+
 func TestAgentPaneUnknownAgentIs404(t *testing.T) {
 	s, _ := newRuntimeServer(t)
 	rec := s.get(t, "/api/agents/totally-unknown-agent/pane")

@@ -644,9 +644,11 @@ func (s *Server) runtimeRoutes() []route {
 }
 
 // paneWire is GET /api/agents/{name}/pane. Text is ANSI-stripped
-// (adapter.StripANSI): the menubar renders it as plain monospaced text.
+// (adapter.StripANSI) for clients that render plain monospaced text; ANSI is
+// the raw capture, SGR colours intact, for clients that render colour.
 type paneWire struct {
 	Text      string `json:"text"`
+	ANSI      string `json:"ansi"`
 	TmuxAlive bool   `json:"tmux_alive"`
 	Lines     int    `json:"lines"`
 }
@@ -703,6 +705,7 @@ func (s *Server) agentPane(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, paneWire{
 		Text:      adapter.StripANSI(capture),
+		ANSI:      capture,
 		TmuxAlive: live[ses.TmuxName],
 		Lines:     lines,
 	})
