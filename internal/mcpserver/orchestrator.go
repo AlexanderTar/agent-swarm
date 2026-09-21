@@ -43,14 +43,17 @@ func rootKeyFor(ctx context.Context, s *Server, rootID string) (string, error) {
 
 // ---------- swarm_items ----------
 
-// promoteDraft moves a Draft task, and its Draft parent story, to Ready as the
-// caller's orchestrator so the daemon may later move them to In progress.
+// promoteDraft moves a Draft task, and its Draft parent story (even when the
+// task is already Ready), to Ready as the caller's orchestrator so the daemon
+// may later move them to In progress.
 func promoteDraft(ctx context.Context, s *Server, it items.Item, actor items.Actor) error {
-	if it.Type != items.Task || it.Status != items.Draft {
+	if it.Type != items.Task {
 		return nil
 	}
-	if _, err := s.RT.Items.Transition(ctx, it.Key, items.Ready, actor); err != nil {
-		return err
+	if it.Status == items.Draft {
+		if _, err := s.RT.Items.Transition(ctx, it.Key, items.Ready, actor); err != nil {
+			return err
+		}
 	}
 	if it.ParentKey == "" {
 		return nil

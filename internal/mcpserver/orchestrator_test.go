@@ -1451,6 +1451,33 @@ func TestSpawnOnReadyTaskChangesNothing(t *testing.T) {
 	}
 }
 
+func TestSpawnOnReadyTaskPromotesDraftParentStory(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	// A Ready task under a Draft story: the story must still be promoted.
+	created, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Ready task","status":"ready"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var it struct {
+		Key string `json:"key"`
+	}
+	json.Unmarshal(mustJSON(created), &it)
+	if it.Key == "" || statusOf(t, s, it.Key) != items.Ready {
+		t.Fatalf("fixture: task %q must start Ready", it.Key)
+	}
+	if got := statusOf(t, s, seed.StoryKey); got != items.Draft {
+		t.Fatalf("fixture: story = %s, must start draft", got)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_spawn", spawnArgs(it.Key)); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(t, s, seed.StoryKey); got != items.Ready {
+		t.Fatalf("story = %s, want ready", got)
+	}
+}
+
 func TestItemsCreateStatusReady(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	out, err := s.call(context.Background(), seed.Caller, "swarm_items",
