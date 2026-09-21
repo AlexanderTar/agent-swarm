@@ -104,8 +104,21 @@ public final class MockDaemonClient: DaemonClient {
         return Array(notificationList.prefix(limit))
     }
 
+    /// When true, `agent` parks after recording its call until `releaseAgent()` — lets a test
+    /// observe a pause/resume request while it is in flight.
+    public var holdAgent = false
+    private var agentGates: [CheckedContinuation<Void, Never>] = []
+
+    public func releaseAgent() {
+        guard !agentGates.isEmpty else { return }
+        agentGates.removeFirst().resume()
+    }
+
     public func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?) async throws {
         try record(["agent", endpoint.rawValue, name, scope?.rawValue].compactMap { $0 }.joined(separator: " "))
+        if holdAgent {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in agentGates.append(cont) }
+        }
     }
 
     public func pauseAll() async throws -> Int {

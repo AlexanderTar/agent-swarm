@@ -15,6 +15,7 @@ public enum Copy {
     public static let readAll = "Read all"
     public static let pauseAll = "Pause all"
     public static let pausing = "Pausing…"
+    public static let resuming = "Resuming…"
     public static let newOrchestrator = "New orchestrator"
     public static let openBoard = "Open board"
     public static let review = "Review"

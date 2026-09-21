@@ -76,6 +76,9 @@ public final class AppModel {
     public private(set) var allNotifications: [SwarmNotification]?
     public private(set) var tmuxSessions: [String: Bool] = [:]
     public private(set) var actionError: String?
+    /// Pause/resume requests sent but not yet reflected in `state`, by agent name. `actions(_:)`
+    /// shows those buttons disabled; the daemon's own "Pausing…" state only arrives with the refresh.
+    public private(set) var inFlight: [String: AgentEndpoint] = [:]
     public private(set) var openSections: Set<Section>
     public private(set) var collapsedAgents: Set<String> = []
     public private(set) var openFinished: Set<String> = []
@@ -336,7 +339,15 @@ public final class AppModel {
     }
 
     public func actions(_ a: AgentNode) -> [AgentAction] {
-        AgentTree.actions(a, tmuxAlive: tmuxAlive(a), connected: connected)
+        let actions = AgentTree.actions(a, tmuxAlive: tmuxAlive(a), connected: connected)
+        guard let pending = inFlight[a.name] else { return actions }
+        return actions.map { action in
+            guard action.endpoint == pending else { return action }
+            var busy = action
+            busy.disabled = true
+            busy.label = pending == .pause ? Copy.pausing : Copy.resuming
+            return busy
+        }
     }
 
     /// The terminal button on a request row (question or prompt from a live agent).
@@ -352,6 +363,12 @@ public final class AppModel {
             await openTerminal(agent.name)
             return
         }
+        let tracked = action.endpoint == .pause || action.endpoint == .resume
+        if tracked {
+            guard inFlight[agent.name] == nil else { return }
+            inFlight[agent.name] = action.endpoint
+        }
+        defer { if tracked { inFlight[agent.name] = nil } } // after the refresh below, also on error
         do {
             try await client.agent(agent.name, action.endpoint, scope: action.scope)
             actionError = nil

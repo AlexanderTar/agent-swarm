@@ -276,6 +276,111 @@ final class AppModelTests: XCTestCase {
         ])
     }
 
+    /// Starts `perform` and returns once the mock has the request parked in flight.
+    private func performInFlight(_ m: AppModel, _ action: AgentAction, on agent: AgentNode) async -> Task<Void, Never> {
+        client.holdAgent = true
+        let before = client.calls.count
+        let task = Task { await m.perform(action, on: agent) }
+        for _ in 0..<200 where client.calls.count == before { await Task.yield() }
+        XCTAssertGreaterThan(client.calls.count, before, "the request never reached the daemon")
+        return task
+    }
+
+    func testPauseInFlightDisablesTheButtonUntilTheRefreshLands() async {
+        let m = make()
+        await m.refresh()
+        let orch = m.state.agents[0]
+        let before = m.actions(orch)
+        XCTAssertEqual(before.map(\.label), ["Open terminal", "Pause group", "Cancel"])
+        XCTAssertTrue(m.inFlight.isEmpty)
+
+        let task = await performInFlight(m, before[1], on: orch)
+        XCTAssertEqual(m.inFlight[orch.name], .pause)
+        let during = m.actions(orch)
+        XCTAssertEqual(during.map(\.endpoint), before.map(\.endpoint))
+        XCTAssertEqual(during[1].label, Copy.pausing)
+        XCTAssertTrue(during[1].disabled)
+        XCTAssertEqual([during[0], during[2]], [before[0], before[2]], "the other actions are unchanged")
+        XCTAssertEqual(during[1].scope, before[1].scope)
+
+        client.releaseAgent()
+        await task.value
+        XCTAssertTrue(m.inFlight.isEmpty)
+        XCTAssertEqual(m.actions(orch).map(\.label), before.map(\.label))
+    }
+
+    func testResumeInFlightDisablesTheButton() async {
+        let m = make()
+        await m.refresh()
+        let paused = m.state.agents[1]
+        let before = m.actions(paused)
+        XCTAssertEqual(before[0].endpoint, .resume)
+        XCTAssertFalse(before[0].disabled)
+
+        let task = await performInFlight(m, before[0], on: paused)
+        XCTAssertEqual(m.inFlight[paused.name], .resume)
+        let during = m.actions(paused)
+        XCTAssertEqual(during[0].label, Copy.resuming)
+        XCTAssertEqual(Copy.resuming, "Resuming…")
+        XCTAssertTrue(during[0].disabled)
+        XCTAssertEqual(Array(during.dropFirst()), Array(before.dropFirst()))
+
+        client.releaseAgent()
+        await task.value
+        XCTAssertTrue(m.inFlight.isEmpty)
+    }
+
+    func testSecondPauseWhileInFlightIsANoOp() async {
+        let m = make()
+        await m.refresh()
+        let orch = m.state.agents[0]
+        let pause = m.actions(orch)[1]
+        let task = await performInFlight(m, pause, on: orch)
+        await m.perform(pause, on: orch) // a stale, still-enabled copy of the button
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("agent pause") }.count, 1)
+        client.releaseAgent()
+        await task.value
+        XCTAssertEqual(client.calls.filter { $0.hasPrefix("agent pause") }.count, 1)
+    }
+
+    func testInFlightIsPerAgent() async {
+        let m = make()
+        await m.refresh()
+        let orch = m.state.agents[0], paused = m.state.agents[1]
+        let task = await performInFlight(m, m.actions(orch)[1], on: orch)
+        XCTAssertEqual(m.actions(paused)[0].label, Copy.resume, "another agent's buttons are untouched")
+        XCTAssertFalse(m.actions(paused)[0].disabled)
+        client.releaseAgent()
+        await task.value
+    }
+
+    func testFailedPauseClearsInFlightAndShowsTheError() async {
+        let m = make()
+        await m.refresh()
+        let orch = m.state.agents[0]
+        client.failNext = .api(status: 409, code: "conflict", message: "Still stopping. Try again in a few seconds.")
+        await m.perform(m.actions(orch)[1], on: orch)
+        XCTAssertTrue(m.inFlight.isEmpty)
+        XCTAssertEqual(m.actionError, "Still stopping. Try again in a few seconds.")
+        XCTAssertEqual(m.actions(orch)[1].label, "Pause group")
+        XCTAssertFalse(m.actions(orch)[1].disabled)
+    }
+
+    func testOtherActionsAreNotTracked() async {
+        let m = make()
+        await m.refresh()
+        let crashed = m.state.agents[2]
+        let ack = m.actions(crashed)[1]
+        XCTAssertEqual(ack.endpoint, .ack)
+        client.holdAgent = true
+        let before = client.calls.count
+        let task = Task { await m.perform(ack, on: crashed) }
+        for _ in 0..<200 where client.calls.count == before { await Task.yield() }
+        XCTAssertTrue(m.inFlight.isEmpty)
+        client.releaseAgent()
+        await task.value
+    }
+
     func testPauseAllStates() async throws {
         let m = make()
         await m.refresh()
