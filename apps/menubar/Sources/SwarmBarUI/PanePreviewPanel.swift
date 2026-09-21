@@ -18,6 +18,8 @@ public struct PanePreviewPanel: View {
     }
 
     public static let size = CGSize(width: 760, height: 320)
+    /// Air between the dark fill's edge and the text.
+    private static let textInset: CGFloat = 6
 
     private var header: String {
         guard let name = preview.agent else { return "" }
@@ -59,9 +61,11 @@ public struct PanePreviewPanel: View {
                 }
                 GeometryReader { geo in
                     ScrollView([.vertical, .horizontal]) {
-                        Text(text)
+                        Text(AnsiText.attributed(text))
                             .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(AnsiText.defaultFG)
                             .fixedSize(horizontal: true, vertical: false)
+                            .padding(Self.textInset)
                             .frame(minWidth: geo.size.width, minHeight: geo.size.height, alignment: .bottomLeading)
                             .textSelection(.enabled)
                             .background(SubtleScrollerConfig())
@@ -69,6 +73,9 @@ public struct PanePreviewPanel: View {
                     .scrollIndicators(.automatic)
                     .defaultScrollAnchor(.bottomLeading)
                 }
+                // TUI palettes assume a dark screen, so the fill is the same in light and dark mode.
+                .background(AnsiText.defaultBG, in: RoundedRectangle(cornerRadius: 6))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         case let .failed(message):

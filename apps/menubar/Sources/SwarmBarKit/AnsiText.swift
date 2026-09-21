@@ -16,7 +16,7 @@ public enum AnsiText {
     /// The colour the panel draws text in when the stream sets none.
     public static let defaultFG = Color(red: 0xD4 / 255, green: 0xD4 / 255, blue: 0xD4 / 255)
     /// The panel's own fill; stands in for a missing background under reverse video.
-    static let defaultBG = Color(red: 0x1E / 255, green: 0x1E / 255, blue: 0x1E / 255)
+    public static let defaultBG = Color(red: 0x1E / 255, green: 0x1E / 255, blue: 0x1E / 255)
 
     public static func attributed(_ raw: String) -> AttributedString {
         var out = AttributedString()
