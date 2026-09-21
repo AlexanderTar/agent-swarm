@@ -735,3 +735,86 @@ func (s *Store) RequestChanges(ctx context.Context, id, comment, via string) (Re
 				"comment": comment, "section_id": req.SectionID}
 		})
 }
+
+// ResolvePrompt resolves an open prompt request. If action is specified and tmux is present,
+// it transmits the keystrokes to the session's tmux pane.
+func (s *Store) ResolvePrompt(ctx context.Context, id, action, via string) (Request, error) {
+	var out Request
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		req, err := s.requestTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if req.State != "open" {
+			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
+		}
+		// Transmit keys to tmux if action specified
+		if action != "" && req.SessionID != "" && s.Tmux != nil {
+			var tmuxName string
+			if err := tx.QueryRowContext(ctx, `SELECT tmux_name FROM sessions WHERE id = ?`, req.SessionID).Scan(&tmuxName); err == nil && tmuxName != "" {
+				_ = s.Tmux.Keys(ctx, tmuxName, action)
+			}
+		}
+		now := s.Now()
+		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'answered', response_text = ?,
+			responded_via = ?, responded_at = ? WHERE id = ?`,
+			nullIf(action), nullIf(via), db.Millis(now), id); err != nil {
+			return err
+		}
+		key, err := s.itemKey(ctx, tx, req.ItemID)
+		if err != nil {
+			return err
+		}
+		w, err := s.RequestWireTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if _, err := s.Events.Append(ctx, tx, events.RequestResolved, w); err != nil {
+			return err
+		}
+		if err := s.Items.ReconcileTx(ctx, tx, key); err != nil {
+			return err
+		}
+		out, err = s.requestTx(ctx, tx, id)
+		return err
+	})
+	return out, err
+}
+
+// ResolveQuestion resolves an open question request with response text and via attribution.
+func (s *Store) ResolveQuestion(ctx context.Context, id, answer, via string) (Request, error) {
+	var out Request
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		req, err := s.requestTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if req.State != "open" {
+			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
+		}
+		now := s.Now()
+		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'answered', response_text = ?,
+			responded_via = ?, responded_at = ? WHERE id = ?`,
+			nullIf(answer), nullIf(via), db.Millis(now), id); err != nil {
+			return err
+		}
+		key, err := s.itemKey(ctx, tx, req.ItemID)
+		if err != nil {
+			return err
+		}
+		w, err := s.RequestWireTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if _, err := s.Events.Append(ctx, tx, events.RequestResolved, w); err != nil {
+			return err
+		}
+		if err := s.Items.ReconcileTx(ctx, tx, key); err != nil {
+			return err
+		}
+		out, err = s.requestTx(ctx, tx, id)
+		return err
+	})
+	return out, err
+}
+

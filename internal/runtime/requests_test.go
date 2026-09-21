@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -493,3 +494,110 @@ func TestPromptLengthIsEnforced(t *testing.T) {
 		t.Fatal("a prompt over 1000 characters must be refused")
 	}
 }
+
+func TestResolvePromptTransmitsKeysAndResolves(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Prompt spike", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("LatestSession failed: %v", err)
+	}
+
+	req, err := s.AskPrompt(ctx, ses.ID, "Trust folder?", []string{"Enter"})
+	if err != nil {
+		t.Fatalf("AskPrompt failed: %v", err)
+	}
+
+	resolved, err := s.ResolvePrompt(ctx, req.ID, "Enter", "menubar")
+	if err != nil {
+		t.Fatalf("ResolvePrompt failed: %v", err)
+	}
+	if resolved.State != "answered" {
+		t.Fatalf("expected state answered, got %s", resolved.State)
+	}
+	if resolved.RespondedVia != "menubar" {
+		t.Fatalf("expected responded_via menubar, got %s", resolved.RespondedVia)
+	}
+	// Verify keys were sent to tmux
+	wantKey := ses.TmuxName + "|Enter"
+	if !slices.Contains(tm.keys, wantKey) {
+		t.Fatalf("expected %q sent to tmux, got %v", wantKey, tm.keys)
+	}
+
+	// Verify resolving again fails with conflict
+	if _, err := s.ResolvePrompt(ctx, req.ID, "Enter", "menubar"); err == nil {
+		t.Fatal("expected conflict on already resolved prompt, got nil")
+	}
+}
+
+func TestResolveQuestionFromTerminal(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Question spike", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("LatestSession failed: %v", err)
+	}
+
+	req, err := s.AskQuestion(ctx, ses.ID, "Choose option", []string{"A", "B"})
+	if err != nil {
+		t.Fatalf("AskQuestion failed: %v", err)
+	}
+
+	resolved, err := s.ResolveQuestion(ctx, req.ID, "A", "terminal")
+	if err != nil {
+		t.Fatalf("ResolveQuestion failed: %v", err)
+	}
+	if resolved.State != "answered" {
+		t.Fatalf("expected state answered, got %s", resolved.State)
+	}
+	if resolved.ResponseText != "A" {
+		t.Fatalf("expected response_text A, got %s", resolved.ResponseText)
+	}
+	if resolved.RespondedVia != "terminal" {
+		t.Fatalf("expected responded_via terminal, got %s", resolved.RespondedVia)
+	}
+
+	// Verify resolving again fails with conflict
+	if _, err := s.ResolveQuestion(ctx, req.ID, "A", "terminal"); err == nil {
+		t.Fatal("expected conflict on already resolved question, got nil")
+	}
+}
+
+func TestResolvePromptEmptyActionDoesNotSendKeys(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Prompt spike empty", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("LatestSession failed: %v", err)
+	}
+
+	req, err := s.AskPrompt(ctx, ses.ID, "Auto approved prompt?", []string{"Enter"})
+	if err != nil {
+		t.Fatalf("AskPrompt failed: %v", err)
+	}
+
+	resolved, err := s.ResolvePrompt(ctx, req.ID, "", "terminal")
+	if err != nil {
+		t.Fatalf("ResolvePrompt failed: %v", err)
+	}
+	if resolved.State != "answered" {
+		t.Fatalf("expected state answered, got %s", resolved.State)
+	}
+	if resolved.ResponseText != "" {
+		t.Fatalf("expected empty response_text, got %q", resolved.ResponseText)
+	}
+	if resolved.RespondedVia != "terminal" {
+		t.Fatalf("expected responded_via terminal, got %s", resolved.RespondedVia)
+	}
+	// Verify NO keys were sent to tmux
+	for _, k := range tm.keys {
+		if strings.HasPrefix(k, ses.TmuxName+"|") {
+			t.Fatalf("expected no keys sent to tmux, got %v", tm.keys)
+		}
+	}
+}
+
+

@@ -251,7 +251,7 @@ CREATE TABLE requests (
   artifact_revision INTEGER,
   binding_json    TEXT,
   response_text   TEXT,
-  responded_via   TEXT CHECK (responded_via IN ('menubar','board','cli')),
+  responded_via   TEXT CHECK (responded_via IN ('menubar','board','cli','terminal')),
   responded_at    INTEGER,
   created_at      INTEGER NOT NULL
 );

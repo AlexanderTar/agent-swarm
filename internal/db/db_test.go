@@ -168,6 +168,16 @@ func TestCheckConstraints(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
 		t.Errorf("bad repo source: err = %v", err)
 	}
+	_, err = d.Exec(`INSERT INTO requests (id, kind, item_id, prompt, state, responded_via, created_at)
+		VALUES ('req_bad_via', 'question', 'itm_ok', 'prompt', 'open', 'pigeon', 1)`)
+	if err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+		t.Errorf("bad responded_via: err = %v", err)
+	}
+	_, err = d.Exec(`INSERT INTO requests (id, kind, item_id, prompt, state, responded_via, created_at)
+		VALUES ('req_terminal', 'question', 'itm_ok', 'prompt', 'answered', 'terminal', 1)`)
+	if err != nil {
+		t.Fatalf("terminal responded_via rejected: %v", err)
+	}
 }
 
 func ftsCount(t *testing.T, d *db.DB, q string) int {
