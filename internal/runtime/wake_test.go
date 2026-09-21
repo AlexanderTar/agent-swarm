@@ -502,3 +502,44 @@ func TestUndeliverableSecondBatchStartsItsOwnClock(t *testing.T) {
 		t.Fatalf("second batch: %d alerts, want 1", n)
 	}
 }
+
+// After a successful paste the agent gets pasteRetry (30 s) to respond before
+// it is pasted again, unless a newer pending message arrived. Previously only
+// the 5 s wakeGap applied, so a mid-turn agent got a paste every ~20 s.
+func TestNoRepasteWithinTheCooldownUnlessAMessageIsNewer(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Cooldown", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"}) // default capture is idle
+
+	at.Advance(25 * time.Second)
+	s.WakeDue(ctx)
+	if len(tm.pasted) != 1 {
+		t.Fatalf("first paste: %d", len(tm.pasted))
+	}
+	for _, step := range []time.Duration{6, 14, 9} { // +6 s, +20 s, +29 s
+		at.Advance(step * time.Second)
+		s.WakeDue(ctx)
+		if len(tm.pasted) != 1 {
+			t.Fatalf("re-pasted inside the cooldown: %d pastes", len(tm.pasted))
+		}
+	}
+	at.Advance(2 * time.Second) // +31 s
+	s.WakeDue(ctx)
+	if len(tm.pasted) != 2 {
+		t.Fatalf("after the cooldown: %d pastes, want 2", len(tm.pasted))
+	}
+
+	// A message created after the last wake is woken for at the next tick, not
+	// after the cooldown. (It must be strictly newer than last_wake_at.)
+	at.Advance(time.Second)
+	enq(t, s, a.ID, a.RootItemID, "finding", `{"body":"newer"}`, 1)
+	at.Advance(6 * time.Second)
+	s.WakeDue(ctx)
+	if len(tm.pasted) != 3 {
+		t.Fatalf("a newer message must be woken at the next tick: %d pastes", len(tm.pasted))
+	}
+}

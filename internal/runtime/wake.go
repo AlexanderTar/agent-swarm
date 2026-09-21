@@ -117,7 +117,13 @@ func (s *Store) WakeDue(ctx context.Context) error {
 				return err
 			}
 		}
-		if r.LastWakeAt != nil && s.Now().Sub(*r.LastWakeAt) < wakeGap {
+		// After a wake (native or paste) give the agent pasteRetry to respond,
+		// unless a pending immediate message is newer than that wake.
+		cool := pasteRetry
+		if r.HasControl {
+			cool = wakeGap
+		}
+		if r.LastWakeAt != nil && s.Now().Sub(*r.LastWakeAt) < cool && !r.NewestPendingAt.After(*r.LastWakeAt) {
 			continue
 		}
 		notice := PendingNotice(r.Pending, r.AgentName, r.ItemKey)
