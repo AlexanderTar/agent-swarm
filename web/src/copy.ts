@@ -123,6 +123,7 @@ export const C = {
   pauseGroup: "Pause group",
   pausing: "Pausing…",
   resume: "Resume",
+  resuming: "Resuming…",
   acknowledge: "Acknowledge",
   retry: "Retry",
   agents: "Agents",

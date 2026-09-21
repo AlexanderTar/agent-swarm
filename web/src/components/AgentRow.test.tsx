@@ -58,6 +58,44 @@ describe("AgentRow (§10.7 on the board)", () => {
     expect(await screen.findByText("Still stopping. Try again in a few seconds.")).toBeInTheDocument();
   });
 
+  // The mock daemon flips its own copy of the agent, not the `agent` prop, so the prop's state stays
+  // unchanged after the click: exactly the window where `useMutation.pending` is already false but the
+  // refetch has not landed.
+  it.each([
+    ["pause", "Pause", "Pausing…", "running", "quiescing"],
+    ["resume", "Resume", "Resuming…", "paused", "spawning"],
+  ] as const)("keeps %s disabled until the agent's state changes", async (_e, label, busy, from, to) => {
+    const name = `req-${_e}`;
+    const d = daemon0();
+    d.override(`POST /api/agents/${name}/${_e}`, { status: 200, body: {} });
+    const { user, rerender } = renderWithDaemon(<AgentRow agent={makeAgent({ name, session: ses(from) })} />, { daemon: d, events: false });
+    const btn = () => within(screen.getByTestId(`agent-${name}`)).getByRole("button", { name: /^(Pause|Pausing…|Resume|Resuming…)$/ });
+    await user.click(screen.getByRole("button", { name: label }));
+    await waitFor(() => expect(btn()).toHaveTextContent(busy));
+    expect(btn()).toBeDisabled();
+    // Let the mutation settle (pending false) with the agent unchanged: still disabled.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(btn()).toBeDisabled();
+    expect(btn()).toHaveTextContent(busy);
+    rerender(<AgentRow agent={makeAgent({ name, session: ses(to) })} />);
+    if (_e === "pause") {
+      // Daemon's own disabled "Pausing…" takes over.
+      expect(btn()).toBeDisabled();
+      expect(btn()).toHaveTextContent("Pausing…");
+    } else {
+      expect(within(screen.getByTestId(`agent-${name}`)).queryByRole("button", { name: /Resum/ })).toBeNull();
+    }
+  });
+
+  it("re-enables the button and toasts when the pause request fails", async () => {
+    const d = daemon0();
+    d.override("POST /api/agents/req-fail/pause", { status: 409, body: { error: { code: "conflict", message: "Still stopping. Try again in a few seconds." } } });
+    const { user } = renderWithDaemon(<AgentRow agent={makeAgent({ name: "req-fail", session: ses("running") })} />, { daemon: d, events: false });
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    expect(await screen.findByText("Still stopping. Try again in a few seconds.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+  });
+
   it("disables actions while disconnected", async () => {
     const d = daemon0();
     renderWithDaemon(<AgentRow agent={makeAgent({ name: "y", session: ses("running") })} />, { daemon: d });
