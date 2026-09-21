@@ -8,9 +8,9 @@ import { useLocalSet } from "../state/local";
 import type { HierarchyProps } from "./props";
 
 export function Hierarchy(p: HierarchyProps) {
-  const [collapsed, toggle] = useLocalSet("swarm.hierarchy.collapsed", []);
+  const [toggled, toggle] = useLocalSet("swarm.hierarchy.collapsed", []);
   const [menu, setMenu] = useState<{ key: string; type: "story" | "task" } | null>(null);
-  const rows = hierarchyRows(p.items, p.filter, collapsed);
+  const rows = hierarchyRows(p.items, p.filter, toggled);
   const tree = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 

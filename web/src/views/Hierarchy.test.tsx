@@ -39,6 +39,14 @@ describe("Hierarchy view (§16.6)", () => {
     expect(within(row("TASK-104")).getByLabelText("Needs you")).toBeInTheDocument();
   });
 
+  it("folds finished items by default and expands them on click", async () => {
+    const { user } = setup();
+    expect(row("EPIC-30")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("treeitem", { name: /^STORY-50 / })).not.toBeInTheDocument();
+    await user.click(within(row("EPIC-30")).getByRole("button", { name: "Expand EPIC-30" }));
+    expect(row("STORY-50")).toBeInTheDocument();
+  });
+
   it("collapses rows and remembers it", async () => {
     const { user, unmount } = setup();
     await user.click(within(row("STORY-40")).getByRole("button", { name: "Collapse STORY-40" }));
