@@ -47,6 +47,16 @@ describe("Hierarchy view (§16.6)", () => {
     expect(row("STORY-50")).toBeInTheDocument();
   });
 
+  it("keeps a finished item folded when it was collapsed by hand before, and remembers opening one", async () => {
+    localStorage.setItem("swarm.hierarchy.collapsed", JSON.stringify(["EPIC-30"]));
+    const { user, unmount } = setup();
+    expect(row("EPIC-30")).toHaveAttribute("aria-expanded", "false");
+    await user.click(within(row("EPIC-30")).getByRole("button", { name: "Expand EPIC-30" }));
+    unmount();
+    setup();
+    expect(row("EPIC-30")).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("collapses rows and remembers it", async () => {
     const { user, unmount } = setup();
     await user.click(within(row("STORY-40")).getByRole("button", { name: "Collapse STORY-40" }));

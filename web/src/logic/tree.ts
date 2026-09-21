@@ -86,9 +86,14 @@ export interface TreeRow { item: Item; depth: number; context: boolean; hasChild
 
 const isFinal = (s: Item["status"]) => s === "done" || s === "cancelled";
 
-// `toggled` holds keys the user flipped from their default: open, except done/cancelled items,
-// which start folded (unless a filter is active, so filter matches are never hidden inside a fold).
-export function hierarchyRows(items: Item[], f: Filter, toggled: ReadonlySet<string>): TreeRow[] {
+// Done/cancelled items start folded, unless a filter is active (so matches are never hidden inside
+// a fold). `collapsed` and `opened` are the user's explicit overrides; collapsed wins.
+export function hierarchyRows(
+  items: Item[],
+  f: Filter,
+  collapsed: ReadonlySet<string>,
+  opened: ReadonlySet<string> = new Set(),
+): TreeRow[] {
   const idx = buildIndex(items);
   const fr = isFilterActive(f) ? filterItems(items, f) : null;
   const rows: TreeRow[] = [];
@@ -97,8 +102,7 @@ export function hierarchyRows(items: Item[], f: Filter, toggled: ReadonlySet<str
     if (fr && !fr.matched.has(it.key) && !context) return;
     const kids = idx.children.get(it.key) ?? [];
     // Context rows stay open so matches are visible; the stored collapse state is untouched.
-    const foldedByDefault = !fr && isFinal(it.status);
-    const expanded = context || foldedByDefault === toggled.has(it.key);
+    const expanded = context || (!collapsed.has(it.key) && (opened.has(it.key) || fr !== null || !isFinal(it.status)));
     rows.push({ item: it, depth, context, hasChildren: kids.length > 0, expanded });
     if (expanded) for (const k of kids) visit(k, depth + 1);
   };
