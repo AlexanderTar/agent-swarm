@@ -428,6 +428,19 @@ func (s *Store) withdraw(ctx context.Context, sessionID, reqID, requestID string
 	return out, err
 }
 
+// errRelayToParent is the refusal a parented agent gets from swarm_ask
+// (kind question) and swarm_blocker. "parent" is swarm_send's alias for the
+// caller's parent (skills/swarm/SKILL.md rule 5), so no parent lookup is needed.
+const errRelayToParent = "You report to an orchestrator, not the user. Send this to it with swarm_send (to: \"parent\", kind: \"question\") and keep working on anything you are not blocked on."
+
+// requireTopLevel returns the refusal for an agent that has a parent, nil otherwise.
+func requireTopLevel(a Agent) error {
+	if a.ParentAgentID == "" {
+		return nil
+	}
+	return &items.Error{Code: items.CodeBadRequest, Message: errRelayToParent}
+}
+
 func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) (Request, error) {
 	if n := utf8.RuneCountInString(in.Prompt); n < 1 || n > 1000 {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
@@ -436,6 +449,9 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
+			return err
+		}
+		if err := requireTopLevel(a); err != nil {
 			return err
 		}
 		id := ids.New("req")
@@ -473,6 +489,9 @@ func (s *Store) AskBlocker(ctx context.Context, sessionID, prompt string, option
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
+			return err
+		}
+		if err := requireTopLevel(a); err != nil {
 			return err
 		}
 		id := ids.New("req")

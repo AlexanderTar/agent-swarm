@@ -600,4 +600,24 @@ func TestResolvePromptEmptyActionDoesNotSendKeys(t *testing.T) {
 	}
 }
 
+func TestParentedAgentCannotOpenQuestionOrBlocker(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
 
+	if _, err := s.Ask(ctx, wSes.ID, AskInput{Kind: "question", Prompt: "which db?"}); err == nil ||
+		!strings.Contains(err.Error(), errRelayToParent) {
+		t.Fatalf("Ask err = %v, want %q", err, errRelayToParent)
+	}
+	if _, err := s.AskBlocker(ctx, wSes.ID, "need a key", nil); err == nil ||
+		!strings.Contains(err.Error(), errRelayToParent) {
+		t.Fatalf("AskBlocker err = %v, want %q", err, errRelayToParent)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE is_hitl = 1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("HITL rows = %d, want 0", n)
+	}
+}
