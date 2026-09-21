@@ -563,7 +563,10 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 		// Auto-resolve any open prompt request whose pattern is no longer present in capture
 		rows, err := s.DB.QueryContext(ctx, `SELECT id, prompt FROM requests
 			WHERE session_id = ? AND kind = 'prompt' AND state = 'open'`, r.SessionID)
-		if err == nil {
+		if err != nil {
+			s.logf("reconcile: query open prompts for %s: %v", r.SessionID, err)
+		} else {
+			defer rows.Close()
 			var toResolve []string
 			for rows.Next() {
 				var reqID, pText string
@@ -580,9 +583,14 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 					}
 				}
 			}
+			if err := rows.Err(); err != nil {
+				s.logf("reconcile: iterate open prompts for %s: %v", r.SessionID, err)
+			}
 			rows.Close()
 			for _, reqID := range toResolve {
-				_, _ = s.ResolvePrompt(ctx, reqID, "", "terminal")
+				if _, err := s.ResolvePrompt(ctx, reqID, "", "terminal"); err != nil {
+					s.logf("reconcile: resolve prompt %s: %v", reqID, err)
+				}
 			}
 			if len(toResolve) > 0 {
 				owesNothing, err = s.owesNothing(ctx, r)
