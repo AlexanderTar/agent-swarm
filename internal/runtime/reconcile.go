@@ -183,7 +183,35 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.notifyUndeliveredMessages(ctx); err != nil {
 		return err
 	}
+	if err := s.withdrawOrphanedRequests(ctx); err != nil {
+		return err
+	}
 	return s.sweepFinishedRoots(ctx)
+}
+
+// withdrawOrphanedRequests closes every open HITL request whose owning agent
+// is done: agents.state = 'finished', or its newest session (same order as
+// LatestSession) is completed/failed/crashed/cancelled. paused/interrupted
+// keep their rows: the answer is delivered as a message on resume. Runs before
+// sweepFinishedRoots, which reads open requests in a tree.
+func (s *Store) withdrawOrphanedRequests(ctx context.Context) error {
+	ids, err := s.queryIDs(ctx, `SELECT r.id FROM requests r
+		JOIN agents a ON a.id = r.agent_id
+		WHERE r.state = 'open' AND r.is_hitl = 1
+		  AND (a.state = 'finished'
+		    OR (SELECT se.state FROM sessions se WHERE se.agent_id = r.agent_id
+		        ORDER BY se.generation DESC, se.attempt DESC LIMIT 1)
+		       IN ('completed', 'failed', 'crashed', 'cancelled'))
+		ORDER BY r.created_at`)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := s.tx(ctx, func(tx *sql.Tx) error { return s.closeRequestTx(ctx, tx, id) }); err != nil {
+			s.logf("reconcile: withdraw orphaned request %s: %v", id, err)
+		}
+	}
+	return nil
 }
 
 // terminalCheckpointKind is the most recent completed/failed checkpoint for

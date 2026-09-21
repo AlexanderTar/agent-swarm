@@ -1585,3 +1585,99 @@ func TestReconcileAutoResolvesPromptWhenDismissedInTerminal(t *testing.T) {
 	}
 }
 
+
+func stateOfRequest(t *testing.T, s *Store, id string) string {
+	t.Helper()
+	var st string
+	if err := s.DB.QueryRow(`SELECT state FROM requests WHERE id = ?`, id).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestSweepWithdrawsOpenHITLRequestsOfEndedSessions(t *testing.T) {
+	cases := []struct {
+		state SessionState
+		want  string
+	}{
+		{Completed, "withdrawn"}, {Failed, "withdrawn"}, {Crashed, "withdrawn"}, {Cancelled, "withdrawn"},
+		{Paused, "open"}, {Interrupted, "open"}, {Running, "open"},
+	}
+	for _, c := range cases {
+		t.Run(string(c.state), func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Ask me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+			ses, _ := s.LatestSession(ctx, a.ID)
+			req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which one?"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetSessionState(ctx, ses.ID, c.state); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.withdrawOrphanedRequests(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := stateOfRequest(t, s, req.ID); got != c.want {
+				t.Fatalf("session %s: request state = %s, want %s", c.state, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSweepKeepsRowWhenNewerAttemptIsRunning(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Retry me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses1, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses1.ID, AskInput{Kind: "question", Prompt: "which one?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, ses1.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	// generation 2: UNIQUE(agent_id, generation) forbids a second generation-1 row.
+	ses2, err := s.startSessionForTest(ctx, a, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, ses2.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.withdrawOrphanedRequests(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOfRequest(t, s, req.ID); got != "open" {
+		t.Fatalf("request state = %s, want open (newest attempt is running)", got)
+	}
+}
+
+func TestSweepWithdrawsRowsOfFinishedAgentEvenIfSessionPaused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Done", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which one?"})
+	_ = s.SetSessionState(ctx, ses.ID, Paused)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.withdrawOrphanedRequests(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOfRequest(t, s, req.ID); got != "withdrawn" {
+		t.Fatalf("request state = %s, want withdrawn", got)
+	}
+	evs, _ := s.Events.After(ctx, 0, 200)
+	var resolved int
+	for _, e := range evs {
+		if e.Type == "request.resolved" {
+			resolved++
+		}
+	}
+	if resolved != 1 {
+		t.Fatalf("request.resolved events = %d, want 1", resolved)
+	}
+}
