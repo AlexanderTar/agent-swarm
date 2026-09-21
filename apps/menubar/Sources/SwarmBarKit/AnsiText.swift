@@ -129,11 +129,13 @@ public enum AnsiText {
             case 100...107: style.bg = base[code - 100 + 8]
             case 39: style.fg = nil
             case 49: style.bg = nil
-            case 38, 48:
+            case 38, 48, 58:
                 // Read the colour even when it is out of range, so its arguments are consumed.
+                // 58 (underline colour) is consumed and dropped: underlines draw in the text colour.
                 let (color, used) = extended(p, from: i + 1)
-                if let color { if code == 38 { style.fg = color } else { style.bg = color } }
+                if let color, code != 58 { if code == 38 { style.fg = color } else { style.bg = color } }
                 i += used
+            case 59: break // underline colour reset; not modelled
             default: break
             }
         }

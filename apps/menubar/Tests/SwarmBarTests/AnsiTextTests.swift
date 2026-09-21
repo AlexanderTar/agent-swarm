@@ -128,6 +128,16 @@ final class AnsiTextTests: XCTestCase {
         ], "22 clears dim")
     }
 
+    func testUnderlineColourIsConsumedNotReadAsStandaloneCodes() {
+        // 58;2;255;0;0 must not parse as dim (2) then reset (0): red survives, undimmed.
+        XCTAssertEqual(pieces("\(esc)[31m\(esc)[58;2;255;0;0mX"), [Piece(text: "X", fg: hex(0xCD3131), bg: nil)])
+        // 58;5;1 must not parse as bold (1).
+        XCTAssertNil(intent("\(esc)[58;5;1mX"))
+        // 59 resets the underline colour, which is not modelled: a no-op.
+        XCTAssertEqual(pieces("\(esc)[59mX"), [Piece(text: "X", fg: nil, bg: nil)])
+        XCTAssertNil(intent("\(esc)[59mX"))
+    }
+
     func testNonSGRSequencesAreDroppedWithoutGarbage() {
         XCTAssertEqual(String(AnsiText.attributed("a\(esc)[?25lb\(esc)[2Kc\(esc)]0;title\u{07}d").characters), "abcd")
         XCTAssertEqual(String(AnsiText.attributed("a\(esc)]0;title\(esc)\\b").characters), "ab", "OSC ended by ST")
