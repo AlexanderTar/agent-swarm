@@ -368,6 +368,11 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{}, nil
 
 	case "UserPromptSubmit":
+		if in.Prompt != "" && !runtime.IsDaemonPrompt(in.Prompt) && h.RT != nil && s.AgentID != "" {
+			if err := h.RT.ResolveAnsweredInTerminal(ctx, s.AgentID); err != nil {
+				h.logf("hook: close rows after human prompt for %s: %v", s.ID, err)
+			}
+		}
 		var parts []string
 		if s.NeedsCompaction {
 			parts = append(parts, runtime.CompactionNotice())

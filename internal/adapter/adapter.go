@@ -75,6 +75,7 @@ type HookInput struct {
 	Cwd               string
 	RawToolInput      []byte
 	ToolResponse      []byte
+	Prompt            string // UserPromptSubmit text; empty for adapters that don't send it
 }
 
 // WakeTarget is what Wake needs to deliver a native or pasted notice.

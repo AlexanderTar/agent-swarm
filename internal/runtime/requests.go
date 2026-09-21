@@ -849,6 +849,23 @@ func (s *Store) ResolveSessionPrompts(ctx context.Context, sessionID, command st
 	return nil
 }
 
+// ResolveAnsweredInTerminal closes every open question/blocker row of an agent
+// after a human-typed prompt: answered, via terminal. Keyed by agent, not
+// session: after a pause and resume the row belongs to the old session.
+func (s *Store) ResolveAnsweredInTerminal(ctx context.Context, agentID string) error {
+	ids, err := s.queryIDs(ctx, `SELECT id FROM requests
+		WHERE agent_id = ? AND is_hitl = 1 AND kind IN ('question', 'blocker') AND state = 'open'`, agentID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := s.ResolveQuestion(ctx, id, "Answered in terminal", "terminal"); err != nil {
+			s.logf("resolve %s after human prompt: %v", id, err)
+		}
+	}
+	return nil
+}
+
 // ResolveQuestion resolves an open question request with response text and via attribution.
 func (s *Store) ResolveQuestion(ctx context.Context, id, answer, via string) (Request, error) {
 	var out Request

@@ -621,3 +621,31 @@ func TestParentedAgentCannotOpenQuestionOrBlocker(t *testing.T) {
 		t.Fatalf("HITL rows = %d, want 0", n)
 	}
 }
+
+func TestResolveAnsweredInTerminalClosesQuestionAndBlockerButNotPrompt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Human", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	q, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "which?"})
+	b, err := s.AskBlocker(ctx, ses.ID, "need a key", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.AskPrompt(ctx, ses.ID, "terraform apply", nil)
+	if err := s.ResolveAnsweredInTerminal(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{q.ID: "answered", b.ID: "answered", p.ID: "open"} {
+		if got := stateOfRequest(t, s, id); got != want {
+			t.Errorf("%s = %s, want %s", id, got, want)
+		}
+	}
+	var text, via string
+	if err := s.DB.QueryRow(`SELECT response_text, responded_via FROM requests WHERE id = ?`, q.ID).Scan(&text, &via); err != nil {
+		t.Fatal(err)
+	}
+	if text != "Answered in terminal" || via != "terminal" {
+		t.Fatalf("response = %q via %q", text, via)
+	}
+}
