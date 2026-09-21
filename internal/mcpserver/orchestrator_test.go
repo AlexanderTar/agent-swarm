@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -1398,5 +1399,54 @@ func TestMaterializeToolUsesTheExplicitSpikeField(t *testing.T) {
 	_, err = s.call(ctx, c, "swarm_materialize", `{"spike":"`+other+`"}`)
 	if err == nil || !strings.Contains(err.Error(), "Only the spike's orchestrator can materialize it") {
 		t.Fatalf("err = %v; want the ownership refusal", err)
+	}
+}
+
+func spawnArgs(item string) string {
+	return `{"item":"` + item + `","role":"coder","brief":{"objective":"x"},"worktrees":[]}`
+}
+
+func statusOf(t *testing.T, s *Server, key string) items.Status {
+	t.Helper()
+	it, err := s.RT.Items.Get(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return it.Status
+}
+
+func TestSpawnPromotesDraftTaskAndParentStory(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	if statusOf(t, s, seed.TaskKey) != items.Draft || statusOf(t, s, seed.StoryKey) != items.Draft {
+		t.Fatal("fixture must start Draft")
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_spawn", spawnArgs(seed.TaskKey)); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(t, s, seed.TaskKey); got != items.Ready {
+		t.Fatalf("task = %s, want ready", got)
+	}
+	if got := statusOf(t, s, seed.StoryKey); got != items.Ready {
+		t.Fatalf("story = %s, want ready", got)
+	}
+	if got := statusOf(t, s, seed.OtherTaskKey); got != items.Draft {
+		t.Fatalf("sibling task = %s, must stay draft", got)
+	}
+}
+
+func TestSpawnOnReadyTaskChangesNothing(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_spawn", spawnArgs(seed.TaskKey)); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.RT.Items.Get(ctx, seed.TaskKey)
+	if _, err := s.call(ctx, seed.Caller, "swarm_spawn", spawnArgs(seed.TaskKey)); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.RT.Items.Get(ctx, seed.TaskKey)
+	if after.Revision != before.Revision {
+		t.Fatalf("revision %d -> %d: a second spawn must not re-promote", before.Revision, after.Revision)
 	}
 }

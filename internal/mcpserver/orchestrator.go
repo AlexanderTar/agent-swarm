@@ -46,6 +46,28 @@ func rootKeyFor(ctx context.Context, s *Server, rootID string) (string, error) {
 // itemsTool is §8.1, read directly from the real spec (fix round 1): op is
 // exactly create|update|link|unlink — reading and listing items is
 // swarm_read's job (its refs/filter cover exactly that), not swarm_items'.
+// promoteDraft moves a Draft task, and its Draft parent story, to Ready as the
+// caller's orchestrator so the daemon may later move them to In progress.
+func promoteDraft(ctx context.Context, s *Server, it items.Item, actor items.Actor) error {
+	if it.Type != items.Task || it.Status != items.Draft {
+		return nil
+	}
+	if _, err := s.RT.Items.Transition(ctx, it.Key, items.Ready, actor); err != nil {
+		return err
+	}
+	if it.ParentKey == "" {
+		return nil
+	}
+	parent, err := s.RT.Items.Get(ctx, it.ParentKey)
+	if err != nil {
+		return err
+	}
+	if parent.Type == items.Story && parent.Status == items.Draft {
+		_, err = s.RT.Items.Transition(ctx, parent.Key, items.Ready, actor)
+	}
+	return err
+}
+
 func itemsTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_items",
@@ -491,6 +513,9 @@ func spawnTool(s *Server) ToolDef {
 			}
 			a, err := callerAgent(ctx, s, c)
 			if err != nil {
+				return nil, err
+			}
+			if err := promoteDraft(ctx, s, it, items.Orchestrator(a.ID, a.RootItemID)); err != nil {
 				return nil, err
 			}
 			agent, queued, err := s.RT.Spawn(ctx, runtime.SpawnInput{
