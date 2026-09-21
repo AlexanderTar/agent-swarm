@@ -363,7 +363,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
-		if in.Kind == BlockedCkp && len(in.Blockers) > 0 {
+		if in.Kind == BlockedCkp && len(in.Blockers) > 0 && a.ParentAgentID == "" {
 			reqID := ids.New("req")
 			prompt := in.Summary
 			if prompt == "" {

@@ -605,3 +605,32 @@ func TestBlockedCheckpointOpensHITLRequest(t *testing.T) {
 		t.Fatalf("expected options to contain blocker, got %s", options)
 	}
 }
+
+func TestParentedBlockedCheckpointRelaysButOpensNoRequest(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: BlockedCkp,
+		Summary: "signing key needs a passphrase", Blockers: []string{"gpg-agent has no cached passphrase"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ItemStatus != items.Blocked {
+		t.Fatalf("item status = %s, want blocked", res.ItemStatus)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE is_hitl = 1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("HITL rows = %d, want 0", n)
+	}
+	var payload string
+	if err := s.DB.QueryRow(`SELECT payload_json FROM messages
+		WHERE to_agent_id = ? AND kind = 'relay' AND payload_json LIKE '%gpg-agent%'`, orch.ID).Scan(&payload); err != nil {
+		t.Fatalf("parent got no relay with the blocker: %v", err)
+	}
+}
