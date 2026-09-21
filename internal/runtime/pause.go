@@ -351,7 +351,10 @@ func (s *Store) onPausingSync(ctx context.Context, tx *sql.Tx, ses *Session) err
 // handoff (or blocked/failed) checkpoint while pausing moves the session to
 // stopping and tells the parent this agent is paused (§10.5).
 func (s *Store) onPausingCheckpoint(ctx context.Context, tx *sql.Tx, ses Session, kind CheckpointKind) error {
-	if !ses.State.Pausing() || ses.State == Stopping || !slices.Contains(pauseAllowedKinds, kind) {
+	if kind != Handoff && (!ses.State.Pausing() || !slices.Contains(pauseAllowedKinds, kind)) {
+		return nil
+	}
+	if ses.State == Stopping {
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, ses.ID); err != nil {
