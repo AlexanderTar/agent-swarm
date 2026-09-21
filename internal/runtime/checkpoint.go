@@ -319,6 +319,11 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if err := s.tryTransition(ctx, tx, itemKey, to); err != nil {
 				return err
 			}
+			if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = 'acked', acked_at = ?
+				WHERE to_agent_id = ? AND kind = 'assignment' AND state = 'delivered'`,
+				db.Millis(s.Now()), a.ID); err != nil {
+				return err
+			}
 		case Progress:
 			if it.Status == items.Blocked {
 				if err := s.tryTransition(ctx, tx, itemKey, it.StatusBeforeBlock); err != nil {
