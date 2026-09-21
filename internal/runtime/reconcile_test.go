@@ -1537,3 +1537,51 @@ func TestCrashedRelayIncludesExitCodeAndTail(t *testing.T) {
 	}
 }
 
+func TestReconcileAutoResolvesPromptWhenDismissedInTerminal(t *testing.T) {
+	s, tm, ad := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Prompt auto resolve", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatalf("StartSpike failed: %v", err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("LatestSession failed: %v", err)
+	}
+	panes(tm, Pane{Session: ses.TmuxName, Command: "swarm-fake-agent"})
+	tm.env[ses.TmuxName] = map[string]string{"SWARM_SESSION": ses.ID}
+
+	ad.PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	// Initial capture has the prompt
+	tm.captures[ses.TmuxName] = []string{"Do you trust this? [y/n]\n"}
+
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+
+	var reqID, state string
+	err = s.DB.QueryRowContext(ctx, `SELECT id, state FROM requests WHERE session_id = ? AND kind = 'prompt'`,
+		ses.ID).Scan(&reqID, &state)
+	if err != nil || state != "open" {
+		t.Fatalf("expected open prompt request, got err=%v, state=%s", err, state)
+	}
+
+	// User approved in terminal; prompt is gone from capture
+	tm.captures[ses.TmuxName] = []string{"Folder trusted. Proceeding...\n"}
+
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+
+	var via string
+	err = s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(responded_via, '') FROM requests WHERE id = ?`, reqID).Scan(&state, &via)
+	if err != nil || state != "answered" {
+		t.Fatalf("expected state answered, got err=%v, state=%s", err, state)
+	}
+	if via != "terminal" {
+		t.Fatalf("expected responded_via terminal, got %s", via)
+	}
+}
+

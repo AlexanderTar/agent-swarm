@@ -559,6 +559,38 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 				}
 			}
 		}
+
+		// Auto-resolve any open prompt request whose pattern is no longer present in capture
+		rows, err := s.DB.QueryContext(ctx, `SELECT id, prompt FROM requests
+			WHERE session_id = ? AND kind = 'prompt' AND state = 'open'`, r.SessionID)
+		if err == nil {
+			var toResolve []string
+			for rows.Next() {
+				var reqID, pText string
+				if err := rows.Scan(&reqID, &pText); err == nil {
+					stillActive := false
+					for _, matcher := range ad.PromptPatterns() {
+						if matcher.Title == pText && matcher.Match != nil && matcher.Match.MatchString(capture) {
+							stillActive = true
+							break
+						}
+					}
+					if !stillActive {
+						toResolve = append(toResolve, reqID)
+					}
+				}
+			}
+			rows.Close()
+			for _, reqID := range toResolve {
+				_, _ = s.ResolvePrompt(ctx, reqID, "", "terminal")
+			}
+			if len(toResolve) > 0 {
+				owesNothing, err = s.owesNothing(ctx, r)
+				if err != nil {
+					return err
+				}
+			}
+		}
 	}
 	waiting := idle && owesNothing
 	if waiting != r.Waiting {
