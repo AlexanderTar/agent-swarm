@@ -68,6 +68,9 @@ test("the inbox shows a question read-only and approves a section", async ({ pag
   await expect(page.getByRole("textbox")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "CRDT" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Open orchestrator terminal" })).toBeVisible();
+  // The question no longer resolves from the board, so the approval is opened directly
+  // (it used to be auto-selected once the answered question left the list).
+  await page.goto("/#/inbox?req=req_section");
   await page.getByRole("button", { name: /Approve "Data model"/ }).click();
   await expect(page.getByText("A local queue of pending messages.")).toBeVisible();
   await page.getByRole("button", { name: "Approve section" }).click();
