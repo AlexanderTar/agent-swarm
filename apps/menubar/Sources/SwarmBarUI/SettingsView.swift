@@ -17,6 +17,7 @@ public struct SettingsView: View {
             DefaultsTab(model: model).tabItem { Label(Copy.tabDefaults, systemImage: "slider.horizontal.3") }
             NotificationsTab(model: model).tabItem { Label(Copy.tabNotifications, systemImage: "bell") }
             LimitsTab(model: model).tabItem { Label(Copy.tabLimits, systemImage: "speedometer") }
+            InstructionsTab(model: model).tabItem { Label(Copy.tabInstructions, systemImage: "doc.text") }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let error = model.saveError {
@@ -222,6 +223,96 @@ struct LimitsTab: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Durable custom instructions injected into every spawned agent (§17.1, docs/specs/2026-09-22-
+/// isolated-mcp-and-custom-instructions.md). Read mode renders Markdown; Edit swaps to a raw
+/// monospace editor that only commits on Save, matching the spec sketch's three states.
+struct InstructionsTab: View {
+    @Bindable var model: SettingsModel
+    @State private var editing = false
+    @State private var draft = ""
+    @State private var copied = false
+    @State private var saved = false
+
+    private var rendered: AttributedString {
+        (try? AttributedString(markdown: model.instructions, options: .init(interpretedSyntax: .full)))
+            ?? AttributedString(model.instructions)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(editing ? Copy.editInstructions : Copy.agentInstructions).font(.headline)
+                Spacer()
+                if editing {
+                    Button(Copy.cancel) { editing = false }
+                    Button(Copy.save) { commit() }.keyboardShortcut(.return, modifiers: .command)
+                } else if !model.instructions.isEmpty {
+                    Button(Copy.edit) { draft = model.instructions; editing = true }
+                }
+            }
+            Text(editing ? Copy.editInstructionsCaption : Copy.instructionsCaption)
+                .font(.caption).foregroundStyle(.secondary)
+
+            if editing {
+                TextEditor(text: $draft)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                HStack {
+                    Text(Copy.instructionsHelp).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if saved { Text(Copy.instructionsSaved).font(.caption).foregroundStyle(.secondary) }
+                }
+            } else if model.instructions.isEmpty {
+                VStack(spacing: 8) {
+                    Spacer()
+                    Text(Copy.noInstructionsConfigured).foregroundStyle(.secondary)
+                    Text(Copy.noInstructionsSubtitle).font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button(Copy.addInstructions) { draft = ""; editing = true }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            } else {
+                ScrollView {
+                    Text(rendered).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                HStack {
+                    Spacer()
+                    Button(copied ? Copy.copied : Copy.copyInstructions) { copyToClipboard() }
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private func commit() {
+        Task {
+            await model.setInstructions(draft)
+            editing = false
+            saved = true
+            try? await Task.sleep(for: .seconds(2))
+            saved = false
+        }
+    }
+
+    private func copyToClipboard() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(model.instructions, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            copied = false
+        }
     }
 }
 

@@ -285,6 +285,35 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(saves, 5)
     }
 
+    /// docs/specs/2026-09-22-isolated-mcp-and-custom-instructions.md: `instructions` decodes from
+    /// the wire (present or, for daemons that predate it, absent) and `setInstructions` PUTs the
+    /// updated settings like every other single-field setter.
+    func testInstructionsDecodesAndSaves() async throws {
+        let withInstructions = try SwarmJSON.decode(Settings.self, from: Data("""
+        {"enabled_agents":["claude"],"roles":{},"notifications":{},"max_orchestrators":3,
+         "max_agents":8,"max_agents_per_root":4,"scan_excludes":[],"scan_interval_sec":21600,
+         "menubar_compact":false,"usage_poll_sec":300,"pause_deadline_sec":120,
+         "instructions":"# Team rules\\nStandard library first."}
+        """.utf8))
+        XCTAssertEqual(withInstructions.instructions, "# Team rules\nStandard library first.")
+
+        let withoutInstructions: Settings = try Fixture.decode("settings.json")
+        XCTAssertEqual(withoutInstructions.instructions, "", "daemons that predate the field decode to empty")
+
+        let m = await model()
+        XCTAssertEqual(m.instructions, "")
+        await m.setInstructions("# Project Guidelines\n- Go 1.24 + standard library first")
+        XCTAssertEqual(m.instructions, "# Project Guidelines\n- Go 1.24 + standard library first")
+        XCTAssertEqual(saves, 1)
+
+        await m.setInstructions("# Project Guidelines\n- Go 1.24 + standard library first")
+        XCTAssertEqual(saves, 1, "an unchanged value doesn't PUT again")
+
+        // The mock echoes back whatever was PUT, so the round trip through `save()` also exercises
+        // `Settings.encode(to:)` carrying `instructions` over the wire.
+        XCTAssertEqual(String(decoding: try SwarmJSON.encode(m.settings), as: UTF8.self).contains("\"instructions\""), true)
+    }
+
     func testSavingWhileDownOrFailing() async {
         let down = await model(connected: false)
         await down.setCenter(.info, false)

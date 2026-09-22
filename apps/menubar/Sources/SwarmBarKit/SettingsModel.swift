@@ -388,4 +388,14 @@ public final class SettingsModel {
             await save()
         }
     }
+
+    // MARK: Instructions tab
+
+    public var instructions: String { settings.instructions }
+
+    public func setInstructions(_ text: String) async {
+        guard settings.instructions != text else { return }
+        settings.instructions = text
+        await save()
+    }
 }

@@ -306,9 +306,13 @@ public struct Settings: Codable, Sendable, Equatable {
     public var menubarCompact: Bool
     public var usagePollSec: Int
     public var pauseDeadlineSec: Int
+    /// Durable custom instructions injected into every spawned agent, isolated from the operator's
+    /// own global CLAUDE.md/AGENTS.md files (docs/specs/2026-09-22-isolated-mcp-and-custom-instructions.md).
+    /// "" = none configured.
+    public var instructions: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case roles, notifications
+        case roles, notifications, instructions
         case fallbackDefault = "fallback_default"
         case enabledAgents = "enabled_agents", maxOrchestrators = "max_orchestrators"
         case maxAgents = "max_agents", maxAgentsPerRoot = "max_agents_per_root"
@@ -358,7 +362,8 @@ public struct Settings: Codable, Sendable, Equatable {
                 notifications: [String: NotifyPref] = [:], maxConcurrentSubagents: Int = 3,
                 maxOrchestrators: Int = 3, maxAgents: Int = 8, maxAgentsPerRoot: Int = 4,
                 scanExcludes: [String] = [], scanIntervalSec: Int = 21600,
-                menubarCompact: Bool = false, usagePollSec: Int = 300, pauseDeadlineSec: Int = 120) {
+                menubarCompact: Bool = false, usagePollSec: Int = 300, pauseDeadlineSec: Int = 120,
+                instructions: String = "") {
         self.enabledAgents = enabledAgents
         self.roles = roles
         self.fallbackDefault = fallbackDefault
@@ -372,6 +377,7 @@ public struct Settings: Codable, Sendable, Equatable {
         self.menubarCompact = menubarCompact
         self.usagePollSec = usagePollSec
         self.pauseDeadlineSec = pauseDeadlineSec
+        self.instructions = instructions
     }
 
     public init(from decoder: Decoder) throws {
@@ -389,6 +395,28 @@ public struct Settings: Codable, Sendable, Equatable {
         menubarCompact = try c.decode(Bool.self, forKey: .menubarCompact)
         usagePollSec = try c.decode(Int.self, forKey: .usagePollSec)
         pauseDeadlineSec = try c.decode(Int.self, forKey: .pauseDeadlineSec)
+        instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
+    }
+
+    /// Hand-written (like `RoleDefault.encode`) so an empty `instructions` -- the common case --
+    /// is omitted rather than encoded as `""`, keeping the wire body byte-for-byte unchanged for
+    /// every daemon and fixture that predates this field.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(enabledAgents, forKey: .enabledAgents)
+        try c.encode(roles, forKey: .roles)
+        try c.encode(fallbackDefault, forKey: .fallbackDefault)
+        try c.encode(notifications, forKey: .notifications)
+        try c.encode(maxConcurrentSubagents, forKey: .maxConcurrentSubagents)
+        try c.encode(maxOrchestrators, forKey: .maxOrchestrators)
+        try c.encode(maxAgents, forKey: .maxAgents)
+        try c.encode(maxAgentsPerRoot, forKey: .maxAgentsPerRoot)
+        try c.encode(scanExcludes, forKey: .scanExcludes)
+        try c.encode(scanIntervalSec, forKey: .scanIntervalSec)
+        try c.encode(menubarCompact, forKey: .menubarCompact)
+        try c.encode(usagePollSec, forKey: .usagePollSec)
+        try c.encode(pauseDeadlineSec, forKey: .pauseDeadlineSec)
+        if !instructions.isEmpty { try c.encode(instructions, forKey: .instructions) }
     }
 
     public func pref(_ level: NotificationLevel) -> NotifyPref {

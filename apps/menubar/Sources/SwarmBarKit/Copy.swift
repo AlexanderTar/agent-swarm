@@ -87,6 +87,7 @@ public enum Copy {
     public static let tabDefaults = "Defaults"
     public static let tabNotifications = "Notifications"
     public static let tabLimits = "Limits"
+    public static let tabInstructions = "Instructions"
     public static let agentsUsedBySwarm = "Agents used by Swarm"
     public static let installed = "Installed"
     public static let notInstalled = "Not installed on this Mac"
@@ -121,6 +122,21 @@ public enum Copy {
     public static let compact = "Compact (icons only)"
     public static let menuBar = "Menu bar:"
     public static let apply = "Apply"
+    public static let edit = "Edit"
+    public static let save = "Save"
+
+    // §17.1 settings: Instructions tab
+    public static let agentInstructions = "Agent Instructions"
+    public static let editInstructions = "Edit Instructions"
+    public static let instructionsCaption = "Injected as durable AGENTS.md and system prompts into all swarm sessions."
+    public static let editInstructionsCaption = "Paste or edit markdown instructions. Changes apply to newly spawned agents."
+    public static let noInstructionsConfigured = "No custom instructions configured"
+    public static let noInstructionsSubtitle = "Agents currently run with isolated swarm MCP and standard system instructions only."
+    public static let addInstructions = "Add Instructions"
+    public static let copyInstructions = "Copy"
+    public static let copied = "Copied"
+    public static let instructionsSaved = "Instructions saved."
+    public static let instructionsHelp = "Markdown supported · Press Cmd+Enter to save"
 
     // §17.2
     public static func roleLabel(_ r: Role) -> String {
