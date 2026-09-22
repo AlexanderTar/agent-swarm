@@ -39,6 +39,15 @@ func TestClaudeMapsEveryMeterFromTheRealHeaders(t *testing.T) {
 	var gotHeaders http.Header
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Fetch now also makes a second, best-effort GET to
+		// /api/oauth/usage; this fake server only serves /v1/messages, so
+		// the second call should 404, which the model-scoped fetch must
+		// treat as an ordinary failure (silently skipped, no extra meters)
+		// without disturbing what this test asserts about the first call.
+		if r.URL.Path != "/v1/messages" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		gotHeaders = r.Header
 		gotBody, _ = io.ReadAll(r.Body)
 		claudeRealHeaders(w)
@@ -252,6 +261,168 @@ func TestClaudeFallsBackToAConservativeRetryAfterWhenTheHeaderIsMissing(t *testi
 	}
 	if rl.RetryAfter <= 0 {
 		t.Fatalf("RetryAfter = %v, must not be zero/immediate", rl.RetryAfter)
+	}
+}
+
+// claudeOauthUsageBody is the fixture for GET /api/oauth/usage?at_wall=1&skip_spend=1,
+// shaped after the live-captured limits[] array: one weekly_scoped/Fable
+// entry (a named model scope) and one weekly_all entry with scope: null,
+// which must be filtered out generically (no "Fable" string match).
+const claudeOauthUsageBody = `{"limits":[
+	{"kind":"weekly_scoped","percent":0,"resets_at":"2026-09-29T17:00:00+00:00",
+	 "scope":{"model":{"display_name":"Fable"}}},
+	{"kind":"weekly_all","percent":2,"resets_at":"2026-09-29T17:00:00.474636+00:00",
+	 "scope":null}
+]}`
+
+func TestClaudeAddsModelScopedMetersFromOauthUsage(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		claudeRealHeaders(w)
+		w.Write([]byte(`{"id":"msg_1","type":"message","content":[{"type":"text","text":"Hello"}]}`))
+	})
+	mux.HandleFunc("GET /api/oauth/usage", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.RawQuery; got != "at_wall=1&skip_spend=1" {
+			t.Errorf("query = %q, want at_wall=1&skip_spend=1", got)
+		}
+		w.Write([]byte(claudeOauthUsageBody))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	src := &Claude{BaseURL: srv.URL, HTTP: srv.Client(), Version: func(context.Context) (string, error) { return "2.1.278", nil },
+		ReadToken: func(context.Context) (string, time.Time, error) {
+			return "oauth-secret", time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC), nil
+		},
+		Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }}
+	snap, err := src.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Meter{}
+	for _, m := range snap.Meters {
+		byID[m.ID] = m
+	}
+	fable, ok := byID["model_scoped:fable"]
+	if !ok {
+		t.Fatalf("no model_scoped:fable meter in %+v", snap.Meters)
+	}
+	if fable.Label != "Weekly (Fable)" || fable.Window != "weekly" || fable.UsedPct != 0 {
+		t.Errorf("fable meter = %+v", fable)
+	}
+	wantResetsAt := time.Date(2026, 9, 29, 17, 0, 0, 0, time.UTC)
+	if fable.ResetsAt == nil || !fable.ResetsAt.Equal(wantResetsAt) {
+		t.Errorf("fable.ResetsAt = %v, want %v", fable.ResetsAt, wantResetsAt)
+	}
+	for id := range byID {
+		if id != "five_hour" && id != "seven_day" && id != "model_scoped:fable" {
+			t.Errorf("unexpected meter %q derived from the scope-less weekly_all entry", id)
+		}
+	}
+	// Additive, not a replacement: the existing header-derived meters must
+	// still be present unchanged.
+	if m := byID["five_hour"]; m.Label != "5h" || m.Window != "5h" || m.UsedPct != 18 {
+		t.Errorf("five_hour = %+v", m)
+	}
+	if m := byID["seven_day"]; m.Label != "Weekly (all models)" || m.Window != "weekly" || m.UsedPct != 47 {
+		t.Errorf("seven_day = %+v", m)
+	}
+}
+
+// A failure on the model-scoped call (429 here; a decode failure would be
+// just as valid coverage of the same fail-closed path) must never break the
+// primary snapshot Fetch already has from /v1/messages's headers.
+func TestClaudeModelScopedFetchFailureDoesNotBreakThePrimarySnapshot(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		claudeRealHeaders(w)
+		w.Write([]byte(`{"id":"msg_1","type":"message","content":[{"type":"text","text":"Hello"}]}`))
+	})
+	mux.HandleFunc("GET /api/oauth/usage", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	src := &Claude{BaseURL: srv.URL, HTTP: srv.Client(), Version: func(context.Context) (string, error) { return "2.1.278", nil },
+		ReadToken: func(context.Context) (string, time.Time, error) {
+			return "oauth-secret", time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC), nil
+		},
+		Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }}
+	snap, err := src.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("model-scoped failure must not fail Fetch: %v", err)
+	}
+	byID := map[string]Meter{}
+	for _, m := range snap.Meters {
+		byID[m.ID] = m
+	}
+	if _, ok := byID["model_scoped:fable"]; ok {
+		t.Error("a failed model-scoped fetch must not produce a model_scoped meter")
+	}
+	if m := byID["five_hour"]; m.UsedPct != 18 {
+		t.Errorf("five_hour = %+v, primary snapshot must be unaffected", m)
+	}
+	if m := byID["seven_day"]; m.UsedPct != 47 {
+		t.Errorf("seven_day = %+v, primary snapshot must be unaffected", m)
+	}
+}
+
+// The locked decision is one attempt, ever — no retry on failure.
+func TestClaudeModelScopedFetchNeverRetries(t *testing.T) {
+	var oauthUsageCalls int
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		claudeRealHeaders(w)
+		w.Write([]byte(`{"id":"msg_1","type":"message","content":[{"type":"text","text":"Hello"}]}`))
+	})
+	mux.HandleFunc("GET /api/oauth/usage", func(w http.ResponseWriter, r *http.Request) {
+		oauthUsageCalls++
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	src := &Claude{BaseURL: srv.URL, HTTP: srv.Client(), Version: func(context.Context) (string, error) { return "2.1.278", nil },
+		ReadToken: func(context.Context) (string, time.Time, error) {
+			return "oauth-secret", time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC), nil
+		},
+		Now: func() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }}
+	if _, err := src.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if oauthUsageCalls != 1 {
+		t.Errorf("/api/oauth/usage was hit %d times, want exactly 1", oauthUsageCalls)
+	}
+}
+
+// Verifies both RFC3339 timestamp shapes from the live capture: one with
+// fractional seconds ("2026-09-22T22:00:00.474610+00:00", the top-level
+// five_hour.resets_at in the live body) and one without
+// ("2026-09-29T17:00:00+00:00", the live limits[] weekly_scoped entry) —
+// through the same parseResetsAt fetchModelScopedMeters uses, not a
+// duplicate. This is the empirical answer to which RFC3339 parse approach
+// works: plain time.RFC3339, no RFC3339Nano fallback needed, because Go's
+// time.Parse accepts a fractional second in the value even when the layout
+// doesn't spell one out.
+func TestParseResetsAtHandlesBothLiveCapturedShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want time.Time
+	}{
+		{"no fractional seconds", "2026-09-29T17:00:00+00:00", time.Date(2026, 9, 29, 17, 0, 0, 0, time.UTC)},
+		{"fractional seconds", "2026-09-22T22:00:00.474610+00:00", time.Date(2026, 9, 22, 22, 0, 0, 474610000, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseResetsAt(tc.in)
+			if got == nil || !got.Equal(tc.want) {
+				t.Errorf("parseResetsAt(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+	if got := parseResetsAt(""); got != nil {
+		t.Errorf("parseResetsAt(\"\") = %v, want nil", got)
+	}
+	if got := parseResetsAt("not-a-timestamp"); got != nil {
+		t.Errorf("parseResetsAt(garbage) = %v, want nil", got)
 	}
 }
 
