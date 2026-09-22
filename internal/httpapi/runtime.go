@@ -507,8 +507,16 @@ func isFinishedChild(a runtime.Agent, sessionState string) bool {
 // queued or agent-level active agent" to "actually running right now" -- the
 // old definition included paused and zombie agents, which never decreases
 // when the user pauses a bunch of agents, making the menubar count look wrong
-// relative to what is visibly working). Walks Children only, never Finished;
-// a session's Waiting/Stale flags don't change its State away from "running".
+// relative to what is visibly working). A session's Waiting/Stale flags don't
+// change its State away from "running".
+//
+// Walks Finished as well as Children: isFinishedChild buckets a node by its
+// OWN state, independent of its descendants -- Cancel never cascades to a
+// cancelled orchestrator's already-spawned children (agents.go's Cancel only
+// touches the named agent's row), so a still-running child can sit under a
+// finished parent's own Children. Stopping at the Finished boundary would
+// silently drop that child from the count even though it is genuinely
+// running and still shown in the UI.
 func countRunning(nodes []agentNodeWire) int {
 	n := 0
 	for _, a := range nodes {
@@ -516,6 +524,7 @@ func countRunning(nodes []agentNodeWire) int {
 			n++
 		}
 		n += countRunning(a.Children)
+		n += countRunning(a.Finished)
 	}
 	return n
 }

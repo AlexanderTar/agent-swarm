@@ -198,6 +198,46 @@ func TestActiveCountReflectsOnlyRunningSessions(t *testing.T) {
 	}
 }
 
+// A cancelled/finished mid-tree orchestrator does not cascade to its own
+// already-spawned children (runtime.Cancel only touches the named agent's
+// row) -- a still-running grandchild must keep counting even though its
+// immediate parent lands in the grandparent's `finished` list, not `children`.
+func TestActiveCountCountsRunningDescendantsOfAFinishedParent(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+	var rootOrchID, taskID, epicID string
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = ?`, seed.AgentName).Scan(&rootOrchID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.TaskKey).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.RootKey).Scan(&epicID); err != nil {
+		t.Fatal(err)
+	}
+	// Mirrors what runtime.Cancel actually leaves behind: the named agent's own
+	// session moves to 'cancelled' and its agents.state to 'finished' -- only
+	// its already-spawned child (never touched by Cancel) stays running.
+	subOrchID := seedAgent(t, s, runtime.RoleOrchestrator, taskID, epicID, rootOrchID, "sub-orchestrator")
+	seedSession(t, s, subOrchID, "sub-orchestrator", 1, "cancelled")
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE agents SET state = 'finished' WHERE id = ?`, subOrchID); err != nil {
+		t.Fatal(err)
+	}
+	grandchildID := seedAgent(t, s, runtime.RoleCoder, taskID, epicID, subOrchID, "still-running-grandchild")
+	seedSession(t, s, grandchildID, "still-running-grandchild", 1, "running")
+
+	rec := s.get(t, "/api/state")
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	// root-orchestrator + task-worker (base tree) + still-running-grandchild = 3;
+	// sub-orchestrator's own session is cancelled, so it must not count itself,
+	// but must not block its still-running child from counting either.
+	if got := body["active_count"].(float64); got != 3 {
+		t.Fatalf("active_count = %v, want 3 (a finished mid-tree parent must not hide a still-running grandchild)", got)
+	}
+}
+
 func TestStateIsEmptyButWellShapedOnAFreshDaemon(t *testing.T) {
 	s := newEmptyServer(t)
 	rec := s.get(t, "/api/state")
