@@ -524,6 +524,227 @@ func TestSyncAlwaysReturnsControlMessagesInFull(t *testing.T) {
 	}
 }
 
+// The orchestrator mirror of notifyNoAck's child-silent case: a message
+// delivered maxFullDeliveries times without ever being acked must actively
+// escalate, not just fall silently into SyncResult.Unacked.
+func TestUnackedMessageEscalatesAtThirdDelivery(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Clear the orchestrator's own kickoff assignment first so the only
+	// pending message left is the relay under test (same idiom as
+	// TestProgressCheckpointWakesImmediately).
+	s.Sync(ctx, orchSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "midway report"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxFullDeliveries; i++ {
+		if _, err := s.Sync(ctx, orchSes.ID, nil, 20); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := notifiedCount(s, "agent.message_unacked"); n != 1 {
+		t.Fatalf("agent.message_unacked raised %d times, want 1", n)
+	}
+	n := notified(t, s, "agent.message_unacked")
+	if n.AgentName != orch.Name {
+		t.Fatalf("notification agent = %q, want %q", n.AgentName, orch.Name)
+	}
+	if n.ItemKey != "TASK-1" {
+		t.Fatalf("notification item = %q, want TASK-1", n.ItemKey)
+	}
+}
+
+// clearInbox acks every pending message for agentID via a raw update, the
+// same idiom TestProgressCheckpointWakesImmediately uses to strip a
+// kickoff assignment out of the way before driving the message under test.
+func clearInbox(t *testing.T, s *Store, agentID string) {
+	t.Helper()
+	if _, err := s.DB.ExecContext(context.Background(),
+		`UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, agentID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A live parent above the non-acking recipient gets the relay, same pattern
+// notifyNoAck/OnDepUnblocked use for a silent child.
+func TestUnackedMessageEscalationRelaysToLiveAncestor(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	root, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: root.ID, Brief: BriefInput{Objective: "mid"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	midSes, err := s.LatestSession(ctx, mid.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: mid.ID, Brief: BriefInput{Objective: "leaf"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafSes, err := s.LatestSession(ctx, leaf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Sync(ctx, midSes.ID, nil, 20)
+	clearInbox(t, s, mid.ID)
+	if _, err := s.WriteCheckpoint(ctx, leafSes.ID, CheckpointInput{Kind: Progress, Summary: "midway report"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxFullDeliveries; i++ {
+		if _, err := s.Sync(ctx, midSes.ID, nil, 20); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := notifiedCount(s, "agent.message_unacked"); n != 1 {
+		t.Fatalf("agent.message_unacked raised %d times, want 1", n)
+	}
+	var toRoot int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"message_unacked"%'`, root.ID).Scan(&toRoot)
+	if toRoot != 1 {
+		t.Fatalf("relay to nearest live ancestor count = %d, want 1", toRoot)
+	}
+}
+
+// A top-level orchestrator has no ancestor to relay to: only the
+// notification fires, silently, no error.
+func TestUnackedMessageEscalationSkipsRelayForTopLevelOrchestrator(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Sync(ctx, orchSes.ID, nil, 20)
+	clearInbox(t, s, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "midway report"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxFullDeliveries; i++ {
+		if _, err := s.Sync(ctx, orchSes.ID, nil, 20); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := notifiedCount(s, "agent.message_unacked"); n != 1 {
+		t.Fatalf("agent.message_unacked raised %d times, want 1", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+		AND payload_json LIKE '%"event":"message_unacked"%'`).Scan(&relays)
+	if relays != 0 {
+		t.Fatalf("a top-level orchestrator has no ancestor to relay to, got %d relays", relays)
+	}
+}
+
+// Acking on/before the 2nd delivery must suppress the escalation entirely --
+// it never has a 3rd delivery to fire on.
+func TestAckingBeforeThirdDeliverySuppressesEscalation(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Sync(ctx, orchSes.ID, nil, 20)
+	clearInbox(t, s, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "midway report"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Sync(ctx, orchSes.ID, nil, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Messages) != 1 {
+		t.Fatalf("got %d messages, want 1", len(first.Messages))
+	}
+	id := first.Messages[0].MsgID
+	if _, err := s.Sync(ctx, orchSes.ID, []string{id}, 20); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := s.Sync(ctx, orchSes.ID, nil, 20); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := notifiedCount(s, "agent.message_unacked"); n != 0 {
+		t.Fatalf("agent.message_unacked raised %d times, want 0 for an acked message", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+		AND payload_json LIKE '%"event":"message_unacked"%'`).Scan(&relays)
+	if relays != 0 {
+		t.Fatalf("an acked message must never relay, got %d", relays)
+	}
+}
+
+// control-kind messages are exempt from maxFullDeliveries capping everywhere
+// else in this file; the escalation must respect the same exemption.
+func TestControlMessagesNeverEscalate(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "ControlNoEscalate", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.Sync(ctx, ses.ID, nil, 20)
+	clearInbox(t, s, a.ID)
+	enq(t, s, a.ID, a.RootItemID, "control", `{"action":"pause"}`, 0)
+	for i := 0; i < 6; i++ {
+		if _, err := s.Sync(ctx, ses.ID, nil, 20); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := notifiedCount(s, "agent.message_unacked"); n != 0 {
+		t.Fatalf("a control message must never escalate, got %d notifications", n)
+	}
+}
+
+// After the escalating 3rd delivery, further Sync calls for the same
+// still-unacked message (now surfaced only via SyncResult.Unacked) must not
+// raise a second notification or a second relay.
+func TestUnackedEscalationFiresExactlyOnce(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Sync(ctx, orchSes.ID, nil, 20)
+	clearInbox(t, s, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "midway report"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		if _, err := s.Sync(ctx, orchSes.ID, nil, 20); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := notifiedCount(s, "agent.message_unacked"); n != 1 {
+		t.Fatalf("agent.message_unacked raised %d times across 6 syncs, want exactly 1", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+		AND payload_json LIKE '%"event":"message_unacked"%'`).Scan(&relays)
+	if relays != 0 {
+		t.Fatalf("relays = %d, want 0 (top-level orchestrator has no ancestor)", relays)
+	}
+}
+
 // Stale unacked messages must not eat the limit and hide new work.
 func TestStaleUnackedMessagesDoNotStarveNewOnes(t *testing.T) {
 	s, _, _ := newStore(t)

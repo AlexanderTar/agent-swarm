@@ -33,6 +33,7 @@ var Rules = map[string]Rule{
 	"agent.crashed":           {"attention", "Agent crashed", "{name} exited unexpectedly on {KEY}.", "swarm.agent"},
 	"agent.stale":             {"attention", "No recent activity", "{name} has been quiet for 30 minutes on {KEY}.", "swarm.agent"},
 	"agent.no_ack":            {"attention", "No response from agent", "{name} hasn't checkpointed in 2 minutes on {KEY}.", "swarm.agent"},
+	"agent.message_unacked":   {"attention", "Message unacknowledged", "{name} hasn't acknowledged a {kind} message on {KEY} after 3 deliveries.", "swarm.agent"},
 	"agent.no_recipient":      {"attention", "Message undelivered", "{name} has no live session on {KEY}; a message to it was never delivered.", "swarm.agent"},
 	"agent.undeliverable":     {"attention", "Couldn't deliver messages", "{name} hasn't picked up {N} message(s).", "swarm.agent"},
 	"agent.preflight_failed":  {"attention", "Couldn't start agent", "{reason}", "swarm.info"},
