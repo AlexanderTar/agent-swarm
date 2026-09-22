@@ -39,7 +39,7 @@ export interface SpikeFormState extends SpawnFormState { intent: "feature" | "de
 // real 3-arg function. Threading catalog through here (rather than hardcoding `[]` inside this file)
 // keeps a real, non-empty settings.roles.advisor.effort from being silently dropped on every submit.
 export function orchestratorPayload(f: SpawnFormState, item: Item, settings: Settings, catalog: AgentCatalogEntry[], requestId: string): StartOrchestratorBody {
-  return {
+  const body: StartOrchestratorBody = {
     request_id: requestId,
     ...choicePayload(f.fields.choice),
     advisor: advisorPayload(f.fields.advisor, settings, catalog),
@@ -47,6 +47,10 @@ export function orchestratorPayload(f: SpawnFormState, item: Item, settings: Set
     repos_version: item.repos_version,
     name: f.name,
   };
+  if (f.fields.roles && Object.keys(f.fields.roles).length > 0) {
+    body.roles = f.fields.roles;
+  }
+  return body;
 }
 
 export function spikePayload(f: SpikeFormState, settings: Settings, catalog: AgentCatalogEntry[], requestId: string): CreateSpikeBody {
@@ -58,6 +62,9 @@ export function spikePayload(f: SpikeFormState, settings: Settings, catalog: Age
     ...choicePayload(f.fields.choice),
     advisor: advisorPayload(f.fields.advisor, settings, catalog),
   };
+  if (f.fields.roles && Object.keys(f.fields.roles).length > 0) {
+    body.roles = f.fields.roles;
+  }
   return f.request.trim() ? { ...body, request: f.request } : body;
 }
 

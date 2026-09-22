@@ -292,6 +292,7 @@ export interface StartOrchestratorBody {
   repos: string[];
   repos_version: number;
   name?: string;
+  roles?: Partial<Record<SettingsRole, RoleDefault>>;
 }
 export interface CreateSpikeBody {
   request_id: string;
@@ -303,6 +304,7 @@ export interface CreateSpikeBody {
   effort?: string;
   advisor?: AdvisorPayload;
   request?: string;
+  roles?: Partial<Record<SettingsRole, RoleDefault>>;
 }
 export interface CreateSpikeResponse { item: Item; agent: AgentNode; queued: boolean }
 

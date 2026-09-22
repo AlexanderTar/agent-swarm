@@ -119,4 +119,24 @@ describe("SpawnSheet (§16.10)", () => {
     await waitFor(() => expect(screen.queryByText("Couldn't load the item.")).not.toBeInTheDocument());
     expect(await screen.findByRole("textbox", { name: "Name" })).toBeInTheDocument();
   });
+
+  it("submits worker role overrides when customized", async () => {
+    const onClose = vi.fn();
+    const { user, daemon } = renderWithDaemon(<SpawnSheet itemKey="EPIC-20" onClose={onClose} />, { daemon: roomy(), events: false });
+    const sheet = await screen.findByRole("dialog", { name: "Start orchestrator" });
+    await user.click(within(sheet).getByText("Worker Roles"));
+    const coderGroup = within(sheet).getByRole("group", { name: "Coder" });
+    await user.selectOptions(within(coderGroup).getByRole("combobox", { name: "Model" }), "opus");
+    await user.click(within(sheet).getByRole("button", { name: "Start orchestrator" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const posts = daemon.calls.filter((c) => c.path === "/api/items/EPIC-20/orchestrator");
+    expect(posts[0]?.body).toMatchObject({
+      roles: {
+        coder: {
+          agent: "claude",
+          model: "opus",
+        },
+      },
+    });
+  });
 });
