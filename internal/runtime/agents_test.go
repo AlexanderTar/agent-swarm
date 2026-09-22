@@ -1634,3 +1634,50 @@ func TestSpawnWorkerPopulatesParentNameInBrief(t *testing.T) {
 		t.Fatalf("expected brief to contain 'parent: %s', got:\n%s", orch.Name, worker.Brief)
 	}
 }
+
+func TestSpawnResolvesAgentFromModelAndNormalizesImplementer(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	a, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey: "TASK-1",
+		Role:    "implementer",
+		Model:   "gpt-6-astra",
+		Kind:    "",
+		Brief:   BriefInput{Objective: "task"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Role != RoleCoder {
+		t.Fatalf("agent.Role = %q, want %q", a.Role, RoleCoder)
+	}
+	if a.Kind != Codex {
+		t.Fatalf("agent.Kind = %q, want %q", a.Kind, Codex)
+	}
+
+	story, err := s.Items.Create(ctx, items.CreateInput{
+		Type:      items.Story,
+		ParentKey: "EPIC-1",
+		Title:     "Story without tasks",
+	}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id = ?`, story.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = s.Spawn(ctx, SpawnInput{
+		ItemKey: story.Key,
+		Role:    "implementer",
+		Model:   "gpt-6-astra",
+		Kind:    "",
+		Brief:   BriefInput{Objective: "task"},
+	})
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("Spawn coder on a task, not %s.", story.Key)) {
+		t.Fatalf("expected rejection 'Spawn coder on a task, not %s.', got %v", story.Key, err)
+	}
+}
+

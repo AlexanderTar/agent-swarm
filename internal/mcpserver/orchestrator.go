@@ -466,7 +466,7 @@ type spawnWorktreeRef struct {
 func spawnTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_spawn",
-		Description: "Spawn a worker agent on an item, filling agent, model, effort and advisor defaults from Settings.",
+		Description: "Spawn a worker agent on an item, filling agent, model, effort and advisor defaults from Settings. Supports explicit agent and model overrides, with automatic model-to-agent resolution.",
 		Roles:       orchestratorRole,
 		Schema: objSchema(`"item":{"type":"string"},"role":{"type":"string"},"agent":{"type":"string"},
 			"model":{"type":"string"},"effort":{"type":"string"},"name":{"type":"string"},

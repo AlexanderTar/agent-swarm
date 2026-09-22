@@ -379,9 +379,32 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, &items.Error{Code: items.CodeConflict, Message: "This item already has an orchestrator."}
 	}
 
+	cfg, _ := s.Settings.Get(ctx)
+	if in.Kind == "" && in.Model != "" {
+		if k, ok := s.resolveAgentForModel(ctx, in.Model); ok {
+			in.Kind = k
+		}
+	}
 	if in.Kind == "" {
-		cfg, _ := s.Settings.Get(ctx)
-		if len(cfg.EnabledAgents) > 0 {
+		if rd, ok := cfg.Roles[RoleOrchestrator]; ok && rd.Agent != "" && (len(cfg.EnabledAgents) == 0 || slices.Contains(cfg.EnabledAgents, rd.Agent)) {
+			in.Kind = rd.Agent
+			if in.Model == "" {
+				if s.Catalog != nil {
+					models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
+					if _, found := catalog.Find(models, rd.Model); found {
+						in.Model = rd.Model
+						if in.Effort == "" {
+							in.Effort = rd.Effort
+						}
+					}
+				} else {
+					in.Model = rd.Model
+					if in.Effort == "" {
+						in.Effort = rd.Effort
+					}
+				}
+			}
+		} else if len(cfg.EnabledAgents) > 0 {
 			in.Kind = cfg.EnabledAgents[0]
 		} else {
 			in.Kind = Fake
@@ -556,6 +579,43 @@ func (s *Store) resolveAdvisor(ctx context.Context, sessionKind AgentKind, choic
 	return kind, model, effort, mode
 }
 
+// resolveAgentForModel resolves which AgentKind supports modelID, checking
+// enabled agents first, then falling back to all agent kinds.
+func (s *Store) resolveAgentForModel(ctx context.Context, modelID string) (AgentKind, bool) {
+	if s.Catalog == nil || modelID == "" {
+		return "", false
+	}
+	var enabled []AgentKind
+	if s.Settings != nil {
+		if cfg, err := s.Settings.Get(ctx); err == nil {
+			enabled = cfg.EnabledAgents
+		}
+	}
+	for _, kind := range enabled {
+		models, _, err := s.Catalog.ModelsFor(ctx, kind)
+		if err != nil {
+			continue
+		}
+		if _, ok := catalog.Find(models, modelID); ok {
+			return kind, true
+		}
+	}
+	all := append(slices.Clone(AgentKinds), Fake)
+	for _, kind := range all {
+		if slices.Contains(enabled, kind) {
+			continue
+		}
+		models, _, err := s.Catalog.ModelsFor(ctx, kind)
+		if err != nil {
+			continue
+		}
+		if _, ok := catalog.Find(models, modelID); ok {
+			return kind, true
+		}
+	}
+	return "", false
+}
+
 func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	it, err := s.Items.Get(ctx, in.ItemKey)
 	if err != nil {
@@ -574,6 +634,10 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return Agent{}, false, err
 	} else if hit {
 		return result.Agent, result.Queued, nil
+	}
+
+	if in.Role == "implementer" {
+		in.Role = RoleCoder
 	}
 
 	if in.Role == RoleOrchestrator {
@@ -609,9 +673,32 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return Agent{}, false, &items.Error{Code: items.CodeBadRequest, Message: msg}
 	}
 
+	cfg, _ := s.Settings.Get(ctx)
+	if in.Kind == "" && in.Model != "" {
+		if k, ok := s.resolveAgentForModel(ctx, in.Model); ok {
+			in.Kind = k
+		}
+	}
 	if in.Kind == "" {
-		cfg, _ := s.Settings.Get(ctx)
-		if len(cfg.EnabledAgents) > 0 {
+		if rd, ok := cfg.Roles[in.Role]; ok && rd.Agent != "" && (len(cfg.EnabledAgents) == 0 || slices.Contains(cfg.EnabledAgents, rd.Agent)) {
+			in.Kind = rd.Agent
+			if in.Model == "" {
+				if s.Catalog != nil {
+					models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
+					if _, found := catalog.Find(models, rd.Model); found {
+						in.Model = rd.Model
+						if in.Effort == "" {
+							in.Effort = rd.Effort
+						}
+					}
+				} else {
+					in.Model = rd.Model
+					if in.Effort == "" {
+						in.Effort = rd.Effort
+					}
+				}
+			}
+		} else if len(cfg.EnabledAgents) > 0 {
 			in.Kind = cfg.EnabledAgents[0]
 		} else {
 			in.Kind = Fake
