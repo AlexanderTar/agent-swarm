@@ -300,6 +300,44 @@ func TestAgyIsolatedMCPAndInstructions(t *testing.T) {
 	}
 }
 
+// P0 (2026-09-22 live incident): setupEnv used to symlink only two named
+// files out of the real ~/.gemini/antigravity-cli/ (oauth token, settings.json).
+// The onboarding-completed flag actually lives in a third file in that same
+// directory (antigravity_state.pbtxt), which the allowlist silently dropped —
+// so every swarm-spawned agy hit the interactive "choose your color scheme"
+// wizard and failed to start (100% of spawns). Confirmed live and fixed by
+// symlinking the whole antigravity-cli directory instead of an allowlist.
+func TestAgyIsolatedHomeCarriesOnboardingState(t *testing.T) {
+	d := testDeps(t)
+	real := filepath.Join(d.UserHome, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "antigravity-oauth-token"), []byte("oauth-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "settings.json"), []byte(`{"trustedWorkspaces":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const onboarded = "post_onboarding: {\n}\nagent_onboarding_completed: AGENT_ONBOARDING_STATE_COMPLETED\n"
+	if err := os.WriteFile(filepath.Join(real, "antigravity_state.pbtxt"), []byte(onboarded), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newAgy(d).Launch(agySpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyHome := l.Env["HOME"]
+	got, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "antigravity-cli", "antigravity_state.pbtxt"))
+	if err != nil {
+		t.Fatalf("expected antigravity_state.pbtxt reachable in isolated home (onboarding state must survive isolation): %v", err)
+	}
+	if string(got) != onboarded {
+		t.Errorf("got %q, want %q", got, onboarded)
+	}
+}
+
 func TestAgyInstructionsOmittedWhenUnset(t *testing.T) {
 	d := testDeps(t)
 	spec := agySpec(t)

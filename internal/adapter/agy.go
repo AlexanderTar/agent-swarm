@@ -26,21 +26,26 @@ func init() { register(kinds.Agy, func(d Deps) Adapter { return newAgy(d) }) }
 // symlinks (mirrors codex.go's setupEnv).
 func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 	agyHome := filepath.Join(a.d.launchDir(s.SessionID), "agy-home")
-	if err := os.MkdirAll(filepath.Join(agyHome, ".gemini", "antigravity-cli"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(agyHome, ".gemini"), 0o700); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Join(agyHome, ".gemini", "config"), 0o700); err != nil {
 		return nil, err
 	}
-	for _, name := range []string{"antigravity-oauth-token", "settings.json"} {
-		userFile := filepath.Join(a.d.UserHome, ".gemini", "antigravity-cli", name)
-		if _, err := os.Stat(userFile); err == nil {
-			symFile := filepath.Join(agyHome, ".gemini", "antigravity-cli", name)
-			_ = os.Remove(symFile)
-			if err := os.Symlink(userFile, symFile); err != nil {
-				return nil, err
-			}
+	// Symlink the whole directory rather than an allowlist of named files:
+	// first-run state (e.g. antigravity_state.pbtxt's onboarding-completed
+	// flag) lives here too, and a per-file allowlist that misses one makes
+	// agy think every swarm-spawned session is a fresh install and show the
+	// interactive setup wizard, which never starts (P0, 2026-09-22).
+	realAntigravityCLI := filepath.Join(a.d.UserHome, ".gemini", "antigravity-cli")
+	symAntigravityCLI := filepath.Join(agyHome, ".gemini", "antigravity-cli")
+	if _, err := os.Stat(realAntigravityCLI); err == nil {
+		_ = os.Remove(symAntigravityCLI)
+		if err := os.Symlink(realAntigravityCLI, symAntigravityCLI); err != nil {
+			return nil, err
 		}
+	} else if err := os.MkdirAll(symAntigravityCLI, 0o700); err != nil {
+		return nil, err
 	}
 	mcpCfg, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
 		"swarm": map[string]any{"command": s.Bin, "args": []string{"mcp"}},
