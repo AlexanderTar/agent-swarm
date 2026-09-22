@@ -74,3 +74,18 @@ func TestFakeBlockWaitsForContext(t *testing.T) {
 		t.Fatal("Block ignored the context")
 	}
 }
+
+func TestRunWithLongerCallerDeadlineDoesNotTruncate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Run(ctx, "sleep", "1")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	dur := time.Since(start)
+	if dur > 500*time.Millisecond {
+		t.Fatalf("expected command to abort near caller deadline ~200ms, took %v", dur)
+	}
+}
+

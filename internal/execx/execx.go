@@ -16,10 +16,13 @@ import (
 // Runner runs a command to completion and returns its stdout.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
-// Run is the real Runner. Stdin is closed; commands get at most 30 s.
+// Run is the real Runner. Stdin is closed; commands get at most 30 s if no deadline is set.
 func Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
