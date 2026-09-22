@@ -62,7 +62,7 @@ func TestTaskTransitions(t *testing.T) {
 	if err := move(t, s, task.Key, items.InProgress, daemon); err != nil {
 		t.Fatal(err)
 	}
-	wantDenied(t, move(t, s, task.Key, items.Done, user), "Couldn't move TASK-2 to Done. No agent has reported it complete.")
+	wantDenied(t, move(t, s, task.Key, items.Done, user), "Couldn't move TASK-2 to Done. No agent has reported it complete on this task.")
 	wantDenied(t, move(t, s, task.Key, items.InReview, daemon), "Couldn't update status. The item remains In progress.")
 	seedCheckpoint(t, s.DB, task, "completed", 1, later(s), "")
 	wantDenied(t, move(t, s, task.Key, items.Done, orch), "Couldn't update status. The item remains In progress.")

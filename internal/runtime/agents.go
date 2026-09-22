@@ -584,6 +584,31 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		}
 	}
 
+	// Gated roles (coder/debugger/mechanical) write completed checkpoints, and
+	// only a Task consumes one (checkpoint.go's CompletedCkp switch moves it
+	// to InReview; WriteCheckpoint now refuses one on anything else). Spawning
+	// one on a Story/Epic/Bug/Spike leaves it with no item it can ever move,
+	// and isDescendant refuses to let it redirect a later checkpoint to a
+	// sibling task. Refuse at spawn time instead -- deterministically, before
+	// any work starts -- and name the task keys to use.
+	if slices.Contains(gatedRoles, in.Role) && it.Type != items.Task {
+		children, cerr := s.Items.Children(ctx, it.Key)
+		if cerr != nil {
+			return Agent{}, false, cerr
+		}
+		var keys []string
+		for _, c := range children {
+			if c.Type == items.Task {
+				keys = append(keys, c.Key)
+			}
+		}
+		msg := fmt.Sprintf("Spawn %s on a task, not %s.", in.Role, it.Key)
+		if len(keys) > 0 {
+			msg = fmt.Sprintf("%s Its tasks: %s.", msg, strings.Join(keys, ", "))
+		}
+		return Agent{}, false, &items.Error{Code: items.CodeBadRequest, Message: msg}
+	}
+
 	if in.Kind == "" {
 		cfg, _ := s.Settings.Get(ctx)
 		if len(cfg.EnabledAgents) > 0 {
