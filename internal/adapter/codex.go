@@ -26,7 +26,7 @@ func init() { register(kinds.Codex, func(d Deps) Adapter { return newCodex(d) })
 // Literal env={…} also works but would put session values in argv, so env_vars wins.
 var mcpEnvVars = []string{"SWARM_URL", "SWARM_SESSION", "SWARM_TOKEN_FILE", "SWARM_AGENT_KIND"}
 
-func (c *Codex) flags(s Spec) []string {
+func (c *Codex) flags(s Spec) ([]string, error) {
 	quoted := make([]string, len(mcpEnvVars))
 	for i, v := range mcpEnvVars {
 		quoted[i] = `"` + v + `"`
@@ -36,20 +36,63 @@ func (c *Codex) flags(s Spec) []string {
 	if s.Effort != "" {
 		a = append(a, "-c", `model_reasoning_effort="`+s.Effort+`"`)
 	}
+	if s.Instructions != "" {
+		instrPath, err := c.d.writeLaunchFile(s.SessionID, "codex-instructions.md", []byte(s.Instructions))
+		if err != nil {
+			return nil, err
+		}
+		a = append(a, "-c", fmt.Sprintf(`model_instructions_file="%s"`, instrPath))
+	}
 	return append(a,
 		"-c", `mcp_servers.swarm.command="`+s.Bin+`"`,
 		"-c", `mcp_servers.swarm.args=["mcp"]`,
-		"-c", `mcp_servers.swarm.env_vars=[`+strings.Join(quoted, ",")+`]`)
+		"-c", `mcp_servers.swarm.env_vars=[`+strings.Join(quoted, ",")+`]`), nil
+}
+
+func (c *Codex) setupEnv(s Spec) (map[string]string, error) {
+	codexHome := filepath.Join(c.d.launchDir(s.SessionID), "codex-home")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		return nil, err
+	}
+	if c.d.UserHome != "" {
+		userAuth := filepath.Join(c.d.UserHome, ".codex", "auth.json")
+		if _, err := os.Stat(userAuth); err == nil {
+			symAuth := filepath.Join(codexHome, "auth.json")
+			_ = os.Remove(symAuth)
+			if err := os.Symlink(userAuth, symAuth); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return map[string]string{"CODEX_HOME": codexHome}, nil
 }
 
 func (c *Codex) Launch(s Spec) (Launch, error) {
-	return Launch{Argv: append(append([]string{"codex"}, c.flags(s)...), s.Kickoff),
-		Env: map[string]string{}}, nil
+	flags, err := c.flags(s)
+	if err != nil {
+		return Launch{}, err
+	}
+	env, err := c.setupEnv(s)
+	if err != nil {
+		return Launch{}, err
+	}
+	return Launch{
+		Argv: append(append([]string{"codex"}, flags...), s.Kickoff),
+		Env:  env,
+	}, nil
 }
 
 func (c *Codex) Resume(s Spec) (Launch, error) {
-	argv := append([]string{"codex", "resume", s.ProviderSessionID}, c.flags(s)...)
-	return Launch{Argv: append(argv, s.Kickoff), Env: map[string]string{}}, nil
+	flags, err := c.flags(s)
+	if err != nil {
+		return Launch{}, err
+	}
+	env, err := c.setupEnv(s)
+	if err != nil {
+		return Launch{}, err
+	}
+	argv := append([]string{"codex", "resume", s.ProviderSessionID}, flags...)
+	return Launch{Argv: append(argv, s.Kickoff), Env: env}, nil
 }
 
 var (
