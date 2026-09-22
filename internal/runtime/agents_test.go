@@ -1614,9 +1614,13 @@ func TestSpawnWorkerPopulatesParentNameInBrief(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// RoleResearcher, not RoleCoder: a spike has no task children yet (it
+	// hasn't materialized), and gated roles can no longer be spawned on
+	// anything but a task. Parent-name population is role-agnostic, so this
+	// still exercises what the test is actually about.
 	worker, _, err := s.Spawn(ctx, SpawnInput{
 		ItemKey:       key,
-		Role:          RoleCoder,
+		Role:          RoleResearcher,
 		Kind:          Fake,
 		Model:         "fake-1",
 		ParentAgentID: orch.ID,

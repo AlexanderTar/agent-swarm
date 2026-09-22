@@ -1415,6 +1415,33 @@ func statusOf(t *testing.T, s *Server, key string) items.Status {
 	return it.Status
 }
 
+// Deterministic fix for the STORY-27 class of bug: a gated role (coder here)
+// can never be assigned to a Story, so its completed checkpoint can never
+// land anywhere but the task it was actually spawned on.
+func TestSpawnRefusesACoderOnAStoryAndNamesItsTasks(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	_, err := s.call(ctx, seed.Caller, "swarm_spawn", spawnArgs(seed.StoryKey))
+	if err == nil {
+		t.Fatal("a coder must not be spawned on a story")
+	}
+	if !strings.Contains(err.Error(), seed.TaskKey) || !strings.Contains(err.Error(), seed.OtherTaskKey) {
+		t.Fatalf("err = %v; want both task keys named", err)
+	}
+}
+
+// Story-wide work (a review spanning all of a story's tasks) still spawns on
+// the story itself -- only the gated implementation roles are restricted to
+// tasks.
+func TestSpawnAllowsAReviewerOnAStory(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	args := `{"item":"` + seed.StoryKey + `","role":"reviewer","brief":{"objective":"x"},"worktrees":[]}`
+	if _, err := s.call(ctx, seed.Caller, "swarm_spawn", args); err != nil {
+		t.Fatalf("a reviewer must still be spawnable on a story: %v", err)
+	}
+}
+
 func TestSpawnPromotesDraftTaskAndParentStory(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()

@@ -398,12 +398,17 @@ func seedTopLevelItem(t *testing.T, s *Store, typ items.Type) items.Item {
 
 // assertRefusesCompleted spawns a coder directly on itemKey and asserts that
 // a completed checkpoint with no item override is refused as bad_request,
-// naming the offending type.
+// naming the offending type. Spawned as a reviewer, not a coder: gated roles
+// (coder/debugger/mechanical) can no longer be spawned on a non-task item at
+// all (Spawn's item-type gate), so this exercises the WriteCheckpoint guard
+// as the defense-in-depth layer it now is -- e.g. a reviewer legitimately
+// assigned to a story for story-wide review, who then mistakenly reports
+// the whole story "completed" instead of leaving its findings as a review.
 func assertRefusesCompleted(t *testing.T, s *Store, itemKey string) {
 	t.Helper()
 	ctx := context.Background()
-	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: itemKey, Role: RoleCoder, Kind: Fake,
-		Model: "fake-1", Brief: BriefInput{Objective: "cover several tasks"}})
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: itemKey, Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "review the story"}})
 	if err != nil {
 		t.Fatal(err)
 	}

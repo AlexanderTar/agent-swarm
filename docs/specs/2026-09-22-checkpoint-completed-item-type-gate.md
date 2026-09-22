@@ -155,10 +155,116 @@ checkpoint — that IS the user-facing copy for this change.
 
 - Unsticking STORY-27 itself (locked decision 4 — operational, separate
   from this code change).
-- Any spawn-time role/item-type validation (locked decision 2).
 - Changing `isDescendant` to tolerate siblings, or any other loosening of
   the checkpoint scoping rule — the current strict ancestor rule is correct;
   the bug was the silent default, not the scoping check.
 - Retroactive backfill or repair tooling for other stories that may have
   hit the same silent-default bug before this fix. If the user wants an
   audit query for that, it's a separate, explicit ask.
+- Auto-fan-out (deriving which tasks a story-level `completed` should apply
+  to and closing all of them at once) — considered and rejected: it would
+  mark partial work as fully done on a guess.
+- A reviewer's `completed` checkpoint counting toward a task's
+  `completedCurrent` gate (any role's `completed` currently satisfies it,
+  not just a gated one's) — real, but a separate concern from item-type
+  targeting; not addressed here.
+
+## Revision (same day, after commit 1): locked decisions 1, 2, 5 reversed
+
+Commit 1 shipped the `WriteCheckpoint` guard above. The user then asked for
+a "more wholistic and deterministic approach": the guard still leaves the
+*choice* of target item to the worker at checkpoint time — a coder can still
+be assigned to a story and has to remember to say `item: "<TASK-KEY>"`
+correctly on every checkpoint. That's a should-remember, not a can't-get-
+wrong; "deterministic" means the target is fixed by the assignment, not
+chosen by the worker.
+
+Verified before reversing (not assumed): `tryTransition`
+(`checkpoint.go:124`) swallows `items.CodeTransitionDenied` and returns nil
+(just logs it). `checkTask`'s `check()` (`transition.go:...`, `case Story:`)
+denies every non-Done transition on a Story generically ("derived; only
+reconciliation moves stories"). So a coder assigned to a Story writing
+`accepted`/`progress`/`completed` was **already a total no-op for every
+checkpoint kind**, not just `completed` — the multi-task-on-story mode never
+worked in code, only in the skill doc that described it. There is no working
+behavior this reversal takes away.
+
+Reversed:
+
+1. **Locked decision 1 (keep multi-task-worker-on-story) is dropped.** Every
+   `coder`/`debugger`/`mechanical` worker is now spawned on exactly one task.
+   Losing "one worker covers several small tasks" costs some efficiency, but
+   the orchestrator's own concurrency budget (3 active subagents by default,
+   `swarm-orchestrator` SKILL.md) already makes "spawn N workers for N tasks"
+   the normal shape of the work; it was never actually saving spawns in
+   practice given that ceiling.
+2. **Locked decision 2 (fix lives in `WriteCheckpoint`, not `swarm_spawn`)
+   is dropped.** The deterministic fix moves to spawn time:
+   `runtime.Spawn` now refuses a gated role (`coder`/`debugger`/`mechanical`)
+   on anything but an `items.Task`, and names the item's task children in
+   the refusal. Once a gated role can only ever be assigned to a task,
+   `completed`'s default-to-assignment is always correct — there is no
+   longer a key to get wrong. `WriteCheckpoint`'s guard (commit 1) is kept as
+   defense-in-depth: it still catches an ungated role (e.g. a `reviewer`,
+   which *can* legitimately be spawned on a story for story-wide review)
+   mistakenly reporting the whole story `completed`.
+3. **Locked decision 5 is narrowed**: `swarm_control retry` and
+   `isDescendant` are still unchanged (retry inherits an assignment that is
+   now always correct by construction; the scoping rule was never the bug).
+   `promoteDraft` is unchanged for the same reason as before. The
+   **spawn-time role/item-type pairing**, previously locked as "no change,"
+   is now the primary fix — see Model/API change below.
+4. `internal/install/skills/swarm-orchestrator/SKILL.md` (and its canonical
+   source `skills/swarm-orchestrator/SKILL.md`, kept in sync via
+   `make skills-sync`) is updated to drop the multi-task-checkpoint
+   instruction and state one-worker-per-task as the rule, since the doc's
+   own guidance is what produced the STORY-27 assignment shape in the first
+   place — leaving it as written would mean orchestrators keep attempting it
+   and hitting the new spawn-time refusal.
+
+### Model/API change (revision)
+
+`runtime.Spawn` (`internal/runtime/agents.go`, after the existing
+orchestrator-uniqueness check):
+
+```go
+if slices.Contains(gatedRoles, in.Role) && it.Type != items.Task {
+    children, cerr := s.Items.Children(ctx, it.Key)
+    if cerr != nil {
+        return Agent{}, false, cerr
+    }
+    var keys []string
+    for _, c := range children {
+        if c.Type == items.Task {
+            keys = append(keys, c.Key)
+        }
+    }
+    msg := fmt.Sprintf("Spawn %s on a task, not %s.", in.Role, it.Key)
+    if len(keys) > 0 {
+        msg = fmt.Sprintf("%s Its tasks: %s.", msg, strings.Join(keys, ", "))
+    }
+    return Agent{}, false, &items.Error{Code: items.CodeBadRequest, Message: msg}
+}
+```
+
+Reviewer/UI-reviewer/researcher/orchestrator are unaffected — they can still
+be spawned on any item type, per the skill's story-wide-review case.
+
+### Contention points audited (revision)
+
+| Site | Risk | Disposition |
+|---|---|---|
+| `runtime.Spawn` (agents.go:559) | Gated role assigned to a non-task | **Fixed here** — refused, names the task keys |
+| `WriteCheckpoint` guard (commit 1) | Now unreachable for gated roles (spawn blocks the fixture) | Kept as defense-in-depth for ungated roles (e.g. reviewer) mistargeting `completed`; commit-1 tests updated to spawn a `reviewer` instead of a `coder` to still exercise it |
+| `promoteDraft` (orchestrator.go:49) | No-op on non-Task spawns | Unaffected — gated roles can no longer reach it on a non-Task at all |
+| `swarm_control retry` | Inherits original assignment | Unaffected — the assignment is now always correct by construction |
+| Reviewer's `completed` still counts toward `completedCurrent` | A reviewer assigned to a task (not just story-wide review) could satisfy the Done gate without a coder ever reporting | Real, pre-existing, unrelated to item-type targeting — logged in "Explicitly out of scope," not fixed here |
+
+### Verification (revision, additive to the original section)
+
+6. `go test ./internal/mcpserver/... -run TestSpawnRefusesACoderOnAStory` —
+   refusal fires and names both sibling task keys.
+7. `go test ./internal/mcpserver/... -run TestSpawnAllowsAReviewerOnAStory` —
+   confirms the exemption isn't over-broad.
+8. `go test ./... ` (full repo) green, including the three commit-1 checkpoint
+   tests updated to spawn a `reviewer` fixture.
