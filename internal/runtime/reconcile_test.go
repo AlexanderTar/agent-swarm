@@ -1869,3 +1869,148 @@ func TestSweepWithdrawsRowsOfFinishedAgentEvenIfSessionPaused(t *testing.T) {
 		t.Fatalf("request.resolved events = %d, want 1", resolved)
 	}
 }
+
+func TestProgressDeadlockNeverFiresForOtherCheckpointKinds(t *testing.T) {
+	cases := []struct {
+		name string
+		in   CheckpointInput
+	}{
+		{"accepted", CheckpointInput{Kind: Accepted, Summary: "starting"}},
+		{"blocked", CheckpointInput{Kind: BlockedCkp, Summary: "stuck", Blockers: []string{"need a decision"}}},
+		{"completed", CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./...", OK: true}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, tm, at := clockStore(t)
+			ctx := context.Background()
+			orch, w, wSes := worker(t, s)
+			panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+				Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+			tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+			tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+			tm.captures[orch.Name] = []string{"working…\n"}
+			s.Sync(ctx, wSes.ID, nil, 20)
+			s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, w.ID)
+			if _, err := s.WriteCheckpoint(ctx, wSes.ID, tc.in); err != nil {
+				t.Fatal(err)
+			}
+			at.Advance(6 * time.Minute)
+			if err := s.Reconcile(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var n int
+			s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+				AND payload_json LIKE '%"event":"progress_deadlock"%'`, orch.ID).Scan(&n)
+			if n != 0 {
+				t.Fatalf("%s: progress_deadlock relay count = %d, want 0", tc.name, n)
+			}
+		})
+	}
+}
+
+func TestProgressDeadlockNeverFiresWithNoCheckpointYet(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	s.Sync(ctx, wSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, w.ID)
+
+	at.Advance(6 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"progress_deadlock"%'`, orch.ID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("no checkpoint at all is notifyNoAck's territory, not this one: count = %d", n)
+	}
+}
+
+func TestProgressDeadlockNeverFiresForTopLevelOrchestrator(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchSes, _ := s.LatestSession(ctx, orch.ID)
+	s.Sync(ctx, orchSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: Progress, Summary: "surveying the epic"}); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": orchSes.ID}
+
+	at.Advance(6 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+		AND payload_json LIKE '%"event":"progress_deadlock"%'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("a top-level orchestrator has nobody to relay to: count = %d", n)
+	}
+}
+
+func TestProgressDeadlockFiresOncePerCheckpointThenAgainForANewOne(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	s.Sync(ctx, wSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, w.ID)
+
+	ck1, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "first stall"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(6 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// two more ticks on the same still-waiting session: must not re-relay ck1
+	at.Advance(5 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(5 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n1 int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay' AND correlation_id = ?`,
+		ck1.CheckpointID).Scan(&n1)
+	if n1 != 1 {
+		t.Fatalf("ck1 relay count = %d, want exactly 1 across repeated ticks", n1)
+	}
+
+	// a fresh progress checkpoint that also stalls gets its own relay
+	ck2, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "second stall"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(6 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n2 int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay' AND correlation_id = ?`,
+		ck2.CheckpointID).Scan(&n2)
+	if n2 != 1 {
+		t.Fatalf("ck2 relay count = %d, want exactly 1", n2)
+	}
+}
