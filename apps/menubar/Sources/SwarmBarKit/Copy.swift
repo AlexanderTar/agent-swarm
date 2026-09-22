@@ -88,6 +88,7 @@ public enum Copy {
     public static let tabNotifications = "Notifications"
     public static let tabLimits = "Limits"
     public static let tabInstructions = "Instructions"
+    public static let tabApp = "App"
     public static let agentsUsedBySwarm = "Agents used by Swarm"
     public static let installed = "Installed"
     public static let notInstalled = "Not installed on this Mac"
