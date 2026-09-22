@@ -44,8 +44,11 @@ describe("agentActions (§10.7, one case per row)", () => {
     expect(labels(a)).toEqual(["terminal:Terminal", "pause:Pause group", "cancel:Cancel"]);
     expect(agentActions(a)[1]?.body).toEqual({ scope: "subtree" });
   });
-  it.each(["pause_requested", "quiescing", "stopping"] as const)("%s: Terminal and a disabled Pausing…", (s) => {
-    expect(labels(makeAgent({ session: session(s) }))).toEqual(["terminal:Terminal", "pause:Pausing…:disabled"]);
+  it.each(["pause_requested", "quiescing"] as const)("%s: Terminal, a disabled Pausing…, and an enabled Cancel", (s) => {
+    expect(labels(makeAgent({ session: session(s) }))).toEqual(["terminal:Terminal", "pause:Pausing…:disabled", "cancel:Cancel"]);
+  });
+  it("stopping: Terminal, a disabled Pausing…, and a disabled Cancel", () => {
+    expect(labels(makeAgent({ session: session("stopping") }))).toEqual(["terminal:Terminal", "pause:Pausing…:disabled", "cancel:Cancel:disabled"]);
   });
   it("paused: Resume, Cancel", () => {
     expect(labels(makeAgent({ session: session("paused") }))).toEqual(["resume:Resume", "cancel:Cancel"]);

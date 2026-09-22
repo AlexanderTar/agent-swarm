@@ -47,36 +47,37 @@ final class AgentActionsTests: XCTestCase {
     }
 
     // §10.7, one test per row.
-    func testQueued() { XCTAssertEqual(labels(agent(nil, agentState: .queued)), ["cancel:Cancel:menu"]) }
+    func testQueued() { XCTAssertEqual(labels(agent(nil, agentState: .queued)), ["cancel:Cancel"]) }
 
     func testSpawning() {
-        XCTAssertEqual(labels(agent(.spawning)), ["terminal:Open terminal", "cancel:Cancel:menu"])
-        XCTAssertEqual(labels(agent(.spawning), tmux: false), ["terminal:Open terminal:disabled", "cancel:Cancel:menu"])
+        XCTAssertEqual(labels(agent(.spawning)), ["terminal:Open terminal", "cancel:Cancel"])
+        XCTAssertEqual(labels(agent(.spawning), tmux: false), ["terminal:Open terminal:disabled", "cancel:Cancel"])
     }
 
     func testRunningWaitingAndStale() {
         for a in [agent(.running), agent(.running, waiting: true), agent(.running, stale: true)] {
-            XCTAssertEqual(labels(a), ["terminal:Open terminal", "pause:Pause", "cancel:Cancel:menu"])
+            XCTAssertEqual(labels(a), ["terminal:Open terminal", "pause:Pause", "cancel:Cancel"])
         }
         XCTAssertEqual(AgentTree.actions(agent(.running), tmuxAlive: true, connected: true)[1].scope, .session)
     }
 
     func testRunningOrchestratorPausesTheGroup() {
         let o = agent(.running, role: .orchestrator)
-        XCTAssertEqual(labels(o), ["terminal:Open terminal", "pause:Pause group", "cancel:Cancel:menu"])
+        XCTAssertEqual(labels(o), ["terminal:Open terminal", "pause:Pause group", "cancel:Cancel"])
         XCTAssertEqual(AgentTree.actions(o, tmuxAlive: true, connected: true)[1].scope, .subtree)
     }
 
-    func testPausingStates() {
-        for s: SessionState in [.pauseRequested, .quiescing, .stopping] {
-            XCTAssertEqual(labels(agent(s)), ["terminal:Open terminal", "pause:Pausing…:disabled"])
+    func testPausingStatesKeepCancelAvailableUntilStopIsRequested() {
+        for s: SessionState in [.pauseRequested, .quiescing] {
+            XCTAssertEqual(labels(agent(s)), ["terminal:Open terminal", "pause:Pausing…:disabled", "cancel:Cancel"])
         }
+        XCTAssertEqual(labels(agent(.stopping)), ["terminal:Open terminal", "pause:Pausing…:disabled", "cancel:Cancel:disabled"])
     }
 
-    func testPaused() { XCTAssertEqual(labels(agent(.paused)), ["resume:Resume", "cancel:Cancel:menu"]) }
+    func testPaused() { XCTAssertEqual(labels(agent(.paused)), ["resume:Resume", "cancel:Cancel"]) }
 
     func testInterrupted() {
-        XCTAssertEqual(labels(agent(.interrupted)), ["resume:Resume", "ack:Acknowledge:menu", "cancel:Cancel:menu"])
+        XCTAssertEqual(labels(agent(.interrupted)), ["resume:Resume", "ack:Acknowledge:menu", "cancel:Cancel"])
     }
 
     func testCrashedAndFailed() {
@@ -87,9 +88,9 @@ final class AgentActionsTests: XCTestCase {
     }
 
     func testFailedAtPreflight() {
-        XCTAssertEqual(labels(agent(nil, preflight: "x")), ["retry:Retry", "cancel:Cancel:menu"])
+        XCTAssertEqual(labels(agent(nil, preflight: "x")), ["retry:Retry", "cancel:Cancel"])
         // Contracts §3.2: no session + preflight_error, whatever AgentState the daemon leaves it in.
-        XCTAssertEqual(labels(agent(nil, agentState: .queued, preflight: "x")), ["retry:Retry", "cancel:Cancel:menu"])
+        XCTAssertEqual(labels(agent(nil, agentState: .queued, preflight: "x")), ["retry:Retry", "cancel:Cancel"])
     }
 
     func testCompletedCancelledAcknowledgedHaveNone() {
@@ -102,9 +103,9 @@ final class AgentActionsTests: XCTestCase {
 
     func testDaemonDownDisablesEverythingButTheTerminal() {
         XCTAssertEqual(labels(agent(.running), connected: false),
-                       ["terminal:Open terminal", "pause:Pause:disabled", "cancel:Cancel:disabled:menu"])
+                       ["terminal:Open terminal", "pause:Pause:disabled", "cancel:Cancel:disabled"])
         XCTAssertEqual(labels(agent(.interrupted), connected: false),
-                       ["resume:Resume:disabled", "ack:Acknowledge:disabled:menu", "cancel:Cancel:disabled:menu"])
+                       ["resume:Resume:disabled", "ack:Acknowledge:disabled:menu", "cancel:Cancel:disabled"])
         XCTAssertEqual(labels(agent(.crashed), connected: false),
                        ["retry:Retry:disabled", "ack:Acknowledge:disabled:menu", "terminal:Open terminal"])
     }
