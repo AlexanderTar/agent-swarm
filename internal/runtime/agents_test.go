@@ -1435,6 +1435,47 @@ func TestSpawnDefaultsKindAndModel(t *testing.T) {
 	}
 }
 
+// TestSpawnUsesRoleDefaultModelNotCatalogFirst guards against the model
+// fallback silently defaulting to whichever model the catalog happens to
+// list first (Claude's catalog puts the "fable" alias first) instead of the
+// role's configured default -- the bug behind agent-swarm's usage overrun
+// where coder/orchestrator workers were dispatched on Fable.
+func TestSpawnUsesRoleDefaultModelNotCatalogFirst(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Adapters[Claude] = fa
+	ctx := context.Background()
+	_, _ = s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','1','[{"id":"claude-fable-5-1","label":"Fable","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":true},{"id":"sonnet","label":"Sonnet","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":true}]','claude-fable-5-1','test',1,1)`)
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != Claude || a.Model != "sonnet" {
+		t.Fatalf("agent = %+v, want role default model sonnet, not catalog-first fable", a)
+	}
+}
+
+// TestStartOrchestratorUsesRoleDefaultModelNotCatalogFirst is the same guard
+// for StartOrchestrator, which had the identical bug.
+func TestStartOrchestratorUsesRoleDefaultModelNotCatalogFirst(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Adapters[Claude] = fa
+	ctx := context.Background()
+	_, _ = s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','1','[{"id":"claude-fable-5-1","label":"Fable","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":true},{"id":"opus","label":"Opus","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":true}]','claude-fable-5-1','test',1,1)`)
+	seedEpicWithTask(t, s)
+	a, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != Claude || a.Model != "opus" {
+		t.Fatalf("agent = %+v, want role default model opus, not catalog-first fable", a)
+	}
+}
+
 func TestSpawnOrchestratorConflict(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

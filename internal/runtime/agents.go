@@ -379,20 +379,7 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, &items.Error{Code: items.CodeConflict, Message: "This item already has an orchestrator."}
 	}
 
-	if in.Kind == "" {
-		cfg, _ := s.Settings.Get(ctx)
-		if len(cfg.EnabledAgents) > 0 {
-			in.Kind = cfg.EnabledAgents[0]
-		} else {
-			in.Kind = Fake
-		}
-	}
-	if in.Model == "" {
-		models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
-		if len(models) > 0 {
-			in.Model = models[0].ID
-		}
-	}
+	in.Kind, in.Model = s.roleDefaultKindModel(ctx, RoleOrchestrator, in.Kind, in.Model)
 
 	origKind := in.Kind
 	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
@@ -518,6 +505,44 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	return a, false, nil
 }
 
+// roleDefaultKindModel fills an empty Kind/Model from the role's configured
+// default (cfg.Roles[role]) rather than an arbitrary catalog entry. It falls
+// back to the first enabled agent / first cataloged model only when the role
+// has no configured default, or that default names a kind or model that
+// isn't currently available (e.g. a retired or renamed model) -- the same
+// safety net the old unconditional fallback provided.
+func (s *Store) roleDefaultKindModel(ctx context.Context, role Role, kind AgentKind, model string) (AgentKind, string) {
+	cfg, _ := s.Settings.Get(ctx)
+	rd := cfg.Roles[role]
+	if kind == "" && rd.Agent != "" && slices.Contains(cfg.EnabledAgents, rd.Agent) {
+		kind = rd.Agent
+	}
+	if kind == "" {
+		if len(cfg.EnabledAgents) > 0 {
+			kind = cfg.EnabledAgents[0]
+		} else {
+			kind = Fake
+		}
+	}
+	models, catalogDef, _ := s.Catalog.ModelsFor(ctx, kind)
+	if model == "" && kind == rd.Agent && rd.Model != "" {
+		if _, ok := catalog.Find(models, rd.Model); ok {
+			model = rd.Model
+		}
+	}
+	// catalogDef is each fetcher's own stated default model (Codex/Agy/Cursor;
+	// Claude's fetcher never sets one), preferred over models[0] because Claude's
+	// list orders aliases (fable, opus, sonnet, haiku) first -- models[0] there is
+	// never "the default", just the alias-first entry.
+	if model == "" && catalogDef != "" {
+		model = catalogDef
+	}
+	if model == "" && len(models) > 0 {
+		model = models[0].ID
+	}
+	return kind, model
+}
+
 // resolveAdvisor is Task 12's spawn-order step 1, advisor half (P2 plan line
 // 6122): picks the advisor kind/model/effort/mode for a newly spawned agent
 // of kind sessionKind. choice is the caller's swarm_spawn/API "advisor"
@@ -609,20 +634,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return Agent{}, false, &items.Error{Code: items.CodeBadRequest, Message: msg}
 	}
 
-	if in.Kind == "" {
-		cfg, _ := s.Settings.Get(ctx)
-		if len(cfg.EnabledAgents) > 0 {
-			in.Kind = cfg.EnabledAgents[0]
-		} else {
-			in.Kind = Fake
-		}
-	}
-	if in.Model == "" {
-		models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
-		if len(models) > 0 {
-			in.Model = models[0].ID
-		}
-	}
+	in.Kind, in.Model = s.roleDefaultKindModel(ctx, in.Role, in.Kind, in.Model)
 
 	origKind := in.Kind
 	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
