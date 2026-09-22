@@ -223,10 +223,89 @@ func itemTypePlural(t items.Type) string {
 	return string(t) + "s"
 }
 
+// siblingTeardown is one other live session on the item a completed
+// checkpoint just landed on, closed out-of-band with WriteCheckpoint's own
+// transaction: killing a tmux pane isn't a SQL operation, so it happens after
+// the tx commits, mirroring Cancel's own tmux/DB split (agents.go's Cancel).
+type siblingTeardown struct {
+	TmuxName, ProviderSessionID string
+	Kind                        AgentKind
+}
+
+// closeCompletedSiblings is the deterministic half of "an orchestrator closes
+// children marked completed, regardless of the report": a completed
+// checkpoint on item X ends every OTHER live session still assigned to X, in
+// the same transaction the checkpoint itself writes in, so nothing needs an
+// orchestrator to remember a follow-up swarm_control call (the failure mode
+// that left s11-tool-stubs running indefinitely after its own item had
+// already gone to done under a different agent's checkpoint). Session state
+// goes to 'completed', not 'cancelled' -- this is the success path a session
+// simply never got to close out for itself, not an abandon. The caller's own
+// agent is excluded: if it owns the item too, it is still mid-turn and must
+// not be torn down under itself.
+func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, callerAgentID string, now time.Time) ([]siblingTeardown, error) {
+	args := []any{itemID, callerAgentID}
+	placeholders := make([]string, len(LiveStates))
+	for i, st := range LiveStates {
+		placeholders[i] = "?"
+		args = append(args, string(st))
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT s.id, s.tmux_name, COALESCE(s.provider_session_id, ''),
+			a2.id, a2.name, a2.kind, a2.root_item_id
+		FROM agents a2 JOIN sessions s ON s.id = (
+			SELECT id FROM sessions WHERE agent_id = a2.id ORDER BY generation DESC, attempt DESC LIMIT 1)
+		WHERE a2.item_id = ? AND a2.id != ? AND s.state IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	type sibling struct {
+		sessionID, tmux, provider, agentID, name, rootItemID string
+		kind                                                 AgentKind
+	}
+	var found []sibling
+	for rows.Next() {
+		var r sibling
+		var kind string
+		if err := rows.Scan(&r.sessionID, &r.tmux, &r.provider, &r.agentID, &r.name, &kind, &r.rootItemID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		r.kind = AgentKind(kind)
+		found = append(found, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	var out []siblingTeardown
+	for _, r := range found {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'completed', ended_at = ? WHERE id = ?`,
+			db.Millis(now), r.sessionID); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`,
+			db.Millis(now), r.agentID); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE worktree_reservations SET released_at = ?
+			WHERE agent_id = ? AND released_at IS NULL`, db.Millis(now), r.agentID); err != nil {
+			return nil, err
+		}
+		if err := s.publishAgentChanged(ctx, tx, r.name, r.rootItemID); err != nil {
+			return nil, err
+		}
+		s.logf("checkpoint: closing %s, its item completed under %s", r.name, callerAgentID)
+		out = append(out, siblingTeardown{TmuxName: r.tmux, ProviderSessionID: r.provider, Kind: r.kind})
+	}
+	return out, nil
+}
+
 // WriteCheckpoint is swarm_checkpoint (§8.1, L24).
 func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in CheckpointInput) (CheckpointResult, error) {
 	var out CheckpointResult
-	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
+	var toClose []siblingTeardown
+	ran, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
 		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -375,6 +454,11 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					return err
 				}
 			}
+			tc, err := s.closeCompletedSiblings(ctx, tx, it.ID, a.ID, now)
+			if err != nil {
+				return err
+			}
+			toClose = tc
 		}
 
 		if in.Resolution != "" {
@@ -478,7 +562,19 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		out.ItemStatus = final.Status
 		return nil
 	})
-	return out, err
+	if err != nil || !ran {
+		// !ran is a genuine I11 replay: closeCompletedSiblings' DB effects were
+		// never (re)computed, so tearing down tmux panes here too would double
+		// -kill sessions a first, successful call already closed.
+		return out, err
+	}
+	for _, t := range toClose {
+		if ad := s.Adapters[t.Kind]; ad != nil {
+			_ = s.Tmux.Keys(ctx, t.TmuxName, ad.InterruptKeys()...)
+		}
+		_ = s.Tmux.Kill(ctx, t.TmuxName)
+	}
+	return out, nil
 }
 
 // Checkpoints lists an item's checkpoints, most recent first.

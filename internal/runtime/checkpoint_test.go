@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -235,6 +236,78 @@ func TestHandoffLeavesTheItemStatusAlone(t *testing.T) {
 	}
 }
 
+// The deterministic half of "an orchestrator closes children marked
+// completed, regardless of the report" (the s11-tool-stubs incident: a coder
+// reported done via a finding, the orchestrator completed the item itself,
+// and the coder's own session sat 'running' forever because nothing ever
+// told it to stop). The orchestrator completing TASK-1 on the coder's behalf
+// must close the coder's still-live session out from under it.
+func TestCompletedChecksClosesTheOtherLiveSessionOnTheSameItem(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	oSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{Kind: CompletedCkp,
+		ItemKey: "TASK-1", Summary: "verified and fixed it myself"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != Completed {
+		t.Fatalf("coder session state = %s, want completed", after.State)
+	}
+	wAfter, err := s.Agent(ctx, w.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wAfter.State != AgentFinished {
+		t.Fatalf("coder agent state = %s, want finished", wAfter.State)
+	}
+	found := false
+	for _, k := range tm.killed {
+		if k == wSes.TmuxName {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("coder's tmux pane %s was never killed: %v", wSes.TmuxName, tm.killed)
+	}
+}
+
+// A completed checkpoint an agent writes on its own item must not tear its
+// own live session down out from under it: WriteCheckpoint hasn't returned
+// yet, so it is still mid-turn.
+func TestCompletedChecksNeverClosesTheCallersOwnSession(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	// Spawn's own defensive pre-start Kill (agents.go:1062, "no duplicate
+	// session name") already put both fixture agents in tm.killed by this
+	// point -- a plain non-empty check would pass for the wrong reason, so
+	// this asserts no *new* kill happens instead.
+	before := len(tm.killed)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "done", Verification: []Verify{{Cmd: "go test ./..."}},
+		Git: []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != before {
+		t.Fatalf("the caller's own session was torn down: %v", tm.killed[before:])
+	}
+	after, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != Running {
+		t.Fatalf("caller's own session state = %s, want unchanged (running)", after.State)
+	}
+}
+
 // L24: the generalist verification gate.
 func TestVerificationGate(t *testing.T) {
 	red := Verify{Cmd: "go test ./internal/x -run TestLogin", Phase: "red", OK: false}
@@ -338,16 +411,20 @@ func TestTryTransitionLogsADeniedTransitionInsteadOfSilence(t *testing.T) {
 		t.Fatal(err)
 	}
 	rSes, _ := s.LatestSession(ctx, rev.ID)
-	var logged string
-	s.Log = func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
+	// worker(t, s) already left a coder assigned to TASK-1 live and unclosed,
+	// so this same completed checkpoint also triggers closeCompletedSiblings
+	// (checkpoint.go) -- a second, expected log line, not a replacement for
+	// the denied-transition one. Capture every line rather than the last.
+	var logged []string
+	s.Log = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
 	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp,
 		Summary: "reviewed, still ready"}); err != nil {
 		t.Fatal(err)
 	}
-	if logged == "" {
+	if len(logged) == 0 {
 		t.Fatal("a denied transition must be logged, not silently swallowed")
 	}
-	if !strings.Contains(logged, "TASK-1") {
+	if !slices.ContainsFunc(logged, func(l string) bool { return strings.Contains(l, "TASK-1") }) {
 		t.Fatalf("the log line should name the item, got %q", logged)
 	}
 }

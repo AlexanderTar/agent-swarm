@@ -282,7 +282,25 @@ func (h *Handler) touch(ctx context.Context, s *sessionRow, in adapter.HookInput
 
 // Handle runs the §11.2 decision table and returns the agent-specific output
 // bytes (empty means "print nothing"). It never errors on an unknown session.
-func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, sessionID string, stdin []byte) ([]byte, error) {
+// Handle logs one line per call, unconditionally, timing the whole round trip:
+// before this, a hook that never arrived and a hook that silently failed left
+// the exact same trace in daemon.err.log (none), so a sustained delivery gap
+// -- an agent going many tool calls with pending mail nobody saw fire --
+// couldn't be told apart from the agent simply not calling anything hook-
+// worthy. This line is the only place that distinction gets recorded.
+func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, sessionID string, stdin []byte) (out []byte, err error) {
+	start := h.now()
+	agentName := "?"
+	defer func() {
+		outcome := "no-op"
+		switch {
+		case err != nil:
+			outcome = "error: " + err.Error()
+		case len(out) > 0:
+			outcome = fmt.Sprintf("decision (%d bytes)", len(out))
+		}
+		h.logf("hook: %s %s for %s took %s -> %s", kind, event, agentName, h.now().Sub(start).Round(time.Millisecond), outcome)
+	}()
 	// L16: identity comes from the token. The {agent} path segment is a hint only;
 	// the adapter is the one the session's agent row names, and a mismatch is
 	// logged and ignored rather than trusted.
@@ -293,6 +311,7 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	if err != nil {
 		return nil, err
 	}
+	agentName = s0.AgentName
 	if s0.Kind != kind {
 		h.logf("hook: %s posted to /hook/%s; using the session's kind", s0.Kind, kind)
 	}
