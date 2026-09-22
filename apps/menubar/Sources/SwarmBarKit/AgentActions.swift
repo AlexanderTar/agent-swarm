@@ -110,7 +110,7 @@ public enum AgentTree {
         let off = !connected
         let terminal = AgentAction(endpoint: .terminal, label: Copy.openTerminal, disabled: !tmuxAlive, placement: .button)
         let cancel = AgentAction(endpoint: .cancel, label: Copy.cancel, disabled: off,
-                                 confirm: orch && live > 0 ? Copy.cancelOrchestrator(a.name, live) : nil, placement: .menu)
+                                 confirm: orch && live > 0 ? Copy.cancelOrchestrator(a.name, live) : nil, placement: .button)
         let ack = AgentAction(endpoint: .ack, label: Copy.acknowledge, disabled: off, placement: .menu)
         let retry = AgentAction(endpoint: .retry, label: Copy.retry, disabled: off, placement: .button)
         let resume = AgentAction(endpoint: .resume, label: Copy.resume, disabled: off, placement: .button)
@@ -123,8 +123,12 @@ public enum AgentTree {
             let pause = AgentAction(endpoint: .pause, label: orch ? Copy.pauseGroup : Copy.pause, disabled: off,
                                     scope: orch ? .subtree : .session, placement: .button)
             return [terminal, pause, cancel]
-        case .pauseRequested, .quiescing, .stopping:
-            return [terminal, AgentAction(endpoint: .pause, label: Copy.pausing, disabled: true, placement: .button)]
+        case .pauseRequested, .quiescing:
+            return [terminal, AgentAction(endpoint: .pause, label: Copy.pausing, disabled: true, placement: .button), cancel]
+        case .stopping:
+            var stopped = cancel
+            stopped.disabled = true
+            return [terminal, AgentAction(endpoint: .pause, label: Copy.pausing, disabled: true, placement: .button), stopped]
         case .paused:
             return [resume, cancel]
         case .interrupted:

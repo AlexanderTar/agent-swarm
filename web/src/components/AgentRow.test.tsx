@@ -26,7 +26,7 @@ describe("AgentRow (§10.7 on the board)", () => {
     ["paused", ses("paused"), ["Resume", "Cancel"]],
     ["interrupted", ses("interrupted"), ["Resume", "Acknowledge", "Cancel"]],
     ["crashed without pane", ses("crashed", false), ["Retry", "Acknowledge"]],
-    ["stopping", ses("stopping"), ["Terminal", "Pausing…"]],
+    ["stopping", ses("stopping"), ["Terminal", "Pausing…", "Cancel"]],
   ] as const)("%s", (_n, session, labels) => {
     renderWithDaemon(<AgentRow agent={makeAgent({ name: "x", session })} />, { events: false });
     expect(within(screen.getByTestId("agent-x")).getAllByRole("button").map((b) => b.textContent)).toEqual(labels);

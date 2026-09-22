@@ -73,8 +73,9 @@ export function agentActions(a: AgentNode): AgentAction[] {
       ];
     case "pause_requested":
     case "quiescing":
+      return [terminal, { endpoint: "pause", label: C.pausing, disabled: true }, cancel];
     case "stopping":
-      return [terminal, { endpoint: "pause", label: C.pausing, disabled: true }];
+      return [terminal, { endpoint: "pause", label: C.pausing, disabled: true }, { ...cancel, disabled: true }];
     case "paused":
       return [resume, cancel];
     case "interrupted":
