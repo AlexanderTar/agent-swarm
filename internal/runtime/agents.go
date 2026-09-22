@@ -988,6 +988,11 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		kickoff = Kickoff(a.Name, a.Role, itemKey, itemTitle)
 	}
 
+	// Settings read failure is unrelated to the spawn itself: fail open (same
+	// philosophy as resolveUsageFallback in fallback.go) rather than block a
+	// spawn on it. cfg's zero value already gives Instructions == "".
+	cfg, _ := s.Settings.Get(ctx)
+
 	spec := adapter.Spec{
 		AgentName:         a.Name,
 		SessionID:         ses.ID,
@@ -1000,6 +1005,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		Kickoff:           kickoff,
 		SettingsDir:       filepath.Join(s.Home, "run", "launch", ses.ID),
 		Bin:               s.Bin,
+		Instructions:      cfg.Instructions,
 	}
 
 	var l adapter.Launch

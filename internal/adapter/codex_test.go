@@ -13,7 +13,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
 
-func codexSpec(t *testing.T) Spec {
+func codexSpec(t *testing.T, _ ...Deps) Spec {
 	t.Helper()
 	return Spec{AgentName: "login-form-coder", SessionID: "ses_01", Token: "tok",
 		DaemonURL: "http://127.0.0.1:17778", Model: "gpt-6-astra", Effort: "medium",
@@ -249,3 +249,96 @@ func TestCodexChecks(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestCodexIsolatedMCPAndInstructions(t *testing.T) {
+	d := testDeps(t)
+	authPath := filepath.Join(d.UserHome, ".codex", "auth.json")
+	_ = os.MkdirAll(filepath.Dir(authPath), 0o755)
+	_ = os.WriteFile(authPath, []byte(`{"tokens":"secret"}`), 0o600)
+
+	spec := codexSpec(t, d)
+	spec.Instructions = "# Codex Custom Instructions"
+	l, err := newCodex(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	codexHome := l.Env["CODEX_HOME"]
+	if codexHome == "" {
+		t.Fatalf("expected CODEX_HOME in Launch.Env")
+	}
+	symAuth := filepath.Join(codexHome, "auth.json")
+	if _, err := os.Stat(symAuth); err != nil {
+		t.Fatalf("expected symlinked auth.json at %s", symAuth)
+	}
+
+	var hasInstructionsFlag bool
+	var instrPath string
+	for i, v := range l.Argv {
+		if v == "-c" && strings.HasPrefix(l.Argv[i+1], "model_instructions_file=") {
+			hasInstructionsFlag = true
+			val := l.Argv[i+1]
+			instrPath = strings.TrimPrefix(val, "model_instructions_file=")
+			instrPath = strings.Trim(instrPath, `"`)
+		}
+	}
+	if !hasInstructionsFlag {
+		t.Errorf("expected -c model_instructions_file=... in codex argv")
+	}
+	if instrPath != "" {
+		content, err := os.ReadFile(instrPath)
+		if err != nil || string(content) != spec.Instructions {
+			t.Fatalf("instruction file content = %q, want %q", string(content), spec.Instructions)
+		}
+	}
+}
+
+func TestCodexInstructionsOmittedWhenUnset(t *testing.T) {
+	d := testDeps(t)
+	spec := codexSpec(t, d)
+	spec.Instructions = ""
+	l, err := newCodex(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range l.Argv {
+		if v == "-c" && i+1 < len(l.Argv) && strings.HasPrefix(l.Argv[i+1], "model_instructions_file=") {
+			t.Errorf("expected no model_instructions_file flag when instructions are empty")
+		}
+	}
+}
+
+func TestCodexResumeIsolatedMCPAndInstructions(t *testing.T) {
+	d := testDeps(t)
+	authPath := filepath.Join(d.UserHome, ".codex", "auth.json")
+	_ = os.MkdirAll(filepath.Dir(authPath), 0o755)
+	_ = os.WriteFile(authPath, []byte(`{"tokens":"secret"}`), 0o600)
+
+	spec := codexSpec(t, d)
+	spec.ProviderSessionID = "01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9"
+	spec.Instructions = "# Codex Resume Instructions"
+	l, err := newCodex(d).Resume(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	codexHome := l.Env["CODEX_HOME"]
+	if codexHome == "" {
+		t.Fatalf("expected CODEX_HOME in Resume.Env")
+	}
+	symAuth := filepath.Join(codexHome, "auth.json")
+	if _, err := os.Stat(symAuth); err != nil {
+		t.Fatalf("expected symlinked auth.json at %s", symAuth)
+	}
+
+	var hasInstructionsFlag bool
+	for i, v := range l.Argv {
+		if v == "-c" && strings.HasPrefix(l.Argv[i+1], "model_instructions_file=") {
+			hasInstructionsFlag = true
+		}
+	}
+	if !hasInstructionsFlag {
+		t.Errorf("expected -c model_instructions_file=... in codex resume argv")
+	}
+}
+

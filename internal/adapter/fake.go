@@ -22,6 +22,7 @@ type Fake struct {
 	WakeOK         bool // e2e can turn on a "native wake" to test the skip-the-paste path
 	Dialogs        []Dialog
 	PromptMatchers []PromptMatcher
+	LastSpec       Spec // test observability: the Spec most recently passed to Launch/Resume
 }
 
 func NewFake(d Deps) *Fake {
@@ -52,6 +53,7 @@ func (f *Fake) argv(s Spec) []string {
 // 37/38) names each spike/orchestrator/child it spawns to match the scenario
 // file it wants that agent to run.
 func (f *Fake) Launch(s Spec) (Launch, error) {
+	f.LastSpec = s
 	return Launch{Argv: f.argv(s), Env: map[string]string{"SWARM_FAKE_SCENARIO": s.AgentName}}, nil
 }
 func (f *Fake) Resume(s Spec) (Launch, error) {

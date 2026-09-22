@@ -44,13 +44,50 @@ func (c *Cursor) argv(s Spec, chat string) []string {
 	return append(a, s.Kickoff)
 }
 
+// setupEnv isolates cursor's MCP config to just the swarm server and, when
+// instructions are set, writes a workspace AGENTS.md (mirrors codex.go's
+// setupEnv; cursor has no HOME-wide config dir to isolate, only CURSOR_DATA_DIR).
+func (c *Cursor) setupEnv(s Spec) (map[string]string, error) {
+	cursorHome := filepath.Join(c.d.launchDir(s.SessionID), "cursor-home")
+	if err := os.MkdirAll(cursorHome, 0o700); err != nil {
+		return nil, err
+	}
+	mcpCfg, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
+		"swarm": map[string]any{"command": s.Bin, "args": []string{"mcp"}, "env": CursorMCPEnv()},
+	}})
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(filepath.Join(cursorHome, "mcp.json"), mcpCfg, 0o644); err != nil {
+		return nil, err
+	}
+	if s.Instructions != "" && s.Cwd != "" {
+		if err := os.MkdirAll(s.Cwd, 0o755); err != nil {
+			return nil, err
+		}
+		if err := writeFileAtomic(filepath.Join(s.Cwd, "AGENTS.md"),
+			[]byte(s.Instructions), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return map[string]string{"CURSOR_DATA_DIR": cursorHome}, nil
+}
+
 func (c *Cursor) Launch(s Spec) (Launch, error) {
-	return Launch{Argv: c.argv(s, PreRunOutput), Env: map[string]string{},
+	env, err := c.setupEnv(s)
+	if err != nil {
+		return Launch{}, err
+	}
+	return Launch{Argv: c.argv(s, PreRunOutput), Env: env,
 		PreRun: [][]string{{"cursor-agent", "create-chat"}}}, nil
 }
 
 func (c *Cursor) Resume(s Spec) (Launch, error) {
-	return Launch{Argv: c.argv(s, s.ProviderSessionID), Env: map[string]string{}}, nil
+	env, err := c.setupEnv(s)
+	if err != nil {
+		return Launch{}, err
+	}
+	return Launch{Argv: c.argv(s, s.ProviderSessionID), Env: env}, nil
 }
 
 var (

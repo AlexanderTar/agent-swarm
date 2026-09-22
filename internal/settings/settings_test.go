@@ -292,3 +292,38 @@ func TestPutDoesNotMutateCallerMaps(t *testing.T) {
 		t.Error("Put wrote into the caller's notifications map")
 	}
 }
+
+func newTestStore(t *testing.T) *Store {
+	return newStore(t)
+}
+
+func TestSettingsInstructionsRoundTrip(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	s, err := st.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Instructions != "" {
+		t.Fatalf("expected empty default instructions, got %q", s.Instructions)
+	}
+
+	s.Instructions = "# Custom Swarm Rules\n1. Standard library first."
+	saved, err := st.Put(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Instructions != s.Instructions {
+		t.Fatalf("Put returned instructions %q, want %q", saved.Instructions, s.Instructions)
+	}
+
+	reloaded, err := st.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Instructions != s.Instructions {
+		t.Fatalf("Get returned instructions %q, want %q", reloaded.Instructions, s.Instructions)
+	}
+}
+

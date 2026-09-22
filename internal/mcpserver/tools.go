@@ -670,3 +670,54 @@ func advisorTool(s *Server) ToolDef {
 		},
 	}
 }
+
+// ---------- swarm_instructions ----------
+
+func instructionsTool(s *Server) ToolDef {
+	return ToolDef{
+		Name:        "swarm_instructions",
+		Description: "Read or update durable Swarm instructions injected into agents.",
+		Schema:      objSchema(`"op":{"type":"string","enum":["get","set"]},"instructions":{"type":"string"}`),
+		Unbound:     true,
+		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
+			var in struct {
+				Op           string `json:"op"`
+				Instructions string `json:"instructions"`
+			}
+			if err := decode(args, &in); err != nil {
+				return nil, err
+			}
+			st := s.Settings
+			if st == nil && s.RT != nil {
+				st = s.RT.Settings
+			}
+			if st == nil {
+				return nil, errors.New("settings store not available")
+			}
+			switch in.Op {
+			case "get":
+				cfg, err := st.Get(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"instructions": cfg.Instructions}, nil
+			case "set":
+				if c.Unbound {
+					return nil, errors.New("read-only: an unbound caller cannot update swarm instructions")
+				}
+				cfg, err := st.Get(ctx)
+				if err != nil {
+					return nil, err
+				}
+				cfg.Instructions = in.Instructions
+				if _, err := st.Put(ctx, cfg); err != nil {
+					return nil, err
+				}
+				return map[string]any{"status": "ok"}, nil
+			default:
+				return nil, fmt.Errorf("op must be get or set, got %q", in.Op)
+			}
+		},
+	}
+}
+

@@ -6,11 +6,13 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -27,9 +29,10 @@ type Caller struct {
 
 // Server carries the runtime state every tool handler reads and writes.
 type Server struct {
-	RT      *runtime.Store
-	KB      *kb.Index
-	Advisor *advisor.Service
+	RT       *runtime.Store
+	KB       *kb.Index
+	Advisor  *advisor.Service
+	Settings *settings.Store
 
 	// Version is reported in the MCP initialize response.
 	Version string
@@ -62,7 +65,7 @@ func (s *Server) Tools() []ToolDef {
 // six roles and their exceptions are exactly the ones the spec lists.
 func (s *Server) ToolsFor(c Caller) []ToolDef {
 	if c.Unbound {
-		return []ToolDef{readTool(s), kbReadOnlyTool(s)}
+		return []ToolDef{readTool(s), kbReadOnlyTool(s), instructionsTool(s)}
 	}
 	out := sharedTools(s)
 	for i, d := range out {
@@ -88,7 +91,7 @@ func (s *Server) ToolsFor(c Caller) []ToolDef {
 // ToolsFor overwrites it in place above.
 func sharedTools(s *Server) []ToolDef {
 	return []ToolDef{
-		syncTool(s), checkpointTool(s), askTool(s), blockerTool(s), sendTool(s), readTool(s), kbReadOnlyTool(s),
+		syncTool(s), checkpointTool(s), askTool(s), blockerTool(s), sendTool(s), readTool(s), kbReadOnlyTool(s), instructionsTool(s),
 	}
 }
 
@@ -107,6 +110,17 @@ func (s *Server) dispatch(ctx context.Context, c Caller, d ToolDef, args json.Ra
 		args = json.RawMessage(`{}`)
 	}
 	return d.Handler(ctx, c, args)
+}
+
+// CallTool invokes a tool by name for the given caller, validating that the caller
+// is permitted to see the tool and enforcing session gating.
+func (s *Server) CallTool(ctx context.Context, c Caller, name string, args json.RawMessage) (any, error) {
+	for _, d := range s.ToolsFor(c) {
+		if d.Name == name {
+			return s.dispatch(ctx, c, d, args)
+		}
+	}
+	return nil, fmt.Errorf("unknown tool %s", name)
 }
 
 // MCPServer builds a server carrying only this caller's tools.
