@@ -179,7 +179,7 @@ func (s *Store) checkTask(ctx context.Context, tx *sql.Tx, it Item, to Status, d
 			return err
 		}
 		if !ok {
-			return deny("Couldn't move %s to Done. No agent has reported it complete.", it.Key)
+			return deny("Couldn't move %s to Done. No agent has reported it complete on this task.", it.Key)
 		}
 		if it.Status == InReview && (orch || daemon) {
 			return nil

@@ -380,6 +380,74 @@ func TestCheckpointItemMustBeADescendantOfTheAssignment(t *testing.T) {
 	}
 }
 
+// seedTopLevelItem creates a single parentless item, readied for a direct
+// spawn -- the multi-task-worker case (spec 2026-09-22): the worker's
+// assignment is the parent item itself, not one of its tasks.
+func seedTopLevelItem(t *testing.T, s *Store, typ items.Type) items.Item {
+	t.Helper()
+	ctx := context.Background()
+	it, err := s.Items.Create(ctx, items.CreateInput{Type: typ, Title: "Ship it"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id = ?`, it.ID); err != nil {
+		t.Fatal(err)
+	}
+	return it
+}
+
+// assertRefusesCompleted spawns a coder directly on itemKey and asserts that
+// a completed checkpoint with no item override is refused as bad_request,
+// naming the offending type.
+func assertRefusesCompleted(t *testing.T, s *Store, itemKey string) {
+	t.Helper()
+	ctx := context.Background()
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: itemKey, Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "cover several tasks"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "all done"})
+	if err == nil {
+		t.Fatalf("a completed checkpoint on %s must be refused", itemKey)
+	}
+	ie, ok := err.(*items.Error)
+	if !ok || ie.Code != items.CodeBadRequest {
+		t.Fatalf("err = %v, want a CodeBadRequest items.Error", err)
+	}
+	if !strings.Contains(ie.Message, "Completed checkpoints attach to tasks") {
+		t.Fatalf("message = %q", ie.Message)
+	}
+}
+
+// I-completed-gate (spec 2026-09-22): STORY-27 got stuck because a
+// multi-task worker's completed checkpoint silently defaulted onto its Story
+// assignment -- accepted (200 OK), but the transition switch has no case for
+// Story/Epic/Bug, so nothing moved and the mistake was invisible. A completed
+// checkpoint must be refused outright on any item type with no consumer for
+// it, forcing the caller to pass item: "<TASK-KEY>".
+func TestWriteCheckpointRefusesCompletedOnAStory(t *testing.T) {
+	s, _, _ := newStore(t)
+	seedEpicWithTask(t, s) // EPIC-1 > STORY-1 > TASK-1, all ready
+	assertRefusesCompleted(t, s, "STORY-1")
+}
+
+func TestWriteCheckpointRefusesCompletedOnAnEpic(t *testing.T) {
+	s, _, _ := newStore(t)
+	it := seedTopLevelItem(t, s, items.Epic)
+	assertRefusesCompleted(t, s, it.Key)
+}
+
+func TestWriteCheckpointRefusesCompletedOnABug(t *testing.T) {
+	s, _, _ := newStore(t)
+	it := seedTopLevelItem(t, s, items.Bug)
+	assertRefusesCompleted(t, s, it.Key)
+}
+
 // C1: integrated is orchestrator-only and needs git plus verification.
 func TestIntegratedRequiresGitAndVerificationAndIsOrchestratorOnly(t *testing.T) {
 	s, _, _ := newStore(t)
@@ -465,6 +533,10 @@ func TestSummaryLengthIsEnforced(t *testing.T) {
 }
 
 // I4: a spike's completed with a resolution opens a close_spike request.
+// This also doubles as the Spike exemption for the completed-item-type gate
+// (spec 2026-09-22): Spike is the one non-Task type a completed checkpoint
+// may still land on, because its resolution is how a spike reports
+// no_change/duplicate_of:<KEY>.
 func TestCompletedWithAResolutionOpensCloseSpike(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

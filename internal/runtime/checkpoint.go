@@ -205,6 +205,15 @@ func (s *Store) changedFiles(ctx context.Context, refs []GitRef) int {
 	return total
 }
 
+// itemTypePlural pluralizes an item.Type for the completed-checkpoint gate's
+// user-facing copy ("not storys" reads wrong; "not stories" doesn't).
+func itemTypePlural(t items.Type) string {
+	if t == items.Story {
+		return "stories"
+	}
+	return string(t) + "s"
+}
+
 // WriteCheckpoint is swarm_checkpoint (§8.1, L24).
 func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in CheckpointInput) (CheckpointResult, error) {
 	var out CheckpointResult
@@ -269,6 +278,13 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "resolution must be no_change or duplicate_of:<KEY>."}
 			}
+		}
+
+		if in.Kind == CompletedCkp && it.Type != items.Task && it.Type != items.Spike {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: fmt.Sprintf(
+					"Completed checkpoints attach to tasks, not %s. Pass item: \"<TASK-KEY>\" for the task you finished.",
+					itemTypePlural(it.Type))}
 		}
 
 		if in.Kind == CompletedCkp && it.TddExempt == "" {
