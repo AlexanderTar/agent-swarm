@@ -444,9 +444,15 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 				maxSubagents = 3
 			}
 
+			// A queued child holds its slot (matches Admit's own comment in
+			// limits.go), but an 'active' child whose latest session died to
+			// interrupted/crashed/failed does not (runtime.NotAZombieSlot,
+			// 2026-09-22 zombie-slot fix) -- otherwise a forgotten dead child
+			// pins the parent's subagent budget at capacity forever.
 			var active int
 			err = h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents
-				WHERE parent_agent_id = ? AND state IN ('queued', 'active')`, s.AgentID).Scan(&active)
+				WHERE parent_agent_id = ? AND (state = 'queued' OR (state = 'active' AND `+runtime.NotAZombieSlot+`))`,
+				s.AgentID).Scan(&active)
 			if err != nil {
 				return adapter.HookDecision{}, err
 			}

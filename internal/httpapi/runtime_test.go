@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -75,6 +77,63 @@ func TestPreflightFailureShape(t *testing.T) {
 	}
 }
 
+// 2026-09-22 incident: a child cancelled while still queued gets agents.state =
+// 'finished' with no session ever created (runtime.Cancel's queued-agent path
+// touches no session row at all). isFinishedChild only checked
+// AgentAcknowledged and a completed/cancelled *session* state, missing this
+// exact shape, so the cancelled child stayed in the parent's live `children`
+// list forever, mislabeled "queued" in both clients' display-state logic
+// (whose `session == nil` branch assumes "never spawned yet", not "spawned
+// then cancelled before a session existed").
+func TestCancelledWhileQueuedChildGoesToFinishedNotChildren(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+	var orchID, taskID, epicID string
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = ?`, seed.AgentName).Scan(&orchID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.TaskKey).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.RootKey).Scan(&epicID); err != nil {
+		t.Fatal(err)
+	}
+	cancelledID := seedAgent(t, s, runtime.RoleCoder, taskID, epicID, orchID, "cancelled-while-queued")
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`,
+		db.Millis(time.Now()), cancelledID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := s.get(t, "/api/state")
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var orchNode map[string]any
+	for _, a := range body["agents"].([]any) {
+		n := a.(map[string]any)
+		if n["name"] == seed.AgentName {
+			orchNode = n
+		}
+	}
+	if orchNode == nil {
+		t.Fatalf("orchestrator %q not found in /api/state", seed.AgentName)
+	}
+	for _, c := range orchNode["children"].([]any) {
+		if c.(map[string]any)["name"] == "cancelled-while-queued" {
+			t.Fatal("a cancelled-while-queued child must not appear in `children` (live)")
+		}
+	}
+	var foundInFinished bool
+	for _, f := range orchNode["finished"].([]any) {
+		if f.(map[string]any)["name"] == "cancelled-while-queued" {
+			foundInFinished = true
+		}
+	}
+	if !foundInFinished {
+		t.Fatal("a cancelled-while-queued child must appear in `finished`")
+	}
+}
+
 // contracts §4: /api/state is the menubar snapshot.
 func TestStateSnapshot(t *testing.T) {
 	s, _ := newRuntimeServer(t)
@@ -97,6 +156,85 @@ func TestStateSnapshot(t *testing.T) {
 	}
 	if items := ntf["items"].([]any); len(items) > 20 {
 		t.Fatalf("notifications.items holds at most 20, got %d", len(items))
+	}
+}
+
+// 2026-09-22: active_count is "actually running right now", not "queued or
+// agent-level active" -- the old definition included paused and zombie
+// agents, so it never dropped when the user paused a bunch of agents. The
+// base tree already has two running agents (root-orchestrator, task-worker);
+// adding a paused one, a queued-with-no-session one and a finished one must
+// not move the count.
+func TestActiveCountReflectsOnlyRunningSessions(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+	var orchID, taskID, epicID string
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = ?`, seed.AgentName).Scan(&orchID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.TaskKey).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.RootKey).Scan(&epicID); err != nil {
+		t.Fatal(err)
+	}
+	pausedID := seedAgent(t, s, runtime.RoleCoder, taskID, epicID, orchID, "paused-worker")
+	seedSession(t, s, pausedID, "paused-worker", 1, "paused")
+	queuedID := seedAgent(t, s, runtime.RoleCoder, taskID, epicID, orchID, "queued-worker")
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE agents SET state = 'queued' WHERE id = ?`, queuedID); err != nil {
+		t.Fatal(err)
+	}
+	finishedID := seedAgent(t, s, runtime.RoleCoder, taskID, epicID, orchID, "cancelled-while-queued-2")
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE agents SET state = 'finished' WHERE id = ?`, finishedID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := s.get(t, "/api/state")
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if got := body["active_count"].(float64); got != 2 {
+		t.Fatalf("active_count = %v, want 2 (root-orchestrator + task-worker running; paused/queued/finished must not count)", got)
+	}
+}
+
+// A cancelled/finished mid-tree orchestrator does not cascade to its own
+// already-spawned children (runtime.Cancel only touches the named agent's
+// row) -- a still-running grandchild must keep counting even though its
+// immediate parent lands in the grandparent's `finished` list, not `children`.
+func TestActiveCountCountsRunningDescendantsOfAFinishedParent(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+	var rootOrchID, taskID, epicID string
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = ?`, seed.AgentName).Scan(&rootOrchID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.TaskKey).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.s.DB.QueryRowContext(bg, `SELECT id FROM items WHERE key = ?`, seed.RootKey).Scan(&epicID); err != nil {
+		t.Fatal(err)
+	}
+	// Mirrors what runtime.Cancel actually leaves behind: the named agent's own
+	// session moves to 'cancelled' and its agents.state to 'finished' -- only
+	// its already-spawned child (never touched by Cancel) stays running.
+	subOrchID := seedAgent(t, s, runtime.RoleOrchestrator, taskID, epicID, rootOrchID, "sub-orchestrator")
+	seedSession(t, s, subOrchID, "sub-orchestrator", 1, "cancelled")
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE agents SET state = 'finished' WHERE id = ?`, subOrchID); err != nil {
+		t.Fatal(err)
+	}
+	grandchildID := seedAgent(t, s, runtime.RoleCoder, taskID, epicID, subOrchID, "still-running-grandchild")
+	seedSession(t, s, grandchildID, "still-running-grandchild", 1, "running")
+
+	rec := s.get(t, "/api/state")
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	// root-orchestrator + task-worker (base tree) + still-running-grandchild = 3;
+	// sub-orchestrator's own session is cancelled, so it must not count itself,
+	// but must not block its still-running child from counting either.
+	if got := body["active_count"].(float64); got != 3 {
+		t.Fatalf("active_count = %v, want 3 (a finished mid-tree parent must not hide a still-running grandchild)", got)
 	}
 }
 

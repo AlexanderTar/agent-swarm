@@ -372,6 +372,23 @@ func TestSendSucceedsToPausedInterruptedAndQueuedTargets(t *testing.T) {
 		t.Fatalf("send to an interrupted target must succeed: %v", err)
 	}
 
+	// Reconcile must not raise no_recipient while the target is still
+	// interrupted, before it gets flipped back to paused below for the
+	// unrelated queuing setup.
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 0 {
+		t.Fatalf("no_recipient must not fire for an interrupted target: count = %d", n)
+	}
+
+	// Back to paused for the queuing setup below: an interrupted session no
+	// longer holds a concurrency slot (2026-09-22 zombie-slot fix, limits.go),
+	// so it can't be what forces the second worker to queue. Paused still does.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
 	setLimits(t, s, 5, 1, 5) // one non-orchestrator slot total, already held by w
 	t2, err := s.Items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: "STORY-1",
 		Title: "Second task"}, items.User("board"))

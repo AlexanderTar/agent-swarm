@@ -492,10 +492,41 @@ func (s *Server) agentNodeOut(ctx context.Context, a runtime.Agent, live map[str
 // isFinishedChild reports whether a child belongs under "finished" rather
 // than "children" (contracts §3.2: completed, cancelled and acknowledged).
 func isFinishedChild(a runtime.Agent, sessionState string) bool {
-	if a.State == runtime.AgentAcknowledged {
+	// AgentFinished covers a natural completion AND runtime.Cancel's queued-agent
+	// path, which sets agents.state = 'finished' directly with no session ever
+	// created (sessionState == "" here) -- 2026-09-22 incident: that shape fell
+	// through both checks below and stayed in the parent's live `children`
+	// forever, mislabeled "queued" by both clients' display-state logic.
+	if a.State == runtime.AgentFinished || a.State == runtime.AgentAcknowledged {
 		return true
 	}
 	return sessionState == string(runtime.Completed) || sessionState == string(runtime.Cancelled)
+}
+
+// countRunning is /api/state's active_count (2026-09-22: redefined from "every
+// queued or agent-level active agent" to "actually running right now" -- the
+// old definition included paused and zombie agents, which never decreases
+// when the user pauses a bunch of agents, making the menubar count look wrong
+// relative to what is visibly working). A session's Waiting/Stale flags don't
+// change its State away from "running".
+//
+// Walks Finished as well as Children: isFinishedChild buckets a node by its
+// OWN state, independent of its descendants -- Cancel never cascades to a
+// cancelled orchestrator's already-spawned children (agents.go's Cancel only
+// touches the named agent's row), so a still-running child can sit under a
+// finished parent's own Children. Stopping at the Finished boundary would
+// silently drop that child from the count even though it is genuinely
+// running and still shown in the UI.
+func countRunning(nodes []agentNodeWire) int {
+	n := 0
+	for _, a := range nodes {
+		if a.Session != nil && a.Session.State == string(runtime.Running) {
+			n++
+		}
+		n += countRunning(a.Children)
+		n += countRunning(a.Finished)
+	}
+	return n
 }
 
 // buildAgentTree turns a flat agent list (one root) into the §3.2 tree: every
@@ -767,12 +798,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
-	activeCount := 0
-	for _, a := range flat {
-		if a.State == runtime.AgentQueued || a.State == runtime.AgentActive {
-			activeCount++
-		}
-	}
+	activeCount := countRunning(agents)
 	reqs, err := s.openRequestsWire(ctx, "", "")
 	if err != nil {
 		s.writeErr(w, err)
