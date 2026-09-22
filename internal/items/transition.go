@@ -186,7 +186,15 @@ func (s *Store) checkTask(ctx context.Context, tx *sql.Tx, it Item, to Status, d
 		}
 	case it.Status == Ready && to == InProgress && daemon:
 		return orGeneric(s.acceptedSince(ctx, tx, it))(generic)
-	case it.Status == InProgress && to == InReview && daemon:
+	// it.Status == Ready is a self-heal (2026-09-22): an agent that skips its
+	// mandatory first "accepted" checkpoint leaves acceptedSince permanently
+	// false, so Ready never reaches InProgress on its own and every later
+	// checkpoint.go tryTransition attempt is denied even though real,
+	// completedCurrent-verified work landed. completedCurrent is strictly
+	// stronger evidence than the accepted step would have been, so the
+	// daemon's own checkpoint-driven attempt (never a direct orch/user call --
+	// unchanged, still generic-denied) may take Ready straight to InReview.
+	case (it.Status == InProgress || it.Status == Ready) && to == InReview && daemon:
 		return orGeneric(s.completedCurrent(ctx, tx, it))(generic)
 	case it.Status == InReview && to == InProgress && (orch || daemon):
 		return nil
