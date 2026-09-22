@@ -97,7 +97,7 @@ func TestInstructionsToolUnboundCaller(t *testing.T) {
 	ctx := context.Background()
 	c := Caller{Unbound: true}
 
-	// 1. Get instructions as unbound caller
+	// 1. Get instructions as unbound caller succeeds
 	res, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"get"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -107,25 +107,10 @@ func TestInstructionsToolUnboundCaller(t *testing.T) {
 		t.Fatalf("expected empty instructions, got %v", m["instructions"])
 	}
 
-	// 2. Set instructions as unbound caller
-	newInstr := "# Global Instructions\nTest standard library first."
-	setRes, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"set","instructions":"# Global Instructions\nTest standard library first."}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sm := setRes.(map[string]any)
-	if sm["status"] != "ok" {
-		t.Fatalf("expected status ok, got %v", sm)
-	}
-
-	// 3. Get updated instructions
-	res2, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"get"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	m2 := res2.(map[string]any)
-	if m2["instructions"] != newInstr {
-		t.Fatalf("expected updated instructions %q, got %q", newInstr, m2["instructions"])
+	// 2. Set instructions as unbound caller fails with read-only error
+	_, err = srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"set","instructions":"# Global Instructions"}`))
+	if err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("expected read-only error for unbound caller set, got %v", err)
 	}
 }
 
