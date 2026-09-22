@@ -47,6 +47,7 @@ type Settings struct {
 	MenubarCompact         bool                  `json:"menubar_compact"`
 	UsagePollSec           int                   `json:"usage_poll_sec"`
 	PauseDeadlineSec       int                   `json:"pause_deadline_sec"`
+	Instructions           string                `json:"instructions"`
 }
 
 // roleDefaults is §2.1 A3; "default" effort is "".
@@ -83,6 +84,7 @@ func Defaults(installed []kinds.AgentKind) Settings {
 		ScanIntervalSec:        21600,
 		UsagePollSec:           300,
 		PauseDeadlineSec:       120,
+		Instructions:           "",
 	}
 }
 
