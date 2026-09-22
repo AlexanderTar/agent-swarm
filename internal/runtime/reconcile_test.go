@@ -1773,7 +1773,6 @@ func TestReconcileNeverResolvesAPromptRowByPatternAbsence(t *testing.T) {
 	}
 }
 
-
 func stateOfRequest(t *testing.T, s *Store, id string) string {
 	t.Helper()
 	var st string
