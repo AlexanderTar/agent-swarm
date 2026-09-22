@@ -13,7 +13,8 @@ final class SettingsRenderTests: XCTestCase {
         await settings.load()
         XCTAssertEqual(renderedSize(SettingsView(model: settings)), CGSize(width: 740, height: 520))
         let tabs: [AnyView] = [AnyView(AgentsTab(model: settings)), AnyView(DefaultsTab(model: settings)),
-                               AnyView(NotificationsTab(model: settings)), AnyView(LimitsTab(model: settings))]
+                               AnyView(NotificationsTab(model: settings)), AnyView(LimitsTab(model: settings)),
+                               AnyView(AppTab(model: settings))]
         for tab in tabs {
             XCTAssertGreaterThan(renderedSize(tab.frame(width: 740)).height, 0)
         }

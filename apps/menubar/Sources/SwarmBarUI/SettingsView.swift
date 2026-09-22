@@ -17,6 +17,7 @@ public struct SettingsView: View {
             DefaultsTab(model: model).tabItem { Label(Copy.tabDefaults, systemImage: "slider.horizontal.3") }
             NotificationsTab(model: model).tabItem { Label(Copy.tabNotifications, systemImage: "bell") }
             LimitsTab(model: model).tabItem { Label(Copy.tabLimits, systemImage: "speedometer") }
+            AppTab(model: model).tabItem { Label(Copy.tabApp, systemImage: "gearshape") }
             InstructionsTab(model: model).tabItem { Label(Copy.tabInstructions, systemImage: "doc.text") }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -186,7 +187,19 @@ struct LimitsTab: View {
                 }
             }
             LimitField(model: model, title: Copy.pauseDeadline, limit: .pauseDeadline, unit: Copy.seconds)
-            Divider()
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Repository discovery and menu bar display preferences: app-level UI settings, not resource limits.
+struct AppTab: View {
+    @Bindable var model: SettingsModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text(Copy.repositoryDiscovery).font(.headline)
             Text(Copy.discoveryCaption).font(.caption).foregroundStyle(.secondary)
             Text(Copy.excludedFolders)
