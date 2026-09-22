@@ -318,8 +318,16 @@ func TestTryTransitionLogsADeniedTransitionInsteadOfSilence(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	orch, _, _ := worker(t, s)
-	// TASK-1 is still "ready" (never accepted), so completing it as a reviewer
-	// asks for a Ready->InReview transition that the state machine denies.
+	// TASK-1 is blocked, so completing it as a reviewer asks for an
+	// InReview transition that the state machine denies (Blocked only ever
+	// unblocks back to StatusBeforeBlock, never straight to InReview) --
+	// unlike a merely-still-Ready task, which self-heals to InReview on a
+	// real completed checkpoint since 2026-09-22 (items/transition.go) and so
+	// no longer denies here.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'blocked', status_before_block = 'ready'
+		WHERE key = 'TASK-1'`); err != nil {
+		t.Fatal(err)
+	}
 	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
 		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
 	if err != nil {

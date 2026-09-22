@@ -101,6 +101,45 @@ func TestTaskTransitions(t *testing.T) {
 	}
 }
 
+// 2026-09-22 incident: an agent that skips its mandatory first "accepted"
+// checkpoint (skills/swarm/SKILL.md's step 1) leaves the task at Ready
+// forever -- acceptedSince never passes, so Ready->InProgress is denied, and
+// every later checkpoint.go tryTransition attempt (InProgress->InReview on
+// completion) is denied too, generic "remains Ready", even though real,
+// verified work landed (three completed checkpoints across three separate
+// agent attempts on TASK-106, root cause confirmed against the live DB).
+// The daemon's own completed-checkpoint path must self-heal Ready straight to
+// InReview when a real completed checkpoint exists -- completedCurrent is
+// strictly stronger evidence than the accepted step would have been. A
+// direct orchestrator/user call must NOT gain this leniency (daemon-only,
+// same as the existing InProgress->InReview case).
+func TestCompletedChecksSelfHealsSkippedAcceptedStep(t *testing.T) {
+	s := newStore(t)
+	e, st, _ := tree(t, s)
+	daemon := items.Daemon()
+	orch := items.Orchestrator("agt_o", e.ID)
+	task := mk(t, s, items.Task, st.Key, "Never accepted")
+	if err := move(t, s, task.Key, items.Ready, orch); err != nil {
+		t.Fatal(err)
+	}
+
+	// No accepted checkpoint ever recorded -- orch/user must still be refused
+	// this hop entirely, exactly as before.
+	wantDenied(t, move(t, s, task.Key, items.InReview, user), "Couldn't update status. The item remains Ready.")
+	wantDenied(t, move(t, s, task.Key, items.InReview, orch), "Couldn't update status. The item remains Ready.")
+
+	seedCheckpoint(t, s.DB, task, "completed", 1, later(s), "")
+	if err := move(t, s, task.Key, items.InReview, daemon); err != nil {
+		t.Fatalf("daemon must self-heal Ready -> InReview on a real completed checkpoint: %v", err)
+	}
+	wantStatus(t, s, task.Key, items.InReview)
+
+	if err := move(t, s, task.Key, items.Done, orch); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, s, task.Key, items.Done)
+}
+
 func TestBlockAndUnblockRestoresStatus(t *testing.T) {
 	s := newStore(t)
 	e, st, task := tree(t, s)
