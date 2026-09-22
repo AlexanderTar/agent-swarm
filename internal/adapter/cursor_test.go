@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -171,6 +173,59 @@ func TestCursorHasNoNativeWake(t *testing.T) {
 	ok, err := newCursor(testDeps(t)).Wake(context.Background(), WakeTarget{SessionID: "ses_1"})
 	if ok || err != nil {
 		t.Fatalf("Wake = %v, %v", ok, err)
+	}
+}
+
+func TestCursorIsolatedMCPAndInstructions(t *testing.T) {
+	d := testDeps(t)
+	spec := cursorSpec(t)
+	spec.Cwd = t.TempDir()
+	spec.Instructions = "# Cursor Rules\nStrict Go standard library."
+	l, err := newCursor(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorDir := l.Env["CURSOR_DATA_DIR"]
+	if cursorDir == "" {
+		t.Fatalf("expected CURSOR_DATA_DIR in Launch.Env")
+	}
+	mcpFile := filepath.Join(cursorDir, "mcp.json")
+	mcpBytes, err := os.ReadFile(mcpFile)
+	if err != nil {
+		t.Fatalf("expected mcp.json at %s: %v", mcpFile, err)
+	}
+	var mcpCfg struct {
+		MCPServers map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(mcpBytes, &mcpCfg); err != nil {
+		t.Fatal(err)
+	}
+	if mcpCfg.MCPServers["swarm"] == nil {
+		t.Errorf("expected swarm MCP server in cursor mcp.json")
+	}
+	if len(mcpCfg.MCPServers) != 1 {
+		t.Errorf("expected only swarm in cursor mcp.json, got %v", mcpCfg.MCPServers)
+	}
+
+	wsRules := filepath.Join(spec.Cwd, "AGENTS.md")
+	content, err := os.ReadFile(wsRules)
+	if err != nil || string(content) != spec.Instructions {
+		t.Fatalf("expected workspace AGENTS.md with content %q, got %q", spec.Instructions, string(content))
+	}
+}
+
+func TestCursorInstructionsOmittedWhenUnset(t *testing.T) {
+	d := testDeps(t)
+	spec := cursorSpec(t)
+	spec.Cwd = t.TempDir()
+	spec.Instructions = ""
+	_, err := newCursor(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsRules := filepath.Join(spec.Cwd, "AGENTS.md")
+	if _, err := os.Stat(wsRules); err == nil {
+		t.Errorf("expected no AGENTS.md in workspace when instructions are empty")
 	}
 }
 

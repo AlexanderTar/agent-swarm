@@ -232,3 +232,85 @@ func TestAgyHasNoNativeWake(t *testing.T) {
 		t.Fatalf("Wake = %v, %v; agy has no native push (§11.3)", ok, err)
 	}
 }
+
+func agySpec(t *testing.T) Spec {
+	t.Helper()
+	return Spec{
+		AgentName: "agy-coder",
+		SessionID: "ses_agy_01",
+		Token:     "tok",
+		DaemonURL: "http://127.0.0.1:17778",
+		Model:     "gemini-3.8-flash-high",
+		Effort:    "high",
+		Cwd:       t.TempDir(),
+		Kickoff:   "kick",
+		Bin:       "/usr/local/bin/swarm",
+	}
+}
+
+func TestAgyIsolatedMCPAndInstructions(t *testing.T) {
+	d := testDeps(t)
+	tokenPath := filepath.Join(d.UserHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+	settingsPath := filepath.Join(d.UserHome, ".gemini", "antigravity-cli", "settings.json")
+	_ = os.MkdirAll(filepath.Dir(tokenPath), 0o755)
+	_ = os.WriteFile(tokenPath, []byte("oauth-secret"), 0o600)
+	_ = os.WriteFile(settingsPath, []byte(`{"trustedWorkspaces":[]}`), 0o644)
+
+	spec := agySpec(t)
+	spec.Instructions = "# Agy Custom Rules\nAlways run tests."
+	l, err := newAgy(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyHome := l.Env["HOME"]
+	if agyHome == "" {
+		t.Fatalf("expected HOME in Launch.Env")
+	}
+	symToken := filepath.Join(agyHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+	if _, err := os.Stat(symToken); err != nil {
+		t.Fatalf("expected symlinked antigravity-oauth-token at %s", symToken)
+	}
+	symSettings := filepath.Join(agyHome, ".gemini", "antigravity-cli", "settings.json")
+	if _, err := os.Stat(symSettings); err != nil {
+		t.Fatalf("expected symlinked settings.json at %s", symSettings)
+	}
+
+	mcpFile := filepath.Join(agyHome, ".gemini", "config", "mcp_config.json")
+	mcpBytes, err := os.ReadFile(mcpFile)
+	if err != nil {
+		t.Fatalf("expected mcp_config.json at %s: %v", mcpFile, err)
+	}
+	var mcpCfg struct {
+		MCPServers map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(mcpBytes, &mcpCfg); err != nil {
+		t.Fatal(err)
+	}
+	if mcpCfg.MCPServers["swarm"] == nil {
+		t.Errorf("expected swarm MCP server in mcp_config.json")
+	}
+	if len(mcpCfg.MCPServers) != 1 {
+		t.Errorf("expected only swarm in mcpServers, got %v", mcpCfg.MCPServers)
+	}
+
+	rulesFile := filepath.Join(agyHome, ".gemini", "AGENTS.md")
+	content, err := os.ReadFile(rulesFile)
+	if err != nil || string(content) != spec.Instructions {
+		t.Fatalf("expected rules file with content %q, got %q", spec.Instructions, string(content))
+	}
+}
+
+func TestAgyInstructionsOmittedWhenUnset(t *testing.T) {
+	d := testDeps(t)
+	spec := agySpec(t)
+	spec.Instructions = ""
+	l, err := newAgy(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyHome := l.Env["HOME"]
+	rulesFile := filepath.Join(agyHome, ".gemini", "AGENTS.md")
+	if _, err := os.Stat(rulesFile); err == nil {
+		t.Errorf("expected no AGENTS.md when instructions are empty")
+	}
+}

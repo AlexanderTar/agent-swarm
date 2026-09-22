@@ -21,16 +21,63 @@ func newAgy(d Deps) *Agy { return &Agy{base{d: d, kind: kinds.Agy}} }
 
 func init() { register(kinds.Agy, func(d Deps) Adapter { return newAgy(d) }) }
 
+// setupEnv isolates agy's HOME so the swarm MCP config and custom instructions
+// never leak into the user's real ~/.gemini, while auth still works via
+// symlinks (mirrors codex.go's setupEnv).
+func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
+	agyHome := filepath.Join(a.d.launchDir(s.SessionID), "agy-home")
+	if err := os.MkdirAll(filepath.Join(agyHome, ".gemini", "antigravity-cli"), 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(agyHome, ".gemini", "config"), 0o700); err != nil {
+		return nil, err
+	}
+	for _, name := range []string{"antigravity-oauth-token", "settings.json"} {
+		userFile := filepath.Join(a.d.UserHome, ".gemini", "antigravity-cli", name)
+		if _, err := os.Stat(userFile); err == nil {
+			symFile := filepath.Join(agyHome, ".gemini", "antigravity-cli", name)
+			_ = os.Remove(symFile)
+			if err := os.Symlink(userFile, symFile); err != nil {
+				return nil, err
+			}
+		}
+	}
+	mcpCfg, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
+		"swarm": map[string]any{"command": s.Bin, "args": []string{"mcp"}},
+	}})
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(filepath.Join(agyHome, ".gemini", "config", "mcp_config.json"), mcpCfg, 0o644); err != nil {
+		return nil, err
+	}
+	if s.Instructions != "" {
+		if err := writeFileAtomic(filepath.Join(agyHome, ".gemini", "AGENTS.md"),
+			[]byte(s.Instructions), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return map[string]string{"HOME": agyHome}, nil
+}
+
 // Launch is §11.1. The model is the exact suffixed slug for the chosen effort;
 // --effort is never passed (P0-12).
 func (a *Agy) Launch(s Spec) (Launch, error) {
+	env, err := a.setupEnv(s)
+	if err != nil {
+		return Launch{}, err
+	}
 	return Launch{Argv: []string{"agy", "-i", s.Kickoff, "--model", s.Model,
-		"--dangerously-skip-permissions"}, Env: map[string]string{}}, nil
+		"--dangerously-skip-permissions"}, Env: env}, nil
 }
 
 func (a *Agy) Resume(s Spec) (Launch, error) {
+	env, err := a.setupEnv(s)
+	if err != nil {
+		return Launch{}, err
+	}
 	return Launch{Argv: []string{"agy", "--conversation", s.ProviderSessionID, "-i", s.Kickoff,
-		"--model", s.Model, "--dangerously-skip-permissions"}, Env: map[string]string{}}, nil
+		"--model", s.Model, "--dangerously-skip-permissions"}, Env: env}, nil
 }
 
 var (
