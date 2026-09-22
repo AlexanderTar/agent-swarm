@@ -12,8 +12,10 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 	"github.com/AlexanderTar/agent-swarm/internal/notify"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/usage"
 )
 
@@ -291,27 +293,50 @@ func advisorChoiceFromBody(b *advisorChoiceBody) *runtime.AdvisorChoice {
 	return &runtime.AdvisorChoice{Kind: runtime.AgentKind(b.Agent), Model: b.Model, Effort: b.Effort}
 }
 
+type roleDefaultBody struct {
+	Agent  string `json:"agent"`
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
+}
+
+func rolesFromBody(b map[string]roleDefaultBody) map[runtime.Role]settings.RoleDefault {
+	if len(b) == 0 {
+		return nil
+	}
+	out := make(map[runtime.Role]settings.RoleDefault, len(b))
+	for r, rd := range b {
+		out[runtime.Role(r)] = settings.RoleDefault{
+			Agent:  kinds.AgentKind(rd.Agent),
+			Model:  rd.Model,
+			Effort: rd.Effort,
+		}
+	}
+	return out
+}
+
 type spikeRequestBody struct {
-	RequestID string             `json:"request_id"`
-	Name      string             `json:"name"`
-	Intent    string             `json:"intent"`
-	Repos     []string           `json:"repos"`
-	Agent     string             `json:"agent"`
-	Model     string             `json:"model"`
-	Effort    string             `json:"effort"`
-	Advisor   *advisorChoiceBody `json:"advisor"`
-	Request   string             `json:"request"`
+	RequestID string                     `json:"request_id"`
+	Name      string                     `json:"name"`
+	Intent    string                     `json:"intent"`
+	Repos     []string                   `json:"repos"`
+	Agent     string                     `json:"agent"`
+	Model     string                     `json:"model"`
+	Effort    string                     `json:"effort"`
+	Advisor   *advisorChoiceBody         `json:"advisor"`
+	Roles     map[string]roleDefaultBody `json:"roles"`
+	Request   string                     `json:"request"`
 }
 
 type orchestratorRequestBody struct {
-	RequestID    string             `json:"request_id"`
-	Agent        string             `json:"agent"`
-	Model        string             `json:"model"`
-	Effort       string             `json:"effort"`
-	Advisor      *advisorChoiceBody `json:"advisor"`
-	Repos        []string           `json:"repos"`
-	ReposVersion int                `json:"repos_version"`
-	Name         string             `json:"name"`
+	RequestID    string                     `json:"request_id"`
+	Agent        string                     `json:"agent"`
+	Model        string                     `json:"model"`
+	Effort       string                     `json:"effort"`
+	Advisor      *advisorChoiceBody         `json:"advisor"`
+	Roles        map[string]roleDefaultBody `json:"roles"`
+	Repos        []string                   `json:"repos"`
+	ReposVersion int                        `json:"repos_version"`
+	Name         string                     `json:"name"`
 }
 
 type answerBody struct {

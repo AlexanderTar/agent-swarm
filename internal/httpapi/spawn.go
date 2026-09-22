@@ -36,7 +36,7 @@ func (s *Server) createSpike(w http.ResponseWriter, r *http.Request) {
 	s.idempotent(w, r, body.RequestID, "POST /api/spikes", http.StatusOK, func(ctx context.Context) (any, error) {
 		key, a, queued, err := s.RT.StartSpike(ctx, runtime.SpikeInput{Name: body.Name, Intent: body.Intent,
 			Kind: runtime.AgentKind(body.Agent), Model: body.Model, Effort: body.Effort,
-			Advisor: advisorChoiceFromBody(body.Advisor), Request: body.Request, Repos: body.Repos})
+			Advisor: advisorChoiceFromBody(body.Advisor), Roles: rolesFromBody(body.Roles), Request: body.Request, Repos: body.Repos})
 		if err != nil {
 			return nil, err
 		}
@@ -95,7 +95,7 @@ func (s *Server) startOrchestrator(w http.ResponseWriter, r *http.Request) {
 			repoPaths = paths
 		}
 		a, _, err := s.RT.StartOrchestrator(ctx, runtime.OrchestratorInput{ItemKey: key, Kind: runtime.AgentKind(body.Agent),
-			Model: body.Model, Effort: body.Effort, Advisor: advisorChoiceFromBody(body.Advisor), Name: body.Name,
+			Model: body.Model, Effort: body.Effort, Advisor: advisorChoiceFromBody(body.Advisor), Roles: rolesFromBody(body.Roles), Name: body.Name,
 			RepoPaths: repoPaths})
 		if err != nil {
 			return nil, wrapPreflightErr(err)
