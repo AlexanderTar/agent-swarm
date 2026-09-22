@@ -372,6 +372,17 @@ func TestSendSucceedsToPausedInterruptedAndQueuedTargets(t *testing.T) {
 		t.Fatalf("send to an interrupted target must succeed: %v", err)
 	}
 
+	// Reconcile must not raise no_recipient while the target is still
+	// interrupted, before it gets flipped back to paused below for the
+	// unrelated queuing setup.
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_recipient"); n != 0 {
+		t.Fatalf("no_recipient must not fire for an interrupted target: count = %d", n)
+	}
+
 	// Back to paused for the queuing setup below: an interrupted session no
 	// longer holds a concurrency slot (2026-09-22 zombie-slot fix, limits.go),
 	// so it can't be what forces the second worker to queue. Paused still does.

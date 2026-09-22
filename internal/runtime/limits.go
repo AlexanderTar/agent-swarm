@@ -15,18 +15,22 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 )
 
-// notAnInterruptedZombie excludes an agent whose latest session crashed to
-// 'interrupted': no process is running, but retryableStates treats it like
-// Crashed/Failed -- waiting on a human resume/ack/cancel, not auto-cleaned. Left
-// out of the slot count, such an agent used to occupy a max_agents/
-// max_agents_per_root/max_orchestrators slot forever (2026-09-22 incident: two
-// sessions interrupted for over an hour pinned the global limit at capacity).
-// The agent row itself is untouched by this -- still active, still shown, still
-// resumable/ackable/cancellable by hand -- this only stops it blocking Admit.
-const notAnInterruptedZombie = `NOT EXISTS (
+// NotAZombieSlot excludes an agent whose latest session is interrupted, crashed
+// or failed: no process is running, but retryableStates treats all three alike
+// -- waiting on a human resume/ack/cancel, not auto-cleaned (reconcile.go's
+// FailedCkp and crashed branches only ever write the session row; neither
+// touches agents.state). Left out of a concurrency-slot count, such an agent
+// used to occupy the slot forever (2026-09-22 incident: two sessions
+// interrupted for over an hour pinned max_agents at capacity). The agent row
+// itself is untouched by this -- still active, still shown, still resumable/
+// ackable/cancellable by hand -- this only stops it blocking admission.
+// Exported so every count of "agents currently occupying a concurrency slot"
+// applies the same exclusion -- Admit's three counts here, and the
+// max_concurrent_subagents count in internal/hook/handler.go.
+const NotAZombieSlot = `NOT EXISTS (
 		SELECT 1 FROM sessions s WHERE s.agent_id = agents.id
 			AND s.generation = (SELECT MAX(generation) FROM sessions WHERE agent_id = agents.id)
-			AND s.state = 'interrupted')`
+			AND s.state IN ('interrupted', 'crashed', 'failed'))`
 
 // Admit reports whether a new agent of this role may start now (A2, I20).
 // Orchestrators count only against max_orchestrators; every other role counts
@@ -43,11 +47,11 @@ func (s *Store) Admit(ctx context.Context, tx *sql.Tx, role Role, rootItemID str
 	}
 	if role == RoleOrchestrator {
 		n, err := count(`SELECT COUNT(*) FROM agents WHERE role = 'orchestrator'
-			AND state = 'active' AND ` + notAnInterruptedZombie)
+			AND state = 'active' AND ` + NotAZombieSlot)
 		return n < cfg.MaxOrchestrators, err
 	}
 	global, err := count(`SELECT COUNT(*) FROM agents WHERE role <> 'orchestrator'
-		AND state = 'active' AND ` + notAnInterruptedZombie)
+		AND state = 'active' AND ` + NotAZombieSlot)
 	if err != nil {
 		return false, err
 	}
@@ -55,7 +59,7 @@ func (s *Store) Admit(ctx context.Context, tx *sql.Tx, role Role, rootItemID str
 		return false, nil
 	}
 	perRoot, err := count(`SELECT COUNT(*) FROM agents WHERE role <> 'orchestrator'
-		AND root_item_id = ? AND state = 'active' AND `+notAnInterruptedZombie, rootItemID)
+		AND root_item_id = ? AND state = 'active' AND `+NotAZombieSlot, rootItemID)
 	if err != nil {
 		return false, err
 	}
