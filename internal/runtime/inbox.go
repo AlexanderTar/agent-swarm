@@ -355,6 +355,11 @@ func (s *Store) envelopes(ctx context.Context, tx *sql.Tx, to Agent, rows []Mess
 			delivery_count = delivery_count + 1, delivered_at = ? WHERE id = ?`, db.Millis(s.Now()), m.ID); err != nil {
 			return nil, err
 		}
+		if m.Kind != "control" && m.DeliveryCount+1 == maxFullDeliveries {
+			if err := s.escalateUnacked(ctx, tx, to, m); err != nil {
+				return nil, err
+			}
+		}
 		e := Envelope{V: 1, MsgID: m.ID, Seq: m.Seq, Kind: m.Kind, Origin: m.Origin,
 			To:          Party{Agent: to.ID, Name: to.Name},
 			Correlation: m.CorrelationID, ReplyTo: m.ReplyTo, RequestID: m.RequestID, Payload: m.Payload}
@@ -374,6 +379,35 @@ func (s *Store) envelopes(ctx context.Context, tx *sql.Tx, to Agent, rows []Mess
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// escalateUnacked is the orchestrator mirror of notifyNoAck's child-silent
+// case (reconcile.go): m has just crossed maxFullDeliveries deliveries to
+// `to` without ever being acked. It fires exactly once per message, a
+// structural property of where it's called from (see the spec's "Where this
+// hooks in") rather than its own dedup table: unackedFor's WHERE clause
+// excludes a message from ever being re-selected, and therefore
+// re-incremented, once its delivery_count reaches maxFullDeliveries.
+func (s *Store) escalateUnacked(ctx context.Context, tx *sql.Tx, to Agent, m Message) error {
+	itemKey, _ := s.itemKey(ctx, tx, m.ItemID) // best-effort, matches e.Item's own handling in envelopes()
+	if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.message_unacked", AgentName: to.Name,
+		ItemKey: itemKey, Args: map[string]string{"name": to.Name, "KEY": itemKey, "kind": string(m.Kind)}}); err != nil {
+		return err
+	}
+	ancestor, ok, err := s.nearestLiveAncestor(ctx, to.ID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // a top-level orchestrator: nothing above it to relay to
+	}
+	payload, err := json.Marshal(map[string]any{"event": "message_unacked", "agent": to.Name, "message_kind": string(m.Kind)})
+	if err != nil {
+		return err
+	}
+	_, err = s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: ancestor.ID,
+		RootItemID: to.RootItemID, ItemID: m.ItemID, Payload: payload})
+	return err
 }
 
 func (s *Store) itemKey(ctx context.Context, tx *sql.Tx, id string) (string, error) {
