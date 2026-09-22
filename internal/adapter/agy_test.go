@@ -1,13 +1,18 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
@@ -226,10 +231,125 @@ func TestAgyChecks(t *testing.T) {
 	}
 }
 
-func TestAgyHasNoNativeWake(t *testing.T) {
-	ok, err := newAgy(testDeps(t)).Wake(context.Background(), WakeTarget{SessionID: "ses_1"})
-	if ok || err != nil {
-		t.Fatalf("Wake = %v, %v; agy has no native push (§11.3)", ok, err)
+// capturingWriteCloser is a concurrency-safe in-memory Stdin double: Wake
+// does exactly one synchronous Write before returning, but the reaper
+// goroutine's later Close races the test's own assertions.
+type capturingWriteCloser struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	closed bool
+}
+
+func (c *capturingWriteCloser) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+func (c *capturingWriteCloser) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+func (c *capturingWriteCloser) Bytes() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.buf.Bytes()...)
+}
+func (c *capturingWriteCloser) Closed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
+// agy now natively wakes (2026-09-22): confirmed live against Google's
+// documented `--input-format stream-json` schema and the isolated agy-home
+// setupEnv already builds. See docs/specs/2026-09-22-agy-native-wake-stream-json.md.
+func TestAgyWakeWritesTheDocumentedPayloadWithoutBlockingOnTheTurn(t *testing.T) {
+	d := testDeps(t)
+	stdin := &capturingWriteCloser{}
+	stdoutR, stdoutW := io.Pipe()
+	killed := make(chan struct{}, 1)
+	var gotEnv map[string]string
+	var gotArgv []string
+	d.StartEnv = func(ctx context.Context, env map[string]string, name string, args ...string) (*execx.Proc, error) {
+		gotEnv = env
+		gotArgv = append([]string{name}, args...)
+		return &execx.Proc{Stdin: stdin, Stdout: stdoutR, Kill: func() {
+			select {
+			case killed <- struct{}{}:
+			default:
+			}
+		}}, nil
+	}
+
+	done := make(chan struct{})
+	var ok bool
+	var werr error
+	go func() {
+		ok, werr = newAgy(d).Wake(context.Background(), WakeTarget{
+			SessionID: "ses_1", ProviderSessionID: "conv_1", Notice: "hello"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Wake blocked on the turn instead of returning once the write succeeded (§ Decision 7)")
+	}
+	if !ok || werr != nil {
+		t.Fatalf("Wake = %v, %v", ok, werr)
+	}
+
+	wantArgv := []string{"agy", "--conversation", "conv_1", "--input-format", "stream-json",
+		"--output-format", "stream-json", "--dangerously-skip-permissions"}
+	if strings.Join(gotArgv, " ") != strings.Join(wantArgv, " ") {
+		t.Fatalf("argv = %v, want %v", gotArgv, wantArgv)
+	}
+	agyHome := filepath.Join(d.launchDir("ses_1"), "agy-home")
+	if gotEnv["HOME"] != agyHome {
+		t.Fatalf("HOME = %q, want %q (Wake must reuse the session's isolated home, not the daemon's ambient $HOME)", gotEnv["HOME"], agyHome)
+	}
+
+	var payload struct {
+		Event   string `json:"event"`
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(stdin.Bytes(), &payload); err != nil {
+		t.Fatalf("stdin = %q: %v", stdin.Bytes(), err)
+	}
+	if payload.Event != "user" || payload.Message.Content != "hello" {
+		t.Fatalf("payload = %+v, want event=user message.content=hello (the schema confirmed in the Task 1 probe)", payload)
+	}
+
+	if stdin.Closed() {
+		t.Fatal("stdin closed before the turn's result event arrived; Wake must not race the reaper")
+	}
+
+	fmt.Fprintln(stdoutW, `{"event":"result","result":{"status":"SUCCESS","response":"hi"}}`)
+	stdoutW.Close()
+
+	select {
+	case <-killed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reaper goroutine never cleaned up after the result event")
+	}
+	if !stdin.Closed() {
+		t.Fatal("expected stdin closed once the reaper's cleanup ran")
+	}
+}
+
+func TestAgyWakeReturnsFalseWhenStartFails(t *testing.T) {
+	d := testDeps(t)
+	wantErr := errors.New("boom")
+	d.StartEnv = func(context.Context, map[string]string, string, ...string) (*execx.Proc, error) {
+		return nil, wantErr
+	}
+	ok, err := newAgy(d).Wake(context.Background(), WakeTarget{SessionID: "ses_1", ProviderSessionID: "conv_1"})
+	if ok || !errors.Is(err, wantErr) {
+		t.Fatalf("Wake = %v, %v; want false, %v", ok, err, wantErr)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -46,7 +47,28 @@ type Starter func(ctx context.Context, name string, args ...string) (*Proc, erro
 
 // Start is the real Starter. Kill closes stdin, kills the process and reaps it.
 func Start(ctx context.Context, name string, args ...string) (*Proc, error) {
+	return startCmd(exec.CommandContext(ctx, name, args...))
+}
+
+// StarterEnv is Starter with an extra environment map merged over the
+// ambient environment. It exists alongside Starter/Start rather than
+// changing their signature, since most callers (catalog/usage app-server
+// probes) need no override; a caller that must run a command under an
+// isolated HOME (e.g. agy.Wake targeting a session's isolated agy-home)
+// uses this instead.
+type StarterEnv func(ctx context.Context, env map[string]string, name string, args ...string) (*Proc, error)
+
+// StartEnv is the real StarterEnv.
+func StartEnv(ctx context.Context, env map[string]string, name string, args ...string) (*Proc, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	return startCmd(cmd)
+}
+
+func startCmd(cmd *exec.Cmd) (*Proc, error) {
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

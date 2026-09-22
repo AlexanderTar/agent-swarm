@@ -40,6 +40,41 @@ func TestStartKeepsStdinOpenBetweenWrites(t *testing.T) {
 	}
 }
 
+// StartEnv exists alongside Start for callers that need an isolated HOME
+// (e.g. agy.Wake targeting a session's isolated agy-home) without changing
+// Start's signature for every other caller (catalog/usage app-server probes,
+// which need no env override).
+func TestStartEnvMergesExtraVariablesOverTheAmbientEnvironment(t *testing.T) {
+	p, err := StartEnv(context.Background(), map[string]string{"SWARM_PROBE": "isolated-value"}, "sh", "-c", "echo $SWARM_PROBE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Kill()
+	out, err := io.ReadAll(p.Stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "isolated-value" {
+		t.Fatalf("got %q, want %q", got, "isolated-value")
+	}
+}
+
+func TestStartEnvKeepsTheAmbientEnvironmentOtherwiseIntact(t *testing.T) {
+	t.Setenv("SWARM_PROBE_AMBIENT", "from-parent")
+	p, err := StartEnv(context.Background(), map[string]string{"SWARM_PROBE_OVERRIDE": "x"}, "sh", "-c", "echo $SWARM_PROBE_AMBIENT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Kill()
+	out, err := io.ReadAll(p.Stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "from-parent" {
+		t.Fatalf("got %q, want %q (StartEnv must not drop the ambient environment)", got, "from-parent")
+	}
+}
+
 func TestFakeRecordsCallsAndReturnsResponses(t *testing.T) {
 	f := &Fake{Responses: map[string]Result{
 		"git -C /r config --get remote.origin.url": {Out: "git@github.com:o/r.git\n"},
@@ -88,4 +123,3 @@ func TestRunWithLongerCallerDeadlineDoesNotTruncate(t *testing.T) {
 		t.Fatalf("expected command to abort near caller deadline ~200ms, took %v", dur)
 	}
 }
-

@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,8 +11,10 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -107,7 +110,7 @@ func (a *Agy) PromptPatterns() []PromptMatcher {
 		{Match: agyTrust, Title: "Trust this project", Action: "Enter"},
 	}
 }
-func (a *Agy) InterruptKeys() []string  { return []string{"Escape"} }
+func (a *Agy) InterruptKeys() []string { return []string{"Escape"} }
 
 func (a *Agy) HookOutput(event string, d HookDecision) ([]byte, error) {
 	if d.Block {
@@ -127,11 +130,11 @@ func (a *Agy) HookOutput(event string, d HookDecision) ([]byte, error) {
 
 func (a *Agy) ParseHook(event string, stdin []byte) (HookInput, error) {
 	var raw struct {
-		ConversationID string          `json:"conversationId"`
-		SessionID      string          `json:"session_id"`
-		TranscriptPath string          `json:"transcriptPath"`
-		ModelName      string          `json:"modelName"`
-		ToolName       string          `json:"tool_name"`
+		ConversationID string `json:"conversationId"`
+		SessionID      string `json:"session_id"`
+		TranscriptPath string `json:"transcriptPath"`
+		ModelName      string `json:"modelName"`
+		ToolName       string `json:"tool_name"`
 		ToolCall       struct {
 			Name string          `json:"name"`
 			Args json.RawMessage `json:"args"`
@@ -218,8 +221,76 @@ func (a *Agy) SuperpowersInstalled() bool {
 	return len(matches) > 0
 }
 
-func (a *Agy) Wake(ctx context.Context, sess WakeTarget) (bool, error) {
-	return false, nil
+// agyWakeMessage is the wire schema Google's docs give for a stream-json
+// turn (antigravity.google/docs/cli/headless/), confirmed live against a
+// signed-in account: {"event":"user","message":{"content":"<text>"}}. See
+// docs/specs/2026-09-22-agy-native-wake-stream-json.md, finding 7.
+type agyWakeMessage struct {
+	Event   string `json:"event"`
+	Message struct {
+		Content string `json:"content"`
+	} `json:"message"`
+}
+
+// agyWakeResultTimeout bounds how long drainWakeTurn waits for a woken turn
+// to finish before forcibly killing it. A real wake notice can trigger tool
+// calls, so this is generous, but it must not leak the process forever if
+// the turn hangs.
+const agyWakeResultTimeout = 5 * time.Minute
+
+// Wake injects a message into the live agy conversation via a short-lived
+// side-channel process, the same pattern Codex.Wake uses (`codex queue
+// --thread`) -- the interactive session Launch started is never touched.
+// Unlike codex's near-instant queue command, driving an agy turn to its
+// result event takes real wall-clock time, so Wake returns as soon as the
+// write succeeds and hands the process off to drainWakeTurn: blocking here
+// would stall WakeDue's per-tick loop for every other pending agent.
+func (a *Agy) Wake(ctx context.Context, w WakeTarget) (bool, error) {
+	agyHome := filepath.Join(a.d.launchDir(w.SessionID), "agy-home")
+	proc, err := a.d.StartEnv(ctx, map[string]string{"HOME": agyHome}, "agy",
+		"--conversation", w.ProviderSessionID,
+		"--input-format", "stream-json", "--output-format", "stream-json",
+		"--dangerously-skip-permissions")
+	if err != nil {
+		return false, err
+	}
+	var msg agyWakeMessage
+	msg.Event = "user"
+	msg.Message.Content = w.Notice
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		proc.Kill()
+		return false, err
+	}
+	if _, err := proc.Stdin.Write(append(payload, '\n')); err != nil {
+		proc.Kill()
+		return false, err
+	}
+	go drainWakeTurn(proc)
+	return true, nil
+}
+
+// drainWakeTurn waits for the turn Wake started to reach its result event
+// (or agyWakeResultTimeout, whichever is first), then closes stdin and kills
+// the process. It runs detached from Wake's caller.
+func drainWakeTurn(proc *execx.Proc) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scanner := bufio.NewScanner(proc.Stdout)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			if strings.Contains(scanner.Text(), `"event":"result"`) {
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(agyWakeResultTimeout):
+	}
+	_ = proc.Stdin.Close()
+	proc.Kill()
 }
 
 // ForgetFolder removes one trustedWorkspaces entry (§11.5). agy stores the path
