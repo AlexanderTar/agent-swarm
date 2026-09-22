@@ -268,3 +268,52 @@ be spawned on any item type, per the skill's story-wide-review case.
    confirms the exemption isn't over-broad.
 8. `go test ./... ` (full repo) green, including the three commit-1 checkpoint
    tests updated to spawn a `reviewer` fixture.
+
+## Second revision (same day, before merge): the commit-1 guard over-blocked
+
+The subagent that implemented commit 1 flagged, correctly, a gap its own
+audit (and mine) missed: `completed` is not task-specific. It's the
+universal session-terminal checkpoint — `skills/swarm/SKILL.md`: "Orchestrators,
+debuggers and reviewers also consult [their advisor] before writing
+`completed`" — and `terminalCheckpointKind` (`reconcile.go:219`) reads the
+most recent `completed`/`failed` checkpoint on *any* agent's attempt to close
+its session as `completed` instead of `crashed`. `checkRoot`'s audit row
+("roots never reach Done via CompletedCkp") was true for *item status* but
+irrelevant to *session status* — a different consumer of the same checkpoint
+kind that neither the original spec nor the first revision considered.
+
+Commit 1's guard, as shipped, refused `completed` on **any** Story/Epic/Bug
+regardless of role. That would have broken:
+
+- An orchestrator's own end-of-epic/bug `completed` checkpoint
+  (`skills/swarm-orchestrator/SKILL.md`: "Write `completed` when the daemon
+  reports the item accepted") — every orchestrator session end, turned into
+  a false "crashed" instead of "completed".
+- A reviewer's `completed` checkpoint ending a legitimate story-wide review.
+
+**Fix:** narrow the `WriteCheckpoint` guard to `gatedRoles` only
+(`slices.Contains(gatedRoles, a.Role)`, i.e. coder/debugger/mechanical) —
+the only roles `runtime.Spawn` now restricts to tasks. For every other role,
+`completed` on any item type it was actually assigned to is legitimate and
+untouched.
+
+**Why the guard is still worth keeping at all**, now that Spawn is airtight
+for new spawns: an agent already running with a gated role on a
+Story/Epic/Bug from *before* this fix deploys (mid-flight across the
+upgrade) is not caught by the spawn-time gate — it was spawned under the
+old code. The `WriteCheckpoint` guard is what still catches that one, purely
+transitional case. It has no effect on a freshly-spawned gated worker, which
+can never reach a non-task assignment in the first place.
+
+**Tests corrected:** `assertRefusesCompleted` no longer spawns a `reviewer`
+(which is no longer refused) — it spawns a `coder` legitimately on a real
+task, then rewrites the agent's own `item_id` directly in the DB to simulate
+"already assigned before the gate existed," and confirms `WriteCheckpoint`
+still refuses. Two new regression tests
+(`TestWriteCheckpointAllowsOrchestratorCompletedOnItsOwnEpic`,
+`TestWriteCheckpointAllowsReviewerCompletedOnAStory`) pin the behavior this
+revision restores, so it can't silently regress again.
+
+No further code changes follow from this — `go test ./...` is green with
+these five tests (three refusals + two allow-regressions) covering both
+sides of the line.

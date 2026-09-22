@@ -280,7 +280,17 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
-		if in.Kind == CompletedCkp && it.Type != items.Task && it.Type != items.Spike {
+		// completed is the universal session-terminal checkpoint (every role
+		// ends its assignment with completed or failed -- terminalCheckpointKind
+		// reads it to close the session cleanly), so it's valid on any item
+		// type an agent can legitimately be assigned to: an orchestrator ends
+		// its own Epic/Bug this way, a reviewer ends a story-wide review this
+		// way. It only needs gating for gatedRoles (coder/debugger/mechanical):
+		// runtime.Spawn now refuses those on anything but a Task, so this is
+		// defense-in-depth for an agent already assigned before that gate
+		// existed, not the primary fix.
+		if in.Kind == CompletedCkp && slices.Contains(gatedRoles, a.Role) &&
+			it.Type != items.Task && it.Type != items.Spike {
 			return &items.Error{Code: items.CodeBadRequest,
 				Message: fmt.Sprintf(
 					"Completed checkpoints attach to tasks, not %s. Pass item: \"<TASK-KEY>\" for the task you finished.",

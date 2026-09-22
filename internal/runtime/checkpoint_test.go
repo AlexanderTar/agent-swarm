@@ -396,20 +396,25 @@ func seedTopLevelItem(t *testing.T, s *Store, typ items.Type) items.Item {
 	return it
 }
 
-// assertRefusesCompleted spawns a coder directly on itemKey and asserts that
-// a completed checkpoint with no item override is refused as bad_request,
-// naming the offending type. Spawned as a reviewer, not a coder: gated roles
-// (coder/debugger/mechanical) can no longer be spawned on a non-task item at
-// all (Spawn's item-type gate), so this exercises the WriteCheckpoint guard
-// as the defense-in-depth layer it now is -- e.g. a reviewer legitimately
-// assigned to a story for story-wide review, who then mistakenly reports
-// the whole story "completed" instead of leaving its findings as a review.
-func assertRefusesCompleted(t *testing.T, s *Store, itemKey string) {
+// assertRefusesCompleted simulates a gated-role (coder) agent already
+// assigned to a non-task item from before Spawn's item-type gate existed --
+// e.g. still running across a deploy of that fix. It spawns legitimately on
+// a real task, then rewrites the agent's own assignment directly (bypassing
+// Spawn, the only thing that would otherwise refuse this), and confirms
+// WriteCheckpoint still refuses a completed checkpoint on the wrong item.
+// This is what's left of the guard after runtime.Spawn's item-type gate
+// became the primary fix: defense-in-depth for that transitional window,
+// not something a normal, freshly-spawned coder can ever hit.
+func assertRefusesCompleted(t *testing.T, s *Store, target items.Item) {
 	t.Helper()
 	ctx := context.Background()
-	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: itemKey, Role: RoleReviewer, Kind: Fake,
-		Model: "fake-1", Brief: BriefInput{Objective: "review the story"}})
+	seedEpicWithTask(t, s) // EPIC-1 > STORY-1 > TASK-1, all ready
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "cover several tasks"}})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET item_id = ? WHERE id = ?`, target.ID, w.ID); err != nil {
 		t.Fatal(err)
 	}
 	wSes, err := s.LatestSession(ctx, w.ID)
@@ -418,7 +423,7 @@ func assertRefusesCompleted(t *testing.T, s *Store, itemKey string) {
 	}
 	_, err = s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "all done"})
 	if err == nil {
-		t.Fatalf("a completed checkpoint on %s must be refused", itemKey)
+		t.Fatalf("a completed checkpoint on %s must be refused", target.Key)
 	}
 	ie, ok := err.(*items.Error)
 	if !ok || ie.Code != items.CodeBadRequest {
@@ -433,24 +438,69 @@ func assertRefusesCompleted(t *testing.T, s *Store, itemKey string) {
 // multi-task worker's completed checkpoint silently defaulted onto its Story
 // assignment -- accepted (200 OK), but the transition switch has no case for
 // Story/Epic/Bug, so nothing moved and the mistake was invisible. A completed
-// checkpoint must be refused outright on any item type with no consumer for
-// it, forcing the caller to pass item: "<TASK-KEY>".
+// checkpoint from a gated role must be refused outright on any item type
+// with no consumer for it, forcing the caller to pass item: "<TASK-KEY>".
 func TestWriteCheckpointRefusesCompletedOnAStory(t *testing.T) {
 	s, _, _ := newStore(t)
 	seedEpicWithTask(t, s) // EPIC-1 > STORY-1 > TASK-1, all ready
-	assertRefusesCompleted(t, s, "STORY-1")
+	story, err := s.Items.Get(context.Background(), "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefusesCompleted(t, s, story)
 }
 
 func TestWriteCheckpointRefusesCompletedOnAnEpic(t *testing.T) {
 	s, _, _ := newStore(t)
 	it := seedTopLevelItem(t, s, items.Epic)
-	assertRefusesCompleted(t, s, it.Key)
+	assertRefusesCompleted(t, s, it)
 }
 
 func TestWriteCheckpointRefusesCompletedOnABug(t *testing.T) {
 	s, _, _ := newStore(t)
 	it := seedTopLevelItem(t, s, items.Bug)
-	assertRefusesCompleted(t, s, it.Key)
+	assertRefusesCompleted(t, s, it)
+}
+
+// Regression guard for the bug the first version of this gate introduced:
+// completed is the universal session-terminal checkpoint (every role ends
+// its assignment with completed or failed; terminalCheckpointKind reads it
+// to close the session as "completed" rather than "crashed"). An orchestrator
+// ending its own Epic, and a reviewer ending a story-wide review, must not
+// be blocked -- only gatedRoles are.
+func TestWriteCheckpointAllowsOrchestratorCompletedOnItsOwnEpic(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	it := seedTopLevelItem(t, s, items.Epic)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "epic accepted"}); err != nil {
+		t.Fatalf("an orchestrator must be able to end its own epic with completed: %v", err)
+	}
+}
+
+func TestWriteCheckpointAllowsReviewerCompletedOnAStory(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s) // EPIC-1 > STORY-1 > TASK-1, all ready
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "STORY-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "review the story"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "review done"}); err != nil {
+		t.Fatalf("a reviewer must be able to end a story-wide review with completed: %v", err)
+	}
 }
 
 // C1: integrated is orchestrator-only and needs git plus verification.
