@@ -241,7 +241,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	adDeps.PublishWake = rt.PublishWake // the claude channel bridge
 	rt.Adapters = adapter.All(adDeps)
 	adv := &advisor.Service{DB: d, Events: ev, Home: cfg.Home, UserHome: userHome,
-		Adapters: rt.Adapters, Run: execx.Run, Now: now, Log: cfg.Log,
+		Adapters: rt.Adapters, Run: execx.RunFor(240 * time.Second), Now: now, Log: cfg.Log,
 		MaxConcurrent: 2, Timeout: 240 * time.Second, Deliver: rt.DeliverAdvice}
 	rt.Advisor = adv
 	wt.OnRetained = rt.OnWorktreeRetained // the §17.5 "Worktree kept" notification

@@ -27,29 +27,6 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
-// AdvisorChoice is the caller-supplied "advisor" field on swarm_spawn,
-// POST /api/spikes and POST /api/items/{key}/orchestrator (spec §7, §8.1).
-// A nil *AdvisorChoice on the input struct it's embedded in means "use
-// Settings"; None means the caller explicitly asked for no advisor.
-type AdvisorChoice struct {
-	None   bool
-	Kind   AgentKind
-	Model  string
-	Effort string
-}
-
-type SpikeInput struct {
-	Name      string
-	Intent    string
-	Kind      AgentKind
-	Model     string
-	Effort    string
-	Advisor   *AdvisorChoice
-	Request   string
-	RepoPaths []string
-	Repos     []string // suggested repo ids, shown back on the confirm_repos ask (D42)
-}
-
 type SpawnInput struct {
 	ItemKey       string
 	Role          Role
@@ -66,16 +43,6 @@ type SpawnInput struct {
 	// just run once"). Neither is the spawned agent's own session.
 	SessionID string
 	RequestID string
-}
-
-type OrchestratorInput struct {
-	ItemKey   string
-	Kind      AgentKind
-	Model     string
-	Effort    string
-	Advisor   *AdvisorChoice
-	Name      string
-	RepoPaths []string
 }
 
 type PreflightInput struct {
@@ -252,6 +219,13 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 			RepoPaths: in.RepoPaths,
 		})
 	}
+	var rolesJSON any
+	if len(in.Roles) > 0 {
+		b, err := json.Marshal(in.Roles)
+		if err == nil {
+			rolesJSON = string(b)
+		}
+	}
 	if preflightErr != nil {
 		agentID := ids.New("agt")
 		nowMs := s.now().UnixMilli()
@@ -267,16 +241,17 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 			Brief:          in.Request,
 			State:          AgentActive,
 			PreflightError: preflightErr.Error(),
+			RoleOverrides:  in.Roles,
 			CreatedAt:      s.now(),
 		}
 		_ = s.tx(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `INSERT INTO agents
 				(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, preflight_error, created_at,
-				 advisor_kind, advisor_model, advisor_effort, advisor_mode)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
+				 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
 				a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 				a.ItemID, a.RootItemID, a.Brief, string(a.State), a.PreflightError, nowMs,
-				string(advKind), advModel, advEffort, advMode)
+				string(advKind), advModel, advEffort, advMode, rolesJSON)
 			if err != nil {
 				return err
 			}
@@ -308,28 +283,29 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	agentID := ids.New("agt")
 	nowMs := s.now().UnixMilli()
 	a := Agent{
-		ID:         agentID,
-		Name:       name,
-		Kind:       in.Kind,
-		Model:      in.Model,
-		Effort:     in.Effort,
-		Role:       RoleOrchestrator,
-		ItemID:     it.ID,
-		RootItemID: it.ID,
-		Brief:      briefText,
-		State:      AgentActive,
-		CreatedAt:  s.now(),
+		ID:            agentID,
+		Name:          name,
+		Kind:          in.Kind,
+		Model:         in.Model,
+		Effort:        in.Effort,
+		Role:          RoleOrchestrator,
+		ItemID:        it.ID,
+		RootItemID:    it.ID,
+		Brief:         briefText,
+		State:         AgentActive,
+		RoleOverrides: in.Roles,
+		CreatedAt:     s.now(),
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at,
-			 advisor_kind, advisor_model, advisor_effort, advisor_mode)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 			a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs,
-			string(advKind), advModel, advEffort, advMode)
+			string(advKind), advModel, advEffort, advMode, rolesJSON)
 		if err != nil {
 			return err
 		}
@@ -379,7 +355,43 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, &items.Error{Code: items.CodeConflict, Message: "This item already has an orchestrator."}
 	}
 
-	in.Kind, in.Model = s.roleDefaultKindModel(ctx, RoleOrchestrator, in.Kind, in.Model)
+	cfg, _ := s.Settings.Get(ctx)
+	if in.Kind == "" && in.Model != "" {
+		if k, ok := s.resolveAgentForModel(ctx, in.Model); ok {
+			in.Kind = k
+		}
+	}
+	if in.Kind == "" {
+		if rd, ok := cfg.Roles[RoleOrchestrator]; ok && rd.Agent != "" && (len(cfg.EnabledAgents) == 0 || slices.Contains(cfg.EnabledAgents, rd.Agent)) {
+			in.Kind = rd.Agent
+			if in.Model == "" {
+				if s.Catalog != nil {
+					models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
+					if _, found := catalog.Find(models, rd.Model); found {
+						in.Model = rd.Model
+						if in.Effort == "" {
+							in.Effort = rd.Effort
+						}
+					}
+				} else {
+					in.Model = rd.Model
+					if in.Effort == "" {
+						in.Effort = rd.Effort
+					}
+				}
+			}
+		} else if len(cfg.EnabledAgents) > 0 {
+			in.Kind = cfg.EnabledAgents[0]
+		} else {
+			in.Kind = Fake
+		}
+	}
+	if in.Model == "" {
+		models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
+		if len(models) > 0 {
+			in.Model = models[0].ID
+		}
+	}
 
 	origKind := in.Kind
 	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
@@ -421,19 +433,28 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, err
 	}
 
+	var rolesJSON any
+	if len(in.Roles) > 0 {
+		b, err := json.Marshal(in.Roles)
+		if err == nil {
+			rolesJSON = string(b)
+		}
+	}
+
 	agentID := ids.New("agt")
 	nowMs := s.now().UnixMilli()
 	a := Agent{
-		ID:         agentID,
-		Name:       name,
-		Kind:       in.Kind,
-		Model:      in.Model,
-		Effort:     in.Effort,
-		Role:       RoleOrchestrator,
-		ItemID:     it.ID,
-		RootItemID: it.RootID,
-		Brief:      briefText,
-		CreatedAt:  s.now(),
+		ID:            agentID,
+		Name:          name,
+		Kind:          in.Kind,
+		Model:         in.Model,
+		Effort:        in.Effort,
+		Role:          RoleOrchestrator,
+		ItemID:        it.ID,
+		RootItemID:    it.RootID,
+		Brief:         briefText,
+		RoleOverrides: in.Roles,
+		CreatedAt:     s.now(),
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
@@ -451,11 +472,11 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at,
-			 advisor_kind, advisor_model, advisor_effort, advisor_mode)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 			a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs,
-			string(advKind), advModel, advEffort, advMode)
+			string(advKind), advModel, advEffort, advMode, rolesJSON)
 		if err != nil {
 			return err
 		}
@@ -581,6 +602,43 @@ func (s *Store) resolveAdvisor(ctx context.Context, sessionKind AgentKind, choic
 	return kind, model, effort, mode
 }
 
+// resolveAgentForModel resolves which AgentKind supports modelID, checking
+// enabled agents first, then falling back to all agent kinds.
+func (s *Store) resolveAgentForModel(ctx context.Context, modelID string) (AgentKind, bool) {
+	if s.Catalog == nil || modelID == "" {
+		return "", false
+	}
+	var enabled []AgentKind
+	if s.Settings != nil {
+		if cfg, err := s.Settings.Get(ctx); err == nil {
+			enabled = cfg.EnabledAgents
+		}
+	}
+	for _, kind := range enabled {
+		models, _, err := s.Catalog.ModelsFor(ctx, kind)
+		if err != nil {
+			continue
+		}
+		if _, ok := catalog.Find(models, modelID); ok {
+			return kind, true
+		}
+	}
+	all := append(slices.Clone(AgentKinds), Fake)
+	for _, kind := range all {
+		if slices.Contains(enabled, kind) {
+			continue
+		}
+		models, _, err := s.Catalog.ModelsFor(ctx, kind)
+		if err != nil {
+			continue
+		}
+		if _, ok := catalog.Find(models, modelID); ok {
+			return kind, true
+		}
+	}
+	return "", false
+}
+
 func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	it, err := s.Items.Get(ctx, in.ItemKey)
 	if err != nil {
@@ -599,6 +657,10 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return Agent{}, false, err
 	} else if hit {
 		return result.Agent, result.Queued, nil
+	}
+
+	if in.Role == "implementer" {
+		in.Role = RoleCoder
 	}
 
 	if in.Role == RoleOrchestrator {
@@ -634,7 +696,77 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return Agent{}, false, &items.Error{Code: items.CodeBadRequest, Message: msg}
 	}
 
-	in.Kind, in.Model = s.roleDefaultKindModel(ctx, in.Role, in.Kind, in.Model)
+	var parentID string
+	switch p := in.ParentAgentID.(type) {
+	case string:
+		parentID = p
+	case items.Item:
+		parentID = p.ID
+	}
+	var parentRoleOverrides map[Role]settings.RoleDefault
+	var parentParam *string
+	var parentName string
+	if parentID != "" {
+		if parent, err := s.agentByID(ctx, parentID); err == nil {
+			parentRoleOverrides = parent.RoleOverrides
+			parentParam = &parentID
+			parentName = parent.Name
+		}
+	}
+
+	cfg, _ := s.Settings.Get(ctx)
+	if in.Kind == "" && in.Model != "" {
+		if k, ok := s.resolveAgentForModel(ctx, in.Model); ok {
+			in.Kind = k
+		}
+	}
+	applyRoleDefault := func(rd settings.RoleDefault) bool {
+		if rd.Agent == "" || (len(cfg.EnabledAgents) > 0 && !slices.Contains(cfg.EnabledAgents, rd.Agent)) {
+			return false
+		}
+		in.Kind = rd.Agent
+		if in.Model == "" {
+			if s.Catalog != nil {
+				models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
+				if _, found := catalog.Find(models, rd.Model); found {
+					in.Model = rd.Model
+					if in.Effort == "" {
+						in.Effort = rd.Effort
+					}
+				}
+			} else {
+				in.Model = rd.Model
+				if in.Effort == "" {
+					in.Effort = rd.Effort
+				}
+			}
+		}
+		return true
+	}
+	if in.Kind == "" {
+		var matched bool
+		if rd, ok := parentRoleOverrides[in.Role]; ok {
+			matched = applyRoleDefault(rd)
+		}
+		if !matched {
+			if rd, ok := cfg.Roles[in.Role]; ok {
+				matched = applyRoleDefault(rd)
+			}
+		}
+		if !matched {
+			if len(cfg.EnabledAgents) > 0 {
+				in.Kind = cfg.EnabledAgents[0]
+			} else {
+				in.Kind = Fake
+			}
+		}
+	}
+	if in.Model == "" {
+		models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
+		if len(models) > 0 {
+			in.Model = models[0].ID
+		}
+	}
 
 	origKind := in.Kind
 	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
@@ -662,21 +794,6 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	name, err := s.resolveName(ctx, in.Name, defName)
 	if err != nil {
 		return Agent{}, false, err
-	}
-
-	var parentID string
-	switch p := in.ParentAgentID.(type) {
-	case string:
-		parentID = p
-	case items.Item:
-		parentID = p.ID
-	}
-	var parentParam *string
-	var parentName string
-	if parentID != "" {
-		if s.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, parentID).Scan(&parentName) == nil {
-			parentParam = &parentID
-		}
 	}
 
 	in.Brief.Key = it.Key
@@ -719,11 +836,11 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, parent_agent_id, brief, state, created_at,
-			 advisor_kind, advisor_model, advisor_effort, advisor_mode)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 			a.ItemID, a.RootItemID, parentParam, a.Brief, string(a.State), nowMs,
-			string(advKind), advModel, advEffort, advMode)
+			string(advKind), advModel, advEffort, advMode, nil)
 		if err != nil {
 			return err
 		}
@@ -1418,7 +1535,7 @@ func (s *Store) SessionByToken(ctx context.Context, token string) (Session, erro
 
 func scanAgent(row *sql.Row) (Agent, error) {
 	var a Agent
-	var kind, role, state string
+	var kind, role, state, roleOverrides string
 	var created int64
 	var finished sql.NullInt64
 	err := row.Scan(
@@ -1426,6 +1543,7 @@ func scanAgent(row *sql.Row) (Agent, error) {
 		&a.ItemID, &a.RootItemID, &a.ParentAgentID,
 		&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode,
 		&a.Brief, &state, &a.PreflightError, &created, &finished,
+		&roleOverrides,
 	)
 	if err != nil {
 		return a, err
@@ -1438,6 +1556,9 @@ func scanAgent(row *sql.Row) (Agent, error) {
 		t := db.FromMillis(finished.Int64)
 		a.FinishedAt = &t
 	}
+	if roleOverrides != "" {
+		_ = json.Unmarshal([]byte(roleOverrides), &a.RoleOverrides)
+	}
 	return a, nil
 }
 
@@ -1446,7 +1567,8 @@ func (s *Store) Agent(ctx context.Context, name string) (Agent, error) {
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
 		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
-		COALESCE(preflight_error, ''), created_at, finished_at
+		COALESCE(preflight_error, ''), created_at, finished_at,
+		COALESCE(role_overrides, '')
 		FROM agents WHERE name = ?`, name)
 	return scanAgent(row)
 }
@@ -1456,7 +1578,8 @@ func (s *Store) agentByID(ctx context.Context, id string) (Agent, error) {
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
 		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
-		COALESCE(preflight_error, ''), created_at, finished_at
+		COALESCE(preflight_error, ''), created_at, finished_at,
+		COALESCE(role_overrides, '')
 		FROM agents WHERE id = ?`, id)
 	return scanAgent(row)
 }
@@ -1475,7 +1598,8 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
 		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
-		COALESCE(preflight_error, ''), created_at, finished_at
+		COALESCE(preflight_error, ''), created_at, finished_at,
+		COALESCE(role_overrides, '')
 		FROM agents WHERE root_item_id = ? ORDER BY created_at`, it.RootID)
 	if err != nil {
 		return nil, err
@@ -1485,7 +1609,7 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		var kind, role, state string
+		var kind, role, state, roleOverrides string
 		var created int64
 		var finished sql.NullInt64
 		if err := rows.Scan(
@@ -1493,6 +1617,7 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 			&a.ItemID, &a.RootItemID, &a.ParentAgentID,
 			&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode,
 			&a.Brief, &state, &a.PreflightError, &created, &finished,
+			&roleOverrides,
 		); err != nil {
 			return nil, err
 		}
@@ -1503,6 +1628,9 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 		if finished.Valid {
 			t := db.FromMillis(finished.Int64)
 			a.FinishedAt = &t
+		}
+		if roleOverrides != "" {
+			_ = json.Unmarshal([]byte(roleOverrides), &a.RoleOverrides)
 		}
 		out = append(out, a)
 	}

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 // contracts §4: POST /api/spikes returns {item, agent, queued}.
@@ -295,5 +297,28 @@ func TestTerminalFallbackRunsGhosttyThroughTheInjectedRunner(t *testing.T) {
 	}
 	if !slices.Contains(got, s.RT.TmuxSocket()) {
 		t.Fatalf("argv = %v, want the store's socket %q", got, s.RT.TmuxSocket())
+	}
+}
+
+func TestStartOrchestratorWithRoleOverrides(t *testing.T) {
+	s, seed := newRuntimeServerWithEpic(t)
+	rec := s.post(t, "/api/items/"+seed.EpicKey+"/orchestrator",
+		`{"request_id":"ro1","agent":"fake","model":"fake-1","repos":[],"repos_version":0,
+		"roles":{"coder":{"agent":"fake","model":"fake-1","effort":"high"}}}`)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	a, err := s.RT.Agent(bg, resp.Name)
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if a.RoleOverrides[runtime.RoleCoder].Model != "fake-1" {
+		t.Fatalf("RoleOverrides[coder].Model = %q, want fake-1", a.RoleOverrides[runtime.RoleCoder].Model)
 	}
 }

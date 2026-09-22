@@ -135,6 +135,8 @@ export const C = {
   defaultClaudeCode: "Default (Claude Code)",
   notSupported: "Not supported",
   defaultsFromSettings: "Defaults from Settings",
+  workerRoles: "Worker Roles",
+  customizeWorkerRoles: "Customize worker roles for this orchestrator",
   name: "Name",
   title: "Title",
   parent: "Parent",
