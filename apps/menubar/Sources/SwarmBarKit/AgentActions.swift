@@ -110,7 +110,7 @@ public enum AgentTree {
         let off = !connected
         let terminal = AgentAction(endpoint: .terminal, label: Copy.openTerminal, disabled: !tmuxAlive, placement: .button)
         let cancel = AgentAction(endpoint: .cancel, label: Copy.cancel, disabled: off,
-                                 confirm: orch && live > 0 ? Copy.cancelOrchestrator(a.name, live) : nil, placement: .button)
+                                 confirm: orch && live > 0 ? Copy.cancelOrchestrator(a.name, live) : nil, placement: .menu)
         let ack = AgentAction(endpoint: .ack, label: Copy.acknowledge, disabled: off, placement: .menu)
         let retry = AgentAction(endpoint: .retry, label: Copy.retry, disabled: off, placement: .button)
         let resume = AgentAction(endpoint: .resume, label: Copy.resume, disabled: off, placement: .button)

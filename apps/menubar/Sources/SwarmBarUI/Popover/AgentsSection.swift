@@ -137,7 +137,7 @@ struct AgentRowView: View {
         case .pause: return "pause.fill"
         case .resume: return "play.fill"
         case .retry: return "arrow.clockwise"
-        case .cancel: return "stop.fill"
+        case .cancel: return "xmark"
         case .ack: return "checkmark"
         }
     }
