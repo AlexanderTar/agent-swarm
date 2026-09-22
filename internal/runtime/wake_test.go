@@ -56,6 +56,41 @@ func TestNativeWakeSkipsThePaste(t *testing.T) {
 	}
 }
 
+// 2026-09-22 live incident: s11-seams filed a progress checkpoint reading
+// like a finished report (TASK-107) and its orchestrator never got pinged
+// -- progress was deferred-wake-class, so it just sat pending until
+// somebody happened to sync. Checkpoint cadence data (873 checkpoints /
+// 167 sessions, median gap 5 min, worst observed case 8.5 min) showed the
+// anti-spam rationale for deferring progress never held in practice, so
+// every relay checkpoint now wakes immediately, same as completed/failed/etc.
+func TestProgressCheckpointWakesImmediately(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.WakeOK = true
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": orchSes.ID}
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	// Clear the orchestrator's own kickoff assignment first (already immediate)
+	// so the only pending immediate message left is the relay under test.
+	s.Sync(ctx, orchSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "midway report"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var wakeAt *int64
+	s.DB.QueryRowContext(ctx, `SELECT last_wake_at FROM sessions WHERE id = ?`, orchSes.ID).Scan(&wakeAt)
+	if wakeAt == nil {
+		t.Fatal("a progress checkpoint's relay must wake its parent immediately, not wait for a sync")
+	}
+}
+
 // I11: a native wake that is not followed by a sync falls back to the paste.
 func TestNativeWakeWithoutASyncFallsBackToThePaste(t *testing.T) {
 	s, tm, fa := newStore(t)
@@ -210,7 +245,10 @@ func TestUndeliverableAfterFiveMinutesUnsynced(t *testing.T) {
 	}
 }
 
-// I19: a deferred message never wakes anyone.
+// I19: a deferred message never wakes anyone. 2026-09-22: progress/handoff
+// relays used to be the deferred case exercised here, but every relay now
+// wakes immediately (see TestProgressCheckpointWakesImmediately) -- digest
+// is the kind that's actually still deferred, so this test now covers that.
 func TestDeferredMessagesNeverWake(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
@@ -221,11 +259,11 @@ func TestDeferredMessagesNeverWake(t *testing.T) {
 	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, a.ID)
 	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
 	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
-	enq(t, s, a.ID, a.RootItemID, "relay", `{"event":"progress","agent":"w1","item":"TASK-1"}`, 1)
+	enq(t, s, a.ID, a.RootItemID, "digest", `{"lines":["TASK-1 · w1 · step 1 done"]}`, 1)
 	at.Advance(120 * time.Second)
 	s.WakeDue(ctx)
 	if len(tm.pasted) != 0 {
-		t.Fatalf("a deferred relay must not wake: %v", tm.pasted)
+		t.Fatalf("a deferred digest must not wake: %v", tm.pasted)
 	}
 }
 
@@ -386,7 +424,6 @@ func TestUndeliverableNotificationOnlyFiresOncePerBatch(t *testing.T) {
 	}
 }
 
-
 // 2026-09-21: wakeCandidates counted state != 'acked', which includes messages
 // the agent had already synced, so agents that read but never acked were
 // reported as "hasn't picked up N message(s)" (four false alerts that day).
@@ -397,7 +434,7 @@ func TestReadButUnackedMessageIsNeverUndeliverable(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "ReadNotAcked", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
-	panes(tm, Pane{Session: a.Name, Command: "zsh"}) // never pasteable
+	panes(tm, Pane{Session: a.Name, Command: "zsh"})        // never pasteable
 	if _, err := s.Sync(ctx, ses.ID, nil, 20); err != nil { // read, never acked
 		t.Fatal(err)
 	}

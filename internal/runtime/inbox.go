@@ -17,17 +17,14 @@ import (
 var ImmediateKinds = []MessageKind{"assignment", "control", "question", "answer", "finding",
 	"approval_result", "user_answer", "repos_confirmed", "assignment_update", "advice"}
 
-// ImmediateRelayEvents are the relay events that wake (I19). progress and handoff
-// are deferred and arrive folded into a digest.
-var ImmediateRelayEvents = []string{"accepted", "completed", "failed", "blocked", "crashed",
-	"interrupted", "paused", "resumed", "dependency_added", "spawn_failed", "no_ack", "no_recipient"}
-
-func WakeClassFor(kind MessageKind, relayEvent string) WakeClass {
+// WakeClassFor: every relay now wakes immediately (2026-09-22: empirical
+// checkpoint cadence — median 5 min, worst observed case 8.5 min between
+// progress checkpoints — showed the deferred/digest split's anti-spam
+// rationale never held in practice, and it was silently losing real
+// completion reports like TASK-107's).
+func WakeClassFor(kind MessageKind) WakeClass {
 	if kind == "relay" {
-		if slices.Contains(ImmediateRelayEvents, relayEvent) {
-			return "immediate"
-		}
-		return "deferred"
+		return "immediate"
 	}
 	if slices.Contains(ImmediateKinds, kind) {
 		return "immediate"
@@ -52,15 +49,7 @@ func (s *Store) enqueue(ctx context.Context, tx *sql.Tx, m Message) (Message, er
 	if m.Priority == 0 && m.Kind != "control" {
 		m.Priority = 1
 	}
-	var relayEvent string
-	if m.Kind == "relay" {
-		var p struct {
-			Event string `json:"event"`
-		}
-		json.Unmarshal(m.Payload, &p)
-		relayEvent = p.Event
-	}
-	m.WakeClass = WakeClassFor(m.Kind, relayEvent)
+	m.WakeClass = WakeClassFor(m.Kind)
 	m.State, m.CreatedAt = "pending", s.Now()
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM messages`).Scan(&m.Seq); err != nil {
 		return m, err
