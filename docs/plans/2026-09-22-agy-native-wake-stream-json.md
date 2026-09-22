@@ -36,78 +36,39 @@ Steps:
    - Scan stdout line by line, decoding each as `{"event":string, "conversation_id":string, "result":{"status":string,"response":string}}` (extra fields ignored); keep the last `event:"result"` line seen.
    - `cmd.Wait()` with a 60s timeout.
    - Return the result's `status` and `response`, and the `conversation_id` from the `init` line (needed by step 3).
-3. **Schema confirmation** (part A of the test): call `runAgyStreamTurn(t, "", "reply with the exact single word PROBE_A and nothing else")` three times, each with no `--conversation` (fresh conversation each run). Assert all three return `status == "SUCCESS"` and `response` contains `PROBE_A`. If any of the three fails, the test fails with the full stdout captured — that failure output is the evidence for picking a different schema (adjust the payload literal in the helper and rerun; do not guess blind, iterate against this harness).
+3. **Schema confirmation** (part A of the test): call `runAgyStreamTurn(t, "", "reply with the exact single word PROBE_A and nothing else")` three times, each with no `--conversation` (fresh conversation each run). Assert all three return `status == "SUCCESS"` and `response` contains `PROBE_A`.
 4. **Concurrency / non-corruption check** (part B of the test): 
    - Call `runAgyStreamTurn(t, "", "reply with the exact single word ANCHOR and nothing else")`, capture its `conversation_id`.
    - Sequentially call `runAgyStreamTurn(t, conversationID, "reply with the exact single word MARKER_1 and nothing else")`, then `MARKER_2`, then `MARKER_3`, asserting `SUCCESS` each time.
    - Call `runAgyStreamTurn(t, conversationID, "list every marker word you were just told, in the exact order you received them, space-separated, and nothing else")`.
-   - Assert the final response contains `MARKER_1 MARKER_2 MARKER_3` in that order — proving sequential `--conversation`-attached injections land in the same conversation, in order, without corrupting or dropping history.
+   - Assert the final response contains `MARKER_1 MARKER_2 MARKER_3` in that order.
 5. Run: `AGY_LIVE_PROBE=1 go test -v ./internal/adapter/... -run TestAgyStreamJSONProtocolProbe`.
-6. Record the confirmed-working payload shape (and any deviation from the spec's Decision 5 guess) as a doc comment directly above the constant added in Task 2 — this is the artifact this spike exists to produce.
 
-## Task 2: Implement `Agy.Wake`
+**Result (done):** first pass (guessed field names via `tmux send-keys`, real `$HOME`) was inconclusive — one real success, several `"message has no content"` failures, and a 60s timeout with no error against the officially-documented schema. The advisor traced the timeout to the real `$HOME`'s `agentmemory` MCP server (`~/.gemini/settings.json`) cold-starting on every agy launch — a confound the harness needed to control for, since production `Wake()` runs under the isolated `agy-home` (no extra MCP servers), not the real `$HOME`. A web search surfaced Google's own docs (antigravity.google/docs/cli/headless/), which give the schema directly: `{"event":"user","message":{"content":"<string>"}}`, no `--print` flag. Rewriting the harness to (a) use `newAgy(deps).setupEnv(...)`'s isolated HOME — the exact environment `Wake()` runs under — and (b) hold stdin open until the result event arrives instead of closing immediately after the write, both `SchemaConfirmation` (3/3 fresh conversations, 12.6s total) and `ConcurrencySafety` (5-turn sequence, correct marker ordering, 24.6s total) passed clean. See `internal/adapter/agy_wake_probe_test.go`.
+
+## Task 1a: Prerequisite — `execx.StartEnv`
+
+`execx.Starter`/`Deps.Start` take no environment override; every existing caller (`catalog/fetch.go`'s and `internal/usage/codex.go`'s `codex app-server` probes) is fine running under the daemon's own ambient environment. `Agy.Wake` is not: `--conversation <id>` only finds the right conversation under the session's isolated `agy-home`, not the daemon's real `$HOME`. Rather than change `Starter`'s signature (which would ripple into `catalog`, `usage`, and their tests for no reason), added a sibling seam:
+
+Files: `internal/execx/execx.go`, `internal/execx/execx_test.go`, `internal/adapter/adapter.go` (`Deps.StartEnv` field), `cmd/swarm/daemon.go` (wire `StartEnv: execx.StartEnv`).
+
+Done: `TestStartEnvMergesExtraVariablesOverTheAmbientEnvironment` and `TestStartEnvKeepsTheAmbientEnvironmentOtherwiseIntact` (red without `StartEnv`, green after adding it as `Start`'s twin sharing a `startCmd` helper, plus `cmd.Env = os.Environ()` merged with the override map).
+
+## Task 2: Implement `Agy.Wake` (done)
 
 Files:
 - `internal/adapter/agy.go`
 - `internal/adapter/agy_test.go`
 
-TDD Steps:
-1. In `internal/adapter/agy_test.go`, add `TestAgyWake`:
-   - Build a `Deps` with `Start` stubbed to a closure that: asserts the argv is exactly `["agy", "--conversation", "<id>", "--input-format", "stream-json", "--output-format", "stream-json", "--dangerously-skip-permissions", "--print="]` for a given `WakeTarget{SessionID: "ses_1", ProviderSessionID: "conv_1", Notice: "hello"}`; returns an `*execx.Proc` whose `Stdin` is an in-memory `io.WriteCloser` (e.g. backed by a `bytes.Buffer` wrapped to satisfy `io.WriteCloser`, recording what was written and whether `Close` was called) and whose `Stdout` is a `strings.NewReader` of a canned `{"event":"result","result":{"status":"SUCCESS"}}\n` line.
-   - Assert `Wake` returns `(true, nil)`.
-   - Assert the bytes written to `Stdin` unmarshal to the confirmed payload shape from Task 1, with `message.prompt_text == "hello"` (or whatever field Task 1 confirmed).
-   - Assert `Stdin.Close()` was called.
-   - Add a second case: `Deps.Start` returns an error; assert `Wake` returns `(false, err)`.
-2. Run `go test -v ./internal/adapter/... -run TestAgyWake` and observe failure (current stub always returns `(false, nil)`).
-3. In `internal/adapter/agy.go`, replace the stub:
-   ```go
-   type agyWakeMessage struct {
-   	Event   string `json:"event"`
-   	Message struct {
-   		PromptText string `json:"prompt_text"`
-   	} `json:"message"`
-   }
+TDD Steps (as run):
+1. Replaced the now-obsolete `TestAgyHasNoNativeWake` (agy genuinely has native wake now — the old assertion is not a behavior anyone wants preserved) with `TestAgyWakeWritesTheDocumentedPayloadWithoutBlockingOnTheTurn` and `TestAgyWakeReturnsFalseWhenStartFails` in `agy_test.go`. The first stubs `Deps.StartEnv` to return a fake `*execx.Proc` whose `Stdout` is one end of an `io.Pipe()` (so the test controls exactly when the "turn" finishes) and whose `Stdin` is an in-memory capturing `io.WriteCloser`; it asserts (a) `Wake` returns `(true, nil)` within 500ms even though nothing has been written to the pipe yet — proving `Wake` does not block on the turn — (b) the argv and `HOME` env passed to `StartEnv` match Decisions 2-4, (c) the bytes written to stdin unmarshal to `{"event":"user","message":{"content":"hello"}}`, (d) stdin is *not* yet closed right after `Wake` returns, and (e) once the test writes a canned `result` event to the pipe, a background reaper closes stdin and calls `Kill` within 2s.
+2. Ran `go test ./internal/adapter/... -run TestAgyWake -v` — failed (stub always returns `(false, nil)`).
+3. Implemented `Wake` and `drainWakeTurn` in `agy.go` per Decisions 3-7: `StartEnv` with `HOME` set to the session's isolated `agy-home`, argv per Decision 4, marshal-and-write the confirmed payload, then `go drainWakeTurn(proc)` and return `(true, nil)` immediately. `drainWakeTurn` scans `proc.Stdout` for a line containing `"event":"result"` (or a 5-minute bound, `agyWakeResultTimeout`), then closes stdin and kills the process.
+4. Ran `go test ./internal/adapter/... -run TestAgyWake -v` — passed. Ran `go test -race ./internal/adapter/... ./internal/execx/...` — passed, no data races. Ran `go build ./...` and the full `go test ./...` (after `make web-build`, which a fresh worktree needs since `web/dist` is gitignored) — all green.
 
-   func (a *Agy) Wake(ctx context.Context, w WakeTarget) (bool, error) {
-   	agyHome := filepath.Join(a.d.launchDir(w.SessionID), "agy-home")
-   	proc, err := a.d.Start(ctx, "agy",
-   		"--conversation", w.ProviderSessionID,
-   		"--input-format", "stream-json", "--output-format", "stream-json",
-   		"--dangerously-skip-permissions", "--print=")
-   	if err != nil {
-   		return false, err
-   	}
-   	msg := agyWakeMessage{Event: "user"}
-   	msg.Message.PromptText = w.Notice
-   	payload, err := json.Marshal(msg)
-   	if err != nil {
-   		proc.Kill()
-   		return false, err
-   	}
-   	if _, err := proc.Stdin.Write(append(payload, '\n')); err != nil {
-   		proc.Kill()
-   		return false, err
-   	}
-   	if err := proc.Stdin.Close(); err != nil {
-   		proc.Kill()
-   		return false, err
-   	}
-   	return true, nil
-   }
-   ```
-   (`agyHome`/`HOME` env wiring: `Deps.Start` needs the same `env["HOME"] = agyHome` treatment `setupEnv` gives `Launch`/`Resume` — extend `Deps.Start`'s call to pass env, or add an `a.d.StartEnv(ctx, env, name, args...)` seam if `Deps.Start` does not currently accept env. Check `execx.Starter`'s signature before writing this line: if it lacks an env parameter, that is a small, separate prerequisite change to `execx.Starter`/`Deps.Start` and every existing caller (`catalog/fetch.go`), done as its own red/green step before this one.)
-4. Run `go test -v ./internal/adapter/... -run TestAgyWake` and verify pass.
-5. Run the full adapter suite: `go test -v ./internal/adapter/...`.
+## Task 3: Update Skills & Docs — not applicable
 
-## Task 3: Update Skills & Docs
-
-Files:
-- `skills/swarm/SKILL.md`
-- `internal/install/skills/swarm/SKILL.md`
-
-Steps:
-1. Wherever the skill currently describes wake behavior (Rule 2/6 area), note that agy now natively wakes via a side-channel process rather than relying solely on idle-paste.
-2. Run `make skills-sync`.
+Checked `skills/swarm/SKILL.md` for wake-mechanism content to update: there isn't any. The skill is agent-facing (how an agent should behave — call `swarm_sync`, ack messages, etc.); wake delivery is a daemon-internal implementation detail no agent-facing instruction describes per-kind. No file needed a change here.
 
 ## Task 4: Live Verification (manual, not unit-testable)
 1. `swarm start` (or `swarm new`) a real epic/spike with an `agy` orchestrator and one `agy` child.

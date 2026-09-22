@@ -90,6 +90,7 @@ type Deps struct {
 	Home, UserHome, Bin string
 	Run                 execx.Runner
 	Start               execx.Starter
+	StartEnv            execx.StarterEnv
 	Now                 func() time.Time
 	Log                 func(format string, args ...any)
 	PublishWake         func(ctx context.Context, sessionID, notice string) error
