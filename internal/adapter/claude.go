@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -47,8 +48,26 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 }
 
 func (c *Claude) flags(s Spec) ([]string, error) {
-	mcp, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
-		"swarm": map[string]any{"type": "stdio", "command": s.Bin, "args": []string{"mcp"}}}})
+	servers := make(map[string]any)
+	if c.d.UserHome != "" {
+		claudeJSONPath := filepath.Join(c.d.UserHome, ".claude.json")
+		if data, err := os.ReadFile(claudeJSONPath); err == nil {
+			var userConfig struct {
+				MCPServers map[string]any `json:"mcpServers"`
+			}
+			if err := json.Unmarshal(data, &userConfig); err == nil && userConfig.MCPServers != nil {
+				for k, v := range userConfig.MCPServers {
+					servers[k] = v
+				}
+			}
+		}
+	}
+	servers["swarm"] = map[string]any{
+		"type":    "stdio",
+		"command": s.Bin,
+		"args":    []string{"mcp"},
+	}
+	mcp, err := json.Marshal(map[string]any{"mcpServers": servers})
 	if err != nil {
 		return nil, err
 	}

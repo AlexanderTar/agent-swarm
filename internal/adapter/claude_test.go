@@ -221,6 +221,40 @@ func TestClaudeMCPConfigJSON(t *testing.T) {
 	}
 }
 
+func TestClaudeInheritsUserMCPServers(t *testing.T) {
+	d := testDeps(t)
+	userJSON := []byte(`{"mcpServers":{"neon":{"type":"http","url":"https://mcp.neon.tech"}}}`)
+	if err := os.WriteFile(filepath.Join(d.UserHome, ".claude.json"), userJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l, err := newClaude(d).Launch(claudeSpec(t, d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	for i, v := range l.Argv {
+		if v == "--mcp-config" {
+			path = l.Argv[i+1]
+		}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Servers map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Servers["neon"] == nil {
+		t.Errorf("expected user MCP server 'neon' to be inherited, got %s", b)
+	}
+	if cfg.Servers["swarm"] == nil {
+		t.Errorf("expected 'swarm' to be present in mcpServers, got %s", b)
+	}
+}
+
 // §11.1 resume: the same flags, --resume <uuid>, and no --session-id.
 // UNVERIFIED: no probe ran a claude resume (see the Phase 0 note in the header).
 func TestClaudeResumeUsesTheProviderID(t *testing.T) {
