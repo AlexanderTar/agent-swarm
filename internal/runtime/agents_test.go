@@ -1609,6 +1609,50 @@ func TestSpawnExplicitAdvisorChoiceOverridesSettings(t *testing.T) {
 	}
 }
 
+// TestSpawnPassesSettingsInstructionsToSpec is Task 6: Settings.Instructions,
+// once persisted, must reach the adapter.Spec that Launch/Resume receives on
+// every spawn -- not just get stored and never read.
+func TestSpawnPassesSettingsInstructionsToSpec(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	// newStore's Settings.Get/Put round-trips EnabledAgents through
+	// validate(), which rejects "fake" (not a real kinds.AgentKind) -- the
+	// same reason newStore itself seeds enabled_agents with a raw INSERT
+	// instead of Put. Match that idiom here for instructions.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES ('instructions', ?, 1)`,
+		`"# Test Instructions\nAlways verify."`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastSpec.Instructions != "# Test Instructions\nAlways verify." {
+		t.Fatalf("LastSpec.Instructions = %q, want the persisted Settings.Instructions", fa.LastSpec.Instructions)
+	}
+}
+
+// TestSpawnPassesEmptyInstructionsWhenSettingsUnset is Task 6's default-case
+// counterpart: no Settings.Instructions set means Spec.Instructions stays "".
+func TestSpawnPassesEmptyInstructionsWhenSettingsUnset(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	_, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastSpec.Instructions != "" {
+		t.Fatalf("LastSpec.Instructions = %q, want empty (no Settings.Instructions set)", fa.LastSpec.Instructions)
+	}
+}
+
 // TestStartOrchestratorUsesSettingsAdvisorDefault is Task 12b case 4
 // (StartOrchestrator half): the same resolveAdvisor wiring reached
 // StartOrchestrator, not just Spawn.
