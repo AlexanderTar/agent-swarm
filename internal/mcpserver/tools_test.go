@@ -7,7 +7,127 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 )
+
+func newTestServerWithSettings(t *testing.T) (*Server, func()) {
+	t.Helper()
+	s := newTestServer(t)
+	s.Settings = s.RT.Settings
+	now := db.Millis(s.RT.Now())
+	ctx := context.Background()
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.DB.ExecContext(ctx, `INSERT INTO items
+		(id, key, type, root_id, title, status, created_at, updated_at)
+		VALUES ('itm_instr', 'TASK-INSTR', 'task', 'itm_instr', 'Instructions Test', 'in_progress', ?, ?)`,
+		now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.DB.ExecContext(ctx, `INSERT INTO agents
+		(id, name, kind, model, role, item_id, root_item_id, brief, state, created_at)
+		VALUES ('agt_instr', 'coder-1', 'fake', 'fake-1', 'coder', 'itm_instr', 'itm_instr', 'brief', 'active', ?)`,
+		now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.DB.ExecContext(ctx, `INSERT INTO sessions
+		(id, agent_id, attempt, generation, token_hash, tmux_name, cwd, state, cwd_kind, started_at)
+		VALUES ('s1', 'agt_instr', 1, 1, 'tok_instr', 'coder-1', '/tmp', 'running', 'neutral', ?)`,
+		now); err != nil {
+		t.Fatal(err)
+	}
+	return s, func() {}
+}
+
+func TestInstructionsToolGetAndSet(t *testing.T) {
+	srv, cleanup := newTestServerWithSettings(t)
+	defer cleanup()
+	ctx := context.Background()
+	c := Caller{SessionID: "s1", AgentName: "coder-1"}
+
+	// 1. Get initial empty instructions
+	res, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"get"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := res.(map[string]any)
+	if m["instructions"] != "" {
+		t.Fatalf("expected empty instructions, got %v", m["instructions"])
+	}
+
+	// 2. Set new instructions
+	newInstr := "# Team Guidelines\nAlways write tests."
+	setRes, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"set","instructions":"# Team Guidelines\nAlways write tests."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := setRes.(map[string]any)
+	if sm["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", sm)
+	}
+
+	// 3. Get updated instructions
+	res2, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"get"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2 := res2.(map[string]any)
+	if m2["instructions"] != newInstr {
+		t.Fatalf("expected updated instructions %q, got %q", newInstr, m2["instructions"])
+	}
+}
+
+func TestInstructionsToolInvalidOp(t *testing.T) {
+	srv, cleanup := newTestServerWithSettings(t)
+	defer cleanup()
+	ctx := context.Background()
+	c := Caller{SessionID: "s1", AgentName: "coder-1"}
+
+	_, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"delete"}`))
+	if err == nil || !strings.Contains(err.Error(), `op must be get or set, got "delete"`) {
+		t.Fatalf("expected error containing op must be get or set, got %v", err)
+	}
+}
+
+func TestInstructionsToolUnboundCaller(t *testing.T) {
+	srv, cleanup := newTestServerWithSettings(t)
+	defer cleanup()
+	ctx := context.Background()
+	c := Caller{Unbound: true}
+
+	// 1. Get instructions as unbound caller
+	res, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"get"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := res.(map[string]any)
+	if m["instructions"] != "" {
+		t.Fatalf("expected empty instructions, got %v", m["instructions"])
+	}
+
+	// 2. Set instructions as unbound caller
+	newInstr := "# Global Instructions\nTest standard library first."
+	setRes, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"set","instructions":"# Global Instructions\nTest standard library first."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := setRes.(map[string]any)
+	if sm["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", sm)
+	}
+
+	// 3. Get updated instructions
+	res2, err := srv.CallTool(ctx, c, "swarm_instructions", json.RawMessage(`{"op":"get"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2 := res2.(map[string]any)
+	if m2["instructions"] != newInstr {
+		t.Fatalf("expected updated instructions %q, got %q", newInstr, m2["instructions"])
+	}
+}
 
 func TestSyncToolReturnsSessionState(t *testing.T) {
 	s, seed := newServerWithSession(t)

@@ -25,20 +25,20 @@ func names(defs []ToolDef) []string {
 
 func TestToolListsByRole(t *testing.T) {
 	s := newTestServer(t)
-	shared := []string{"swarm_ask", "swarm_blocker", "swarm_checkpoint", "swarm_kb", "swarm_read", "swarm_send", "swarm_sync"}
+	shared := []string{"swarm_ask", "swarm_blocker", "swarm_checkpoint", "swarm_instructions", "swarm_kb", "swarm_read", "swarm_send", "swarm_sync"}
 	for _, role := range []runtime.Role{runtime.RoleCoder, runtime.RoleReviewer, runtime.RoleUIReviewer,
 		runtime.RoleResearcher, runtime.RoleDebugger, runtime.RoleMechanical} {
 		got := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: role}))
 		if strings.Join(got, ",") != strings.Join(shared, ",") {
-			t.Errorf("%s sees %v, want the 7 shared tools", role, got)
+			t.Errorf("%s sees %v, want the 8 shared tools", role, got)
 		}
 	}
-	// §8.1: 7 shared + 5 orchestrator tools = 12. swarm_materialize is the thirteenth
+	// §8.1: 8 shared + 5 orchestrator tools = 13. swarm_materialize is the fourteenth
 	// and only appears for a *spike* orchestrator — TestMaterializeIsSpikeOnly below
 	// pins both halves.
 	orch := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleOrchestrator}))
-	if len(orch) != 12 {
-		t.Fatalf("an orchestrator sees %d tools, want 12: %v", len(orch), orch)
+	if len(orch) != 13 {
+		t.Fatalf("an orchestrator sees %d tools, want 13: %v", len(orch), orch)
 	}
 	for _, want := range []string{"swarm_items", "swarm_artifact", "swarm_worktree", "swarm_spawn",
 		"swarm_control"} {
@@ -50,11 +50,11 @@ func TestToolListsByRole(t *testing.T) {
 		t.Error("swarm_materialize belongs to a spike orchestrator only")
 	}
 	spikeOrch := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleOrchestrator, SpikeOrchestrator: true}))
-	if len(spikeOrch) != 13 {
-		t.Fatalf("a spike orchestrator sees %d tools, want 13: %v", len(spikeOrch), spikeOrch)
+	if len(spikeOrch) != 14 {
+		t.Fatalf("a spike orchestrator sees %d tools, want 14: %v", len(spikeOrch), spikeOrch)
 	}
 	unbound := names(s.ToolsFor(Caller{Unbound: true}))
-	if strings.Join(unbound, ",") != "swarm_kb,swarm_read" {
+	if strings.Join(unbound, ",") != "swarm_instructions,swarm_kb,swarm_read" {
 		t.Fatalf("an unbound caller sees %v", unbound)
 	}
 }
