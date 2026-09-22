@@ -40,7 +40,7 @@ func AdvisorCommand(kind runtime.AgentKind, model, effort, dir, prompt string) (
 		// the -- is required: the variadic --allowedTools otherwise eats the prompt
 		return append(a, "--output-format", "json", "--allowedTools", "Read,Grep,Glob", "--", prompt), nil
 	case runtime.Codex:
-		a := []string{"codex", "exec", "-s", "read-only", "--skip-git-repo-check", "-m", model}
+		a := []string{"codex", "exec", "-s", "read-only", "--skip-git-repo-check", "-c", "mcp_servers={}", "-m", model}
 		if effort != "" {
 			a = append(a, "-c", `model_reasoning_effort="`+effort+`"`)
 		}

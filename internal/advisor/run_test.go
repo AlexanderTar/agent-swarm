@@ -27,7 +27,7 @@ func TestAdvisorCommand(t *testing.T) {
 			"claude", "-p", "--model", "claude-fable-5-1", "--effort", "high",
 			"--output-format", "json", "--allowedTools", "Read,Grep,Glob", "--", Prompt}},
 		{runtime.Codex, "gpt-6-astra", "medium", []string{
-			"codex", "exec", "-s", "read-only", "--skip-git-repo-check", "-m", "gpt-6-astra",
+			"codex", "exec", "-s", "read-only", "--skip-git-repo-check", "-c", "mcp_servers={}", "-m", "gpt-6-astra",
 			"-c", `model_reasoning_effort="medium"`, "-o", dir + "/answer.md", Prompt}},
 		{runtime.Agy, "gemini-3.8-flash-high", "", []string{
 			"agy", "--model", "gemini-3.8-flash-high", "--mode", "plan",
