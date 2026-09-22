@@ -424,7 +424,6 @@ func TestUndeliverableNotificationOnlyFiresOncePerBatch(t *testing.T) {
 	}
 }
 
-
 // 2026-09-21: wakeCandidates counted state != 'acked', which includes messages
 // the agent had already synced, so agents that read but never acked were
 // reported as "hasn't picked up N message(s)" (four false alerts that day).
@@ -435,7 +434,7 @@ func TestReadButUnackedMessageIsNeverUndeliverable(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "ReadNotAcked", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
-	panes(tm, Pane{Session: a.Name, Command: "zsh"}) // never pasteable
+	panes(tm, Pane{Session: a.Name, Command: "zsh"})        // never pasteable
 	if _, err := s.Sync(ctx, ses.ID, nil, 20); err != nil { // read, never acked
 		t.Fatal(err)
 	}
