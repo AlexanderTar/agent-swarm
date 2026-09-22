@@ -22,6 +22,12 @@ const killCompletedAfter = 60 * time.Second
 // that will never come.
 const ackTimeout = 2 * time.Minute
 
+// progressDeadlockTimeout is how long a waiting session gets after its most
+// recent checkpoint -- if that checkpoint was "progress" -- before the
+// daemon assumes it's stuck on an unresolved ask and relays to its parent.
+// See docs/specs/2026-09-22-progress-checkpoint-deadlock-nudge.md.
+const progressDeadlockTimeout = 5 * time.Minute
+
 // queryIDs runs a query returning one string column per row. Several callers
 // across pause.go and reconcile.go collect a plain id/name list this way; one
 // shared helper keeps the row-scan-close boilerplate (and its error checks)
@@ -312,6 +318,75 @@ func (s *Store) notifyNoAck(ctx context.Context, r liveRow) error {
 			RootItemID: r.RootItemID, ItemID: r.ItemID, Payload: payload})
 		return err
 	})
+}
+
+// checkProgressDeadlock relays once to the nearest live ancestor when a
+// child has gone idle-and-owes-nothing right after a progress checkpoint --
+// the daemon-visible signature of a child waiting on an answer it never
+// formally asked for (a "next" note aimed at the orchestrator, not a
+// swarm_send question or a blocked checkpoint). See docs/specs/
+// 2026-09-22-progress-checkpoint-deadlock-nudge.md.
+//
+// Deviation from the task brief: the brief said to link the relay to the
+// checkpoint via Message.ReplyTo. messages.reply_to has
+// `REFERENCES messages(id)` (schema/0001_init.sql) -- it was built for a
+// message replying to another message (notifyUndeliveredMessages,
+// swarm_send's own reply_to), not for pointing at a row in the checkpoints
+// table, and a checkpoint id there trips a real FOREIGN KEY constraint
+// failed at runtime. correlation_id has no such FK and is already a plain
+// pass-through field (inbox.go), so the checkpoint id goes there instead.
+// If a later task needs `reply_to == checkpoint id` specifically (e.g. the
+// menubar dereferencing it against messages), that requires a messages
+// table-recreate migration (as 0006 did for requests) to drop or relax the
+// FK -- out of scope for this task.
+func (s *Store) checkProgressDeadlock(ctx context.Context, r liveRow) error {
+	if r.ParentAgentID == "" || r.LastCheckpointID == "" || r.LastCheckpointKind != Progress {
+		return nil
+	}
+	// r.LastCheckpointAt is always set together with r.LastCheckpointID (both
+	// come from the same LEFT JOIN row in liveSessionRows).
+	if s.Now().Sub(*r.LastCheckpointAt) < progressDeadlockTimeout {
+		return nil
+	}
+	already, err := s.alreadyRelayedForCheckpoint(ctx, r.LastCheckpointID)
+	if err != nil {
+		return err
+	}
+	if already {
+		return nil
+	}
+	ancestor, ok, err := s.nearestLiveAncestor(ctx, r.AgentID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]any{"event": "progress_deadlock",
+		"agent": r.AgentName, "item": r.ItemKey,
+		"checkpoint": map[string]any{"summary": r.LastCheckpointSummary, "next": r.LastCheckpointNext}})
+	if err != nil {
+		return err
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		_, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon",
+			ToAgentID: ancestor.ID, RootItemID: r.RootItemID, ItemID: r.ItemID,
+			CorrelationID: r.LastCheckpointID, Payload: payload})
+		return err
+	})
+}
+
+// alreadyRelayedForCheckpoint is alreadyRelayedForMessage's counterpart for
+// a checkpoint id (see checkProgressDeadlock's deviation note): same
+// idempotency guard, keyed on correlation_id instead of reply_to since a
+// checkpoint id can't satisfy messages.reply_to's FK.
+// ponytail: no index on correlation_id -- add one if this table scan shows
+// up under load.
+func (s *Store) alreadyRelayedForCheckpoint(ctx context.Context, checkpointID string) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE kind = 'relay' AND correlation_id = ?`, checkpointID).Scan(&n)
+	return n > 0, err
 }
 
 // OnDepUnblocked is the items.Store.DepUnblocked hook (wired in
@@ -636,6 +711,9 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 		}
 	}
 	if waiting {
+		if err := s.checkProgressDeadlock(ctx, r); err != nil {
+			return err
+		}
 		return nil // M6: a waiting session is never stale
 	}
 	if r.ParentAgentID != "" && s.Now().Sub(r.StartedAt) >= ackTimeout {

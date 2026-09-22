@@ -1023,6 +1023,58 @@ func TestNoAckAfterTwoMinutesWithNoCheckpointNotifiesAndRelaysOnce(t *testing.T)
 	}
 }
 
+func TestProgressDeadlockRelaysAfterFiveMinutesIdle(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"} // orchestrator stays busy; w has no capture set, so idle by default
+	s.Sync(ctx, wSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, w.ID)
+
+	res, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress,
+		Summary: "wired the seams", Next: []string{"needs a scope decision from the orchestrator"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	at.Advance(4*time.Minute + 59*time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"progress_deadlock"%'`, orch.ID).Scan(&before)
+	if before != 0 {
+		t.Fatalf("relay before 5 minutes = %d, want 0", before)
+	}
+
+	at.Advance(2 * time.Second) // total 5:01
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Deviation from the task brief: reply_to has REFERENCES messages(id)
+	// (schema/0001_init.sql), so a checkpoint id there trips a real FK
+	// violation. The daemon links the relay via correlation_id instead (see
+	// checkProgressDeadlock's comment in reconcile.go).
+	var payload, correlationID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json, COALESCE(correlation_id, '') FROM messages
+		WHERE to_agent_id = ? AND kind = 'relay' AND payload_json LIKE '%"event":"progress_deadlock"%'`,
+		orch.ID).Scan(&payload, &correlationID); err != nil {
+		t.Fatalf("expected exactly one progress_deadlock relay: %v", err)
+	}
+	if correlationID != res.CheckpointID {
+		t.Fatalf("correlation_id = %q, want checkpoint id %q", correlationID, res.CheckpointID)
+	}
+	if !strings.Contains(payload, `"wired the seams"`) ||
+		!strings.Contains(payload, `"needs a scope decision from the orchestrator"`) {
+		t.Fatalf("payload missing checkpoint content: %s", payload)
+	}
+}
+
 // A checkpoint of any kind — not only "accepted" — counts as an ack: the
 // signal the daemon needs is that the child is alive and talking, not that
 // it led with a specific checkpoint kind.
