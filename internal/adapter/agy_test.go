@@ -458,6 +458,57 @@ func TestAgyIsolatedHomeCarriesOnboardingState(t *testing.T) {
 	}
 }
 
+// P0 (2026-09-22, found while investigating why agy behaves as if it has no
+// idea how swarm works): the swarm/swarm-orchestrator skills `swarm install`
+// writes to ~/.gemini/skills/ (Config.SkillsDir(KindAgy)) live outside both
+// ~/.gemini/antigravity-cli/ and ~/.gemini/config/ -- setupEnv never carried
+// that directory into the isolated home, nor ~/.gemini/config/hooks.json
+// (swarm's PreToolUse/PostToolUse/Stop wiring). Every swarm-spawned agy agent
+// has therefore run with zero knowledge of the swarm protocol and zero hook
+// interception, unlike claude (no HOME isolation at all) and codex (isolates
+// only CODEX_HOME, not its skills path).
+func TestAgyIsolatedHomeCarriesSkillsAndHooks(t *testing.T) {
+	d := testDeps(t)
+	skillsDir := filepath.Join(d.UserHome, ".gemini", "skills", "swarm")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const skillBody = "# Working as a Swarm agent\n..."
+	if err := os.WriteFile(filepath.Join(skillsDir, "SKILL.md"), []byte(skillBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(d.UserHome, ".gemini", "config", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const hooksBody = `{"swarm":{"PreToolUse":[]}}`
+	if err := os.WriteFile(hooksPath, []byte(hooksBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newAgy(d).Launch(agySpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyHome := l.Env["HOME"]
+
+	gotSkill, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "skills", "swarm", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected the swarm skill reachable in the isolated home: %v", err)
+	}
+	if string(gotSkill) != skillBody {
+		t.Errorf("skill body = %q, want %q", gotSkill, skillBody)
+	}
+
+	gotHooks, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "config", "hooks.json"))
+	if err != nil {
+		t.Fatalf("expected hooks.json reachable in the isolated home: %v", err)
+	}
+	if string(gotHooks) != hooksBody {
+		t.Errorf("hooks.json = %q, want %q", gotHooks, hooksBody)
+	}
+}
+
 func TestAgyInstructionsOmittedWhenUnset(t *testing.T) {
 	d := testDeps(t)
 	spec := agySpec(t)
