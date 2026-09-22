@@ -187,6 +187,7 @@ struct PopoverHost: View {
                         openWindow(id: "new-orchestrator")
                     },
                     openSettings: {
+                        StatusItemWatcher.dismissPopover()
                         NSApp.activate(ignoringOtherApps: true)
                         openSettings()
                     })

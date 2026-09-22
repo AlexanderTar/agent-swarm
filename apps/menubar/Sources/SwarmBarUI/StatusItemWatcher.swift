@@ -20,6 +20,26 @@ public final class StatusItemWatcher {
         NSApp.windows.first { String(describing: type(of: $0)).contains("NSStatusBarWindow") }
     }
 
+    public static func statusItem() -> NSStatusItem? {
+        guard let w = statusWindow() else { return nil }
+        return (w.value(forKey: "statusItem") as? NSStatusItem)
+            ?? (Mirror(reflecting: w).descendant("statusItem") as? NSStatusItem)
+    }
+
+    /// Dismisses the MenuBarExtra popover window.
+    /// Simulating a click on the status item button dismisses the window and resets SwiftUI's
+    /// internal presentation state so the next status item click reopens it on the first click.
+    /// Falls back to ordering out any MenuBarExtraWindow if the status button cannot be reached.
+    public static func dismissPopover() {
+        if let button = statusItem()?.button {
+            button.performClick(nil)
+        } else {
+            for w in NSApp.windows where String(describing: type(of: w)).contains("MenuBarExtraWindow") {
+                w.orderOut(nil)
+            }
+        }
+    }
+
     public func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
