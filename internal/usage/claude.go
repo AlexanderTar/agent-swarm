@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,9 +21,11 @@ import (
 // quota, that gets worse on every retry regardless of the endpoint's own
 // quoted Retry-After (confirmed live: 2m23s -> 59m11s after one retry that
 // honored it) — plausibly worse still for not including its `skip_spend=1`
-// query param, which the real CLI always sends and this package never
-// tried. A minimal (max_tokens: 1) real inference call costs about one
-// output token and a handful of input tokens per poll and uses the same
+// query param, which the real CLI always sends and this package didn't try
+// until fetchModelScopedMeters below, which uses it on a single, never-retried
+// best-effort call for model-scoped (e.g. Fable) meters this header-based
+// path can't see. A minimal (max_tokens: 1) real inference call costs about
+// one output token and a handful of input tokens per poll and uses the same
 // infrastructure as normal usage, which is what makes it reliable.
 type Claude struct {
 	BaseURL   string // "https://api.anthropic.com" in production
@@ -61,6 +64,12 @@ type claudeProbeRequest struct {
 	Messages  []claudeProbeMessage `json:"messages"`
 }
 
+// parseResetsAt parses an RFC3339 resets_at string, used by agy.go's bucket
+// mapping and by fetchModelScopedMeters below for /api/oauth/usage's
+// limits[].resets_at. time.RFC3339 alone handles both shapes seen live
+// (with and without fractional seconds) — Go's time.Parse accepts a
+// fractional second in the value even when the layout doesn't spell one out
+// — confirmed via TestParseResetsAtHandlesBothLiveCapturedShapes.
 func parseResetsAt(s string) *time.Time {
 	if s == "" {
 		return nil
@@ -145,6 +154,98 @@ func claudeSnapshotFromHeaders(h http.Header) (Snapshot, bool) {
 	return Snapshot{Meters: meters, HeadlineID: headline}, true
 }
 
+// oauthUsageLimit/oauthUsageResponse decode only the fields this package
+// needs from GET /api/oauth/usage?at_wall=1&skip_spend=1's limits[] array
+// (see claude.go's package doc for why this endpoint, once abandoned, is
+// used again here with skip_spend=1 for this one best-effort, single-shot
+// call — never the primary /v1/messages path above).
+type oauthUsageLimit struct {
+	Percent  float64 `json:"percent"`
+	ResetsAt string  `json:"resets_at"`
+	Scope    *struct {
+		Model *struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+	} `json:"scope"`
+}
+
+type oauthUsageResponse struct {
+	Limits []oauthUsageLimit `json:"limits"`
+}
+
+// slugModelName turns a display name like "Fable" into "fable" for a Meter
+// ID: lowercase, non-alphanumeric runs collapsed to a single "_", no
+// leading/trailing "_". No existing helper in internal/ does this (checked:
+// internal/migrate's slug() replaces spaces with "-" for section headings,
+// a different job in a different package).
+func slugModelName(s string) string {
+	var b strings.Builder
+	prevUnderscore := false
+	for _, r := range strings.ToLower(s) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+			prevUnderscore = false
+			continue
+		}
+		if !prevUnderscore && b.Len() > 0 {
+			b.WriteByte('_')
+			prevUnderscore = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "_")
+}
+
+// fetchModelScopedMeters is a second, best-effort call to the endpoint
+// claude.go's package doc documents as abandoned for the primary path — with
+// the skip_spend=1 param the prior investigation never tried, live-verified
+// safe for exactly this one-shot, no-retry usage (see
+// docs/specs/2026-09-22-claude-model-scoped-usage.md). Any failure (network
+// error, non-200, decode error) is logged and swallowed: this must never
+// fail Fetch, which already has its full primary snapshot by the time this
+// runs.
+func (c *Claude) fetchModelScopedMeters(ctx context.Context, token, version string) []Meter {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/oauth/usage?at_wall=1&skip_spend=1", nil)
+	if err != nil {
+		c.logf("usage: claude: model-scoped: %v", err)
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", "claude-code/"+version)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClientOrDefault(c.HTTP).Do(req)
+	if err != nil {
+		c.logf("usage: claude: model-scoped: %v", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		c.logf("usage: claude: model-scoped: status %d", resp.StatusCode)
+		return nil
+	}
+	var parsed oauthUsageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		c.logf("usage: claude: model-scoped: %v", err)
+		return nil
+	}
+	var meters []Meter
+	for _, l := range parsed.Limits {
+		if l.Scope == nil || l.Scope.Model == nil || l.Scope.Model.DisplayName == "" {
+			continue
+		}
+		name := l.Scope.Model.DisplayName
+		meters = append(meters, Meter{
+			ID:       "model_scoped:" + slugModelName(name),
+			Label:    "Weekly (" + name + ")",
+			Window:   "weekly",
+			UsedPct:  l.Percent,
+			ResetsAt: parseResetsAt(l.ResetsAt),
+		})
+	}
+	return meters
+}
+
 // Fetch is §13's Claude source. The token is read fresh every call and never
 // persisted — Snapshot carries only meters, never the credential.
 func (c *Claude) Fetch(ctx context.Context) (Snapshot, error) {
@@ -189,6 +290,9 @@ func (c *Claude) Fetch(ctx context.Context) (Snapshot, error) {
 	io.Copy(io.Discard, resp.Body) // the usage data is in the headers, not this body
 
 	if snap, ok := claudeSnapshotFromHeaders(resp.Header); ok {
+		if extra := c.fetchModelScopedMeters(ctx, token, version); len(extra) > 0 {
+			snap.Meters = append(snap.Meters, extra...)
+		}
 		return snap, nil
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
