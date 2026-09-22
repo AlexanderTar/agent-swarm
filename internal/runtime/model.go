@@ -295,6 +295,7 @@ type Tmux interface {
 	Keys(ctx context.Context, name string, keys ...string) error
 	Env(ctx context.Context, name, key string) (string, error)
 	Kill(ctx context.Context, name string) error
+	RenameWindow(ctx context.Context, name, title string) error
 }
 
 // Notifier raises a §17.5 notification. internal/notify implements it (Task 23).
@@ -380,6 +381,11 @@ type Store struct {
 	// promptAnswered marks (sessionID|title) pairs whose PromptPattern keys were
 	// already pressed, so a dialog still on screen is answered once, not every tick.
 	promptAnswered map[string]bool
+	// lastTitle is the Ghostty tab title (sessionTitle's output) each live
+	// session had as of the last tick that set it, so a tick whose status,
+	// role and tree haven't changed skips the tmux rename-window call instead
+	// of renaming every live window every few seconds.
+	lastTitle map[string]string
 }
 
 // TmuxBin and TmuxSocket are the two readers httpapi's Ghostty fallback uses

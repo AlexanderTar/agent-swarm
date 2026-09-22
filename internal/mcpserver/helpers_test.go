@@ -82,6 +82,7 @@ func (f *fakeTmux) Kill(ctx context.Context, name string) error {
 	f.killed = append(f.killed, name)
 	return nil
 }
+func (f *fakeTmux) RenameWindow(ctx context.Context, name, title string) error { return nil }
 
 // testClock is the one clock every runtime test shares; copied from
 // internal/runtime/agents_test.go.

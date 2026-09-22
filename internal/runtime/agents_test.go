@@ -34,6 +34,7 @@ type fakeTmux struct {
 	pasted   []string
 	keys     []string
 	killed   []string
+	renamed  []string // "<name>|<title>" per call
 	panes    []Pane
 	n        map[string]int
 	clk      *testClock // the Store's clock, so a test can advance it: tm.clk.Advance(d)
@@ -74,6 +75,10 @@ func (f *fakeTmux) Env(ctx context.Context, name, key string) (string, error) {
 }
 func (f *fakeTmux) Kill(ctx context.Context, name string) error {
 	f.killed = append(f.killed, name)
+	return nil
+}
+func (f *fakeTmux) RenameWindow(ctx context.Context, name, title string) error {
+	f.renamed = append(f.renamed, name+"|"+title)
 	return nil
 }
 

@@ -81,7 +81,7 @@ func TestDaemonWritesItsOwnTmuxConf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "set-titles-string 'swarm:#S'") {
+	if !strings.Contains(string(b), "set-titles-string '#W'") {
 		t.Fatalf("tmux.conf = %s", b)
 	}
 }

@@ -40,7 +40,7 @@ final class TerminalsTests: XCTestCase {
 
     func testScriptTextMatchesPhaseZero() {
         let s = Terminals.focusOrOpenScript(name: "login-form-coder", tmuxPath: "/opt/homebrew/bin/tmux")
-        XCTAssertTrue(s.contains(#"set target to "swarm:login-form-coder""#))
+        XCTAssertTrue(s.contains(#"set target to " login-form-coder""#))
         XCTAssertTrue(s.contains(#"set cmd to "/opt/homebrew/bin/tmux -L swarm attach -t =login-form-coder""#))
         XCTAssertTrue(s.contains("tell application \"Ghostty\""))
         XCTAssertTrue(s.contains("if name of t ends with target then"))

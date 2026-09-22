@@ -29,11 +29,16 @@ type Spawner struct {
 // remain-on-exit keeps a dead pane readable for the reconciler (§10.6);
 // mouse on enables wheel scroll to enter copy-mode and scroll conversation history
 // rather than sending Up/Down arrow keys that cycle prompt history in Codex/agy/Cursor.
+// set-titles-string is '#W' (the window name), not a literal: the reconciler
+// renames each session's window every tick to the fun title (status/role/tree
+// emoji + name, see runtime.sessionTitle), and automatic-rename off stops tmux
+// fighting that by renaming the window back to the foreground command itself.
 func TmuxConf() []byte {
 	return []byte(strings.Join([]string{
 		"# Written by `swarm install`. Swarm's tmux server only.",
 		"set -g set-titles on",
-		"set -g set-titles-string 'swarm:#S'",
+		"set -g set-titles-string '#W'",
+		"set -g automatic-rename off",
 		"set -g focus-events on",
 		"set -g remain-on-exit on",
 		"set -g history-limit 20000",
@@ -176,6 +181,15 @@ func (s *Spawner) PasteLine(ctx context.Context, name, line string) error {
 
 func (s *Spawner) Keys(ctx context.Context, name string, keys ...string) error {
 	_, err := s.run(ctx, append([]string{"send-keys", "-t", name}, keys...)...)
+	return err
+}
+
+// RenameWindow sets the session's window name (#W), which set-titles-string
+// then puts in the terminal's title. name resolves the same way every other
+// per-session call here does (Capture, Keys): a plain "-t name", not the
+// exact-match "=name" form Terminals.swift needs for tmux attach.
+func (s *Spawner) RenameWindow(ctx context.Context, name, title string) error {
+	_, err := s.run(ctx, "rename-window", "-t", name, title)
 	return err
 }
 

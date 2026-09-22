@@ -669,6 +669,23 @@ func (s *Store) setLastAlive(sessionID string, at time.Time) {
 	s.lastAliveAt[sessionID] = at
 }
 
+// getLastTitle and setLastTitle guard Store.lastTitle, so resolveAlive only
+// calls RenameWindow when sessionTitle's output actually changed.
+func (s *Store) getLastTitle(sessionID string) string {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	return s.lastTitle[sessionID]
+}
+
+func (s *Store) setLastTitle(sessionID, title string) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.lastTitle == nil {
+		s.lastTitle = map[string]string{}
+	}
+	s.lastTitle[sessionID] = title
+}
+
 // resolveAlive applies the "pane is alive" half of the §10.6 table.
 func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	if r.CompletedCheckpointAt != nil && s.Now().Sub(*r.CompletedCheckpointAt) >= killCompletedAfter {
@@ -704,6 +721,13 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 		}
 	}
 	waiting := idle && owesNothing
+	if title := sessionTitle(waiting, r.Role, r.RootItemID, r.AgentName); title != s.getLastTitle(r.SessionID) {
+		if err := s.Tmux.RenameWindow(ctx, r.TmuxName, title); err != nil {
+			s.logf("reconcile: rename-window %s: %v", r.SessionID, err)
+		} else {
+			s.setLastTitle(r.SessionID, title)
+		}
+	}
 	if waiting != r.Waiting {
 		if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET waiting = ? WHERE id = ?`,
 			boolToInt(waiting), r.SessionID); err != nil {

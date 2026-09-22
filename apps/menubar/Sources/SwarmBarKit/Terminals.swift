@@ -40,11 +40,14 @@ public final class Terminals {
         "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 
-    /// Focus the terminal titled `swarm:<name>`, otherwise open a new window attached to the session.
-    /// "ends with" still matches a prefixed title and never mixes up `name` and `name-2`.
+    /// Focus the terminal whose fun title (status/role/tree emoji + name, set by the
+    /// daemon's reconciler via tmux rename-window) ends with " <name>", otherwise open a
+    /// new window attached to the session. The leading space is the boundary: a kebab
+    /// name can never contain one (isValidName), so "ends with" never mixes up `name` and
+    /// a sibling like `re<name>` the way a bare suffix match would.
     public static func focusOrOpenScript(name: String, tmuxPath: String) -> String {
         """
-        set target to \(appleScriptString("swarm:" + name))
+        set target to \(appleScriptString(" " + name))
         set cmd to \(appleScriptString("\(tmuxPath) -L \(socket) attach -t \(exactTarget(name))"))
         tell application "Ghostty"
             repeat with w in windows

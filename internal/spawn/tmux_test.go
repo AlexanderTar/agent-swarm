@@ -124,6 +124,27 @@ func TestPasteLineDeliversExactlyOneLine(t *testing.T) {
 	})
 }
 
+// RenameWindow is how the reconciler pushes the fun Ghostty title (status +
+// role + tree emoji + name) into #W every tick; set-titles-string='#W' is
+// what then surfaces it as the terminal's actual title.
+func TestRenameWindowSetsTheWindowName(t *testing.T) {
+	s := newSpawner(t)
+	ctx := context.Background()
+	if err := s.Start(ctx, "renamed", t.TempDir(), nil, []string{"sh", "-c", "while :; do sleep 0.2; done"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameWindow(ctx, "renamed", "▶️ 🧠 🔵 renamed"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.run(ctx, "list-windows", "-t", "renamed", "-F", "#{window_name}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "▶️ 🧠 🔵 renamed" {
+		t.Fatalf("window name = %q", got)
+	}
+}
+
 // §10.5 interrupts a quiescing agent with Escape then C-c. A test that only
 // checks err == nil would pass even if Keys sent nothing at all, so the pane
 // records the interrupt it receives.
@@ -249,7 +270,8 @@ func TestTmuxConfSetsTitlesFocusEventsAndRemainOnExit(t *testing.T) {
 	conf := string(TmuxConf())
 	for _, want := range []string{
 		"set -g set-titles on",
-		"set -g set-titles-string 'swarm:#S'",
+		"set -g set-titles-string '#W'",
+		"set -g automatic-rename off",
 		"set -g focus-events on",
 		"set -g remain-on-exit on",
 		"set -g history-limit 20000",
