@@ -56,6 +56,10 @@ type liveRow struct {
 	StartedAt                                  time.Time
 	LastSeenAt                                 *time.Time
 	CompletedCheckpointAt                      *time.Time
+	LastCheckpointID, LastCheckpointSummary    string
+	LastCheckpointKind                         CheckpointKind
+	LastCheckpointAt                           *time.Time
+	LastCheckpointNext                         []string
 }
 
 // lastActivity is the most recent evidence of life: a hook call or sync
@@ -76,8 +80,13 @@ func (s *Store) liveSessionRows(ctx context.Context) ([]liveRow, error) {
 		ses.state, ses.attempt, ses.waiting, ses.started_at, ses.last_seen_at,
 		(SELECT MAX(created_at) FROM checkpoints c
 			WHERE c.agent_id = a.id AND c.attempt = ses.attempt AND c.kind = 'completed'
-			  AND c.item_id = a.item_id)
+			  AND c.item_id = a.item_id),
+		lc.id, lc.kind, lc.created_at, lc.summary, lc.next_json
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
+		LEFT JOIN checkpoints lc ON lc.id = (
+			SELECT c.id FROM checkpoints c
+			WHERE c.agent_id = a.id AND c.attempt = ses.attempt
+			ORDER BY c.created_at DESC, c.rowid DESC LIMIT 1)
 		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {
 		return nil, err
@@ -90,9 +99,12 @@ func (s *Store) liveSessionRows(ctx context.Context) ([]liveRow, error) {
 		var waiting int
 		var started int64
 		var lastSeen, completedAt sql.NullInt64
+		var lcID, lcKind, lcSummary, lcNext sql.NullString
+		var lcAt sql.NullInt64
 		if err := rows.Scan(&r.SessionID, &r.AgentID, &r.AgentName, &r.TmuxName,
 			&r.ItemID, &r.ItemKey, &r.RootItemID, &r.ParentAgentID, &kind, &role,
-			&state, &r.Attempt, &waiting, &started, &lastSeen, &completedAt); err != nil {
+			&state, &r.Attempt, &waiting, &started, &lastSeen, &completedAt,
+			&lcID, &lcKind, &lcAt, &lcSummary, &lcNext); err != nil {
 			return nil, err
 		}
 		r.Kind, r.Role, r.State = AgentKind(kind), Role(role), SessionState(state)
@@ -105,6 +117,16 @@ func (s *Store) liveSessionRows(ctx context.Context) ([]liveRow, error) {
 		if completedAt.Valid {
 			t := db.FromMillis(completedAt.Int64)
 			r.CompletedCheckpointAt = &t
+		}
+		if lcID.Valid {
+			r.LastCheckpointID = lcID.String
+			r.LastCheckpointKind = CheckpointKind(lcKind.String)
+			r.LastCheckpointSummary = lcSummary.String
+			t := db.FromMillis(lcAt.Int64)
+			r.LastCheckpointAt = &t
+			if lcNext.Valid {
+				json.Unmarshal([]byte(lcNext.String), &r.LastCheckpointNext)
+			}
 		}
 		out = append(out, r)
 	}

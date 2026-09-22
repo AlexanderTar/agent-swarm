@@ -462,6 +462,45 @@ func TestOrchestratorWithALiveChildIsNeverWaiting(t *testing.T) {
 	}
 }
 
+func TestLiveSessionRowsIncludesLastCheckpoint(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	res, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress,
+		Summary: "found two bugs", Next: []string{"HITL gap is out of scope"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.liveSessionRows(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *liveRow
+	for i := range rows {
+		if rows[i].AgentID == w.ID {
+			got = &rows[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("worker session not found in liveSessionRows")
+	}
+	if got.LastCheckpointID != res.CheckpointID {
+		t.Fatalf("LastCheckpointID = %q, want %q", got.LastCheckpointID, res.CheckpointID)
+	}
+	if got.LastCheckpointKind != Progress {
+		t.Fatalf("LastCheckpointKind = %q, want %q", got.LastCheckpointKind, Progress)
+	}
+	if got.LastCheckpointSummary != "found two bugs" {
+		t.Fatalf("LastCheckpointSummary = %q", got.LastCheckpointSummary)
+	}
+	if len(got.LastCheckpointNext) != 1 || got.LastCheckpointNext[0] != "HITL gap is out of scope" {
+		t.Fatalf("LastCheckpointNext = %v", got.LastCheckpointNext)
+	}
+	if got.LastCheckpointAt == nil {
+		t.Fatal("LastCheckpointAt is nil")
+	}
+}
+
 // M6: an agent with an open request it raised is never waiting.
 func TestOwesNothingCountsAnOpenRequest(t *testing.T) {
 	s, tm, _ := clockStore(t)
