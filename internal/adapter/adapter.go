@@ -28,6 +28,7 @@ type Spec struct {
 	Bin                                    string // absolute path to the swarm binary
 	PluginDirs                             []string
 	AdvisorModel                           string
+	Instructions                           string
 	Env                                    map[string]string
 }
 

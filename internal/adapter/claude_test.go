@@ -221,23 +221,52 @@ func TestClaudeMCPConfigJSON(t *testing.T) {
 	}
 }
 
-func TestClaudeInheritsUserMCPServers(t *testing.T) {
+func TestClaudeMCPConfigIsIsolated(t *testing.T) {
 	d := testDeps(t)
+	// Even if user has .claude.json with other servers, claude-mcp.json must only contain swarm
 	userJSON := []byte(`{"mcpServers":{"neon":{"type":"http","url":"https://mcp.neon.tech"}}}`)
 	if err := os.WriteFile(filepath.Join(d.UserHome, ".claude.json"), userJSON, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	l, err := newClaude(d).Launch(claudeSpec(t, d))
+	spec := claudeSpec(t, d)
+	spec.Instructions = "# Custom Instructions\nFollow TDD strictly."
+	l, err := newClaude(d).Launch(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var path string
+
+	var mcpPath, promptFilePath string
+	var hasStrictMCP, hasSettingSources bool
 	for i, v := range l.Argv {
 		if v == "--mcp-config" {
-			path = l.Argv[i+1]
+			mcpPath = l.Argv[i+1]
+		}
+		if v == "--append-system-prompt-file" {
+			promptFilePath = l.Argv[i+1]
+		}
+		if v == "--strict-mcp-config" {
+			hasStrictMCP = true
+		}
+		if v == "--setting-sources" && i+1 < len(l.Argv) && l.Argv[i+1] == "project,local" {
+			hasSettingSources = true
 		}
 	}
-	b, err := os.ReadFile(path)
+
+	if !hasStrictMCP {
+		t.Errorf("expected --strict-mcp-config flag in Claude argv")
+	}
+	if !hasSettingSources {
+		t.Errorf("expected --setting-sources project,local in Claude argv")
+	}
+	if promptFilePath == "" {
+		t.Fatalf("expected --append-system-prompt-file in Claude argv")
+	}
+	content, err := os.ReadFile(promptFilePath)
+	if err != nil || string(content) != spec.Instructions {
+		t.Fatalf("prompt file content = %q, want %q", string(content), spec.Instructions)
+	}
+
+	b, err := os.ReadFile(mcpPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,11 +276,26 @@ func TestClaudeInheritsUserMCPServers(t *testing.T) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Servers["neon"] == nil {
-		t.Errorf("expected user MCP server 'neon' to be inherited, got %s", b)
+	if cfg.Servers["neon"] != nil {
+		t.Errorf("expected neon to be excluded from isolated mcp config")
 	}
 	if cfg.Servers["swarm"] == nil {
-		t.Errorf("expected 'swarm' to be present in mcpServers, got %s", b)
+		t.Errorf("expected swarm to be present in mcpServers")
+	}
+}
+
+func TestClaudeOmitsInstructionsWhenUnset(t *testing.T) {
+	d := testDeps(t)
+	spec := claudeSpec(t, d)
+	spec.Instructions = ""
+	l, err := newClaude(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range l.Argv {
+		if v == "--append-system-prompt-file" {
+			t.Errorf("expected no --append-system-prompt-file flag when instructions are empty")
+		}
 	}
 }
 
