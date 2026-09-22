@@ -244,6 +244,7 @@ func TestPaneFormatSurvivesLocaleSanitizationOfControlCharacters(t *testing.T) {
 }
 
 // remain-on-exit keeps a dead pane visible so the reconciler can read its status.
+// mouse on enables wheel scrolling through conversation history rather than cycling prompt history.
 func TestTmuxConfSetsTitlesFocusEventsAndRemainOnExit(t *testing.T) {
 	conf := string(TmuxConf())
 	for _, want := range []string{
@@ -251,6 +252,8 @@ func TestTmuxConfSetsTitlesFocusEventsAndRemainOnExit(t *testing.T) {
 		"set -g set-titles-string 'swarm:#S'",
 		"set -g focus-events on",
 		"set -g remain-on-exit on",
+		"set -g history-limit 20000",
+		"set -g mouse on",
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("tmux.conf is missing %q:\n%s", want, conf)

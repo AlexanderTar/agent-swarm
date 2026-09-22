@@ -26,7 +26,9 @@ type Spawner struct {
 
 // TmuxConf is ~/.swarm/tmux.conf. set-titles lets the menubar find a terminal by
 // title (L17); focus-events keeps Claude Code from printing a hint (P0-6);
-// remain-on-exit keeps a dead pane readable for the reconciler (§10.6).
+// remain-on-exit keeps a dead pane readable for the reconciler (§10.6);
+// mouse on enables wheel scroll to enter copy-mode and scroll conversation history
+// rather than sending Up/Down arrow keys that cycle prompt history in Codex/agy/Cursor.
 func TmuxConf() []byte {
 	return []byte(strings.Join([]string{
 		"# Written by `swarm install`. Swarm's tmux server only.",
@@ -35,6 +37,7 @@ func TmuxConf() []byte {
 		"set -g focus-events on",
 		"set -g remain-on-exit on",
 		"set -g history-limit 20000",
+		"set -g mouse on",
 		"",
 	}, "\n"))
 }
