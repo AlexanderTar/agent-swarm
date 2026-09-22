@@ -104,8 +104,44 @@ type Agent struct {
 	Brief                             string
 	State                             AgentState
 	PreflightError                    string // set only when the agent never spawned (contracts §3.2)
+	RoleOverrides                     map[Role]settings.RoleDefault
 	CreatedAt                         time.Time
 	FinishedAt                        *time.Time
+}
+
+// AdvisorChoice is the caller-supplied "advisor" field on swarm_spawn,
+// POST /api/spikes and POST /api/items/{key}/orchestrator (spec §7, §8.1).
+// A nil *AdvisorChoice on the input struct it's embedded in means "use
+// Settings"; None means the caller explicitly asked for no advisor.
+type AdvisorChoice struct {
+	None   bool
+	Kind   AgentKind
+	Model  string
+	Effort string
+}
+
+type SpikeInput struct {
+	Name      string
+	Intent    string
+	Kind      AgentKind
+	Model     string
+	Effort    string
+	Advisor   *AdvisorChoice
+	Request   string
+	RepoPaths []string
+	Repos     []string // suggested repo ids, shown back on the confirm_repos ask (D42)
+	Roles     map[Role]settings.RoleDefault
+}
+
+type OrchestratorInput struct {
+	ItemKey   string
+	Kind      AgentKind
+	Model     string
+	Effort    string
+	Advisor   *AdvisorChoice
+	Name      string
+	RepoPaths []string
+	Roles     map[Role]settings.RoleDefault
 }
 
 type Session struct {

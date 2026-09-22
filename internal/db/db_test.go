@@ -60,7 +60,15 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatalf("sessions.failure_text: %v", err)
 		}
 	}
+	assertHasRoleOverrides := func() {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT role_overrides FROM agents LIMIT 0`).Scan(&n); err != sql.ErrNoRows {
+			t.Fatalf("agents.role_overrides: %v", err)
+		}
+	}
 	assertHasFailureText()
+	assertHasRoleOverrides()
 	d.Close()
 
 	// Simulate a database that only ever ran migration 1 (pre-2026-09-20 production).
@@ -74,6 +82,9 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE sessions DROP COLUMN failure_text`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN role_overrides`); err != nil {
+		t.Fatal(err)
+	}
 	raw.Close()
 
 	d, err = db.Open(ctx, path)
@@ -82,6 +93,7 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	}
 	defer d.Close()
 	assertHasFailureText()
+	assertHasRoleOverrides()
 	var v int
 	d.QueryRow("PRAGMA user_version").Scan(&v)
 	if v != db.SchemaVersion {

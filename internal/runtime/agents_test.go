@@ -1681,3 +1681,61 @@ func TestSpawnResolvesAgentFromModelAndNormalizesImplementer(t *testing.T) {
 	}
 }
 
+func TestOrchestratorRoleOverridesInheritedByWorkers(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{
+		ItemKey: "EPIC-1",
+		Kind:    Codex,
+		Model:   "gpt-6-astra",
+		Roles: map[Role]settings.RoleDefault{
+			RoleCoder: {Agent: Codex, Model: "gpt-6-astra", Effort: "high"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey:       "TASK-1",
+		ParentAgentID: orch.ID,
+		Role:          RoleCoder,
+		Kind:          "",
+		Model:         "",
+		Brief:         BriefInput{Objective: "task"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worker.Kind != Codex {
+		t.Fatalf("worker.Kind = %q, want %q", worker.Kind, Codex)
+	}
+	if worker.Model != "gpt-6-astra" {
+		t.Fatalf("worker.Model = %q, want %q", worker.Model, "gpt-6-astra")
+	}
+	if worker.Effort != "high" {
+		t.Fatalf("worker.Effort = %q, want %q", worker.Effort, "high")
+	}
+
+	loadedOrch, err := s.AgentByID(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedOrch.RoleOverrides[RoleCoder].Model != "gpt-6-astra" {
+		t.Fatalf("loadedOrch role override model = %q, want %q", loadedOrch.RoleOverrides[RoleCoder].Model, "gpt-6-astra")
+	}
+
+	tree, err := s.AgentTree(ctx, "EPIC-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree) < 2 {
+		t.Fatalf("tree length = %d, want at least 2", len(tree))
+	}
+	if tree[0].RoleOverrides[RoleCoder].Model != "gpt-6-astra" {
+		t.Fatalf("tree[0] role override model = %q, want %q", tree[0].RoleOverrides[RoleCoder].Model, "gpt-6-astra")
+	}
+}
+
