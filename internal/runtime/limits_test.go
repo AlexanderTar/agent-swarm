@@ -253,6 +253,76 @@ func TestDrainQueuePreflightFailureRelaysToParent(t *testing.T) {
 	}
 }
 
+// TestAdmitIgnoresInterruptedZombiesWhenCountingSlots is the 2026-09-22 zombie-slot
+// fix: a session that crashed to 'interrupted' has no live process, but its agent
+// row stays 'active' (retryableStates treats Interrupted like Crashed/Failed --
+// waiting on a human resume/ack/cancel, not auto-cleaned). Before this fix such an
+// agent silently occupied a max_agents/max_agents_per_root slot forever. The zombie
+// itself must stay exactly as it was -- still active, still resumable/ackable/
+// cancellable by hand -- this only stops it from blocking the queue.
+func TestAdmitIgnoresInterruptedZombiesWhenCountingSlots(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4)
+	seedEpicWithTwoTasks(t, s)
+	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
+	if err != nil || queued {
+		t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+	}
+	// Simulate a crash: the session goes interrupted but nothing touches agents.state,
+	// exactly what a real interrupt leaves behind.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'interrupted' WHERE agent_id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, queued, err = s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatalf("the interrupted zombie must not hold the slot: second queued = %v", queued)
+	}
+	out, err := s.Agent(ctx, first.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != AgentActive {
+		t.Fatalf("the zombie's own agent state must stay untouched by this fix: %s", out.State)
+	}
+}
+
+// TestAdmitIgnoresInterruptedZombiesForOrchestratorLimit is the same fix applied to
+// the orchestrator branch of Admit, which runs a separate query against
+// max_orchestrators.
+func TestAdmitIgnoresInterruptedZombiesForOrchestratorLimit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 1, 8, 8)
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'interrupted' WHERE agent_id = ?`, orch.ID); err != nil {
+		t.Fatal(err)
+	}
+	ep2, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Second Epic"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id = ?`, ep2.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep2.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued || second.State != AgentActive {
+		t.Fatalf("the interrupted orchestrator must not hold the max_orchestrators slot: queued = %v, state = %s", queued, second.State)
+	}
+}
+
 // TestAdmitConcurrentSpawnsNeverExceedLimit verifies that concurrent spawns hitting
 // the limit never over-admit agents due to a TOCTOU race.
 func TestAdmitConcurrentSpawnsNeverExceedLimit(t *testing.T) {
