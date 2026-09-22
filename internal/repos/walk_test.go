@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -47,12 +48,16 @@ func fixtureHome(t *testing.T) string {
 	repo(".tool/plugin")
 	repo("Library/Mobile/repo")
 	repo("Downloads/repo")
+	repo("Music/album/repo")
+	repo("Pictures/photo/repo")
+	repo("Movies/film/repo")
 	repo("locked/repo")
 	dir("loop")
 	link(filepath.Join(home, "loop"), "loop/self") // symlink loop
 	link(filepath.Join(home, "loop/b"), "loop/a")
 	link(filepath.Join(home, "loop/a"), "loop/b")
 	link(filepath.Join(home, "GitHub"), "alias") // a second route to the same repos
+	link(filepath.Join(home, "Music"), "MusicLink")
 
 	dir("Workspaces/endurio")
 	link(filepath.Join(home, "GitHub/normal"), "Workspaces/endurio/chat")
@@ -94,6 +99,13 @@ func TestWalkFindsTheRightRepos(t *testing.T) {
 	slices.Sort(ws)
 	if !slices.Equal(ws, []string{filepath.Join(home, "Workspaces/endurio.code-workspace"), filepath.Join(home, "bad.code-workspace")}) {
 		t.Fatalf("workspaces = %v", ws)
+	}
+	for _, targets := range w.LinkDirs {
+		for _, target := range targets {
+			if strings.Contains(target, "Music") {
+				t.Errorf("symlink target in skipped dir was retained: %s", target)
+			}
+		}
 	}
 }
 

@@ -45,7 +45,13 @@ func Walk(home string, excludes []string) WalkResult {
 
 // walk is Walk that stops with ctx; a cancelled walk returns ctx's error and no repos.
 func walk(ctx context.Context, home string, excludes []string) (WalkResult, error) {
-	skip := map[string]bool{filepath.Join(home, "Library"): true, filepath.Join(home, ".Trash"): true}
+	skip := map[string]bool{
+		filepath.Join(home, "Library"):  true,
+		filepath.Join(home, ".Trash"):   true,
+		filepath.Join(home, "Music"):    true,
+		filepath.Join(home, "Pictures"): true,
+		filepath.Join(home, "Movies"):   true,
+	}
 	for _, e := range excludes {
 		skip[ExpandHome(e, home)] = true
 	}
@@ -62,6 +68,12 @@ func walk(ctx context.Context, home string, excludes []string) (WalkResult, erro
 			}
 			return nil
 		}
+		if path != home && (skipNames[d.Name()] || skip[path]) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if path != home && strings.HasPrefix(d.Name(), ".") {
 			if d.IsDir() {
 				return fs.SkipDir
@@ -71,8 +83,10 @@ func walk(ctx context.Context, home string, excludes []string) (WalkResult, erro
 		if d.Type()&fs.ModeSymlink != 0 {
 			if target, err := filepath.EvalSymlinks(path); err == nil {
 				if fi, err := os.Stat(target); err == nil && fi.IsDir() {
-					parent := filepath.Dir(path)
-					res.LinkDirs[parent] = append(res.LinkDirs[parent], target)
+					if !isSkipped(target, skip) {
+						parent := filepath.Dir(path)
+						res.LinkDirs[parent] = append(res.LinkDirs[parent], target)
+					}
 				}
 			}
 			return nil
@@ -82,9 +96,6 @@ func walk(ctx context.Context, home string, excludes []string) (WalkResult, erro
 				res.Workspaces = append(res.Workspaces, path)
 			}
 			return nil
-		}
-		if path != home && (skipNames[d.Name()] || skip[path]) {
-			return fs.SkipDir
 		}
 		if IsRepo(path) {
 			if real, err := filepath.EvalSymlinks(path); err == nil && !seen[real] {
@@ -99,6 +110,18 @@ func walk(ctx context.Context, home string, excludes []string) (WalkResult, erro
 	}
 	sort.Strings(res.Repos)
 	return res, nil
+}
+
+func isSkipped(p string, skip map[string]bool) bool {
+	if skip[p] {
+		return true
+	}
+	for s := range skip {
+		if strings.HasPrefix(p, s+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 type Group struct {

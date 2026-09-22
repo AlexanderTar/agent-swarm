@@ -54,11 +54,47 @@ open /Applications/Swarm.app
 - writes `~/Library/LaunchAgents/dev.swarm.daemon.plist` and starts the daemon on 127.0.0.1:7777
 - writes `~/.swarm/tmux.conf` (agents run on a private tmux socket, `tmux -L swarm`)
 - for each installed agent, installs the superpowers plugins it supports, and adds the `swarm` MCP server, the Swarm hooks (inactive outside Swarm sessions) and the `swarm` skill
-- scans your home folder for git repositories (hidden folders and `~/Library` are skipped; change exclusions in Settings)
+- scans your home folder for git repositories (hidden folders, `~/Library`, `~/Music`, `~/Pictures`, `~/Movies`, and `~/Downloads` are skipped by default; change exclusions in Settings)
 - removes hooks and config left by Agent Swarm 1.x
 - links `swarm` into `~/.local/bin`
 
 The first time the menu bar app opens a terminal, macOS asks for permission to control Ghostty. Allow it. The app also asks to send notifications.
+
+### Code signing and macOS permissions
+
+Local builds are signed with `codesign`. If ad-hoc signing (`-`) is used, macOS binds TCC privacy permissions to the binary's cryptographic hash (`cdhash`), causing permission prompts to re-appear whenever `swarm` is recompiled.
+
+To keep permissions trusted permanently across rebuilds and redeploys, create a persistent local self-signed code-signing certificate named `Swarm Dev`:
+
+```bash
+# 1. Create a certificate configuration
+cat << 'EOF' > /tmp/swarm-cert.conf
+[ req ]
+default_bits        = 2048
+distinguished_name  = req_dn
+prompt              = no
+x509_extensions     = v3_code_sign
+
+[ req_dn ]
+CN = Swarm Dev
+
+[ v3_code_sign ]
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+basicConstraints = critical, CA:FALSE
+EOF
+
+# 2. Generate private key and certificate
+openssl req -new -x509 -days 3650 -config /tmp/swarm-cert.conf -nodes -keyout /tmp/swarm-key.pem -out /tmp/swarm-cert.pem
+openssl pkcs12 -export -legacy -inkey /tmp/swarm-key.pem -in /tmp/swarm-cert.pem -out /tmp/swarm-cert.p12 -passout pass:swarmdev -name "Swarm Dev"
+
+# 3. Import and trust in your login keychain
+security import /tmp/swarm-cert.p12 -k ~/Library/Keychains/login.keychain-db -P swarmdev -T /usr/bin/codesign
+security add-trusted-cert -p codeSign -k ~/Library/Keychains/login.keychain-db /tmp/swarm-cert.pem
+rm -f /tmp/swarm-cert.conf /tmp/swarm-key.pem /tmp/swarm-cert.pem /tmp/swarm-cert.p12
+```
+
+The `Makefile` automatically detects `Swarm Dev` when present in your keychain and uses it to sign `bin/swarm`. You can also override the identity via `SWARM_SIGN_IDENTITY="<Your Certificate Name>"`.
 
 ### Upgrading from Agent Swarm 1.x
 

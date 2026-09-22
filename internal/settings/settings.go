@@ -80,7 +80,7 @@ func Defaults(installed []kinds.AgentKind) Settings {
 		MaxAgents:              8,
 		MaxAgentsPerRoot:       4,
 		MaxConcurrentSubagents: 3,
-		ScanExcludes:           []string{"~/Library", "~/.Trash", "~/Downloads"},
+		ScanExcludes:           []string{"~/Library", "~/.Trash", "~/Downloads", "~/Music", "~/Pictures", "~/Movies"},
 		ScanIntervalSec:        21600,
 		UsagePollSec:           300,
 		PauseDeadlineSec:       120,

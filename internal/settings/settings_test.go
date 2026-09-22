@@ -84,7 +84,7 @@ func TestDefaults(t *testing.T) {
 	}
 	if d.MaxOrchestrators != 3 || d.MaxAgents != 8 || d.MaxAgentsPerRoot != 4 || d.ScanIntervalSec != 21600 ||
 		d.UsagePollSec != 300 || d.PauseDeadlineSec != 120 || d.MenubarCompact ||
-		!slices.Equal(d.ScanExcludes, []string{"~/Library", "~/.Trash", "~/Downloads"}) {
+		!slices.Equal(d.ScanExcludes, []string{"~/Library", "~/.Trash", "~/Downloads", "~/Music", "~/Pictures", "~/Movies"}) {
 		t.Errorf("defaults = %+v", d)
 	}
 	if want := (RoleDefault{kinds.Claude, "sonnet", ""}); d.FallbackDefault != want {

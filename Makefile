@@ -1,6 +1,8 @@
 GO ?= /opt/homebrew/bin/go
 GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 PREFIX ?= $(HOME)/.swarm
+DEFAULT_SIGN_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | grep -q '"Swarm Dev"' && echo "Swarm Dev" || echo "-")
+SWARM_SIGN_IDENTITY ?= $(DEFAULT_SIGN_IDENTITY)
 
 .PHONY: build web-build vet fmt test test-go test-web test-menubar e2e dev dev-seed install install-daemon install-app app skills-sync
 
@@ -8,7 +10,7 @@ APP_DIR ?= /Applications
 
 build: web-build
 	$(GO) build -o bin/swarm ./cmd/swarm
-	codesign --force --sign "$${SWARM_SIGN_IDENTITY:--}" --identifier dev.swarm.daemon bin/swarm
+	codesign --force --sign "$(SWARM_SIGN_IDENTITY)" --identifier dev.swarm.daemon bin/swarm
 
 web-build:
 	cd web && pnpm install --frozen-lockfile && pnpm build
@@ -57,7 +59,7 @@ install: install-daemon install-app
 install-daemon: build
 	mkdir -p $(PREFIX)/bin
 	install -m 0755 bin/swarm $(PREFIX)/bin/swarm
-	codesign --force --sign "$${SWARM_SIGN_IDENTITY:--}" --identifier dev.swarm.daemon $(PREFIX)/bin/swarm
+	codesign --force --sign "$(SWARM_SIGN_IDENTITY)" --identifier dev.swarm.daemon $(PREFIX)/bin/swarm
 
 # Builds Swarm.app into /Applications.
 install-app: app
