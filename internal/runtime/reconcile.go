@@ -75,7 +75,8 @@ func (s *Store) liveSessionRows(ctx context.Context) ([]liveRow, error) {
 		a.item_id, i.key, a.root_item_id, COALESCE(a.parent_agent_id, ''), a.kind, a.role,
 		ses.state, ses.attempt, ses.waiting, ses.started_at, ses.last_seen_at,
 		(SELECT MAX(created_at) FROM checkpoints c
-			WHERE c.agent_id = a.id AND c.attempt = ses.attempt AND c.kind = 'completed')
+			WHERE c.agent_id = a.id AND c.attempt = ses.attempt AND c.kind = 'completed'
+			  AND c.item_id = a.item_id)
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
 		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {
@@ -214,12 +215,15 @@ func (s *Store) withdrawOrphanedRequests(ctx context.Context) error {
 	return nil
 }
 
-// terminalCheckpointKind is the most recent completed/failed checkpoint for
-// this attempt, if any.
-func (s *Store) terminalCheckpointKind(ctx context.Context, agentID string, attempt int) (CheckpointKind, bool, error) {
+// terminalCheckpointKind is the most recent completed/failed checkpoint
+// against the agent's OWN item for this attempt, if any. A completed/failed
+// checkpoint against a child item (an orchestrator's routine board
+// bookkeeping) does not count: it says nothing about whether the agent's own
+// assignment is done.
+func (s *Store) terminalCheckpointKind(ctx context.Context, agentID, itemID string, attempt int) (CheckpointKind, bool, error) {
 	var kind string
-	err := s.DB.QueryRowContext(ctx, `SELECT kind FROM checkpoints WHERE agent_id = ? AND attempt = ?
-		AND kind IN ('completed', 'failed') ORDER BY created_at DESC, rowid DESC LIMIT 1`, agentID, attempt).Scan(&kind)
+	err := s.DB.QueryRowContext(ctx, `SELECT kind FROM checkpoints WHERE agent_id = ? AND item_id = ? AND attempt = ?
+		AND kind IN ('completed', 'failed') ORDER BY created_at DESC, rowid DESC LIMIT 1`, agentID, itemID, attempt).Scan(&kind)
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}
@@ -471,7 +475,7 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 			return err
 		})
 	}
-	kind, hasTerminal, err := s.terminalCheckpointKind(ctx, r.AgentID, r.Attempt)
+	kind, hasTerminal, err := s.terminalCheckpointKind(ctx, r.AgentID, r.ItemID, r.Attempt)
 	if err != nil {
 		return err
 	}

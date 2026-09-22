@@ -262,6 +262,40 @@ func TestDeadPaneWithACompletedCheckpointCompletesTheSession(t *testing.T) {
 	}
 }
 
+// Companion to TestDeadPaneWithACompletedCheckpointCompletesTheSession: a
+// completed checkpoint against a CHILD item (the orchestrator's routine board
+// bookkeeping -- skills/swarm-orchestrator's own documented
+// swarm_checkpoint(item=<task>, kind="completed") pattern) must not be
+// mistaken for the orchestrator's OWN work being done. If its pane really
+// does go away with no completed checkpoint against its own item, that is a
+// crash, not a clean completion -- losing that distinction is what silently
+// buried the EPIC-2 orchestrator's remaining work (2026-09-22 incident).
+func TestDeadPaneWithOnlyAChildsCompletedCheckpointCrashesNotCompletes(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+	s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: CompletedCkp,
+		ItemKey: "TASK-1", Summary: "TASK-1 done, reconciling the board"})
+	panes(tm) // the pane is gone
+	at.Advance(11 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(spawnGracePeriod + time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, orch.ID)
+	if ses.State != Crashed {
+		t.Fatalf("session state = %s, want crashed: a completed checkpoint against a child item must not read as the orchestrator's own item being done", ses.State)
+	}
+}
+
 func TestDeadPaneWithNoTerminalCheckpointCrashes(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()
@@ -523,6 +557,37 @@ func TestAliveWithAnOldCompletedCheckpointIsKilled(t *testing.T) {
 	s.Reconcile(ctx)
 	if len(tm.killed)-before != 1 {
 		t.Fatalf("killed = %v", tm.killed[before:])
+	}
+}
+
+// 2026-09-22 incident: the EPIC-2 orchestrator wrote a routine `completed`
+// checkpoint against a child TASK item (closing it out on the board, exactly
+// as skills/swarm-orchestrator documents), and the daemon killed the
+// orchestrator's own still-live pane 60s later as if EPIC-2 itself were done.
+// A completed checkpoint only counts toward this kill when it is against the
+// agent's OWN item.
+func TestACompletedCheckpointAgainstAChildItemDoesNotKillTheOrchestrator(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, orchSes.ID, CheckpointInput{Kind: CompletedCkp,
+		ItemKey: "TASK-1", Summary: "TASK-1 done, reconciling the board"}); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": orchSes.ID}
+	at.Advance(61 * time.Second)
+	before := len(tm.killed)
+	s.Reconcile(ctx)
+	if len(tm.killed) != before {
+		t.Fatalf("a completed checkpoint against a child item must not kill the orchestrator's own session: killed = %v", tm.killed[before:])
 	}
 }
 
