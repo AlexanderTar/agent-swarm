@@ -127,16 +127,24 @@ func TestSyncLimitAndMore(t *testing.T) {
 	}
 }
 
-// I19: deferred relays never wake anyone and arrive folded into one digest.
+// I19: deferred messages never wake anyone and arrive folded into one digest.
+// 2026-09-22: relay is no longer a deferred kind (every relay checkpoint now
+// wakes immediately), so this test's original vehicle -- three deferred
+// `relay` rows -- can no longer occur in production. digest is the only kind
+// still deferred; this retargets the synthetic enq() rows to it so the
+// foldDigest mechanism itself (kept, per spec, as out-of-scope-to-remove)
+// stays covered.
 func TestDeferredRelaysAreFoldedIntoOneDigest(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Digest", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	s.Sync(ctx, ses.ID, nil, 20) // clear the assignment from the picture
+	var seedIDs []string
 	for i, key := range []string{"TASK-1", "TASK-2", "TASK-3"} {
-		enq(t, s, a.ID, a.RootItemID, "relay",
+		m := enq(t, s, a.ID, a.RootItemID, "digest",
 			`{"event":"progress","agent":"w`+string(rune('1'+i))+`","item":"`+key+`","checkpoint":{"summary":"step `+string(rune('1'+i))+` done"}}`, 1)
+		seedIDs = append(seedIDs, m.ID)
 	}
 	res, err := s.Sync(ctx, ses.ID, nil, 20)
 	if err != nil {
@@ -144,9 +152,6 @@ func TestDeferredRelaysAreFoldedIntoOneDigest(t *testing.T) {
 	}
 	var digests int
 	for _, m := range res.Messages {
-		if m.Kind == "relay" {
-			t.Fatalf("a deferred relay must not be returned on its own: %s", m.Payload)
-		}
 		if m.Kind == "digest" {
 			digests++
 			var p struct {
@@ -164,14 +169,18 @@ func TestDeferredRelaysAreFoldedIntoOneDigest(t *testing.T) {
 			}
 		}
 	}
+	// the three synthetic deferred rows fold into exactly one new digest
 	if digests != 1 {
 		t.Fatalf("digest count = %d, want 1", digests)
 	}
-	// the folded rows are acked by the digest's own id
-	var pending int
-	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay' AND state <> 'acked'`).Scan(&pending)
-	if pending != 0 {
-		t.Fatalf("%d deferred relays are still un-acked after the digest", pending)
+	// the three seed rows are acked by the new digest's own id (the new digest
+	// itself is excluded -- it was just delivered by this same Sync, not acked)
+	for _, id := range seedIDs {
+		var state string
+		s.DB.QueryRowContext(ctx, `SELECT state FROM messages WHERE id = ?`, id).Scan(&state)
+		if state != "acked" {
+			t.Fatalf("seed digest %s state = %q, want acked", id, state)
+		}
 	}
 }
 
@@ -239,30 +248,20 @@ func TestPendingCountCountsUnackedMessages(t *testing.T) {
 	}
 }
 
+// 2026-09-22: every relay now wakes immediately regardless of its event --
+// progress and handoff (historically deferred, folded into a digest) moved
+// into the immediate case along with the events that were always immediate.
 func TestWakeClassFor(t *testing.T) {
-	immediate := []struct {
-		kind  MessageKind
-		event string
-	}{
-		{"control", ""}, {"question", ""}, {"answer", ""}, {"finding", ""},
-		{"approval_result", ""}, {"user_answer", ""}, {"repos_confirmed", ""},
-		{"assignment_update", ""}, {"advice", ""}, {"assignment", ""},
-		{"relay", "accepted"}, {"relay", "completed"}, {"relay", "failed"}, {"relay", "blocked"},
-		{"relay", "crashed"}, {"relay", "interrupted"}, {"relay", "paused"},
-		{"relay", "dependency_added"}, {"relay", "spawn_failed"},
-	}
-	for _, c := range immediate {
-		if got := WakeClassFor(c.kind, c.event); got != "immediate" {
-			t.Errorf("%s/%s = %s, want immediate", c.kind, c.event, got)
+	immediate := []MessageKind{"control", "question", "answer", "finding",
+		"approval_result", "user_answer", "repos_confirmed",
+		"assignment_update", "advice", "assignment", "relay"}
+	for _, kind := range immediate {
+		if got := WakeClassFor(kind); got != "immediate" {
+			t.Errorf("%s = %s, want immediate", kind, got)
 		}
 	}
-	for _, c := range []struct {
-		kind  MessageKind
-		event string
-	}{{"relay", "progress"}, {"relay", "handoff"}, {"digest", ""}} {
-		if got := WakeClassFor(c.kind, c.event); got != "deferred" {
-			t.Errorf("%s/%s = %s, want deferred", c.kind, c.event, got)
-		}
+	if got := WakeClassFor("digest"); got != "deferred" {
+		t.Errorf("digest = %s, want deferred", got)
 	}
 }
 
