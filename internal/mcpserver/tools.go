@@ -107,7 +107,8 @@ func checkpointTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"checkpoint_id": res.CheckpointID, "item_status": res.ItemStatus}, nil
+			return map[string]any{"checkpoint_id": res.CheckpointID, "item_status": res.ItemStatus,
+				"item_revision": res.ItemRevision}, nil
 		},
 	}
 }

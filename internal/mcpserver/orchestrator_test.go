@@ -682,6 +682,23 @@ func TestItemsToolUpdate(t *testing.T) {
 	}
 }
 
+// A stale-revision conflict must hand back what it already promises in its
+// own message ("Showing its latest status") -- the exact incident this
+// covers: an orchestrator guessed a revision one checkpoint call ahead of
+// the real one (its own transition had been a same-state no-op) and kept
+// guessing further away on each retry because the error never told it what
+// the real number was.
+func TestItemsToolStaleRevisionErrorNamesTheCurrentRevisionAndStatus(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","title":"x","revision":999}`); err == nil {
+		t.Fatal("a wrong revision must be refused")
+	} else if !strings.Contains(err.Error(), "Current revision: 1") || !strings.Contains(err.Error(), "status: draft") {
+		t.Fatalf("err = %q, want it to name the real revision and status", err)
+	}
+}
+
 // §8.1: op is create|update|link|unlink — link/unlink call items.Store's
 // AddDep/RemoveDep (the same primitive the blockOn test helper already uses
 // directly) and return the item with its blocked_by updated.

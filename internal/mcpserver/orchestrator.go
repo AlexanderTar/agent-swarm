@@ -157,6 +157,18 @@ func itemsTool(s *Server) ToolDef {
 						out, err = s.RT.Items.UpdateTx(ctx, tx, in.Key, p, actor)
 						return err
 					}); err != nil {
+					// The StaleRevision message already promises "Showing its latest
+					// status" without delivering it (fix round 2: a caller correcting a
+					// guessed revision needs the real number, not just confirmation it
+					// guessed wrong). Any other conflict (a cycle, a denied hierarchy
+					// dep) keeps its own message as-is.
+					var ie *items.Error
+					if errors.As(err, &ie) && ie.Code == items.CodeConflict && ie.Message == items.StaleRevision {
+						if cur, gerr := s.RT.Items.Get(ctx, in.Key); gerr == nil {
+							return nil, fmt.Errorf("%s Current revision: %d, status: %s.",
+								ie.Message, cur.Revision, cur.Status)
+						}
+					}
 					return nil, err
 				}
 				// Update's own non-Tx wrapper re-reads (enriched) after commit, too

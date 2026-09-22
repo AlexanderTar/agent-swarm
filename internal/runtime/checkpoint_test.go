@@ -279,6 +279,52 @@ func TestCompletedChecksClosesTheOtherLiveSessionOnTheSameItem(t *testing.T) {
 	}
 }
 
+// Reproduces the TASK-123 incident (swarm_items update kept rejecting a
+// freshly-read revision): a coder's own `completed` checkpoint really does
+// bump the item's revision (Ready/InProgress -> InReview), but a SECOND
+// `completed` checkpoint on the same item -- e.g. an orchestrator completing
+// it too, having missed that the coder already had -- lands on an item
+// already InReview, so its own tryTransition is a same-state no-op and the
+// revision does NOT move again. WriteCheckpoint's own result must report
+// which is which: the caller needs the real number to write its own
+// swarm_items update next, not a guess that assumes every completed
+// checkpoint bumps revision.
+func TestCompletedChecksReportsTheRealRevisionEvenWhenItsOwnTransitionIsANoOp(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"})
+
+	res1, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "done", Verification: []Verify{{Cmd: "go test ./..."}},
+		Git: []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterCoder, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1.ItemRevision != afterCoder.Revision {
+		t.Fatalf("coder's own completed: ItemRevision = %d, want %d (the real, just-bumped value)",
+			res1.ItemRevision, afterCoder.Revision)
+	}
+
+	oSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{Kind: CompletedCkp,
+		ItemKey: "TASK-1", Summary: "verified it myself too"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.ItemRevision != afterCoder.Revision {
+		t.Fatalf("orchestrator's redundant completed (a same-state no-op): ItemRevision = %d, want %d unchanged",
+			res2.ItemRevision, afterCoder.Revision)
+	}
+}
+
 // A completed checkpoint an agent writes on its own item must not tear its
 // own live session down out from under it: WriteCheckpoint hasn't returned
 // yet, so it is still mid-turn.

@@ -87,6 +87,13 @@ type CheckpointInput struct {
 type CheckpointResult struct {
 	CheckpointID string
 	ItemStatus   items.Status
+	// ItemRevision is the item's revision right after this checkpoint's own
+	// transition attempt (a real bump, or none if it was a same-state no-op --
+	// e.g. two agents both writing `completed` on one item, the second finding
+	// it already in_review). Handing this back means a caller's very next
+	// swarm_items update can use the correct value outright instead of
+	// guessing whether this checkpoint bumped it, then re-reading to find out.
+	ItemRevision int
 }
 
 // verifyOK is L24. Evidence is every verification entry of this attempt, earlier
@@ -560,6 +567,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			return err
 		}
 		out.ItemStatus = final.Status
+		out.ItemRevision = final.Revision
 		return nil
 	})
 	if err != nil || !ran {
