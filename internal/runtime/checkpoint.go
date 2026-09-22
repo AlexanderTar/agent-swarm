@@ -91,18 +91,27 @@ type CheckpointResult struct {
 
 // verifyOK is L24. Evidence is every verification entry of this attempt, earlier
 // checkpoints included, so a pause and resume inside one attempt keeps it.
-// It checks that at least one verification command was recorded.
-func verifyOK(prior, now []Verify) bool {
+// It checks that at least one verification command was recorded, and returns
+// "" when satisfied or the specific reason otherwise: a caller that sent
+// entries with the wrong field names (so every Cmd came back empty) needs a
+// different message than one that sent nothing at all, or it'll keep
+// resending the same malformed shape under a new guessed key.
+func verifyOK(prior, now []Verify) string {
 	all := append(append([]Verify{}, prior...), now...)
 	if len(all) == 0 {
-		return false
+		return verifyMissing
 	}
 	for _, v := range all {
 		if strings.TrimSpace(v.Cmd) != "" {
-			return true
+			return ""
 		}
 	}
-	return false
+	plural := "entries"
+	if len(all) == 1 {
+		plural = "entry"
+	}
+	return fmt.Sprintf(`%s %d verification %s given, but none has a non-empty "cmd" -- each entry needs {"cmd": "...", "ok": true}.`,
+		verifyMissing, len(all), plural)
 }
 
 func jsonArray[T any](v []T) string {
@@ -307,8 +316,8 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				if err != nil {
 					return err
 				}
-				if !verifyOK(prior, in.Verification) {
-					return errors.New(verifyMissing)
+				if msg := verifyOK(prior, in.Verification); msg != "" {
+					return errors.New(msg)
 				}
 			}
 		}

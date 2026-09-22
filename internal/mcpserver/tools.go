@@ -73,7 +73,13 @@ func checkpointTool(s *Server) ToolDef {
 		Description: "Record progress: accepted, progress, blocked, handoff, completed or failed, with the verification evidence TDD requires.",
 		Schema: objSchema(`"kind":{"type":"string"},"item":{"type":"string"},"summary":{"type":"string"},
 			"resolution":{"type":"string"},"next":{"type":"array"},"blockers":{"type":"array"},
-			"git":{"type":"array"},"verification":{"type":"array"},"artifacts":{"type":"array"},"processed":{"type":"array"},
+			"git":{"type":"array","items":{"type":"object","properties":{
+				"repo":{"type":"string"},"branch":{"type":"string"},"sha":{"type":"string"},"dirty":{"type":"boolean"}},
+				"required":["repo","sha"]}},
+			"verification":{"type":"array","items":{"type":"object","properties":{
+				"cmd":{"type":"string"},"phase":{"type":"string"},"ok":{"type":"boolean"},"note":{"type":"string"}},
+				"required":["cmd","ok"]}},
+			"artifacts":{"type":"array"},"processed":{"type":"array"},
 			"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {

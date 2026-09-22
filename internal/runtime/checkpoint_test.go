@@ -240,15 +240,19 @@ func TestVerificationGate(t *testing.T) {
 	red := Verify{Cmd: "go test ./internal/x -run TestLogin", Phase: "red", OK: false}
 	green := Verify{Cmd: "go test ./internal/x -run TestLogin", Phase: "green", OK: true}
 	cases := []struct {
-		name string
-		v    []Verify
-		ok   bool
+		name    string
+		v       []Verify
+		ok      bool
+		wantErr string // exact message when !ok
 	}{
-		{"red only", []Verify{red}, true},
-		{"green only", []Verify{green}, true},
-		{"red then green", []Verify{red, green}, true},
-		{"nothing at all", nil, false},
-		{"empty command", []Verify{{Cmd: "  "}}, false},
+		{"red only", []Verify{red}, true, ""},
+		{"green only", []Verify{green}, true, ""},
+		{"red then green", []Verify{red, green}, true, ""},
+		{"nothing at all", nil, false, verifyMissing},
+		{"empty command", []Verify{{Cmd: "  "}}, false,
+			verifyMissing + ` 1 verification entry given, but none has a non-empty "cmd" -- each entry needs {"cmd": "...", "ok": true}.`},
+		{"wrong field names", []Verify{{}, {}}, false,
+			verifyMissing + ` 2 verification entries given, but none has a non-empty "cmd" -- each entry needs {"cmd": "...", "ok": true}.`},
 	}
 	for _, c := range cases {
 		s, _, _ := newStore(t)
@@ -264,8 +268,8 @@ func TestVerificationGate(t *testing.T) {
 		if !c.ok {
 			if err == nil {
 				t.Errorf("%s: should be refused", c.name)
-			} else if err.Error() != verifyMissing {
-				t.Errorf("%s: err = %q, want %q", c.name, err, verifyMissing)
+			} else if err.Error() != c.wantErr {
+				t.Errorf("%s: err = %q, want %q", c.name, err, c.wantErr)
 			}
 		}
 	}
