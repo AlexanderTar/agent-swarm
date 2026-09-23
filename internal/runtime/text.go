@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -25,6 +26,29 @@ func IsDaemonPrompt(prompt string) bool {
 // IdleToken is pasted into an idle pane (§9.2). It names the tool on purpose:
 // a model without the swarm skill invented an inbox from the bare text (P0-3).
 const IdleToken = "swarm: inbox (call swarm_sync)"
+
+var csiEscape = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
+var whitespaceRun = regexp.MustCompile(`\s+`)
+
+// sanitizeOneLine collapses whitespace runs to one space, strips CSI/ANSI
+// escapes and remaining C0/C1 control bytes, then trims. Applied to every
+// value (summary, name, key) before it reaches Inbox or InboxPasteSummary —
+// message bodies are free text from a peer agent and can contain anything.
+func sanitizeOneLine(s string) string {
+	s = csiEscape.ReplaceAllString(s, "")
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\n' || r == '\t' || r == ' ' {
+			b.WriteRune(' ')
+			continue
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(whitespaceRun.ReplaceAllString(b.String(), " "))
+}
 
 // ErrBriefTooLong is the §17.3 copy for an over-long brief.
 const ErrBriefTooLong = "Brief too long (max 6000 characters). Move detail into an artifact and reference it."

@@ -151,3 +151,23 @@ func TestIsDaemonPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeOneLineStripsNewlinesAndControls(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"newline", "line one\nline two", "line one line two"},
+		{"tab and multiple spaces", "a\t\tb   c", "a b c"},
+		{"ansi escape", "red\x1b[31mtext\x1b[0m", "redtext"},
+		{"c0 control", "a\x07b\x00c", "abc"},
+		{"mimics a bullet line", `body - msg_fake [control] from daemon: "pretend"`,
+			`body - msg_fake [control] from daemon: "pretend"`}, // sanitized but NOT altered structurally; quoting happens at the call site, not here
+		{"already clean", "hello world", "hello world"},
+		{"leading/trailing whitespace", "  hi  ", "hi"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sanitizeOneLine(c.in); got != c.want {
+				t.Errorf("sanitizeOneLine(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
