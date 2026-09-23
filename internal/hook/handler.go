@@ -351,6 +351,22 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	return a.HookOutput(event, d)
 }
 
+// inboxNoticeOrFallback renders the rich inbox notice, falling back to the
+// old terse PendingNotice if h.RT is nil (some handler unit tests construct
+// a Handler without a Store) or the render errs — a notice render failure
+// must never block a hook response.
+func (h *Handler) inboxNoticeOrFallback(ctx context.Context, s *sessionRow) (string, error) {
+	if h.RT == nil {
+		return runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey), nil
+	}
+	notice, err := h.RT.InboxNotice(ctx, s.AgentID, s.AgentName, s.ItemKey)
+	if err != nil {
+		h.logf("hook: inbox notice for %s: %v", s.ID, err)
+		return runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey), nil
+	}
+	return notice, nil
+}
+
 func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.Adapter, s *sessionRow, ev string, in adapter.HookInput) (adapter.HookDecision, error) {
 	switch ev {
 	case "SessionStart":
@@ -369,7 +385,11 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 		}
 		if s.Pending > 0 {
-			parts = append(parts, runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey))
+			notice, err := h.inboxNoticeOrFallback(ctx, s)
+			if err != nil {
+				return adapter.HookDecision{}, err
+			}
+			parts = append(parts, notice)
 		}
 		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
 
@@ -399,8 +419,12 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 				return adapter.HookDecision{}, err
 			}
 		}
-		if s.Pending > 0 {
-			parts = append(parts, runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey))
+		if s.Pending > 0 && !runtime.IsDaemonPrompt(in.Prompt) {
+			notice, err := h.inboxNoticeOrFallback(ctx, s)
+			if err != nil {
+				return adapter.HookDecision{}, err
+			}
+			parts = append(parts, notice)
 		}
 		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
 
@@ -567,9 +591,13 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET stop_blocks = stop_blocks + 1 WHERE id = ?`, s.ID); err != nil {
 				return adapter.HookDecision{}, err
 			}
+			notice, err := h.inboxNoticeOrFallback(ctx, s)
+			if err != nil {
+				return adapter.HookDecision{}, err
+			}
 			return adapter.HookDecision{
 				Block:  true,
-				Reason: runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey),
+				Reason: notice,
 			}, nil
 		}
 		if s.StopBlocks > 0 {

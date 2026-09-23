@@ -68,16 +68,16 @@ func contextOf(t *testing.T, out []byte) string {
 	return m.H.Ctx
 }
 
-func TestSessionStartInjectsThePendingNoticeOnlyWhenTheInboxHasMessages(t *testing.T) {
+func TestSessionStartInjectsTheRichInboxNoticeOnlyWhenTheInboxHasMessages(t *testing.T) {
 	h, ses := seed(t, 2, runtime.Running)
 	out, err := h.Handle(context.Background(), runtime.Claude, "SessionStart", ses,
 		[]byte(`{"session_id":"p1","source":"startup"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := runtime.PendingNotice(2, "login-form-coder", "TASK-101")
-	if contextOf(t, out) != want {
-		t.Fatalf("context = %q, want %q", contextOf(t, out), want)
+	got := contextOf(t, out)
+	if !strings.Contains(got, `"x"`) || !strings.Contains(got, "swarm_sync") {
+		t.Fatalf("context = %q, want the rich inbox notice with message content", got)
 	}
 	h2, ses2 := seed(t, 0, runtime.Running)
 	out2, _ := h2.Handle(context.Background(), runtime.Claude, "SessionStart", ses2,
@@ -1279,5 +1279,58 @@ func TestHumanPromptInANewSessionClosesTheRowOfTheOldOne(t *testing.T) {
 	}
 	if st != "answered" {
 		t.Fatalf("row = %s, want answered (rows are keyed by agent, not session)", st)
+	}
+}
+
+func TestSessionStartUsesRichInboxNotice(t *testing.T) {
+	h, ses := seed(t, 2, runtime.Running)
+	out, err := h.Handle(context.Background(), runtime.Claude, "SessionStart", ses,
+		[]byte(`{"session_id":"p1","source":"startup"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := contextOf(t, out)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("SessionStart context contains a literal newline: %q", got)
+	}
+	// Rich content, not just a count: the finding bodies ("x") and their ids.
+	if !strings.Contains(got, `"x"`) {
+		t.Errorf("SessionStart context missing message content: %q", got)
+	}
+	if !strings.Contains(got, "swarm_sync") {
+		t.Errorf("SessionStart context missing swarm_sync pointer: %q", got)
+	}
+}
+
+func TestUserPromptSubmitSkipsDoubleDeliveryForDaemonPrompt(t *testing.T) {
+	h, ses := seed(t, 2, runtime.Running)
+	// The pasted/native-delivered notice becomes the next prompt; the hook
+	// must not stack another notice on top of the daemon's own text.
+	daemonPrompt, err := json.Marshal(map[string]string{
+		"session_id": "p1",
+		"prompt":     runtime.PendingNotice(2, "login-form-coder", "TASK-101"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(context.Background(), runtime.Claude, "UserPromptSubmit", ses, daemonPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("daemon prompt got a stacked context: %q", contextOf(t, out))
+	}
+}
+
+func TestPostToolUseStaysTerseUnderRepeatedCalls(t *testing.T) {
+	h, ses := seed(t, 2, runtime.Running)
+	out, err := h.Handle(context.Background(), runtime.Claude, "PostToolUse", ses,
+		[]byte(`{"session_id":"p1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := runtime.PendingNotice(2, "login-form-coder", "TASK-101")
+	if contextOf(t, out) != want {
+		t.Fatalf("PostToolUse context = %q, want terse %q", contextOf(t, out), want)
 	}
 }
