@@ -125,6 +125,25 @@ func TestMuseIdleAndBusy(t *testing.T) {
 	}
 }
 
+// P0-4: `muse` is a launcher script that `exec`s the real binary
+// (muse-bin-<version>), so the pane command becomes the binary's name, seen
+// truncated to MAXCOMLEN on macOS (confirmed live 2026-09-23).
+func TestMuseProcessNames(t *testing.T) {
+	a := newMuse(testDeps(t))
+	accept := []string{"muse", "muse-bin-1.3.0-R3401.1", "muse-bin-1.3.0-"}
+	reject := []string{"zsh", "node"}
+	for _, s := range accept {
+		if !anyMatch(a.ProcessNames(), s) {
+			t.Errorf("%q should be accepted", s)
+		}
+	}
+	for _, s := range reject {
+		if anyMatch(a.ProcessNames(), s) {
+			t.Errorf("%q should be rejected", s)
+		}
+	}
+}
+
 func TestMuseInstalled(t *testing.T) {
 	d := testDeps(t)
 	d.Run = (&execx.Fake{Responses: map[string]execx.Result{
