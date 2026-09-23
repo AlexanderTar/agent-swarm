@@ -153,7 +153,9 @@ func TestSyncRunsTheExactAgyInstallCommand(t *testing.T) {
 }
 
 // muse lists plugins as JSON records: a present superpowers means Sync must not
-// attempt any install command (marketplace install is unprobed for muse).
+// attempt any install command (marketplace install is probed and works — see
+// TestSyncInstallsMuseFreshWithNoPriorPluginsOrMarketplace below — but an
+// already-present plugin still must go through update, not install).
 func TestSyncDetectsMusePluginsFromListJSON(t *testing.T) {
 	c := fakeHome(t)
 	srv := marketplaceServer(t)
