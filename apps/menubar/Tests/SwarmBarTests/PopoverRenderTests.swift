@@ -18,7 +18,12 @@ final class PopoverRenderTests: XCTestCase {
         XCTAssertTrue(fullImage.isTemplate)
         XCTAssertGreaterThan(fullImage.size.width, LabelRenderer.image(compact).size.width)
         XCTAssertGreaterThan(LabelRenderer.image(down).size.width, 0)
-        XCTAssertEqual(MenuBarLabelView.tooltipSlots(full).map(\.0).last, "Monthly Auto usage · resets 1 Oct")
+        // usage.json has no "muse" snapshot, so muse (now last in AgentKind.selectable) falls back
+        // to "Usage unavailable."; cursor (the slot that actually carries monthly usage data) is
+        // checked by its own index instead of `.last`.
+        let tooltips = MenuBarLabelView.tooltipSlots(full).map(\.0)
+        XCTAssertEqual(tooltips[3], "Monthly Auto usage · resets 1 Oct")
+        XCTAssertEqual(tooltips.last, "Usage unavailable.")
         XCTAssertTrue(Icons.image(.codex).isTemplate)
         XCTAssertEqual(IconName(.fake), .claude)
     }

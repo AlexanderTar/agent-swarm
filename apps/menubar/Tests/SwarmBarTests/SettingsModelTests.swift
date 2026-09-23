@@ -26,14 +26,14 @@ final class SettingsModelTests: XCTestCase {
     func testAgentsTabRows() async {
         let m = await model()
         let rows = m.agentRows
-        XCTAssertEqual(rows.map(\.label), ["Claude", "Codex", "Antigravity", "Cursor"])
-        XCTAssertEqual(rows.map(\.checked), [true, true, true, false])
-        XCTAssertEqual(rows.map(\.checkboxDisabled), [false, false, false, true])
+        XCTAssertEqual(rows.map(\.label), ["Claude", "Codex", "Antigravity", "Cursor", "Muse"])
+        XCTAssertEqual(rows.map(\.checked), [true, true, true, false, false])
+        XCTAssertEqual(rows.map(\.checkboxDisabled), [false, false, false, true, true])
         XCTAssertEqual(rows.map(\.status), [
-            "Installed · 2.1.274 · Signed in", "Installed · 0.154.0 · Signed in", "Installed · 1.2.5", "Not installed on this Mac",
+            "Installed · 2.1.274 · Signed in", "Installed · 0.154.0 · Signed in", "Installed · 1.2.5", "Not installed on this Mac", "Not installed on this Mac",
         ])
-        XCTAssertEqual(rows.map(\.signInNote), [nil, nil, "Not signed in. Run `agy` in a terminal.", nil])
-        XCTAssertEqual(rows.map(\.superpowersNote), [nil, nil, "Superpowers missing — orchestrators unavailable", nil])
+        XCTAssertEqual(rows.map(\.signInNote), [nil, nil, "Not signed in. Run `agy` in a terminal.", nil, nil])
+        XCTAssertEqual(rows.map(\.superpowersNote), [nil, nil, "Superpowers missing — orchestrators unavailable", nil, nil])
     }
 
     func testDisablingAnAgentAsksFirstAndTheLastOneStays() async {

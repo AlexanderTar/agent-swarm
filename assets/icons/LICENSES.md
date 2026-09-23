@@ -8,6 +8,7 @@ The menu bar uses these files as single-colour template images (spec §21.1).
 | `cursor.svg` | Simple Icons, `cursor` | CC0 1.0 Universal |
 | `codex.svg` | LobeHub Icons, `@lobehub/icons-static-svg` `codex.svg` (https://github.com/lobehub/lobe-icons) | MIT, Copyright (c) 2023 LobeHub |
 | `agy.svg` | LobeHub Icons, `@lobehub/icons-static-svg` `antigravity.svg` | MIT, Copyright (c) 2023 LobeHub |
+| `muse.svg` | LobeHub Icons, `@lobehub/icons-static-svg` `meta.svg` (https://github.com/lobehub/lobe-icons) | MIT, Copyright (c) 2023 LobeHub |
 | `swarm.svg` | Drawn for Agent Swarm | MIT, same as this repository |
 
 Product names and logos are trademarks of their owners. They identify which agent a value belongs to.
