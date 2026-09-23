@@ -299,6 +299,194 @@ func TestAdmitIgnoresZombiesWhenCountingSlots(t *testing.T) {
 	}
 }
 
+// TestAdmitIgnoresASelfTerminalCheckpointWhenCountingSlots is the 2026-09-23
+// budget-overcounting bug: a worker's own `completed` or `failed` checkpoint
+// never touches its own agents.state/sessions.state -- closeCompletedSiblings
+// (checkpoint.go) explicitly excludes the checkpoint's own writer, and
+// onPausingCheckpoint only reacts while the session is pausing. Only the async
+// reconciler eventually flips agents.state to 'finished' (resolveAlive's
+// 60s kill-after-completed, then resolveDead's terminalCheckpointKind once
+// the pane is confirmed gone) -- nothing in WriteCheckpoint's own
+// transaction does it. Before the reconciler runs (which this test never
+// invokes, simulating the window it leaves open, or a daemon that never
+// gets to it in time), the worker still reads agents.state = 'active' and
+// NotAZombieSlot only excludes interrupted/crashed/failed sessions, so a
+// genuinely finished-but-not-yet-reconciled worker keeps occupying its
+// budget slot. Table-driven over both terminal kinds the SQL claims
+// (`kind IN ('completed', 'failed')`), the same way
+// TestAdmitIgnoresZombiesWhenCountingSlots tables over its three states.
+func TestAdmitIgnoresASelfTerminalCheckpointWhenCountingSlots(t *testing.T) {
+	for _, kind := range []CheckpointKind{CompletedCkp, FailedCkp} {
+		t.Run(string(kind), func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			setLimits(t, s, 3, 1, 4)
+			seedEpicWithTwoTasks(t, s)
+			first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+				Model: "fake-1", Brief: BriefInput{Objective: "one"}})
+			if err != nil || queued {
+				t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+			}
+			ses, err := s.LatestSession(ctx, first.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The worker writes its OWN terminal checkpoint (self-completion/
+			// self-failure, not an orchestrator acting on the worker's behalf)
+			// while its session's process has NOT exited -- the reconciler
+			// never runs in this test, so nothing has touched
+			// agents.state/sessions.state yet, exactly the window the live
+			// incident hit.
+			in := CheckpointInput{Kind: kind, Summary: "done"}
+			if kind == CompletedCkp {
+				in.Verification = []Verify{{Cmd: "go test ./..."}}
+				in.Git = []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}
+			}
+			if _, err := s.WriteCheckpoint(ctx, ses.ID, in); err != nil {
+				t.Fatal(err)
+			}
+			out, err := s.Agent(ctx, first.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.State != AgentActive {
+				t.Fatalf("precondition broken: agent state = %s, want still active (nothing reconciled yet)", out.State)
+			}
+			_, queued, err = s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+				Model: "fake-1", Brief: BriefInput{Objective: "two"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queued {
+				t.Fatalf("the self-%s worker must not hold the slot: second queued = true", kind)
+			}
+			// The fix is a pure read-time predicate: writing the terminal
+			// checkpoint and running Admit again must not have touched the
+			// excluded agent's own row, exactly as the zombie test above
+			// verifies for its own exclusion.
+			out, err = s.Agent(ctx, first.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.State != AgentActive {
+				t.Fatalf("the self-%s worker's own agent state must stay untouched by this fix: %s", kind, out.State)
+			}
+		})
+	}
+}
+
+// TestAdmitCountsOrchestratorsOwnSlotDespiteChildItemCheckpoint guards
+// NotAZombieSlot's c.item_id = agents.item_id scoping: an orchestrator
+// routinely writes checkpoints against the CHILD items it's tracking, not
+// its own root item. That must never be mistaken for the orchestrator's OWN
+// completed/failed checkpoint -- the orchestrator's own slot has to stay
+// held exactly as if no checkpoint had been written at all.
+func TestAdmitCountsOrchestratorsOwnSlotDespiteChildItemCheckpoint(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 1, 8, 8)
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A routine checkpoint about the CHILD task the orchestrator is
+	// overseeing, not about the orchestrator's own root -- c.item_id here is
+	// TASK-1's item id, not EPIC-1's.
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: FailedCkp,
+		ItemKey: "TASK-1", Summary: "the child task failed"}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Agent(ctx, orch.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != AgentActive {
+		t.Fatalf("precondition broken: orchestrator state = %s, want still active", out.State)
+	}
+	ep2, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Second Epic"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'ready' WHERE id = ?`, ep2.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep2.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued || second.State != AgentQueued {
+		t.Fatalf("the orchestrator's OWN slot must still be held (a child-item checkpoint must not exclude it): "+
+			"queued = %v, state = %s", queued, second.State)
+	}
+}
+
+// TestAdmitCountsAResumedAgentAfterItsOwnFailedCheckpoint is the regression
+// caught in review of the 2026-09-23 fix above: correlating the exclusion by
+// c.attempt = s.attempt instead of by session leaked across a Resume.
+// pause.go's Resume starts a NEW generation but the SAME attempt
+// (startSession(ctx, a, ses.Attempt, ses.Generation+1, ...)), so an
+// attempt-scoped match kept matching the OLD (now-dead) session's `failed`
+// checkpoint forever, permanently excluding the now-genuinely-running
+// resumed agent from every budget count -- even though a brand new session
+// with a brand new pane is running. This reproduces the exact sequence: an
+// agent writes `failed` while pause_requested (checkpoint.go's
+// pauseAllowedKinds permits it), onPausingCheckpoint moves it to 'stopping',
+// resolveDead's Stopping branch (reconcile.go) flips it to 'paused' once the
+// pane is confirmed dead, then Resume starts generation 2 of the same
+// attempt.
+func TestAdmitCountsAResumedAgentAfterItsOwnFailedCheckpoint(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4)
+	seedEpicWithTwoTasks(t, s)
+	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
+	if err != nil || queued {
+		t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+	}
+	ses, err := s.LatestSession(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'pause_requested' WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: FailedCkp,
+		Summary: "could not proceed"}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulates resolveDead's Stopping branch (reconcile.go:529-531) confirming
+	// the pane gone, without driving the whole reconciler/tmux machinery.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Resume(ctx, first.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := s.LatestSession(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Attempt != ses.Attempt || resumed.Generation != ses.Generation+1 {
+		t.Fatalf("resumed session = attempt %d generation %d, want attempt %d generation %d (same attempt, next generation)",
+			resumed.Attempt, resumed.Generation, ses.Attempt, ses.Generation+1)
+	}
+	_, queued, err = s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued {
+		t.Fatal("the resumed agent must hold its slot: second queued = false " +
+			"(NotAZombieSlot wrongly matched the resumed session against the OLD generation's failed checkpoint)")
+	}
+}
+
 // TestAdmitIgnoresZombiesForOrchestratorLimit is the same fix applied to the
 // orchestrator branch of Admit, which runs a separate query against
 // max_orchestrators.
