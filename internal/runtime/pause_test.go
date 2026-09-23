@@ -1928,6 +1928,70 @@ func TestResumeEmitsRelayToParent(t *testing.T) {
 	}
 }
 
+// TestResumeQueuesSelfMessageForKickoff covers the muse gap: muse's `resume
+// <sid>` CLI takes no prompt argument (unlike claude/codex/cursor/agy, which
+// all get a resume kickoff on argv), so Resume must queue the agent itself a
+// message instead. WakeDue's idle-paste fallback picks up any pending
+// immediate message and pastes the generic "call swarm_sync" nudge once the
+// pane goes idle -- this is what actually gets a resumed muse agent to act.
+func TestResumeQueuesSelfMessageForKickoff(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = 'p1' WHERE id = ?`, wSes.ID)
+
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	var payloadStr, wakeClass string
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(payload_json, ''), COALESCE(wake_class, '')
+		FROM messages WHERE to_agent_id = ? AND kind = 'relay' AND payload_json LIKE '%"event":"resumed"%'`,
+		w.ID).Scan(&count, &payloadStr, &wakeClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 self-addressed resumed relay, got %d", count)
+	}
+	if wakeClass != "immediate" {
+		t.Fatalf("expected wake_class immediate, got %s", wakeClass)
+	}
+	if !strings.Contains(payloadStr, w.Name) {
+		t.Fatalf("expected payload to contain agent name %s: %s", w.Name, payloadStr)
+	}
+}
+
+// TestResumeFreshLaunchQueuesNoSelfMessage covers the other half: with no
+// provider session id, Resume falls back to a fresh Launch (see
+// TestResumeFallsBackToAFreshLaunch), which already carries a full Kickoff
+// on argv for every adapter including muse -- queuing a redundant self
+// message here would be pointless.
+func TestResumeFreshLaunchQueuesNoSelfMessage(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = NULL WHERE id = ?`, wSes.ID)
+
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE to_agent_id = ? AND kind = 'relay' AND payload_json LIKE '%"event":"resumed"%'`,
+		w.ID).Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no self-addressed resumed relay on a fresh-launch fallback, got %d", count)
+	}
+}
+
 func TestRelayPausedIncludesItemAndSummary(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()

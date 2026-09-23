@@ -905,6 +905,33 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 				})
 			}
 		}
+
+		// A real resume (ad.Resume, not a fresh Launch) reattaches a session
+		// with nothing telling it to act: unlike claude/codex/cursor/agy, muse's
+		// `resume <sid>` CLI takes no prompt/kickoff argument at all (confirmed
+		// live 2026-09-23, see Muse.Resume), so it can't get a reminder on argv
+		// the way the others do. Queuing this agent a message closes that gap
+		// for every kind, not just muse: WakeDue already pastes the generic
+		// "call swarm_sync" idle nudge into any pane with a pending immediate
+		// message once it goes idle (the same mechanism muse's Wake -- always
+		// tmux-paste, see its doc comment -- already relies on for ordinary
+		// inbox delivery). Adapters that already carry a kickoff on their
+		// resume argv see this message on the swarm_sync call their own
+		// kickoff text tells them to make, well before WakeDue's 20s paste
+		// delay, so it never produces a redundant paste for them.
+		if resume {
+			payload, err := json.Marshal(map[string]any{"event": "resumed", "agent": a.Name})
+			if err == nil {
+				_, _ = s.enqueue(ctx, tx, Message{
+					Kind:       "relay",
+					Origin:     "daemon",
+					ToAgentID:  a.ID,
+					RootItemID: a.RootItemID,
+					ItemID:     a.ItemID,
+					Payload:    payload,
+				})
+			}
+		}
 		return nil
 	}); err != nil {
 		return Agent{}, err

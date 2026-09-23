@@ -61,9 +61,18 @@ func (m *Muse) Launch(s Spec) (Launch, error) {
 	return Launch{Argv: m.argv(s), Env: map[string]string{}}, nil
 }
 
-// Resume reattaches the muse session by its UUID. No kickoff is passed: `muse
-// resume` takes no prompt argument (probed 2026-09-23), and inventing one
-// would start a new turn on every daemon restart.
+// Resume reattaches the muse session by its UUID. No kickoff is passed:
+// `muse resume <sid>` takes exactly one positional, the session ref itself,
+// with no room for a trailing prompt (confirmed live 2026-09-23 -- a second
+// positional is parsed as an invalid session name, not a prompt; `--last`
+// is the only other accepted form). Resume only ever runs from an explicit
+// swarm_control resume of a paused/interrupted session (runtime/pause.go),
+// never from daemon-restart recovery (Reconcile reattaches to still-live
+// tmux panes without calling Resume), so there is no "every daemon restart"
+// risk to invent a kickoff against. The reminder to call swarm_sync still
+// reaches the agent -- runtime/pause.go's Resume queues it a message, and
+// WakeDue's idle-paste fallback (the only wake path muse supports, see
+// Wake below) delivers it once the reattached pane goes idle.
 func (m *Muse) Resume(s Spec) (Launch, error) {
 	if err := m.setupEnv(s); err != nil {
 		return Launch{}, err
