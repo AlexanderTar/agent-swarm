@@ -599,9 +599,9 @@ func cmdUsage(args []string, stdout, stderr io.Writer) int {
 		} else if u.Stale && u.FetchedAt == 0 {
 			// fetched_at == 0 with no error is recordAttemptOnly's fingerprint
 			// (internal/usage/usage.go): this kind has no configured source at
-			// all (e.g. muse has no quota endpoint), never a fetch that
-			// happened and aged out, so "stale" (implying prior data) would
-			// mislead.
+			// all — nothing polls it, so "stale" (implying prior data that
+			// aged out) would mislead. Every kind DefaultSources builds has
+			// one; this is the SWARM_USAGE-unset / disabled-agent path.
 			note = "no usage source"
 		} else if u.Stale {
 			note = "stale"

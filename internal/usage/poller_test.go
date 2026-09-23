@@ -185,7 +185,7 @@ func TestSourcesFromEnvIsEmptyUnlessExplicitlyEnabled(t *testing.T) {
 		}
 		return ""
 	}, t.TempDir(), "u", http.DefaultClient, nil, nil)
-	if len(live) != 4 {
-		t.Fatalf("SWARM_USAGE=live gave %d sources, want 4", len(live))
+	if len(live) != 5 {
+		t.Fatalf("SWARM_USAGE=live gave %d sources, want 5", len(live))
 	}
 }
