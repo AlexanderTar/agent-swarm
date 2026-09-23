@@ -165,11 +165,13 @@ func normalize(kind runtime.AgentKind, event string) string {
 // isQuestionTool is the one list of native "ask the human" tools.
 // Per-adapter status (spec section 5): names and hook block shapes are read from
 // code and vendor docs only; nothing here was run against a live agent.
-//   claude AskUserQuestion: PreToolUse deny documented (code + docs VERIFIED, live UNVERIFIED).
-//   codex request_user_input, experimental_request_user_input: UNVERIFIED that PreToolUse
-//     reaches these tools (docs say some tool paths opt out) and that the block is honored.
-//   cursor ask_question: tool name from the user's brief, UNVERIFIED (docs name no question tool).
-//   agy ask_question: name from an existing test, block shape UNVERIFIED.
+//
+//	claude AskUserQuestion: PreToolUse deny documented (code + docs VERIFIED, live UNVERIFIED).
+//	codex request_user_input, experimental_request_user_input: UNVERIFIED that PreToolUse
+//	  reaches these tools (docs say some tool paths opt out) and that the block is honored.
+//	cursor ask_question: tool name from the user's brief, UNVERIFIED (docs name no question tool).
+//	agy ask_question: name from an existing test, block shape UNVERIFIED.
+//
 // Where a block is ignored, a parented agent's question opens no row and nothing else happens.
 func isQuestionTool(name string) bool {
 	switch name {
@@ -201,9 +203,13 @@ type Handler struct {
 	Advisor  AdvisorScanner
 	Now      func() time.Time
 	Log      func(string, ...any)
-	mu       sync.Mutex
-	noticeAt map[string]time.Time
-	readFile func(string) ([]byte, error) // nil means os.ReadFile
+	// WorktreesDir is ~/.swarm/worktrees (install.Config.Worktrees()); empty
+	// disables the worktree-mutation guard below, so every existing Handler
+	// literal in tests keeps compiling and keeps its current behaviour.
+	WorktreesDir string
+	mu           sync.Mutex
+	noticeAt     map[string]time.Time
+	readFile     func(string) ([]byte, error) // nil means os.ReadFile
 }
 
 func (h *Handler) now() time.Time {
@@ -450,6 +456,13 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 					Block:  true,
 					Reason: "[swarm] Nested agent invocations via shell are disabled. Use swarm_spawn to delegate work.",
 				}, nil
+			}
+			if blocksWorktreeMutation(in.Command, h.WorktreesDir) {
+				reason := worktreeGuardOrchestrator
+				if s.ParentAgentID != "" {
+					reason = worktreeGuardWorker
+				}
+				return adapter.HookDecision{Block: true, Reason: reason}, nil
 			}
 			if blocked, reason := (AttrCheck{ReadFile: h.readFile}).Block(in.Command, in.Cwd); blocked {
 				return adapter.HookDecision{

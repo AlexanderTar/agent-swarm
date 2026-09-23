@@ -199,20 +199,68 @@ func (s *Service) insert(ctx context.Context, wt Worktree) error {
 }
 
 // retain sets state='retained', the reason, and calls OnRetained inside the
-// same transaction.
+// same transaction -- but only on a genuine (state, reason) transition. At a
+// 10-minute reclaim cadence the 30s notify dedup window (notify.go:33) never
+// suppresses a repeat, so an unchanged dirty worktree would otherwise raise
+// "Worktree kept" once per pass forever.
 func (s *Service) retain(ctx context.Context, wt Worktree, reason string) (Worktree, error) {
+	changed := wt.State != "retained" || wt.RetainedReason != reason
 	wt.State, wt.RetainedReason = "retained", reason
 	err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE worktrees SET state = 'retained', retained_reason = ? WHERE id = ?`, reason, wt.ID); err != nil {
 			return err
 		}
-		if s.OnRetained != nil {
+		if s.OnRetained != nil && changed {
 			return s.OnRetained(ctx, tx, wt)
 		}
 		return nil
 	})
 	return wt, err
+}
+
+// markRemoved closes the row without touching git or the filesystem: the
+// path is already gone, so there is nothing left to remove.
+//
+// ponytail: it does not run `git worktree prune`. Measured today,
+// `git worktree list --porcelain | grep -c '^prunable'` is 0 in both repos,
+// because the agents doing raw removals prune after themselves. Ceiling: a
+// future `rm -rf` with no prune would leave `.git/worktrees/<name>`
+// registered, and since PathFor checks the filesystem and not the registry,
+// the next Create for the same slug would pick the same base path and
+// `git worktree add` would fail with "missing but already registered".
+// Upgrade path if that is ever observed: one `git worktree prune` in the repo
+// here.
+func (s *Service) markRemoved(ctx context.Context, wt Worktree) (Worktree, error) {
+	wt.State, wt.RetainedReason = "removed", ""
+	now := s.Now()
+	wt.RemovedAt = &now
+	_, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'removed', retained_reason = NULL,
+		removed_at = ? WHERE id = ?`, db.Millis(now), wt.ID)
+	return wt, err
+}
+
+// atDetachedSHA reports whether a detached worktree's HEAD is still the sha
+// it was created at. A command failure reads as "moved" -- the same
+// cannot-prove-it-is-safe posture DirtyStrict takes.
+//
+// wt.DetachedSHA may be the abbreviated sha Review was called with
+// (shaPattern allows 7-40 hex chars; a review worktree's real-world path,
+// "review-0d2d79d", is exactly this shape) while `git rev-parse HEAD` always
+// returns the full 40-char sha, so this is a prefix match, not ==: since
+// DetachedSHA is guaranteed hex by shaPattern, HasPrefix here means "HEAD is
+// the commit that abbreviation named" -- the same resolution git itself did
+// at `worktree add --detach`.
+//
+// wt.DetachedSHA is never empty when this runs: remove()'s caller only takes
+// this branch when wt.Branch == "", and Create requires a non-empty Branch
+// while Review validates sha against shaPattern (non-empty) before
+// constructing the row -- so "both empty" (which would make HasPrefix(head,
+// "") trivially true and skip this check entirely) cannot occur by
+// construction. Confirmed empirically too: zero live rows have both NULL.
+func (s *Service) atDetachedSHA(ctx context.Context, wt Worktree) bool {
+	head, err := s.git(ctx, wt.Path, "rev-parse", "HEAD")
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(head)), wt.DetachedSHA)
 }
 
 func scanWorktree(row interface {
@@ -413,12 +461,26 @@ func (s *Service) Remove(ctx context.Context, wtID, callerAgentID string) (Workt
 }
 
 func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
+	// A path that is already gone is 'removed', not 'dirty': without this,
+	// DirtyStrict's git call fails, dirty comes back true, and a vanished
+	// worktree raises a spurious "Worktree kept" notification (§2.6). Runs
+	// before any git call.
+	if !fileExists(wt.Path) {
+		return s.markRemoved(ctx, wt)
+	}
+
 	dirty, err := s.DirtyStrict(ctx, wt.Path)
 	if dirty {
 		if err != nil {
 			s.logf("worktree: status failed for %s, keeping it: %v", wt.Path, err)
 		}
 		return s.retain(ctx, wt, "dirty")
+	}
+	// A detached worktree whose HEAD has moved off detached_sha holds commits
+	// reachable from no ref anywhere else. Branch == "" alone would skip
+	// mergedOrPushed entirely and delete those commits with the worktree.
+	if wt.Branch == "" && !s.atDetachedSHA(ctx, wt) {
+		return s.retain(ctx, wt, "unmerged")
 	}
 	if wt.Branch != "" && !s.mergedOrPushed(ctx, wt) {
 		return s.retain(ctx, wt, "unmerged")
@@ -452,14 +514,32 @@ func (s *Service) mergedOrPushed(ctx context.Context, wt Worktree) bool {
 	return err == nil && strings.TrimSpace(string(up)) == strings.TrimSpace(string(head))
 }
 
+// ReclaimOne applies Remove's rules to one worktree the caller has already
+// decided is eligible. It is Sweep's per-worktree body, exported: the same
+// lockFor(wt.ID) window and the same call into remove, with no eligibility
+// opinion of its own.
+//
+// It exists because Sweep's *own* eligibility rule — a whole root item
+// finished — cannot fire during a multi-week epic, and runtime needs a way to
+// act on one worktree at a time.
+func (s *Service) ReclaimOne(ctx context.Context, wt Worktree) (Worktree, error) {
+	lock := lockFor(wt.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	return s.remove(ctx, wt)
+}
+
+// Candidates returns the worktrees matching an eligibility clause the caller
+// supplies, so runtime can express a gate over agents and sessions without
+// this package taking a view on either. It is the existing unexported
+// query(), exported.
+func (s *Service) Candidates(ctx context.Context, where string, args ...any) ([]Worktree, error) {
+	return s.query(ctx, where, args...)
+}
+
 // Sweep is §12.2: it runs Remove's rules on every active worktree of one root,
 // ignoring reservations, because the caller has checked the whole tree is
-// finished. Each worktree is still locked for its own removal (C4): a Share
-// racing this exact worktree must see the same before/after guarantee Remove
-// gives, not an in-between state. The lock is taken here, per iteration, and
-// not inside remove itself — remove is also Remove's helper, and Remove
-// already holds this same lock around its own call to remove; locking inside
-// remove would self-deadlock.
+// finished.
 func (s *Service) Sweep(ctx context.Context, rootItemID string) ([]Worktree, error) {
 	wts, err := s.query(ctx, `WHERE root_item_id = ? AND state = 'active'`, rootItemID)
 	if err != nil {
@@ -472,10 +552,7 @@ func (s *Service) Sweep(ctx context.Context, rootItemID string) ([]Worktree, err
 	}
 	var out []Worktree
 	for _, wt := range wts {
-		lock := lockFor(wt.ID)
-		lock.Lock()
-		done, err := s.remove(ctx, wt)
-		lock.Unlock()
+		done, err := s.ReclaimOne(ctx, wt)
 		if err != nil {
 			return out, err
 		}
