@@ -38,18 +38,21 @@ public final class NewOrchestratorForm {
         self.connected = connected
         self.format = format
         takenNames = Set(AgentTree.flatten(agents).map(\.name))
-        queued = Self.wouldQueue(agents, max: settings.maxOrchestrators)
+        queued = Self.wouldQueue(agents, max: settings.maxConcurrentAgents)
         (choice, advisor) = CatalogRules.prefill(settings)
     }
 
-    /// Queue when live or waiting orchestrators already fill `max_orchestrators` (I20).
+    /// Queue when live or waiting agents of ANY role already fill the shared
+    /// `max_concurrent_agents` pool (docs/specs/2026-09-24-unify-agent-limits.md):
+    /// orchestrators no longer have their own separate limit, so starting one
+    /// now competes for the same slots every other role does.
     public static func wouldQueue(_ agents: [AgentNode], max: Int) -> Bool {
-        let orchestrators = AgentTree.flatten(agents).filter { $0.role == .orchestrator && !AgentTree.isFinished($0) }
-        if orchestrators.contains(where: { $0.state == .queued }) { return true }
-        let live = orchestrators.filter {
+        let live = AgentTree.flatten(agents).filter { !AgentTree.isFinished($0) }
+        if live.contains(where: { $0.state == .queued }) { return true }
+        let running = live.filter {
             [.spawning, .running, .waiting, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
         }
-        return live.count >= max
+        return running.count >= max
     }
 
     public func load() async {

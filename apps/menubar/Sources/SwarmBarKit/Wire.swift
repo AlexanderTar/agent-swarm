@@ -298,8 +298,10 @@ public struct Settings: Codable, Sendable, Equatable {
     public var fallbackDefault: RoleDefault = RoleDefault(agent: .claude, model: "sonnet")
     public var notifications: [String: NotifyPref]
     public var maxConcurrentSubagents: Int = 3
-    public var maxOrchestrators: Int
-    public var maxAgents: Int
+    /// The single global admission ceiling shared by every role, orchestrator
+    /// included (docs/specs/2026-09-24-unify-agent-limits.md; replaces the old,
+    /// separately-counted maxOrchestrators/maxAgents pair).
+    public var maxConcurrentAgents: Int
     public var maxAgentsPerRoot: Int
     public var scanExcludes: [String]
     public var scanIntervalSec: Int
@@ -314,8 +316,8 @@ public struct Settings: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case roles, notifications, instructions
         case fallbackDefault = "fallback_default"
-        case enabledAgents = "enabled_agents", maxOrchestrators = "max_orchestrators"
-        case maxAgents = "max_agents", maxAgentsPerRoot = "max_agents_per_root"
+        case enabledAgents = "enabled_agents"
+        case maxConcurrentAgents = "max_concurrent_agents", maxAgentsPerRoot = "max_agents_per_root"
         case maxConcurrentSubagents = "max_concurrent_subagents"
         case scanExcludes = "scan_excludes", scanIntervalSec = "scan_interval_sec"
         case menubarCompact = "menubar_compact", usagePollSec = "usage_poll_sec"
@@ -338,7 +340,7 @@ public struct Settings: Codable, Sendable, Equatable {
         fallbackDefault: RoleDefault(agent: .claude, model: "sonnet"),
         notifications: ["info": NotifyPref(), "attention": NotifyPref(), "action": NotifyPref()],
         maxConcurrentSubagents: 3,
-        maxOrchestrators: 3, maxAgents: 8, maxAgentsPerRoot: 4,
+        maxConcurrentAgents: 4, maxAgentsPerRoot: 4,
         scanExcludes: ["~/Library", "~/.Trash", "~/Downloads"], scanIntervalSec: 21600,
         menubarCompact: false, usagePollSec: 300, pauseDeadlineSec: 120)
 
@@ -360,7 +362,7 @@ public struct Settings: Codable, Sendable, Equatable {
     public init(enabledAgents: [AgentKind] = [.claude], roles: [String: RoleDefault] = [:],
                 fallbackDefault: RoleDefault = RoleDefault(agent: .claude, model: "sonnet"),
                 notifications: [String: NotifyPref] = [:], maxConcurrentSubagents: Int = 3,
-                maxOrchestrators: Int = 3, maxAgents: Int = 8, maxAgentsPerRoot: Int = 4,
+                maxConcurrentAgents: Int = 4, maxAgentsPerRoot: Int = 4,
                 scanExcludes: [String] = [], scanIntervalSec: Int = 21600,
                 menubarCompact: Bool = false, usagePollSec: Int = 300, pauseDeadlineSec: Int = 120,
                 instructions: String = "") {
@@ -369,8 +371,7 @@ public struct Settings: Codable, Sendable, Equatable {
         self.fallbackDefault = fallbackDefault
         self.notifications = notifications
         self.maxConcurrentSubagents = maxConcurrentSubagents
-        self.maxOrchestrators = maxOrchestrators
-        self.maxAgents = maxAgents
+        self.maxConcurrentAgents = maxConcurrentAgents
         self.maxAgentsPerRoot = maxAgentsPerRoot
         self.scanExcludes = scanExcludes
         self.scanIntervalSec = scanIntervalSec
@@ -387,8 +388,11 @@ public struct Settings: Codable, Sendable, Equatable {
         fallbackDefault = try c.decodeIfPresent(RoleDefault.self, forKey: .fallbackDefault) ?? RoleDefault(agent: .claude, model: "sonnet")
         notifications = try c.decode([String: NotifyPref].self, forKey: .notifications)
         maxConcurrentSubagents = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentSubagents) ?? 3
-        maxOrchestrators = try c.decode(Int.self, forKey: .maxOrchestrators)
-        maxAgents = try c.decode(Int.self, forKey: .maxAgents)
+        // decodeIfPresent, not decode: a daemon that predates this rename (or a
+        // stale fixture) sends no max_concurrent_agents key at all -- falling
+        // back to the shipped default rather than throwing keeps the app usable
+        // against it, the same tolerance maxConcurrentSubagents/instructions use.
+        maxConcurrentAgents = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentAgents) ?? 4
         maxAgentsPerRoot = try c.decode(Int.self, forKey: .maxAgentsPerRoot)
         scanExcludes = try c.decode([String].self, forKey: .scanExcludes)
         scanIntervalSec = try c.decode(Int.self, forKey: .scanIntervalSec)
@@ -408,8 +412,7 @@ public struct Settings: Codable, Sendable, Equatable {
         try c.encode(fallbackDefault, forKey: .fallbackDefault)
         try c.encode(notifications, forKey: .notifications)
         try c.encode(maxConcurrentSubagents, forKey: .maxConcurrentSubagents)
-        try c.encode(maxOrchestrators, forKey: .maxOrchestrators)
-        try c.encode(maxAgents, forKey: .maxAgents)
+        try c.encode(maxConcurrentAgents, forKey: .maxConcurrentAgents)
         try c.encode(maxAgentsPerRoot, forKey: .maxAgentsPerRoot)
         try c.encode(scanExcludes, forKey: .scanExcludes)
         try c.encode(scanIntervalSec, forKey: .scanIntervalSec)

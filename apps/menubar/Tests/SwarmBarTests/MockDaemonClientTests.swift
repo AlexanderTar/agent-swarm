@@ -50,10 +50,10 @@ final class MockDaemonClientTests: XCTestCase {
         XCTAssertEqual(recovered.agents, [])
 
         var s = Settings.defaults
-        s.maxAgents = 2
+        s.maxConcurrentAgents = 2
         let saved = try await mock.saveSettings(s)
         let reloaded = try await mock.state()
-        XCTAssertEqual([saved.maxAgents, reloaded.settings.maxAgents], [2, 2])
+        XCTAssertEqual([saved.maxConcurrentAgents, reloaded.settings.maxConcurrentAgents], [2, 2])
 
         let body = CreateSpikeBody(requestId: "r", name: "x", intent: .feature, repos: [], agent: .claude,
                                    model: "opus", effort: nil, advisor: .none, request: nil)

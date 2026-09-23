@@ -43,10 +43,11 @@ public final class SettingsModel {
     }
 
     public enum Limit: CaseIterable, Sendable {
-        case subagents, pauseDeadline
+        case agents, subagents, pauseDeadline
 
         public var range: ClosedRange<Int> {
             switch self {
+            case .agents: return 1...32
             case .subagents: return 1...16
             case .pauseDeadline: return 30...600
             }
@@ -302,6 +303,7 @@ public final class SettingsModel {
 
     public func value(_ limit: Limit) -> Int {
         switch limit {
+        case .agents: return settings.maxConcurrentAgents
         case .subagents: return settings.maxConcurrentSubagents
         case .pauseDeadline: return settings.pauseDeadlineSec
         }
@@ -309,6 +311,7 @@ public final class SettingsModel {
 
     private func store(_ limit: Limit, _ v: Int) {
         switch limit {
+        case .agents: settings.maxConcurrentAgents = v
         case .subagents: settings.maxConcurrentSubagents = v
         case .pauseDeadline: settings.pauseDeadlineSec = v
         }
@@ -317,6 +320,12 @@ public final class SettingsModel {
     /// How many running agents a lower limit leaves above it.
     public func overLimit(_ limit: Limit, _ value: Int) -> Int {
         switch limit {
+        case .agents:
+            let running = AgentTree.flatten(agents).filter {
+                !AgentTree.isFinished($0) &&
+                [.spawning, .running, .waiting, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
+            }
+            return running.count - value
         case .subagents:
             let subagents = AgentTree.flatten(agents).filter {
                 $0.parentName != nil && !AgentTree.isFinished($0) &&

@@ -622,8 +622,7 @@
         "sound": true
       }
     },
-    "max_orchestrators": 3,
-    "max_agents": 8,
+    "max_concurrent_agents": 4,
     "max_agents_per_root": 4,
     "scan_excludes": [
       "~/Library",
