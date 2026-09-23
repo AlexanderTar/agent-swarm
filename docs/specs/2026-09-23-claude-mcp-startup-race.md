@@ -14,9 +14,19 @@ showed this in its pane right after spawn:
 ```
 
 The agent then fell back to calling `swarm_sync` directly as an MCP tool a few
-seconds later and got on with real work, so this wasn't permanently fatal —
-but every fresh claude session starts with its native-wake channel dead and
-its `swarm` skill unusable.
+seconds later and got on with real work, so this wasn't permanently fatal.
+
+**Correction after a targeted delivery probe (see Phase 1):** the
+"no MCP server configured with that name" line is cosmetic. It does **not**
+mean native wake is broken — a `notifications/claude/channel` frame sent by
+the MCP server after that banner prints is still delivered into the pane
+(`← swarm: <content>`) with the banner unchanged, both with and without this
+fix. Only `Skill(swarm)` is actually, functionally broken by
+`--setting-sources project,local`; the banner line is a confusing but inert
+side effect of the same flag. This spec and the fix still address both
+(the banner is legitimately confusing — the original report reasonably read
+it as "native wake is dead"), but the channel half of the fix is a clarity
+improvement, not a restoration of broken functionality.
 
 **Original hypothesis (this investigation's starting point): a client-side
 startup race.** The theory was that `claude` starts executing the kickoff
@@ -42,6 +52,21 @@ server exposes. This spec supersedes that hypothesis — see Root cause below.
 - The same fake-server harness with `--setting-sources user,project,local`
   (the only variable changed) makes **both** symptoms disappear: the channels
   banner is clean and `Skill(swarm)` reports "Successfully loaded skill".
+- **Delivery probe (added after the advisor's second review, before declaring
+  done):** does the "no MCP server configured with that name" banner mean
+  native wake is actually broken, or just that the banner text is wrong?
+  Extended the fake MCP server to emit one `notifications/claude/channel`
+  frame (`PROBE-WAKE-MARKER`) 6 s after `initialize`, then ran two sessions —
+  one with `--setting-sources project,local` and no project `.mcp.json`
+  (pre-fix shape), one with the same flags plus a project `.mcp.json` mirroring
+  `--mcp-config` (post-fix shape). **`← swarm: PROBE-WAKE-MARKER` was
+  delivered into the pane in both**, banner unchanged either way. Native wake
+  delivery was never actually broken by this bug; the banner line is
+  cosmetic. Also checked process count during the post-fix run:
+  `ps -ef | grep fake_mcp.py` showed exactly one process per session (not
+  two) — `--strict-mcp-config` does not let the project `.mcp.json` open a
+  second, duplicate connection to the same server name, so the fix carries no
+  double-delivery risk.
 
 ## Root cause
 
@@ -63,16 +88,20 @@ source, neither of which is CLAUDE.md:
    `Skill` tool, even though the files are present, correctly named, and
    correctly formed. This is why `Skill(swarm)` always fails with "Unknown
    skill: swarm" — not a race, a deterministic exclusion.
-2. **Channel name resolution.** `--dangerously-load-development-channels
-   server:swarm` resolves the name `swarm` against whatever registry Claude
-   Code consults for "is there an MCP server named swarm" — a registry that
-   is populated only when the "user" source loads, and that is a *different*
+2. **Channel name resolution (banner only, not delivery — see the delivery
+   probe above).** `--dangerously-load-development-channels server:swarm`
+   resolves the name `swarm` against whatever registry Claude Code consults
+   to print the "server:swarm · ..." status line — a registry that is
+   populated only when the "user" source loads, and that is a *different*
    registry from the one `--strict-mcp-config --mcp-config <path>` actually
-   connects the tool-calling server from. The `swarm` MCP server (tools) works
-   fine the whole time; only the *channel capability lookup* fails, which is
-   why `swarm_sync` called directly always succeeds once the model tries it,
-   while `Skill(swarm)` never does and the channel banner always shows the
-   "no MCP server configured with that name" line.
+   connects the tool-calling (and, per the delivery probe, channel-emitting)
+   server from. The `swarm` MCP server works fine the whole time, for both
+   tool calls and `notifications/claude/channel` delivery; only the *banner
+   text* is wrong, printing "no MCP server configured with that name" even
+   though one is configured and working. This is still worth fixing — the
+   banner is exactly what led the original report to (reasonably, but
+   incorrectly) conclude native wake was down — but it is a cosmetic bug, not
+   a functional one.
 
 Both failures are **100% deterministic given `--setting-sources
 project,local`** — they do not depend on timing, process load, prompt length,
