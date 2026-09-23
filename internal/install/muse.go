@@ -65,7 +65,7 @@ func CheckMuse(ctx context.Context, c Config, run execx.Runner) []Check {
 		return []Check{{"muse MCP", false, "The swarm MCP server points at " + entry.Command + ". Run swarm install."}}
 	}
 	if _, err := os.Stat(c.Bin); err != nil {
-		return []Check{{"muse MCP", false, "The hook binary is missing: " + c.Bin + ". Run make install."}}
+		return []Check{{"muse MCP", false, "The swarm binary is missing: " + c.Bin + ". Run make install."}}
 	}
 	return []Check{{"muse MCP", true, p}}
 }
