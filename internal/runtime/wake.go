@@ -307,8 +307,10 @@ func (s *Store) getPasteAttempts(sessionID string) (int, *time.Time) {
 
 // PublishWake is the adapter.Deps.PublishWake seam: it fans a notice out to
 // every channel SubscribeWake handed out for sessionID (Task 34's SSE route
-// subscribes here for the claude bridge).
-func (s *Store) PublishWake(ctx context.Context, sessionID, notice string) error {
+// subscribes here for the claude bridge). It reports whether there was anyone
+// to publish TO -- a publish with no subscriber is not a delivered wake, and
+// Claude.Wake must not tell WakeDue otherwise.
+func (s *Store) PublishWake(ctx context.Context, sessionID, notice string) (bool, error) {
 	s.bookkeepingMu.Lock()
 	subs := append([]chan string{}, s.wakeSubs[sessionID]...)
 	s.bookkeepingMu.Unlock()
@@ -318,7 +320,7 @@ func (s *Store) PublishWake(ctx context.Context, sessionID, notice string) error
 		default:
 		}
 	}
-	return nil
+	return len(subs) > 0, nil
 }
 
 // SubscribeWake returns a buffered channel of notices for sessionID and an

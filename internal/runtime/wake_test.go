@@ -351,8 +351,12 @@ func TestPublishWakeReachesOnlyItsOwnSession(t *testing.T) {
 	defer stopMine()
 	theirs, stopTheirs := s.SubscribeWake("ses_2")
 	defer stopTheirs()
-	if err := s.PublishWake(ctx, "ses_1", "[swarm] 1 new message(s)"); err != nil {
+	delivered, err := s.PublishWake(ctx, "ses_1", "[swarm] 1 new message(s)")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !delivered {
+		t.Fatal("PublishWake must report delivered when a session is subscribed")
 	}
 	select {
 	case got := <-mine:

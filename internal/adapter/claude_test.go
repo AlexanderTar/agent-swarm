@@ -493,9 +493,9 @@ func TestClaudeParseHook(t *testing.T) {
 func TestClaudeWakePublishes(t *testing.T) {
 	d := testDeps(t)
 	var got string
-	d.PublishWake = func(ctx context.Context, sessionID, notice string) error {
+	d.PublishWake = func(ctx context.Context, sessionID, notice string) (bool, error) {
 		got = sessionID + "|" + notice
-		return nil
+		return true, nil
 	}
 	ok, err := newClaude(d).Wake(context.Background(), WakeTarget{SessionID: "ses_1", Notice: "N"})
 	if err != nil || !ok {
@@ -503,6 +503,25 @@ func TestClaudeWakePublishes(t *testing.T) {
 	}
 	if got != "ses_1|N" {
 		t.Fatalf("published %q", got)
+	}
+}
+
+// Publishing into the void is not a delivery. The claude bridge fans a notice
+// out to whatever SubscribeWake handed out for the session; with the mcpshim
+// not connected there is nobody subscribed, and reporting delivered=true then
+// makes WakeDue record a wake that never reached anyone -- so the session sits
+// silent until the cooldown expires instead of falling to the paste at once.
+func TestClaudeWakeIsNotDeliveredWithoutASubscriber(t *testing.T) {
+	d := testDeps(t)
+	d.PublishWake = func(ctx context.Context, sessionID, notice string) (bool, error) {
+		return false, nil // published, but nobody is listening
+	}
+	ok, err := newClaude(d).Wake(context.Background(), WakeTarget{SessionID: "ses_1", Notice: "N"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("Wake reported delivered with no subscriber on the channel bridge")
 	}
 }
 

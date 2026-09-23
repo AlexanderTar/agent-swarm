@@ -94,7 +94,7 @@ type Deps struct {
 	StartEnv            execx.StarterEnv
 	Now                 func() time.Time
 	Log                 func(format string, args ...any)
-	PublishWake         func(ctx context.Context, sessionID, notice string) error
+	PublishWake         func(ctx context.Context, sessionID, notice string) (bool, error)
 }
 
 // Adapter is the per-agent-kind seam between the daemon and one CLI.
