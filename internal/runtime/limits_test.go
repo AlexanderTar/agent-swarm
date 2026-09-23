@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -548,9 +549,19 @@ func TestNoAckChildren(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE agent_id = ?`, crashed.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Not a zombie slot (still 'active', not interrupted/crashed/failed, no
+	// terminal checkpoint) -- only the sessions.state filter this test also
+	// guards excludes it: "swarm_control cancel if genuinely stuck" is wrong
+	// advice for a child correctly waiting on `swarm_control resume`.
+	mustExec(t, s.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+		VALUES ('paused_child', 'paused-child', 'fake', 'fake-1', 'coder', ?, ?, ?, '', 'active', 1)`,
+		stuck.ItemID, stuck.RootItemID, orch.ID)
+	mustExec(t, s.DB, `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, cwd_kind, state, started_at)
+		VALUES ('ses_paused_child', 'paused_child', 1, 1, 'hash_paused', 'paused-child', '/tmp/w', 'neutral', 'paused', ?)`,
+		db.Millis(s.now()))
 
-	// Neither child has checkpointed yet, but ackTimeout hasn't elapsed --
-	// nothing must be reported.
+	// Neither active child has checkpointed yet, but ackTimeout hasn't
+	// elapsed -- nothing must be reported.
 	names, err := s.NoAckChildren(ctx, orch.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -567,7 +578,15 @@ func TestNoAckChildren(t *testing.T) {
 	}
 	if len(names) != 1 || names[0] != stuck.Name {
 		t.Fatalf("want only %q (the still-running, never-checkpointed child): got %v -- "+
-			"the crashed child must be excluded, same as NotAZombieSlot already excludes it from the slot count", stuck.Name, names)
+			"the crashed child must be excluded (NotAZombieSlot), and the paused child must be excluded "+
+			"(sessions.state filter -- it is correctly waiting on a human resume, not stuck)", stuck.Name, names)
+	}
+}
+
+func mustExec(t *testing.T, d *db.DB, query string, args ...any) {
+	t.Helper()
+	if _, err := d.ExecContext(context.Background(), query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
 	}
 }
 

@@ -611,12 +611,9 @@ func TestPreToolUseSurfacesNoAckChildAfterResumeWithZeroNewCheckpoints(t *testin
 		VALUES ('ses_child_1_g2', 'child_1', 1, 2, 'hash1b', 'resumed-then-stuck', '/tmp/w', 'neutral', 'running', ?)`,
 		db.Millis(now().Add(-5*time.Minute)))
 
-	// Fill the budget with a second, otherwise-innocuous active child so the
-	// block actually fires with maxSubagents' default of 3 -- reuse the
-	// seeded session ('agt_1'/'ses_1' from seed()) plus these two, three
-	// total active children of agt_1... actually child_1 alone plus the
-	// parent's own two other slots isn't needed: maxSubagents defaults to 3,
-	// so spawn two more filler children to reach the threshold.
+	// maxSubagents defaults to 3: two filler children (inside the ack grace
+	// window, so never named) push the parent to the threshold so the block
+	// fires and the reason string gets built.
 	for i, name := range []string{"filler_a", "filler_b"} {
 		id := fmt.Sprintf("child_filler_%d", i)
 		mustExec(t, h.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
