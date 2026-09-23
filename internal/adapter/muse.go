@@ -76,7 +76,14 @@ var (
 	// after ❯ so it no longer matches. Busy runs against StripANSI (see
 	// idle()), which is what makes the per-letter truecolor escapes in the
 	// spinner line harmless: ◈/◇ + "(Ns · esc to interrupt)".
-	museProcess = []*regexp.Regexp{regexp.MustCompile(`^muse$`)}
+	// P0-4: `muse` is a launcher script whose last line `exec`s the real
+	// binary, muse-bin-<version> (e.g. muse-bin-1.3.0-R3401.1). exec keeps the
+	// PID but replaces the process image, so tmux's pane_current_command
+	// becomes the binary's name, not "muse" — and macOS truncates that to
+	// MAXCOMLEN, so "muse-bin-1.3.0-R3401.1" is seen live as
+	// "muse-bin-1.3.0-". `.*` matches the empty tail, so this also covers the
+	// truncated form. Confirmed live 2026-09-23.
+	museProcess = []*regexp.Regexp{regexp.MustCompile(`^muse(-bin.*)?$`)}
 	museIdle    = regexp.MustCompile("(?m)^(?:\x1b\\[[0-9;?]*[A-Za-z]|\\s)*❯(?:\x1b\\[[0-9;?]*[A-Za-z]|\\s)*$")
 	museBusy    = regexp.MustCompile(`(?m)^[^\n]*[◈◇][^\n]*interrupt[^\n]*$`)
 )
