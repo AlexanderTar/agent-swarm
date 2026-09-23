@@ -117,11 +117,13 @@ Response:
     }
   ],
   "roles": {
-    "coder": {"agent": "claude", "model": "sonnet", "effort": ""},
-    "reviewer": {"agent": "claude", "model": "opus", "effort": ""}
+    "coder": {"agent": "claude", "model": "sonnet"},
+    "reviewer": {"agent": "claude", "model": "opus"}
   }
 }
 ```
+(`RoleDefault.Effort` is `json:"effort,omitempty"` — omitted here since both
+are "", not emitted as `""`.)
 
 `agents` is filtered to `Settings.EnabledAgents`, in `EnabledAgents` order;
 each entry's `models` array has `Hidden` entries removed (the `hidden` field
@@ -144,7 +146,8 @@ caller's own name, unchanged by this batch).
 - `skills/swarm-orchestrator/SKILL.md` + `internal/install/skills/swarm-orchestrator/SKILL.md`
   (synced via `make skills-sync`) — one guidance line.
 - Reused unchanged: `internal/catalog/*`, `internal/settings/*`,
-  `internal/mcpserver/tools.go`'s `roleOverridesOut`, `objSchema`, `decode`.
+  `internal/mcpserver/tools.go`'s `roleOverridesOut` and `objSchema` (the
+  handler takes no input, so `decode` doesn't apply here).
 
 ## Verification
 
