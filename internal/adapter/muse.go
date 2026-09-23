@@ -31,12 +31,29 @@ func (m *Muse) argv(s Spec) []string {
 		"--reasoning-effort", museEffort(s.Effort), "--yolo", "--trust-workspace"}
 }
 
+// setupEnv writes custom instructions to the workspace AGENTS.md (cursor
+// pattern §11.1): workspace trust (--trust-workspace) is what loads them, and
+// there is no isolated HOME to carry them instead. Empty instructions touch
+// nothing, so repos without custom instructions are never modified.
+func (m *Muse) setupEnv(s Spec) error {
+	if s.Instructions == "" || s.Cwd == "" {
+		return nil
+	}
+	if err := os.MkdirAll(s.Cwd, 0o755); err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(s.Cwd, "AGENTS.md"), []byte(s.Instructions), 0o644)
+}
+
 // Launch is §11.1. Every flag was probed 2026-09-23: -i takes the kickoff,
 // --model takes the raw Spark slug, --reasoning-effort the tier ladder, and
 // --yolo --trust-workspace is the always-yolo posture other agents get from
 // --dangerously-skip-permissions. No isolated HOME: workspace trust loads the
 // workspace skills and AGENTS.md.
 func (m *Muse) Launch(s Spec) (Launch, error) {
+	if err := m.setupEnv(s); err != nil {
+		return Launch{}, err
+	}
 	return Launch{Argv: m.argv(s), Env: map[string]string{}}, nil
 }
 
@@ -44,6 +61,9 @@ func (m *Muse) Launch(s Spec) (Launch, error) {
 // resume` takes no prompt argument (probed 2026-09-23), and inventing one
 // would start a new turn on every daemon restart.
 func (m *Muse) Resume(s Spec) (Launch, error) {
+	if err := m.setupEnv(s); err != nil {
+		return Launch{}, err
+	}
 	return Launch{Argv: []string{"muse", "--model", s.Model,
 		"--reasoning-effort", museEffort(s.Effort),
 		"--yolo", "--trust-workspace", "resume", s.ProviderSessionID},
