@@ -854,6 +854,254 @@ func TestRetainDoesNotRenotifyOnAnUnchangedReason(t *testing.T) {
 	}
 }
 
+// TestReclaimOneRemovesACleanMergedWorktree is scenario 1: ReclaimOne applies
+// the same rules as remove() to a worktree the caller has already decided is
+// eligible -- it has no eligibility opinion of its own.
+func TestReclaimOneRemovesACleanMergedWorktree(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reclaim-clean",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed", out)
+	}
+}
+
+// TestReclaimOneRetainsAnUnmergedWorktree is scenario 2.
+func TestReclaimOneRetainsAnUnmergedWorktree(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reclaim-unmerged",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, wt.Path, "add", "f.txt")
+	run(t, wt.Path, "-c", "commit.gpgsign=false", "commit", "-m", "work")
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "unmerged" {
+		t.Fatalf("worktree = %+v, want retained/unmerged", out)
+	}
+}
+
+// TestReclaimOneRetainsADirtyWorktree is scenario 4.
+func TestReclaimOneRetainsADirtyWorktree(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reclaim-dirty",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "untracked.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "dirty" {
+		t.Fatalf("worktree = %+v, want retained/dirty", out)
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path, "untracked.txt")); err != nil {
+		t.Fatalf("the untracked file must still be there: %v", err)
+	}
+}
+
+// TestReclaimOneReEvaluatesAnAlreadyRetainedWorktree is scenario 12: a
+// worktree retained/unmerged whose branch has since merged is not stranded
+// forever -- the next reclaim pass re-checks git state from scratch.
+func TestReclaimOneReEvaluatesAnAlreadyRetainedWorktree(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reclaim-reevaluate",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, wt.Path, "add", "f.txt")
+	run(t, wt.Path, "-c", "commit.gpgsign=false", "commit", "-m", "work")
+	// Seed the row directly as already retained/unmerged, per the fixture
+	// pitfall: driving it there via Remove would itself raise a notification.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'unmerged' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repo, "-c", "commit.gpgsign=false", "merge", "--no-ff", "-m", "merge it", "task/reclaim-reevaluate")
+	wt.State, wt.RetainedReason = "retained", "unmerged"
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed: a merged branch must not stay stranded retained", out)
+	}
+}
+
+// TestReclaimOneRacingShareBehavesLikeRemove is scenario 15: the same
+// lockFor(wt.ID) exclusion Remove/Share already give each other must hold for
+// ReclaimOne too.
+func TestReclaimOneRacingShareBehavesLikeRemove(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reclaim-race",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := make(chan struct{})
+	shareErr := make(chan error, 1)
+	real := s.Run
+	var once sync.Once
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "status" {
+			once.Do(func() { close(claimed) })
+		}
+		return real(ctx, name, args...)
+	}
+	go func() {
+		<-claimed
+		shareErr <- s.Share(context.Background(), wt.ID, "agt_2", "ro")
+	}()
+	if _, err := s.ReclaimOne(ctx, wt); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := fmt.Sprintf("worktree: %s is not active", wt.ID)
+	if err := <-shareErr; err == nil || err.Error() != wantErr {
+		t.Fatalf("Share err = %v, want %q", err, wantErr)
+	}
+	final, err := s.Get(ctx, wt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "removed" || final.RemovedAt == nil {
+		t.Fatalf("worktree = %+v, want removed with RemovedAt set", final)
+	}
+}
+
+// TestSweepStillMatchesPreRefactorBehaviorViaReclaimOne is scenario 17:
+// extracting Sweep's loop body into ReclaimOne must not change Sweep's own
+// outcome.
+func TestSweepStillMatchesPreRefactorBehaviorViaReclaimOne(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	for _, br := range []string{"task/sweep-a", "task/sweep-b"} {
+		if _, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: br,
+			OwnerAgentID: "agt_1", RootItemID: "itm_1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := s.Sweep(ctx, "itm_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("swept %d worktrees, want 2", len(out))
+	}
+	for _, wt := range out {
+		if wt.State != "removed" {
+			t.Errorf("%s state = %s, want removed (unchanged post-refactor behaviour)", wt.Path, wt.State)
+		}
+	}
+}
+
+// TestCandidatesAppliesAnArbitraryWhereClause is a smoke test that Candidates
+// is query() exported unchanged.
+func TestCandidatesAppliesAnArbitraryWhereClause(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/candidates",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Candidates(ctx, `WHERE id = ?`, wt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != wt.ID {
+		t.Fatalf("Candidates = %+v, want just %s", got, wt.ID)
+	}
+}
+
+// TestReclaimOneRetainsOnRemoveFailure is §8.4's Decline path, through
+// ReclaimOne rather than Remove.
+func TestReclaimOneRetainsOnRemoveFailure(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reclaim-remove-fails",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := s.Run
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) > 3 && args[2] == "worktree" && args[3] == "remove" {
+			return nil, errors.New("boom: simulated git worktree remove failure")
+		}
+		return real(ctx, name, args...)
+	}
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "remove_failed" {
+		t.Fatalf("worktree = %+v, want retained/remove_failed", out)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("a retain-on-failure must leave the directory untouched: %v", err)
+	}
+}
+
+// TestReclaimOneTreatsAGitStatusFailureAsDirty is §8.4's Error path, through
+// ReclaimOne.
+func TestReclaimOneTreatsAGitStatusFailureAsDirty(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/reclaim-status-fails",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "status" {
+			return nil, errors.New("fatal: not a git repository")
+		}
+		return execx.Run(ctx, name, args...)
+	}
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "dirty" {
+		t.Fatalf("worktree = %+v, want retained/dirty on a git error", out)
+	}
+}
+
 // recordingRunner records the argv into fake.Calls() and then runs the real command.
 func recordingRunner(fake *execx.Fake, real execx.Runner) execx.Runner {
 	rec := fake.Runner()
