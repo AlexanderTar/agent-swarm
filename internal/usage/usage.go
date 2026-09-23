@@ -84,24 +84,21 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 // UserHome's rollout files as a fallback; Agy reads its own OAuth token
 // cache from disk and calls Antigravity's real remote quota endpoint
 // directly (verified live 2026-09-19 — see agy.go's Agy doc comment for the
-// full trace and why it must be the "daily" host, not "prod"). Muse spawns
-// its own `muse serve` MSP host and polls usage/read. Nothing here is
-// called by any test in this package — the only thing exercised is that the
-// slice has five entries (S-4).
+// full trace and why it must be the "daily" host, not "prod"). Muse reads
+// the CLI-owned device-code token and mints quota from Meta's
+// muse-code/key endpoint over HTTPS — a free call on the normal cadence.
+// Nothing here is called by any test in this package — the only thing
+// exercised is that the slice has five entries (S-4).
 //
 // muse was absent until 2026-09-23 on the grounds that `muse --help` has no
 // quota subcommand. True of the subcommand surface, wrong as a conclusion:
-// the MSP host `muse serve` answers usage/read with the provider's own
-// window/weekly percentages — polled directly rather than waiting on the
-// usage/changed notification, which muse.go's Muse doc comment explains is
-// unreliable on a Go-driven connection —
-// docs/specs/2026-09-23-muse-usage-probe.md has the full trace. Note that
-// muse is the one source whose probe is not free: a fresh observation costs
-// one minimal-effort turn, which Muse.ProbeGap caps at one per 15 minutes
-// (see Muse's doc comment). Its per-session token export
-// (MuseSessionUsage/ParseMuseExport, muse.go) remains a different thing
-// entirely — cumulative tokens for one session id, never a percentage — and
-// is still not used here.
+// the CLI's `dca:` token (inline in the auth file, else the CLI's Keychain
+// item) mints the provider's own window/weekly percentages from
+// api.meta.ai — docs/specs/2026-09-23-muse-keychain-api-usage.md has the
+// full trace. The mint response's api_key and payment fields are discarded.
+// Its per-session token export (MuseSessionUsage/ParseMuseExport, muse.go)
+// remains a different thing entirely — cumulative tokens for one session
+// id, never a percentage — and is still not used here.
 func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, start execx.Starter) []Source {
 	claudeSrc := &Claude{BaseURL: "https://api.anthropic.com", HTTP: hc, Version: claudeCLIVersion(run),
 		ReadToken: claudeKeychainToken(run, "Claude Code-credentials", user), Now: time.Now}
@@ -110,7 +107,8 @@ func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, st
 		ReadToken: agyOAuthToken(userHome), Now: time.Now}
 	cursorSrc := &Cursor{BaseURL: "https://api2.cursor.sh", HTTP: hc,
 		ReadToken: cursorKeychainToken(run, "cursor-access-token", "cursor-user"), Now: time.Now}
-	museSrc := &Muse{Start: start, Dir: userHome, Now: time.Now}
+	museSrc := &MuseAPI{BaseURL: "https://api.meta.ai", HTTP: hc,
+		ReadToken: museKeychainToken(run, userHome, os.Getenv), Now: time.Now}
 	return []Source{
 		{Agent: runtime.Claude, Fetch: func(ctx context.Context) ([]Meter, string, error) {
 			snap, err := claudeSrc.Fetch(ctx)
