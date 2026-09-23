@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -117,13 +118,28 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 }
 
 // WakeDue wakes every live session with a pending immediate message, in the
-// §11.3 order. The daemon runs it every 5 s.
+// §11.3 order. The daemon runs it every 5 s. Sessions whose kind is confirmed
+// out of usage are skipped entirely (no native wake, no paste, no
+// undeliverable escalation): pinging a quota-dead session only feeds the
+// pileup the quota-reset flush then has to digest.
 func (s *Store) WakeDue(ctx context.Context) error {
 	rows, err := s.wakeCandidates(ctx)
 	if err != nil {
 		return err
 	}
+	exhausted := map[AgentKind]bool{}
+	isExhausted := func(k AgentKind) bool {
+		e, ok := exhausted[k]
+		if !ok {
+			e = s.Usage != nil && s.Usage.Exhausted(ctx, k)
+			exhausted[k] = e
+		}
+		return e
+	}
 	for _, r := range rows {
+		if isExhausted(r.Kind) {
+			continue
+		}
 		if s.Now().Sub(r.OldestMessageAt) >= undeliverableAfter {
 			if err := s.raiseUndeliverable(ctx, r); err != nil {
 				return err
@@ -365,9 +381,80 @@ func (s *Store) WakeLoop(ctx context.Context, every time.Duration) {
 	}
 }
 
+// flushSuppressed delivers one digest per agent holding suppressed rows for
+// kind, then deletes the rows. The digest precedes the reset wake in the same
+// batch, so the parent learns what piled up while it was quota-dead at the
+// cost of one message instead of hundreds.
+func (s *Store) flushSuppressed(ctx context.Context, kind AgentKind) error {
+	type supRow struct {
+		agentID, rootItemID, event, sample string
+		count                              int
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT sr.agent_id, a.root_item_id, sr.event, sr.count, sr.sample_json
+		FROM suppressed_relays sr JOIN agents a ON a.id = sr.agent_id
+		WHERE a.kind = ? ORDER BY sr.agent_id, sr.count DESC`, string(kind))
+	if err != nil {
+		return err
+	}
+	var all []supRow
+	for rows.Next() {
+		var r supRow
+		if err := rows.Scan(&r.agentID, &r.rootItemID, &r.event, &r.count, &r.sample); err != nil {
+			rows.Close()
+			return err
+		}
+		all = append(all, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for len(all) > 0 {
+		var group []supRow
+		id, root := all[0].agentID, all[0].rootItemID
+		for len(all) > 0 && all[0].agentID == id {
+			group = append(group, all[0])
+			all = all[1:]
+		}
+		lines := make([]string, 0, len(group))
+		for _, g := range group {
+			sample := g.sample
+			if len(sample) > 120 {
+				sample = sample[:120]
+			}
+			lines = append(lines, fmt.Sprintf("%s x%d while %s exhausted: %s", g.event, g.count, kind, sample))
+		}
+		for {
+			body, err := json.Marshal(map[string]any{"lines": lines, "suppressed": true})
+			if err != nil {
+				return err
+			}
+			if len(body) <= maxDigest || len(lines) == 0 {
+				err := s.tx(ctx, func(tx *sql.Tx) error {
+					if _, err := s.enqueueRaw(ctx, tx, Message{Kind: "digest", Origin: "daemon",
+						ToAgentID: id, RootItemID: root, Payload: body}); err != nil {
+						return err
+					}
+					_, err := tx.ExecContext(ctx, `DELETE FROM suppressed_relays WHERE agent_id = ?`, id)
+					return err
+				})
+				if err != nil {
+					return err
+				}
+				break
+			}
+			lines = lines[:len(lines)-1]
+		}
+	}
+	return nil
+}
+
 // WakeOnQuotaReset wakes all live or waiting sessions belonging to kind that have
 // not already been woken for this cutoff cycle (last_wake_at < cutoff).
 func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff time.Time) (int, error) {
+	if err := s.flushSuppressed(ctx, kind); err != nil {
+		return 0, err
+	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.tmux_name, ses.state, ses.waiting
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
 		WHERE a.kind = ? AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')

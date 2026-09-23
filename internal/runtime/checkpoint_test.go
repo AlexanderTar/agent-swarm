@@ -1069,3 +1069,24 @@ func TestParentedBlockedCheckpointRelaysButOpensNoRequest(t *testing.T) {
 		t.Fatalf("parent got no relay with the blocker: %v", err)
 	}
 }
+
+// While the parent's kind is confirmed exhausted, a checkpoint relay must be
+// held (one suppressed_relays row), not enqueued.
+func TestCheckpointRelayHeldWhileExhausted(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	s.Usage = fakeUsage{Fake: true}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: "midway"}); err != nil {
+		t.Fatal(err)
+	}
+	var relays, rows int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'`, orch.ID).Scan(&relays)
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays WHERE agent_id = ? AND event = 'progress'`, orch.ID).Scan(&rows)
+	if relays != 0 {
+		t.Fatalf("relay count = %d, want 0 held while exhausted", relays)
+	}
+	if rows != 1 {
+		t.Fatalf("suppressed rows = %d, want 1", rows)
+	}
+}

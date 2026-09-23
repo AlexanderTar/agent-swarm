@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -292,6 +293,17 @@ func (s *Store) alreadyRelayed(ctx context.Context, toAgentID, itemID, event str
 	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
 		WHERE to_agent_id = ? AND item_id = ? AND kind = 'relay' AND payload_json LIKE ? AND created_at >= ?`,
 		toAgentID, itemID, `%"event":"`+event+`"%`, db.Millis(sinceStartedAt)).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
+	// A held relay counts as handled too: without this the 5 s tick would
+	// re-notify and re-hold on every pass while the kind stays exhausted.
+	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays
+		WHERE agent_id = ? AND event = ? AND last_at >= ?`,
+		toAgentID, event, db.Millis(sinceStartedAt)).Scan(&n)
 	return n > 0, err
 }
 
@@ -387,6 +399,28 @@ func (s *Store) alreadyRelayedForCheckpoint(ctx context.Context, checkpointID st
 	var n int
 	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
 		WHERE kind = 'relay' AND correlation_id = ?`, checkpointID).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
+	// Same held-counts-as-handled rule as alreadyRelayed, scoped to this
+	// checkpoint's own tree and time: a progress_deadlock held after this
+	// checkpoint was written covers it.
+	var agentID string
+	var createdAt int64
+	if err := s.DB.QueryRowContext(ctx, `SELECT agent_id, created_at FROM checkpoints WHERE id = ?`,
+		checkpointID).Scan(&agentID, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays sr
+		JOIN agents a ON a.id = sr.agent_id
+		WHERE a.root_item_id = (SELECT root_item_id FROM agents WHERE id = ?)
+		AND sr.event = 'progress_deadlock' AND sr.last_at >= ?`, agentID, createdAt).Scan(&n)
 	return n > 0, err
 }
 

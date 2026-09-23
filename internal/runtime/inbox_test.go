@@ -906,3 +906,115 @@ func TestInboxNoticeCapsAtEightItemsWithMoreCount(t *testing.T) {
 		t.Errorf("InboxNotice %d bytes, want <= %d", len(notice), maxInboxNotice)
 	}
 }
+
+// While the target's kind is confirmed exhausted, a daemon relay must be held
+// (one suppressed_relays row), not enqueued; a repeat hold bumps the same row.
+func TestHoldIfExhaustedSuppressesRelay(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	s.Usage = fakeUsage{Fake: true}
+	hold := func() bool {
+		t.Helper()
+		var held bool
+		err := s.tx(ctx, func(tx *sql.Tx) error {
+			var err error
+			held, err = s.holdIfExhausted(ctx, tx, orch.ID, "no_ack", json.RawMessage(`{"event":"no_ack"}`))
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return held
+	}
+	if !hold() {
+		t.Fatal("holdIfExhausted = false for an exhausted kind, want true")
+	}
+	if !hold() {
+		t.Fatal("second holdIfExhausted = false, want true")
+	}
+	var msgs, rows, count int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ?`, orch.ID).Scan(&msgs)
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays WHERE agent_id = ?`, orch.ID).Scan(&rows)
+	s.DB.QueryRowContext(ctx, `SELECT count FROM suppressed_relays WHERE agent_id = ? AND event = 'no_ack'`, orch.ID).Scan(&count)
+	if rows != 1 || count != 2 {
+		t.Fatalf("suppressed rows = %d (count %d), want 1 row with count 2", rows, count)
+	}
+	_ = msgs
+}
+
+// While the ancestor's kind is exhausted, an unacked-message escalation still
+// notifies but holds the relay.
+func TestEscalateUnackedHeldWhileExhausted(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, _ := worker(t, s)
+	s.Usage = fakeUsage{Fake: true}
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.escalateUnacked(ctx, tx, w, Message{Kind: "finding",
+			ItemID: w.ItemID, RootItemID: w.RootItemID, Payload: json.RawMessage(`{"body":"hi"}`)})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.message_unacked"); n != 1 {
+		t.Fatalf("agent.message_unacked count = %d, want 1 (notify still fires)", n)
+	}
+	var relays, rows int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+		AND payload_json LIKE '%"event":"message_unacked"%'`).Scan(&relays)
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays WHERE event = 'message_unacked'`).Scan(&rows)
+	if relays != 0 {
+		t.Fatalf("message_unacked relays = %d, want 0 held while exhausted", relays)
+	}
+	if rows != 1 {
+		t.Fatalf("suppressed message_unacked rows = %d, want 1", rows)
+	}
+}
+
+// A digest folds pre-existing deferred rows: it compresses load rather than
+// adding it, so it still delivers while the kind is exhausted.
+func TestFoldDigestStillDeliversWhileExhausted(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "DigestHeld", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.Sync(ctx, ses.ID, nil, 20)
+	for i, key := range []string{"TASK-1", "TASK-2"} {
+		enq(t, s, a.ID, a.RootItemID, "digest",
+			`{"event":"progress","agent":"w`+string(rune('1'+i))+`","item":"`+key+`","checkpoint":{"summary":"step done"}}`, 1)
+	}
+	s.Usage = fakeUsage{Fake: true}
+	res, err := s.Sync(ctx, ses.ID, nil, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digests := 0
+	for _, m := range res.Messages {
+		if m.Kind == "digest" {
+			digests++
+		}
+	}
+	if digests != 1 {
+		t.Fatalf("digest count while exhausted = %d, want 1 (fold still delivers)", digests)
+	}
+}
+
+// Nil Usage (usage polling off) never holds: today's behavior is unchanged.
+func TestHoldIfExhaustedNilUsageNeverHolds(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	var held bool
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		held, err = s.holdIfExhausted(ctx, tx, orch.ID, "no_ack", json.RawMessage(`{}`))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Fatal("holdIfExhausted = true with nil Usage, want false (fail open)")
+	}
+}

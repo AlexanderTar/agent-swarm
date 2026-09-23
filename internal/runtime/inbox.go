@@ -40,9 +40,42 @@ func nullIf(s string) any {
 	return s
 }
 
-// enqueue stores one message. seq is max(seq)+1 inside this transaction, which is
-// safe because the daemon is the only writer (§5).
+// enqueue stores one message, unless it is daemon fan-in to a kind that is
+// confirmed out of usage right now: relay/digest/advice from the daemon to an
+// exhausted kind are held (one suppressed_relays row per event) instead of
+// queued, so a quota-dead parent does not wake up to hundreds of relays
+// (2026-09-23 orchestrator-2 incident). Holding returns a zero Message and nil
+// error -- no daemon-relay caller reads the returned ID, only agent-origin
+// Send does, and it never matches this gate. seq is max(seq)+1 inside this
+// transaction, which is safe because the daemon is the only writer (§5).
 func (s *Store) enqueue(ctx context.Context, tx *sql.Tx, m Message) (Message, error) {
+	if m.Origin == "daemon" && (m.Kind == "relay" || m.Kind == "digest" || m.Kind == "advice") {
+		a, err := s.agentByIDTx(ctx, tx, m.ToAgentID)
+		if err != nil {
+			return m, err
+		}
+		if s.Usage != nil && s.Usage.Exhausted(ctx, a.Kind) {
+			event := string(m.Kind)
+			var p struct {
+				Event string `json:"event"`
+			}
+			if json.Unmarshal(m.Payload, &p) == nil && p.Event != "" {
+				event = p.Event
+			}
+			if held, err := s.holdIfExhausted(ctx, tx, m.ToAgentID, event, m.Payload); err != nil {
+				return m, err
+			} else if held {
+				return Message{}, nil
+			}
+		}
+	}
+	return s.enqueueRaw(ctx, tx, m)
+}
+
+// enqueueRaw is the ungated insert body. foldDigest (which compresses
+// pre-existing deferred rows rather than adding load) and the quota-reset
+// flush use it directly; everything else goes through enqueue's hold gate.
+func (s *Store) enqueueRaw(ctx context.Context, tx *sql.Tx, m Message) (Message, error) {
 	if m.ID == "" {
 		m.ID = ids.New("msg")
 	}
@@ -62,6 +95,39 @@ func (s *Store) enqueue(ctx context.Context, tx *sql.Tx, m Message) (Message, er
 		nullIf(m.FromAgentID), nullIf(m.FromSessionID), m.ToAgentID, m.RootItemID, nullIf(m.ItemID),
 		nullIf(m.CorrelationID), nullIf(m.ReplyTo), nullIf(m.RequestID), string(m.Payload), db.Millis(m.CreatedAt))
 	return m, err
+}
+
+// holdIfExhausted reports whether a daemon relay/digest/advice to toAgentID must
+// be held instead of enqueued: the target's kind is confirmed exhausted via
+// Store.Usage (2026-09-23: queueing hundreds of relays to a quota-dead parent
+// burns its whole reset window on wakeup). When holding, it upserts one
+// suppressed_relays row per (agent, event) and returns true; the caller skips
+// its enqueue. Nil Usage never holds (fail open: tests, SWARM_USAGE unset).
+// sample is stored (truncated) on first hold so the quota-reset digest can name it.
+func (s *Store) holdIfExhausted(ctx context.Context, tx *sql.Tx, toAgentID, event string, sample json.RawMessage) (bool, error) {
+	if s.Usage == nil {
+		return false, nil
+	}
+	a, err := s.agentByIDTx(ctx, tx, toAgentID)
+	if err != nil {
+		return false, err
+	}
+	if !s.Usage.Exhausted(ctx, a.Kind) {
+		return false, nil
+	}
+	now := db.Millis(s.Now())
+	sampleStr := string(sample)
+	if len(sampleStr) > 500 {
+		sampleStr = sampleStr[:500]
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO suppressed_relays (agent_id, event, count, first_at, last_at, sample_json)
+		VALUES (?, ?, 1, ?, ?, ?)
+		ON CONFLICT (agent_id, event) DO UPDATE SET count = count + 1, last_at = excluded.last_at`,
+		toAgentID, event, now, now, sampleStr)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // sessionAndAgent loads a session and its agent inside the caller's transaction,
@@ -340,7 +406,9 @@ func (s *Store) foldDigest(ctx context.Context, tx *sql.Tx, a Agent, deferred []
 					return Message{}, err
 				}
 			}
-			return s.enqueue(ctx, tx, Message{Kind: "digest", Origin: "daemon",
+			// Ungated on purpose: these rows predate any outage and the digest
+			// compresses them rather than adding load.
+			return s.enqueueRaw(ctx, tx, Message{Kind: "digest", Origin: "daemon",
 				ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: body})
 		}
 		lines = lines[:len(lines)-1]
