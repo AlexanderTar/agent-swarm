@@ -20,7 +20,7 @@ describe("copy (§17)", () => {
   it("has the role, type and agent labels", () => {
     expect(ROLE_LABEL).toMatchObject({ ui_reviewer: "UI reviewer", orchestrator: "Orchestrator", advisor: "Advisor" });
     expect(TYPE_PLURAL.spike).toBe("Spikes");
-    expect(AGENT_LABEL).toMatchObject({ claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor" });
+    expect(AGENT_LABEL).toMatchObject({ claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor", muse: "Muse" });
   });
 
   // Added by the fix-round-2 rulings; queued for the P5 §17 spec pass.

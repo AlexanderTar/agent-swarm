@@ -13,10 +13,11 @@ const (
 	KindCodex  Kind = "codex"
 	KindAgy    Kind = "agy"
 	KindCursor Kind = "cursor"
+	KindMuse   Kind = "muse"
 )
 
 // Kinds is in §11.1 column order.
-var Kinds = []Kind{KindClaude, KindCodex, KindAgy, KindCursor}
+var Kinds = []Kind{KindClaude, KindCodex, KindAgy, KindCursor, KindMuse}
 
 // Display is the name shown to the user (§17.3 "{Agent} isn't installed…").
 func (k Kind) Display() string {
@@ -29,6 +30,8 @@ func (k Kind) Display() string {
 		return "agy"
 	case KindCursor:
 		return "Cursor"
+	case KindMuse:
+		return "Muse"
 	}
 	return string(k)
 }
@@ -40,6 +43,19 @@ func (c Config) Claude(rest ...string) string { return c.under(".claude", rest) 
 func (c Config) Codex(rest ...string) string  { return c.under(".codex", rest) }
 func (c Config) Cursor(rest ...string) string { return c.under(".cursor", rest) }
 func (c Config) Gemini(rest ...string) string { return c.under(".gemini", rest) }
+
+// Muse is the muse config root ($CONFIG_DIR for the muse CLI, probed
+// 2026-09-23: `muse skills install --scope user` lands in skills/ here and the
+// entry appears in `muse skills list --json`). XDG_CONFIG_HOME overrides are
+// out of scope: S-5 forbids guessing the operator's real dirs.
+func (c Config) Muse(rest ...string) string {
+	return c.under(".config", append([]string{"muse"}, rest...))
+}
+
+// MuseData is the muse data root (plugin cache, model catalog, session store).
+func (c Config) MuseData(rest ...string) string {
+	return filepath.Join(append([]string{c.UserHome, ".local", "share", "muse"}, rest...)...)
+}
 
 func (c Config) under(dir string, rest []string) string {
 	return filepath.Join(append([]string{c.UserHome, dir}, rest...)...)
@@ -74,6 +90,8 @@ func (c Config) SkillsDir(k Kind) string {
 		return c.Gemini("antigravity-cli", "skills")
 	case KindCursor:
 		return c.Cursor("skills")
+	case KindMuse:
+		return c.Muse("skills")
 	}
 	return ""
 }

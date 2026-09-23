@@ -117,6 +117,12 @@ func superpowersInstalled(home string, kind kinds.AgentKind) bool {
 			filepath.Join(home, ".cursor", "plugins", "cache", "*", "superpowers", "*", "skills", "brainstorming", "SKILL.md"),
 			filepath.Join(home, ".cursor", "plugins", "local", "superpowers", "skills", "brainstorming", "SKILL.md"),
 		}
+	case kinds.Muse:
+		museBase := filepath.Join(home, ".local", "share", "muse", "plugins", "cache", "*", "superpowers", "*")
+		globs = []string{
+			filepath.Join(museBase, "skills", "brainstorming", "SKILL.md"),
+			filepath.Join(museBase, "package", "skills", "brainstorming", "SKILL.md"),
+		}
 	default:
 		return false
 	}

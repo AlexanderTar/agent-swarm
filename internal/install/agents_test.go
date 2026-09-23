@@ -165,6 +165,37 @@ func TestAgentsWithPluginsOnlyWritesNoConfiguration(t *testing.T) {
 	}
 }
 
+// The install flow dispatches each present kind to its writer: a muse-only
+// machine must get settings.json plus both skills with no other agent touched.
+func TestAgentsDispatchesMuseToWriteMuse(t *testing.T) {
+	c := fakeHome(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"launchctl bootout gui/501/dev.swarm.updater": {},
+		"muse plugins list --json":                   {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
+		"muse plugins update superpowers":            {Out: "updated"},
+		"muse plugins update elements-of-style":      {Out: "updated"},
+	}}
+	o := agentsOpts(t, c, f, install.KindMuse)
+	if err := install.Agents(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(c.Muse("settings.json"))
+	if err != nil {
+		t.Fatalf("muse settings.json was not written: %v", err)
+	}
+	if !strings.Contains(string(raw), `"swarm"`) {
+		t.Errorf("swarm MCP server missing:\n%s", raw)
+	}
+	for _, name := range []string{"swarm", "swarm-orchestrator"} {
+		if _, err := os.Stat(filepath.Join(c.SkillsDir(install.KindMuse), name, "SKILL.md")); err != nil {
+			t.Errorf("missing skill %s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(c.Claude("skills", "swarm", "SKILL.md")); !os.IsNotExist(err) {
+		t.Error("muse-only install must not touch claude")
+	}
+}
+
 // A writer error is fatal: a half-written config would launch agents wrong.
 func TestAgentsFailsWhenAWriterFails(t *testing.T) {
 	c := fakeHome(t)
@@ -180,14 +211,14 @@ func TestAgentsFailsWhenAWriterFails(t *testing.T) {
 
 // S-5: InstalledKinds uses the injected LookPath, never a real one in tests.
 func TestInstalledKindsUsesTheInjectedLookPath(t *testing.T) {
-	found := map[string]bool{"codex": true, "cursor-agent": true}
+	found := map[string]bool{"codex": true, "cursor-agent": true, "muse": true}
 	kinds := install.InstalledKinds(func(bin string) (string, error) {
 		if found[bin] {
 			return "/fake/bin/" + bin, nil
 		}
 		return "", errors.New("not found")
 	})(context.Background())
-	if len(kinds) != 2 || kinds[0] != install.KindCodex || kinds[1] != install.KindCursor {
-		t.Fatalf("kinds = %v, want [codex cursor]", kinds)
+	if len(kinds) != 3 || kinds[0] != install.KindCodex || kinds[1] != install.KindCursor || kinds[2] != install.KindMuse {
+		t.Fatalf("kinds = %v, want [codex cursor muse]", kinds)
 	}
 }

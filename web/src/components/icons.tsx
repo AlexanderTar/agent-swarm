@@ -4,10 +4,11 @@ import agyUrl from "../assets/agents/agy.svg";
 import claudeUrl from "../assets/agents/claude.svg";
 import codexUrl from "../assets/agents/codex.svg";
 import cursorUrl from "../assets/agents/cursor.svg";
+import museUrl from "../assets/agents/muse.svg";
 import { AGENT_LABEL, TYPE_LABEL } from "../copy";
 import type { AgentKind, ItemType } from "../types";
 
-const AGENT_URL: Record<AgentKind, string> = { claude: claudeUrl, codex: codexUrl, agy: agyUrl, cursor: cursorUrl, fake: claudeUrl };
+const AGENT_URL: Record<AgentKind, string> = { claude: claudeUrl, codex: codexUrl, agy: agyUrl, cursor: cursorUrl, muse: museUrl, fake: claudeUrl };
 
 export function AgentIcon({ kind, className = "" }: { kind: AgentKind; className?: string }) {
   const mask = `url("${AGENT_URL[kind]}") center / contain no-repeat`;

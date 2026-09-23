@@ -364,3 +364,35 @@ func TestEntriesReportsSuperpowersFromTheRealFiles(t *testing.T) {
 		t.Fatalf("Superpowers = false with the skill file present at %s", skill)
 	}
 }
+
+func TestEntriesReportsSuperpowersForMuse(t *testing.T) {
+	home := t.TempDir()
+	muse := &fakeFetcher{kind: kinds.Muse, version: "1.3.0", models: m1}
+	s, _ := newCatalog(t, muse)
+	s.Home = home
+	if _, err := s.Refresh(bg, false); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.Entries(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[0].Superpowers {
+		t.Fatalf("Superpowers = true before the skill file exists")
+	}
+	skill := filepath.Join(home, ".local", "share", "muse", "plugins", "cache", "local",
+		"superpowers", "abc123", "package", "skills", "brainstorming", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("# b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = s.Entries(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !entries[0].Superpowers {
+		t.Fatalf("Superpowers = false with the skill file present at %s", skill)
+	}
+}

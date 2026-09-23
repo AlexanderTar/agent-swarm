@@ -67,15 +67,25 @@ func skills(role Role) string {
 	return "`swarm`"
 }
 
+// mandate is R3's instruction-level enforcement: orchestrators MUST follow the
+// skills' superpowers workflows (the lapsed runs skipped them despite the skill
+// text). Workers keep the advisory form; a daemon-side gate is out of scope.
+func mandate(role Role) string {
+	if role == RoleOrchestrator {
+		return " You MUST follow the skill(s) above, including their superpowers workflows — do not improvise around them."
+	}
+	return ""
+}
+
 func Kickoff(name string, role Role, key, title string) string {
-	return fmt.Sprintf("You are swarm agent %s (%s) for %s: %s. Use the %s skill(s). Call swarm_sync now to get your assignment. %s",
-		name, role, key, title, skills(role), Preamble)
+	return fmt.Sprintf("You are swarm agent %s (%s) for %s: %s. Use the %s skill(s).%s Call swarm_sync now to get your assignment. %s",
+		name, role, key, title, skills(role), mandate(role), Preamble)
 }
 
 // ResumeKickoff's notice omits the title (§9.3); title is kept for signature symmetry with Kickoff.
 func ResumeKickoff(name string, role Role, key, title string) string {
-	return fmt.Sprintf("You are swarm agent %s (%s) for %s, resuming after a pause. Use the %s skill(s). Call swarm_sync now; it returns your assignment and your last checkpoint. %s",
-		name, role, key, skills(role), ShortPreamble)
+	return fmt.Sprintf("You are swarm agent %s (%s) for %s, resuming after a pause. Use the %s skill(s).%s Call swarm_sync now; it returns your assignment and your last checkpoint. %s",
+		name, role, key, skills(role), mandate(role), ShortPreamble)
 }
 
 // RenderBrief renders §9.4. Empty sections are left out.
