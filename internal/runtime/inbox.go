@@ -522,3 +522,84 @@ func (s *Store) Idempotent(ctx context.Context, tx *sql.Tx, sessionID, requestID
 		VALUES (?, ?, ?, ?, ?)`, sessionID, requestID, tool, string(body), db.Millis(s.Now()))
 	return body, err
 }
+
+// summarizeFor extracts one sanitized, quoted (where it carries free text)
+// summary line from a message's kind and payload. Unrecognized kind/shape
+// falls back to a JSON preview rather than guessing a field name.
+func summarizeFor(kind MessageKind, payload json.RawMessage) string {
+	quote := func(s string) string { return `"` + sanitizeOneLine(s) + `"` }
+	var raw map[string]any
+	json.Unmarshal(payload, &raw)
+	str := func(k string) (string, bool) {
+		v, ok := raw[k].(string)
+		return v, ok
+	}
+	switch kind {
+	case "assignment":
+		if b, ok := str("brief"); ok {
+			return "New assignment: " + quote(b)
+		}
+	case "assignment_update":
+		// Store.Retry writes {"note": ...}; other callers (e.g. worktree
+		// share) use caller-specific fields with no stable text key, which
+		// fall through to the raw-JSON preview below.
+		if n, ok := str("note"); ok {
+			return "Assignment update: " + quote(n)
+		}
+	case "question", "answer", "finding", "repos_confirmed":
+		if b, ok := str("body"); ok {
+			return quote(b)
+		}
+	case "control":
+		action, _ := str("action")
+		scope, _ := str("scope")
+		return sanitizeOneLine(fmt.Sprintf("%s requested (scope=%s)", action, scope))
+	case "approval_result":
+		decision, _ := str("decision")
+		if comment, ok := str("comment"); ok && comment != "" {
+			return sanitizeOneLine(decision) + ": " + quote(comment)
+		}
+		return sanitizeOneLine(decision)
+	case "user_answer":
+		if t, ok := str("text"); ok {
+			return quote(t)
+		}
+	case "advice":
+		switch state, _ := str("state"); state {
+		case "answered":
+			if a, ok := str("answer"); ok {
+				return quote(a)
+			}
+		case "failed":
+			if e, ok := str("error"); ok {
+				return "advice failed: " + quote(e)
+			}
+		default:
+			if q, ok := str("question"); ok {
+				return quote(q)
+			}
+		}
+	case "relay":
+		event, _ := str("event")
+		agent, _ := str("agent")
+		item, _ := str("item")
+		line := sanitizeOneLine(fmt.Sprintf("%s from %s (%s)", event, agent, item))
+		if cp, ok := raw["checkpoint"].(map[string]any); ok {
+			if summary, ok := cp["summary"].(string); ok && summary != "" {
+				line += ": " + quote(summary)
+			}
+		}
+		return line
+	case "digest":
+		if lines, ok := raw["lines"].([]any); ok && len(lines) > 0 {
+			if first, ok := lines[0].(string); ok {
+				return sanitizeOneLine(first)
+			}
+		}
+	}
+	preview := string(payload)
+	if len(preview) > 120 {
+		preview = preview[:120]
+	}
+	return sanitizeOneLine(preview)
+}
