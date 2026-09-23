@@ -24,13 +24,30 @@ import (
 // interrupted for over an hour pinned max_agents at capacity). The agent row
 // itself is untouched by this -- still active, still shown, still resumable/
 // ackable/cancellable by hand -- this only stops it blocking admission.
+//
+// It also excludes an agent whose own item already has a completed or failed
+// checkpoint on record for that session's attempt (2026-09-23 fix): a
+// worker's own terminal checkpoint (WriteCheckpoint, checkpoint.go) never
+// touches its own agents.state/sessions.state -- closeCompletedSiblings
+// tears down every OTHER live session on the item, deliberately excluding
+// the checkpoint's own writer, since it is still mid-turn. Only the async
+// reconciler eventually catches up (resolveAlive kills the pane ~60s after
+// a completed checkpoint, then resolveDead flips agents.state once the pane
+// is confirmed gone) -- up to ~75s where a genuinely-done agent still reads
+// as 'active'. c.item_id = agents.item_id mirrors terminalCheckpointKind's
+// own scoping (b36e56f): an orchestrator's routine checkpoint against a
+// CHILD's item must not be mistaken for the orchestrator's own completion.
+//
 // Exported so every count of "agents currently occupying a concurrency slot"
 // applies the same exclusion -- Admit's three counts here, and the
 // max_concurrent_subagents count in internal/hook/handler.go.
 const NotAZombieSlot = `NOT EXISTS (
 		SELECT 1 FROM sessions s WHERE s.agent_id = agents.id
 			AND s.generation = (SELECT MAX(generation) FROM sessions WHERE agent_id = agents.id)
-			AND s.state IN ('interrupted', 'crashed', 'failed'))`
+			AND (s.state IN ('interrupted', 'crashed', 'failed')
+				OR EXISTS (SELECT 1 FROM checkpoints c WHERE c.agent_id = agents.id
+					AND c.item_id = agents.item_id AND c.attempt = s.attempt
+					AND c.kind IN ('completed', 'failed'))))`
 
 // Admit reports whether a new agent of this role may start now (A2, I20).
 // Orchestrators count only against max_orchestrators; every other role counts

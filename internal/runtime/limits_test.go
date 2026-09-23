@@ -299,6 +299,61 @@ func TestAdmitIgnoresZombiesWhenCountingSlots(t *testing.T) {
 	}
 }
 
+// TestAdmitIgnoresASelfCompletedAgentWhenCountingSlots is the 2026-09-23
+// budget-overcounting bug: a worker's own `completed` checkpoint never
+// touches its own agents.state/sessions.state -- closeCompletedSiblings
+// (checkpoint.go) explicitly excludes the checkpoint's own writer, and
+// onPausingCheckpoint only reacts to handoff/blocked/failed. Only the async
+// reconciler eventually flips agents.state to 'finished' (resolveAlive's
+// 60s kill-after-completed, then resolveDead's terminalCheckpointKind once
+// the pane is confirmed gone) -- nothing in WriteCheckpoint's own
+// transaction does it. Before the reconciler runs (which this test never
+// invokes, simulating the window it leaves open, or a daemon that never
+// gets to it in time), the worker still reads agents.state = 'active' and
+// NotAZombieSlot only excludes interrupted/crashed/failed sessions, so a
+// genuinely finished-but-not-yet-reconciled worker keeps occupying its
+// budget slot.
+func TestAdmitIgnoresASelfCompletedAgentWhenCountingSlots(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 1, 4)
+	seedEpicWithTwoTasks(t, s)
+	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
+	if err != nil || queued {
+		t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+	}
+	ses, err := s.LatestSession(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The worker completes its OWN task (self-completion, not an orchestrator
+	// completing it on the worker's behalf) while its session's process has
+	// NOT exited -- the reconciler never runs in this test, so nothing has
+	// touched agents.state/sessions.state yet, exactly the window the live
+	// incident hit.
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "done", Verification: []Verify{{Cmd: "go test ./..."}},
+		Git: []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Agent(ctx, first.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != AgentActive {
+		t.Fatalf("precondition broken: agent state = %s, want still active (nothing reconciled yet)", out.State)
+	}
+	_, queued, err = s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued {
+		t.Fatal("the self-completed worker must not hold the slot: second queued = true")
+	}
+}
+
 // TestAdmitIgnoresZombiesForOrchestratorLimit is the same fix applied to the
 // orchestrator branch of Admit, which runs a separate query against
 // max_orchestrators.
