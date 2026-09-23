@@ -4,7 +4,7 @@ import XCTest
 
 final class IconAssetsTests: XCTestCase {
     let icons = Fixture.repoRoot.appendingPathComponent("assets/icons")
-    let names = ["claude", "codex", "agy", "cursor", "swarm"]
+    let names = ["claude", "codex", "agy", "cursor", "muse", "swarm"]
 
     func testEveryIconLoadsAt24Points() throws {
         for name in names {
