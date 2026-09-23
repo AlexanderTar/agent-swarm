@@ -87,6 +87,16 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 // full trace and why it must be the "daily" host, not "prod"). Nothing here
 // is called by any test in this package — the only thing exercised is that
 // the slice has four entries (S-4).
+//
+// muse is deliberately absent: `muse --help` (verified live 2026-09-23) has
+// no quota/usage/billing subcommand, so there is no source shaped like the
+// four above to poll. Its own per-session token export
+// (MuseSessionUsage/ParseMuseExport, muse.go) is a different shape entirely
+// — cumulative tokens for one session id, not a percentage against a quota
+// — and has no session id to fetch here even if Source.Fetch took one. A
+// muse row still appears in usage_snapshots via recordAttemptOnly
+// (fetched_at 0, no error); cmd/swarm's `swarm usage` labels that "no usage
+// source" rather than "stale".
 func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, start execx.Starter) []Source {
 	claudeSrc := &Claude{BaseURL: "https://api.anthropic.com", HTTP: hc, Version: claudeCLIVersion(run),
 		ReadToken: claudeKeychainToken(run, "Claude Code-credentials", user), Now: time.Now}

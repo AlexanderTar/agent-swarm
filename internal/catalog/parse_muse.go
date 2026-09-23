@@ -1,6 +1,9 @@
 package catalog
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // museCatalog is one ~/.local/share/muse/model-catalog/*.json file: the muse
 // CLI's own provider catalog cache, refreshed on every muse run.
@@ -9,12 +12,36 @@ type museCatalog struct {
 }
 
 type museRow struct {
-	ModelID    string `json:"model_id"`
-	Visibility string `json:"visibility"`
-	IsDefault  bool   `json:"is_default"`
-	Variants   []struct {
+	ModelID string `json:"model_id"`
+	// DisplayLabel is provider-supplied, same as model_id in every row seen
+	// live 2026-09-23 -- but trusted verbatim when it ever differs, same
+	// discipline as claude/codex's DisplayName.
+	DisplayLabel string `json:"display_label"`
+	Visibility   string `json:"visibility"`
+	IsDefault    bool   `json:"is_default"`
+	Variants     []struct {
 		Tier string `json:"tier"`
 	} `json:"reasoning_effort_variants"`
+}
+
+// museLabel prefers the provider's own display_label when it actually says
+// something the id doesn't; otherwise it title-cases the id's own segments
+// ("muse-spark-1.3-contributor" -> "Spark 1.3 Contributor"), dropping a
+// leading "muse-" the way claude's alias labels drop "Claude" -- short
+// enough not to truncate in the menubar's fixed-width model picker.
+func museLabel(id, displayLabel string) string {
+	if displayLabel != "" && displayLabel != id {
+		return displayLabel
+	}
+	stem := strings.TrimPrefix(id, "muse-")
+	parts := strings.Split(stem, "-")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, " ")
 }
 
 // ParseMuseModels parses one model-catalog file and resolves the default from
@@ -42,7 +69,7 @@ func ParseMuseModels(catalogJSON, settingsJSON []byte) ([]CatalogModel, string, 
 			}
 		}
 		models = append(models, CatalogModel{
-			ID: r.ModelID, Label: r.ModelID,
+			ID: r.ModelID, Label: museLabel(r.ModelID, r.DisplayLabel),
 			Efforts: efforts, DefaultEffort: "high", EffortEncoding: "flag",
 		})
 	}
