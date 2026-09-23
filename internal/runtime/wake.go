@@ -203,6 +203,8 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow) err
 			return err
 		}
 		ok = ad.Idle(capture)
+	} else {
+		s.logf("wake: pane command %q for %s matches no ProcessNames pattern, skipping idle paste", r.PaneCommand, r.AgentName)
 	}
 	if ok {
 		if err := s.Tmux.PasteLine(ctx, r.TmuxName, IdleToken); err != nil {
