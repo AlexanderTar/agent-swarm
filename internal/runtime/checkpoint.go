@@ -121,6 +121,42 @@ func verifyOK(prior, now []Verify) string {
 		verifyMissing, len(all), plural)
 }
 
+// requiredArtifactKind returns the artifact kind a root item's completed
+// checkpoint must have on record before it's accepted, or "" if none is
+// required (not a gated root type, or tdd_exempt). Only epic and bug roots
+// are gated -- chore is the codebase's designated lightweight root type,
+// and story/task are never roots.
+func requiredArtifactKind(it items.Item) string {
+	if it.TddExempt != "" {
+		return ""
+	}
+	switch it.Type {
+	case items.Epic:
+		return "plan"
+	case items.Bug:
+		return "debug_report"
+	default:
+		return ""
+	}
+}
+
+// hasArtifact reports whether an artifact of the given kind is registered
+// against itemID, queried inside the caller's own transaction so it sees
+// anything registered earlier in the same request and can't race a
+// concurrent registration.
+func (s *Store) hasArtifact(ctx context.Context, tx *sql.Tx, itemID, kind string) (bool, error) {
+	var exists int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM artifacts WHERE item_id = ? AND kind = ? LIMIT 1`,
+		itemID, kind).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func jsonArray[T any](v []T) string {
 	if v == nil {
 		v = []T{}
@@ -404,6 +440,21 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				}
 				if msg := verifyOK(prior, in.Verification); msg != "" {
 					return errors.New(msg)
+				}
+			}
+		}
+
+		if in.Kind == CompletedCkp {
+			if kind := requiredArtifactKind(it); kind != "" {
+				ok, err := s.hasArtifact(ctx, tx, it.ID, kind)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+						"completed requires a registered %s for this %s. Register one with "+
+							"swarm_artifact register, or set tdd_exempt if this genuinely needs neither.",
+						kind, it.Type)}
 				}
 			}
 		}

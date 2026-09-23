@@ -342,3 +342,82 @@ func TestCodexResumeIsolatedMCPAndInstructions(t *testing.T) {
 	}
 }
 
+// P0 (2026-09-23): setupEnv isolated CODEX_HOME to a fresh empty directory and
+// symlinked only auth.json into it. ~/.codex/hooks.json (swarm's hook wiring),
+// ~/.codex/skills/ (the swarm/swarm-orchestrator skills `swarm install`
+// writes there), and ~/.codex/plugins/ (the superpowers marketplace plugin
+// cache) were never carried over -- a spawned Codex agent had zero swarm
+// protocol awareness and zero superpowers skills. Mirrors agy's fix
+// (TestAgyIsolatedHomeCarriesSkillsAndHooks).
+func TestCodexIsolatedHomeCarriesHooksSkillsAndPlugins(t *testing.T) {
+	d := testDeps(t)
+
+	hooksPath := filepath.Join(d.UserHome, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const hooksBody = `{"hooks":{"SessionStart":[]}}`
+	if err := os.WriteFile(hooksPath, []byte(hooksBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	skillPath := filepath.Join(d.UserHome, ".codex", "skills", "swarm", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const skillBody = "# Working as a Swarm agent\n..."
+	if err := os.WriteFile(skillPath, []byte(skillBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pluginPath := filepath.Join(d.UserHome, ".codex", "plugins", "cache", "obra",
+		"superpowers", "6.3.0", "skills", "brainstorming", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const pluginBody = "# Brainstorming\n..."
+	if err := os.WriteFile(pluginPath, []byte(pluginBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newCodex(d).Launch(codexSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexHome := l.Env["CODEX_HOME"]
+
+	gotHooks, err := os.ReadFile(filepath.Join(codexHome, "hooks.json"))
+	if err != nil {
+		t.Fatalf("expected hooks.json reachable in the isolated home: %v", err)
+	}
+	if string(gotHooks) != hooksBody {
+		t.Errorf("hooks.json = %q, want %q", gotHooks, hooksBody)
+	}
+
+	gotSkill, err := os.ReadFile(filepath.Join(codexHome, "skills", "swarm", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected the swarm skill reachable in the isolated home: %v", err)
+	}
+	if string(gotSkill) != skillBody {
+		t.Errorf("skill body = %q, want %q", gotSkill, skillBody)
+	}
+
+	gotPlugin, err := os.ReadFile(filepath.Join(codexHome, "plugins", "cache", "obra",
+		"superpowers", "6.3.0", "skills", "brainstorming", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected the superpowers plugin reachable in the isolated home: %v", err)
+	}
+	if string(gotPlugin) != pluginBody {
+		t.Errorf("plugin body = %q, want %q", gotPlugin, pluginBody)
+	}
+}
+
+// setupEnv must not fail when none of hooks.json/skills/plugins exist yet
+// (a machine where `swarm install` hasn't run for codex, or a bare test Deps).
+func TestCodexIsolatedHomeToleratesMissingHooksSkillsAndPlugins(t *testing.T) {
+	d := testDeps(t)
+	if _, err := newCodex(d).Launch(codexSpec(t)); err != nil {
+		t.Fatalf("Launch must not fail when hooks/skills/plugins are absent: %v", err)
+	}
+}
+

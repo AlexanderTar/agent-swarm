@@ -519,6 +519,40 @@ func TestAgyIsolatedHomeCarriesSkillsAndHooks(t *testing.T) {
 	}
 }
 
+// P0 (2026-09-23): yesterday's fix carried hooks.json and (via the
+// antigravity-cli symlink) the swarm/swarm-orchestrator skills into the
+// isolated home, but never ~/.gemini/config/plugins/ -- so the superpowers
+// marketplace plugin itself (brainstorming, systematic-debugging,
+// writing-plans skill definitions) still wasn't reachable, even though
+// Agy.SuperpowersInstalled() checks the real home and reports "installed."
+func TestAgyIsolatedHomeCarriesSuperpowersPlugin(t *testing.T) {
+	d := testDeps(t)
+	pluginPath := filepath.Join(d.UserHome, ".gemini", "config", "plugins",
+		"superpowers", "skills", "brainstorming", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const pluginBody = "# Brainstorming\n..."
+	if err := os.WriteFile(pluginPath, []byte(pluginBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newAgy(d).Launch(agySpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyHome := l.Env["HOME"]
+
+	got, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "config", "plugins",
+		"superpowers", "skills", "brainstorming", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected the superpowers plugin reachable in the isolated home: %v", err)
+	}
+	if string(got) != pluginBody {
+		t.Errorf("plugin body = %q, want %q", got, pluginBody)
+	}
+}
+
 func TestAgyInstructionsOmittedWhenUnset(t *testing.T) {
 	d := testDeps(t)
 	spec := agySpec(t)
