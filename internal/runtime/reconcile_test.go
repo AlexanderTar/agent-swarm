@@ -2427,6 +2427,176 @@ func TestReclaimStopsPromptlyOnCancellation(t *testing.T) {
 	}
 }
 
+// commitFile writes name/content into dir and commits it unsigned -- used
+// inside a worktree checkout, which shares the main repo's local git config
+// (commit.gpgsign=false, from gitRepoNoSigning).
+func commitFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", name}, {"-c", "commit.gpgsign=false", "commit", "-m", "work"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return string(out)
+}
+
+// dumpTable renders every row of query as text, for a before/after
+// byte-identical comparison (§8.3 step 6) that doesn't hand-pick columns.
+func dumpTable(t *testing.T, s *Store, query string) string {
+	t.Helper()
+	rows, err := s.DB.QueryContext(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sb strings.Builder
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintln(&sb, vals...)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return sb.String()
+}
+
+// TestReclaimWorktreesEndToEndOverTwoPasses is §8.3: seven worktrees modeling
+// scenarios 1, 2, 3, 4, 5, 6 and 13 in one fixture, one ReclaimWorktrees
+// pass, then a second with nothing changed.
+func TestReclaimWorktreesEndToEndOverTwoPasses(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	s.Worktree.OnRetained = s.OnWorktreeRetained // not wired by newStore; see the plan's fixture pitfalls
+	ep := seedEpicWithTask(t, s)
+	repoID := seedRepo(t, s, "proj")
+	repoPath := repoPathFor(t, s, repoID)
+
+	for _, id := range []string{"owner_1", "owner_2", "owner_3", "owner_4", "owner_5", "owner_6", "owner_13"} {
+		seedReclaimAgent(t, s, id, ep.ID, "")
+	}
+	for _, id := range []string{"owner_1", "owner_2", "owner_4", "owner_5", "owner_6", "owner_13"} {
+		finishReclaimAgent(t, s, id, s.Now())
+	}
+	seedReclaimSession(t, s, "ses_3", "owner_3", Running) // owner_3 stays active with a live session
+
+	// 1: clean, merged (freshly checked out == already an ancestor of base)
+	wt1 := seedReclaimWorktree(t, s, repoID, repoPath, "task/e2e-1", "owner_1", ep.ID)
+
+	// 2: clean, unmerged and unpushed
+	wt2 := seedReclaimWorktree(t, s, repoID, repoPath, "task/e2e-2", "owner_2", ep.ID)
+	commitFile(t, wt2.Path, "f.txt", "work")
+
+	// 3: dirty, but the owner is active with a live session -- must never be touched
+	wt3 := seedReclaimWorktree(t, s, repoID, repoPath, "task/e2e-3", "owner_3", ep.ID)
+	if err := os.WriteFile(filepath.Join(wt3.Path, "scratch.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4: dirty (untracked file only)
+	wt4 := seedReclaimWorktree(t, s, repoID, repoPath, "task/e2e-4", "owner_4", ep.ID)
+	if err := os.WriteFile(filepath.Join(wt4.Path, "scratch.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 5: row active, directory already deleted
+	wt5 := seedReclaimWorktree(t, s, repoID, repoPath, "task/e2e-5", "owner_5", ep.ID)
+	if err := os.RemoveAll(wt5.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	// 6: detached review worktree, clean, HEAD == detached_sha
+	sha := strings.TrimSpace(gitOutput(t, repoPath, "rev-parse", "HEAD"))
+	wt6, err := s.Worktree.Review(ctx, worktree.CreateInput{RepoID: repoID, RepoPath: repoPath,
+		OwnerAgentID: "owner_6", RootItemID: ep.ID}, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 13: already retained/dirty, still dirty -- seeded directly (not via
+	// Remove/ReclaimOne), so no notification is raised getting there.
+	wt13 := seedReclaimWorktree(t, s, repoID, repoPath, "task/e2e-13", "owner_13", ep.ID)
+	if err := os.WriteFile(filepath.Join(wt13.Path, "scratch.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'retained', retained_reason = 'dirty' WHERE id = ?`, wt13.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	at.Advance(2 * time.Hour) // past reclaimGrace for every finished owner
+
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	wantState := map[string]struct{ state, reason string }{
+		wt1.ID:  {"removed", ""},
+		wt2.ID:  {"retained", "unmerged"},
+		wt3.ID:  {"active", ""},
+		wt4.ID:  {"retained", "dirty"},
+		wt5.ID:  {"removed", ""},
+		wt6.ID:  {"removed", ""},
+		wt13.ID: {"retained", "dirty"},
+	}
+	for id, want := range wantState {
+		state, reason := reclaimWorktreeState(t, s, id)
+		if state != want.state || reason != want.reason {
+			t.Errorf("%s: state/reason = %s/%s, want %s/%s", id, state, reason, want.state, want.reason)
+		}
+	}
+	// on disk: 1 and 6 gone, 2/3/4/13 present.
+	for _, wt := range []worktree.Worktree{wt1, wt6} {
+		if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+			t.Errorf("%s should be gone from disk: %v", wt.Path, err)
+		}
+	}
+	for _, wt := range []worktree.Worktree{wt2, wt3, wt4, wt13} {
+		if _, err := os.Stat(wt.Path); err != nil {
+			t.Errorf("%s should still be on disk: %v", wt.Path, err)
+		}
+	}
+	if n := notifiedCount(s, "worktree.retained"); n != 2 {
+		t.Fatalf("notifications after pass 1 = %d, want exactly 2 (scenario 2's and 4's transitions)", n)
+	}
+
+	before := dumpTable(t, s, `SELECT * FROM worktrees ORDER BY id`)
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after := dumpTable(t, s, `SELECT * FROM worktrees ORDER BY id`)
+	if before != after {
+		t.Fatalf("a second pass over nothing changed must leave the DB byte-identical:\nbefore: %q\nafter:  %q", before, after)
+	}
+	if n := notifiedCount(s, "worktree.retained"); n != 2 {
+		t.Fatalf("notifications after pass 2 = %d, want still 2 (no repeat)", n)
+	}
+}
+
 // repoPathFor returns the repo's on-disk path and gives it one commit on
 // main, so a test can pass it straight into worktree.CreateInput -- unlike
 // internal/worktree's own gitRepo fixture, gitRepoNoSigning (seedRepo's
