@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -515,6 +516,77 @@ func TestAdmitIgnoresZombiesForOrchestratorLimit(t *testing.T) {
 	}
 	if queued || second.State != AgentActive {
 		t.Fatalf("the crashed orchestrator must not hold the max_orchestrators slot: queued = %v, state = %s", queued, second.State)
+	}
+}
+
+// TestNoAckChildren is a direct test of Store.NoAckChildren, the same level
+// every other slot/zombie exclusion in this file is tested at (see
+// TestAdmitIgnoresZombiesWhenCountingSlots above). A child whose latest
+// session is 'crashed' is already excluded from the slot count by
+// NotAZombieSlot -- NoAckChildren, built on the same exclusion, must not
+// report it either: "swarm_control cancel if genuinely stuck" is nonsense
+// advice for a session with no live process left to cancel.
+func TestNoAckChildren(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 8, 8)
+	seedEpicWithTwoTasks(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "one"}, ParentAgentID: orch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashed, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "two"}, ParentAgentID: orch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE agent_id = ?`, crashed.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Not a zombie slot (still 'active', not interrupted/crashed/failed, no
+	// terminal checkpoint) -- only the sessions.state filter this test also
+	// guards excludes it: "swarm_control cancel if genuinely stuck" is wrong
+	// advice for a child correctly waiting on `swarm_control resume`.
+	mustExec(t, s.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+		VALUES ('paused_child', 'paused-child', 'fake', 'fake-1', 'coder', ?, ?, ?, '', 'active', 1)`,
+		stuck.ItemID, stuck.RootItemID, orch.ID)
+	mustExec(t, s.DB, `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, cwd_kind, state, started_at)
+		VALUES ('ses_paused_child', 'paused_child', 1, 1, 'hash_paused', 'paused-child', '/tmp/w', 'neutral', 'paused', ?)`,
+		db.Millis(s.now()))
+
+	// Neither active child has checkpointed yet, but ackTimeout hasn't
+	// elapsed -- nothing must be reported.
+	names, err := s.NoAckChildren(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("within the ack grace period, want no names, got %v", names)
+	}
+
+	tm.clk.Advance(3 * time.Minute) // past ackTimeout (2 minutes)
+
+	names, err = s.NoAckChildren(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != stuck.Name {
+		t.Fatalf("want only %q (the still-running, never-checkpointed child): got %v -- "+
+			"the crashed child must be excluded (NotAZombieSlot), and the paused child must be excluded "+
+			"(sessions.state filter -- it is correctly waiting on a human resume, not stuck)", stuck.Name, names)
+	}
+}
+
+func mustExec(t *testing.T, d *db.DB, query string, args ...any) {
+	t.Helper()
+	if _, err := d.ExecContext(context.Background(), query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
 	}
 }
 

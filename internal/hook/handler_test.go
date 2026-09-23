@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
@@ -513,6 +514,137 @@ func TestPreToolUseBlocksSubagentsWhenBudgetExceeded(t *testing.T) {
 				t.Fatalf("%s: after child finishes must be allowed, got %s", tc.tools[0].name, out)
 			}
 		})
+	}
+}
+
+// The user reported swarm_spawn refusing with "budget exceeded" while fewer
+// than max_concurrent_subagents workers were genuinely running. Live DB
+// records for the two named agents showed neither had ever written a single
+// checkpoint -- their sessions were alive-and-idle, never crashed, so
+// runtime.NotAZombieSlot's exclusion (interrupted/crashed/failed only) never
+// applied, and the existing agent.no_ack/agent.stale notifications
+// (reconcile.go) only ever mail the parent async, never touch agents.state.
+// This test locks the surfaced-not-auto-killed fix: the budget-block reason
+// itself must name any slot-holding child whose latest session has run past
+// ackTimeout with zero checkpoints, so a human/orchestrator reading the
+// refusal (not just the mailbox) can act on it immediately.
+func TestPreToolUseSurfacesNoAckChildrenInBudgetBlockReason(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	// child_1: session started well past ackTimeout, never checkpointed --
+	// the exact shape of the incident.
+	mustExec(t, h.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+		VALUES ('child_1', 'stuck-no-ack', 'claude', 'model', 'coder', 'itm_1', 'itm_1', 'agt_1', '', 'active', 1)`)
+	mustExec(t, h.DB, `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, cwd_kind, state, started_at)
+		VALUES ('ses_child_1', 'child_1', 1, 1, 'hash1', 'stuck-no-ack', '/tmp/w', 'neutral', 'running', ?)`,
+		db.Millis(now().Add(-5*time.Minute)))
+
+	// child_2: session started just as long ago, but it DID checkpoint --
+	// must never be reported.
+	mustExec(t, h.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+		VALUES ('child_2', 'old-but-acked', 'claude', 'model', 'coder', 'itm_1', 'itm_1', 'agt_1', '', 'active', 1)`)
+	mustExec(t, h.DB, `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, cwd_kind, state, started_at)
+		VALUES ('ses_child_2', 'child_2', 1, 1, 'hash2', 'old-but-acked', '/tmp/w', 'neutral', 'running', ?)`,
+		db.Millis(now().Add(-5*time.Minute)))
+	mustExec(t, h.DB, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary, created_at)
+		VALUES ('ckp_1', 'ses_child_2', 'child_2', 'itm_1', 'accepted', 1, 'started', ?)`,
+		db.Millis(now().Add(-4*time.Minute)))
+
+	// child_3: session started recently, no checkpoint yet -- still inside
+	// its ack-timeout grace period, must never be reported.
+	mustExec(t, h.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+		VALUES ('child_3', 'freshly-spawned', 'claude', 'model', 'coder', 'itm_1', 'itm_1', 'agt_1', '', 'active', 1)`)
+	mustExec(t, h.DB, `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, cwd_kind, state, started_at)
+		VALUES ('ses_child_3', 'child_3', 1, 1, 'hash3', 'freshly-spawned', '/tmp/w', 'neutral', 'running', ?)`,
+		db.Millis(now().Add(-30*time.Second)))
+
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses,
+		[]byte(`{"session_id":"p1","tool_name":"mcp__swarm__swarm_spawn","tool_input":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]map[string]string
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
+		t.Fatalf("want deny, got %s", out)
+	}
+	reason := m["hookSpecificOutput"]["permissionDecisionReason"]
+	if !strings.Contains(reason, "stuck-no-ack") {
+		t.Fatalf("reason must name the no-ack child, got %q", reason)
+	}
+	if strings.Contains(reason, "old-but-acked") {
+		t.Fatalf("reason must not name the checkpointed child, got %q", reason)
+	}
+	if strings.Contains(reason, "freshly-spawned") {
+		t.Fatalf("reason must not name the still-within-grace child, got %q", reason)
+	}
+}
+
+// TestPreToolUseSurfacesNoAckChildAfterResumeWithZeroNewCheckpoints is the
+// review-flagged regression on the fix above: pause.go's Resume calls
+// startSession(ctx, a, ses.Attempt, ses.Generation+1, ...) -- same attempt,
+// new generation, new session row. A child that paused (writing a
+// 'handoff' checkpoint on generation 1 of attempt 1), got resumed, then
+// stalled with ZERO checkpoints on its new generation 2 session must still
+// be named: an attempt-scoped NOT EXISTS wrongly treats the OLD
+// generation's handoff checkpoint as covering the NEW generation, hiding
+// the exact stuck-after-resume case NoAckChildren exists to catch.
+func TestPreToolUseSurfacesNoAckChildAfterResumeWithZeroNewCheckpoints(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	mustExec(t, h.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+		VALUES ('child_1', 'resumed-then-stuck', 'claude', 'model', 'coder', 'itm_1', 'itm_1', 'agt_1', '', 'active', 1)`)
+	// Generation 1: paused, with a handoff checkpoint written before pausing.
+	mustExec(t, h.DB, `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, cwd_kind, state, started_at)
+		VALUES ('ses_child_1_g1', 'child_1', 1, 1, 'hash1a', 'resumed-then-stuck', '/tmp/w', 'neutral', 'paused', ?)`,
+		db.Millis(now().Add(-20*time.Minute)))
+	mustExec(t, h.DB, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary, created_at)
+		VALUES ('ckp_handoff_1', 'ses_child_1_g1', 'child_1', 'itm_1', 'handoff', 1, 'pausing', ?)`,
+		db.Millis(now().Add(-15*time.Minute)))
+	// Generation 2: the Resume-started session, same attempt, zero
+	// checkpoints of its own, started well past the ack timeout.
+	mustExec(t, h.DB, `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, cwd_kind, state, started_at)
+		VALUES ('ses_child_1_g2', 'child_1', 1, 2, 'hash1b', 'resumed-then-stuck', '/tmp/w', 'neutral', 'running', ?)`,
+		db.Millis(now().Add(-5*time.Minute)))
+
+	// maxSubagents defaults to 3: two filler children (inside the ack grace
+	// window, so never named) push the parent to the threshold so the block
+	// fires and the reason string gets built.
+	for i, name := range []string{"filler_a", "filler_b"} {
+		id := fmt.Sprintf("child_filler_%d", i)
+		mustExec(t, h.DB, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+			VALUES (?, ?, 'claude', 'model', 'coder', 'itm_1', 'itm_1', 'agt_1', '', 'active', 1)`, id, name)
+		mustExec(t, h.DB, `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, cwd_kind, state, started_at)
+			VALUES (?, ?, 1, 1, ?, ?, '/tmp/w', 'neutral', 'running', ?)`,
+			"ses_"+id, id, "hash_"+id, name, db.Millis(now().Add(-30*time.Second)))
+	}
+
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses,
+		[]byte(`{"session_id":"p1","tool_name":"mcp__swarm__swarm_spawn","tool_input":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]map[string]string
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
+		t.Fatalf("want deny, got %s", out)
+	}
+	reason := m["hookSpecificOutput"]["permissionDecisionReason"]
+	if !strings.Contains(reason, "resumed-then-stuck") {
+		t.Fatalf("reason must name the resumed, still-unacked child -- an attempt-scoped query wrongly credits it with generation 1's handoff checkpoint; got %q", reason)
+	}
+}
+
+func mustExec(t *testing.T, d *db.DB, query string, args ...any) {
+	t.Helper()
+	if _, err := d.ExecContext(context.Background(), query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
 	}
 }
 
