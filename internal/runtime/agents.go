@@ -1317,6 +1317,99 @@ func (s *Store) Cancel(ctx context.Context, name, sessionID, requestID string) (
 	return out, nil
 }
 
+// OverridableRoles is kinds.SettingsRoles minus RoleAdvisor. RoleAdvisor is
+// "Settings only; never an agent row" (kinds.go's own comment), and
+// resolveAdvisor (above) reads cfg.Roles[RoleAdvisor] straight off the live
+// global Settings -- it never consults a parent's RoleOverrides the way
+// Spawn's own role-default resolution does at line 748. A RoleAdvisor entry
+// in role_overrides would therefore be silently dead, so it's refused here
+// rather than accepted and ignored (docs/specs/2026-09-23-orchestrator-role-overrides.md).
+var OverridableRoles = []Role{RoleOrchestrator, RoleCoder, RoleReviewer, RoleUIReviewer, RoleResearcher, RoleDebugger, RoleMechanical}
+
+func joinRoles(roles []Role) string {
+	ss := make([]string, len(roles))
+	for i, r := range roles {
+		ss[i] = string(r)
+	}
+	return strings.Join(ss, ", ")
+}
+
+// SetRoleOverride is swarm_role_overrides' set/clear op. name is always
+// resolved from the caller's own MCP session by the mcpserver handler, never
+// a target parameter -- there is no way to reach another agent's row through
+// this method, which is the whole "self only" scope proof (grepping
+// RoleOverrides across internal/runtime shows only line 711/748, the owning
+// orchestrator's own spawn resolution, ever reads the map this writes).
+//
+// rd == nil clears role back to falling through to the live global default
+// (line 748's own lookup already treats a missing map key that way); rd !=
+// nil sets/replaces it after validation against enabled agents and the real
+// catalog, via the same settings.Store.ValidateDefault the user's own
+// Settings page goes through -- so an orchestrator can't set a role to a
+// disabled agent or an unlisted model any more than a Settings PUT could.
+func (s *Store) SetRoleOverride(ctx context.Context, name string, role Role, rd *settings.RoleDefault, sessionID, requestID string) (Agent, error) {
+	if !slices.Contains(OverridableRoles, role) {
+		return Agent{}, fmt.Errorf("bad_request: role must be one of %s", joinRoles(OverridableRoles))
+	}
+	a, err := s.Agent(ctx, name)
+	if err != nil {
+		return Agent{}, err
+	}
+	if rd != nil {
+		cfg, err := s.Settings.Get(ctx)
+		if err != nil {
+			return Agent{}, err
+		}
+		old := a.RoleOverrides[role]
+		if err := s.Settings.ValidateDefault(ctx, old, *rd, cfg.EnabledAgents, nil); err != nil {
+			return Agent{}, fmt.Errorf("bad_request: %s", err.Error())
+		}
+	}
+
+	var out Agent
+	if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_role_overrides", &out, func(tx *sql.Tx) error {
+		// Read-modify-write inside the transaction (s.tx is BEGIN IMMEDIATE),
+		// not before it: two concurrent set/clear calls on different roles
+		// from the same orchestrator must not clobber each other's map
+		// entry the way a read taken outside the tx could.
+		var raw string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(role_overrides, '') FROM agents WHERE id = ?`, a.ID).Scan(&raw); err != nil {
+			return err
+		}
+		overrides := map[Role]settings.RoleDefault{}
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &overrides); err != nil {
+				return err
+			}
+		}
+		if rd == nil {
+			delete(overrides, role)
+		} else {
+			overrides[role] = *rd
+		}
+		var next any
+		if len(overrides) > 0 {
+			b, err := json.Marshal(overrides)
+			if err != nil {
+				return err
+			}
+			next = string(b)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET role_overrides = ? WHERE id = ?`, next, a.ID); err != nil {
+			return err
+		}
+		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
+			return err
+		}
+		a.RoleOverrides = overrides
+		out = a
+		return nil
+	}); err != nil {
+		return Agent{}, err
+	}
+	return out, nil
+}
+
 // retryableStates is §8.1's own swarm_control description: "retry starts a
 // new attempt of a completed, failed, crashed or interrupted agent." Every
 // other live or pausing state (queued, spawning, running, pause_requested,
