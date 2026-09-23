@@ -477,9 +477,24 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 
 			if active >= maxSubagents {
+				reason := fmt.Sprintf("[swarm] Subagent budget exceeded (max %d active). Run sequentially or wait for active subagents to finish.", maxSubagents)
+				// Surface (never auto-cancel, see runtime.NoAckChildren) any
+				// slot-holding child that has run past the ack timeout with
+				// zero checkpoints -- the daemon's only other signal for this
+				// is agent.no_ack, which only ever mails the parent's inbox
+				// asynchronously and was easy to miss in the live incident
+				// this addresses.
+				noAck, err := h.RT.NoAckChildren(ctx, s.AgentID)
+				if err != nil {
+					return adapter.HookDecision{}, err
+				}
+				if len(noAck) > 0 {
+					reason += fmt.Sprintf(" %d slot(s) among those show no checkpoint since spawn (past the ack timeout): %s. swarm_read them; swarm_control cancel if genuinely stuck.",
+						len(noAck), strings.Join(noAck, ", "))
+				}
 				return adapter.HookDecision{
 					Block:  true,
-					Reason: fmt.Sprintf("[swarm] Subagent budget exceeded (max %d active). Run sequentially or wait for active subagents to finish.", maxSubagents),
+					Reason: reason,
 				}, nil
 			}
 		}

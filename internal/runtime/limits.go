@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 )
 
@@ -31,6 +32,34 @@ const NotAZombieSlot = `NOT EXISTS (
 		SELECT 1 FROM sessions s WHERE s.agent_id = agents.id
 			AND s.generation = (SELECT MAX(generation) FROM sessions WHERE agent_id = agents.id)
 			AND s.state IN ('interrupted', 'crashed', 'failed'))`
+
+// NoAckChildren returns the names of parentAgentID's slot-holding children
+// (the same 'active' + NotAZombieSlot set the swarm_spawn budget check in
+// internal/hook/handler.go counts) whose latest session is still running but
+// has never written a single checkpoint though ackTimeout has passed since
+// it started. This is the same "never heard from" signal notifyNoAck
+// (reconcile.go) already relays to the parent's inbox asynchronously; that
+// relay alone left a live incident invisible until a human dug through the
+// DB by hand (2026-09-23: two agents sat alive-and-idle, zero checkpoints,
+// for 72-116 minutes, pinning their parent's budget the whole time, because
+// nothing -- not the no_ack notification, not agent.stale -- ever touches
+// agents.state or sessions.state). Surfacing the same query synchronously in
+// the budget-block reason itself, rather than auto-cancelling, is the
+// deliberate choice: a live, never-checkpointed session might still be a
+// slow legitimate start (cold model, big clone, flaky network) and the
+// daemon has no stronger signal than ackTimeout to tell the two apart, so
+// this only reports -- swarm-orchestrator's SKILL.md tells the reader what
+// to do about it (swarm_read, then swarm_control cancel if genuinely stuck).
+func (s *Store) NoAckChildren(ctx context.Context, parentAgentID string) ([]string, error) {
+	cutoff := db.Millis(s.now().Add(-ackTimeout))
+	return s.queryIDs(ctx, `SELECT agents.name FROM agents
+		JOIN sessions ON sessions.agent_id = agents.id
+			AND sessions.generation = (SELECT MAX(generation) FROM sessions WHERE agent_id = agents.id)
+		WHERE agents.parent_agent_id = ? AND agents.state = 'active' AND `+NotAZombieSlot+`
+			AND sessions.started_at <= ?
+			AND NOT EXISTS (SELECT 1 FROM checkpoints c WHERE c.agent_id = agents.id AND c.attempt = sessions.attempt)
+		ORDER BY agents.name`, parentAgentID, cutoff)
+}
 
 // Admit reports whether a new agent of this role may start now (A2, I20).
 // Orchestrators count only against max_orchestrators; every other role counts
