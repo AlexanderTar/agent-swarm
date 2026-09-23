@@ -50,16 +50,26 @@ func ParseMuseModels(catalogJSON, settingsJSON []byte) ([]CatalogModel, string, 
 		return nil, "", errNoModels
 	}
 	def := marked
-	var cfg struct {
-		Model string `json:"model"`
-	}
-	if json.Unmarshal(settingsJSON, &cfg) == nil && cfg.Model != "" {
-		if _, ok := Find(models, cfg.Model); ok {
-			def = cfg.Model
+	if cfgModel := museConfiguredModel(settingsJSON); cfgModel != "" {
+		if _, ok := Find(models, cfgModel); ok {
+			def = cfgModel
 		}
 	}
 	for i := range models {
 		models[i].IsDefault = models[i].ID == def
 	}
 	return models, def, nil
+}
+
+// museConfiguredModel reads the model id settings.json pins, or "" if unset
+// or unparsable. Shared by ParseMuseModels (per-file default) and MuseFetcher
+// (cross-file default precedence, and the no-catalog backstop).
+func museConfiguredModel(settingsJSON []byte) string {
+	var cfg struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(settingsJSON, &cfg) != nil {
+		return ""
+	}
+	return cfg.Model
 }

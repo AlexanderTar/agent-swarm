@@ -74,10 +74,11 @@ func ParseMuseExport(raw []byte) (MuseUsage, error) {
 	return out, nil
 }
 
-// SessionUsage exports one muse session (redacted) and sums its token usage.
-// The export lands in dir and is removed afterwards; dir must exist.
-func SessionUsage(ctx context.Context, run execx.Runner, dir, sessionID string) (MuseUsage, error) {
+// MuseSessionUsage exports one muse session (redacted) and sums its token
+// usage. The export lands in dir and is removed afterwards; dir must exist.
+func MuseSessionUsage(ctx context.Context, run execx.Runner, dir, sessionID string) (MuseUsage, error) {
 	out := filepath.Join(dir, "muse-export-"+sessionID+".json")
+	// --out <file>: confirmed live 2026-09-23 via `muse export --help` (v1.3.0).
 	if _, err := run(ctx, "muse", "export", "--session", sessionID, "--redacted", "--out", out); err != nil {
 		return MuseUsage{}, err
 	}

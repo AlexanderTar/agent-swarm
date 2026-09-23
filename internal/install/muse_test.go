@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
 )
 
@@ -59,5 +60,25 @@ func TestWriteMuseMergesSwarmMCPServerAndKeepsOthers(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(c.SkillsDir(install.KindMuse), name, "SKILL.md")); err != nil {
 			t.Errorf("missing skill %s: %v", name, err)
 		}
+	}
+}
+
+func TestCheckMuseFailsBeforeInstallAndOnAMissingBinary(t *testing.T) {
+	c := fakeHome(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{}}
+	if ch := findCheck(t, install.CheckMuse(context.Background(), c, f.Runner()), "muse MCP"); ch.OK {
+		t.Error("muse MCP must fail before install")
+	}
+	if _, err := install.WriteMuse(context.Background(), c, nil); err != nil {
+		t.Fatal(err)
+	}
+	if ch := findCheck(t, install.CheckMuse(context.Background(), c, f.Runner()), "muse MCP"); !ch.OK {
+		t.Errorf("muse MCP = %+v after WriteMuse", ch)
+	}
+	if err := os.Remove(c.Bin); err != nil {
+		t.Fatal(err)
+	}
+	if ch := findCheck(t, install.CheckMuse(context.Background(), c, f.Runner()), "muse MCP"); ch.OK {
+		t.Error("a missing hook binary must fail")
 	}
 }

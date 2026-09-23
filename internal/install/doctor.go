@@ -53,6 +53,8 @@ func (d Doctor) Checks(ctx context.Context) []Check {
 			out = append(out, CheckCursor(ctx, d.Cfg, d.Run)...)
 		case KindAgy:
 			out = append(out, CheckAgy(ctx, d.Cfg, d.Run)...)
+		case KindMuse:
+			out = append(out, CheckMuse(ctx, d.Cfg, d.Run)...)
 		}
 	}
 	return append(out, d.superpowers(ctx)...)
@@ -94,6 +96,8 @@ func bothSuperpowersVariants(c Config, k Kind) bool {
 		roots = []string{c.Gemini("config", "plugins", "%s")}
 	case KindCursor:
 		roots = []string{c.Cursor("plugins", "cache", "*", "%s", "*"), c.Cursor("plugins", "local", "%s")}
+	case KindMuse:
+		roots = []string{c.MuseData("plugins", "cache", "*", "%s", "*")}
 	}
 	present := func(name string) bool {
 		for _, pattern := range roots {
