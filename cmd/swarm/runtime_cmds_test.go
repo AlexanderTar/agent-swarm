@@ -358,6 +358,47 @@ func TestUsageCommandPrintsMeters(t *testing.T) {
 	}
 }
 
+// A kind with no configured source at all (muse) hits recordAttemptOnly:
+// meters:[], error:null, fetched_at:0 — the daemon's designed "no source"
+// shape, distinct from a real fetch that later aged out. The CLI must not
+// call this "stale", which implies data that used to exist.
+func TestUsageCommandLabelsNoSourceDistinctFromStale(t *testing.T) {
+	srv, _, home := stubDaemon(t, map[string]string{
+		"GET /api/usage": `[
+			{"agent":"muse","meters":[],"headline_id":"","source":"muse","error":null,
+				"fetched_at":0,"attempted_at":1789651920000,"stale":true},
+			{"agent":"claude","meters":[],"headline_id":"","source":"oauth","error":null,
+				"fetched_at":1000,"attempted_at":1789651920000,"stale":true}
+		]`,
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	run([]string{"usage", "--home", home, "--url", srv.URL}, &out, &out)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	var museLine, claudeLine string
+	for _, l := range lines {
+		fields := strings.Fields(l)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "muse":
+			museLine = l
+		case "claude":
+			claudeLine = l
+		}
+	}
+	if !strings.Contains(museLine, "no usage source") {
+		t.Errorf("muse line = %q, want it to contain %q", museLine, "no usage source")
+	}
+	if strings.HasSuffix(strings.TrimRight(museLine, " \t"), "stale") {
+		t.Errorf("muse line = %q, must not say bare 'stale'", museLine)
+	}
+	if !strings.HasSuffix(strings.TrimRight(claudeLine, " \t"), "stale") {
+		t.Errorf("claude line = %q, want it to still say 'stale' (real fetched_at)", claudeLine)
+	}
+}
+
 // An API error is printed as its message, with exit code 1.
 func TestErrorsArePrintedAsTheDaemonsMessage(t *testing.T) {
 	srv, _, home := stubDaemon(t, nil) // every route 404s

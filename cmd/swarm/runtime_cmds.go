@@ -560,10 +560,11 @@ type meterRow struct {
 
 // usageRow is §3.4 UsageSnapshot, trimmed to what `swarm usage` prints.
 type usageRow struct {
-	Agent  string     `json:"agent"`
-	Meters []meterRow `json:"meters"`
-	Error  *string    `json:"error"`
-	Stale  bool       `json:"stale"`
+	Agent     string     `json:"agent"`
+	Meters    []meterRow `json:"meters"`
+	Error     *string    `json:"error"`
+	FetchedAt int64      `json:"fetched_at"`
+	Stale     bool       `json:"stale"`
 }
 
 func cmdUsage(args []string, stdout, stderr io.Writer) int {
@@ -595,6 +596,13 @@ func cmdUsage(args []string, stdout, stderr io.Writer) int {
 		note := ""
 		if u.Error != nil {
 			note = *u.Error
+		} else if u.Stale && u.FetchedAt == 0 {
+			// fetched_at == 0 with no error is recordAttemptOnly's fingerprint
+			// (internal/usage/usage.go): this kind has no configured source at
+			// all (e.g. muse has no quota endpoint), never a fetch that
+			// happened and aged out, so "stale" (implying prior data) would
+			// mislead.
+			note = "no usage source"
 		} else if u.Stale {
 			note = "stale"
 		}
