@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
@@ -88,4 +92,286 @@ func MuseSessionUsage(ctx context.Context, run execx.Runner, dir, sessionID stri
 		return MuseUsage{}, err
 	}
 	return ParseMuseExport(raw)
+}
+
+// ---------------------------------------------------------------------------
+// Muse: the real subscription-quota source, read over MSP.
+// ---------------------------------------------------------------------------
+
+// Muse reads Muse Code's subscription quota from a `muse serve` MSP host
+// (`usage/read` / `usage/changed`, live-verified against Muse Code 1.3.0 on
+// 2026-09-23 — see docs/specs/2026-09-23-muse-usage-probe.md for the full
+// trace). The payload is the same shape codex app-server returns: an integer
+// usedPercent per window, the window's length in minutes, and an epoch-ms
+// reset stamp — verbatim from the provider, not derived from token counts.
+//
+// THIS PROBE IS NOT FREE. A freshly spawned host has observed nothing and
+// answers `{}`; the numbers only arrive with a provider response frame, so a
+// fresh observation costs one minimal-effort muse turn (prompt "ok",
+// reasoningEffort "minimal", shell and writes disabled). ProbeGap caps that
+// at one turn per 15 minutes and serves the last observation in between —
+// which is exactly what MSP's own usage/read does, so the cached answer is
+// the same truth, only older. The poller's fetched_at then means "last
+// confirmed", and the data is at most ProbeGap + one poll old.
+type Muse struct {
+	Start    execx.Starter
+	Dir      string        // workspaceRoot for the throwaway probe session
+	Timeout  time.Duration // default 60s
+	ProbeGap time.Duration // default 15m
+	Now      func() time.Time
+
+	mu       sync.Mutex
+	cached   []Meter
+	headline string
+	at       time.Time
+}
+
+func (m *Muse) now() time.Time {
+	if m.Now != nil {
+		return m.Now()
+	}
+	return time.Now()
+}
+
+func (m *Muse) timeout() time.Duration {
+	if m.Timeout > 0 {
+		return m.Timeout
+	}
+	return 60 * time.Second
+}
+
+// probeGap defaults to 15 minutes: three times the poller's default
+// UsagePollSec, which is exactly its own staleAfter, so a cached answer
+// never reads as stale.
+func (m *Muse) probeGap() time.Duration {
+	if m.ProbeGap > 0 {
+		return m.ProbeGap
+	}
+	return 15 * time.Minute
+}
+
+// museUsageWindow is one block of the SubscriptionUsage payload. The weekly
+// block carries no windowDurationMins; the field simply stays zero there.
+type museUsageWindow struct {
+	UsedPercent        float64 `json:"usedPercent"`
+	WindowDurationMins int     `json:"windowDurationMins"`
+	ResetsAtMs         int64   `json:"resetsAtMs"`
+}
+
+type museSubscriptionUsage struct {
+	Window museUsageWindow `json:"window"`
+	Weekly museUsageWindow `json:"weekly"`
+	Tier   string          `json:"tier"`
+}
+
+// museRPCEnvelope covers everything that can arrive on the host's stdout: a
+// response (ID set, Result or Error) or a notification (Method set, no ID).
+type museRPCEnvelope struct {
+	ID     *int               `json:"id"`
+	Method string             `json:"method"`
+	Result json.RawMessage    `json:"result"`
+	Params json.RawMessage    `json:"params"`
+	Error  *museRPCErrorField `json:"error"`
+}
+
+type museRPCErrorField struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// Fetch returns the 5h and weekly quota meters. Inside ProbeGap it replays
+// the last observation without starting a host; a failed probe leaves the
+// cache alone so the next poll retries instead of serving a stale answer for
+// the whole gap.
+func (m *Muse) Fetch(ctx context.Context) ([]Meter, string, error) {
+	m.mu.Lock()
+	if len(m.cached) > 0 && m.now().Sub(m.at) < m.probeGap() {
+		meters, headline := m.cached, m.headline
+		m.mu.Unlock()
+		return meters, headline, nil
+	}
+	m.mu.Unlock()
+
+	usage, err := m.probe(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	meters, headline := museMeters(usage)
+	m.mu.Lock()
+	m.cached, m.headline, m.at = meters, headline, m.now()
+	m.mu.Unlock()
+	return meters, headline, nil
+}
+
+// probe spawns one MSP host, spends one minimal turn and returns the
+// subscription usage the host observed while that turn ran.
+func (m *Muse) probe(ctx context.Context) (museSubscriptionUsage, error) {
+	var zero museSubscriptionUsage
+	if m.Start == nil {
+		return zero, fmt.Errorf("muse: no MSP host starter configured")
+	}
+	proc, err := m.Start(ctx, "muse", "serve",
+		"--no-session-log", "--disable-shell", "--disable-write")
+	if err != nil {
+		return zero, err
+	}
+	defer proc.Kill()
+
+	deadline := time.Now().Add(m.timeout())
+	msgs := make(chan museRPCEnvelope)
+	readErrs := make(chan error, 1)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		dec := json.NewDecoder(proc.Stdout)
+		for {
+			var env museRPCEnvelope
+			if err := dec.Decode(&env); err != nil {
+				select {
+				case readErrs <- err:
+				case <-done:
+				}
+				return
+			}
+			select {
+			case msgs <- env:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	if _, err := m.call(proc, msgs, readErrs, deadline, 1, "initialize", map[string]any{
+		// MSP requires ^[a-z0-9_]+$ here. A hyphen does NOT fail loudly: the
+		// initialize response still arrives, the initialized notification is
+		// dropped (FR-008), and every later call answers notInitialized.
+		"clientInfo": map[string]any{"name": "swarm", "title": "agent-swarm", "version": "0.0.0"},
+	}); err != nil {
+		return zero, fmt.Errorf("muse: initialize: %w", err)
+	}
+	// The handshake only closes once this lands, and it must carry object
+	// params or the host drops it as FR-005.
+	if err := m.notify(proc, "initialized"); err != nil {
+		return zero, fmt.Errorf("muse: initialized: %w", err)
+	}
+
+	sessionID, err := uuid.NewV7()
+	if err != nil {
+		return zero, err
+	}
+	startID, err := uuid.NewV7()
+	if err != nil {
+		return zero, err
+	}
+	if _, err := m.call(proc, msgs, readErrs, deadline, 2, "session/start", map[string]any{
+		"commandId": startID.String(), "sessionId": sessionID.String(), "workspaceRoot": m.Dir,
+	}); err != nil {
+		return zero, fmt.Errorf("muse: session/start: %w", err)
+	}
+
+	turnID, err := uuid.NewV7()
+	if err != nil {
+		return zero, err
+	}
+	if _, err := m.call(proc, msgs, readErrs, deadline, 3, "turn/start", map[string]any{
+		"commandId": turnID.String(), "sessionId": sessionID.String(),
+		"reasoningEffort": "minimal",
+		"input":           []any{map[string]any{"type": "text", "text": "ok"}},
+	}); err != nil {
+		return zero, fmt.Errorf("muse: turn/start: %w", err)
+	}
+	return m.awaitUsage(msgs, readErrs, deadline)
+}
+
+// awaitUsage watches the notification stream for usage/changed, which a
+// fresh host always emits on its first observation (absent-to-present, ADR
+// 32563 D3). A turn that completes without one means the provider sent no
+// subscription frames at all — the PAYG/META_API_KEY case — which is an
+// error, never an empty success.
+func (m *Muse) awaitUsage(msgs <-chan museRPCEnvelope, readErrs <-chan error,
+	deadline time.Time) (museSubscriptionUsage, error) {
+	var zero museSubscriptionUsage
+	for {
+		select {
+		case env := <-msgs:
+			switch env.Method {
+			case "usage/changed":
+				var usage museSubscriptionUsage
+				if err := json.Unmarshal(env.Params, &usage); err != nil {
+					return zero, fmt.Errorf("muse: decoding usage/changed: %w", err)
+				}
+				return usage, nil
+			case "turn/completed":
+				return zero, fmt.Errorf("muse: the turn completed but the host observed no subscription usage")
+			}
+		case err := <-readErrs:
+			return zero, fmt.Errorf("muse: the host closed before reporting usage: %w", err)
+		case <-time.After(time.Until(deadline)):
+			return zero, fmt.Errorf("muse: timed out after %s waiting for usage", m.timeout())
+		}
+	}
+}
+
+// call writes one JSON-RPC request and waits for the response with a
+// matching id, skipping notifications and other ids on the way.
+func (m *Muse) call(proc *execx.Proc, msgs <-chan museRPCEnvelope, readErrs <-chan error,
+	deadline time.Time, id int, method string, params any) (json.RawMessage, error) {
+	req := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
+	if params != nil {
+		req["params"] = params
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := proc.Stdin.Write(append(data, '\n')); err != nil {
+		return nil, fmt.Errorf("writing the request: %w", err)
+	}
+	for {
+		select {
+		case env := <-msgs:
+			if env.ID == nil || *env.ID != id {
+				continue
+			}
+			if env.Error != nil {
+				return nil, fmt.Errorf("host error %d: %s", env.Error.Code, env.Error.Message)
+			}
+			return env.Result, nil
+		case err := <-readErrs:
+			return nil, fmt.Errorf("the host closed before answering: %w", err)
+		case <-time.After(time.Until(deadline)):
+			return nil, fmt.Errorf("the host timed out after %s", m.timeout())
+		}
+	}
+}
+
+func (m *Muse) notify(proc *execx.Proc, method string) error {
+	data, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "method": method, "params": map[string]any{}})
+	if err != nil {
+		return err
+	}
+	_, err = proc.Stdin.Write(append(data, '\n'))
+	return err
+}
+
+// museMeters maps one SubscriptionUsage payload onto this package's meters.
+// The 5h block reuses codexWindow (windowDurationMins 300 -> "5h"); the
+// weekly block has no duration of its own, so its labels are fixed.
+func museMeters(u museSubscriptionUsage) ([]Meter, string) {
+	resetsAt := func(ms int64) *time.Time {
+		if ms <= 0 {
+			return nil
+		}
+		t := time.UnixMilli(ms)
+		return &t
+	}
+	label, window := codexWindow(u.Window.WindowDurationMins)
+	meters := []Meter{
+		{ID: window, Label: label, Window: window,
+			UsedPct: u.Window.UsedPercent, ResetsAt: resetsAt(u.Window.ResetsAtMs)},
+		{ID: "weekly", Label: "Weekly", Window: "weekly",
+			UsedPct: u.Weekly.UsedPercent, ResetsAt: resetsAt(u.Weekly.ResetsAtMs)},
+	}
+	return meters, meters[0].ID
 }
