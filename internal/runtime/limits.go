@@ -25,13 +25,44 @@ import (
 // interrupted for over an hour pinned max_agents at capacity). The agent row
 // itself is untouched by this -- still active, still shown, still resumable/
 // ackable/cancellable by hand -- this only stops it blocking admission.
+//
+// It also excludes an agent whose own item already has a completed or failed
+// checkpoint on record for that session (2026-09-23 fix): a worker's own
+// terminal checkpoint (WriteCheckpoint, checkpoint.go) never touches its own
+// agents.state/sessions.state -- closeCompletedSiblings tears down every
+// OTHER live session on the item, deliberately excluding the checkpoint's
+// own writer, since it is still mid-turn. Only the async reconciler
+// eventually catches up (resolveAlive kills the pane ~60s after a completed
+// checkpoint, then resolveDead flips agents.state once the pane is
+// confirmed gone) -- up to ~75s where a genuinely-done agent still reads as
+// 'active'. c.item_id = agents.item_id keeps an orchestrator's routine
+// checkpoint against a CHILD's item from being mistaken for the
+// orchestrator's own completion.
+//
+// The checkpoint is correlated by c.session_id = s.id, not attempt: attempt
+// survives a Resume (same attempt, new generation -- pause.go's Resume calls
+// startSession(ctx, a, ses.Attempt, ses.Generation+1, ...)), so an
+// attempt-scoped match would keep excluding a resumed, genuinely-running
+// agent forever using its OLD session's terminal checkpoint (that regression
+// shipped briefly in the first cut of this fix and was caught before it
+// merged). checkpoints.session_id is always the writing session
+// (checkpoint.go's WriteCheckpoint inserts sessionID; pause.go's
+// writeDaemonPauseCheckpoint inserts sesID), so session-scoping is strictly
+// correct and strictly narrower than attempt-scoping was.
+//
 // Exported so every count of "agents currently occupying a concurrency slot"
 // applies the same exclusion -- Admit's three counts here, and the
-// max_concurrent_subagents count in internal/hook/handler.go.
+// max_concurrent_subagents count in internal/hook/handler.go. Both call
+// sites compose it into a query whose outer table is `agents` -- required,
+// since the SQL fragment references `agents.id`/`agents.item_id` unqualified
+// by any other alias.
 const NotAZombieSlot = `NOT EXISTS (
 		SELECT 1 FROM sessions s WHERE s.agent_id = agents.id
 			AND s.generation = (SELECT MAX(generation) FROM sessions WHERE agent_id = agents.id)
-			AND s.state IN ('interrupted', 'crashed', 'failed'))`
+			AND (s.state IN ('interrupted', 'crashed', 'failed')
+				OR EXISTS (SELECT 1 FROM checkpoints c WHERE c.agent_id = agents.id
+					AND c.item_id = agents.item_id AND c.session_id = s.id
+					AND c.kind IN ('completed', 'failed'))))`
 
 // NoAckChildren returns the names of parentAgentID's slot-holding children
 // (the same 'active' + NotAZombieSlot set the swarm_spawn budget check in
