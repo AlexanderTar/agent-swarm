@@ -26,9 +26,10 @@ func TestMuseLaunchArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"muse", "-i", "You are swarm agent login-form-coder (coder) for TASK-101: x.",
+	want := []string{"muse",
 		"--model", "muse-spark-1.3-contributor", "--reasoning-effort", "high",
-		"--yolo", "--trust-workspace"}
+		"--yolo", "--trust-workspace",
+		"You are swarm agent login-form-coder (coder) for TASK-101: x."}
 	if len(l.Argv) != len(want) {
 		t.Fatalf("argv = %q, want %q", l.Argv, want)
 	}
