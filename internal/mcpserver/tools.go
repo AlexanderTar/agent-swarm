@@ -121,7 +121,15 @@ func askTool(s *Server) ToolDef {
 		Description: "Ask a question, request an approval, propose repos to confirm, or withdraw an earlier ask, and block for the answer.",
 		Schema: objSchema(`"kind":{"type":"string"},"prompt":{"type":"string"},"options":{"type":"array"},
 			"artifact":{"type":"string"},"section":{"type":"string"},"withdraw":{"type":"string"},
-			"repos":{"type":"array"},"expansion":{"type":"array"},"request_id":{"type":"string"}`),
+			"repos":{"type":"array","items":{"type":"object","properties":{
+				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
+				"reason":{"type":"string"},"source":{"type":"string","enum":["","dropped"]}},
+				"required":["repo","reason"]}},
+			"expansion":{"type":"array","items":{"type":"object","properties":{
+				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
+				"reason":{"type":"string"}},
+				"required":["repo","reason"]}},
+			"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Kind      string                  `json:"kind"`
@@ -727,4 +735,3 @@ func instructionsTool(s *Server) ToolDef {
 		},
 	}
 }
-

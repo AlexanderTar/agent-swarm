@@ -406,6 +406,62 @@ func TestArtifactRequestIDReplaysInsteadOfRevisingTwice(t *testing.T) {
 	}
 }
 
+// P0 (2026-09-23, live incident): swarm_ask's "repos"/"expansion" params
+// were advertised as bare {"type":"array"}, with no items sub-schema at all.
+// An agent proposing repos to confirm had zero visibility into the required
+// shape (runtime.ReposProposal: {repo, reason, source?}) and, across two
+// separate live spikes, guessed the repo NAME, its ID and its PATH under
+// several different field names -- none matched "repo" -- and got the same
+// generic "was dropped" validation error every time with no way to
+// self-diagnose. The schema must declare the object shape.
+func TestAskToolSchemaDeclaresRepoProposalShape(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	var schema struct {
+		Properties struct {
+			Repos struct {
+				Items struct {
+					Properties struct {
+						Repo   struct{ Type string } `json:"repo"`
+						Reason struct{ Type string } `json:"reason"`
+					} `json:"properties"`
+					Required []string `json:"required"`
+				} `json:"items"`
+			} `json:"repos"`
+			Expansion struct {
+				Items struct {
+					Properties struct {
+						Repo   struct{ Type string } `json:"repo"`
+						Reason struct{ Type string } `json:"reason"`
+					} `json:"properties"`
+					Required []string `json:"required"`
+				} `json:"items"`
+			} `json:"expansion"`
+		} `json:"properties"`
+	}
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name == "swarm_ask" {
+			if err := json.Unmarshal(d.Schema, &schema); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, field := range []struct {
+		name string
+		repo struct{ Type string }
+		req  []string
+	}{
+		{"repos", schema.Properties.Repos.Items.Properties.Repo, schema.Properties.Repos.Items.Required},
+		{"expansion", schema.Properties.Expansion.Items.Properties.Repo, schema.Properties.Expansion.Items.Required},
+	} {
+		if field.repo.Type != "string" {
+			t.Errorf("%s.items.properties.repo missing or not a string in the advertised schema", field.name)
+		}
+		if !slices.Contains(field.req, "repo") || !slices.Contains(field.req, "reason") {
+			t.Errorf("%s.items.required = %v, want it to include \"repo\" and \"reason\"", field.name, field.req)
+		}
+	}
+}
+
 // §8.1: op is "register"|"revise" - the schema enum must allow both, and a
 // second call against the same item+path (with op:"revise") bumps the
 // revision (fix round 2, item 3).
