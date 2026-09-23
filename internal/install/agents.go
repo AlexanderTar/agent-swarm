@@ -26,7 +26,7 @@ type AgentsOpts struct {
 
 // agentBinaries maps a kind to the CLI whose presence means "installed".
 var agentBinaries = map[Kind]string{
-	KindClaude: "claude", KindCodex: "codex", KindAgy: "agy", KindCursor: "cursor-agent",
+	KindClaude: "claude", KindCodex: "codex", KindAgy: "agy", KindCursor: "cursor-agent", KindMuse: "muse",
 }
 
 // InstalledKinds reports which agents are on this Mac, in Kinds order.

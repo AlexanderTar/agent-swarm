@@ -55,6 +55,7 @@ func TestSkillsDirPerAgent(t *testing.T) {
 		install.KindCodex:  "/fake/home/.codex/skills",
 		install.KindAgy:    "/fake/home/.gemini/antigravity-cli/skills",
 		install.KindCursor: "/fake/home/.cursor/skills",
+		install.KindMuse:   "/fake/home/.config/muse/skills",
 	}
 	for k, w := range want {
 		if got := c.SkillsDir(k); got != w {
@@ -68,9 +69,10 @@ func TestKindDisplayMatchesTheCopyTable(t *testing.T) {
 	want := map[install.Kind]string{
 		install.KindClaude: "Claude", install.KindCodex: "Codex",
 		install.KindAgy: "agy", install.KindCursor: "Cursor",
+		install.KindMuse: "Muse",
 	}
-	if len(install.Kinds) != 4 {
-		t.Fatalf("Kinds = %v; L2 lists exactly four installable agents", install.Kinds)
+	if len(install.Kinds) != 5 {
+		t.Fatalf("Kinds = %v; L2 lists exactly five installable agents", install.Kinds)
 	}
 	for _, k := range install.Kinds {
 		if got := k.Display(); got != want[k] {
