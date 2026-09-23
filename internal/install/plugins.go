@@ -24,8 +24,8 @@ const MarketplaceName = "superpowers-marketplace"
 // installed for claude only (see the task rationale); superpowers-dev is never
 // installed, because it conflicts with superpowers.
 var pluginSupport = map[string][]Kind{
-	"superpowers":                            {KindClaude, KindCodex, KindAgy, KindCursor},
-	"elements-of-style":                      {KindClaude, KindCodex, KindAgy, KindCursor},
+	"superpowers":                            {KindClaude, KindCodex, KindAgy, KindCursor, KindMuse},
+	"elements-of-style":                      {KindClaude, KindCodex, KindAgy, KindCursor, KindMuse},
 	"episodic-memory":                        {KindClaude, KindCodex},
 	"superpowers-chrome":                     {KindClaude},
 	"superpowers-lab":                        {KindClaude},
@@ -237,6 +237,23 @@ func (p Plugins) alreadyInstalled(ctx context.Context, k Kind) map[string]bool {
 				have[e.Name()] = true
 			}
 		}
+	case KindMuse:
+		out, err := p.run(ctx, "muse", "plugins", "list", "--json")
+		if err != nil {
+			return have
+		}
+		var f struct {
+			Plugins []struct {
+				Record struct {
+					ID string `json:"id"`
+				} `json:"record"`
+			} `json:"plugins"`
+		}
+		if json.Unmarshal(out, &f) == nil {
+			for _, pl := range f.Plugins {
+				have[pl.Record.ID] = true
+			}
+		}
 	}
 	return have
 }
@@ -264,7 +281,7 @@ func (p Plugins) addMarketplace(ctx context.Context, k Kind, have map[string]boo
 			"https://github.com/obra/superpowers-marketplace")
 		return PluginResult{Kind: k, Action: "marketplace", Err: err}, true
 	}
-	return PluginResult{}, false // agy has no marketplace step
+	return PluginResult{}, false // agy and muse have no marketplace step
 }
 
 // apply installs or updates one plugin with the exact §12.4 command for that agent.
@@ -295,6 +312,19 @@ func (p Plugins) apply(ctx context.Context, k Kind, m MarketplacePlugin, action 
 		return err
 	case KindCursor:
 		return p.vendorForCursor(ctx, m, action)
+	case KindMuse:
+		if action == "update" {
+			// Probed in `muse plugins --help` 2026-09-23 (no network, refreshes
+			// the installed local plugin from its source).
+			_, err := p.run(ctx, "muse", "plugins", "update", m.Name)
+			return err
+		}
+		// Install is unprobed: `install <plugin>@<marketplace>` exists in help
+		// but no marketplace is registered (`list --available` is empty) and the
+		// registration command form is unknown, so Phase-0 forbids inventing the
+		// call. Surface as a reported failure with the manual command instead of
+		// a silent success. Re-probe when muse documents marketplace registration.
+		return fmt.Errorf("muse: install %q with `muse plugins install <path>` (e.g. your superpowers checkout); marketplace install is unprobed", m.Name)
 	}
 	return nil
 }
@@ -376,6 +406,18 @@ func SuperpowersOK(c Config, k Kind) (bool, string) {
 		for _, g := range []string{
 			c.Cursor("plugins", "cache", "*", "superpowers", "*", "skills", "brainstorming", "SKILL.md"),
 			c.Cursor("plugins", "local", "superpowers", "skills", "brainstorming", "SKILL.md"),
+		} {
+			if hits, _ := filepath.Glob(g); len(hits) > 0 {
+				return true, g
+			}
+		}
+		return false, "Install the superpowers plugin for " + k.Display() + " to run orchestrators."
+	case KindMuse:
+		// The cache layout nests the bundle under package/ (probed 2026-09-23);
+		// accept the flat layout too in case a future muse version flattens it.
+		for _, g := range []string{
+			c.MuseData("plugins", "cache", "*", "superpowers", "*", "skills", "brainstorming", "SKILL.md"),
+			c.MuseData("plugins", "cache", "*", "superpowers", "*", "package", "skills", "brainstorming", "SKILL.md"),
 		} {
 			if hits, _ := filepath.Glob(g); len(hits) > 0 {
 				return true, g

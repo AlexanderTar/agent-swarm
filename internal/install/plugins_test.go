@@ -57,6 +57,8 @@ func TestSupportedByFollowsTheSpecMatrix(t *testing.T) {
 		{"superpowers", install.KindCodex, true},
 		{"superpowers", install.KindAgy, true},
 		{"superpowers", install.KindCursor, true},
+		{"superpowers", install.KindMuse, true},
+		{"elements-of-style", install.KindMuse, true},
 		{"elements-of-style", install.KindCursor, true},
 		{"episodic-memory", install.KindCodex, true},
 		{"episodic-memory", install.KindAgy, false},
@@ -147,6 +149,33 @@ func TestSyncRunsTheExactAgyInstallCommand(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no successful agy superpowers install: %+v", got)
+	}
+}
+
+// muse lists plugins as JSON records: a present superpowers means Sync must not
+// attempt any install command (marketplace install is unprobed for muse).
+func TestSyncDetectsMusePluginsFromListJSON(t *testing.T) {
+	c := fakeHome(t)
+	srv := marketplaceServer(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"muse plugins list --json":         {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
+		"muse plugins update superpowers":       {Out: "updated"},
+		"muse plugins update elements-of-style": {Out: "updated"},
+	}}
+	p := install.Plugins{Cfg: c, Run: f.Runner(), HTTP: srv.Client(), MarketplaceURL: srv.URL, Log: &bytes.Buffer{}}
+	got := p.Sync(context.Background(), []install.Kind{install.KindMuse})
+
+	calls := strings.Join(f.Calls(), "\n")
+	if !strings.Contains(calls, "muse plugins list --json") {
+		t.Errorf("have-detection must query the CLI; calls =\n%s", calls)
+	}
+	if strings.Contains(calls, "muse plugins install") {
+		t.Errorf("present plugin must not be reinstalled; calls =\n%s", calls)
+	}
+	for _, r := range got {
+		if r.Kind == install.KindMuse && r.Err != nil {
+			t.Errorf("unexpected error: %+v", r)
+		}
 	}
 }
 
@@ -272,6 +301,7 @@ func TestSuperpowersOKChecksTheListedFilePerAgent(t *testing.T) {
 		{install.KindCodex, c.Codex("plugins", "cache", "m1", "superpowers", "v1", "skills", "brainstorming", "SKILL.md")},
 		{install.KindAgy, c.Gemini("config", "plugins", "superpowers", "skills", "brainstorming", "SKILL.md")},
 		{install.KindCursor, c.Cursor("plugins", "local", "superpowers", "skills", "brainstorming", "SKILL.md")},
+		{install.KindMuse, c.MuseData("plugins", "cache", "m1", "superpowers", "v1", "package", "skills", "brainstorming", "SKILL.md")},
 	} {
 		if ok, _ := install.SuperpowersOK(c, tc.kind); ok {
 			t.Errorf("%s: ok before anything is installed", tc.kind)

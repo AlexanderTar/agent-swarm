@@ -52,6 +52,11 @@ func (c Config) Muse(rest ...string) string {
 	return c.under(".config", append([]string{"muse"}, rest...))
 }
 
+// MuseData is the muse data root (plugin cache, model catalog, session store).
+func (c Config) MuseData(rest ...string) string {
+	return filepath.Join(append([]string{c.UserHome, ".local", "share", "muse"}, rest...)...)
+}
+
 func (c Config) under(dir string, rest []string) string {
 	return filepath.Join(append([]string{c.UserHome, dir}, rest...)...)
 }
