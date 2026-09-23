@@ -64,6 +64,14 @@ func (c *Codex) setupEnv(s Spec) (map[string]string, error) {
 			}
 		}
 	}
+	for _, rel := range []string{"hooks.json", "skills", "plugins"} {
+		if err := symlinkIfExists(
+			filepath.Join(c.d.UserHome, ".codex", rel),
+			filepath.Join(codexHome, rel),
+		); err != nil {
+			return nil, err
+		}
+	}
 	return map[string]string{"CODEX_HOME": codexHome}, nil
 }
 
