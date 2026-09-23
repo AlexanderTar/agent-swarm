@@ -24,6 +24,17 @@ func newAgy(d Deps) *Agy { return &Agy{base{d: d, kind: kinds.Agy}} }
 
 func init() { register(kinds.Agy, func(d Deps) Adapter { return newAgy(d) }) }
 
+// symlinkIfExists symlinks src at dst when src exists; it is a silent no-op
+// otherwise (a test-only Deps, or a machine where `swarm install` hasn't run
+// for agy yet -- setupEnv must not fail just because optional state is missing).
+func symlinkIfExists(src, dst string) error {
+	if _, err := os.Stat(src); err != nil {
+		return nil
+	}
+	_ = os.Remove(dst)
+	return os.Symlink(src, dst)
+}
+
 // setupEnv isolates agy's HOME so the swarm MCP config and custom instructions
 // never leak into the user's real ~/.gemini, while auth still works via
 // symlinks (mirrors codex.go's setupEnv).
@@ -48,6 +59,20 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 			return nil, err
 		}
 	} else if err := os.MkdirAll(symAntigravityCLI, 0o700); err != nil {
+		return nil, err
+	}
+	// The swarm/swarm-orchestrator skills (installed to ~/.gemini/skills/,
+	// Config.SkillsDir(KindAgy)) and swarm's hook wiring
+	// (~/.gemini/config/hooks.json) live outside antigravity-cli too. Without
+	// these, a spawned agy has no idea how the swarm protocol works and no
+	// hook interception -- unlike claude (no HOME isolation) or codex
+	// (isolates only CODEX_HOME, not its skills path). Symlink both.
+	if err := symlinkIfExists(filepath.Join(a.d.UserHome, ".gemini", "skills"),
+		filepath.Join(agyHome, ".gemini", "skills")); err != nil {
+		return nil, err
+	}
+	if err := symlinkIfExists(filepath.Join(a.d.UserHome, ".gemini", "config", "hooks.json"),
+		filepath.Join(agyHome, ".gemini", "config", "hooks.json")); err != nil {
 		return nil, err
 	}
 	mcpCfg, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
