@@ -107,8 +107,8 @@ func TestNativeWakeWithoutASyncFallsBackToThePaste(t *testing.T) {
 	if err := s.WakeDue(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(tm.pasted) != 1 || !strings.HasSuffix(tm.pasted[0], "|"+IdleToken) {
-		t.Fatalf("pasted = %v, want the idle token", tm.pasted)
+	if len(tm.pasted) != 1 || strings.HasSuffix(tm.pasted[0], "|"+IdleToken) {
+		t.Fatalf("pasted = %v, want the inbox paste notice, not the bare idle token", tm.pasted)
 	}
 }
 
@@ -578,5 +578,38 @@ func TestNoRepasteWithinTheCooldownUnlessAMessageIsNewer(t *testing.T) {
 	s.WakeDue(ctx)
 	if len(tm.pasted) != 3 {
 		t.Fatalf("a newer message must be woken at the next tick: %d pastes", len(tm.pasted))
+	}
+}
+
+func TestTryPasteUsesInboxNoticeNotBareIdleToken(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "PasteNotice", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"}
+	enq(t, s, a.ID, a.RootItemID, "question", `{"body":"does the paste carry content?"}`, 1)
+	at.Advance(25 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.pasted) != 1 {
+		t.Fatalf("pasted = %v, want one paste", tm.pasted)
+	}
+	pasted := tm.pasted[0]
+	if strings.HasSuffix(pasted, "|"+IdleToken) {
+		t.Fatalf("tryPaste still pastes the bare IdleToken: %q", pasted)
+	}
+	// The paste channel is terse by design (spec Locked decision 3): kinds,
+	// not bodies or ids — but it must name what's pending and point at sync.
+	for _, want := range []string{"question", "swarm_sync"} {
+		if !strings.Contains(pasted, want) {
+			t.Errorf("pasted notice missing %q: %q", want, pasted)
+		}
+	}
+	if strings.Contains(pasted, "\n") {
+		t.Errorf("pasted notice contains a literal newline: %q", pasted)
 	}
 }
