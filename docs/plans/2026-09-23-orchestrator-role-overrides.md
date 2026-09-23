@@ -69,9 +69,13 @@ All steps executed in `../agent-swarm--orchestrator-role-overrides`, branch
 - `go build ./...`
 - `go test ./internal/settings/... ./internal/runtime/... ./internal/mcpserver/... ./internal/install/...`
 - `go test ./...` — expect everything green except the pre-existing,
-  unrelated `internal/httpapi` `TestBoardServedAtRoot` failure (missing
-  untracked `web/dist` build artifact in the fresh worktree — see spec's
+  unrelated `internal/httpapi` `TestBoardServedAtRoot` failure (`web/dist`'s
+  real build output is gitignored, `dist/*` + `!dist/.gitkeep`, so a fresh
+  worktree only has the placeholder, not a `pnpm build` — see spec's
   Verification section). Do not attempt to fix this as part of this task.
+- `gofmt -l internal/` — compare against the same command on `main`; confirm
+  no *new* files appear (this repo carries pre-existing gofmt debt on files
+  this change doesn't touch; don't fix unrelated files here).
 - Commit in small, real steps (not one giant commit): (1) settings rename,
   (2) runtime `SetRoleOverride` + its tests, (3) mcp tool + `swarm_read`
   extension + their tests + the tool-count fixture fix, (4) SKILL.md docs.

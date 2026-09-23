@@ -1368,8 +1368,10 @@ func (s *Store) SetRoleOverride(ctx context.Context, name string, role Role, rd 
 
 	var out Agent
 	if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_role_overrides", &out, func(tx *sql.Tx) error {
-		// Read-modify-write inside the transaction (s.tx is BEGIN IMMEDIATE),
-		// not before it: two concurrent set/clear calls on different roles
+		// Read-modify-write inside the transaction, not before it: every
+		// connection opens with _txlock=immediate (internal/db/db.go:33-35),
+		// so this always holds SQLite's write lock from BEGIN. Two concurrent
+		// set/clear calls on different roles
 		// from the same orchestrator must not clobber each other's map
 		// entry the way a read taken outside the tx could.
 		var raw string

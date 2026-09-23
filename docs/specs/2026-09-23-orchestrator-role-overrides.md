@@ -135,10 +135,14 @@ any other known worktree as of 2026-09-23.
      state = ...`.
    - The read-modify-write of the JSON map happens **inside** the `IdemTx`
      transaction body (`SELECT ... FROM agents WHERE id = ? ` then `UPDATE
-     ...`), not before it: `s.tx` is `BEGIN IMMEDIATE`, so this is
-     race-free against two concurrent `set`/`clear` calls on different roles
-     from the same orchestrator (a read taken before the transaction could
-     let one clobber the other).
+     ...`), not before it: every connection is opened with `_txlock=immediate`
+     in its DSN (`internal/db/db.go:33-35`, its own comment: "makes every
+     transaction take the write lock up front"), so `d.BeginTx`/`s.tx` always
+     takes SQLite's write lock at `BEGIN`, not at the first write. This makes
+     the read-modify-write race-free against two concurrent `set`/`clear`
+     calls on different roles from the same orchestrator (a read taken
+     before the transaction could let one clobber the other; reading inside
+     it, under the write lock, cannot).
    - The row is stored as `NULL` when the resulting map is empty (mirrors
      `StartOrchestrator`'s own `rolesJSON any` — `nil` when `len(in.Roles) ==
      0`), not `"{}"`.
@@ -244,15 +248,16 @@ go test ./internal/install/...
 
 All pass as of this writing. `go test ./...` also shows a pre-existing,
 unrelated failure in `internal/httpapi` (`TestBoardServedAtRoot`, 503) caused
-by `web/dist` being an untracked, `pnpm build`-generated directory that a
-fresh `git worktree add` never checks out (confirmed: `web/dist` doesn't
-exist in this worktree; `git check-ignore -v web/dist` on the primary
-checkout confirms it's gitignored; the Makefile's own `test-go: vet fmt
-web-build` target exists specifically to build it first). This is an
+by `web/dist`'s real build output being gitignored (`web/.gitignore`: `dist/*`
+plus `!dist/.gitkeep`) — a fresh worktree's `web/dist/` therefore contains
+only the tracked `.gitkeep` placeholder, no `index.html`/`assets`, so
+`//go:embed all:dist` (`web/embed.go`) embeds an empty board and
+`web.Handler` 404s/503s on it. The Makefile's own `test-go: vet fmt
+web-build` target exists specifically to run `pnpm build` first. This is an
 environment-setup gap in any fresh worktree, not a regression from this
 change — `internal/httpapi` has a zero-line diff against `main` in this
-worktree, and the primary checkout's `internal/httpapi` suite passes
-unchanged.
+worktree, and the primary checkout's `internal/httpapi` suite (which has a
+real, `pnpm build`-populated `web/dist/`) passes unchanged.
 
 End-to-end scenarios covered by tests:
 - Set an override, spawn a worker on that role with no explicit
