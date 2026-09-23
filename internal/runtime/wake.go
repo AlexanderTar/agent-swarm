@@ -167,15 +167,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if r.PasteAttempts > 0 && r.LastPasteAttemptAt != nil && s.Now().Sub(*r.LastPasteAttemptAt) < pasteRetry {
 			continue
 		}
-		pasteNotice, err := s.InboxPasteNotice(ctx, r.AgentID, r.AgentName, r.ItemKey)
-		if err != nil {
-			s.logf("wake: inbox paste notice for %s: %v", r.AgentName, err)
-			pasteNotice = IdleToken // fallback, never block a wake on a render error
-		}
-		if r.HasControl {
-			pasteNotice = ControlNotice(r.AgentName, r.ItemKey)
-		}
-		if err := s.tryPaste(ctx, ad, r, pasteNotice); err != nil {
+		if err := s.tryPaste(ctx, ad, r, notice); err != nil {
 			return err
 		}
 	}
@@ -205,9 +197,9 @@ func (s *Store) alreadyNotifiedUndeliverable(ctx context.Context, agentID string
 }
 
 // tryPaste checks the three §11.3 conditions and pastes the caller-supplied notice
-// (the terse InboxPasteSummary, or ControlNotice for a control batch — never the bare IdleToken). The
-// daemon never logs a full process listing: other tools' bearer tokens show up
-// there (P0-4).
+// (the same rich Inbox notice native wake gets, or ControlNotice for a control batch
+// — never the bare IdleToken). The daemon never logs a full process listing: other
+// tools' bearer tokens show up there (P0-4).
 func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pasteNotice string) error {
 	ok := false
 	if matchesAny(ad.ProcessNames(), r.PaneCommand) && !isShell(r.PaneCommand) {

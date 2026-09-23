@@ -581,7 +581,7 @@ func TestNoRepasteWithinTheCooldownUnlessAMessageIsNewer(t *testing.T) {
 	}
 }
 
-func TestTryPasteUsesInboxNoticeNotBareIdleToken(t *testing.T) {
+func TestTryPasteReceivesTheSameRichNoticeAsNativeWake(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
 	at := tm.clk
@@ -590,7 +590,7 @@ func TestTryPasteUsesInboxNoticeNotBareIdleToken(t *testing.T) {
 	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
 	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
 	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"}
-	enq(t, s, a.ID, a.RootItemID, "question", `{"body":"does the paste carry content?"}`, 1)
+	enq(t, s, a.ID, a.RootItemID, "question", `{"body":"does the paste carry the full summary now?"}`, 1)
 	at.Advance(25 * time.Second)
 	if err := s.WakeDue(ctx); err != nil {
 		t.Fatal(err)
@@ -602,14 +602,10 @@ func TestTryPasteUsesInboxNoticeNotBareIdleToken(t *testing.T) {
 	if strings.HasSuffix(pasted, "|"+IdleToken) {
 		t.Fatalf("tryPaste still pastes the bare IdleToken: %q", pasted)
 	}
-	// The paste channel is terse by design (spec Locked decision 3): kinds,
-	// not bodies or ids — but it must name what's pending and point at sync.
-	for _, want := range []string{"question", "swarm_sync"} {
-		if !strings.Contains(pasted, want) {
-			t.Errorf("pasted notice missing %q: %q", want, pasted)
-		}
+	if !strings.Contains(pasted, "does the paste carry the full summary now?") {
+		t.Errorf("pasted notice missing the real message content (v2: no more terse-only paste): %q", pasted)
 	}
-	if strings.Contains(pasted, "\n") {
-		t.Errorf("pasted notice contains a literal newline: %q", pasted)
+	if !strings.Contains(pasted, "[QUESTION]") {
+		t.Errorf("pasted notice missing the new [TAG] format: %q", pasted)
 	}
 }

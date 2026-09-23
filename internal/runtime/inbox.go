@@ -597,10 +597,7 @@ func summarizeFor(kind MessageKind, payload json.RawMessage) string {
 			}
 		}
 	}
-	preview := string(payload)
-	if len(preview) > 120 {
-		preview = preview[:120]
-	}
+	preview, _ := truncateRunes(string(payload), 120) // rune-safe, see text.go
 	return sanitizeOneLine(preview)
 }
 
@@ -657,22 +654,12 @@ func (s *Store) pendingInboxItems(ctx context.Context, agentID string, limit int
 	return items, more, nil
 }
 
-// InboxNotice renders the rich notice for hook-injected context and native
-// wake (spec Locked decision 1).
+// InboxNotice renders the notice used on every delivery channel: hook
+// context, native wake, and tryPaste's raw paste alike (v2 Locked decision 1).
 func (s *Store) InboxNotice(ctx context.Context, agentID, name, key string) (string, error) {
 	items, more, err := s.pendingInboxItems(ctx, agentID, maxInboxItems)
 	if err != nil {
 		return "", err
 	}
 	return Inbox(items, more, name, key), nil
-}
-
-// InboxPasteNotice renders the terse notice for tryPaste's raw tmux paste
-// (spec Locked decision 3).
-func (s *Store) InboxPasteNotice(ctx context.Context, agentID, name, key string) (string, error) {
-	items, more, err := s.pendingInboxItems(ctx, agentID, maxInboxItems)
-	if err != nil {
-		return "", err
-	}
-	return InboxPasteSummary(items, more, name, key), nil
 }
