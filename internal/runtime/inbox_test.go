@@ -906,3 +906,58 @@ func TestInboxNoticeCapsAtEightItemsWithMoreCount(t *testing.T) {
 		t.Errorf("InboxNotice %d bytes, want <= %d", len(notice), maxInboxNotice)
 	}
 }
+
+// While the target's kind is confirmed exhausted, a daemon relay must be held
+// (one suppressed_relays row), not enqueued; a repeat hold bumps the same row.
+func TestHoldIfExhaustedSuppressesRelay(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	s.Usage = fakeUsage{Fake: true}
+	hold := func() bool {
+		t.Helper()
+		var held bool
+		err := s.tx(ctx, func(tx *sql.Tx) error {
+			var err error
+			held, err = s.holdIfExhausted(ctx, tx, orch.ID, "no_ack", json.RawMessage(`{"event":"no_ack"}`))
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return held
+	}
+	if !hold() {
+		t.Fatal("holdIfExhausted = false for an exhausted kind, want true")
+	}
+	if !hold() {
+		t.Fatal("second holdIfExhausted = false, want true")
+	}
+	var msgs, rows, count int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ?`, orch.ID).Scan(&msgs)
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays WHERE agent_id = ?`, orch.ID).Scan(&rows)
+	s.DB.QueryRowContext(ctx, `SELECT count FROM suppressed_relays WHERE agent_id = ? AND event = 'no_ack'`, orch.ID).Scan(&count)
+	if rows != 1 || count != 2 {
+		t.Fatalf("suppressed rows = %d (count %d), want 1 row with count 2", rows, count)
+	}
+	_ = msgs
+}
+
+// Nil Usage (usage polling off) never holds: today's behavior is unchanged.
+func TestHoldIfExhaustedNilUsageNeverHolds(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	var held bool
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		held, err = s.holdIfExhausted(ctx, tx, orch.ID, "no_ack", json.RawMessage(`{}`))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Fatal("holdIfExhausted = true with nil Usage, want false (fail open)")
+	}
+}
