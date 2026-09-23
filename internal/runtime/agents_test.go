@@ -957,12 +957,13 @@ func TestDiscoverProviderSessionNeverOverwritesAnExistingValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate the hook path having already populated the value, then call
-	// the discovery fallback directly: it must leave a non-empty value alone.
+	// Simulate the hook path having already populated the value via the DB
+	// directly (not the in-memory struct, which stays empty) -- this is what
+	// actually exercises setProviderSessionID's own WHERE provider_session_id
+	// = '' guard, not just discoverProviderSession's early-return check.
 	if err := s.setProviderSessionID(context.Background(), ses.ID, "hook-set-id"); err != nil {
 		t.Fatal(err)
 	}
-	ses.ProviderSessionID = "hook-set-id"
 	fa.DiscoverSessionOK = true
 	fa.DiscoverSessionResult = "should-not-be-used"
 	s.discoverProviderSession(context.Background(), a, ses, fa)

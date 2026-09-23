@@ -1246,6 +1246,7 @@ func (s *Store) discoverProviderSession(ctx context.Context, a Agent, ses Sessio
 	}
 	providerID, ok := ad.DiscoverSession(ctx, pid, ses.Cwd)
 	if !ok {
+		s.logf("discoverProviderSession: %s: pid %d matched no registry entry", a.Name, pid)
 		return
 	}
 	if err := s.setProviderSessionID(ctx, ses.ID, providerID); err != nil {
@@ -1260,7 +1261,7 @@ func (s *Store) discoverProviderSession(ctx context.Context, a Agent, ses Sessio
 // value the hook path wrote concurrently.
 func (s *Store) setProviderSessionID(ctx context.Context, sessionID, providerID string) error {
 	_, err := s.DB.ExecContext(ctx,
-		`UPDATE sessions SET provider_session_id = ? WHERE id = ? AND provider_session_id = ''`,
+		`UPDATE sessions SET provider_session_id = ? WHERE id = ? AND (provider_session_id IS NULL OR provider_session_id = '')`,
 		providerID, sessionID)
 	return err
 }
