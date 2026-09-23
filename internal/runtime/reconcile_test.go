@@ -2634,3 +2634,81 @@ func repoPathFor(t *testing.T, s *Store, repoID string) string {
 	}
 	return path
 }
+
+// While the parent's kind is exhausted, no_ack still notifies once but the
+// relay is held — and the next tick stays quiet (the hold counts as handled).
+func TestNoAckHeldWhileExhausted(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[w.Name] = []string{"starting up…\n"} // not idle
+	tm.captures[orch.Name] = []string{"working…\n"}
+	s.Usage = fakeUsage{Fake: true}
+	at.Advance(3 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 1 {
+		t.Fatalf("agent.no_ack count = %d, want 1 (notify still fires)", n)
+	}
+	var relays, rows, count int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`).Scan(&relays)
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays WHERE event = 'no_ack'`).Scan(&rows)
+	s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(count), 0) FROM suppressed_relays WHERE event = 'no_ack'`).Scan(&count)
+	if relays != 0 {
+		t.Fatalf("no_ack relays = %d, want 0 held while exhausted", relays)
+	}
+	if rows != 1 || count != 1 {
+		t.Fatalf("suppressed no_ack rows = %d (count %d), want 1 row with count 1", rows, count)
+	}
+	at.Advance(5 * time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 1 {
+		t.Fatalf("agent.no_ack must stay at 1 on the next tick: count = %d", n)
+	}
+	s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(count), 0) FROM suppressed_relays WHERE event = 'no_ack'`).Scan(&count)
+	if count != 1 {
+		t.Fatalf("suppressed no_ack count after a second tick = %d, want 1", count)
+	}
+}
+
+// While the ancestor's kind is exhausted, the progress-deadlock relay is held,
+// not enqueued.
+func TestProgressDeadlockHeldWhileExhausted(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	s.Sync(ctx, wSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, w.ID)
+	s.Usage = fakeUsage{Fake: true}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress,
+		Summary: "wired the seams", Next: []string{"needs a scope decision"}}); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(5*time.Minute + time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var relays, rows int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"progress_deadlock"%'`, orch.ID).Scan(&relays)
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays WHERE agent_id = ? AND event = 'progress_deadlock'`, orch.ID).Scan(&rows)
+	if relays != 0 {
+		t.Fatalf("progress_deadlock relays = %d, want 0 held while exhausted", relays)
+	}
+	if rows != 1 {
+		t.Fatalf("suppressed progress_deadlock rows = %d, want 1", rows)
+	}
+}

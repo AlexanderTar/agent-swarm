@@ -40,9 +40,42 @@ func nullIf(s string) any {
 	return s
 }
 
-// enqueue stores one message. seq is max(seq)+1 inside this transaction, which is
-// safe because the daemon is the only writer (§5).
+// enqueue stores one message, unless it is daemon fan-in to a kind that is
+// confirmed out of usage right now: relay/digest/advice from the daemon to an
+// exhausted kind are held (one suppressed_relays row per event) instead of
+// queued, so a quota-dead parent does not wake up to hundreds of relays
+// (2026-09-23 orchestrator-2 incident). Holding returns a zero Message and nil
+// error -- no daemon-relay caller reads the returned ID, only agent-origin
+// Send does, and it never matches this gate. seq is max(seq)+1 inside this
+// transaction, which is safe because the daemon is the only writer (§5).
 func (s *Store) enqueue(ctx context.Context, tx *sql.Tx, m Message) (Message, error) {
+	if m.Origin == "daemon" && (m.Kind == "relay" || m.Kind == "digest" || m.Kind == "advice") {
+		a, err := s.agentByIDTx(ctx, tx, m.ToAgentID)
+		if err != nil {
+			return m, err
+		}
+		if s.Usage != nil && s.Usage.Exhausted(ctx, a.Kind) {
+			event := string(m.Kind)
+			var p struct {
+				Event string `json:"event"`
+			}
+			if json.Unmarshal(m.Payload, &p) == nil && p.Event != "" {
+				event = p.Event
+			}
+			if held, err := s.holdIfExhausted(ctx, tx, m.ToAgentID, event, m.Payload); err != nil {
+				return m, err
+			} else if held {
+				return Message{}, nil
+			}
+		}
+	}
+	return s.enqueueRaw(ctx, tx, m)
+}
+
+// enqueueRaw is the ungated insert body. foldDigest (which compresses
+// pre-existing deferred rows rather than adding load) and the quota-reset
+// flush use it directly; everything else goes through enqueue's hold gate.
+func (s *Store) enqueueRaw(ctx context.Context, tx *sql.Tx, m Message) (Message, error) {
 	if m.ID == "" {
 		m.ID = ids.New("msg")
 	}
@@ -373,7 +406,9 @@ func (s *Store) foldDigest(ctx context.Context, tx *sql.Tx, a Agent, deferred []
 					return Message{}, err
 				}
 			}
-			return s.enqueue(ctx, tx, Message{Kind: "digest", Origin: "daemon",
+			// Ungated on purpose: these rows predate any outage and the digest
+		// compresses them rather than adding load.
+		return s.enqueueRaw(ctx, tx, Message{Kind: "digest", Origin: "daemon",
 				ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: body})
 		}
 		lines = lines[:len(lines)-1]

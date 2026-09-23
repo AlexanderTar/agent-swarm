@@ -81,6 +81,18 @@ No new exported types. One new unexported helper on `*runtime.Store`:
 func (s *Store) holdIfExhausted(ctx context.Context, tx *sql.Tx, toAgentID, event string, sample json.RawMessage) (bool, error)
 ```
 
+The gate lives in one place — `enqueue` itself — not at each call site: when
+`m.Origin == "daemon"`, `m.Kind` is `relay`/`digest`/`advice`, and the target's kind
+is exhausted, `enqueue` holds (upserting `suppressed_relays` with the payload's
+`event`, falling back to the kind string) and returns a zero `Message` with nil
+error instead of inserting. No daemon-relay caller reads the returned ID (all `_`;
+only agent-origin `Send` does, and it never matches the gate). Two paths bypass
+the gate via `enqueueRaw` (the ungated insert body): `foldDigest`, whose deferred
+rows predate the outage and whose digest compresses rather than adds load, and the
+quota-reset flush itself. `alreadyRelayed` / `alreadyRelayedForCheckpoint` also
+consult `suppressed_relays` so a held signal still counts as "already handled" for
+this session/checkpoint and the 5 s tick stays quiet.
+
 `WakeOnQuotaReset(ctx, kind, cutoff)` keeps its signature `(int, error)` and gains the
 flush: before waking sessions, for every agent of `kind` with `suppressed_relays` rows,
 enqueue one `digest` (`origin daemon`) with payload
@@ -104,12 +116,12 @@ No i18n keys, no notification kind changes, no empty-state copy.
 ## File list
 
 Changed:
-- `internal/runtime/inbox.go` — `holdIfExhausted` helper + gates in `escalateUnacked`, `foldDigest`
+- `internal/runtime/inbox.go` — `holdIfExhausted` helper, central gate in `enqueue`,
+  `enqueueRaw` bypass used by `foldDigest`
 - `internal/runtime/wake.go` — `WakeDue` skip when exhausted; `WakeOnQuotaReset` flush + wake
-- `internal/runtime/reconcile.go` — gates in `notifyNoAck`, `checkProgressDeadlock`,
-  `OnDepUnblocked`, undelivered-escalation sites
-- `internal/runtime/checkpoint.go` — gate on parent checkpoint relay
-- `internal/runtime/agents.go` — gates on preflight-failed relay + `DeliverAdvice`
+- `internal/runtime/reconcile.go` — `alreadyRelayed` / `alreadyRelayedForCheckpoint`
+  also consult `suppressed_relays` (no per-site gates: `enqueue` covers notifyNoAck,
+  progressDeadlock, OnDepUnblocked, interrupted/crashed/no_recipient relays)
 - `internal/db/schema/0009_hold_relays_while_exhausted.sql` — new table
 - Tests beside each: `inbox_test.go`, `wake_test.go`, `reconcile_test.go`,
   `checkpoint` coverage via existing checkpoint tests, `agents_test.go`, `db_test.go` migration check

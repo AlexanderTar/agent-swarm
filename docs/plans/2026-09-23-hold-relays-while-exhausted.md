@@ -21,32 +21,33 @@ Implement:
 Verify: `go test -race ./internal/runtime/ -run 'TestHoldIfExhausted|TestFoldDigest'`
 plus `go test ./internal/db/`. Commit: `git add docs/specs/2026-09-23-hold-relays-while-exhausted.md docs/plans/2026-09-23-hold-relays-while-exhausted.md internal/db/schema/0009_hold_relays_while_exhausted.sql internal/runtime/inbox.go internal/runtime/inbox_test.go` then commit.
 
-## Task 2 — gate the relay call sites
+## Task 2 — central gate in `enqueue` + guard extensions
 
-Failing tests (one per site, fake exhausted `claude` parent):
-- `TestCheckpointRelayHeldWhileExhausted` (`checkpoint_test.go` or extend): child checkpoint
-  with exhausted parent kind → 0 new `messages`, 1 `suppressed_relays` row.
-- `TestNoAckHeldWhileExhausted` + `TestProgressDeadlockHeldWhileExhausted`
-  (`reconcile_test.go`): same shape via `notifyNoAck` / `checkProgressDeadlock`.
-- `TestEscalateUnackedHeldWhileExhausted` (`inbox_test.go`): delivery at
-  `maxFullDeliveries` with exhausted target → no ancestor relay, marker written.
-- `TestPreflightRelayHeldWhileExhausted` (`agents_test.go`) + advice held test.
+The gate lives in `enqueue`, not at each call site (every daemon relay already
+funnels through it; no caller of a daemon relay reads the returned ID).
 
-Implement (each ≤ 5 lines at the top of the enqueue block):
-```go
-if held, err := s.holdIfExhausted(ctx, tx, parentID, event, payload); err != nil {
-    return err
-} else if held {
-    return nil
-}
-```
-Sites: `checkpoint.go:586` (event = checkpoint kind), `reconcile.go` notifyNoAck
-(`no_ack`), `checkProgressDeadlock` (`progress_deadlock`), `OnDepUnblocked` + undelivered
-sites (their payload `event`), `inbox.go` escalateUnacked (`message_unacked`) +
-`foldDigest` (`digest`), `agents.go` preflight (`failed`) + advice (`advice`).
-`alreadyRelayed`/`alreadyRelayedForCheckpoint` guards: extend the existence check to
-`suppressed_relays` so a held relay still counts as "already handled" for this
-session/checkpoint (prevents unbounded marker churn on the 5 s tick).
+Failing tests first (fake exhausted `Fake` kind via `fakeUsage`):
+- `TestCheckpointRelayHeldWhileExhausted` (`checkpoint_test.go`): child checkpoint
+  with exhausted parent kind → 0 new `messages` rows to the parent, 1
+  `suppressed_relays` row with the checkpoint-kind event.
+- `TestNoAckHeldWhileExhausted` (`reconcile_test.go`, canonical no_ack setup):
+  notify still fires once, 0 `no_ack` relays, 1 suppressed row; second tick changes nothing.
+- `TestProgressDeadlockHeldWhileExhausted` (`reconcile_test.go`, deadlock setup):
+  0 `progress_deadlock` relays, 1 suppressed row.
+- `TestEscalateUnackedHeldWhileExhausted` (`inbox_test.go`, direct `escalateUnacked`
+  call against the worker tree): 0 `message_unacked` relays, 1 suppressed row.
+- `TestFoldDigestStillDeliversWhileExhausted` (`inbox_test.go`): deferred rows fold
+  into a real `digest` even when exhausted (fold compresses pre-existing load).
+
+Implement in `internal/runtime/inbox.go`:
+- Split `enqueue` into gated `enqueue` + ungated `enqueueRaw` (current insert body).
+  `enqueue` holds when `m.Origin == "daemon"`, `m.Kind ∈ {relay, digest, advice}`,
+  and the target kind is exhausted (event = payload `event` field, fallback kind
+  string); returns zero `Message`, nil error. `foldDigest` calls `enqueueRaw`.
+- `internal/runtime/reconcile.go`: `alreadyRelayed` also returns true when a
+  matching `suppressed_relays` row (same agent, event, `last_at >= sinceStartedAt`)
+  exists; `alreadyRelayedForCheckpoint` likewise for `progress_deadlock` rows in the
+  same root with `last_at >=` the checkpoint's `created_at`.
 
 Verify: `go test -race ./internal/runtime/`. Commit runtime + tests only (explicit paths).
 

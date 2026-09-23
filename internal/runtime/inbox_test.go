@@ -943,6 +943,63 @@ func TestHoldIfExhaustedSuppressesRelay(t *testing.T) {
 	_ = msgs
 }
 
+// While the ancestor's kind is exhausted, an unacked-message escalation still
+// notifies but holds the relay.
+func TestEscalateUnackedHeldWhileExhausted(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, _ := worker(t, s)
+	s.Usage = fakeUsage{Fake: true}
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.escalateUnacked(ctx, tx, w, Message{Kind: "finding",
+			ItemID: w.ItemID, RootItemID: w.RootItemID, Payload: json.RawMessage(`{"body":"hi"}`)})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := notifiedCount(s, "agent.message_unacked"); n != 1 {
+		t.Fatalf("agent.message_unacked count = %d, want 1 (notify still fires)", n)
+	}
+	var relays, rows int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'
+		AND payload_json LIKE '%"event":"message_unacked"%'`).Scan(&relays)
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays WHERE event = 'message_unacked'`).Scan(&rows)
+	if relays != 0 {
+		t.Fatalf("message_unacked relays = %d, want 0 held while exhausted", relays)
+	}
+	if rows != 1 {
+		t.Fatalf("suppressed message_unacked rows = %d, want 1", rows)
+	}
+}
+
+// A digest folds pre-existing deferred rows: it compresses load rather than
+// adding it, so it still delivers while the kind is exhausted.
+func TestFoldDigestStillDeliversWhileExhausted(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "DigestHeld", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.Sync(ctx, ses.ID, nil, 20)
+	for i, key := range []string{"TASK-1", "TASK-2"} {
+		enq(t, s, a.ID, a.RootItemID, "digest",
+			`{"event":"progress","agent":"w`+string(rune('1'+i))+`","item":"`+key+`","checkpoint":{"summary":"step done"}}`, 1)
+	}
+	s.Usage = fakeUsage{Fake: true}
+	res, err := s.Sync(ctx, ses.ID, nil, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digests := 0
+	for _, m := range res.Messages {
+		if m.Kind == "digest" {
+			digests++
+		}
+	}
+	if digests != 1 {
+		t.Fatalf("digest count while exhausted = %d, want 1 (fold still delivers)", digests)
+	}
+}
+
 // Nil Usage (usage polling off) never holds: today's behavior is unchanged.
 func TestHoldIfExhaustedNilUsageNeverHolds(t *testing.T) {
 	s, _, _ := newStore(t)
