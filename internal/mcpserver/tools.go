@@ -16,7 +16,19 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/settings"
 )
+
+// roleOverridesOut normalizes an Agent's RoleOverrides for the wire: a nil
+// map (the common case -- most agents have never set one) marshals as an
+// empty object, not JSON null, matching every other empty-collection field
+// this package returns (e.g. readTool's out["items"] = []items.Item{}).
+func roleOverridesOut(m map[runtime.Role]settings.RoleDefault) map[runtime.Role]settings.RoleDefault {
+	if m == nil {
+		return map[runtime.Role]settings.RoleDefault{}
+	}
+	return m
+}
 
 func objSchema(props string) json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{` + props + `},"additionalProperties":true}`)
@@ -256,7 +268,8 @@ type readInput struct {
 }
 
 func (s *Server) agentOut(ctx context.Context, a runtime.Agent) map[string]any {
-	out := map[string]any{"name": a.Name, "kind": a.Kind, "model": a.Model, "role": a.Role, "state": a.State}
+	out := map[string]any{"name": a.Name, "kind": a.Kind, "model": a.Model, "role": a.Role, "state": a.State,
+		"role_overrides": roleOverridesOut(a.RoleOverrides)}
 	if a.ParentAgentID != "" {
 		if parent, err := s.RT.AgentByID(ctx, a.ParentAgentID); err == nil {
 			out["parent"] = parent.Name

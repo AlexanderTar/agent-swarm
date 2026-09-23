@@ -1891,3 +1891,174 @@ func TestOrchestratorRoleOverridesInheritedByWorkers(t *testing.T) {
 		t.Fatalf("tree[0] role override model = %q, want %q", tree[0].RoleOverrides[RoleCoder].Model, "gpt-6-astra")
 	}
 }
+
+// ---------- SetRoleOverride (docs/specs/2026-09-23-orchestrator-role-overrides.md) ----------
+
+func TestSetRoleOverrideAppliesAtSpawn(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := s.SetRoleOverride(ctx, orch.Name, RoleCoder,
+		&settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra", Effort: "high"}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RoleOverrides[RoleCoder].Model != "gpt-6-astra" {
+		t.Fatalf("updated.RoleOverrides[coder].Model = %q, want gpt-6-astra", updated.RoleOverrides[RoleCoder].Model)
+	}
+
+	worker, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey: "TASK-1", ParentAgentID: orch.ID, Role: RoleCoder,
+		Brief: BriefInput{Objective: "task"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worker.Kind != Codex || worker.Model != "gpt-6-astra" || worker.Effort != "high" {
+		t.Fatalf("worker = %+v, want Codex/gpt-6-astra/high", worker)
+	}
+}
+
+func TestSetRoleOverrideClearFallsThroughToGlobalDefault(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{
+		ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5",
+		Roles: map[Role]settings.RoleDefault{RoleCoder: {Agent: Codex, Model: "gpt-6-astra", Effort: "high"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := s.SetRoleOverride(ctx, orch.Name, RoleCoder, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := updated.RoleOverrides[RoleCoder]; ok {
+		t.Fatalf("RoleOverrides[coder] = %+v, want cleared", updated.RoleOverrides[RoleCoder])
+	}
+
+	worker, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey: "TASK-1", ParentAgentID: orch.ID, Role: RoleCoder,
+		Brief: BriefInput{Objective: "task"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Global default (roleDefaults' RoleCoder = {Claude, "sonnet"}) applies
+	// once the override is gone.
+	if worker.Kind != Claude {
+		t.Fatalf("worker.Kind = %q, want %q (the global default) once the override is cleared", worker.Kind, Claude)
+	}
+}
+
+func TestSetRoleOverrideRejectsDisabledAgent(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake is a real AgentKind but not enabled by newStoreWithFallback
+	// (only Claude and Codex are), so this must go through the exact same
+	// enabled-agent check settings.Store.Put's own validate() runs.
+	_, err = s.SetRoleOverride(ctx, orch.Name, RoleCoder, &settings.RoleDefault{Agent: Fake, Model: "fake-1"}, "", "")
+	if err == nil {
+		t.Fatal("expected an error for a disabled agent")
+	}
+	if !strings.Contains(err.Error(), "isn't enabled") {
+		t.Fatalf("err = %v, want an 'isn't enabled' message", err)
+	}
+}
+
+func TestSetRoleOverrideRejectsUnoverridableRole(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// advisor is never a spawned agent's own role and resolveAdvisor never
+	// consults a parent's RoleOverrides (it reads cfg.Roles[RoleAdvisor]
+	// directly), so an override here would be silently dead -- refused
+	// rather than accepted and ignored.
+	_, err = s.SetRoleOverride(ctx, orch.Name, RoleAdvisor, &settings.RoleDefault{Agent: Claude, Model: "claude-sonnet-5"}, "", "")
+	if err == nil {
+		t.Fatal("expected an error for the advisor role")
+	}
+}
+
+func TestSetRoleOverrideRequestIDReplaysWithoutASecondWrite(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := s.SetRoleOverride(ctx, orch.Name, RoleCoder,
+		&settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"}, "sess-1", "req-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.SetRoleOverride(ctx, orch.Name, RoleCoder,
+		&settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"}, "sess-1", "req-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RoleOverrides[RoleCoder] != second.RoleOverrides[RoleCoder] {
+		t.Fatalf("replay result differs: %+v vs %+v", first.RoleOverrides[RoleCoder], second.RoleOverrides[RoleCoder])
+	}
+}
+
+// TestSetRoleOverrideOnlyEverTouchesTheCallersOwnRow is a scope proof: the
+// method has no target-agent parameter at all (name is always the caller's
+// own agent name at the MCP layer), so a second orchestrator's row is
+// provably untouched by any call SetRoleOverride ever makes.
+func TestSetRoleOverrideOnlyEverTouchesTheCallersOwnRow(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	orchA, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherEpic, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Other"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchB, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: otherEpic.Key, Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.SetRoleOverride(ctx, orchA.Name, RoleCoder,
+		&settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	loadedB, err := s.AgentByID(ctx, orchB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loadedB.RoleOverrides) != 0 {
+		t.Fatalf("orchB.RoleOverrides = %+v, want empty (orchA's SetRoleOverride must not touch it)", loadedB.RoleOverrides)
+	}
+}

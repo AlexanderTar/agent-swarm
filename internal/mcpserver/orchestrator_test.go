@@ -1601,3 +1601,122 @@ func TestItemsCreateRejectsInProgressStatus(t *testing.T) {
 		t.Fatal("a new item can only start draft or ready")
 	}
 }
+
+// ---------- swarm_role_overrides (docs/specs/2026-09-23-orchestrator-role-overrides.md) ----------
+
+func TestSwarmRoleOverridesSetThenSpawnUsesIt(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	out, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		RoleOverrides map[string]struct {
+			Agent string `json:"agent"`
+			Model string `json:"model"`
+		} `json:"role_overrides"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.RoleOverrides["coder"].Agent != "fake" || res.RoleOverrides["coder"].Model != "fake-1" {
+		t.Fatalf("role_overrides[coder] = %+v, want fake/fake-1", res.RoleOverrides["coder"])
+	}
+
+	worker := spawnWorker(t, s, seed)
+	if worker.Kind != runtime.Fake || worker.Model != "fake-1" {
+		t.Fatalf("worker = %+v, want Fake/fake-1", worker)
+	}
+}
+
+func TestSwarmRoleOverridesClearRemovesTheEntry(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_role_overrides", `{"op":"clear","role":"coder"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		RoleOverrides map[string]any `json:"role_overrides"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.RoleOverrides["coder"]; ok {
+		t.Fatalf("role_overrides = %+v, want coder cleared", res.RoleOverrides)
+	}
+}
+
+func TestSwarmRoleOverridesRejectsAdvisorRole(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	if _, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"advisor","agent":"fake","model":"fake-1"}`); err == nil {
+		t.Fatal("expected an error for the advisor role")
+	}
+}
+
+func TestSwarmRoleOverridesRejectsDisabledAgent(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	// claude is a real AgentKind but not enabled (newOrchestratorServer's
+	// enabled_agents is ["fake"] only).
+	if _, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"coder","agent":"claude","model":"claude-sonnet-5"}`); err == nil {
+		t.Fatal("expected an error for a disabled agent")
+	}
+}
+
+func TestSwarmRoleOverridesIsScopedToTheCallersOwnRow(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	other := seedOtherOrchestrator(t, s)
+
+	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`); err != nil {
+		t.Fatal(err)
+	}
+
+	otherAgent, err := s.RT.Agent(ctx, other.AgentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherAgent.RoleOverrides) != 0 {
+		t.Fatalf("other orchestrator's RoleOverrides = %+v, want empty", otherAgent.RoleOverrides)
+	}
+}
+
+func TestSwarmReadShowsRoleOverrides(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["`+seed.Caller.AgentName+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Agents []struct {
+			RoleOverrides map[string]struct {
+				Agent string `json:"agent"`
+				Model string `json:"model"`
+			} `json:"role_overrides"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(res.Agents))
+	}
+	if res.Agents[0].RoleOverrides["coder"].Agent != "fake" {
+		t.Fatalf("role_overrides = %+v, want coder set to fake", res.Agents[0].RoleOverrides)
+	}
+}
