@@ -201,7 +201,35 @@ notice produced by the real `runtime.Inbox`.
 - **Claude Code** — 1496-byte notice with 4 newlines. Transcript: exactly one
   typed prompt, `LEN=1491`, byte-for-byte equal to the flattened notice,
   starting `[swarm] Durable runtime events for probe-agent (T-9)…`.
-- **cursor-agent** — same driver, same notice; see the commit log for the run.
+- **cursor-agent** — `pasted_text.json` entry `len=1491`, byte-for-byte equal
+  to the flattened notice, and `meta.json` `hasConversation:true` (i.e. it was
+  actually submitted, which the pre-fix run was not).
+- **muse** — `~/.local/share/muse/sessions/2026/09/23/01a0cfd1…/session.jsonl`,
+  event `runtime.user_intent.accepted`, `payload.model_messages[0].content[0].text`
+  `LEN=1491`, byte-for-byte equal. The agent then reasoned about `msg_00/01/02`
+  by id, so the content reached the model, not just the input box.
+
+All three kinds therefore verified against their own durable stores, with the
+notice produced by the real `runtime.Inbox` and pasted by the real
+`spawn.PasteLine`.
+
+### Does claude still reach the paste lane?
+
+After these fixes claude pastes in exactly two situations, and the second is a
+policy call the user should make rather than something this branch changed:
+
+1. **`PublishWake` has no subscriber** — the mcpshim bridge is not connected,
+   so there is no native channel at all and paste is the only route left.
+   Before Bug 3 was fixed this case was invisible (it claimed success and then
+   pasted anyway a tick later); now it is honest and immediate.
+2. **I11: native was delivered but no sync followed within `pasteRetry` (30 s)**
+   — `WakeDue`'s "a sync must follow; if it does not, the next pass pastes".
+   This is a deliberate §11.3 escalation pinned by
+   `TestNativeWakeWithoutASyncFallsBackToThePaste`, so it was **not** changed
+   here. If claude should never be pasted at while its bridge is live, the
+   change is to retry native instead of escalating for kinds whose `Wake`
+   confirmed a subscriber — a spec amendment plus a rewrite of that test, not
+   a silent tweak.
 
 ## Verification
 
