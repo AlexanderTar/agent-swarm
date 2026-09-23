@@ -78,25 +78,28 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 	return http.DefaultClient
 }
 
-// DefaultSources builds the four real sources: Claude and Cursor read their
+// DefaultSources builds the five real sources: Claude and Cursor read their
 // OAuth token from the login keychain via run (`security
 // find-generic-password`); Codex talks to `codex app-server` via start, with
 // UserHome's rollout files as a fallback; Agy reads its own OAuth token
 // cache from disk and calls Antigravity's real remote quota endpoint
 // directly (verified live 2026-09-19 — see agy.go's Agy doc comment for the
-// full trace and why it must be the "daily" host, not "prod"). Nothing here
-// is called by any test in this package — the only thing exercised is that
-// the slice has four entries (S-4).
+// full trace and why it must be the "daily" host, not "prod"). Muse spawns
+// its own `muse serve` MSP host and reads usage/changed. Nothing here is
+// called by any test in this package — the only thing exercised is that the
+// slice has five entries (S-4).
 //
-// muse is deliberately absent: `muse --help` (verified live 2026-09-23) has
-// no quota/usage/billing subcommand, so there is no source shaped like the
-// four above to poll. Its own per-session token export
-// (MuseSessionUsage/ParseMuseExport, muse.go) is a different shape entirely
-// — cumulative tokens for one session id, not a percentage against a quota
-// — and has no session id to fetch here even if Source.Fetch took one. A
-// muse row still appears in usage_snapshots via recordAttemptOnly
-// (fetched_at 0, no error); cmd/swarm's `swarm usage` labels that "no usage
-// source" rather than "stale".
+// muse was absent until 2026-09-23 on the grounds that `muse --help` has no
+// quota subcommand. True of the subcommand surface, wrong as a conclusion:
+// the MSP host `muse serve` speaks answers usage/read and emits
+// usage/changed with the provider's own window/weekly percentages —
+// docs/specs/2026-09-23-muse-usage-probe.md has the full trace. Note that
+// muse is the one source whose probe is not free: a fresh observation costs
+// one minimal-effort turn, which Muse.ProbeGap caps at one per 15 minutes
+// (see Muse's doc comment). Its per-session token export
+// (MuseSessionUsage/ParseMuseExport, muse.go) remains a different thing
+// entirely — cumulative tokens for one session id, never a percentage — and
+// is still not used here.
 func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, start execx.Starter) []Source {
 	claudeSrc := &Claude{BaseURL: "https://api.anthropic.com", HTTP: hc, Version: claudeCLIVersion(run),
 		ReadToken: claudeKeychainToken(run, "Claude Code-credentials", user), Now: time.Now}
@@ -105,6 +108,7 @@ func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, st
 		ReadToken: agyOAuthToken(userHome), Now: time.Now}
 	cursorSrc := &Cursor{BaseURL: "https://api2.cursor.sh", HTTP: hc,
 		ReadToken: cursorKeychainToken(run, "cursor-access-token", "cursor-user"), Now: time.Now}
+	museSrc := &Muse{Start: start, Dir: userHome, Now: time.Now}
 	return []Source{
 		{Agent: runtime.Claude, Fetch: func(ctx context.Context) ([]Meter, string, error) {
 			snap, err := claudeSrc.Fetch(ctx)
@@ -119,6 +123,7 @@ func DefaultSources(userHome, user string, hc *http.Client, run execx.Runner, st
 			snap, err := cursorSrc.Fetch(ctx)
 			return snap.Meters, snap.HeadlineID, err
 		}},
+		{Agent: runtime.Muse, Fetch: museSrc.Fetch},
 	}
 }
 

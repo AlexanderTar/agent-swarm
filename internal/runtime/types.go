@@ -12,6 +12,7 @@ const (
 	Codex  = kinds.Codex
 	Agy    = kinds.Agy
 	Cursor = kinds.Cursor
+	Muse   = kinds.Muse
 	Fake   = kinds.Fake
 )
 
