@@ -117,7 +117,10 @@ then `go test ./...`, then web `pnpm test` (catalog, AgentFields, spawn sheets).
 Probes: `MUSE_LIVE_PROBE=1 go test ./internal/adapter/ -run TestMuse` (paid; never CI).
 Acceptance: `swarm install` on a muse-only machine enables muse; picker shows Muse;
 spawned muse lists `swarm` + `superpowers:*` via `muse skills list --json`;
-`swarm export`-equivalent usage path returns nonzero tokens for a live session;
+`MuseUsage` reader returns exact nonzero token sums for a live session export
+(unit-proven on a real redacted export); poller registration deferred — quota
+Meters cannot represent token counts and no per-session token pipeline exists
+for any kind yet (all-kinds follow-up, not muse-only surface);
 wake delivers or documented fallback does.
 
 ## 9. Explicitly out of scope
