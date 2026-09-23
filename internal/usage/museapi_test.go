@@ -244,3 +244,25 @@ func TestMuseFetchRejectsInactiveAndBillingStates(t *testing.T) {
 		}
 	}
 }
+
+// Live: reads the real keychain and calls the real mint endpoint. Spends
+// no model turn. Asserts meters only — never logs the token or identity.
+//
+//	MUSE_LIVE_MINT=1 go test ./internal/usage/ -run TestMuseMintLive -v
+func TestMuseMintLive(t *testing.T) {
+	if os.Getenv("MUSE_LIVE_MINT") != "1" {
+		t.Skip("set MUSE_LIVE_MINT=1 to hit the real mint endpoint")
+	}
+	m := &MuseAPI{BaseURL: "https://api.meta.ai", HTTP: http.DefaultClient,
+		ReadToken: museKeychainToken(execx.Run, os.Getenv("HOME"), os.Getenv)}
+	meters, headline, err := m.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mt := range meters {
+		t.Logf("%s %s %.0f%% resets %v", mt.ID, mt.Label, mt.UsedPct, mt.ResetsAt)
+	}
+	if len(meters) != 2 || headline != "5h" {
+		t.Fatalf("meters = %+v headline = %q, want 2 meters headed by 5h", meters, headline)
+	}
+}
