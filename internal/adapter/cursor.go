@@ -47,6 +47,10 @@ func (c *Cursor) argv(s Spec, chat string) []string {
 // setupEnv isolates cursor's MCP config to just the swarm server and, when
 // instructions are set, writes a workspace AGENTS.md (mirrors codex.go's
 // setupEnv; cursor has no HOME-wide config dir to isolate, only CURSOR_DATA_DIR).
+//
+// Verified 2026-09-23 (docs/specs/2026-09-23-superpowers-remediation.md):
+// an isolated CURSOR_DATA_DIR still resolves plugins from the real
+// ~/.cursor/plugins -- cursor-agent's plugin lookup isn't CURSOR_DATA_DIR-relative.
 func (c *Cursor) setupEnv(s Spec) (map[string]string, error) {
 	cursorHome := filepath.Join(c.d.launchDir(s.SessionID), "cursor-home")
 	if err := os.MkdirAll(cursorHome, 0o700); err != nil {
