@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +78,151 @@ func TestMuseLaunchDefaultsEmptyEffort(t *testing.T) {
 	joined := strings.Join(l.Argv, " ")
 	if !strings.Contains(joined, "--reasoning-effort high") {
 		t.Errorf("empty effort must default to high: %q", joined)
+	}
+}
+
+// TestMuseLaunchIsolatesXDGConfigHomeWithLiteralSwarmEnv is the P0-1 fix's
+// non-live proof: muse only forwards a fixed allowlist (HOME, PATH, USER,
+// LANG, TERM and similar) plus a settings.json server's literal `env` map to
+// its spawned stdio MCP subprocesses -- it does not expand ${VAR} and does
+// not auto-forward its own process env by name (confirmed live 2026-09-23,
+// see museMCPEnv's doc). So the swarm MCP server can only authenticate if
+// Launch bakes this launch's concrete SWARM_* values into an isolated
+// settings.json and points muse at it via XDG_CONFIG_HOME, which is what
+// this test asserts byte-for-byte. TestMuseSetupEnvReachesRealMCPSubprocess
+// (muse_wake_probe_test.go, MUSE_LIVE_PROBE=1) proves the real binary honors
+// that shape end to end.
+func TestMuseLaunchIsolatesXDGConfigHomeWithLiteralSwarmEnv(t *testing.T) {
+	d := testDeps(t)
+	// The operator's real, pre-existing settings.json: another MCP server and
+	// unrelated settings that must survive the isolated clone unchanged.
+	realDir := filepath.Join(d.UserHome, ".config", "muse")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realSettings := `{"schema_version":1,"provider":"meta","model":"muse-spark-1.3",` +
+		`"mcpServers":{"notion":{"mode":"optional","url":"https://mcp.notion.com/mcp"}}}`
+	if err := os.WriteFile(filepath.Join(realDir, "settings.json"), []byte(realSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "auth.json"),
+		[]byte(`{"schema_version":1,"providers":{"meta":{}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(realDir, "skills", "swarm"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling XDG_CONFIG_HOME-rooted tool's config (e.g. gh, git): the
+	// isolation must not blind it, since XDG_CONFIG_HOME lands on the whole
+	// tmux pane, not just muse.
+	if err := os.MkdirAll(filepath.Join(d.UserHome, ".config", "gh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	s := museSpec(t)
+	l, err := newMuse(d).Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xdgConfigHome := l.Env["XDG_CONFIG_HOME"]
+	if xdgConfigHome == "" {
+		t.Fatal("Launch must set XDG_CONFIG_HOME so muse reads the isolated settings.json")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(xdgConfigHome, "muse", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["schema_version"] != float64(1) {
+		t.Errorf("schema_version = %v, want 1 (muse's loader rejects a file without it)", m["schema_version"])
+	}
+	if m["provider"] != "meta" || m["model"] != "muse-spark-1.3" {
+		t.Errorf("unrelated real settings keys were not cloned: %v", m)
+	}
+	servers, _ := m["mcpServers"].(map[string]any)
+	if _, ok := servers["notion"]; !ok {
+		t.Errorf("unrelated real MCP server was dropped: %v", servers)
+	}
+	swarm, _ := servers["swarm"].(map[string]any)
+	if swarm["command"] != s.Bin {
+		t.Errorf("swarm.command = %v, want %q", swarm["command"], s.Bin)
+	}
+	if args, _ := swarm["args"].([]any); len(args) != 1 || args[0] != "mcp" {
+		t.Errorf("swarm.args = %v, want [mcp]", args)
+	}
+	env, _ := swarm["env"].(map[string]any)
+	want := map[string]any{
+		"SWARM_URL":        s.DaemonURL,
+		"SWARM_SESSION":    s.SessionID,
+		"SWARM_TOKEN_FILE": filepath.Join(d.Home, "run", "tokens", s.SessionID),
+		"SWARM_AGENT_KIND": "muse",
+	}
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("swarm.env[%s] = %v, want %v", k, env[k], v)
+		}
+	}
+	// Literal values, never a template: muse does not expand ${VAR}.
+	for k, v := range env {
+		if s, ok := v.(string); ok && strings.Contains(s, "${") {
+			t.Errorf("swarm.env[%s] = %q must be a literal value, not a template", k, s)
+		}
+	}
+
+	// auth.json and the user skills dir are symlinked in so provider login
+	// and installed skills still work from the isolated config dir.
+	for _, name := range []string{"auth.json", "skills"} {
+		fi, err := os.Lstat(filepath.Join(xdgConfigHome, "muse", name))
+		if err != nil {
+			t.Errorf("%s not present in isolated config dir: %v", name, err)
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s should be a symlink to the real one", name)
+		}
+	}
+	// A sibling ~/.config dir (gh, git, ...) must also be symlinked straight
+	// into the isolated XDG_CONFIG_HOME, or every tool but muse goes blind.
+	if fi, err := os.Lstat(filepath.Join(xdgConfigHome, "gh")); err != nil {
+		t.Errorf("sibling .config/gh dir not carried into the isolated XDG_CONFIG_HOME: %v", err)
+	} else if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error(".config/gh should be a symlink to the real one")
+	}
+
+	// Resume must isolate the same way.
+	s.ProviderSessionID = "prov-abc"
+	rl, err := newMuse(d).Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rl.Env["XDG_CONFIG_HOME"] == "" {
+		t.Error("Resume must also set XDG_CONFIG_HOME")
+	}
+}
+
+// A missing real settings.json (fresh machine, muse never run) must not fail
+// the launch: setupEnv starts from an empty object plus schema_version.
+func TestMuseLaunchIsolatesConfigWithNoRealSettingsFile(t *testing.T) {
+	d := testDeps(t)
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(l.Env["XDG_CONFIG_HOME"], "muse", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	servers, _ := m["mcpServers"].(map[string]any)
+	if _, ok := servers["swarm"].(map[string]any); !ok {
+		t.Errorf("swarm entry missing: %v", m)
 	}
 }
 

@@ -933,6 +933,9 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 	tokenHash := hex.EncodeToString(tokenHashBytes[:])
 
 	sesID := ids.New("ses")
+	// adapter/muse.go's museMCPEnv recomputes this exact formula (it needs
+	// the token path before this function returns it in Spec/env): keep the
+	// two in sync if this ever moves.
 	tokPath := filepath.Join(s.Home, "run", "tokens", sesID)
 	if err := os.MkdirAll(filepath.Dir(tokPath), 0o700); err != nil {
 		return Session{}, err
