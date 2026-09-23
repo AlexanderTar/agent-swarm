@@ -12,6 +12,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 	_ "modernc.org/sqlite"
 )
 
@@ -98,6 +99,44 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	d.QueryRow("PRAGMA user_version").Scan(&v)
 	if v != db.SchemaVersion {
 		t.Fatalf("user_version = %d, want %d after catching up", v, db.SchemaVersion)
+	}
+}
+
+// Live incident (2026-09-23): muse was wired in at the application layer
+// (kinds.AgentKinds, the adapter, catalog, usage source, menubar) across
+// several merges, but agents.kind's own CHECK constraint was never
+// migrated -- every attempt to spawn a real muse agent failed with "CHECK
+// constraint failed: kind IN ('claude','codex','agy','cursor','fake')",
+// silently, at the SQL layer, well below anything a Go-level kind check
+// could catch. This pins the fix and proves the other four kinds -- and a
+// genuinely invalid one -- still behave exactly as before.
+func TestAgentsKindAllowsMuse(t *testing.T) {
+	d := dbtest.Open(t)
+	if _, err := d.Exec(`INSERT INTO items (id, key, type, root_id, title, status, created_at, updated_at)
+		VALUES ('itm_1', 'TASK-1', 'task', 'itm_1', 'test item', 'ready', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	insertAgent := func(id, kind string) error {
+		_, err := d.Exec(`INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, brief, state, created_at)
+			VALUES (?, ?, ?, 'm', 'coder', 'itm_1', 'itm_1', 'b', 'queued', 0)`, id, id, kind)
+		return err
+	}
+	// kinds.AgentKinds is the real, installable kinds (kinds.Fake is
+	// deliberately excluded from it -- test-only, not a kind a user selects
+	// -- so it's asserted separately below). Iterating the real slice, not a
+	// literal copy of it, is what makes this test rot loudly the next time a
+	// kind is added at the Go layer without a matching schema migration --
+	// exactly the gap that caused this incident.
+	for _, kind := range kinds.AgentKinds {
+		if err := insertAgent("agt_"+string(kind), string(kind)); err != nil {
+			t.Errorf("kind %q: %v", kind, err)
+		}
+	}
+	if err := insertAgent("agt_fake", string(kinds.Fake)); err != nil {
+		t.Errorf("kind %q: %v", kinds.Fake, err)
+	}
+	if err := insertAgent("agt_bogus", "bogus"); err == nil {
+		t.Fatal("kind 'bogus' should still violate the CHECK constraint")
 	}
 }
 
