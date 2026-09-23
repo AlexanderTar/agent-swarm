@@ -2585,12 +2585,25 @@ func TestReclaimWorktreesEndToEndOverTwoPasses(t *testing.T) {
 	}
 
 	before := dumpTable(t, s, `SELECT * FROM worktrees ORDER BY id`)
+	calls := recordingGitCalls(s)
 	if err := s.ReclaimWorktrees(ctx); err != nil {
 		t.Fatal(err)
 	}
 	after := dumpTable(t, s, `SELECT * FROM worktrees ORDER BY id`)
 	if before != after {
 		t.Fatalf("a second pass over nothing changed must leave the DB byte-identical:\nbefore: %q\nafter:  %q", before, after)
+	}
+	// 1, 5 and 6 are already 'removed' (excluded by Candidates' own state
+	// filter); 3's owner still has a live session. None of the four should
+	// ever be touched again.
+	for _, untouchedPath := range []string{wt1.Path, wt3.Path, wt5.Path, wt6.Path} {
+		for _, c := range *calls {
+			// Field-exact, not substring: "...--e2e-1" is itself a substring
+			// of "...--e2e-13"'s call text.
+			if slices.Contains(strings.Fields(c), untouchedPath) {
+				t.Fatalf("a worktree outside this pass's candidates must never be touched: %s", c)
+			}
+		}
 	}
 	if n := notifiedCount(s, "worktree.retained"); n != 2 {
 		t.Fatalf("notifications after pass 2 = %d, want still 2 (no repeat)", n)

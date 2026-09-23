@@ -243,9 +243,17 @@ func (s *Service) markRemoved(ctx context.Context, wt Worktree) (Worktree, error
 // atDetachedSHA reports whether a detached worktree's HEAD is still the sha
 // it was created at. A command failure reads as "moved" -- the same
 // cannot-prove-it-is-safe posture DirtyStrict takes.
+//
+// wt.DetachedSHA may be the abbreviated sha Review was called with
+// (shaPattern allows 7-40 hex chars; a review worktree's real-world path,
+// "review-0d2d79d", is exactly this shape) while `git rev-parse HEAD` always
+// returns the full 40-char sha, so this is a prefix match, not ==: since
+// DetachedSHA is guaranteed hex by shaPattern, HasPrefix here means "HEAD is
+// the commit that abbreviation named" -- the same resolution git itself did
+// at `worktree add --detach`.
 func (s *Service) atDetachedSHA(ctx context.Context, wt Worktree) bool {
 	head, err := s.git(ctx, wt.Path, "rev-parse", "HEAD")
-	return err == nil && strings.TrimSpace(string(head)) == wt.DetachedSHA
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(head)), wt.DetachedSHA)
 }
 
 func scanWorktree(row interface {

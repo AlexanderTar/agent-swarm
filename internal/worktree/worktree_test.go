@@ -791,6 +791,30 @@ func TestRemoveDeletesADetachedWorktreeStillAtItsSHA(t *testing.T) {
 	}
 }
 
+// TestRemoveDeletesADetachedWorktreeCreatedFromAnAbbreviatedSHA is scenario 6
+// with an abbreviated sha, the shape Review actually models
+// (review-0d2d79d): `git rev-parse HEAD` always returns the full 40-char
+// sha, so a naive == against a 7-char DetachedSHA would never match and
+// every clean review worktree would wrongly retain as unmerged.
+func TestRemoveDeletesADetachedWorktreeCreatedFromAnAbbreviatedSHA(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	full := strings.TrimSpace(run(t, repo, "rev-parse", "HEAD"))
+	wt, err := s.Review(ctx, CreateInput{RepoID: repoID, RepoPath: repo,
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"}, full[:7])
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed", out)
+	}
+}
+
 // TestRemoveRetainsADetachedWorktreeThatMovedOffItsSHA is scenario 7: a local
 // commit on a detached worktree holds commits reachable from no ref anywhere
 // else. Before atDetachedSHA, Branch == "" skipped mergedOrPushed entirely
