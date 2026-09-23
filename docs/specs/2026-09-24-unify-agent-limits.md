@@ -243,6 +243,44 @@ Context.
    zombie/self-terminal-checkpoint exclusions still apply to the unified
    count; `MaxAgentsPerRoot` still only gates non-orchestrator roles.
 
+## Rollout
+
+Not performed as part of this change (see Explicitly out of scope), but
+load-bearing for whoever deploys it:
+
+- **Daemon and menubar app must redeploy together, not independently.** The
+  Swift `Wire.swift` shipped in this change decodes `max_concurrent_agents`
+  with `decodeIfPresent(...) ?? 4`, which protects a *new* menubar build
+  against an *old*, not-yet-upgraded daemon. The reverse direction is not
+  protected: today's already-installed menubar app decodes with `try
+  c.decode(Int.self, forKey: .maxOrchestrators)` (required, no fallback). If
+  the daemon deploys first, its `GET /api/settings` response no longer has a
+  `max_orchestrators` key at all, so the *old, still-running* menubar app's
+  Settings window fails to decode and any settings PUT it sends omits
+  `max_concurrent_agents` entirely, which `validate()` reads as 0 and
+  rejects with a 400. `make install-daemon` and `make install-app` are two
+  separate steps on this machine (per the `swarm-local-deploy` memory) —
+  they need to run back to back for this change, not independently.
+- **`web/dist` is embedded at daemon build time** (`web/embed.go`), so
+  `make install-daemon` (which does `web build` + `go build` in one step,
+  per the same memory) already keeps the daemon and the web board in sync —
+  no extra step needed there, just confirming the existing `make
+  install-daemon` flow covers it; a manual `go build` of only `cmd/swarm`
+  without rebuilding `web/` first would ship a stale bundle still reading
+  `settings.max_orchestrators` (now `undefined`), silently pinning
+  `orchestratorsBusy` to `false`.
+- **Deploy-time admission cliff.** The bug report that triggered this task
+  describes the live system already at `max_agents=8` (plus orchestrators)
+  and saturated. The moment this ships, the pool becomes `max_concurrent_agents=4`
+  total. Already-running agents are never stopped (`TestLoweringALimitQueuesTheNextSpawnAndLeavesRunningAgentsAlone`
+  covers exactly this), but if more than 4 agents are active at deploy time,
+  *no new agent admits* — spawns and new orchestrators queue — until enough
+  of the existing fleet finishes to drop the count under 4. That's the
+  user's locked default working as designed, not a bug, but it means
+  deploying this while the fleet is busy will visibly stall new work until
+  it drains; worth deploying at a quiet point, or raising the limit via the
+  new Settings UI field right after deploy if that stall isn't acceptable.
+
 ## Explicitly out of scope
 
 - UI for `MaxAgentsPerRoot` (real gap, left for a follow-up — see Locked

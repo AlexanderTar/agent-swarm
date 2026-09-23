@@ -123,6 +123,17 @@ representative example.
 
 ## Commits
 
-One commit per numbered task above (backend, then Swift, then web, then
-docs), each a real `git commit` in the worktree — see `git log
-feat/unify-agent-limits` for the exact sequence and messages.
+Five real commits in the worktree, grouped by surface rather than one per
+numbered task above (tasks 1–4 share a single backend commit; the docs
+commit below is the fifth) — see `git log feat/unify-agent-limits` for the
+exact sequence and messages:
+
+1. `feat(settings,runtime): unify max_orchestrators/max_agents into one pool`
+   — tasks 1–4.
+2. `feat(menubar): expose the unified max_concurrent_agents limit` — tasks
+   5–7.
+3. `feat(web): mirror the unified max_concurrent_agents limit` — task 8.
+4. `docs: spec and plan for unify-agent-limits` — task 9 (initial spec/plan).
+5. `docs: add rollout section to unify-agent-limits spec` — advisor-prompted
+   addition covering daemon/menubar deploy coupling and the deploy-time
+   admission cliff, added after the rest of the work was verified green.
