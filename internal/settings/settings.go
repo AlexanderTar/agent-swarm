@@ -247,14 +247,17 @@ func (s *Store) switchDisabled(ctx context.Context, prev Settings, next *Setting
 	return nil
 }
 
-// validateDefault checks one RoleDefault (a role, or FallbackDefault)
+// ValidateDefault checks one RoleDefault (a role, or FallbackDefault)
 // against enabled and the real catalog, in the exact order this codebase
 // has always checked a default: enabled, then catalog/model, then (via
 // extra, when non-nil — RoleAdvisor's own AdvisorCapable rule) any
 // role-specific rule on the resolved model, then effort. oldRD is the
 // previously-saved value for the same slot, so a model that just
-// disappeared from the catalog gets its own clearer message.
-func (s *Store) validateDefault(ctx context.Context, oldRD, rd RoleDefault, enabled []kinds.AgentKind, extra func(catalog.CatalogModel) error) error {
+// disappeared from the catalog gets its own clearer message. Exported so an
+// orchestrator's own swarm_role_overrides write path (internal/runtime's
+// SetRoleOverride) can validate a single role the same way Put validates a
+// whole Settings write, without duplicating this logic.
+func (s *Store) ValidateDefault(ctx context.Context, oldRD, rd RoleDefault, enabled []kinds.AgentKind, extra func(catalog.CatalogModel) error) error {
 	if !slices.Contains(enabled, rd.Agent) {
 		return invalid("%s isn't enabled. Choose an enabled agent.", rd.Agent.Display())
 	}
@@ -311,14 +314,14 @@ func (s *Store) validate(ctx context.Context, prev, next Settings) error {
 				return nil
 			}
 		}
-		if err := s.validateDefault(ctx, prev.Roles[role], rd, next.EnabledAgents, advisorCapable); err != nil {
+		if err := s.ValidateDefault(ctx, prev.Roles[role], rd, next.EnabledAgents, advisorCapable); err != nil {
 			return err
 		}
 	}
 	// FallbackDefault has no "none"/advisor-capable carve-out: it must
 	// always resolve to a real, enabled agent and model, or the feature it
 	// backs is defeated.
-	if err := s.validateDefault(ctx, prev.FallbackDefault, next.FallbackDefault, next.EnabledAgents, nil); err != nil {
+	if err := s.ValidateDefault(ctx, prev.FallbackDefault, next.FallbackDefault, next.EnabledAgents, nil); err != nil {
 		return err
 	}
 	switch {
