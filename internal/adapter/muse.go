@@ -27,8 +27,8 @@ func museEffort(effort string) string {
 }
 
 func (m *Muse) argv(s Spec) []string {
-	return []string{"muse", "-i", s.Kickoff, "--model", s.Model,
-		"--reasoning-effort", museEffort(s.Effort), "--yolo", "--trust-workspace"}
+	return []string{"muse", "--model", s.Model,
+		"--reasoning-effort", museEffort(s.Effort), "--yolo", "--trust-workspace", s.Kickoff}
 }
 
 // setupEnv writes custom instructions to the workspace AGENTS.md (cursor
@@ -45,11 +45,15 @@ func (m *Muse) setupEnv(s Spec) error {
 	return writeFileAtomic(filepath.Join(s.Cwd, "AGENTS.md"), []byte(s.Instructions), 0o644)
 }
 
-// Launch is §11.1. Every flag was probed 2026-09-23: -i takes the kickoff,
-// --model takes the raw Spark slug, --reasoning-effort the tier ladder, and
-// --yolo --trust-workspace is the always-yolo posture other agents get from
-// --dangerously-skip-permissions. No isolated HOME: workspace trust loads the
-// workspace skills and AGENTS.md.
+// Launch is §11.1. `muse [OPTIONS] [PROMPT]` takes the kickoff as a bare
+// positional (confirmed live 2026-09-23 against `muse --help`, v1.3.0; there
+// is no -i flag -- an earlier version of this comment claimed one was probed,
+// but muse's own --help lists no such flag, and the probe test that should
+// have caught this only asserted `strings.Contains(help, "-i")`, which
+// "--image" also satisfies). --model takes the raw Spark slug,
+// --reasoning-effort the tier ladder, and --yolo --trust-workspace is the
+// always-yolo posture other agents get from --dangerously-skip-permissions.
+// No isolated HOME: workspace trust loads the workspace skills and AGENTS.md.
 func (m *Muse) Launch(s Spec) (Launch, error) {
 	if err := m.setupEnv(s); err != nil {
 		return Launch{}, err
