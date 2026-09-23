@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
@@ -176,8 +178,18 @@ func (s *Spawner) Capture(ctx context.Context, name string, lines int) (string, 
 // PasteLine loads the text into a buffer and pastes it, so bracketed paste and
 // long lines survive; -d deletes the buffer afterwards. pasteViaTempFile is
 // defined below and is the whole implementation.
+//
+// The newlines are flattened first, because this pastes ONE line and tmux
+// turns every "\n" in a buffer into a carriage return -- i.e. an Enter
+// keypress -- on its way into the pane. Claude Code then will not submit the
+// result at all: a multi-line paste left the full notice sitting in its input
+// box, unsent, through a settle of half a second (measured live 2026-09-23);
+// the same notice flattened to one line was submitted by the very first Enter
+// and recorded whole in its transcript. Nothing is lost by flattening:
+// Inbox()'s newlines only separate the header, items and trailer, and every
+// value inside an item has already been through runtime.sanitizeOneLine.
 func (s *Spawner) PasteLine(ctx context.Context, name, line string) error {
-	return s.pasteViaTempFile(ctx, name, line)
+	return s.pasteViaTempFile(ctx, name, strings.Join(strings.Fields(line), " "))
 }
 
 func (s *Spawner) Keys(ctx context.Context, name string, keys ...string) error {
@@ -222,23 +234,96 @@ func (s *Spawner) Kill(ctx context.Context, name string) error {
 	return err
 }
 
+// Paste pacing. These are calibration knobs, not constants of nature: 1022 is
+// a Darwin kernel figure and the settle window is an observed property of two
+// closed-source TUIs, so both are expected to need tuning on other platforms
+// or after an agent CLI updates.
+//
+// pasteChunkSize is half the measured 1022-byte first-read ceiling (see
+// ttyReadCeiling in tmux_test.go). A single write larger than that ceiling is
+// split by the kernel into several reads on the pane's side, and the agent
+// CLIs on the other end do not reassemble them: Claude Code keeps only the
+// last read and silently discards everything before it. That is the whole of
+// the 2026-09-23 truncation -- a 1716-byte notice arrived as [1022, 694] and
+// the model was handed the 694-byte tail, starting mid-word. Pacing the write
+// so every read stays small is the fix; it is not a "wait and hope" delay,
+// because the bytes are lost during the write itself and no delay placed
+// before Enter can bring them back.
+//
+// pasteSettle is separate and is about Enter, not about the bytes. Both
+// Claude Code and cursor-agent coalesce input that arrives in a burst and
+// treat it as one paste, and an Enter landing inside that window is absorbed
+// into the pasted text instead of submitting it -- observed live as a notice
+// sitting complete but unsent in cursor's input box (its own chat store showed
+// hasConversation:false). One settle before Enter, always, including for a
+// single-chunk notice like IdleToken.
+var (
+	pasteChunkSize = 512
+	pasteChunkGap  = 50 * time.Millisecond
+	pasteSettle    = 500 * time.Millisecond
+)
+
+// chunkRunes splits s into pieces of at most max bytes, never cutting a rune
+// in half. TUIs decode each stdin read as UTF-8 on its own, so a split
+// mid-rune shows up as U+FFFD -- and the notice really does carry multi-byte
+// characters (inboxTrailer's "—", and the "(+N more pending —" tail).
+func chunkRunes(s string, max int) []string {
+	var out []string
+	for len(s) > 0 {
+		n := max
+		if n >= len(s) {
+			out = append(out, s)
+			break
+		}
+		for n > 0 && !utf8.RuneStart(s[n]) {
+			n--
+		}
+		if n == 0 { // one rune longer than max: emit it whole rather than corrupt it
+			_, n = utf8.DecodeRuneInString(s)
+		}
+		out, s = append(out, s[:n]), s[n:]
+	}
+	return out
+}
+
+// sleep waits d, or gives up early if the caller's context is done. Wake is a
+// best-effort path; a cancelled daemon must not sit here.
+func sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // pasteViaTempFile is how the line reaches tmux: execx.Runner has no stdin, and
-// send-keys -l would interpret some characters.
+// send-keys -l would interpret some characters. The buffer is reused across
+// chunks, so at most one temp file exists per paste.
 func (s *Spawner) pasteViaTempFile(ctx context.Context, name, line string) error {
 	f, err := os.CreateTemp("", "swarm-paste-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
-	if _, err := f.WriteString(line); err != nil {
-		f.Close()
-		return err
-	}
 	f.Close()
-	if _, err := s.run(ctx, "load-buffer", "-b", "swarmwake", f.Name()); err != nil {
-		return err
+	for _, chunk := range chunkRunes(line, pasteChunkSize) {
+		if err := os.WriteFile(f.Name(), []byte(chunk), 0o600); err != nil {
+			return err
+		}
+		if _, err := s.run(ctx, "load-buffer", "-b", "swarmwake", f.Name()); err != nil {
+			return err
+		}
+		if _, err := s.run(ctx, "paste-buffer", "-d", "-b", "swarmwake", "-t", name); err != nil {
+			return err
+		}
+		if err := sleep(ctx, pasteChunkGap); err != nil {
+			return err
+		}
 	}
-	if _, err := s.run(ctx, "paste-buffer", "-d", "-b", "swarmwake", "-t", name); err != nil {
+	if err := sleep(ctx, pasteSettle); err != nil {
 		return err
 	}
 	return s.Keys(ctx, name, "Enter")
