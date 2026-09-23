@@ -211,14 +211,14 @@ func TestAgentsFailsWhenAWriterFails(t *testing.T) {
 
 // S-5: InstalledKinds uses the injected LookPath, never a real one in tests.
 func TestInstalledKindsUsesTheInjectedLookPath(t *testing.T) {
-	found := map[string]bool{"codex": true, "cursor-agent": true}
+	found := map[string]bool{"codex": true, "cursor-agent": true, "muse": true}
 	kinds := install.InstalledKinds(func(bin string) (string, error) {
 		if found[bin] {
 			return "/fake/bin/" + bin, nil
 		}
 		return "", errors.New("not found")
 	})(context.Background())
-	if len(kinds) != 2 || kinds[0] != install.KindCodex || kinds[1] != install.KindCursor {
-		t.Fatalf("kinds = %v, want [codex cursor]", kinds)
+	if len(kinds) != 3 || kinds[0] != install.KindCodex || kinds[1] != install.KindCursor || kinds[2] != install.KindMuse {
+		t.Fatalf("kinds = %v, want [codex cursor muse]", kinds)
 	}
 }
