@@ -19,7 +19,7 @@ Supported agents: Claude Code (default), Codex, Antigravity CLI (`agy`) and Curs
 5. **Start delivery.** Press Start orchestrator on the epic. The orchestrator creates worktrees, spawns coders and reviewers, merges, and asks you to accept the result.
 6. **Supervise.** Open any agent's terminal from the menu bar or board, pause one agent or everything, and read checkpoints instead of transcripts.
 
-Specs and plans live in `~/.superpowers/specs` and `~/.superpowers/plans`, not in your repositories. Commits and PRs are made under your name and signature, with no agent attribution.
+Specs and plans live in `~/.swarm/specs` and `~/.swarm/plans`, not in your repositories. Commits and PRs are made under your name and signature, with no agent attribution.
 
 ## Requirements
 
@@ -170,7 +170,7 @@ Each agent runs `swarm mcp` as an MCP server. Tools: `swarm_sync`, `swarm_checkp
 | `~/.swarm/run/daemon.token` | API token for the board and menu bar |
 | `~/.swarm/logs/` | daemon logs |
 | `~/.swarm/tmux.conf` | tmux config for agent sessions |
-| `~/.superpowers/specs`, `~/.superpowers/plans` | specs and plans written by spikes |
+| `~/.swarm/specs`, `~/.swarm/plans` | specs and plans written by spikes |
 
 ## Troubleshooting
 

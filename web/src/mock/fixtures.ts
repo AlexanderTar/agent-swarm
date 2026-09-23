@@ -103,7 +103,7 @@ function requests(): Request[] {
 const SPEC_3 = "## Overview\n\nWork offline.\n\n## Data model\n\nA local queue of pending messages.\n";
 function artifacts(): ArtifactRecord[] {
   const art = (p: Partial<Artifact> & Pick<Artifact, "id" | "item_key" | "kind" | "head_revision">): Artifact => ({
-    path: `/Users/alex/.superpowers/specs/${p.id}.md`, revision: p.head_revision, sections: [], created_at: NOW - 30 * MIN, ...p,
+    path: `/Users/alex/.swarm/specs/${p.id}.md`, revision: p.head_revision, sections: [], created_at: NOW - 30 * MIN, ...p,
   });
   const spec = {
     markdown: SPEC_3,
