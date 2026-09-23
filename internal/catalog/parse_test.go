@@ -322,3 +322,42 @@ func TestFindAndEffortHelpers(t *testing.T) {
 		t.Error("slug without launch ids falls back to id-effort, and never to id-default")
 	}
 }
+
+func TestParseMuseModels(t *testing.T) {
+	cat := fixture(t, "muse-catalog.json")
+	set := []byte(`{"model":"muse-spark-1.3-contributor","reasoning_effort":"high"}`)
+	ms, def, err := ParseMuseModels(cat, set)
+	if err != nil {
+		t.Fatalf("ParseMuseModels: %v", err)
+	}
+	if def != "muse-spark-1.3-contributor" {
+		t.Errorf("default = %q, want the settings.json model", def)
+	}
+	if len(ms) != 2 {
+		t.Fatalf("models = %d, want 2", len(ms))
+	}
+	got := map[string]CatalogModel{}
+	for _, m := range ms {
+		got[m.ID] = m
+	}
+	full, ok := got["muse-spark-1.3"]
+	if !ok || !slices.Equal(full.Efforts, []string{"minimal", "low", "medium", "high", "xhigh", "max"}) {
+		t.Errorf("1.3 efforts = %v", full.Efforts)
+	}
+	if full.EffortEncoding != "flag" || full.DefaultEffort != "high" || full.IsDefault {
+		t.Errorf("1.3 = %+v, want flag/high/non-default", full)
+	}
+	contrib := got["muse-spark-1.3-contributor"]
+	if !contrib.IsDefault || !slices.Equal(contrib.Efforts, []string{"minimal", "high", "max"}) {
+		t.Errorf("contributor = %+v", contrib)
+	}
+	// Unknown settings model falls back to the catalog's is_default row.
+	ms2, def2, err := ParseMuseModels(cat, []byte(`{"model":"nope"}`))
+	if err != nil || def2 != "muse-spark-1.3-contributor" || len(ms2) != 2 {
+		t.Errorf("fallback def=%q err=%v", def2, err)
+	}
+	// Empty rows is an error, never an empty catalog.
+	if _, _, err := ParseMuseModels([]byte(`{"rows":[]}`), nil); err == nil {
+		t.Error("empty rows must error")
+	}
+}

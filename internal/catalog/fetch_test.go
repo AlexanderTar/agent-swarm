@@ -282,7 +282,34 @@ func TestAgyAndCursorFetchers(t *testing.T) {
 	if _, err := (&AgyFetcher{Run: odd}).Version(bg); err == nil {
 		t.Error("unparseable version must fail")
 	}
-	if fs := DefaultFetchers("/Users/x", "x"); len(fs) != 4 || fs[0].Kind() != "claude" || fs[3].Kind() != "cursor" {
+	if fs := DefaultFetchers("/Users/x", "x"); len(fs) != 5 || fs[0].Kind() != "claude" || fs[4].Kind() != "muse" {
 		t.Errorf("DefaultFetchers = %v", fs)
+	}
+}
+
+func TestMuseFetcher(t *testing.T) {
+	dir := t.TempDir()
+	raw := fixture(t, "muse-catalog.json")
+	os.WriteFile(filepath.Join(dir, "6d657461__p746268.json"), raw, 0o644)
+	settings := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(settings, []byte(`{"model":"muse-spark-1.3-contributor"}`), 0o644)
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"muse --version": {Out: "Muse Code 1.3.0 (1.3.0-R3401.1)\n"},
+	}}).Runner()
+	got, err := (&MuseFetcher{Run: run, DataDir: dir, SettingsFile: settings}).Fetch(bg)
+	if err != nil || got.DefaultModel != "muse-spark-1.3-contributor" || got.Source != "muse model-catalog" || len(got.Models) != 2 {
+		t.Fatalf("muse = %+v %v", got, err)
+	}
+	if v, _ := (&MuseFetcher{Run: run}).Version(bg); v != "1.3.0" {
+		t.Errorf("muse version %q", v)
+	}
+	// Missing catalog dir: settings model is the backstop, never an error.
+	got, err = (&MuseFetcher{Run: run, DataDir: filepath.Join(dir, "nope"), SettingsFile: settings}).Fetch(bg)
+	if err != nil || len(got.Models) != 1 || got.Models[0].ID != "muse-spark-1.3-contributor" {
+		t.Fatalf("backstop = %+v %v", got, err)
+	}
+	// Nothing anywhere: an error, never an empty catalog.
+	if _, err := (&MuseFetcher{Run: run, DataDir: filepath.Join(dir, "nope"), SettingsFile: filepath.Join(dir, "nope.json")}).Fetch(bg); err == nil {
+		t.Error("missing catalog and settings must error")
 	}
 }

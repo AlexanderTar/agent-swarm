@@ -58,6 +58,9 @@ func DefaultFetchers(home, user string) []Fetcher {
 		&CodexFetcher{Run: execx.Run, Start: execx.Start, CacheFile: filepath.Join(home, ".codex", "models_cache.json"), Timeout: 10 * time.Second},
 		&AgyFetcher{Run: execx.Run, SettingsFile: filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")},
 		&CursorFetcher{Run: execx.Run},
+		&MuseFetcher{Run: execx.Run,
+			DataDir:      filepath.Join(home, ".local", "share", "muse", "model-catalog"),
+			SettingsFile: filepath.Join(home, ".config", "muse", "settings.json")},
 	}
 }
 
@@ -304,4 +307,82 @@ func (f *CursorFetcher) Fetch(ctx context.Context) (Fetched, error) {
 	}
 	models, def, err := ParseCursorModels(string(out))
 	return fetched(models, def, "cursor-agent models"), err
+}
+
+// ---- muse ----
+
+type MuseFetcher struct {
+	Run          execx.Runner
+	DataDir      string // ~/.local/share/muse/model-catalog: the CLI's own cache
+	SettingsFile string // ~/.config/muse/settings.json: configured-model backstop
+}
+
+func (f *MuseFetcher) Kind() kinds.AgentKind { return kinds.Muse }
+
+func (f *MuseFetcher) Version(ctx context.Context) (string, error) {
+	return versionOf(ctx, f.Run, "muse")
+}
+
+// Fetch unions every catalog file in DataDir (one per provider profile) and
+// resolves the default from SettingsFile. A missing DataDir is not an error:
+// the settings model alone still yields a one-model catalog. Only "nothing
+// anywhere" errors, so the kind is never disabled by a fresh machine.
+func (f *MuseFetcher) Fetch(ctx context.Context) (Fetched, error) {
+	settings, _ := os.ReadFile(f.SettingsFile)
+	entries, _ := os.ReadDir(f.DataDir)
+	seen := map[string]bool{}
+	var models []CatalogModel
+	def := ""
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(f.DataDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		ms, d, err := ParseMuseModels(raw, settings)
+		if err != nil {
+			continue
+		}
+		for _, m := range ms {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				models = append(models, m)
+			}
+		}
+		if def == "" {
+			def = d
+		}
+	}
+	if len(models) == 0 {
+		if m, d := museSettingsBackstop(settings); m != nil {
+			return fetched([]CatalogModel{*m}, d, "muse settings"), nil
+		}
+		return Fetched{}, errNoModels
+	}
+	for i := range models {
+		models[i].IsDefault = models[i].ID == def
+	}
+	return fetched(models, def, "muse model-catalog"), nil
+}
+
+// museSettingsBackstop builds the one-model catalog from settings.json's model
+// (and reasoning_effort when present) for machines whose catalog cache is empty.
+func museSettingsBackstop(settings []byte) (*CatalogModel, string) {
+	var cfg struct {
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoning_effort"`
+	}
+	if json.Unmarshal(settings, &cfg) != nil || cfg.Model == "" {
+		return nil, ""
+	}
+	effort := cfg.ReasoningEffort
+	if effort == "" {
+		effort = "high"
+	}
+	m := CatalogModel{ID: cfg.Model, Label: cfg.Model,
+		Efforts: []string{effort}, DefaultEffort: effort,
+		EffortEncoding: "flag", IsDefault: true}
+	return &m, cfg.Model
 }
