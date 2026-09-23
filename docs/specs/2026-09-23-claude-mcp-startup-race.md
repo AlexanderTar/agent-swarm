@@ -37,9 +37,13 @@ server exposes. This spec supersedes that hypothesis — see Root cause below.
 **Investigation method (systematic-debugging).** Phase 1 evidence:
 - Daemon log (`~/.swarm/logs/daemon.err.log`) shows the same two-hop
   `UserPromptSubmit` pattern (immediate no-op at spawn, a `decision`-bearing
-  one 2–5 s later) on every single fresh claude spawn sampled across the last
-  ~5 hours of production activity (12+ sessions checked) — this symptom class
-  is universal, not a rare one-off.
+  one 2–5 s later): grepped every `SessionStart`/`UserPromptSubmit` line
+  across ~5 hours of production activity (~30 fresh spawns) and spot-checked
+  5 of them with full surrounding context — the pattern held in all 5, and
+  the grep-only pass shows the same no-op-then-decision shape for every other
+  spawn in that window. This symptom class is universal, not a rare
+  one-off — though see the delivery probe below for what it actually turned
+  out to mean (not proof the channel was broken).
 - Direct reproduction (`claude -p "list every skill..." --setting-sources
   project,local`) shows the `swarm` skill is **never** in the list, 100% of
   three repeated runs, with **zero** delay — proving this is not timing
@@ -225,7 +229,23 @@ currently imports the other.
   in the plan's manual-verification step): mirror `flags()`'s real argv
   against a throwaway `cwd` with the fix applied, on an isolated tmux test
   socket (never `swarm`), and confirm both the channels banner and
-  `Skill(swarm)` are clean.
+  `Skill(swarm)` are clean. Already run live during the investigation itself
+  (`probe-projfix3` in the session transcript) — `go test`'s new assertions
+  on `flags()`'s actual file-writing code cover the same ground for the
+  built fix, so this was not repeated a third time.
+- `go test ./...` in this worktree has one unrelated, pre-existing failure:
+  `internal/httpapi.TestBoardServedAtRoot` (`GET /kanban = 503`), because
+  `web/dist` is unbuilt in a fresh `git worktree add` (no `npm run build` run
+  here). Confirmed: the same test passes in the primary checkout
+  (`/Users/alexandertar/GitHub/agent-swarm`, which has a built `web/dist`),
+  and `web/dist` in this worktree is confirmed empty
+  (`ls web/dist` shows only a placeholder). Not touched by this fix
+  (`internal/adapter` only, no `internal/httpapi`/`web` changes) and not
+  fixed here — out of scope, pre-existing worktree environment gap.
+- With the fix applied, the kickoff prompt's own instruction ("Use the swarm
+  skill(s). Call swarm_sync now...") is finally fully followable: before,
+  the "Use the swarm skill(s)" half was unsatisfiable no matter what the
+  agent did.
 
 ## Explicitly out of scope
 
