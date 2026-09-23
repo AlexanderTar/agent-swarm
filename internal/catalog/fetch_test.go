@@ -313,3 +313,43 @@ func TestMuseFetcher(t *testing.T) {
 		t.Error("missing catalog and settings must error")
 	}
 }
+
+// TestMuseFetcherDefaultAcrossMultipleFiles pins that settings.json's
+// configured model wins as the catalog default regardless of which
+// provider-profile file happens to parse first. "a-profile.json" sorts (and
+// so parses) before "z-profile.json" via os.ReadDir's alphabetical order, and
+// only its own is_default row is marked -- for a model settings.json does NOT
+// name. The configured model only lives in z-profile.json. Racing "whichever
+// file's default we see first" would wrongly settle on a-profile's marked
+// model; the fix must make settings.json's model win outright once any file
+// resolves it.
+func TestMuseFetcherDefaultAcrossMultipleFiles(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a-profile.json"), []byte(`{"rows":[
+		{"model_id":"model-a-1","visibility":"visible","is_default":true},
+		{"model_id":"model-a-2","visibility":"visible","is_default":false}
+	]}`), 0o644)
+	os.WriteFile(filepath.Join(dir, "z-profile.json"), []byte(`{"rows":[
+		{"model_id":"model-b-1","visibility":"visible","is_default":false},
+		{"model_id":"muse-target","visibility":"visible","is_default":true}
+	]}`), 0o644)
+	settings := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(settings, []byte(`{"model":"muse-target"}`), 0o644)
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"muse --version": {Out: "Muse Code 1.3.0 (1.3.0-R3401.1)\n"},
+	}}).Runner()
+
+	got, err := (&MuseFetcher{Run: run, DataDir: dir, SettingsFile: settings}).Fetch(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DefaultModel != "muse-target" {
+		t.Fatalf("DefaultModel = %q, want the settings-configured model, not whichever file parsed first", got.DefaultModel)
+	}
+	for _, m := range got.Models {
+		want := m.ID == "muse-target"
+		if m.IsDefault != want {
+			t.Errorf("model %q IsDefault = %v, want %v", m.ID, m.IsDefault, want)
+		}
+	}
+}

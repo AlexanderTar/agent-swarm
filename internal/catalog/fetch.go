@@ -327,8 +327,17 @@ func (f *MuseFetcher) Version(ctx context.Context) (string, error) {
 // resolves the default from SettingsFile. A missing DataDir is not an error:
 // the settings model alone still yields a one-model catalog. Only "nothing
 // anywhere" errors, so the kind is never disabled by a fresh machine.
+//
+// Each file's own default (ParseMuseModels' return) only sees that file's
+// models, so os.ReadDir's alphabetical order previously decided the winner:
+// "first file with any default wins" raced the configured model against
+// whichever profile parsed first. The configured model (settings.json) must
+// win outright whenever any file's default actually resolved to it; only
+// when settings.json names nothing (or nothing matches) do we fall back to
+// the first file's own is_default marker.
 func (f *MuseFetcher) Fetch(ctx context.Context) (Fetched, error) {
 	settings, _ := os.ReadFile(f.SettingsFile)
+	cfgModel := museConfiguredModel(settings)
 	entries, _ := os.ReadDir(f.DataDir)
 	seen := map[string]bool{}
 	var models []CatalogModel
@@ -351,7 +360,7 @@ func (f *MuseFetcher) Fetch(ctx context.Context) (Fetched, error) {
 				models = append(models, m)
 			}
 		}
-		if def == "" {
+		if d != "" && (def == "" || (cfgModel != "" && d == cfgModel)) {
 			def = d
 		}
 	}
@@ -370,19 +379,20 @@ func (f *MuseFetcher) Fetch(ctx context.Context) (Fetched, error) {
 // museSettingsBackstop builds the one-model catalog from settings.json's model
 // (and reasoning_effort when present) for machines whose catalog cache is empty.
 func museSettingsBackstop(settings []byte) (*CatalogModel, string) {
-	var cfg struct {
-		Model           string `json:"model"`
-		ReasoningEffort string `json:"reasoning_effort"`
-	}
-	if json.Unmarshal(settings, &cfg) != nil || cfg.Model == "" {
+	model := museConfiguredModel(settings)
+	if model == "" {
 		return nil, ""
 	}
+	var cfg struct {
+		ReasoningEffort string `json:"reasoning_effort"`
+	}
+	_ = json.Unmarshal(settings, &cfg)
 	effort := cfg.ReasoningEffort
 	if effort == "" {
 		effort = "high"
 	}
-	m := CatalogModel{ID: cfg.Model, Label: cfg.Model,
+	m := CatalogModel{ID: model, Label: model,
 		Efforts: []string{effort}, DefaultEffort: effort,
 		EffortEncoding: "flag", IsDefault: true}
-	return &m, cfg.Model
+	return &m, model
 }
