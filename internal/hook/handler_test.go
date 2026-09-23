@@ -1290,8 +1290,10 @@ func TestSessionStartUsesRichInboxNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := contextOf(t, out)
-	if strings.Contains(got, "\n") {
-		t.Fatalf("SessionStart context contains a literal newline: %q", got)
+	// v2: real newlines between items are the template's own structure, not
+	// message content (spec Locked decision 2) -- one item per line.
+	if !strings.Contains(got, "\n- ") {
+		t.Fatalf("SessionStart context should render one item per line: %q", got)
 	}
 	// Rich content, not just a count: the finding bodies ("x") and their ids.
 	if !strings.Contains(got, `"x"`) {

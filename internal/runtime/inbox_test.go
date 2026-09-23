@@ -835,8 +835,10 @@ func TestInboxNoticeListsPendingMessagesOldestFirst(t *testing.T) {
 	if strings.Index(notice, "first question here?") > strings.Index(notice, "second question here?") {
 		t.Errorf("InboxNotice not oldest-first: %q", notice)
 	}
-	if strings.Contains(notice, "\n") {
-		t.Errorf("InboxNotice contains a literal newline: %q", notice)
+	// v2: real newlines between items are the template's own structure, not
+	// message content (spec Locked decision 2) -- each item is its own line.
+	if !strings.Contains(notice, "\n- ") {
+		t.Errorf("InboxNotice should render one item per line: %q", notice)
 	}
 }
 
@@ -868,24 +870,5 @@ func TestInboxNoticeCapsAtEightItemsWithMoreCount(t *testing.T) {
 	}
 	if len(notice) > maxInboxNotice {
 		t.Errorf("InboxNotice %d bytes, want <= %d", len(notice), maxInboxNotice)
-	}
-}
-
-func TestInboxPasteNoticeStaysUnderPasteBudget(t *testing.T) {
-	s, _, _ := newStore(t)
-	ctx := context.Background()
-	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Inbox", Intent: "feature", Kind: Fake, Model: "fake-1"})
-	for i := 0; i < 9; i++ {
-		enq(t, s, a.ID, a.RootItemID, "question", `{"body":"queued question"}`, 1)
-	}
-	got, err := s.InboxPasteNotice(ctx, a.ID, a.Name, "TASK-42")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) > maxPasteNotice {
-		t.Errorf("InboxPasteNotice %d bytes, want <= %d", len(got), maxPasteNotice)
-	}
-	if strings.Contains(got, "\n") {
-		t.Errorf("InboxPasteNotice contains a literal newline: %q", got)
 	}
 }

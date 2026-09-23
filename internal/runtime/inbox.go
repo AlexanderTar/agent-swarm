@@ -666,13 +666,3 @@ func (s *Store) InboxNotice(ctx context.Context, agentID, name, key string) (str
 	}
 	return Inbox(items, more, name, key), nil
 }
-
-// InboxPasteNotice renders the terse notice for tryPaste's raw tmux paste
-// (spec Locked decision 3).
-func (s *Store) InboxPasteNotice(ctx context.Context, agentID, name, key string) (string, error) {
-	items, more, err := s.pendingInboxItems(ctx, agentID, maxInboxItems)
-	if err != nil {
-		return "", err
-	}
-	return InboxPasteSummary(items, more, name, key), nil
-}
