@@ -159,7 +159,7 @@ Every agent can consult a stronger model before big decisions, when stuck, and b
 
 ## How agents talk to Swarm
 
-Each agent runs `swarm mcp` as an MCP server. Tools: `swarm_sync`, `swarm_checkpoint`, `swarm_ask`, `swarm_send`, `swarm_read`, `swarm_kb`, `swarm_advise` (agents without Claude's built-in advisor), and for orchestrators `swarm_items`, `swarm_artifact`, `swarm_worktree`, `swarm_spawn`, `swarm_control`, `swarm_materialize`. Messages are stored in SQLite first; hooks and short notices only tell the agent to fetch them. Nothing an agent sends counts as your approval.
+Each agent runs `swarm mcp` as an MCP server. Tools: `swarm_sync`, `swarm_checkpoint`, `swarm_ask`, `swarm_send`, `swarm_read`, `swarm_kb`, `swarm_advise` (agents without Claude's built-in advisor), and for orchestrators `swarm_items`, `swarm_artifact`, `swarm_worktree`, `swarm_spawn`, `swarm_control`, `swarm_materialize`, `swarm_role_overrides`, `swarm_catalog`. Messages are stored in SQLite first; hooks and short notices only tell the agent to fetch them. Nothing an agent sends counts as your approval.
 
 ## Files
 
