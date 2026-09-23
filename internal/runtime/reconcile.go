@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -793,6 +794,21 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// liveDescendants counts agentID's queued/active descendants, walking the
+// whole subtree (not just direct children). q is either s.DB or a caller's
+// own tx, the same seam txQuerier gives agentHasLiveSession above. Shared by
+// owesNothing and the worktree reclaim gate (reconcile.go's ReclaimWorktrees)
+// -- the spec calls this out as "reused verbatim rather than inlined."
+func (s *Store) liveDescendants(ctx context.Context, q txQuerier, agentID string) (int, error) {
+	var n int
+	err := q.QueryRowContext(ctx, `WITH RECURSIVE d(id) AS (
+			SELECT id FROM agents WHERE parent_agent_id = ?
+			UNION ALL SELECT a.id FROM agents a JOIN d ON a.parent_agent_id = d.id)
+		SELECT COUNT(*) FROM agents WHERE id IN (SELECT id FROM d) AND state IN ('queued', 'active')`,
+		agentID).Scan(&n)
+	return n, err
+}
+
 // owesNothing is M6: no un-acked messages, no open request this agent raised,
 // and, for an orchestrator, no live children and no open requests in its tree.
 func (s *Store) owesNothing(ctx context.Context, r liveRow) (bool, error) {
@@ -815,12 +831,8 @@ func (s *Store) owesNothing(ctx context.Context, r liveRow) (bool, error) {
 	if r.Role != RoleOrchestrator {
 		return true, nil
 	}
-	var liveChildren int
-	if err := s.DB.QueryRowContext(ctx, `WITH RECURSIVE d(id) AS (
-			SELECT id FROM agents WHERE parent_agent_id = ?
-			UNION ALL SELECT a.id FROM agents a JOIN d ON a.parent_agent_id = d.id)
-		SELECT COUNT(*) FROM agents WHERE id IN (SELECT id FROM d) AND state IN ('queued', 'active')`,
-		r.AgentID).Scan(&liveChildren); err != nil {
+	liveChildren, err := s.liveDescendants(ctx, s.DB, r.AgentID)
+	if err != nil {
 		return false, err
 	}
 	if liveChildren > 0 {
@@ -880,6 +892,111 @@ func (s *Store) sweepFinishedRoots(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// reclaimGrace is how long an owner agent must have been finished before its
+// worktrees become reclaimable. Retry (agents.go) gates on *session* state
+// (Completed|Failed|Crashed|Interrupted) and flips a finished agent back to
+// active, so "finished" is never permanently terminal and this window is
+// real, not decorative.
+const reclaimGrace = time.Hour
+
+// reclaimGateWhere is the §4.3 eligibility clause, passed to
+// Worktree.Candidates. The owner's own unreleased reservation never blocks
+// (measured: 91 real rows look like this, from the self-completion asymmetry
+// in WriteCheckpoint's sibling-only release); any other agent's does.
+const reclaimGateWhere = `w WHERE w.state IN ('active', 'retained')
+	AND EXISTS (
+		SELECT 1 FROM agents a
+		WHERE a.id = w.owner_agent_id
+		  AND a.state IN ('finished', 'acknowledged')
+		  AND a.finished_at IS NOT NULL
+		  AND a.finished_at <= ?)
+	AND NOT EXISTS (
+		SELECT 1 FROM sessions s
+		WHERE s.agent_id = w.owner_agent_id
+		  AND s.state IN ('spawning','running','pause_requested','quiescing','stopping'))
+	AND NOT EXISTS (
+		SELECT 1 FROM worktree_reservations r
+		WHERE r.worktree_id = w.id
+		  AND r.agent_id <> w.owner_agent_id
+		  AND r.released_at IS NULL)
+	ORDER BY w.created_at`
+
+// ReclaimWorktrees is the per-agent backstop sweepFinishedRoots cannot be.
+// sweepFinishedRoots waits for a whole root item to reach done/cancelled,
+// which a multi-week epic never does; this waits only for one worktree's own
+// owner to be genuinely finished.
+//
+// It never returns early on a per-worktree failure: one unreadable repo must
+// not strand every other worktree behind it. sweepFinishedRoots' fail-fast
+// loop is not inherited. It does check ctx between candidates, so a shutdown
+// mid-pass stops promptly with whatever it has already done intact -- each
+// worktree's row write is its own transaction, so there is no partial state
+// to unwind.
+func (s *Store) ReclaimWorktrees(ctx context.Context) error {
+	cutoff := db.Millis(s.Now().Add(-reclaimGrace))
+	cands, err := s.Worktree.Candidates(ctx, reclaimGateWhere, cutoff)
+	if err != nil {
+		return err
+	}
+	var reclaimed, kept, failed int
+	for _, wt := range cands {
+		if ctx.Err() != nil {
+			break
+		}
+		live, err := s.liveDescendants(ctx, s.DB, wt.OwnerAgentID)
+		if err != nil {
+			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
+			failed++
+			continue
+		}
+		if live > 0 {
+			s.logf("worktree: keeping %s (owner has a live descendant)", wt.Path)
+			kept++
+			continue
+		}
+		_, pathErr := os.Lstat(wt.Path)
+		pathWasGone := pathErr != nil
+		done, err := s.Worktree.ReclaimOne(ctx, wt)
+		if err != nil {
+			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
+			failed++
+			continue
+		}
+		switch done.State {
+		case "removed":
+			if pathWasGone {
+				s.logf("worktree: %s is gone, closing its row", wt.Path)
+			} else {
+				s.logf("worktree: reclaimed %s", wt.Path)
+			}
+			reclaimed++
+		default:
+			s.logf("worktree: keeping %s (%s)", wt.Path, done.RetainedReason)
+			kept++
+		}
+	}
+	s.logf("worktree: reclaim pass: %d reclaimed, %d kept, %d failed", reclaimed, kept, failed)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
+}
+
+// ReclaimWorktreesLoop runs ReclaimWorktrees every `every` until ctx is
+// cancelled. Same shape as ReconcileLoop, deliberately.
+func (s *Store) ReclaimWorktreesLoop(ctx context.Context, every time.Duration) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.after(every):
+		}
+		if err := s.ReclaimWorktrees(ctx); err != nil && ctx.Err() == nil {
+			s.logf("reclaim: %v", err)
+		}
+	}
 }
 
 // ReconcileLoop runs Reconcile every `every` until ctx is cancelled.

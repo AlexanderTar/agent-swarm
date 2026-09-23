@@ -4,6 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -13,6 +17,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
 // A real tmux failure to list panes at all must surface, not be treated as
@@ -2012,4 +2017,437 @@ func TestProgressDeadlockFiresOncePerCheckpointThenAgainForANewOne(t *testing.T)
 	if n2 != 1 {
 		t.Fatalf("ck2 relay count = %d, want exactly 1", n2)
 	}
+}
+
+// --- Worktree reclaim gate --------------------------------------------
+// docs/specs/2026-09-23-worktree-cleanup-enforcement.md §4.3, §8.2 (tests 3,
+// 8, 9, 10, 11, 14, 16 per the plan's file-placement ruling) and §8.4's
+// Exhaust/Cancellation paths.
+
+// seedReclaimAgent inserts an owner (or descendant, or sibling) agent row
+// directly, so the test controls state/finished_at without the full spawn
+// lifecycle. epicID doubles as both item_id and root_item_id, the same
+// pattern internal/worktree's own fixture uses (an epic is its own root).
+func seedReclaimAgent(t *testing.T, s *Store, id, epicID, parentAgentID string) {
+	t.Helper()
+	var parent sql.NullString
+	if parentAgentID != "" {
+		parent = sql.NullString{String: parentAgentID, Valid: true}
+	}
+	if _, err := s.DB.ExecContext(context.Background(), `INSERT INTO agents
+		(id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+		VALUES (?, ?, 'fake', 'fake-1', 'orchestrator', ?, ?, ?, '', 'active', ?)`,
+		id, id, epicID, epicID, parent, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// finishReclaimAgent marks agentID finished at `at`.
+func finishReclaimAgent(t *testing.T, s *Store, agentID string, at time.Time) {
+	t.Helper()
+	if _, err := s.DB.ExecContext(context.Background(),
+		`UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`, db.Millis(at), agentID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedReclaimSession gives agentID one session in the given state -- Running
+// models a live session; a terminal state (Completed) models none.
+func seedReclaimSession(t *testing.T, s *Store, id, agentID string, state SessionState) {
+	t.Helper()
+	if _, err := s.DB.ExecContext(context.Background(), `INSERT INTO sessions
+		(id, agent_id, attempt, generation, token_hash, tmux_name, cwd, state, cwd_kind, started_at)
+		VALUES (?, ?, 1, 1, ?, ?, '/tmp/w', ?, 'neutral', ?)`,
+		id, agentID, id, id, string(state), db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// endReclaimSession is the control half of seedReclaimSession: move a live
+// session to a terminal state so agentHasLiveSession stops seeing it.
+func endReclaimSession(t *testing.T, s *Store, sessionID string) {
+	t.Helper()
+	if err := s.SetSessionState(context.Background(), sessionID, Completed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedReclaimWorktree creates a real worktree, freshly checked out (HEAD ==
+// base, so trivially merged), owned by ownerID.
+func seedReclaimWorktree(t *testing.T, s *Store, repoID, repoPath, branch, ownerID, epicID string) worktree.Worktree {
+	t.Helper()
+	wt, err := s.Worktree.Create(context.Background(), worktree.CreateInput{
+		RepoID: repoID, RepoPath: repoPath, Branch: branch, OwnerAgentID: ownerID, RootItemID: epicID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wt
+}
+
+func reclaimWorktreeState(t *testing.T, s *Store, wtID string) (state, reason string) {
+	t.Helper()
+	var r sql.NullString
+	if err := s.DB.QueryRowContext(context.Background(),
+		`SELECT state, retained_reason FROM worktrees WHERE id = ?`, wtID).Scan(&state, &r); err != nil {
+		t.Fatal(err)
+	}
+	return state, r.String
+}
+
+// recordingGitCalls wraps s.Worktree.Run to record every call's argv,
+// still running the real command -- so a test can assert the safety
+// invariant ("this must not even shell out") directly against the recorded
+// argv, not just the outcome.
+func recordingGitCalls(s *Store) *[]string {
+	var calls []string
+	real := s.Worktree.Run
+	s.Worktree.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return real(ctx, name, args...)
+	}
+	return &calls
+}
+
+// TestReclaimExcludesAnOwnerWithALiveSession is scenario 3: an active owner
+// with a live session must not be a candidate at all -- no git command runs
+// against its worktree.
+func TestReclaimExcludesAnOwnerWithALiveSession(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "owner_a", ep.ID, "")
+	finishReclaimAgent(t, s, "owner_a", s.Now())
+	seedReclaimSession(t, s, "ses_a", "owner_a", Running)
+	repoID := seedRepo(t, s, "proj")
+	repoPath := repoPathFor(t, s, repoID)
+	wt := seedReclaimWorktree(t, s, repoID, repoPath, "task/live-session", "owner_a", ep.ID)
+	at.Advance(2 * time.Hour) // well past reclaimGrace
+	calls := recordingGitCalls(s)
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("a live-session owner's worktree must not be touched at all: %v", *calls)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "active" {
+		t.Fatalf("state = %q, want active (excluded, not processed)", state)
+	}
+	// Control: end the session -- the same worktree must now reclaim.
+	endReclaimSession(t, s, "ses_a")
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "removed" {
+		t.Fatalf("state = %q, want removed once the session ends", state)
+	}
+}
+
+// TestReclaimWaitsOutTheGraceWindow is scenario 8.
+func TestReclaimWaitsOutTheGraceWindow(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "owner_a", ep.ID, "")
+	finishReclaimAgent(t, s, "owner_a", s.Now())
+	repoID := seedRepo(t, s, "proj")
+	repoPath := repoPathFor(t, s, repoID)
+	wt := seedReclaimWorktree(t, s, repoID, repoPath, "task/grace", "owner_a", ep.ID)
+	at.Advance(10 * time.Minute)
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "active" {
+		t.Fatalf("state = %q, want active: inside reclaimGrace is not a candidate", state)
+	}
+	at.Advance(55 * time.Minute) // 65 min since finished, past the 1h grace
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "removed" {
+		t.Fatalf("state = %q, want removed once past reclaimGrace", state)
+	}
+}
+
+// TestReclaimExcludesAnOwnerWithALiveDescendant is scenario 9.
+func TestReclaimExcludesAnOwnerWithALiveDescendant(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "owner_a", ep.ID, "")
+	seedReclaimAgent(t, s, "child_c", ep.ID, "owner_a") // still 'active' by default
+	finishReclaimAgent(t, s, "owner_a", s.Now())
+	repoID := seedRepo(t, s, "proj")
+	repoPath := repoPathFor(t, s, repoID)
+	wt := seedReclaimWorktree(t, s, repoID, repoPath, "task/live-descendant", "owner_a", ep.ID)
+	at.Advance(2 * time.Hour)
+	calls := recordingGitCalls(s)
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("an owner with a live descendant must not be touched: %v", *calls)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "active" {
+		t.Fatalf("state = %q, want active", state)
+	}
+	// Control: finish the descendant -- the worktree must now reclaim.
+	finishReclaimAgent(t, s, "child_c", s.Now())
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "removed" {
+		t.Fatalf("state = %q, want removed once the descendant finishes", state)
+	}
+}
+
+// TestReclaimExcludesAWorktreeWithAnotherAgentsUnreleasedReservation is
+// scenario 10.
+func TestReclaimExcludesAWorktreeWithAnotherAgentsUnreleasedReservation(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "owner_a", ep.ID, "")
+	seedReclaimAgent(t, s, "other_b", ep.ID, "")
+	finishReclaimAgent(t, s, "owner_a", s.Now())
+	repoID := seedRepo(t, s, "proj")
+	repoPath := repoPathFor(t, s, repoID)
+	wt := seedReclaimWorktree(t, s, repoID, repoPath, "task/other-reservation", "owner_a", ep.ID)
+	if err := s.Worktree.Share(ctx, wt.ID, "other_b", "ro"); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(2 * time.Hour)
+	calls := recordingGitCalls(s)
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("another agent's unreleased reservation must block without touching git: %v", *calls)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "active" {
+		t.Fatalf("state = %q, want active", state)
+	}
+	// Control: release it -- the worktree must now reclaim.
+	if err := s.Worktree.Release(ctx, wt.ID, "other_b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "removed" {
+		t.Fatalf("state = %q, want removed once released", state)
+	}
+}
+
+// TestReclaimIgnoresTheOwnersOwnUnreleasedReservation is scenario 11: Create
+// already gives the owner its own unreleased rw reservation (C4) -- 91 real
+// rows look exactly like this -- and it must never block its own reclaim.
+func TestReclaimIgnoresTheOwnersOwnUnreleasedReservation(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "owner_a", ep.ID, "")
+	finishReclaimAgent(t, s, "owner_a", s.Now())
+	repoID := seedRepo(t, s, "proj")
+	repoPath := repoPathFor(t, s, repoID)
+	wt := seedReclaimWorktree(t, s, repoID, repoPath, "task/own-reservation", "owner_a", ep.ID)
+	var stillHeld int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktree_reservations
+		WHERE worktree_id = ? AND agent_id = 'owner_a' AND released_at IS NULL`, wt.ID).Scan(&stillHeld)
+	if stillHeld != 1 {
+		t.Fatalf("precondition: the owner should hold its own unreleased reservation, got %d", stillHeld)
+	}
+	at.Advance(2 * time.Hour)
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "removed" {
+		t.Fatalf("state = %q, want removed: the owner's own reservation must never block", state)
+	}
+}
+
+// TestReclaimIncludesASiblingOrchestratorsWorktree is scenario 16: two
+// top-level agents (parent_agent_id NULL) on the same root never see each
+// other via the descendant check, and B holds no reservation on A's
+// worktree, so the daemon never revealed that path to B (§2.11's accepted
+// residual risk) -- A's worktree must still reclaim.
+func TestReclaimIncludesASiblingOrchestratorsWorktree(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "owner_a", ep.ID, "")
+	seedReclaimAgent(t, s, "sibling_b", ep.ID, "") // also parent_agent_id NULL, same root
+	finishReclaimAgent(t, s, "owner_a", s.Now())
+	repoID := seedRepo(t, s, "proj")
+	repoPath := repoPathFor(t, s, repoID)
+	wt := seedReclaimWorktree(t, s, repoID, repoPath, "task/sibling", "owner_a", ep.ID)
+	at.Advance(2 * time.Hour)
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "removed" {
+		t.Fatalf("state = %q, want removed: a live sibling orchestrator must not block", state)
+	}
+}
+
+// TestReclaimContinuesPastOneCandidatesFailure is scenario 14. As literally
+// written ("unreadable repo") this doesn't produce a *failure* through
+// remove()'s own rules -- a DirtyStrict error just reads as dirty and
+// retains. The plan's ruling: rig the real error path instead, a failing
+// OnRetained, so the middle candidate's own retain transaction fails while
+// the other two succeed.
+func TestReclaimContinuesPastOneCandidatesFailure(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "owner_a", ep.ID, "")
+	finishReclaimAgent(t, s, "owner_a", s.Now())
+	repoID := seedRepo(t, s, "proj")
+	repoPath := repoPathFor(t, s, repoID)
+	var wts []worktree.Worktree
+	for i := 0; i < 3; i++ {
+		wt := seedReclaimWorktree(t, s, repoID, repoPath, fmt.Sprintf("task/fault-%d", i), "owner_a", ep.ID)
+		if err := os.WriteFile(filepath.Join(wt.Path, "wip.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		wts = append(wts, wt)
+	}
+	failID := wts[1].ID
+	s.Worktree.OnRetained = func(ctx context.Context, tx *sql.Tx, wt worktree.Worktree) error {
+		if wt.ID == failID {
+			return errors.New("boom: simulated notify failure")
+		}
+		return nil
+	}
+	var logs []string
+	s.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	at.Advance(2 * time.Hour)
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st, reason := reclaimWorktreeState(t, s, wts[0].ID); st != "retained" || reason != "dirty" {
+		t.Fatalf("first = %s/%s, want retained/dirty", st, reason)
+	}
+	if st, _ := reclaimWorktreeState(t, s, wts[1].ID); st != "active" {
+		t.Fatalf("middle = %s, want active (its transaction rolled back)", st)
+	}
+	if st, reason := reclaimWorktreeState(t, s, wts[2].ID); st != "retained" || reason != "dirty" {
+		t.Fatalf("third = %s/%s, want retained/dirty", st, reason)
+	}
+	var summary string
+	for _, l := range logs {
+		if strings.Contains(l, "reclaim pass:") {
+			summary = l
+		}
+	}
+	if summary != "worktree: reclaim pass: 0 reclaimed, 2 kept, 1 failed" {
+		t.Fatalf("summary = %q", summary)
+	}
+}
+
+// TestReclaimProcessesFiveHundredCandidatesInOnePass is §8.4's Exhaust path:
+// every candidate is processed, no early return, one summary log line.
+func TestReclaimProcessesFiveHundredCandidatesInOnePass(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "owner_a", ep.ID, "")
+	finishReclaimAgent(t, s, "owner_a", s.Now())
+	repoID := seedRepo(t, s, "proj")
+	const n = 500
+	for i := 0; i < n; i++ {
+		wtID := fmt.Sprintf("wt_exhaust_%d", i)
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktrees
+			(id, repo_id, path, branch, base_ref, base_sha, owner_agent_id, root_item_id, state, created_at)
+			VALUES (?, ?, ?, 'task/gone', 'main', 'abc1234', 'owner_a', ?, 'active', ?)`,
+			wtID, repoID, filepath.Join(t.TempDir(), "gone"), ep.ID, db.Millis(s.Now())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var logs []string
+	s.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	at.Advance(2 * time.Hour)
+	if err := s.ReclaimWorktrees(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var removed int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktrees WHERE state = 'removed'`).Scan(&removed); err != nil {
+		t.Fatal(err)
+	}
+	if removed != n {
+		t.Fatalf("removed = %d, want %d", removed, n)
+	}
+	var summaries int
+	for _, l := range logs {
+		if strings.Contains(l, "reclaim pass:") {
+			summaries++
+			if l != fmt.Sprintf("worktree: reclaim pass: %d reclaimed, 0 kept, 0 failed", n) {
+				t.Fatalf("summary = %q", l)
+			}
+		}
+	}
+	if summaries != 1 {
+		t.Fatalf("got %d summary lines, want exactly 1", summaries)
+	}
+}
+
+// TestReclaimStopsPromptlyOnCancellation is §8.4's Cancellation path. The
+// Run hook cancels the outer context the instant the first candidate's own
+// git call is dispatched, deterministically (no subprocess-timing race): the
+// candidate whose call raced the cancellation sees a cancelled ctx and its
+// own retain transaction fails (rolled back, so its row is untouched too),
+// and the loop's own ctx.Err() check stops it from ever reaching the rest.
+func TestReclaimStopsPromptlyOnCancellation(t *testing.T) {
+	s, _, at := clockStore(t)
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "owner_a", ep.ID, "")
+	finishReclaimAgent(t, s, "owner_a", s.Now())
+	repoID := seedRepo(t, s, "proj")
+	repoPath := repoPathFor(t, s, repoID)
+	var wts []worktree.Worktree
+	for i := 0; i < 3; i++ {
+		wts = append(wts, seedReclaimWorktree(t, s, repoID, repoPath, fmt.Sprintf("task/cancel-%d", i), "owner_a", ep.ID))
+	}
+	at.Advance(2 * time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	real := s.Worktree.Run
+	s.Worktree.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "status" {
+			cancel()
+		}
+		return real(ctx, name, args...)
+	}
+	err := s.ReclaimWorktrees(ctx)
+	if err == nil {
+		t.Fatal("a cancelled pass must return an error")
+	}
+	for _, wt := range wts {
+		if state, _ := reclaimWorktreeState(t, s, wt.ID); state != "active" {
+			t.Fatalf("worktree %s state = %q, want active: cancellation must leave no partial state", wt.ID, state)
+		}
+	}
+}
+
+// repoPathFor returns the repo's on-disk path and gives it one commit on
+// main, so a test can pass it straight into worktree.CreateInput -- unlike
+// internal/worktree's own gitRepo fixture, gitRepoNoSigning (seedRepo's
+// backing repo) leaves main unborn, which git worktree add -b <branch> path
+// main refuses ("invalid reference: main").
+func repoPathFor(t *testing.T, s *Store, repoID string) string {
+	t.Helper()
+	var path string
+	if err := s.DB.QueryRowContext(context.Background(),
+		`SELECT path FROM repos WHERE id = ?`, repoID).Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "README.md"}, {"-c", "commit.gpgsign=false", "commit", "-m", "init"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = path
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return path
 }
