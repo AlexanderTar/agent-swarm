@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 )
 
 // pane and anyMatch are shared by all four adapter test files (R2). They are
@@ -281,6 +282,75 @@ func TestClaudeMCPConfigIsIsolated(t *testing.T) {
 	}
 	if cfg.Servers["swarm"] == nil {
 		t.Errorf("expected swarm to be present in mcpServers")
+	}
+}
+
+// 2026-09-23, root-caused live: --setting-sources project,local (added
+// yesterday to keep ~/.claude/CLAUDE.md out) also hides ~/.claude/skills and
+// whatever registry the channels feature resolves "server:swarm" against --
+// both confirmed by direct reproduction, not a timing race (see the spec).
+// A project-scope .mcp.json in the session's own scratch cwd fixes the
+// channels side deterministically.
+func TestClaudeLaunchWritesProjectScopeMCPConfig(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(s.Cwd, ".mcp.json"))
+	if err != nil {
+		t.Fatalf("expected .mcp.json in the session cwd: %v", err)
+	}
+	var cfg struct {
+		Servers map[string]struct {
+			Type    string   `json:"type"`
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("project .mcp.json does not parse: %v\n%s", err, b)
+	}
+	sw := cfg.Servers["swarm"]
+	if sw.Type != "stdio" || sw.Command != s.Bin || strings.Join(sw.Args, " ") != "mcp" {
+		t.Fatalf("project .mcp.json swarm entry = %+v", sw)
+	}
+}
+
+// Same bug, skill side: Skill(swarm) was "Unknown skill: swarm" 100% of the
+// time under --setting-sources project,local (verified live, zero-delay
+// repro) because ~/.claude/skills is "user" scope. Project-scope copies in
+// the session's own cwd fix it without reopening the excluded user scope.
+func TestClaudeLaunchWritesProjectScopeSkills(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range install.SkillNames {
+		got, err := os.ReadFile(filepath.Join(s.Cwd, ".claude", "skills", name, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("expected %s skill reachable in the session cwd: %v", name, err)
+		}
+		if string(got) != string(install.SkillBody(name)) {
+			t.Errorf("%s skill body does not match the embedded source", name)
+		}
+	}
+}
+
+// Resume() shares flags() with Launch(); this must not regress on resume.
+func TestClaudeResumeWritesProjectScopeSkillsAndMCP(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	s.ProviderSessionID = "11111111-2222-4333-8444-555555555555"
+	if _, err := newClaude(d).Resume(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(s.Cwd, ".mcp.json")); err != nil {
+		t.Errorf("resume: expected .mcp.json in the session cwd: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.Cwd, ".claude", "skills", "swarm", "SKILL.md")); err != nil {
+		t.Errorf("resume: expected the swarm skill in the session cwd: %v", err)
 	}
 }
 

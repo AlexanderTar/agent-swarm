@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -63,6 +65,9 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := writeProjectSwarmConfig(s.Cwd, mcp); err != nil {
+		return nil, err
+	}
 	set, err := c.settingsJSON(s)
 	if err != nil {
 		return nil, err
@@ -88,6 +93,37 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 		a = append(a, "--append-system-prompt-file", instrPath)
 	}
 	return append(a, "--dangerously-load-development-channels", "server:swarm"), nil
+}
+
+// writeProjectSwarmConfig makes the swarm skill and the "swarm" channel name
+// resolvable under --setting-sources project,local, which excludes the
+// "user" scope where `swarm install` writes ~/.claude/skills and where
+// Claude Code's own channel-name registry apparently lives too (confirmed by
+// direct, zero-delay reproduction -- see
+// docs/specs/2026-09-23-claude-mcp-startup-race.md; it is not a startup
+// race). It writes project-scope copies into the session's own scratch cwd
+// -- always empty at spawn, never a real git worktree
+// (internal/runtime/agents.go creates it fresh right before Launch/Resume)
+// -- so both become visible without re-admitting the excluded user scope
+// (and with it ~/.claude/CLAUDE.md, which --setting-sources project,local
+// exists to keep out).
+func writeProjectSwarmConfig(cwd string, mcp []byte) error {
+	if cwd == "" {
+		return nil
+	}
+	if err := os.WriteFile(filepath.Join(cwd, ".mcp.json"), mcp, 0o600); err != nil {
+		return err
+	}
+	for _, name := range install.SkillNames {
+		dir := filepath.Join(cwd, ".claude", "skills", name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), install.SkillBody(name), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Claude) Launch(s Spec) (Launch, error) {
