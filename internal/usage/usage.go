@@ -85,14 +85,16 @@ func httpClientOrDefault(c *http.Client) *http.Client {
 // cache from disk and calls Antigravity's real remote quota endpoint
 // directly (verified live 2026-09-19 — see agy.go's Agy doc comment for the
 // full trace and why it must be the "daily" host, not "prod"). Muse spawns
-// its own `muse serve` MSP host and reads usage/changed. Nothing here is
+// its own `muse serve` MSP host and polls usage/read. Nothing here is
 // called by any test in this package — the only thing exercised is that the
 // slice has five entries (S-4).
 //
 // muse was absent until 2026-09-23 on the grounds that `muse --help` has no
 // quota subcommand. True of the subcommand surface, wrong as a conclusion:
-// the MSP host `muse serve` speaks answers usage/read and emits
-// usage/changed with the provider's own window/weekly percentages —
+// the MSP host `muse serve` answers usage/read with the provider's own
+// window/weekly percentages — polled directly rather than waiting on the
+// usage/changed notification, which muse.go's Muse doc comment explains is
+// unreliable on a Go-driven connection —
 // docs/specs/2026-09-23-muse-usage-probe.md has the full trace. Note that
 // muse is the one source whose probe is not free: a fresh observation costs
 // one minimal-effort turn, which Muse.ProbeGap caps at one per 15 minutes
