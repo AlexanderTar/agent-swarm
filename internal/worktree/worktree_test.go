@@ -734,6 +734,126 @@ func TestBranchName(t *testing.T) {
 	}
 }
 
+// TestRemoveOfAVanishedPathMarksRemovedWithoutAnyGitCall is scenario 5: the
+// ~210 stale rows in the live DB point at directories git already removed.
+// A missing path must close the row as 'removed' before any git call runs --
+// otherwise DirtyStrict's failure reads as dirty and fires a spurious
+// "Worktree kept" notification for a directory that no longer exists (§2.6).
+func TestRemoveOfAVanishedPathMarksRemovedWithoutAnyGitCall(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/gone",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(wt.Path); err != nil {
+		t.Fatal(err)
+	}
+	fake := &execx.Fake{Responses: map[string]execx.Result{}}
+	s.Run = recordingRunner(fake, execx.Run)
+	var notified int
+	s.OnRetained = func(context.Context, *sql.Tx, Worktree) error { notified++; return nil }
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" || out.RemovedAt == nil {
+		t.Fatalf("worktree = %+v, want removed with RemovedAt set", out)
+	}
+	if len(fake.Calls()) != 0 {
+		t.Fatalf("a vanished path must not shell out at all: %v", fake.Calls())
+	}
+	if notified != 0 {
+		t.Fatalf("a vanished path must never raise 'Worktree kept': notified %d times", notified)
+	}
+}
+
+// TestRemoveDeletesADetachedWorktreeStillAtItsSHA is scenario 6: a clean
+// detached review worktree whose HEAD is still the sha it was created at.
+func TestRemoveDeletesADetachedWorktreeStillAtItsSHA(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	sha := strings.TrimSpace(run(t, repo, "rev-parse", "HEAD"))
+	wt, err := s.Review(ctx, CreateInput{RepoID: repoID, RepoPath: repo,
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"}, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed", out)
+	}
+}
+
+// TestRemoveRetainsADetachedWorktreeThatMovedOffItsSHA is scenario 7: a local
+// commit on a detached worktree holds commits reachable from no ref anywhere
+// else. Before atDetachedSHA, Branch == "" skipped mergedOrPushed entirely
+// and this worktree would have been deleted, orphaning that commit.
+func TestRemoveRetainsADetachedWorktreeThatMovedOffItsSHA(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	sha := strings.TrimSpace(run(t, repo, "rev-parse", "HEAD"))
+	wt, err := s.Review(ctx, CreateInput{RepoID: repoID, RepoPath: repo,
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"}, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, wt.Path, "add", "f.txt")
+	run(t, wt.Path, "-c", "commit.gpgsign=false", "commit", "-m", "local review note")
+	out, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "unmerged" {
+		t.Fatalf("worktree = %+v, want retained/unmerged: a detached commit must not be orphaned", out)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("a retained worktree must still exist: %v", err)
+	}
+}
+
+// TestRetainDoesNotRenotifyOnAnUnchangedReason is scenario 13: at a 10-minute
+// reclaim cadence, the 30s notify dedup window never suppresses a repeat, so
+// an unchanged dirty worktree must only ever raise 'Worktree kept' once, on
+// the actual (state, reason) transition -- not once per pass forever.
+func TestRetainDoesNotRenotifyOnAnUnchangedReason(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/still-dirty",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "scratch.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var notified int
+	s.OnRetained = func(context.Context, *sql.Tx, Worktree) error { notified++; return nil }
+	if _, err := s.Remove(ctx, wt.ID, "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+	if notified != 1 {
+		t.Fatalf("first retain: notified %d times, want 1", notified)
+	}
+	if _, err := s.Remove(ctx, wt.ID, "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+	if notified != 1 {
+		t.Fatalf("an unchanged retain must not renotify: notified %d times, want 1", notified)
+	}
+}
+
 // recordingRunner records the argv into fake.Calls() and then runs the real command.
 func recordingRunner(fake *execx.Fake, real execx.Runner) execx.Runner {
 	rec := fake.Runner()
