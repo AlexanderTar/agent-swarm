@@ -21,8 +21,17 @@ func TestMuseLaunchFlagsProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("muse --help: %v", err)
 	}
-	for _, flag := range []string{"-i", "--model", "--reasoning-effort", "--yolo", "--trust-workspace"} {
-		if !strings.Contains(string(out), flag) {
+	help := string(out)
+	// The kickoff is a bare positional, never a flag. Assert the documented
+	// usage grammar exactly -- a loose `strings.Contains(help, "-i")` (the
+	// prior form of this check) is satisfied by "--image" too, so it never
+	// would have caught argv passing a nonexistent -i flag (see the fix in
+	// muse.go: Launch/argv no longer emits -i).
+	if !strings.Contains(help, "Usage: muse [OPTIONS] [PROMPT]") {
+		t.Errorf("muse --help no longer documents the kickoff as a bare positional:\n%s", help)
+	}
+	for _, flag := range []string{"--model", "--reasoning-effort", "--yolo", "--trust-workspace"} {
+		if !strings.Contains(help, flag) {
 			t.Errorf("muse --help lacks %q: Launch argv invents a flag", flag)
 		}
 	}
@@ -30,8 +39,15 @@ func TestMuseLaunchFlagsProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("muse resume --help: %v", err)
 	}
-	if !strings.Contains(string(resume), "session-ref") && !strings.Contains(string(resume), "session") {
-		t.Errorf("muse resume takes no session target: Resume argv is wrong:\n%s", resume)
+	resumeHelp := string(resume)
+	// `strings.Contains(resumeHelp, "session")` (the prior check) is satisfied
+	// by nearly any resume help text, correct or not. Assert the specific
+	// positional token instead, and that resume takes no prompt argument.
+	if !strings.Contains(resumeHelp, "<session-ref>") {
+		t.Errorf("muse resume --help dropped <session-ref>: Resume argv is wrong:\n%s", resumeHelp)
+	}
+	if strings.Contains(resumeHelp, "[PROMPT]") {
+		t.Errorf("muse resume --help now documents a prompt argument; Resume's no-kickoff assumption is stale:\n%s", resumeHelp)
 	}
 }
 

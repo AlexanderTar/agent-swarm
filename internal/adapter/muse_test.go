@@ -27,9 +27,10 @@ func TestMuseLaunchArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"muse", "-i", "You are swarm agent login-form-coder (coder) for TASK-101: x.",
+	want := []string{"muse",
 		"--model", "muse-spark-1.3-contributor", "--reasoning-effort", "high",
-		"--yolo", "--trust-workspace"}
+		"--yolo", "--trust-workspace",
+		"You are swarm agent login-form-coder (coder) for TASK-101: x."}
 	if len(l.Argv) != len(want) {
 		t.Fatalf("argv = %q, want %q", l.Argv, want)
 	}
@@ -40,6 +41,38 @@ func TestMuseLaunchArgv(t *testing.T) {
 	}
 	if a.Kind() != kinds.Muse {
 		t.Errorf("Kind() = %s", a.Kind())
+	}
+}
+
+// TestMuseResumeArgv pins that Resume never appends s.Kickoff: `muse resume
+// <sid>` takes exactly one positional, the session ref, confirmed live
+// 2026-09-23 (a second positional is parsed as an invalid session name, not
+// a prompt). The reminder to call swarm_sync reaches the agent a different
+// way -- runtime/pause.go's Resume queues it a message that WakeDue's
+// idle-paste fallback delivers once the reattached pane goes idle.
+func TestMuseResumeArgv(t *testing.T) {
+	d := testDeps(t)
+	a := newMuse(d)
+	s := museSpec(t)
+	s.ProviderSessionID = "uuid-123"
+	l, err := a.Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"muse", "--model", "muse-spark-1.3-contributor", "--reasoning-effort", "high",
+		"--yolo", "--trust-workspace", "resume", "uuid-123"}
+	if len(l.Argv) != len(want) {
+		t.Fatalf("argv = %q, want %q", l.Argv, want)
+	}
+	for i := range want {
+		if l.Argv[i] != want[i] {
+			t.Fatalf("argv = %q, want %q", l.Argv, want)
+		}
+	}
+	for _, arg := range l.Argv {
+		if strings.Contains(arg, s.Kickoff) {
+			t.Fatalf("argv must not carry the kickoff, muse resume takes no prompt argument: %q", l.Argv)
+		}
 	}
 }
 

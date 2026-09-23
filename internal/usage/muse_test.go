@@ -58,7 +58,7 @@ func TestSessionUsageLive(t *testing.T) {
 	if id == "" {
 		t.Skip("set MUSE_PROBE_SESSION=<session uuid> to a retained muse session")
 	}
-	u, err := SessionUsage(context.Background(), execx.Run, t.TempDir(), id)
+	u, err := MuseSessionUsage(context.Background(), execx.Run, t.TempDir(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
