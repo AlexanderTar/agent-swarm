@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func golden(t *testing.T, name string) string {
@@ -222,5 +223,21 @@ func TestInboxPasteSummaryStaysUnderPasteBudget(t *testing.T) {
 	}
 	if !strings.Contains(got, "swarm_sync") {
 		t.Errorf("InboxPasteSummary should still tell the agent to sync: %q", got)
+	}
+}
+
+// The kind-dedup in InboxPasteSummary means a large item count alone never
+// forces truncation (a real batch is capped at maxInboxItems distinct
+// kinds); an oversized name/key is the only realistic way to exceed
+// maxPasteNotice, so that's what actually exercises the truncation path.
+func TestInboxPasteSummaryTruncatesOnRuneBoundary(t *testing.T) {
+	longName := strings.Repeat("agent-", 100) + "—end" // em dash near the cut point
+	items := []InboxItem{{ID: "msg_1", Kind: "question", From: "orchestrator"}}
+	got := InboxPasteSummary(items, 0, longName, "TASK-42")
+	if len(got) > maxPasteNotice {
+		t.Errorf("InboxPasteSummary output %d bytes, want <= %d", len(got), maxPasteNotice)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("InboxPasteSummary truncated mid-rune, produced invalid UTF-8: %q", got)
 	}
 }
