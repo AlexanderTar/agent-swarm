@@ -76,7 +76,11 @@ Collisions/caveats:
 7. **`clientInfo.name` is `"swarm"`.** MSP requires `^[a-z0-9_]+$`; a hyphen
    makes the handshake fail *silently* (the `initialize` response still
    arrives, then everything answers `notInitialized`). Pinned by a test.
-8. **Timeout 60 s.** The observation arrived ~18 s into the live probe.
+8. **Timeout 60 s.** The live probe observed usage ~13 s in.
+   `Dir` is `userHome`, live-verified as a working `workspaceRoot`. The host
+   runs `--no-session-log`, so probe sessions never enter the user's
+   `muse resume` picker — confirmed against `session-index.db` after eight
+   probes: zero rows.
 9. `windowDurationMins: 300` reuses the existing `codexWindow` mapping →
    label `5h`, window `5h`. Weekly → label `Weekly`, window `weekly`.
    Headline is the 5h meter, matching `codexSnapshotFromRPC`.
@@ -133,6 +137,8 @@ Changed:
 - `internal/usage/usage.go` — `DefaultSources` builds and returns the muse
   source; rewrite the "muse is deliberately absent" paragraph.
 - `internal/usage/poller_test.go` — the "four entries" assertion becomes five.
+- `internal/runtime/types.go` — re-export `Muse = kinds.Muse` alongside the
+  other four kinds, which nothing had needed before.
 - `cmd/swarm/runtime_cmds.go` — the `no usage source` comment no longer cites
   muse as the example.
 - `go.mod` — `github.com/google/uuid` moves from indirect to direct.

@@ -48,8 +48,9 @@ Flow inside `probe`:
 id 1 → send `initialized` notification (`"params": {}`) → `session/start`
 (id 2, `commandId`+`sessionId` from `uuid.NewV7()`, `workspaceRoot: m.Dir`)
 → wait id 2 → `turn/start` (id 3, `reasoningEffort:"minimal"`,
-`input:[{type:"text",text:"ok"}]`) → wait id 3 → read notifications until
-`usage/changed` (or `turn/completed` → error, or deadline).
+`input:[{type:"text",text:"ok"}]`) → wait id 3 → poll `usage/read` every
+2 s until its `usage` member appears, or the deadline (Locked decision 6:
+`usage/changed` is not reliably delivered, `usage/read` is).
 
 Mapping mirrors `codexSnapshotFromRPC`: `codexWindow(300)` → `"5h","5h"`;
 weekly is hard-coded `"Weekly","weekly"` because it has no duration.

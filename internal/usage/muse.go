@@ -311,7 +311,8 @@ func (m *Muse) pollUsage(proc *execx.Proc, msgs <-chan museRPCEnvelope, readErrs
 			return *result.Usage, nil
 		}
 		if !time.Now().Add(museUsagePollGap).Before(deadline) {
-			return zero, fmt.Errorf("muse: the turn ran but the host observed no subscription usage within %s", m.timeout())
+			return zero, fmt.Errorf("muse: no subscription usage observed within %s "+
+				"(the probe turn may have failed; check `muse exec ok`)", m.timeout())
 		}
 		time.Sleep(museUsagePollGap)
 	}
