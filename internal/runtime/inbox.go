@@ -603,3 +603,73 @@ func summarizeFor(kind MessageKind, payload json.RawMessage) string {
 	}
 	return sanitizeOneLine(preview)
 }
+
+const maxInboxItems = 8
+
+// pendingInboxItems loads up to limit pending messages for agentID, oldest
+// first (priority, seq — the same order swarm_sync delivers them), each
+// resolved to a sanitized InboxItem. moreCount is how many pending messages
+// exist beyond limit.
+func (s *Store) pendingInboxItems(ctx context.Context, agentID string, limit int) ([]InboxItem, int, error) {
+	var items []InboxItem
+	var total int
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+			WHERE to_agent_id = ? AND state = 'pending'`, agentID).Scan(&total); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT id, kind, COALESCE(from_agent_id, ''), origin, payload_json
+			FROM messages WHERE to_agent_id = ? AND state = 'pending'
+			ORDER BY priority, seq LIMIT ?`, agentID, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, kind, fromAgentID, origin string
+			var payload []byte
+			if err := rows.Scan(&id, &kind, &fromAgentID, &origin, &payload); err != nil {
+				return err
+			}
+			from := "daemon"
+			if fromAgentID != "" {
+				if a, err := s.agentByIDTx(ctx, tx, fromAgentID); err == nil {
+					from = a.Name
+				}
+			} else if origin == "user_action" {
+				from = "user"
+			}
+			items = append(items, InboxItem{ID: id, Kind: kind, From: from,
+				Summary: summarizeFor(MessageKind(kind), json.RawMessage(payload))})
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	more := total - len(items)
+	if more < 0 {
+		more = 0
+	}
+	return items, more, nil
+}
+
+// InboxNotice renders the rich notice for hook-injected context and native
+// wake (spec Locked decision 1).
+func (s *Store) InboxNotice(ctx context.Context, agentID, name, key string) (string, error) {
+	items, more, err := s.pendingInboxItems(ctx, agentID, maxInboxItems)
+	if err != nil {
+		return "", err
+	}
+	return Inbox(items, more, name, key), nil
+}
+
+// InboxPasteNotice renders the terse notice for tryPaste's raw tmux paste
+// (spec Locked decision 3).
+func (s *Store) InboxPasteNotice(ctx context.Context, agentID, name, key string) (string, error) {
+	items, more, err := s.pendingInboxItems(ctx, agentID, maxInboxItems)
+	if err != nil {
+		return "", err
+	}
+	return InboxPasteSummary(items, more, name, key), nil
+}

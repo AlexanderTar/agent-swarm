@@ -818,3 +818,74 @@ func TestSummarizeForEveryKind(t *testing.T) {
 		})
 	}
 }
+
+func TestInboxNoticeListsPendingMessagesOldestFirst(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Inbox", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	enq(t, s, a.ID, a.RootItemID, "question", `{"body":"first question here?"}`, 1)
+	enq(t, s, a.ID, a.RootItemID, "question", `{"body":"second question here?"}`, 1)
+	notice, err := s.InboxNotice(ctx, a.ID, a.Name, "TASK-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notice, "first question here?") || !strings.Contains(notice, "second question here?") {
+		t.Errorf("InboxNotice missing message content: %q", notice)
+	}
+	if strings.Index(notice, "first question here?") > strings.Index(notice, "second question here?") {
+		t.Errorf("InboxNotice not oldest-first: %q", notice)
+	}
+	if strings.Contains(notice, "\n") {
+		t.Errorf("InboxNotice contains a literal newline: %q", notice)
+	}
+}
+
+func TestInboxNoticeCapsAtEightItemsWithMoreCount(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Inbox", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	// StartSpike already leaves one pending assignment; 9 more questions
+	// make 10 pending, so a limit of 8 leaves moreCount == 2.
+	for i := 0; i < 9; i++ {
+		enq(t, s, a.ID, a.RootItemID, "question", `{"body":"queued question"}`, 1)
+	}
+	items, more, err := s.pendingInboxItems(ctx, a.ID, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 8 {
+		t.Errorf("pendingInboxItems returned %d items, want 8", len(items))
+	}
+	if more != 2 {
+		t.Errorf("pendingInboxItems moreCount = %d, want 2", more)
+	}
+	notice, err := s.InboxNotice(ctx, a.ID, a.Name, "TASK-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notice, "+2 more") {
+		t.Errorf("InboxNotice should mention +2 more: %q", notice)
+	}
+	if len(notice) > maxInboxNotice {
+		t.Errorf("InboxNotice %d bytes, want <= %d", len(notice), maxInboxNotice)
+	}
+}
+
+func TestInboxPasteNoticeStaysUnderPasteBudget(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Inbox", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	for i := 0; i < 9; i++ {
+		enq(t, s, a.ID, a.RootItemID, "question", `{"body":"queued question"}`, 1)
+	}
+	got, err := s.InboxPasteNotice(ctx, a.ID, a.Name, "TASK-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > maxPasteNotice {
+		t.Errorf("InboxPasteNotice %d bytes, want <= %d", len(got), maxPasteNotice)
+	}
+	if strings.Contains(got, "\n") {
+		t.Errorf("InboxPasteNotice contains a literal newline: %q", got)
+	}
+}
