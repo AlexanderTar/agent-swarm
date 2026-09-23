@@ -79,7 +79,19 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		if lastWake.Valid {
 			t := db.FromMillis(lastWake.Int64)
 			r.LastWakeAt = &t
-			r.NativeTried = true
+			// §11.3 step 1 is "native wake, once per message BATCH", so
+			// NativeTried must mean "already natively woken FOR THIS batch",
+			// not "this session was woken at some point in its life".
+			// last_wake_at is set by markWoken after a native wake OR a paste
+			// and is never cleared, so deriving NativeTried from its mere
+			// presence disabled native wake forever after a session's first
+			// wake -- every later batch fell straight through to the paste
+			// fallback (the 2026-09-23 orchestrator incident). A pending
+			// message newer than the last wake is by definition a batch that
+			// wake has not covered yet. This is deliberately the exact mirror
+			// of WakeDue's cooldown escape clause below, so the two cannot
+			// drift apart.
+			r.NativeTried = !r.NewestPendingAt.After(t)
 		}
 		r.PasteAttempts, r.LastPasteAttemptAt = s.getPasteAttempts(r.SessionID)
 		out = append(out, r)
@@ -295,8 +307,10 @@ func (s *Store) getPasteAttempts(sessionID string) (int, *time.Time) {
 
 // PublishWake is the adapter.Deps.PublishWake seam: it fans a notice out to
 // every channel SubscribeWake handed out for sessionID (Task 34's SSE route
-// subscribes here for the claude bridge).
-func (s *Store) PublishWake(ctx context.Context, sessionID, notice string) error {
+// subscribes here for the claude bridge). It reports whether there was anyone
+// to publish TO -- a publish with no subscriber is not a delivered wake, and
+// Claude.Wake must not tell WakeDue otherwise.
+func (s *Store) PublishWake(ctx context.Context, sessionID, notice string) (bool, error) {
 	s.bookkeepingMu.Lock()
 	subs := append([]chan string{}, s.wakeSubs[sessionID]...)
 	s.bookkeepingMu.Unlock()
@@ -306,7 +320,7 @@ func (s *Store) PublishWake(ctx context.Context, sessionID, notice string) error
 		default:
 		}
 	}
-	return nil
+	return len(subs) > 0, nil
 }
 
 // SubscribeWake returns a buffered channel of notices for sessionID and an

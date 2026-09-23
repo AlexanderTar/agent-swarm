@@ -124,6 +124,123 @@ func TestPasteLineDeliversExactlyOneLine(t *testing.T) {
 	})
 }
 
+// tmux turns every "\n" in a pasted buffer into a carriage return, i.e. an
+// Enter keypress in the pane. Claude Code will not submit a notice pasted that
+// way at all -- measured live on 2026-09-23, the full multi-line notice sat
+// unsent in its input box through settle windows of 0.5 s and 1.0 s, while the
+// identical notice flattened to one line was submitted by the first Enter and
+// recorded whole in the transcript. PasteLine pastes ONE line; this pins that.
+func TestPasteLineFlattensNewlinesIntoOneLine(t *testing.T) {
+	s := newSpawner(t)
+	ctx := context.Background()
+	out := filepath.Join(t.TempDir(), "typed.txt")
+	if err := s.Start(ctx, "flat", t.TempDir(), nil,
+		[]string{"sh", "-c", "read line; printf '%s' \"$line\" > " + out + "; while :; do sleep 1; done"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the shell to start reading", func() bool {
+		_, err := s.Capture(ctx, "flat", 5)
+		return err == nil
+	})
+	notice := "[swarm] header line\n- msg_1:note [NOTE] note from peer: body\n\ntrailer — with an em dash"
+	want := "[swarm] header line - msg_1:note [NOTE] note from peer: body trailer — with an em dash"
+	if err := s.PasteLine(ctx, "flat", notice); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the flattened line", func() bool {
+		b, err := os.ReadFile(out)
+		return err == nil && string(b) == want
+	})
+}
+
+// readSizeProbe is a pane program that records the length of every os.read()
+// it gets off its tty, in raw mode -- the same mode every agent CLI runs its
+// terminal in. It is the ground truth for the 2026-09-23 truncation: a single
+// tmux paste-buffer larger than the kernel's per-read ceiling is delivered to
+// the pane as several reads, and Claude Code's raw-mode input handler keeps
+// only the last of them.
+const readSizeProbe = `
+import sys, os, tty, termios, select, time
+fd = sys.stdin.fileno()
+old = termios.tcgetattr(fd)
+tty.setraw(fd)
+open(sys.argv[2], "w").close()   # tell the test the tty is raw; a paste before
+                                 # this would be read in canonical mode instead
+sizes, total, t0 = [], 0, time.time()
+try:
+    while time.time() - t0 < 5:
+        if select.select([fd], [], [], 0.2)[0]:
+            b = os.read(fd, 65536)
+            if not b:
+                break
+            sizes.append(len(b)); total += len(b)
+finally:
+    termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+open(sys.argv[1], "w").write("%d %d" % (total, max(sizes or [0])))
+time.sleep(600)
+`
+
+// ttyReadCeiling is the size of the first read() a raw-mode pane program gets
+// from any single oversized write: on Darwin ptcwrite blocks the master writer
+// once the slave's raw queue hits TTYHOG-2, so the first read returns exactly
+// 1022 bytes and the rest follows in a second read. Measured live, and it is
+// exactly the split seen in the incident (a 1716-byte notice arrived as
+// [1022, 694] and Claude Code recorded only the 694-byte tail, starting
+// mid-word).
+const ttyReadCeiling = 1022
+
+// A notice big enough to cross that ceiling in one write must still reach the
+// pane as a series of small reads, because the agent CLIs on the other end are
+// closed-source binaries that demonstrably do not reassemble a split read. The
+// real Inbox notice is routinely over 1 KB (header + items + the ~550-byte
+// trailer), so this is the normal case, not an edge case.
+func TestPasteLineNeverExceedsOneTtyReadPerChunk(t *testing.T) {
+	s := newSpawner(t)
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+	dir := t.TempDir()
+	probe := filepath.Join(dir, "readsize.py")
+	if err := os.WriteFile(probe, []byte(readSizeProbe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "sizes.txt")
+	ready := filepath.Join(dir, "ready")
+	ctx := context.Background()
+	if err := s.Start(ctx, "readsize", dir, nil, []string{py, probe, out, ready}); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the tty to actually be in raw mode, not merely for the pane to
+	// exist: a paste that lands while it is still canonical would be read
+	// under MAX_CANON rules and measure the wrong thing entirely.
+	waitFor(t, "the probe to put its tty in raw mode", func() bool {
+		_, err := os.Stat(ready)
+		return err == nil
+	})
+	line := strings.Repeat("swarm inbox notice filler ", 66)[:1700]
+	if err := s.PasteLine(ctx, "readsize", line); err != nil {
+		t.Fatal(err)
+	}
+	var total, maxRead int
+	waitFor(t, "the probe to report its read sizes", func() bool {
+		b, err := os.ReadFile(out)
+		if err != nil {
+			return false
+		}
+		_, err = fmt.Sscanf(string(b), "%d %d", &total, &maxRead)
+		return err == nil
+	})
+	if want := len(line) + 1; total != want { // +1 for the Enter
+		t.Errorf("the pane received %d bytes, want %d -- the paste did not arrive whole", total, want)
+	}
+	if maxRead >= ttyReadCeiling {
+		t.Errorf("largest single tty read = %d bytes (ceiling %d): an agent CLI that keeps only the "+
+			"last read of a split write would silently drop everything before it, which is the "+
+			"2026-09-23 truncation. Paste must be chunked.", maxRead, ttyReadCeiling)
+	}
+}
+
 // RenameWindow is how the reconciler pushes the fun Ghostty title (status +
 // role + tree emoji + name) into #W every tick; set-titles-string='#W' is
 // what then surfaces it as the terminal's actual title.

@@ -106,7 +106,7 @@ func TestWakeStreamDeliversOnlyToItsOwnSession(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Fatalf("Content-Type = %q", ct)
 	}
-	if err := s.RT.PublishWake(context.Background(), seed.SessionID, "[swarm] 1 new message(s)"); err != nil {
+	if _, err := s.RT.PublishWake(context.Background(), seed.SessionID, "[swarm] 1 new message(s)"); err != nil {
 		t.Fatal(err)
 	}
 	// Read until the wake event arrives. The server writes it as two lines, so read

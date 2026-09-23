@@ -163,14 +163,16 @@ func (c *Claude) InterruptKeys() []string { return []string{"Escape"} }
 
 // Wake goes through the shim's channel bridge (§11.3 step 1): the daemon
 // publishes a wake event, the shim emits notifications/claude/channel.
+// "delivered" is whether anything was actually subscribed to this session, not
+// merely whether the publish errored: with the shim not connected there is
+// nobody on the other end, and claiming a delivery then records a wake that
+// reached no one, holding the session silent until the cooldown expires
+// instead of dropping to the paste fallback straight away.
 func (c *Claude) Wake(ctx context.Context, w WakeTarget) (bool, error) {
 	if c.d.PublishWake == nil {
 		return false, nil
 	}
-	if err := c.d.PublishWake(ctx, w.SessionID, w.Notice); err != nil {
-		return false, err
-	}
-	return true, nil
+	return c.d.PublishWake(ctx, w.SessionID, w.Notice)
 }
 
 // DiscoverSession is a no-op: the hook path (ParseHook) already populates
