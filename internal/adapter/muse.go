@@ -31,18 +31,129 @@ func (m *Muse) argv(s Spec) []string {
 		"--reasoning-effort", museEffort(s.Effort), "--yolo", "--trust-workspace", s.Kickoff}
 }
 
+// museMCPEnv is the literal env block the isolated settings.json's swarm
+// entry needs for this one launch (P0-1). Confirmed live 2026-09-23 by
+// strings-dumping the installed muse-bin-1.3.0-R3401.1 binary: its own
+// embedded "migrate" skill doc states "Muse does not expand ${VAR} and
+// starts stdio servers with only a small fixed allowlist of the user's
+// environment (HOME, PATH, USER, LANG, TERM and similar) plus the literal
+// `env` map" -- so neither codex's env_vars-by-name nor cursor's
+// ${env:NAME} templates work here; only baked-in literal values do. Verified
+// empirically too: a settings.json env block with literal (non-${VAR})
+// values, read from an XDG_CONFIG_HOME-isolated dir, reached a spawned stdio
+// MCP subprocess's own environment even with those same vars unset in
+// muse's process env -- see TestMuseSetupEnvReachesRealMCPSubprocess
+// (muse_wake_probe_test.go, MUSE_LIVE_PROBE=1) for the exact repro.
+// mcpServers.swarm.env therefore must be written fresh per launch (WriteMuse,
+// at install time, cannot: SWARM_SESSION and SWARM_TOKEN_FILE do not exist
+// until startSession mints them). SWARM_TOKEN_FILE comes from Spec.TokenFile
+// (runtime/agents.go's startSession threads through the exact tokPath it
+// wrote the token to) rather than being recomputed here, so the two can
+// never drift out of sync.
+func museMCPEnv(s Spec) map[string]any {
+	return map[string]any{
+		"SWARM_URL":        s.DaemonURL,
+		"SWARM_SESSION":    s.SessionID,
+		"SWARM_TOKEN_FILE": s.TokenFile,
+		"SWARM_AGENT_KIND": string(kinds.Muse),
+	}
+}
+
 // setupEnv writes custom instructions to the workspace AGENTS.md (cursor
-// pattern §11.1): workspace trust (--trust-workspace) is what loads them, and
-// there is no isolated HOME to carry them instead. Empty instructions touch
-// nothing, so repos without custom instructions are never modified.
-func (m *Muse) setupEnv(s Spec) error {
-	if s.Instructions == "" || s.Cwd == "" {
-		return nil
+// pattern §11.1: workspace trust, --trust-workspace, is what loads them) and
+// isolates muse's XDG_CONFIG_HOME to a per-launch copy of the real
+// settings.json with the swarm server's env patched in -- the only place
+// the four SWARM_* vars can reach the swarm MCP subprocess muse spawns (see
+// museMCPEnv). The real settings.json is cloned first so every other MCP
+// server and setting the operator configured keeps working; auth.json is
+// symlinked in so provider login still works. trust.json is not needed:
+// --yolo already trusts the workspace for this run without saving it.
+//
+// XDG_CONFIG_HOME is process-wide, not muse-specific (muse has no dedicated
+// override var -- confirmed by strings-dumping the binary, no MUSE_CONFIG/
+// MUSE_HOME/MUSE_SETTINGS hit), and it lands on the whole tmux pane, so any
+// other XDG_CONFIG_HOME-rooted tool muse's shell tool runs (git, gh, ...)
+// would otherwise see an empty config. Every real ~/.config sibling except
+// muse/ is symlinked into the isolated dir so they keep resolving (agy.go's
+// pattern for the same reason, one level up).
+func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
+	if s.Instructions != "" && s.Cwd != "" {
+		if err := os.MkdirAll(s.Cwd, 0o755); err != nil {
+			return nil, err
+		}
+		if err := writeFileAtomic(filepath.Join(s.Cwd, "AGENTS.md"),
+			[]byte(s.Instructions), 0o644); err != nil {
+			return nil, err
+		}
 	}
-	if err := os.MkdirAll(s.Cwd, 0o755); err != nil {
-		return err
+
+	xdgConfigHome := filepath.Join(m.d.launchDir(s.SessionID), "muse-config")
+	museDir := filepath.Join(xdgConfigHome, "muse")
+	if err := os.MkdirAll(museDir, 0o700); err != nil {
+		return nil, err
 	}
-	return writeFileAtomic(filepath.Join(s.Cwd, "AGENTS.md"), []byte(s.Instructions), 0o644)
+	realConfigHome := filepath.Join(m.d.UserHome, ".config")
+	if entries, err := os.ReadDir(realConfigHome); err == nil {
+		for _, e := range entries {
+			if e.Name() == "muse" {
+				continue // isolated below, not symlinked whole
+			}
+			if err := symlinkIfExists(filepath.Join(realConfigHome, e.Name()),
+				filepath.Join(xdgConfigHome, e.Name())); err != nil {
+				return nil, err
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	settings := map[string]any{}
+	realSettings := filepath.Join(m.d.UserHome, ".config", "muse", "settings.json")
+	if raw, err := os.ReadFile(realSettings); err == nil {
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &settings); err != nil {
+				return nil, fmt.Errorf("%s: %w", realSettings, err)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if _, ok := settings["schema_version"]; !ok {
+		// A real settings.json always carries this (muse writes it on first
+		// run); a missing/fresh one needs it too -- muse's loader rejects a
+		// settings file without it (confirmed live: "missing field
+		// `schema_version`").
+		settings["schema_version"] = 1
+	}
+	servers, _ := settings["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+	}
+	servers["swarm"] = map[string]any{
+		"mode":    "optional",
+		"command": s.Bin,
+		"args":    []string{"mcp"},
+		"env":     museMCPEnv(s),
+	}
+	settings["mcpServers"] = servers
+	body, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(filepath.Join(museDir, "settings.json"), body, 0o600); err != nil {
+		return nil, err
+	}
+
+	if err := symlinkIfExists(filepath.Join(m.d.UserHome, ".config", "muse", "auth.json"),
+		filepath.Join(museDir, "auth.json")); err != nil {
+		return nil, err
+	}
+	if err := symlinkIfExists(filepath.Join(m.d.UserHome, ".config", "muse", "skills"),
+		filepath.Join(museDir, "skills")); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"XDG_CONFIG_HOME": xdgConfigHome}, nil
 }
 
 // Launch is §11.1. `muse [OPTIONS] [PROMPT]` takes the kickoff as a bare
@@ -53,12 +164,14 @@ func (m *Muse) setupEnv(s Spec) error {
 // "--image" also satisfies). --model takes the raw Spark slug,
 // --reasoning-effort the tier ladder, and --yolo --trust-workspace is the
 // always-yolo posture other agents get from --dangerously-skip-permissions.
-// No isolated HOME: workspace trust loads the workspace skills and AGENTS.md.
+// XDG_CONFIG_HOME is isolated per launch (see setupEnv) for the swarm MCP
+// server's env; workspace trust still loads the workspace skills and AGENTS.md.
 func (m *Muse) Launch(s Spec) (Launch, error) {
-	if err := m.setupEnv(s); err != nil {
+	env, err := m.setupEnv(s)
+	if err != nil {
 		return Launch{}, err
 	}
-	return Launch{Argv: m.argv(s), Env: map[string]string{}}, nil
+	return Launch{Argv: m.argv(s), Env: env}, nil
 }
 
 // Resume reattaches the muse session by its UUID. No kickoff is passed:
@@ -74,13 +187,14 @@ func (m *Muse) Launch(s Spec) (Launch, error) {
 // WakeDue's idle-paste fallback (the only wake path muse supports, see
 // Wake below) delivers it once the reattached pane goes idle.
 func (m *Muse) Resume(s Spec) (Launch, error) {
-	if err := m.setupEnv(s); err != nil {
+	env, err := m.setupEnv(s)
+	if err != nil {
 		return Launch{}, err
 	}
 	return Launch{Argv: []string{"muse", "--model", s.Model,
 		"--reasoning-effort", museEffort(s.Effort),
 		"--yolo", "--trust-workspace", "resume", s.ProviderSessionID},
-		Env: map[string]string{}}, nil
+		Env: env}, nil
 }
 
 var (

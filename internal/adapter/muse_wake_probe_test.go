@@ -3,6 +3,7 @@ package adapter
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -74,4 +75,90 @@ func TestMuseWakeProbe(t *testing.T) {
 		t.Fatalf("session-message send to %q: %v\n%s", target, err, out)
 	}
 	t.Logf("send acknowledged; verify the marker turn appears in %q's pane", target)
+}
+
+// TestMuseSetupEnvReachesRealMCPSubprocess is the P0-1 fix's live proof: it
+// runs setupEnv exactly as Launch/Resume do, then actually starts the real
+// muse CLI against the isolated XDG_CONFIG_HOME it produced and confirms a
+// spawned stdio "MCP server" (standing in for `swarm mcp`, so the probe stays
+// free -- no `meta` provider call, no real swarm daemon) sees the four SWARM_*
+// vars in its own process environment. `muse exec --provider echo` is
+// headless and loads mcpServers at startup (confirmed live 2026-09-23; see
+// museMCPEnv's doc), so no paid model turn is needed. The ambient shell's
+// SWARM_* vars are stripped from the child's env first, so a pass here can
+// only mean the isolated settings.json's literal `env` block was what
+// delivered them -- the exact mechanism the fix relies on.
+//
+//	MUSE_LIVE_PROBE=1 go test ./internal/adapter/ -run TestMuseSetupEnvReachesRealMCPSubprocess -v
+func TestMuseSetupEnvReachesRealMCPSubprocess(t *testing.T) {
+	if os.Getenv("MUSE_LIVE_PROBE") != "1" {
+		t.Skip("live probe against real muse CLI; set MUSE_LIVE_PROBE=1 to run")
+	}
+	if _, err := exec.LookPath("muse"); err != nil {
+		t.Skip("muse not installed")
+	}
+
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "envecho-output.txt")
+	script := filepath.Join(dir, "envecho.sh")
+	// A stand-in stdio MCP server: dumps what it sees on start (before any
+	// handshake), then just echoes empty JSON-RPC replies forever so muse
+	// doesn't consider it crashed mid-init.
+	body := "#!/usr/bin/env bash\n" +
+		"{\n" +
+		"  echo \"SWARM_URL=${SWARM_URL:-<unset>}\"\n" +
+		"  echo \"SWARM_SESSION=${SWARM_SESSION:-<unset>}\"\n" +
+		"  echo \"SWARM_TOKEN_FILE=${SWARM_TOKEN_FILE:-<unset>}\"\n" +
+		"  echo \"SWARM_AGENT_KIND=${SWARM_AGENT_KIND:-<unset>}\"\n" +
+		"} > " + outFile + "\n" +
+		"while IFS= read -r line; do echo '{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{}}'; done\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	d := Deps{Home: t.TempDir(), UserHome: t.TempDir(), Bin: script, Now: nowStub, Log: func(string, ...any) {}}
+	s := Spec{SessionID: "live-probe-session", DaemonURL: "http://127.0.0.1:9-probe-url", Bin: script,
+		TokenFile: filepath.Join(d.Home, "run", "tokens", "live-probe-session")}
+	env, err := newMuse(d).setupEnv(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xdgConfigHome, ok := env["XDG_CONFIG_HOME"]
+	if !ok || xdgConfigHome == "" {
+		t.Fatalf("setupEnv did not return XDG_CONFIG_HOME: %v", env)
+	}
+
+	var childEnv []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "SWARM_") {
+			continue // strip ambient SWARM_* so a pass can only come from settings.json
+		}
+		childEnv = append(childEnv, kv)
+	}
+	childEnv = append(childEnv, "XDG_CONFIG_HOME="+xdgConfigHome)
+
+	cmd := exec.Command("muse", "exec", "--provider", "echo", "--yolo", "--trust-workspace",
+		"--no-session-log", "hello")
+	cmd.Dir = t.TempDir()
+	cmd.Env = childEnv
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("muse exec: %v\n%s", err, out)
+	}
+
+	raw, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("swarm MCP stand-in never started (no output file written): %v\nmuse output:\n%s", err, out)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		"SWARM_URL=" + s.DaemonURL,
+		"SWARM_SESSION=" + s.SessionID,
+		"SWARM_TOKEN_FILE=" + s.TokenFile,
+		"SWARM_AGENT_KIND=muse",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("MCP subprocess env missing %q; got:\n%s", want, got)
+		}
+	}
 }
