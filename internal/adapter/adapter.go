@@ -117,6 +117,12 @@ type Adapter interface {
 	Idle(capture string) bool
 	TrustFolder(ctx context.Context, path string) error
 	ForgetFolder(ctx context.Context, path string) error
+	// DiscoverSession lets a kind with no hook surface recover its own
+	// provider session id after launch, given the live pane's OS pid and the
+	// session's workspace root. Kinds with a working hook path (claude,
+	// codex, cursor, agy) return "", false unconditionally -- they already
+	// get this from ParseHook.
+	DiscoverSession(ctx context.Context, pid int, workspaceRoot string) (providerSessionID string, ok bool)
 }
 
 // base carries what every adapter needs and supplies the shared Idle rule.

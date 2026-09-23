@@ -1204,6 +1204,7 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 		// a false idle read, so reusing it here to rule in "done starting" is the
 		// same signal, not a new one.
 		if ad.Idle(capture) || (ad.Busy() != nil && ad.Busy().MatchString(stripANSI(capture))) {
+			s.discoverProviderSession(ctx, a, ses, ad)
 			return s.SetSessionState(ctx, ses.ID, Running)
 		}
 		select {
@@ -1214,6 +1215,55 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 	}
 	capture, _ := s.Tmux.Capture(ctx, ses.TmuxName, 60)
 	return s.failSession(ctx, a, ses, lastLines(capture, 40))
+}
+
+// discoverProviderSession is the muse-shaped fallback for kinds with no hook
+// surface to populate ProviderSessionID via ParseHook (spec: DiscoverSession
+// on the Adapter interface). It is strictly best-effort: startup correctness
+// must never depend on it, so every failure (no matching pane, no match in
+// the adapter's own registry, a write error) is logged and swallowed rather
+// than returned, and it never runs at all once a hook path has already
+// populated ProviderSessionID.
+func (s *Store) discoverProviderSession(ctx context.Context, a Agent, ses Session, ad adapter.Adapter) {
+	if ses.ProviderSessionID != "" {
+		return
+	}
+	panes, err := s.Tmux.Panes(ctx)
+	if err != nil {
+		s.logf("discoverProviderSession: Panes: %v", err)
+		return
+	}
+	var pid int
+	found := false
+	for _, p := range panes {
+		if p.Session == ses.TmuxName {
+			pid, found = p.Pid, true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+	providerID, ok := ad.DiscoverSession(ctx, pid, ses.Cwd)
+	if !ok {
+		s.logf("discoverProviderSession: %s: pid %d matched no registry entry", a.Name, pid)
+		return
+	}
+	if err := s.setProviderSessionID(ctx, ses.ID, providerID); err != nil {
+		s.logf("discoverProviderSession: setProviderSessionID(%s): %v", a.Name, err)
+	}
+}
+
+// setProviderSessionID is discoverProviderSession's write. It never
+// overwrites an existing value: this path only ever fires for a session that
+// started with an empty one (see discoverProviderSession's own guard), and
+// the WHERE clause is a second, defensive belt against a race clobbering a
+// value the hook path wrote concurrently.
+func (s *Store) setProviderSessionID(ctx context.Context, sessionID, providerID string) error {
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE sessions SET provider_session_id = ? WHERE id = ? AND (provider_session_id IS NULL OR provider_session_id = '')`,
+		providerID, sessionID)
+	return err
 }
 
 // Cancel is swarm_control's cancel action. sessionID/requestID are I11's
@@ -1593,7 +1643,6 @@ func (s *Store) agentByID(ctx context.Context, id string) (Agent, error) {
 func (s *Store) AgentByID(ctx context.Context, id string) (Agent, error) {
 	return s.agentByID(ctx, id)
 }
-
 
 func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, error) {
 	it, err := s.Items.Get(ctx, rootItemKey)

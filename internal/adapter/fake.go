@@ -15,14 +15,19 @@ import (
 // end-to-end run never calls a model.
 type Fake struct {
 	base
-	NotInstalled  bool
-	AuthError     error
-	NoSuperpowers bool
-	Version       string
+	NotInstalled   bool
+	AuthError      error
+	NoSuperpowers  bool
+	Version        string
 	WakeOK         bool // e2e can turn on a "native wake" to test the skip-the-paste path
 	Dialogs        []Dialog
 	PromptMatchers []PromptMatcher
 	LastSpec       Spec // test observability: the Spec most recently passed to Launch/Resume
+
+	// DiscoverSessionResult/DiscoverSessionOK let a test opt this kind into
+	// the muse-style no-hook discovery path (see Muse.DiscoverSession).
+	DiscoverSessionResult string
+	DiscoverSessionOK     bool
 }
 
 func NewFake(d Deps) *Fake {
@@ -68,15 +73,19 @@ var (
 	fakeBusy    = regexp.MustCompile("(?m)^[\u273b\u273d\u2736\u2722\u00b7*] \\S+\u2026 \\(")
 )
 
-func (f *Fake) ProcessNames() []*regexp.Regexp { return []*regexp.Regexp{fakeProcess} }
-func (f *Fake) IdlePrompt() *regexp.Regexp     { return fakeIdle }
-func (f *Fake) Busy() *regexp.Regexp           { return fakeBusy }
-func (f *Fake) StartupDialogs() []Dialog       { return f.Dialogs }
+func (f *Fake) ProcessNames() []*regexp.Regexp  { return []*regexp.Regexp{fakeProcess} }
+func (f *Fake) IdlePrompt() *regexp.Regexp      { return fakeIdle }
+func (f *Fake) Busy() *regexp.Regexp            { return fakeBusy }
+func (f *Fake) StartupDialogs() []Dialog        { return f.Dialogs }
 func (f *Fake) PromptPatterns() []PromptMatcher { return f.PromptMatchers }
-func (f *Fake) InterruptKeys() []string        { return []string{"Escape"} }
-func (f *Fake) Idle(capture string) bool       { return idle(f, capture) }
+func (f *Fake) InterruptKeys() []string         { return []string{"Escape"} }
+func (f *Fake) Idle(capture string) bool        { return idle(f, capture) }
 
 func (f *Fake) Wake(context.Context, WakeTarget) (bool, error) { return f.WakeOK, nil }
+
+func (f *Fake) DiscoverSession(context.Context, int, string) (string, bool) {
+	return f.DiscoverSessionResult, f.DiscoverSessionOK
+}
 
 // HookOutput mirrors claude's shapes so the e2e harness can reuse one client.
 func (f *Fake) HookOutput(event string, d HookDecision) ([]byte, error) {

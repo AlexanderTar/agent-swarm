@@ -173,6 +173,10 @@ func (c *Claude) Wake(ctx context.Context, w WakeTarget) (bool, error) {
 	return true, nil
 }
 
+// DiscoverSession is a no-op: the hook path (ParseHook) already populates
+// ProviderSessionID for this kind.
+func (c *Claude) DiscoverSession(context.Context, int, string) (string, bool) { return "", false }
+
 func (c *Claude) HookOutput(event string, d HookDecision) ([]byte, error) {
 	if d.Block {
 		if event == "Stop" {

@@ -119,7 +119,7 @@ func (s *Spawner) Start(ctx context.Context, name, cwd string, env map[string]st
 // live sessions as gone and crashed them. "|" is not sanitized under any
 // locale and cannot appear in a session name (ids.Kebab-sanitized) or a
 // process name, so it can't collide with real field content.
-const paneFormat = "#{session_name}|#{pane_dead}|#{pane_dead_status}|#{session_attached}|#{pane_current_command}"
+const paneFormat = "#{session_name}|#{pane_dead}|#{pane_dead_status}|#{session_attached}|#{pane_current_command}|#{pane_pid}"
 
 // noServer reports whether a tmux failure just means there is no server on
 // this socket yet, not a real error. A socket that already had a server but
@@ -155,12 +155,13 @@ func (s *Spawner) Panes(ctx context.Context) ([]runtime.Pane, error) {
 			continue
 		}
 		f := strings.Split(line, "|")
-		if len(f) < 5 {
+		if len(f) < 6 {
 			continue
 		}
 		st, _ := strconv.Atoi(f[2])
+		pid, _ := strconv.Atoi(f[5])
 		ps = append(ps, runtime.Pane{Session: f[0], Dead: f[1] == "1", DeadStatus: st,
-			Attached: f[3] != "0", Command: f[4]})
+			Attached: f[3] != "0", Command: f[4], Pid: pid})
 	}
 	return ps, nil
 }

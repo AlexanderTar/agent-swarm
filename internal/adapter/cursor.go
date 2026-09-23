@@ -119,7 +119,7 @@ func (c *Cursor) PromptPatterns() []PromptMatcher {
 		{Match: cursorContinue, Title: "Continue confirmation", Action: "y"},
 	}
 }
-func (c *Cursor) InterruptKeys() []string  { return []string{"C-c"} }
+func (c *Cursor) InterruptKeys() []string { return []string{"C-c"} }
 
 func (c *Cursor) HookOutput(event string, d HookDecision) ([]byte, error) {
 	if d.Block {
@@ -212,3 +212,7 @@ func (c *Cursor) SuperpowersInstalled() bool {
 func (c *Cursor) Wake(ctx context.Context, sess WakeTarget) (bool, error) {
 	return false, nil
 }
+
+// DiscoverSession is a no-op: the hook path (ParseHook) already populates
+// ProviderSessionID for this kind.
+func (c *Cursor) DiscoverSession(context.Context, int, string) (string, bool) { return "", false }

@@ -125,6 +125,57 @@ func TestMuseIdleAndBusy(t *testing.T) {
 	}
 }
 
+// TestMuseDiscoverSession pins the pid-match fallback (no hook surface):
+// fixture shape confirmed live 2026-09-23 against
+// ~/.local/share/muse/runtime/muse/sessions/<uuid>.json.
+func TestMuseDiscoverSession(t *testing.T) {
+	d := testDeps(t)
+	dir := filepath.Join(d.UserHome, ".local", "share", "muse", "runtime", "muse", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"schema_version":1,"session_id":"01a0cd08-3c06-7a12-a7dc-c56be5066bc8",` +
+		`"session_name":null,"endpoint_hint":"ms-7772700b22e7.sock",` +
+		`"workspace_label":"agent-swarm","target_eligibility":"message_capable",` +
+		`"process_generation_hint":"pid=96988"}`
+	if err := os.WriteFile(filepath.Join(dir, "01a0cd08.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := newMuse(d)
+	id, ok := a.DiscoverSession(context.Background(), 96988, "/some/workspace")
+	if !ok || id != "01a0cd08-3c06-7a12-a7dc-c56be5066bc8" {
+		t.Fatalf("DiscoverSession(96988) = %q, %v, want the matching session id", id, ok)
+	}
+	if _, ok := a.DiscoverSession(context.Background(), 1, "/some/workspace"); ok {
+		t.Error("DiscoverSession(1) matched no file, want false")
+	}
+}
+
+// A malformed registry file (a session mid-write) must be skipped, not
+// treated as an error that fails the whole scan.
+func TestMuseDiscoverSessionSkipsUnparsableFiles(t *testing.T) {
+	d := testDeps(t)
+	dir := filepath.Join(d.UserHome, ".local", "share", "muse", "runtime", "muse", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte(`{"session_id":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := newMuse(d).DiscoverSession(context.Background(), 96988, ""); ok {
+		t.Error("an unparsable fixture must not be reported as a match")
+	}
+}
+
+// No registry directory at all (called before muse ever writes one) is the
+// normal early-startup case, not an error.
+func TestMuseDiscoverSessionNoRegistryDir(t *testing.T) {
+	d := testDeps(t)
+	if _, ok := newMuse(d).DiscoverSession(context.Background(), 1, ""); ok {
+		t.Error("an absent registry dir must not be reported as a match")
+	}
+}
+
 // P0-4: `muse` is a launcher script that `exec`s the real binary
 // (muse-bin-<version>), so the pane command becomes the binary's name, seen
 // truncated to MAXCOMLEN on macOS (confirmed live 2026-09-23).

@@ -175,3 +175,40 @@ func (m *Muse) SuperpowersInstalled() bool {
 // history. Returning an error would read as "wake unsupported"; false reads as
 // "use the fallback", which is the cursor precedent.
 func (m *Muse) Wake(context.Context, WakeTarget) (bool, error) { return false, nil }
+
+// museSessionFile is one entry in muse's own live-session registry
+// (~/.local/share/muse/runtime/muse/sessions/<uuid>.json, confirmed live
+// 2026-09-23), one file per currently-running muse TUI process.
+type museSessionFile struct {
+	SessionID             string `json:"session_id"`
+	ProcessGenerationHint string `json:"process_generation_hint"`
+}
+
+// DiscoverSession recovers muse's own provider session id after launch: muse
+// has no hook surface (ParseHook is unreachable, see the package doc above),
+// so instead of a hook writing ProviderSessionID, the caller matches the live
+// tmux pane's OS pid against process_generation_hint ("pid=<pid>") in muse's
+// session registry. No match (empty dir, file not written yet, wrong pid) is
+// a normal, expected outcome -- e.g. called before muse has written its
+// registry file -- not an error, so it returns false rather than an error.
+func (m *Muse) DiscoverSession(ctx context.Context, pid int, workspaceRoot string) (string, bool) {
+	_ = ctx
+	_ = workspaceRoot // secondary sanity check only; pid is the primary, sufficient key
+	dir := filepath.Join(m.d.UserHome, ".local", "share", "muse", "runtime", "muse", "sessions")
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	want := fmt.Sprintf("pid=%d", pid)
+	for _, p := range matches {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var f museSessionFile
+		if err := json.Unmarshal(raw, &f); err != nil {
+			continue // a session mid-write is not a bug, just skip it
+		}
+		if f.ProcessGenerationHint == want && f.SessionID != "" {
+			return f.SessionID, true
+		}
+	}
+	return "", false
+}

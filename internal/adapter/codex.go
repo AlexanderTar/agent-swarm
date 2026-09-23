@@ -224,6 +224,10 @@ func (c *Codex) Wake(ctx context.Context, w WakeTarget) (bool, error) {
 	return true, nil
 }
 
+// DiscoverSession is a no-op: the hook path (ParseHook) already populates
+// ProviderSessionID for this kind.
+func (c *Codex) DiscoverSession(context.Context, int, string) (string, bool) { return "", false }
+
 // TrustFolder writes [projects."<realpath>"] trust_level = "trusted" into
 // ~/.codex/config.toml (§11.5). The edit is structured, so every other key
 // survives, and it is skipped when the entry already exists.

@@ -913,6 +913,69 @@ func TestStartupTransitionsToRunningWhenBusyWithoutEverGoingIdle(t *testing.T) {
 	}
 }
 
+// The muse gap this covers: a kind with no hook surface never gets
+// ProviderSessionID from ParseHook, so watchStartup must fall back to
+// ad.DiscoverSession keyed by the live pane's OS pid, once the session
+// reaches Running.
+func TestWatchStartupDiscoversProviderSessionIDForANoHookKind(t *testing.T) {
+	s, tm, fa := newStore(t)
+	tm.panes = []Pane{{Session: "muse-pid-test", Pid: 4242}}
+	fa.DiscoverSessionOK = true
+	fa.DiscoverSessionResult = "provider-sess-xyz"
+	_, a, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "muse-pid-test",
+		Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Running {
+		t.Fatalf("session state = %s, want running", ses.State)
+	}
+	if ses.ProviderSessionID != "provider-sess-xyz" {
+		t.Fatalf("ProviderSessionID = %q, want the id DiscoverSession returned", ses.ProviderSessionID)
+	}
+}
+
+// discoverProviderSession must never clobber a value a kind's normal hook
+// path already wrote -- it is a fallback for kinds that have nothing, not a
+// second writer racing the first.
+func TestDiscoverProviderSessionNeverOverwritesAnExistingValue(t *testing.T) {
+	s, tm, fa := newStore(t)
+	tm.panes = []Pane{{Session: "already-set-pid", Pid: 99}}
+	// DiscoverSessionOK starts false so the spawn itself (which also runs
+	// watchStartup -> discoverProviderSession) leaves ProviderSessionID
+	// empty; the row is populated below the way a hook actually would.
+	_, a, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "already-set-pid",
+		Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the hook path having already populated the value via the DB
+	// directly (not the in-memory struct, which stays empty) -- this is what
+	// actually exercises setProviderSessionID's own WHERE provider_session_id
+	// = '' guard, not just discoverProviderSession's early-return check.
+	if err := s.setProviderSessionID(context.Background(), ses.ID, "hook-set-id"); err != nil {
+		t.Fatal(err)
+	}
+	fa.DiscoverSessionOK = true
+	fa.DiscoverSessionResult = "should-not-be-used"
+	s.discoverProviderSession(context.Background(), a, ses, fa)
+	got, err := s.LatestSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProviderSessionID != "hook-set-id" {
+		t.Fatalf("ProviderSessionID = %q, want untouched hook-set-id", got.ProviderSessionID)
+	}
+}
+
 func TestSessionByToken(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -1828,4 +1891,3 @@ func TestOrchestratorRoleOverridesInheritedByWorkers(t *testing.T) {
 		t.Fatalf("tree[0] role override model = %q, want %q", tree[0].RoleOverrides[RoleCoder].Model, "gpt-6-astra")
 	}
 }
-
