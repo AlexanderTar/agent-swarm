@@ -153,12 +153,15 @@ func TestSyncRunsTheExactAgyInstallCommand(t *testing.T) {
 }
 
 // muse lists plugins as JSON records: a present superpowers means Sync must not
-// attempt any install command (marketplace install is unprobed for muse).
+// attempt any install command (marketplace install is probed and works — see
+// TestSyncInstallsMuseFreshWithNoPriorPluginsOrMarketplace below — but an
+// already-present plugin still must go through update, not install).
 func TestSyncDetectsMusePluginsFromListJSON(t *testing.T) {
 	c := fakeHome(t)
 	srv := marketplaceServer(t)
 	f := &execx.Fake{Responses: map[string]execx.Result{
-		"muse plugins list --json":         {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
+		"muse plugins list --json":              {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
+		"muse plugins marketplace list --json":  {Out: `{"marketplaces":[{"name":"superpowers-marketplace"}]}`},
 		"muse plugins update superpowers":       {Out: "updated"},
 		"muse plugins update elements-of-style": {Out: "updated"},
 	}}
@@ -172,10 +175,56 @@ func TestSyncDetectsMusePluginsFromListJSON(t *testing.T) {
 	if strings.Contains(calls, "muse plugins install") {
 		t.Errorf("present plugin must not be reinstalled; calls =\n%s", calls)
 	}
+	if strings.Contains(calls, "muse plugins marketplace add") {
+		t.Errorf("marketplace is already registered; add must be skipped; calls =\n%s", calls)
+	}
 	for _, r := range got {
 		if r.Kind == install.KindMuse && r.Err != nil {
 			t.Errorf("unexpected error: %+v", r)
 		}
+	}
+}
+
+// A fresh machine has no muse plugins and no muse marketplace: Sync must
+// register the marketplace once, then install (not update) each supported
+// plugin from it. Command forms probed live 2026-09-23: `marketplace add
+// <name> <git-url>` (the raw marketplace.json URL 404s on git clone; the
+// repo URL clones), then `install <plugin>@<marketplace>`.
+func TestSyncInstallsMuseFreshWithNoPriorPluginsOrMarketplace(t *testing.T) {
+	c := fakeHome(t)
+	srv := marketplaceServer(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"muse plugins list --json":             {Out: `{"plugins":[]}`},
+		"muse plugins marketplace list --json": {Out: `{"marketplaces":[]}`},
+		"muse plugins marketplace add superpowers-marketplace https://github.com/obra/superpowers-marketplace": {Out: `{"marketplace":{"name":"superpowers-marketplace"}}`},
+		"muse plugins install superpowers@superpowers-marketplace":                                             {Out: `{"installed":{"id":"superpowers"}}`},
+		"muse plugins install elements-of-style@superpowers-marketplace":                                       {Out: `{"installed":{"id":"elements-of-style"}}`},
+	}}
+	p := install.Plugins{Cfg: c, Run: f.Runner(), HTTP: srv.Client(), MarketplaceURL: srv.URL, Log: &bytes.Buffer{}}
+	got := p.Sync(context.Background(), []install.Kind{install.KindMuse})
+
+	calls := strings.Join(f.Calls(), "\n")
+	for _, want := range []string{
+		"muse plugins marketplace list --json",
+		"muse plugins marketplace add superpowers-marketplace https://github.com/obra/superpowers-marketplace",
+		"muse plugins install superpowers@superpowers-marketplace",
+		"muse plugins install elements-of-style@superpowers-marketplace",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("missing call %q; calls =\n%s", want, calls)
+		}
+	}
+	var installed int
+	for _, r := range got {
+		if r.Kind == install.KindMuse && r.Action == "install" {
+			if r.Err != nil {
+				t.Errorf("install of %s failed: %v", r.Plugin, r.Err)
+			}
+			installed++
+		}
+	}
+	if installed != 2 {
+		t.Errorf("installed = %d, want 2 (superpowers, elements-of-style): %+v", installed, got)
 	}
 }
 

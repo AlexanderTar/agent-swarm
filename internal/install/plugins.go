@@ -20,6 +20,13 @@ const MarketplaceURL = "https://raw.githubusercontent.com/obra/superpowers-marke
 // MarketplaceName is the name the per-agent install commands address it by.
 const MarketplaceName = "superpowers-marketplace"
 
+// githubMarketplaceURL is the git-clonable form of the marketplace. cursor's
+// and muse's `marketplace add` commands clone a git source directly (unlike
+// claude/codex, which take the "owner/repo" shorthand, or Sync's own fetch,
+// which needs the raw marketplace.json URL — probed 2026-09-23: a git clone
+// of that raw-file URL 404s, the repo URL clones fine).
+const githubMarketplaceURL = "https://github.com/obra/superpowers-marketplace"
+
 // pluginSupport is §12.4's matrix as of 2026-09-17. A plugin that is not listed is
 // installed for claude only (see the task rationale); superpowers-dev is never
 // installed, because it conflicts with superpowers.
@@ -277,11 +284,30 @@ func (p Plugins) addMarketplace(ctx context.Context, k Kind, have map[string]boo
 		_, err := p.run(ctx, "codex", "plugin", "marketplace", "add", "obra/superpowers-marketplace")
 		return PluginResult{Kind: k, Action: "marketplace", Err: err}, true
 	case KindCursor:
-		_, err := p.run(ctx, "cursor-agent", "plugin", "marketplace", "add",
-			"https://github.com/obra/superpowers-marketplace")
+		_, err := p.run(ctx, "cursor-agent", "plugin", "marketplace", "add", githubMarketplaceURL)
+		return PluginResult{Kind: k, Action: "marketplace", Err: err}, true
+	case KindMuse:
+		// Probed 2026-09-23: unlike claude/codex/cursor, a second `marketplace add`
+		// of the same name errors ("already configured") rather than no-opping, so
+		// presence must be checked first via `marketplace list --json`.
+		if out, err := p.run(ctx, "muse", "plugins", "marketplace", "list", "--json"); err == nil {
+			var f struct {
+				Marketplaces []struct {
+					Name string `json:"name"`
+				} `json:"marketplaces"`
+			}
+			if json.Unmarshal(out, &f) == nil {
+				for _, mp := range f.Marketplaces {
+					if mp.Name == MarketplaceName {
+						return PluginResult{}, false
+					}
+				}
+			}
+		}
+		_, err := p.run(ctx, "muse", "plugins", "marketplace", "add", MarketplaceName, githubMarketplaceURL)
 		return PluginResult{Kind: k, Action: "marketplace", Err: err}, true
 	}
-	return PluginResult{}, false // agy and muse have no marketplace step
+	return PluginResult{}, false // agy has no marketplace step
 }
 
 // apply installs or updates one plugin with the exact §12.4 command for that agent.
@@ -319,12 +345,12 @@ func (p Plugins) apply(ctx context.Context, k Kind, m MarketplacePlugin, action 
 			_, err := p.run(ctx, "muse", "plugins", "update", m.Name)
 			return err
 		}
-		// Install is unprobed: `install <plugin>@<marketplace>` exists in help
-		// but no marketplace is registered (`list --available` is empty) and the
-		// registration command form is unknown, so Phase-0 forbids inventing the
-		// call. Surface as a reported failure with the manual command instead of
-		// a silent success. Re-probe when muse documents marketplace registration.
-		return fmt.Errorf("muse: install %q with `muse plugins install <path>` (e.g. your superpowers checkout); marketplace install is unprobed", m.Name)
+		// Probed 2026-09-23 (live run, see plugins_test.go): addMarketplace (above)
+		// registers githubMarketplaceURL as MarketplaceName once per Sync, before
+		// this loop runs; this then installs from that registered snapshot, the
+		// same ref-construction pattern as KindCodex.
+		_, err := p.run(ctx, "muse", "plugins", "install", m.Name+"@"+MarketplaceName)
+		return err
 	}
 	return nil
 }
