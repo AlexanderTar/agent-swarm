@@ -6,9 +6,13 @@ import { flattenAgents } from "./agentActions";
 import { advisorPayload, choicePayload } from "./catalog";
 import { kebab } from "./kebab";
 
+// Every role, orchestrator included, now shares one admission pool
+// (docs/specs/2026-09-24-unify-agent-limits.md), so whether starting a NEW
+// orchestrator would queue depends on every live/queued agent in the tree,
+// not just existing orchestrators.
 export function orchestratorsBusy(agents: AgentNode[], settings: Settings): boolean {
-  const live = flattenAgents(agents).filter((a) => a.role === "orchestrator" && (a.state === "queued" || a.state === "active"));
-  return live.length >= settings.max_orchestrators;
+  const live = flattenAgents(agents).filter((a) => a.state === "queued" || a.state === "active");
+  return live.length >= settings.max_concurrent_agents;
 }
 
 export const submitLabel = (busy: boolean) => (busy ? C.queueOrchestrator : C.startOrchestrator);

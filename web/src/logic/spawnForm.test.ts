@@ -10,9 +10,11 @@ const fields = { choice: { agent: "claude" as const, model: "opus", effort: "" }
 
 describe("spawn form rules (§16.3, §16.10)", () => {
   it("detects the orchestrator limit", () => {
+    // fixture: 6 live agents (4 orchestrators + 2 active children of
+    // auth-epic-orchestrator) share one pool now (unify-agent-limits).
     expect(orchestratorsBusy(db.agents, db.settings)).toBe(true);
-    expect(orchestratorsBusy(db.agents, { ...db.settings, max_orchestrators: 8 })).toBe(false);
-    expect(orchestratorsBusy([makeAgent({ role: "orchestrator", state: "finished" })], { ...db.settings, max_orchestrators: 1 })).toBe(false);
+    expect(orchestratorsBusy(db.agents, { ...db.settings, max_concurrent_agents: 8 })).toBe(false);
+    expect(orchestratorsBusy([makeAgent({ role: "orchestrator", state: "finished" })], { ...db.settings, max_concurrent_agents: 1 })).toBe(false);
     expect(submitLabel(true)).toBe("Queue orchestrator");
     expect(submitLabel(false)).toBe("Start orchestrator");
   });

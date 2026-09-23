@@ -227,8 +227,10 @@ export interface Settings {
   // menubar app is the only editor); see the spec's "Web UI" section.
   fallback_default: RoleDefault;
   notifications: Record<string, { center: boolean; sound: boolean }>;
-  max_orchestrators: number;
-  max_agents: number;
+  // Single global admission ceiling shared by every role, orchestrator
+  // included (docs/specs/2026-09-24-unify-agent-limits.md; replaces the old,
+  // separately-counted max_orchestrators/max_agents pair).
+  max_concurrent_agents: number;
   max_agents_per_root: number;
   scan_excludes: string[];
   scan_interval_sec: number;

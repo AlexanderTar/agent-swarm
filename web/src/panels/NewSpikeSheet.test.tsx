@@ -26,7 +26,7 @@ describe("NewSpikeSheet (§16.3, I15)", () => {
 
   it("creates the spike with intent, repos, request and agent choice", async () => {
     const d = createMockDaemon();
-    d.db.settings.max_orchestrators = 8;
+    d.db.settings.max_concurrent_agents = 8;
     const onCreated = vi.fn();
     const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={onCreated} />, { daemon: d, events: false });
     const sheet = await screen.findByRole("dialog", { name: "New spike" });
@@ -47,7 +47,7 @@ describe("NewSpikeSheet (§16.3, I15)", () => {
     // Same repro as SpawnSheet: claude-haiku-4-5-20251001 has efforts: [], so a stored "high" is
     // stale. The Effort control is correctly hidden, but the submit must not still carry it.
     const d = createMockDaemon();
-    d.db.settings.max_orchestrators = 8;
+    d.db.settings.max_concurrent_agents = 8;
     d.db.settings.roles.orchestrator = { agent: "claude", model: "haiku", effort: "high" };
     const onCreated = vi.fn();
     const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={onCreated} />, { daemon: d, events: false });

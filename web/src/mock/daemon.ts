@@ -248,8 +248,10 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
   }
 
   function newAgent(name: string, body: Body, it: Item): AgentNode {
-    const running = allAgents(db.agents).filter((a) => a.role === "orchestrator" && (a.state === "queued" || a.state === "active")).length;
-    const queued = running >= db.settings.max_orchestrators;
+    // Every role shares one admission pool now (unify-agent-limits), so a new
+    // orchestrator queues against the same count every other spawn does.
+    const running = allAgents(db.agents).filter((a) => a.state === "queued" || a.state === "active").length;
+    const queued = running >= db.settings.max_concurrent_agents;
     const node: AgentNode = {
       id: `agt_${++counter}`, name, kind: body.agent, model: body.model, effort: body.effort ?? null, role: "orchestrator",
       item_key: it.key, item_title: it.title, root_key: it.root_key, parent_name: null, advisor: null,

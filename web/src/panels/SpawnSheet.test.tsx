@@ -6,7 +6,7 @@ import { SpawnSheet } from "./SpawnSheet";
 
 const roomy = () => {
   const d = createMockDaemon();
-  d.db.settings.max_orchestrators = 8;
+  d.db.settings.max_concurrent_agents = 8;
   return d;
 };
 

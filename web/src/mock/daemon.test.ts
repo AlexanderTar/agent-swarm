@@ -196,10 +196,10 @@ describe("mock daemon", () => {
     expect(call(d, "POST", "/api/spikes", { request_id: "s2", name: "Auth epic orchestrator", intent: "feature", agent: "claude", model: "opus" })).toMatchObject({
       status: 409, body: { error: { message: "This agent name is already in use." } },
     });
-    d.db.settings.max_orchestrators = 8;
+    d.db.settings.max_concurrent_agents = 8;
     const s = call(d, "POST", "/api/spikes", { request_id: "s3", name: "Offline sync", intent: "debug", agent: "claude", model: "opus" });
     expect(s.body).toMatchObject({ item: { type: "spike", status: "draft", spike_intent: "debug" }, agent: { name: "offline-sync", state: "active" }, queued: false });
-    d.db.settings.max_orchestrators = 1;
+    d.db.settings.max_concurrent_agents = 1;
     const q = call(d, "POST", "/api/spikes", { request_id: "s4", name: "Another spike", intent: "feature", agent: "claude", model: "opus" });
     expect(q.body).toMatchObject({ agent: { state: "queued", session: null }, queued: true });
   });
