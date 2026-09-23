@@ -251,6 +251,13 @@ func (s *Service) markRemoved(ctx context.Context, wt Worktree) (Worktree, error
 // DetachedSHA is guaranteed hex by shaPattern, HasPrefix here means "HEAD is
 // the commit that abbreviation named" -- the same resolution git itself did
 // at `worktree add --detach`.
+//
+// wt.DetachedSHA is never empty when this runs: remove()'s caller only takes
+// this branch when wt.Branch == "", and Create requires a non-empty Branch
+// while Review validates sha against shaPattern (non-empty) before
+// constructing the row -- so "both empty" (which would make HasPrefix(head,
+// "") trivially true and skip this check entirely) cannot occur by
+// construction. Confirmed empirically too: zero live rows have both NULL.
 func (s *Service) atDetachedSHA(ctx context.Context, wt Worktree) bool {
 	head, err := s.git(ctx, wt.Path, "rev-parse", "HEAD")
 	return err == nil && strings.HasPrefix(strings.TrimSpace(string(head)), wt.DetachedSHA)

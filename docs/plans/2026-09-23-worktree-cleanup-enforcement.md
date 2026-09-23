@@ -241,7 +241,7 @@ Tests, new file `internal/hook/worktreeguard_test.go`, modeled on
 - G5 also needs a `Handler{WorktreesDir: ""}` case to prove existing literals
   (empty by default) keep compiling and keep allowing.
 
-Run: `go test ./internal/hook/... -run 'WorktreeGuard' -v`
+Run: `go test ./internal/hook/... -run 'BlocksWorktreeMutation|WorktreeGuard' -v`
 
 ### 5. `cmd/swarm/daemon.go` — wiring (§4.6)
 
@@ -276,7 +276,7 @@ cd ../agent-swarm--worktree-cleanup-enforcement
 go build ./...
 go test ./internal/worktree/... -run 'Reclaim|Retain|Remove|Sweep' -v
 go test ./internal/runtime/... -run 'Reclaim' -v
-go test ./internal/hook/... -run 'WorktreeGuard' -v
+go test ./internal/hook/... -run 'BlocksWorktreeMutation|WorktreeGuard' -v
 go test ./internal/worktree/... ./internal/runtime/... ./internal/hook/... ./cmd/...
 go vet ./...
 go test ./...
