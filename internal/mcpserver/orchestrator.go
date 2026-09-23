@@ -12,13 +12,14 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
 var orchestratorRole = []runtime.Role{runtime.RoleOrchestrator}
 
 func orchestratorTools(s *Server) []ToolDef {
-	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s)}
+	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s)}
 }
 
 // §17.3 copy owned by this file.
@@ -634,6 +635,64 @@ func controlTool(s *Server) ToolDef {
 				return nil, fmt.Errorf("action must be pause, resume, cancel or retry, got %q", in.Action)
 			}
 			return map[string]any{"state": state}, nil
+		},
+	}
+}
+
+// ---------- swarm_role_overrides ----------
+
+// roleOverridesTool is docs/specs/2026-09-23-orchestrator-role-overrides.md's
+// write path onto an orchestrator's own agents.role_overrides (previously
+// settable only once, at creation, via the roles/Roles param CLI/HTTP
+// creation already had -- see runtime.agents.go:706-755, which resolves a
+// spawned child's agent/model/effort from the parent's own RoleOverrides
+// before ever falling back to the live global Settings). Deliberately
+// self-scoped: unlike swarm_worktree/swarm_control, there is no
+// target-agent/agent-id parameter here at all -- name is always resolved
+// from the caller's own MCP session, so there is no way to reach another
+// agent's row through this tool.
+func roleOverridesTool(s *Server) ToolDef {
+	return ToolDef{
+		Name: "swarm_role_overrides",
+		Description: "Set or clear your OWN future role->agent/model/effort default (checked before the live global Settings when you spawn). " +
+			"Self only -- there is no target-agent parameter. set requires role, agent and model (effort optional); clear requires role.",
+		Roles: orchestratorRole,
+		Schema: objSchema(`"op":{"type":"string","enum":["set","clear"]},
+			"role":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"effort":{"type":"string"},
+			"request_id":{"type":"string"}`),
+		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
+			var in struct {
+				Op        string `json:"op"`
+				Role      string `json:"role"`
+				Agent     string `json:"agent"`
+				Model     string `json:"model"`
+				Effort    string `json:"effort"`
+				RequestID string `json:"request_id"`
+			}
+			if err := decode(args, &in); err != nil {
+				return nil, err
+			}
+			a, err := callerAgent(ctx, s, c)
+			if err != nil {
+				return nil, err
+			}
+			var rd *settings.RoleDefault
+			switch in.Op {
+			case "set":
+				if in.Agent == "" || in.Model == "" {
+					return nil, errors.New("bad_request: agent and model are required to set a role override")
+				}
+				rd = &settings.RoleDefault{Agent: runtime.AgentKind(in.Agent), Model: in.Model, Effort: in.Effort}
+			case "clear":
+				rd = nil
+			default:
+				return nil, fmt.Errorf("op must be set or clear, got %q", in.Op)
+			}
+			out, err := s.RT.SetRoleOverride(ctx, a.Name, runtime.Role(in.Role), rd, c.SessionID, in.RequestID)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"role_overrides": roleOverridesOut(out.RoleOverrides)}, nil
 		},
 	}
 }
