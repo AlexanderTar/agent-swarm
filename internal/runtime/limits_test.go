@@ -518,6 +518,59 @@ func TestAdmitIgnoresZombiesForOrchestratorLimit(t *testing.T) {
 	}
 }
 
+// TestNoAckChildren is a direct test of Store.NoAckChildren, the same level
+// every other slot/zombie exclusion in this file is tested at (see
+// TestAdmitIgnoresZombiesWhenCountingSlots above). A child whose latest
+// session is 'crashed' is already excluded from the slot count by
+// NotAZombieSlot -- NoAckChildren, built on the same exclusion, must not
+// report it either: "swarm_control cancel if genuinely stuck" is nonsense
+// advice for a session with no live process left to cancel.
+func TestNoAckChildren(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 3, 8, 8)
+	seedEpicWithTwoTasks(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "one"}, ParentAgentID: orch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashed, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "two"}, ParentAgentID: orch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE agent_id = ?`, crashed.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Neither child has checkpointed yet, but ackTimeout hasn't elapsed --
+	// nothing must be reported.
+	names, err := s.NoAckChildren(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("within the ack grace period, want no names, got %v", names)
+	}
+
+	tm.clk.Advance(3 * time.Minute) // past ackTimeout (2 minutes)
+
+	names, err = s.NoAckChildren(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != stuck.Name {
+		t.Fatalf("want only %q (the still-running, never-checkpointed child): got %v -- "+
+			"the crashed child must be excluded, same as NotAZombieSlot already excludes it from the slot count", stuck.Name, names)
+	}
+}
+
 // TestAdmitConcurrentSpawnsNeverExceedLimit verifies that concurrent spawns hitting
 // the limit never over-admit agents due to a TOCTOU race.
 func TestAdmitConcurrentSpawnsNeverExceedLimit(t *testing.T) {

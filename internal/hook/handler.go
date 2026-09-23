@@ -486,10 +486,10 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 				// this addresses.
 				noAck, err := h.RT.NoAckChildren(ctx, s.AgentID)
 				if err != nil {
-					return adapter.HookDecision{}, err
-				}
-				if len(noAck) > 0 {
-					reason += fmt.Sprintf(" %d slot(s) among those show no checkpoint since spawn (past the ack timeout): %s. swarm_read them; swarm_control cancel if genuinely stuck.",
+					// informational only -- never let this suppress the budget block
+					h.logf("hook: no-ack children lookup failed for %s: %v", s.AgentID, err)
+				} else if len(noAck) > 0 {
+					reason += fmt.Sprintf(" %d slot(s) among those show no checkpoint since its session started (past the ack timeout): %s. swarm_read them; swarm_control cancel if genuinely stuck.",
 						len(noAck), strings.Join(noAck, ", "))
 				}
 				return adapter.HookDecision{
