@@ -169,7 +169,7 @@ final class CatalogRulesTests: XCTestCase {
         XCTAssertEqual(notEnabled.agent, "Choose an agent.")
         XCTAssertEqual(R.validate(AgentChoice(agent: .agy, model: "x"), advisor: .none, catalog: catalog, enabled: [.agy], role: .coder).agent,
                        "Antigravity isn't installed on this Mac.")
-        XCTAssertEqual(["claude", "codex login", "agy", "cursor-agent login"], AgentKind.selectable.map(Copy.loginCommand))
+        XCTAssertEqual(["claude", "codex login", "agy", "cursor-agent login", "muse login"], AgentKind.selectable.map(Copy.loginCommand))
     }
 
     func testGoneModelOnTheSettingsGrid() {
