@@ -42,6 +42,30 @@ func TestMuseLaunchArgv(t *testing.T) {
 	}
 }
 
+// Instructions ride the workspace AGENTS.md (cursor pattern): only when the
+// operator configured custom instructions; empty means no file is touched.
+func TestMuseLaunchWritesInstructionsToWorkspaceAgentsMd(t *testing.T) {
+	d := testDeps(t)
+	s := museSpec(t)
+	s.Instructions = "Obey the fleet."
+	l, err := newMuse(d).Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = l
+	raw, err := os.ReadFile(filepath.Join(s.Cwd, "AGENTS.md"))
+	if err != nil || string(raw) != "Obey the fleet." {
+		t.Errorf("AGENTS.md = %q, %v", raw, err)
+	}
+	s2 := museSpec(t)
+	if _, err := newMuse(d).Launch(s2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(s2.Cwd, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Error("empty instructions must not touch the workspace")
+	}
+}
+
 func TestMuseLaunchDefaultsEmptyEffort(t *testing.T) {
 	d := testDeps(t)
 	s := museSpec(t)
