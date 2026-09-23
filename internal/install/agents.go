@@ -105,6 +105,8 @@ func Agents(ctx context.Context, o AgentsOpts) error {
 			changed, err = WriteCursor(o.Cfg)
 		case KindAgy:
 			changed, err = WriteAgy(ctx, o.Cfg, o.Run)
+		case KindMuse:
+			changed, err = WriteMuse(ctx, o.Cfg, o.Run)
 		}
 		if err != nil {
 			return fmt.Errorf("configuring %s: %w", k.Display(), err)
