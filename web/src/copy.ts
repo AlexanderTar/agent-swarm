@@ -25,10 +25,10 @@ export const ROLE_LABEL: Record<Role | "advisor", string> = {
   mechanical: "Mechanical",
 };
 
-export const AGENT_LABEL: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor", fake: "Fake" };
+export const AGENT_LABEL: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor", muse: "Muse", fake: "Fake" };
 // README §19 troubleshooting: how each agent signs in.
 export const AGENT_LOGIN_CMD: Record<AgentKind, string> = {
-  claude: "claude", codex: "codex login", agy: "agy", cursor: "cursor-agent login", fake: "true",
+  claude: "claude", codex: "codex login", agy: "agy", cursor: "cursor-agent login", muse: "muse login", fake: "true",
 };
 
 export const SESSION_LABEL: Record<SessionState | "queued" | "waiting" | "stale" | "preflight_failed", string> = {
