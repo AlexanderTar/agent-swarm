@@ -178,6 +178,8 @@ struct LimitsTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            LimitField(model: model, title: Copy.maxAgents, limit: .agents)
+            Text(Copy.agentsLimitCaption).font(.caption).foregroundStyle(.secondary)
             LimitField(model: model, title: Copy.maxSubagents, limit: .subagents)
             Text(Copy.subagentsLimitCaption).font(.caption).foregroundStyle(.secondary)
             if let notice = model.limitNotice {

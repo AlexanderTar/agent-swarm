@@ -121,7 +121,7 @@ final class FixtureTests: XCTestCase {
         XCTAssertEqual(d[.orchestrator], RoleDefault(agent: .claude, model: "opus"))
         XCTAssertEqual(d[.advisor], RoleDefault(agent: .claude, model: "fable"))
         XCTAssertEqual(d[.mechanical]?.model, "haiku")
-        XCTAssertEqual([d.maxOrchestrators, d.maxAgents, d.maxAgentsPerRoot, d.usagePollSec, d.pauseDeadlineSec], [3, 8, 4, 300, 120])
+        XCTAssertEqual([d.maxConcurrentAgents, d.maxAgentsPerRoot, d.usagePollSec, d.pauseDeadlineSec], [4, 4, 300, 120])
         XCTAssertEqual(d.pref(.info), NotifyPref(center: true, sound: true))
         var s = d
         s[.coder] = RoleDefault(agent: .codex, model: "gpt-6-astra")

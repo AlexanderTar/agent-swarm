@@ -36,18 +36,24 @@ type Settings struct {
 	// configured agent when that agent is confirmed out of usage (see
 	// docs/specs/2026-09-19-usage-fallback-agent.md). Validated and
 	// reassigned on a disabled agent the same way a role default is.
-	FallbackDefault  RoleDefault           `json:"fallback_default"`
-	Notifications    map[string]NotifyPref `json:"notifications"`
-	MaxOrchestrators int                   `json:"max_orchestrators"`
-	MaxAgents        int                   `json:"max_agents"`
-	MaxAgentsPerRoot       int                   `json:"max_agents_per_root"`
-	MaxConcurrentSubagents int                   `json:"max_concurrent_subagents"`
-	ScanExcludes           []string              `json:"scan_excludes"`
-	ScanIntervalSec        int                   `json:"scan_interval_sec"`
-	MenubarCompact         bool                  `json:"menubar_compact"`
-	UsagePollSec           int                   `json:"usage_poll_sec"`
-	PauseDeadlineSec       int                   `json:"pause_deadline_sec"`
-	Instructions           string                `json:"instructions"`
+	FallbackDefault RoleDefault           `json:"fallback_default"`
+	Notifications   map[string]NotifyPref `json:"notifications"`
+	// MaxConcurrentAgents is the single global admission ceiling shared by
+	// every role, orchestrator included (2026-09-24 unify-agent-limits:
+	// replaces the old, separately-counted MaxOrchestrators/MaxAgents
+	// pair). A new key rather than a reused one, deliberately: a live
+	// max_agents row's old non-orchestrator-only value would otherwise be
+	// silently reinterpreted under the new, broader semantics the moment
+	// this ships. See docs/specs/2026-09-24-unify-agent-limits.md.
+	MaxConcurrentAgents    int      `json:"max_concurrent_agents"`
+	MaxAgentsPerRoot       int      `json:"max_agents_per_root"`
+	MaxConcurrentSubagents int      `json:"max_concurrent_subagents"`
+	ScanExcludes           []string `json:"scan_excludes"`
+	ScanIntervalSec        int      `json:"scan_interval_sec"`
+	MenubarCompact         bool     `json:"menubar_compact"`
+	UsagePollSec           int      `json:"usage_poll_sec"`
+	PauseDeadlineSec       int      `json:"pause_deadline_sec"`
+	Instructions           string   `json:"instructions"`
 }
 
 // roleDefaults is §2.1 A3; "default" effort is "".
@@ -76,8 +82,7 @@ func Defaults(installed []kinds.AgentKind) Settings {
 		Roles:                  maps.Clone(roleDefaults),
 		FallbackDefault:        RoleDefault{Agent: kinds.Claude, Model: "sonnet"},
 		Notifications:          map[string]NotifyPref{"info": on, "attention": on, "action": on},
-		MaxOrchestrators:       3,
-		MaxAgents:              8,
+		MaxConcurrentAgents:    4,
 		MaxAgentsPerRoot:       4,
 		MaxConcurrentSubagents: 3,
 		ScanExcludes:           []string{"~/Library", "~/.Trash", "~/Downloads", "~/Music", "~/Pictures", "~/Movies"},
@@ -325,9 +330,7 @@ func (s *Store) validate(ctx context.Context, prev, next Settings) error {
 		return err
 	}
 	switch {
-	case next.MaxOrchestrators < 1 || next.MaxOrchestrators > 8:
-		return invalid("Maximum concurrent orchestrators must be between 1 and 8.")
-	case next.MaxAgents < 1 || next.MaxAgents > 32:
+	case next.MaxConcurrentAgents < 1 || next.MaxConcurrentAgents > 32:
 		return invalid("Maximum concurrent agents must be between 1 and 32.")
 	case next.MaxAgentsPerRoot < 1 || next.MaxAgentsPerRoot > 16:
 		return invalid("Maximum concurrent agents per item must be between 1 and 16.")

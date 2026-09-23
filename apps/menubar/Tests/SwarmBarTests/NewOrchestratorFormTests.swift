@@ -14,7 +14,7 @@ final class NewOrchestratorFormTests: XCTestCase {
 
     private func form(connected: Bool = true, max: Int? = nil, agents: [AgentNode]? = nil) async -> NewOrchestratorForm {
         var settings = state.settings
-        if let max { settings.maxOrchestrators = max }
+        if let max { settings.maxConcurrentAgents = max }
         let f = NewOrchestratorForm(client: client, settings: settings, agents: agents ?? state.agents, connected: connected,
                                     format: Format(now: fixtureNow))
         await f.load()
@@ -209,7 +209,9 @@ final class NewOrchestratorFormTests: XCTestCase {
         let free = await form(max: 8, agents: [state.agents[0]])
         XCTAssertEqual(free.startLabel, "Start orchestrator")
         XCTAssertNil(free.queuedCaption)
-        XCTAssertFalse(NewOrchestratorForm.wouldQueue([state.agents[0]], max: 2))
+        // state.agents[0] (an orchestrator) carries 2 active children in the fixture --
+        // 3 live agents total once the unified pool counts every role, not just orchestrators.
+        XCTAssertFalse(NewOrchestratorForm.wouldQueue([state.agents[0]], max: 4))
         XCTAssertTrue(NewOrchestratorForm.wouldQueue([state.agents[0]], max: 1))
         XCTAssertFalse(NewOrchestratorForm.wouldQueue([], max: 1))
 

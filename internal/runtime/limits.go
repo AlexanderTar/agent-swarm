@@ -51,7 +51,7 @@ import (
 // correct and strictly narrower than attempt-scoping was.
 //
 // Exported so every count of "agents currently occupying a concurrency slot"
-// applies the same exclusion -- Admit's three counts here, and the
+// applies the same exclusion -- Admit's two counts here, and the
 // max_concurrent_subagents count in internal/hook/handler.go. Both call
 // sites compose it into a query whose outer table is `agents` -- required,
 // since the SQL fragment references `agents.id`/`agents.item_id` unqualified
@@ -106,9 +106,12 @@ func (s *Store) NoAckChildren(ctx context.Context, parentAgentID string) ([]stri
 }
 
 // Admit reports whether a new agent of this role may start now (A2, I20).
-// Orchestrators count only against max_orchestrators; every other role counts
-// against max_agents and max_agents_per_root. A queued agent holds its slot, so
-// the FIFO order the drain uses stays stable.
+// Every role, orchestrator included, counts against one shared
+// max_concurrent_agents pool (2026-09-24 unify-agent-limits: replaces the old
+// max_orchestrators/max_agents split). Non-orchestrator roles additionally
+// check max_agents_per_root for per-epic fairness; orchestrators never did and
+// still don't. A queued agent holds its slot, so the FIFO order the drain
+// uses stays stable.
 func (s *Store) Admit(ctx context.Context, tx *sql.Tx, role Role, rootItemID string) (bool, error) {
 	cfg, err := s.Settings.Get(ctx)
 	if err != nil {
@@ -118,18 +121,15 @@ func (s *Store) Admit(ctx context.Context, tx *sql.Tx, role Role, rootItemID str
 		var n int
 		return n, tx.QueryRowContext(ctx, query, args...).Scan(&n)
 	}
-	if role == RoleOrchestrator {
-		n, err := count(`SELECT COUNT(*) FROM agents WHERE role = 'orchestrator'
-			AND state = 'active' AND ` + NotAZombieSlot)
-		return n < cfg.MaxOrchestrators, err
-	}
-	global, err := count(`SELECT COUNT(*) FROM agents WHERE role <> 'orchestrator'
-		AND state = 'active' AND ` + NotAZombieSlot)
+	global, err := count(`SELECT COUNT(*) FROM agents WHERE state = 'active' AND ` + NotAZombieSlot)
 	if err != nil {
 		return false, err
 	}
-	if global >= cfg.MaxAgents {
+	if global >= cfg.MaxConcurrentAgents {
 		return false, nil
+	}
+	if role == RoleOrchestrator {
+		return true, nil
 	}
 	perRoot, err := count(`SELECT COUNT(*) FROM agents WHERE role <> 'orchestrator'
 		AND root_item_id = ? AND state = 'active' AND `+NotAZombieSlot, rootItemID)

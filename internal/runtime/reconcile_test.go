@@ -833,7 +833,7 @@ func TestSweepRunsOnlyWhenTheWholeTreeIsFinished(t *testing.T) {
 func TestReconcileDrainsTheQueue(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 1, 4)
+	setLimits(t, s, 1, 4)
 	seedEpicWithTwoTasks(t, s)
 	first, _, _ := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -1263,7 +1263,7 @@ func TestUndeliveredMessageRelaysToSenderOnceAfterGracePeriod(t *testing.T) {
 func TestUndeliveredMessageFallsBackToTheSendersParentWhenTheSenderIsAlsoDead(t *testing.T) {
 	s, tm, at := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 5, 5, 5)
+	setLimits(t, s, 5, 5)
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -1321,7 +1321,7 @@ func TestUndeliveredMessageFallsBackToTheSendersParentWhenTheSenderIsAlsoDead(t 
 func TestUndeliveredMessageWithNoLiveSenderAndNoParentNeverFires(t *testing.T) {
 	s, _, at := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 5, 5, 5)
+	setLimits(t, s, 5, 5)
 	seedEpicWithTwoTasks(t, s)
 	sender, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
 		Brief: BriefInput{Objective: "one"}})
@@ -1482,7 +1482,7 @@ func TestUndeliveredMessagesCutoffBoundaryIsInclusive(t *testing.T) {
 func TestUndeliveredMessageEscalatesPastADeadParentToTheNearestLiveAncestor(t *testing.T) {
 	s, tm, at := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 5, 5, 5)
+	setLimits(t, s, 5, 5)
 	seedEpicWithTwoTasks(t, s)
 	root, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {

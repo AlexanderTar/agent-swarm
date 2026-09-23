@@ -240,9 +240,15 @@ final class SettingsModelTests: XCTestCase {
 
     func testLimitsTab() async {
         let m = await model()
-        XCTAssertEqual([m.value(.subagents), m.value(.pauseDeadline)], [3, 120])
+        XCTAssertEqual([m.value(.agents), m.value(.subagents), m.value(.pauseDeadline)], [4, 3, 120])
         // fixture: 2 live subagents login-form-coder, login-review under auth-epic-orchestrator
         XCTAssertEqual(m.overLimit(.subagents, 1), 1)
+        // 3 live agents of any role across the whole tree: auth-epic-orchestrator,
+        // login-form-coder and login-review (running/waiting). Excluded: the
+        // finished session-coder, the queued billing-spike-orchestrator, the
+        // paused crash-debug-orchestrator, the crashed docs-fix-coder, and
+        // search-spike-orchestrator (no session in the fixture -> reads as queued).
+        XCTAssertEqual(m.overLimit(.agents, 2), 1)
         XCTAssertEqual(m.overLimit(.pauseDeadline, 30), 0)
 
         await m.setLimit(.subagents, 1)
@@ -260,8 +266,8 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(m.settings.pauseDeadlineSec, 30)
         await m.setLimit(.subagents, 16)
         XCTAssertEqual(saves, 3)
-        XCTAssertEqual([SettingsModel.Limit.subagents, .pauseDeadline].map(\.range),
-                       [1...16, 30...600])
+        XCTAssertEqual([SettingsModel.Limit.agents, .subagents, .pauseDeadline].map(\.range),
+                       [1...32, 1...16, 30...600])
     }
 
     func testDiscoveryAndCompact() async {
@@ -290,8 +296,8 @@ final class SettingsModelTests: XCTestCase {
     /// updated settings like every other single-field setter.
     func testInstructionsDecodesAndSaves() async throws {
         let withInstructions = try SwarmJSON.decode(Settings.self, from: Data("""
-        {"enabled_agents":["claude"],"roles":{},"notifications":{},"max_orchestrators":3,
-         "max_agents":8,"max_agents_per_root":4,"scan_excludes":[],"scan_interval_sec":21600,
+        {"enabled_agents":["claude"],"roles":{},"notifications":{},
+         "max_concurrent_agents":4,"max_agents_per_root":4,"scan_excludes":[],"scan_interval_sec":21600,
          "menubar_compact":false,"usage_poll_sec":300,"pause_deadline_sec":120,
          "instructions":"# Team rules\\nStandard library first."}
         """.utf8))

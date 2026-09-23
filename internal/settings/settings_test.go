@@ -82,7 +82,7 @@ func TestDefaults(t *testing.T) {
 			t.Errorf("notifications[%s] = %+v", lvl, d.Notifications[lvl])
 		}
 	}
-	if d.MaxOrchestrators != 3 || d.MaxAgents != 8 || d.MaxAgentsPerRoot != 4 || d.ScanIntervalSec != 21600 ||
+	if d.MaxConcurrentAgents != 4 || d.MaxAgentsPerRoot != 4 || d.ScanIntervalSec != 21600 ||
 		d.UsagePollSec != 300 || d.PauseDeadlineSec != 120 || d.MenubarCompact ||
 		!slices.Equal(d.ScanExcludes, []string{"~/Library", "~/.Trash", "~/Downloads", "~/Music", "~/Pictures", "~/Movies"}) {
 		t.Errorf("defaults = %+v", d)
@@ -98,7 +98,7 @@ func TestGetPutRoundTrip(t *testing.T) {
 	if err != nil || !slices.Equal(got.EnabledAgents, []kinds.AgentKind{kinds.Claude, kinds.Codex}) {
 		t.Fatalf("Get = %+v, %v", got, err)
 	}
-	got.MaxAgents = 12
+	got.MaxConcurrentAgents = 12
 	got.Roles[kinds.RoleCoder] = RoleDefault{kinds.Codex, "gpt-6-astra", "high"}
 	got.Roles[kinds.RoleAdvisor] = RoleDefault{Model: NoAdvisor}
 	got.ScanExcludes = []string{"~/Downloads", "~/Movies"}
@@ -107,7 +107,7 @@ func TestGetPutRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	again, _ := s.Get(ctx)
-	if again.MaxAgents != 12 || again.Roles[kinds.RoleCoder] != saved.Roles[kinds.RoleCoder] ||
+	if again.MaxConcurrentAgents != 12 || again.Roles[kinds.RoleCoder] != saved.Roles[kinds.RoleCoder] ||
 		again.Roles[kinds.RoleAdvisor].Model != NoAdvisor || !slices.Equal(again.ScanExcludes, []string{"~/Downloads", "~/Movies"}) {
 		t.Fatalf("after put = %+v", again)
 	}
@@ -116,9 +116,9 @@ func TestGetPutRoundTrip(t *testing.T) {
 		t.Fatalf("events = %+v", evs)
 	}
 	// a partial table still yields defaults for the rest
-	s.DB.Exec(`DELETE FROM settings WHERE key <> 'max_agents'`)
+	s.DB.Exec(`DELETE FROM settings WHERE key <> 'max_concurrent_agents'`)
 	partial, _ := s.Get(ctx)
-	if partial.MaxAgents != 12 || partial.MaxOrchestrators != 3 || partial.Roles[kinds.RoleCoder].Agent != kinds.Claude {
+	if partial.MaxConcurrentAgents != 12 || partial.MaxAgentsPerRoot != 4 || partial.Roles[kinds.RoleCoder].Agent != kinds.Claude {
 		t.Fatalf("partial = %+v", partial)
 	}
 }
@@ -151,9 +151,8 @@ func TestPutValidation(t *testing.T) {
 		{func(c *Settings) { c.FallbackDefault = RoleDefault{kinds.Agy, "gemini", ""} }, "agy isn't enabled. Choose an enabled agent."},
 		{func(c *Settings) { c.FallbackDefault = RoleDefault{kinds.Claude, "claude-9", ""} }, "Choose a model available for this agent."},
 		{func(c *Settings) { c.FallbackDefault = RoleDefault{kinds.Claude, "sonnet", "ultra"} }, "ultra isn't available for Claude Sonnet 5."},
-		{func(c *Settings) { c.MaxOrchestrators = 9 }, "Maximum concurrent orchestrators must be between 1 and 8."},
-		{func(c *Settings) { c.MaxOrchestrators = 0 }, "Maximum concurrent orchestrators must be between 1 and 8."},
-		{func(c *Settings) { c.MaxAgents = 33 }, "Maximum concurrent agents must be between 1 and 32."},
+		{func(c *Settings) { c.MaxConcurrentAgents = 33 }, "Maximum concurrent agents must be between 1 and 32."},
+		{func(c *Settings) { c.MaxConcurrentAgents = 0 }, "Maximum concurrent agents must be between 1 and 32."},
 		{func(c *Settings) { c.MaxAgentsPerRoot = 17 }, "Maximum concurrent agents per item must be between 1 and 16."},
 		{func(c *Settings) { c.PauseDeadlineSec = 29 }, "Pause deadline must be between 30 and 600 seconds."},
 		{func(c *Settings) { c.PauseDeadlineSec = 601 }, "Pause deadline must be between 30 and 600 seconds."},
@@ -170,7 +169,7 @@ func TestPutValidation(t *testing.T) {
 	ok := clone(func(c *Settings) {
 		c.Roles[kinds.RoleCoder] = RoleDefault{kinds.Claude, "claude-sonnet-5", "xhigh"}
 		c.Roles[kinds.RoleAdvisor] = RoleDefault{kinds.Claude, "opus", ""}
-		c.MaxOrchestrators, c.MaxAgents, c.MaxAgentsPerRoot, c.PauseDeadlineSec = 1, 32, 16, 600
+		c.MaxConcurrentAgents, c.MaxAgentsPerRoot, c.PauseDeadlineSec = 32, 16, 600
 	})
 	if _, err := s.Put(ctx, ok); err != nil {
 		t.Fatalf("boundary values: %v", err)
@@ -194,7 +193,7 @@ func TestModelGoneFromCatalog(t *testing.T) {
 	catalogs[kinds.Claude] = saved[:2] // sonnet and haiku disappear
 	defer func() { catalogs[kinds.Claude] = saved }()
 	cur, _ = s.Get(ctx)
-	cur.MaxAgents = 9
+	cur.MaxConcurrentAgents = 9
 	_, err := s.Put(ctx, cur)
 	verr(t, err, "claude-sonnet-5 is no longer offered by Claude.")
 }
@@ -219,7 +218,7 @@ func TestFallbackModelGoneFromCatalog(t *testing.T) {
 	catalogs[kinds.Claude] = saved[:2] // sonnet and haiku disappear
 	defer func() { catalogs[kinds.Claude] = saved }()
 	cur, _ = s.Get(ctx)
-	cur.MaxAgents = 9
+	cur.MaxConcurrentAgents = 9
 	_, err := s.Put(ctx, cur)
 	verr(t, err, "claude-sonnet-5 is no longer offered by Claude.")
 }

@@ -78,13 +78,13 @@ func (h *harness) enableFake(t *testing.T) {
 	now := time.Now().UnixMilli()
 
 	// The whole suite shares one daemon and never tears an agent down between
-	// tests, so the production defaults (3 orchestrators, 8 agents, 4 per
-	// root) run out well before scenario 30 — raise them generously here,
-	// every time (idempotent, cheap), not just on the first call: if scenario
-	// 11's own t.Cleanup that restores max_agents were ever skipped (a panic,
-	// say), every later test still gets it raised back up here rather than
-	// staying stuck at 1.
-	for _, kv := range [][2]string{{"max_orchestrators", "200"}, {"max_agents", "200"}, {"max_agents_per_root", "50"}} {
+	// tests, so the production defaults (4 concurrent agents, 4 per root) run
+	// out well before scenario 30 — raise them generously here, every time
+	// (idempotent, cheap), not just on the first call: if scenario 11's own
+	// t.Cleanup that restores max_concurrent_agents were ever skipped (a
+	// panic, say), every later test still gets it raised back up here rather
+	// than staying stuck at 1.
+	for _, kv := range [][2]string{{"max_concurrent_agents", "200"}, {"max_agents_per_root", "50"}} {
 		if _, err := d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)
 			ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
 			kv[0], kv[1], now); err != nil {
@@ -130,17 +130,18 @@ func (h *harness) enableFake(t *testing.T) {
 	}
 }
 
-// setMaxAgents overrides max_agents directly (raw SQL, same reasoning as
-// enableFake: this is daemon-internal tuning for the test run, not a user
-// setting change worth routing through Store.Put's validation).
-func (h *harness) setMaxAgents(t *testing.T, n int) {
+// setMaxConcurrentAgents overrides max_concurrent_agents directly (raw SQL,
+// same reasoning as enableFake: this is daemon-internal tuning for the test
+// run, not a user setting change worth routing through Store.Put's
+// validation).
+func (h *harness) setMaxConcurrentAgents(t *testing.T, n int) {
 	t.Helper()
 	d, err := sql.Open("sqlite", "file:"+filepath.Join(h.home, "swarm.db")+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if _, err := d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES ('max_agents', ?, ?)
+	if _, err := d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES ('max_concurrent_agents', ?, ?)
 		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
 		strconv.Itoa(n), time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
@@ -617,7 +618,7 @@ func (h *harness) paneEnv(t *testing.T, agentName, key string) string {
 }
 
 // setPauseDeadlineSec writes settings.pause_deadline_sec directly, the same
-// bypass-validate raw-SQL pattern setMaxAgents/enableFake already use: PUT
+// bypass-validate raw-SQL pattern setMaxConcurrentAgents/enableFake already use: PUT
 // /api/settings clamps this to [30, 600] (settings.go's validate), which
 // would make scenarios 7/9 wait out the real production default (120s)
 // instead of the spec's own short test deadlines. Settings.Get applies no
