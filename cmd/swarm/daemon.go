@@ -263,7 +263,8 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// together without either package importing the other.
 	rt.Usage = &usagegate.Gate{Poller: up, Now: now}
 	mcpsrv := &mcpserver.Server{RT: rt, KB: idx, Advisor: adv, Log: cfg.Log, Version: version}
-	hookH := &hook.Handler{DB: d, RT: rt, Adapters: rt.Adapters, Now: now, Log: cfg.Log, Advisor: adv}
+	hookH := &hook.Handler{DB: d, RT: rt, Adapters: rt.Adapters, Now: now, Log: cfg.Log, Advisor: adv,
+		WorktreesDir: filepath.Join(cfg.Home, "worktrees")}
 
 	api := httpapi.New(httpapi.Deps{Version: version, Token: token, DB: d, Events: ev,
 		Items: it, Repos: rp, Settings: st, Catalog: cat, KB: idx, Log: cfg.Log,
@@ -314,9 +315,10 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 			},
 			dm.cat.Loop,
 			func(ctx context.Context) { pruneLoop(ctx, dm.ev, dm.db, cfg.Log) },
-			func(ctx context.Context) { dm.rt.ReconcileLoop(ctx, 5*time.Second) }, // §10.6
-			func(ctx context.Context) { dm.rt.WakeLoop(ctx, 5*time.Second) },      // §11.3
-			func(ctx context.Context) { dm.up.Loop(ctx, nil) },                    // §13 (a no-op with no sources, S-4)
+			func(ctx context.Context) { dm.rt.ReconcileLoop(ctx, 5*time.Second) },         // §10.6
+			func(ctx context.Context) { dm.rt.WakeLoop(ctx, 5*time.Second) },              // §11.3
+			func(ctx context.Context) { dm.rt.ReclaimWorktreesLoop(ctx, 10*time.Minute) }, // worktree cleanup enforcement
+			func(ctx context.Context) { dm.up.Loop(ctx, nil) },                            // §13 (a no-op with no sources, S-4)
 			func(ctx context.Context) { quotaResetLoop(ctx, dm.up, dm.rt, cfg.Log) },
 		)
 	}
