@@ -597,6 +597,136 @@ func TestWriteCheckpointRefusesCompletedOnABug(t *testing.T) {
 	assertRefusesCompleted(t, s, it)
 }
 
+// P0 (2026-09-23): nothing required an orchestrator to have produced a plan
+// before completing its own epic -- POST /api/items lets a human create an
+// epic directly (no spike), so brainstorming/writing-plans could be skipped
+// entirely. This closes that gap at the one place every root item's
+// completion already passes through.
+func TestCompletedOnEpicRequiresARegisteredPlan(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	it := seedTopLevelItem(t, s, items.Epic)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "epic accepted"})
+	if err == nil {
+		t.Fatal("expected completed to be refused with no registered plan")
+	}
+	const want = `completed requires a registered plan for this epic. Register one with swarm_artifact register, or set tdd_exempt if this genuinely needs neither.`
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestCompletedOnEpicSucceedsOnceAPlanIsRegistered(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	it := seedTopLevelItem(t, s, items.Epic)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterArtifact(ctx, ses.ID, "register", it.Key, "plan", writeFile(t, planBody), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "epic accepted"}); err != nil {
+		t.Fatalf("completed must succeed once a plan is registered: %v", err)
+	}
+}
+
+func TestCompletedOnBugRequiresARegisteredDebugReport(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	it := seedTopLevelItem(t, s, items.Bug)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "bug closed"})
+	if err == nil {
+		t.Fatal("expected completed to be refused with no registered debug_report")
+	}
+	const want = `completed requires a registered debug_report for this bug. Register one with swarm_artifact register, or set tdd_exempt if this genuinely needs neither.`
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestCompletedOnBugSucceedsOnceADebugReportIsRegistered(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	it := seedTopLevelItem(t, s, items.Bug)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterArtifact(ctx, ses.ID, "register", it.Key, "debug_report", writeFile(t, reportBody), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "bug closed"}); err != nil {
+		t.Fatalf("completed must succeed once a debug_report is registered: %v", err)
+	}
+}
+
+func TestCompletedOnChoreNeedsNoArtifact(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	it := seedTopLevelItem(t, s, items.Chore)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "chore done"}); err != nil {
+		t.Fatalf("a chore root must never require an artifact: %v", err)
+	}
+}
+
+func TestCompletedOnTddExemptEpicNeedsNoArtifact(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	it := seedTopLevelItem(t, s, items.Epic)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: it.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// items.Store.Update refuses tdd_exempt on anything but a Task ("Only
+	// tasks can be TDD-exempt.") -- that restriction is unrelated to this
+	// gate and out of scope to change, so set it directly the same way
+	// TestTDDGateSkippedForExemptTasksAndReviewRoles (line ~418) already does.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET tdd_exempt = 'spike-research' WHERE id = ?`, it.ID); err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "epic accepted"}); err != nil {
+		t.Fatalf("a tdd_exempt epic must never require an artifact: %v", err)
+	}
+}
+
 // Regression guard for the bug the first version of this gate introduced:
 // completed is the universal session-terminal checkpoint (every role ends
 // its assignment with completed or failed; terminalCheckpointKind reads it
@@ -613,6 +743,9 @@ func TestWriteCheckpointAllowsOrchestratorCompletedOnItsOwnEpic(t *testing.T) {
 	}
 	ses, err := s.LatestSession(ctx, orch.ID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterArtifact(ctx, ses.ID, "register", it.Key, "plan", writeFile(t, planBody), ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "epic accepted"}); err != nil {
