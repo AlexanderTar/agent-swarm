@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -660,5 +662,86 @@ func TestTryPasteReceivesTheSameRichNoticeAsNativeWake(t *testing.T) {
 	}
 	if !strings.Contains(pasted, "[QUESTION]") {
 		t.Errorf("pasted notice missing the new [TAG] format: %q", pasted)
+	}
+}
+
+// Waking a quota-dead session is pointless: while its kind is exhausted,
+// WakeDue attempts neither native wake nor paste, and the message stays pending
+// for the quota-reset flush.
+func TestWakeDueSkipsExhaustedKind(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.WakeOK = true // would succeed if attempted: last_wake_at proves it was not
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Skipped", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	s.Usage = fakeUsage{Fake: true}
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.pasted) != 0 {
+		t.Fatalf("pasted while exhausted: %v", tm.pasted)
+	}
+	var wakeAt *int64
+	s.DB.QueryRowContext(ctx, `SELECT last_wake_at FROM sessions WHERE id = ?`, ses.ID).Scan(&wakeAt)
+	if wakeAt != nil {
+		t.Fatal("last_wake_at set while exhausted: native wake must not be attempted")
+	}
+	var pending int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND state = 'pending'`, a.ID).Scan(&pending)
+	if pending == 0 {
+		t.Fatal("no pending message left: the wake must leave it for the reset flush")
+	}
+}
+
+// On quota reset, each agent's held rows flush as exactly one digest before the
+// wake, and the rows are deleted.
+func TestWakeOnQuotaResetFlushesOneDigest(t *testing.T) {
+	s, _, fa := newStore(t)
+	fa.WakeOK = true
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Flushed", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.Usage = fakeUsage{Fake: true}
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		for _, ev := range []string{"no_ack", "progress_deadlock", "no_ack"} {
+			held, err := s.holdIfExhausted(ctx, tx, a.ID, ev, json.RawMessage(`{"event":"`+ev+`"}`))
+			if err != nil || !held {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Usage = fakeUsage{} // reset passed: nothing exhausted anymore
+	n, err := s.WakeOnQuotaReset(ctx, Fake, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("woke %d sessions, want 1", n)
+	}
+	var digests int
+	var payload string
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(payload_json), '') FROM messages
+		WHERE to_agent_id = ? AND kind = 'digest' AND payload_json LIKE '%"suppressed":true%'`, a.ID).Scan(&digests, &payload)
+	if digests != 1 {
+		t.Fatalf("suppressed digest count = %d, want exactly 1", digests)
+	}
+	if !strings.Contains(payload, "no_ack x2") || !strings.Contains(payload, "progress_deadlock x1") {
+		t.Fatalf("digest missing held counts: %s", payload)
+	}
+	var leftover int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays WHERE agent_id = ?`, a.ID).Scan(&leftover)
+	if leftover != 0 {
+		t.Fatalf("leftover suppressed rows = %d, want 0 flushed", leftover)
+	}
+	var wakeAt *int64
+	s.DB.QueryRowContext(ctx, `SELECT last_wake_at FROM sessions WHERE id = ?`, ses.ID).Scan(&wakeAt)
+	if wakeAt == nil {
+		t.Fatal("session not woken after the flush")
 	}
 }

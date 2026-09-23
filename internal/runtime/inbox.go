@@ -407,8 +407,8 @@ func (s *Store) foldDigest(ctx context.Context, tx *sql.Tx, a Agent, deferred []
 				}
 			}
 			// Ungated on purpose: these rows predate any outage and the digest
-		// compresses them rather than adding load.
-		return s.enqueueRaw(ctx, tx, Message{Kind: "digest", Origin: "daemon",
+			// compresses them rather than adding load.
+			return s.enqueueRaw(ctx, tx, Message{Kind: "digest", Origin: "daemon",
 				ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: body})
 		}
 		lines = lines[:len(lines)-1]
