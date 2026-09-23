@@ -31,6 +31,7 @@ func Uninstall(ctx context.Context, o AgentsOpts) error {
 		{o.Cfg.Cursor("hooks.json"), dropSwarmCursorHookEntries},
 		{o.Cfg.Cursor("mcp.json"), dropSwarmMCPServer},
 		{o.Cfg.Gemini("config", "hooks.json"), dropAgySwarmBlock},
+		{o.Cfg.Muse("settings.json"), dropSwarmMCPServer},
 	} {
 		wrote, err := EditJSON(step.path, false, step.edit)
 		if err != nil {
@@ -54,7 +55,7 @@ func Uninstall(ctx context.Context, o AgentsOpts) error {
 		}
 	}
 
-	// Both skills, from all four roots.
+	// Both skills, from all five roots.
 	for _, k := range Kinds {
 		for _, name := range SkillNames {
 			dir := filepath.Join(o.Cfg.SkillsDir(k), name)

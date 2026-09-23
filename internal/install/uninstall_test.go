@@ -39,6 +39,7 @@ func TestUninstallRemovesSwarmsOwnEntriesAndKeepsEverythingElse(t *testing.T) {
 		func() ([]string, error) { return install.WriteCodex(c) },
 		func() ([]string, error) { return install.WriteCursor(c) },
 		func() ([]string, error) { return install.WriteAgy(context.Background(), c, f.Runner()) },
+		func() ([]string, error) { return install.WriteMuse(context.Background(), c, f.Runner()) },
 	} {
 		if _, err := w(); err != nil {
 			t.Fatal(err)
@@ -93,6 +94,16 @@ func TestUninstallRemovesSwarmsOwnEntriesAndKeepsEverythingElse(t *testing.T) {
 	agyHooks, _ := os.ReadFile(c.Gemini("config", "hooks.json"))
 	if strings.Contains(string(agyHooks), "hook agy") {
 		t.Errorf("agy hooks survived:\n%s", agyHooks)
+	}
+	museSettings, _ := os.ReadFile(c.Muse("settings.json"))
+	var ms struct {
+		MCPServers map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(museSettings, &ms); err != nil {
+		t.Fatal(err)
+	}
+	if _, bad := ms.MCPServers["swarm"]; bad {
+		t.Error("the muse MCP entry survived")
 	}
 	if _, err := os.Lstat(c.LocalBin()); !os.IsNotExist(err) {
 		t.Error("~/.local/bin/swarm survived")
