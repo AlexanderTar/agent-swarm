@@ -126,7 +126,11 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if r.LastWakeAt != nil && s.Now().Sub(*r.LastWakeAt) < cool && !r.NewestPendingAt.After(*r.LastWakeAt) {
 			continue
 		}
-		notice := PendingNotice(r.Pending, r.AgentName, r.ItemKey)
+		notice, err := s.InboxNotice(ctx, r.AgentID, r.AgentName, r.ItemKey)
+		if err != nil {
+			s.logf("wake: inbox notice for %s: %v", r.AgentName, err)
+			notice = PendingNotice(r.Pending, r.AgentName, r.ItemKey) // fallback, never block a wake on a render error
+		}
 		if r.HasControl {
 			notice = ControlNotice(r.AgentName, r.ItemKey)
 		}
@@ -163,7 +167,15 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if r.PasteAttempts > 0 && r.LastPasteAttemptAt != nil && s.Now().Sub(*r.LastPasteAttemptAt) < pasteRetry {
 			continue
 		}
-		if err := s.tryPaste(ctx, ad, r); err != nil {
+		pasteNotice, err := s.InboxPasteNotice(ctx, r.AgentID, r.AgentName, r.ItemKey)
+		if err != nil {
+			s.logf("wake: inbox paste notice for %s: %v", r.AgentName, err)
+			pasteNotice = IdleToken // fallback, never block a wake on a render error
+		}
+		if r.HasControl {
+			pasteNotice = ControlNotice(r.AgentName, r.ItemKey)
+		}
+		if err := s.tryPaste(ctx, ad, r, pasteNotice); err != nil {
 			return err
 		}
 	}
@@ -192,10 +204,11 @@ func (s *Store) alreadyNotifiedUndeliverable(ctx context.Context, agentID string
 	return count > 0, err
 }
 
-// tryPaste checks the three §11.3 conditions and pastes the idle token. The
+// tryPaste checks the three §11.3 conditions and pastes the caller-supplied notice
+// (the terse InboxPasteSummary, or ControlNotice for a control batch — never the bare IdleToken). The
 // daemon never logs a full process listing: other tools' bearer tokens show up
 // there (P0-4).
-func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow) error {
+func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pasteNotice string) error {
 	ok := false
 	if matchesAny(ad.ProcessNames(), r.PaneCommand) && !isShell(r.PaneCommand) {
 		capture, err := s.Tmux.Capture(ctx, r.TmuxName, 15)
@@ -207,7 +220,7 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow) err
 		s.logf("wake: pane command %q for %s matches no ProcessNames pattern, skipping idle paste", r.PaneCommand, r.AgentName)
 	}
 	if ok {
-		if err := s.Tmux.PasteLine(ctx, r.TmuxName, IdleToken); err != nil {
+		if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
 			return err
 		}
 		return s.markWoken(ctx, r.SessionID, false)

@@ -766,3 +766,126 @@ func TestStaleUnackedMessagesDoNotStarveNewOnes(t *testing.T) {
 		t.Fatalf("unacked = %d, want the 25 stale findings listed", len(res.Unacked))
 	}
 }
+
+func TestSummarizeForEveryKind(t *testing.T) {
+	cases := []struct {
+		name    string
+		kind    MessageKind
+		payload string
+		want    string // substring the output must contain
+	}{
+		{"assignment", "assignment", `{"brief":"Fix the flaky retry test","item_key":"TASK-42"}`,
+			`"Fix the flaky retry test"`},
+		{"question body", "question", `{"body":"Should this run before the migration?"}`,
+			`"Should this run before the migration?"`},
+		{"answer body", "answer", `{"body":"Yes, run it first."}`, `"Yes, run it first."`},
+		{"control pause", "control", `{"action":"pause","deadline_at":"2026-09-23T12:00:00Z","scope":"root"}`,
+			"pause"},
+		{"approval_result approved", "approval_result", `{"decision":"approved"}`, "approved"},
+		{"approval_result changes", "approval_result",
+			`{"decision":"changes_requested","comment":"tighten the retry loop"}`,
+			`"tighten the retry loop"`},
+		{"user_answer", "user_answer", `{"request_id":"req_1","text":"Use main."}`, `"Use main."`},
+		{"advice pending", "advice", `{"advice_id":"a1","question":"Should I retry?","state":"pending"}`,
+			`"Should I retry?"`},
+		{"advice answered", "advice",
+			`{"advice_id":"a1","question":"Should I retry?","answer":"Yes.","state":"answered"}`,
+			`"Yes."`},
+		{"relay checkpoint", "relay",
+			`{"event":"progress","agent":"s3-fix-b","item":"TASK-9","checkpoint":{"summary":"starting on the auth regression"}}`,
+			`"starting on the auth regression"`},
+		{"relay failed", "relay", `{"event":"failed","agent":"s3-fix-c","item":"TASK-9"}`, "failed"},
+		{"digest", "digest", `{"lines":["TASK-1 · a · did x","TASK-2 · b · did y"]}`, "TASK-1"},
+		{"assignment_update note", "assignment_update", `{"note":"Retrying with the fallback model"}`,
+			`"Retrying with the fallback model"`},
+		{"unrecognized kind falls back to raw JSON preview", MessageKind("bogus"),
+			`{"weird_field":"some value that is not in any known shape"}`,
+			"weird_field"},
+		{
+			"body containing newline is sanitized",
+			"question", `{"body":"line one\nline two"}`, "line one line two",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := summarizeFor(MessageKind(c.kind), json.RawMessage(c.payload))
+			if !strings.Contains(got, c.want) {
+				t.Errorf("summarizeFor(%s, %s) = %q, want substring %q", c.kind, c.payload, got, c.want)
+			}
+			if strings.Contains(got, "\n") {
+				t.Errorf("summarizeFor(%s) contains a literal newline: %q", c.kind, got)
+			}
+		})
+	}
+}
+
+func TestInboxNoticeListsPendingMessagesOldestFirst(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Inbox", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	enq(t, s, a.ID, a.RootItemID, "question", `{"body":"first question here?"}`, 1)
+	enq(t, s, a.ID, a.RootItemID, "question", `{"body":"second question here?"}`, 1)
+	notice, err := s.InboxNotice(ctx, a.ID, a.Name, "TASK-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notice, "first question here?") || !strings.Contains(notice, "second question here?") {
+		t.Errorf("InboxNotice missing message content: %q", notice)
+	}
+	if strings.Index(notice, "first question here?") > strings.Index(notice, "second question here?") {
+		t.Errorf("InboxNotice not oldest-first: %q", notice)
+	}
+	if strings.Contains(notice, "\n") {
+		t.Errorf("InboxNotice contains a literal newline: %q", notice)
+	}
+}
+
+func TestInboxNoticeCapsAtEightItemsWithMoreCount(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Inbox", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	// StartSpike already leaves one pending assignment; 9 more questions
+	// make 10 pending, so a limit of 8 leaves moreCount == 2.
+	for i := 0; i < 9; i++ {
+		enq(t, s, a.ID, a.RootItemID, "question", `{"body":"queued question"}`, 1)
+	}
+	items, more, err := s.pendingInboxItems(ctx, a.ID, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 8 {
+		t.Errorf("pendingInboxItems returned %d items, want 8", len(items))
+	}
+	if more != 2 {
+		t.Errorf("pendingInboxItems moreCount = %d, want 2", more)
+	}
+	notice, err := s.InboxNotice(ctx, a.ID, a.Name, "TASK-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notice, "+2 more") {
+		t.Errorf("InboxNotice should mention +2 more: %q", notice)
+	}
+	if len(notice) > maxInboxNotice {
+		t.Errorf("InboxNotice %d bytes, want <= %d", len(notice), maxInboxNotice)
+	}
+}
+
+func TestInboxPasteNoticeStaysUnderPasteBudget(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Inbox", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	for i := 0; i < 9; i++ {
+		enq(t, s, a.ID, a.RootItemID, "question", `{"body":"queued question"}`, 1)
+	}
+	got, err := s.InboxPasteNotice(ctx, a.ID, a.Name, "TASK-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > maxPasteNotice {
+		t.Errorf("InboxPasteNotice %d bytes, want <= %d", len(got), maxPasteNotice)
+	}
+	if strings.Contains(got, "\n") {
+		t.Errorf("InboxPasteNotice contains a literal newline: %q", got)
+	}
+}
