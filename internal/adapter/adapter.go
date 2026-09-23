@@ -26,6 +26,7 @@ type Spec struct {
 	Kickoff                                string
 	SettingsDir                            string // per-launch JSON files: <home>/run/launch/<session id>
 	Bin                                    string // absolute path to the swarm binary
+	TokenFile                              string // <home>/run/tokens/<session id>, minted by startSession
 	PluginDirs                             []string
 	AdvisorModel                           string
 	Instructions                           string

@@ -1000,6 +1000,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		AgentName:         a.Name,
 		SessionID:         ses.ID,
 		Token:             token,
+		TokenFile:         tokPath,
 		DaemonURL:         s.DaemonURL,
 		Model:             a.Model,
 		Effort:            a.Effort,

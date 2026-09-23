@@ -15,6 +15,7 @@ import (
 func museSpec(t *testing.T) Spec {
 	t.Helper()
 	return Spec{AgentName: "login-form-coder", SessionID: "ses_01", Token: "tok",
+		TokenFile: "/swarm-home/run/tokens/ses_01",
 		DaemonURL: "http://127.0.0.1:17778", Model: "muse-spark-1.3-contributor", Effort: "high",
 		Cwd: t.TempDir(), Kickoff: "You are swarm agent login-form-coder (coder) for TASK-101: x.",
 		Bin: "/usr/local/bin/swarm"}
@@ -187,11 +188,14 @@ func TestMuseLaunchIsolatesXDGConfigHomeWithLiteralSwarmEnv(t *testing.T) {
 	if args, _ := swarm["args"].([]any); len(args) != 1 || args[0] != "mcp" {
 		t.Errorf("swarm.args = %v, want [mcp]", args)
 	}
+	if swarm["mode"] != "optional" {
+		t.Errorf("swarm.mode = %v, want optional", swarm["mode"])
+	}
 	env, _ := swarm["env"].(map[string]any)
 	want := map[string]any{
 		"SWARM_URL":        s.DaemonURL,
 		"SWARM_SESSION":    s.SessionID,
-		"SWARM_TOKEN_FILE": filepath.Join(d.Home, "run", "tokens", s.SessionID),
+		"SWARM_TOKEN_FILE": s.TokenFile,
 		"SWARM_AGENT_KIND": "muse",
 	}
 	for k, v := range want {
@@ -207,23 +211,46 @@ func TestMuseLaunchIsolatesXDGConfigHomeWithLiteralSwarmEnv(t *testing.T) {
 	}
 
 	// auth.json and the user skills dir are symlinked in so provider login
-	// and installed skills still work from the isolated config dir.
-	for _, name := range []string{"auth.json", "skills"} {
-		fi, err := os.Lstat(filepath.Join(xdgConfigHome, "muse", name))
+	// and installed skills still work from the isolated config dir -- and
+	// must point AT the real files, not just be a symlink of some kind.
+	for _, tc := range []struct{ name, wantTarget string }{
+		{"auth.json", filepath.Join(realDir, "auth.json")},
+		{"skills", filepath.Join(realDir, "skills")},
+	} {
+		p := filepath.Join(xdgConfigHome, "muse", tc.name)
+		fi, err := os.Lstat(p)
 		if err != nil {
-			t.Errorf("%s not present in isolated config dir: %v", name, err)
+			t.Errorf("%s not present in isolated config dir: %v", tc.name, err)
 			continue
 		}
 		if fi.Mode()&os.ModeSymlink == 0 {
-			t.Errorf("%s should be a symlink to the real one", name)
+			t.Errorf("%s should be a symlink to the real one", tc.name)
+			continue
+		}
+		if target, err := os.Readlink(p); err != nil || target != tc.wantTarget {
+			t.Errorf("%s symlink target = %q, %v; want %q", tc.name, target, err, tc.wantTarget)
 		}
 	}
 	// A sibling ~/.config dir (gh, git, ...) must also be symlinked straight
 	// into the isolated XDG_CONFIG_HOME, or every tool but muse goes blind.
-	if fi, err := os.Lstat(filepath.Join(xdgConfigHome, "gh")); err != nil {
+	ghLink := filepath.Join(xdgConfigHome, "gh")
+	wantGhTarget := filepath.Join(d.UserHome, ".config", "gh")
+	if fi, err := os.Lstat(ghLink); err != nil {
 		t.Errorf("sibling .config/gh dir not carried into the isolated XDG_CONFIG_HOME: %v", err)
 	} else if fi.Mode()&os.ModeSymlink == 0 {
 		t.Error(".config/gh should be a symlink to the real one")
+	} else if target, err := os.Readlink(ghLink); err != nil || target != wantGhTarget {
+		t.Errorf("gh symlink target = %q, %v; want %q", target, err, wantGhTarget)
+	}
+
+	// The whole point of the isolation: the operator's real settings.json
+	// must never be mutated by a launch.
+	afterReal, err := os.ReadFile(filepath.Join(realDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterReal) != realSettings {
+		t.Errorf("Launch must not touch the real settings.json; got %q, want %q", afterReal, realSettings)
 	}
 
 	// Resume must isolate the same way.

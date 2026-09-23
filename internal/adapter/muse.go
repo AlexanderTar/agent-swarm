@@ -46,16 +46,15 @@ func (m *Muse) argv(s Spec) []string {
 // (muse_wake_probe_test.go, MUSE_LIVE_PROBE=1) for the exact repro.
 // mcpServers.swarm.env therefore must be written fresh per launch (WriteMuse,
 // at install time, cannot: SWARM_SESSION and SWARM_TOKEN_FILE do not exist
-// until startSession mints them).
-//
-// SWARM_TOKEN_FILE mirrors runtime/agents.go:936's tokPath formula exactly
-// (<home>/run/tokens/<session id>); the two must be kept in sync if that
-// formula ever moves.
-func museMCPEnv(d Deps, s Spec) map[string]any {
+// until startSession mints them). SWARM_TOKEN_FILE comes from Spec.TokenFile
+// (runtime/agents.go's startSession threads through the exact tokPath it
+// wrote the token to) rather than being recomputed here, so the two can
+// never drift out of sync.
+func museMCPEnv(s Spec) map[string]any {
 	return map[string]any{
 		"SWARM_URL":        s.DaemonURL,
 		"SWARM_SESSION":    s.SessionID,
-		"SWARM_TOKEN_FILE": filepath.Join(d.Home, "run", "tokens", s.SessionID),
+		"SWARM_TOKEN_FILE": s.TokenFile,
 		"SWARM_AGENT_KIND": string(kinds.Muse),
 	}
 }
@@ -134,7 +133,7 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 		"mode":    "optional",
 		"command": s.Bin,
 		"args":    []string{"mcp"},
-		"env":     museMCPEnv(m.d, s),
+		"env":     museMCPEnv(s),
 	}
 	settings["mcpServers"] = servers
 	body, err := json.MarshalIndent(settings, "", "  ")

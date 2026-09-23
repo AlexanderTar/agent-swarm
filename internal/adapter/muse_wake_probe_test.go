@@ -117,7 +117,8 @@ func TestMuseSetupEnvReachesRealMCPSubprocess(t *testing.T) {
 	}
 
 	d := Deps{Home: t.TempDir(), UserHome: t.TempDir(), Bin: script, Now: nowStub, Log: func(string, ...any) {}}
-	s := Spec{SessionID: "live-probe-session", DaemonURL: "http://127.0.0.1:9-probe-url", Bin: script}
+	s := Spec{SessionID: "live-probe-session", DaemonURL: "http://127.0.0.1:9-probe-url", Bin: script,
+		TokenFile: filepath.Join(d.Home, "run", "tokens", "live-probe-session")}
 	env, err := newMuse(d).setupEnv(s)
 	if err != nil {
 		t.Fatal(err)
@@ -150,11 +151,10 @@ func TestMuseSetupEnvReachesRealMCPSubprocess(t *testing.T) {
 		t.Fatalf("swarm MCP stand-in never started (no output file written): %v\nmuse output:\n%s", err, out)
 	}
 	got := string(raw)
-	wantTokenFile := filepath.Join(d.Home, "run", "tokens", s.SessionID)
 	for _, want := range []string{
 		"SWARM_URL=" + s.DaemonURL,
 		"SWARM_SESSION=" + s.SessionID,
-		"SWARM_TOKEN_FILE=" + wantTokenFile,
+		"SWARM_TOKEN_FILE=" + s.TokenFile,
 		"SWARM_AGENT_KIND=muse",
 	} {
 		if !strings.Contains(got, want) {
