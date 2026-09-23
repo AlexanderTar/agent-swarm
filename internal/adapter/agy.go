@@ -71,6 +71,10 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 		filepath.Join(agyHome, ".gemini", "config", "hooks.json")); err != nil {
 		return nil, err
 	}
+	if err := symlinkIfExists(filepath.Join(a.d.UserHome, ".gemini", "config", "plugins"),
+		filepath.Join(agyHome, ".gemini", "config", "plugins")); err != nil {
+		return nil, err
+	}
 	mcpCfg, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
 		"swarm": map[string]any{"command": s.Bin, "args": []string{"mcp"}},
 	}})
