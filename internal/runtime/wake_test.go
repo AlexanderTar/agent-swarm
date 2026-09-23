@@ -91,6 +91,56 @@ func TestProgressCheckpointWakesImmediately(t *testing.T) {
 	}
 }
 
+// Step 1 of §11.3 is "native wake, once per message BATCH", but NativeTried
+// used to be derived from last_wake_at alone -- and last_wake_at is written by
+// markWoken after a native wake OR a paste, and never cleared. So the first
+// wake of a session's life disabled native wake for the rest of that session:
+// every later batch dropped straight to the paste fallback. That is how the
+// 2026-09-23 orchestrator incident reached the paste path at all (it had many
+// prior turns), and it is why the user saw claude being pasted at instead of
+// woken natively. A message newer than the last wake is a new batch and must
+// get its own native attempt.
+func TestNativeWakeIsRetriedForEachNewMessageBatch(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.WakeOK = true
+	ctx := context.Background()
+	at := tm.clk
+	orch, w, wSes := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": orchSes.ID}
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	// Clear the orchestrator's own kickoff assignment so the only pending
+	// immediate messages left are the two findings below.
+	s.Sync(ctx, orchSes.ID, nil, 20)
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, orch.ID)
+
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "first batch", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WakeDue(ctx); err != nil { // batch 1: native
+		t.Fatal(err)
+	}
+	if len(tm.pasted) != 0 {
+		t.Fatalf("batch 1 should have woken natively, pasted = %v", tm.pasted)
+	}
+	// Past the paste cooldown, then a genuinely new message arrives.
+	at.Advance(31 * time.Second)
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "second batch", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.pasted) != 0 {
+		t.Fatalf("a message newer than the last wake is a new batch and must get its own native wake, "+
+			"not fall through to the paste: pasted = %v", tm.pasted)
+	}
+}
+
 // I11: a native wake that is not followed by a sync falls back to the paste.
 func TestNativeWakeWithoutASyncFallsBackToThePaste(t *testing.T) {
 	s, tm, fa := newStore(t)

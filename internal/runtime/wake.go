@@ -79,7 +79,19 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		if lastWake.Valid {
 			t := db.FromMillis(lastWake.Int64)
 			r.LastWakeAt = &t
-			r.NativeTried = true
+			// §11.3 step 1 is "native wake, once per message BATCH", so
+			// NativeTried must mean "already natively woken FOR THIS batch",
+			// not "this session was woken at some point in its life".
+			// last_wake_at is set by markWoken after a native wake OR a paste
+			// and is never cleared, so deriving NativeTried from its mere
+			// presence disabled native wake forever after a session's first
+			// wake -- every later batch fell straight through to the paste
+			// fallback (the 2026-09-23 orchestrator incident). A pending
+			// message newer than the last wake is by definition a batch that
+			// wake has not covered yet. This is deliberately the exact mirror
+			// of WakeDue's cooldown escape clause below, so the two cannot
+			// drift apart.
+			r.NativeTried = !r.NewestPendingAt.After(t)
 		}
 		r.PasteAttempts, r.LastPasteAttemptAt = s.getPasteAttempts(r.SessionID)
 		out = append(out, r)
