@@ -295,6 +295,10 @@ func (a *Agy) Wake(ctx context.Context, w WakeTarget) (bool, error) {
 	return true, nil
 }
 
+// DiscoverSession is a no-op: the hook path (ParseHook) already populates
+// ProviderSessionID for this kind.
+func (a *Agy) DiscoverSession(context.Context, int, string) (string, bool) { return "", false }
+
 // drainWakeTurn waits for the turn Wake started to reach its result event
 // (or agyWakeResultTimeout, whichever is first), then closes stdin and kills
 // the process. It runs detached from Wake's caller.

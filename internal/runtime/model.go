@@ -284,6 +284,7 @@ type Pane struct {
 	DeadStatus int
 	Attached   bool
 	Command    string
+	Pid        int
 }
 
 // Tmux is the spawner seam; *spawn.Spawner implements it (Task 4).
@@ -367,8 +368,8 @@ type Store struct {
 	// interrupt keys or restarts the paste backoff, and the reconciler's
 	// un-acked-message rule is the durable guarantee the user hears about a
 	// stuck delivery either way.
-	bookkeepingMu sync.Mutex
-	interruptedAt map[string]time.Time
+	bookkeepingMu      sync.Mutex
+	interruptedAt      map[string]time.Time
 	pasteAttempts      map[string]int
 	lastPasteAttemptAt map[string]time.Time
 	wakeSubs           map[string][]chan string
