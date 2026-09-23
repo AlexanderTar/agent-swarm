@@ -41,8 +41,9 @@ one live session); superpowers plugin 6.4.1 is already installed in muse
   (shape proven by the live user config); per-launch override only if a probe shows
   a `--settings`/`--mcp-config` flag works — else install-time merge stands.
 - Instructions: workspace `AGENTS.md` (trusted-workspace loading). No isolated HOME.
-- Wake: live probes (`MUSE_LIVE_PROBE=1`, agy-probe pattern) try `session-message send`
-  first; tmux-paste is the fallback. Spec does not pre-pick the winner.
+- Wake: probed 2026-09-23 — `session-message send` to a live message_capable TUI
+  session fails with `external_agent_ingress_closed` (no opt-in found); Wake stays
+  on the tmux-paste fallback. Re-probe if a newer muse documents ingress opt-in.
 - Superpowers remediation covers all three fronts; daemon-side blocking enforcement
   gate is explicitly out of scope (instruction-level MUST + kickoff mandate only).
 - Muse is opt-in everywhere: role defaults stay claude; `EnabledAgents` gains muse

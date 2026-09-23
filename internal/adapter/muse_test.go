@@ -1,0 +1,117 @@
+package adapter
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
+)
+
+func museSpec(t *testing.T) Spec {
+	t.Helper()
+	return Spec{AgentName: "login-form-coder", SessionID: "ses_01", Token: "tok",
+		DaemonURL: "http://127.0.0.1:17778", Model: "muse-spark-1.3-contributor", Effort: "high",
+		Cwd: t.TempDir(), Kickoff: "You are swarm agent login-form-coder (coder) for TASK-101: x.",
+		Bin: "/usr/local/bin/swarm"}
+}
+
+func TestMuseLaunchArgv(t *testing.T) {
+	d := testDeps(t)
+	a := newMuse(d)
+	l, err := a.Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"muse", "-i", "You are swarm agent login-form-coder (coder) for TASK-101: x.",
+		"--model", "muse-spark-1.3-contributor", "--reasoning-effort", "high",
+		"--yolo", "--trust-workspace"}
+	if len(l.Argv) != len(want) {
+		t.Fatalf("argv = %q, want %q", l.Argv, want)
+	}
+	for i := range want {
+		if l.Argv[i] != want[i] {
+			t.Fatalf("argv = %q, want %q", l.Argv, want)
+		}
+	}
+	if a.Kind() != kinds.Muse {
+		t.Errorf("Kind() = %s", a.Kind())
+	}
+}
+
+func TestMuseLaunchDefaultsEmptyEffort(t *testing.T) {
+	d := testDeps(t)
+	s := museSpec(t)
+	s.Effort = ""
+	l, err := newMuse(d).Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(l.Argv, " ")
+	if !strings.Contains(joined, "--reasoning-effort high") {
+		t.Errorf("empty effort must default to high: %q", joined)
+	}
+}
+
+func writeMuseAuth(t *testing.T, home, body string) {
+	t.Helper()
+	dir := filepath.Join(home, ".config", "muse")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMuseAuthOK(t *testing.T) {
+	d := testDeps(t)
+	writeMuseAuth(t, d.UserHome, `{"schema_version":1,"providers":{"meta":{}}}`)
+	if err := newMuse(d).AuthOK(context.Background()); err != nil {
+		t.Errorf("signed-in auth.json: %v", err)
+	}
+	d2 := testDeps(t)
+	writeMuseAuth(t, d2.UserHome, `{"schema_version":1,"providers":{}}`)
+	if err := newMuse(d2).AuthOK(context.Background()); err == nil {
+		t.Error("empty providers must fail AuthOK")
+	}
+	d3 := testDeps(t)
+	if err := newMuse(d3).AuthOK(context.Background()); err == nil {
+		t.Error("missing auth.json must fail AuthOK")
+	}
+}
+
+// Live captures 2026-09-23 (tmux pane, v1.3.0): idle is a bare ❯ prompt with
+// the model/effort/YOLO status line; busy adds "◈ Thinking (Ns · esc to
+// interrupt)" (also seen as "◇ Double checking"). The ansi busy fixture keeps
+// the real per-letter truecolor escapes, which Busy must survive via StripANSI.
+func TestMuseIdleAndBusy(t *testing.T) {
+	a := newMuse(testDeps(t))
+	if !a.Idle(pane(t, "muse", "pane-idle.txt")) {
+		t.Error("bare ❯ prompt with status line should be idle")
+	}
+	if a.Idle(pane(t, "muse", "pane-busy-ansi.txt")) {
+		t.Error("spinner line means busy even with the ❯ prompt drawn")
+	}
+	if a.Idle("$ \n") {
+		t.Error("a shell prompt is not idle")
+	}
+}
+
+func TestMuseInstalled(t *testing.T) {
+	d := testDeps(t)
+	d.Run = (&execx.Fake{Responses: map[string]execx.Result{
+		"muse --version": {Out: "Muse Code 1.3.0 (1.3.0-R3401.1)\n"},
+	}}).Runner()
+	v, ok := newMuse(d).Installed(context.Background())
+	if !ok || v == "" {
+		t.Errorf("Installed = %q, %v", v, ok)
+	}
+	d.Run = (&execx.Fake{}).Runner()
+	if _, ok := newMuse(d).Installed(context.Background()); ok {
+		t.Error("missing binary must not report installed")
+	}
+}
