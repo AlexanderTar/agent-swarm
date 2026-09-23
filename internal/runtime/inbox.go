@@ -597,10 +597,7 @@ func summarizeFor(kind MessageKind, payload json.RawMessage) string {
 			}
 		}
 	}
-	preview := string(payload)
-	if len(preview) > 120 {
-		preview = preview[:120]
-	}
+	preview, _ := truncateRunes(string(payload), 120) // rune-safe, see text.go
 	return sanitizeOneLine(preview)
 }
 

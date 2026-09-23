@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
@@ -816,6 +817,39 @@ func TestSummarizeForEveryKind(t *testing.T) {
 				t.Errorf("summarizeFor(%s) contains a literal newline: %q", c.kind, got)
 			}
 		})
+	}
+}
+
+// TestSummarizeForFallbackTruncatesRuneSafe: the unrecognized-kind fallback
+// truncates raw JSON at ~120 bytes; a payload whose 120th byte lands
+// mid multi-byte rune (an em dash, 3 bytes in UTF-8) must not mangle it --
+// same bug class Task 1 fixed in Inbox's own truncation.
+//
+// utf8.ValidString alone can't catch this: sanitizeOneLine (called after
+// truncation) ranges over the string rune-by-rune, and Go's range already
+// turns any incomplete trailing byte sequence into U+FFFD (a *valid*
+// replacement rune) -- so the output is always valid UTF-8 regardless of
+// the bug. The actual signature of the bug is that U+FFFD appearing in the
+// output at all: a rune-safe cut never produces it here (it either keeps
+// the whole em dash or drops it, never a partial one).
+//
+// Swept over n rather than one fixed offset: the JSON prefix
+// (`{"weird_field":"`) shifts where any single fixed-n em dash actually
+// lands relative to byte 120, so one magic n could pass by luck even with
+// the bug present. Sweeping guarantees at least one n crosses the boundary
+// (verified against the pre-fix code: n=102 and n=103 both produced
+// U+FFFD; n=101 landed on a clean boundary and did not).
+func TestSummarizeForFallbackTruncatesRuneSafe(t *testing.T) {
+	for n := 95; n <= 120; n++ {
+		longVal := strings.Repeat("x", n) + "—" + "yyy"
+		payload, _ := json.Marshal(map[string]string{"weird_field": longVal})
+		got := summarizeFor(MessageKind("some_unrecognized_kind"), payload)
+		if !utf8.ValidString(got) {
+			t.Fatalf("n=%d: summarizeFor fallback produced invalid UTF-8: %q", n, got)
+		}
+		if strings.ContainsRune(got, utf8.RuneError) {
+			t.Fatalf("n=%d: summarizeFor fallback truncated mid-rune, mangled the em dash into U+FFFD: %q", n, got)
+		}
 	}
 }
 
