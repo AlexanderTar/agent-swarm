@@ -61,16 +61,12 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 	} else if err := os.MkdirAll(symAntigravityCLI, 0o700); err != nil {
 		return nil, err
 	}
-	// The swarm/swarm-orchestrator skills (installed to ~/.gemini/skills/,
-	// Config.SkillsDir(KindAgy)) and swarm's hook wiring
-	// (~/.gemini/config/hooks.json) live outside antigravity-cli too. Without
-	// these, a spawned agy has no idea how the swarm protocol works and no
-	// hook interception -- unlike claude (no HOME isolation) or codex
-	// (isolates only CODEX_HOME, not its skills path). Symlink both.
-	if err := symlinkIfExists(filepath.Join(a.d.UserHome, ".gemini", "skills"),
-		filepath.Join(agyHome, ".gemini", "skills")); err != nil {
-		return nil, err
-	}
+	// The swarm and swarm-orchestrator skills now install to
+	// ~/.gemini/antigravity-cli/skills/ (Config.SkillsDir(KindAgy)) -- inside
+	// the directory just symlinked above, so no separate glue is needed for
+	// them. swarm's hook wiring (~/.gemini/config/hooks.json) lives outside
+	// antigravity-cli, though, and without it a spawned agy has no hook
+	// interception at all. Symlink it.
 	if err := symlinkIfExists(filepath.Join(a.d.UserHome, ".gemini", "config", "hooks.json"),
 		filepath.Join(agyHome, ".gemini", "config", "hooks.json")); err != nil {
 		return nil, err

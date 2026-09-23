@@ -40,12 +40,20 @@ func TestConfigPathsDeriveFromUserHomeOnly(t *testing.T) {
 }
 
 // §18: both skills are installed for every agent, at the four listed roots.
+//
+// P0 (2026-09-23): agy's was wrong -- ~/.gemini/skills/ isn't a directory agy
+// itself ever reads skills from. Per antigravity.google/docs/skills/ (and
+// confirmed live: a spawned agy's own reported skill listing never included
+// "swarm" while it did include agy's built-in ones), agy's real global
+// skills directory is ~/.gemini/antigravity-cli/skills/ -- nested inside the
+// same antigravity-cli directory the onboarding-isolation fix already
+// symlinks whole, so a corrected path needs no separate isolation glue.
 func TestSkillsDirPerAgent(t *testing.T) {
 	c := install.Config{UserHome: "/fake/home"}
 	want := map[install.Kind]string{
 		install.KindClaude: "/fake/home/.claude/skills",
 		install.KindCodex:  "/fake/home/.codex/skills",
-		install.KindAgy:    "/fake/home/.gemini/skills",
+		install.KindAgy:    "/fake/home/.gemini/antigravity-cli/skills",
 		install.KindCursor: "/fake/home/.cursor/skills",
 	}
 	for k, w := range want {
