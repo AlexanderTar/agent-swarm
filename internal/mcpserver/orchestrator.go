@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
@@ -19,7 +20,7 @@ import (
 var orchestratorRole = []runtime.Role{runtime.RoleOrchestrator}
 
 func orchestratorTools(s *Server) []ToolDef {
-	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s)}
+	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s), catalogTool(s)}
 }
 
 // §17.3 copy owned by this file.
@@ -693,6 +694,65 @@ func roleOverridesTool(s *Server) ToolDef {
 				return nil, err
 			}
 			return map[string]any{"role_overrides": roleOverridesOut(out.RoleOverrides)}, nil
+		},
+	}
+}
+
+// ---------- swarm_catalog ----------
+
+// catalogAgentWire is one enabled agent kind's models, the same models/default
+// pair settings.Store.ValidateDefault checks a swarm_spawn/swarm_role_overrides
+// agent+model pair against -- so an orchestrator can check before it leaps
+// instead of round-tripping a guess through a bad_request.
+type catalogAgentWire struct {
+	Kind         runtime.AgentKind      `json:"kind"`
+	Models       []catalog.CatalogModel `json:"models"`
+	DefaultModel string                 `json:"default_model"`
+}
+
+// visibleModels drops Hidden entries, the same rule the menubar app already
+// applies client-side (SwarmBarTests/CatalogRulesTests) before offering a
+// model to a human choosing one; an orchestrator choosing a model for
+// swarm_spawn/swarm_role_overrides is the same kind of chooser.
+func visibleModels(ms []catalog.CatalogModel) []catalog.CatalogModel {
+	out := make([]catalog.CatalogModel, 0, len(ms))
+	for _, m := range ms {
+		if !m.Hidden {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// catalogTool is docs/specs/2026-09-23-orchestrator-catalog-tool.md: a
+// read-only lookup, orchestrator-only like swarm_role_overrides (no
+// non-orchestrator tool ever takes an agent/model parameter). It reuses
+// settings.Store.ModelsFor (== catalog.Service.ModelsFor, the exact function
+// ValidateDefault itself calls) rather than catalog.Service.Entries: Entries
+// only reports a kind that has a registered Fetcher, which is a
+// production/install concern this tool has no reason to couple to -- every
+// kind this tool cares about is already resolved by Settings.EnabledAgents.
+func catalogTool(s *Server) ToolDef {
+	return ToolDef{
+		Name: "swarm_catalog",
+		Description: "List your enabled agent kinds with their available models and the live global role defaults. " +
+			"Check here before passing an explicit agent/model to swarm_spawn or swarm_role_overrides, rather than guessing.",
+		Roles:  orchestratorRole,
+		Schema: objSchema(""),
+		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
+			cur, err := s.RT.Settings.Get(ctx)
+			if err != nil {
+				return nil, err
+			}
+			agents := make([]catalogAgentWire, 0, len(cur.EnabledAgents))
+			for _, kind := range cur.EnabledAgents {
+				models, def, err := s.RT.Settings.ModelsFor(ctx, kind)
+				if err != nil {
+					return nil, err
+				}
+				agents = append(agents, catalogAgentWire{Kind: kind, Models: visibleModels(models), DefaultModel: def})
+			}
+			return map[string]any{"agents": agents, "roles": roleOverridesOut(cur.Roles)}, nil
 		},
 	}
 }
