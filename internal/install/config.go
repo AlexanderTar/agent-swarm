@@ -71,7 +71,7 @@ func (c Config) SkillsDir(k Kind) string {
 	case KindCodex:
 		return c.Codex("skills")
 	case KindAgy:
-		return c.Gemini("skills")
+		return c.Gemini("antigravity-cli", "skills")
 	case KindCursor:
 		return c.Cursor("skills")
 	}

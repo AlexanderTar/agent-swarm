@@ -467,9 +467,19 @@ func TestAgyIsolatedHomeCarriesOnboardingState(t *testing.T) {
 // has therefore run with zero knowledge of the swarm protocol and zero hook
 // interception, unlike claude (no HOME isolation at all) and codex (isolates
 // only CODEX_HOME, not its skills path).
+// P0 (2026-09-23), superseding the 2026-09-22 fix of the same name: that fix
+// symlinked ~/.gemini/skills/, which turned out to be the wrong path -- a
+// live spawn's own reported skill listing never included "swarm" while it
+// did include agy's genuinely-discovered built-ins. Per
+// antigravity.google/docs/skills/, agy's real global skills directory is
+// ~/.gemini/antigravity-cli/skills/ (Config.SkillsDir(KindAgy) now matches),
+// which is INSIDE the directory the onboarding-isolation fix already
+// symlinks whole -- so correcting the install path needs no separate
+// isolation glue for skills at all. Hooks (~/.gemini/config/hooks.json)
+// still live outside antigravity-cli and still need their own symlink.
 func TestAgyIsolatedHomeCarriesSkillsAndHooks(t *testing.T) {
 	d := testDeps(t)
-	skillsDir := filepath.Join(d.UserHome, ".gemini", "skills", "swarm")
+	skillsDir := filepath.Join(d.UserHome, ".gemini", "antigravity-cli", "skills", "swarm")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -492,9 +502,9 @@ func TestAgyIsolatedHomeCarriesSkillsAndHooks(t *testing.T) {
 	}
 	agyHome := l.Env["HOME"]
 
-	gotSkill, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "skills", "swarm", "SKILL.md"))
+	gotSkill, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "antigravity-cli", "skills", "swarm", "SKILL.md"))
 	if err != nil {
-		t.Fatalf("expected the swarm skill reachable in the isolated home: %v", err)
+		t.Fatalf("expected the swarm skill reachable in the isolated home via the antigravity-cli symlink: %v", err)
 	}
 	if string(gotSkill) != skillBody {
 		t.Errorf("skill body = %q, want %q", gotSkill, skillBody)
