@@ -67,11 +67,17 @@ Collisions/caveats:
    success — that is the PAYG / `META_API_KEY` case where the provider sends
    no subscription frames. The poller keeps the previous meters and shows the
    error, which is the truthful outcome.
-6. **`clientInfo.name` is `"swarm"`.** MSP requires `^[a-z0-9_]+$`; a hyphen
+6. **The probe polls `usage/read`; it does not wait on `usage/changed`.**
+   Verified live 2026-09-23: a host driven from Go answers `usage/read`
+   correctly (`usedPercent` climbing 0 -> 1 -> 3 across probes) while never
+   delivering the `usage/changed` notification on that connection, so a
+   notification wait hangs to the deadline. `usage/read` is also the
+   documented read and makes no model call of its own.
+7. **`clientInfo.name` is `"swarm"`.** MSP requires `^[a-z0-9_]+$`; a hyphen
    makes the handshake fail *silently* (the `initialize` response still
    arrives, then everything answers `notInitialized`). Pinned by a test.
-7. **Timeout 60 s.** The observation arrived ~18 s into the live probe.
-8. `windowDurationMins: 300` reuses the existing `codexWindow` mapping →
+8. **Timeout 60 s.** The observation arrived ~18 s into the live probe.
+9. `windowDurationMins: 300` reuses the existing `codexWindow` mapping →
    label `5h`, window `5h`. Weekly → label `Weekly`, window `weekly`.
    Headline is the 5h meter, matching `codexSnapshotFromRPC`.
 
@@ -147,20 +153,23 @@ go build ./...
 ```
 
 Scenarios covered by tests (scripted `execx.Starter`, no real muse):
-1. Happy path — handshake, turn, `usage/changed` → two meters (5h 0%,
-   weekly 9%), headline `5h`, reset stamps from `resetsAtMs`.
+1. Happy path — handshake, turn, `usage/read` → two meters (5h 0%, weekly
+   9%), headline `5h`, reset stamps from `resetsAtMs`.
 2. `clientInfo.name` written to the host matches `^[a-z0-9_]+$`.
-3. Host answers `turn/completed` with no `usage/changed` → error, no meters.
+3. Host keeps answering `usage/read` with `{}` → error naming the missing
+   usage, no meters.
 4. Host writes nothing → timeout error and `Kill` ran.
 5. Second `Fetch` inside `ProbeGap` returns the cached meters and does **not**
    start a process.
 6. Second `Fetch` after `ProbeGap` starts a process again.
 7. `DefaultSources` returns five sources.
 
-Manual end-to-end (not in CI — spends one real turn):
+Live end-to-end (gated, spends one real turn) — run and passing 2026-09-23:
 ```
-SWARM_USAGE=live go run ./cmd/... # or the daemon; then
-swarm usage   # muse row shows 5h/weekly percentages instead of "no usage source"
+MUSE_LIVE_PROBE=1 go test ./internal/usage/ -run TestMuseFetchLive -v
+    muse_test.go:372: 5h 5h 3% resets 2026-09-24 00:14:25 +0000 UTC
+    muse_test.go:372: weekly weekly 9% resets 2026-09-28 00:00:00 +0000 UTC
+--- PASS: TestMuseFetchLive (12.66s)
 ```
 
 ## Out of scope

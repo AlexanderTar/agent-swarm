@@ -98,10 +98,9 @@ func MuseSessionUsage(ctx context.Context, run execx.Runner, dir, sessionID stri
 // Muse: the real subscription-quota source, read over MSP.
 // ---------------------------------------------------------------------------
 
-// Muse reads Muse Code's subscription quota from a `muse serve` MSP host
-// (`usage/read` / `usage/changed`, live-verified against Muse Code 1.3.0 on
-// 2026-09-23 — see docs/specs/2026-09-23-muse-usage-probe.md for the full
-// trace). The payload is the same shape codex app-server returns: an integer
+// Muse reads Muse Code's subscription quota from a `muse serve` MSP host's
+// `usage/read`, live-verified against Muse Code 1.3.0 on 2026-09-23 — see
+// docs/specs/2026-09-23-muse-usage-probe.md for the full trace. The payload is the same shape codex app-server returns: an integer
 // usedPercent per window, the window's length in minutes, and an epoch-ms
 // reset stamp — verbatim from the provider, not derived from token counts.
 //
@@ -280,37 +279,46 @@ func (m *Muse) probe(ctx context.Context) (museSubscriptionUsage, error) {
 	}); err != nil {
 		return zero, fmt.Errorf("muse: turn/start: %w", err)
 	}
-	return m.awaitUsage(msgs, readErrs, deadline)
+	return m.pollUsage(proc, msgs, readErrs, deadline)
 }
 
-// awaitUsage watches the notification stream for usage/changed, which a
-// fresh host always emits on its first observation (absent-to-present, ADR
-// 32563 D3). A turn that completes without one means the provider sent no
-// subscription frames at all — the PAYG/META_API_KEY case — which is an
-// error, never an empty success.
-func (m *Muse) awaitUsage(msgs <-chan museRPCEnvelope, readErrs <-chan error,
+// pollUsage asks usage/read until the host answers with a usage member.
+// usage/read itself makes no model call; it replays whatever the host has
+// observed, so this is just waiting for the turn above to produce the
+// provider frame. It deliberately does NOT wait on the usage/changed
+// notification: verified live 2026-09-23 that a host reached this way
+// answers usage/read correctly while never delivering usage/changed on the
+// same connection, so a notification wait hangs until the deadline.
+//
+// A deadline with the usage member still absent is an error, never an empty
+// success: that is the PAYG/META_API_KEY case, where the provider sends no
+// subscription frames at all.
+func (m *Muse) pollUsage(proc *execx.Proc, msgs <-chan museRPCEnvelope, readErrs <-chan error,
 	deadline time.Time) (museSubscriptionUsage, error) {
 	var zero museSubscriptionUsage
-	for {
-		select {
-		case env := <-msgs:
-			switch env.Method {
-			case "usage/changed":
-				var usage museSubscriptionUsage
-				if err := json.Unmarshal(env.Params, &usage); err != nil {
-					return zero, fmt.Errorf("muse: decoding usage/changed: %w", err)
-				}
-				return usage, nil
-			case "turn/completed":
-				return zero, fmt.Errorf("muse: the turn completed but the host observed no subscription usage")
-			}
-		case err := <-readErrs:
-			return zero, fmt.Errorf("muse: the host closed before reporting usage: %w", err)
-		case <-time.After(time.Until(deadline)):
-			return zero, fmt.Errorf("muse: timed out after %s waiting for usage", m.timeout())
+	for id := 10; ; id++ {
+		raw, err := m.call(proc, msgs, readErrs, deadline, id, "usage/read", nil)
+		if err != nil {
+			return zero, fmt.Errorf("muse: usage/read: %w", err)
 		}
+		var result struct {
+			Usage *museSubscriptionUsage `json:"usage"`
+		}
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return zero, fmt.Errorf("muse: decoding usage/read: %w", err)
+		}
+		if result.Usage != nil {
+			return *result.Usage, nil
+		}
+		if !time.Now().Add(museUsagePollGap).Before(deadline) {
+			return zero, fmt.Errorf("muse: the turn ran but the host observed no subscription usage within %s", m.timeout())
+		}
+		time.Sleep(museUsagePollGap)
 	}
 }
+
+// museUsagePollGap paces the usage/read retries while the probe turn runs.
+const museUsagePollGap = 2 * time.Second
 
 // call writes one JSON-RPC request and waits for the response with a
 // matching id, skipping notifications and other ids on the way.
