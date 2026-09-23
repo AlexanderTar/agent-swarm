@@ -33,16 +33,17 @@ func TestToolListsByRole(t *testing.T) {
 			t.Errorf("%s sees %v, want the 8 shared tools", role, got)
 		}
 	}
-	// §8.1 + docs/specs/2026-09-23-orchestrator-role-overrides.md: 8 shared + 6
-	// orchestrator tools (swarm_role_overrides is the sixth) = 14.
-	// swarm_materialize is the fifteenth and only appears for a *spike*
-	// orchestrator — TestMaterializeIsSpikeOnly below pins both halves.
+	// §8.1 + docs/specs/2026-09-23-orchestrator-role-overrides.md +
+	// docs/specs/2026-09-23-orchestrator-catalog-tool.md: 8 shared + 7
+	// orchestrator tools (swarm_role_overrides is the sixth, swarm_catalog the
+	// seventh) = 15. swarm_materialize is the sixteenth and only appears for a
+	// *spike* orchestrator — TestMaterializeIsSpikeOnly below pins both halves.
 	orch := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleOrchestrator}))
-	if len(orch) != 14 {
-		t.Fatalf("an orchestrator sees %d tools, want 14: %v", len(orch), orch)
+	if len(orch) != 15 {
+		t.Fatalf("an orchestrator sees %d tools, want 15: %v", len(orch), orch)
 	}
 	for _, want := range []string{"swarm_items", "swarm_artifact", "swarm_worktree", "swarm_spawn",
-		"swarm_control", "swarm_role_overrides"} {
+		"swarm_control", "swarm_role_overrides", "swarm_catalog"} {
 		if !slices.Contains(orch, want) {
 			t.Errorf("an orchestrator is missing %s", want)
 		}
@@ -51,8 +52,8 @@ func TestToolListsByRole(t *testing.T) {
 		t.Error("swarm_materialize belongs to a spike orchestrator only")
 	}
 	spikeOrch := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleOrchestrator, SpikeOrchestrator: true}))
-	if len(spikeOrch) != 15 {
-		t.Fatalf("a spike orchestrator sees %d tools, want 15: %v", len(spikeOrch), spikeOrch)
+	if len(spikeOrch) != 16 {
+		t.Fatalf("a spike orchestrator sees %d tools, want 16: %v", len(spikeOrch), spikeOrch)
 	}
 	unbound := names(s.ToolsFor(Caller{Unbound: true}))
 	if strings.Join(unbound, ",") != "swarm_instructions,swarm_kb,swarm_read" {

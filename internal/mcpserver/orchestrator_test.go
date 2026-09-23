@@ -1720,3 +1720,87 @@ func TestSwarmReadShowsRoleOverrides(t *testing.T) {
 		t.Fatalf("role_overrides = %+v, want coder set to fake", res.Agents[0].RoleOverrides)
 	}
 }
+
+// ---------- swarm_catalog (docs/specs/2026-09-23-orchestrator-catalog-tool.md) ----------
+
+func TestSwarmCatalogReturnsEnabledAgentsAndLiveRoleDefaults(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	out, err := s.call(ctx, seed.Caller, "swarm_catalog", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Agents []struct {
+			Kind      string `json:"kind"`
+			Installed bool   `json:"installed"`
+			Models    []struct {
+				ID    string `json:"id"`
+				Label string `json:"label"`
+			} `json:"models"`
+			DefaultModel string `json:"default_model"`
+		} `json:"agents"`
+		Roles map[string]struct {
+			Agent string `json:"agent"`
+			Model string `json:"model"`
+		} `json:"roles"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	// newTestServer's enabled_agents is ["fake"] only, so a real, unenabled
+	// kind like claude must not appear even though it's a known AgentKind.
+	if len(res.Agents) != 1 || res.Agents[0].Kind != "fake" {
+		t.Fatalf("agents = %+v, want exactly [fake]", res.Agents)
+	}
+	if len(res.Agents[0].Models) != 1 || res.Agents[0].Models[0].ID != "fake-1" {
+		t.Fatalf("fake models = %+v, want exactly [fake-1]", res.Agents[0].Models)
+	}
+	if res.Agents[0].DefaultModel != "fake-1" {
+		t.Fatalf("fake default_model = %q, want fake-1", res.Agents[0].DefaultModel)
+	}
+	// roles is the live global Settings default, unrelated to the caller's own
+	// role_overrides -- present even though this orchestrator has none set.
+	if _, ok := res.Roles["coder"]; !ok {
+		t.Fatalf("roles = %+v, want a coder entry", res.Roles)
+	}
+}
+
+func TestSwarmCatalogHidesHiddenModels(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE model_catalog SET models_json = ? WHERE agent_kind = 'fake'`,
+		`[{"id":"fake-1","label":"Fake 1","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false},
+		  {"id":"fake-secret","label":"Fake Secret","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false,"hidden":true}]`); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := s.call(ctx, seed.Caller, "swarm_catalog", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Agents []struct {
+			Models []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Agents) != 1 || len(res.Agents[0].Models) != 1 || res.Agents[0].Models[0].ID != "fake-1" {
+		t.Fatalf("models = %+v, want exactly [fake-1] (fake-secret is hidden)", res.Agents[0].Models)
+	}
+}
+
+func TestSwarmCatalogIsOrchestratorOnly(t *testing.T) {
+	s := newTestServer(t)
+	if slices.Contains(names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleCoder})), "swarm_catalog") {
+		t.Fatal("a coder must not see swarm_catalog")
+	}
+	if !slices.Contains(names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleOrchestrator})), "swarm_catalog") {
+		t.Fatal("an orchestrator must see swarm_catalog")
+	}
+}
