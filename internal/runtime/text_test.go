@@ -62,6 +62,22 @@ func TestEveryNoticeCarriesThePreamble(t *testing.T) {
 	}
 }
 
+// R3 (superpowers enforcement): orchestrator kickoffs carry a MUST-level skills
+// mandate — the lapsed spec-less runs skipped the skill's superpowers workflows
+// despite the skill text. Workers keep the advisory form; their flow differs.
+func TestOrchestratorKickoffMandatesSkillWorkflows(t *testing.T) {
+	got := Kickoff("a", RoleOrchestrator, "EPIC-1", "T")
+	if !strings.Contains(got, "MUST follow") || !strings.Contains(got, "superpowers") {
+		t.Errorf("orchestrator kickoff lacks the skills mandate: %q", got)
+	}
+	if got := Kickoff("a", RoleCoder, "TASK-1", "t"); strings.Contains(got, "MUST follow") {
+		t.Errorf("worker kickoff must not carry the orchestrator mandate: %q", got)
+	}
+	if got := ResumeKickoff("a", RoleOrchestrator, "EPIC-1", "T"); !strings.Contains(got, "MUST follow") {
+		t.Errorf("orchestrator resume lacks the skills mandate: %q", got)
+	}
+}
+
 // §9.2: the token names the tool, because a model without the skill invented an inbox (P0-3).
 func TestIdleTokenNamesTheTool(t *testing.T) {
 	if IdleToken != "swarm: inbox (call swarm_sync)" {
