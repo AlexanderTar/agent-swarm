@@ -466,7 +466,7 @@ func TestMidTreeDescendantNeverGetsItsOwnDaemonCheckpoint(t *testing.T) {
 func TestPauseAllFreezesAQueuedSpawnTheSameWayASubtreePauseDoes(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 1, 4) // only one non-orchestrator agent globally
+	setLimits(t, s, 2, 4) // orchestrator + one child fill the shared pool
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -486,7 +486,7 @@ func TestPauseAllFreezesAQueuedSpawnTheSameWayASubtreePauseDoes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !queued2 {
-		t.Fatal("the second child should queue; the global agent limit is 1")
+		t.Fatal("the second child should queue; the shared agent limit is 2")
 	}
 
 	if _, err := s.PauseAll(ctx); err != nil {
@@ -537,7 +537,7 @@ func TestPauseAllFreezesAQueuedSpawnTheSameWayASubtreePauseDoes(t *testing.T) {
 func TestPauseAllFreezesAQueuedSpawnWithNoLiveSiblingLeft(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 1, 4) // only one non-orchestrator agent globally
+	setLimits(t, s, 2, 4) // orchestrator + one child fill the shared pool
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -557,7 +557,7 @@ func TestPauseAllFreezesAQueuedSpawnWithNoLiveSiblingLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !queued2 {
-		t.Fatal("the second child should queue; the global agent limit is 1")
+		t.Fatal("the second child should queue; the shared agent limit is 2")
 	}
 
 	// Cancel the first child through the real API (§10.5 Cancel, not raw
@@ -873,7 +873,7 @@ func TestPauseAllUpgradesAnAlreadySessionPausedTargetToSubtree(t *testing.T) {
 func TestPauseAllUpgradeFreezesAQueuedSiblingSpawn(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 1, 4) // only one non-orchestrator agent globally
+	setLimits(t, s, 2, 4) // orchestrator + one child fill the shared pool
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -893,7 +893,7 @@ func TestPauseAllUpgradeFreezesAQueuedSiblingSpawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !queued2 {
-		t.Fatal("the second child should queue; the global agent limit is 1")
+		t.Fatal("the second child should queue; the shared agent limit is 2")
 	}
 
 	if _, err := s.Pause(ctx, orch.Name, "session"); err != nil {
@@ -982,7 +982,7 @@ func TestPauseAllLeavesAnAlreadyPausingChildlessTargetAtSessionScope(t *testing.
 func TestDrainQueueSkipsARootUnderALiveSubtreePause(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 1, 4) // only one non-orchestrator agent globally
+	setLimits(t, s, 2, 4) // orchestrator + one child fill the shared pool
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -1002,7 +1002,7 @@ func TestDrainQueueSkipsARootUnderALiveSubtreePause(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !queued2 {
-		t.Fatal("the second child should queue; the global agent limit is 1")
+		t.Fatal("the second child should queue; the shared agent limit is 2")
 	}
 
 	if _, err := s.Pause(ctx, orch.Name, "subtree"); err != nil {
@@ -1837,7 +1837,7 @@ func TestUnactionableSubtreeRowsAreInertButStillFreezeTheQueue(t *testing.T) {
 func TestRepeatedPauseAllCascadesOntoAChildSpawnedUnderAPendingRoot(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 4, 4)
+	setLimits(t, s, 4, 4)
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {

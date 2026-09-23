@@ -389,7 +389,7 @@ func TestSendSucceedsToPausedInterruptedAndQueuedTargets(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, wSes.ID); err != nil {
 		t.Fatal(err)
 	}
-	setLimits(t, s, 5, 1, 5) // one non-orchestrator slot total, already held by w
+	setLimits(t, s, 2, 5) // orch + w already fill the shared pool
 	t2, err := s.Items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: "STORY-1",
 		Title: "Second task"}, items.User("board"))
 	if err != nil {

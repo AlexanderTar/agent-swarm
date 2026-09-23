@@ -1153,7 +1153,7 @@ func TestPreflightEffortAndRepoNotFound(t *testing.T) {
 func TestStartOrchestratorBranches(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 4, 4)
+	setLimits(t, s, 1, 4)
 	seedEpicWithTask(t, s)
 	// Start first orchestrator with empty model -> defaults to fake-1
 	orch1, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake})
@@ -1168,7 +1168,8 @@ func TestStartOrchestratorBranches(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "already has an orchestrator") {
 		t.Fatalf("expected conflict, got %v", err)
 	}
-	// Second epic with max_orchestrators=1 -> queued
+	// Second epic with max_concurrent_agents=1 (the orchestrator pool is
+	// unified now) -> queued
 	ep2, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Second Epic"}, items.User("board"))
 	if err != nil {
 		t.Fatal(err)
@@ -1450,7 +1451,7 @@ func TestSpawnQueuedRequestIDReplaysWithoutDoubleNotify(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	seedEpicWithTask(t, s)
-	setLimits(t, s, 4, 0, 0) // max_agents=0: every non-orchestrator spawn queues
+	setLimits(t, s, 0, 0) // max_concurrent_agents=0: every spawn queues
 	in := SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
 		Brief: BriefInput{Objective: "task"}, SessionID: "ses_caller", RequestID: "req-1"}
 	a1, queued1, err := s.Spawn(ctx, in)

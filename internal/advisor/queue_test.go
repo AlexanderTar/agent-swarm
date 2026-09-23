@@ -32,7 +32,7 @@ func TestAdviceBusy(t *testing.T) {
 // carries the "advice never consumes an agent slot" guard (D67) — see the two
 // countAgents lines. They are two different properties: the peak assertion pins
 // advisor.Service's own MaxConcurrent, the count assertion pins that advice does
-// not count against max_agents (8) or max_agents_per_root (4), which are Task 13's
+// not count against max_concurrent_agents (4) or max_agents_per_root (4), which are Task 13's
 // limiter. Wire Ask through runtime.Store.Admit tomorrow and the peak assertion
 // still passes while the second property is broken, so both belong here.
 func TestQueueCapsConcurrencyAtTwo(t *testing.T) {

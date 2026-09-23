@@ -8,15 +8,15 @@ import (
 )
 
 // countActiveAgents is the same global count internal/runtime's Admit uses
-// (role <> orchestrator, state = active) — needed because this suite shares
-// one daemon across every scenario and never tears an agent down, so a
-// literal max_agents=1 would already be over budget by the time scenario 11
-// runs. Set the ceiling relative to what's already there instead of to a
-// fixed number.
+// since 2026-09-24 unify-agent-limits (every role, state = active) — needed
+// because this suite shares one daemon across every scenario and never
+// tears an agent down, so a literal max_concurrent_agents=1 would already
+// be over budget by the time scenario 11 runs. Set the ceiling relative to
+// what's already there instead of to a fixed number.
 func (h *harness) countActiveAgents(t *testing.T) int {
 	t.Helper()
 	var n int
-	if err := h.db(t).QueryRow(`SELECT COUNT(*) FROM agents WHERE role <> 'orchestrator' AND state = 'active'`).Scan(&n); err != nil {
+	if err := h.db(t).QueryRow(`SELECT COUNT(*) FROM agents WHERE state = 'active'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -27,9 +27,12 @@ func (h *harness) countActiveAgents(t *testing.T) int {
 // completes.
 func TestScenario11ConcurrencyQueue(t *testing.T) {
 	h := newHarness(t)
+	// +2, not +1: the orchestrator started below now shares the same pool as
+	// the worker it spawns (unify-agent-limits), so both need headroom before
+	// task2's spawn is the one that queues.
 	before := h.countActiveAgents(t)
-	h.setMaxAgents(t, before+1)
-	t.Cleanup(func() { h.setMaxAgents(t, 200) })
+	h.setMaxConcurrentAgents(t, before+2)
+	t.Cleanup(func() { h.setMaxConcurrentAgents(t, 200) })
 
 	epic := h.materializedEpic(t)
 	orch := h.startOrchestrator(t, epic)

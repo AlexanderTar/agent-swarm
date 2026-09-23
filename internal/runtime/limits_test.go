@@ -12,13 +12,17 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
-func setLimits(t *testing.T, s *Store, orchestrators, agents, perRoot int) {
+// setLimits sets the two remaining admission knobs (2026-09-24
+// unify-agent-limits: max_orchestrators and max_agents merged into one
+// shared max_concurrent_agents pool -- see Admit's own doc comment).
+// agents is that shared global ceiling; perRoot is the untouched
+// max_agents_per_root fairness check.
+func setLimits(t *testing.T, s *Store, agents, perRoot int) {
 	t.Helper()
 	ctx := context.Background()
 	now := s.now().UnixMilli()
 	for _, kv := range [][2]string{
-		{"max_orchestrators", fmt.Sprintf("%d", orchestrators)},
-		{"max_agents", fmt.Sprintf("%d", agents)},
+		{"max_concurrent_agents", fmt.Sprintf("%d", agents)},
 		{"max_agents_per_root", fmt.Sprintf("%d", perRoot)},
 	} {
 		_, err := s.DB.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at)
@@ -31,30 +35,35 @@ func setLimits(t *testing.T, s *Store, orchestrators, agents, perRoot int) {
 	s.Events.Notify()
 }
 
-func TestAdmitOrchestratorsUseTheirOwnLimit(t *testing.T) {
+// TestAdmitOrchestratorsShareTheGlobalLimit is the 2026-09-24
+// unify-agent-limits inversion of this suite's old
+// TestAdmitOrchestratorsUseTheirOwnLimit: orchestrators no longer have a
+// separate max_orchestrators pool, so starting one now holds a slot in the
+// same shared max_concurrent_agents pool every other role counts against.
+func TestAdmitOrchestratorsShareTheGlobalLimit(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 1, 1)
+	setLimits(t, s, 1, 1)
 	seedEpicWithTask(t, s)
 	if _, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"}); err != nil {
 		t.Fatal(err)
 	}
-	// with max_agents = 1 and no worker running, a child is still admitted:
-	// the orchestrator does not occupy an agent slot (I20)
+	// with max_concurrent_agents = 1, the orchestrator already holds the one
+	// shared slot -- a coder child must queue behind it.
 	a, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "x"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if queued {
-		t.Fatalf("the child must start; the orchestrator does not hold an agent slot (agent %s)", a.Name)
+	if !queued {
+		t.Fatalf("the child must queue; the orchestrator now holds the shared slot (agent %s)", a.Name)
 	}
 }
 
 func TestAdmitQueuesTheSecondWorkerAndStartsItWhenASlotFrees(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 1, 4)
+	setLimits(t, s, 1, 4)
 	seedEpicWithTwoTasks(t, s)
 	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -93,7 +102,7 @@ func TestAdmitQueuesTheSecondWorkerAndStartsItWhenASlotFrees(t *testing.T) {
 func TestDrainQueueIsFIFO(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 1, 4)
+	setLimits(t, s, 1, 4)
 	seedEpicWithThreeTasks(t, s)
 	running, _, _ := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -117,7 +126,7 @@ func TestDrainQueueIsFIFO(t *testing.T) {
 func TestAdmitEnforcesThePerRootLimit(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 8, 1)
+	setLimits(t, s, 8, 1)
 	seedEpicWithTwoTasks(t, s)
 	if _, queued, _ := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}}); queued {
@@ -141,7 +150,7 @@ func TestAdmitEnforcesThePerRootLimit(t *testing.T) {
 func TestLoweringALimitQueuesTheNextSpawnAndLeavesRunningAgentsAlone(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 8, 4)
+	setLimits(t, s, 8, 4)
 	seedEpicWithTwoTasks(t, s)
 	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -149,7 +158,7 @@ func TestLoweringALimitQueuesTheNextSpawnAndLeavesRunningAgentsAlone(t *testing.
 		t.Fatal(err)
 	}
 	startedBefore := len(tm.started)
-	setLimits(t, s, 1, 1, 1)
+	setLimits(t, s, 1, 1)
 	out, err := s.Agent(ctx, a.Name)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +172,7 @@ func TestLoweringALimitQueuesTheNextSpawnAndLeavesRunningAgentsAlone(t *testing.
 		t.Fatal(err)
 	}
 	if !queued {
-		t.Fatal("the second spawn must queue: max_agents is 1 and the first agent holds the slot")
+		t.Fatal("the second spawn must queue: max_concurrent_agents is 1 and the first agent holds the slot")
 	}
 	if b.State != AgentQueued {
 		t.Fatalf("state = %s, want queued", b.State)
@@ -177,7 +186,7 @@ func TestLoweringALimitQueuesTheNextSpawnAndLeavesRunningAgentsAlone(t *testing.
 func TestDrainQueueGivesUpOnAnAgentItCannotStart(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 8, 4)
+	setLimits(t, s, 8, 4)
 	seedEpicWithTwoTasks(t, s)
 	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -209,7 +218,9 @@ func TestDrainQueueGivesUpOnAnAgentItCannotStart(t *testing.T) {
 func TestDrainQueuePreflightFailureRelaysToParent(t *testing.T) {
 	s, _, f := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 1, 4)
+	// agents=2: the orchestrator and the first child share the pool now, so
+	// both need room before the second child can be the one that queues.
+	setLimits(t, s, 2, 4)
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -268,7 +279,7 @@ func TestAdmitIgnoresZombiesWhenCountingSlots(t *testing.T) {
 		t.Run(string(zombieState), func(t *testing.T) {
 			s, _, _ := newStore(t)
 			ctx := context.Background()
-			setLimits(t, s, 3, 1, 4)
+			setLimits(t, s, 1, 4)
 			seedEpicWithTwoTasks(t, s)
 			first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 				Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -321,7 +332,7 @@ func TestAdmitIgnoresASelfTerminalCheckpointWhenCountingSlots(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			s, _, _ := newStore(t)
 			ctx := context.Background()
-			setLimits(t, s, 3, 1, 4)
+			setLimits(t, s, 1, 4)
 			seedEpicWithTwoTasks(t, s)
 			first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 				Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -385,7 +396,7 @@ func TestAdmitIgnoresASelfTerminalCheckpointWhenCountingSlots(t *testing.T) {
 func TestAdmitCountsOrchestratorsOwnSlotDespiteChildItemCheckpoint(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 8, 8)
+	setLimits(t, s, 1, 8)
 	seedEpicWithTask(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -443,7 +454,7 @@ func TestAdmitCountsOrchestratorsOwnSlotDespiteChildItemCheckpoint(t *testing.T)
 func TestAdmitCountsAResumedAgentAfterItsOwnFailedCheckpoint(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 1, 4)
+	setLimits(t, s, 1, 4)
 	seedEpicWithTwoTasks(t, s)
 	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -488,13 +499,15 @@ func TestAdmitCountsAResumedAgentAfterItsOwnFailedCheckpoint(t *testing.T) {
 	}
 }
 
-// TestAdmitIgnoresZombiesForOrchestratorLimit is the same fix applied to the
-// orchestrator branch of Admit, which runs a separate query against
-// max_orchestrators.
+// TestAdmitIgnoresZombiesForOrchestratorLimit is the same fix, exercised via
+// an orchestrator spawn: since 2026-09-24 unify-agent-limits there is no
+// separate orchestrator query any more -- this now goes through the same
+// shared max_concurrent_agents count every other role uses, and the crashed
+// orchestrator's slot must still be excluded from it.
 func TestAdmitIgnoresZombiesForOrchestratorLimit(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 8, 8)
+	setLimits(t, s, 1, 8)
 	seedEpicWithTask(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -515,7 +528,7 @@ func TestAdmitIgnoresZombiesForOrchestratorLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if queued || second.State != AgentActive {
-		t.Fatalf("the crashed orchestrator must not hold the max_orchestrators slot: queued = %v, state = %s", queued, second.State)
+		t.Fatalf("the crashed orchestrator must not hold the shared max_concurrent_agents slot: queued = %v, state = %s", queued, second.State)
 	}
 }
 
@@ -529,7 +542,7 @@ func TestAdmitIgnoresZombiesForOrchestratorLimit(t *testing.T) {
 func TestNoAckChildren(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 8, 8)
+	setLimits(t, s, 8, 8)
 	seedEpicWithTwoTasks(t, s)
 
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
@@ -595,7 +608,7 @@ func mustExec(t *testing.T, d *db.DB, query string, args ...any) {
 func TestAdmitConcurrentSpawnsNeverExceedLimit(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 3, 2, 5)
+	setLimits(t, s, 2, 5)
 
 	ep, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Concurrency Epic"}, items.User("board"))
 	if err != nil {
@@ -662,7 +675,7 @@ func TestAdmitConcurrentSpawnsNeverExceedLimit(t *testing.T) {
 	}
 
 	if activeCount != 2 {
-		t.Fatalf("active agents = %d, want exactly 2 (exceeded MaxAgents=2 limit due to race!)", activeCount)
+		t.Fatalf("active agents = %d, want exactly 2 (exceeded MaxConcurrentAgents=2 limit due to race!)", activeCount)
 	}
 	if queuedCount != numTasks-2 {
 		t.Fatalf("queued agents = %d, want %d", queuedCount, numTasks-2)

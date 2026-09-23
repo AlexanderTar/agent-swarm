@@ -21,15 +21,15 @@ func TestSettingsRoutes(t *testing.T) {
 	e := newEnv(t)
 	status, b := e.api("GET", "/api/settings", nil)
 	cur := decode[settings.Settings](t, b)
-	if status != 200 || cur.MaxAgents != 8 || cur.Roles[runtime.RoleCoder].Model != "sonnet" {
+	if status != 200 || cur.MaxConcurrentAgents != 4 || cur.Roles[runtime.RoleCoder].Model != "sonnet" {
 		t.Fatalf("GET = %d %s", status, b)
 	}
 	before, _ := e.events.Latest(bg)
-	cur.MaxAgents = 10
+	cur.MaxConcurrentAgents = 10
 	cur.Roles[runtime.RoleCoder] = settings.RoleDefault{Agent: runtime.Claude, Model: "opus", Effort: "xhigh"}
 	status, b = e.api("PUT", "/api/settings", cur)
 	saved := decode[settings.Settings](t, b)
-	if status != 200 || saved.MaxAgents != 10 || saved.Roles[runtime.RoleCoder].Effort != "xhigh" {
+	if status != 200 || saved.MaxConcurrentAgents != 10 || saved.Roles[runtime.RoleCoder].Effort != "xhigh" {
 		t.Fatalf("PUT = %d %s", status, b)
 	}
 	evs, _ := e.events.After(bg, before, 10)

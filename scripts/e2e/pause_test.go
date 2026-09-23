@@ -250,9 +250,12 @@ func TestScenario08PauseAllAndResume(t *testing.T) {
 // then pause-all.
 func TestScenario08bPauseAllFreezesAQueuedSpawn(t *testing.T) {
 	h := newHarness(t)
+	// +2, not +1: the orchestrator started below now shares the same pool as
+	// the worker it spawns (unify-agent-limits), so both need headroom before
+	// the second child's spawn is the one that queues.
 	before := h.countActiveAgents(t)
-	h.setMaxAgents(t, before+1)
-	t.Cleanup(func() { h.setMaxAgents(t, 200) })
+	h.setMaxConcurrentAgents(t, before+2)
+	t.Cleanup(func() { h.setMaxConcurrentAgents(t, 200) })
 
 	epic := h.materializedEpic(t)
 	orch := h.startOrchestrator(t, epic)
