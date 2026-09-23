@@ -105,12 +105,11 @@ func TestNativeWakeIsRetriedForEachNewMessageBatch(t *testing.T) {
 	fa.WakeOK = true
 	ctx := context.Background()
 	at := tm.clk
-	orch, w, wSes := worker(t, s)
+	orch, _, wSes := worker(t, s)
 	orchSes, err := s.LatestSession(ctx, orch.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = w
 	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": orchSes.ID}
 	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
 	// Clear the orchestrator's own kickoff assignment so the only pending

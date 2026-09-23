@@ -164,6 +164,8 @@ import sys, os, tty, termios, select, time
 fd = sys.stdin.fileno()
 old = termios.tcgetattr(fd)
 tty.setraw(fd)
+open(sys.argv[2], "w").close()   # tell the test the tty is raw; a paste before
+                                 # this would be read in canonical mode instead
 sizes, total, t0 = [], 0, time.time()
 try:
     while time.time() - t0 < 5:
@@ -204,15 +206,18 @@ func TestPasteLineNeverExceedsOneTtyReadPerChunk(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "sizes.txt")
+	ready := filepath.Join(dir, "ready")
 	ctx := context.Background()
-	if err := s.Start(ctx, "readsize", dir, nil, []string{py, probe, out}); err != nil {
+	if err := s.Start(ctx, "readsize", dir, nil, []string{py, probe, out, ready}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the probe to start reading", func() bool {
-		_, err := s.Capture(ctx, "readsize", 5)
+	// Wait for the tty to actually be in raw mode, not merely for the pane to
+	// exist: a paste that lands while it is still canonical would be read
+	// under MAX_CANON rules and measure the wrong thing entirely.
+	waitFor(t, "the probe to put its tty in raw mode", func() bool {
+		_, err := os.Stat(ready)
 		return err == nil
 	})
-	time.Sleep(300 * time.Millisecond) // let python reach tty.setraw before the paste
 	line := strings.Repeat("swarm inbox notice filler ", 66)[:1700]
 	if err := s.PasteLine(ctx, "readsize", line); err != nil {
 		t.Fatal(err)
