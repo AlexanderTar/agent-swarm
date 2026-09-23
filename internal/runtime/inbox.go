@@ -618,7 +618,7 @@ func (s *Store) pendingInboxItems(ctx context.Context, agentID string, limit int
 			WHERE to_agent_id = ? AND state = 'pending'`, agentID).Scan(&total); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT id, kind, COALESCE(from_agent_id, ''), origin, payload_json
+		rows, err := tx.QueryContext(ctx, `SELECT id, kind, COALESCE(from_agent_id, ''), payload_json
 			FROM messages WHERE to_agent_id = ? AND state = 'pending'
 			ORDER BY priority, seq LIMIT ?`, agentID, limit)
 		if err != nil {
@@ -626,18 +626,21 @@ func (s *Store) pendingInboxItems(ctx context.Context, agentID string, limit int
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id, kind, fromAgentID, origin string
+			var id, kind, fromAgentID string
 			var payload []byte
-			if err := rows.Scan(&id, &kind, &fromAgentID, &origin, &payload); err != nil {
+			if err := rows.Scan(&id, &kind, &fromAgentID, &payload); err != nil {
 				return err
 			}
+			// Sender attribution mirrors envelopes() above: a resolvable
+			// from_agent_id names the peer, otherwise the daemon. (No
+			// origin check here: TestOnlyTheUserPathsWriteUserActionMessages
+			// forbids the "user_action" literal outside the allow-listed
+			// UI/CLI write paths, and this is a read path.)
 			from := "daemon"
 			if fromAgentID != "" {
 				if a, err := s.agentByIDTx(ctx, tx, fromAgentID); err == nil {
 					from = a.Name
 				}
-			} else if origin == "user_action" {
-				from = "user"
 			}
 			items = append(items, InboxItem{ID: id, Kind: kind, From: from,
 				Summary: summarizeFor(MessageKind(kind), json.RawMessage(payload))})
