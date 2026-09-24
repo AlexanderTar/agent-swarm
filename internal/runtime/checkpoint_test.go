@@ -2257,3 +2257,80 @@ func TestTDDGateMergesAcrossMultipleReviewStepsForSameBuildStep(t *testing.T) {
 		t.Fatalf("only unit 1 should be required (review-ui's finding, merged with review-code's clean pass): %v", err)
 	}
 }
+
+// Finding 3 (Minor): pins an R3 behaviour that was implemented but never
+// directly tested -- a genuine fix round (blocked verdict) with zero
+// structured findings still needs at least one red-before-green pair
+// somewhere, it is never "nothing required".
+func TestTDDGateBlockedWithZeroFindingsStillNeedsAPair(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindingsAs(t, s, workflowID, "review", 1, "reviewer", "blocked", nil)
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "resumed"})
+	if err == nil {
+		t.Fatal("a blocked verdict with zero findings must still require one pair, not pass silently")
+	}
+	if err.Error() != tddMissingRound {
+		t.Fatalf("err = %q, want %q", err, tddMissingRound)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "resumed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatalf("one pair should satisfy it: %v", err)
+	}
+}
+
+// Finding 3 (Minor): pins another R3 behaviour -- a unit-tagged finding on
+// a NON-batched task (no units at all) is treated as package-wide, since
+// there's no unit space for that tag to address; an untagged pair
+// satisfies it.
+func TestTDDGateUnitTaggedFindingOnNonBatchedTaskIsPackageWide(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	// The task has no units at all; this finding still carries a (stray)
+	// unit tag.
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "a.go", Summary: "still broken", Unit: 5},
+	})
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed"})
+	if err == nil {
+		t.Fatal("expected the generic round copy, not a silent pass or a unit(s)-list error")
+	}
+	if err.Error() != tddMissingRound {
+		t.Fatalf("err = %q, want %q", err, tddMissingRound)
+	}
+
+	// An UNTAGGED pair (not "unit 5") satisfies it.
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatalf("an untagged pair should satisfy a package-wide requirement: %v", err)
+	}
+}
