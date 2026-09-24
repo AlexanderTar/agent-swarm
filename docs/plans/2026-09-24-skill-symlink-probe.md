@@ -116,41 +116,74 @@ That is `$HOME/.gemini/config/skills/...`, **not**
 `Config.SkillsDir(KindAgy)` actually resolves to, reached through the
 `.gemini/antigravity-cli` symlink). agy 1.2.10 reads its skills from
 `$HOME/.gemini/config/skills`, and on first run in a fresh `HOME` it
-**migrates** whatever it finds under `.gemini/antigravity-cli/skills` into
-`$HOME/.gemini/config/skills` — moving the content, not copying it — and
-leaves a reverse symlink at the old location pointing at the new one. Since
-in run 4 `.gemini/antigravity-cli` was itself a symlink to the **real**
-`~/.gemini/antigravity-cli`, the migration did not stay inside the scratch
-`HOME`: it moved the real `swarm`/`swarm-orchestrator` directories (and the
-probe symlink alongside them) out of the real, shared
-`~/.gemini/antigravity-cli/skills` location and into the scratch `HOME`'s
-`.gemini/config/skills`, replacing the real location with a symlink pointing
-into the scratch dir.
+**copies** whatever it finds under `.gemini/antigravity-cli/skills` into
+`$HOME/.gemini/config/skills`, then **repoints**
+`.gemini/antigravity-cli/skills` itself at that copy (a reverse symlink) —
+confirmed by a plain `ls` of the chain's terminal directory right after this
+round's cleanup (20:55, before the controller touched anything): `swarm/`
+and `swarm-orchestrator/` were present, `mtime` unchanged since 19:45, and
+`SKILL.md` contents byte-identical to before. Nothing was moved or deleted;
+the *link* was repointed, the originals stayed put. Since in run 4
+`.gemini/antigravity-cli` was itself a symlink to the **real**
+`~/.gemini/antigravity-cli`, that repoint reached all the way to the real,
+shared `~/.gemini/antigravity-cli/skills` path — after run 4, that real path
+no longer pointed at the terminal directory holding the real
+`swarm`/`swarm-orchestrator` dirs; it pointed into the scratch `HOME`
+instead.
 
 **Consequence (safety incident):** deleting that scratch `HOME` afterwards
-(ordinary probe cleanup) deleted the migrated content, leaving the live
-`~/.gemini/antigravity-cli/skills` symlink dangling — a real side effect on
-shared, in-use state (this machine runs other live swarm sessions), not
-contained to the probe's own scratch area. The controller restored the link.
-Per that review, **no further agy CLI runs happened in this round**, and
-`Config.SkillsDir(KindAgy)`, the real `~/.gemini/antigravity-cli` tree, and
-anything else under `~` were left untouched for the fix.
+(ordinary probe cleanup) removed the copy agy had repointed the real link
+at, leaving `~/.gemini/antigravity-cli/skills` **dangling over otherwise
+intact originals** — no content was lost, but a real, shared, in-use path
+(this machine runs other live swarm sessions) was left broken by a probe
+run. The controller restored the link. Per that review, **no further agy
+CLI runs happened in this round**, and `Config.SkillsDir(KindAgy)`, the real
+`~/.gemini/antigravity-cli` tree, and anything else under `~` were left
+untouched for the fix.
 
-Because the positive result in run 4 was reading agy's own migrated copy
-(agy's migration is effectively a copy/move operation, independent of
-whether the source was a symlink or a real directory), it says nothing about
-whether agy follows a symlink placed directly at
-`Config.SkillsDir(KindAgy)` — the two earlier bare-`HOME` runs (1–3), which
-did use that exact location without triggering a fresh-`HOME` migration,
-found nothing at all, symlink or copy. **Verdict: unverified; `skillLinkMode`
-keeps agy on `Copy`** (the pre-existing safe default) rather than asserting
-either way.
+Because the positive result in run 4 was reading agy's own copy-then-repoint
+target, it says nothing about whether agy follows a symlink placed directly
+at `Config.SkillsDir(KindAgy)` and left there. The two earlier bare-`HOME`
+runs (1–3) used that exact location without triggering a fresh-`HOME`
+copy/repoint and found nothing at all, symlink or real copy — because on
+this operator's real `HOME`, the migration had already run once before (see
+below), so `~/.gemini/config/skills` did exist but had no user-installed
+entries in it, and agy never looked at `.gemini/antigravity-cli/skills`
+again. **Verdict: unverified; `skillLinkMode` keeps agy on `Copy`** (the
+pre-existing safe default) rather than asserting either way.
 
-### Follow-up (not implemented here)
+Runs 1–3's "nothing at all" is explained the same way: `ls -la
+~/.gemini/config/` shows a `.migrated` marker (28 Aug) and no `skills/`
+subdirectory at all under the real `$HOME` — the one-time copy/repoint had
+already happened on this machine, long before this check, against whatever
+`~/.gemini/antigravity-cli/skills` held at the time. Bare-`HOME` agy has no
+user skills directory under `.gemini/config/` to read at all; it falls back
+to plugin-provided skills only, which is exactly the curated
+ponytail/superpowers-only list runs 1–3 returned.
+
+### Follow-up (not implemented here) — this is not just hygiene
 
 `Config.SkillsDir(KindAgy)` (`internal/install/config.go` around line 90)
-points at `~/.gemini/antigravity-cli/skills`, a location agy 1.2.10 migrates
-away from on first run in a given `HOME`. To get a clean, repeatable signal:
+points at `~/.gemini/antigravity-cli/skills`, a location agy 1.2.10
+copies away from and repoints on first run in a given `HOME`. This is
+already happening in production, not just in this probe: before any probe
+in this check ran, `~/.gemini/antigravity-cli/skills` was *already* a
+two-hop symlink chain (`... -> ses_01M36H52.../agy-home/.gemini/config/skills
+-> ses_01M36FPV68.../agy-home/.gemini/config/skills`, the second a real
+directory holding `swarm`/`swarm-orchestrator`). That is exactly this same
+copy-and-repoint behavior, left over from *prior* real swarm spawns — every
+production agy spawn goes through `adapter/agy.go`'s `setupEnv`, which
+symlinks a brand-new session's `.gemini/antigravity-cli` to the real one, so
+every spawn is a "fresh `HOME`" from agy's point of view and each one
+copies-and-repoints the real `~/.gemini/antigravity-cli/skills` link one hop
+further into that session's own directory. (Round 0 of this check's report
+stated this chain was "not something `setupEnv` produces" — that was wrong;
+`setupEnv` does not do the repointing itself, but it reliably triggers agy
+into doing it, spawn after spawn.) Each hop lands inside a session directory
+that is later cleaned up, so the chain is one broken link away from going
+dangling on any ordinary swarm session cleanup — this already happened once
+by accident during this check and will keep happening on its own. To get a
+clean, repeatable signal *and* stop this:
 
 1. Move `Config.SkillsDir(KindAgy)` to `~/.gemini/config/skills` (the
    location agy actually reads from), matching the `$CONFIG_DIR/skills`
@@ -158,10 +191,11 @@ away from on first run in a given `HOME`. To get a clean, repeatable signal:
 2. Update `internal/adapter/agy.go`'s `setupEnv` to symlink
    `<agy-home>/.gemini/config/skills` to that real location directly
    (instead of relying on the `.gemini/antigravity-cli` symlink plus agy's
-   own migration to get there), so a swarm-spawned agy sees the shared
-   skills tree at the path it actually reads without agy needing to migrate
-   anything.
+   own copy-and-repoint to get there), so a swarm-spawned agy sees the
+   shared skills tree at the path it actually reads without agy needing to
+   copy or repoint anything, and the real path is never the thing that gets
+   repointed.
 3. Re-probe with a real-copy control alongside the symlink at the new
    location, in a single well-isolated scratch `HOME` that has no path back
-   into any real, shared config directory, so a migration (if agy still
-   performs one) cannot escape the scratch sandbox.
+   into any real, shared config directory, so a copy/repoint (if agy still
+   performs one there) cannot escape the scratch sandbox.
