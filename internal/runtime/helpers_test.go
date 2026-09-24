@@ -333,6 +333,30 @@ func seedReviewFindings(t *testing.T, s *Store, workflowID string, round int, fi
 	}
 }
 
+// seedRWWorktreeAt gives agentID an active 'rw' reservation on a worktree
+// whose path is a REAL git checkout (unlike seedWorktreeReservation, whose
+// path is an empty t.TempDir() -- fine for reservation-accounting tests, but
+// not for the commit gate, which runs real `git status`/`rev-parse` against
+// it). repoID must already exist (its own `path` column is unrelated to
+// this worktree's path -- the commit gate only ever looks at the worktree
+// row, exactly like the real one-repo-many-worktrees shape).
+func seedRWWorktreeAt(t *testing.T, s *Store, repoID, agentID, rootItemID, path string) string {
+	t.Helper()
+	ctx := context.Background()
+	wtID, now := ids.New("wt"), db.Millis(s.Now())
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktrees
+		(id, repo_id, path, branch, base_ref, base_sha, owner_agent_id, root_item_id, state, created_at)
+		VALUES (?, ?, ?, 'task/x', 'main', 'abc1234', ?, ?, 'active', ?)`,
+		wtID, repoID, path, agentID, rootItemID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktree_reservations
+		(worktree_id, agent_id, mode, created_at) VALUES (?, ?, 'rw', ?)`, wtID, agentID, now); err != nil {
+		t.Fatal(err)
+	}
+	return wtID
+}
+
 func gitRepoNoSigning(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

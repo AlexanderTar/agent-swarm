@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -1489,5 +1491,141 @@ func TestLegacyCoderKeepsVerifyOK(t *testing.T) {
 		Verification: []Verify{{Cmd: "go test ./..."}},
 		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
 		t.Fatalf("legacy verifyOK should accept any non-empty cmd: %v", err)
+	}
+}
+
+// --- Unit 8.5: commit and artifact gates (spec B5), real temp git repos ---
+
+// seedCommitRepo creates a real one-commit git repo, registers it and gives
+// coder an rw worktree reservation on it (its own checkout doubling as the
+// worktree path, same as this file's other git fixtures). Returns the repo
+// dir and its HEAD sha.
+func seedCommitRepo(t *testing.T, s *Store, coder Agent) (dir, head string) {
+	t.Helper()
+	ctx := context.Background()
+	dir = gitRepoNoSigning(t)
+	commitFile(t, dir, "a.txt", "hi")
+	head = strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+	repoID := ids.New("repo")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO repos (id, path, name, default_branch, source, created_at, updated_at)
+		VALUES (?, ?, 'proj', 'main', 'manual', 1, 1)`, repoID, dir); err != nil {
+		t.Fatal(err)
+	}
+	seedRWWorktreeAt(t, s, repoID, coder.ID, coder.RootItemID, dir)
+	return dir, head
+}
+
+func TestCommitGateRefusesDirtyWorktree(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+	dir, head := seedCommitRepo(t, s, coder)
+	// The worktree is genuinely dirty; the checkpoint's own claim of
+	// dirty:false must not be trusted over it.
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("uncommitted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}})
+	if err == nil {
+		t.Fatal("expected a dirty-worktree error")
+	}
+	if want := "Commit your work before completing: proj is dirty"; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+func TestCommitGateRefusesShaMismatch(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+	_, head := seedCommitRepo(t, s, coder)
+
+	stale := "1111111111111111111111111111111111111a"
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: stale, Dirty: false}}})
+	if err == nil {
+		t.Fatal("expected a sha-mismatch error")
+	}
+	want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s.", head[:7], stale[:7])
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+func TestCommitGateStoresSha(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, workflowID := buildOnly(t, s, workflow.GateCommit)
+	_, head := seedCommitRepo(t, s, coder)
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatalf("a clean worktree with a matching sha should pass the commit gate: %v", err)
+	}
+	var stored string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(sha, '') FROM workflow_runs WHERE workflow_id = ?`,
+		workflowID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != head {
+		t.Fatalf("workflow_runs.sha = %q, want %q", stored, head)
+	}
+}
+
+func TestDesignArtifactGateRegistersArtifact(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "design", Run: "designer", Gates: []workflow.Gate{workflow.GateArtifactDesign}},
+		{ID: "review", Review: []string{"ui_reviewer"}, Of: "design"},
+	}})
+	designer, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "design it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dSes, err := s.LatestSession(ctx, designer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, designer.ID, "design", "designer", 1)
+
+	if _, err := s.WriteCheckpoint(ctx, dSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "designed"}); err == nil {
+		t.Fatal("expected an artifact-missing error")
+	} else if want := fmt.Sprintf("Completed needs your design file in artifacts (under ~/.swarm/designs/%s/).", it.RootKey); err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	dir := filepath.Join(s.Home, "designs", it.RootKey)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "flow.md")
+	if err := os.WriteFile(path, []byte("# Flow\n\nThree screens.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, dSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "designed",
+		Artifacts: []string{path}}); err != nil {
+		t.Fatalf("a readable design file under the gate's path should pass: %v", err)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE item_id = ? AND kind = 'design' AND path = ?`,
+		it.ID, path).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("design artifact not registered: count = %d", count)
 	}
 }

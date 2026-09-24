@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -215,6 +217,12 @@ func (s *Store) applyGates(ctx context.Context, tx *sql.Tx, it items.Item, run w
 			err = s.tddGate(ctx, tx, it, run, a, in)
 		case workflow.GateVerify:
 			err = s.verifyGate(ctx, tx, it, run, a, in)
+		case workflow.GateCommit:
+			err = s.commitGate(ctx, tx, a, in, run)
+		case workflow.GateArtifactDesign:
+			err = s.artifactGate(ctx, tx, it, a, in, "design", "designs")
+		case workflow.GateArtifactNotes:
+			err = s.artifactGate(ctx, tx, it, a, in, "research", "research")
 		}
 		if err != nil {
 			return err
@@ -439,6 +447,172 @@ func (s *Store) verifyGate(ctx context.Context, tx *sql.Tx, it items.Item, run w
 	}
 	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
 		"Declared verify commands not recorded as passing: %s.", strings.Join(missing, "; "))}
+}
+
+// rwWorktree is one read-write worktree share the commit gate checks.
+type rwWorktree struct{ Repo, Path string }
+
+// rwWorktreesFor returns every currently-held 'rw' worktree reservation for
+// agentID, repo name and worktree path, ordered by repo name for
+// deterministic sha selection when a task shares more than one repo.
+func (s *Store) rwWorktreesFor(ctx context.Context, tx *sql.Tx, agentID string) ([]rwWorktree, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT r.name, w.path FROM worktree_reservations wr
+		JOIN worktrees w ON w.id = wr.worktree_id
+		JOIN repos r ON r.id = w.repo_id
+		WHERE wr.agent_id = ? AND wr.mode = 'rw' AND wr.released_at IS NULL
+		ORDER BY r.name`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []rwWorktree
+	for rows.Next() {
+		var w rwWorktree
+		if err := rows.Scan(&w.Repo, &w.Path); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// gitHead runs `git rev-parse HEAD` at path.
+func (s *Store) gitHead(ctx context.Context, path string) (string, error) {
+	runner := s.Exec
+	if runner == nil {
+		runner = execx.Run
+	}
+	out, err := runner(ctx, "git", "-C", path, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// sha7 is the short form of a git sha (its first 7 characters), for error
+// copy -- mirrors internal/workflow's own unexported sha7.
+func sha7(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+func dirtyRepoError(repo string) error {
+	return &items.Error{Code: items.CodeBadRequest,
+		Message: fmt.Sprintf("Commit your work before completing: %s is dirty", repo)}
+}
+
+// commitGate is the workflow commit gate (spec B5): the checkpoint must
+// declare git, every declared entry must claim clean, and for each rw
+// worktree actually shared to this agent the real tree must be clean too
+// (not just trust the caller's own dirty:false) with HEAD matching the
+// entry recorded for that repo. The matched HEAD sha is stored on the run
+// (its own lifecycle -- state, ended_at -- is P9's, not touched here).
+func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in CheckpointInput, run workflowRun) error {
+	if len(in.Git) == 0 {
+		return &items.Error{Code: items.CodeBadRequest,
+			Message: "Completed needs git: [{repo, branch, sha, dirty:false}]."}
+	}
+	byRepo := map[string]GitRef{}
+	for _, g := range in.Git {
+		if g.Dirty {
+			return dirtyRepoError(g.Repo)
+		}
+		byRepo[g.Repo] = g
+	}
+	wts, err := s.rwWorktreesFor(ctx, tx, a.ID)
+	if err != nil {
+		return err
+	}
+	var sha string
+	for _, wt := range wts {
+		dirty, err := s.Worktree.DirtyStrict(ctx, wt.Path)
+		if err != nil {
+			return err
+		}
+		if dirty {
+			return dirtyRepoError(wt.Repo)
+		}
+		head, err := s.gitHead(ctx, wt.Path)
+		if err != nil {
+			return err
+		}
+		g := byRepo[wt.Repo]
+		if head != g.SHA {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"Commit your work before completing: %s HEAD is %s, checkpoint says %s.",
+				wt.Repo, sha7(head), sha7(g.SHA))}
+		}
+		if sha == "" {
+			sha = head
+		}
+	}
+	if sha != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET sha = ? WHERE id = ?`, sha, run.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// registerArtifactAsDaemon registers a design/research artifact the
+// artifact gate found (spec B5), as the daemon rather than through
+// swarm_artifact's orchestrator-only RegisterArtifact -- a designer or
+// researcher, not necessarily an orchestrator, writes these. It runs inside
+// WriteCheckpoint's own transaction. A path already registered on the item
+// is left alone (first registration only; these single-file design/research
+// notes don't carry RegisterArtifact's revision/section-approval machinery).
+func (s *Store) registerArtifactAsDaemon(ctx context.Context, tx *sql.Tx, itemID, agentID, kind, path string) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("artifact: %w", err)
+	}
+	var exists int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM artifacts WHERE item_id = ? AND path = ?`, itemID, path).Scan(&exists)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	sections := SplitSections(string(body))
+	sectionsJSON, err := json.Marshal(sections)
+	if err != nil {
+		return err
+	}
+	artifactID, now := ids.New("art"), db.Millis(s.Now())
+	if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts
+		(id, item_id, kind, path, head_revision, created_by, created_at)
+		VALUES (?, ?, ?, ?, 1, ?, ?)`, artifactID, itemID, kind, path, agentID, now); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO artifact_revisions
+		(artifact_id, revision, sha256, content, sections_json, created_at)
+		VALUES (?, 1, ?, ?, ?, ?)`, artifactID, sha256Hex(string(body)), string(body), string(sectionsJSON), now)
+	return err
+}
+
+// artifactGate is the workflow artifact:design / artifact:notes gate (spec
+// B5): artifacts must contain a readable file under
+// ~/.swarm/<dir>/<ROOT-KEY>/, which is then registered on the task.
+func (s *Store) artifactGate(ctx context.Context, tx *sql.Tx, it items.Item, a Agent, in CheckpointInput, kind, dir string) error {
+	prefix := filepath.Join(s.Home, dir, it.RootKey) + string(filepath.Separator)
+	for _, p := range in.Artifacts {
+		if !strings.HasPrefix(p, prefix) {
+			continue
+		}
+		if fi, err := os.Stat(p); err != nil || fi.IsDir() {
+			continue
+		}
+		return s.registerArtifactAsDaemon(ctx, tx, it.ID, a.ID, kind, p)
+	}
+	noun, thing := "design file", "designs"
+	if kind == "research" {
+		noun, thing = "research notes", "research"
+	}
+	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+		"Completed needs your %s in artifacts (under ~/.swarm/%s/%s/).", noun, thing, it.RootKey)}
 }
 
 // requiredArtifactKind returns the artifact kind a root item's completed
