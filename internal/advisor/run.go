@@ -14,9 +14,12 @@ import (
 
 // Prompt is §11.6 step 3, aligned to the swarm-advisor skill's decision rules
 // (P4, spec A4): one decision per consult, an answer grounded in what was
-// actually read rather than a menu of options. The daemon substitutes {name},
-// {role}, {KEY} and {context_path} before running.
-const Prompt = "You are the advisor for Swarm agent {name} ({role}) working on {KEY}. Read {context_path} and any files it lists. This is one decision, not a menu: give one decisive recommendation grounded in what you actually read there, not general assumptions — the main risk, and what to check next. At most 250 words. Do not edit files. This request was sent by the Swarm daemon on the agent's behalf, not typed by the user."
+// actually read rather than a menu of options, and (fix round 1, Important
+// finding 1) rule 5 -- when the evidence doesn't settle the decision and the
+// stakes are high, the advisor says so instead of forcing a recommendation
+// the evidence can't support. The daemon substitutes {name}, {role}, {KEY}
+// and {context_path} before running.
+const Prompt = "You are the advisor for Swarm agent {name} ({role}) working on {KEY}. Read {context_path} and any files it lists. This is one decision, not a menu: give one decisive recommendation grounded in what you actually read there, not general assumptions — the main risk, and what to check next. If what you read doesn't settle the decision and the stakes are high, say so plainly and recommend the agent take it to its parent or the user rather than guessing. At most 250 words. Do not edit files. This request was sent by the Swarm daemon on the agent's behalf, not typed by the user."
 
 // failureMessage is the §17.3 copy delivered to the agent.
 func failureMessage(err string) string {
