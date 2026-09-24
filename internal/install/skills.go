@@ -159,18 +159,29 @@ const (
 	Copy
 )
 
-// skillLinkMode is §A1's per-kind choice, checked empirically against each
-// agent CLI on 2026-09-24: only `claude` is installed on the machine this
-// check ran on, and it does follow a skills-root entry that is a symlink to
-// another directory (it lists and can invoke the skill inside). codex, agy,
-// cursor-agent and muse were not installed to check, so each defaults to the
-// safe Copy fallback until someone verifies it and flips the entry below.
+// skillLinkMode is §A1's per-kind choice, checked empirically against every
+// agent CLI on 2026-09-24 (probe skill planted as `<kind-skills-root>/zz-swarm-symlink-probe`,
+// a symlink to a directory outside the skills root; each CLI run headless and
+// asked to list its skills / invoke the probe by name). All five discovered
+// and invoked the symlinked skill, so all five are Symlink:
+//   - claude, codex, cursor-agent: a bare headless run against the real
+//     ~/.<kind>/skills root listed the probe and reported its codeword.
+//   - muse: `muse skills list --json` and `muse skills inspect` read the
+//     probe's frontmatter through the symlink; `muse exec` confirmed live.
+//   - agy: a bare run against the real user HOME did not surface the probe
+//     (nor the pre-existing `swarm`/`swarm-orchestrator` skills either,
+//     symlink or real copy alike) -- that HOME's agy config looked stale.
+//     Re-run with a fresh, never-used HOME whose `.gemini/antigravity-cli` is
+//     symlinked to the real one (mirroring adapter/agy.go's setupEnv, which
+//     is how swarm actually launches agy -- always a brand-new per-session
+//     HOME) discovered the symlinked probe and reported its codeword.
+// See docs' skilllink-report.md for the exact commands and versions.
 var skillLinkMode = map[Kind]LinkMode{
 	KindClaude: Symlink,
-	KindCodex:  Copy,
-	KindAgy:    Copy,
-	KindCursor: Copy,
-	KindMuse:   Copy,
+	KindCodex:  Symlink,
+	KindAgy:    Symlink,
+	KindCursor: Symlink,
+	KindMuse:   Symlink,
 }
 
 // SkillLinkMode reports how WriteSkills exposes skills for k. Exported so a

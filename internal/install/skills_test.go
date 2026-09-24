@@ -829,12 +829,11 @@ func TestWriteClaudeAdoptsAPreA1RealSkillDirectory(t *testing.T) {
 	}
 }
 
-// Review round 1, Minor 7: a Copy-mode kind must never follow a leftover
-// symlink at dst (this kind used to be Symlink-mode, say) into whatever it
-// actually points at -- here, on purpose, a *different* skill's shared
-// ~/.swarm/skills directory -- and write through it. dst must become a real
-// removed-then-copied directory, and the other skill's shared copy must come
-// out untouched.
+// Review round 1, Minor 7: Copy mode must never follow a leftover symlink at
+// dst (a kind that used to be Symlink-mode, say) into whatever it actually
+// points at -- here, on purpose, a *different* skill's shared ~/.swarm/skills
+// directory -- and write through it. dst must become a real removed-then-copied
+// directory, and the other skill's shared copy must come out untouched.
 func TestWriteSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing.T) {
 	home := t.TempDir()
 	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
@@ -845,8 +844,13 @@ func TestWriteSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	// This exercises Copy mode directly via LinkSkills rather than a Kind:
+	// the empirical symlink check (2026-09-24) found every registered CLI
+	// discovers a symlinked skill, so skillLinkMode has no Copy-mode Kind
+	// left to stand in for one here.
+	root := filepath.Join(home, "copy-mode-root")
+	dst := filepath.Join(root, "swarm")
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	wrongTarget := filepath.Join(skillsHome, "swarm-orchestrator")
@@ -854,7 +858,7 @@ func TestWriteSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing
 		t.Fatal(err)
 	}
 
-	if _, _, err := install.WriteSkills(c, install.KindCodex); err != nil {
+	if _, err := install.LinkSkills(root, skillsHome, install.Copy); err != nil {
 		t.Fatal(err)
 	}
 
