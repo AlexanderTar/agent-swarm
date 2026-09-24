@@ -1270,10 +1270,6 @@ func TestSameRoleSiblingStillClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	it, err := s.Items.Get(ctx, "TASK-1")
-	if err != nil {
-		t.Fatal(err)
-	}
 	wfID := func() string {
 		var id string
 		if err := s.DB.QueryRowContext(ctx, `SELECT workflow_id FROM workflow_runs WHERE agent_id = ?`, coder.ID).
@@ -1293,7 +1289,6 @@ func TestSameRoleSiblingStillClosed(t *testing.T) {
 		ids.New("wfr"), wfID, coder2.ID, db.Millis(s.Now())); err != nil {
 		t.Fatal(err)
 	}
-	_ = it
 	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
 		Verification: []Verify{{Cmd: "go test ./..."}},
 		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
@@ -1548,7 +1543,7 @@ func TestCommitGateRefusesShaMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a sha-mismatch error")
 	}
-	want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s.", head[:7], stale[:7])
+	want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s", head[:7], stale[:7])
 	if err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
@@ -1627,5 +1622,34 @@ func TestDesignArtifactGateRegistersArtifact(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("design artifact not registered: count = %d", count)
+	}
+}
+
+// --- Fix round 1 (Opus review + controller rulings R1-R3) ---
+
+// Finding 4: applyGates used to fail OPEN when run.step_id names no step in
+// the item's own workflow (stepFor's zero-value Step has no Gates, so the
+// loop over them does nothing) -- a corrupted or stale run row silently
+// skipped every gate instead of refusing.
+func TestApplyGatesRefusesUnknownWorkflowStep(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "does-not-exist", "coder", 1)
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected an unknown-workflow-step error, not a silent pass")
+	}
+	want := `workflow step "does-not-exist" not found on TASK-1; ask your orchestrator.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
 	}
 }

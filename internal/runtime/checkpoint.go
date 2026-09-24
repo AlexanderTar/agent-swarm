@@ -209,7 +209,15 @@ func hasMajorOrCritical(fs []workflow.Finding) bool {
 // its case in); 8.4 adds tdd/verify, 8.5 adds
 // commit/artifact:design/artifact:notes.
 func (s *Store) applyGates(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput) error {
-	step, _ := stepFor(it.Workflow, run.StepID)
+	step, ok := stepFor(it.Workflow, run.StepID)
+	if !ok {
+		// A corrupted or stale run row (or an item whose workflow_json went
+		// missing) must refuse, not silently enforce zero gates (fix round
+		// 1, finding 4): stepFor's zero-value Step has no Gates, so the
+		// loop below would just do nothing.
+		return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+			`workflow step %q not found on %s; ask your orchestrator.`, run.StepID, it.Key)}
+	}
 	for _, g := range step.Gates {
 		var err error
 		switch g {
@@ -489,15 +497,6 @@ func (s *Store) gitHead(ctx context.Context, path string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// sha7 is the short form of a git sha (its first 7 characters), for error
-// copy -- mirrors internal/workflow's own unexported sha7.
-func sha7(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
-	}
-	return sha
-}
-
 func dirtyRepoError(repo string) error {
 	return &items.Error{Code: items.CodeBadRequest,
 		Message: fmt.Sprintf("Commit your work before completing: %s is dirty", repo)}
@@ -525,6 +524,10 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 	if err != nil {
 		return err
 	}
+	if len(wts) == 0 {
+		return &items.Error{Code: items.CodeBadRequest,
+			Message: "Commit your work before completing: no rw worktree shared with you"}
+	}
 	var sha string
 	for _, wt := range wts {
 		dirty, err := s.Worktree.DirtyStrict(ctx, wt.Path)
@@ -534,15 +537,19 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 		if dirty {
 			return dirtyRepoError(wt.Repo)
 		}
+		g, ok := byRepo[wt.Repo]
+		if !ok {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"Commit your work before completing: no git entry for %s", wt.Repo)}
+		}
 		head, err := s.gitHead(ctx, wt.Path)
 		if err != nil {
 			return err
 		}
-		g := byRepo[wt.Repo]
 		if head != g.SHA {
 			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
-				"Commit your work before completing: %s HEAD is %s, checkpoint says %s.",
-				wt.Repo, sha7(head), sha7(g.SHA))}
+				"Commit your work before completing: %s HEAD is %s, checkpoint says %s",
+				wt.Repo, workflow.SHA7(head), workflow.SHA7(g.SHA))}
 		}
 		if sha == "" {
 			sha = head
