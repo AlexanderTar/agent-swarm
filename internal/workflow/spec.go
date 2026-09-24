@@ -10,7 +10,7 @@ package workflow
 type Gate string
 
 const (
-	GateTDD            Gate = "tdd"             // red (ok:false) before green (ok:true), same attempt
+	GateTDD            Gate = "tdd"             // red (ok:false) before green (ok:true), same round
 	GateCommit         Gate = "commit"          // git present, clean, sha == worktree HEAD
 	GateVerify         Gate = "verify"          // every declared verify cmd recorded ok:true
 	GateArtifactDesign Gate = "artifact:design" // a design artifact path under ~/.swarm/designs

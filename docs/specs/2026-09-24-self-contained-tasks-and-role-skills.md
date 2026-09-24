@@ -680,39 +680,78 @@ questions still reach the orchestrator, which answers as today.
     item is `tdd_exempt`. For a batched task (`units`), `Verify` entries
     carry `unit` (1-based) and the red-before-green pair is required **per
     unit** — on the step's first round, for every unit in the package.
-    **Fix rounds** (the builder retried with findings, round > 1, per B4's
-    `Retry`, which starts a fresh round for this gate's scope): red-before-
-    green is required only for the units named by unit-tagged findings in
-    that round's fix brief. If any finding in the round carries no `unit`
-    (package-wide), at least one red-before-green pair (any unit, or
-    untagged for a non-batched task) is required somewhere in the round. Units
-    named by no finding in that round need no new `tdd` evidence that round
-    — the `verify` gate still requires every declared verify command to
-    pass, which covers unchanged units. A finding that is not testable
-    behaviour (wording, comments, docs) still counts toward its unit's
-    requirement: the red entry's `note` says why the red is a new or
-    updated test, or, when no test can express it, names the failing check
-    actually used instead (e.g. a grep or lint command). The error names
-    only the units still missing required evidence for the current round.
+    **What counts as a fix round** (fix round 1, R3) is per *step*, not per
+    round number: a run is in a fix round only when (a) some review step's
+    loop retries it — `Loop.Fix`, falling back to `Of`, names this run's
+    `step_id` — **and** (b) that review step has reviewer/`ui_reviewer` rows
+    at round − 1 with verdict `changes_requested` or `blocked`. Findings are
+    read only from those rows (every reviewer's, not just the blocking
+    one's — a reviewer who passed but left findings still counts, same as
+    B4's `mergeFindings`). Any other run — no review step targets this
+    step at all, or one does but has no `changes_requested`/`blocked` row
+    at round − 1 — is a **first run of the step**, however high the
+    workflow's round counter has climbed for some *other* step's own fix
+    loop (a multi-loop spec, e.g. `design → review-design → build →
+    review-build`, can put `build`'s first-ever run at round 2 if
+    `review-design` spent round 1): first runs always need every unit (or
+    one untagged pair, non-batched).
+    In a genuine fix round: red-before-green is required only for the
+    units named by unit-tagged findings from those rows. A finding on a
+    **non-batched** task, or one with no `unit` at all (package-wide), is
+    the same case: at least one red-before-green pair (any unit, or
+    untagged) is required somewhere in the round — including when the
+    round's rows carry no findings at all (e.g. a `blocked` verdict with no
+    structured findings, resumed): that still needs its one pair, it is
+    never "nothing required". Units named by no finding in a genuine fix
+    round need no new `tdd` evidence that round — the `verify` gate still
+    requires every declared verify command to pass, which covers unchanged
+    units. A finding that is not testable behaviour (wording, comments,
+    docs) still counts toward its unit's requirement: the red entry's
+    `note` says why the red is a new or updated test, or, when no test can
+    express it, names the failing check actually used instead (e.g. a grep
+    or lint command). The error names only the units still missing
+    required evidence for the current round.
   - `verify`: every string in the item's `verify` list is matched by a
     recorded entry with `ok:true` whose `cmd`, whitespace-normalized,
     equals or contains it.
-  - `commit`: `git` non-empty; every entry `dirty:false`; for each rw
-    worktree shared to this agent, `DirtyStrict` is false and `git
-    rev-parse HEAD` equals the entry's `sha` for that repo. The sha is
-    stored on the run.
+  - `commit`: `git` non-empty (else "Completed needs git: ..."); every
+    entry `dirty:false`; at least one rw worktree must be shared to this
+    agent (else refused: "no rw worktree shared with you"); for each rw
+    worktree shared to this agent, a missing `git` entry for that repo is
+    refused by name ("no git entry for `<repo>`"), `DirtyStrict` is false,
+    and `git rev-parse HEAD` equals the entry's `sha` for that repo. The
+    matched HEAD is stored on the run.
   - `artifact:design` / `artifact:notes`: `artifacts` contains a readable
-    file under `~/.swarm/designs/<ROOT-KEY>/` / `~/.swarm/research/<ROOT-KEY>/`;
-    the daemon registers it (new internal `registerArtifactAsDaemon`,
-    kinds `design` / `research`) on the task.
-- **Siblings.** `closeCompletedSiblings` only closes live sessions on the
-  same item whose agent has the **same role and the same workflow step**
-  as the caller (for legacy agents without a run: same role). A reviewer
-  finishing never tears down a builder, and vice versa.
-- **Per-agent completion.** `completedCurrent` checks, for the agent with
-  the most recent `completed` checkpoint on the item among gated roles, that
-  its checkpoint is on that agent's own latest attempt — instead of
-  `MAX(attempt)` across agents. `acceptedSince` stays item-level.
+    file under `~/.swarm/designs/<ROOT-KEY>/` / `~/.swarm/research/<ROOT-KEY>/`
+    (a leading `~/` and `.`/`..` segments are resolved before matching; the
+    error names the daemon's real, resolved directory, not a literal
+    `~/.swarm` when `SWARM_HOME` differs); the daemon registers it (new
+    internal `registerArtifactAsDaemon`, kinds `design` / `research`) on
+    the task, recording a new revision on every completed checkpoint whose
+    file content changed since the head revision (a fix round's revised
+    design/notes are kept), deduped when the content is identical.
+  - Every gate refuses if `run.step_id` isn't a step of the item's own
+    resolved workflow (a corrupted or stale run row): `"workflow step
+    \"<id>\" not found on <KEY>; ask your orchestrator."` — this must never
+    silently pass with no gates enforced.
+- **Siblings** (fix round 1, R1). `closeCompletedSiblings`'s filter depends
+  on whether the *item* is legacy or a workflow task, not on the caller's
+  role: on a **workflow task** (`workflow_json` set), every caller —
+  orchestrator included — is filtered to the **same role**, and, when the
+  caller has a workflow run, the **same step** too; a reviewer finishing
+  never tears down a builder, and vice versa, with no exemption. On a
+  **legacy task**, an orchestrator caller keeps today's behaviour (closes
+  every other live session on the item, any role — the s11-tool-stubs
+  override this function exists for); any other legacy caller is filtered
+  to same role.
+- **Per-agent completion** (fix round 1, R2). `completedCurrent`'s
+  workflow-task branch counts the most recent `completed` checkpoint among
+  **build roles** — any role except `reviewer`, `ui_reviewer` and
+  `orchestrator` (not just `coder`/`debugger`/`mechanical`: a
+  `design-reviewed`/`research` template's `designer`/`researcher` step must
+  be able to finish too) — and checks it's on that same agent's own latest
+  attempt, instead of `MAX(attempt)` across agents. The legacy branch
+  (`workflow_json` NULL) is unchanged. `acceptedSince` stays item-level.
 - **Done.** `checkTask`: if the item has a `workflows` row, `→ Done` is
   allowed only for the daemon actor and only when the workflow is
   `succeeded` (or the orchestrator resumed with `accept`). Orchestrator
@@ -991,9 +1030,11 @@ Agent-facing errors (tool results):
 - Resume on non-escalated: `"<KEY>'s workflow isn't waiting on you (state: <state>)."`
 - TDD gate: `"TDD evidence missing: record the failing test run (phase: \"red\", ok: false) before the passing run (phase: \"green\", ok: true) in this round."`
 - Verify gate: `"Declared verify commands not recorded as passing: <cmd>; <cmd>."`
-- Commit gate: `"Commit your work before completing: <repo> is dirty"` / `"… HEAD is <sha7>, checkpoint says <sha7>"` / `"Completed needs git: [{repo, branch, sha, dirty:false}]."`
-- Artifact gates: `"Completed needs your design file in artifacts (under ~/.swarm/designs/<ROOT>/)."` and the research equivalent.
-- Verdict: `"Reviewers must complete with verdict: pass, changes_requested or blocked."`, `"verdict pass can't carry critical or major findings."`, `"Only reviewers set a verdict."`
+- Commit gate: `"Commit your work before completing: <repo> is dirty"` / `"… HEAD is <sha7>, checkpoint says <sha7>"` / `"Completed needs git: [{repo, branch, sha, dirty:false}]."` / `"Commit your work before completing: no rw worktree shared with you"` / `"Commit your work before completing: no git entry for <repo>"`.
+- Artifact gates: `"Completed needs your design file in artifacts (under ~/.swarm/designs/<ROOT>/)."` and the research equivalent — `<ROOT>` and the directory are the daemon's actual, resolved path (not a literal `~/.swarm` when `SWARM_HOME` differs).
+- Unknown workflow step (fix round 1): `"workflow step \"<id>\" not found on <KEY>; ask your orchestrator."`
+- Verdict: `"Reviewers must complete with verdict: pass, changes_requested or blocked."` (also refuses an invalid — not empty, not `pass`/`changes_requested`/`blocked` — value on any checkpoint kind, not just `completed`), `"verdict pass can't carry critical or major findings."`, `"Only reviewers set a verdict."`
+- Finding severity (fix round 1): `"finding severity \"<severity>\" must be critical, major, minor or nit."`
 - Stale review (Next escalates when a same-round review's recorded sha no longer matches what it reviewed): `"<role> reviewed <sha7>, but <of> is now at <sha7>"`. A `swarm_workflow resume` with `decision: retry` after this escalation re-runs the review's fix step, then the review itself at the fresh sha (B7) — the same as an ordinary `changes_requested`.
 - Batching/role copy: `"Task <ref> has no workflow. Plans assign every role: pick a template or write steps."`, `"Task <ref> role_hint <x> doesn't match its workflow (<y>)."`, `"Task <ref> has both steps and units; use one."`, `"Task <ref> has <n> units (max 8)."`, `"Unit <n> needs a title and at least one step."`, `"Only tasks can set steps, units, solo or verify."`, `"TDD evidence missing for unit(s) <n,…>: record red then green with \"unit\": <n>."`, plus the C2 warnings.
 - Item-store permission copy (items.Store, spec B3; not otherwise specified above like `tdd_exempt`'s own line): `"Only an orchestrator or a plan can set workflow, steps, units, solo or verify."`
