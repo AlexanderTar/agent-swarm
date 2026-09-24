@@ -262,7 +262,9 @@ func (s *Store) verifySince(ctx context.Context, tx *sql.Tx, agentID string, sin
 			return nil, err
 		}
 		var vs []Verify
-		json.Unmarshal([]byte(raw), &vs)
+		if err := json.Unmarshal([]byte(raw), &vs); err != nil {
+			return nil, fmt.Errorf("checkpoints verify_json: %w", err)
+		}
 		out = append(out, vs...)
 	}
 	return out, rows.Err()

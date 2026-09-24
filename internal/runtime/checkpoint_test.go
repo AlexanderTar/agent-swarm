@@ -1983,6 +1983,31 @@ func TestOrchestratorCompletedOnWorkflowTaskDoesNotCloseBuilder(t *testing.T) {
 	}
 }
 
+// Finding 9: a malformed verify_json in a prior checkpoint must surface as
+// an error from the tdd/verify gates, not be silently swallowed by
+// verifySince's json.Unmarshal (which used to discard the error and just
+// leave that checkpoint's entries out, masking real evidence).
+func TestVerifySinceSurfacesUnmarshalErrors(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO checkpoints
+		(id, session_id, agent_id, item_id, kind, attempt, summary, verify_json, daemon_written, created_at)
+		VALUES (?, ?, ?, ?, 'progress', 1, 'corrupted row', '{not valid json', 0, ?)`,
+		ids.New("ckp"), coderSes.ID, coder.ID, coder.ItemID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}})
+	if err == nil {
+		t.Fatal("expected the malformed verify_json to surface as an error")
+	}
+}
+
 // Finding 8: registerArtifactAsDaemon records a new revision whenever the
 // file's content changed since the head revision (a fix round's revised
 // design notes must not be silently dropped), and dedupes when it's
