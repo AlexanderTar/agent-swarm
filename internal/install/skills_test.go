@@ -3,38 +3,59 @@ package install_test
 import (
 	"context"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"gopkg.in/yaml.v3"
 )
 
-// parseFrontmatter extracts the "key: value" lines between the first pair of
-// "---" fence lines. It is a test-local, from-scratch parse (not the
-// production one), so a registry bug in Skills() can't hide behind a shared
-// helper.
+// parseFrontmatter extracts and decodes the YAML between the first pair of
+// "---" fence lines with a real YAML parser (yaml.v3, already a direct
+// dependency: see internal/kb/doc.go). It is a test-local, from-scratch parse
+// (not the production one), so a registry bug in Skills() can't hide behind a
+// shared helper. Only string-valued top-level fields (name, description, ...)
+// are surfaced; a skill's non-string fields (metadata, argument-hint lists,
+// ...) aren't read by any test here.
+//
+// Review round 1, Important: the prior line-based version read only the first
+// line after "key:", so a multi-line YAML scalar (a folded `description: >`
+// or a plain scalar starting on the next line, both used upstream) decoded to
+// "" or ">" instead of the real value -- and ">" being non-empty hid that from
+// TestSkillsRegistryMatchesTree's "non-empty description" check. That bug
+// nearly cost 4 vendored skills their byte-verbatim upstream frontmatter.
 func parseFrontmatter(t *testing.T, body []byte) map[string]string {
 	t.Helper()
-	lines := strings.Split(string(body), "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+	rest, ok := strings.CutPrefix(string(body), "---\n")
+	if !ok {
 		t.Fatalf("no frontmatter fence: %.40q", body)
 	}
-	out := map[string]string{}
-	for _, l := range lines[1:] {
-		if strings.TrimSpace(l) == "---" {
-			return out
-		}
-		k, v, ok := strings.Cut(l, ":")
-		if ok {
-			out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	front, _, ok := strings.Cut(rest, "\n---\n")
+	if !ok {
+		// The fence may be the very last thing in the file (no body after).
+		var ok2 bool
+		front, ok2 = strings.CutSuffix(rest, "\n---")
+		if !ok2 {
+			t.Fatalf("frontmatter fence never closed: %.40q", body)
 		}
 	}
-	t.Fatalf("frontmatter fence never closed: %.40q", body)
-	return nil
+	var decoded map[string]any
+	if err := yaml.Unmarshal([]byte(front), &decoded); err != nil {
+		t.Fatalf("invalid frontmatter YAML: %v\n%s", err, front)
+	}
+	out := map[string]string{}
+	for k, v := range decoded {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
 }
 
 func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
@@ -730,7 +751,10 @@ func TestVendoredSkillsHaveLicenseAndProvenance(t *testing.T) {
 		want[n] = true
 	}
 	if len(got) != len(want) {
-		t.Fatalf("skills/vendor dirs = %v, want exactly %v", sortedKeys(got), sortedKeys(want))
+		// Errorf, not Fatalf (review round 1, Minor 3): a wrong dir count must
+		// not skip the per-skill checks or the banned-strings walk below.
+		t.Errorf("skills/vendor dirs = %v, want exactly %v",
+			slices.Sorted(maps.Keys(got)), slices.Sorted(maps.Keys(want)))
 	}
 	for n := range want {
 		if !got[n] {
@@ -799,13 +823,4 @@ func TestVendoredSkillsHaveLicenseAndProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

@@ -36,7 +36,7 @@ For the full rule list per category (all ~98 UX guidelines with rationale), read
 
 ## Running the search tool
 
-The search script lives inside this skill's own directory, not the project directory. Every path below is relative to this skill's directory (e.g. `skills/vendor/ui-ux-pro-max/scripts/search.py` in this repo, or wherever it is installed) — run it from there, or prefix the path accordingly:
+The search script lives inside this skill's own directory, not the project directory. Every path below is relative to the directory containing this SKILL.md — run it from there, or prefix the path accordingly:
 
 ```bash
 python "scripts/search.py" "<query>" --domain <domain>

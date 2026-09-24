@@ -5,11 +5,7 @@
 - Changes:
   - Added this `LICENSE` file (MIT, crediting Vercel) since the source repo
     ships no LICENSE file of its own.
-  - `SKILL.md`: upstream's frontmatter `name` was already
-    `vercel-react-native-skills` (it differs from the upstream directory
-    name `react-native-skills`, which is why this skill is vendored under
-    `vercel-react-native-skills`). Its `description` was a multi-line
-    folded YAML scalar (value starting on the line after `description:`);
-    reflowed it to one line, wording unchanged, since this repo's
-    frontmatter parser (`internal/install/skills.go`) only reads flat,
-    single-line `key: value` frontmatter.
+  - `SKILL.md` is otherwise byte-verbatim from upstream. Its frontmatter
+    `name` was already `vercel-react-native-skills` (it differs from the
+    upstream directory name `react-native-skills`, which is why this skill
+    is vendored under `vercel-react-native-skills`).

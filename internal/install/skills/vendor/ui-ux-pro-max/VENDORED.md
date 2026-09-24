@@ -9,6 +9,9 @@
     plugin-root environment variable expansion in its path, which only
     resolves under a Claude Code plugin install. Rewrote every occurrence
     to `scripts/search.py`, a path relative to this skill's own directory,
-    and reworded the surrounding note accordingly.
+    and reworded the surrounding note to say "relative to the directory
+    containing this SKILL.md" rather than naming this repo's own path
+    (which is wrong once the skill is installed elsewhere, e.g. under
+    `<cwd>/.claude/skills/ui-ux-pro-max/` or `~/.swarm/skills/ui-ux-pro-max/`).
   - Kept `data/` in full, including each CSV's own source/provenance
     columns.
