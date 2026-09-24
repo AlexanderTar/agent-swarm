@@ -1276,7 +1276,7 @@ func TestHumanPromptClosesOpenRowsButDaemonPromptsDoNot(t *testing.T) {
 		}
 		return
 	}
-	for _, daemon := range []string{runtime.IdleToken, runtime.Kickoff("login-form-coder", runtime.RoleCoder, "TASK-101", "T"),
+	for _, daemon := range []string{runtime.IdleToken, runtime.Kickoff("login-form-coder", runtime.RoleCoder, items.Task, "TASK-101", "T"),
 		runtime.PendingNotice(1, "login-form-coder", "TASK-101"), ""} {
 		submit(daemon)
 		if got := state(); got != "open" {

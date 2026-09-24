@@ -1148,6 +1148,33 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"| Work in the package | Workflow |",
 			"| Units per package |",
 		}},
+		{"swarm-debugger", []string{
+			"Follow the `swarm` skill first",
+			"superpowers:systematic-debugging",
+			"regression test",
+			"root cause",
+			"progress",
+			"swarm-advisor",
+			`"cmd"`,
+			"## Units",
+		}},
+		{"swarm-mechanical", []string{
+			"Follow the `swarm` skill first",
+			"ponytail",
+			"blocked",
+		}},
+		{"swarm-researcher", []string{
+			"Follow the `swarm` skill first",
+			"superpowers:brainstorming",
+			"no user dialogue",
+			"~/.swarm/research/",
+			"### Takeaway",
+			"### Cited findings",
+			"### Inferences",
+			"### Gaps",
+			"artifacts",
+			"Never invent",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.skill, func(t *testing.T) {
@@ -1165,10 +1192,65 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 	}
 }
 
-// knownSuperpowersSkills is the fixed set of 15 superpowers v6.4.1 skill
-// names (P3 brief). Any `superpowers:<x>` reference in a non-vendored skill
-// must name one of these -- a typo'd or invented superpowers skill name would
-// otherwise silently tell an agent to "follow" a skill that doesn't exist.
+// P4 unit 4.3 acceptance: swarm-advisor is an original rewrite (locked decision
+// 9) inspired by, not copied from, scdenney/open-science-skills codex/advisor
+// (CC BY-NC 4.0) -- it must carry the mermaid diagram from spec A4 and the
+// exact credit footer, and it must reference the swarm skill and its own
+// decision rules.
+func TestAdvisorSkillHasMermaidAndCredit(t *testing.T) {
+	body, err := fs.ReadFile(install.SkillFS(), path.Join("swarm-advisor", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		"Follow the `swarm` skill first",
+		"```mermaid",
+		"flowchart",
+		"One decision per consult",
+		"Advice is evidence, not authority",
+		"follow-up",
+		"checkpoint",
+		"Structure inspired by the `advisor` skill in scdenney/open-science-skills (CC BY-NC 4.0); this text is original.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("swarm-advisor: missing %q", want)
+		}
+	}
+	// Fix round 1, Minor finding 2: the advisor does not run with zero
+	// context -- BuildContext (internal/advisor/context.go) forwards up to
+	// 30 truncated transcript turns for a simulated advisor, and a native
+	// Claude advisor call runs inside the agent's own conversation. The
+	// skill must not overclaim "never sees your conversation".
+	if strings.Contains(text, "never sees your conversation") {
+		t.Error("swarm-advisor: overclaims the advisor never sees any of the conversation")
+	}
+	if !strings.Contains(text, "truncated slice") {
+		t.Error("swarm-advisor: missing the corrected truncated-slice wording")
+	}
+}
+
+// P4 unit 4.1 acceptance: swarm-mechanical is a light skill, at most 60 lines
+// (frontmatter included) -- the mechanical role does the smallest of the work
+// packages, so its own skill stays proportionally small.
+func TestSwarmMechanicalSkillIsAtMost60Lines(t *testing.T) {
+	body, err := fs.ReadFile(install.SkillFS(), path.Join("swarm-mechanical", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(body), "\n"); n > 60 {
+		t.Errorf("swarm-mechanical/SKILL.md has %d lines, want <= 60", n)
+	}
+}
+
+// knownSuperpowersSkills is the fixed set of 15 real superpowers v6.4.1 skill
+// names (P3 brief) -- the upstream skill catalog these names were verified
+// against, a separate and newer release than the v6.3.0 plugin cache other
+// tests in this repo pin for adapter/parity fixtures (internal/adapter,
+// internal/catalog): the two version numbers are not a typo of each other.
+// Any `superpowers:<x>` reference in a non-vendored skill must name one of
+// these -- a typo'd or invented superpowers skill name would otherwise
+// silently tell an agent to "follow" a skill that doesn't exist.
 var knownSuperpowersSkills = map[string]bool{
 	"brainstorming":                  true,
 	"diagnosing-superpowers":         true,
@@ -1190,8 +1272,9 @@ var knownSuperpowersSkills = map[string]bool{
 var superpowersRefRe = regexp.MustCompile(`superpowers:([a-zA-Z][a-zA-Z0-9-]*)`)
 
 // TestSuperpowersReferencesAreKnown scans every non-vendored skill for
-// `superpowers:<name>` references and checks each against the fixed set of
-// 15 real superpowers v6.4.1 skill names. Vendored skills are third-party
+// `superpowers:<name>` references and checks each against
+// knownSuperpowersSkills, the fixed set of 15 real superpowers v6.4.1 skill
+// names. Vendored skills are third-party
 // content (P2) and are exempt. It also asserts at least one reference was
 // found at all: the regex trivially "passes" over a tree with zero
 // `superpowers:` references, which would hide a typo'd prefix (e.g. every

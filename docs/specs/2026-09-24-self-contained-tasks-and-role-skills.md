@@ -394,9 +394,10 @@ adds to it." Contents:
   an approach, when stuck, before `completed` for orchestrators/debuggers/
   reviewers, before irreversible steps; not for routine work); how
   (a self-contained briefing — task, evidence with paths, current approach,
-  alternatives, the exact question, consequences — because the advisor
-  never sees your conversation; save the deliverable first when asking for
-  sign-off); decision rules (one decision per consult; advice is evidence,
+  alternatives, the exact question, consequences — because the advisor sees
+  at most a truncated slice of your recent transcript, not your full
+  context; save the deliverable first when asking for sign-off); decision
+  rules (one decision per consult; advice is evidence,
   not authority; at most one focused follow-up; authoritative evidence wins;
   unresolved high-impact uncertainty goes to your parent or the user); how
   to record the outcome (checkpoint note of what you followed or declined

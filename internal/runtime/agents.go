@@ -1009,14 +1009,15 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		return Session{}, err
 	}
 
-	var itemKey, itemTitle string
-	_ = s.DB.QueryRowContext(ctx, `SELECT key, title FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey, &itemTitle)
+	var itemKey, itemTitle, itemTypeStr string
+	_ = s.DB.QueryRowContext(ctx, `SELECT key, title, type FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey, &itemTitle, &itemTypeStr)
+	itemType := items.Type(itemTypeStr)
 
 	var kickoff string
 	if resume {
-		kickoff = ResumeKickoff(a.Name, a.Role, itemKey, itemTitle)
+		kickoff = ResumeKickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	} else {
-		kickoff = Kickoff(a.Name, a.Role, itemKey, itemTitle)
+		kickoff = Kickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	}
 
 	// Settings read failure is unrelated to the spawn itself: fail open (same
