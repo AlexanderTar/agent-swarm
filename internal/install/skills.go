@@ -692,11 +692,13 @@ func SyncSkills(home string) ([]string, error) {
 // registered skill must be reachable under k's own skills root, whether that
 // is v2's own symlink/copy or a same-named skill the user made themselves.
 // The latter is reported (not failed): swarm's own copy simply is not
-// installed there. This is a read-only report, not a write, but it uses
-// adopt=false throughout (review round 2, C1 #3 / I2) to stay consistent with
-// the daemon's own refresh: a pre-this-fix empty marker or a pre-A1 directory
-// reads as user-owned here until an explicit `swarm install` upgrades it,
-// rather than doctor silently disagreeing with what the daemon would do.
+// installed there. This is a read-only report (never a write), so adopt=true
+// throughout (review round 2, item 2): a byte-matching pre-A1 directory or a
+// pre-this-fix empty marker is swarm's own, and doctor should say so rather
+// than report "user-owned" for something an explicit `swarm install` would
+// happily recognize as its own. adopt is still false for the daemon's own
+// automatic RefreshSkillLinks (C1 #3 / I2), since that path performs a write
+// with no explicit user action behind it -- this function performs neither.
 func CheckSkills(c Config, k Kind) Check {
 	name := k.Display() + " skills"
 	root := c.SkillsDir(k)
@@ -710,7 +712,7 @@ func CheckSkills(c Config, k Kind) Check {
 		if _, err := os.Stat(filepath.Join(dst, "SKILL.md")); err != nil {
 			return Check{name, false, "Missing " + dst + ". Run swarm install."}
 		}
-		owned, err := isSwarmOwned(dst, skillsHome, false)
+		owned, err := isSwarmOwned(dst, skillsHome, true)
 		if err != nil {
 			return Check{name, false, err.Error()}
 		}
