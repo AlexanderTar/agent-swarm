@@ -1354,6 +1354,40 @@ func TestSameRoleSiblingStillClosed(t *testing.T) {
 	}
 }
 
+// Finding 10: same role, DIFFERENT step -- must not be closed. The role
+// filter alone isn't the whole story once the caller has a run; step must
+// also match.
+func TestSameRoleDifferentStepNotClosed(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes, _, _ := buildAndReview(t, s)
+	coder2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "a different build step"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflowID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT workflow_id FROM workflow_runs WHERE agent_id = ?`, coder.ID).
+		Scan(&workflowID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build2', 1, 'coder', ?, 'active', ?)`,
+		ids.New("wfr"), workflowID, coder2.ID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, coder2.ID); got != Running {
+		t.Fatalf("different-step same-role sibling closed: state = %s, want unchanged (running)", got)
+	}
+}
+
 // --- Unit 8.4: tdd and verify gates (spec B5, ruling-tdd-followups.md) ---
 
 const tddMissingRound = `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round.`

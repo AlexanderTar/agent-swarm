@@ -1734,6 +1734,84 @@ func TestDepUnblockedWakesAllParents(t *testing.T) {
 	}
 }
 
+// Finding 10: two agents on the blocked item that resolve to the SAME
+// parent must be deduped into exactly one relay, not one per agent.
+func TestDepUnblockedDedupesTwoAgentsUnderOneParent(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Items.DepUnblocked = s.OnDepUnblocked
+	ctx := context.Background()
+	seedEpicWithTwoTasks(t, s)
+	if err := s.Items.AddDep(ctx, "TASK-2", "TASK-1", items.User("board")); err != nil {
+		t.Fatal(err)
+	}
+	root, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneB, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root.ID, Brief: BriefInput{Objective: "unblock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneBSes, err := s.LatestSession(ctx, laneB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// agentX (coder) and agentY (reviewer) both wait on TASK-2, both
+	// directly under root -- different roles so 8.2's sibling-closing rule
+	// can't collapse them into one along the way, but they share the same
+	// parent for OnDepUnblocked's own dedup to collapse instead.
+	agentX, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root.ID, Brief: BriefInput{Objective: "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentXSes, err := s.LatestSession(ctx, agentX.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentY, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root.ID, Brief: BriefInput{Objective: "y"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentYSes, err := s.LatestSession(ctx, agentY.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, ses := range []Session{agentXSes, agentYSes} {
+		if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: BlockedCkp,
+			Summary: "waiting", Blockers: []string{"TASK-1 isn't done yet"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"dependency_added"%' AND payload_json LIKE '%"item":"TASK-2"%'`,
+		root.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("relay to the shared parent = %d, want exactly 1 (deduped)", n)
+	}
+}
+
 // Rewritten from TestPromptDetectedInRunningSessionOpensHITLRequest (spec 8.3): a scraped
 // prompt no longer becomes a row; the daemon presses the matcher's keys once instead.
 func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {
