@@ -174,6 +174,9 @@ type fkRow struct {
 	RefTable string
 	From     string
 	To       string
+	OnUpdate string
+	OnDelete string
+	Match    string
 }
 
 // foreignKeyList returns table's foreign keys, sorted for stable comparison
@@ -188,9 +191,8 @@ func foreignKeyList(t *testing.T, raw *sql.DB, table string) []fkRow {
 	var out []fkRow
 	for rows.Next() {
 		var id, seq int
-		var onUpdate, onDelete, match string
 		var r fkRow
-		if err := rows.Scan(&id, &seq, &r.RefTable, &r.From, &r.To, &onUpdate, &onDelete, &match); err != nil {
+		if err := rows.Scan(&id, &seq, &r.RefTable, &r.From, &r.To, &r.OnUpdate, &r.OnDelete, &r.Match); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, r)

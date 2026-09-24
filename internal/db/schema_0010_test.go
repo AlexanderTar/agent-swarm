@@ -14,13 +14,13 @@ import (
 // new values ('designer' role, 'design'/'research' kinds) while still
 // rejecting bogus ones.
 //
-// Review round 1 found that row-count and single-column spot checks pass
-// even when a rebuild drops an index or silently transposes two columns'
+// Row counts and single-column spot checks alone aren't enough: they pass
+// even when a rebuild drops an index, or silently transposes two columns'
 // values (INSERT INTO t_new SELECT * FROM t copies positionally, so
 // reordering two same-type columns in t_new's declaration relabels their
-// values without changing anything a naive check would notice). This test
-// is written to actually fail on both: see the "review evidence" comments
-// below and the unit's commit message for how that was proven.
+// values without changing anything positional). The checks below compare
+// rows by column name and diff the index and foreign key lists directly, to
+// catch exactly that.
 func TestMigration0010PreservesRowsAndWidensChecks(t *testing.T) {
 	raw := openFixtureAtVersion(t, 9) // pre-0010: today's schema, before this migration exists
 
@@ -86,6 +86,22 @@ func TestMigration0010PreservesRowsAndWidensChecks(t *testing.T) {
 	beforeRequestsFK := foreignKeyList(t, raw, "requests")
 	beforeSessionsFK := foreignKeyList(t, raw, "sessions")
 	beforeCheckpointsFK := foreignKeyList(t, raw, "checkpoints")
+	// Guard the FK comparison below against a typo'd or missing table name:
+	// PRAGMA foreign_key_list on a table that doesn't exist (or has no FKs)
+	// returns zero rows, which would make an empty-vs-empty comparison pass
+	// without actually checking anything.
+	for name, fks := range map[string][]fkRow{
+		"agents":             beforeAgentsFK,
+		"artifacts":          beforeArtifactsFK,
+		"artifact_revisions": beforeArtifactRevisionsFK,
+		"requests":           beforeRequestsFK,
+		"sessions":           beforeSessionsFK,
+		"checkpoints":        beforeCheckpointsFK,
+	} {
+		if len(fks) == 0 {
+			t.Fatalf("%s: foreign_key_list returned no rows before migrating; the table name is probably wrong", name)
+		}
+	}
 
 	continueMigratingTo(t, raw, 9, 10) // applies 0010, and only 0010
 
@@ -96,12 +112,10 @@ func TestMigration0010PreservesRowsAndWidensChecks(t *testing.T) {
 		}
 	}
 
-	// Every row is byte-for-byte identical, column name for column name --
-	// review evidence: reverting to the pre-fix migration and swapping
-	// agents_new's advisor_kind/advisor_model declaration order makes this
-	// fail (values end up relabeled under each other's column name) while
-	// leaving row counts and the two join-based spot checks this test used
-	// to run untouched; see the unit's commit message.
+	// Every row is byte-for-byte identical, column name for column name.
+	// SELECT * copies by position, so a column reorder in the rebuild
+	// relabels values under the wrong name -- comparing by name (via
+	// namedRowSnapshot) catches that; comparing by position would not.
 	afterAgents := namedRowSnapshot(t, raw, `SELECT * FROM agents ORDER BY id`)
 	afterArtifacts := namedRowSnapshot(t, raw, `SELECT * FROM artifacts ORDER BY id`)
 	if !reflect.DeepEqual(beforeAgents, afterAgents) {
@@ -120,10 +134,9 @@ func TestMigration0010PreservesRowsAndWidensChecks(t *testing.T) {
 		t.Fatalf("parent agent name = %q, want agent-one", parentName)
 	}
 
-	// Every index on agents/artifacts is unchanged -- review evidence:
-	// deleting the two CREATE INDEX statements from 0010 makes this fail
-	// while every other assertion in the pre-fix version of this test still
-	// passed; see the unit's commit message.
+	// Every index on agents/artifacts is unchanged -- a rebuild that forgets
+	// to recreate an index after the rename (or gets one wrong) shows up
+	// here, not in row counts or row contents.
 	if !reflect.DeepEqual(beforeAgentsIdx, indexList(t, raw, "agents")) {
 		t.Errorf("agents indexes changed:\nbefore: %+v\nafter:  %+v", beforeAgentsIdx, indexList(t, raw, "agents"))
 	}
