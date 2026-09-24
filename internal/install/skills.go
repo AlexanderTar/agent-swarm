@@ -159,18 +159,23 @@ const (
 	Copy
 )
 
-// skillLinkMode is §A1's per-kind choice, checked empirically against each
-// agent CLI on 2026-09-24: only `claude` is installed on the machine this
-// check ran on, and it does follow a skills-root entry that is a symlink to
-// another directory (it lists and can invoke the skill inside). codex, agy,
-// cursor-agent and muse were not installed to check, so each defaults to the
-// safe Copy fallback until someone verifies it and flips the entry below.
+// skillLinkMode is §A1's per-kind choice. claude's Symlink predates this
+// check (not re-run here). codex, cursor-agent, and muse were empirically
+// verified 2026-09-24 to discover a skill whose directory is a symlink.
+// agy stays Copy: that same probe run showed agy 1.2.10 migrates
+// .gemini/antigravity-cli/skills (Config.SkillsDir(KindAgy)) to
+// $HOME/.gemini/config/skills on first run, leaving a reverse symlink behind
+// -- so the positive result seen against a fresh HOME was reading a migrated
+// copy, not proof of following a symlink placed there, and the mode stays
+// unverified/Copy until SkillsDir(KindAgy) points at the location agy
+// actually migrates to. See docs/plans/2026-09-24-skill-symlink-probe.md for
+// the exact commands, output, and the follow-up this implies.
 var skillLinkMode = map[Kind]LinkMode{
 	KindClaude: Symlink,
-	KindCodex:  Copy,
+	KindCodex:  Symlink,
 	KindAgy:    Copy,
-	KindCursor: Copy,
-	KindMuse:   Copy,
+	KindCursor: Symlink,
+	KindMuse:   Symlink,
 }
 
 // SkillLinkMode reports how WriteSkills exposes skills for k. Exported so a

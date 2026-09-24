@@ -838,13 +838,12 @@ func TestWriteClaudeAdoptsAPreA1RealSkillDirectory(t *testing.T) {
 	}
 }
 
-// Review round 1, Minor 7: a Copy-mode kind must never follow a leftover
-// symlink at dst (this kind used to be Symlink-mode, say) into whatever it
-// actually points at -- here, on purpose, a *different* skill's shared
-// ~/.swarm/skills directory -- and write through it. dst must become a real
-// removed-then-copied directory, and the other skill's shared copy must come
-// out untouched.
-func TestWriteSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing.T) {
+// Review round 1, Minor 7: Copy mode must never follow a leftover symlink at
+// dst (a kind that used to be Symlink-mode, say) into whatever it actually
+// points at -- here, on purpose, a *different* skill's shared ~/.swarm/skills
+// directory -- and write through it. dst must become a real removed-then-copied
+// directory, and the other skill's shared copy must come out untouched.
+func TestLinkSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing.T) {
 	home := t.TempDir()
 	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
 	if _, err := install.SyncSkills(c.Home); err != nil {
@@ -854,8 +853,14 @@ func TestWriteSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	// Exercises Copy mode directly via LinkSkills against a throwaway root,
+	// rather than routing through WriteSkills+a Kind: it is Copy mode's own
+	// anti-symlink-follow safety net under test, not any particular Kind's
+	// choice (which kind defaults to Copy has changed across this file's
+	// history; see skillLinkMode in skills.go for the current per-kind map).
+	root := filepath.Join(home, "copy-mode-root")
+	dst := filepath.Join(root, "swarm")
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	wrongTarget := filepath.Join(skillsHome, "swarm-orchestrator")
@@ -863,7 +868,7 @@ func TestWriteSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing
 		t.Fatal(err)
 	}
 
-	if _, _, err := install.WriteSkills(c, install.KindCodex); err != nil {
+	if _, err := install.LinkSkills(root, skillsHome, install.Copy); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1302,5 +1307,33 @@ func TestSuperpowersReferencesAreKnown(t *testing.T) {
 	}
 	if total == 0 {
 		t.Error("found zero superpowers: references across all non-vendored skills; the regex or the skill tree is broken")
+	}
+}
+
+// Pins §A1's per-kind link mode (skills.go's skillLinkMode) against the
+// empirical symlink check documented in
+// docs/plans/2026-09-24-skill-symlink-probe.md: claude, codex, and
+// cursor-agent are Symlink (claude predates the check; codex and
+// cursor-agent were verified 2026-09-24). muse is Symlink (verified
+// 2026-09-24). agy is Copy: the same check found agy 1.2.10 migrates
+// Config.SkillsDir(KindAgy) to a different on-disk location on first run,
+// so a symlink placed at SkillsDir(KindAgy) is not a reliable signal there
+// yet.
+func TestSkillLinkModePerKind(t *testing.T) {
+	want := map[install.Kind]install.LinkMode{
+		install.KindClaude: install.Symlink,
+		install.KindCodex:  install.Symlink,
+		install.KindAgy:    install.Copy,
+		install.KindCursor: install.Symlink,
+		install.KindMuse:   install.Symlink,
+	}
+	for _, k := range install.Kinds {
+		got, ok := want[k]
+		if !ok {
+			t.Fatalf("kind %q has no expected link mode in this test; add one", k)
+		}
+		if install.SkillLinkMode(k) != got {
+			t.Errorf("SkillLinkMode(%s) = %v, want %v", k, install.SkillLinkMode(k), got)
+		}
 	}
 }
