@@ -371,6 +371,33 @@ func TestUserCannotSetWorkflow(t *testing.T) {
 	}
 }
 
+// TestUpdateSetsWorkflowAndKeepsItOnBoardEdits covers UpdateTx's workflow
+// path: an orchestrator can set Workflow on an existing (legacy, daemon-
+// created) task, the resolved spec and derived role_hint persist through
+// the post-update getByID re-read (role_hint must be in the UPDATE's own
+// SET clause, not just the in-memory merge), and a later board edit that
+// doesn't touch workflow/steps/units/solo/verify must not trip the
+// permission check just because the task already carries a workflow.
+func TestUpdateSetsWorkflowAndKeepsItOnBoardEdits(t *testing.T) {
+	s := newStore(t)
+	e := mk(t, s, items.Epic, "", "E")
+	st := mk(t, s, items.Story, e.Key, "S")
+	task := mk(t, s, items.Task, st.Key, "T") // daemon-created, no workflow
+	orch := items.Orchestrator("agt_1", e.ID)
+
+	got, err := s.Update(ctx, task.Key,
+		items.Patch{Workflow: &workflow.Spec{Template: "tdd-reviewed"}, Revision: task.Revision}, orch)
+	if err != nil || got.Workflow == nil || len(got.Workflow.Steps) != 2 || got.RoleHint != "coder" {
+		t.Fatalf("update = %+v, %v", got, err)
+	}
+
+	title := "Renamed"
+	got2, err := s.Update(ctx, task.Key, items.Patch{Title: &title, Revision: got.Revision}, user)
+	if err != nil || got2.Workflow == nil || got2.RoleHint != "coder" || got2.Title != "Renamed" {
+		t.Fatalf("board edit = %+v, %v", got2, err)
+	}
+}
+
 func TestConcurrentUpdatesOneWins(t *testing.T) {
 	s := newStore(t)
 	e := mk(t, s, items.Epic, "", "Old")
