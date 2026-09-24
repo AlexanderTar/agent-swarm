@@ -28,11 +28,12 @@ const (
 
 // Finding is one reviewer-reported issue.
 type Finding struct {
-	Severity string
-	File     string
-	Line     int
-	Unit     int
-	Summary  string
+	Severity string `json:"severity"`
+	File     string `json:"file"`
+	Line     int    `json:"line,omitempty"`
+	Unit     int    `json:"unit,omitempty"`
+	Summary  string `json:"summary"`
+	Reviewer string `json:"reviewer,omitempty"` // the reviewer role that reported it
 }
 
 // Run is one agent's attempt at a workflow step.
@@ -76,9 +77,29 @@ type Action struct {
 // granted by an orchestrator's resume, it returns the single next action.
 // It is total: every reachable state produces exactly one Action, and it
 // never panics.
+//
+// Next sorts its own copy of runs by (Round, StepID, Role) before looking at
+// them, so callers may pass runs in any order (e.g. straight from a DB
+// query with no ORDER BY) and get the same, deterministic result.
+//
+// A step that is a review step, or that is some review step's Loop.Fix, is
+// "retryable": Next only considers its runs from the current round (an
+// earlier round's runs for it are a superseded attempt). Every other run
+// step is satisfied by its latest run at or before the current round, and
+// its sha is carried forward - it is never re-spawned just because a later
+// step's retry loop bumped the round.
 func Next(s Spec, runs []Run, round, extraRounds int) Action {
-	// Failures are handled first, regardless of which step they belong to.
+	runs = sortedRuns(runs)
+	retryable := retryableSteps(s)
+
+	// Failures in the current round are handled first, regardless of which
+	// step they belong to. A terminal run from an earlier, superseded round
+	// (e.g. a stale reviewer left over from before a retry) is not a
+	// current failure and is ignored here.
 	for _, run := range runs {
+		if run.Round != round {
+			continue
+		}
 		if run.State == RunStateCancelled {
 			return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s cancelled", run.Role)}
 		}
@@ -91,13 +112,18 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 				rc := run
 				return Action{Kind: ActionAutoRetry, StepID: run.StepID, Round: run.Round, Run: &rc}
 			}
-			return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s %s twice", run.Role, run.State)}
+			return Action{Kind: ActionEscalate, Reason: failureReason(run, retries)}
 		}
 	}
 
-	var lastSHA string
+	shas := map[string]string{}
 	for i, step := range s.Steps {
-		stepRuns := runsFor(runs, step.ID, round)
+		var stepRuns []Run
+		if retryable[step.ID] {
+			stepRuns = runsFor(runs, step.ID, round)
+		} else {
+			stepRuns = latestRunsFor(runs, step.ID, round)
+		}
 		last := i == len(s.Steps)-1
 
 		if step.Run != "" {
@@ -111,16 +137,17 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 			if hasGate(step.Gates, GateCommit) && run.SHA == "" {
 				return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s completed without a sha", step.ID)}
 			}
-			lastSHA = run.SHA
+			shas[step.ID] = run.SHA
 			if last {
-				return Action{Kind: ActionSucceed, SHA: lastSHA}
+				return Action{Kind: ActionSucceed, SHA: run.SHA}
 			}
 			continue
 		}
 
 		// Review step.
-		if len(stepRuns) == 0 {
-			return Action{Kind: ActionSpawn, StepID: step.ID, Roles: step.Review, Round: round, SHA: lastSHA}
+		missing := missingRoles(step.Review, stepRuns)
+		if len(missing) > 0 {
+			return Action{Kind: ActionSpawn, StepID: step.ID, Roles: missing, Round: round, SHA: shas[step.Of]}
 		}
 		for _, run := range stepRuns {
 			if run.State != RunStateCompleted {
@@ -129,21 +156,24 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 		}
 
 		if blocked := findBlocked(stepRuns); blocked != nil {
-			return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s blocked: %s", blocked.Role, firstSummary(blocked.Findings))}
+			reason := blocked.Role + " blocked"
+			if summary := firstSummary(blocked.Findings); summary != "" {
+				reason += ": " + summary
+			}
+			return Action{Kind: ActionEscalate, Reason: reason}
 		}
 
 		if hasChangesRequested(stepRuns) {
-			max := defaultLoopMaxRounds
-			fix := step.ID
-			if step.Loop != nil {
-				if step.Loop.MaxRounds != 0 {
-					max = step.Loop.MaxRounds
-				}
-				if step.Loop.Fix != "" {
-					fix = step.Loop.Fix
-				}
+			// Decision A: a review step with no loop (a story after_tasks
+			// shape) has no fix step to retry - it can only escalate.
+			if step.Loop == nil {
+				return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s changes requested", step.ID)}
 			}
-			effectiveMax := max + extraRounds
+			fix := step.Loop.Fix
+			if fix == "" {
+				fix = step.ID
+			}
+			effectiveMax := loopMaxRounds(step.Loop) + extraRounds
 			if round >= effectiveMax {
 				return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s rounds exhausted (%d/%d)", step.ID, round, effectiveMax)}
 			}
@@ -152,12 +182,42 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 
 		// Every reviewer passed.
 		if last {
-			return Action{Kind: ActionSucceed, SHA: lastSHA}
+			return Action{Kind: ActionSucceed, SHA: shas[step.Of]}
 		}
 	}
 
 	// A spec with no steps at all: nothing to do but tell the caller so.
 	return Action{Kind: ActionEscalate, Reason: "workflow has no steps"}
+}
+
+// retryableSteps returns the set of step ids that must be matched to the
+// exact current round: every review step, plus every step named as some
+// review step's Loop.Fix.
+func retryableSteps(s Spec) map[string]bool {
+	out := map[string]bool{}
+	for _, st := range s.Steps {
+		if len(st.Review) > 0 {
+			out[st.ID] = true
+		}
+		if st.Loop != nil && st.Loop.Fix != "" {
+			out[st.Loop.Fix] = true
+		}
+	}
+	return out
+}
+
+func sortedRuns(in []Run) []Run {
+	out := append([]Run(nil), in...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Round != out[j].Round {
+			return out[i].Round < out[j].Round
+		}
+		if out[i].StepID != out[j].StepID {
+			return out[i].StepID < out[j].StepID
+		}
+		return out[i].Role < out[j].Role
+	})
+	return out
 }
 
 func runsFor(runs []Run, stepID string, round int) []Run {
@@ -168,6 +228,36 @@ func runsFor(runs []Run, stepID string, round int) []Run {
 		}
 	}
 	return out
+}
+
+// latestRunsFor returns the runs for stepID at the highest round <= upTo
+// that has any, or nil if there are none. It's how a step that isn't being
+// retried this round stays "satisfied" once it has ever completed.
+func latestRunsFor(runs []Run, stepID string, upTo int) []Run {
+	best := -1
+	for _, run := range runs {
+		if run.StepID == stepID && run.Round <= upTo && run.Round > best {
+			best = run.Round
+		}
+	}
+	if best == -1 {
+		return nil
+	}
+	return runsFor(runs, stepID, best)
+}
+
+func missingRoles(want []string, have []Run) []string {
+	present := map[string]bool{}
+	for _, run := range have {
+		present[run.Role] = true
+	}
+	var missing []string
+	for _, role := range want {
+		if !present[role] {
+			missing = append(missing, role)
+		}
+	}
+	return missing
 }
 
 func hasGate(gates []Gate, g Gate) bool {
@@ -204,17 +294,38 @@ func firstSummary(findings []Finding) string {
 	return findings[0].Summary
 }
 
-// mergeFindings collects the findings of every reviewer that requested
-// changes, in the step's declared reviewer role order, each reviewer's own
-// findings sorted by file then line.
+func failureReason(run Run, retries int) string {
+	if retries == 0 {
+		return fmt.Sprintf("%s %s", run.Role, run.State)
+	}
+	return fmt.Sprintf("%s %s after %d auto-retries", run.Role, run.State, run.AutoRetries)
+}
+
+// loopMaxRounds returns l's max_rounds, or the default when l is nil or
+// leaves it unset.
+func loopMaxRounds(l *Loop) int {
+	if l != nil && l.MaxRounds != 0 {
+		return l.MaxRounds
+	}
+	return defaultLoopMaxRounds
+}
+
+// mergeFindings collects every reviewer's findings for the round (decision
+// C: including a reviewer who passed but left minor/nit findings, not just
+// the ones who requested changes), in the step's declared reviewer role
+// order, each tagged with its reviewer and sorted by file then line.
 func mergeFindings(step Step, stepRuns []Run) []Finding {
 	var out []Finding
 	for _, role := range step.Review {
 		for _, run := range stepRuns {
-			if run.Role != role || run.Verdict != VerdictChangesRequested {
+			if run.Role != role {
 				continue
 			}
-			fs := append([]Finding(nil), run.Findings...)
+			fs := make([]Finding, len(run.Findings))
+			copy(fs, run.Findings)
+			for i := range fs {
+				fs[i].Reviewer = role
+			}
 			sort.SliceStable(fs, func(i, j int) bool {
 				if fs[i].File != fs[j].File {
 					return fs[i].File < fs[j].File
