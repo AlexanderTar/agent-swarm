@@ -175,7 +175,17 @@ func toAny(v any) (any, error) {
 // round-trip would drop the user's comments and reorder their tables (rule 4).
 func CodexTrust(text, realPath string) (string, bool) {
 	header := fmt.Sprintf("[projects.%q]", realPath)
-	if strings.Contains(text, header) {
+	// Codex's own config writer emits TOML literal strings (single-quoted)
+	// for a path with no characters that need escaping, not %q's Go-style
+	// (and also valid TOML) double-quoted basic strings. A project codex
+	// already trusts this way went unrecognized by the double-quote-only
+	// check above, so every install appended a second, duplicate table for
+	// the same path -- and TOML rejects the same table declared twice,
+	// breaking every later "remove legacy" edit on the same file (2026-09-24
+	// live incident: [projects.'/…/.swarm/work'] from codex itself,
+	// [projects."/…/.swarm/work"] appended here on top of it).
+	singleQuoted := "[projects.'" + realPath + "']"
+	if strings.Contains(text, header) || strings.Contains(text, singleQuoted) {
 		return text, false
 	}
 	block := header + "\ntrust_level = \"trusted\"\n"

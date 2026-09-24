@@ -290,6 +290,24 @@ func TestCodexTrustAppendsOnceAndKeepsExistingEntries(t *testing.T) {
 	}
 }
 
+// TestCodexTrustRecognizesASingleQuotedExistingEntry is the 2026-09-24 fix:
+// codex's own writer uses TOML literal (single-quoted) strings for a
+// project's table header, not the double-quoted form %q produces. Before
+// this fix, a path codex already trusted this way went unrecognized,
+// duplicating the table -- which TOML rejects, breaking install's later
+// legacy-removal edit on the same file.
+func TestCodexTrustRecognizesASingleQuotedExistingEntry(t *testing.T) {
+	in := "[projects.'/private/fake/.swarm/work']\ntrust_level = \"trusted\"\n"
+	out, added := install.CodexTrust(in, "/private/fake/.swarm/work")
+	if added || out != in {
+		t.Fatalf("a single-quoted existing entry must be recognized: added = %v, out:\n%s", added, out)
+	}
+	var m map[string]any
+	if err := toml.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("result does not parse: %v\n%s", err, out)
+	}
+}
+
 // §20 step 8 + §21.4 row 2, from the fixture.
 func TestRemoveLegacyCodexMCPTakesTheSwarmTablesAndNothingElse(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("testdata", "codex", "config-v1.toml"))

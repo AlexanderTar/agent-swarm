@@ -107,8 +107,6 @@ public enum Copy {
     public static let levelAttentionCaption = "Paused, stopped, failed, crashed, worktree kept"
     public static let levelActionCaption = "Questions and approvals"
     public static let notificationsFooter = "Turning off notifications does not hide requests in Needs you."
-    public static let maxSubagents = "Max concurrent subagents"
-    public static let subagentsLimitCaption = "Maximum subagents each parent agent may run concurrently."
     public static let maxAgents = "Max concurrent agents"
     public static let agentsLimitCaption = "Maximum agents running at once, every role including orchestrators."
     public static let maxAgentsPerItem = "Maximum concurrent agents per item"

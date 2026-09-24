@@ -383,13 +383,15 @@ func TestSendSucceedsToPausedInterruptedAndQueuedTargets(t *testing.T) {
 		t.Fatalf("no_recipient must not fire for an interrupted target: count = %d", n)
 	}
 
-	// Back to paused for the queuing setup below: an interrupted session no
-	// longer holds a concurrency slot (2026-09-22 zombie-slot fix, limits.go),
-	// so it can't be what forces the second worker to queue. Paused still does.
+	// Back to paused for the queuing setup below: neither an interrupted nor a
+	// paused session holds a concurrency slot any more (2026-09-22 zombie-slot
+	// fix widened to 'paused' on 2026-09-24, limits.go) -- w can't be what
+	// forces the second worker to queue. Cap at 1 so orch's own live slot
+	// alone saturates the pool instead.
 	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, wSes.ID); err != nil {
 		t.Fatal(err)
 	}
-	setLimits(t, s, 2, 5) // orch + w already fill the shared pool
+	setLimits(t, s, 1, 5) // orch alone fills the shared pool
 	t2, err := s.Items.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: "STORY-1",
 		Title: "Second task"}, items.User("board"))
 	if err != nil {

@@ -16,15 +16,25 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 )
 
-// NotAZombieSlot excludes an agent whose latest session is interrupted, crashed
-// or failed: no process is running, but retryableStates treats all three alike
-// -- waiting on a human resume/ack/cancel, not auto-cleaned (reconcile.go's
-// FailedCkp and crashed branches only ever write the session row; neither
-// touches agents.state). Left out of a concurrency-slot count, such an agent
-// used to occupy the slot forever (2026-09-22 incident: two sessions
-// interrupted for over an hour pinned max_agents at capacity). The agent row
-// itself is untouched by this -- still active, still shown, still resumable/
-// ackable/cancellable by hand -- this only stops it blocking admission.
+// NotAZombieSlot excludes an agent whose latest session is interrupted,
+// crashed, failed or paused: no process is running, but retryableStates
+// treats the first three alike -- waiting on a human resume/ack/cancel, not
+// auto-cleaned (reconcile.go's FailedCkp and crashed branches only ever
+// write the session row; neither touches agents.state). Left out of a
+// concurrency-slot count, such an agent used to occupy the slot forever
+// (2026-09-22 incident: two sessions interrupted for over an hour pinned
+// max_agents at capacity). paused joined the same list on 2026-09-24: a
+// human (or the pause-deadline reaper) pausing an agent is exactly this
+// same "no process running, slot held forever until someone acts" shape --
+// Resume always starts a fresh generation (pause.go's Resume calls
+// startSession(ctx, a, ses.Attempt, ses.Generation+1, ...)), so once resumed
+// the agent's newest session is no longer 'paused' and counts normally; the
+// window this excludes is only "paused and not yet resumed". Without this,
+// pausing agents to free capacity for something else didn't actually free
+// any capacity, defeating the reason to pause in the first place. The agent
+// row itself is untouched by this -- still active, still shown, still
+// resumable/ackable/cancellable by hand -- this only stops it blocking
+// admission.
 //
 // It also excludes an agent whose own item already has a completed or failed
 // checkpoint on record for that session (2026-09-23 fix): a worker's own
@@ -59,7 +69,7 @@ import (
 const NotAZombieSlot = `NOT EXISTS (
 		SELECT 1 FROM sessions s WHERE s.agent_id = agents.id
 			AND s.generation = (SELECT MAX(generation) FROM sessions WHERE agent_id = agents.id)
-			AND (s.state IN ('interrupted', 'crashed', 'failed')
+			AND (s.state IN ('interrupted', 'crashed', 'failed', 'paused')
 				OR EXISTS (SELECT 1 FROM checkpoints c WHERE c.agent_id = agents.id
 					AND c.item_id = agents.item_id AND c.session_id = s.id
 					AND c.kind IN ('completed', 'failed'))))`
