@@ -41,7 +41,7 @@ func RemoveLegacyClaude(c Config) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	owned, err := isSwarmOwned(link, skillsHome)
+	owned, err := isSwarmOwned(link, skillsHome, true) // symlink-only check; adopt is moot here
 	if err != nil {
 		return nil, err
 	}

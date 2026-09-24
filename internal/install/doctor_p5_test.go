@@ -190,6 +190,38 @@ func TestCheckSkillsReportsTheExactUserOwnedDetail(t *testing.T) {
 	}
 }
 
+// Review round 2, item 2: CheckSkills used adopt=false, so a marker-less
+// pre-A1 install (this machine's real shape until the next `swarm install` --
+// see the P1 fix report) was reported "user-owned" even though it is
+// swarm's own. Doctor is read-only, so there is no adoption risk here the
+// way there is for the daemon's automatic refresh: adopt=true lets it agree
+// with what an explicit `swarm install` would recognize as pre-A1.
+func TestCheckSkillsRecognizesAPreA1InstallAsSwarmOwned(t *testing.T) {
+	c := fakeHome(t)
+	if _, _, err := install.WriteSkills(c, install.KindCodex); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the fresh "swarm" install with a marker-less pre-A1 shape.
+	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.RemoveAll(dst); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), readTestdata(t, "pre_a1_swarm_skill.md"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := install.CheckSkills(c, install.KindCodex)
+	if !ch.OK {
+		t.Fatalf("a pre-A1 install must not fail the check: %+v", ch)
+	}
+	if strings.Contains(ch.Detail, "user-owned") {
+		t.Errorf("a pre-A1 install was reported user-owned: %+v", ch)
+	}
+}
+
 // A1: ui-ux-pro-max's search script needs python3, but its absence must warn,
 // not fail doctor (§ many machines run swarm without it and still work fine
 // otherwise).

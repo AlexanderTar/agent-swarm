@@ -167,6 +167,44 @@ func TestSyncSkillsWritesNestedFilesAndPrunes(t *testing.T) {
 	}
 }
 
+// Review round 1, Minor 5 (moved here by review round 2, I1): content-equal
+// is not the same as fully in sync -- a synced skill's file mode can drift
+// (a tool that doesn't preserve it, a manual edit) even though the bytes
+// still match, and only the skills-sync path self-heals that; every other
+// WriteIfChanged caller must not (see
+// TestWriteIfChangedLeavesAContentEqualFileAtItsOwnModeEvenWhenTheModeArgDiffers
+// in files_test.go).
+func TestSyncSkillsFixesADriftedFileMode(t *testing.T) {
+	home := t.TempDir()
+	if _, err := install.SyncSkills(home); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(home, "skills", "swarm", "SKILL.md")
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := install.SyncSkills(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range changed {
+		if c == p {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the mode-only fix was not reported in changed: %v", changed)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o644 {
+		t.Errorf("mode = %v, want 0644", fi.Mode().Perm())
+	}
+}
+
 // Review round 1, Major 1: a custom (or relative) --home must not split
 // SyncSkills' writes from where WriteSkills/CheckSkills/the claude adapter
 // look for them, and a relative home must never produce a relative (and
@@ -536,6 +574,153 @@ func TestWriteSkillsReplacesStaleSwarmCopy(t *testing.T) {
 	}
 }
 
+// Review round 2, C1 #3: a marker naming a *different* swarm home is never
+// ours, even for an explicit `swarm install` (adopt=true) -- this is the
+// direct regression for the mechanism that let a daemon with a dev/test home
+// silently recopy a real installation's content, since a content-blind
+// marker (round 1's shape) reads as "owned" by any skillsHome that asks.
+func TestWriteSkillsLeavesADirAloneWhenItsMarkerNamesADifferentSwarmHome(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	drifted := []byte("content installed by a different swarm home\n")
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), drifted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, install.ManagedMarker), []byte("/some/other/swarm/skills"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, skipped, err := install.WriteSkills(c, install.KindCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range skipped {
+		if s == dst {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a dir with a foreign marker was not reported skipped: %v", skipped)
+	}
+	for _, ch := range changed {
+		if ch == dst {
+			t.Errorf("changed reports the foreign-marker dir %s", dst)
+		}
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil || string(body) != string(drifted) {
+		t.Errorf("the foreign-marker dir's content was touched: %q, %v", body, err)
+	}
+}
+
+// Review round 2, C1 #3 / I2: an empty (pre-this-fix) marker is owned by an
+// explicit `swarm install` (adopt=true) but NOT by the daemon's own automatic
+// refresh (adopt=false, RefreshSkillLinks/SyncAndRefreshSkills) -- exactly
+// the asymmetry TestWriteSkillsReplacesStaleSwarmCopy above already locks in
+// for the adopt=true side; this locks in the adopt=false side too, and
+// through the real SyncAndRefreshSkills entry point (not linkSkills
+// directly), so the Home-vs-UserHome gate and the marker check are both
+// exercised together.
+func TestSyncAndRefreshSkillsLeavesAnEmptyMarkerDirAloneButWriteSkillsAdoptsIt(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	drifted := []byte("stale content, pre-this-fix empty marker\n")
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), drifted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, install.ManagedMarker), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := install.SyncAndRefreshSkills(c); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil || string(body) != string(drifted) {
+		t.Errorf("SyncAndRefreshSkills touched an empty-marker dir: %q, %v", body, err)
+	}
+
+	if _, _, err := install.WriteSkills(c, install.KindCodex); err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != string(install.SkillBody("swarm")) {
+		t.Errorf("WriteSkills did not adopt the empty-marker dir: %.20q", body)
+	}
+}
+
+// Review round 2, item 3: the earlier C1 regression tests all happened to
+// pass even without the Home-vs-UserHome gate in SyncAndRefreshSkills,
+// because their fixtures' markers never matched the *test's own* skillsHome
+// -- the marker-content check alone was enough to protect them. This test
+// isolates the gate itself: the seeded entry's marker names exactly the
+// skillsHome this call's own (non-canonical) Home would compute, i.e. it
+// looks precisely like something *this daemon's own temp home* installed.
+// Without the gate, isSwarmOwned's content==skillsHome branch would call it
+// owned and RefreshSkillLinks would recopy fresh content over it; the gate
+// must stop that regardless, because Home is not the canonical default for
+// UserHome.
+func TestSyncAndRefreshSkillsGateBlocksRefreshEvenWhenTheMarkerMatchesThisCallsOwnSkillsHome(t *testing.T) {
+	userHome := t.TempDir()
+	daemonHome := t.TempDir() // deliberately not filepath.Join(userHome, ".swarm")
+	skillsHome, err := install.SkillsHome(daemonHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(userHome, ".codex", "skills", "swarm")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	drifted := []byte("content that looks exactly like this daemon's own home installed it\n")
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), drifted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, install.ManagedMarker), []byte(skillsHome), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := install.Config{UserHome: userHome, Home: daemonHome}
+	if _, err := install.SyncAndRefreshSkills(c); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil || string(body) != string(drifted) {
+		t.Errorf("the gate did not block the refresh: %q, %v", body, err)
+	}
+}
+
+// readTestdata returns a frozen historical fixture body from testdata/.
+// Review round 2, item 1: the pre-A1 adoption tests below used to build their
+// fixture from install.SkillBody(name) -- the CURRENT embedded body. That
+// only worked because HEAD's own blob happened to be in
+// preA1SkillBodyHashes; the next edit to skills/swarm/SKILL.md (P3) would
+// have turned these tests red for a reason that has nothing to do with the
+// adoption logic they're testing. testdata/pre_a1_*.md are frozen bodies
+// (captured from commit 90918bd, "ship the swarm and swarm-orchestrator
+// skills for every agent" -- the first commit that shipped them, i.e.
+// genuinely pre-A1) whose sha256 is a permanent entry in
+// preA1SkillBodyHashes and will never change out from under these tests.
+func readTestdata(t *testing.T, name string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
 // Review round 1, Major 2: a pre-A1 install wrote only a bare SKILL.md per
 // skill, no .swarm-managed marker (that marker did not exist yet). Without
 // recognizing this shape, isSwarmOwned would call it user-owned forever, and
@@ -548,7 +733,7 @@ func TestWriteSkillsAdoptsAPreA1RealSkillDirectoryInCopyMode(t *testing.T) {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), install.SkillBody("swarm"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), readTestdata(t, "pre_a1_swarm_skill.md"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -575,6 +760,52 @@ func TestWriteSkillsAdoptsAPreA1RealSkillDirectoryInCopyMode(t *testing.T) {
 	}
 }
 
+// Review round 2, I2: matching frontmatter `name:` was not enough to treat a
+// marker-less directory as a pre-A1 swarm install -- a user's own same-named,
+// single-file skill (with its own, unrelated body, but a `name: swarm` line)
+// must be left alone: not adopted, reported skipped, its content untouched.
+// Only a body that byte-matches something swarm actually shipped
+// (preA1SkillBodyHashes) is adopted; see
+// TestWriteSkillsAdoptsAPreA1RealSkillDirectoryInCopyMode above for that.
+func TestWriteSkillsLeavesAMarkerlessSameNameDirAloneWhenItsBodyWasNeverShipped(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mine := []byte("---\nname: swarm\ndescription: my own thing\n---\n\nnot swarm's content at all\n")
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), mine, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, skipped, err := install.WriteSkills(c, install.KindCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range skipped {
+		if s == dst {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the user's own same-name dir was not reported skipped: %v", skipped)
+	}
+	for _, ch := range changed {
+		if ch == dst {
+			t.Errorf("changed reports the user-owned dir %s", dst)
+		}
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil || string(body) != string(mine) {
+		t.Errorf("the user's own SKILL.md was touched: %q, %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, install.ManagedMarker)); !os.IsNotExist(err) {
+		t.Errorf("a marker was written into the user's own dir: %v", err)
+	}
+}
+
 // Same adoption, Symlink mode (Claude): the pre-A1 real directory is replaced
 // with v2's own symlink.
 func TestWriteClaudeAdoptsAPreA1RealSkillDirectory(t *testing.T) {
@@ -583,7 +814,7 @@ func TestWriteClaudeAdoptsAPreA1RealSkillDirectory(t *testing.T) {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), install.SkillBody("swarm-orchestrator"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), readTestdata(t, "pre_a1_swarm_orchestrator_skill.md"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := install.WriteClaude(context.Background(), c, claudeMCPFake(c.Bin).Runner()); err != nil {

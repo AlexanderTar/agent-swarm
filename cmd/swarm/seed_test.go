@@ -43,7 +43,7 @@ func devDaemonWithout(t *testing.T, without ...string) (*devServer, string) {
 	t.Setenv("SWARM_TMUX_SOCKET", "swarm-test-"+strconv.Itoa(os.Getpid()))
 	t.Setenv("SWARM_USAGE", "")
 	home := t.TempDir()
-	cfg := daemonConfig{Home: home, Port: 0, Background: false, ScanRoot: t.TempDir(),
+	cfg := daemonConfig{UserHome: t.TempDir(), Home: home, Port: 0, Background: false, ScanRoot: t.TempDir(),
 		Embedder: offlineEmb{}, Log: func(string, ...any) {},
 		Dev: !slices.Contains(without, "--dev")}
 	addr := make(chan string, 1)

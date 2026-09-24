@@ -29,6 +29,52 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// TestMain is the C1 last-resort safety net: it points $HOME at a throwaway
+// temp dir for the whole cmd/swarm test binary, so a test that opens a daemon
+// (or runs any command touching os.UserHomeDir()) without its own explicit
+// UserHome/HOME override still cannot reach the real operator's home. This
+// already happened once on this machine (a daemon test relinked/recopied
+// ~/.claude/skills and friends) -- individual tests still set
+// daemonConfig.UserHome explicitly (belt and braces), this is the backstop
+// for the one that forgets.
+func TestMain(m *testing.M) {
+	os.Exit(runCmdSwarmTests(m))
+}
+
+func runCmdSwarmTests(m *testing.M) int {
+	dir, err := os.MkdirTemp("", "swarm-test-home")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+	os.Setenv("HOME", dir)
+	// Review round 2, item 4: SWARM_HOME and SWARM_URL are the two other
+	// env-first defaults (defaultHome/defaultURL in main.go) a runner's shell
+	// could have exported for real use -- unset them too, so a test that
+	// forgets its own --home/--url can't inherit a real one from outside the
+	// test binary.
+	os.Unsetenv("SWARM_HOME")
+	os.Unsetenv("SWARM_URL")
+	return m.Run()
+}
+
+// Review round 2, item 4: a runner (CI, a developer's shell) that already
+// has SWARM_HOME or SWARM_URL exported could otherwise point a test's
+// default --home/--url (defaultHome/defaultURL in main.go, both env-first)
+// at something real, the same class of leak TestMain's HOME override exists
+// to prevent. This only proves TestMain did its job by the time any test
+// body runs -- the actual "a runner had them exported" scenario has to be
+// exercised from outside the test binary (see the fix report for the
+// before/after run with both vars exported in the invoking shell).
+func TestMainScrubsSwarmHomeAndSwarmURLFromTheEnvironment(t *testing.T) {
+	if v := os.Getenv("SWARM_HOME"); v != "" {
+		t.Errorf("SWARM_HOME leaked into a test: %q", v)
+	}
+	if v := os.Getenv("SWARM_URL"); v != "" {
+		t.Errorf("SWARM_URL leaked into a test: %q", v)
+	}
+}
+
 type offlineEmb struct{}
 
 func (offlineEmb) Model() string               { return "offline" }
@@ -77,7 +123,7 @@ func startDaemon(t *testing.T) (url, home string, stop func()) {
 	ready := make(chan string, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, daemonConfig{Home: home, Port: 0, ScanRoot: scan, Embedder: offlineEmb{}, Log: t.Logf,
+		done <- serve(ctx, daemonConfig{UserHome: t.TempDir(), Home: home, Port: 0, ScanRoot: scan, Embedder: offlineEmb{}, Log: t.Logf,
 			Ready: func(addr string) { ready <- addr }})
 	}()
 	select {
@@ -243,7 +289,7 @@ func TestTokenIsReusedAndLegacyDataRefused(t *testing.T) {
 	ready := make(chan string, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf,
+		done <- serve(ctx, daemonConfig{UserHome: t.TempDir(), Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf,
 			Ready: func(a string) { ready <- a }})
 	}()
 	<-ready
@@ -258,7 +304,7 @@ func TestTokenIsReusedAndLegacyDataRefused(t *testing.T) {
 	d, _ := sql.Open("sqlite", "file:"+filepath.Join(legacy, "swarm.db"))
 	d.Exec(`CREATE TABLE schema_meta (version INTEGER)`)
 	d.Close()
-	err := serve(context.Background(), daemonConfig{Home: legacy, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	err := serve(context.Background(), daemonConfig{UserHome: t.TempDir(), Home: legacy, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
 	if err == nil || err.Error() != "Agent Swarm 1.x data found. Run `swarm migrate` first." {
 		t.Fatalf("legacy = %v", err)
 	}
@@ -287,7 +333,7 @@ func TestServeBoundsWaitForBackgroundLoops(t *testing.T) {
 	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, daemonConfig{Home: t.TempDir(), ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: logf,
+		done <- serve(ctx, daemonConfig{UserHome: t.TempDir(), Home: t.TempDir(), ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: logf,
 			grace: 200 * time.Millisecond, loops: []func(context.Context){func(context.Context) { <-block }},
 			Ready: func(string) { close(ready) }})
 	}()
@@ -322,7 +368,7 @@ func TestServeShutsDownWithAnOpenEventStream(t *testing.T) {
 	done := make(chan error, 1)
 	loopDone := make(chan struct{})
 	go func() {
-		done <- serve(ctx, daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf,
+		done <- serve(ctx, daemonConfig{UserHome: t.TempDir(), Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf,
 			grace: 2 * time.Second, Ready: func(a string) { ready <- a },
 			loops: []func(context.Context){func(c context.Context) {
 				<-c.Done()
@@ -368,7 +414,7 @@ func TestOpenDaemonKeepsTightHomePermissions(t *testing.T) {
 	if err := os.Chmod(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	dm, err := openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	dm, err := openDaemon(context.Background(), daemonConfig{UserHome: t.TempDir(), Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,13 +437,164 @@ func TestOpenDaemonKeepsTightHomePermissions(t *testing.T) {
 func TestOpenDaemonSyncsSkills(t *testing.T) {
 	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	home := t.TempDir()
-	dm, err := openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	dm, err := openDaemon(context.Background(), daemonConfig{UserHome: t.TempDir(), Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer dm.db.Close()
 	if _, err := os.Stat(filepath.Join(home, "skills", "swarm", "SKILL.md")); err != nil {
 		t.Errorf("openDaemon did not sync skills into cfg.Home: %v", err)
+	}
+}
+
+// snapshotTree captures every file's mode+bytes and every symlink's target
+// under root, keyed by path relative to root, so a test can assert a whole
+// tree came out byte-for-byte untouched.
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		fi, err := os.Lstat(p)
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			out[rel] = fmt.Sprintf("symlink(%v) -> %s", fi.Mode().Perm(), target)
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		out[rel] = fmt.Sprintf("file(%v) %s", fi.Mode().Perm(), body)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// C1: a daemon opened with a temp/custom swarm Home must never reach into the
+// real UserHome's own per-kind skill roots (~/.claude/skills, ...) -- only a
+// daemon whose Home IS the canonical default home for that UserHome
+// (filepath.Join(userHome, ".swarm")) may relink/repair them. This is the
+// regression for the live-machine incident: a daemon test opened with a temp
+// Home but the real UserHome relinked ~/.claude/skills into a now-deleted
+// temp dir and overwrote ~/.codex/skills' content.
+//
+// Codex (Copy mode) is seeded with content that has drifted from what the
+// binary embeds (simulating an install from an older build) and a *foreign*
+// marker naming a different swarm home, then deliberately mutated again after
+// WriteSkills -- this exercises the exact bug: the pre-fix ManagedMarker
+// carries no record of which swarm home wrote it, so any marker at all reads
+// as "owned" by ANY skillsHome, and RefreshSkillLinks recopies fresh content
+// over it even though this daemon's Home has nothing to do with this
+// UserHome's real install.
+//
+// Claude (Symlink mode) is seeded with a link pointing at a skills home that
+// no longer exists on disk at all (the deleted-temp-dir shape from the
+// incident) to confirm a dangling foreign link is left exactly as dangling,
+// never "helpfully" touched.
+func TestOpenDaemonWithACustomHomeLeavesTheRealUserHomeSkillsUntouched(t *testing.T) {
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
+	userHome := t.TempDir()
+	ic := install.Config{UserHome: userHome, Home: filepath.Join(userHome, ".swarm")}
+	if _, _, err := install.WriteSkills(ic, install.KindClaude); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := install.WriteSkills(ic, install.KindCodex); err != nil {
+		t.Fatal(err)
+	}
+	// Drift Codex's real, already-installed copy so a silent recopy is
+	// observable.
+	codexSwarmMD := filepath.Join(userHome, ".codex", "skills", "swarm", "SKILL.md")
+	if err := os.WriteFile(codexSwarmMD, []byte("stale content from an older build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A dangling foreign link: this exact shape bit the live machine.
+	claudeSwarmLink := filepath.Join(userHome, ".claude", "skills", "swarm")
+	if err := os.RemoveAll(claudeSwarmLink); err != nil {
+		t.Fatal(err)
+	}
+	deletedHome := filepath.Join(t.TempDir(), "already-gone")
+	if err := os.Symlink(filepath.Join(deletedHome, "skills", "swarm"), claudeSwarmLink); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, filepath.Join(userHome, ".claude", "skills"))
+	beforeCodex := snapshotTree(t, filepath.Join(userHome, ".codex", "skills"))
+
+	// A different, throwaway daemon Home for the *same* real UserHome -- the
+	// exact shape of `make dev` (--home ~/.swarm-dev) or any test.
+	dm, err := openDaemon(context.Background(), daemonConfig{
+		Home: t.TempDir(), UserHome: userHome, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dm.db.Close()
+
+	after := snapshotTree(t, filepath.Join(userHome, ".claude", "skills"))
+	afterCodex := snapshotTree(t, filepath.Join(userHome, ".codex", "skills"))
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("a daemon with a different Home touched the real UserHome's claude skills:\nbefore: %v\nafter:  %v", before, after)
+	}
+	if !reflect.DeepEqual(beforeCodex, afterCodex) {
+		t.Errorf("a daemon with a different Home touched the real UserHome's codex skills:\nbefore: %v\nafter:  %v", beforeCodex, afterCodex)
+	}
+}
+
+// C1, positive case: when Home really is the canonical default for UserHome
+// (filepath.Join(userHome, ".swarm")), openDaemon still repairs a broken
+// per-kind link -- the gate must not turn the refresh off altogether.
+func TestOpenDaemonWithTheCanonicalHomeStillRefreshesUserHomeSkillLinks(t *testing.T) {
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
+	userHome := t.TempDir()
+	swarmHome := filepath.Join(userHome, ".swarm")
+	ic := install.Config{UserHome: userHome, Home: swarmHome}
+	if _, _, err := install.WriteSkills(ic, install.KindClaude); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(userHome, ".claude", "skills", "swarm")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	skillsHome, err := install.SkillsHome(swarmHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Dangling but still swarm-owned: it resolves inside skillsHome, just at a
+	// wrong (nonexistent) name.
+	if err := os.Symlink(filepath.Join(skillsHome, "some-old-removed-name"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	dm, err := openDaemon(context.Background(), daemonConfig{
+		Home: swarmHome, UserHome: userHome, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dm.db.Close()
+
+	got, err := os.Readlink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(skillsHome, "swarm"); got != want {
+		t.Errorf("link still broken: %s, want %s", got, want)
 	}
 }
 
@@ -411,7 +608,7 @@ func TestTokenEmptyIsReplacedUnreadableFails(t *testing.T) {
 	if err := os.WriteFile(path, []byte("\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dm, err := openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	dm, err := openDaemon(context.Background(), daemonConfig{UserHome: t.TempDir(), Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +623,7 @@ func TestTokenEmptyIsReplacedUnreadableFails(t *testing.T) {
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dm, err = openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	dm, err = openDaemon(context.Background(), daemonConfig{UserHome: t.TempDir(), Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +637,7 @@ func TestTokenEmptyIsReplacedUnreadableFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(path, 0o600)
-	_, err = openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	_, err = openDaemon(context.Background(), daemonConfig{UserHome: t.TempDir(), Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
 	if err == nil || !strings.Contains(err.Error(), "Can't read the daemon token ("+path+")") {
 		t.Fatalf("unreadable token = %v", err)
 	}
@@ -455,7 +652,7 @@ func TestDaemonLoggersWired(t *testing.T) {
 		defer mu.Unlock()
 		got = append(got, format)
 	}
-	dm, err := openDaemon(context.Background(), daemonConfig{Home: t.TempDir(), ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: logf})
+	dm, err := openDaemon(context.Background(), daemonConfig{UserHome: t.TempDir(), Home: t.TempDir(), ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: logf})
 	if err != nil {
 		t.Fatal(err)
 	}

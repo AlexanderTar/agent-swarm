@@ -126,7 +126,7 @@ func Leftovers(c Config) []Leftover {
 		// ~/.swarm/skills; only a link that does not resolve there is v1's.
 		if link == claudeSkillsLink {
 			if skillsHome, err := SkillsHome(c.Home); err == nil {
-				if owned, err := isSwarmOwned(link, skillsHome); err == nil && owned {
+				if owned, err := isSwarmOwned(link, skillsHome, true); err == nil && owned { // symlink-only check; adopt is moot here
 					continue
 				}
 			}

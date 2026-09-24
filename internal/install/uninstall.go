@@ -64,7 +64,7 @@ func Uninstall(ctx context.Context, o AgentsOpts) error {
 	for _, k := range Kinds {
 		for _, name := range SkillNames() {
 			dir := filepath.Join(o.Cfg.SkillsDir(k), name)
-			owned, err := isSwarmOwned(dir, skillsHome)
+			owned, err := isSwarmOwned(dir, skillsHome, true) // explicit `swarm uninstall`: adopt
 			if err != nil {
 				return err
 			}
