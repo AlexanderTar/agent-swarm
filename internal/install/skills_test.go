@@ -640,6 +640,66 @@ func TestSyncAndRefreshSkillsLeavesAnEmptyMarkerDirAloneButWriteSkillsAdoptsIt(t
 	}
 }
 
+// Review round 2, item 3: the earlier C1 regression tests all happened to
+// pass even without the Home-vs-UserHome gate in SyncAndRefreshSkills,
+// because their fixtures' markers never matched the *test's own* skillsHome
+// -- the marker-content check alone was enough to protect them. This test
+// isolates the gate itself: the seeded entry's marker names exactly the
+// skillsHome this call's own (non-canonical) Home would compute, i.e. it
+// looks precisely like something *this daemon's own temp home* installed.
+// Without the gate, isSwarmOwned's content==skillsHome branch would call it
+// owned and RefreshSkillLinks would recopy fresh content over it; the gate
+// must stop that regardless, because Home is not the canonical default for
+// UserHome.
+func TestSyncAndRefreshSkillsGateBlocksRefreshEvenWhenTheMarkerMatchesThisCallsOwnSkillsHome(t *testing.T) {
+	userHome := t.TempDir()
+	daemonHome := t.TempDir() // deliberately not filepath.Join(userHome, ".swarm")
+	skillsHome, err := install.SkillsHome(daemonHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(userHome, ".codex", "skills", "swarm")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	drifted := []byte("content that looks exactly like this daemon's own home installed it\n")
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), drifted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, install.ManagedMarker), []byte(skillsHome), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := install.Config{UserHome: userHome, Home: daemonHome}
+	if _, err := install.SyncAndRefreshSkills(c); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil || string(body) != string(drifted) {
+		t.Errorf("the gate did not block the refresh: %q, %v", body, err)
+	}
+}
+
+// readTestdata returns a frozen historical fixture body from testdata/.
+// Review round 2, item 1: the pre-A1 adoption tests below used to build their
+// fixture from install.SkillBody(name) -- the CURRENT embedded body. That
+// only worked because HEAD's own blob happened to be in
+// preA1SkillBodyHashes; the next edit to skills/swarm/SKILL.md (P3) would
+// have turned these tests red for a reason that has nothing to do with the
+// adoption logic they're testing. testdata/pre_a1_*.md are frozen bodies
+// (captured from commit 90918bd, "ship the swarm and swarm-orchestrator
+// skills for every agent" -- the first commit that shipped them, i.e.
+// genuinely pre-A1) whose sha256 is a permanent entry in
+// preA1SkillBodyHashes and will never change out from under these tests.
+func readTestdata(t *testing.T, name string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
 // Review round 1, Major 2: a pre-A1 install wrote only a bare SKILL.md per
 // skill, no .swarm-managed marker (that marker did not exist yet). Without
 // recognizing this shape, isSwarmOwned would call it user-owned forever, and
@@ -652,7 +712,7 @@ func TestWriteSkillsAdoptsAPreA1RealSkillDirectoryInCopyMode(t *testing.T) {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), install.SkillBody("swarm"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), readTestdata(t, "pre_a1_swarm_skill.md"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -733,7 +793,7 @@ func TestWriteClaudeAdoptsAPreA1RealSkillDirectory(t *testing.T) {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), install.SkillBody("swarm-orchestrator"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), readTestdata(t, "pre_a1_swarm_orchestrator_skill.md"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := install.WriteClaude(context.Background(), c, claudeMCPFake(c.Bin).Runner()); err != nil {

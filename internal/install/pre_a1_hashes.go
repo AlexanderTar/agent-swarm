@@ -1,13 +1,17 @@
 package install
 
 // preA1SkillBodyHashes are the sha256 hex digests of every body
-// skills/swarm/SKILL.md and skills/swarm-orchestrator/SKILL.md have ever had
-// on main (including the current one). isPreA1CoreSkillDir (review round 2,
-// I2) treats a marker-less directory as swarm-owned -- safe to adopt during
-// an explicit `swarm install` -- only when its SKILL.md byte-matches one of
-// these, never merely because its frontmatter `name:` matches: a user's own
-// same-named skill is astronomically unlikely to be byte-identical to
-// something swarm actually shipped.
+// skills/swarm/SKILL.md and skills/swarm-orchestrator/SKILL.md had on main as
+// of 2026-09-24 (round 2, item 1: this is a frozen, point-in-time snapshot --
+// it does NOT auto-track "the current body" and must not be regenerated just
+// because either file changes again; a future body only needs adding here if
+// an install written with that exact body needs to be recognized as pre-A1).
+// isPreA1CoreSkillDir (review round 2, I2) treats a marker-less directory as
+// swarm-owned -- safe to adopt during an explicit `swarm install` -- only
+// when its SKILL.md byte-matches one of these, never merely because its
+// frontmatter `name:` matches: a user's own same-named skill is
+// astronomically unlikely to be byte-identical to something swarm actually
+// shipped.
 //
 // Generated 2026-09-24 with:
 //
