@@ -1626,6 +1626,114 @@ func TestOnDepUnblockedEscalatesPastADeadParentToTheNearestLiveAncestor(t *testi
 	}
 }
 
+// TestDepUnblockedWakesAllParents (spec B5): OnDepUnblocked used to pick one
+// arbitrary active agent on the unblocked item and relay to only its
+// parent. Two different agents, both active on TASK-2, with two different
+// live parents, must both be woken -- not just whichever one the query
+// happened to return first.
+func TestDepUnblockedWakesAllParents(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Items.DepUnblocked = s.OnDepUnblocked // cmd/swarm/daemon.go wires this in production
+	ctx := context.Background()
+	// This test needs 5 concurrently active agents; the default
+	// max_concurrent_agents (4) would otherwise queue the last spawn instead
+	// of starting it. Raw SQL, not Settings.Put: Put's validate() rejects the
+	// "fake" kind this fixture's Installed hook enables as the default
+	// enabled_agents, which Get() would otherwise round-trip right back in.
+	for _, kv := range [][2]string{{"max_concurrent_agents", "10"}, {"max_agents_per_root", "10"}} {
+		if _, err := s.DB.ExecContext(ctx, `INSERT OR REPLACE INTO settings (key, value_json, updated_at)
+			VALUES (?, ?, 1)`, kv[0], kv[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedEpicWithTwoTasks(t, s)
+	if err := s.Items.AddDep(ctx, "TASK-2", "TASK-1", items.User("board")); err != nil {
+		t.Fatal(err)
+	}
+	root, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneB, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root.ID, Brief: BriefInput{Objective: "unblock TASK-2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneBSes, err := s.LatestSession(ctx, laneB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// helper is a second, independent live parent -- not root, not each
+	// other's ancestor -- so its own child (agentY) must be woken via
+	// helper, distinctly from agentX's wake via root. Role reviewer (not
+	// coder, unlike laneB): closeCompletedSiblings (spec B5/8.2) only tears
+	// down a same-role sibling, and a same-role coder on TASK-1 would
+	// otherwise be closed the moment laneB completes it below, before
+	// OnDepUnblocked even runs.
+	helper, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root.ID, Brief: BriefInput{Objective: "helper"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentX, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: root.ID, Brief: BriefInput{Objective: "wait on TASK-1 (via root)"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentXSes, err := s.LatestSession(ctx, agentX.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentY, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: helper.ID, Brief: BriefInput{Objective: "wait on TASK-1 (via helper)"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentYSes, err := s.LatestSession(ctx, agentY.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, ses := range []Session{agentXSes, agentYSes} {
+		if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: BlockedCkp,
+			Summary: "waiting on TASK-1", Blockers: []string{"TASK-1 isn't done yet"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, laneBSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	relaysTo := func(agentID string) int {
+		var n int
+		s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+			AND payload_json LIKE '%"event":"dependency_added"%' AND payload_json LIKE '%"item":"TASK-2"%'`,
+			agentID).Scan(&n)
+		return n
+	}
+	if n := relaysTo(root.ID); n != 1 {
+		t.Fatalf("root (agentX's parent) relay count = %d, want 1", n)
+	}
+	if n := relaysTo(helper.ID); n != 1 {
+		t.Fatalf("helper (agentY's parent) relay count = %d, want 1", n)
+	}
+}
+
 // Rewritten from TestPromptDetectedInRunningSessionOpensHITLRequest (spec 8.3): a scraped
 // prompt no longer becomes a row; the daemon presses the matcher's keys once instead.
 func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {

@@ -273,9 +273,30 @@ func (s *Store) acceptedSince(ctx context.Context, q querier, it Item) (bool, er
 		it.ID, db.Millis(it.UpdatedAt))
 }
 
+// completedCurrent reports whether the item has a "current" completed
+// checkpoint. Legacy tasks (workflow_json IS NULL, it.Workflow == nil) keep
+// the original, unchanged formula byte-for-byte (Review Focus 1). A
+// workflow task instead fixes the cross-agent attempt bug (spec B5/Context):
+// the original MAX(attempt) was taken across every checkpoint on the item,
+// mixing each agent's own independent attempt/session counter -- a
+// reviewer's own review-attempt sequence could mask or falsely validate a
+// builder's completed checkpoint. The fix looks only at gated-role
+// (coder/debugger/mechanical) checkpoints, picks the temporally latest
+// completed one among them, and checks it against THAT SAME agent's own
+// latest attempt -- not the item-wide max -- so a later attempt from a
+// DIFFERENT agent (e.g. a sibling reviewer) can never invalidate it, while a
+// later attempt from the SAME agent (a fix-round retry) still does.
 func (s *Store) completedCurrent(ctx context.Context, q querier, it Item) (bool, error) {
-	return exists(ctx, q, `SELECT 1 FROM checkpoints WHERE item_id = ? AND kind = 'completed'
-		AND attempt = (SELECT MAX(attempt) FROM checkpoints WHERE item_id = ?)`, it.ID, it.ID)
+	if it.Workflow == nil {
+		return exists(ctx, q, `SELECT 1 FROM checkpoints WHERE item_id = ? AND kind = 'completed'
+			AND attempt = (SELECT MAX(attempt) FROM checkpoints WHERE item_id = ?)`, it.ID, it.ID)
+	}
+	return exists(ctx, q, `SELECT 1 FROM checkpoints c JOIN agents ag ON ag.id = c.agent_id
+		WHERE c.item_id = ? AND c.kind = 'completed' AND ag.role IN ('coder','debugger','mechanical')
+		AND c.created_at = (SELECT MAX(c2.created_at) FROM checkpoints c2 JOIN agents ag2 ON ag2.id = c2.agent_id
+			WHERE c2.item_id = ? AND c2.kind = 'completed' AND ag2.role IN ('coder','debugger','mechanical'))
+		AND c.attempt = (SELECT MAX(attempt) FROM checkpoints WHERE item_id = ? AND agent_id = c.agent_id)`,
+		it.ID, it.ID, it.ID)
 }
 
 func (s *Store) openApproval(ctx context.Context, q querier, it Item) (bool, error) {

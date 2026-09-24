@@ -545,6 +545,43 @@ func TestSpikeTransitions(t *testing.T) {
 	}
 }
 
+// TestCompletedCurrentIsPerAgent reproduces the cross-agent attempt bug (spec
+// B5/Context): completedCurrent used to take MAX(attempt) across every
+// checkpoint on the item, mixing each agent's own independent attempt
+// counter. A workflow task's reviewer cycles through its own review
+// attempts on a totally different counter than the builder's -- that must
+// never mask or invalidate the builder's own completed checkpoint.
+func TestCompletedCurrentIsPerAgent(t *testing.T) {
+	s := newStore(t)
+	_, st, _ := tree(t, s)
+	daemon := items.Daemon()
+
+	// Positive case: the reviewer's own attempt counter (5) is way ahead of
+	// the coder's (1) -- must not stop the coder's completed@1 from counting.
+	taskA := mk(t, s, items.Task, st.Key, "Batched fix")
+	setWorkflowJSON(t, s.DB, taskA)
+	setStatus(t, s, taskA, items.InProgress)
+	coderAgent, coderSes := seedSessionRole(t, s.DB, taskA, "coder", "running")
+	seedCheckpointFor(t, s.DB, taskA, coderAgent, coderSes, "completed", 1, later(s))
+	reviewerAgent, reviewerSes := seedSessionRole(t, s.DB, taskA, "reviewer", "running")
+	seedCheckpointFor(t, s.DB, taskA, reviewerAgent, reviewerSes, "progress", 5, later(s))
+	if err := move(t, s, taskA.Key, items.InReview, daemon); err != nil {
+		t.Fatalf("the reviewer's unrelated attempt counter must not block the coder's own completed: %v", err)
+	}
+	wantStatus(t, s, taskA.Key, items.InReview)
+
+	// Negative case: the SAME coder later posts a non-completed checkpoint at
+	// a higher attempt -- its own stale completed@1 must stop counting.
+	taskB := mk(t, s, items.Task, st.Key, "Batched fix, retried")
+	setWorkflowJSON(t, s.DB, taskB)
+	setStatus(t, s, taskB, items.InProgress)
+	coderAgent2, coderSes2 := seedSessionRole(t, s.DB, taskB, "coder", "running")
+	seedCheckpointFor(t, s.DB, taskB, coderAgent2, coderSes2, "completed", 1, later(s))
+	seedCheckpointFor(t, s.DB, taskB, coderAgent2, coderSes2, "progress", 2, later(s))
+	wantDenied(t, move(t, s, taskB.Key, items.InReview, daemon),
+		"Couldn't update status. The item remains In progress.")
+}
+
 func TestPatchStatusGoesThroughTransition(t *testing.T) {
 	s := newStore(t)
 	e := mk(t, s, items.Epic, "", "E")
