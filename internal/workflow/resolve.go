@@ -7,24 +7,44 @@ const defaultRetries = 1
 
 // Resolve expands a template (if set) into Steps, applies the max_rounds
 // override, defaults each loop's max_rounds and the spec's retries, fills in
-// each review step's default Of (the nearest preceding run step), and drops
-// the tdd gate everywhere when the task is tdd-exempt.
+// each review step's default Of (the nearest preceding run step) and, for a
+// task-level review step with no loop (or a loop with no fix), synthesizes
+// one (Fix: Of, MaxRounds: default or override, OnExhausted: "escalate");
+// and drops the tdd gate everywhere when the task is tdd-exempt.
+//
+// A spec that is neither template- nor steps-shaped (a story or root spec)
+// is returned as-is, aside from a defensive copy of AfterTasks: it has
+// nothing to expand, and task-only fields like Retries must stay unset so
+// Validate for its level still passes.
+//
+// Setting both Template and Steps is an error: pick one.
 func Resolve(s Spec, tddExempt bool) (Spec, error) {
 	out := s
 
-	if s.Template != "" {
+	if out.AfterTasks != nil {
+		at := *out.AfterTasks
+		out.AfterTasks = &at
+	}
+
+	hasTemplate := s.Template != ""
+	hasSteps := len(s.Steps) > 0
+
+	if !hasTemplate && !hasSteps {
+		return out, nil
+	}
+	if hasTemplate && hasSteps {
+		return Spec{}, fmt.Errorf("set template or steps, not both")
+	}
+
+	if hasTemplate {
 		steps, ok := Templates[s.Template]
 		if !ok {
 			return Spec{}, fmt.Errorf("unknown template %q", s.Template)
 		}
 		out.Steps = cloneSteps(steps)
+		out.Template = "" // resolved: Steps is now the source of truth
 	} else {
 		out.Steps = cloneSteps(s.Steps)
-	}
-
-	if out.AfterTasks != nil {
-		at := *out.AfterTasks
-		out.AfterTasks = &at
 	}
 
 	lastRun := ""
@@ -37,7 +57,13 @@ func Resolve(s Spec, tddExempt bool) (Spec, error) {
 		if st.Of == "" {
 			st.Of = lastRun
 		}
-		if st.Loop != nil && st.Loop.MaxRounds == 0 {
+		if st.Loop == nil || st.Loop.Fix == "" {
+			maxRounds := defaultLoopMaxRounds
+			if st.Loop != nil && st.Loop.MaxRounds != 0 {
+				maxRounds = st.Loop.MaxRounds
+			}
+			st.Loop = &Loop{Fix: st.Of, MaxRounds: maxRounds, OnExhausted: "escalate"}
+		} else if st.Loop.MaxRounds == 0 {
 			st.Loop.MaxRounds = defaultLoopMaxRounds
 		}
 	}
