@@ -3,12 +3,14 @@ package items_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 func code(err error) string {
@@ -152,6 +154,7 @@ func TestTddExemptRules(t *testing.T) {
 	if _, err := s.Create(ctx, in, user); err == nil || err.Error() != "Only an orchestrator or a plan can set tdd_exempt." {
 		t.Errorf("user: %v", err)
 	}
+	in.Workflow = &workflow.Spec{Template: "tdd-reviewed"}
 	for _, v := range []string{"docs", "config", "mechanical-rename", "spike-research"} {
 		in.TddExempt = v
 		it, err := s.Create(ctx, in, orch)
@@ -248,6 +251,123 @@ func TestUpdateTddExempt(t *testing.T) {
 
 	if _, err := s.Update(ctx, task.Key, items.Patch{TddExempt: &exempt, Revision: got.Revision}, user); code(err) != items.CodeBadRequest {
 		t.Fatalf("non-orchestrator: %v", err)
+	}
+}
+
+// TestCreateTaskStoresResolvedWorkflowAndRoleHint is spec B3: CreateTx runs
+// workflow.Resolve on the given spec and stores the resolved form (a
+// template expands to its steps), and sets role_hint from the resolved
+// spec's first run step.
+func TestCreateTaskStoresResolvedWorkflowAndRoleHint(t *testing.T) {
+	s := newStore(t)
+	e := mk(t, s, items.Epic, "", "E")
+	st := mk(t, s, items.Story, e.Key, "S")
+	orch := items.Orchestrator("agt_1", e.ID)
+	it, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "T",
+		Workflow: &workflow.Spec{Template: "tdd-reviewed"}}, orch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Workflow == nil || it.Workflow.Template != "" || len(it.Workflow.Steps) != 2 {
+		t.Fatalf("workflow = %+v", it.Workflow)
+	}
+	if it.RoleHint != "coder" {
+		t.Fatalf("role_hint = %q, want coder", it.RoleHint)
+	}
+	got, err := s.Get(ctx, it.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || len(got.Workflow.Steps) != 2 || got.RoleHint != "coder" {
+		t.Fatalf("get round trip = %+v", got)
+	}
+}
+
+// TestCreateRejectsInvalidWorkflow is spec B2: an invalid workflow spec is
+// refused with the workflow package's own validation copy.
+func TestCreateRejectsInvalidWorkflow(t *testing.T) {
+	s := newStore(t)
+	e := mk(t, s, items.Epic, "", "E")
+	st := mk(t, s, items.Story, e.Key, "S")
+	orch := items.Orchestrator("agt_1", e.ID)
+	_, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "T",
+		Workflow: &workflow.Spec{Template: "no-such-template"}}, orch)
+	want := `unknown template "no-such-template"`
+	if err == nil || err.Error() != want || code(err) != items.CodeBadRequest {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// TestCreateRejectsStepsAndUnits is spec B3/C4: a task has either steps or
+// units, never both, and at most 8 units.
+func TestCreateRejectsStepsAndUnits(t *testing.T) {
+	s := newStore(t)
+	e := mk(t, s, items.Epic, "", "E")
+	st := mk(t, s, items.Story, e.Key, "S")
+	orch := items.Orchestrator("agt_1", e.ID)
+	_, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "Both",
+		Workflow: &workflow.Spec{Template: "tdd-reviewed"},
+		Steps:    []string{"do the thing"},
+		Units:    []items.Unit{{Title: "u1", Steps: []string{"s1"}}},
+	}, orch)
+	want := "Task Both has both steps and units; use one."
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+
+	units := make([]items.Unit, 9)
+	for i := range units {
+		units[i] = items.Unit{Title: fmt.Sprintf("u%d", i), Steps: []string{"s"}}
+	}
+	_, err = s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "TooMany",
+		Workflow: &workflow.Spec{Template: "tdd-reviewed"}, Units: units}, orch)
+	want2 := "Task TooMany has 9 units (max 8)."
+	if err == nil || err.Error() != want2 {
+		t.Fatalf("err = %v, want %q", err, want2)
+	}
+}
+
+// TestOrchestratorTaskNeedsWorkflow is spec B3/locked decision 15: a task
+// created by an orchestrator must carry a workflow.
+func TestOrchestratorTaskNeedsWorkflow(t *testing.T) {
+	s := newStore(t)
+	e := mk(t, s, items.Epic, "", "E")
+	st := mk(t, s, items.Story, e.Key, "S")
+	orch := items.Orchestrator("agt_1", e.ID)
+	_, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "NoFlow"}, orch)
+	want := "Task NoFlow has no workflow. Plans assign every role: pick a template or write steps."
+	if err == nil || err.Error() != want || code(err) != items.CodeBadRequest {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// TestBoardTaskMayOmitWorkflow is spec B3: only orchestrator-created tasks
+// require a workflow; a task the user creates on the board is the legacy
+// flow and may omit it.
+func TestBoardTaskMayOmitWorkflow(t *testing.T) {
+	s := newStore(t)
+	e := mk(t, s, items.Epic, "", "E")
+	st := mk(t, s, items.Story, e.Key, "S")
+	it, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "Board task"}, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Workflow != nil {
+		t.Fatalf("workflow = %+v, want nil", it.Workflow)
+	}
+}
+
+// TestUserCannotSetWorkflow is spec B3's judgment call: only an orchestrator
+// or the daemon (a plan materializing) may set workflow/steps/units/solo/verify.
+func TestUserCannotSetWorkflow(t *testing.T) {
+	s := newStore(t)
+	e := mk(t, s, items.Epic, "", "E")
+	st := mk(t, s, items.Story, e.Key, "S")
+	_, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "T",
+		Workflow: &workflow.Spec{Template: "tdd-reviewed"}}, user)
+	want := "Only an orchestrator or a plan can set workflow, steps, units, solo or verify."
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
 	}
 }
 

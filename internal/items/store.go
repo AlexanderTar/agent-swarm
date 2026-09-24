@@ -14,6 +14,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 type Store struct {
@@ -45,7 +46,12 @@ type CreateInput struct {
 	Priority       *int   // nil means 2
 	RoleHint       string
 	TddExempt      string
-	Repos          []string // top-level: confirmed repo ids; children: hints (subset of the root's)
+	Workflow       *workflow.Spec // orchestrator/daemon only (B3); resolved and stored
+	Steps          []string       // orchestrator/daemon only; either Steps or Units, never both
+	Units          []Unit         // orchestrator/daemon only; at most 8
+	Solo           string         // orchestrator/daemon only
+	Verify         []string       // orchestrator/daemon only
+	Repos          []string       // top-level: confirmed repo ids; children: hints (subset of the root's)
 	SuggestedRepos []string
 	SpikeIntent    string
 	OriginSpikeID  string
@@ -59,6 +65,11 @@ type Patch struct {
 	Acceptance *[]string
 	Priority   *int
 	TddExempt  *string
+	Workflow   *workflow.Spec // orchestrator/daemon only; provided means "set to this"
+	Steps      *[]string      // orchestrator/daemon only
+	Units      *[]Unit        // orchestrator/daemon only
+	Solo       *string        // orchestrator/daemon only
+	Verify     *[]string      // orchestrator/daemon only
 	Status     *Status
 	Revision   int
 }
@@ -76,7 +87,8 @@ const itemCols = `i.id, i.key, i.type, COALESCE(i.parent_id, ''), COALESCE(p.key
  i.title, i.brief, i.acceptance_json, i.status, COALESCE(i.status_before_block, ''), i.priority,
  COALESCE(i.role_hint, ''), COALESCE(i.tdd_exempt, ''), i.confirmed_repos_json, i.repos_version,
  i.repo_hints_json, i.suggested_repos_json, COALESCE(i.spike_intent, ''), COALESCE(i.origin_spike_id, ''),
- COALESCE(i.legacy_key, ''), i.sort_order, i.revision, i.archived_at, i.created_at, i.updated_at
+ COALESCE(i.legacy_key, ''), i.sort_order, i.revision, i.archived_at, i.created_at, i.updated_at,
+ i.workflow_json, COALESCE(i.steps_json, '[]'), COALESCE(i.units_json, '[]'), COALESCE(i.solo, ''), COALESCE(i.verify_json, '[]')
  FROM items i LEFT JOIN items p ON p.id = i.parent_id JOIN items r ON r.id = i.root_id`
 
 type scanner interface{ Scan(dest ...any) error }
@@ -86,13 +98,36 @@ func scanItem(sc scanner) (Item, error) {
 	var acc, confirmed, hints, suggested string
 	var archived sql.NullInt64
 	var created, updated int64
+	var workflowJSON sql.NullString
+	var stepsRaw, unitsRaw, verifyRaw string
 	err := sc.Scan(&it.ID, &it.Key, &it.Type, &it.ParentID, &it.ParentKey, &it.RootID, &it.RootKey,
 		&it.Title, &it.Brief, &acc, &it.Status, &it.StatusBeforeBlock, &it.Priority,
 		&it.RoleHint, &it.TddExempt, &confirmed, &it.ReposVersion,
 		&hints, &suggested, &it.SpikeIntent, &it.OriginSpikeID,
-		&it.LegacyKey, &it.SortOrder, &it.Revision, &archived, &created, &updated)
+		&it.LegacyKey, &it.SortOrder, &it.Revision, &archived, &created, &updated,
+		&workflowJSON, &stepsRaw, &unitsRaw, &it.Solo, &verifyRaw)
 	if err != nil {
 		return it, err
+	}
+	if workflowJSON.Valid && workflowJSON.String != "" {
+		var spec workflow.Spec
+		if err := json.Unmarshal([]byte(workflowJSON.String), &spec); err != nil {
+			return it, fmt.Errorf("items: %s workflow_json: %w", it.Key, err)
+		}
+		it.Workflow = &spec
+	}
+	if err := json.Unmarshal([]byte(stepsRaw), &it.Steps); err != nil {
+		return it, fmt.Errorf("items: %s steps_json: %w", it.Key, err)
+	}
+	if err := json.Unmarshal([]byte(unitsRaw), &it.Units); err != nil {
+		return it, fmt.Errorf("items: %s units_json: %w", it.Key, err)
+	}
+	if err := json.Unmarshal([]byte(verifyRaw), &it.Verify); err != nil {
+		return it, fmt.Errorf("items: %s verify_json: %w", it.Key, err)
+	}
+	it.Steps, it.Verify = nonNil(it.Steps), nonNil(it.Verify)
+	if it.Units == nil {
+		it.Units = []Unit{}
 	}
 	reposCol, repos := "repo_hints_json", hints
 	if it.ParentID == "" {
@@ -128,6 +163,99 @@ func nonNil(s []string) []string {
 func jsonList(s []string) string {
 	b, _ := json.Marshal(nonNil(s))
 	return string(b)
+}
+
+// deref and derefStr read a Patch pointer-to-slice/string field as its zero
+// value when unset, for callers (like workflowFieldsPermitted) that only
+// care about the value, not whether it was provided.
+func deref[T any](p *[]T) []T {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func jsonUnits(u []Unit) string {
+	if u == nil {
+		u = []Unit{}
+	}
+	b, _ := json.Marshal(u)
+	return string(b)
+}
+
+func workflowJSONString(w *workflow.Spec) string {
+	if w == nil {
+		return ""
+	}
+	b, _ := json.Marshal(w)
+	return string(b)
+}
+
+// workflowLevel maps an item's Type to the workflow DSL level that decides
+// which Spec fields are legal (spec B2's Level): stories get after_tasks,
+// epics/bugs get integration, everything else (task, plus spike/chore --
+// unspecified by the spec, since neither carries integration/after_tasks
+// semantics -- default to the task shape) resolves template/steps.
+func workflowLevel(t Type) workflow.Level {
+	switch t {
+	case Story:
+		return workflow.LevelStory
+	case Epic, Bug:
+		return workflow.LevelRoot
+	default:
+		return workflow.LevelTask
+	}
+}
+
+// resolveWorkflow validates spec against t's level and resolves it (template
+// expansion, defaults, dropping the tdd gate when tddExempt), returning the
+// resolved spec and its RunRole (for role_hint; "" if spec is nil or has no
+// run step). nil in, nil out: an item with no workflow is untouched.
+func resolveWorkflow(t Type, spec *workflow.Spec, tddExempt bool) (*workflow.Spec, string, error) {
+	if spec == nil {
+		return nil, "", nil
+	}
+	if err := workflow.Validate(workflowLevel(t), *spec); err != nil {
+		return nil, "", errf(CodeBadRequest, "%s", err)
+	}
+	resolved, err := workflow.Resolve(*spec, tddExempt)
+	if err != nil {
+		return nil, "", errf(CodeBadRequest, "%s", err)
+	}
+	return &resolved, workflow.RunRole(resolved), nil
+}
+
+// validateStepsUnits is spec B3/C4: a task has either steps or units, never
+// both, and at most 8 units.
+func validateStepsUnits(identifier string, steps []string, units []Unit) error {
+	if len(steps) > 0 && len(units) > 0 {
+		return errf(CodeBadRequest, "Task %s has both steps and units; use one.", identifier)
+	}
+	if len(units) > 8 {
+		return errf(CodeBadRequest, "Task %s has %d units (max 8).", identifier, len(units))
+	}
+	return nil
+}
+
+// workflowFieldsPermitted is this package's judgment call (spec copy for it
+// wasn't given, unlike tdd_exempt's): only an orchestrator or the daemon
+// (a plan materializing) may set workflow/steps/units/solo/verify, mirroring
+// tdd_exempt's own permission rule exactly.
+func workflowFieldsPermitted(by Actor, hasWorkflow bool, steps []string, units []Unit, verify []string, solo string) error {
+	if !hasWorkflow && len(steps) == 0 && len(units) == 0 && solo == "" && len(verify) == 0 {
+		return nil
+	}
+	if !by.isOrchestrator() && by.Kind != ActorDaemon {
+		return errf(CodeBadRequest, "Only an orchestrator or a plan can set workflow, steps, units, solo or verify.")
+	}
+	return nil
 }
 
 func (s *Store) getTx(ctx context.Context, q querier, key string) (Item, error) {
@@ -225,6 +353,19 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 			return Item{}, errf(CodeBadRequest, "Only an orchestrator or a plan can set tdd_exempt.")
 		}
 	}
+	if err := workflowFieldsPermitted(by, in.Workflow != nil, in.Steps, in.Units, in.Verify, in.Solo); err != nil {
+		return Item{}, err
+	}
+	if err := validateStepsUnits(in.Title, in.Steps, in.Units); err != nil {
+		return Item{}, err
+	}
+	rw, runRole, werr := resolveWorkflow(in.Type, in.Workflow, in.TddExempt != "")
+	if werr != nil {
+		return Item{}, werr
+	}
+	if rw != nil {
+		in.Workflow, in.RoleHint = rw, runRole
+	}
 
 	id := ids.New("itm")
 	rootID, parentID := id, sql.NullString{}
@@ -261,6 +402,14 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 		}
 	}
 
+	// Locked decision 15: a task an orchestrator creates must carry a
+	// workflow (no role_hint -> workflow inference anywhere). Only a task
+	// the user creates on the board, or one the daemon materializes from a
+	// plan, may omit it (legacy flow / a future package's concern).
+	if in.Type == Task && in.Workflow == nil && by.isOrchestrator() {
+		return Item{}, errf(CodeBadRequest, "Task %s has no workflow. Plans assign every role: pick a template or write steps.", in.Title)
+	}
+
 	key, err := ids.NextKey(ctx, tx, string(in.Type))
 	if err != nil {
 		return Item{}, err
@@ -275,11 +424,14 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	now := db.Millis(s.Now())
 	_, err = tx.ExecContext(ctx, `INSERT INTO items (id, key, type, parent_id, root_id, title, brief, acceptance_json,
 		status, priority, role_hint, tdd_exempt, confirmed_repos_json, repos_version, repo_hints_json, spike_intent,
-		suggested_repos_json, origin_spike_id, legacy_key, sort_order, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?)`,
+		suggested_repos_json, origin_spike_id, legacy_key, sort_order, created_at, updated_at,
+		workflow_json, steps_json, units_json, solo, verify_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?,
+		NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?)`,
 		id, key, in.Type, parentID, rootID, in.Title, in.Brief, jsonList(in.Acceptance),
 		in.Status, prio, in.RoleHint, in.TddExempt, confirmed, reposVersion, hints, in.SpikeIntent,
-		jsonList(in.SuggestedRepos), in.OriginSpikeID, in.LegacyKey, in.SortOrder, now, now)
+		jsonList(in.SuggestedRepos), in.OriginSpikeID, in.LegacyKey, in.SortOrder, now, now,
+		workflowJSONString(in.Workflow), jsonList(in.Steps), jsonUnits(in.Units), in.Solo, jsonList(in.Verify))
 	if err != nil {
 		return Item{}, err
 	}
@@ -349,7 +501,8 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 	if p.Revision != it.Revision {
 		return Item{}, errf(CodeConflict, StaleRevision)
 	}
-	if p.Title != nil || p.Brief != nil || p.Acceptance != nil || p.Priority != nil || p.TddExempt != nil {
+	if p.Title != nil || p.Brief != nil || p.Acceptance != nil || p.Priority != nil || p.TddExempt != nil ||
+		p.Workflow != nil || p.Steps != nil || p.Units != nil || p.Solo != nil || p.Verify != nil {
 		if p.Title != nil {
 			it.Title = strings.TrimSpace(*p.Title)
 		}
@@ -364,6 +517,18 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 		}
 		if p.TddExempt != nil {
 			it.TddExempt = *p.TddExempt
+		}
+		if p.Steps != nil {
+			it.Steps = *p.Steps
+		}
+		if p.Units != nil {
+			it.Units = *p.Units
+		}
+		if p.Solo != nil {
+			it.Solo = *p.Solo
+		}
+		if p.Verify != nil {
+			it.Verify = *p.Verify
 		}
 		if err := validateText(it.Title, it.Brief); err != nil {
 			return Item{}, err
@@ -382,9 +547,31 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 				return Item{}, errf(CodeBadRequest, "Only an orchestrator or a plan can set tdd_exempt.")
 			}
 		}
+		// Permission is checked against what THIS patch asks to set, not the
+		// item's already-stored state (unlike tdd_exempt above): the only
+		// caller that can ever reach here with these fields is swarm_items,
+		// already orchestrator-gated at the MCP layer, but a plain board
+		// edit of an already-workflowed task's title must not trip on the
+		// task's own pre-existing workflow.
+		if err := workflowFieldsPermitted(by, p.Workflow != nil, deref(p.Steps), deref(p.Units), deref(p.Verify), derefStr(p.Solo)); err != nil {
+			return Item{}, err
+		}
+		if p.Workflow != nil {
+			rw, runRole, werr := resolveWorkflow(it.Type, p.Workflow, it.TddExempt != "")
+			if werr != nil {
+				return Item{}, werr
+			}
+			it.Workflow, it.RoleHint = rw, runRole
+		}
+		if err := validateStepsUnits(it.Key, it.Steps, it.Units); err != nil {
+			return Item{}, err
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE items SET title = ?, brief = ?, acceptance_json = ?, priority = ?,
-			tdd_exempt = NULLIF(?, ''), revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
-			it.Title, it.Brief, jsonList(it.Acceptance), it.Priority, it.TddExempt, db.Millis(s.Now()), it.ID, p.Revision)
+			tdd_exempt = NULLIF(?, ''), role_hint = NULLIF(?, ''), workflow_json = NULLIF(?, ''), steps_json = ?,
+			units_json = ?, solo = NULLIF(?, ''), verify_json = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
+			it.Title, it.Brief, jsonList(it.Acceptance), it.Priority, it.TddExempt, it.RoleHint,
+			workflowJSONString(it.Workflow), jsonList(it.Steps), jsonUnits(it.Units), it.Solo, jsonList(it.Verify),
+			db.Millis(s.Now()), it.ID, p.Revision)
 		if err != nil {
 			return Item{}, err
 		}

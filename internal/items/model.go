@@ -4,6 +4,8 @@ package items
 import (
 	"fmt"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 type Type string
@@ -67,33 +69,49 @@ type Progress struct {
 	Unit  string `json:"unit"` // tasks | stories
 }
 
+// Unit is one batched execution unit of a task (spec C1/C4): a titled group
+// of steps, gated independently. Mirrors the swarm-tree TreeUnit shape.
+type Unit struct {
+	Title string   `json:"title"`
+	Steps []string `json:"steps"`
+}
+
 type Item struct {
-	ID                string     `json:"id"`
-	Key               string     `json:"key"`
-	Type              Type       `json:"type"`
-	ParentID          string     `json:"parent_id,omitempty"`
-	ParentKey         string     `json:"parent_key,omitempty"`
-	RootID            string     `json:"root_id"`
-	RootKey           string     `json:"root_key"`
-	Title             string     `json:"title"`
-	Brief             string     `json:"brief"`
-	Acceptance        []string   `json:"acceptance"`
-	Status            Status     `json:"status"`
-	StatusBeforeBlock Status     `json:"status_before_block,omitempty"`
-	Priority          int        `json:"priority"`
-	RoleHint          string     `json:"role_hint,omitempty"`
-	TddExempt         string     `json:"tdd_exempt,omitempty"`
-	Repos             []string   `json:"repos"` // top-level: confirmed repo ids; children: repo hints
-	ReposVersion      int        `json:"repos_version"`
-	SuggestedRepos    []string   `json:"suggested_repos"`
-	SpikeIntent       string     `json:"spike_intent,omitempty"`
-	OriginSpikeID     string     `json:"origin_spike_id,omitempty"`
-	LegacyKey         string     `json:"legacy_key,omitempty"`
-	SortOrder         int        `json:"sort_order"`
-	Revision          int        `json:"revision"`
-	ArchivedAt        *time.Time `json:"archived_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	ID                string   `json:"id"`
+	Key               string   `json:"key"`
+	Type              Type     `json:"type"`
+	ParentID          string   `json:"parent_id,omitempty"`
+	ParentKey         string   `json:"parent_key,omitempty"`
+	RootID            string   `json:"root_id"`
+	RootKey           string   `json:"root_key"`
+	Title             string   `json:"title"`
+	Brief             string   `json:"brief"`
+	Acceptance        []string `json:"acceptance"`
+	Status            Status   `json:"status"`
+	StatusBeforeBlock Status   `json:"status_before_block,omitempty"`
+	Priority          int      `json:"priority"`
+	RoleHint          string   `json:"role_hint,omitempty"`
+	TddExempt         string   `json:"tdd_exempt,omitempty"`
+	// Workflow is the resolved workflow (spec B2/B3); nil means a legacy
+	// task with no workflow. Steps/Units/Solo/Verify are the task's own
+	// execution script, separate from Workflow.Steps (the run/review DSL
+	// steps): a task has either Steps or Units, never both (C1/C4).
+	Workflow       *workflow.Spec `json:"workflow,omitempty"`
+	Steps          []string       `json:"steps,omitempty"`
+	Units          []Unit         `json:"units,omitempty"`
+	Solo           string         `json:"solo,omitempty"`
+	Verify         []string       `json:"verify,omitempty"`
+	Repos          []string       `json:"repos"` // top-level: confirmed repo ids; children: repo hints
+	ReposVersion   int            `json:"repos_version"`
+	SuggestedRepos []string       `json:"suggested_repos"`
+	SpikeIntent    string         `json:"spike_intent,omitempty"`
+	OriginSpikeID  string         `json:"origin_spike_id,omitempty"`
+	LegacyKey      string         `json:"legacy_key,omitempty"`
+	SortOrder      int            `json:"sort_order"`
+	Revision       int            `json:"revision"`
+	ArchivedAt     *time.Time     `json:"archived_at,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 	// computed, not stored
 	BlockedBy    []string  `json:"blocked_by"`
 	Progress     *Progress `json:"progress,omitempty"`
