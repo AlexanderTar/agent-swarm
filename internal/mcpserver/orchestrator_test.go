@@ -19,7 +19,7 @@ func TestItemsIsScopedToTheCallersRoot(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
 	if _, err := s.call(ctx, seed.Caller, "swarm_items",
-		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"New task","brief":"b","acceptance":["a"]}`); err != nil {
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"New task","brief":"b","acceptance":["a"],"workflow":{"template":"tdd-reviewed"}}`); err != nil {
 		t.Fatal(err)
 	}
 	other := seedOtherRoot(t, s)
@@ -799,7 +799,7 @@ func TestItemsCreateRequestIDReplaysInsteadOfCreatingTwice(t *testing.T) {
 	ctx := context.Background()
 	before := countItems(t, s)
 	body := `{"op":"create","type":"task","parent":"` + seed.StoryKey +
-		`","title":"New task","brief":"b","acceptance":["a"],"request_id":"req-1"}`
+		`","title":"New task","brief":"b","acceptance":["a"],"request_id":"req-1","workflow":{"template":"tdd-reviewed"}}`
 	out1, err := s.call(ctx, seed.Caller, "swarm_items", body)
 	if err != nil {
 		t.Fatal(err)
@@ -824,15 +824,15 @@ func TestItemsCreateWithoutOrDistinctRequestIDsEachCreate(t *testing.T) {
 	ctx := context.Background()
 	before := countItems(t, s)
 	if _, err := s.call(ctx, seed.Caller, "swarm_items",
-		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"A","brief":"b","acceptance":["a"],"request_id":"req-a"}`); err != nil {
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"A","brief":"b","acceptance":["a"],"request_id":"req-a","workflow":{"template":"tdd-reviewed"}}`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_items",
-		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"B","brief":"b","acceptance":["a"],"request_id":"req-b"}`); err != nil {
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"B","brief":"b","acceptance":["a"],"request_id":"req-b","workflow":{"template":"tdd-reviewed"}}`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_items",
-		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"C","brief":"b","acceptance":["a"]}`); err != nil {
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"C","brief":"b","acceptance":["a"],"workflow":{"template":"tdd-reviewed"}}`); err != nil {
 		t.Fatal(err)
 	}
 	if n := countItems(t, s); n != before+3 {
@@ -1556,7 +1556,7 @@ func TestSpawnOnReadyTaskPromotesDraftParentStory(t *testing.T) {
 	ctx := context.Background()
 	// A Ready task under a Draft story: the story must still be promoted.
 	created, err := s.call(ctx, seed.Caller, "swarm_items",
-		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Ready task","status":"ready"}`)
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Ready task","status":"ready","workflow":{"template":"tdd-reviewed"}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1581,7 +1581,7 @@ func TestSpawnOnReadyTaskPromotesDraftParentStory(t *testing.T) {
 func TestItemsCreateStatusReady(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	out, err := s.call(context.Background(), seed.Caller, "swarm_items",
-		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Ready task","status":"ready"}`)
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Ready task","status":"ready","workflow":{"template":"tdd-reviewed"}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1599,6 +1599,87 @@ func TestItemsCreateRejectsInProgressStatus(t *testing.T) {
 	if _, err := s.call(context.Background(), seed.Caller, "swarm_items",
 		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"x","status":"in_progress"}`); err == nil {
 		t.Fatal("a new item can only start draft or ready")
+	}
+}
+
+// TestSwarmItemsAcceptsWorkflowUnitsVerify is spec B3/B7: swarm_items create
+// accepts workflow, units and verify; the stored item comes back with the
+// resolved workflow (a template expands to its steps) and role_hint set
+// from it.
+func TestSwarmItemsAcceptsWorkflowUnitsVerify(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Batched",
+		"workflow":{"template":"tdd-reviewed"},
+		"units":[{"title":"u1","steps":["s1"]}],
+		"verify":["go test ./..."]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var it struct {
+		RoleHint string `json:"role_hint"`
+		Workflow struct {
+			Steps []map[string]any `json:"steps"`
+		} `json:"workflow"`
+		Units []struct {
+			Title string   `json:"title"`
+			Steps []string `json:"steps"`
+		} `json:"units"`
+		Verify []string `json:"verify"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &it); err != nil {
+		t.Fatal(err)
+	}
+	if it.RoleHint != "coder" {
+		t.Fatalf("role_hint = %q, want coder", it.RoleHint)
+	}
+	if len(it.Workflow.Steps) != 2 {
+		t.Fatalf("workflow steps = %+v", it.Workflow.Steps)
+	}
+	if len(it.Units) != 1 || it.Units[0].Title != "u1" || !slices.Equal(it.Units[0].Steps, []string{"s1"}) {
+		t.Fatalf("units = %+v", it.Units)
+	}
+	if !slices.Equal(it.Verify, []string{"go test ./..."}) {
+		t.Fatalf("verify = %+v", it.Verify)
+	}
+}
+
+// TestSwarmReadReturnsWorkflowFields is spec B3: swarm_read's item output
+// includes workflow/steps/verify (units too, via the same items.Item shape).
+func TestSwarmReadReturnsWorkflowFields(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	created, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Flow","workflow":{"template":"tdd-reviewed"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(mustJSON(created), &c); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["`+c.Key+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Items []struct {
+			Key      string `json:"key"`
+			RoleHint string `json:"role_hint"`
+			Workflow struct {
+				Steps []map[string]any `json:"steps"`
+			} `json:"workflow"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 1 || res.Items[0].RoleHint != "coder" || len(res.Items[0].Workflow.Steps) != 2 {
+		t.Fatalf("read = %+v", res)
 	}
 }
 

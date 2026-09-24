@@ -97,10 +97,10 @@ type Item struct {
 	// execution script, separate from Workflow.Steps (the run/review DSL
 	// steps): a task has either Steps or Units, never both (C1/C4).
 	Workflow       *workflow.Spec `json:"workflow,omitempty"`
-	Steps          []string       `json:"steps,omitempty"`
-	Units          []Unit         `json:"units,omitempty"`
+	Steps          []string       `json:"steps"`
+	Units          []Unit         `json:"units"`
 	Solo           string         `json:"solo,omitempty"`
-	Verify         []string       `json:"verify,omitempty"`
+	Verify         []string       `json:"verify"`
 	Repos          []string       `json:"repos"` // top-level: confirmed repo ids; children: repo hints
 	ReposVersion   int            `json:"repos_version"`
 	SuggestedRepos []string       `json:"suggested_repos"`
