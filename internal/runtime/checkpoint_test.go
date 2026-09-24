@@ -1475,6 +1475,217 @@ func TestTDDGateFixRoundScopesToNamedUnits(t *testing.T) {
 	}
 }
 
+// R3, fix round 1 finding 1: a package-wide finding (no unit at all) in a
+// genuine fix round needs at least one red-before-green pair somewhere --
+// nothing at all is refused with the generic round copy, not the
+// unit(s)-list copy (there's no specific unit to name).
+func TestTDDGatePackageWideFindingNeedsAnyPairRoundCopy(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "x.go", Summary: "general cleanup, no single unit"},
+	})
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed"})
+	if err == nil {
+		t.Fatal("expected the generic round copy, not a silent pass")
+	}
+	if err.Error() != tddMissingRound {
+		t.Fatalf("err = %q, want %q", err, tddMissingRound)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatalf("one pair anywhere should satisfy a package-wide finding: %v", err)
+	}
+}
+
+// R3, fix round 1 finding 1: round-1 evidence must not carry into round 2's
+// own fix-round requirement -- a NEW workflow_runs row for the retried
+// agent starts the evidence window over.
+func TestTDDGateRoundEvidenceDoesNotCarryForward(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 1)
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "round 1 evidence",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "x.go", Summary: "still broken"},
+	})
+	// A fresh round-2 run row for the SAME coder agent (production's Retry
+	// resumes the same agent, a new session generation/attempt).
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build', 2, 'coder', ?, 'active', ?)`,
+		ids.New("wfr"), workflowID, coder.ID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed"})
+	if err == nil {
+		t.Fatal("round 1's evidence must not satisfy round 2's own requirement")
+	}
+	if err.Error() != tddMissingRound {
+		t.Fatalf("err = %q, want %q", err, tddMissingRound)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatalf("fresh round-2 evidence should satisfy it: %v", err)
+	}
+}
+
+// R3, fix round 1 finding 1: a multi-loop spec (design -> review-design ->
+// build -> review-build) can put build's first-ever run at round 2 (because
+// review-design's own loop spent round 1) -- that must still need every
+// unit, not be mistaken for a fix round of review-build, which has never
+// run at all.
+func TestTDDGateMultiLoopFirstRunNeedsEveryUnit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "design", Run: "designer"},
+		{ID: "review-design", Review: []string{"ui_reviewer"}, Of: "design", Loop: &workflow.Loop{Fix: "design"}},
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review-build", Review: []string{"reviewer"}, Of: "build", Loop: &workflow.Loop{Fix: "build"}},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	// The decoy: review-design (a DIFFERENT step) requested changes at
+	// round 1, tagged "unit 1" -- a step-unaware reader would mistake this
+	// for build's own fix brief and wrongly treat unit 1 as already
+	// covered/required instead of needing every unit from scratch.
+	seedReviewFindingsAs(t, s, workflowID, "review-design", 1, "ui_reviewer", "changes_requested",
+		[]workflow.Finding{{Severity: "major", File: "d.go", Summary: "fix the design", Unit: 1}})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected unit 2 to be required (build's own first run needs every unit)")
+	}
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// R3, fix round 1: a review step that only ever PASSED at round-1 (no
+// changes_requested/blocked) is not a fix round, even though it has
+// findings and targets this exact build step -- the round only bumped
+// because of some other retry, nothing here was actually asked to change.
+func TestTDDGateReviewStepPassedOnlyNeedsEveryUnit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindingsAs(t, s, workflowID, "review", 1, "reviewer", "pass",
+		[]workflow.Finding{{Severity: "minor", File: "a.go", Summary: "nit", Unit: 1}})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected unit 2 to still be required -- a pass-only round is not a fix round")
+	}
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// R3, fix round 1 finding 1: findings from BOTH reviewer roles of the same
+// review step, same round, merge -- a passing ui_reviewer who still left a
+// finding counts too (same inclusive rule as B4's mergeFindings).
+func TestTDDGateFixRoundMergesFindingsFromBothReviewers(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer", "ui_reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindingsAs(t, s, workflowID, "review", 1, "reviewer", "changes_requested",
+		[]workflow.Finding{{Severity: "major", File: "a.go", Summary: "fix unit 1", Unit: 1}})
+	seedReviewFindingsAs(t, s, workflowID, "review", 1, "ui_reviewer", "pass",
+		[]workflow.Finding{{Severity: "minor", File: "b.go", Summary: "nit on unit 2", Unit: 2}})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected unit 2 (from the passing ui_reviewer's own finding) to still be required")
+	}
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
 // A coder with NO workflow run (legacy) must keep exactly verifyOK's
 // behaviour -- any single entry with a non-empty cmd, no red/green needed --
 // even after the gates refactor.

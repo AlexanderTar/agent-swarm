@@ -262,29 +262,62 @@ func (s *Store) verifySince(ctx context.Context, tx *sql.Tx, agentID string, sin
 	return out, rows.Err()
 }
 
-// priorRoundFindings collects every reviewer/ui_reviewer finding recorded on
-// workflowID's round (a fix round reads its own triggering round, round-1
-// of the fix round it's gating). rowsExist distinguishes "no reviewer ran
-// that round at all" (nothing to read, defensive fallback) from "a reviewer
-// ran and left zero findings" (nothing named, findings is simply empty).
-func (s *Store) priorRoundFindings(ctx context.Context, tx *sql.Tx, workflowID string, round int) (findings []workflow.Finding, rowsExist bool, err error) {
-	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(findings_json, '[]') FROM workflow_runs
-		WHERE workflow_id = ? AND round = ? AND role IN ('reviewer', 'ui_reviewer')`, workflowID, round)
+// findFixStepFor returns the review step in spec whose loop retries
+// buildStepID (`Loop.Fix`, falling back to `Of` when `Loop.Fix` is unset --
+// spec B5, fix round 1's R3), or ok=false if no review step targets it at
+// all (a step with no review, e.g. mechanical/research; or the review step
+// for some OTHER build step in a multi-loop workflow).
+func findFixStepFor(spec *workflow.Spec, buildStepID string) (workflow.Step, bool) {
+	if spec == nil {
+		return workflow.Step{}, false
+	}
+	for _, st := range spec.Steps {
+		if len(st.Review) == 0 {
+			continue
+		}
+		fix := st.Of
+		if st.Loop != nil && st.Loop.Fix != "" {
+			fix = st.Loop.Fix
+		}
+		if fix == buildStepID {
+			return st, true
+		}
+	}
+	return workflow.Step{}, false
+}
+
+// fixRoundFindings collects reviewStepID's reviewer/ui_reviewer findings at
+// round, and reports whether any of those rows actually requested changes
+// or blocked (R3): a review step can have a row at that round with only a
+// passing verdict (nothing to retry), which is NOT a fix round at all --
+// distinct from a genuine fix round whose rows simply carry zero findings
+// (e.g. a bare `blocked` verdict, no structured findings). hasBlocking is
+// that distinction; findings is every row's findings, merged (a reviewer
+// who passed but still left findings counts too, same as B4's
+// mergeFindings).
+func (s *Store) fixRoundFindings(ctx context.Context, tx *sql.Tx, workflowID, reviewStepID string, round int) (findings []workflow.Finding, hasBlocking bool, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(verdict, ''), COALESCE(findings_json, '[]') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = ? AND round = ? AND role IN ('reviewer', 'ui_reviewer')`,
+		workflowID, reviewStepID, round)
 	if err != nil {
 		return nil, false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		rowsExist = true
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var verdict, raw string
+		if err := rows.Scan(&verdict, &raw); err != nil {
 			return nil, false, err
 		}
+		if verdict == string(workflow.VerdictChangesRequested) || verdict == string(workflow.VerdictBlocked) {
+			hasBlocking = true
+		}
 		var fs []workflow.Finding
-		json.Unmarshal([]byte(raw), &fs)
+		if err := json.Unmarshal([]byte(raw), &fs); err != nil {
+			return nil, false, fmt.Errorf("workflow_runs %s findings_json: %w", reviewStepID, err)
+		}
 		findings = append(findings, fs...)
 	}
-	return findings, rowsExist, rows.Err()
+	return findings, hasBlocking, rows.Err()
 }
 
 // hasRedBeforeGreen reports whether entries contains a {phase:"red",
@@ -380,33 +413,47 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 
 	var required []int
 	packageWide := false
-	switch {
-	case run.Round <= 1:
-		required = everyUnit()
-	default:
-		findings, rowsExist, err := s.priorRoundFindings(ctx, tx, run.WorkflowID, run.Round-1)
+	if fixStep, ok := findFixStepFor(it.Workflow, run.StepID); ok {
+		findings, hasBlocking, err := s.fixRoundFindings(ctx, tx, run.WorkflowID, fixStep.ID, run.Round-1)
 		if err != nil {
 			return err
 		}
 		switch {
-		case !rowsExist:
+		case !hasBlocking:
+			// This step's own first run: no changes_requested/blocked row
+			// at round-1 explains a retry of it, however high the
+			// workflow's round counter climbed for some OTHER step's fix
+			// loop (a multi-loop spec) -- never mistake that for a fix
+			// round of THIS step.
 			required = everyUnit()
 		case len(findings) == 0:
-			return nil // nothing named this round; the verify gate covers unchanged units
+			// A genuine fix round (blocked/changes_requested), but no
+			// structured findings at all (e.g. a bare blocked verdict,
+			// resumed): still needs its one pair, never "nothing required".
+			packageWide = true
 		default:
 			units := map[int]bool{}
 			for _, f := range findings {
-				if f.Unit == 0 {
+				u := f.Unit
+				if !batched {
+					u = 0 // unit tags don't apply to a non-batched task
+				}
+				if u == 0 {
 					packageWide = true
 					continue
 				}
-				units[f.Unit] = true
+				units[u] = true
 			}
 			for u := range units {
 				required = append(required, u)
 			}
 			sort.Ints(required)
 		}
+	} else {
+		// No review step targets this step at all (no review, e.g.
+		// mechanical/research; or this is round 1 with nothing to retry
+		// yet): always a first run.
+		required = everyUnit()
 	}
 
 	ok, missing := tddOK(entries, required, packageWide)

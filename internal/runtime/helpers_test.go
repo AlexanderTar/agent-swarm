@@ -316,10 +316,18 @@ func setItemVerify(t *testing.T, s *Store, key string, cmds ...string) {
 	}
 }
 
-// seedReviewFindings inserts a reviewer's workflow_runs row for workflowID at
-// round with the given findings, for tests exercising the tdd gate's
-// fix-round scope (spec B5/ruling-tdd-followups.md).
+// seedReviewFindings inserts a reviewer's workflow_runs row for workflowID's
+// "review" step at round with the given findings, verdict changes_requested
+// -- the common case for tdd gate fix-round tests (spec B5, R3).
 func seedReviewFindings(t *testing.T, s *Store, workflowID string, round int, findings []workflow.Finding) {
+	t.Helper()
+	seedReviewFindingsAs(t, s, workflowID, "review", round, "reviewer", "changes_requested", findings)
+}
+
+// seedReviewFindingsAs is seedReviewFindings with a caller-chosen step,
+// role and verdict, for tests exercising R3's fix-round detection (which
+// review step, which verdict) and multi-reviewer finding merges.
+func seedReviewFindingsAs(t *testing.T, s *Store, workflowID, stepID string, round int, role, verdict string, findings []workflow.Finding) {
 	t.Helper()
 	b, err := json.Marshal(findings)
 	if err != nil {
@@ -327,8 +335,8 @@ func seedReviewFindings(t *testing.T, s *Store, workflowID string, round int, fi
 	}
 	if _, err := s.DB.ExecContext(context.Background(), `INSERT INTO workflow_runs
 		(id, workflow_id, step_id, round, role, state, verdict, findings_json, created_at)
-		VALUES (?, ?, 'review', ?, 'reviewer', 'completed', 'changes_requested', ?, ?)`,
-		ids.New("wfr"), workflowID, round, string(b), db.Millis(s.Now())); err != nil {
+		VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?)`,
+		ids.New("wfr"), workflowID, stepID, round, role, verdict, string(b), db.Millis(s.Now())); err != nil {
 		t.Fatal(err)
 	}
 }
