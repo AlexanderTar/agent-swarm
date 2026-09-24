@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
 // Preamble is §9.1, used in every injected notice, the kickoff prompt and the brief header.
@@ -155,33 +157,69 @@ func CompactionNotice() string {
 	return "[swarm] Your context was compacted. Call swarm_sync, then swarm_read with your root filter, before continuing. " + ShortPreamble
 }
 
-// skills is §9.3's {skills}: orchestrators also get swarm-orchestrator (D4).
-func skills(role Role) string {
-	if role == RoleOrchestrator {
-		return "`swarm` and `swarm-orchestrator`"
+// RoleSkills is A3's kickoff table: the skill(s) a role's kickoff names. An
+// orchestrator on a spike item gets swarm-spike instead of swarm-orchestrator
+// (Kickoff/ResumeKickoff take itemType for exactly this). kinds.RoleDesigner
+// lands in a parallel package (P7); until it merges, the designer row is
+// written inline as Role("designer") — swap for the constant at merge.
+func RoleSkills(role Role, itemType items.Type) []string {
+	switch role {
+	case RoleOrchestrator:
+		if itemType == items.Spike {
+			return []string{"swarm", "swarm-spike", "swarm-workflows", "swarm-batching"}
+		}
+		return []string{"swarm", "swarm-orchestrator", "swarm-workflows", "swarm-batching"}
+	case RoleCoder:
+		return []string{"swarm", "swarm-coder"}
+	case RoleReviewer:
+		return []string{"swarm", "swarm-reviewer"}
+	case RoleUIReviewer:
+		return []string{"swarm", "swarm-ui-reviewer"}
+	case Role("designer"): // kinds.RoleDesigner (P7); swap for the constant once it merges
+		return []string{"swarm", "swarm-designer"}
+	case RoleDebugger:
+		return []string{"swarm", "swarm-debugger"}
+	case RoleMechanical:
+		return []string{"swarm", "swarm-mechanical"}
+	case RoleResearcher:
+		return []string{"swarm", "swarm-researcher"}
 	}
-	return "`swarm`"
+	return []string{"swarm"}
 }
 
-// mandate is R3's instruction-level enforcement: orchestrators MUST follow the
-// skills' superpowers workflows (the lapsed runs skipped them despite the skill
-// text). Workers keep the advisory form; a daemon-side gate is out of scope.
-func mandate(role Role) string {
-	if role == RoleOrchestrator {
-		return " You MUST follow the skill(s) above, including their superpowers workflows — do not improvise around them."
+// joinSkillNames renders a role's skill list as backticked names joined for
+// prose: "`a`", "`a` and `b`", "`a`, `b` and `c`".
+func joinSkillNames(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = "`" + n + "`"
 	}
-	return ""
+	if len(quoted) <= 1 {
+		return strings.Join(quoted, "")
+	}
+	return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
 }
 
-func Kickoff(name string, role Role, key, title string) string {
+// skills is §9.3's {skills}, from the A3 table.
+func skills(role Role, itemType items.Type) string {
+	return joinSkillNames(RoleSkills(role, itemType))
+}
+
+// mandate is A3's instruction-level enforcement, for every role: the lapsed
+// spec-less runs skipped a skill's superpowers workflows despite the skill
+// text, so every kickoff — not just the orchestrator's — now carries the
+// MUST-level mandate. A daemon-side gate is out of scope.
+const mandateText = " You MUST follow the skill(s) above, including the superpowers skills they name — do not improvise around them."
+
+func Kickoff(name string, role Role, itemType items.Type, key, title string) string {
 	return fmt.Sprintf("You are swarm agent %s (%s) for %s: %s. Use the %s skill(s).%s Call swarm_sync now to get your assignment. %s",
-		name, role, key, title, skills(role), mandate(role), Preamble)
+		name, role, key, title, skills(role, itemType), mandateText, Preamble)
 }
 
 // ResumeKickoff's notice omits the title (§9.3); title is kept for signature symmetry with Kickoff.
-func ResumeKickoff(name string, role Role, key, title string) string {
+func ResumeKickoff(name string, role Role, itemType items.Type, key, title string) string {
 	return fmt.Sprintf("You are swarm agent %s (%s) for %s, resuming after a pause. Use the %s skill(s).%s Call swarm_sync now; it returns your assignment and your last checkpoint. %s",
-		name, role, key, skills(role), mandate(role), ShortPreamble)
+		name, role, key, skills(role, itemType), mandateText, ShortPreamble)
 }
 
 // RenderBrief renders §9.4. Empty sections are left out.

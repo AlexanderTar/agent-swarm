@@ -5,9 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
 func golden(t *testing.T, name string) string {
@@ -26,9 +30,9 @@ func TestNoticesMatchGoldens(t *testing.T) {
 		{"pending", PendingNotice(3, "login-form-coder", "TASK-101")},
 		{"control", ControlNotice("login-form-coder", "TASK-101")},
 		{"compaction", CompactionNotice()},
-		{"kickoff-worker", Kickoff("login-form-coder", RoleCoder, "TASK-101", "Build the login form")},
-		{"kickoff-orchestrator", Kickoff("auth-epic-orchestrator", RoleOrchestrator, "EPIC-12", "Ship auth")},
-		{"resume", ResumeKickoff("login-form-coder", RoleCoder, "TASK-101", "Build the login form")},
+		{"kickoff-worker", Kickoff("login-form-coder", RoleCoder, items.Task, "TASK-101", "Build the login form")},
+		{"kickoff-orchestrator", Kickoff("auth-epic-orchestrator", RoleOrchestrator, items.Epic, "EPIC-12", "Ship auth")},
+		{"resume", ResumeKickoff("login-form-coder", RoleCoder, items.Task, "TASK-101", "Build the login form")},
 	}
 	for _, c := range cases {
 		if w := golden(t, c.name); c.got != w {
@@ -43,7 +47,7 @@ func TestNoticesNeverAskForAReplyPhrase(t *testing.T) {
 	banned := regexp.MustCompile(`(?i)reply with|respond with|say exactly|answer with the (exact|word)|the exact phrase`)
 	all := []string{
 		PendingNotice(1, "a", "TASK-1"), ControlNotice("a", "TASK-1"), CompactionNotice(),
-		Kickoff("a", RoleCoder, "TASK-1", "t"), ResumeKickoff("a", RoleCoder, "TASK-1", "t"), IdleToken,
+		Kickoff("a", RoleCoder, items.Task, "TASK-1", "t"), ResumeKickoff("a", RoleCoder, items.Task, "TASK-1", "t"), IdleToken,
 	}
 	for _, s := range all {
 		if banned.MatchString(s) {
@@ -56,7 +60,7 @@ func TestNoticesNeverAskForAReplyPhrase(t *testing.T) {
 func TestEveryNoticeCarriesThePreamble(t *testing.T) {
 	for _, s := range []string{
 		PendingNotice(1, "a", "TASK-1"), ControlNotice("a", "TASK-1"), CompactionNotice(),
-		Kickoff("a", RoleCoder, "TASK-1", "t"), ResumeKickoff("a", RoleCoder, "TASK-1", "t"),
+		Kickoff("a", RoleCoder, items.Task, "TASK-1", "t"), ResumeKickoff("a", RoleCoder, items.Task, "TASK-1", "t"),
 	} {
 		if !strings.Contains(s, ShortPreamble) {
 			t.Errorf("notice without the preamble: %q", s)
@@ -64,19 +68,88 @@ func TestEveryNoticeCarriesThePreamble(t *testing.T) {
 	}
 }
 
-// R3 (superpowers enforcement): orchestrator kickoffs carry a MUST-level skills
-// mandate — the lapsed spec-less runs skipped the skill's superpowers workflows
-// despite the skill text. Workers keep the advisory form; their flow differs.
-func TestOrchestratorKickoffMandatesSkillWorkflows(t *testing.T) {
-	got := Kickoff("a", RoleOrchestrator, "EPIC-1", "T")
-	if !strings.Contains(got, "MUST follow") || !strings.Contains(got, "superpowers") {
-		t.Errorf("orchestrator kickoff lacks the skills mandate: %q", got)
+// P4 A3 (intentional change from R3): the lapsed spec-less runs skipped a
+// skill's superpowers workflows despite the skill text, so every role's
+// kickoff now carries the MUST-level skills mandate, not just the
+// orchestrator's. This replaces TestOrchestratorKickoffMandatesSkillWorkflows,
+// whose "workers keep the advisory form" assertion no longer holds.
+func TestKickoffMandateForEveryRole(t *testing.T) {
+	for _, r := range []Role{RoleOrchestrator, RoleCoder, RoleReviewer, RoleUIReviewer,
+		Role("designer"), RoleDebugger, RoleMechanical, RoleResearcher} {
+		if got := Kickoff("a", r, items.Task, "TASK-1", "t"); !strings.Contains(got, "MUST follow") || !strings.Contains(got, "superpowers") {
+			t.Errorf("%s kickoff lacks the skills mandate: %q", r, got)
+		}
+		if got := ResumeKickoff("a", r, items.Task, "TASK-1", "t"); !strings.Contains(got, "MUST follow") {
+			t.Errorf("%s resume kickoff lacks the skills mandate: %q", r, got)
+		}
 	}
-	if got := Kickoff("a", RoleCoder, "TASK-1", "t"); strings.Contains(got, "MUST follow") {
-		t.Errorf("worker kickoff must not carry the orchestrator mandate: %q", got)
+}
+
+// P4 A3: RoleSkills is the kickoff/role-skill table. The orchestrator gets a
+// different list for a spike item (swarm-spike instead of swarm-orchestrator).
+// kinds.RoleDesigner lands in a parallel package (P7); until it merges this
+// uses the raw string Role("designer") the same way RoleSkills does.
+func TestKickoffNamesRoleSkill(t *testing.T) {
+	cases := []struct {
+		role     Role
+		itemType items.Type
+		want     []string
+	}{
+		{RoleOrchestrator, items.Epic, []string{"swarm", "swarm-orchestrator", "swarm-workflows", "swarm-batching"}},
+		{RoleOrchestrator, items.Spike, []string{"swarm", "swarm-spike", "swarm-workflows", "swarm-batching"}},
+		{RoleCoder, items.Task, []string{"swarm", "swarm-coder"}},
+		{RoleReviewer, items.Task, []string{"swarm", "swarm-reviewer"}},
+		{RoleUIReviewer, items.Task, []string{"swarm", "swarm-ui-reviewer"}},
+		{Role("designer"), items.Task, []string{"swarm", "swarm-designer"}},
+		{RoleDebugger, items.Task, []string{"swarm", "swarm-debugger"}},
+		{RoleMechanical, items.Task, []string{"swarm", "swarm-mechanical"}},
+		{RoleResearcher, items.Task, []string{"swarm", "swarm-researcher"}},
 	}
-	if got := ResumeKickoff("a", RoleOrchestrator, "EPIC-1", "T"); !strings.Contains(got, "MUST follow") {
-		t.Errorf("orchestrator resume lacks the skills mandate: %q", got)
+	for _, tc := range cases {
+		t.Run(string(tc.role)+"/"+string(tc.itemType), func(t *testing.T) {
+			got := RoleSkills(tc.role, tc.itemType)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("RoleSkills(%s, %s) = %v, want %v", tc.role, tc.itemType, got, tc.want)
+			}
+			kickoff := Kickoff("a", tc.role, tc.itemType, "KEY-1", "t")
+			for _, sk := range tc.want {
+				if !strings.Contains(kickoff, "`"+sk+"`") {
+					t.Errorf("kickoff for %s/%s missing skill %q: %q", tc.role, tc.itemType, sk, kickoff)
+				}
+			}
+		})
+	}
+	// A non-spike orchestrator kickoff must not name swarm-spike, and vice versa.
+	if got := Kickoff("a", RoleOrchestrator, items.Epic, "EPIC-1", "T"); strings.Contains(got, "swarm-spike") {
+		t.Errorf("non-spike orchestrator kickoff must not name swarm-spike: %q", got)
+	}
+	if got := Kickoff("a", RoleOrchestrator, items.Spike, "SPIKE-1", "T"); strings.Contains(got, "`swarm-orchestrator`") {
+		t.Errorf("spike orchestrator kickoff must not name swarm-orchestrator: %q", got)
+	}
+}
+
+// P4 acceptance: every name RoleSkills returns exists in install.Skills() —
+// including the swarm-spike and swarm-workflows stubs this unit creates.
+func TestRoleSkillsExist(t *testing.T) {
+	sk, err := install.Skills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, s := range sk {
+		names[s.Name] = true
+	}
+	roles := []Role{RoleOrchestrator, RoleCoder, RoleReviewer, RoleUIReviewer,
+		Role("designer"), RoleDebugger, RoleMechanical, RoleResearcher}
+	itemTypes := []items.Type{items.Epic, items.Story, items.Task, items.Bug, items.Spike, items.Chore}
+	for _, r := range roles {
+		for _, it := range itemTypes {
+			for _, name := range RoleSkills(r, it) {
+				if !names[name] {
+					t.Errorf("RoleSkills(%s, %s) names %q, missing from install.Skills()", r, it, name)
+				}
+			}
+		}
 	}
 }
 
@@ -138,7 +211,7 @@ func TestRenderBriefOmitsEmptySections(t *testing.T) {
 func TestIsDaemonPrompt(t *testing.T) {
 	for _, p := range []string{
 		IdleToken, " " + IdleToken + "\n",
-		Kickoff("a", RoleOrchestrator, "EPIC-1", "T"), ResumeKickoff("a", RoleOrchestrator, "EPIC-1", "T"),
+		Kickoff("a", RoleOrchestrator, items.Epic, "EPIC-1", "T"), ResumeKickoff("a", RoleOrchestrator, items.Epic, "EPIC-1", "T"),
 		PendingNotice(2, "a", "EPIC-1"), ControlNotice("a", "EPIC-1"), CompactionNotice(),
 		"[swarm] Quota reset window passed. Resuming.", // wake.go quota notice: no preamble
 		"typed by a human, merged with " + IdleToken + " " + ShortPreamble,
