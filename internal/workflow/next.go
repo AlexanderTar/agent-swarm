@@ -76,54 +76,68 @@ type Action struct {
 // run recorded so far, the workflow's current round and any extra rounds
 // granted by an orchestrator's resume, it returns the single next action.
 // It is total: every reachable state produces exactly one Action, and it
-// never panics.
+// never panics. round < 1 is clamped to 1.
 //
 // Next sorts its own copy of runs by (Round, StepID, Role) before looking at
 // them, so callers may pass runs in any order (e.g. straight from a DB
 // query with no ORDER BY) and get the same, deterministic result.
 //
-// A step that is a review step, or that is some review step's Loop.Fix, is
-// "retryable": Next only considers its runs from the current round (an
-// earlier round's runs for it are a superseded attempt). Every other run
-// step is satisfied by its latest run at or before the current round, and
-// its sha is carried forward - it is never re-spawned just because a later
-// step's retry loop bumped the round.
+// For round > 1, Next finds the review step in round-1 whose runs requested
+// changes (the one that triggered this round), tie-broken to the lowest
+// Loop.Fix index when more than one did, and pins every step from that fix
+// step's index to the end of the step list: those must have a run in the
+// exact current round. Steps before that index carry forward from their
+// latest run at or before the current round, sha included - they are never
+// re-spawned just because a later step's retry loop bumped the round. When
+// no round-1 review requested changes at all (e.g. the round was bumped by
+// an orchestrator's resume after a crash escalation, not a normal fix
+// loop), Next instead pins from the index of whichever step failed or was
+// cancelled in round-1. round 1 itself has no earlier round to consult, so
+// everything is pinned.
+//
+// Whichever way a step's current run(s) are selected - pinned to this exact
+// round, or carried forward from an earlier one - a failed or cancelled run
+// among them is handled the same way (auto-retry while retries remain, else
+// escalate): Next never returns Wait on a terminal run, carried forward or
+// not.
 func Next(s Spec, runs []Run, round, extraRounds int) Action {
+	if round < 1 {
+		round = 1
+	}
 	runs = sortedRuns(runs)
-	retryable := retryableSteps(s)
+	pinnedFromIdx := pinnedFrom(s, runs, round)
 
-	// Failures in the current round are handled first, regardless of which
-	// step they belong to. A terminal run from an earlier, superseded round
-	// (e.g. a stale reviewer left over from before a retry) is not a
-	// current failure and is ignored here.
-	for _, run := range runs {
-		if run.Round != round {
-			continue
+	currentRuns := func(i int, stepID string) []Run {
+		if i >= pinnedFromIdx {
+			return runsFor(runs, stepID, round)
 		}
-		if run.State == RunStateCancelled {
-			return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s cancelled", run.Role)}
-		}
-		if run.State == RunStateFailed {
-			retries := defaultRetries
-			if s.Retries != nil {
-				retries = *s.Retries
+		return latestRunsFor(runs, stepID, round)
+	}
+
+	// Failures are handled first, in step order, whether they're pinned to
+	// this exact round or carried forward from an earlier one.
+	for i, step := range s.Steps {
+		for _, run := range currentRuns(i, step.ID) {
+			if run.State == RunStateCancelled {
+				return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s cancelled", run.Role)}
 			}
-			if run.AutoRetries < retries {
-				rc := run
-				return Action{Kind: ActionAutoRetry, StepID: run.StepID, Round: run.Round, Run: &rc}
+			if run.State == RunStateFailed {
+				retries := defaultRetries
+				if s.Retries != nil {
+					retries = *s.Retries
+				}
+				if run.AutoRetries < retries {
+					rc := run
+					return Action{Kind: ActionAutoRetry, StepID: run.StepID, Round: run.Round, Run: &rc}
+				}
+				return Action{Kind: ActionEscalate, Reason: failureReason(run, retries)}
 			}
-			return Action{Kind: ActionEscalate, Reason: failureReason(run, retries)}
 		}
 	}
 
 	shas := map[string]string{}
 	for i, step := range s.Steps {
-		var stepRuns []Run
-		if retryable[step.ID] {
-			stepRuns = runsFor(runs, step.ID, round)
-		} else {
-			stepRuns = latestRunsFor(runs, step.ID, round)
-		}
+		stepRuns := currentRuns(i, step.ID)
 		last := i == len(s.Steps)-1
 
 		if step.Run != "" {
@@ -144,7 +158,16 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 			continue
 		}
 
-		// Review step.
+		// Review step. A blocked verdict escalates immediately - it never
+		// waits for, or spawns, a still-missing reviewer role first.
+		if blocked := findBlocked(stepRuns); blocked != nil {
+			reason := blocked.Role + " blocked"
+			if summary := firstSummary(blocked.Findings); summary != "" {
+				reason += ": " + summary
+			}
+			return Action{Kind: ActionEscalate, Reason: reason}
+		}
+
 		missing := missingRoles(step.Review, stepRuns)
 		if len(missing) > 0 {
 			return Action{Kind: ActionSpawn, StepID: step.ID, Roles: missing, Round: round, SHA: shas[step.Of]}
@@ -155,14 +178,6 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 			}
 		}
 
-		if blocked := findBlocked(stepRuns); blocked != nil {
-			reason := blocked.Role + " blocked"
-			if summary := firstSummary(blocked.Findings); summary != "" {
-				reason += ": " + summary
-			}
-			return Action{Kind: ActionEscalate, Reason: reason}
-		}
-
 		if hasChangesRequested(stepRuns) {
 			// Decision A: a review step with no loop (a story after_tasks
 			// shape) has no fix step to retry - it can only escalate.
@@ -171,7 +186,7 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 			}
 			fix := step.Loop.Fix
 			if fix == "" {
-				fix = step.ID
+				fix = step.Of
 			}
 			effectiveMax := loopMaxRounds(step.Loop) + extraRounds
 			if round >= effectiveMax {
@@ -190,20 +205,76 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 	return Action{Kind: ActionEscalate, Reason: "workflow has no steps"}
 }
 
-// retryableSteps returns the set of step ids that must be matched to the
-// exact current round: every review step, plus every step named as some
-// review step's Loop.Fix.
-func retryableSteps(s Spec) map[string]bool {
-	out := map[string]bool{}
-	for _, st := range s.Steps {
-		if len(st.Review) > 0 {
-			out[st.ID] = true
-		}
-		if st.Loop != nil && st.Loop.Fix != "" {
-			out[st.Loop.Fix] = true
+// pinnedFrom returns the step index from which steps must be matched to the
+// exact current round (see Next's doc comment for the full rule). Steps
+// before that index carry forward from their latest run at or before the
+// current round.
+func pinnedFrom(s Spec, runs []Run, round int) int {
+	if round <= 1 {
+		return 0
+	}
+	prevRound := round - 1
+
+	bestIdx := -1
+	consider := func(idx int) {
+		if bestIdx == -1 || idx < bestIdx {
+			bestIdx = idx
 		}
 	}
-	return out
+
+	// The review step (if any) that requested changes last round is what
+	// drove this round's bump; pin from its fix step's index.
+	for _, step := range s.Steps {
+		if len(step.Review) == 0 {
+			continue
+		}
+		cr := false
+		for _, run := range runsFor(runs, step.ID, prevRound) {
+			if run.Verdict == VerdictChangesRequested {
+				cr = true
+				break
+			}
+		}
+		if !cr {
+			continue
+		}
+		fixID := step.Of
+		if step.Loop != nil && step.Loop.Fix != "" {
+			fixID = step.Loop.Fix
+		}
+		if fixIdx := stepIndex(s, fixID); fixIdx != -1 {
+			consider(fixIdx)
+		}
+	}
+	if bestIdx != -1 {
+		return bestIdx
+	}
+
+	// No round-1 review requested changes (e.g. an orchestrator resume
+	// after a crash escalation, not a normal fix loop): pin from whichever
+	// step failed or was cancelled last round.
+	for i, step := range s.Steps {
+		for _, run := range runsFor(runs, step.ID, prevRound) {
+			if run.State == RunStateFailed || run.State == RunStateCancelled {
+				consider(i)
+			}
+		}
+	}
+	if bestIdx != -1 {
+		return bestIdx
+	}
+
+	// Nothing at the previous round explains the bump; pin everything.
+	return 0
+}
+
+func stepIndex(s Spec, id string) int {
+	for i, st := range s.Steps {
+		if st.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 func sortedRuns(in []Run) []Run {
@@ -298,7 +369,11 @@ func failureReason(run Run, retries int) string {
 	if retries == 0 {
 		return fmt.Sprintf("%s %s", run.Role, run.State)
 	}
-	return fmt.Sprintf("%s %s after %d auto-retries", run.Role, run.State, run.AutoRetries)
+	unit := "auto-retries"
+	if run.AutoRetries == 1 {
+		unit = "auto-retry"
+	}
+	return fmt.Sprintf("%s %s after %d %s", run.Role, run.State, run.AutoRetries, unit)
 }
 
 // loopMaxRounds returns l's max_rounds, or the default when l is nil or

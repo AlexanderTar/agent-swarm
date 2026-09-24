@@ -35,6 +35,14 @@ func r(step string, round int, role string, state RunState, verdict Verdict) Run
 	return Run{StepID: step, Round: round, Role: role, State: state, Verdict: verdict}
 }
 
+// cr2 builds a completed run step with a sha (a run step that finished
+// cleanly), as used throughout the probe2 tables.
+func cr2(step string, round int, role, sha string) Run {
+	run := r(step, round, role, RunStateCompleted, VerdictNone)
+	run.SHA = sha
+	return run
+}
+
 func resolveT(t *testing.T, template string) Spec {
 	t.Helper()
 	s, err := Resolve(Spec{Template: template}, false)
@@ -79,6 +87,56 @@ func TestNext(t *testing.T) {
 		{ID: "merge", Run: "coder"},
 		{ID: "review", Review: []string{"reviewer"}, Of: "merge"},
 	}}
+
+	// twoLoop (probe2 table A): two independent run/review pairs. review2's
+	// fix loop must never respawn build/review1, which already passed.
+	twoLoop, err := Resolve(Spec{Steps: []Step{
+		{ID: "build", Run: "coder", Gates: []Gate{GateCommit}},
+		{ID: "review1", Review: []string{"reviewer"}},
+		{ID: "docs", Run: "mechanical", Gates: []Gate{GateCommit}},
+		{ID: "review2", Review: []string{"reviewer"}},
+	}}, false)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	// buildLintReview (probe2 table B): the fix step ("build") isn't
+	// adjacent to its review - "lint" sits between them and must be
+	// re-run too once round advances, since it's within the pinned range
+	// (indexOf(fix)..end), not before it.
+	buildLintReview, err := Resolve(Spec{Steps: []Step{
+		{ID: "build", Run: "coder", Gates: []Gate{GateCommit}},
+		{ID: "lint", Run: "mechanical", Gates: []Gate{GateCommit}},
+		{ID: "review", Review: []string{"reviewer"}, Loop: &Loop{Fix: "build"}},
+	}}, false)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	// researchThenBuild (probe2 table C): an earlier, already-passed
+	// run/review pair ("research"/"rreview") must stay carried forward
+	// when a later pair's review requests changes.
+	researchThenBuild, err := Resolve(Spec{Steps: []Step{
+		{ID: "research", Run: "researcher", Gates: []Gate{GateArtifactNotes}},
+		{ID: "rreview", Review: []string{"reviewer"}},
+		{ID: "build", Run: "coder", Gates: []Gate{GateCommit}},
+		{ID: "review", Review: []string{"reviewer"}},
+	}}, false)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	// twoReviewsOfBuild (probe2 table D): two review steps of the same
+	// build step. When one requests changes, the pinned range covers the
+	// build step's index onward, so the other reviewer is re-run too.
+	twoReviewsOfBuild, err := Resolve(Spec{Steps: []Step{
+		{ID: "build", Run: "coder", Gates: []Gate{GateCommit}},
+		{ID: "r-a", Review: []string{"reviewer"}},
+		{ID: "r-b", Review: []string{"ui_reviewer"}, Of: "build"},
+	}}, false)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
 
 	buildCompleted := func(sha string) Run {
 		run := r("build", 1, "coder", RunStateCompleted, VerdictNone)
@@ -266,11 +324,23 @@ func TestNext(t *testing.T) {
 			want:  Action{Kind: ActionAutoRetry, StepID: "build", Round: 1, Run: func() *Run { fb := failedBuild(0); return &fb }()},
 		},
 		{
-			name:  "failed run with no auto-retries left escalates",
+			name:  "failed run with no auto-retries left escalates (singular)",
 			spec:  tddReviewed,
 			runs:  []Run{failedBuild(1)},
 			round: 1,
-			want:  Action{Kind: ActionEscalate, Reason: "coder failed after 1 auto-retries"},
+			want:  Action{Kind: ActionEscalate, Reason: "coder failed after 1 auto-retry"},
+		},
+		{
+			name: "failed run with no auto-retries left escalates (plural)",
+			spec: func() Spec {
+				s := tddReviewed
+				two := 2
+				s.Retries = &two
+				return s
+			}(),
+			runs:  []Run{failedBuild(2)},
+			round: 1,
+			want:  Action{Kind: ActionEscalate, Reason: "coder failed after 2 auto-retries"},
 		},
 		{
 			name: "failed run with retries=0 escalates without mentioning auto-retries",
@@ -450,6 +520,183 @@ func TestNext(t *testing.T) {
 			round: 1,
 			want:  Action{Kind: ActionRetryFix, StepID: "build", Round: 2},
 		},
+
+		// Finding 6: an unresolved loop with no Fix falls back to the
+		// step's Of, not the review step's own id.
+		{
+			name: "loop with no fix falls back to Of, not the review step's own id",
+			spec: Spec{Steps: []Step{
+				{ID: "build", Run: "coder"},
+				{ID: "review", Review: []string{"reviewer"}, Of: "build", Loop: &Loop{}},
+			}},
+			runs: []Run{
+				r("build", 1, "coder", RunStateCompleted, VerdictNone),
+				r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+			},
+			round: 1,
+			want:  Action{Kind: ActionRetryFix, StepID: "build", Round: 2},
+		},
+
+		// Finding 9: a round below 1 is clamped to 1.
+		{
+			name:  "round below 1 is clamped to 1",
+			spec:  tddReviewed,
+			runs:  nil,
+			round: 0,
+			want:  Action{Kind: ActionSpawn, StepID: "build", Roles: []string{"coder"}, Round: 1},
+		},
+
+		// probe2 table A: two independent loops. review2 (fix: docs)
+		// requesting changes must never touch build/review1.
+		{
+			name: "table A: review2 requests changes; only docs is retried, not build",
+			spec: twoLoop,
+			runs: []Run{
+				cr2("build", 1, "coder", "b1"),
+				r("review1", 1, "reviewer", RunStateCompleted, VerdictPass),
+				cr2("docs", 1, "mechanical", "d1"),
+				r("review2", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+			},
+			round: 1,
+			want:  Action{Kind: ActionRetryFix, StepID: "docs", Round: 2},
+		},
+		{
+			name: "table A: round 2, docs fixing; build/review1 stay carried forward",
+			spec: twoLoop,
+			runs: []Run{
+				cr2("build", 1, "coder", "b1"),
+				r("review1", 1, "reviewer", RunStateCompleted, VerdictPass),
+				cr2("docs", 1, "mechanical", "d1"),
+				r("review2", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+				r("docs", 2, "mechanical", RunStateActive, VerdictNone),
+			},
+			round: 2,
+			want:  Action{Kind: ActionWait, StepID: "docs", Round: 2},
+		},
+
+		// probe2 table B (finding 1, critical): "lint" sits between the fix
+		// step ("build") and its review. Once build is fixed, lint is
+		// within the pinned range too and must be re-run before review, so
+		// the eventual succeed carries lint's fresh sha, not the stale one.
+		{
+			name: "table B: build fixed at round 2; lint (between build and review) must be re-run too",
+			spec: buildLintReview,
+			runs: []Run{
+				cr2("build", 1, "coder", "b1"),
+				cr2("lint", 1, "mechanical", "l1"),
+				r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+				cr2("build", 2, "coder", "b2"),
+			},
+			round: 2,
+			want:  Action{Kind: ActionSpawn, StepID: "lint", Roles: []string{"mechanical"}, Round: 2},
+		},
+		{
+			name: "table B: build and lint both re-run at round 2; review spawns with lint's fresh sha",
+			spec: buildLintReview,
+			runs: []Run{
+				cr2("build", 1, "coder", "b1"),
+				cr2("lint", 1, "mechanical", "l1"),
+				r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+				cr2("build", 2, "coder", "b2"),
+				cr2("lint", 2, "mechanical", "l2"),
+			},
+			round: 2,
+			want:  Action{Kind: ActionSpawn, StepID: "review", Roles: []string{"reviewer"}, Round: 2, SHA: "l2"},
+		},
+		{
+			name: "table B: round 2 review passes; succeeds with lint's fresh sha, not the stale round-1 one",
+			spec: buildLintReview,
+			runs: []Run{
+				cr2("build", 1, "coder", "b1"),
+				cr2("lint", 1, "mechanical", "l1"),
+				r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+				cr2("build", 2, "coder", "b2"),
+				cr2("lint", 2, "mechanical", "l2"),
+				r("review", 2, "reviewer", RunStateCompleted, VerdictPass),
+			},
+			round: 2,
+			want:  Action{Kind: ActionSucceed, SHA: "l2"},
+		},
+
+		// probe2 table C: an earlier, already-passed run/review pair
+		// ("research"/"rreview") must stay carried forward when a later
+		// pair's review requests changes - it must never be re-spawned.
+		{
+			name: "table C: build's review requests changes; research/rreview carry forward, not re-spawned",
+			spec: researchThenBuild,
+			runs: []Run{
+				cr2("research", 1, "researcher", ""),
+				r("rreview", 1, "reviewer", RunStateCompleted, VerdictPass),
+				cr2("build", 1, "coder", "b1"),
+				r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+				r("build", 2, "coder", RunStateActive, VerdictNone),
+			},
+			round: 2,
+			want:  Action{Kind: ActionWait, StepID: "build", Round: 2},
+		},
+
+		// probe2 table D: two review steps of the same build step. r-b
+		// requesting changes pins from build's index onward, so r-a (an
+		// unrelated reviewer of the same build) is re-run too.
+		{
+			name: "table D: r-b requests changes; r-a (same build, different reviewer) is re-spawned too",
+			spec: twoReviewsOfBuild,
+			runs: []Run{
+				cr2("build", 1, "coder", "b1"),
+				r("r-a", 1, "reviewer", RunStateCompleted, VerdictPass),
+				r("r-b", 1, "ui_reviewer", RunStateCompleted, VerdictChangesRequested),
+				cr2("build", 2, "coder", "b2"),
+			},
+			round: 2,
+			want:  Action{Kind: ActionSpawn, StepID: "r-a", Roles: []string{"reviewer"}, Round: 2, SHA: "b2"},
+		},
+
+		// probe2 table M / finding 7: a blocked verdict escalates even when
+		// another reviewer role hasn't run yet - it never waits for or
+		// spawns the missing role first.
+		{
+			name: "table M: one reviewer blocked, the other missing entirely - escalates, doesn't spawn the missing one",
+			spec: uiTddReviewed,
+			runs: []Run{
+				buildCompleted("x"),
+				r("review", 1, "reviewer", RunStateCompleted, VerdictBlocked),
+			},
+			round: 1,
+			want:  Action{Kind: ActionEscalate, Reason: "reviewer blocked"},
+		},
+		{
+			name: "table M: round 2, one reviewer's round-2 row still missing while the other passed",
+			spec: uiTddReviewed,
+			runs: []Run{
+				buildCompleted("x"),
+				r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+				r("review", 1, "ui_reviewer", RunStateCompleted, VerdictPass),
+				cr2("build", 2, "coder", "y"),
+				r("review", 2, "ui_reviewer", RunStateCompleted, VerdictPass),
+			},
+			round: 2,
+			want:  Action{Kind: ActionSpawn, StepID: "review", Roles: []string{"reviewer"}, Round: 2, SHA: "y"},
+		},
+
+		// Finding 3 (major): a carried-forward step whose latest run is
+		// failed/cancelled must be auto-retried/escalated, never waited on
+		// forever. Anchored by a real CR review (fix: build), so "notes"
+		// unambiguously stays carried forward.
+		{
+			name: "finding 3: a carried-forward step's stale failure escalates instead of waiting forever",
+			spec: notesBuildReview,
+			runs: []Run{
+				func() Run {
+					run := r("notes", 1, "researcher", RunStateFailed, VerdictNone)
+					run.AutoRetries = 1
+					return run
+				}(),
+				cr2("build", 1, "coder", "a1"),
+				r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested),
+			},
+			round: 2,
+			want:  Action{Kind: ActionEscalate, Reason: "researcher failed after 1 auto-retry"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -460,6 +707,67 @@ func TestNext(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNextRoundEdgeCases covers probe2 table E: a future-round run row is
+// invisible at an earlier round, an exhausted-failure escalation pluralizes
+// correctly, and - when round advanced with no round-1 review evidence at
+// all to explain it (no CR review found) - the decided fallback pins from
+// the failed step's own index, so that step is freshly spawned rather than
+// re-examined via its stale earlier-round failure.
+func TestNextRoundEdgeCases(t *testing.T) {
+	td := resolveT(t, "tdd-reviewed")
+
+	t.Run("a future-round run is invisible at an earlier round", func(t *testing.T) {
+		got := Next(td, []Run{cr2("build", 2, "coder", "x")}, 1, 0)
+		want := Action{Kind: ActionSpawn, StepID: "build", Roles: []string{"coder"}, Round: 1}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("exhausted failure with retries=2 pluralizes auto-retries", func(t *testing.T) {
+		s := Spec{Steps: td.Steps, Retries: intp(2)}
+		got := Next(s, []Run{{StepID: "build", Round: 1, Role: "coder", State: RunStateFailed, AutoRetries: 2}}, 1, 0)
+		want := Action{Kind: ActionEscalate, Reason: "coder failed after 2 auto-retries"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	// probe2's literal "E failed r1 earlier in a carried step" input: round
+	// advanced to 2 but no round-1 review ever requested changes (there is
+	// no review run at all), so there's no CR-driven pin target. The
+	// decided fallback then pins from the failed step's own index ("notes",
+	// index 0) to the end. Notes therefore requires an exact round-2 match;
+	// finding none, it is freshly spawned. This does NOT re-examine the
+	// stale round-1 failure (that data is superseded once the step is
+	// pinned) - it's a distinct scenario from finding 3, which is about a
+	// step that stays *carried forward* (see TestNext's "finding 3" case,
+	// anchored by an actual CR review).
+	t.Run("round bumped with no round-1 review evidence: pins from the failed step's own index", func(t *testing.T) {
+		s2, err := Resolve(Spec{Steps: []Step{
+			{ID: "notes", Run: "researcher"},
+			{ID: "build", Run: "coder", Gates: []Gate{GateCommit}},
+			{ID: "review", Review: []string{"reviewer"}, Loop: &Loop{Fix: "build"}},
+		}}, false)
+		if err != nil {
+			t.Fatalf("Resolve() error = %v", err)
+		}
+		runs := []Run{
+			func() Run {
+				run := r("notes", 1, "researcher", RunStateFailed, VerdictNone)
+				run.AutoRetries = 1
+				return run
+			}(),
+			cr2("build", 2, "coder", "z"),
+		}
+		got := Next(s2, runs, 2, 0)
+		want := Action{Kind: ActionSpawn, StepID: "notes", Roles: []string{"researcher"}, Round: 2}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
 }
 
 // TestNextIgnoresInputOrder checks that Next sorts its own copy of runs
