@@ -15,7 +15,7 @@ Follow `swarm-batching` "Executing a package": work the units in order, one at a
 
 For each unit:
 1. Write the failing test for that unit. Run it. Immediately write a `progress` checkpoint recording that run, tagged with the unit's number: `verification: [{"cmd": "...", "phase": "red", "ok": false, "note": "<why it fails>", "unit": <n>}]` — write this checkpoint when the red run actually happens, not reconstructed afterward from memory.
-2. Write the minimal code to pass it (see ponytail below). Run the test again; record `{"phase": "green", "ok": true, "unit": <n>}`. Refactor if it clarifies the code, then rerun to confirm it's still green.
+2. Write the minimal code to pass it (see ponytail below). Run the test again; record it too, in a `progress` checkpoint: `verification: [{"phase": "green", "ok": true, "unit": <n>}]`. Refactor if it clarifies the code, then rerun to confirm it's still green.
 3. Commit — small, signed, conventional message, on your worktree branch. Never leave a unit's work uncommitted before moving to the next one, and never leave your own work uncommitted at the end of a turn.
 
 This is `superpowers:test-driven-development` applied per unit: every behaviour change gets its own recorded red before its green, and a batched task's red/green pair is required **per unit**, not once for the whole package.
@@ -39,7 +39,13 @@ Once every unit is committed, run every command in `## Verify` and record each a
 - If a Verify command needs a clean tree to mean anything (a build, a full test run), run it after your last commit, not before.
 
 ## Fix rounds
-Review findings come back as an `assignment_update` on the same session — the daemon does not spawn a new agent for a fix round. Use `superpowers:receiving-code-review`: read each finding, verify it against the code and the task before changing anything. If a finding is correct, fix it. If you believe a finding is wrong, say so with evidence in your next checkpoint summary rather than silently complying or silently ignoring it — performative agreement helps nobody. After fixing, re-run the affected unit's tests and the package's Verify commands, commit (a new commit, never amend a prior unit's commit), and write `completed` again with the same git contract.
+A fix round is you, not a fresh agent — but it is a new attempt: `RetryFix` runs through the same `Retry` mechanism used everywhere else in Swarm, which starts a new attempt (new session) once your prior one reached `completed`. The reviewers' findings arrive as an `assignment_update` message, waiting for you on your next `swarm_sync`.
+
+**This matters for the `tdd` gate.** The gate reads only this attempt's checkpoint entries — it cannot see the red/green evidence you recorded in the attempt that just ended. Read literally, that means every unit in the package needs its red→green pair recorded again in this new attempt before `completed` will pass, not only the unit(s) a finding names — the gate checks the whole unit list and names whichever are missing evidence, not just the touched ones.
+
+The spec doesn't say how to produce a genuine new red for a unit whose code is already correct and unchanged — re-running an already-passing test can't legitimately fail, and fabricating one is never acceptable (rule 10's evidence discipline applies here too). Don't invent a red to satisfy the letter of the gate: fix and re-verify the unit(s) the findings actually touch with a real red→green pair, re-run and record a real green for every unchanged unit, and if the gate still refuses `completed` for an unchanged unit's missing red, say so plainly — `blocked`, or ask your parent/advisor — rather than papering over it.
+
+Use `superpowers:receiving-code-review`: read each finding, verify it against the code and the task before changing anything. If a finding is correct, fix it. If you believe a finding is wrong, say so with evidence in your next checkpoint summary rather than silently complying or silently ignoring it — performative agreement helps nobody. After fixing, re-run the affected unit's tests and the package's Verify commands, commit (a new commit, never amend a prior unit's commit), and write `completed` again with the same git contract.
 
 ## Scope discipline
 Do exactly what `## Scope` and the unit steps describe. A "while I'm here" fix, refactor, or improvement that isn't in scope goes in your `completed` summary as a suggestion for a follow-up package, not into your diff.

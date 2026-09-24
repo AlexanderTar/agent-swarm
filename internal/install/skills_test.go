@@ -851,7 +851,8 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"swarm_workflow",
 			"swarm-advisor",
 			"don't coordinate the next step yourself",
-			"only questions, `blocked` and `failed`",
+			"the engine reports the workflow's outcome",
+			"`blocked`, `failed`, `handoff`, and `swarm_send` questions still reach",
 		}},
 		{"swarm-coder", []string{
 			"Follow the `swarm` skill first",
@@ -865,6 +866,8 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"superpowers:receiving-code-review",
 			"dirty:false",
 			"assignment_update",
+			"record it too, in a `progress` checkpoint",
+			"new attempt",
 		}},
 		{"swarm-reviewer", []string{
 			"Follow the `swarm` skill first",
