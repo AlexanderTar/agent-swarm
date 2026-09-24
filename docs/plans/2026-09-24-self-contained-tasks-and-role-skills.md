@@ -116,7 +116,7 @@ Spec inputs most likely to be under-tested. Reviewers check these explicitly:
 - `go build ./... && go vet ./...`
 
 #### Unit 1.1: Embed, registry, sync
-- [ ] Write the failing tests in `internal/install/skills_test.go`:
+- [x] Write the failing tests in `internal/install/skills_test.go`:
 
 ```go
 func TestSkillsRegistryMatchesTree(t *testing.T) {
@@ -151,36 +151,36 @@ func TestSyncSkillsWritesNestedFilesAndPrunes(t *testing.T) {
 func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) { /* walk ../../skills vs SkillFS(); same file set, same bytes */ }
 ```
 
-- [ ] Run `go test ./internal/install/ -run 'TestSkillsRegistry|TestSyncSkills|TestEmbeddedMirror'`. Expect a compile failure and record it as red (unit 1).
-- [ ] Implement the embed and sync:
+- [x] Run `go test ./internal/install/ -run 'TestSkillsRegistry|TestSyncSkills|TestEmbeddedMirror'`. Expect a compile failure and record it as red (unit 1).
+- [x] Implement the embed and sync:
   - Replace the current embed with `//go:embed all:skills`. `SkillFS()` returns `fs.Sub(..., "skills")`.
   - `Skills()` treats every dir holding a `SKILL.md` as a skill; `Vendored` is set when the dir is under `vendor/`.
   - `SyncSkills` writes each file with `WriteIfChanged`, keeps the exec bit under `scripts/`, writes the marker, and prunes files that are no longer embedded.
   - `SkillNames()` becomes a function. Update its callers in `WriteSkills`, `adapter/claude.go`, `uninstall.go` and `migrate/integrations.go`.
   - Update the count assertions in `skills_test.go:66` and `migrate/recover_test.go:479-517` to derive from `len(SkillNames())`. This is an intentional change.
-- [ ] Change `Makefile` `skills-sync` to mirror with deletes (`rm -rf internal/install/skills && cp -R skills internal/install/skills`; rsync isn't always installed) and run it.
-- [ ] In `cmd/swarm/daemon.go`, call `install.SyncSkills(cfg.Home)` (the swarm home) before the reconcile loop, then relink kinds that already hold swarm-owned skills. Log failures; they are not fatal.
-- [ ] Run green and record it (unit 1). Commit: `feat(install): embed and sync the full skills tree`.
+- [x] Change `Makefile` `skills-sync` to mirror with deletes (`rm -rf internal/install/skills && cp -R skills internal/install/skills`; rsync isn't always installed) and run it.
+- [x] In `cmd/swarm/daemon.go`, call `install.SyncSkills(cfg.Home)` (the swarm home) before the reconcile loop, then relink kinds that already hold swarm-owned skills. Log failures; they are not fatal.
+- [x] Run green and record it (unit 1). Commit: `feat(install): embed and sync the full skills tree`.
 
 #### Unit 1.2: Per-kind links, user-owned safety, uninstall
-- [ ] **Empirical check first.** For each installed CLI (claude, codex, agy, cursor-agent, muse), symlink a throwaway skill into its skills root and confirm whether the CLI lists or uses it. Set `skillLinkMode[kind]` from the result. A CLI that isn't installed defaults to `Copy`. Put the findings in the commit message.
-- [ ] Write the failing tests and record red:
+- [x] **Empirical check first.** For each installed CLI (claude, codex, agy, cursor-agent, muse), symlink a throwaway skill into its skills root and confirm whether the CLI lists or uses it. Set `skillLinkMode[kind]` from the result. A CLI that isn't installed defaults to `Copy`. Put the findings in the commit message.
+- [x] Write the failing tests and record red:
   - `TestWriteSkillsSymlinksEveryManagedSkill`
   - `TestWriteSkillsSkipsUserOwnedSameName`
   - `TestWriteSkillsReplacesStaleSwarmCopy`
   - `TestUninstallRemovesOnlySwarmSkills`
-- [ ] Implement `LinkSkills` and `WriteSkills`. An entry counts as swarm-owned if it is a symlink into `skillsHome`, or a dir containing the marker.
-- [ ] Run green. Commit: `feat(install): link swarm skills into every agent kind`.
+- [x] Implement `LinkSkills` and `WriteSkills`. An entry counts as swarm-owned if it is a symlink into `skillsHome`, or a dir containing the marker.
+- [x] Run green. Commit: `feat(install): link swarm skills into every agent kind`.
 
 #### Unit 1.3: Claude per-spawn links
-- [ ] Write the failing test `TestClaudeProjectConfigLinksSkills` in `internal/adapter/claude_test.go`. Red.
-- [ ] Make `writeProjectSwarmConfig` call `LinkSkills(<cwd>/.claude/skills, ~/.swarm/skills, skillLinkMode[Claude])`.
-- [ ] Run green. Commit: `feat(adapter): link skills into claude spawn dirs`.
+- [x] Write the failing test `TestClaudeProjectConfigLinksSkills` in `internal/adapter/claude_test.go`. Red.
+- [x] Make `writeProjectSwarmConfig` call `LinkSkills(<cwd>/.claude/skills, ~/.swarm/skills, skillLinkMode[Claude])`.
+- [x] Run green. Commit: `feat(adapter): link skills into claude spawn dirs`.
 
 #### Unit 1.4: Doctor
-- [ ] Write the failing tests `TestDoctorChecksSkillsForEveryKind` and `TestDoctorWarnsWithoutPython3`. Red.
-- [ ] Add `CheckSkills` to every kind's `Check*`, and add a warn-level `python3` base check. Refresh the README's `swarm doctor` line (folded docs).
-- [ ] Run green. Commit: `feat(doctor): skills check per kind and python3 warning`.
+- [x] Write the failing tests `TestDoctorChecksSkillsForEveryKind` and `TestDoctorWarnsWithoutPython3`. Red.
+- [x] Add `CheckSkills` to every kind's `Check*`, and add a warn-level `python3` base check. Refresh the README's `swarm doctor` line (folded docs).
+- [x] Run green. Commit: `feat(doctor): skills check per kind and python3 warning`.
 
 ### P2: Vendored skills
 **Workflow:** steps `[{id: "vendor", run: "mechanical", gates: ["commit", "verify"]}, {id: "review", review: ["reviewer"], loop: {fix: "vendor", max_rounds: 2}}]` (a license/provenance check matters) · **Units:** 5 (same-shape edits)
