@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -58,6 +59,13 @@ func parseFrontmatter(t *testing.T, body []byte) map[string]string {
 	return out
 }
 
+// P3 unit 3.2: swarm is rewritten as protocol only. Rule 11 (TDD) moved out
+// to swarm-coder/swarm-debugger; swarm gained the workflow-step rule and
+// `Workflow` in its disabled-tool list instead. This is the one existing
+// expectation the P3 brief names as changing intentionally (unit 3.2), so the
+// old "Reviewers: check that the tests..." assertion moves to the
+// swarm-reviewer row of TestRoleSkillsReferenceTheirSkills below rather than
+// being dropped.
 func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
 	agent := string(install.SkillBody("swarm"))
 	for _, want := range []string{
@@ -65,7 +73,8 @@ func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
 		"description: Rules for any agent spawned by Agent Swarm (SWARM_SESSION is set).",
 		"# Working as a Swarm agent",
 		"Never add `Co-Authored-By`, \"Generated with\", session links, emoji signatures or agent names",
-		"Reviewers: check that the tests cover each acceptance criterion and would fail without the change.",
+		"## Workflow",
+		"`Workflow`",
 	} {
 		if !strings.Contains(agent, want) {
 			t.Errorf("skills/swarm/SKILL.md is missing %q", want)
@@ -1053,5 +1062,162 @@ func TestVendoredSkillsHaveLicenseAndProvenance(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// P3 unit 3.1: one table row per role skill this package writes, each a list
+// of substrings that must appear in its SKILL.md. A skill that doesn't exist
+// yet fails its own subtest (fs.ReadFile error) without taking the rest of
+// the table down with it -- unlike install.SkillBody, which panics on an
+// unknown name and would kill the whole test binary before every row got a
+// chance to report red.
+func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
+	cases := []struct {
+		skill    string
+		requires []string
+	}{
+		{"swarm", []string{
+			"## Workflow",
+			"`Workflow`",
+			"swarm_workflow",
+			"swarm-advisor",
+			"don't coordinate the next step yourself",
+			"the engine reports the workflow's outcome",
+			"`blocked`, `failed`, `handoff`, and `swarm_send` questions still reach",
+		}},
+		{"swarm-coder", []string{
+			"Follow the `swarm` skill first",
+			"swarm-batching",
+			"\"unit\": <n>",
+			"one commit per unit",
+			"ponytail",
+			"Precedence",
+			"superpowers:test-driven-development",
+			"superpowers:verification-before-completion",
+			"superpowers:receiving-code-review",
+			"dirty:false",
+			"assignment_update",
+			"record it too, in a `progress` checkpoint",
+			"new attempt",
+		}},
+		{"swarm-reviewer", []string{
+			"Follow the `swarm` skill first",
+			"superpowers:requesting-code-review",
+			"ponytail-review",
+			"`pass` | `changes_requested` | `blocked`",
+			"critical|major|minor|nit",
+			"findings",
+			"swarm-batching",
+			"swarm_read",
+			"Never edit",
+			"would fail without the change",
+			"for each acceptance criterion",
+		}},
+		{"swarm-ui-reviewer", []string{
+			"Follow the `swarm` skill first",
+			"swarm-reviewer",
+			"`pass` | `changes_requested` | `blocked`",
+			"critical|major|minor|nit",
+			"web-design-guidelines",
+			"building-components",
+			"mobile-ios-design",
+			"mobile-android-design",
+			"expo-native-ui",
+			"vercel-react-native-skills",
+			"ui-ux-pro-max",
+			"44pt",
+		}},
+		{"swarm-designer", []string{
+			"Follow the `swarm` skill first",
+			"superpowers:brainstorming",
+			"ui-ux-pro-max",
+			"building-components",
+			"~/.swarm/designs/",
+			"artifacts",
+			"Goals",
+			"Screens",
+			"Components",
+			"Tokens",
+			"Interaction & motion",
+			"Accessibility",
+			"Mobile specifics",
+			"Open questions",
+			"Mermaid",
+		}},
+		{"swarm-batching", []string{
+			"| Work in the package | Workflow |",
+			"| Units per package |",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.skill, func(t *testing.T) {
+			body, err := fs.ReadFile(install.SkillFS(), path.Join(tc.skill, "SKILL.md"))
+			if err != nil {
+				t.Fatalf("%s: %v", tc.skill, err)
+			}
+			text := string(body)
+			for _, want := range tc.requires {
+				if !strings.Contains(text, want) {
+					t.Errorf("%s: missing %q", tc.skill, want)
+				}
+			}
+		})
+	}
+}
+
+// knownSuperpowersSkills is the fixed set of 15 superpowers v6.4.1 skill
+// names (P3 brief). Any `superpowers:<x>` reference in a non-vendored skill
+// must name one of these -- a typo'd or invented superpowers skill name would
+// otherwise silently tell an agent to "follow" a skill that doesn't exist.
+var knownSuperpowersSkills = map[string]bool{
+	"brainstorming":                  true,
+	"diagnosing-superpowers":         true,
+	"dispatching-parallel-agents":    true,
+	"executing-plans":                true,
+	"finishing-a-development-branch": true,
+	"receiving-code-review":          true,
+	"requesting-code-review":         true,
+	"subagent-driven-development":    true,
+	"systematic-debugging":           true,
+	"test-driven-development":        true,
+	"using-git-worktrees":            true,
+	"using-superpowers":              true,
+	"verification-before-completion": true,
+	"writing-plans":                  true,
+	"writing-skills":                 true,
+}
+
+var superpowersRefRe = regexp.MustCompile(`superpowers:([a-zA-Z][a-zA-Z0-9-]*)`)
+
+// TestSuperpowersReferencesAreKnown scans every non-vendored skill for
+// `superpowers:<name>` references and checks each against the fixed set of
+// 15 real superpowers v6.4.1 skill names. Vendored skills are third-party
+// content (P2) and are exempt. It also asserts at least one reference was
+// found at all: the regex trivially "passes" over a tree with zero
+// `superpowers:` references, which would hide a typo'd prefix (e.g. every
+// skill silently switching to a different convention) instead of catching it.
+func TestSuperpowersReferencesAreKnown(t *testing.T) {
+	sk, err := install.Skills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, s := range sk {
+		if s.Vendored {
+			continue
+		}
+		body, err := fs.ReadFile(install.SkillFS(), path.Join(s.Dir, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("%s: %v", s.Name, err)
+		}
+		for _, m := range superpowersRefRe.FindAllStringSubmatch(string(body), -1) {
+			total++
+			if !knownSuperpowersSkills[m[1]] {
+				t.Errorf("%s: unknown superpowers skill %q referenced as superpowers:%s", s.Name, m[1], m[1])
+			}
+		}
+	}
+	if total == 0 {
+		t.Error("found zero superpowers: references across all non-vendored skills; the regex or the skill tree is broken")
 	}
 }

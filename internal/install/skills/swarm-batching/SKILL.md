@@ -36,7 +36,7 @@ Small edits of the same kind across many files batch well, even beyond 5 units: 
 - **Truly independent work that will actually run in parallel.** Separate packages let the orchestrator run them at the same time. If they would run one after another anyway, batch them.
 - **Contracts before consumers.** When packages share an interface (types, schema, API), the package defining it goes first. Batch on each side of it, not across it.
 
-A single-unit package is fine when one of these reasons applies. Say which one in the task's `solo` field (for example `"solo": "irreversible migration"`). Without a reason, plan registration warns.
+A single-unit package is fine when one of these reasons applies. Say which one in the task's `solo` field (for example `"solo": "irreversible migration"`). Without a reason, plan registration returns these as `warnings[]` (registration still succeeds; the warning shows on the board's plan review screen).
 
 ## Size bounds
 
@@ -78,7 +78,7 @@ Every package gets an explicit `workflow`. The workflow names the role for each 
 | Any UI code, web or native | `ui-tdd-reviewed`: coder, then reviewer and ui_reviewer |
 | Designing a new screen, flow or component before it is built | `design-reviewed`: designer, then ui_reviewer. It blocks the UI package that builds it. |
 | Fixing a reproducible bug | `debug`: debugger, then reviewer |
-| Renames, config, docs-only changes, generated files, vendoring | `mechanical`. Add a reviewer step when a license or provenance check matters. |
+| Renames, config, docs-only changes, generated files, vendoring | `mechanical` (mechanical, no review) — or steps `[{run: mechanical}, {review: [reviewer]}]` when a license or provenance check matters |
 | An open question that needs evidence | `research`: researcher |
 | Security-sensitive change | Its own package (`solo: "security"`), `tdd-reviewed` with `max_rounds: 4`. The context names the security focus. |
 
