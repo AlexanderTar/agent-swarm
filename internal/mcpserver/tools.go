@@ -17,6 +17,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // roleOverridesOut normalizes an Agent's RoleOverrides for the wire: a nil
@@ -89,23 +90,31 @@ func checkpointTool(s *Server) ToolDef {
 				"repo":{"type":"string"},"branch":{"type":"string"},"sha":{"type":"string"},"dirty":{"type":"boolean"}},
 				"required":["repo","sha"]}},
 			"verification":{"type":"array","items":{"type":"object","properties":{
-				"cmd":{"type":"string"},"phase":{"type":"string"},"ok":{"type":"boolean"},"note":{"type":"string"}},
+				"cmd":{"type":"string"},"phase":{"type":"string"},"ok":{"type":"boolean"},"note":{"type":"string"},
+				"unit":{"type":"integer"}},
 				"required":["cmd","ok"]}},
 			"artifacts":{"type":"array"},"processed":{"type":"array"},
+			"verdict":{"type":"string","enum":["","pass","changes_requested","blocked"]},
+			"findings":{"type":"array","items":{"type":"object","properties":{
+				"severity":{"type":"string"},"file":{"type":"string"},"line":{"type":"integer"},
+				"unit":{"type":"integer"},"summary":{"type":"string"}},
+				"required":["severity","file","summary"]}},
 			"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Kind         string           `json:"kind"`
-				ItemKey      string           `json:"item"`
-				Summary      string           `json:"summary"`
-				Resolution   string           `json:"resolution"`
-				Next         []string         `json:"next"`
-				Blockers     []string         `json:"blockers"`
-				Git          []runtime.GitRef `json:"git"`
-				Verification []runtime.Verify `json:"verification"`
-				Artifacts    []string         `json:"artifacts"`
-				Processed    []string         `json:"processed"`
-				RequestID    string           `json:"request_id"`
+				Kind         string             `json:"kind"`
+				ItemKey      string             `json:"item"`
+				Summary      string             `json:"summary"`
+				Resolution   string             `json:"resolution"`
+				Next         []string           `json:"next"`
+				Blockers     []string           `json:"blockers"`
+				Git          []runtime.GitRef   `json:"git"`
+				Verification []runtime.Verify   `json:"verification"`
+				Artifacts    []string           `json:"artifacts"`
+				Processed    []string           `json:"processed"`
+				Verdict      string             `json:"verdict"`
+				Findings     []workflow.Finding `json:"findings"`
+				RequestID    string             `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -114,6 +123,7 @@ func checkpointTool(s *Server) ToolDef {
 				Kind: runtime.CheckpointKind(in.Kind), ItemKey: in.ItemKey, Summary: in.Summary,
 				Resolution: in.Resolution, Next: in.Next, Blockers: in.Blockers,
 				Git: in.Git, Verification: in.Verification, Artifacts: in.Artifacts, Processed: in.Processed,
+				Verdict: in.Verdict, Findings: in.Findings,
 				RequestID: in.RequestID,
 			})
 			if err != nil {

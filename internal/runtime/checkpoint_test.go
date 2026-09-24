@@ -12,6 +12,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // worker spawns a coder on TASK-1 under an orchestrator and returns both sessions.
@@ -1088,5 +1089,96 @@ func TestCheckpointRelayHeldWhileExhausted(t *testing.T) {
 	}
 	if rows != 1 {
 		t.Fatalf("suppressed rows = %d, want 1", rows)
+	}
+}
+
+// --- Unit 8.1: verdicts and findings (spec B5) ---
+
+func TestVerdictRequiredForWorkflowReviewer(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateVerify}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, rev.ID, "review", "reviewer", 1)
+
+	_, err = s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed"})
+	if err == nil {
+		t.Fatal("expected a verdict-required error")
+	}
+	want := `Reviewers must complete with verdict: pass, changes_requested or blocked.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed",
+		Verdict: "pass"}); err != nil {
+		t.Fatalf("a valid verdict should be accepted: %v", err)
+	}
+}
+
+func TestVerdictRefusedForCoder(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	_, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}},
+		Verdict:      "pass"})
+	if err == nil {
+		t.Fatal("expected a verdict-refused error")
+	}
+	if want := "Only reviewers set a verdict."; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+func TestPassVerdictRefusesMajorFindings(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder"},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, rev.ID, "review", "reviewer", 1)
+
+	_, err = s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed",
+		Verdict:  "pass",
+		Findings: []workflow.Finding{{Severity: "major", File: "a.go", Line: 3, Summary: "leaks a file handle"}}})
+	if err == nil {
+		t.Fatal("expected a pass-with-major-finding error")
+	}
+	if want := "verdict pass can't carry critical or major findings."; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	// A minor finding is fine with pass.
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed",
+		Verdict:  "pass",
+		Findings: []workflow.Finding{{Severity: "minor", File: "a.go", Line: 3, Summary: "nit"}}}); err != nil {
+		t.Fatalf("pass with only a minor finding should be accepted: %v", err)
 	}
 }

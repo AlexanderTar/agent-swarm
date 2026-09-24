@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // panes sets the fake tmux's pane list for a test (Task 21; Task 22's wake
@@ -239,6 +241,48 @@ func writeFile(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// setItemWorkflow writes a resolved workflow.Spec straight to an item's
+// workflow_json (P9's engine, which would normally resolve and store this
+// via items.Store.CreateTx/PatchTx, doesn't exist yet -- P8's tests seed the
+// column directly, same pattern as the tdd_exempt UPDATE above).
+func setItemWorkflow(t *testing.T, s *Store, key string, spec workflow.Spec) {
+	t.Helper()
+	ctx := context.Background()
+	b, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET workflow_json = ? WHERE key = ?`,
+		string(b), key); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedWorkflowRun inserts a workflows row and one workflow_runs row directly
+// (P9's engine, which would normally own these inserts, doesn't exist yet):
+// P8's gates and sibling-closing logic read workflow_runs, so its tests seed
+// rows by hand. Returns both ids.
+func seedWorkflowRun(t *testing.T, s *Store, itemID, rootItemID, ownerAgentID, agentID, stepID, role string, round int) (workflowID, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	now := db.Millis(s.Now())
+	workflowID = ids.New("wf")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflows
+		(id, item_id, root_item_id, owner_agent_id, state, round, worktrees_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'running', ?, '[]', ?, ?)`,
+		workflowID, itemID, rootItemID, ownerAgentID, round, now, now); err != nil {
+		t.Fatal(err)
+	}
+	runID = ids.New("wfr")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`,
+		runID, workflowID, stepID, round, role, agentID, now); err != nil {
+		t.Fatal(err)
+	}
+	return workflowID, runID
 }
 
 func gitRepoNoSigning(t *testing.T) string {

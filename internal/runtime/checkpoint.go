@@ -17,6 +17,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 const verifyMissing = "Verification evidence missing: record what was run to verify this work before completing."
@@ -76,6 +77,13 @@ type CheckpointInput struct {
 	Verification []Verify
 	Artifacts    []string
 	Processed    []string
+	// Verdict and Findings are spec B5: a reviewer/ui_reviewer agent with a
+	// workflow run must set Verdict on a completed checkpoint; every other
+	// role is refused if it sets one at all (isReviewerRole/validVerdict
+	// below own the exact rules). Findings reuses workflow.Finding rather
+	// than defining a second copy.
+	Verdict  string
+	Findings []workflow.Finding
 	// RequestID is I11's idempotency key, scoped to the calling MCP session:
 	// a repeated (session, RequestID) pair replays the first checkpoint's
 	// result instead of writing a second one. Empty means "no idempotency,
@@ -119,6 +127,81 @@ func verifyOK(prior, now []Verify) string {
 	}
 	return fmt.Sprintf(`%s %d verification %s given, but none has a non-empty "cmd" -- each entry needs {"cmd": "...", "ok": true}.`,
 		verifyMissing, len(all), plural)
+}
+
+// workflowRun is the slice of an agent's current workflow_runs row (spec B1)
+// that checkpoint gating and sibling-closing need. P9's engine (not built
+// yet) owns the row's full lifecycle (state, sha, ended_at, auto_retries);
+// P8 only reads it and writes verdict/findings/sha onto it.
+type workflowRun struct {
+	ID, WorkflowID, StepID, Role, State, SHA string
+	Round                                    int
+}
+
+// workflowRunFor returns agentID's latest workflow_runs row (highest round,
+// then most recent), or ok=false if it has none -- a legacy agent, or (until
+// P9 wires the engine) a workflow agent no test has seeded a row for.
+func (s *Store) workflowRunFor(ctx context.Context, tx *sql.Tx, agentID string) (workflowRun, bool, error) {
+	var r workflowRun
+	err := tx.QueryRowContext(ctx, `SELECT id, workflow_id, step_id, round, role, state, COALESCE(sha, '')
+		FROM workflow_runs WHERE agent_id = ? ORDER BY round DESC, created_at DESC LIMIT 1`, agentID).
+		Scan(&r.ID, &r.WorkflowID, &r.StepID, &r.Round, &r.Role, &r.State, &r.SHA)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workflowRun{}, false, nil
+	}
+	if err != nil {
+		return workflowRun{}, false, err
+	}
+	return r, true, nil
+}
+
+// stepFor returns the step named stepID out of spec (nil-safe), or ok=false.
+func stepFor(spec *workflow.Spec, stepID string) (workflow.Step, bool) {
+	if spec == nil {
+		return workflow.Step{}, false
+	}
+	for _, st := range spec.Steps {
+		if st.ID == stepID {
+			return st, true
+		}
+	}
+	return workflow.Step{}, false
+}
+
+// isReviewerRole reports whether r is one of the two roles that review a
+// workflow step (spec B5: only these may ever set a verdict).
+func isReviewerRole(r Role) bool { return r == RoleReviewer || r == RoleUIReviewer }
+
+// validVerdict reports whether v is one of the three verdicts a reviewer may
+// record.
+func validVerdict(v workflow.Verdict) bool {
+	return v == workflow.VerdictPass || v == workflow.VerdictChangesRequested || v == workflow.VerdictBlocked
+}
+
+// hasMajorOrCritical reports whether any finding is severity "major" or
+// "critical" -- a pass verdict can't carry either (spec B5).
+func hasMajorOrCritical(fs []workflow.Finding) bool {
+	for _, f := range fs {
+		if f.Severity == "major" || f.Severity == "critical" {
+			return true
+		}
+	}
+	return false
+}
+
+// applyGates enforces the completed step's declared gates (spec B5) for an
+// agent with a workflow run -- the replacement for verifyOK on such agents.
+// Unit 8.1 only wires the dispatch (no gate does anything yet, so a step
+// that only declares gates has nothing to check until a later unit fills
+// its case in); 8.4 adds tdd/verify, 8.5 adds
+// commit/artifact:design/artifact:notes.
+func (s *Store) applyGates(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput, attempt int) error {
+	step, _ := stepFor(it.Workflow, run.StepID)
+	for _, g := range step.Gates {
+		switch g {
+		}
+	}
+	return nil
 }
 
 // requiredArtifactKind returns the artifact kind a root item's completed
@@ -411,6 +494,14 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
+		// Only a reviewer/ui_reviewer ever sets a verdict (spec B5), on any
+		// checkpoint kind -- checked up front, independent of workflow-run
+		// gating below, so a misuse is refused even for a legacy agent.
+		verdict := workflow.Verdict(in.Verdict)
+		if verdict != "" && !isReviewerRole(a.Role) {
+			return &items.Error{Code: items.CodeBadRequest, Message: "Only reviewers set a verdict."}
+		}
+
 		// completed is the universal session-terminal checkpoint (every role
 		// ends its assignment with completed or failed -- terminalCheckpointKind
 		// reads it to close the session cleanly), so it's valid on any item
@@ -428,7 +519,34 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					itemTypePlural(it.Type))}
 		}
 
-		if in.Kind == CompletedCkp && it.TddExempt == "" {
+		var run workflowRun
+		var hasRun bool
+		if in.Kind == CompletedCkp {
+			run, hasRun, err = s.workflowRunFor(ctx, tx, a.ID)
+			if err != nil {
+				return err
+			}
+		}
+		if in.Kind == CompletedCkp && hasRun {
+			// Gates replace verifyOK for an agent with a workflow run (spec
+			// B5): the step's own declared gates decide, not a blanket
+			// "some verification was recorded". Reviewer/ui_reviewer steps
+			// also require a verdict here, independent of any declared
+			// gates (templates never put a Gate on a review step).
+			if isReviewerRole(a.Role) {
+				if !validVerdict(verdict) {
+					return &items.Error{Code: items.CodeBadRequest,
+						Message: "Reviewers must complete with verdict: pass, changes_requested or blocked."}
+				}
+				if verdict == workflow.VerdictPass && hasMajorOrCritical(in.Findings) {
+					return &items.Error{Code: items.CodeBadRequest,
+						Message: "verdict pass can't carry critical or major findings."}
+				}
+			}
+			if err := s.applyGates(ctx, tx, it, run, a, in, ses.Attempt); err != nil {
+				return err
+			}
+		} else if in.Kind == CompletedCkp && it.TddExempt == "" {
 			gated := slices.Contains(gatedRoles, a.Role)
 			if !gated && a.Role == RoleOrchestrator && s.changedFiles(ctx, in.Git) > 0 {
 				gated = true
@@ -463,14 +581,21 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		now := s.Now()
 		if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind,
 			attempt, resolution, summary, next_json, blockers_json, git_json, verify_json, artifacts_json,
-			processed_json, daemon_written, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+			processed_json, verdict, findings_json, daemon_written, created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
 			ckpID, sessionID, a.ID, it.ID, string(in.Kind), ses.Attempt, nullIf(in.Resolution), in.Summary,
 			jsonArray(in.Next), jsonArray(in.Blockers), jsonArray(in.Git), jsonArray(in.Verification),
-			jsonArray(in.Artifacts), jsonArray(in.Processed), db.Millis(now)); err != nil {
+			jsonArray(in.Artifacts), jsonArray(in.Processed), nullIf(in.Verdict), jsonArray(in.Findings),
+			db.Millis(now)); err != nil {
 			return err
 		}
 		out.CheckpointID = ckpID
+		if hasRun && verdict != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET verdict = ?, findings_json = ?
+				WHERE id = ?`, string(verdict), jsonArray(in.Findings), run.ID); err != nil {
+				return err
+			}
+		}
 		if err := s.onPausingCheckpoint(ctx, tx, ses, in.Kind); err != nil {
 			return err
 		}
