@@ -26,13 +26,20 @@ var schemaFS embed.FS
 
 type DB struct{ *sql.DB }
 
+// dsnPragmas is the query-string suffix that configures every connection's
+// pragmas: foreign key enforcement, WAL journaling, a busy timeout, NORMAL
+// synchronous (safe under WAL), and _txlock=immediate, which makes every
+// transaction take the write lock up front so concurrent writers wait on
+// the busy timeout instead of failing on lock upgrade. Tests that open a raw
+// connection to build a fixture at an older schema version (see
+// migration_helpers_test.go) reuse this so they see the same pragmas as a
+// real Open.
+const dsnPragmas = "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)" +
+	"&_pragma=synchronous(NORMAL)&_txlock=immediate"
+
 // Open opens (creating if needed) and migrates the database at path.
-// _txlock=immediate makes every transaction take the write lock up front, so
-// concurrent writers wait on busy_timeout instead of failing on lock upgrade.
 func Open(ctx context.Context, path string) (*DB, error) {
-	dsn := "file:" + path +
-		"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)" +
-		"&_pragma=synchronous(NORMAL)&_txlock=immediate"
+	dsn := "file:" + path + dsnPragmas
 	raw, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -98,9 +105,7 @@ func migrationFiles() ([]string, error) {
 // applyMigrations runs files[from:to] on conn in order, each in its own
 // transaction, advancing PRAGMA user_version as it goes. Foreign keys are
 // disabled for the duration so table recreations (e.g. 0003_add_chore.sql)
-// can drop and rename tables without foreign key violations. Tests use this
-// (via migrationFiles) to build fixtures at an older schema version by
-// stopping early, then continue migrating from there.
+// can drop and rename tables without foreign key violations.
 func applyMigrations(ctx context.Context, conn *sql.Conn, files []string, from, to int) error {
 	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
 		return err
