@@ -5,10 +5,10 @@
 - Changes:
   - Dropped `scripts/tests/` (upstream's own test suite; not needed at
     runtime).
-  - `SKILL.md`: every `scripts/search.py` invocation used
-    `${CLAUDE_PLUGIN_ROOT}/.claude/skills/ui-ux-pro-max/scripts/search.py`,
-    a path that only resolves under a Claude Code plugin install. Rewrote
-    every occurrence to `scripts/search.py`, a path relative to this
-    skill's own directory, and reworded the surrounding note accordingly.
+  - `SKILL.md`: every `scripts/search.py` invocation used a Claude Code
+    plugin-root environment variable expansion in its path, which only
+    resolves under a Claude Code plugin install. Rewrote every occurrence
+    to `scripts/search.py`, a path relative to this skill's own directory,
+    and reworded the surrounding note accordingly.
   - Kept `data/` in full, including each CSV's own source/provenance
     columns.
