@@ -49,7 +49,15 @@ const (
 )
 
 type daemonConfig struct {
-	Home       string
+	Home     string
+	UserHome string // real user's HOME (C1); "" means os.UserHomeDir(). Every
+	// cmd/swarm test that opens a daemon MUST pass a temp dir here: the daemon's
+	// startup skills refresh writes into UserHome-relative per-kind skill roots
+	// (~/.claude/skills, ...), and a test that leaves this empty relinks/recopies
+	// the real operator's live skill roots. This already happened once (see
+	// docs/specs/2026-09-24-self-contained-tasks-and-role-skills.md's P1 fix
+	// notes); TestMain in main_test.go is the last-resort net for a test that
+	// forgets.
 	Port       int
 	Background bool        // start the KB, repo, catalog and prune loops
 	ScanRoot   string      // folder scanned for repos; "" means the user's home
@@ -170,7 +178,10 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		d.Close()
 		return nil, err
 	}
-	userHome, _ := os.UserHomeDir()
+	userHome := cfg.UserHome
+	if userHome == "" {
+		userHome, _ = os.UserHomeDir()
+	}
 	if cfg.ScanRoot == "" {
 		cfg.ScanRoot = userHome
 	}
@@ -224,6 +235,12 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	// Never fatal: a skills problem here must not stop the daemon starting.
 	// cfg.Home, not userHome: a custom --home/SWARM_HOME must not split where
 	// this writes from where WriteSkills/CheckSkills/the claude adapter look.
+	//
+	// C1: SyncAndRefreshSkills itself only re-links (touches UserHome-relative
+	// paths like ~/.claude/skills) when cfg.Home is the canonical default swarm
+	// home for userHome; otherwise it still syncs the shared copy under
+	// cfg.Home but leaves every kind's own skills root alone. See its doc
+	// comment for why.
 	skillsCfg := install.Config{UserHome: userHome, Home: cfg.Home}
 	if skillErrs, err := install.SyncAndRefreshSkills(skillsCfg); err != nil {
 		cfg.Log("sync skills: %v", err)

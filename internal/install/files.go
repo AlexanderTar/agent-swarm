@@ -13,14 +13,19 @@ import (
 // WriteIfChanged writes body to path atomically, creating parent folders, and only
 // when the bytes differ from what is already there. Idempotence is a Global
 // Constraint: swarm install runs many times and must not churn mtimes or modes.
-// When the bytes already match but the mode has drifted (e.g. a synced
-// skill's exec bit was reset by a tool that doesn't preserve it), the mode is
-// still corrected: content-equal is not the same as fully in sync.
+//
+// Review round 2, I1: this used to also correct a drifted mode on
+// content-equal bytes, but every caller shares this one function, including
+// EditJSON and the codex/agy/cursor/muse writers that rewrite a *user's own*
+// config file (~/.cursor/mcp.json, ~/.codex/config.toml, ...) with a fixed
+// mode argument. That reset a file the operator had deliberately chmod'd
+// (0600, say) back to the caller's mode on every single content-equal
+// no-op install, and reported wrote=true for what should have been a true
+// no-op. Content-equal is a true no-op again; only the skills-sync paths
+// (writeSkillFileSynced, called from syncSkills and copyTreeSynced) still
+// self-heal a drifted mode, since those own the file end to end.
 func WriteIfChanged(path string, body []byte, mode os.FileMode) (bool, error) {
 	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, body) {
-		if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != mode {
-			return true, os.Chmod(path, mode)
-		}
 		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

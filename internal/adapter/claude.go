@@ -102,10 +102,12 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 // direct, zero-delay reproduction -- see
 // docs/specs/2026-09-23-claude-mcp-startup-race.md; it is not a startup
 // race). It writes a project-scope .mcp.json, and links every registered
-// skill (A1, unit 1.3) into the session's own scratch cwd -- always empty at
-// spawn, never a real git worktree (internal/runtime/agents.go creates it
-// fresh right before Launch/Resume) -- so both become visible without
-// re-admitting the excluded user scope (and with it ~/.claude/CLAUDE.md,
+// skill (A1, unit 1.3) into the session's own scratch cwd -- swarm's own
+// scratch dir (s.Home/work/<agent-name>), never a real git worktree the user
+// touches (internal/runtime/agents.go MkdirAlls it before Launch/Resume,
+// review round 2, M2: kept across attempts, not recreated) -- so both become
+// visible without re-admitting the excluded user scope (and with it
+// ~/.claude/CLAUDE.md,
 // which --setting-sources project,local exists to keep out). Symlinking
 // (rather than copying every skill's files, as before) matches WriteSkills'
 // own choice for Claude and avoids re-copying the vendored skills' data on
@@ -131,13 +133,14 @@ func writeProjectSwarmConfig(cwd, swarmHome string, mcp []byte) error {
 
 // adoptPreExistingSkills removes any non-symlink entry already at root.
 // Everything under a session's scratch cwd is swarm's own by construction
-// (internal/runtime/agents.go creates it fresh right before Launch/Resume,
-// never a real git worktree the user touches), so a real directory there --
-// left by an older, copy-based writeProjectSwarmConfig, say -- is never the
-// user's own same-named skill the way it would be under a real, shared skills
-// root; it is simply stale and must be replaced. A symlink is left alone:
-// LinkSkills' own idempotency check (and its user-owned check, belt and
-// braces) handles it.
+// (internal/runtime/agents.go MkdirAlls s.Home/work/<agent-name> before
+// Launch/Resume and keeps it across attempts, never a real git worktree the
+// user touches -- review round 2, M2), so a real directory there -- left by
+// an older, copy-based writeProjectSwarmConfig, say, or a previous attempt's
+// run -- is never the user's own same-named skill the way it would be under a
+// real, shared skills root; it is simply stale and must be replaced. A
+// symlink is left alone: LinkSkills' own idempotency check (and its
+// user-owned check, belt and braces) handles it.
 func adoptPreExistingSkills(root string) error {
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {

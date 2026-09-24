@@ -1,7 +1,9 @@
 package install
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -193,11 +195,21 @@ func SkillsHome(home string) (string, error) {
 
 // isSwarmOwned reports whether dst is safe for WriteSkills/SyncSkills/Uninstall
 // to create, replace or remove: nothing is there yet, it is a symlink whose
-// target resolves inside skillsHome, it is a directory carrying ManagedMarker,
-// or it is a pre-A1 real directory (isPreA1CoreSkillDir). Anything else (a
-// real file, or a plain directory with no marker that isn't a recognized
-// pre-A1 skill dir) is the user's own same-named skill.
-func isSwarmOwned(dst, skillsHome string) (bool, error) {
+// target resolves inside skillsHome, or it is a directory carrying a
+// ManagedMarker that names this exact skillsHome (review round 2, C1 #3: the
+// marker records which swarm home wrote it, so a marker naming a *different*
+// home is never treated as ours -- that is what let a daemon with a
+// dev/test-only home relink or recopy skill roots a different, real
+// installation actually owns).
+//
+// adopt widens ownership for the two cases that only an explicit, user-visible
+// action (`swarm install`, the per-spawn Claude linker, uninstall) may adopt,
+// never an automatic background refresh (RefreshSkillLinks, review round 2,
+// C1 #3 / I2): a marker with no home recorded at all (an empty, pre-this-fix
+// marker) and a marker-less pre-A1 directory (isPreA1CoreSkillDir). With
+// adopt=false, both read as foreign (not owned) so an implicit daemon-startup
+// refresh never mutates them.
+func isSwarmOwned(dst, skillsHome string, adopt bool) (bool, error) {
 	fi, err := os.Lstat(dst)
 	if os.IsNotExist(err) {
 		return true, nil
@@ -217,8 +229,19 @@ func isSwarmOwned(dst, skillsHome string) (bool, error) {
 		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
 	}
 	if fi.IsDir() {
-		if _, err := os.Stat(filepath.Join(dst, ManagedMarker)); err == nil {
-			return true, nil
+		body, err := os.ReadFile(filepath.Join(dst, ManagedMarker))
+		if err == nil {
+			content := strings.TrimSpace(string(body))
+			if content == skillsHome {
+				return true, nil
+			}
+			if content == "" {
+				return adopt, nil // pre-this-fix marker: no home recorded
+			}
+			return false, nil // marker names a different swarm home
+		}
+		if !adopt {
+			return false, nil
 		}
 		return isPreA1CoreSkillDir(dst), nil
 	}
@@ -232,6 +255,12 @@ func isSwarmOwned(dst, skillsHome string) (bool, error) {
 // other name could be a pre-A1 install). Recognizing and adopting it (rather
 // than treating it as user-owned) means an operator who installed before A1
 // does not have their own v2 skills frozen out of every later sync or repair.
+//
+// Review round 2, I2: matching the directory's own frontmatter `name:` field
+// was not enough -- a user's own single-file skill with the same name and a
+// `name:` line got silently adopted (removed, overwritten or later
+// uninstalled) too. dst is now adopted only when its SKILL.md is byte-for-byte
+// a body swarm actually shipped for that name (preA1SkillBodyHashes).
 func isPreA1CoreSkillDir(dst string) bool {
 	name := filepath.Base(dst)
 	if name != "swarm" && name != "swarm-orchestrator" {
@@ -245,7 +274,8 @@ func isPreA1CoreSkillDir(dst string) bool {
 	if err != nil {
 		return false
 	}
-	return frontmatterField(body, "name") == name
+	sum := sha256.Sum256(body)
+	return preA1SkillBodyHashes[hex.EncodeToString(sum[:])]
 }
 
 // applyLink makes dst reflect src under mode and reports whether it changed
@@ -285,8 +315,30 @@ func applyLink(dst, src string, mode LinkMode) (bool, error) {
 	return copyTreeSynced(src, dst)
 }
 
-// copyTreeSynced mirrors src into dst with WriteIfChanged per file (keeping
-// each file's own mode, unlike the embed which loses exec bits) and prunes
+// writeSkillFileSynced is WriteIfChanged plus a mode self-heal: a synced
+// skill's exec bit (or any file's mode) can drift out from under swarm -- a
+// tool that doesn't preserve it, a manual edit -- even when the bytes still
+// match, and only the skills-sync paths (syncSkills, copyTreeSynced) need
+// that self-heal. Review round 2, I1: every *other* WriteIfChanged caller
+// writes into a user's own config file (~/.cursor/mcp.json, ~/.codex/config.toml,
+// ...), where resetting a mode the user deliberately set (chmod 600, say) on a
+// content-equal no-op is a bug, not a repair -- so WriteIfChanged itself went
+// back to a pure content-diff no-op, and only this skills-only wrapper still
+// fixes mode drift.
+func writeSkillFileSynced(path string, body []byte, mode os.FileMode) (bool, error) {
+	wrote, err := WriteIfChanged(path, body, mode)
+	if err != nil || wrote {
+		return wrote, err
+	}
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != mode {
+		return true, os.Chmod(path, mode)
+	}
+	return false, nil
+}
+
+// copyTreeSynced mirrors src into dst with writeSkillFileSynced per file
+// (keeping each file's own mode, unlike the embed which loses exec bits, and
+// self-healing a drifted mode even on content-equal bytes) and prunes
 // anything in dst that is no longer present in src. It reports whether
 // anything changed.
 func copyTreeSynced(src, dst string) (bool, error) {
@@ -316,7 +368,7 @@ func copyTreeSynced(src, dst string) (bool, error) {
 		if fi, err := d.Info(); err == nil {
 			mode = fi.Mode().Perm()
 		}
-		wrote, err := WriteIfChanged(target, body, mode)
+		wrote, err := writeSkillFileSynced(target, body, mode)
 		if err != nil {
 			return err
 		}
@@ -338,14 +390,17 @@ func copyTreeSynced(src, dst string) (bool, error) {
 // it exposes every registered skill under root, pointed at skillsHome/<name>
 // (A1), and prunes a swarm-owned entry under root whose name is no longer
 // registered (a skill that was renamed or retired). An entry that is not
-// swarm-owned is left untouched and reported in skipped.
-func linkSkills(root, skillsHome string, mode LinkMode) (changed, skipped []string, err error) {
+// swarm-owned is left untouched and reported in skipped. adopt is
+// isSwarmOwned's adopt (review round 2, C1 #3 / I2): true for an explicit
+// action (WriteSkills, LinkSkills), false for the daemon's own automatic
+// startup refresh (RefreshSkillLinks).
+func linkSkills(root, skillsHome string, mode LinkMode, adopt bool) (changed, skipped []string, err error) {
 	registered := make(map[string]bool, len(SkillNames()))
 	for _, name := range SkillNames() {
 		registered[name] = true
 		dst := filepath.Join(root, name)
 		src := filepath.Join(skillsHome, name)
-		owned, err := isSwarmOwned(dst, skillsHome)
+		owned, err := isSwarmOwned(dst, skillsHome, adopt)
 		if err != nil {
 			return changed, skipped, err
 		}
@@ -361,7 +416,7 @@ func linkSkills(root, skillsHome string, mode LinkMode) (changed, skipped []stri
 			changed = append(changed, dst)
 		}
 	}
-	pruned, err := pruneUnregistered(root, skillsHome, registered)
+	pruned, err := pruneUnregistered(root, skillsHome, registered, adopt)
 	if err != nil {
 		return changed, skipped, err
 	}
@@ -371,7 +426,7 @@ func linkSkills(root, skillsHome string, mode LinkMode) (changed, skipped []stri
 // pruneUnregistered removes a swarm-owned entry directly under root whose
 // name is not in registered (a skill that was renamed or retired since it was
 // last installed there). A user-owned same-named leftover is never touched.
-func pruneUnregistered(root, skillsHome string, registered map[string]bool) ([]string, error) {
+func pruneUnregistered(root, skillsHome string, registered map[string]bool, adopt bool) ([]string, error) {
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -385,7 +440,7 @@ func pruneUnregistered(root, skillsHome string, registered map[string]bool) ([]s
 			continue
 		}
 		dst := filepath.Join(root, e.Name())
-		owned, err := isSwarmOwned(dst, skillsHome)
+		owned, err := isSwarmOwned(dst, skillsHome, adopt)
 		if err != nil {
 			return removed, err
 		}
@@ -402,9 +457,11 @@ func pruneUnregistered(root, skillsHome string, registered map[string]bool) ([]s
 
 // LinkSkills exposes every registered skill under root, pointed at
 // skillsHome/<name> (A1). An entry that is not swarm-owned (isSwarmOwned) is
-// left untouched and reported in skipped rather than overwritten.
+// left untouched and reported in skipped rather than overwritten. This is an
+// explicit action (the per-spawn Claude linker), so a pre-this-fix empty
+// marker or a byte-matching pre-A1 directory is adopted (adopt=true).
 func LinkSkills(root, skillsHome string, mode LinkMode) (skipped []string, err error) {
-	_, skipped, err = linkSkills(root, skillsHome, mode)
+	_, skipped, err = linkSkills(root, skillsHome, mode, true)
 	return skipped, err
 }
 
@@ -413,7 +470,8 @@ func LinkSkills(root, skillsHome string, mode LinkMode) (skipped []string, err e
 // syncs that shared copy first, so a fresh install has real content to link to
 // even before the daemon's first SyncSkills. changed lists the skills it
 // created or replaced; skipped lists ones left alone because the user already
-// owns a same-named skill there.
+// owns a same-named skill there. This is `swarm install`'s own explicit
+// write, so it adopts (adopt=true, review round 2, C1 #3 / I2).
 func WriteSkills(c Config, k Kind) (changed, skipped []string, err error) {
 	if _, err := SyncSkills(c.Home); err != nil {
 		return nil, nil, err
@@ -426,7 +484,7 @@ func WriteSkills(c Config, k Kind) (changed, skipped []string, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return linkSkills(root, skillsHome, skillLinkMode[k])
+	return linkSkills(root, skillsHome, skillLinkMode[k], true)
 }
 
 // RefreshSkillLinks re-links every kind whose skills root already holds at
@@ -437,6 +495,13 @@ func WriteSkills(c Config, k Kind) (changed, skipped []string, err error) {
 // re-run. A kind that was never installed (no swarm-owned entry yet) is left
 // alone: it is never silently created here. Per-kind errors are returned in
 // the map rather than aborting the rest.
+//
+// This is the daemon's own automatic, unattended startup refresh, so it never
+// adopts (adopt=false, review round 2, C1 #3 / I2): a pre-this-fix empty
+// marker or a marker-less pre-A1 directory reads as foreign here, even though
+// the same entry would be adopted by an explicit `swarm install`. Only
+// SyncAndRefreshSkills' own Home-vs-userHome gate decides whether this runs
+// at all; this function has no way to tell a canonical home from any other.
 func RefreshSkillLinks(c Config) map[Kind]error {
 	errs := map[Kind]error{}
 	skillsHome, err := SkillsHome(c.Home)
@@ -451,7 +516,7 @@ func RefreshSkillLinks(c Config) map[Kind]error {
 		if root == "" || !anyAlreadyInstalled(root, skillsHome) {
 			continue
 		}
-		if _, _, err := linkSkills(root, skillsHome, skillLinkMode[k]); err != nil {
+		if _, _, err := linkSkills(root, skillsHome, skillLinkMode[k], false); err != nil {
 			errs[k] = err
 		}
 	}
@@ -461,14 +526,15 @@ func RefreshSkillLinks(c Config) map[Kind]error {
 // anyAlreadyInstalled reports whether root already holds at least one
 // swarm-owned registered skill entry -- the signal that WriteSkills has run
 // for this kind before, distinct from isSwarmOwned's own "nothing there yet"
-// case (which must not count as "installed").
+// case (which must not count as "installed"). Called only from
+// RefreshSkillLinks, so adopt=false throughout: see its doc comment.
 func anyAlreadyInstalled(root, skillsHome string) bool {
 	for _, name := range SkillNames() {
 		dst := filepath.Join(root, name)
 		if _, err := os.Lstat(dst); err != nil {
 			continue
 		}
-		if owned, err := isSwarmOwned(dst, skillsHome); err == nil && owned {
+		if owned, err := isSwarmOwned(dst, skillsHome, false); err == nil && owned {
 			return true
 		}
 	}
@@ -481,9 +547,23 @@ func anyAlreadyInstalled(root, skillsHome string) bool {
 // syncErr means the shared copy itself failed and skillErrs is nil; a
 // per-kind refresh error is returned in skillErrs instead, since one kind's
 // problem must never mask another's or stop the daemon starting.
+//
+// Review round 2, C1 #2: RefreshSkillLinks touches c.UserHome-relative paths
+// (~/.claude/skills, ...), not c.Home. The shared copy under c.Home is always
+// synced -- that is safe for any Home -- but the per-kind refresh only runs
+// when c.Home IS the canonical default swarm home for c.UserHome
+// (filepath.Join(c.UserHome, ".swarm")). Any other Home (a temp dir, `--home
+// ~/.swarm-dev`, every daemon test) means "this daemon's own skills" and "this
+// user's real, already-installed skills" are deliberately different things,
+// and only an explicit `swarm install` may touch the latter. This is the fix
+// for the live-machine incident: a daemon opened with a temp/dev Home used to
+// relink and recopy the real UserHome's skill roots regardless.
 func SyncAndRefreshSkills(c Config) (skillErrs map[Kind]error, syncErr error) {
 	if _, err := SyncSkills(c.Home); err != nil {
 		return nil, err
+	}
+	if filepath.Clean(c.Home) != filepath.Join(c.UserHome, ".swarm") {
+		return nil, nil
 	}
 	return RefreshSkillLinks(c), nil
 }
@@ -540,7 +620,7 @@ func syncSkills(fsys fs.FS, dstRoot string) ([]string, error) {
 			if err != nil {
 				return err
 			}
-			wrote, err := WriteIfChanged(target, body, scriptsFileMode(rel))
+			wrote, err := writeSkillFileSynced(target, body, scriptsFileMode(rel))
 			if err != nil {
 				return err
 			}
@@ -552,8 +632,16 @@ func syncSkills(fsys fs.FS, dstRoot string) ([]string, error) {
 		if err != nil {
 			return changed, err
 		}
+		// The marker's content is dstRoot itself (review round 2, C1 #3): the
+		// skills-home path that wrote it, so isSwarmOwned can tell "our home
+		// wrote this" from "some other swarm home wrote this" instead of
+		// trusting any marker file's mere presence. Copy mode copies this
+		// marker verbatim into every kind's own root (copyTreeSynced walks
+		// src's whole tree, and the marker is a real file in it), so the
+		// value written here is what every Copy-mode kind's marker ends up
+		// carrying too.
 		marker := filepath.Join(dst, ManagedMarker)
-		wrote, err := WriteIfChanged(marker, []byte{}, 0o644)
+		wrote, err := writeSkillFileSynced(marker, []byte(dstRoot), 0o644)
 		if err != nil {
 			return changed, err
 		}
@@ -604,7 +692,11 @@ func SyncSkills(home string) ([]string, error) {
 // registered skill must be reachable under k's own skills root, whether that
 // is v2's own symlink/copy or a same-named skill the user made themselves.
 // The latter is reported (not failed): swarm's own copy simply is not
-// installed there.
+// installed there. This is a read-only report, not a write, but it uses
+// adopt=false throughout (review round 2, C1 #3 / I2) to stay consistent with
+// the daemon's own refresh: a pre-this-fix empty marker or a pre-A1 directory
+// reads as user-owned here until an explicit `swarm install` upgrades it,
+// rather than doctor silently disagreeing with what the daemon would do.
 func CheckSkills(c Config, k Kind) Check {
 	name := k.Display() + " skills"
 	root := c.SkillsDir(k)
@@ -618,7 +710,7 @@ func CheckSkills(c Config, k Kind) Check {
 		if _, err := os.Stat(filepath.Join(dst, "SKILL.md")); err != nil {
 			return Check{name, false, "Missing " + dst + ". Run swarm install."}
 		}
-		owned, err := isSwarmOwned(dst, skillsHome)
+		owned, err := isSwarmOwned(dst, skillsHome, false)
 		if err != nil {
 			return Check{name, false, err.Error()}
 		}
