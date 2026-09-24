@@ -25,10 +25,10 @@ func TestWriteClaudeInstallsSkillsAndTouchesNoLocalFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changed) != 2 {
-		t.Fatalf("changed = %v, want the two skill files only", changed)
+	if len(changed) != len(install.SkillNames()) {
+		t.Fatalf("changed = %v, want one skill file per registered skill", changed)
 	}
-	for _, name := range install.SkillNames {
+	for _, name := range install.SkillNames() {
 		if _, err := os.Stat(c.Claude("skills", name, "SKILL.md")); err != nil {
 			t.Error(err)
 		}

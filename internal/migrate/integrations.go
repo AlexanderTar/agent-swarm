@@ -83,7 +83,7 @@ func (r *Runner) newArtifactPaths() []string {
 	c := r.Cfg
 	paths := []string{install.PlistPath(c), c.LocalBin()}
 	for _, k := range install.Kinds {
-		for _, name := range install.SkillNames {
+		for _, name := range install.SkillNames() {
 			paths = append(paths, filepath.Join(c.SkillsDir(k), name))
 		}
 	}

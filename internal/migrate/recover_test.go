@@ -490,7 +490,7 @@ func TestInstallRemovesAllFreshSkillDirsAndLocalBinOnRollback(t *testing.T) {
 	env.Runner.DoInstall = func(context.Context) error {
 		env.Installed++
 		for _, k := range install.Kinds {
-			for _, name := range install.SkillNames {
+			for _, name := range install.SkillNames() {
 				dir := filepath.Join(env.Cfg.SkillsDir(k), name)
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					return err
@@ -513,8 +513,8 @@ func TestInstallRemovesAllFreshSkillDirsAndLocalBinOnRollback(t *testing.T) {
 	if err := env.Runner.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(created) != len(install.Kinds)*len(install.SkillNames)+1 {
-		t.Fatalf("test setup created %d paths, want %d", len(created), len(install.Kinds)*len(install.SkillNames)+1)
+	if len(created) != len(install.Kinds)*len(install.SkillNames())+1 {
+		t.Fatalf("test setup created %d paths, want %d", len(created), len(install.Kinds)*len(install.SkillNames())+1)
 	}
 	if err := env.Runner.Rollback(context.Background()); err != nil {
 		t.Fatal(err)

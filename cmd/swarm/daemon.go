@@ -28,6 +28,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/hook"
 	"github.com/AlexanderTar/agent-swarm/internal/httpapi"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/mcpserver"
@@ -214,6 +215,13 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 			d.Close()
 			return nil, err
 		}
+	}
+
+	// A1: refresh ~/.swarm/skills from the binary's embedded tree on every start,
+	// so upgrading the binary alone (no `swarm install` re-run) still picks up
+	// skill changes. Never fatal: a sync failure here must not stop the daemon.
+	if _, err := install.SyncSkills(userHome); err != nil {
+		cfg.Log("sync skills: %v", err)
 	}
 
 	it := &items.Store{DB: d, Events: ev, Now: now}

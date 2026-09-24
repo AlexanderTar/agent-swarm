@@ -73,7 +73,9 @@ install-app: app
 app:
 	apps/menubar/scripts/bundle.sh
 
-# The embedded skill copies must match the canonical skills/ files (§18, §21.1).
+# The embedded skill mirror must match the canonical skills/ tree byte-for-byte
+# (§18, §21.1, A1). Plain cp -R rather than rsync: rsync is not guaranteed to be
+# installed on every dev/CI machine.
 skills-sync:
-	cp skills/swarm/SKILL.md internal/install/skills/swarm/SKILL.md
-	cp skills/swarm-orchestrator/SKILL.md internal/install/skills/swarm-orchestrator/SKILL.md
+	rm -rf internal/install/skills
+	cp -R skills internal/install/skills

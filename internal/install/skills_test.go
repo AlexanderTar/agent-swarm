@@ -1,13 +1,40 @@
 package install_test
 
 import (
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/install"
 )
+
+// parseFrontmatter extracts the "key: value" lines between the first pair of
+// "---" fence lines. It is a test-local, from-scratch parse (not the
+// production one), so a registry bug in Skills() can't hide behind a shared
+// helper.
+func parseFrontmatter(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+	lines := strings.Split(string(body), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		t.Fatalf("no frontmatter fence: %.40q", body)
+	}
+	out := map[string]string{}
+	for _, l := range lines[1:] {
+		if strings.TrimSpace(l) == "---" {
+			return out
+		}
+		k, v, ok := strings.Cut(l, ":")
+		if ok {
+			out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	t.Fatalf("frontmatter fence never closed: %.40q", body)
+	return nil
+}
 
 func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
 	agent := string(install.SkillBody("swarm"))
@@ -45,6 +72,131 @@ func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
 	}
 }
 
+// A1: the registry is derived from the embedded tree, not a hand-kept list. Every
+// SKILL.md's frontmatter name must match its directory, every description must be
+// non-empty, and the canonical trio must be present.
+func TestSkillsRegistryMatchesTree(t *testing.T) {
+	sk, err := install.Skills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, s := range sk {
+		if names[s.Name] {
+			t.Fatalf("duplicate skill name %q", s.Name)
+		}
+		names[s.Name] = true
+		body, err := fs.ReadFile(install.SkillFS(), path.Join(s.Dir, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("%s: %v", s.Name, err)
+		}
+		fm := parseFrontmatter(t, body)
+		if fm["name"] != s.Name || path.Base(s.Dir) != s.Name {
+			t.Errorf("%s: frontmatter/dir mismatch (frontmatter name %q, dir %q)", s.Dir, fm["name"], s.Dir)
+		}
+		if strings.TrimSpace(fm["description"]) == "" {
+			t.Errorf("%s: empty description", s.Name)
+		}
+	}
+	for _, want := range []string{"swarm", "swarm-orchestrator", "swarm-batching"} {
+		if !names[want] {
+			t.Errorf("missing %s", want)
+		}
+	}
+}
+
+// A1: SyncSkills extracts nested files (not just SKILL.md), marks each skill dir
+// managed, and prunes files that are no longer part of the embed.
+func TestSyncSkillsWritesNestedFilesAndPrunes(t *testing.T) {
+	home := t.TempDir()
+	if _, err := install.SyncSkills(home); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(home, ".swarm", "skills", "swarm", install.ManagedMarker)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("marker: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(home, ".swarm", "skills", "swarm", "SKILL.md"))
+	if err != nil || !strings.HasPrefix(string(body), "---\n") {
+		t.Fatalf("SKILL.md: body=%.20q err=%v", body, err)
+	}
+	stale := filepath.Join(home, ".swarm", "skills", "swarm", "stale.md")
+	if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := install.SyncSkills(home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale file survived sync: %v", err)
+	}
+	// Idempotent: a second sync with nothing stale changes nothing.
+	changed, err := install.SyncSkills(home)
+	if err != nil || len(changed) != 0 {
+		t.Errorf("second sync changed %v, %v; want a no-op", changed, err)
+	}
+}
+
+// A1: the embedded mirror under internal/install/skills must match the canonical
+// skills/ tree byte-for-byte (make skills-sync keeps them in sync).
+func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) {
+	canonicalRoot := filepath.Join("..", "..", "skills")
+	var canonical []string
+	if err := filepath.WalkDir(canonicalRoot, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(canonicalRoot, p)
+		if err != nil {
+			return err
+		}
+		canonical = append(canonical, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var embedded []string
+	if err := fs.WalkDir(install.SkillFS(), ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		embedded = append(embedded, p)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sort.Strings(canonical)
+	sort.Strings(embedded)
+	if len(canonical) != len(embedded) {
+		t.Fatalf("file count differs: canonical %d, embedded %d\ncanonical: %v\nembedded: %v",
+			len(canonical), len(embedded), canonical, embedded)
+	}
+	for i, rel := range canonical {
+		if embedded[i] != rel {
+			t.Fatalf("file set differs at %d: canonical %q, embedded %q", i, rel, embedded[i])
+		}
+		want, err := os.ReadFile(filepath.Join(canonicalRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := fs.ReadFile(install.SkillFS(), rel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("%s has drifted from the canonical tree; run make skills-sync", rel)
+		}
+	}
+}
+
 func TestSkillBodyPanicsOnAnUnknownName(t *testing.T) {
 	defer func() {
 		if recover() == nil {
@@ -63,8 +215,8 @@ func TestWriteSkillsInstallsBothForEveryAgentAndIsIdempotent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", k, err)
 		}
-		if len(changed) != 2 {
-			t.Errorf("%s changed %v, want both skill files", k, changed)
+		if len(changed) != len(install.SkillNames()) {
+			t.Errorf("%s changed %v, want one file per registered skill", k, changed)
 		}
 		for _, name := range []string{"swarm", "swarm-orchestrator"} {
 			p := filepath.Join(c.SkillsDir(k), name, "SKILL.md")
@@ -100,7 +252,7 @@ func TestWriteSkillsStaysInsideTheGivenHome(t *testing.T) {
 }
 
 func TestEmbeddedSkillsMatchTheCanonicalFiles(t *testing.T) {
-	for _, name := range install.SkillNames {
+	for _, name := range install.SkillNames() {
 		want, err := os.ReadFile(filepath.Join("..", "..", "skills", name, "SKILL.md"))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)

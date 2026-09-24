@@ -114,7 +114,7 @@ func writeProjectSwarmConfig(cwd string, mcp []byte) error {
 	if err := os.WriteFile(filepath.Join(cwd, ".mcp.json"), mcp, 0o600); err != nil {
 		return err
 	}
-	for _, name := range install.SkillNames {
+	for _, name := range install.SkillNames() {
 		dir := filepath.Join(cwd, ".claude", "skills", name)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err

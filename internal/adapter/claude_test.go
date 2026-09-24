@@ -327,7 +327,7 @@ func TestClaudeLaunchWritesProjectScopeSkills(t *testing.T) {
 	if _, err := newClaude(d).Launch(s); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range install.SkillNames {
+	for _, name := range install.SkillNames() {
 		got, err := os.ReadFile(filepath.Join(s.Cwd, ".claude", "skills", name, "SKILL.md"))
 		if err != nil {
 			t.Fatalf("expected %s skill reachable in the session cwd: %v", name, err)

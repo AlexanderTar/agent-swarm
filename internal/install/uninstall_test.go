@@ -71,7 +71,7 @@ func TestUninstallRemovesSwarmsOwnEntriesAndKeepsEverythingElse(t *testing.T) {
 		t.Error("the launch agent plist survived")
 	}
 	for _, k := range install.Kinds {
-		for _, name := range install.SkillNames {
+		for _, name := range install.SkillNames() {
 			if _, err := os.Stat(filepath.Join(c.SkillsDir(k), name, "SKILL.md")); !os.IsNotExist(err) {
 				t.Errorf("%s/%s survived", k, name)
 			}

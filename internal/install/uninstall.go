@@ -57,7 +57,7 @@ func Uninstall(ctx context.Context, o AgentsOpts) error {
 
 	// Both skills, from all five roots.
 	for _, k := range Kinds {
-		for _, name := range SkillNames {
+		for _, name := range SkillNames() {
 			dir := filepath.Join(o.Cfg.SkillsDir(k), name)
 			if err := os.RemoveAll(dir); err != nil {
 				return err
