@@ -998,6 +998,14 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		if verdict != "" && !isReviewerRole(a.Role) {
 			return &items.Error{Code: items.CodeBadRequest, Message: "Only reviewers set a verdict."}
 		}
+		// Finding 6: an invalid enum value is refused here, on any
+		// checkpoint kind, rather than reaching the checkpoints.verdict
+		// CHECK constraint (a raw, unclear SQL error) or only being caught
+		// within the completed+hasRun+reviewer requiredness check below.
+		if verdict != "" && !validVerdict(verdict) {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: "Reviewers must complete with verdict: pass, changes_requested or blocked."}
+		}
 
 		// completed is the universal session-terminal checkpoint (every role
 		// ends its assignment with completed or failed -- terminalCheckpointKind
@@ -1031,7 +1039,9 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			// also require a verdict here, independent of any declared
 			// gates (templates never put a Gate on a review step).
 			if isReviewerRole(a.Role) {
-				if !validVerdict(verdict) {
+				// Validity was already checked above; this is just
+				// requiredness -- a reviewer with a run must set one.
+				if verdict == "" {
 					return &items.Error{Code: items.CodeBadRequest,
 						Message: "Reviewers must complete with verdict: pass, changes_requested or blocked."}
 				}

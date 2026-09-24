@@ -1147,6 +1147,30 @@ func TestVerdictRefusedForCoder(t *testing.T) {
 	}
 }
 
+// Finding 6: an invalid verdict value is refused up front with the spec's
+// copy, on ANY checkpoint kind -- not just left to hit the raw SQL CHECK
+// constraint on checkpoints.verdict (an ugly, unclear error), and not only
+// checked within the completed+hasRun+reviewer path.
+func TestInvalidVerdictValueRefused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+
+	_, err = s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: Progress, Summary: "midway", Verdict: "bogus"})
+	if err == nil {
+		t.Fatal("expected an invalid-verdict error")
+	}
+	if want := "Reviewers must complete with verdict: pass, changes_requested or blocked."; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
 func TestPassVerdictRefusesMajorFindings(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
