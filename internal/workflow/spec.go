@@ -45,6 +45,11 @@ type Integration struct {
 // legal depends on the level: task -> Template/Steps/MaxRounds/Retries;
 // story -> AfterTasks; root -> Integration.
 type Spec struct {
+	// Template names one of Templates, for Resolve to expand into Steps.
+	// Resolve clears it once it has (a resolved Spec never carries both):
+	// a caller that wants to display which template a task was resolved
+	// from (e.g. "Workflow · tdd-reviewed · Running") must store the name
+	// separately alongside the resolved Spec, not read it back off here.
 	Template    string       `json:"template,omitempty"`
 	Steps       []Step       `json:"steps,omitempty"`
 	MaxRounds   int          `json:"max_rounds,omitempty"`  // overrides every loop's max_rounds
