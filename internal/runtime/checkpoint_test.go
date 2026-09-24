@@ -1780,6 +1780,43 @@ func TestCommitGateStoresSha(t *testing.T) {
 	}
 }
 
+// Finding 5: zero rw worktrees shared with the agent must refuse, not
+// silently pass (before this fix, an empty rwWorktreesFor loop never
+// touched `sha` and returned nil).
+func TestCommitGateRefusesWithNoRWWorktree(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: "abc1234", Dirty: false}}})
+	if err == nil {
+		t.Fatal("expected a no-rw-worktree error")
+	}
+	if want := "Commit your work before completing: no rw worktree shared with you"; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// Finding 5: an rw worktree whose repo has no matching git entry in the
+// checkpoint gets its own named error, not a confusing sha-mismatch against
+// an empty declared sha.
+func TestCommitGateRefusesMissingGitEntryForRepo(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+	seedCommitRepo(t, s, coder) // repo "proj", but the checkpoint below never mentions it
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "other-repo", Branch: "main", SHA: "abc1234", Dirty: false}}})
+	if err == nil {
+		t.Fatal("expected a no-git-entry error")
+	}
+	if want := "Commit your work before completing: no git entry for proj"; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
 func TestDesignArtifactGateRegistersArtifact(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
