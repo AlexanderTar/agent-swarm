@@ -20,3 +20,18 @@ func TestRenderBuildStepGolden(t *testing.T) {
 		t.Fatalf("Render() =\n%s\nwant\n%s", got, want)
 	}
 }
+
+func TestRenderReviewStepGolden(t *testing.T) {
+	s := Spec{Steps: Templates["ui-tdd-reviewed"]}
+
+	got := Render(s, "review", 2)
+
+	want, err := os.ReadFile("testdata/render_review_r2.txt")
+	if err != nil {
+		t.Fatalf("reading golden file: %v", err)
+	}
+
+	if got != strings.TrimRight(string(want), "\n") {
+		t.Fatalf("Render() =\n%s\nwant\n%s", got, want)
+	}
+}

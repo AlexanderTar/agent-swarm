@@ -18,12 +18,9 @@ func Render(s Spec, stepID string, round int) string {
 	lines := []string{"## Workflow"}
 
 	if step.Run != "" {
-		if rev, ok := findReviewOf(s, stepID); ok {
-			max := defaultLoopMaxRounds
-			if rev.Loop != nil && rev.Loop.MaxRounds != 0 {
-				max = rev.Loop.MaxRounds
-			}
-			lines = append(lines, fmt.Sprintf("You are step %q (%s), round %d of at most %d.", step.ID, step.Run, round, max))
+		if rev := findReviewOf(s, stepID); rev != nil {
+			maxRounds := loopMaxRounds(rev.Loop)
+			lines = append(lines, fmt.Sprintf("You are step %q (%s), round %d of at most %d.", step.ID, step.Run, round, maxRounds))
 			if len(step.Gates) > 0 {
 				lines = append(lines, fmt.Sprintf("Gates for your completed checkpoint: %s.", joinGates(step.Gates)))
 			}
@@ -39,13 +36,16 @@ func Render(s Spec, stepID string, round int) string {
 		return strings.Join(lines, "\n")
 	}
 
-	// Review step.
-	max := defaultLoopMaxRounds
-	if step.Loop != nil && step.Loop.MaxRounds != 0 {
-		max = step.Loop.MaxRounds
+	// Review step: name what it reviews and the round, point at the
+	// reviewed step's red/green evidence, and spell out the verdict
+	// contract (spec B5/B6).
+	ofRole := ""
+	if of := findStep(s, step.Of); of != nil {
+		ofRole = of.Run
 	}
-	lines = append(lines, fmt.Sprintf("You are reviewing step %q, round %d of at most %d.", step.Of, round, max))
-	lines = append(lines, "Give a verdict: pass, changes_requested or blocked.")
+	lines = append(lines, fmt.Sprintf("You are reviewing step %q (%s), round %d of at most %d.", step.Of, ofRole, round, loopMaxRounds(step.Loop)))
+	lines = append(lines, "The builder's red/green evidence is in its checkpoints; swarm_read the task's checkpoints to see it.")
+	lines = append(lines, "Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, summary}. A blocked verdict escalates to the orchestrator.")
 	return strings.Join(lines, "\n")
 }
 
@@ -66,12 +66,12 @@ func findStep(s Spec, id string) *Step {
 	return nil
 }
 
-// findReviewOf finds the review step whose Of is runStepID.
-func findReviewOf(s Spec, runStepID string) (*Step, bool) {
+// findReviewOf finds the review step whose Of is runStepID, or nil.
+func findReviewOf(s Spec, runStepID string) *Step {
 	for i := range s.Steps {
 		if len(s.Steps[i].Review) > 0 && s.Steps[i].Of == runStepID {
-			return &s.Steps[i], true
+			return &s.Steps[i]
 		}
 	}
-	return nil, false
+	return nil
 }
