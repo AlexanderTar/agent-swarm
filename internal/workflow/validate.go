@@ -143,9 +143,9 @@ func validateSteps(steps []Step) error {
 	}
 
 	seen := map[string]bool{}
-	runSteps := map[string]bool{}
+	runSteps := map[string]int{} // run step id -> its index
 
-	for _, st := range steps {
+	for i, st := range steps {
 		if err := validateStepShape(st); err != nil {
 			return err
 		}
@@ -155,16 +155,21 @@ func validateSteps(steps []Step) error {
 		seen[st.ID] = true
 
 		if st.Run != "" {
-			runSteps[st.ID] = true
+			runSteps[st.ID] = i
 			continue
 		}
 
-		if st.Of != "" && !runSteps[st.Of] {
+		ofIdx, ofOK := runSteps[st.Of]
+		if st.Of != "" && !ofOK {
 			return fmt.Errorf("step %s: of/fix must name an earlier run step", st.ID)
 		}
 		if st.Loop != nil {
-			if st.Loop.Fix != "" && !runSteps[st.Loop.Fix] {
+			fixIdx, fixOK := runSteps[st.Loop.Fix]
+			if st.Loop.Fix != "" && !fixOK {
 				return fmt.Errorf("step %s: of/fix must name an earlier run step", st.ID)
+			}
+			if st.Of != "" && st.Loop.Fix != "" && ofOK && fixOK && fixIdx > ofIdx {
+				return fmt.Errorf("step %s: fix must not come after of", st.ID)
 			}
 			if st.Loop.MaxRounds != 0 && (st.Loop.MaxRounds < 1 || st.Loop.MaxRounds > 5) {
 				return fmt.Errorf("max_rounds must be 1–5")

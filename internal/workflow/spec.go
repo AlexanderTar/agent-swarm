@@ -19,8 +19,13 @@ const (
 
 // Loop describes the fix-and-retry cycle attached to a review step.
 type Loop struct {
-	Fix         string `json:"fix"`                    // run-step id retried with findings
-	MaxRounds   int    `json:"max_rounds,omitempty"`   // default 3, allowed 1..5
+	Fix string `json:"fix"` // run-step id retried with findings; must not come after Of
+	// MaxRounds is this loop's own budget (default 3, allowed 1..5), but
+	// rounds are counted per workflow, shared by all loops: workflows.round
+	// is a single counter for the whole spec, so a task with several
+	// run/review pairs doesn't get MaxRounds rounds per loop - an earlier
+	// loop's retries spend from the same budget a later one draws on.
+	MaxRounds   int    `json:"max_rounds,omitempty"`
 	OnExhausted string `json:"on_exhausted,omitempty"` // "escalate" (only value)
 }
 
@@ -50,9 +55,12 @@ type Spec struct {
 	// a caller that wants to display which template a task was resolved
 	// from (e.g. "Workflow · tdd-reviewed · Running") must store the name
 	// separately alongside the resolved Spec, not read it back off here.
-	Template    string       `json:"template,omitempty"`
-	Steps       []Step       `json:"steps,omitempty"`
-	MaxRounds   int          `json:"max_rounds,omitempty"`  // overrides every loop's max_rounds
+	Template string `json:"template,omitempty"`
+	Steps    []Step `json:"steps,omitempty"`
+	// MaxRounds overrides every loop's max_rounds. Rounds are counted per
+	// workflow, shared by all loops (see Loop.MaxRounds): this override
+	// sets one shared ceiling for the whole spec, not a per-loop one.
+	MaxRounds   int          `json:"max_rounds,omitempty"`
 	Retries     *int         `json:"retries,omitempty"`     // auto-retries for crashed/failed step agents; default 1, 0..2
 	AfterTasks  *Step        `json:"after_tasks,omitempty"` // story: one review step over the story's merged work
 	Integration *Integration `json:"integration,omitempty"`

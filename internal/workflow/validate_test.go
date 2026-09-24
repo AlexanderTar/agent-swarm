@@ -311,6 +311,26 @@ func TestValidateErrors(t *testing.T) {
 			}},
 			want: "",
 		},
+		{
+			name:  "loop.fix must not come after of",
+			level: LevelTask,
+			spec: Spec{Steps: []Step{
+				{ID: "build", Run: "coder"},
+				{ID: "lint", Run: "mechanical"},
+				{ID: "review", Review: []string{"reviewer"}, Of: "build", Loop: &Loop{Fix: "lint"}},
+			}},
+			want: `step review: fix must not come after of`,
+		},
+		{
+			name:  "loop.fix at or before of is valid",
+			level: LevelTask,
+			spec: Spec{Steps: []Step{
+				{ID: "build", Run: "coder"},
+				{ID: "lint", Run: "mechanical"},
+				{ID: "review", Review: []string{"reviewer"}, Of: "lint", Loop: &Loop{Fix: "build"}},
+			}},
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {
