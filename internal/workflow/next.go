@@ -93,14 +93,21 @@ type Action struct {
 // sha doesn't match what it reviewed): the row's sha can't be trusted, but
 // which step it belongs to can, and the only way such a row survives to the
 // previous round at all is an orchestrator resume after the same-round
-// stale-review escalation. A stale row with no such verdict (e.g. one that
-// was itself the escalated row, recorded pass/active/failed before the sha
-// it reviewed was superseded) pins the same way - it's the same resume
-// shape, just without a verdict to key off. When neither explains the bump
-// at all (e.g. the round was bumped by an orchestrator's resume after a
-// crash escalation, not a normal fix loop), Next instead pins from the
-// index of whichever step failed or was cancelled in round-1. round 1
-// itself has no earlier round to consult, so everything is pinned.
+// stale-review escalation.
+//
+// When no round-1 review requested changes at all, Next instead pins from
+// the index of whichever step actually failed or was cancelled in round-1
+// (an orchestrator resume after a crash escalation, not a normal fix loop) -
+// this outranks a stale row on some unrelated, already-passed pair, which is
+// just carried-forward noise dropped and respawned by the ordinary per-step
+// review evaluation once that other pair is left below the pin. Only when
+// neither a crash nor a changes_requested/blocked verdict explains the bump
+// does a stale row with no verdict of its own (e.g. one that was itself the
+// escalated row, recorded pass/active/failed before the sha it reviewed was
+// superseded) pin the same way as a changes_requested/blocked row would -
+// including a review step whose OWN row is both stale and crashed, which
+// pins at its fix step here rather than its own index in the crash phase.
+// round 1 itself has no earlier round to consult, so everything is pinned.
 //
 // Whichever way a step's current run(s) are selected - pinned to this exact
 // round, or carried forward from an earlier one - a failed or cancelled run
@@ -277,35 +284,62 @@ func pinnedFrom(s Spec, runs []Run, round int) int {
 		return idx
 	}
 
-	// Phase 2: no changes_requested/blocked verdict explains the bump, but
-	// a stale row (any verdict or state - pass, still active, even a
-	// crashed reviewer) at the previous round still means its step is the
-	// fix loop that needs re-pinning; the row's sha just isn't trustworthy
-	// evidence of anything else.
+	// Phase 2: no changes_requested/blocked verdict explains the bump: pin
+	// from whichever step actually crashed (failed or was cancelled) last
+	// round - the real signal that drove an orchestrator's resume, and a
+	// stronger one than an unrelated stale row sitting on some other,
+	// already-passed pair (that staleness is just carried-forward noise,
+	// dropped and respawned by the ordinary per-step review evaluation
+	// once this step's pin lets it carry forward - see
+	// TestNextPinnedFromFailedOutranksStale).
+	if idx := pinFromFailed(s, runs, prevRound); idx != -1 {
+		return idx
+	}
+
+	// Phase 3: nothing failed or was cancelled either, but a stale row
+	// (any verdict or state - pass, still active, even a crashed reviewer)
+	// at the previous round still means its step is the fix loop that
+	// needs re-pinning; the row's sha just isn't trustworthy evidence of
+	// anything else. This is also where a review step whose OWN row is
+	// both crashed and stale ends up: phase 2 skips it (see pinFromFailed)
+	// since a stale row isn't real crash evidence for that step, so it
+	// falls to this phase and pins at its fix step instead of its own
+	// index - the same stale-review resume shape, whether or not the
+	// stale row happened to crash.
 	if idx := pinFromStale(s, runs, prevRound, fixIdx); idx != -1 {
 		return idx
 	}
 
-	// Phase 3: no round-1 review requested changes and none was stale
-	// (e.g. an orchestrator resume after a crash escalation, not a normal
-	// fix loop): pin from whichever step failed or was cancelled last
-	// round.
-	bestIdx := -1
+	// Nothing at the previous round explains the bump; pin everything.
+	return 0
+}
+
+// pinFromFailed returns the lowest index among steps with a failed or
+// cancelled run at prevRound, or -1 if none did. A review step's row is
+// skipped here if it's stale (its sha doesn't match what it reviewed by the
+// end of that round): a stale row isn't real evidence that step itself
+// crashed - it's the same shape pinFromStale handles, which pins at the
+// review's fix step rather than the review's own index. Mirrors the same
+// skip Next's failure-handling loop applies at evaluation time.
+func pinFromFailed(s Spec, runs []Run, prevRound int) int {
+	best := -1
 	for i, step := range s.Steps {
 		for _, run := range runsFor(runs, step.ID, prevRound) {
-			if run.State == RunStateFailed || run.State == RunStateCancelled {
-				if bestIdx == -1 || i < bestIdx {
-					bestIdx = i
+			if run.State != RunStateFailed && run.State != RunStateCancelled {
+				continue
+			}
+			if len(step.Review) > 0 {
+				ofSHA := completedSHA(runsFor(runs, step.Of, prevRound))
+				if ofSHA != "" && run.SHA != "" && run.SHA != ofSHA {
+					continue // stale: not real crash evidence for this step
 				}
+			}
+			if best == -1 || i < best {
+				best = i
 			}
 		}
 	}
-	if bestIdx != -1 {
-		return bestIdx
-	}
-
-	// Nothing at the previous round explains the bump; pin everything.
-	return 0
+	return best
 }
 
 // pinFromVerdict returns the lowest fix-step index among review steps whose
