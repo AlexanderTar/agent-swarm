@@ -1301,3 +1301,193 @@ func TestSameRoleSiblingStillClosed(t *testing.T) {
 		t.Fatalf("second coder (same role, same step) session state = %s, want completed", got)
 	}
 }
+
+// --- Unit 8.4: tdd and verify gates (spec B5, ruling-tdd-followups.md) ---
+
+const tddMissingRound = `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round.`
+
+// buildOnly spawns a coder on a single-unit (non-batched) workflow task with
+// the given build-step gates and returns the coder's session and the
+// workflow's id.
+func buildOnly(t *testing.T, s *Store, gates ...workflow.Gate) (coder Agent, coderSes Session, workflowID string) {
+	t.Helper()
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: gates},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ = seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 1)
+	return coder, coderSes, workflowID
+}
+
+func TestTDDGateNeedsRedBeforeGreen(t *testing.T) {
+	t.Run("green only", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+		_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./x", Phase: "green", OK: true}}})
+		if err == nil {
+			t.Fatal("expected a TDD-evidence-missing error")
+		}
+		if err.Error() != tddMissingRound {
+			t.Fatalf("err = %q, want %q", err, tddMissingRound)
+		}
+	})
+
+	t.Run("red then green across checkpoints", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "red",
+			Verification: []Verify{{Cmd: "go test ./x", Phase: "red", OK: false}}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./x", Phase: "green", OK: true}}}); err != nil {
+			t.Fatalf("red then green should satisfy the tdd gate: %v", err)
+		}
+	})
+
+	t.Run("red and green in different attempts", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		coder, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+		// A red entry recorded under a DIFFERENT attempt number (e.g. an
+		// earlier crashed session of the same agent, same round) must still
+		// count -- the gate's scope is the round, not the attempt.
+		red := jsonArray([]Verify{{Cmd: "go test ./x", Phase: "red", OK: false}})
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO checkpoints
+			(id, session_id, agent_id, item_id, kind, attempt, summary, verify_json, daemon_written, created_at)
+			VALUES (?, ?, ?, ?, 'progress', 99, 'red from a crashed attempt', ?, 0, ?)`,
+			ids.New("ckp"), coderSes.ID, coder.ID, coder.ItemID, red, db.Millis(s.Now())); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./x", Phase: "green", OK: true}}}); err != nil {
+			t.Fatalf("a red from a different attempt, same round, should satisfy the tdd gate: %v", err)
+		}
+	})
+}
+
+func TestTDDGatePerUnit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	setItemUnits(t, s, "TASK-1", "Unit one", "Unit two")
+
+	// unit 1's evidence lands on a non-gated progress checkpoint first: a
+	// failed completed checkpoint below writes nothing at all (the whole
+	// transaction rolls back on a gate error), so this is the only way to
+	// give unit 1 evidence that survives into the next attempt.
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1 done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected unit 2 to still be missing evidence")
+	}
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 2},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 2},
+		}}); err != nil {
+		t.Fatalf("both units now covered (unit 1 from the earlier progress checkpoint carries forward): %v", err)
+	}
+}
+
+func TestTDDGateSkippedWhenExempt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET tdd_exempt = 'docs' WHERE key = 'TASK-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "docs updated"}); err != nil {
+		t.Fatalf("an exempt task needs no TDD evidence even with the tdd gate declared: %v", err)
+	}
+}
+
+func TestVerifyGateMatchesDeclaredCommands(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateVerify)
+	setItemVerify(t, s, "TASK-1", "go test ./...")
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected a verify-gate error")
+	}
+	want := `Declared verify commands not recorded as passing: go test ./....`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	// whitespace-normalized containment: extra internal spacing, and more
+	// command than just the declared one, both still match.
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "cd /repo &&   go   test    ./...   -v", OK: true}}}); err != nil {
+		t.Fatalf("a normalized, containing command should satisfy the verify gate: %v", err)
+	}
+}
+
+// Diligence test (not brief-named, but the crux of both controller rulings
+// this unit implements): a fix round (round > 1) narrows tdd evidence to
+// only the units the previous round's reviewer actually flagged -- unit 3
+// (untouched, unnamed) needs nothing new, unlike round 1's "every unit".
+func TestTDDGateFixRoundScopesToNamedUnits(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two", "three")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "b.go", Summary: "fix unit 2", Unit: 2},
+	})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 2},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 2},
+		}}); err != nil {
+		t.Fatalf("only unit 2 was named by the fix brief; units 1 and 3 need no new evidence: %v", err)
+	}
+}
+
+// A coder with NO workflow run (legacy) must keep exactly verifyOK's
+// behaviour -- any single entry with a non-empty cmd, no red/green needed --
+// even after the gates refactor.
+func TestLegacyCoderKeepsVerifyOK(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatalf("legacy verifyOK should accept any non-empty cmd: %v", err)
+	}
+}

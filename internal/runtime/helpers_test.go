@@ -285,6 +285,54 @@ func seedWorkflowRun(t *testing.T, s *Store, itemID, rootItemID, ownerAgentID, a
 	return workflowID, runID
 }
 
+// setItemUnits writes it.Units directly (batched task, spec C4). The
+// content of each unit's own Steps doesn't matter to the gates under test.
+func setItemUnits(t *testing.T, s *Store, key string, titles ...string) {
+	t.Helper()
+	units := make([]items.Unit, len(titles))
+	for i, title := range titles {
+		units[i] = items.Unit{Title: title, Steps: []string{"do it"}}
+	}
+	b, err := json.Marshal(units)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(context.Background(), `UPDATE items SET units_json = ? WHERE key = ?`,
+		string(b), key); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// setItemVerify writes it.Verify directly (declared verify commands).
+func setItemVerify(t *testing.T, s *Store, key string, cmds ...string) {
+	t.Helper()
+	b, err := json.Marshal(cmds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(context.Background(), `UPDATE items SET verify_json = ? WHERE key = ?`,
+		string(b), key); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedReviewFindings inserts a reviewer's workflow_runs row for workflowID at
+// round with the given findings, for tests exercising the tdd gate's
+// fix-round scope (spec B5/ruling-tdd-followups.md).
+func seedReviewFindings(t *testing.T, s *Store, workflowID string, round int, findings []workflow.Finding) {
+	t.Helper()
+	b, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(context.Background(), `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, state, verdict, findings_json, created_at)
+		VALUES (?, ?, 'review', ?, 'reviewer', 'completed', 'changes_requested', ?, ?)`,
+		ids.New("wfr"), workflowID, round, string(b), db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func gitRepoNoSigning(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

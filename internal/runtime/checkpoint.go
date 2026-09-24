@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 )
 
 const verifyMissing = "Verification evidence missing: record what was run to verify this work before completing."
+const tddMissingCopy = `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round.`
 const pausedTool = "paused: finish your handoff and stop."
 
 var gatedRoles = []Role{RoleCoder, RoleDebugger, RoleMechanical}
@@ -136,6 +138,13 @@ func verifyOK(prior, now []Verify) string {
 type workflowRun struct {
 	ID, WorkflowID, StepID, Role, State, SHA string
 	Round                                    int
+	// CreatedAt is when this round's row was inserted -- before any
+	// checkpoint of this round (spawn / RetryFix insert the row, then the
+	// step agent starts working), so it's the tdd/verify gates' round-scope
+	// boundary: an AutoRetry crash re-attempt reuses this same row, so
+	// evidence from an earlier attempt of the same round is >= CreatedAt
+	// too and still counts.
+	CreatedAt time.Time
 }
 
 // workflowRunFor returns agentID's latest workflow_runs row (highest round,
@@ -143,15 +152,17 @@ type workflowRun struct {
 // P9 wires the engine) a workflow agent no test has seeded a row for.
 func (s *Store) workflowRunFor(ctx context.Context, tx *sql.Tx, agentID string) (workflowRun, bool, error) {
 	var r workflowRun
-	err := tx.QueryRowContext(ctx, `SELECT id, workflow_id, step_id, round, role, state, COALESCE(sha, '')
+	var created int64
+	err := tx.QueryRowContext(ctx, `SELECT id, workflow_id, step_id, round, role, state, COALESCE(sha, ''), created_at
 		FROM workflow_runs WHERE agent_id = ? ORDER BY round DESC, created_at DESC LIMIT 1`, agentID).
-		Scan(&r.ID, &r.WorkflowID, &r.StepID, &r.Round, &r.Role, &r.State, &r.SHA)
+		Scan(&r.ID, &r.WorkflowID, &r.StepID, &r.Round, &r.Role, &r.State, &r.SHA, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return workflowRun{}, false, nil
 	}
 	if err != nil {
 		return workflowRun{}, false, err
 	}
+	r.CreatedAt = db.FromMillis(created)
 	return r, true, nil
 }
 
@@ -195,13 +206,239 @@ func hasMajorOrCritical(fs []workflow.Finding) bool {
 // that only declares gates has nothing to check until a later unit fills
 // its case in); 8.4 adds tdd/verify, 8.5 adds
 // commit/artifact:design/artifact:notes.
-func (s *Store) applyGates(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput, attempt int) error {
+func (s *Store) applyGates(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput) error {
 	step, _ := stepFor(it.Workflow, run.StepID)
 	for _, g := range step.Gates {
+		var err error
 		switch g {
+		case workflow.GateTDD:
+			err = s.tddGate(ctx, tx, it, run, a, in)
+		case workflow.GateVerify:
+			err = s.verifyGate(ctx, tx, it, run, a, in)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// verifySince collects every verification entry agentID recorded at or
+// after since, in order -- the tdd/verify gates' shared "this round" scope
+// (workflowRun.CreatedAt is the boundary; see its doc comment).
+func (s *Store) verifySince(ctx context.Context, tx *sql.Tx, agentID string, since time.Time) ([]Verify, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT verify_json FROM checkpoints
+		WHERE agent_id = ? AND created_at >= ? ORDER BY created_at, rowid`, agentID, db.Millis(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Verify
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var vs []Verify
+		json.Unmarshal([]byte(raw), &vs)
+		out = append(out, vs...)
+	}
+	return out, rows.Err()
+}
+
+// priorRoundFindings collects every reviewer/ui_reviewer finding recorded on
+// workflowID's round (a fix round reads its own triggering round, round-1
+// of the fix round it's gating). rowsExist distinguishes "no reviewer ran
+// that round at all" (nothing to read, defensive fallback) from "a reviewer
+// ran and left zero findings" (nothing named, findings is simply empty).
+func (s *Store) priorRoundFindings(ctx context.Context, tx *sql.Tx, workflowID string, round int) (findings []workflow.Finding, rowsExist bool, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(findings_json, '[]') FROM workflow_runs
+		WHERE workflow_id = ? AND round = ? AND role IN ('reviewer', 'ui_reviewer')`, workflowID, round)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		rowsExist = true
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, false, err
+		}
+		var fs []workflow.Finding
+		json.Unmarshal([]byte(raw), &fs)
+		findings = append(findings, fs...)
+	}
+	return findings, rowsExist, rows.Err()
+}
+
+// hasRedBeforeGreen reports whether entries contains a {phase:"red",
+// ok:false} entry for unit, followed later (in slice order) by a
+// {phase:"green", ok:true} entry for the same unit. unit 0 means
+// "untagged" (a non-batched task's own evidence).
+func hasRedBeforeGreen(entries []Verify, unit int) bool {
+	red := false
+	for _, v := range entries {
+		if v.Unit != unit {
+			continue
+		}
+		switch {
+		case v.Phase == "red" && !v.OK:
+			red = true
+		case v.Phase == "green" && v.OK && red:
+			return true
+		}
+	}
+	return false
+}
+
+// anyUnitHasRedBeforeGreen is hasRedBeforeGreen without pinning to one unit
+// -- the fix-round "package-wide" requirement (spec B5): at least one unit
+// (tagged or untagged) has its own red-before-green pair.
+func anyUnitHasRedBeforeGreen(entries []Verify) bool {
+	red := map[int]bool{}
+	for _, v := range entries {
+		switch {
+		case v.Phase == "red" && !v.OK:
+			red[v.Unit] = true
+		case v.Phase == "green" && v.OK && red[v.Unit]:
+			return true
+		}
+	}
+	return false
+}
+
+// tddOK is the pure part of the tdd gate (spec B5): entries is the round's
+// accumulated verification evidence. required is the set of unit numbers
+// that each need their own red-before-green pair (nil for a non-batched
+// task, or a fix round naming no specific unit); packageWide additionally
+// accepts any single unit's pair when no specific unit is required. It
+// returns ok, and (only when required is non-empty) which units are still
+// missing evidence.
+func tddOK(entries []Verify, required []int, packageWide bool) (ok bool, missing []int) {
+	if len(required) > 0 {
+		for _, u := range required {
+			if !hasRedBeforeGreen(entries, u) {
+				missing = append(missing, u)
+			}
+		}
+		return len(missing) == 0, missing
+	}
+	if packageWide {
+		return anyUnitHasRedBeforeGreen(entries), nil
+	}
+	return hasRedBeforeGreen(entries, 0), nil
+}
+
+func tddMissingUnitsError(missing []int) error {
+	parts := make([]string, len(missing))
+	for i, u := range missing {
+		parts[i] = strconv.Itoa(u)
+	}
+	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+		`TDD evidence missing for unit(s) %s: record red then green with "unit": <n>.`, strings.Join(parts, ","))}
+}
+
+// tddGate is the workflow tdd gate (spec B5, ruling-tdd-fix-rounds.md,
+// ruling-tdd-followups.md). Skipped entirely when the item is tdd_exempt.
+func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput) error {
+	if it.TddExempt != "" {
+		return nil
+	}
+	prior, err := s.verifySince(ctx, tx, a.ID, run.CreatedAt)
+	if err != nil {
+		return err
+	}
+	entries := append(append([]Verify{}, prior...), in.Verification...)
+	batched := len(it.Units) > 0
+
+	everyUnit := func() []int {
+		if !batched {
+			return nil
+		}
+		req := make([]int, len(it.Units))
+		for i := range it.Units {
+			req[i] = i + 1
+		}
+		return req
+	}
+
+	var required []int
+	packageWide := false
+	switch {
+	case run.Round <= 1:
+		required = everyUnit()
+	default:
+		findings, rowsExist, err := s.priorRoundFindings(ctx, tx, run.WorkflowID, run.Round-1)
+		if err != nil {
+			return err
+		}
+		switch {
+		case !rowsExist:
+			required = everyUnit()
+		case len(findings) == 0:
+			return nil // nothing named this round; the verify gate covers unchanged units
+		default:
+			units := map[int]bool{}
+			for _, f := range findings {
+				if f.Unit == 0 {
+					packageWide = true
+					continue
+				}
+				units[f.Unit] = true
+			}
+			for u := range units {
+				required = append(required, u)
+			}
+			sort.Ints(required)
+		}
+	}
+
+	ok, missing := tddOK(entries, required, packageWide)
+	if ok {
+		return nil
+	}
+	if len(missing) > 0 {
+		return tddMissingUnitsError(missing)
+	}
+	return errors.New(tddMissingCopy)
+}
+
+// verifyDeclaredOK reports whether entries contains an ok:true entry whose
+// cmd, whitespace-normalized, equals or contains want (also
+// whitespace-normalized).
+func verifyDeclaredOK(entries []Verify, want string) bool {
+	w := normalizeWhitespace(want)
+	for _, v := range entries {
+		if v.OK && strings.Contains(normalizeWhitespace(v.Cmd), w) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// verifyGate is the workflow verify gate (spec B5): every item.Verify command
+// must be recorded ok:true, by containment, within this round's evidence.
+func (s *Store) verifyGate(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput) error {
+	prior, err := s.verifySince(ctx, tx, a.ID, run.CreatedAt)
+	if err != nil {
+		return err
+	}
+	entries := append(append([]Verify{}, prior...), in.Verification...)
+	var missing []string
+	for _, want := range it.Verify {
+		if !verifyDeclaredOK(entries, want) {
+			missing = append(missing, want)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+		"Declared verify commands not recorded as passing: %s.", strings.Join(missing, "; "))}
 }
 
 // requiredArtifactKind returns the artifact kind a root item's completed
@@ -569,7 +806,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 						Message: "verdict pass can't carry critical or major findings."}
 				}
 			}
-			if err := s.applyGates(ctx, tx, it, run, a, in, ses.Attempt); err != nil {
+			if err := s.applyGates(ctx, tx, it, run, a, in); err != nil {
 				return err
 			}
 		} else if in.Kind == CompletedCkp && it.TddExempt == "" {
