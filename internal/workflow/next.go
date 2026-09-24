@@ -191,22 +191,25 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 		// in the CURRENT round can't be dropped-and-respawned the same
 		// way: that key already exists, so a Spawn for it would be a
 		// no-op against the UNIQUE(workflow_id, step_id, round, role)
-		// constraint and hang the workflow. That case escalates instead.
+		// constraint and hang the workflow. That case escalates instead -
+		// unless a fresh sibling reviewer in the same round is blocked, in
+		// which case that's the more urgent, more informative signal and
+		// wins (a stale row isn't real evidence of anything; a fresh
+		// blocked verdict is).
 		if want := shas[step.Of]; want != "" {
-			fresh, escalate := staleReviews(step, stepRuns, want, round)
-			if escalate != nil {
-				return *escalate
+			fresh, staleEscalate := staleReviews(step, stepRuns, want, round)
+			if staleEscalate != nil {
+				if reason, ok := blockedReason(fresh); ok {
+					return Action{Kind: ActionEscalate, Reason: reason}
+				}
+				return *staleEscalate
 			}
 			stepRuns = fresh
 		}
 
 		// A blocked verdict escalates immediately - it never waits for, or
 		// spawns, a still-missing reviewer role first.
-		if blocked := findBlocked(stepRuns); blocked != nil {
-			reason := blocked.Role + " blocked"
-			if summary := firstSummary(blocked.Findings); summary != "" {
-				reason += ": " + summary
-			}
+		if reason, ok := blockedReason(stepRuns); ok {
 			return Action{Kind: ActionEscalate, Reason: reason}
 		}
 
@@ -424,26 +427,33 @@ func latestRunsFor(runs []Run, stepID string, upTo int) []Run {
 }
 
 // staleReviews splits stepRuns into the ones that are still fresh (sha
-// matches want, or carries no sha at all - never considered stale) and
-// handles the stale ones: a stale row from an earlier round is dropped (nil
-// alongside the fresh ones is fine - that role is then just "missing"), but
-// a stale row already in the current round returns an escalate Action
-// instead, since a Spawn for that same (step, round, role) key would be a
-// no-op.
+// matches want, or carries no sha at all - never considered stale) and, if
+// any stale row belongs to the CURRENT round, also returns the escalate
+// Action for it: that (step, round, role) key already has a row, so a Spawn
+// for it would be a no-op against the UNIQUE(workflow_id, step_id, round,
+// role) constraint and hang the workflow. A stale row from an EARLIER round
+// is just dropped, no escalate - that role is then just "missing" and gets
+// respawned at the fresh sha. The full fresh list is always returned
+// alongside the escalate Action (never discarded), so a caller can still
+// check it for a fresh, more urgent signal - a blocked verdict - before
+// committing to the stale escalation.
 func staleReviews(step Step, runs []Run, want string, round int) ([]Run, *Action) {
 	var fresh []Run
+	var escalate *Action
 	for _, run := range runs {
 		if run.SHA == "" || run.SHA == want {
 			fresh = append(fresh, run)
 			continue
 		}
-		if run.Round == round {
+		if run.Round == round && escalate == nil {
 			reason := fmt.Sprintf("%s reviewed %s, but %s is now at %s", run.Role, sha7(run.SHA), step.Of, sha7(want))
-			return nil, &Action{Kind: ActionEscalate, Reason: reason}
+			escalate = &Action{Kind: ActionEscalate, Reason: reason}
+			continue
 		}
-		// Stale, but from an earlier round: drop it.
+		// Stale, but from an earlier round (or a later duplicate same-round
+		// stale row once one escalate reason is already recorded): drop it.
 	}
-	return fresh, nil
+	return fresh, escalate
 }
 
 // sha7 is the short form of a sha: its first 7 characters, or the whole
@@ -485,6 +495,21 @@ func findBlocked(runs []Run) *Run {
 		}
 	}
 	return nil
+}
+
+// blockedReason returns the escalate reason for the first blocked verdict in
+// runs ("<role> blocked" or "<role> blocked: <summary>"), and whether one
+// was found at all.
+func blockedReason(runs []Run) (string, bool) {
+	blocked := findBlocked(runs)
+	if blocked == nil {
+		return "", false
+	}
+	reason := blocked.Role + " blocked"
+	if summary := firstSummary(blocked.Findings); summary != "" {
+		reason += ": " + summary
+	}
+	return reason, true
 }
 
 func hasChangesRequested(runs []Run) bool {

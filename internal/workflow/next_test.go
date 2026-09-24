@@ -1218,6 +1218,27 @@ func TestNextStaleReviewInCurrentRoundEscalates(t *testing.T) {
 	})
 }
 
+// TestNextFreshBlockedNotHiddenByStaleSibling covers a P6 fix1 review minor:
+// a same-round stale-review escalation (see
+// TestNextStaleReviewInCurrentRoundEscalates) must not hide a genuinely
+// fresh blocked verdict from a sibling reviewer in the same round - blocked
+// is the more urgent, more informative signal, and it's real (not stale)
+// evidence unlike the row that triggered the stale escalation.
+func TestNextFreshBlockedNotHiddenByStaleSibling(t *testing.T) {
+	ui := resolveT(t, "ui-tdd-reviewed")
+	runs := []Run{
+		rsha("build", 1, "coder", RunStateCompleted, VerdictNone, "b1new"),
+		rsha("review", 1, "reviewer", RunStateCompleted, VerdictBlocked, "b1new"), // fresh
+		rsha("review", 1, "ui_reviewer", RunStateCompleted, VerdictPass, "b1old"), // stale
+	}
+	runs[1].Findings = []Finding{{Summary: "secrets in repo"}}
+	got := Next(ui, runs, 1, 0)
+	want := Action{Kind: ActionEscalate, Reason: "reviewer blocked: secrets in repo"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Next() = %+v, want %+v (a fresh blocked verdict must win over a stale sibling's escalation)", got, want)
+	}
+}
+
 // TestNextEmptyReviewSHAIsNeverStale covers probe4 S6-S8: a review run with
 // no sha recorded at all - because it's reviewing a step with no commit
 // gate, or just wasn't stamped - is never treated as stale, regardless of
@@ -1334,39 +1355,16 @@ func TestNextCarriedStaleReviewIsDroppedAndRespawned(t *testing.T) {
 	})
 }
 
-// TestNextPinnedFromStaleReviewStillPinsFixStep covers probe4 S12 and the
-// resume-path fix to f97734e (P6 fix1, Important): a stale review row's own
-// sha can't be trusted, but which step it belongs to can. The only way such
-// a row survives to the previous round at all is an orchestrator resume
-// after the same-round stale-review escalation (spec ~737: retry re-runs
-// the fix step, then the review at the fresh sha) - so pinnedFrom must
-// still pin from that row's fix step, whether the row carries a
-// changes_requested/blocked verdict or (having itself been the escalated
-// row) a pass.
+// TestNextPinnedFromStaleReviewStillPinsFixStep covers the resume-path fix
+// to f97734e (P6 fix1, Important): a stale review row's own sha can't be
+// trusted, but which step it belongs to can. The only way such a row
+// survives to the previous round at all is an orchestrator resume after the
+// same-round stale-review escalation (spec ~737: retry re-runs the fix
+// step, then the review at the fresh sha) - so pinnedFrom must still pin
+// from that row's fix step, whether the row carries a changes_requested/
+// blocked verdict or (having itself been the escalated row) a pass.
 func TestNextPinnedFromStaleReviewStillPinsFixStep(t *testing.T) {
 	two := twoPairsSpec(t)
-
-	t.Run("S12 literal: a stale ra CR at r1 doesn't change the (already-0) pin", func(t *testing.T) {
-		// ra's own recorded sha ("a0") never matched what "a" actually
-		// completed with ("a1") even back in round 1 - a corrupted/bogus
-		// row. rb's own review passed (fresh, sha matches b). A stale CR
-		// still pins (from "a", ra's fix step), which happens to be index
-		// 0 - the same as the "pin everything" default - so this case
-		// can't tell a filtered and an unfiltered implementation apart on
-		// its own; see the next case for that.
-		runs := []Run{
-			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
-			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictChangesRequested, "a0"),
-			rsha("b", 1, "mechanical", RunStateCompleted, VerdictNone, "b1"),
-			rsha("rb", 1, "reviewer", RunStateCompleted, VerdictPass, "b1"),
-			rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""),
-		}
-		got := Next(two, runs, 2, 0)
-		want := Action{Kind: ActionSpawn, StepID: "a", Roles: []string{"coder"}, Round: 2}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("Next() = %+v, want %+v", got, want)
-		}
-	})
 
 	t.Run("a stale CR pins at its own fix step (b), not wherever it happens to coincide", func(t *testing.T) {
 		// ra passed cleanly (fresh). rb's CR is stale: rb's own recorded
