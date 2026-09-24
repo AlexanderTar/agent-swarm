@@ -64,6 +64,19 @@ func TestMigration0011Schema(t *testing.T) {
 		t.Fatalf("workflows.extra_rounds: %v", err)
 	}
 
+	// round and extra_rounds default to 1 and 0 when omitted.
+	if err := exec(`INSERT INTO workflows (id, item_id, root_item_id, owner_agent_id, state, worktrees_json, created_at, updated_at)
+		VALUES ('wf_defaults', 'itm_1', 'itm_1', 'agt_1', 'failed', '[]', 1, 1)`); err != nil {
+		t.Fatalf("workflows insert omitting round/extra_rounds: %v", err)
+	}
+	var round, defaultExtraRounds int
+	if err := raw.QueryRow(`SELECT round, extra_rounds FROM workflows WHERE id = 'wf_defaults'`).Scan(&round, &defaultExtraRounds); err != nil {
+		t.Fatalf("workflows round/extra_rounds defaults: %v", err)
+	}
+	if round != 1 || defaultExtraRounds != 0 {
+		t.Fatalf("workflows round/extra_rounds defaults = %d/%d, want 1/0", round, defaultExtraRounds)
+	}
+
 	// workflow_runs table, its UNIQUE key and its agent index.
 	if err := exec(`INSERT INTO workflow_runs (id, workflow_id, step_id, round, role, agent_id, state, created_at)
 		VALUES ('run_1', 'wf_1', 'build', 1, 'coder', 'agt_1', 'active', 1)`); err != nil {
