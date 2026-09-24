@@ -1047,11 +1047,16 @@ func TestNextExtraRoundsSameRound(t *testing.T) {
 	}
 }
 
-// TestNextStaleReviewSha covers probe3's table-B follow-up (decision 2,
-// minor): a review run's sha is stamped with the sha it actually reviewed.
-// Once that sha is superseded (the reviewed step re-ran), the stale
-// approval doesn't count - that reviewer role is treated as missing and
-// re-spawned at the fresh sha, not trusted into a premature succeed.
+// TestNextStaleReviewSha covers probe3's table-B follow-up: a review run's
+// sha is stamped with the sha it actually reviewed. Once that sha is
+// superseded (the reviewed step re-ran) in the SAME round the stale row
+// belongs to, the approval doesn't count - and since a fresh row can't be
+// spawned at that same (step, round, role) key, Next escalates instead of
+// trying to (round 4, decision 1; round 3's "just re-spawn it" turned out
+// to be a no-op against the unique-run-key constraint and would have hung
+// the workflow - see TestNextStaleReviewInCurrentRoundEscalates for the
+// full set of same-round cases, and TestNextCarriedStaleReviewIsDroppedAndRespawned
+// for the earlier-round case, which still drops and re-spawns).
 func TestNextStaleReviewSha(t *testing.T) {
 	b, err := Resolve(Spec{Steps: []Step{
 		{ID: "build", Run: "coder", Gates: []Gate{GateCommit}},
@@ -1070,9 +1075,9 @@ func TestNextStaleReviewSha(t *testing.T) {
 
 	withFreshLint := cat3(bb, []Run{stale, cr2("lint", 2, "mechanical", "l2")})
 	got := Next(b, withFreshLint, 2, 0)
-	want := Action{Kind: ActionSpawn, StepID: "review", Roles: []string{"reviewer"}, Round: 2, SHA: "l2"}
+	want := Action{Kind: ActionEscalate, Reason: "reviewer reviewed l1, but lint is now at l2"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("stale review (sha l1) once lint is fresh (l2): Next() = %+v, want %+v (must re-spawn at the fresh sha, not succeed on the stale approval)", got, want)
+		t.Fatalf("stale review (sha l1) in round 2, once lint is fresh (l2) in round 2: Next() = %+v, want %+v (can't re-spawn the same (review, round 2, reviewer) key)", got, want)
 	}
 }
 
@@ -1127,4 +1132,260 @@ func TestNextAfterTasksShape(t *testing.T) {
 			}
 		})
 	}
+}
+
+// rsha builds a Run with an explicit sha, state and verdict - used for the
+// stale-review-sha probes (probe4).
+func rsha(step string, round int, role string, state RunState, verdict Verdict, sha string) Run {
+	return Run{StepID: step, Round: round, Role: role, State: state, Verdict: verdict, SHA: sha}
+}
+
+// TestNextStaleReviewInCurrentRoundEscalates covers probe4 S1-S5 (decision
+// 1, major, and decision 2, minor): a stale review row - one whose sha
+// doesn't match the reviewed step's current sha - AT THE CURRENT ROUND
+// can't simply be dropped and "respawned": the (step, round, role) key
+// already has a row, so a Spawn for it would be a no-op against the
+// UNIQUE(workflow_id, step_id, round, role) constraint and hang the
+// workflow forever. Next must escalate instead, regardless of the stale
+// run's own verdict or state (pass, changes_requested, blocked, still
+// active, or even failed - the failure scan must not auto-retry a stale
+// row at its old sha either).
+func TestNextStaleReviewInCurrentRoundEscalates(t *testing.T) {
+	ui := resolveT(t, "ui-tdd-reviewed")
+	td := resolveT(t, "tdd-reviewed")
+	wantReason := "reviewer reviewed b1old, but build is now at b1new"
+
+	t.Run("S1 one of two reviewers stale pass, the other fresh pass", func(t *testing.T) {
+		runs := []Run{
+			rsha("build", 1, "coder", RunStateCompleted, VerdictNone, "b1new"),
+			rsha("review", 1, "reviewer", RunStateCompleted, VerdictPass, "b1old"),
+			rsha("review", 1, "ui_reviewer", RunStateCompleted, VerdictPass, "b1new"),
+		}
+		got := Next(ui, runs, 1, 0)
+		want := Action{Kind: ActionEscalate, Reason: wantReason}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("S2 stale changes_requested + fresh pass", func(t *testing.T) {
+		runs := []Run{
+			rsha("build", 1, "coder", RunStateCompleted, VerdictNone, "b1new"),
+			rsha("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested, "b1old"),
+			rsha("review", 1, "ui_reviewer", RunStateCompleted, VerdictPass, "b1new"),
+		}
+		got := Next(ui, runs, 1, 0)
+		want := Action{Kind: ActionEscalate, Reason: wantReason}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("S3 stale blocked", func(t *testing.T) {
+		runs := []Run{
+			rsha("build", 1, "coder", RunStateCompleted, VerdictNone, "b1new"),
+			rsha("review", 1, "reviewer", RunStateCompleted, VerdictBlocked, "b1old"),
+		}
+		got := Next(td, runs, 1, 0)
+		want := Action{Kind: ActionEscalate, Reason: wantReason}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("S4 stale reviewer still active", func(t *testing.T) {
+		runs := []Run{
+			rsha("build", 1, "coder", RunStateCompleted, VerdictNone, "b1new"),
+			rsha("review", 1, "reviewer", RunStateActive, VerdictNone, "b1old"),
+		}
+		got := Next(td, runs, 1, 0)
+		want := Action{Kind: ActionEscalate, Reason: wantReason}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("S5 stale failed reviewer with retries left does not auto-retry at the old sha", func(t *testing.T) {
+		runs := []Run{
+			rsha("build", 1, "coder", RunStateCompleted, VerdictNone, "b1new"),
+			rsha("review", 1, "reviewer", RunStateFailed, VerdictNone, "b1old"),
+		}
+		got := Next(td, runs, 1, 0)
+		want := Action{Kind: ActionEscalate, Reason: wantReason}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+}
+
+// TestNextEmptyReviewSHAIsNeverStale covers probe4 S6-S8: a review run with
+// no sha recorded at all - because it's reviewing a step with no commit
+// gate, or just wasn't stamped - is never treated as stale, regardless of
+// whether the reviewed step has a sha of its own.
+func TestNextEmptyReviewSHAIsNeverStale(t *testing.T) {
+	td := resolveT(t, "tdd-reviewed")
+
+	t.Run("S6 empty-sha review pass succeeds with Of's sha", func(t *testing.T) {
+		runs := []Run{
+			rsha("build", 1, "coder", RunStateCompleted, VerdictNone, "b1"),
+			rsha("review", 1, "reviewer", RunStateCompleted, VerdictPass, ""),
+		}
+		got := Next(td, runs, 1, 0)
+		want := Action{Kind: ActionSucceed, SHA: "b1"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("S7 empty-sha active reviewer just waits", func(t *testing.T) {
+		runs := []Run{
+			rsha("build", 1, "coder", RunStateCompleted, VerdictNone, "b1"),
+			rsha("review", 1, "reviewer", RunStateActive, VerdictNone, ""),
+		}
+		got := Next(td, runs, 1, 0)
+		want := Action{Kind: ActionWait, StepID: "review", Round: 1}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("S8 a step with no commit gate has no sha to compare against", func(t *testing.T) {
+		dr := resolveT(t, "design-reviewed")
+		runs := []Run{
+			rsha("design", 1, "designer", RunStateCompleted, VerdictNone, ""),
+			rsha("review", 1, "ui_reviewer", RunStateCompleted, VerdictPass, "zzz"),
+		}
+		got := Next(dr, runs, 1, 0)
+		want := Action{Kind: ActionSucceed, SHA: ""}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+}
+
+// twoPairsSpec (probe3/probe4 "two"): a-ra, b-rb, chained.
+func twoPairsSpec(t *testing.T) Spec {
+	t.Helper()
+	s, err := Resolve(Spec{Steps: []Step{
+		{ID: "a", Run: "coder", Gates: []Gate{GateCommit}}, {ID: "ra", Review: []string{"reviewer"}},
+		{ID: "b", Run: "mechanical", Gates: []Gate{GateCommit}}, {ID: "rb", Review: []string{"reviewer"}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestNextCarriedStaleReviewIsDroppedAndRespawned covers probe4 S9-S11: a
+// stale review row carried forward from an EARLIER round (not the current
+// one) is simply dropped - that role is treated as missing and re-spawned
+// at the fresh sha in the current round, since that's a brand new
+// (step, round, role) key, not a collision.
+func TestNextCarriedStaleReviewIsDroppedAndRespawned(t *testing.T) {
+	two := twoPairsSpec(t)
+	base := []Run{
+		rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
+		rsha("ra", 1, "reviewer", RunStateCompleted, VerdictPass, "a1"),
+		rsha("b", 1, "mechanical", RunStateCompleted, VerdictNone, "b1"),
+		rsha("rb", 1, "reviewer", RunStateCompleted, VerdictChangesRequested, "b1"),
+	}
+
+	t.Run("S9 carried ra/a consistent; b's round-2 retry is just active", func(t *testing.T) {
+		runs := append(append([]Run{}, base...), rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""))
+		got := Next(two, runs, 2, 0)
+		want := Action{Kind: ActionWait, StepID: "b", Round: 2}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("S10 carried ra is stale against a re-completed carried a; ra is re-spawned at a's fresh sha", func(t *testing.T) {
+		bad := append([]Run{}, base...)
+		bad[0].SHA = "a1new" // "a" re-completed round 1 with a different sha than what ra reviewed
+		runs := append(bad, rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""))
+		got := Next(two, runs, 2, 0)
+		want := Action{Kind: ActionSpawn, StepID: "ra", Roles: []string{"reviewer"}, Round: 2, SHA: "a1new"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("S11 fix index before Of: both re-run at round 2, review re-spawns fresh (no stale row to drop)", func(t *testing.T) {
+		fo, err := Resolve(Spec{Steps: []Step{
+			{ID: "a", Run: "coder", Gates: []Gate{GateCommit}},
+			{ID: "b", Run: "mechanical", Gates: []Gate{GateCommit}},
+			{ID: "rb", Review: []string{"reviewer"}, Loop: &Loop{Fix: "a"}},
+		}}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs := []Run{
+			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
+			rsha("b", 1, "mechanical", RunStateCompleted, VerdictNone, "b1"),
+			rsha("rb", 1, "reviewer", RunStateCompleted, VerdictChangesRequested, "b1"),
+			rsha("a", 2, "coder", RunStateCompleted, VerdictNone, "a2"),
+			rsha("b", 2, "mechanical", RunStateCompleted, VerdictNone, "b2"),
+		}
+		got := Next(fo, runs, 2, 0)
+		want := Action{Kind: ActionSpawn, StepID: "rb", Roles: []string{"reviewer"}, Round: 2, SHA: "b2"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+}
+
+// TestNextPinnedFromIgnoresStaleReviews covers probe4 S12 (decision 2,
+// minor): a stale review's changes_requested/blocked verdict from the
+// previous round must not drive pinnedFrom - it never happened against the
+// sha that step actually reviewed, so it isn't a real signal that a fix
+// loop needs retrying.
+func TestNextPinnedFromIgnoresStaleReviews(t *testing.T) {
+	two := twoPairsSpec(t)
+
+	t.Run("S12 literal: a stale ra CR at r1 doesn't change the (already-0) pin", func(t *testing.T) {
+		// ra's own recorded sha ("a0") never matched what "a" actually
+		// completed with ("a1") even back in round 1 - a corrupted/bogus
+		// row. rb's own review passed (fresh, sha matches b). With the
+		// stale ra CR correctly ignored, nothing at round 1 explains the
+		// bump to round 2, so pinnedFrom falls back to its default (pin
+		// everything) - which happens to be index 0 here too, same as
+		// (incorrectly) trusting ra's stale fix target ("a", also index
+		// 0). This case can't tell the two implementations apart on its
+		// own; see the "clearly distinguishing" case below for that.
+		runs := []Run{
+			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
+			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictChangesRequested, "a0"),
+			rsha("b", 1, "mechanical", RunStateCompleted, VerdictNone, "b1"),
+			rsha("rb", 1, "reviewer", RunStateCompleted, VerdictPass, "b1"),
+			rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""),
+		}
+		got := Next(two, runs, 2, 0)
+		want := Action{Kind: ActionSpawn, StepID: "a", Roles: []string{"coder"}, Round: 2}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("clearly distinguishing: a stale rb CR (fix index 2) must not narrow the pin away from the correct default (0)", func(t *testing.T) {
+		// ra passed cleanly (fresh). rb's CR is stale: rb's own recorded
+		// sha ("stale") never matches what "b" actually completed with
+		// ("b1"). If the stale CR were (wrongly) trusted, it would pin
+		// from "b" (index 2), leaving a/ra carried forward and returning
+		// Wait on b's round-2 active row. Correctly ignored, nothing at
+		// round 1 explains the bump, so it falls back to pinning
+		// everything (index 0) - and with no round-2 "a" row, that's a
+		// fresh Spawn of "a", not a Wait on "b".
+		runs := []Run{
+			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
+			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictPass, "a1"),
+			rsha("b", 1, "mechanical", RunStateCompleted, VerdictNone, "b1"),
+			rsha("rb", 1, "reviewer", RunStateCompleted, VerdictChangesRequested, "stale"),
+			rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""),
+		}
+		got := Next(two, runs, 2, 0)
+		want := Action{Kind: ActionSpawn, StepID: "a", Roles: []string{"coder"}, Round: 2}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v (a stale review must not narrow the pin)", got, want)
+		}
+	})
 }

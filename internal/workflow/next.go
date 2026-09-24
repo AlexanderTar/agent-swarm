@@ -123,6 +123,16 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 	// this exact round or carried forward from an earlier one.
 	for i, step := range s.Steps {
 		for _, run := range currentRuns(i, step.ID) {
+			// A stale review (one whose recorded sha no longer matches
+			// what it reviewed) isn't a real failure signal at its old
+			// sha - it's handled by the ordinary review-step evaluation
+			// below instead (escalate if it's this round's own row, or
+			// dropped if it's carried forward from an earlier one).
+			if len(step.Review) > 0 {
+				if want := stepSHA(s, runs, pinnedFromIdx, round, step.Of); want != "" && run.SHA != "" && run.SHA != want {
+					continue
+				}
+			}
 			if run.State == RunStateCancelled {
 				return Action{Kind: ActionEscalate, Reason: fmt.Sprintf("%s cancelled", run.Role)}
 			}
@@ -165,11 +175,20 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 
 		// Review step. A reviewer's run is stamped with the sha it actually
 		// reviewed; once that sha is superseded (the reviewed step re-ran),
-		// the approval is stale and doesn't count - that role is treated as
-		// not having reported at all, so it's re-spawned at the fresh sha
-		// rather than trusted into a premature succeed.
+		// the approval is stale. A stale row from an EARLIER round is
+		// simply dropped - that role is treated as not having reported at
+		// all, so it's re-spawned at the fresh sha in the current round (a
+		// brand new (step, round, role) key). A stale row already sitting
+		// in the CURRENT round can't be dropped-and-respawned the same
+		// way: that key already exists, so a Spawn for it would be a
+		// no-op against the UNIQUE(workflow_id, step_id, round, role)
+		// constraint and hang the workflow. That case escalates instead.
 		if want := shas[step.Of]; want != "" {
-			stepRuns = freshReviews(stepRuns, want)
+			fresh, escalate := staleReviews(step, stepRuns, want, round)
+			if escalate != nil {
+				return *escalate
+			}
+			stepRuns = fresh
 		}
 
 		// A blocked verdict escalates immediately - it never waits for, or
@@ -238,17 +257,25 @@ func pinnedFrom(s Spec, runs []Run, round int) int {
 
 	// The review step (if any) that requested changes - or was blocked;
 	// both are "the reviewer wants this redone" - last round is what drove
-	// this round's bump; pin from its fix step's index.
+	// this round's bump; pin from its fix step's index. A stale verdict
+	// (its sha doesn't match what the reviewed step actually completed
+	// with, back in that same round) isn't a real signal and is ignored -
+	// it never happened against the code it claims to be about.
 	for _, step := range s.Steps {
 		if len(step.Review) == 0 {
 			continue
 		}
+		ofSHA := completedSHAAt(runs, step.Of, prevRound)
 		cr := false
 		for _, run := range runsFor(runs, step.ID, prevRound) {
-			if run.Verdict == VerdictChangesRequested || run.Verdict == VerdictBlocked {
-				cr = true
-				break
+			if run.Verdict != VerdictChangesRequested && run.Verdict != VerdictBlocked {
+				continue
 			}
+			if ofSHA != "" && run.SHA != "" && run.SHA != ofSHA {
+				continue // stale: not a real signal
+			}
+			cr = true
+			break
 		}
 		if !cr {
 			continue
@@ -281,6 +308,17 @@ func pinnedFrom(s Spec, runs []Run, round int) int {
 
 	// Nothing at the previous round explains the bump; pin everything.
 	return 0
+}
+
+// completedSHAAt returns stepID's completed sha at exactly the given round,
+// or "" if it didn't complete then.
+func completedSHAAt(runs []Run, stepID string, round int) string {
+	for _, run := range runsFor(runs, stepID, round) {
+		if run.State == RunStateCompleted {
+			return run.SHA
+		}
+	}
+	return ""
 }
 
 func stepIndex(s Spec, id string) int {
@@ -332,19 +370,58 @@ func latestRunsFor(runs []Run, stepID string, upTo int) []Run {
 	return runsFor(runs, stepID, best)
 }
 
-// freshReviews drops any run whose non-empty sha doesn't match want (the
-// current sha of the step it's reviewing). A run with no sha recorded at
-// all (e.g. reviewing a step with no commit gate) is never considered
-// stale.
-func freshReviews(runs []Run, want string) []Run {
-	var out []Run
+// staleReviews splits stepRuns into the ones that are still fresh (sha
+// matches want, or carries no sha at all - never considered stale) and
+// handles the stale ones: a stale row from an earlier round is dropped (nil
+// alongside the fresh ones is fine - that role is then just "missing"), but
+// a stale row already in the current round returns an escalate Action
+// instead, since a Spawn for that same (step, round, role) key would be a
+// no-op.
+func staleReviews(step Step, runs []Run, want string, round int) ([]Run, *Action) {
+	var fresh []Run
 	for _, run := range runs {
-		if run.SHA != "" && run.SHA != want {
+		if run.SHA == "" || run.SHA == want {
+			fresh = append(fresh, run)
 			continue
 		}
-		out = append(out, run)
+		if run.Round == round {
+			reason := fmt.Sprintf("%s reviewed %s, but %s is now at %s", run.Role, sha7(run.SHA), step.Of, sha7(want))
+			return nil, &Action{Kind: ActionEscalate, Reason: reason}
+		}
+		// Stale, but from an earlier round: drop it.
 	}
-	return out
+	return fresh, nil
+}
+
+// sha7 is the short form of a sha: its first 7 characters, or the whole
+// thing if it's shorter than that.
+func sha7(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// stepSHA returns stepID's current completed sha, using the same
+// pinned/carried-forward selection as the main planner loop. It returns ""
+// if stepID isn't in s.Steps or has no completed run yet.
+func stepSHA(s Spec, runs []Run, pinnedFromIdx, round int, stepID string) string {
+	idx := stepIndex(s, stepID)
+	if idx == -1 {
+		return ""
+	}
+	var stepRuns []Run
+	if idx >= pinnedFromIdx {
+		stepRuns = runsFor(runs, stepID, round)
+	} else {
+		stepRuns = latestRunsFor(runs, stepID, round)
+	}
+	for _, run := range stepRuns {
+		if run.State == RunStateCompleted {
+			return run.SHA
+		}
+	}
+	return ""
 }
 
 func missingRoles(want []string, have []Run) []string {

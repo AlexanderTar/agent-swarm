@@ -46,21 +46,37 @@ func Render(s Spec, stepID string, round int) string {
 	// reviewed step's red/green evidence (only when it actually has a tdd
 	// gate), and spell out the verdict contract (spec B5/B6). An
 	// after_tasks-shaped review has no single Of step - it reviews the
-	// story's merged work as a whole.
+	// story's merged work as a whole. A loop-less review (only possible
+	// for that after_tasks shape, or an unresolved custom spec) has no
+	// retry ceiling to report, and both a blocked and a changes_requested
+	// verdict escalate straight to the orchestrator - there's no fix step
+	// to retry.
 	if step.Of == "" {
-		lines = append(lines, fmt.Sprintf("You are reviewing the story's merged work, round %d of at most %d.", round, loopMaxRounds(step.Loop)))
+		if step.Loop == nil {
+			lines = append(lines, fmt.Sprintf("You are reviewing the story's merged work, round %d.", round))
+		} else {
+			lines = append(lines, fmt.Sprintf("You are reviewing the story's merged work, round %d of at most %d.", round, loopMaxRounds(step.Loop)))
+		}
 	} else {
 		ofRole := ""
 		ofStep := findStep(s, step.Of)
 		if ofStep != nil {
 			ofRole = ofStep.Run
 		}
-		lines = append(lines, fmt.Sprintf("You are reviewing step %q (%s), round %d of at most %d.", step.Of, ofRole, round, loopMaxRounds(step.Loop)))
+		if step.Loop == nil {
+			lines = append(lines, fmt.Sprintf("You are reviewing step %q (%s), round %d.", step.Of, ofRole, round))
+		} else {
+			lines = append(lines, fmt.Sprintf("You are reviewing step %q (%s), round %d of at most %d.", step.Of, ofRole, round, loopMaxRounds(step.Loop)))
+		}
 		if ofStep != nil && hasGate(ofStep.Gates, GateTDD) {
 			lines = append(lines, "The builder's red/green evidence is in its checkpoints; swarm_read the task's checkpoints to see it.")
 		}
 	}
-	lines = append(lines, "Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, unit (batched tasks), summary}. A blocked verdict escalates to the orchestrator.")
+	escalates := "A blocked verdict escalates to the orchestrator."
+	if step.Loop == nil {
+		escalates = "A blocked or changes_requested verdict escalates to the orchestrator."
+	}
+	lines = append(lines, fmt.Sprintf("Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, unit (batched tasks), summary}. %s", escalates))
 	return strings.Join(lines, "\n")
 }
 

@@ -67,9 +67,12 @@ func TestRenderAfterTasksShape(t *testing.T) {
 	}
 
 	got := Render(storySpec, "review", 1)
+	// After_tasks has no loop, so there's no "of at most N" ceiling to
+	// report, and both a blocked and a changes_requested verdict escalate
+	// straight to the orchestrator - there's no fix step to retry.
 	want := "## Workflow\n" +
-		"You are reviewing the story's merged work, round 1 of at most 3.\n" +
-		"Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, unit (batched tasks), summary}. A blocked verdict escalates to the orchestrator."
+		"You are reviewing the story's merged work, round 1.\n" +
+		"Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, unit (batched tasks), summary}. A blocked or changes_requested verdict escalates to the orchestrator."
 	if got != want {
 		t.Fatalf("Render() =\n%s\nwant\n%s", got, want)
 	}
