@@ -6,7 +6,7 @@ package workflow
 func reviewed(id, role string, gates []Gate, reviewers []string, maxRounds int) []Step {
 	return []Step{
 		{ID: id, Run: role, Gates: gates},
-		{ID: "review", Review: reviewers, Of: id, Loop: &Loop{Fix: id, MaxRounds: maxRounds}},
+		{ID: "review", Review: reviewers, Of: id, Loop: &Loop{Fix: id, MaxRounds: maxRounds, OnExhausted: "escalate"}},
 	}
 }
 

@@ -169,6 +169,9 @@ func validateSteps(steps []Step) error {
 			if st.Loop.MaxRounds != 0 && (st.Loop.MaxRounds < 1 || st.Loop.MaxRounds > 5) {
 				return fmt.Errorf("max_rounds must be 1–5")
 			}
+			if st.Loop.OnExhausted != "" && st.Loop.OnExhausted != "escalate" {
+				return fmt.Errorf("step %s: on_exhausted must be %q", st.ID, "escalate")
+			}
 		}
 	}
 	return nil

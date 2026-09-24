@@ -284,6 +284,33 @@ func TestValidateErrors(t *testing.T) {
 			spec:  Spec{Template: "tdd-reviewed"},
 			want:  `unknown level "epic"`,
 		},
+		{
+			name:  "loop.on_exhausted must be escalate or unset",
+			level: LevelTask,
+			spec: Spec{Steps: []Step{
+				{ID: "a", Run: "coder"},
+				{ID: "b", Review: []string{"reviewer"}, Of: "a", Loop: &Loop{Fix: "a", OnExhausted: "retry-forever"}},
+			}},
+			want: `step b: on_exhausted must be "escalate"`,
+		},
+		{
+			name:  "loop.on_exhausted unset is valid",
+			level: LevelTask,
+			spec: Spec{Steps: []Step{
+				{ID: "a", Run: "coder"},
+				{ID: "b", Review: []string{"reviewer"}, Of: "a", Loop: &Loop{Fix: "a"}},
+			}},
+			want: "",
+		},
+		{
+			name:  "loop.on_exhausted escalate is valid",
+			level: LevelTask,
+			spec: Spec{Steps: []Step{
+				{ID: "a", Run: "coder"},
+				{ID: "b", Review: []string{"reviewer"}, Of: "a", Loop: &Loop{Fix: "a", OnExhausted: "escalate"}},
+			}},
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {
