@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 var (
 	ErrLegacy = errors.New("Agent Swarm 1.x data found. Run `swarm migrate` first.")
@@ -59,11 +59,10 @@ func (d *DB) migrate(ctx context.Context) error {
 	if legacy > 0 {
 		return ErrLegacy
 	}
-	files, err := fs.Glob(schemaFS, "schema/*.sql")
+	files, err := migrationFiles()
 	if err != nil {
 		return err
 	}
-	sort.Strings(files)
 	var version int
 	if err := d.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
@@ -81,14 +80,34 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	// Disable foreign keys on this connection during migration so table recreations
-	// (e.g. 0003_add_chore.sql) can drop and rename tables without foreign key violations.
+	return applyMigrations(ctx, conn, files, version, len(files))
+}
+
+// migrationFiles returns the embedded schema/*.sql migration files in
+// applied order (their zero-padded numeric prefixes sort lexicographically
+// in version order, file N being the migration to PRAGMA user_version N).
+func migrationFiles() ([]string, error) {
+	files, err := fs.Glob(schemaFS, "schema/*.sql")
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// applyMigrations runs files[from:to] on conn in order, each in its own
+// transaction, advancing PRAGMA user_version as it goes. Foreign keys are
+// disabled for the duration so table recreations (e.g. 0003_add_chore.sql)
+// can drop and rename tables without foreign key violations. Tests use this
+// (via migrationFiles) to build fixtures at an older schema version by
+// stopping early, then continue migrating from there.
+func applyMigrations(ctx context.Context, conn *sql.Conn, files []string, from, to int) error {
 	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
 		return err
 	}
 	defer conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
 
-	for i := version; i < len(files); i++ {
+	for i := from; i < to; i++ {
 		body, err := schemaFS.ReadFile(files[i])
 		if err != nil {
 			return err
