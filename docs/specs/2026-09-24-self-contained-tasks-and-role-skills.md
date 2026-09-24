@@ -673,8 +673,22 @@ questions still reach the orchestrator, which answers as today.
     order) there is an entry `{phase:"red", ok:false}` followed later by
     `{phase:"green", ok:true}`; skipped if the item is `tdd_exempt`. For a
     batched task (`units`), `Verify` entries carry `unit` (1-based) and the
-    red-before-green pair is required **per unit**; the error names the
-    units missing evidence.
+    red-before-green pair is required **per unit** — on the step's first
+    attempt (round 1), for every unit in the package.
+    **Fix-round attempts** (the builder retried with findings, round > 1,
+    a new attempt per B4's `Retry`): red-before-green is required only for
+    the units named by unit-tagged findings in that round's fix brief. If
+    any finding in the round carries no `unit` (package-wide), at least
+    one red-before-green pair (any unit, or untagged for a non-batched
+    task) is required in the attempt. Units named by no finding in that
+    round need no new `tdd` evidence that attempt — the `verify` gate
+    still requires every declared verify command to pass, which covers
+    unchanged units. A finding that is not testable behaviour (wording,
+    comments, docs) still counts toward its unit's requirement: the red
+    entry's `note` says why the red is a new or updated test, or, when no
+    test can express it, names the failing check actually used instead
+    (e.g. a grep or lint command). The error names only the units still
+    missing required evidence for the current attempt.
   - `verify`: every string in the item's `verify` list is matched by a
     recorded entry with `ok:true` whose `cmd`, whitespace-normalized,
     equals or contains it.
