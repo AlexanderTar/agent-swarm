@@ -96,6 +96,28 @@ rm -f /tmp/swarm-cert.conf /tmp/swarm-key.pem /tmp/swarm-cert.pem /tmp/swarm-cer
 
 The `Makefile` automatically detects `Swarm Dev` when present in your keychain and uses it to sign `bin/swarm`. You can also override the identity via `SWARM_SIGN_IDENTITY="<Your Certificate Name>"`.
 
+### Keychain access (per-agent usage numbers)
+
+To show 5h/weekly usage in the menu bar, the daemon reads each agent's own login token via `security find-generic-password`, the same way any local CLI would. Not every agent touches the keychain:
+
+| Agent | Keychain item | Prompts? |
+|---|---|---|
+| Claude | `Claude Code-credentials` (account: your macOS username) | No |
+| Cursor | `cursor-access-token` (account: `cursor-user`) | No |
+| Muse | `ai.meta.dev.credentials` (account: `meta`) | **Yes, every poll** |
+| Codex | — reads its own CLI locally, no keychain | — |
+| agy | — reads `~/.gemini/antigravity-cli/antigravity-oauth-token` directly, no keychain | — |
+
+Claude's and Cursor's items are created with the default `apple-tool:` keychain partition, so `security` (partition `apple-tool:`) can read them silently — clicking Allow once elsewhere is enough. Muse's item is different: `muse login` locks it to Muse's own code-signing team (`partition_id: teamid:V9WTTPBFK9`), which excludes `security` regardless of how many times you click **Always Allow** in the prompt — that dialog only grants the app-list ACL, a separate check the daemon already passes; it never touches the partition list, so the prompt keeps coming back on every usage poll (every 5 minutes by default) forever.
+
+To silence it permanently, widen Muse's partition list once:
+
+```bash
+security set-generic-password-partition-list -S apple-tool:,apple:,teamid:V9WTTPBFK9 -s ai.meta.dev.credentials -a meta
+```
+
+One last prompt to authorize the change, then no more. Trade-off: this also lets any other local process read that same token via `security find-generic-password -s ai.meta.dev.credentials -a meta -w` — accept only if you're fine with that on this machine. If you'd rather not, leave Muse usage prompting (or disable Muse in Settings → agents) instead of running the command above.
+
 ### Upgrading from Agent Swarm 1.x
 
 ```bash
