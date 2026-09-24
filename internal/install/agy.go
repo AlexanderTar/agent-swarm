@@ -80,7 +80,7 @@ func WriteAgy(ctx context.Context, c Config, run execx.Runner) ([]string, error)
 		return changed, err
 	}
 
-	skills, err := WriteSkills(c, KindAgy)
+	skills, _, err := WriteSkills(c, KindAgy)
 	return append(changed, skills...), err
 }
 

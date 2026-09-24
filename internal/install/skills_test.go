@@ -211,12 +211,15 @@ func TestWriteSkillsInstallsBothForEveryAgentAndIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
 	for _, k := range install.Kinds {
-		changed, err := install.WriteSkills(c, k)
+		changed, skipped, err := install.WriteSkills(c, k)
 		if err != nil {
 			t.Fatalf("%s: %v", k, err)
 		}
+		if len(skipped) != 0 {
+			t.Errorf("%s skipped %v on a clean home", k, skipped)
+		}
 		if len(changed) != len(install.SkillNames()) {
-			t.Errorf("%s changed %v, want one file per registered skill", k, changed)
+			t.Errorf("%s changed %v, want one entry per registered skill", k, changed)
 		}
 		for _, name := range []string{"swarm", "swarm-orchestrator"} {
 			p := filepath.Join(c.SkillsDir(k), name, "SKILL.md")
@@ -228,7 +231,7 @@ func TestWriteSkillsInstallsBothForEveryAgentAndIsIdempotent(t *testing.T) {
 				t.Errorf("%s: %.20q", p, body)
 			}
 		}
-		again, err := install.WriteSkills(c, k)
+		again, _, err := install.WriteSkills(c, k)
 		if err != nil || len(again) != 0 {
 			t.Errorf("%s second call changed %v, %v; must be a no-op", k, again, err)
 		}
@@ -238,7 +241,7 @@ func TestWriteSkillsInstallsBothForEveryAgentAndIsIdempotent(t *testing.T) {
 func TestWriteSkillsStaysInsideTheGivenHome(t *testing.T) {
 	home := t.TempDir()
 	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
-	if _, err := install.WriteSkills(c, install.KindClaude); err != nil {
+	if _, _, err := install.WriteSkills(c, install.KindClaude); err != nil {
 		t.Fatal(err)
 	}
 	// S-5: nothing may land outside the fake home.
@@ -248,6 +251,107 @@ func TestWriteSkillsStaysInsideTheGivenHome(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "swarm", "SKILL.md")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A1's symlink fallback: a CLI that is confirmed to follow a symlinked skill
+// directory (Claude Code, checked 2026-09-24) gets a real symlink into
+// ~/.swarm/skills/<name>, one on-disk copy shared by every kind.
+func TestWriteSkillsSymlinksEveryManagedSkill(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	if _, _, err := install.WriteSkills(c, install.KindClaude); err != nil {
+		t.Fatal(err)
+	}
+	skillsHome := filepath.Join(home, ".swarm", "skills")
+	for _, name := range install.SkillNames() {
+		dst := filepath.Join(c.SkillsDir(install.KindClaude), name)
+		fi, err := os.Lstat(dst)
+		if err != nil {
+			t.Fatalf("%s: %v", dst, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s is not a symlink", dst)
+		}
+		target, err := os.Readlink(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target != filepath.Join(skillsHome, name) {
+			t.Errorf("%s -> %s, want %s", dst, target, filepath.Join(skillsHome, name))
+		}
+	}
+}
+
+// A CLI whose skills root already holds a same-named skill the user made
+// themselves (no swarm symlink, no .swarm-managed marker) must be left alone
+// and reported, never overwritten.
+func TestWriteSkillsSkipsUserOwnedSameName(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	ownDir := filepath.Join(c.SkillsDir(install.KindClaude), "swarm")
+	if err := os.MkdirAll(ownDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ownFile := filepath.Join(ownDir, "SKILL.md")
+	if err := os.WriteFile(ownFile, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, skipped, err := install.WriteSkills(c, install.KindClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range skipped {
+		if s == ownDir {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("skipped = %v, want %s in it", skipped, ownDir)
+	}
+	for _, ch := range changed {
+		if ch == ownDir {
+			t.Errorf("changed reports the user-owned dir %s", ownDir)
+		}
+	}
+	body, err := os.ReadFile(ownFile)
+	if err != nil || string(body) != "mine\n" {
+		t.Errorf("the user's own SKILL.md was touched: %q, %v", body, err)
+	}
+}
+
+// A stale swarm-managed copy (the Copy fallback, or a leftover from before a
+// skill's content changed) must be replaced with fresh content, not merged with
+// or left alongside the old files.
+func TestWriteSkillsReplacesStaleSwarmCopy(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "leftover.md"), []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, install.ManagedMarker), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := install.WriteSkills(c, install.KindCodex); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != string(install.SkillBody("swarm")) {
+		t.Errorf("stale SKILL.md survived: %.20q", body)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "leftover.md")); !os.IsNotExist(err) {
+		t.Errorf("the stale leftover file survived: %v", err)
 	}
 }
 

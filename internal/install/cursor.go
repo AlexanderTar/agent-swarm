@@ -117,7 +117,7 @@ func WriteCursor(c Config) ([]string, error) {
 		changed = append(changed, cliPath)
 	}
 
-	skills, err := WriteSkills(c, KindCursor)
+	skills, _, err := WriteSkills(c, KindCursor)
 	return append(changed, skills...), err
 }
 

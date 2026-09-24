@@ -71,9 +71,11 @@ func TestWriteClaudeRegistersTheGlobalMCPServer(t *testing.T) {
 	}
 }
 
-// WriteClaude must remove a leftover v1 symlink before writing the v2 skills:
-// the two occupy the same path, and WriteIfChanged's MkdirAll/WriteFile/Rename
-// would otherwise transparently follow the stale link into the v1 release target.
+// WriteClaude must replace a leftover v1 symlink with its own (A1): the two
+// occupy the same path, and a stale v1 target must never be mistaken for v2's
+// own link into ~/.swarm/skills. Intentional behavior change from pre-A1: v2
+// used to land a real directory here; now Claude is symlink-mode (unit 1.2),
+// so the replacement is v2's own symlink, not a directory.
 func TestWriteClaudeRemovesALeftoverV1LinkBeforeWriting(t *testing.T) {
 	c := fakeHome(t)
 	target := filepath.Join(c.Home, "app", "current", "plugin", "skills")
@@ -100,11 +102,15 @@ func TestWriteClaudeRemovesALeftoverV1LinkBeforeWriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		t.Error("skills/swarm is still a symlink; the v1 link was not replaced")
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("skills/swarm is not a symlink; v2's own link (A1) was not written")
 	}
-	if !fi.IsDir() {
-		t.Error("skills/swarm is not a real directory")
+	got, err := os.Readlink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(c.Home, "skills", "swarm"); got != want {
+		t.Errorf("skills/swarm -> %s, want %s (still pointing at the v1 target, or somewhere else)", got, want)
 	}
 	if _, err := os.Stat(filepath.Join(link, "SKILL.md")); err != nil {
 		t.Error(err)

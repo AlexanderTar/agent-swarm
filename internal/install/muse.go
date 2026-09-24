@@ -46,7 +46,7 @@ func WriteMuse(ctx context.Context, c Config, _ execx.Runner) ([]string, error) 
 	if wrote {
 		changed = append(changed, p)
 	}
-	skills, err := WriteSkills(c, KindMuse)
+	skills, _, err := WriteSkills(c, KindMuse)
 	return append(changed, skills...), err
 }
 

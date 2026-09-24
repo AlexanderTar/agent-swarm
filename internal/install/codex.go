@@ -112,7 +112,7 @@ func WriteCodex(c Config) ([]string, error) {
 		changed = append(changed, cfgPath)
 	}
 
-	skills, err := WriteSkills(c, KindCodex)
+	skills, _, err := WriteSkills(c, KindCodex)
 	return append(changed, skills...), err
 }
 
