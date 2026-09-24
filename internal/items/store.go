@@ -233,13 +233,39 @@ func resolveWorkflow(t Type, spec *workflow.Spec, tddExempt bool) (*workflow.Spe
 }
 
 // validateStepsUnits is spec B3/C4: a task has either steps or units, never
-// both, and at most 8 units.
+// both, at most 8 units, and every unit has a title and at least one
+// non-empty step (P7 fix round 1 finding #2).
 func validateStepsUnits(identifier string, steps []string, units []Unit) error {
 	if len(steps) > 0 && len(units) > 0 {
 		return errf(CodeBadRequest, "Task %s has both steps and units; use one.", identifier)
 	}
 	if len(units) > 8 {
 		return errf(CodeBadRequest, "Task %s has %d units (max 8).", identifier, len(units))
+	}
+	for i, u := range units {
+		malformed := strings.TrimSpace(u.Title) == "" || len(u.Steps) == 0
+		for _, st := range u.Steps {
+			if strings.TrimSpace(st) == "" {
+				malformed = true
+			}
+		}
+		if malformed {
+			return errf(CodeBadRequest, "Unit %d needs a title and at least one step.", i+1)
+		}
+	}
+	return nil
+}
+
+// onlyTasksSet is P7 fix round 1 finding #1: steps/units/solo/verify are
+// task-only fields (spec C1). A story or root may still carry its own level
+// of Workflow (after_tasks / integration, validated by workflowLevel above)
+// -- this only refuses the task-execution-script fields on a non-task item.
+func onlyTasksSet(t Type, steps []string, units []Unit, solo string, verify []string) error {
+	if t == Task {
+		return nil
+	}
+	if len(steps) > 0 || len(units) > 0 || solo != "" || len(verify) > 0 {
+		return errf(CodeBadRequest, "Only tasks can set steps, units, solo or verify.")
 	}
 	return nil
 }
@@ -354,6 +380,9 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 		}
 	}
 	if err := workflowFieldsPermitted(by, in.Workflow != nil, in.Steps, in.Units, in.Verify, in.Solo); err != nil {
+		return Item{}, err
+	}
+	if err := onlyTasksSet(in.Type, in.Steps, in.Units, in.Solo, in.Verify); err != nil {
 		return Item{}, err
 	}
 	if err := validateStepsUnits(in.Title, in.Steps, in.Units); err != nil {
@@ -554,6 +583,9 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 		// edit of an already-workflowed task's title must not trip on the
 		// task's own pre-existing workflow.
 		if err := workflowFieldsPermitted(by, p.Workflow != nil, deref(p.Steps), deref(p.Units), deref(p.Verify), derefStr(p.Solo)); err != nil {
+			return Item{}, err
+		}
+		if err := onlyTasksSet(it.Type, it.Steps, it.Units, it.Solo, it.Verify); err != nil {
 			return Item{}, err
 		}
 		if p.Workflow != nil {
