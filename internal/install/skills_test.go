@@ -834,7 +834,7 @@ func TestWriteClaudeAdoptsAPreA1RealSkillDirectory(t *testing.T) {
 // points at -- here, on purpose, a *different* skill's shared ~/.swarm/skills
 // directory -- and write through it. dst must become a real removed-then-copied
 // directory, and the other skill's shared copy must come out untouched.
-func TestWriteSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing.T) {
+func TestLinkSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing.T) {
 	home := t.TempDir()
 	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
 	if _, err := install.SyncSkills(c.Home); err != nil {
@@ -844,10 +844,11 @@ func TestWriteSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This exercises Copy mode directly via LinkSkills rather than a Kind:
-	// the empirical symlink check (2026-09-24) found every registered CLI
-	// discovers a symlinked skill, so skillLinkMode has no Copy-mode Kind
-	// left to stand in for one here.
+	// Exercises Copy mode directly via LinkSkills against a throwaway root,
+	// rather than routing through WriteSkills+a Kind: it is Copy mode's own
+	// anti-symlink-follow safety net under test, not any particular Kind's
+	// choice (which kind defaults to Copy has changed across this file's
+	// history; see skillLinkMode in skills.go for the current per-kind map).
 	root := filepath.Join(home, "copy-mode-root")
 	dst := filepath.Join(root, "swarm")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -1057,5 +1058,33 @@ func TestVendoredSkillsHaveLicenseAndProvenance(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Pins §A1's per-kind link mode (skills.go's skillLinkMode) against the
+// empirical symlink check documented in
+// docs/plans/2026-09-24-skill-symlink-probe.md: claude, codex, and
+// cursor-agent are Symlink (claude predates the check; codex and
+// cursor-agent were verified 2026-09-24). muse is Symlink (verified
+// 2026-09-24). agy is Copy: the same check found agy 1.2.10 migrates
+// Config.SkillsDir(KindAgy) to a different on-disk location on first run,
+// so a symlink placed at SkillsDir(KindAgy) is not a reliable signal there
+// yet.
+func TestSkillLinkModePerKind(t *testing.T) {
+	want := map[install.Kind]install.LinkMode{
+		install.KindClaude: install.Symlink,
+		install.KindCodex:  install.Symlink,
+		install.KindAgy:    install.Copy,
+		install.KindCursor: install.Symlink,
+		install.KindMuse:   install.Symlink,
+	}
+	for _, k := range install.Kinds {
+		got, ok := want[k]
+		if !ok {
+			t.Fatalf("kind %q has no expected link mode in this test; add one", k)
+		}
+		if install.SkillLinkMode(k) != got {
+			t.Errorf("SkillLinkMode(%s) = %v, want %v", k, install.SkillLinkMode(k), got)
+		}
 	}
 }

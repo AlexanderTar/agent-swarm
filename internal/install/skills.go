@@ -159,27 +159,21 @@ const (
 	Copy
 )
 
-// skillLinkMode is §A1's per-kind choice, checked empirically against every
-// agent CLI on 2026-09-24 (probe skill planted as `<kind-skills-root>/zz-swarm-symlink-probe`,
-// a symlink to a directory outside the skills root; each CLI run headless and
-// asked to list its skills / invoke the probe by name). All five discovered
-// and invoked the symlinked skill, so all five are Symlink:
-//   - claude, codex, cursor-agent: a bare headless run against the real
-//     ~/.<kind>/skills root listed the probe and reported its codeword.
-//   - muse: `muse skills list --json` and `muse skills inspect` read the
-//     probe's frontmatter through the symlink; `muse exec` confirmed live.
-//   - agy: a bare run against the real user HOME did not surface the probe
-//     (nor the pre-existing `swarm`/`swarm-orchestrator` skills either,
-//     symlink or real copy alike) -- that HOME's agy config looked stale.
-//     Re-run with a fresh, never-used HOME whose `.gemini/antigravity-cli` is
-//     symlinked to the real one (mirroring adapter/agy.go's setupEnv, which
-//     is how swarm actually launches agy -- always a brand-new per-session
-//     HOME) discovered the symlinked probe and reported its codeword.
-// See docs' skilllink-report.md for the exact commands and versions.
+// skillLinkMode is §A1's per-kind choice. claude's Symlink predates this
+// check (not re-run here). codex, cursor-agent, and muse were empirically
+// verified 2026-09-24 to discover a skill whose directory is a symlink.
+// agy stays Copy: that same probe run showed agy 1.2.10 migrates
+// .gemini/antigravity-cli/skills (Config.SkillsDir(KindAgy)) to
+// $HOME/.gemini/config/skills on first run, leaving a reverse symlink behind
+// -- so the positive result seen against a fresh HOME was reading a migrated
+// copy, not proof of following a symlink placed there, and the mode stays
+// unverified/Copy until SkillsDir(KindAgy) points at the location agy
+// actually migrates to. See docs/plans/2026-09-24-skill-symlink-probe.md for
+// the exact commands, output, and the follow-up this implies.
 var skillLinkMode = map[Kind]LinkMode{
 	KindClaude: Symlink,
 	KindCodex:  Symlink,
-	KindAgy:    Symlink,
+	KindAgy:    Copy,
 	KindCursor: Symlink,
 	KindMuse:   Symlink,
 }
