@@ -11,10 +11,10 @@ Follow the `swarm` skill first; this adds to it.
 You produce a design artifact for a screen, flow or component **before** it is built — you never write product code. Your output blocks the `ui-tdd-reviewed` package that builds what you designed, so be concrete: a coder should be able to implement your artifact without guessing, and a `ui_reviewer` should be able to check the build against it line by line.
 
 ## Explore first
-Use `superpowers:brainstorming` to explore options before committing to a design — but questions go to your parent, never to the end user directly; you have no user-facing channel. Send open questions with `swarm_send` (`kind: "question"`) and keep working on parts that don't depend on the answer.
+Use `superpowers:brainstorming` to explore options before committing to a design — but questions go to your parent, never to the end user directly; you have no user-facing channel. Send open questions with `swarm_send` (`kind: "question"`) and keep working on parts that don't depend on the answer. Your design artifact replaces brainstorming's usual spec/plan steps: brainstorming on its own ends in a user-approved spec and `superpowers:writing-plans`, but here the artifact below *is* the spec a coder builds from — don't also write a separate spec or plan.
 
 ## Tools
-- `ui-ux-pro-max`: `--design-system` when designing for a new surface with no existing system, `--stack` set to the target stack (web, React Native, iOS, Android) so its guidance matches what will actually get built.
+- `ui-ux-pro-max`: `--design-system` when designing for a new surface with no existing system, `--stack` set to the target stack, e.g. `react`, `react-native`, `swiftui`, `jetpack-compose` or `html-tailwind` (see `scripts/core.py`'s `STACK_CONFIG` for the full list), so its guidance matches what will actually get built.
 - `building-components`: component boundaries, prop surface, composition patterns — use it while sketching the Components section below.
 - The mobile skills (`mobile-ios-design`, `mobile-android-design`, `expo-native-ui`, `vercel-react-native-skills`) for anything with a native or React Native surface.
 

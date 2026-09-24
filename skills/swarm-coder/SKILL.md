@@ -14,8 +14,8 @@ Your brief has `## Units` (or `## Steps` for a single-unit task), `## Verify`, a
 Follow `swarm-batching` "Executing a package": work the units in order, one at a time. Each unit gets its own red → green cycle, one commit per unit — don't batch several units into one commit, and don't start unit *n*+1's implementation before unit *n* is committed.
 
 For each unit:
-1. Write the failing test for that unit. Run it. Record it as a verification entry tagged with that unit's number: `{"cmd": "...", "phase": "red", "ok": false, "unit": <n>}`.
-2. Write the minimal code to pass it (see ponytail below). Run the test again. Record `{"phase": "green", "ok": true, "unit": <n>}`.
+1. Write the failing test for that unit. Run it. Immediately write a `progress` checkpoint recording that run, tagged with the unit's number: `verification: [{"cmd": "...", "phase": "red", "ok": false, "note": "<why it fails>", "unit": <n>}]` — write this checkpoint when the red run actually happens, not reconstructed afterward from memory.
+2. Write the minimal code to pass it (see ponytail below). Run the test again; record `{"phase": "green", "ok": true, "unit": <n>}`. Refactor if it clarifies the code, then rerun to confirm it's still green.
 3. Commit — small, signed, conventional message, on your worktree branch. Never leave a unit's work uncommitted before moving to the next one, and never leave your own work uncommitted at the end of a turn.
 
 This is `superpowers:test-driven-development` applied per unit: every behaviour change gets its own recorded red before its green, and a batched task's red/green pair is required **per unit**, not once for the whole package.
@@ -31,10 +31,10 @@ Once a unit's test is red, write the minimal code with the vendored `ponytail` l
 Self-review your diff before moving on or completing (borrowed from `superpowers:subagent-driven-development`'s implementer prompt): does it match the unit's steps, does it touch only files in scope, did you leave debug output or commented-out code behind. If the brief is ambiguous about how to implement something, ask your parent (`swarm_send`, `kind: "question"`) rather than guessing — but keep working on anything that doesn't depend on the answer.
 
 ## Verify and completing the package
-Once every unit is committed, run every command in `## Verify` and record each as a verification entry (`superpowers:verification-before-completion` — evidence before the claim, no "should pass"). `completed` carries `git` with `dirty:false` and the HEAD sha for every worktree you touched, plus the full `verification` list (red and green entries for every unit, then the Verify commands). Do not write `completed` with anything uncommitted or any Verify command unrun.
+Once every unit is committed, run every command in `## Verify` and record each as a verification entry (`superpowers:verification-before-completion` — evidence before the claim, no "should pass"). `completed` carries `git` with `dirty:false` and the HEAD sha for every rw worktree shared with you, plus the `verification` entries for the Verify commands you just ran. The per-unit red/green entries were already recorded as `progress` checkpoints while you worked each unit (step 1 and 2 above) — `completed` doesn't re-create or backfill them, it only adds the Verify run on top; the `tdd` gate reads across every checkpoint from this attempt, in order. A single-unit task (`## Steps`, no `## Units`) has no unit number to tag — omit `unit` on its verification entries. Do not write `completed` with anything uncommitted or any Verify command unrun.
 
 ## The `completed` git contract
-- `dirty:false` — nothing uncommitted, staged or not, in any worktree your brief shares with you.
+- `dirty:false` — nothing uncommitted, staged or not, in every rw worktree shared with you.
 - The recorded `sha` is your current `HEAD` in that worktree, after your last commit.
 - If a Verify command needs a clean tree to mean anything (a build, a full test run), run it after your last commit, not before.
 

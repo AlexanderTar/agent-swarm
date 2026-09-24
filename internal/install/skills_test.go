@@ -851,6 +851,7 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"swarm_workflow",
 			"swarm-advisor",
 			"don't coordinate the next step yourself",
+			"only questions, `blocked` and `failed`",
 		}},
 		{"swarm-coder", []string{
 			"Follow the `swarm` skill first",
@@ -869,21 +870,20 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"Follow the `swarm` skill first",
 			"superpowers:requesting-code-review",
 			"ponytail-review",
-			"verdict",
-			"changes_requested",
+			"`pass` | `changes_requested` | `blocked`",
+			"critical|major|minor|nit",
 			"findings",
-			"critical",
-			"major",
-			"minor",
-			"nit",
 			"swarm-batching",
 			"swarm_read",
 			"Never edit",
 			"would fail without the change",
+			"for each acceptance criterion",
 		}},
 		{"swarm-ui-reviewer", []string{
 			"Follow the `swarm` skill first",
 			"swarm-reviewer",
+			"`pass` | `changes_requested` | `blocked`",
+			"critical|major|minor|nit",
 			"web-design-guidelines",
 			"building-components",
 			"mobile-ios-design",
@@ -904,7 +904,11 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"Screens",
 			"Components",
 			"Tokens",
+			"Interaction & motion",
 			"Accessibility",
+			"Mobile specifics",
+			"Open questions",
+			"Mermaid",
 		}},
 		{"swarm-batching", []string{
 			"| Work in the package | Workflow |",
@@ -954,12 +958,16 @@ var superpowersRefRe = regexp.MustCompile(`superpowers:([a-zA-Z][a-zA-Z0-9-]*)`)
 // TestSuperpowersReferencesAreKnown scans every non-vendored skill for
 // `superpowers:<name>` references and checks each against the fixed set of
 // 15 real superpowers v6.4.1 skill names. Vendored skills are third-party
-// content (P2) and are exempt.
+// content (P2) and are exempt. It also asserts at least one reference was
+// found at all: the regex trivially "passes" over a tree with zero
+// `superpowers:` references, which would hide a typo'd prefix (e.g. every
+// skill silently switching to a different convention) instead of catching it.
 func TestSuperpowersReferencesAreKnown(t *testing.T) {
 	sk, err := install.Skills()
 	if err != nil {
 		t.Fatal(err)
 	}
+	total := 0
 	for _, s := range sk {
 		if s.Vendored {
 			continue
@@ -969,9 +977,13 @@ func TestSuperpowersReferencesAreKnown(t *testing.T) {
 			t.Fatalf("%s: %v", s.Name, err)
 		}
 		for _, m := range superpowersRefRe.FindAllStringSubmatch(string(body), -1) {
+			total++
 			if !knownSuperpowersSkills[m[1]] {
 				t.Errorf("%s: unknown superpowers skill %q referenced as superpowers:%s", s.Name, m[1], m[1])
 			}
 		}
+	}
+	if total == 0 {
+		t.Error("found zero superpowers: references across all non-vendored skills; the regex or the skill tree is broken")
 	}
 }

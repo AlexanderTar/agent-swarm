@@ -36,7 +36,7 @@ Small edits of the same kind across many files batch well, even beyond 5 units: 
 - **Truly independent work that will actually run in parallel.** Separate packages let the orchestrator run them at the same time. If they would run one after another anyway, batch them.
 - **Contracts before consumers.** When packages share an interface (types, schema, API), the package defining it goes first. Batch on each side of it, not across it.
 
-A single-unit package is fine when one of these reasons applies. Say which one in the task's `solo` field (for example `"solo": "irreversible migration"`). Without a reason, plan registration warns (once P12 lands, this and the other batching warnings below are checked automatically at `RegisterArtifact` time and returned in `warnings[]` — see spec C2).
+A single-unit package is fine when one of these reasons applies. Say which one in the task's `solo` field (for example `"solo": "irreversible migration"`). Without a reason, plan registration returns these as `warnings[]` (registration still succeeds; the warning shows on the board's plan review screen).
 
 ## Size bounds
 
