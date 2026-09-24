@@ -1653,3 +1653,28 @@ func TestApplyGatesRefusesUnknownWorkflowStep(t *testing.T) {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
 }
+
+// Finding 2 / R1: on a WORKFLOW task, the orchestrator-override exemption
+// from closeCompletedSiblings' role filter no longer applies -- only legacy
+// tasks keep it. An orchestrator "verifying it myself" on a workflow task
+// must not tear down the builder out from under it.
+func TestOrchestratorCompletedOnWorkflowTaskDoesNotCloseBuilder(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, _ := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder"},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	oSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{Kind: CompletedCkp,
+		ItemKey: "TASK-1", Summary: "verified myself"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, coder.ID); got != Running {
+		t.Fatalf("workflow task: orchestrator's completed closed the builder anyway: state = %s, want running", got)
+	}
+}

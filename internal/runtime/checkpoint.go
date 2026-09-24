@@ -788,18 +788,20 @@ type siblingTeardown struct {
 // agent is excluded: if it owns the item too, it is still mid-turn and must
 // not be torn down under itself.
 //
-// Narrowed by spec B5: a sibling is only torn down when it has the same role
-// as the caller (and, when the caller has a workflow run, the same step
-// too) -- a reviewer completing must not close a builder, and vice versa.
-// An orchestrator caller is exempt from this filter and still closes every
-// live sibling regardless of role: it is never itself one of the item's
-// siblings (its own item_id is its parent, not the item it's completing on
-// behalf of), and the s11-tool-stubs incident this function exists to fix
-// is exactly this override -- "an orchestrator closes children marked
-// completed, regardless of the report" -- which must keep working
-// byte-for-byte for legacy tasks (Review Focus 1).
+// Narrowed by spec B5, amended by fix round 1's R1: the filter depends on
+// the ITEM, not the caller. On a workflow task, every sibling is only torn
+// down when it has the same role as the caller (and, when the caller has a
+// workflow run, the same step too) -- a reviewer completing must not close
+// a builder, and vice versa, with NO exemption: an orchestrator directly
+// completing a workflow task on a builder's behalf is not a designed path
+// (P9's engine owns that task's lifecycle), so it gets the same narrow
+// filter as anyone else. On a legacy task, an orchestrator caller keeps the
+// original exemption and still closes every live sibling regardless of
+// role -- the s11-tool-stubs incident this function exists to fix, kept
+// byte-for-byte for legacy tasks (Review Focus 1); any other legacy caller
+// is filtered to same role (no step concept without a workflow run).
 func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, callerAgentID string,
-	callerRole Role, callerRun workflowRun, callerHasRun bool, now time.Time) ([]siblingTeardown, error) {
+	callerRole Role, callerRun workflowRun, callerHasRun, isWorkflowItem bool, now time.Time) ([]siblingTeardown, error) {
 	args := []any{itemID, callerAgentID}
 	placeholders := make([]string, len(LiveStates))
 	for i, st := range LiveStates {
@@ -836,7 +838,11 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 
 	var out []siblingTeardown
 	for _, r := range found {
-		if callerRole != RoleOrchestrator {
+		// Legacy items keep the orchestrator override; workflow items never
+		// do (R1). Everyone else (any role on a legacy item, or ANY caller
+		// including an orchestrator on a workflow item) is filtered to the
+		// same role, plus the same step when the caller has a run.
+		if !(callerRole == RoleOrchestrator && !isWorkflowItem) {
 			if Role(r.role) != callerRole {
 				continue
 			}
@@ -1081,7 +1087,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					return err
 				}
 			}
-			tc, err := s.closeCompletedSiblings(ctx, tx, it.ID, a.ID, a.Role, run, hasRun, now)
+			tc, err := s.closeCompletedSiblings(ctx, tx, it.ID, a.ID, a.Role, run, hasRun, it.Workflow != nil, now)
 			if err != nil {
 				return err
 			}
