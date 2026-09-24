@@ -68,11 +68,28 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatalf("agents.role_overrides: %v", err)
 		}
 	}
+	assertHasWorkflowColumns := func() {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT workflow_json, steps_json, units_json, solo, verify_json FROM items LIMIT 0`).Scan(&n, &n, &n, &n, &n); err != sql.ErrNoRows {
+			t.Fatalf("items workflow columns: %v", err)
+		}
+		if err := d.QueryRow(`SELECT verdict, findings_json FROM checkpoints LIMIT 0`).Scan(&n, &n); err != sql.ErrNoRows {
+			t.Fatalf("checkpoints.verdict/findings_json: %v", err)
+		}
+	}
 	assertHasFailureText()
 	assertHasRoleOverrides()
+	assertHasWorkflowColumns()
 	d.Close()
 
 	// Simulate a database that only ever ran migration 1 (pre-2026-09-20 production).
+	// This must strip every column later migrations added by ALTER TABLE, not
+	// just the two the incident was about: 0011_workflows.sql adds columns to
+	// items and checkpoints without rebuilding either table, so a real v1
+	// database's items/checkpoints tables never had them either -- leaving
+	// them in place here would make 0003_add_chore.sql's items rebuild (which
+	// expects exactly the v1 column set) fail with a column-count mismatch.
 	raw, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +103,25 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN role_overrides`); err != nil {
 		t.Fatal(err)
 	}
+	for _, col := range []string{"workflow_json", "steps_json", "units_json", "solo", "verify_json"} {
+		if _, err := raw.Exec(`ALTER TABLE items DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, col := range []string{"verdict", "findings_json"} {
+		if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 0011_workflows.sql also creates two new tables (plain CREATE TABLE, not
+	// IF NOT EXISTS), so replaying it against this "v1" database must not
+	// find them already there.
+	if _, err := raw.Exec(`DROP TABLE workflow_runs`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`DROP TABLE workflows`); err != nil {
+		t.Fatal(err)
+	}
 	raw.Close()
 
 	d, err = db.Open(ctx, path)
@@ -95,6 +131,7 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	defer d.Close()
 	assertHasFailureText()
 	assertHasRoleOverrides()
+	assertHasWorkflowColumns()
 	var v int
 	d.QueryRow("PRAGMA user_version").Scan(&v)
 	if v != db.SchemaVersion {
