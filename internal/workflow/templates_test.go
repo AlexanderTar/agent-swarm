@@ -1,6 +1,9 @@
 package workflow
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestTemplatesResolve(t *testing.T) {
 	want := map[string][]Step{
@@ -38,40 +41,72 @@ func TestTemplatesResolve(t *testing.T) {
 			t.Errorf("Templates missing %q", name)
 			continue
 		}
-		if len(gotSteps) != len(wantSteps) {
-			t.Errorf("%s: got %d steps, want %d", name, len(gotSteps), len(wantSteps))
-			continue
+		if !reflect.DeepEqual(gotSteps, wantSteps) {
+			t.Errorf("Templates[%q] = %+v, want %+v", name, gotSteps, wantSteps)
 		}
-		for i, ws := range wantSteps {
-			gs := gotSteps[i]
-			if gs.ID != ws.ID || gs.Run != ws.Run || gs.Of != ws.Of {
-				t.Errorf("%s[%d]: got %+v, want %+v", name, i, gs, ws)
+	}
+}
+
+// TestTemplateResolves checks that Resolve(Spec{Template: name}, false)
+// produces exactly the expected fully-resolved Spec: Template cleared,
+// Steps from the table above, and Retries defaulted to 1.
+func TestTemplateResolves(t *testing.T) {
+	one := 1
+	want := map[string]Spec{
+		"tdd-reviewed": {
+			Retries: &one,
+			Steps: []Step{
+				{ID: "build", Run: "coder", Gates: []Gate{GateTDD, GateCommit, GateVerify}},
+				{ID: "review", Review: []string{"reviewer"}, Of: "build", Loop: &Loop{Fix: "build", MaxRounds: 3}},
+			},
+		},
+		"ui-tdd-reviewed": {
+			Retries: &one,
+			Steps: []Step{
+				{ID: "build", Run: "coder", Gates: []Gate{GateTDD, GateCommit, GateVerify}},
+				{ID: "review", Review: []string{"reviewer", "ui_reviewer"}, Of: "build", Loop: &Loop{Fix: "build", MaxRounds: 3}},
+			},
+		},
+		"design-reviewed": {
+			Retries: &one,
+			Steps: []Step{
+				{ID: "design", Run: "designer", Gates: []Gate{GateArtifactDesign}},
+				{ID: "review", Review: []string{"ui_reviewer"}, Of: "design", Loop: &Loop{Fix: "design", MaxRounds: 2}},
+			},
+		},
+		"debug": {
+			Retries: &one,
+			Steps: []Step{
+				{ID: "fix", Run: "debugger", Gates: []Gate{GateTDD, GateCommit, GateVerify}},
+				{ID: "review", Review: []string{"reviewer"}, Of: "fix", Loop: &Loop{Fix: "fix", MaxRounds: 3}},
+			},
+		},
+		"mechanical": {
+			Retries: &one,
+			Steps: []Step{
+				{ID: "change", Run: "mechanical", Gates: []Gate{GateCommit, GateVerify}},
+			},
+		},
+		"research": {
+			Retries: &one,
+			Steps: []Step{
+				{ID: "research", Run: "researcher", Gates: []Gate{GateArtifactNotes}},
+			},
+		},
+	}
+
+	for name, want := range want {
+		t.Run(name, func(t *testing.T) {
+			got, err := Resolve(Spec{Template: name}, false)
+			if err != nil {
+				t.Fatalf("Resolve(%q) error = %v", name, err)
 			}
-			if len(gs.Review) != len(ws.Review) {
-				t.Errorf("%s[%d]: review got %v, want %v", name, i, gs.Review, ws.Review)
-			} else {
-				for j := range ws.Review {
-					if gs.Review[j] != ws.Review[j] {
-						t.Errorf("%s[%d]: review got %v, want %v", name, i, gs.Review, ws.Review)
-					}
-				}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("Resolve(%q) = %+v, want %+v", name, got, want)
 			}
-			if len(gs.Gates) != len(ws.Gates) {
-				t.Errorf("%s[%d]: gates got %v, want %v", name, i, gs.Gates, ws.Gates)
-			} else {
-				for j := range ws.Gates {
-					if gs.Gates[j] != ws.Gates[j] {
-						t.Errorf("%s[%d]: gates got %v, want %v", name, i, gs.Gates, ws.Gates)
-					}
-				}
+			if err := Validate(LevelTask, got); err != nil {
+				t.Errorf("Validate(LevelTask, Resolve(%q)) = %v, want nil", name, err)
 			}
-			if (gs.Loop == nil) != (ws.Loop == nil) {
-				t.Errorf("%s[%d]: loop got %v, want %v", name, i, gs.Loop, ws.Loop)
-			} else if gs.Loop != nil {
-				if gs.Loop.Fix != ws.Loop.Fix || gs.Loop.MaxRounds != ws.Loop.MaxRounds {
-					t.Errorf("%s[%d]: loop got %+v, want %+v", name, i, gs.Loop, ws.Loop)
-				}
-			}
-		}
+		})
 	}
 }
