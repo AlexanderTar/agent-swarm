@@ -87,8 +87,8 @@ func TestNext(t *testing.T) {
 			want:  Action{Kind: ActionSpawn, StepID: "review", Roles: []string{"reviewer", "ui_reviewer"}, Round: 1, SHA: "abc1234"},
 		},
 		{
-			name:  "parallel reviewers: wait while one is still active",
-			spec:  uiTddReviewed,
+			name: "parallel reviewers: wait while one is still active",
+			spec: uiTddReviewed,
 			runs: []Run{
 				buildCompleted("abc1234"),
 				r("review", 1, "reviewer", RunStateCompleted, VerdictPass),
@@ -98,8 +98,8 @@ func TestNext(t *testing.T) {
 			want:  Action{Kind: ActionWait, StepID: "review", Round: 1},
 		},
 		{
-			name:  "all pass succeeds with the builder's sha",
-			spec:  uiTddReviewed,
+			name: "all pass succeeds with the builder's sha",
+			spec: uiTddReviewed,
 			runs: []Run{
 				buildCompleted("abc1234"),
 				r("review", 1, "reviewer", RunStateCompleted, VerdictPass),
@@ -193,9 +193,13 @@ func TestNext(t *testing.T) {
 			want:  Action{Kind: ActionEscalate, Reason: "coder failed twice"},
 		},
 		{
-			name:  "single-step template succeeds once its run completes",
-			spec:  mechanical,
-			runs:  []Run{func() Run { run := r("change", 1, "mechanical", RunStateCompleted, VerdictNone); run.SHA = "cafe123"; return run }()},
+			name: "single-step template succeeds once its run completes",
+			spec: mechanical,
+			runs: []Run{func() Run {
+				run := r("change", 1, "mechanical", RunStateCompleted, VerdictNone)
+				run.SHA = "cafe123"
+				return run
+			}()},
 			round: 1,
 			want:  Action{Kind: ActionSucceed, SHA: "cafe123"},
 		},

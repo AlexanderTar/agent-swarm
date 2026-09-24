@@ -27,7 +27,7 @@ type Loop struct {
 // Step is either a run step (Run set) or a review step (Review set).
 type Step struct {
 	ID     string   `json:"id"`
-	Run    string   `json:"run,omitempty"`    // role doing the work
+	Run    string   `json:"run,omitempty"` // role doing the work
 	Gates  []Gate   `json:"gates,omitempty"`
 	Review []string `json:"review,omitempty"` // reviewer roles, run in parallel
 	Of     string   `json:"of,omitempty"`     // run step reviewed; default: nearest preceding run step
@@ -36,7 +36,7 @@ type Step struct {
 
 // Integration describes how a root's tasks are merged and verified.
 type Integration struct {
-	MergeOrder  []string `json:"merge_order,omitempty"`  // task refs/keys
+	MergeOrder  []string `json:"merge_order,omitempty"` // task refs/keys
 	Verify      []string `json:"verify,omitempty"`
 	FinalReview []string `json:"final_review,omitempty"` // roles reviewing the integrated sha
 }
