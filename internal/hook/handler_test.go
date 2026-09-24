@@ -686,6 +686,52 @@ func TestPreToolUseBlocksNativeForksAndSubagents(t *testing.T) {
 	}
 }
 
+// TestPreToolUseBlocksWorkflowTool is spec A6: the native Workflow tool is
+// disabled in Swarm sessions, both spellings ("Workflow" the tool name,
+// "workflow" as some adapters lowercase it).
+func TestPreToolUseBlocksWorkflowTool(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	wantReason := "[swarm] The Workflow tool is disabled in Swarm sessions. Use swarm_spawn or swarm_workflow."
+
+	for _, tool := range []string{"Workflow", "workflow"} {
+		t.Run(tool, func(t *testing.T) {
+			stdin := []byte(fmt.Sprintf(`{"session_id":"p1","tool_name":"%s","tool_input":{}}`, tool))
+			out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, stdin)
+			if err != nil {
+				t.Fatalf("%s: %v", tool, err)
+			}
+			var m map[string]map[string]string
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatalf("%s unmarshal: %v", tool, err)
+			}
+			if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
+				t.Fatalf("%s: want deny, got %s", tool, out)
+			}
+			if m["hookSpecificOutput"]["permissionDecisionReason"] != wantReason {
+				t.Fatalf("%s: reason = %q, want %q", tool, m["hookSpecificOutput"]["permissionDecisionReason"], wantReason)
+			}
+		})
+	}
+}
+
+// TestWorkflowToolAllowedOutsideSwarm: a PreToolUse call for a session Swarm
+// doesn't manage (no row in sessions) is a no-op, same as any other tool --
+// the block only applies inside a Swarm session.
+func TestWorkflowToolAllowedOutsideSwarm(t *testing.T) {
+	h, _ := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", "not-a-swarm-session",
+		[]byte(`{"session_id":"p1","tool_name":"Workflow","tool_input":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("output = %s, want no-op outside a swarm session", out)
+	}
+}
+
 func TestPreToolUseBlocksNestedClaudeShellCommand(t *testing.T) {
 	h, ses := seed(t, 0, runtime.Running)
 	ctx := context.Background()

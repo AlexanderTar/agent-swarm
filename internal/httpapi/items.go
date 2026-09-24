@@ -14,6 +14,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // itemWire is Item on the wire (contracts §3.1): ms timestamps, null for unset optional
@@ -25,6 +26,8 @@ type itemWire struct {
 	StatusBeforeBlock *string         `json:"status_before_block"`
 	RoleHint          *string         `json:"role_hint"`
 	TddExempt         *string         `json:"tdd_exempt"`
+	Workflow          *workflow.Spec  `json:"workflow"`
+	Solo              *string         `json:"solo"`
 	SpikeIntent       *string         `json:"spike_intent"`
 	OriginSpikeID     *string         `json:"origin_spike_id"`
 	OriginSpikeKey    *string         `json:"origin_spike_key"`
@@ -43,9 +46,9 @@ func orNull(s string) *string {
 	return &s
 }
 
-func orEmpty(s []string) []string {
+func orEmpty[T any](s []T) []T {
 	if s == nil {
-		return []string{}
+		return []T{}
 	}
 	return s
 }
@@ -53,9 +56,11 @@ func orEmpty(s []string) []string {
 func (s *Server) itemOut(ctx context.Context, it items.Item) (itemWire, error) {
 	it.Acceptance, it.Repos, it.SuggestedRepos, it.BlockedBy =
 		orEmpty(it.Acceptance), orEmpty(it.Repos), orEmpty(it.SuggestedRepos), orEmpty(it.BlockedBy)
+	it.Steps, it.Units, it.Verify = orEmpty(it.Steps), orEmpty(it.Units), orEmpty(it.Verify)
 	w := itemWire{Item: it, ParentID: orNull(it.ParentID), ParentKey: orNull(it.ParentKey),
 		StatusBeforeBlock: orNull(string(it.StatusBeforeBlock)), RoleHint: orNull(it.RoleHint),
-		TddExempt: orNull(it.TddExempt), SpikeIntent: orNull(it.SpikeIntent), OriginSpikeID: orNull(it.OriginSpikeID),
+		TddExempt: orNull(it.TddExempt), Workflow: it.Workflow, Solo: orNull(it.Solo),
+		SpikeIntent: orNull(it.SpikeIntent), OriginSpikeID: orNull(it.OriginSpikeID),
 		LegacyKey: orNull(it.LegacyKey), Progress: it.Progress, Context: it.Context,
 		CreatedAt: db.Millis(it.CreatedAt), UpdatedAt: db.Millis(it.UpdatedAt)}
 	if it.ArchivedAt != nil {

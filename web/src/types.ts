@@ -14,6 +14,31 @@ export type TddExempt = "docs" | "config" | "mechanical-rename" | "spike-researc
 
 export interface Progress { done: number; total: number; unit: "tasks" | "stories" }
 
+// Workflow/Unit mirror internal/workflow.Spec and items.Unit (spec B2/C1);
+// the board's own workflow UI lands in a later package, so these are just
+// enough shape for Item to round-trip the field. Optional here (rather than
+// `| null`) so existing fixtures.ts item literals keep typechecking without
+// every one of them naming these five new wire fields.
+export interface WorkflowLoop { fix: string; max_rounds?: number; on_exhausted?: string }
+export interface WorkflowStep {
+  id: string;
+  run?: string;
+  gates?: string[];
+  review?: string[];
+  of?: string;
+  loop?: WorkflowLoop;
+}
+export interface WorkflowIntegration { merge_order?: string[]; verify?: string[]; final_review?: string[] }
+export interface Workflow {
+  template?: string;
+  steps?: WorkflowStep[];
+  max_rounds?: number;
+  retries?: number;
+  after_tasks?: WorkflowStep;
+  integration?: WorkflowIntegration;
+}
+export interface Unit { title: string; steps: string[] }
+
 export interface Item {
   id: string;
   key: string;
@@ -30,6 +55,11 @@ export interface Item {
   priority: Priority;
   role_hint: string | null;
   tdd_exempt: TddExempt | null;
+  workflow?: Workflow | null;
+  steps?: string[];
+  units?: Unit[];
+  solo?: string | null;
+  verify?: string[];
   repos: string[];                 // top-level: confirmed repo ids; children: repo hints
   repos_version: number;           // top-level only (I13); 0 elsewhere
   suggested_repos: string[];
