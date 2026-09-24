@@ -11,7 +11,7 @@ Follow the `swarm` skill first; this adds to it.
 Before committing to an approach when more than one option looks reasonable. When an error keeps recurring or your reasoning has stopped converging. Before a step that's hard to undo — a migration, a delete, a force-push, telling your parent something is done. Orchestrators, debuggers and reviewers consult before every `completed`. Skip it for routine work that has one obvious way to do it: the advisor is for a real decision, not a rubber stamp.
 
 ## How to ask
-Your advisor never sees your conversation — the daemon builds a fresh, self-contained briefing for each call. Make that briefing carry everything a stranger would need:
+Your advisor doesn't automatically share your context. A native Claude advisor call runs inside your own conversation and sees your full history; every other advisor — and a simulated call for any agent kind — gets a context file the daemon assembles fresh: your brief, recent checkpoints, open requests, and at most a truncated slice of your recent transcript, never the whole thing. Don't rely on either shape. Write your question and `focus` paths so the file carries everything a reader of only that slice would need:
 - What you're deciding, in one sentence.
 - The evidence you've gathered, with paths and line numbers — not a paraphrase.
 - Your current approach, and the alternative(s) you're weighing.

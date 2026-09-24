@@ -1215,6 +1215,17 @@ func TestAdvisorSkillHasMermaidAndCredit(t *testing.T) {
 			t.Errorf("swarm-advisor: missing %q", want)
 		}
 	}
+	// Fix round 1, Minor finding 2: the advisor does not run with zero
+	// context -- BuildContext (internal/advisor/context.go) forwards up to
+	// 30 truncated transcript turns for a simulated advisor, and a native
+	// Claude advisor call runs inside the agent's own conversation. The
+	// skill must not overclaim "never sees your conversation".
+	if strings.Contains(text, "never sees your conversation") {
+		t.Error("swarm-advisor: overclaims the advisor never sees any of the conversation")
+	}
+	if !strings.Contains(text, "truncated slice") {
+		t.Error("swarm-advisor: missing the corrected truncated-slice wording")
+	}
 }
 
 // P4 unit 4.1 acceptance: swarm-mechanical is a light skill, at most 60 lines
