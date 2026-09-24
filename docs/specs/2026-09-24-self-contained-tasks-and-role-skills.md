@@ -669,26 +669,31 @@ questions still reach the orchestrator, which answers as today.
 - **Gates** replace the generic `verifyOK` for agents with a workflow run
   (the step's `gates` decide); agents without one keep today's `verifyOK`
   path unchanged:
-  - `tdd`: across this attempt's entries (prior checkpoints + this one, in
-    order) there is an entry `{phase:"red", ok:false}` followed later by
-    `{phase:"green", ok:true}`; skipped if the item is `tdd_exempt`. For a
-    batched task (`units`), `Verify` entries carry `unit` (1-based) and the
-    red-before-green pair is required **per unit** — on the step's first
-    attempt (round 1), for every unit in the package.
-    **Fix-round attempts** (the builder retried with findings, round > 1,
-    a new attempt per B4's `Retry`): red-before-green is required only for
-    the units named by unit-tagged findings in that round's fix brief. If
-    any finding in the round carries no `unit` (package-wide), at least
-    one red-before-green pair (any unit, or untagged for a non-batched
-    task) is required in the attempt. Units named by no finding in that
-    round need no new `tdd` evidence that attempt — the `verify` gate
-    still requires every declared verify command to pass, which covers
-    unchanged units. A finding that is not testable behaviour (wording,
-    comments, docs) still counts toward its unit's requirement: the red
-    entry's `note` says why the red is a new or updated test, or, when no
-    test can express it, names the failing check actually used instead
-    (e.g. a grep or lint command). The error names only the units still
-    missing required evidence for the current attempt.
+  - `tdd`: scope is this step's **attempts in the current round** — prior
+    checkpoints of any attempt in this round, plus this one, in order (not
+    just "this attempt"): a crash re-attempt (`AutoRetry`) in the same round
+    keeps evidence recorded by earlier attempts of the same step/round, so a
+    resumed agent doesn't have to reproduce a red it already produced before
+    it crashed. A fix round (a new round, per B4's `Retry`) starts fresh —
+    see below. Within that scope there must be an entry `{phase:"red",
+    ok:false}` followed later by `{phase:"green", ok:true}`; skipped if the
+    item is `tdd_exempt`. For a batched task (`units`), `Verify` entries
+    carry `unit` (1-based) and the red-before-green pair is required **per
+    unit** — on the step's first round, for every unit in the package.
+    **Fix rounds** (the builder retried with findings, round > 1, per B4's
+    `Retry`, which starts a fresh round for this gate's scope): red-before-
+    green is required only for the units named by unit-tagged findings in
+    that round's fix brief. If any finding in the round carries no `unit`
+    (package-wide), at least one red-before-green pair (any unit, or
+    untagged for a non-batched task) is required somewhere in the round. Units
+    named by no finding in that round need no new `tdd` evidence that round
+    — the `verify` gate still requires every declared verify command to
+    pass, which covers unchanged units. A finding that is not testable
+    behaviour (wording, comments, docs) still counts toward its unit's
+    requirement: the red entry's `note` says why the red is a new or
+    updated test, or, when no test can express it, names the failing check
+    actually used instead (e.g. a grep or lint command). The error names
+    only the units still missing required evidence for the current round.
   - `verify`: every string in the item's `verify` list is matched by a
     recorded entry with `ok:true` whose `cmd`, whitespace-normalized,
     equals or contains it.
@@ -731,7 +736,7 @@ depends on; new `Workflow` section = `workflow.Render(spec, stepID, round)`:
 You are step "build" (coder), round 2 of at most 3.
 Gates for your completed checkpoint: tdd, commit, verify.
 After you complete: reviewer + ui_reviewer review your commit at its sha.
-If they request changes you receive their findings as an assignment update in this same session.
+If they request changes you receive their findings as an assignment update; the retry is a new session of the same agent — `swarm_read` your prior checkpoints first.
 Do not spawn or message reviewers yourself.
 ```
 
@@ -984,7 +989,7 @@ Agent-facing errors (tool results):
 - Done on workflow task: `"<KEY> is finished by its workflow. It moves to Done when the workflow succeeds; use swarm_workflow resume to accept or fail it."`
 - Start errors: `"<KEY> has no workflow."`, `"<KEY> already has a running workflow."`, `"Start needs a read-write worktree you own."`, `"dependencies_open: <keys>"` (existing).
 - Resume on non-escalated: `"<KEY>'s workflow isn't waiting on you (state: <state>)."`
-- TDD gate: `"TDD evidence missing: record the failing test run (phase: \"red\", ok: false) before the passing run (phase: \"green\", ok: true) in this attempt."`
+- TDD gate: `"TDD evidence missing: record the failing test run (phase: \"red\", ok: false) before the passing run (phase: \"green\", ok: true) in this round."`
 - Verify gate: `"Declared verify commands not recorded as passing: <cmd>; <cmd>."`
 - Commit gate: `"Commit your work before completing: <repo> is dirty"` / `"… HEAD is <sha7>, checkpoint says <sha7>"` / `"Completed needs git: [{repo, branch, sha, dirty:false}]."`
 - Artifact gates: `"Completed needs your design file in artifacts (under ~/.swarm/designs/<ROOT>/)."` and the research equivalent.
