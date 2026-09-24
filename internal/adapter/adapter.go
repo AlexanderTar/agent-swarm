@@ -31,10 +31,6 @@ type Spec struct {
 	AdvisorModel                           string
 	Instructions                           string
 	Env                                    map[string]string
-	// RemoteControl requests --remote-control on a launch/resume that
-	// supports it. Only the Claude adapter acts on it; every other kind
-	// ignores the field (no equivalent flag on their own CLI).
-	RemoteControl bool
 }
 
 // Launch is what the caller feeds to the spawner.

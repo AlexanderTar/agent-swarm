@@ -1993,64 +1993,6 @@ func TestSetRoleOverrideEffortNeverAppliesToAMismatchedModel(t *testing.T) {
 	}
 }
 
-// TestSpawnSetsRemoteControlOnlyForOrchestratorsWhenEnabled is the
-// 2026-09-24 fix: EnableRemoteControl asks the daemon to pass
-// --remote-control to a spawned Claude process, but only for the
-// orchestrator role -- a coder/reviewer/etc.'s session is short-lived and
-// not something a user watches live the way an orchestrator is.
-func TestSpawnSetsRemoteControlOnlyForOrchestratorsWhenEnabled(t *testing.T) {
-	s, _, fa := newStore(t)
-	ctx := context.Background()
-	seedEpicWithTask(t, s)
-
-	// Raw insert, not Settings.Put: Put's validate() rejects "fake" (the
-	// harness's own enabled_agents seed, inserted the same raw way in
-	// newStore) as an unknown kind, and this test needs Fake to stay
-	// enabled so its spawns succeed.
-	if _, err := s.DB.ExecContext(ctx,
-		`INSERT INTO settings (key, value_json, updated_at) VALUES ('enable_remote_control', 'true', 1)`); err != nil {
-		t.Fatal(err)
-	}
-
-	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !fa.LastSpec.RemoteControl {
-		t.Fatal("orchestrator spawn: Spec.RemoteControl = false, want true (EnableRemoteControl is on)")
-	}
-
-	worker, _, err := s.Spawn(ctx, SpawnInput{
-		ItemKey: "TASK-1", ParentAgentID: orch.ID, Role: RoleCoder, Kind: Fake, Model: "fake-1",
-		Brief: BriefInput{Objective: "task"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if worker.Role != RoleCoder {
-		t.Fatalf("sanity: worker.Role = %s", worker.Role)
-	}
-	if fa.LastSpec.RemoteControl {
-		t.Fatal("coder spawn: Spec.RemoteControl = true, want false (only orchestrators get it)")
-	}
-}
-
-// TestSpawnOmitsRemoteControlWhenSettingIsOff is the same fix's default-off
-// side: with EnableRemoteControl left at its zero value, even an
-// orchestrator spawn must not set Spec.RemoteControl.
-func TestSpawnOmitsRemoteControlWhenSettingIsOff(t *testing.T) {
-	s, _, fa := newStore(t)
-	ctx := context.Background()
-	seedEpicWithTask(t, s)
-
-	if _, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"}); err != nil {
-		t.Fatal(err)
-	}
-	if fa.LastSpec.RemoteControl {
-		t.Fatal("Spec.RemoteControl = true, want false (EnableRemoteControl defaults off)")
-	}
-}
-
 func TestSetRoleOverrideClearFallsThroughToGlobalDefault(t *testing.T) {
 	s, _ := newStoreWithFallback(t)
 	ctx := context.Background()

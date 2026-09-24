@@ -98,31 +98,6 @@ func TestClaudeLaunchOmitsEffortWhenUnset(t *testing.T) {
 	}
 }
 
-func TestClaudeLaunchOmitsRemoteControlByDefault(t *testing.T) {
-	d := testDeps(t)
-	l, err := newClaude(d).Launch(claudeSpec(t, d))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(strings.Join(l.Argv, " "), "--remote-control") {
-		t.Fatal("no --remote-control flag unless Spec.RemoteControl is set")
-	}
-}
-
-func TestClaudeLaunchAddsRemoteControlNamedAfterTheAgent(t *testing.T) {
-	d := testDeps(t)
-	s := claudeSpec(t, d)
-	s.RemoteControl = true
-	l, err := newClaude(d).Launch(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(l.Argv, " ")
-	if !strings.Contains(joined, "--remote-control login-form-coder") {
-		t.Fatalf("missing --remote-control login-form-coder:\n%s", joined)
-	}
-}
-
 func TestClaudeSettingsJSONTurnsAttributionOffAndListsEveryHook(t *testing.T) {
 	d := testDeps(t)
 	s := claudeSpec(t, d)
