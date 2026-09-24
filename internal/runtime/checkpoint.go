@@ -369,7 +369,19 @@ type siblingTeardown struct {
 // simply never got to close out for itself, not an abandon. The caller's own
 // agent is excluded: if it owns the item too, it is still mid-turn and must
 // not be torn down under itself.
-func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, callerAgentID string, now time.Time) ([]siblingTeardown, error) {
+//
+// Narrowed by spec B5: a sibling is only torn down when it has the same role
+// as the caller (and, when the caller has a workflow run, the same step
+// too) -- a reviewer completing must not close a builder, and vice versa.
+// An orchestrator caller is exempt from this filter and still closes every
+// live sibling regardless of role: it is never itself one of the item's
+// siblings (its own item_id is its parent, not the item it's completing on
+// behalf of), and the s11-tool-stubs incident this function exists to fix
+// is exactly this override -- "an orchestrator closes children marked
+// completed, regardless of the report" -- which must keep working
+// byte-for-byte for legacy tasks (Review Focus 1).
+func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, callerAgentID string,
+	callerRole Role, callerRun workflowRun, callerHasRun bool, now time.Time) ([]siblingTeardown, error) {
 	args := []any{itemID, callerAgentID}
 	placeholders := make([]string, len(LiveStates))
 	for i, st := range LiveStates {
@@ -377,7 +389,7 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 		args = append(args, string(st))
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT s.id, s.tmux_name, COALESCE(s.provider_session_id, ''),
-			a2.id, a2.name, a2.kind, a2.root_item_id
+			a2.id, a2.name, a2.kind, a2.root_item_id, a2.role
 		FROM agents a2 JOIN sessions s ON s.id = (
 			SELECT id FROM sessions WHERE agent_id = a2.id ORDER BY generation DESC, attempt DESC LIMIT 1)
 		WHERE a2.item_id = ? AND a2.id != ? AND s.state IN (`+strings.Join(placeholders, ",")+`)`, args...)
@@ -385,14 +397,14 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 		return nil, err
 	}
 	type sibling struct {
-		sessionID, tmux, provider, agentID, name, rootItemID string
-		kind                                                 AgentKind
+		sessionID, tmux, provider, agentID, name, rootItemID, role string
+		kind                                                       AgentKind
 	}
 	var found []sibling
 	for rows.Next() {
 		var r sibling
 		var kind string
-		if err := rows.Scan(&r.sessionID, &r.tmux, &r.provider, &r.agentID, &r.name, &kind, &r.rootItemID); err != nil {
+		if err := rows.Scan(&r.sessionID, &r.tmux, &r.provider, &r.agentID, &r.name, &kind, &r.rootItemID, &r.role); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -406,6 +418,20 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 
 	var out []siblingTeardown
 	for _, r := range found {
+		if callerRole != RoleOrchestrator {
+			if Role(r.role) != callerRole {
+				continue
+			}
+			if callerHasRun {
+				sibRun, sibHasRun, err := s.workflowRunFor(ctx, tx, r.agentID)
+				if err != nil {
+					return nil, err
+				}
+				if !sibHasRun || sibRun.StepID != callerRun.StepID {
+					continue
+				}
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'completed', ended_at = ? WHERE id = ?`,
 			db.Millis(now), r.sessionID); err != nil {
 			return nil, err
@@ -637,7 +663,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					return err
 				}
 			}
-			tc, err := s.closeCompletedSiblings(ctx, tx, it.ID, a.ID, now)
+			tc, err := s.closeCompletedSiblings(ctx, tx, it.ID, a.ID, a.Role, run, hasRun, now)
 			if err != nil {
 				return err
 			}

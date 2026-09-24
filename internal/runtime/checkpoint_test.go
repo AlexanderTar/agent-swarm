@@ -1182,3 +1182,122 @@ func TestPassVerdictRefusesMajorFindings(t *testing.T) {
 		t.Fatalf("pass with only a minor finding should be accepted: %v", err)
 	}
 }
+
+// --- Unit 8.2: close siblings only by same role + same workflow step (spec B5) ---
+
+// buildAndReview spawns a coder (build) and a reviewer (review) on TASK-1,
+// each with its own workflow_runs row on the same workflow/round, and
+// returns both live sessions.
+func buildAndReview(t *testing.T, s *Store) (orch Agent, coder Agent, coderSes Session, rev Agent, revSes Session) {
+	t.Helper()
+	ctx := context.Background()
+	orch, coder, coderSes = worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder"},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	var err error
+	rev, _, err = s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revSes, err = s.LatestSession(ctx, rev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 1)
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'review', 1, 'reviewer', ?, 'active', ?)`,
+		ids.New("wfr"), wfID, rev.ID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+	return orch, coder, coderSes, rev, revSes
+}
+
+func liveSessionState(t *testing.T, s *Store, agentID string) SessionState {
+	t.Helper()
+	ses, err := s.LatestSession(context.Background(), agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ses.State
+}
+
+func TestReviewerCompletedDoesNotCloseBuilder(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coder, _, _, revSes := buildAndReview(t, s)
+	if _, err := s.WriteCheckpoint(ctx, revSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed",
+		Verdict: "pass"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, coder.ID); got != Running {
+		t.Fatalf("coder session state = %s, want unchanged (running) -- a reviewer's completed must not close it", got)
+	}
+}
+
+func TestBuilderCompletedDoesNotCloseReviewer(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, coderSes, rev, _ := buildAndReview(t, s)
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, rev.ID); got != Running {
+		t.Fatalf("reviewer session state = %s, want unchanged (running) -- a builder's completed must not close it", got)
+	}
+}
+
+// A second coder assigned to the same item and step, in the same round, is
+// still closed by the first coder's completed -- the role+step rule narrows
+// who gets torn down, it doesn't disable teardown altogether.
+func TestSameRoleSiblingStillClosed(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes, _, _ := buildAndReview(t, s)
+	coder2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it too"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfID := func() string {
+		var id string
+		if err := s.DB.QueryRowContext(ctx, `SELECT workflow_id FROM workflow_runs WHERE agent_id = ?`, coder.ID).
+			Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}()
+	// round 2, not 1: the real UNIQUE(workflow_id, step_id, round, role)
+	// constraint forbids two runs for the same step/round/role, so a second
+	// live coder on the same step can only be modeled as an earlier round's
+	// run that's still (unrealistically, but validly) live -- same role and
+	// same step is exactly what this test checks, round included or not.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build', 2, 'coder', ?, 'active', ?)`,
+		ids.New("wfr"), wfID, coder2.ID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+	_ = it
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, coder2.ID); got != Completed {
+		t.Fatalf("second coder (same role, same step) session state = %s, want completed", got)
+	}
+}
