@@ -48,7 +48,31 @@ func runCmdSwarmTests(m *testing.M) int {
 	}
 	defer os.RemoveAll(dir)
 	os.Setenv("HOME", dir)
+	// Review round 2, item 4: SWARM_HOME and SWARM_URL are the two other
+	// env-first defaults (defaultHome/defaultURL in main.go) a runner's shell
+	// could have exported for real use -- unset them too, so a test that
+	// forgets its own --home/--url can't inherit a real one from outside the
+	// test binary.
+	os.Unsetenv("SWARM_HOME")
+	os.Unsetenv("SWARM_URL")
 	return m.Run()
+}
+
+// Review round 2, item 4: a runner (CI, a developer's shell) that already
+// has SWARM_HOME or SWARM_URL exported could otherwise point a test's
+// default --home/--url (defaultHome/defaultURL in main.go, both env-first)
+// at something real, the same class of leak TestMain's HOME override exists
+// to prevent. This only proves TestMain did its job by the time any test
+// body runs -- the actual "a runner had them exported" scenario has to be
+// exercised from outside the test binary (see the fix report for the
+// before/after run with both vars exported in the invoking shell).
+func TestMainScrubsSwarmHomeAndSwarmURLFromTheEnvironment(t *testing.T) {
+	if v := os.Getenv("SWARM_HOME"); v != "" {
+		t.Errorf("SWARM_HOME leaked into a test: %q", v)
+	}
+	if v := os.Getenv("SWARM_URL"); v != "" {
+		t.Errorf("SWARM_URL leaked into a test: %q", v)
+	}
 }
 
 type offlineEmb struct{}
