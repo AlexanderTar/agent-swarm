@@ -2,6 +2,8 @@ package workflow
 
 import "testing"
 
+func intp(n int) *int { return &n }
+
 func TestValidateErrors(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -196,6 +198,91 @@ func TestValidateErrors(t *testing.T) {
 			level: LevelRoot,
 			spec:  Spec{Integration: &Integration{FinalReview: []string{"reviewer"}}},
 			want:  "",
+		},
+		{
+			name:  "template and steps both set",
+			level: LevelTask,
+			spec:  Spec{Template: "tdd-reviewed", Steps: []Step{{ID: "a", Run: "coder"}}},
+			want:  `set template or steps, not both`,
+		},
+		{
+			name:  "neither template nor steps set",
+			level: LevelTask,
+			spec:  Spec{},
+			want:  `set template or steps`,
+		},
+		{
+			name:  "neither template nor steps set (only max_rounds)",
+			level: LevelTask,
+			spec:  Spec{MaxRounds: 2},
+			want:  `set template or steps`,
+		},
+		{
+			name:  "retries too high",
+			level: LevelTask,
+			spec:  Spec{Template: "tdd-reviewed", Retries: intp(50)},
+			want:  `retries must be 0–2`,
+		},
+		{
+			name:  "retries negative",
+			level: LevelTask,
+			spec:  Spec{Template: "tdd-reviewed", Retries: intp(-3)},
+			want:  `retries must be 0–2`,
+		},
+		{
+			name:  "retries 0 and 2 are valid",
+			level: LevelTask,
+			spec:  Spec{Template: "tdd-reviewed", Retries: intp(0)},
+			want:  "",
+		},
+		{
+			name:  "integration.final_review roles must be review roles",
+			level: LevelRoot,
+			spec:  Spec{Integration: &Integration{FinalReview: []string{"coder"}}},
+			want:  `integration final_review: coder can't review`,
+		},
+		{
+			name:  "duplicate reviewer role",
+			level: LevelTask,
+			spec: Spec{Steps: []Step{
+				{ID: "a", Run: "coder"},
+				{ID: "b", Review: []string{"reviewer", "reviewer"}, Of: "a"},
+			}},
+			want: `step b: duplicate reviewer reviewer`,
+		},
+		{
+			name:  "loop on a run step is rejected",
+			level: LevelTask,
+			spec: Spec{Steps: []Step{
+				{ID: "a", Run: "coder", Loop: &Loop{Fix: "zzz"}, Of: "qq"},
+			}},
+			want: `step a: loop/of only apply to review steps`,
+		},
+		{
+			name:  "of on a run step is rejected",
+			level: LevelTask,
+			spec: Spec{Steps: []Step{
+				{ID: "a", Run: "coder", Of: "qq"},
+			}},
+			want: `step a: loop/of only apply to review steps`,
+		},
+		{
+			name:  "after_tasks step id must match the pattern",
+			level: LevelStory,
+			spec:  Spec{AfterTasks: &Step{ID: "Review", Review: []string{"reviewer"}}},
+			want:  `step Review: invalid id, must match [a-z][a-z0-9-]*`,
+		},
+		{
+			name:  "after_tasks step sets exactly one of run or review",
+			level: LevelStory,
+			spec:  Spec{AfterTasks: &Step{ID: "review", Run: "coder", Review: []string{"reviewer"}}},
+			want:  `step review: set exactly one of run or review`,
+		},
+		{
+			name:  "unknown level",
+			level: Level("epic"),
+			spec:  Spec{Template: "tdd-reviewed"},
+			want:  `unknown level "epic"`,
 		},
 	}
 
