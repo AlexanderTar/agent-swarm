@@ -1926,6 +1926,73 @@ func TestSetRoleOverrideAppliesAtSpawn(t *testing.T) {
 	}
 }
 
+// TestSetRoleOverrideAppliesEffortWhenCallerNamesTheSameModelExplicitly is
+// the 2026-09-24 fix: TestSetRoleOverrideAppliesAtSpawn above only ever
+// exercised the caller leaving agent/model/effort all blank -- the
+// resolution path a caller naming its own kind/model (exactly what the
+// swarm-orchestrator skill tells orchestrators they may do) never touched
+// at all, so a role override's Effort silently never applied whenever the
+// caller's explicit kind/model happened to match the override and Effort
+// itself was left blank.
+func TestSetRoleOverrideAppliesEffortWhenCallerNamesTheSameModelExplicitly(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetRoleOverride(ctx, orch.Name, RoleCoder,
+		&settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra", Effort: "high"}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	worker, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey: "TASK-1", ParentAgentID: orch.ID, Role: RoleCoder,
+		Kind: Codex, Model: "gpt-6-astra", // caller's own explicit kind/model, matching the override
+		Brief: BriefInput{Objective: "task"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worker.Effort != "high" {
+		t.Fatalf("worker.Effort = %q, want %q (the override's Effort, despite the caller naming kind/model explicitly)",
+			worker.Effort, "high")
+	}
+}
+
+// TestSetRoleOverrideEffortNeverAppliesToAMismatchedModel guards the safety
+// side of the same fix: a caller's explicit model that differs from the
+// role override's model must never inherit an effort tuned for a different
+// model.
+func TestSetRoleOverrideEffortNeverAppliesToAMismatchedModel(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetRoleOverride(ctx, orch.Name, RoleCoder,
+		&settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra", Effort: "high"}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	worker, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey: "TASK-1", ParentAgentID: orch.ID, Role: RoleCoder,
+		Kind: Claude, Model: "claude-opus-5", // a different agent/model than the override's
+		Brief: BriefInput{Objective: "task"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worker.Effort == "high" {
+		t.Fatalf("worker.Effort = %q, must not inherit the override's effort for a different agent/model (claude-opus-5)", worker.Effort)
+	}
+}
+
 func TestSetRoleOverrideClearFallsThroughToGlobalDefault(t *testing.T) {
 	s, _ := newStoreWithFallback(t)
 	ctx := context.Background()

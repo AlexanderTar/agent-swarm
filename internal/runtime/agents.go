@@ -768,6 +768,34 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		}
 	}
 
+	// A role default's Effort only ever reached in.Effort above when this
+	// call resolved Kind/Model FROM that default (in.Kind/in.Model both
+	// started empty). A caller that names its own explicit kind/model --
+	// exactly what the swarm-orchestrator skill tells orchestrators they may
+	// do -- skipped applyRoleDefault entirely, so a role override's Effort
+	// silently never applied even when the caller's kind/model happened to
+	// match it and Effort was left blank (2026-09-24: the actual gap behind
+	// "we need to be able to override effort" -- the override always stored
+	// and read back Effort correctly; it just never got applied here).
+	// Matching on the FINAL (Kind, Model) rather than reusing
+	// applyRoleDefault keeps this safe: a caller whose explicit model
+	// doesn't match the stored default's model must not inherit an effort
+	// tuned for a different model.
+	if in.Effort == "" {
+		matchEffort := func(rd settings.RoleDefault, ok bool) bool {
+			if !ok || rd.Agent != in.Kind || rd.Model != in.Model || rd.Effort == "" {
+				return false
+			}
+			in.Effort = rd.Effort
+			return true
+		}
+		rd, ok := parentRoleOverrides[in.Role]
+		if !matchEffort(rd, ok) {
+			rd, ok = cfg.Roles[in.Role]
+			matchEffort(rd, ok)
+		}
+	}
+
 	origKind := in.Kind
 	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
 	if ferr != nil {
