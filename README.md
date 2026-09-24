@@ -209,3 +209,5 @@ make dev       # daemon on :17777 with a scratch ~/.swarm-dev
 ## License
 
 MIT
+
+Vendored skills under `skills/vendor/` keep their own licenses; see each `VENDORED.md`.

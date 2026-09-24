@@ -3,38 +3,59 @@ package install_test
 import (
 	"context"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"gopkg.in/yaml.v3"
 )
 
-// parseFrontmatter extracts the "key: value" lines between the first pair of
-// "---" fence lines. It is a test-local, from-scratch parse (not the
-// production one), so a registry bug in Skills() can't hide behind a shared
-// helper.
+// parseFrontmatter extracts and decodes the YAML between the first pair of
+// "---" fence lines with a real YAML parser (yaml.v3, already a direct
+// dependency: see internal/kb/doc.go). It is a test-local, from-scratch parse
+// (not the production one), so a registry bug in Skills() can't hide behind a
+// shared helper. Only string-valued top-level fields (name, description, ...)
+// are surfaced; a skill's non-string fields (metadata, argument-hint lists,
+// ...) aren't read by any test here.
+//
+// Review round 1, Important: the prior line-based version read only the first
+// line after "key:", so a multi-line YAML scalar (a folded `description: >`
+// or a plain scalar starting on the next line, both used upstream) decoded to
+// "" or ">" instead of the real value -- and ">" being non-empty hid that from
+// TestSkillsRegistryMatchesTree's "non-empty description" check. That bug
+// nearly cost 4 vendored skills their byte-verbatim upstream frontmatter.
 func parseFrontmatter(t *testing.T, body []byte) map[string]string {
 	t.Helper()
-	lines := strings.Split(string(body), "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+	rest, ok := strings.CutPrefix(string(body), "---\n")
+	if !ok {
 		t.Fatalf("no frontmatter fence: %.40q", body)
 	}
-	out := map[string]string{}
-	for _, l := range lines[1:] {
-		if strings.TrimSpace(l) == "---" {
-			return out
-		}
-		k, v, ok := strings.Cut(l, ":")
-		if ok {
-			out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	front, _, ok := strings.Cut(rest, "\n---\n")
+	if !ok {
+		// The fence may be the very last thing in the file (no body after).
+		var ok2 bool
+		front, ok2 = strings.CutSuffix(rest, "\n---")
+		if !ok2 {
+			t.Fatalf("frontmatter fence never closed: %.40q", body)
 		}
 	}
-	t.Fatalf("frontmatter fence never closed: %.40q", body)
-	return nil
+	var decoded map[string]any
+	if err := yaml.Unmarshal([]byte(front), &decoded); err != nil {
+		t.Fatalf("invalid frontmatter YAML: %v\n%s", err, front)
+	}
+	out := map[string]string{}
+	for k, v := range decoded {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
 }
 
 func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
@@ -679,3 +700,127 @@ func TestSyncAndRefreshSkillsRepairsAnAlreadyInstalledKindsBrokenLink(t *testing
 // TestEmbeddedSkillsMatchTheCanonicalFiles was superseded by
 // TestEmbeddedMirrorMatchesCanonicalTree (review round 1, nit), which compares
 // the whole tree byte-for-byte, not just each skill's SKILL.md.
+
+// vendoredSkillNames is the fixed set from spec A2's source table.
+var vendoredSkillNames = []string{
+	"web-design-guidelines",
+	"building-components",
+	"ui-ux-pro-max",
+	"expo-native-ui",
+	"expo-design-system",
+	"vercel-react-native-skills",
+	"mobile-ios-design",
+	"mobile-android-design",
+	"ponytail",
+	"ponytail-review",
+	"ponytail-debt",
+}
+
+// bannedVendorStrings must never appear anywhere under skills/vendor/: each is
+// either a leftover plugin-root reference (CLAUDE_PLUGIN_ROOT), a feature we
+// deliberately stripped (submit-expo-feedback), a live fetch of upstream
+// instead of the vendored copy (raw.githubusercontent.com), or the
+// interactive mode-switching text ponytail's swarm note replaces
+// ("/ponytail ").
+var bannedVendorStrings = []string{
+	"CLAUDE_PLUGIN_ROOT",
+	"submit-expo-feedback",
+	"raw.githubusercontent.com",
+	"/ponytail ",
+}
+
+// P2 acceptance: every vendored skill has a license file and a VENDORED.md in
+// the spec's format, the vendored set is exactly the 11 names in spec A2, and
+// none of the banned strings leaked in from upstream or from our own edits.
+func TestVendoredSkillsHaveLicenseAndProvenance(t *testing.T) {
+	vendorRoot := filepath.Join("..", "..", "skills", "vendor")
+	entries, err := os.ReadDir(vendorRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]bool{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		got[e.Name()] = true
+	}
+	want := map[string]bool{}
+	for _, n := range vendoredSkillNames {
+		want[n] = true
+	}
+	if len(got) != len(want) {
+		// Errorf, not Fatalf (review round 1, Minor 3): a wrong dir count must
+		// not skip the per-skill checks or the banned-strings walk below.
+		t.Errorf("skills/vendor dirs = %v, want exactly %v",
+			slices.Sorted(maps.Keys(got)), slices.Sorted(maps.Keys(want)))
+	}
+	for n := range want {
+		if !got[n] {
+			t.Errorf("missing vendored skill dir %s", n)
+		}
+	}
+
+	for _, name := range vendoredSkillNames {
+		dir := filepath.Join(vendorRoot, name)
+
+		hasLicense := false
+		for _, lic := range []string{"LICENSE", "LICENSE.md"} {
+			if _, err := os.Stat(filepath.Join(dir, lic)); err == nil {
+				hasLicense = true
+			}
+		}
+		if !hasLicense {
+			t.Errorf("%s: missing LICENSE or LICENSE.md", name)
+		}
+
+		body, err := os.ReadFile(filepath.Join(dir, "VENDORED.md"))
+		if err != nil {
+			t.Errorf("%s: missing VENDORED.md: %v", name, err)
+			continue
+		}
+		text := string(body)
+		if !strings.HasPrefix(text, "# Vendored: "+name+"\n") {
+			t.Errorf("%s: VENDORED.md must start with '# Vendored: %s'", name, name)
+		}
+		for _, field := range []string{"\n- Source:", "\n- License:", "\n- Vendored on:", "\n- Changes:"} {
+			if !strings.Contains(text, field) {
+				t.Errorf("%s: VENDORED.md missing %q field", name, strings.TrimSpace(field))
+			}
+		}
+
+		skillBody, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+		if err != nil {
+			t.Errorf("%s: missing SKILL.md: %v", name, err)
+			continue
+		}
+		fm := parseFrontmatter(t, skillBody)
+		if fm["name"] != name {
+			t.Errorf("%s: frontmatter name = %q, want %q", name, fm["name"], name)
+		}
+	}
+
+	err = filepath.WalkDir(vendorRoot, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		text := string(body)
+		for _, banned := range bannedVendorStrings {
+			if strings.Contains(text, banned) {
+				t.Errorf("%s: contains banned string %q", p, banned)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
