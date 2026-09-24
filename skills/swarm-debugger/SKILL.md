@@ -8,7 +8,7 @@ description: Extra rules for Swarm debugger agents (role debugger) fixing a repr
 Follow the `swarm` skill first; this adds to it.
 
 ## Root cause before any fix
-Use `superpowers:systematic-debugging`'s four phases: reproduce, isolate, understand, fix. There is no fix without a root cause — state it in a `progress` checkpoint before you touch implementation code. If your root-cause guess doesn't hold up once you test it, that's a new isolate/understand pass, not a patch on top of the wrong theory.
+Use `superpowers:systematic-debugging`'s four phases (Root Cause Investigation, Pattern Analysis, Hypothesis and Testing, Implementation). There is no fix without a root cause — state it in a `progress` checkpoint before you touch implementation code. If your root-cause guess doesn't hold up once you test it, that's a new investigation pass, not a patch on top of the wrong theory.
 
 Consult your advisor before you commit to a root cause: this is exactly the "before committing to an approach" and "going in circles" case `swarm-advisor` calls out, and a wrong root cause wastes the rest of the task.
 
