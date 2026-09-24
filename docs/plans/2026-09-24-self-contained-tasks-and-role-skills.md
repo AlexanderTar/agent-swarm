@@ -203,30 +203,30 @@ func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) { /* walk ../../skills
 - `python3 skills/vendor/ui-ux-pro-max/scripts/search.py "dashboard" --domain style | head -5`
 
 #### Unit 2.1: Provenance test and vendor README
-- [ ] Write the failing test `TestVendoredSkillsHaveLicenseAndProvenance`. It covers the expected set of 11 names, the license files, the `VENDORED.md` fields and the banned strings. Red.
-- [ ] Write `skills/vendor/README.md` (name, source, license, which role skills use it) and the README License line. Commit: `test(skills): vendored skill provenance checks`.
+- [x] Write the failing test `TestVendoredSkillsHaveLicenseAndProvenance`. It covers the expected set of 11 names, the license files, the `VENDORED.md` fields and the banned strings. Red.
+- [x] Write `skills/vendor/README.md` (name, source, license, which role skills use it) and the README License line. Commit: `test(skills): vendored skill provenance checks`.
 
 #### Unit 2.2: web-design-guidelines and building-components
-- [ ] Vendor web-design-guidelines together with `vercel-labs/web-interface-guidelines/command.md` saved as `references/rules.md`. Change SKILL.md to read the local file.
+- [x] Vendor web-design-guidelines together with `vercel-labs/web-interface-guidelines/command.md` saved as `references/rules.md`. Change SKILL.md to read the local file.
   - Upstream has no LICENSE file, so write the MIT text crediting Vercel and note that in `VENDORED.md`.
-- [ ] Vendor building-components under Apache-2.0.
-- [ ] Commit: `feat(skills): vendor web design and component skills`.
+- [x] Vendor building-components under Apache-2.0.
+- [x] Commit: `feat(skills): vendor web design and component skills`.
 
 #### Unit 2.3: ui-ux-pro-max
-- [ ] Vendor v2.13.0 without `scripts/tests/`. Rewrite the `search.py` paths to be relative to the skill dir, and keep the data provenance files.
-- [ ] Run the search script (Verify line). Commit: `feat(skills): vendor ui-ux-pro-max`.
+- [x] Vendor v2.13.0 without `scripts/tests/`. Rewrite the `search.py` paths to be relative to the skill dir, and keep the data provenance files.
+- [x] Run the search script (Verify line). Commit: `feat(skills): vendor ui-ux-pro-max`.
 
 #### Unit 2.4: Mobile skills
-- [ ] Vendor the mobile skills:
+- [x] Vendor the mobile skills:
   - `expo-native-ui` and `expo-design-system`, with the "Submitting Feedback" sections removed
   - `vercel-react-native-skills`
   - `mobile-ios-design` and `mobile-android-design`
-- [ ] Commit: `feat(skills): vendor mobile design skills`.
+- [x] Commit: `feat(skills): vendor mobile design skills`.
 
 #### Unit 2.5: ponytail
-- [ ] Vendor `ponytail`, `ponytail-review` and `ponytail-debt` from DietrichGebert/ponytail@`e3ba2aa`, with the MIT license.
+- [x] Vendor `ponytail`, `ponytail-review` and `ponytail-debt` from DietrichGebert/ponytail@`e3ba2aa`, with the MIT license.
   - In `ponytail`, replace "Persistence" and the intensity-switch commands with: "Swarm runs ponytail at **full** level for coders and mechanical agents; there is no mode switching in swarm sessions."
-- [ ] Run the provenance test green. Commit: `feat(skills): vendor ponytail skills`.
+- [x] Run the provenance test green. Commit: `feat(skills): vendor ponytail skills`.
 
 ### P3: Builder and reviewer skills
 **Workflow:** `tdd-reviewed` (coder → reviewer; tests assert skill content) · **Units:** 5
@@ -347,12 +347,12 @@ func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) { /* walk ../../skills
 **Verify:** `go test ./internal/db/... -count=1 && go build ./...`
 
 #### Unit 5.1: Migration 0010
-- [ ] Write the failing test `TestMigration0010PreservesRowsAndWidensChecks`: populate the fixture, migrate, then assert counts and that an insert of role `designer` / kind `design` succeeds. Red.
-- [ ] Write the migration. Green. Commit.
+- [x] Write the failing test `TestMigration0010PreservesRowsAndWidensChecks`: populate the fixture, migrate, then assert counts and that an insert of role `designer` / kind `design` succeeds. Red.
+- [x] Write the migration. Green. Commit.
 
 #### Unit 5.2: Migration 0011
-- [ ] Write the failing tests `TestMigration0011Schema` (columns, tables, indexes and CHECKs) and `TestOneLiveWorkflowPerItem` (the second `running` row fails). Red.
-- [ ] Write the migration. Green. Commit.
+- [x] Write the failing tests `TestMigration0011Schema` (columns, tables, indexes and CHECKs) and `TestOneLiveWorkflowPerItem` (the second `running` row fails). Red.
+- [x] Write the migration. Green. Commit.
 
 ### P6: Workflow model (`internal/workflow`)
 **Workflow:** `tdd-reviewed` · **Units:** 4 · This package is the contract every later package consumes.
