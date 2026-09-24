@@ -1155,6 +1155,8 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"root cause",
 			"progress",
 			"swarm-advisor",
+			`"cmd"`,
+			"## Units",
 		}},
 		{"swarm-mechanical", []string{
 			"Follow the `swarm` skill first",
