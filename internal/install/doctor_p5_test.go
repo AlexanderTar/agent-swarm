@@ -154,6 +154,42 @@ func TestDoctorChecksSkillsForEveryKind(t *testing.T) {
 	}
 }
 
+// Review round 1, Minor 9: the exact user-owned wording A1 promises, not just
+// "OK and mentions the skill somehow".
+func TestCheckSkillsReportsTheExactUserOwnedDetail(t *testing.T) {
+	c := fakeHome(t)
+	for _, name := range install.SkillNames() {
+		if name == "swarm" {
+			continue
+		}
+		p := filepath.Join(c.SkillsDir(install.KindCodex), name, "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, install.SkillBody(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A real user directory, no marker, content that is deliberately not a
+	// valid pre-A1 swarm skill body -- genuinely user-owned, not adopted.
+	own := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(own, "SKILL.md"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := install.CheckSkills(c, install.KindCodex)
+	if !ch.OK {
+		t.Fatalf("a user-owned skill must not fail the check: %+v", ch)
+	}
+	want := "skill swarm for Codex is user-owned; swarm's copy is not installed there"
+	if !strings.Contains(ch.Detail, want) {
+		t.Errorf("detail = %q, want it to contain %q", ch.Detail, want)
+	}
+}
+
 // A1: ui-ux-pro-max's search script needs python3, but its absence must warn,
 // not fail doctor (§ many machines run swarm without it and still work fine
 // otherwise).
