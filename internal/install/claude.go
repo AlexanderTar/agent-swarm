@@ -2,7 +2,6 @@ package install
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -57,12 +56,5 @@ func RemoveLegacyClaude(c Config) ([]string, error) {
 }
 
 func CheckClaude(ctx context.Context, c Config, run execx.Runner) []Check {
-	root := c.SkillsDir(KindClaude)
-	for _, name := range SkillNames() {
-		p := filepath.Join(root, name, "SKILL.md")
-		if _, err := os.Stat(p); err != nil {
-			return []Check{{"Claude skills", false, "Missing " + p + ". Run swarm install."}}
-		}
-	}
-	return []Check{{"Claude skills", true, root}}
+	return []Check{CheckSkills(c, KindClaude)}
 }

@@ -188,7 +188,7 @@ func RemoveLegacyCursor(c Config) ([]string, error) {
 }
 
 func CheckCursor(ctx context.Context, c Config, run execx.Runner) []Check {
-	return []Check{cursorMCPCheck(c), cursorHookCheck(c), cursorAttributionCheck(c)}
+	return []Check{cursorMCPCheck(c), cursorHookCheck(c), cursorAttributionCheck(c), CheckSkills(c, KindCursor)}
 }
 
 func cursorMCPCheck(c Config) Check {

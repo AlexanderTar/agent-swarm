@@ -128,7 +128,7 @@ Open http://127.0.0.1:7777 (or Open board in the menu bar).
 
 ```text
 swarm install [--plugins] [--yes]  set up launchd, tmux, superpowers plugins and agent integrations (--plugins: only install/update plugins) (--yes: remove the Agent Swarm 1.x release folders without asking)
-swarm doctor [--legacy]            check prerequisites, agents, auth, superpowers, Ollama, signing (--legacy: report Agent Swarm 1.x state still on this Mac)
+swarm doctor [--legacy]            check prerequisites, agents, auth, superpowers, skills, Ollama, signing (--legacy: report Agent Swarm 1.x state still on this Mac)
 swarm status                       daemon, active agents, open requests
 swarm new --name N --intent feature|debug [--repo PATH...] [--agent A --model M --effort E] [--request TEXT]
 swarm start KEY [--agent A --model M --effort E] [--repo PATH...]

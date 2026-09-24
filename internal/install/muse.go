@@ -50,14 +50,19 @@ func WriteMuse(ctx context.Context, c Config, _ execx.Runner) ([]string, error) 
 	return append(changed, skills...), err
 }
 
-// CheckMuse is doctor's muse block. Muse has no hooks step (see WriteMuse), so
-// the only thing to verify is the swarm MCP entry in settings.json plus the
-// hook binary it points at -- the same shape and size as agy's single check.
+// CheckMuse is doctor's muse block (plus A1's skills check). Muse has no hooks
+// step (see WriteMuse), so the only thing to verify is the swarm MCP entry in
+// settings.json plus the hook binary it points at -- the same shape and size
+// as agy's single check.
 func CheckMuse(ctx context.Context, c Config, run execx.Runner) []Check {
+	return []Check{museMCPCheck(c), CheckSkills(c, KindMuse)}
+}
+
+func museMCPCheck(c Config) Check {
 	p := c.Muse("settings.json")
 	body, err := os.ReadFile(p)
 	if err != nil {
-		return []Check{{"muse MCP", false, "Not installed. Run swarm install."}}
+		return Check{"muse MCP", false, "Not installed. Run swarm install."}
 	}
 	var f struct {
 		MCPServers map[string]struct {
@@ -65,17 +70,17 @@ func CheckMuse(ctx context.Context, c Config, run execx.Runner) []Check {
 		} `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(body, &f); err != nil {
-		return []Check{{"muse MCP", false, "Invalid " + p + ". Run swarm install."}}
+		return Check{"muse MCP", false, "Invalid " + p + ". Run swarm install."}
 	}
 	entry, ok := f.MCPServers["swarm"]
 	if !ok {
-		return []Check{{"muse MCP", false, "The swarm MCP server is missing from " + p + ". Run swarm install."}}
+		return Check{"muse MCP", false, "The swarm MCP server is missing from " + p + ". Run swarm install."}
 	}
 	if entry.Command != c.Bin {
-		return []Check{{"muse MCP", false, "The swarm MCP server points at " + entry.Command + ". Run swarm install."}}
+		return Check{"muse MCP", false, "The swarm MCP server points at " + entry.Command + ". Run swarm install."}
 	}
 	if _, err := os.Stat(c.Bin); err != nil {
-		return []Check{{"muse MCP", false, "The swarm binary is missing: " + c.Bin + ". Run make install."}}
+		return Check{"muse MCP", false, "The swarm binary is missing: " + c.Bin + ". Run make install."}
 	}
-	return []Check{{"muse MCP", true, p}}
+	return Check{"muse MCP", true, p}
 }

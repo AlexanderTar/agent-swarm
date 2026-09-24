@@ -411,6 +411,39 @@ func SyncSkills(home string) ([]string, error) {
 	return changed, nil
 }
 
+// CheckSkills is doctor's per-kind skills check (A1, unit 1.4): every
+// registered skill must be reachable under k's own skills root, whether that
+// is v2's own symlink/copy or a same-named skill the user made themselves.
+// The latter is reported (not failed): swarm's own copy simply is not
+// installed there.
+func CheckSkills(c Config, k Kind) Check {
+	name := k.Display() + " skills"
+	root := c.SkillsDir(k)
+	skillsHome := filepath.Join(c.Home, "skills")
+	var userOwned []string
+	for _, s := range SkillNames() {
+		dst := filepath.Join(root, s)
+		if _, err := os.Stat(filepath.Join(dst, "SKILL.md")); err != nil {
+			return Check{name, false, "Missing " + dst + ". Run swarm install."}
+		}
+		owned, err := isSwarmOwned(dst, skillsHome)
+		if err != nil {
+			return Check{name, false, err.Error()}
+		}
+		if !owned {
+			userOwned = append(userOwned, s)
+		}
+	}
+	if len(userOwned) > 0 {
+		var notes []string
+		for _, s := range userOwned {
+			notes = append(notes, fmt.Sprintf("skill %s for %s is user-owned; swarm's copy is not installed there", s, k.Display()))
+		}
+		return Check{name, true, strings.Join(notes, " ")}
+	}
+	return Check{name, true, root}
+}
+
 // pruneUnkept removes anything under dst that keep does not list, deepest
 // files first so a directory empties before it is itself considered.
 func pruneUnkept(dst string, keep map[string]bool) error {

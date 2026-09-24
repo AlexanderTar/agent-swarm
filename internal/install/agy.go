@@ -148,49 +148,53 @@ func dropSwarmMCPServer(m map[string]any) error {
 	return nil
 }
 
-// CheckAgy is doctor's agy block (§21.4 row 1).
+// CheckAgy is doctor's agy block (§21.4 row 1, plus A1's skills check).
 func CheckAgy(ctx context.Context, c Config, run execx.Runner) []Check {
+	return []Check{agyHooksCheck(c), CheckSkills(c, KindAgy)}
+}
+
+func agyHooksCheck(c Config) Check {
 	p := c.Gemini("config", "hooks.json")
 	body, err := os.ReadFile(p)
 	if err != nil {
-		return []Check{{"agy hooks", false, "Not installed. Run swarm install."}}
+		return Check{"agy hooks", false, "Not installed. Run swarm install."}
 	}
 	if strings.Contains(string(body), "${PLUGIN_ROOT}") {
-		return []Check{{"agy hooks", false, p + " still uses ${PLUGIN_ROOT}. Run swarm install."}}
+		return Check{"agy hooks", false, p + " still uses ${PLUGIN_ROOT}. Run swarm install."}
 	}
 	var f map[string]map[string][]map[string]any
 	if err := json.Unmarshal(body, &f); err != nil {
-		return []Check{{"agy hooks", false, "Invalid " + p + ". Run swarm install."}}
+		return Check{"agy hooks", false, "Invalid " + p + ". Run swarm install."}
 	}
 	block, ok := f[agyHookName]
 	if !ok {
-		return []Check{{"agy hooks", false, "The swarm hook block is missing from " + p + ". Run swarm install."}}
+		return Check{"agy hooks", false, "The swarm hook block is missing from " + p + ". Run swarm install."}
 	}
 	for _, ev := range agyFlatEvents {
 		entries := block[ev]
 		if len(entries) == 0 {
-			return []Check{{"agy hooks", false, ev + " is missing from " + p + ". Run swarm install."}}
+			return Check{"agy hooks", false, ev + " is missing from " + p + ". Run swarm install."}
 		}
 		cmd, _ := entries[0]["command"].(string)
 		if cmd == "" {
-			return []Check{{"agy hooks", false,
-				ev + " must be a flat { command } handler; a nested hooks array fails to parse in agy. Run swarm install."}}
+			return Check{"agy hooks", false,
+				ev + " must be a flat { command } handler; a nested hooks array fails to parse in agy. Run swarm install."}
 		}
 		if cmd != c.Bin+" hook agy "+ev {
-			return []Check{{"agy hooks", false, ev + " points somewhere else: " + cmd + ". Run swarm install."}}
+			return Check{"agy hooks", false, ev + " points somewhere else: " + cmd + ". Run swarm install."}
 		}
 	}
 	for _, ev := range agyMatcherEvents {
 		entries := block[ev]
 		if len(entries) == 0 {
-			return []Check{{"agy hooks", false, ev + " is missing from " + p + ". Run swarm install."}}
+			return Check{"agy hooks", false, ev + " is missing from " + p + ". Run swarm install."}
 		}
 		if m, _ := entries[0]["matcher"].(string); m != "*" {
-			return []Check{{"agy hooks", false, ev + " needs a matcher wrapper. Run swarm install."}}
+			return Check{"agy hooks", false, ev + " needs a matcher wrapper. Run swarm install."}
 		}
 	}
 	if _, err := os.Stat(c.Bin); err != nil {
-		return []Check{{"agy hooks", false, "The hook binary is missing: " + c.Bin + ". Run make install."}}
+		return Check{"agy hooks", false, "The hook binary is missing: " + c.Bin + ". Run make install."}
 	}
-	return []Check{{"agy hooks", true, p}}
+	return Check{"agy hooks", true, p}
 }

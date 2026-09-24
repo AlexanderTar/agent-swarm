@@ -42,7 +42,7 @@ var tmuxVersion = regexp.MustCompile(`tmux (\d+)\.(\d+)`)
 // item §11.1 says must fail.
 func (d Doctor) Checks(ctx context.Context) []Check {
 	out := []Check{d.tmux(ctx), d.ghostty(), d.ollama(ctx), d.agents(), d.signing(ctx),
-		d.launchAgent(), d.daemon(ctx), d.data()}
+		d.launchAgent(), d.daemon(ctx), d.data(), d.python3()}
 	for _, k := range d.installedKinds(ctx) {
 		switch k {
 		case KindClaude:
@@ -170,6 +170,16 @@ func (d Doctor) agents() Check {
 		return Check{"Agents", false, "Install at least one agent CLI: claude, codex, agy or cursor-agent."}
 	}
 	return Check{"Agents", true, strings.Join(found, ", ")}
+}
+
+// python3 warns, but never fails doctor (A1): the vendored ui-ux-pro-max
+// skill's search script needs it, but plenty of swarm setups work fine
+// without ever running it.
+func (d Doctor) python3() Check {
+	if _, err := d.LookPath("python3"); err != nil {
+		return Check{"python3", true, "python3 isn't installed. ui-ux-pro-max's search script needs it: install it if you use that skill."}
+	}
+	return Check{"python3", true, "python3 is installed."}
 }
 
 func (d Doctor) signing(ctx context.Context) Check {

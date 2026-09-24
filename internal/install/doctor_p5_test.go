@@ -126,3 +126,45 @@ func TestChecksKeepsThePhaseOneOrderFirst(t *testing.T) {
 		}
 	}
 }
+
+// A1: every installed kind gets its own skills check, not only Claude.
+func TestDoctorChecksSkillsForEveryKind(t *testing.T) {
+	c := fakeHome(t)
+	for _, k := range install.Kinds {
+		if _, _, err := install.WriteSkills(c, k); err != nil {
+			t.Fatalf("%s: %v", k, err)
+		}
+	}
+	d := newTestDoctor(t, c, install.Kinds...)
+	seen := map[install.Kind]bool{}
+	for _, ch := range d.Checks(context.Background()) {
+		for _, k := range install.Kinds {
+			if ch.Name == k.Display()+" skills" {
+				seen[k] = true
+				if !ch.OK {
+					t.Errorf("%s skills check failed after WriteSkills: %+v", k, ch)
+				}
+			}
+		}
+	}
+	for _, k := range install.Kinds {
+		if !seen[k] {
+			t.Errorf("no skills check for %s", k)
+		}
+	}
+}
+
+// A1: ui-ux-pro-max's search script needs python3, but its absence must warn,
+// not fail doctor (§ many machines run swarm without it and still work fine
+// otherwise).
+func TestDoctorWarnsWithoutPython3(t *testing.T) {
+	c := fakeHome(t)
+	d := newTestDoctor(t, c) // LookPath always errors, so python3 "isn't found"
+	ch := findCheck(t, d.Checks(context.Background()), "python3")
+	if !ch.OK {
+		t.Errorf("python3 must warn, not fail doctor: %+v", ch)
+	}
+	if !strings.Contains(ch.Detail, "python3") {
+		t.Errorf("detail should mention python3: %+v", ch)
+	}
+}
