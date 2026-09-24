@@ -460,24 +460,24 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action
 - `cd web && pnpm test`
 
 #### Unit 7.1: Designer role plumbing (Go)
-- [ ] Write the failing tests `TestSettingsDefaultsIncludeDesigner`, `TestSpawnDesignerRoleAccepted` and `TestOverridableRolesIncludeDesigner`. Red. Implement. Green. Commit.
+- [x] Write the failing tests `TestSettingsDefaultsIncludeDesigner`, `TestSpawnDesignerRoleAccepted` and `TestOverridableRolesIncludeDesigner`. Red. Implement. Green. Commit.
 
 #### Unit 7.2: Block the native Workflow tool
-- [ ] Write the failing tests `TestPreToolUseBlocksWorkflowTool` and `TestWorkflowToolAllowedOutsideSwarm`. Red. Implement. Green. Commit.
+- [x] Write the failing tests `TestPreToolUseBlocksWorkflowTool` and `TestWorkflowToolAllowedOutsideSwarm`. Red. Implement. Green. Commit.
 
 #### Unit 7.3: Item fields in the store
-- [ ] Write the failing tests:
+- [x] Write the failing tests:
   - `TestCreateTaskStoresResolvedWorkflowAndRoleHint`
   - `TestCreateRejectsInvalidWorkflow`
   - `TestCreateRejectsStepsAndUnits`
   - `TestOrchestratorTaskNeedsWorkflow`
   - `TestBoardTaskMayOmitWorkflow`
   - `TestUserCannotSetWorkflow`
-- [ ] Red. Implement the model, `scanItem` and the create/update validation. Green. Commit.
+- [x] Red. Implement the model, `scanItem` and the create/update validation. Green. Commit.
 
 #### Unit 7.4: Wire the fields through MCP and HTTP
-- [ ] Write the failing tests `TestSwarmItemsAcceptsWorkflowUnitsVerify`, `TestSwarmReadReturnsWorkflowFields` and `TestItemJSONIncludesWorkflowFields`. Red.
-- [ ] Implement, and update the web `Item` type. Green. Commit.
+- [x] Write the failing tests `TestSwarmItemsAcceptsWorkflowUnitsVerify`, `TestSwarmReadReturnsWorkflowFields` and `TestItemJSONIncludesWorkflowFields`. Red.
+- [x] Implement, and update the web `Item` type. Green. Commit.
 
 ### P8: Checkpoint semantics
 **Workflow:** `tdd-reviewed` · **Units:** 5 · Every unit touches `internal/runtime/checkpoint.go`, so they share context.
