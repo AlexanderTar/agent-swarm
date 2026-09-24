@@ -259,21 +259,21 @@ func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) { /* walk ../../skills
 - `go test ./internal/install/...`
 
 #### Unit 3.1: Reference-checking tests
-- [ ] Write `TestRoleSkillsReferenceTheirSkills` (a table from skill to required substrings, covering the five skills in this package) and `TestSuperpowersReferencesAreKnown`. Red. Commit with unit 3.2.
+- [x] Write `TestRoleSkillsReferenceTheirSkills` (a table from skill to required substrings, covering the five skills in this package) and `TestSuperpowersReferencesAreKnown`. Red. Commit with unit 3.2.
 
 #### Unit 3.2: Core `swarm` rewrite
-- [ ] Rewrite `skills/swarm/SKILL.md` as protocol only. TDD rule 11 moves to `swarm-coder` and `swarm-debugger`. Add the workflow-step rule and the disabled-tool list.
-- [ ] Commit: `docs(skills): core swarm protocol for workflow steps`.
+- [x] Rewrite `skills/swarm/SKILL.md` as protocol only. TDD rule 11 moves to `swarm-coder` and `swarm-debugger`. Add the workflow-step rule and the disabled-tool list.
+- [x] Commit: `docs(skills): core swarm protocol for workflow steps`.
 
 #### Unit 3.3: `swarm-coder`
-- [ ] Write it per spec A4, including the ponytail precedence rule and package execution. Its test row goes green. Commit.
+- [x] Write it per spec A4, including the ponytail precedence rule and package execution. Its test row goes green. Commit.
 
 #### Unit 3.4: `swarm-reviewer` and `swarm-ui-reviewer`
-- [ ] Write both. Their test rows go green. Commit.
+- [x] Write both. Their test rows go green. Commit.
 
 #### Unit 3.5: `swarm-designer` and adopting `swarm-batching`
-- [ ] Write `swarm-designer`. Review the draft `swarm-batching` against spec C4/C5 and fix any drift. Add its test row, which requires the role assignment table and the size-bounds table.
-- [ ] All green. Commit: `docs(skills): designer skill; adopt swarm-batching`.
+- [x] Write `swarm-designer`. Review the draft `swarm-batching` against spec C4/C5 and fix any drift. Add its test row, which requires the role assignment table and the size-bounds table.
+- [x] All green. Commit: `docs(skills): designer skill; adopt swarm-batching`.
 
 ### P4: Support-role skills and kickoff
 **Workflow:** `tdd-reviewed` · **Units:** 4
