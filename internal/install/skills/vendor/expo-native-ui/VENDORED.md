@@ -5,6 +5,5 @@
 - Changes:
   - Removed the "Submitting Feedback" section (it shells out to run an
     upstream feedback-collection package on every use; not applicable to
-    a vendored, offline copy).
-  - Dropped the upstream `agents/` directory (an OpenAI-specific agent
-    config file, not part of the skill content).
+    a vendored, offline copy). This is the only change spec A2 lists for
+    this skill; `agents/openai.yaml` ships unchanged.

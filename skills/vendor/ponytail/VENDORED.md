@@ -7,6 +7,9 @@
     (off/on by saying "stop ponytail" / "normal mode", `/ponytail
     lite|full|ultra`) with a fixed note: swarm agents have no user to
     switch modes for, so swarm always runs ponytail at `full`.
+  - Removed the same "stop ponytail" / "normal mode" / session-persistence
+    sentence from the closing "Boundaries" section for the same reason (a
+    second copy of the mode-switch instruction the spec calls out).
   - `description` was a multi-line YAML folded scalar (`description: >`);
     reflowed it to one line, wording unchanged, since this repo's
     frontmatter parser (`internal/install/skills.go`) only reads flat,

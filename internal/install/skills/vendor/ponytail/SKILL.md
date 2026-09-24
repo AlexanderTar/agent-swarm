@@ -101,7 +101,6 @@ test, YAGNI applies to tests too.
 ## Boundaries
 
 Ponytail governs what you build, not how you talk (pair with Caveman for
-terse prose). "stop ponytail" / "normal mode": revert. Level persists until
-changed or session end.
+terse prose).
 
 The shortest path to done is the right path.
