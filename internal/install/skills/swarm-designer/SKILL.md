@@ -30,4 +30,4 @@ Write to `~/.swarm/designs/<ROOT-KEY>/<ITEM-KEY>-<slug>.md`. Sections, in order:
 - **Open questions** — anything left unresolved; never silently pick an answer here and hide the uncertainty.
 
 ## Completing
-Register the artifact and write `completed` with the artifact's path in `artifacts` (gate `artifact:design` reads it from there). Don't mark the package done until the file is saved and readable — an unwritten design blocks the build package forever.
+Write `completed` with the artifact's path in `artifacts` (gate `artifact:design` reads it from there; the daemon registers it, not you). Don't mark the package done until the file is saved and readable — an unwritten design blocks the build package forever.
