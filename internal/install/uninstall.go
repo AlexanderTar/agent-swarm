@@ -57,7 +57,10 @@ func Uninstall(ctx context.Context, o AgentsOpts) error {
 
 	// Every registered skill, from every kind's root — but only swarm's own
 	// entries (A1): a same-named skill the user made themselves is left alone.
-	skillsHome := filepath.Join(o.Cfg.Home, "skills")
+	skillsHome, err := SkillsHome(o.Cfg.Home)
+	if err != nil {
+		return err
+	}
 	for _, k := range Kinds {
 		for _, name := range SkillNames() {
 			dir := filepath.Join(o.Cfg.SkillsDir(k), name)

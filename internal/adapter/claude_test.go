@@ -405,6 +405,39 @@ func TestClaudeProjectConfigLinksSkills(t *testing.T) {
 	}
 }
 
+// Review round 1, Major 2: a pre-existing real (non-symlink) skill directory
+// in the spawn's own scratch cwd -- left by an older, copy-based
+// writeProjectSwarmConfig, or simply stale from a previous launch this same
+// cwd was somehow reused for -- is swarm-owned by construction: every file
+// under this cwd is the daemon's own (internal/runtime/agents.go creates it
+// fresh right before Launch/Resume, never a real git worktree the user
+// touches). It must be replaced with v2's own symlink, not left alone as if
+// it were the user's.
+func TestClaudeProjectConfigAdoptsAPreExistingRealSkillDir(t *testing.T) {
+	d := testDeps(t)
+	seedSkillsHome(t, d.Home)
+	s := claudeSpec(t, d)
+	old := filepath.Join(s.Cwd, ".claude", "skills", "swarm")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "SKILL.md"), []byte("stale copy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+
+	fi, err := os.Lstat(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the pre-existing real skill dir in the spawn cwd was not replaced with v2's symlink")
+	}
+}
+
 func TestClaudeOmitsInstructionsWhenUnset(t *testing.T) {
 	d := testDeps(t)
 	spec := claudeSpec(t, d)

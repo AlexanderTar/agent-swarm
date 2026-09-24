@@ -125,8 +125,10 @@ func Leftovers(c Config) []Leftover {
 		// A1: v2 legitimately symlinks Claude's own skills root into
 		// ~/.swarm/skills; only a link that does not resolve there is v1's.
 		if link == claudeSkillsLink {
-			if owned, err := isSwarmOwned(link, filepath.Join(c.Home, "skills")); err == nil && owned {
-				continue
+			if skillsHome, err := SkillsHome(c.Home); err == nil {
+				if owned, err := isSwarmOwned(link, skillsHome); err == nil && owned {
+					continue
+				}
 			}
 		}
 		add(link, "Agent Swarm 1.x symlink")

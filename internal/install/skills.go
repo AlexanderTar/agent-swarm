@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // The whole skills/ tree ships inside the binary (A1): every skill's SKILL.md
@@ -44,10 +45,11 @@ func SkillFS() fs.FS {
 	return sub
 }
 
-// Skills walks the embedded tree and returns one entry per directory that holds
-// a SKILL.md, sorted by name for a deterministic install order.
-func Skills() ([]Skill, error) {
-	fsys := SkillFS()
+// skillsIn walks fsys and returns one entry per directory that holds a
+// SKILL.md, sorted by name for a deterministic install order. It is the
+// fs.FS-generic primitive behind Skills() (bound to the real embedded tree)
+// and syncSkills' tests (bound to a synthetic fstest.MapFS).
+func skillsIn(fsys fs.FS) ([]Skill, error) {
 	var out []Skill
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -78,6 +80,15 @@ func Skills() ([]Skill, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
+
+// cachedSkills memoizes skillsIn(SkillFS()): the embed is fixed at compile
+// time, so re-walking and re-parsing frontmatter on every SkillNames() or
+// SkillBody() call (both go through Skills()) is pure waste.
+var cachedSkills = sync.OnceValues(func() ([]Skill, error) { return skillsIn(SkillFS()) })
+
+// Skills returns the registry derived from the embedded tree (cached: see
+// cachedSkills).
+func Skills() ([]Skill, error) { return cachedSkills() }
 
 // frontmatterField reads a top-level "key: value" line from the YAML-ish
 // frontmatter between the first pair of "---" fence lines. It is deliberately
@@ -166,11 +177,26 @@ var skillLinkMode = map[Kind]LinkMode{
 // hardcoding a mode that could drift from skillLinkMode.
 func SkillLinkMode(k Kind) LinkMode { return skillLinkMode[k] }
 
+// SkillsHome is the one on-disk copy every kind's WriteSkills links or copies
+// from (A1): <home>/skills, where home is the swarm home (Config.Home, e.g.
+// ~/.swarm, or a custom --home/SWARM_HOME). It is always made absolute: the
+// result also becomes a symlink target (LinkSkills), and a relative one would
+// resolve against whatever cwd the *reading* process (an agent CLI, possibly
+// launched from a different directory) happens to have, not the writer's.
+func SkillsHome(home string) (string, error) {
+	abs, err := filepath.Abs(home)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(abs, "skills"), nil
+}
+
 // isSwarmOwned reports whether dst is safe for WriteSkills/SyncSkills/Uninstall
 // to create, replace or remove: nothing is there yet, it is a symlink whose
-// target resolves inside skillsHome, or it is a directory carrying
-// ManagedMarker. Anything else (a real file or a plain directory with no
-// marker) is the user's own same-named skill.
+// target resolves inside skillsHome, it is a directory carrying ManagedMarker,
+// or it is a pre-A1 real directory (isPreA1CoreSkillDir). Anything else (a
+// real file, or a plain directory with no marker that isn't a recognized
+// pre-A1 skill dir) is the user's own same-named skill.
 func isSwarmOwned(dst, skillsHome string) (bool, error) {
 	fi, err := os.Lstat(dst)
 	if os.IsNotExist(err) {
@@ -191,10 +217,35 @@ func isSwarmOwned(dst, skillsHome string) (bool, error) {
 		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
 	}
 	if fi.IsDir() {
-		_, err := os.Stat(filepath.Join(dst, ManagedMarker))
-		return err == nil, nil
+		if _, err := os.Stat(filepath.Join(dst, ManagedMarker)); err == nil {
+			return true, nil
+		}
+		return isPreA1CoreSkillDir(dst), nil
 	}
 	return false, nil
+}
+
+// isPreA1CoreSkillDir reports whether dst is a marker-less directory written
+// by the pre-A1 WriteSkills, which wrote only a single SKILL.md per skill, for
+// the two skills that existed before this feature (swarm, swarm-orchestrator;
+// A1 is the first release with vendored or otherwise-nested skills, so no
+// other name could be a pre-A1 install). Recognizing and adopting it (rather
+// than treating it as user-owned) means an operator who installed before A1
+// does not have their own v2 skills frozen out of every later sync or repair.
+func isPreA1CoreSkillDir(dst string) bool {
+	name := filepath.Base(dst)
+	if name != "swarm" && name != "swarm-orchestrator" {
+		return false
+	}
+	entries, err := os.ReadDir(dst)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "SKILL.md" {
+		return false
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil {
+		return false
+	}
+	return frontmatterField(body, "name") == name
 }
 
 // applyLink makes dst reflect src under mode and reports whether it changed
@@ -220,7 +271,17 @@ func applyLink(dst, src string, mode LinkMode) (bool, error) {
 	// Copy: mirror src (the synced ~/.swarm/skills/<name> tree) into dst
 	// file-by-file, so a previous copy that has drifted self-heals instead of
 	// silently keeping stale content next to a marker that only proves it was
-	// once written by swarm.
+	// once written by swarm. A leftover symlink at dst (e.g. this kind used to
+	// be Symlink-mode, or a stale entry pointing at a *different* skill's
+	// shared directory) must be removed first: filepath.WalkDir/MkdirAll would
+	// otherwise silently follow it, writing this skill's files through the
+	// link into whatever it actually points at -- possibly another skill's
+	// shared ~/.swarm/skills copy.
+	if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(dst); err != nil {
+			return false, err
+		}
+	}
 	return copyTreeSynced(src, dst)
 }
 
@@ -273,45 +334,15 @@ func copyTreeSynced(src, dst string) (bool, error) {
 	return changed, nil
 }
 
-// LinkSkills exposes every registered skill under root, pointed at
-// skillsHome/<name> (A1). An entry that is not swarm-owned (isSwarmOwned) is
-// left untouched and reported in skipped rather than overwritten.
-func LinkSkills(root, skillsHome string, mode LinkMode) (skipped []string, err error) {
+// linkSkills is the shared implementation behind LinkSkills and WriteSkills:
+// it exposes every registered skill under root, pointed at skillsHome/<name>
+// (A1), and prunes a swarm-owned entry under root whose name is no longer
+// registered (a skill that was renamed or retired). An entry that is not
+// swarm-owned is left untouched and reported in skipped.
+func linkSkills(root, skillsHome string, mode LinkMode) (changed, skipped []string, err error) {
+	registered := make(map[string]bool, len(SkillNames()))
 	for _, name := range SkillNames() {
-		dst := filepath.Join(root, name)
-		src := filepath.Join(skillsHome, name)
-		owned, err := isSwarmOwned(dst, skillsHome)
-		if err != nil {
-			return skipped, err
-		}
-		if !owned {
-			skipped = append(skipped, dst)
-			continue
-		}
-		if _, err := applyLink(dst, src, mode); err != nil {
-			return skipped, err
-		}
-	}
-	return skipped, nil
-}
-
-// WriteSkills makes every registered skill available under k's own skills
-// root, symlinked or copied from ~/.swarm/skills per skillLinkMode (A1). It
-// syncs that shared copy first, so a fresh install has real content to link to
-// even before the daemon's first SyncSkills. changed lists the skills it
-// created or replaced; skipped lists ones left alone because the user already
-// owns a same-named skill there.
-func WriteSkills(c Config, k Kind) (changed, skipped []string, err error) {
-	if _, err := SyncSkills(c.UserHome); err != nil {
-		return nil, nil, err
-	}
-	root := c.SkillsDir(k)
-	if root == "" {
-		return nil, nil, fmt.Errorf("install: no skills folder for agent %q", k)
-	}
-	skillsHome := filepath.Join(c.Home, "skills")
-	mode := skillLinkMode[k]
-	for _, name := range SkillNames() {
+		registered[name] = true
 		dst := filepath.Join(root, name)
 		src := filepath.Join(skillsHome, name)
 		owned, err := isSwarmOwned(dst, skillsHome)
@@ -330,7 +361,131 @@ func WriteSkills(c Config, k Kind) (changed, skipped []string, err error) {
 			changed = append(changed, dst)
 		}
 	}
-	return changed, skipped, nil
+	pruned, err := pruneUnregistered(root, skillsHome, registered)
+	if err != nil {
+		return changed, skipped, err
+	}
+	return append(changed, pruned...), skipped, nil
+}
+
+// pruneUnregistered removes a swarm-owned entry directly under root whose
+// name is not in registered (a skill that was renamed or retired since it was
+// last installed there). A user-owned same-named leftover is never touched.
+func pruneUnregistered(root, skillsHome string, registered map[string]bool) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, e := range entries {
+		if registered[e.Name()] {
+			continue
+		}
+		dst := filepath.Join(root, e.Name())
+		owned, err := isSwarmOwned(dst, skillsHome)
+		if err != nil {
+			return removed, err
+		}
+		if !owned {
+			continue
+		}
+		if err := os.RemoveAll(dst); err != nil {
+			return removed, err
+		}
+		removed = append(removed, dst)
+	}
+	return removed, nil
+}
+
+// LinkSkills exposes every registered skill under root, pointed at
+// skillsHome/<name> (A1). An entry that is not swarm-owned (isSwarmOwned) is
+// left untouched and reported in skipped rather than overwritten.
+func LinkSkills(root, skillsHome string, mode LinkMode) (skipped []string, err error) {
+	_, skipped, err = linkSkills(root, skillsHome, mode)
+	return skipped, err
+}
+
+// WriteSkills makes every registered skill available under k's own skills
+// root, symlinked or copied from ~/.swarm/skills per skillLinkMode (A1). It
+// syncs that shared copy first, so a fresh install has real content to link to
+// even before the daemon's first SyncSkills. changed lists the skills it
+// created or replaced; skipped lists ones left alone because the user already
+// owns a same-named skill there.
+func WriteSkills(c Config, k Kind) (changed, skipped []string, err error) {
+	if _, err := SyncSkills(c.Home); err != nil {
+		return nil, nil, err
+	}
+	root := c.SkillsDir(k)
+	if root == "" {
+		return nil, nil, fmt.Errorf("install: no skills folder for agent %q", k)
+	}
+	skillsHome, err := SkillsHome(c.Home)
+	if err != nil {
+		return nil, nil, err
+	}
+	return linkSkills(root, skillsHome, skillLinkMode[k])
+}
+
+// RefreshSkillLinks re-links every kind whose skills root already holds at
+// least one swarm-owned entry -- i.e. WriteSkills has run for it before --
+// against the current shared skills copy. This is what lets the daemon's own
+// startup sync (SyncSkills) also repair drift in an already-installed kind's
+// Copy-mode copy, or a broken Symlink, without requiring a `swarm install`
+// re-run. A kind that was never installed (no swarm-owned entry yet) is left
+// alone: it is never silently created here. Per-kind errors are returned in
+// the map rather than aborting the rest.
+func RefreshSkillLinks(c Config) map[Kind]error {
+	errs := map[Kind]error{}
+	skillsHome, err := SkillsHome(c.Home)
+	if err != nil {
+		for _, k := range Kinds {
+			errs[k] = err
+		}
+		return errs
+	}
+	for _, k := range Kinds {
+		root := c.SkillsDir(k)
+		if root == "" || !anyAlreadyInstalled(root, skillsHome) {
+			continue
+		}
+		if _, _, err := linkSkills(root, skillsHome, skillLinkMode[k]); err != nil {
+			errs[k] = err
+		}
+	}
+	return errs
+}
+
+// anyAlreadyInstalled reports whether root already holds at least one
+// swarm-owned registered skill entry -- the signal that WriteSkills has run
+// for this kind before, distinct from isSwarmOwned's own "nothing there yet"
+// case (which must not count as "installed").
+func anyAlreadyInstalled(root, skillsHome string) bool {
+	for _, name := range SkillNames() {
+		dst := filepath.Join(root, name)
+		if _, err := os.Lstat(dst); err != nil {
+			continue
+		}
+		if owned, err := isSwarmOwned(dst, skillsHome); err == nil && owned {
+			return true
+		}
+	}
+	return false
+}
+
+// SyncAndRefreshSkills is the daemon's startup skills step (A1): sync the
+// shared skills copy from the embedded tree, then refresh every
+// already-installed kind's own skills root against it (RefreshSkillLinks).
+// syncErr means the shared copy itself failed and skillErrs is nil; a
+// per-kind refresh error is returned in skillErrs instead, since one kind's
+// problem must never mask another's or stop the daemon starting.
+func SyncAndRefreshSkills(c Config) (skillErrs map[Kind]error, syncErr error) {
+	if _, err := SyncSkills(c.Home); err != nil {
+		return nil, err
+	}
+	return RefreshSkillLinks(c), nil
 }
 
 // scriptsFileMode returns the mode a synced file should carry: executable
@@ -345,22 +500,25 @@ func scriptsFileMode(rel string) os.FileMode {
 	return 0o644
 }
 
-// SyncSkills extracts the embedded skills tree to ~/.swarm/skills/<name>/ (one
-// on-disk copy every kind links or copies from, A1). Vendored skills are
-// flattened by name: install.Skill.Dir may be nested (vendor/<name>), but the
-// extracted copy always lands directly under <name>. Each file is written with
-// WriteIfChanged, each skill directory gets ManagedMarker, and any file left
-// over from a previous sync that is no longer part of the embed is pruned.
-func SyncSkills(home string) ([]string, error) {
-	root := filepath.Join(home, ".swarm", "skills")
-	sk, err := Skills()
+// syncSkills mirrors every skill in fsys (an already-namespaced skills tree --
+// SkillFS() in production, a synthetic fstest.MapFS in tests) into
+// dstRoot/<name>, flattening a vendored skill's nested path. Each file is
+// written with WriteIfChanged, each skill directory gets ManagedMarker, any
+// file left over from a previous sync that is no longer part of fsys is
+// pruned, and a whole skill directory under dstRoot that is no longer
+// registered at all (renamed or retired) is removed too, as long as it is
+// still swarm-managed (carries the marker) -- a real user directory of the
+// same name, though unexpected directly under dstRoot, is never touched.
+func syncSkills(fsys fs.FS, dstRoot string) ([]string, error) {
+	sk, err := skillsIn(fsys)
 	if err != nil {
 		return nil, err
 	}
-	fsys := SkillFS()
 	var changed []string
+	registered := make(map[string]bool, len(sk))
 	for _, s := range sk {
-		dst := filepath.Join(root, s.Name)
+		registered[s.Name] = true
+		dst := filepath.Join(dstRoot, s.Name)
 		keep := map[string]bool{dst: true}
 		err := fs.WalkDir(fsys, s.Dir, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -408,7 +566,38 @@ func SyncSkills(home string) ([]string, error) {
 			return changed, err
 		}
 	}
+
+	// A skill that used to be registered (renamed or retired) must not linger
+	// under dstRoot forever just because fsys no longer embeds it.
+	entries, err := os.ReadDir(dstRoot)
+	if err != nil && !os.IsNotExist(err) {
+		return changed, err
+	}
+	for _, e := range entries {
+		if registered[e.Name()] {
+			continue
+		}
+		dst := filepath.Join(dstRoot, e.Name())
+		if _, err := os.Stat(filepath.Join(dst, ManagedMarker)); err != nil {
+			continue // not (or no longer) swarm-managed; never touch it
+		}
+		if err := os.RemoveAll(dst); err != nil {
+			return changed, err
+		}
+		changed = append(changed, dst)
+	}
 	return changed, nil
+}
+
+// SyncSkills extracts the embedded skills tree to SkillsHome(home)/<name>/
+// (one on-disk copy every kind links or copies from, A1). home is the swarm
+// home (Config.Home), not the user's home.
+func SyncSkills(home string) ([]string, error) {
+	root, err := SkillsHome(home)
+	if err != nil {
+		return nil, err
+	}
+	return syncSkills(SkillFS(), root)
 }
 
 // CheckSkills is doctor's per-kind skills check (A1, unit 1.4): every
@@ -419,7 +608,10 @@ func SyncSkills(home string) ([]string, error) {
 func CheckSkills(c Config, k Kind) Check {
 	name := k.Display() + " skills"
 	root := c.SkillsDir(k)
-	skillsHome := filepath.Join(c.Home, "skills")
+	skillsHome, err := SkillsHome(c.Home)
+	if err != nil {
+		return Check{name, false, err.Error()}
+	}
 	var userOwned []string
 	for _, s := range SkillNames() {
 		dst := filepath.Join(root, s)
@@ -445,7 +637,11 @@ func CheckSkills(c Config, k Kind) Check {
 }
 
 // pruneUnkept removes anything under dst that keep does not list, deepest
-// files first so a directory empties before it is itself considered.
+// files first so a directory empties before it is itself considered. A
+// `*.swarm-tmp` entry is always skipped: it is WriteIfChanged's own in-flight
+// temp file (write-then-rename), and a concurrent sync elsewhere (the daemon
+// and a `swarm install` can run at the same time) must never delete out from
+// under a rename that is mid-flight.
 func pruneUnkept(dst string, keep map[string]bool) error {
 	return filepath.WalkDir(dst, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -453,6 +649,9 @@ func pruneUnkept(dst string, keep map[string]bool) error {
 				return nil
 			}
 			return err
+		}
+		if strings.HasSuffix(p, ".swarm-tmp") {
+			return nil
 		}
 		if keep[p] {
 			return nil

@@ -1,6 +1,7 @@
 package install_test
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"path"
@@ -107,20 +108,28 @@ func TestSkillsRegistryMatchesTree(t *testing.T) {
 
 // A1: SyncSkills extracts nested files (not just SKILL.md), marks each skill dir
 // managed, and prunes files that are no longer part of the embed.
+//
+// Intentional plan erratum fix (review round 1): SyncSkills's `home` argument
+// is the swarm home (Config.Home, e.g. ~/.swarm), not the user's home -- it
+// writes to <home>/skills, not <home>/.swarm/skills. The plan's own snippet
+// had it the other way; WriteSkills/CheckSkills/the claude adapter always
+// derived skillsHome from Config.Home directly, so the mismatch broke a
+// custom --home/SWARM_HOME (make dev, e2e): SyncSkills wrote under the real
+// user's home while everything else looked under the custom one.
 func TestSyncSkillsWritesNestedFilesAndPrunes(t *testing.T) {
 	home := t.TempDir()
 	if _, err := install.SyncSkills(home); err != nil {
 		t.Fatal(err)
 	}
-	marker := filepath.Join(home, ".swarm", "skills", "swarm", install.ManagedMarker)
+	marker := filepath.Join(home, "skills", "swarm", install.ManagedMarker)
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("marker: %v", err)
 	}
-	body, err := os.ReadFile(filepath.Join(home, ".swarm", "skills", "swarm", "SKILL.md"))
+	body, err := os.ReadFile(filepath.Join(home, "skills", "swarm", "SKILL.md"))
 	if err != nil || !strings.HasPrefix(string(body), "---\n") {
 		t.Fatalf("SKILL.md: body=%.20q err=%v", body, err)
 	}
-	stale := filepath.Join(home, ".swarm", "skills", "swarm", "stale.md")
+	stale := filepath.Join(home, "skills", "swarm", "stale.md")
 	if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +143,53 @@ func TestSyncSkillsWritesNestedFilesAndPrunes(t *testing.T) {
 	changed, err := install.SyncSkills(home)
 	if err != nil || len(changed) != 0 {
 		t.Errorf("second sync changed %v, %v; want a no-op", changed, err)
+	}
+}
+
+// Review round 1, Major 1: a custom (or relative) --home must not split
+// SyncSkills' writes from where WriteSkills/CheckSkills/the claude adapter
+// look for them, and a relative home must never produce a relative (and
+// therefore cwd-fragile) symlink target.
+func TestSkillsHomeIsAbsoluteAndUnderHomeNotUserHome(t *testing.T) {
+	userHome := t.TempDir()
+	swarmHome := filepath.Join(t.TempDir(), "custom-swarm-home") // unrelated to userHome
+	c := install.Config{UserHome: userHome, Home: swarmHome}
+	if _, _, err := install.WriteSkills(c, install.KindClaude); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing was written under the (unrelated) user home.
+	if _, err := os.Stat(filepath.Join(userHome, ".swarm")); !os.IsNotExist(err) {
+		t.Fatalf("WriteSkills wrote under UserHome instead of Home: %v", err)
+	}
+	link := filepath.Join(c.SkillsDir(install.KindClaude), "swarm")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(swarmHome, "skills", "swarm")
+	if target != want {
+		t.Errorf("symlink target = %s, want %s", target, want)
+	}
+	if !filepath.IsAbs(target) {
+		t.Errorf("symlink target %q is not absolute", target)
+	}
+
+	// A relative Home must still produce an absolute symlink target: a
+	// symlink is read by another process (an agent CLI), possibly from a
+	// different cwd, so a relative target would resolve to the wrong place.
+	relHome, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := install.SkillsHome("relative-swarm-home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("SkillsHome(%q) = %q, want an absolute path", "relative-swarm-home", got)
+	}
+	if want := filepath.Join(relHome, "relative-swarm-home", "skills"); got != want {
+		t.Errorf("SkillsHome(%q) = %q, want %q", "relative-swarm-home", got, want)
 	}
 }
 
@@ -283,6 +339,46 @@ func TestWriteSkillsSymlinksEveryManagedSkill(t *testing.T) {
 	}
 }
 
+// Review round 1, Minor 6: a swarm-owned entry whose name is no longer
+// registered (a skill that was renamed or retired since this root was last
+// installed) must not linger there forever.
+func TestLinkSkillsPrunesASwarmOwnedEntryThatIsNoLongerRegistered(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	if _, err := install.SyncSkills(c.Home); err != nil {
+		t.Fatal(err)
+	}
+	skillsHome, err := install.SkillsHome(c.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := c.SkillsDir(install.KindClaude)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A swarm-owned entry for a name the registry no longer has.
+	retired := filepath.Join(root, "swarm-retired-skill")
+	if err := os.Symlink(filepath.Join(skillsHome, "swarm-retired-skill"), retired); err != nil {
+		t.Fatal(err)
+	}
+	// A user's own same-named leftover must survive regardless.
+	usersOwn := filepath.Join(root, "not-a-swarm-skill")
+	if err := os.MkdirAll(usersOwn, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := install.LinkSkills(root, skillsHome, install.Symlink); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Lstat(retired); !os.IsNotExist(err) {
+		t.Errorf("the retired swarm-owned entry survived: %v", err)
+	}
+	if _, err := os.Stat(usersOwn); err != nil {
+		t.Errorf("the user's own unrelated directory was removed: %v", err)
+	}
+}
+
 // A CLI whose skills root already holds a same-named skill the user made
 // themselves (no swarm symlink, no .swarm-managed marker) must be left alone
 // and reported, never overwritten.
@@ -321,6 +417,70 @@ func TestWriteSkillsSkipsUserOwnedSameName(t *testing.T) {
 	}
 }
 
+// Review round 1, Minor 9: WriteSkills must tell apart the two kinds of
+// dangling (broken) symlink -- one that still resolves inside skillsHome
+// (repair it) and one that does not (a foreign link; leave it alone).
+func TestWriteSkillsRepairsADanglingSwarmOwnedSymlinkButSkipsADanglingForeignOne(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	skillsHome, err := install.SkillsHome(c.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := c.SkillsDir(install.KindClaude)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	swarmLink := filepath.Join(root, "swarm")
+	if err := os.Symlink(filepath.Join(skillsHome, "swarm-was-renamed"), swarmLink); err != nil {
+		t.Fatal(err)
+	}
+	orchLink := filepath.Join(root, "swarm-orchestrator")
+	if err := os.Symlink("/nonexistent/somewhere/else", orchLink); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, skipped, err := install.WriteSkills(c, install.KindClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.Readlink(swarmLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(skillsHome, "swarm"); got != want {
+		t.Errorf("dangling swarm-owned link not repaired: %s, want %s", got, want)
+	}
+	foundChanged := false
+	for _, c := range changed {
+		if c == swarmLink {
+			foundChanged = true
+		}
+	}
+	if !foundChanged {
+		t.Errorf("swarm link repair not reported in changed: %v", changed)
+	}
+
+	stillDangling, err := os.Readlink(orchLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillDangling != "/nonexistent/somewhere/else" {
+		t.Errorf("the foreign dangling link was touched: %s", stillDangling)
+	}
+	foundSkipped := false
+	for _, s := range skipped {
+		if s == orchLink {
+			foundSkipped = true
+		}
+	}
+	if !foundSkipped {
+		t.Errorf("the foreign dangling link was not reported skipped: %v", skipped)
+	}
+}
+
 // A stale swarm-managed copy (the Copy fallback, or a leftover from before a
 // skill's content changed) must be replaced with fresh content, not merged with
 // or left alongside the old files.
@@ -355,14 +515,167 @@ func TestWriteSkillsReplacesStaleSwarmCopy(t *testing.T) {
 	}
 }
 
-func TestEmbeddedSkillsMatchTheCanonicalFiles(t *testing.T) {
-	for _, name := range install.SkillNames() {
-		want, err := os.ReadFile(filepath.Join("..", "..", "skills", name, "SKILL.md"))
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		if string(install.SkillBody(name)) != string(want) {
-			t.Errorf("internal/install/skills/%s/SKILL.md has drifted from skills/%s/SKILL.md; run make skills-sync", name, name)
+// Review round 1, Major 2: a pre-A1 install wrote only a bare SKILL.md per
+// skill, no .swarm-managed marker (that marker did not exist yet). Without
+// recognizing this shape, isSwarmOwned would call it user-owned forever, and
+// an operator who installed before A1 would never get the marker, the
+// nested-file sync, or any future repair for their own core skills.
+func TestWriteSkillsAdoptsAPreA1RealSkillDirectoryInCopyMode(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), install.SkillBody("swarm"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, skipped, err := install.WriteSkills(c, install.KindCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range skipped {
+		if s == dst {
+			t.Fatalf("the pre-A1 dir was skipped as user-owned: %v", skipped)
 		}
 	}
+	found := false
+	for _, ch := range changed {
+		if ch == dst {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the pre-A1 dir was not adopted: changed = %v", changed)
+	}
+	if _, err := os.Stat(filepath.Join(dst, install.ManagedMarker)); err != nil {
+		t.Errorf("adopted dir is missing its marker: %v", err)
+	}
 }
+
+// Same adoption, Symlink mode (Claude): the pre-A1 real directory is replaced
+// with v2's own symlink.
+func TestWriteClaudeAdoptsAPreA1RealSkillDirectory(t *testing.T) {
+	c := fakeHome(t)
+	dst := filepath.Join(c.SkillsDir(install.KindClaude), "swarm-orchestrator")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), install.SkillBody("swarm-orchestrator"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := install.WriteClaude(context.Background(), c, claudeMCPFake(c.Bin).Runner()); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the pre-A1 real directory was not replaced with v2's symlink")
+	}
+}
+
+// Review round 1, Minor 7: a Copy-mode kind must never follow a leftover
+// symlink at dst (this kind used to be Symlink-mode, say) into whatever it
+// actually points at -- here, on purpose, a *different* skill's shared
+// ~/.swarm/skills directory -- and write through it. dst must become a real
+// removed-then-copied directory, and the other skill's shared copy must come
+// out untouched.
+func TestWriteSkillsRemovesASymlinkBeforeCopyingRatherThanFollowingIt(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	if _, err := install.SyncSkills(c.Home); err != nil {
+		t.Fatal(err)
+	}
+	skillsHome, err := install.SkillsHome(c.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wrongTarget := filepath.Join(skillsHome, "swarm-orchestrator")
+	if err := os.Symlink(wrongTarget, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := install.WriteSkills(c, install.KindCodex); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(wrongTarget, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != string(install.SkillBody("swarm-orchestrator")) {
+		t.Fatal("the shared swarm-orchestrator copy was corrupted through the symlink")
+	}
+	fi, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Error("dst is still a symlink instead of a real Copy-mode directory")
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(install.SkillBody("swarm")) {
+		t.Errorf("dst content = %q, want the swarm skill", got)
+	}
+}
+
+// Review round 1, Major 3: the daemon's startup sync must also repair drift
+// in an already-installed kind's own skills root -- a broken Symlink, or a
+// Copy-mode copy that has drifted -- not just refresh the shared
+// ~/.swarm/skills copy underneath it.
+func TestSyncAndRefreshSkillsRepairsAnAlreadyInstalledKindsBrokenLink(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	if _, _, err := install.WriteSkills(c, install.KindClaude); err != nil {
+		t.Fatal(err)
+	}
+	skillsHome, err := install.SkillsHome(c.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(c.SkillsDir(install.KindClaude), "swarm")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	// Dangling but still swarm-owned: it resolves inside skillsHome, just at
+	// the wrong (nonexistent) name -- distinct from a foreign dangling link,
+	// which must be left alone (see TestWriteSkillsSkipsADanglingForeignSymlink).
+	if err := os.Symlink(filepath.Join(skillsHome, "some-old-removed-name"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	skillErrs, err := install.SyncAndRefreshSkills(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, kerr := range skillErrs {
+		if kerr != nil {
+			t.Errorf("%s: %v", k, kerr)
+		}
+	}
+	got, err := os.Readlink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(skillsHome, "swarm"); got != want {
+		t.Errorf("link still broken after SyncAndRefreshSkills: %s, want %s", got, want)
+	}
+	// Codex was never installed: it must not be silently created.
+	if _, err := os.Stat(c.SkillsDir(install.KindCodex)); !os.IsNotExist(err) {
+		t.Error("SyncAndRefreshSkills must not create a skills root for a never-installed kind")
+	}
+}
+
+// TestEmbeddedSkillsMatchTheCanonicalFiles was superseded by
+// TestEmbeddedMirrorMatchesCanonicalTree (review round 1, nit), which compares
+// the whole tree byte-for-byte, not just each skill's SKILL.md.

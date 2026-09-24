@@ -13,8 +13,14 @@ import (
 // WriteIfChanged writes body to path atomically, creating parent folders, and only
 // when the bytes differ from what is already there. Idempotence is a Global
 // Constraint: swarm install runs many times and must not churn mtimes or modes.
+// When the bytes already match but the mode has drifted (e.g. a synced
+// skill's exec bit was reset by a tool that doesn't preserve it), the mode is
+// still corrected: content-equal is not the same as fully in sync.
 func WriteIfChanged(path string, body []byte, mode os.FileMode) (bool, error) {
 	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, body) {
+		if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != mode {
+			return true, os.Chmod(path, mode)
+		}
 		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

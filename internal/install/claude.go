@@ -2,7 +2,6 @@ package install
 
 import (
 	"context"
-	"path/filepath"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
@@ -38,7 +37,11 @@ func WriteClaude(ctx context.Context, c Config, run execx.Runner) ([]string, err
 // as legacy; v2's own link (or a real v2-managed directory) is left alone.
 func RemoveLegacyClaude(c Config) ([]string, error) {
 	link := c.Claude("skills", "swarm")
-	owned, err := isSwarmOwned(link, filepath.Join(c.Home, "skills"))
+	skillsHome, err := SkillsHome(c.Home)
+	if err != nil {
+		return nil, err
+	}
+	owned, err := isSwarmOwned(link, skillsHome)
 	if err != nil {
 		return nil, err
 	}

@@ -117,9 +117,49 @@ func writeProjectSwarmConfig(cwd, swarmHome string, mcp []byte) error {
 	if err := os.WriteFile(filepath.Join(cwd, ".mcp.json"), mcp, 0o600); err != nil {
 		return err
 	}
-	skillsHome := filepath.Join(swarmHome, "skills")
-	_, err := install.LinkSkills(filepath.Join(cwd, ".claude", "skills"), skillsHome, install.SkillLinkMode(install.KindClaude))
+	skillsHome, err := install.SkillsHome(swarmHome)
+	if err != nil {
+		return err
+	}
+	skillsRoot := filepath.Join(cwd, ".claude", "skills")
+	if err := adoptPreExistingSkills(skillsRoot); err != nil {
+		return err
+	}
+	_, err = install.LinkSkills(skillsRoot, skillsHome, install.SkillLinkMode(install.KindClaude))
 	return err
+}
+
+// adoptPreExistingSkills removes any non-symlink entry already at root.
+// Everything under a session's scratch cwd is swarm's own by construction
+// (internal/runtime/agents.go creates it fresh right before Launch/Resume,
+// never a real git worktree the user touches), so a real directory there --
+// left by an older, copy-based writeProjectSwarmConfig, say -- is never the
+// user's own same-named skill the way it would be under a real, shared skills
+// root; it is simply stale and must be replaced. A symlink is left alone:
+// LinkSkills' own idempotency check (and its user-owned check, belt and
+// braces) handles it.
+func adoptPreExistingSkills(root string) error {
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		p := filepath.Join(root, e.Name())
+		fi, err := os.Lstat(p)
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Claude) Launch(s Spec) (Launch, error) {
