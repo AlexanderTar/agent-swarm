@@ -96,9 +96,11 @@ func checkpointTool(s *Server) ToolDef {
 			"artifacts":{"type":"array"},"processed":{"type":"array"},
 			"verdict":{"type":"string","enum":["","pass","changes_requested","blocked"]},
 			"findings":{"type":"array","items":{"type":"object","properties":{
-				"severity":{"type":"string"},"file":{"type":"string"},"line":{"type":"integer"},
+				"severity":{"type":"string","enum":["critical","major","minor","nit"]},
+				"file":{"type":"string","description":"omit for a package-wide finding"},
+				"line":{"type":"integer"},
 				"unit":{"type":"integer"},"summary":{"type":"string"}},
-				"required":["severity","file","summary"]}},
+				"required":["severity","summary"]}},
 			"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {

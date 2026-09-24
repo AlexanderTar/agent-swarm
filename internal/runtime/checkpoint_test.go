@@ -1171,6 +1171,36 @@ func TestInvalidVerdictValueRefused(t *testing.T) {
 	}
 }
 
+// Finding 7: an unknown finding severity is refused server-side (not just
+// left to the MCP schema's own advisory enum).
+func TestFindingSeverityValidated(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+
+	_, err = s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: Progress, Summary: "reviewing",
+		Findings: []workflow.Finding{{Severity: "urgent", File: "a.go", Summary: "huh"}}})
+	if err == nil {
+		t.Fatal("expected a finding-severity error")
+	}
+	want := `finding severity "urgent" must be critical, major, minor or nit.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	// A package-wide finding (no file) with a valid severity is fine.
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: Progress, Summary: "reviewing",
+		Findings: []workflow.Finding{{Severity: "nit", Summary: "package-wide nit"}}}); err != nil {
+		t.Fatalf("a valid severity with no file should be accepted: %v", err)
+	}
+}
+
 func TestPassVerdictRefusesMajorFindings(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

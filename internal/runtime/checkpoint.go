@@ -191,6 +191,12 @@ func validVerdict(v workflow.Verdict) bool {
 	return v == workflow.VerdictPass || v == workflow.VerdictChangesRequested || v == workflow.VerdictBlocked
 }
 
+// validSeverities are the only legal workflow.Finding.Severity values (fix
+// round 1, finding 7).
+var validSeverities = []string{"critical", "major", "minor", "nit"}
+
+func validSeverity(sev string) bool { return slices.Contains(validSeverities, sev) }
+
 // hasMajorOrCritical reports whether any finding is severity "major" or
 // "critical" -- a pass verdict can't carry either (spec B5).
 func hasMajorOrCritical(fs []workflow.Finding) bool {
@@ -1005,6 +1011,14 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		if verdict != "" && !validVerdict(verdict) {
 			return &items.Error{Code: items.CodeBadRequest,
 				Message: "Reviewers must complete with verdict: pass, changes_requested or blocked."}
+		}
+		// Finding 7: server-side severity validation, not just the MCP
+		// schema's advisory enum.
+		for _, f := range in.Findings {
+			if !validSeverity(f.Severity) {
+				return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+					"finding severity %q must be critical, major, minor or nit.", f.Severity)}
+			}
 		}
 
 		// completed is the universal session-terminal checkpoint (every role
