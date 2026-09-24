@@ -273,9 +273,13 @@ func TestDrainQueuePreflightFailureRelaysToParent(t *testing.T) {
 // cancel, not auto-cleaned). Before this fix such an agent silently occupied a
 // max_agents/max_agents_per_root slot forever. The zombie itself must stay
 // exactly as it was -- still active, still resumable/ackable/cancellable by
-// hand -- this only stops it from blocking the queue.
+// hand -- this only stops it from blocking the queue. paused joined the table
+// 2026-09-24: a paused agent has no live process either, and Resume always
+// starts a fresh generation, so excluding a not-yet-resumed 'paused' session
+// is the same shape as the other three -- without it, pausing an agent never
+// actually freed the capacity pausing exists to free.
 func TestAdmitIgnoresZombiesWhenCountingSlots(t *testing.T) {
-	for _, zombieState := range []SessionState{Interrupted, Crashed, Failed} {
+	for _, zombieState := range []SessionState{Interrupted, Crashed, Failed, Paused} {
 		t.Run(string(zombieState), func(t *testing.T) {
 			s, _, _ := newStore(t)
 			ctx := context.Background()
