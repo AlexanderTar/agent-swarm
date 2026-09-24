@@ -104,6 +104,11 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 	if round < 1 {
 		round = 1
 	}
+	// A resolved story spec has no Steps (Resolve leaves a non-task-shaped
+	// spec alone) - operate on its single after_tasks review step instead.
+	if len(s.Steps) == 0 && s.AfterTasks != nil {
+		s.Steps = []Step{*s.AfterTasks}
+	}
 	runs = sortedRuns(runs)
 	pinnedFromIdx := pinnedFrom(s, runs, round)
 
@@ -158,8 +163,17 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 			continue
 		}
 
-		// Review step. A blocked verdict escalates immediately - it never
-		// waits for, or spawns, a still-missing reviewer role first.
+		// Review step. A reviewer's run is stamped with the sha it actually
+		// reviewed; once that sha is superseded (the reviewed step re-ran),
+		// the approval is stale and doesn't count - that role is treated as
+		// not having reported at all, so it's re-spawned at the fresh sha
+		// rather than trusted into a premature succeed.
+		if want := shas[step.Of]; want != "" {
+			stepRuns = freshReviews(stepRuns, want)
+		}
+
+		// A blocked verdict escalates immediately - it never waits for, or
+		// spawns, a still-missing reviewer role first.
 		if blocked := findBlocked(stepRuns); blocked != nil {
 			reason := blocked.Role + " blocked"
 			if summary := firstSummary(blocked.Findings); summary != "" {
@@ -222,15 +236,16 @@ func pinnedFrom(s Spec, runs []Run, round int) int {
 		}
 	}
 
-	// The review step (if any) that requested changes last round is what
-	// drove this round's bump; pin from its fix step's index.
+	// The review step (if any) that requested changes - or was blocked;
+	// both are "the reviewer wants this redone" - last round is what drove
+	// this round's bump; pin from its fix step's index.
 	for _, step := range s.Steps {
 		if len(step.Review) == 0 {
 			continue
 		}
 		cr := false
 		for _, run := range runsFor(runs, step.ID, prevRound) {
-			if run.Verdict == VerdictChangesRequested {
+			if run.Verdict == VerdictChangesRequested || run.Verdict == VerdictBlocked {
 				cr = true
 				break
 			}
@@ -315,6 +330,21 @@ func latestRunsFor(runs []Run, stepID string, upTo int) []Run {
 		return nil
 	}
 	return runsFor(runs, stepID, best)
+}
+
+// freshReviews drops any run whose non-empty sha doesn't match want (the
+// current sha of the step it's reviewing). A run with no sha recorded at
+// all (e.g. reviewing a step with no commit gate) is never considered
+// stale.
+func freshReviews(runs []Run, want string) []Run {
+	var out []Run
+	for _, run := range runs {
+		if run.SHA != "" && run.SHA != want {
+			continue
+		}
+		out = append(out, run)
+	}
+	return out
 }
 
 func missingRoles(want []string, have []Run) []string {

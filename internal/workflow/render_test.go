@@ -56,3 +56,21 @@ func TestRenderReviewStepGoldenNoTDDGate(t *testing.T) {
 		t.Fatalf("Render() mentions red/green evidence for a step with no tdd gate:\n%s", got)
 	}
 }
+
+// Decision 3 (minor): a resolved story spec has no Steps (Resolve leaves a
+// non-task-shaped spec alone) - Render must operate on its single
+// after_tasks review step instead of returning "" for it.
+func TestRenderAfterTasksShape(t *testing.T) {
+	storySpec, err := Resolve(Spec{AfterTasks: &Step{ID: "review", Review: []string{"reviewer"}}}, false)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	got := Render(storySpec, "review", 1)
+	want := "## Workflow\n" +
+		"You are reviewing the story's merged work, round 1 of at most 3.\n" +
+		"Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, unit (batched tasks), summary}. A blocked verdict escalates to the orchestrator."
+	if got != want {
+		t.Fatalf("Render() =\n%s\nwant\n%s", got, want)
+	}
+}

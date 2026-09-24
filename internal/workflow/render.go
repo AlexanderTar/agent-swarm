@@ -10,6 +10,12 @@ import (
 // next (for a run step), or what it is reviewing and the verdict contract
 // (for a review step). It returns "" if stepID isn't in s.Steps.
 func Render(s Spec, stepID string, round int) string {
+	// A resolved story spec has no Steps (Resolve leaves a non-task-shaped
+	// spec alone) - operate on its single after_tasks review step instead.
+	if len(s.Steps) == 0 && s.AfterTasks != nil {
+		s.Steps = []Step{*s.AfterTasks}
+	}
+
 	step := findStep(s, stepID)
 	if step == nil {
 		return ""
@@ -38,15 +44,21 @@ func Render(s Spec, stepID string, round int) string {
 
 	// Review step: name what it reviews and the round, point at the
 	// reviewed step's red/green evidence (only when it actually has a tdd
-	// gate), and spell out the verdict contract (spec B5/B6).
-	ofRole := ""
-	ofStep := findStep(s, step.Of)
-	if ofStep != nil {
-		ofRole = ofStep.Run
-	}
-	lines = append(lines, fmt.Sprintf("You are reviewing step %q (%s), round %d of at most %d.", step.Of, ofRole, round, loopMaxRounds(step.Loop)))
-	if ofStep != nil && hasGate(ofStep.Gates, GateTDD) {
-		lines = append(lines, "The builder's red/green evidence is in its checkpoints; swarm_read the task's checkpoints to see it.")
+	// gate), and spell out the verdict contract (spec B5/B6). An
+	// after_tasks-shaped review has no single Of step - it reviews the
+	// story's merged work as a whole.
+	if step.Of == "" {
+		lines = append(lines, fmt.Sprintf("You are reviewing the story's merged work, round %d of at most %d.", round, loopMaxRounds(step.Loop)))
+	} else {
+		ofRole := ""
+		ofStep := findStep(s, step.Of)
+		if ofStep != nil {
+			ofRole = ofStep.Run
+		}
+		lines = append(lines, fmt.Sprintf("You are reviewing step %q (%s), round %d of at most %d.", step.Of, ofRole, round, loopMaxRounds(step.Loop)))
+		if ofStep != nil && hasGate(ofStep.Gates, GateTDD) {
+			lines = append(lines, "The builder's red/green evidence is in its checkpoints; swarm_read the task's checkpoints to see it.")
+		}
 	}
 	lines = append(lines, "Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, unit (batched tasks), summary}. A blocked verdict escalates to the orchestrator.")
 	return strings.Join(lines, "\n")

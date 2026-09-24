@@ -808,3 +808,323 @@ func TestNextIgnoresInputOrder(t *testing.T) {
 		t.Fatalf("Next() mutated its runs argument: got %+v, want %+v", orderings[0], want)
 	}
 }
+
+// failed3 builds a failed run with the given AutoRetries count.
+func failed3(step string, round int, role string, autoRetries int) Run {
+	run := r(step, round, role, RunStateFailed, VerdictNone)
+	run.AutoRetries = autoRetries
+	return run
+}
+
+// active3 builds an active (in-progress) run.
+func active3(step string, round int, role string) Run {
+	return r(step, round, role, RunStateActive, VerdictNone)
+}
+
+func cat3(rs ...[]Run) []Run {
+	var out []Run
+	for _, r := range rs {
+		out = append(out, r...)
+	}
+	return out
+}
+
+// threeLoopsSpec (probe3 "three"): a-ra, b-rb, c-rc, three independent
+// run/review pairs chained one after another.
+func threeLoopsSpec(t *testing.T) Spec {
+	t.Helper()
+	s, err := Resolve(Spec{Steps: []Step{
+		{ID: "a", Run: "coder", Gates: []Gate{GateCommit}}, {ID: "ra", Review: []string{"reviewer"}},
+		{ID: "b", Run: "mechanical", Gates: []Gate{GateCommit}}, {ID: "rb", Review: []string{"reviewer"}},
+		{ID: "c", Run: "mechanical", Gates: []Gate{GateCommit}}, {ID: "rc", Review: []string{"ui_reviewer"}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(LevelTask, s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestNextThreeLoops locks in probe3 table 3L: index pinning across three
+// independent run/review pairs, including a mid-chain retry (rb) followed
+// by a later one (rc) that must only ever pin from its own fix step (c)
+// onward, never re-touching a/ra or the already-passed b/rb.
+func TestNextThreeLoops(t *testing.T) {
+	three := threeLoopsSpec(t)
+
+	r1 := []Run{
+		cr2("a", 1, "coder", "a1"), r("ra", 1, "reviewer", RunStateCompleted, VerdictPass),
+		cr2("b", 1, "mechanical", "b1"), r("rb", 1, "reviewer", RunStateCompleted, VerdictPass),
+		cr2("c", 1, "mechanical", "c1"), r("rc", 1, "ui_reviewer", RunStateCompleted, VerdictChangesRequested),
+	}
+
+	tests := []struct {
+		name  string
+		runs  []Run
+		round int
+		want  Action
+	}{
+		{"rc CR at r1 retries only c", r1, 1, Action{Kind: ActionRetryFix, StepID: "c", Round: 2}},
+		{"r2 c active waits on c alone", cat3(r1, []Run{active3("c", 2, "mechanical")}), 2, Action{Kind: ActionWait, StepID: "c", Round: 2}},
+		{"r2 c done spawns rc with c's fresh sha", cat3(r1, []Run{cr2("c", 2, "mechanical", "c2")}), 2, Action{Kind: ActionSpawn, StepID: "rc", Roles: []string{"ui_reviewer"}, Round: 2, SHA: "c2"}},
+		{"r2 rc passes, succeeds with c2", cat3(r1, []Run{cr2("c", 2, "mechanical", "c2"), r("rc", 2, "ui_reviewer", RunStateCompleted, VerdictPass)}), 2, Action{Kind: ActionSucceed, SHA: "c2"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Next(three, tt.runs, tt.round, 0); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("Next() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+
+	// A mid-chain retry (rb CR at r1) re-runs b onward at r2; c/rc, never
+	// having run, are then picked up fresh once b/rb pass, and a later rc
+	// CR at r2 pins only from c onward for r3 - b/rb (already passed at
+	// r2) and a/ra (r1) both stay carried forward.
+	s1 := []Run{cr2("a", 1, "coder", "a1"), r("ra", 1, "reviewer", RunStateCompleted, VerdictPass), cr2("b", 1, "mechanical", "b1"), r("rb", 1, "reviewer", RunStateCompleted, VerdictChangesRequested)}
+	if got, want := Next(three, s1, 1, 0), (Action{Kind: ActionRetryFix, StepID: "b", Round: 2}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("rb CR at r1: Next() = %+v, want %+v", got, want)
+	}
+	s2 := cat3(s1, []Run{cr2("b", 2, "mechanical", "b2"), r("rb", 2, "reviewer", RunStateCompleted, VerdictPass)})
+	if got, want := Next(three, s2, 2, 0), (Action{Kind: ActionSpawn, StepID: "c", Roles: []string{"mechanical"}, Round: 2}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r2 rb passed, c never ran: Next() = %+v, want %+v", got, want)
+	}
+	s2c := cat3(s2, []Run{cr2("c", 2, "mechanical", "c2"), r("rc", 2, "ui_reviewer", RunStateCompleted, VerdictChangesRequested)})
+	if got, want := Next(three, s2c, 2, 0), (Action{Kind: ActionRetryFix, StepID: "c", Round: 3}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r2 rc CR: Next() = %+v, want %+v", got, want)
+	}
+	s3 := cat3(s2c, []Run{cr2("c", 3, "mechanical", "c3")})
+	if got, want := Next(three, s3, 3, 0), (Action{Kind: ActionSpawn, StepID: "rc", Roles: []string{"ui_reviewer"}, Round: 3, SHA: "c3"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r3 c done, b/rb carried from r2: Next() = %+v, want %+v", got, want)
+	}
+	// Rounds are shared across the whole workflow (one workflows.round):
+	// rb already spent a round getting to r2, so rc's own loop (max 3)
+	// only has one round left before exhausting at r3.
+	exhausted := cat3(s3, []Run{r("rc", 3, "ui_reviewer", RunStateCompleted, VerdictChangesRequested)})
+	if got, want := Next(three, exhausted, 3, 0), (Action{Kind: ActionEscalate, Reason: "rc rounds exhausted (3/3)"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r3 rc CR, budget shared: Next() = %+v, want %+v", got, want)
+	}
+	if got, want := Next(three, exhausted, 3, 1), (Action{Kind: ActionRetryFix, StepID: "c", Round: 4}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r3 rc CR with an extra round granted: Next() = %+v, want %+v", got, want)
+	}
+}
+
+// fixIndexSpec (probe3 "fx"): notes -> build -> review{fix:build}. Exercises
+// carry-forward alongside failures on both sides of the pinned range.
+func fixIndexSpec(t *testing.T) Spec {
+	t.Helper()
+	s, err := Resolve(Spec{Steps: []Step{
+		{ID: "notes", Run: "researcher", Gates: []Gate{GateArtifactNotes}},
+		{ID: "build", Run: "coder", Gates: []Gate{GateCommit}},
+		{ID: "review", Review: []string{"reviewer"}, Loop: &Loop{Fix: "build"}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestNextFixIndexCarryForward locks in probe3 table FX: failures on either
+// side of a fix index > 0 are handled correctly, including an orchestrator
+// crash-resume that bumps the round with no CR review to explain it.
+func TestNextFixIndexCarryForward(t *testing.T) {
+	fx := fixIndexSpec(t)
+
+	f1 := []Run{cr2("notes", 1, "researcher", ""), cr2("build", 1, "coder", "b1"), r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested)}
+	if got, want := Next(fx, f1, 2, 0), (Action{Kind: ActionSpawn, StepID: "build", Roles: []string{"coder"}, Round: 2}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r2 no build row yet: Next() = %+v, want %+v", got, want)
+	}
+
+	// notes (carried forward, before the fix index) failed at its latest
+	// round with retries left: auto-retry, not an infinite wait.
+	f1f := []Run{failed3("notes", 1, "researcher", 0), cr2("build", 1, "coder", "b1"), r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested), active3("build", 2, "coder")}
+	wantRun := failed3("notes", 1, "researcher", 0)
+	if got, want := Next(fx, f1f, 2, 0), (Action{Kind: ActionAutoRetry, StepID: "notes", Round: 1, Run: &wantRun}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r2 carried notes failed with retries left: Next() = %+v, want %+v", got, want)
+	}
+
+	// build (the fix step itself) crashes in round 2 with retries exhausted.
+	f2 := cat3(f1, []Run{failed3("build", 2, "coder", 1)})
+	if got, want := Next(fx, f2, 2, 0), (Action{Kind: ActionEscalate, Reason: "coder failed after 1 auto-retry"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r2 build failed exhausted: Next() = %+v, want %+v", got, want)
+	}
+
+	// Orchestrator resumes after the crash: round bumps to 3 with no CR
+	// review to explain it, so pinnedFrom falls back to the failed step's
+	// own index (build) - notes stays carried forward, build is pinned.
+	if got, want := Next(fx, cat3(f2, []Run{active3("build", 3, "coder")}), 3, 1), (Action{Kind: ActionWait, StepID: "build", Round: 3}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r3 after crash resume, build r3 active: Next() = %+v, want %+v", got, want)
+	}
+	if got, want := Next(fx, f2, 3, 1), (Action{Kind: ActionSpawn, StepID: "build", Roles: []string{"coder"}, Round: 3}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r3 after crash resume, no r3 row: Next() = %+v, want %+v (must respawn build, not notes)", got, want)
+	}
+
+	// The reviewer itself crashed and exhausted its retries in round 1;
+	// resuming bumps to round 2 with no CR review either (it never got to
+	// verdict), pinning from review's own index. build/notes carry forward.
+	f3 := []Run{cr2("notes", 1, "researcher", ""), cr2("build", 1, "coder", "b1"), failed3("review", 1, "reviewer", 1)}
+	if got, want := Next(fx, f3, 2, 1), (Action{Kind: ActionSpawn, StepID: "review", Roles: []string{"reviewer"}, Round: 2, SHA: "b1"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("r2 after reviewer crash resume: Next() = %+v, want %+v", got, want)
+	}
+}
+
+// TestNextBlockedPinsLikeChangesRequested covers probe3 tables BL and UI
+// (decision 1, major): a blocked verdict must pin pinnedFrom exactly like
+// changes_requested - checked before the failed/cancelled fallback -
+// otherwise a resume after a blocked escalation re-touches steps that
+// already passed (BL) or re-reviews a stale build instead of fixing it
+// (UI).
+func TestNextBlockedPinsLikeChangesRequested(t *testing.T) {
+	three := threeLoopsSpec(t)
+	bl1 := []Run{
+		cr2("a", 1, "coder", "a1"), r("ra", 1, "reviewer", RunStateCompleted, VerdictPass),
+		cr2("b", 1, "mechanical", "b1"), r("rb", 1, "reviewer", RunStateCompleted, VerdictPass),
+		cr2("c", 1, "mechanical", "c1"), r("rc", 1, "ui_reviewer", RunStateCompleted, VerdictBlocked),
+	}
+
+	blTests := []struct {
+		name        string
+		runs        []Run
+		round       int
+		extraRounds int
+		want        Action
+	}{
+		{"r1 rc blocked escalates", bl1, 1, 0, Action{Kind: ActionEscalate, Reason: "ui_reviewer blocked"}},
+		// Resume grants an extra round and bumps to r2. rc's blocked
+		// verdict must pin from c (rc's fix), never re-touching a/ra or
+		// b/rb.
+		{"resume r2, engine inserted c r2 active waits on c", cat3(bl1, []Run{active3("c", 2, "mechanical")}), 2, 1, Action{Kind: ActionWait, StepID: "c", Round: 2}},
+		{"resume r2, no rows yet spawns c", bl1, 2, 1, Action{Kind: ActionSpawn, StepID: "c", Roles: []string{"mechanical"}, Round: 2}},
+	}
+	for _, tt := range blTests {
+		t.Run("BL "+tt.name, func(t *testing.T) {
+			if got := Next(three, tt.runs, tt.round, tt.extraRounds); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("Next() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+
+	ui := resolveT(t, "ui-tdd-reviewed")
+	u1 := []Run{cr2("build", 1, "coder", "x1"), r("review", 1, "reviewer", RunStateCompleted, VerdictBlocked), active3("review", 1, "ui_reviewer")}
+	u1c := []Run{cr2("build", 1, "coder", "x1"), r("review", 1, "reviewer", RunStateCompleted, VerdictBlocked), r("review", 1, "ui_reviewer", RunStateCancelled, VerdictNone)}
+
+	uiTests := []struct {
+		name        string
+		runs        []Run
+		round       int
+		extraRounds int
+		want        Action
+	}{
+		{"r1 blocked while ui_reviewer active escalates", u1, 1, 0, Action{Kind: ActionEscalate, Reason: "reviewer blocked"}},
+		// The orchestrator's resume decision is to fix the build, not
+		// re-review the same x1 commit: the blocked reviewer's pin target
+		// is "build" (review's Loop.Fix), so build itself is what's pinned
+		// for r2 - and with no r2 build row yet, it's spawned fresh.
+		{"resume r2, no build r2 row spawns build (not a re-review of x1)", u1c, 2, 1, Action{Kind: ActionSpawn, StepID: "build", Roles: []string{"coder"}, Round: 2}},
+		{"resume r2, build r2 active waits", cat3(u1c, []Run{active3("build", 2, "coder")}), 2, 1, Action{Kind: ActionWait, StepID: "build", Round: 2}},
+	}
+	for _, tt := range uiTests {
+		t.Run("UI "+tt.name, func(t *testing.T) {
+			if got := Next(ui, tt.runs, tt.round, tt.extraRounds); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("Next() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNextExtraRoundsSameRound covers probe3 table EX: a resume that grants
+// an extra round without bumping workflows.round retries the same round
+// number, one higher.
+func TestNextExtraRoundsSameRound(t *testing.T) {
+	td := resolveT(t, "tdd-reviewed")
+	ex := []Run{cr2("build", 3, "coder", "b3"), r("review", 3, "reviewer", RunStateCompleted, VerdictChangesRequested)}
+	got := Next(td, ex, 3, 1)
+	want := Action{Kind: ActionRetryFix, StepID: "build", Round: 4}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Next() = %+v, want %+v", got, want)
+	}
+}
+
+// TestNextStaleReviewSha covers probe3's table-B follow-up (decision 2,
+// minor): a review run's sha is stamped with the sha it actually reviewed.
+// Once that sha is superseded (the reviewed step re-ran), the stale
+// approval doesn't count - that reviewer role is treated as missing and
+// re-spawned at the fresh sha, not trusted into a premature succeed.
+func TestNextStaleReviewSha(t *testing.T) {
+	b, err := Resolve(Spec{Steps: []Step{
+		{ID: "build", Run: "coder", Gates: []Gate{GateCommit}},
+		{ID: "lint", Run: "mechanical", Gates: []Gate{GateCommit}},
+		{ID: "review", Review: []string{"reviewer"}, Loop: &Loop{Fix: "build"}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bb := []Run{cr2("build", 1, "coder", "b1"), cr2("lint", 1, "mechanical", "l1"), r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested), cr2("build", 2, "coder", "b2")}
+	stale := Run{StepID: "review", Round: 2, Role: "reviewer", State: RunStateCompleted, Verdict: VerdictPass, SHA: "l1"}
+
+	if got, want := Next(b, cat3(bb, []Run{stale}), 2, 0), (Action{Kind: ActionSpawn, StepID: "lint", Roles: []string{"mechanical"}, Round: 2}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("no lint r2 row yet: Next() = %+v, want %+v", got, want)
+	}
+
+	withFreshLint := cat3(bb, []Run{stale, cr2("lint", 2, "mechanical", "l2")})
+	got := Next(b, withFreshLint, 2, 0)
+	want := Action{Kind: ActionSpawn, StepID: "review", Roles: []string{"reviewer"}, Round: 2, SHA: "l2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stale review (sha l1) once lint is fresh (l2): Next() = %+v, want %+v (must re-spawn at the fresh sha, not succeed on the stale approval)", got, want)
+	}
+}
+
+// TestNextAfterTasksShape covers probe3 table AT (decision 3, minor): when a
+// resolved spec has no Steps but does have AfterTasks (a story spec, per
+// Resolve), Next operates on []Step{*s.AfterTasks} instead of bailing out
+// with "workflow has no steps".
+func TestNextAfterTasksShape(t *testing.T) {
+	storySpec, err := Resolve(Spec{AfterTasks: &Step{ID: "review", Review: []string{"reviewer", "ui_reviewer"}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storySpec.Steps) != 0 {
+		t.Fatalf("storySpec.Steps = %v, want none (AfterTasks isn't expanded into Steps)", storySpec.Steps)
+	}
+
+	tests := []struct {
+		name  string
+		runs  []Run
+		round int
+		want  Action
+	}{
+		{
+			name: "no runs yet spawns both review roles",
+			runs: nil,
+			want: Action{Kind: ActionSpawn, StepID: "review", Roles: []string{"reviewer", "ui_reviewer"}, Round: 1},
+		},
+		{
+			name: "changes requested escalates (no loop on an after_tasks review)",
+			runs: []Run{r("review", 1, "reviewer", RunStateCompleted, VerdictChangesRequested), r("review", 1, "ui_reviewer", RunStateCompleted, VerdictPass)},
+			want: Action{Kind: ActionEscalate, Reason: "review changes requested"},
+		},
+		{
+			name: "all pass succeeds",
+			runs: []Run{r("review", 1, "reviewer", RunStateCompleted, VerdictPass), r("review", 1, "ui_reviewer", RunStateCompleted, VerdictPass)},
+			want: Action{Kind: ActionSucceed},
+		},
+		{
+			name: "a crashed reviewer escalates once retries are exhausted",
+			runs: []Run{failed3("review", 1, "reviewer", 1)},
+			want: Action{Kind: ActionEscalate, Reason: "reviewer failed after 1 auto-retry"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			round := tt.round
+			if round == 0 {
+				round = 1
+			}
+			if got := Next(storySpec, tt.runs, round, 0); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("Next() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
