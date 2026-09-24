@@ -275,6 +275,7 @@ func (m *Muse) probe(ctx context.Context) (museSubscriptionUsage, error) {
 	}
 	if _, err := m.call(proc, msgs, readErrs, deadline, 2, "session/start", map[string]any{
 		"commandId": startID.String(), "sessionId": sessionID.String(), "workspaceRoot": m.Dir,
+		"modelId": museProbeModel,
 	}); err != nil {
 		return zero, fmt.Errorf("muse: session/start: %w", err)
 	}
@@ -330,6 +331,19 @@ func (m *Muse) pollUsage(proc *execx.Proc, msgs <-chan museRPCEnvelope, readErrs
 
 // museUsagePollGap paces the usage/read retries while the probe turn runs.
 const museUsagePollGap = 2 * time.Second
+
+// museProbeModel pins the probe turn's model explicitly instead of leaving
+// modelId unset and letting the host apply its own default: an omitted
+// modelId is "server default when omitted" per the MSP schema, which is
+// exactly what today's default already resolves to (muse-spark-1.3-
+// contributor, catalog's own is_default: true, confirmed via GET
+// /api/catalog 2026-09-24) but is implicit and can drift out from under this
+// probe if Meta changes it. Effort "none" isn't in this model's catalog
+// effort list (minimal..max) but is accepted and produces a real usage/read
+// frame regardless -- live-verified against muse serve 1.3.0 on 2026-09-24,
+// the catalog's effort list is what's offered for real coding work, not an
+// exhaustive validity list for the wire protocol.
+const museProbeModel = "muse-spark-1.3-contributor"
 
 // call writes one JSON-RPC request and waits for the response with a
 // matching id, skipping notifications and other ids on the way.
