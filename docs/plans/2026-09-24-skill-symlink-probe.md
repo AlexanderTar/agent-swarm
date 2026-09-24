@@ -130,7 +130,8 @@ tested**, and the evidence argues it could be either: a plain `ls` of the
 chain's terminal directory taken during the original pass (20:55, before the
 controller touched anything) showed `swarm/` and `swarm-orchestrator/`
 present there with `mtime` unchanged since 19:45 and byte-identical
-`SKILL.md` contents (consistent with a copy, this specific run). But the
+`SKILL.md` contents (consistent with either a copy or a rename; the
+terminal dir is untouched in both cases). But the
 same chain, at that point, was *already* two hops deep
 (`~/.gemini/antigravity-cli/skills -> ses_01M36H52.../skills -> ses_01M36FPV68.../skills`,
 the last one real) from *before* this check's first probe — which argues
@@ -150,12 +151,12 @@ than "one broken link away": the real content's durability is currently
 tied to one arbitrary past session's launch directory surviving.
 
 **Consequence (safety incident, this check):** during the original pass, an
-additional isolated-`HOME` probe run added one more hop to this same chain,
-inside a scratch `HOME` under this check's own scratchpad; deleting that
-scratch `HOME` during ordinary probe cleanup left
-`~/.gemini/antigravity-cli/skills` dangling (pointing at a now-deleted
-scratch path) rather than at the previous hop. The controller restored the
-link. Per review, **no further agy CLI runs happened in the fix rounds**,
+isolated-`HOME` probe run repointed the real link into a scratch `HOME`
+under this check's own scratchpad; deleting that scratch `HOME` during
+ordinary probe cleanup left `~/.gemini/antigravity-cli/skills` dangling
+(pointing at the now-deleted scratch path). Only the dangling target and
+the controller's restore were observed, not the intermediate mechanics. Per
+review, **no further agy CLI runs happened in the fix rounds**,
 and `Config.SkillsDir(KindAgy)`, the real `~/.gemini/antigravity-cli` tree,
 and anything else under `~` were left untouched for the fixes.
 
@@ -193,20 +194,21 @@ was *already* a two-hop symlink chain (`... -> ses_01M36H52.../agy-home/.gemini/
 -> ses_01M36FPV68.../agy-home/.gemini/config/skills`, the second a real
 directory holding `swarm`/`swarm-orchestrator`) — the same migration
 behavior, left over from *prior* real swarm sessions. `adapter/agy.go`'s
-`setupEnv` runs once per **new** session (a `Resume` reuses that session's
-existing `agy-home` rather than creating a fresh one), symlinking that
-session's `.gemini/antigravity-cli` to the real one; from agy's point of
-view that's a "fresh `HOME`", so each new session's first run migrates the
+`setupEnv` runs both on spawn and on `Resume` (`agy.go:108`), symlinking
+that session's `.gemini/antigravity-cli` to the real one each time — but
+`agyHome` is keyed by the swarm session ID (`agy.go:42`), and `os.MkdirAll`
+doesn't wipe an existing directory, so a `Resume` of an already-spawned
+session reuses that same, already-migrated `agy-home` rather than getting a
+fresh one. Only a genuinely **new** session ID presents agy with a fresh
+`HOME`, so each new session's first run migrates the
 real `~/.gemini/antigravity-cli/skills` link one hop further into that
 session's own directory. (Round 0 of this check's report stated this chain
 was "not something `setupEnv` produces" — that was wrong; `setupEnv` does
 not do the migration itself, but it reliably triggers agy into doing it, new
-session after new session.) The real risk is not "one broken link away": as
-stated above, the shared `swarm`/`swarm-orchestrator` tree currently lives
-inside one specific past session's launch directory, so that session being
-cleaned up (ordinary swarm lifecycle) deletes the files outright, and each
-new agy session moves the live copy into yet another single point of
-failure. To get a clean, repeatable signal *and* stop this:
+session after new session.) Two risks: cleaning up FPV68's session deletes
+the files outright, and cleaning up any intermediate session (e.g. H52)
+dangles the real link. Each new agy session adds another such hop. To get a
+clean, repeatable signal *and* stop this:
 
 1. Move `Config.SkillsDir(KindAgy)` to `~/.gemini/config/skills` (the
    location agy actually reads from), matching the `$CONFIG_DIR/skills`
