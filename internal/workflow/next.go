@@ -88,12 +88,26 @@ type Action struct {
 // step's index to the end of the step list: those must have a run in the
 // exact current round. Steps before that index carry forward from their
 // latest run at or before the current round, sha included - they are never
-// re-spawned just because a later step's retry loop bumped the round. When
-// no round-1 review requested changes at all (e.g. the round was bumped by
-// an orchestrator's resume after a crash escalation, not a normal fix
-// loop), Next instead pins from the index of whichever step failed or was
-// cancelled in round-1. round 1 itself has no earlier round to consult, so
-// everything is pinned.
+// re-spawned just because a later step's retry loop bumped the round. This
+// still applies when the changes_requested/blocked row itself is stale (its
+// sha doesn't match what it reviewed): the row's sha can't be trusted, but
+// which step it belongs to can, and the only way such a row survives to the
+// previous round at all is an orchestrator resume after the same-round
+// stale-review escalation.
+//
+// When no round-1 review requested changes at all, Next instead pins from
+// the index of whichever step actually failed or was cancelled in round-1
+// (an orchestrator resume after a crash escalation, not a normal fix loop) -
+// this outranks a stale row on some unrelated, already-passed pair, which is
+// just carried-forward noise dropped and respawned by the ordinary per-step
+// review evaluation once that other pair is left below the pin. Only when
+// neither a crash nor a changes_requested/blocked verdict explains the bump
+// does a stale row with no verdict of its own (e.g. one that was itself the
+// escalated row, recorded pass/active/failed before the sha it reviewed was
+// superseded) pin the same way as a changes_requested/blocked row would -
+// including a review step whose OWN row is both stale and crashed, which
+// pins at its fix step here rather than its own index in the crash phase.
+// round 1 itself has no earlier round to consult, so everything is pinned.
 //
 // Whichever way a step's current run(s) are selected - pinned to this exact
 // round, or carried forward from an earlier one - a failed or cancelled run
@@ -129,8 +143,10 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 			// below instead (escalate if it's this round's own row, or
 			// dropped if it's carried forward from an earlier one).
 			if len(step.Review) > 0 {
-				if want := stepSHA(s, runs, pinnedFromIdx, round, step.Of); want != "" && run.SHA != "" && run.SHA != want {
-					continue
+				if ofIdx := stepIndex(s, step.Of); ofIdx != -1 {
+					if want := completedSHA(currentRuns(ofIdx, step.Of)); want != "" && run.SHA != "" && run.SHA != want {
+						continue
+					}
 				}
 			}
 			if run.State == RunStateCancelled {
@@ -182,22 +198,25 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 		// in the CURRENT round can't be dropped-and-respawned the same
 		// way: that key already exists, so a Spawn for it would be a
 		// no-op against the UNIQUE(workflow_id, step_id, round, role)
-		// constraint and hang the workflow. That case escalates instead.
+		// constraint and hang the workflow. That case escalates instead -
+		// unless a fresh sibling reviewer in the same round is blocked, in
+		// which case that's the more urgent, more informative signal and
+		// wins (a stale row isn't real evidence of anything; a fresh
+		// blocked verdict is).
 		if want := shas[step.Of]; want != "" {
-			fresh, escalate := staleReviews(step, stepRuns, want, round)
-			if escalate != nil {
-				return *escalate
+			fresh, staleEscalate := staleReviews(step, stepRuns, want, round)
+			if staleEscalate != nil {
+				if reason, ok := blockedReason(fresh); ok {
+					return Action{Kind: ActionEscalate, Reason: reason}
+				}
+				return *staleEscalate
 			}
 			stepRuns = fresh
 		}
 
 		// A blocked verdict escalates immediately - it never waits for, or
 		// spawns, a still-missing reviewer role first.
-		if blocked := findBlocked(stepRuns); blocked != nil {
-			reason := blocked.Role + " blocked"
-			if summary := firstSummary(blocked.Findings); summary != "" {
-				reason += ": " + summary
-			}
+		if reason, ok := blockedReason(stepRuns); ok {
 			return Action{Kind: ActionEscalate, Reason: reason}
 		}
 
@@ -248,72 +267,143 @@ func pinnedFrom(s Spec, runs []Run, round int) int {
 	}
 	prevRound := round - 1
 
-	bestIdx := -1
-	consider := func(idx int) {
-		if bestIdx == -1 || idx < bestIdx {
-			bestIdx = idx
-		}
-	}
-
-	// The review step (if any) that requested changes - or was blocked;
-	// both are "the reviewer wants this redone" - last round is what drove
-	// this round's bump; pin from its fix step's index. A stale verdict
-	// (its sha doesn't match what the reviewed step actually completed
-	// with, back in that same round) isn't a real signal and is ignored -
-	// it never happened against the code it claims to be about.
-	for _, step := range s.Steps {
-		if len(step.Review) == 0 {
-			continue
-		}
-		ofSHA := completedSHAAt(runs, step.Of, prevRound)
-		cr := false
-		for _, run := range runsFor(runs, step.ID, prevRound) {
-			if run.Verdict != VerdictChangesRequested && run.Verdict != VerdictBlocked {
-				continue
-			}
-			if ofSHA != "" && run.SHA != "" && run.SHA != ofSHA {
-				continue // stale: not a real signal
-			}
-			cr = true
-			break
-		}
-		if !cr {
-			continue
-		}
+	fixIdx := func(step Step) int {
 		fixID := step.Of
 		if step.Loop != nil && step.Loop.Fix != "" {
 			fixID = step.Loop.Fix
 		}
-		if fixIdx := stepIndex(s, fixID); fixIdx != -1 {
-			consider(fixIdx)
-		}
-	}
-	if bestIdx != -1 {
-		return bestIdx
+		return stepIndex(s, fixID)
 	}
 
-	// No round-1 review requested changes (e.g. an orchestrator resume
-	// after a crash escalation, not a normal fix loop): pin from whichever
-	// step failed or was cancelled last round.
-	for i, step := range s.Steps {
-		for _, run := range runsFor(runs, step.ID, prevRound) {
-			if run.State == RunStateFailed || run.State == RunStateCancelled {
-				consider(i)
-			}
-		}
+	// Phase 1: the review step (if any) that requested changes - or was
+	// blocked; both are "the reviewer wants this redone" - last round is
+	// what drove this round's bump; pin from its fix step's index. This
+	// counts even when the verdict-carrying row is itself stale (see
+	// Next's doc comment).
+	if idx := pinFromVerdict(s, runs, prevRound, fixIdx); idx != -1 {
+		return idx
 	}
-	if bestIdx != -1 {
-		return bestIdx
+
+	// Phase 2: no changes_requested/blocked verdict explains the bump: pin
+	// from whichever step actually crashed (failed or was cancelled) last
+	// round - the real signal that drove an orchestrator's resume, and a
+	// stronger one than an unrelated stale row sitting on some other,
+	// already-passed pair (that staleness is just carried-forward noise,
+	// dropped and respawned by the ordinary per-step review evaluation
+	// once this step's pin lets it carry forward - see
+	// TestNextPinnedFromFailedOutranksStale).
+	if idx := pinFromFailed(s, runs, prevRound); idx != -1 {
+		return idx
+	}
+
+	// Phase 3: nothing failed or was cancelled either, but a stale row
+	// (any verdict or state - pass, still active, even a crashed reviewer)
+	// at the previous round still means its step is the fix loop that
+	// needs re-pinning; the row's sha just isn't trustworthy evidence of
+	// anything else. This is also where a review step whose OWN row is
+	// both crashed and stale ends up: phase 2 skips it (see pinFromFailed)
+	// since a stale row isn't real crash evidence for that step, so it
+	// falls to this phase and pins at its fix step instead of its own
+	// index - the same stale-review resume shape, whether or not the
+	// stale row happened to crash.
+	if idx := pinFromStale(s, runs, prevRound, fixIdx); idx != -1 {
+		return idx
 	}
 
 	// Nothing at the previous round explains the bump; pin everything.
 	return 0
 }
 
-// completedSHAAt returns stepID's completed sha at exactly the given round,
-// or "" if it didn't complete then.
-func completedSHAAt(runs []Run, stepID string, round int) string {
-	for _, run := range runsFor(runs, stepID, round) {
+// pinFromFailed returns the lowest index among steps with a failed or
+// cancelled run at prevRound, or -1 if none did. A review step's row is
+// skipped here if it's stale (its sha doesn't match what it reviewed by the
+// end of that round): a stale row isn't real evidence that step itself
+// crashed - it's the same shape pinFromStale handles, which pins at the
+// review's fix step rather than the review's own index. Mirrors the same
+// skip Next's failure-handling loop applies at evaluation time.
+func pinFromFailed(s Spec, runs []Run, prevRound int) int {
+	best := -1
+	for i, step := range s.Steps {
+		for _, run := range runsFor(runs, step.ID, prevRound) {
+			if run.State != RunStateFailed && run.State != RunStateCancelled {
+				continue
+			}
+			if len(step.Review) > 0 {
+				ofSHA := completedSHA(runsFor(runs, step.Of, prevRound))
+				if ofSHA != "" && run.SHA != "" && run.SHA != ofSHA {
+					continue // stale: not real crash evidence for this step
+				}
+			}
+			if best == -1 || i < best {
+				best = i
+			}
+		}
+	}
+	return best
+}
+
+// pinFromVerdict returns the lowest fix-step index among review steps whose
+// prevRound runs include a changes_requested or blocked verdict - regardless
+// of whether that run's sha is stale - or -1 if none did.
+func pinFromVerdict(s Spec, runs []Run, prevRound int, fixIdx func(Step) int) int {
+	best := -1
+	for _, step := range s.Steps {
+		if len(step.Review) == 0 {
+			continue
+		}
+		cr := false
+		for _, run := range runsFor(runs, step.ID, prevRound) {
+			if run.Verdict == VerdictChangesRequested || run.Verdict == VerdictBlocked {
+				cr = true
+				break
+			}
+		}
+		if !cr {
+			continue
+		}
+		if idx := fixIdx(step); idx != -1 && (best == -1 || idx < best) {
+			best = idx
+		}
+	}
+	return best
+}
+
+// pinFromStale returns the lowest fix-step index among review steps whose
+// prevRound runs include one whose sha no longer matches what its reviewed
+// step (Of) completed with by the end of that round - the shape left behind
+// by a resume after a same-round stale-review escalation - or -1 if none
+// did.
+func pinFromStale(s Spec, runs []Run, prevRound int, fixIdx func(Step) int) int {
+	best := -1
+	for _, step := range s.Steps {
+		if len(step.Review) == 0 {
+			continue
+		}
+		ofSHA := completedSHA(runsFor(runs, step.Of, prevRound))
+		if ofSHA == "" {
+			continue
+		}
+		stale := false
+		for _, run := range runsFor(runs, step.ID, prevRound) {
+			if run.SHA != "" && run.SHA != ofSHA {
+				stale = true
+				break
+			}
+		}
+		if !stale {
+			continue
+		}
+		if idx := fixIdx(step); idx != -1 && (best == -1 || idx < best) {
+			best = idx
+		}
+	}
+	return best
+}
+
+// completedSHA returns the sha of the first completed run in runs, or "" if
+// none completed.
+func completedSHA(runs []Run) string {
+	for _, run := range runs {
 		if run.State == RunStateCompleted {
 			return run.SHA
 		}
@@ -371,26 +461,33 @@ func latestRunsFor(runs []Run, stepID string, upTo int) []Run {
 }
 
 // staleReviews splits stepRuns into the ones that are still fresh (sha
-// matches want, or carries no sha at all - never considered stale) and
-// handles the stale ones: a stale row from an earlier round is dropped (nil
-// alongside the fresh ones is fine - that role is then just "missing"), but
-// a stale row already in the current round returns an escalate Action
-// instead, since a Spawn for that same (step, round, role) key would be a
-// no-op.
+// matches want, or carries no sha at all - never considered stale) and, if
+// any stale row belongs to the CURRENT round, also returns the escalate
+// Action for it: that (step, round, role) key already has a row, so a Spawn
+// for it would be a no-op against the UNIQUE(workflow_id, step_id, round,
+// role) constraint and hang the workflow. A stale row from an EARLIER round
+// is just dropped, no escalate - that role is then just "missing" and gets
+// respawned at the fresh sha. The full fresh list is always returned
+// alongside the escalate Action (never discarded), so a caller can still
+// check it for a fresh, more urgent signal - a blocked verdict - before
+// committing to the stale escalation.
 func staleReviews(step Step, runs []Run, want string, round int) ([]Run, *Action) {
 	var fresh []Run
+	var escalate *Action
 	for _, run := range runs {
 		if run.SHA == "" || run.SHA == want {
 			fresh = append(fresh, run)
 			continue
 		}
-		if run.Round == round {
+		if run.Round == round && escalate == nil {
 			reason := fmt.Sprintf("%s reviewed %s, but %s is now at %s", run.Role, sha7(run.SHA), step.Of, sha7(want))
-			return nil, &Action{Kind: ActionEscalate, Reason: reason}
+			escalate = &Action{Kind: ActionEscalate, Reason: reason}
+			continue
 		}
-		// Stale, but from an earlier round: drop it.
+		// Stale, but from an earlier round (or a later duplicate same-round
+		// stale row once one escalate reason is already recorded): drop it.
 	}
-	return fresh, nil
+	return fresh, escalate
 }
 
 // sha7 is the short form of a sha: its first 7 characters, or the whole
@@ -400,28 +497,6 @@ func sha7(sha string) string {
 		return sha[:7]
 	}
 	return sha
-}
-
-// stepSHA returns stepID's current completed sha, using the same
-// pinned/carried-forward selection as the main planner loop. It returns ""
-// if stepID isn't in s.Steps or has no completed run yet.
-func stepSHA(s Spec, runs []Run, pinnedFromIdx, round int, stepID string) string {
-	idx := stepIndex(s, stepID)
-	if idx == -1 {
-		return ""
-	}
-	var stepRuns []Run
-	if idx >= pinnedFromIdx {
-		stepRuns = runsFor(runs, stepID, round)
-	} else {
-		stepRuns = latestRunsFor(runs, stepID, round)
-	}
-	for _, run := range stepRuns {
-		if run.State == RunStateCompleted {
-			return run.SHA
-		}
-	}
-	return ""
 }
 
 func missingRoles(want []string, have []Run) []string {
@@ -454,6 +529,21 @@ func findBlocked(runs []Run) *Run {
 		}
 	}
 	return nil
+}
+
+// blockedReason returns the escalate reason for the first blocked verdict in
+// runs ("<role> blocked" or "<role> blocked: <summary>"), and whether one
+// was found at all.
+func blockedReason(runs []Run) (string, bool) {
+	blocked := findBlocked(runs)
+	if blocked == nil {
+		return "", false
+	}
+	reason := blocked.Role + " blocked"
+	if summary := firstSummary(blocked.Findings); summary != "" {
+		reason += ": " + summary
+	}
+	return reason, true
 }
 
 func hasChangesRequested(runs []Run) bool {

@@ -1218,6 +1218,27 @@ func TestNextStaleReviewInCurrentRoundEscalates(t *testing.T) {
 	})
 }
 
+// TestNextFreshBlockedNotHiddenByStaleSibling covers a P6 fix1 review minor:
+// a same-round stale-review escalation (see
+// TestNextStaleReviewInCurrentRoundEscalates) must not hide a genuinely
+// fresh blocked verdict from a sibling reviewer in the same round - blocked
+// is the more urgent, more informative signal, and it's real (not stale)
+// evidence unlike the row that triggered the stale escalation.
+func TestNextFreshBlockedNotHiddenByStaleSibling(t *testing.T) {
+	ui := resolveT(t, "ui-tdd-reviewed")
+	runs := []Run{
+		rsha("build", 1, "coder", RunStateCompleted, VerdictNone, "b1new"),
+		rsha("review", 1, "reviewer", RunStateCompleted, VerdictBlocked, "b1new"), // fresh
+		rsha("review", 1, "ui_reviewer", RunStateCompleted, VerdictPass, "b1old"), // stale
+	}
+	runs[1].Findings = []Finding{{Summary: "secrets in repo"}}
+	got := Next(ui, runs, 1, 0)
+	want := Action{Kind: ActionEscalate, Reason: "reviewer blocked: secrets in repo"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Next() = %+v, want %+v (a fresh blocked verdict must win over a stale sibling's escalation)", got, want)
+	}
+}
+
 // TestNextEmptyReviewSHAIsNeverStale covers probe4 S6-S8: a review run with
 // no sha recorded at all - because it's reviewing a step with no commit
 // gate, or just wasn't stamped - is never treated as stale, regardless of
@@ -1334,47 +1355,24 @@ func TestNextCarriedStaleReviewIsDroppedAndRespawned(t *testing.T) {
 	})
 }
 
-// TestNextPinnedFromIgnoresStaleReviews covers probe4 S12 (decision 2,
-// minor): a stale review's changes_requested/blocked verdict from the
-// previous round must not drive pinnedFrom - it never happened against the
-// sha that step actually reviewed, so it isn't a real signal that a fix
-// loop needs retrying.
-func TestNextPinnedFromIgnoresStaleReviews(t *testing.T) {
+// TestNextPinnedFromStaleReviewStillPinsFixStep covers the resume-path fix
+// to f97734e (P6 fix1, Important): a stale review row's own sha can't be
+// trusted, but which step it belongs to can. The only way such a row
+// survives to the previous round at all is an orchestrator resume after the
+// same-round stale-review escalation (spec ~737: retry re-runs the fix
+// step, then the review at the fresh sha) - so pinnedFrom must still pin
+// from that row's fix step, whether the row carries a changes_requested/
+// blocked verdict or (having itself been the escalated row) a pass.
+func TestNextPinnedFromStaleReviewStillPinsFixStep(t *testing.T) {
 	two := twoPairsSpec(t)
 
-	t.Run("S12 literal: a stale ra CR at r1 doesn't change the (already-0) pin", func(t *testing.T) {
-		// ra's own recorded sha ("a0") never matched what "a" actually
-		// completed with ("a1") even back in round 1 - a corrupted/bogus
-		// row. rb's own review passed (fresh, sha matches b). With the
-		// stale ra CR correctly ignored, nothing at round 1 explains the
-		// bump to round 2, so pinnedFrom falls back to its default (pin
-		// everything) - which happens to be index 0 here too, same as
-		// (incorrectly) trusting ra's stale fix target ("a", also index
-		// 0). This case can't tell the two implementations apart on its
-		// own; see the "clearly distinguishing" case below for that.
-		runs := []Run{
-			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
-			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictChangesRequested, "a0"),
-			rsha("b", 1, "mechanical", RunStateCompleted, VerdictNone, "b1"),
-			rsha("rb", 1, "reviewer", RunStateCompleted, VerdictPass, "b1"),
-			rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""),
-		}
-		got := Next(two, runs, 2, 0)
-		want := Action{Kind: ActionSpawn, StepID: "a", Roles: []string{"coder"}, Round: 2}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("Next() = %+v, want %+v", got, want)
-		}
-	})
-
-	t.Run("clearly distinguishing: a stale rb CR (fix index 2) must not narrow the pin away from the correct default (0)", func(t *testing.T) {
+	t.Run("a stale CR pins at its own fix step (b), not wherever it happens to coincide", func(t *testing.T) {
 		// ra passed cleanly (fresh). rb's CR is stale: rb's own recorded
 		// sha ("stale") never matches what "b" actually completed with
-		// ("b1"). If the stale CR were (wrongly) trusted, it would pin
-		// from "b" (index 2), leaving a/ra carried forward and returning
-		// Wait on b's round-2 active row. Correctly ignored, nothing at
-		// round 1 explains the bump, so it falls back to pinning
-		// everything (index 0) - and with no round-2 "a" row, that's a
-		// fresh Spawn of "a", not a Wait on "b".
+		// ("b1"). Its sha can't be trusted, but its step id can: pinnedFrom
+		// pins from "b" (rb's fix step, index 2), leaving a/ra carried
+		// forward - and with b's round-2 row still active, Next waits on
+		// it, exactly as it did before f97734e.
 		runs := []Run{
 			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
 			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictPass, "a1"),
@@ -1383,9 +1381,108 @@ func TestNextPinnedFromIgnoresStaleReviews(t *testing.T) {
 			rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""),
 		}
 		got := Next(two, runs, 2, 0)
-		want := Action{Kind: ActionSpawn, StepID: "a", Roles: []string{"coder"}, Round: 2}
+		want := Action{Kind: ActionWait, StepID: "b", Round: 2}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("Next() = %+v, want %+v (a stale review must not narrow the pin)", got, want)
+			t.Fatalf("Next() = %+v, want %+v (a stale review must pin at its own fix step)", got, want)
+		}
+	})
+
+	t.Run("a stale PASS row (stale-escalation, then resumed) also pins at its fix step", func(t *testing.T) {
+		// ra passed fresh (sha matches a). "b" actually completed round 1
+		// with "b1new" (after an in-round retry), but rb's row recorded
+		// "b1" - the sha it reviewed before that retry landed. At round 1
+		// this would itself have escalated
+		// (TestNextStaleReviewInCurrentRoundEscalates/S1); the only way it
+		// can be sitting at the previous round at all is a resume after
+		// that escalation. It carries no changes_requested/blocked verdict
+		// to trigger the ordinary pin, but its staleness alone still means
+		// "b" is the fix loop that needs re-pinning - not "pin
+		// everything", which would otherwise wrongly respawn "a".
+		runs := []Run{
+			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
+			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictPass, "a1"),
+			rsha("b", 1, "mechanical", RunStateCompleted, VerdictNone, "b1new"),
+			rsha("rb", 1, "reviewer", RunStateCompleted, VerdictPass, "b1"),
+			rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""),
+		}
+		got := Next(two, runs, 2, 1)
+		want := Action{Kind: ActionWait, StepID: "b", Round: 2}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v (a stale pass row must still pin, not fall through to \"pin everything\")", got, want)
+		}
+	})
+}
+
+// TestNextPinnedFromFailedOutranksStale covers a P6 fix2 review finding: a
+// crash's failed/cancelled row must win pinnedFrom's phase ordering over an
+// unrelated stale review row from an earlier, already-passed pair - the
+// crash is what actually drove the resume; the stale row is incidental
+// noise from a different pair entirely.
+func TestNextPinnedFromFailedOutranksStale(t *testing.T) {
+	two := twoPairsSpec(t)
+
+	t.Run("b crashed (exhausted); ra's unrelated staleness must not steal the pin from b", func(t *testing.T) {
+		// "a" was re-run within round 1, landing on "a1new" after ra had
+		// already reviewed and passed at "a1" - ra is stale, but that's
+		// unrelated to what actually drove this round's bump: "b" crashed
+		// and exhausted its retries. pinnedFrom must pin from "b" (index
+		// 2), not from ra's fix step ("a", index 0) - leaving "a"/"ra"
+		// carried forward, where ra's ordinary earlier-round staleness
+		// (independent of pinnedFrom) gets it dropped and respawned at
+		// a's fresh sha by the ordinary per-step review evaluation - not
+		// by pinnedFrom pinning at "a".
+		runs := []Run{
+			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1new"),
+			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictPass, "a1"),
+			failed3("b", 1, "mechanical", 1),
+		}
+		gotR1 := Next(two, runs, 1, 0)
+		wantR1 := Action{Kind: ActionEscalate, Reason: "mechanical failed after 1 auto-retry"}
+		if !reflect.DeepEqual(gotR1, wantR1) {
+			t.Fatalf("round 1: Next() = %+v, want %+v", gotR1, wantR1)
+		}
+
+		gotResume := Next(two, runs, 2, 1)
+		wantResume := Action{Kind: ActionSpawn, StepID: "ra", Roles: []string{"reviewer"}, Round: 2, SHA: "a1new"}
+		if !reflect.DeepEqual(gotResume, wantResume) {
+			t.Fatalf("resume: Next() = %+v, want %+v (b's crash must pin the resume, dropping/respawning stale ra along the way)", gotResume, wantResume)
+		}
+	})
+
+	t.Run("rb crashed AND is stale; the resume must still re-run b (its fix step), not just re-spawn rb", func(t *testing.T) {
+		// rb's own row is both stale (its sha "b1" no longer matches what
+		// "b" completed with, "b1new") and crashed (failed, retries
+		// exhausted). At round 1 that's a same-round stale-review
+		// escalation (TestNextStaleReviewInCurrentRoundEscalates/S5's
+		// shape) - the failed state never even surfaces, because the
+		// failure scan skips a stale review row and defers to the
+		// ordinary review evaluation, which escalates on staleness first.
+		// The resume must follow the same rule pinnedFrom's stale phase
+		// already encodes: pin at rb's fix step ("b"), not at rb's own
+		// index - a plain (non-stale) crash pins at the crashed step
+		// itself, but a stale-crashed row is the stale-review shape, which
+		// always re-runs the fix step (spec ~737), never a direct
+		// re-review.
+		runs := []Run{
+			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
+			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictPass, "a1"),
+			rsha("b", 1, "mechanical", RunStateCompleted, VerdictNone, "b1new"),
+			func() Run {
+				run := rsha("rb", 1, "reviewer", RunStateFailed, VerdictNone, "b1")
+				run.AutoRetries = 1
+				return run
+			}(),
+		}
+		gotR1 := Next(two, runs, 1, 0)
+		wantR1 := Action{Kind: ActionEscalate, Reason: "reviewer reviewed b1, but b is now at b1new"}
+		if !reflect.DeepEqual(gotR1, wantR1) {
+			t.Fatalf("round 1: Next() = %+v, want %+v", gotR1, wantR1)
+		}
+
+		gotResume := Next(two, runs, 2, 1)
+		wantResume := Action{Kind: ActionSpawn, StepID: "b", Roles: []string{"mechanical"}, Round: 2}
+		if !reflect.DeepEqual(gotResume, wantResume) {
+			t.Fatalf("resume: Next() = %+v, want %+v (a stale-crashed review must still pin at its fix step, not its own index)", gotResume, wantResume)
 		}
 	})
 }

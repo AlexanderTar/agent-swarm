@@ -608,7 +608,7 @@ include ≥ 1 `rw` worktree owned by the caller. Inserts the `workflows` row
 | `AutoRetry{run}` | a run is `failed` (crash/failure) and `auto_retries < retries` |
 | `Wait` | some run for the current step is `waiting`/`active` |
 | `Succeed{sha}` | the last step's runs all completed (review steps all `pass`) |
-| `Escalate{reason}` | rounds exhausted; any `blocked` verdict; a run failed with no auto-retries left |
+| `Escalate{reason}` | rounds exhausted; any `blocked` verdict; a run failed with no auto-retries left; a review's recorded sha is stale in its own round (the reviewed step re-ran after it was reviewed — `"<role> reviewed <sha7>, but <of> is now at <sha7>"`) |
 
 It is a pure function of the spec and the runs table, so it is unit-tested
 exhaustively without a DB.
@@ -734,7 +734,7 @@ character cap stays; the renderer truncates `Context` first and appends
   - `op:"status"`, `item` → same shape.
   - `op:"resume"`, `item`, `decision: retry|accept|fail`, `note`,
     `request_id`: `retry` grants one extra round beyond `max_rounds`
-    (recorded as `workflows.extra_rounds`, add column `extra_rounds INTEGER NOT NULL DEFAULT 0`) and re-runs the fix step with `note` appended to the findings — or, when the escalation was a crash, re-runs the crashed step;
+    (recorded as `workflows.extra_rounds`, add column `extra_rounds INTEGER NOT NULL DEFAULT 0`) and re-runs the fix step with `note` appended to the findings — or, when the escalation was a crash, re-runs the crashed step. A stale-review escalation (B4) is treated the same as an ordinary `changes_requested`: `retry` re-runs the review's fix step, and once that completes the review itself re-runs at the fresh sha — never a re-review of the stale sha it originally escalated on;
     `accept` marks the workflow `succeeded` (recorded as an orchestrator
     ruling in the workflow row) and the task Done; `fail` marks it `failed`
     and the task back to Ready.
@@ -975,6 +975,7 @@ Agent-facing errors (tool results):
 - Commit gate: `"Commit your work before completing: <repo> is dirty"` / `"… HEAD is <sha7>, checkpoint says <sha7>"` / `"Completed needs git: [{repo, branch, sha, dirty:false}]."`
 - Artifact gates: `"Completed needs your design file in artifacts (under ~/.swarm/designs/<ROOT>/)."` and the research equivalent.
 - Verdict: `"Reviewers must complete with verdict: pass, changes_requested or blocked."`, `"verdict pass can't carry critical or major findings."`, `"Only reviewers set a verdict."`
+- Stale review (Next escalates when a same-round review's recorded sha no longer matches what it reviewed): `"<role> reviewed <sha7>, but <of> is now at <sha7>"`. A `swarm_workflow resume` with `decision: retry` after this escalation re-runs the review's fix step, then the review itself at the fresh sha (B7) — the same as an ordinary `changes_requested`.
 - Batching/role copy: `"Task <ref> has no workflow. Plans assign every role: pick a template or write steps."`, `"Task <ref> role_hint <x> doesn't match its workflow (<y>)."`, `"Task <ref> has both steps and units; use one."`, `"Task <ref> has <n> units (max 8)."`, `"TDD evidence missing for unit(s) <n,…>: record red then green with \"unit\": <n>."`, plus the C2 warnings.
 - Tree errors: `"Task <ref> is a review task. Reviews run inside each task's workflow; remove it and give the reviewed task a reviewed template."`, `"Task <ref> needs steps and verify commands (its workflow has a tdd gate)."`, `"Task <ref> workflow: <validation error>."`
 - Workflow validation: `"step <id>: set exactly one of run or review"`, `"step <id>: <role> can't run a step"`, `"step <id>: <role> can't review"`, `"step <id>: of/fix must name an earlier run step"`, `"max_rounds must be 1–5"`, `"unknown template \"<name>\""`, `"after_tasks is only for stories"`, `"integration is only for epics and bugs"`.
