@@ -232,14 +232,6 @@ struct AppTab: View {
                 Toggle(Copy.compact, isOn: Binding(get: { model.compact }, set: { on in Task { await model.setCompact(on) } }))
                     .toggleStyle(.checkbox)
             }
-            Divider()
-            HStack {
-                Text(Copy.orchestrators)
-                Toggle(Copy.remoteControl, isOn: Binding(get: { model.enableRemoteControl },
-                    set: { on in Task { await model.setEnableRemoteControl(on) } }))
-                    .toggleStyle(.checkbox)
-            }
-            Text(Copy.remoteControlCaption).font(.caption).foregroundStyle(.secondary)
             Spacer()
         }
         .padding(20)

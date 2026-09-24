@@ -407,14 +407,4 @@ public final class SettingsModel {
         settings.instructions = text
         await save()
     }
-
-    // MARK: Remote control
-
-    public var enableRemoteControl: Bool { settings.enableRemoteControl }
-
-    public func setEnableRemoteControl(_ on: Bool) async {
-        guard settings.enableRemoteControl != on else { return }
-        settings.enableRemoteControl = on
-        await save()
-    }
 }
