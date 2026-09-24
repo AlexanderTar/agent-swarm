@@ -173,7 +173,11 @@ func stepFor(spec *workflow.Spec, stepID string) (workflow.Step, bool) {
 	if spec == nil {
 		return workflow.Step{}, false
 	}
-	for _, st := range spec.Steps {
+	// EffectiveSteps, not spec.Steps directly (fix round 2, finding 1): a
+	// resolved story spec keeps its one review step in AfterTasks, with
+	// Steps empty -- Next and Render both promote it the same way before
+	// looking anything up by id.
+	for _, st := range spec.EffectiveSteps() {
 		if st.ID == stepID {
 			return st, true
 		}
@@ -270,16 +274,20 @@ func (s *Store) verifySince(ctx context.Context, tx *sql.Tx, agentID string, sin
 	return out, rows.Err()
 }
 
-// findFixStepFor returns the review step in spec whose loop retries
+// findFixStepsFor returns every review step in spec whose loop retries
 // buildStepID (`Loop.Fix`, falling back to `Of` when `Loop.Fix` is unset --
-// spec B5, fix round 1's R3), or ok=false if no review step targets it at
-// all (a step with no review, e.g. mechanical/research; or the review step
-// for some OTHER build step in a multi-loop workflow).
-func findFixStepFor(spec *workflow.Spec, buildStepID string) (workflow.Step, bool) {
+// spec B5, fix round 1's R3), or nil if none targets it at all (a step with
+// no review, e.g. mechanical/research; or the review step for some OTHER
+// build step in a multi-loop workflow). More than one review step can share
+// a fix target (e.g. review-code and review-ui both reviewing "build",
+// fix round 2's finding 2) -- every one of them is read, not just the
+// first match.
+func findFixStepsFor(spec *workflow.Spec, buildStepID string) []workflow.Step {
 	if spec == nil {
-		return workflow.Step{}, false
+		return nil
 	}
-	for _, st := range spec.Steps {
+	var out []workflow.Step
+	for _, st := range spec.EffectiveSteps() {
 		if len(st.Review) == 0 {
 			continue
 		}
@@ -288,10 +296,10 @@ func findFixStepFor(spec *workflow.Spec, buildStepID string) (workflow.Step, boo
 			fix = st.Loop.Fix
 		}
 		if fix == buildStepID {
-			return st, true
+			out = append(out, st)
 		}
 	}
-	return workflow.Step{}, false
+	return out
 }
 
 // fixRoundFindings collects reviewStepID's reviewer/ui_reviewer findings at
@@ -421,10 +429,21 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 
 	var required []int
 	packageWide := false
-	if fixStep, ok := findFixStepFor(it.Workflow, run.StepID); ok {
-		findings, hasBlocking, err := s.fixRoundFindings(ctx, tx, run.WorkflowID, fixStep.ID, run.Round-1)
-		if err != nil {
-			return err
+	if fixSteps := findFixStepsFor(it.Workflow, run.StepID); len(fixSteps) > 0 {
+		// Fix round 2, finding 2: more than one review step can target the
+		// same build step. Blocking if ANY of them requested changes or
+		// blocked; findings merge across all of them (mirrors B4's
+		// mergeFindings, which does the same across a single step's
+		// several reviewer roles).
+		var findings []workflow.Finding
+		var hasBlocking bool
+		for _, fixStep := range fixSteps {
+			fnd, blocking, err := s.fixRoundFindings(ctx, tx, run.WorkflowID, fixStep.ID, run.Round-1)
+			if err != nil {
+				return err
+			}
+			findings = append(findings, fnd...)
+			hasBlocking = hasBlocking || blocking
 		}
 		switch {
 		case !hasBlocking:

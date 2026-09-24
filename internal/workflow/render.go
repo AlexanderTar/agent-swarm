@@ -10,11 +10,7 @@ import (
 // next (for a run step), or what it is reviewing and the verdict contract
 // (for a review step). It returns "" if stepID isn't in s.Steps.
 func Render(s Spec, stepID string, round int) string {
-	// A resolved story spec has no Steps (Resolve leaves a non-task-shaped
-	// spec alone) - operate on its single after_tasks review step instead.
-	if len(s.Steps) == 0 && s.AfterTasks != nil {
-		s.Steps = []Step{*s.AfterTasks}
-	}
+	s.Steps = s.EffectiveSteps()
 
 	step := findStep(s, stepID)
 	if step == nil {

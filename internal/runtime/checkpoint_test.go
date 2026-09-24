@@ -2184,3 +2184,76 @@ func TestArtifactGateCleansDotDotSegments(t *testing.T) {
 		t.Fatalf("artifact registered under the CLEANED path = %d, want 1", count)
 	}
 }
+
+// --- Fix round 2 ---
+
+// Finding 1 (Important, new breakage): a resolved story spec keeps its
+// review step in AfterTasks, with Steps empty (Next/Render both promote it
+// before looking anything up) -- stepFor only ever looked at spec.Steps, so
+// a story's after_tasks reviewer with a workflow run was refused "workflow
+// step ... not found" on every completed checkpoint.
+func TestApplyGatesAcceptsStoryAfterTasksReviewStep(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s) // EPIC-1 > STORY-1 > TASK-1, all ready
+	setItemWorkflow(t, s, "STORY-1", workflow.Spec{
+		AfterTasks: &workflow.Step{ID: "story-review", Review: []string{"reviewer"}},
+	})
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "STORY-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "review the story"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, w.RootItemID, w.ID, w.ID, "story-review", "reviewer", 1)
+
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "review done",
+		Verdict: "pass"}); err != nil {
+		t.Fatalf("a story after_tasks reviewer with a workflow run must be able to complete: %v", err)
+	}
+}
+
+// Finding 2 (Minor): two review steps can share the same fix target (e.g.
+// review-code and review-ui both review "build"). findFixStepFor used to
+// return only the FIRST match -- if that one happened to pass while the
+// OTHER requested changes on a specific unit, the gate fell back to "every
+// unit" instead of narrowing to what was actually named.
+func TestTDDGateMergesAcrossMultipleReviewStepsForSameBuildStep(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review-code", Review: []string{"reviewer"}, Of: "build"},
+		{ID: "review-ui", Review: []string{"ui_reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	// review-code (first in Steps order) passed clean; review-ui requested
+	// changes on unit 1 only.
+	seedReviewFindingsAs(t, s, workflowID, "review-code", 1, "reviewer", "pass", nil)
+	seedReviewFindingsAs(t, s, workflowID, "review-ui", 1, "ui_reviewer", "changes_requested",
+		[]workflow.Finding{{Severity: "major", File: "a.go", Summary: "fix unit 1", Unit: 1}})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed"}); err != nil {
+		t.Fatalf("only unit 1 should be required (review-ui's finding, merged with review-code's clean pass): %v", err)
+	}
+}

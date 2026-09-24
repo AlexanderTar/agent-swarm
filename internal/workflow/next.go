@@ -118,11 +118,7 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 	if round < 1 {
 		round = 1
 	}
-	// A resolved story spec has no Steps (Resolve leaves a non-task-shaped
-	// spec alone) - operate on its single after_tasks review step instead.
-	if len(s.Steps) == 0 && s.AfterTasks != nil {
-		s.Steps = []Step{*s.AfterTasks}
-	}
+	s.Steps = s.EffectiveSteps()
 	runs = sortedRuns(runs)
 	pinnedFromIdx := pinnedFrom(s, runs, round)
 

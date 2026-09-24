@@ -66,6 +66,19 @@ type Spec struct {
 	Integration *Integration `json:"integration,omitempty"`
 }
 
+// EffectiveSteps returns s.Steps, or, for a resolved story spec (which has
+// no Steps at all -- Resolve leaves a non-task-shaped spec alone), its
+// single after_tasks review step promoted into a one-element slice. Next
+// and Render both need this same promotion before looking anything up by
+// step id; it lives here once, on the type, so every caller (including
+// outside this package) shares it instead of keeping its own copy.
+func (s Spec) EffectiveSteps() []Step {
+	if len(s.Steps) == 0 && s.AfterTasks != nil {
+		return []Step{*s.AfterTasks}
+	}
+	return s.Steps
+}
+
 // Level is the swarm-tree/item level a Spec belongs to; it decides which
 // fields are legal.
 type Level string
