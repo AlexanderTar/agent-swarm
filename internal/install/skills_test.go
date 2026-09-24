@@ -553,6 +553,93 @@ func TestWriteSkillsReplacesStaleSwarmCopy(t *testing.T) {
 	}
 }
 
+// Review round 2, C1 #3: a marker naming a *different* swarm home is never
+// ours, even for an explicit `swarm install` (adopt=true) -- this is the
+// direct regression for the mechanism that let a daemon with a dev/test home
+// silently recopy a real installation's content, since a content-blind
+// marker (round 1's shape) reads as "owned" by any skillsHome that asks.
+func TestWriteSkillsLeavesADirAloneWhenItsMarkerNamesADifferentSwarmHome(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	drifted := []byte("content installed by a different swarm home\n")
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), drifted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, install.ManagedMarker), []byte("/some/other/swarm/skills"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, skipped, err := install.WriteSkills(c, install.KindCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range skipped {
+		if s == dst {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a dir with a foreign marker was not reported skipped: %v", skipped)
+	}
+	for _, ch := range changed {
+		if ch == dst {
+			t.Errorf("changed reports the foreign-marker dir %s", dst)
+		}
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil || string(body) != string(drifted) {
+		t.Errorf("the foreign-marker dir's content was touched: %q, %v", body, err)
+	}
+}
+
+// Review round 2, C1 #3 / I2: an empty (pre-this-fix) marker is owned by an
+// explicit `swarm install` (adopt=true) but NOT by the daemon's own automatic
+// refresh (adopt=false, RefreshSkillLinks/SyncAndRefreshSkills) -- exactly
+// the asymmetry TestWriteSkillsReplacesStaleSwarmCopy above already locks in
+// for the adopt=true side; this locks in the adopt=false side too, and
+// through the real SyncAndRefreshSkills entry point (not linkSkills
+// directly), so the Home-vs-UserHome gate and the marker check are both
+// exercised together.
+func TestSyncAndRefreshSkillsLeavesAnEmptyMarkerDirAloneButWriteSkillsAdoptsIt(t *testing.T) {
+	home := t.TempDir()
+	c := install.Config{UserHome: home, Home: filepath.Join(home, ".swarm")}
+	dst := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	drifted := []byte("stale content, pre-this-fix empty marker\n")
+	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), drifted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, install.ManagedMarker), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := install.SyncAndRefreshSkills(c); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil || string(body) != string(drifted) {
+		t.Errorf("SyncAndRefreshSkills touched an empty-marker dir: %q, %v", body, err)
+	}
+
+	if _, _, err := install.WriteSkills(c, install.KindCodex); err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != string(install.SkillBody("swarm")) {
+		t.Errorf("WriteSkills did not adopt the empty-marker dir: %.20q", body)
+	}
+}
+
 // Review round 1, Major 2: a pre-A1 install wrote only a bare SKILL.md per
 // skill, no .swarm-managed marker (that marker did not exist yet). Without
 // recognizing this shape, isSwarmOwned would call it user-owned forever, and
