@@ -582,6 +582,26 @@ func TestCompletedCurrentIsPerAgent(t *testing.T) {
 		"Couldn't update status. The item remains In progress.")
 }
 
+// Fix round 1, R2: completedCurrent's workflow branch counts "build roles"
+// -- any role except reviewer/ui_reviewer/orchestrator, not just
+// coder/debugger/mechanical -- so a design-reviewed template's designer step
+// can finish too.
+func TestCompletedCurrentCountsDesignerOnAWorkflowTask(t *testing.T) {
+	s := newStore(t)
+	_, st, _ := tree(t, s)
+	daemon := items.Daemon()
+
+	task := mk(t, s, items.Task, st.Key, "Design the flow")
+	setWorkflowJSON(t, s.DB, task)
+	setStatus(t, s, task, items.InProgress)
+	designerAgent, designerSes := seedSessionRole(t, s.DB, task, "designer", "running")
+	seedCheckpointFor(t, s.DB, task, designerAgent, designerSes, "completed", 1, later(s))
+	if err := move(t, s, task.Key, items.InReview, daemon); err != nil {
+		t.Fatalf("a designer's completed on a workflow task must count: %v", err)
+	}
+	wantStatus(t, s, task.Key, items.InReview)
+}
+
 func TestPatchStatusGoesThroughTransition(t *testing.T) {
 	s := newStore(t)
 	e := mk(t, s, items.Epic, "", "E")
