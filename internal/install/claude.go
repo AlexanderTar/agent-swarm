@@ -2,8 +2,6 @@ package install
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
@@ -16,11 +14,11 @@ import (
 // swarm's tools. Remove-then-add makes this idempotent and self-healing against
 // a stale binary path from an older build.
 //
-// The v1 symlink and the v2 skills folder share the same path
-// (c.Claude("skills", "swarm")): if the v1 link is still there, WriteSkills'
-// MkdirAll/WriteFile/Rename would transparently follow it into the v1 release
-// target instead of creating a real v2 directory. RemoveLegacyClaude must run
-// first so WriteSkills always lands on a real path.
+// The v1 symlink and v2's own skill symlink (A1) share the same path
+// (c.Claude("skills", "swarm")): a leftover v1 link points outside
+// ~/.swarm/skills, at the old release's plugin folder, so it must be replaced
+// rather than mistaken for v2's own link. RemoveLegacyClaude runs first and
+// only removes a link that is not already swarm-owned.
 func WriteClaude(ctx context.Context, c Config, run execx.Runner) ([]string, error) {
 	if _, err := RemoveLegacyClaude(c); err != nil {
 		return nil, err
@@ -29,14 +27,27 @@ func WriteClaude(ctx context.Context, c Config, run execx.Runner) ([]string, err
 	if _, err := run(ctx, "claude", "mcp", "add", "swarm", "-s", "user", "--", c.Bin, "mcp"); err != nil {
 		return nil, err
 	}
-	return WriteSkills(c, KindClaude)
+	changed, _, err := WriteSkills(c, KindClaude)
+	return changed, err
 }
 
 // RemoveLegacyClaude removes the v1 symlink ~/.claude/skills/swarm. It is removed
-// as a link, never followed (§20). A real directory there is v2's own skill folder,
-// so it is left alone.
+// as a link, never followed (§20). A1: v2 legitimately symlinks this same path
+// into ~/.swarm/skills/swarm, so only a link that does not resolve there counts
+// as legacy; v2's own link (or a real v2-managed directory) is left alone.
 func RemoveLegacyClaude(c Config) ([]string, error) {
 	link := c.Claude("skills", "swarm")
+	skillsHome, err := SkillsHome(c.Home)
+	if err != nil {
+		return nil, err
+	}
+	owned, err := isSwarmOwned(link, skillsHome)
+	if err != nil {
+		return nil, err
+	}
+	if owned {
+		return nil, nil
+	}
 	removed, _, err := RemoveLink(link)
 	if err != nil {
 		return nil, err
@@ -48,12 +59,5 @@ func RemoveLegacyClaude(c Config) ([]string, error) {
 }
 
 func CheckClaude(ctx context.Context, c Config, run execx.Runner) []Check {
-	root := c.SkillsDir(KindClaude)
-	for _, name := range SkillNames {
-		p := filepath.Join(root, name, "SKILL.md")
-		if _, err := os.Stat(p); err != nil {
-			return []Check{{"Claude skills", false, "Missing " + p + ". Run swarm install."}}
-		}
-	}
-	return []Check{{"Claude skills", true, root}}
+	return []Check{CheckSkills(c, KindClaude)}
 }

@@ -71,7 +71,7 @@ func TestUninstallRemovesSwarmsOwnEntriesAndKeepsEverythingElse(t *testing.T) {
 		t.Error("the launch agent plist survived")
 	}
 	for _, k := range install.Kinds {
-		for _, name := range install.SkillNames {
+		for _, name := range install.SkillNames() {
 			if _, err := os.Stat(filepath.Join(c.SkillsDir(k), name, "SKILL.md")); !os.IsNotExist(err) {
 				t.Errorf("%s/%s survived", k, name)
 			}
@@ -146,6 +146,39 @@ func TestUninstallLeavesALinkThatPointsElsewhere(t *testing.T) {
 	}
 	if got, err := os.Readlink(c.LocalBin()); err != nil || got != other {
 		t.Errorf("the user's own link was removed: %q, %v", got, err)
+	}
+}
+
+// A1: uninstall must remove only swarm's own skill entries (a symlink into
+// ~/.swarm/skills, or a .swarm-managed copy), and leave a same-named skill the
+// user made themselves alone, for every kind independently.
+func TestUninstallRemovesOnlySwarmSkills(t *testing.T) {
+	c := fakeHome(t)
+	if _, _, err := install.WriteSkills(c, install.KindClaude); err != nil {
+		t.Fatal(err)
+	}
+	userDir := filepath.Join(c.SkillsDir(install.KindCodex), "swarm")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userFile := filepath.Join(userDir, "SKILL.md")
+	if err := os.WriteFile(userFile, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &execx.Fake{Responses: map[string]execx.Result{"launchctl bootout gui/501/dev.swarm.daemon": {}}}
+	if err := install.Uninstall(context.Background(), agentsOpts(t, c, f)); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range install.SkillNames() {
+		if _, err := os.Lstat(filepath.Join(c.SkillsDir(install.KindClaude), name)); !os.IsNotExist(err) {
+			t.Errorf("swarm-managed claude/%s survived: %v", name, err)
+		}
+	}
+	body, err := os.ReadFile(userFile)
+	if err != nil || string(body) != "mine\n" {
+		t.Errorf("the user-owned codex/swarm skill was touched: %q, %v", body, err)
 	}
 }
 

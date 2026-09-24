@@ -71,19 +71,25 @@ func (r *Runner) backupIndex() map[string]string {
 }
 
 // newArtifactPaths lists every path step 9 (DoInstall) may create for the first
-// time: the daemon plist, every agent's two v2 skill folders (install.WriteSkills
-// runs for all of install.Kinds — claude, codex, cursor, agy — each writing
-// install.SkillNames; these are fresh directory trees whenever there was no v1
-// symlink at that same path to overwrite, which filesToBackUp's restore-from-copy
-// mechanism never covers), and the ~/.local/bin/swarm link. If DoInstall creates
-// one of these where nothing was there before, rollback just removes it: there is
-// nothing to restore it to (Important 3, widened per O2 to cover all four agents'
-// skill folders, not only Claude's).
+// time: the daemon plist, the shared ~/.swarm/skills copy every kind links or
+// copies from (install.SyncSkills/A1), every agent's own per-skill entries
+// under it (install.WriteSkills runs for all of install.Kinds — claude, codex,
+// cursor, agy — each writing install.SkillNames as a symlink or a real copy
+// depending on the kind, A1's per-kind link mode; these are fresh entries
+// whenever there was no v1 symlink at that same path to overwrite, which
+// filesToBackUp's restore-from-copy mechanism never covers), and the
+// ~/.local/bin/swarm link. If DoInstall creates one of these where nothing was
+// there before, rollback just removes it: there is nothing to restore it to
+// (Important 3, widened per O2 to cover all four agents' skill folders, not
+// only Claude's).
 func (r *Runner) newArtifactPaths() []string {
 	c := r.Cfg
 	paths := []string{install.PlistPath(c), c.LocalBin()}
+	if skillsHome, err := install.SkillsHome(c.Home); err == nil {
+		paths = append(paths, skillsHome)
+	}
 	for _, k := range install.Kinds {
-		for _, name := range install.SkillNames {
+		for _, name := range install.SkillNames() {
 			paths = append(paths, filepath.Join(c.SkillsDir(k), name))
 		}
 	}
@@ -106,8 +112,9 @@ func (r *Runner) install(ctx context.Context, j *Journal, s *Step) error {
 	for _, p := range r.newArtifactPaths() {
 		// Lstat, not Stat: a pre-existing symlink (a v1 skills link, say) must count
 		// as "existed" even though DoInstall's own RemoveLegacy* call removes it and
-		// WriteSkills then creates a real directory in its place — that removal is
-		// already reported separately (the "unrestorable" note in Rollback's output).
+		// WriteSkills then creates its own entry in its place (a symlink or a real
+		// copy, per A1's per-kind link mode) — that removal is already reported
+		// separately (the "unrestorable" note in Rollback's output).
 		if _, err := os.Lstat(p); err != nil {
 			s.Add(Action{Kind: "remove", To: p})
 		}

@@ -384,6 +384,23 @@ func TestOpenDaemonKeepsTightHomePermissions(t *testing.T) {
 	}
 }
 
+// Review round 1, Majors 1 & 3: openDaemon must sync skills into cfg.Home
+// (not the real user's home, which would both break a custom --home/SWARM_HOME
+// and leak into whatever machine happens to run the test), and the path is
+// SkillsHome(cfg.Home) = cfg.Home/skills, not cfg.Home/.swarm/skills.
+func TestOpenDaemonSyncsSkills(t *testing.T) {
+	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
+	home := t.TempDir()
+	dm, err := openDaemon(context.Background(), daemonConfig{Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dm.db.Close()
+	if _, err := os.Stat(filepath.Join(home, "skills", "swarm", "SKILL.md")); err != nil {
+		t.Errorf("openDaemon did not sync skills into cfg.Home: %v", err)
+	}
+}
+
 func TestTokenEmptyIsReplacedUnreadableFails(t *testing.T) {
 	t.Setenv("SWARM_TMUX_SOCKET", fmt.Sprintf("swarm-test-%d", os.Getpid()))
 	home := t.TempDir()

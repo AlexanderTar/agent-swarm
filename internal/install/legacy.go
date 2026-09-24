@@ -112,14 +112,26 @@ func Leftovers(c Config) []Leftover {
 	var out []Leftover
 	add := func(path, what string) { out = append(out, Leftover{Path: path, What: what}) }
 
+	claudeSkillsLink := c.Claude("skills", "swarm")
 	for _, link := range []string{
-		c.Claude("skills", "swarm"),
+		claudeSkillsLink,
 		c.Cursor("plugins", "local", "swarm"),
 		c.Gemini("config", "plugins", "swarm"),
 	} {
-		if fi, err := os.Lstat(link); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			add(link, "Agent Swarm 1.x symlink")
+		fi, err := os.Lstat(link)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			continue
 		}
+		// A1: v2 legitimately symlinks Claude's own skills root into
+		// ~/.swarm/skills; only a link that does not resolve there is v1's.
+		if link == claudeSkillsLink {
+			if skillsHome, err := SkillsHome(c.Home); err == nil {
+				if owned, err := isSwarmOwned(link, skillsHome); err == nil && owned {
+					continue
+				}
+			}
+		}
+		add(link, "Agent Swarm 1.x symlink")
 	}
 	if body, err := os.ReadFile(c.Codex("config.toml")); err == nil {
 		if _, removed := RemoveLegacyCodexMCP(string(body)); removed {

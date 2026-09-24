@@ -55,6 +55,39 @@ func TestWriteIfChangedLeavesNoTempFileBehind(t *testing.T) {
 	}
 }
 
+// Review round 1, Minor 5: content-equal is not the same as fully in sync --
+// a synced skill's exec bit can drift (a tool that doesn't preserve it, a
+// manual edit) even though the bytes still match, and that must self-heal
+// too, not just a content difference.
+func TestWriteIfChangedFixesTheModeWhenOnlyThatDrifted(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "run.py")
+	if _, err := install.WriteIfChanged(p, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wrote, err := install.WriteIfChanged(p, []byte("x"), 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Error("want wrote=true when only the mode needed fixing")
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o755 {
+		t.Errorf("mode = %v, want 0755", fi.Mode().Perm())
+	}
+	// Fully in sync (same bytes, same mode) is still a true no-op.
+	wrote, err = install.WriteIfChanged(p, []byte("x"), 0o755)
+	if err != nil || wrote {
+		t.Errorf("second call changed %v, %v; want a no-op", wrote, err)
+	}
+}
+
 func TestEditJSONKeepsEveryOtherKeyAndSkipsNoOps(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "mcp.json")
 	// A fixture shaped like the operator's ~/.cursor/mcp.json: other servers must survive.

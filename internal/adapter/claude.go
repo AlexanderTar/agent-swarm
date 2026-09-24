@@ -65,7 +65,7 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeProjectSwarmConfig(s.Cwd, mcp); err != nil {
+	if err := writeProjectSwarmConfig(s.Cwd, c.d.Home, mcp); err != nil {
 		return nil, err
 	}
 	set, err := c.settingsJSON(s)
@@ -101,25 +101,61 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 // Claude Code's own channel-name registry apparently lives too (confirmed by
 // direct, zero-delay reproduction -- see
 // docs/specs/2026-09-23-claude-mcp-startup-race.md; it is not a startup
-// race). It writes project-scope copies into the session's own scratch cwd
-// -- always empty at spawn, never a real git worktree
-// (internal/runtime/agents.go creates it fresh right before Launch/Resume)
-// -- so both become visible without re-admitting the excluded user scope
-// (and with it ~/.claude/CLAUDE.md, which --setting-sources project,local
-// exists to keep out).
-func writeProjectSwarmConfig(cwd string, mcp []byte) error {
+// race). It writes a project-scope .mcp.json, and links every registered
+// skill (A1, unit 1.3) into the session's own scratch cwd -- always empty at
+// spawn, never a real git worktree (internal/runtime/agents.go creates it
+// fresh right before Launch/Resume) -- so both become visible without
+// re-admitting the excluded user scope (and with it ~/.claude/CLAUDE.md,
+// which --setting-sources project,local exists to keep out). Symlinking
+// (rather than copying every skill's files, as before) matches WriteSkills'
+// own choice for Claude and avoids re-copying the vendored skills' data on
+// every single spawn -- ui-ux-pro-max alone is 3.1 MB.
+func writeProjectSwarmConfig(cwd, swarmHome string, mcp []byte) error {
 	if cwd == "" {
 		return nil
 	}
 	if err := os.WriteFile(filepath.Join(cwd, ".mcp.json"), mcp, 0o600); err != nil {
 		return err
 	}
-	for _, name := range install.SkillNames {
-		dir := filepath.Join(cwd, ".claude", "skills", name)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+	skillsHome, err := install.SkillsHome(swarmHome)
+	if err != nil {
+		return err
+	}
+	skillsRoot := filepath.Join(cwd, ".claude", "skills")
+	if err := adoptPreExistingSkills(skillsRoot); err != nil {
+		return err
+	}
+	_, err = install.LinkSkills(skillsRoot, skillsHome, install.SkillLinkMode(install.KindClaude))
+	return err
+}
+
+// adoptPreExistingSkills removes any non-symlink entry already at root.
+// Everything under a session's scratch cwd is swarm's own by construction
+// (internal/runtime/agents.go creates it fresh right before Launch/Resume,
+// never a real git worktree the user touches), so a real directory there --
+// left by an older, copy-based writeProjectSwarmConfig, say -- is never the
+// user's own same-named skill the way it would be under a real, shared skills
+// root; it is simply stale and must be replaced. A symlink is left alone:
+// LinkSkills' own idempotency check (and its user-owned check, belt and
+// braces) handles it.
+func adoptPreExistingSkills(root string) error {
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		p := filepath.Join(root, e.Name())
+		fi, err := os.Lstat(p)
+		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), install.SkillBody(name), 0o600); err != nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil {
 			return err
 		}
 	}

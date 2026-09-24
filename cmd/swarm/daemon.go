@@ -28,6 +28,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/hook"
 	"github.com/AlexanderTar/agent-swarm/internal/httpapi"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/mcpserver"
@@ -213,6 +214,24 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			d.Close()
 			return nil, err
+		}
+	}
+
+	// A1: refresh the shared skills copy under cfg.Home from the binary's
+	// embedded tree on every start, then re-link every already-installed
+	// kind's own skills root against it -- so upgrading the binary alone (no
+	// `swarm install` re-run) still picks up skill changes and repairs drift.
+	// Never fatal: a skills problem here must not stop the daemon starting.
+	// cfg.Home, not userHome: a custom --home/SWARM_HOME must not split where
+	// this writes from where WriteSkills/CheckSkills/the claude adapter look.
+	skillsCfg := install.Config{UserHome: userHome, Home: cfg.Home}
+	if skillErrs, err := install.SyncAndRefreshSkills(skillsCfg); err != nil {
+		cfg.Log("sync skills: %v", err)
+	} else {
+		for k, kerr := range skillErrs {
+			if kerr != nil {
+				cfg.Log("refresh %s skills: %v", k, kerr)
+			}
 		}
 	}
 
