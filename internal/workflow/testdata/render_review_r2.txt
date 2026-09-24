@@ -1,0 +1,4 @@
+## Workflow
+You are reviewing step "build" (coder), round 2 of at most 3.
+The builder's red/green evidence is in its checkpoints; swarm_read the task's checkpoints to see it.
+Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, unit (batched tasks), summary}. A blocked verdict escalates to the orchestrator.

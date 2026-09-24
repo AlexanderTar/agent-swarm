@@ -1,0 +1,6 @@
+## Workflow
+You are step "build" (coder), round 2 of at most 3.
+Gates for your completed checkpoint: tdd, commit, verify.
+After you complete: reviewer + ui_reviewer review your commit at its sha.
+If they request changes you receive their findings as an assignment update in this same session.
+Do not spawn or message reviewers yourself.
