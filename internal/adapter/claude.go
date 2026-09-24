@@ -92,6 +92,12 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 		}
 		a = append(a, "--append-system-prompt-file", instrPath)
 	}
+	if s.RemoteControl {
+		// Named after the agent so multiple orchestrators are distinguishable
+		// in Remote Control's own session list, instead of every one
+		// defaulting to the same hostname-prefixed auto-name.
+		a = append(a, "--remote-control", s.AgentName)
+	}
 	return append(a, "--dangerously-load-development-channels", "server:swarm"), nil
 }
 

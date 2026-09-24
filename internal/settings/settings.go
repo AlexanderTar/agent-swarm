@@ -54,6 +54,14 @@ type Settings struct {
 	UsagePollSec           int      `json:"usage_poll_sec"`
 	PauseDeadlineSec       int      `json:"pause_deadline_sec"`
 	Instructions           string   `json:"instructions"`
+	// EnableRemoteControl passes --remote-control to a spawned agent's own
+	// `claude` process (2026-09-24), scoped to orchestrators only -- a
+	// coder/reviewer/etc.'s session is short-lived and not something a user
+	// watches live the way an orchestrator is. Off by default: it's an
+	// opt-in convenience, not something every install should register with
+	// Remote Control unasked. Ignored entirely for a non-Claude orchestrator
+	// kind (codex/agy/cursor/muse have no such flag).
+	EnableRemoteControl bool `json:"enable_remote_control"`
 }
 
 // roleDefaults is §2.1 A3; "default" effort is "".

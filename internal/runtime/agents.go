@@ -1038,6 +1038,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		SettingsDir:       filepath.Join(s.Home, "run", "launch", ses.ID),
 		Bin:               s.Bin,
 		Instructions:      cfg.Instructions,
+		RemoteControl:     cfg.EnableRemoteControl && a.Role == RoleOrchestrator,
 	}
 
 	var l adapter.Launch
