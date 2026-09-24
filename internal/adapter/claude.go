@@ -65,7 +65,7 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeProjectSwarmConfig(s.Cwd, mcp); err != nil {
+	if err := writeProjectSwarmConfig(s.Cwd, c.d.Home, mcp); err != nil {
 		return nil, err
 	}
 	set, err := c.settingsJSON(s)
@@ -101,29 +101,25 @@ func (c *Claude) flags(s Spec) ([]string, error) {
 // Claude Code's own channel-name registry apparently lives too (confirmed by
 // direct, zero-delay reproduction -- see
 // docs/specs/2026-09-23-claude-mcp-startup-race.md; it is not a startup
-// race). It writes project-scope copies into the session's own scratch cwd
-// -- always empty at spawn, never a real git worktree
-// (internal/runtime/agents.go creates it fresh right before Launch/Resume)
-// -- so both become visible without re-admitting the excluded user scope
-// (and with it ~/.claude/CLAUDE.md, which --setting-sources project,local
-// exists to keep out).
-func writeProjectSwarmConfig(cwd string, mcp []byte) error {
+// race). It writes a project-scope .mcp.json, and links every registered
+// skill (A1, unit 1.3) into the session's own scratch cwd -- always empty at
+// spawn, never a real git worktree (internal/runtime/agents.go creates it
+// fresh right before Launch/Resume) -- so both become visible without
+// re-admitting the excluded user scope (and with it ~/.claude/CLAUDE.md,
+// which --setting-sources project,local exists to keep out). Symlinking
+// (rather than copying every skill's files, as before) matches WriteSkills'
+// own choice for Claude and avoids re-copying the vendored skills' data on
+// every single spawn -- ui-ux-pro-max alone is 3.1 MB.
+func writeProjectSwarmConfig(cwd, swarmHome string, mcp []byte) error {
 	if cwd == "" {
 		return nil
 	}
 	if err := os.WriteFile(filepath.Join(cwd, ".mcp.json"), mcp, 0o600); err != nil {
 		return err
 	}
-	for _, name := range install.SkillNames() {
-		dir := filepath.Join(cwd, ".claude", "skills", name)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), install.SkillBody(name), 0o600); err != nil {
-			return err
-		}
-	}
-	return nil
+	skillsHome := filepath.Join(swarmHome, "skills")
+	_, err := install.LinkSkills(filepath.Join(cwd, ".claude", "skills"), skillsHome, install.SkillLinkMode(install.KindClaude))
+	return err
 }
 
 func (c *Claude) Launch(s Spec) (Launch, error) {

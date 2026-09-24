@@ -160,6 +160,12 @@ var skillLinkMode = map[Kind]LinkMode{
 	KindMuse:   Copy,
 }
 
+// SkillLinkMode reports how WriteSkills exposes skills for k. Exported so a
+// per-spawn config writer (adapter/claude.go's writeProjectSwarmConfig) can
+// match swarm install's own choice for that kind exactly, rather than
+// hardcoding a mode that could drift from skillLinkMode.
+func SkillLinkMode(k Kind) LinkMode { return skillLinkMode[k] }
+
 // isSwarmOwned reports whether dst is safe for WriteSkills/SyncSkills/Uninstall
 // to create, replace or remove: nothing is there yet, it is a symlink whose
 // target resolves inside skillsHome, or it is a directory carrying
