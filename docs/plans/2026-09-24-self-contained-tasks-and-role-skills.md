@@ -306,20 +306,20 @@ func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) { /* walk ../../skills
 - `go build ./... && go vet ./...`
 
 #### Unit 4.1: `swarm-debugger` and `swarm-mechanical`
-- [ ] Add the test rows (red), write both skills (green), commit.
+- [x] Add the test rows (red), write both skills (green), commit.
 
 #### Unit 4.2: `swarm-researcher`
-- [ ] Add the test row (red), write the skill (green), commit.
+- [x] Add the test row (red), write the skill (green), commit.
 
 #### Unit 4.3: `swarm-advisor` and the advisor prompt
-- [ ] Write the failing tests `TestAdvisorSkillHasMermaidAndCredit` and `TestAdvisorSystemPromptDecisionRules`. Red.
-- [ ] Write the skill and update the prompt builder in `internal/advisor`. Green. Commit.
+- [x] Write the failing tests `TestAdvisorSkillHasMermaidAndCredit` and `TestAdvisorSystemPromptDecisionRules`. Red.
+- [x] Write the skill and update the prompt builder in `internal/advisor`. Green. Commit.
 
 #### Unit 4.4: Kickoff role-skill table
-- [ ] Write the failing tests `TestKickoffNamesRoleSkill` (a table over roles plus the spike case), `TestRoleSkillsExist` and `TestKickoffMandateForEveryRole`. Red.
+- [x] Write the failing tests `TestKickoffNamesRoleSkill` (a table over roles plus the spike case), `TestRoleSkillsExist` and `TestKickoffMandateForEveryRole`. Red.
   - Old kickoff-string assertions in `text_test.go` are updated. This is an intentional change.
-- [ ] Implement the table, the new signatures and the call sites. Add the `swarm-spike` and `swarm-workflows` stubs (valid frontmatter, body "Filled in by P12").
-- [ ] Green. Commit: `feat(runtime): kickoff names each role's skill`.
+- [x] Implement the table, the new signatures and the call sites. Add the `swarm-spike` and `swarm-workflows` stubs (valid frontmatter, body "Filled in by P12").
+- [x] Green. Commit: `feat(runtime): kickoff names each role's skill`.
 
 ---
 
