@@ -104,6 +104,24 @@ Confirmed with the user during brainstorming; not reopened here.
 12. **One spec, one plan, one release.** The plan is phased for ordering of
     work, not for staged rollout, so no compatibility shims between
     components (e.g. the menubar learns `designer` in the same release).
+13. **Work is batched into work packages** (user requirement, backed by the
+    research in C4): a swarm-tree task batches **3–5 units** (a unit is what
+    superpowers calls a task: its own test cycle, independently reviewable),
+    with one workflow, one review loop and one verify set per package.
+    Superpowers' 2–5 minute granularity applies to *steps*, never to tasks.
+    The canonical rules live in a new `swarm-batching` skill that the
+    planning, orchestration, build and review skills all reference.
+14. **ponytail is vendored for coder and mechanical roles**
+    (DietrichGebert/ponytail, MIT): `ponytail` (least code that works),
+    plus `ponytail-review` as the over-engineering lens for reviewers and
+    `ponytail-debt` for the orchestrator's integration pass. The task's
+    steps and TDD gate take precedence over ponytail's test minimalism.
+15. **Plans assign every role; the orchestrator never guesses.** Every task
+    node must carry an explicit `workflow` (template or steps) that names
+    the role for each step; story `after_tasks` and root `integration`
+    name their reviewer roles; spike-created research/design tasks carry
+    workflows too. There is no role_hint → workflow inference anywhere;
+    `role_hint` is derived from the workflow's first run step.
 
 ## Architecture overview
 
@@ -146,10 +164,12 @@ flowchart TD
     swarm-workflows/        workflow DSL reference (new)
     swarm-coder/ swarm-reviewer/ swarm-ui-reviewer/ swarm-designer/
     swarm-debugger/ swarm-mechanical/ swarm-researcher/ swarm-advisor/   (new)
+    swarm-batching/         work-package sizing and batching rules (new)
     vendor/
       web-design-guidelines/  building-components/  ui-ux-pro-max/
       expo-native-ui/  expo-design-system/  vercel-react-native-skills/
       mobile-ios-design/  mobile-android-design/
+      ponytail/  ponytail-review/  ponytail-debt/
   ```
 
 - `internal/install/skills/` becomes a full mirror of `skills/`, and
@@ -209,10 +229,17 @@ file, and `VENDORED.md`:
 | vercel-react-native-skills | vercel-labs/agent-skills `skills/react-native-skills` | MIT | None |
 | mobile-ios-design | wshobson/agents `plugins/ui-design/skills/mobile-ios-design` | MIT (Seth Hobson) | None |
 | mobile-android-design | wshobson/agents `plugins/ui-design/skills/mobile-android-design` | MIT (Seth Hobson) | None |
+| ponytail | DietrichGebert/ponytail `skills/ponytail` (commit `e3ba2aa`) | MIT (DietrichGebert) | Replace the "Persistence"/intensity-switch instructions (slash commands, "stop ponytail") with a fixed `full` level note — swarm agents have no user to switch modes; everything else verbatim |
+| ponytail-review | DietrichGebert/ponytail `skills/ponytail-review` | MIT | None |
+| ponytail-debt | DietrichGebert/ponytail `skills/ponytail-debt` | MIT | None |
 
 A `skills/vendor/README.md` table lists all of the above; the root README's
 License section gains one line: "Vendored skills under `skills/vendor/` keep
 their own licenses; see each `VENDORED.md`."
+
+Not vendored from ponytail: `ponytail-help` (slash-command/config help for
+interactive users), `ponytail-gain` (benchmark scoreboard) and
+`ponytail-audit` (whole-repo audit; out of scope for task agents).
 
 Name collisions: if a user already has e.g. `vercel-react-native-skills`
 in `~/.claude/skills` (the Claude.ai synced set includes it), A1's
@@ -225,8 +252,8 @@ per-spawn project dir, which takes precedence.
 
 | Role | Kickoff skills |
 |---|---|
-| orchestrator (delivery) | `swarm`, `swarm-orchestrator`, `swarm-workflows` |
-| orchestrator (spike item) | `swarm`, `swarm-spike`, `swarm-workflows` |
+| orchestrator (delivery) | `swarm`, `swarm-orchestrator`, `swarm-workflows`, `swarm-batching` |
+| orchestrator (spike item) | `swarm`, `swarm-spike`, `swarm-workflows`, `swarm-batching` |
 | coder | `swarm`, `swarm-coder` |
 | reviewer | `swarm`, `swarm-reviewer` |
 | ui_reviewer | `swarm`, `swarm-ui-reviewer` |
@@ -253,7 +280,17 @@ adds to it." Contents:
   assignment has a `## Workflow` section, you are one step of a
   daemon-run workflow: do exactly your step, write `completed` when your
   step's gates are met, and don't coordinate the next step yourself."
-- **swarm-coder**: read `## Steps`, `## Verify`, `## Workflow` in the brief;
+- **swarm-coder**: read `## Units` (or `## Steps`), `## Verify`, `## Workflow` in the brief;
+  execute a work package unit by unit (`swarm-batching` "Executing a
+  package": own red → green per unit, verification entries tagged
+  `unit`, one commit per unit); write production code with the vendored
+  `ponytail` ladder (reuse → stdlib → platform → installed dependency →
+  minimum code; no speculative abstractions; `ponytail:` comments for
+  deliberate ceilings). **Precedence:** the task's steps, acceptance and
+  the `tdd` gate govern tests — ponytail's "one small check, no suites"
+  applies only where the task has no tdd gate; ponytail's "question the
+  requirement" becomes a note in the `completed` summary, never a skipped
+  acceptance criterion;
   `superpowers:test-driven-development` for every behaviour change (record
   red with `phase:"red", ok:false`, then green); commit your own work —
   small, signed, conventional-message commits on your worktree branch, never
@@ -268,7 +305,10 @@ adds to it." Contents:
   `superpowers:subagent-driven-development`'s implementer prompt: ask your
   parent before guessing on ambiguity; self-review your diff before
   completing.
-- **swarm-reviewer**: you review a read-only worktree at a fixed sha.
+- **swarm-reviewer**: you review a read-only worktree at a fixed sha,
+  walking a work package unit by unit, commit by commit (`swarm-batching`
+  "Reviewing a package": missing unit = `major`, findings tagged `unit`);
+  run `ponytail-review` as the over-engineering lens after correctness.
   Check, in order: spec/acceptance compliance (every acceptance bullet
   covered), tests exist for each acceptance criterion and would fail without
   the change (read the red evidence in the task's checkpoints via
@@ -305,6 +345,8 @@ adds to it." Contents:
   (green); same commit/verify rules as the coder; consult the advisor
   before committing to a root cause.
 - **swarm-mechanical** (light): for renames, config, docs, generated files.
+  Apply the `ponytail` ladder (shortest correct diff; reuse before adding);
+  same-shape batches get one checklist line per file.
   Do exactly the described change; no refactors or "while I'm here"; run the
   declared verify commands; commit; `completed`. If the change turns out to
   need judgement, write `blocked` and say why.
@@ -338,6 +380,16 @@ adds to it." Contents:
   a pipeline; barriers (deps) only when a task truly needs another's output;
   adversarial verify = multiple reviewer roles on one step; loop-until-pass
   with bounded rounds; completeness critic before approval; no silent caps.
+  Includes the **role assignment table** (C5) so plans never leave a role
+  to be guessed.
+- **swarm-batching** (drafted in this change at
+  `skills/swarm-batching/SKILL.md`): vocabulary (step / unit / work
+  package), the batching test (one verdict, one slice, shared context, one
+  "done when"), what to fold in, what to keep apart (irreversible work,
+  different reviewer or model tier, uncertain work, truly parallel work,
+  contracts before consumers), size bounds (3–5 units; ~100–400 changed
+  lines; 3–8 files; 30–90 human-minutes), split triggers, and how coders,
+  reviewers and orchestrators execute packages. Sources credited (C4).
 - **swarm-advisor** (original text): when to consult (before committing to
   an approach, when stuck, before `completed` for orchestrators/debuggers/
   reviewers, before irreversible steps; not for routine work); how
@@ -490,7 +542,7 @@ type Spec struct {
 
 func Validate(level Level, s Spec) error
 func Resolve(s Spec, tddExempt bool) (Spec, error) // expand template, apply overrides, drop tdd gate if exempt
-func DefaultFor(roleHint string) Spec              // role_hint → template
+func RunRole(s Spec) string                          // first run step's role (for role_hint)
 func Next(s Spec, runs []Run, round, extraRounds int) Action // pure planner (B4)
 func Render(s Spec, stepID string, round int) string // "## Workflow" section for a step's brief
 ```
@@ -506,9 +558,9 @@ Templates (`templates.go`), resolved form:
 | `mechanical` | `change{run:mechanical, gates:[commit,verify]}` (no review) |
 | `research` | `research{run:researcher, gates:[artifact:notes]}` (no review) |
 
-`DefaultFor(role_hint)`: `coder`/`""` → `tdd-reviewed`, `designer` →
-`design-reviewed`, `debugger` → `debug`, `mechanical` → `mechanical`,
-`researcher` → `research`; `ui_reviewer` as a hint → `ui-tdd-reviewed`.
+There is deliberately no `role_hint → template` inference (locked
+decision 15): a workflow is always written by the planner. `RunRole`
+derives `role_hint` from it for display and filtering.
 
 Validation rules (errors, with copy in "All user-facing copy"):
 - exactly one of `run`/`review` per step; step ids unique, `[a-z][a-z0-9-]*`;
@@ -526,10 +578,14 @@ Validation rules (errors, with copy in "All user-facing copy"):
 - `items.Item` gains `Workflow *workflow.Spec`, `Steps []string`,
   `Verify []string`; `CreateInput`/`Patch` accept them (orchestrator/daemon
   only, like `tdd_exempt`). Stored resolved: `CreateTx` runs
-  `workflow.Resolve`; a task with no explicit workflow gets
-  `DefaultFor(role_hint)` **only when created by materialize** (so
-  hand-created tasks from the board stay legacy unless given one).
-- `swarm_items create/update` accept `workflow`, `steps`, `verify`.
+  `workflow.Resolve` and sets `role_hint = RunRole(workflow)`. A task
+  created by an orchestrator (`swarm_items create`, including spike
+  research/design tasks and follow-ups) **must** carry a `workflow`;
+  only tasks created by the user on the board may omit it (legacy flow).
+- `items.Item` also gains `Units []Unit` (`{Title string; Steps []string}`)
+  and `Solo string` (C4). A task has either `steps` (single unit) or
+  `units` (batched), never both.
+- `swarm_items create/update` accept `workflow`, `steps`, `units`, `solo`, `verify`.
 - `swarm_read` item output adds `workflow`, `steps`, `verify`, and for
   tasks with a workflow row: `workflow_state {state, round, escalation,
   runs[{step, round, role, agent, state, verdict, findings, sha}]}` and
@@ -604,7 +660,7 @@ questions still reach the orchestrator, which answers as today.
 
 ### B5. Checkpoint changes
 
-- `CheckpointInput` gains `Verdict string`, `Findings []Finding`
+- `Verify` gains `Unit int` (`unit` on the wire, optional). `CheckpointInput` gains `Verdict string`, `Findings []Finding` (`Finding` also carries an optional `Unit int`)
   (`{Severity, File, Line, Summary}`). `verdict` is required on `completed`
   by `reviewer`/`ui_reviewer` agents that have a workflow run, and refused
   on any other role's checkpoint. `pass` with any `critical`/`major`
@@ -615,7 +671,10 @@ questions still reach the orchestrator, which answers as today.
   path unchanged:
   - `tdd`: across this attempt's entries (prior checkpoints + this one, in
     order) there is an entry `{phase:"red", ok:false}` followed later by
-    `{phase:"green", ok:true}`; skipped if the item is `tdd_exempt`.
+    `{phase:"green", ok:true}`; skipped if the item is `tdd_exempt`. For a
+    batched task (`units`), `Verify` entries carry `unit` (1-based) and the
+    red-before-green pair is required **per unit**; the error names the
+    units missing evidence.
   - `verify`: every string in the item's `verify` list is matched by a
     recorded entry with `ok:true` whose `cmd`, whitespace-normalized,
     equals or contains it.
@@ -646,8 +705,10 @@ questions still reach the orchestrator, which answers as today.
 ### B6. Daemon-rendered briefs
 
 For engine spawns, `BriefInput` is built from the item: `Objective` =
-item brief; `Acceptance`; new `Steps` section (numbered, the item's
-`steps`); `Verify` = item `verify`; `Context` = workflow `context` from
+item brief; `Acceptance`; new `Units` section (each unit a numbered
+heading with its steps) or `Steps` section for single-unit tasks; when the
+brief would exceed the cap after truncating `Context`, unit steps collapse
+to their titles plus "(steps: swarm_read <KEY>)"; `Verify` = item `verify`; `Context` = workflow `context` from
 start + paths of `design`/`research` artifacts on the item and on items it
 depends on; new `Workflow` section = `workflow.Render(spec, stepID, round)`:
 
@@ -729,6 +790,13 @@ character cap stays; the renderer truncates `Context` first and appends
 Workflow *workflow.Spec `json:"workflow,omitempty"`
 Steps    []string       `json:"steps,omitempty"`  // tasks: ordered execution script
 Verify   []string       `json:"verify,omitempty"` // tasks: commands proving the task
+Units    []TreeUnit     `json:"units,omitempty"`  // tasks: batched units (C4), instead of steps
+Solo     string         `json:"solo,omitempty"`   // tasks: why this is a single-unit package
+
+type TreeUnit struct {
+	Title string   `json:"title"`
+	Steps []string `json:"steps"`
+}
 ```
 
 Example task node:
@@ -746,9 +814,13 @@ Example task node:
  "workflow":{"template":"tdd-reviewed"}}
 ```
 
-`materialize.createTree` copies `workflow` (resolved, defaulting from
-`role_hint`), `steps`, `verify` onto created items; root/story `workflow`
-likewise.
+A batched task node uses `units` instead of `steps`; see the example in
+`skills/swarm-batching/SKILL.md`.
+
+`materialize.createTree` copies `workflow` (resolved), `steps`/`units`,
+`solo`, `verify` onto created items and sets `role_hint` from the
+workflow; root/story `workflow` likewise. `role_hint` in the tree is
+optional and, if present, must equal `RunRole(workflow)`.
 
 ### C2. Plan validation (`RegisterArtifact` for `plan`/`debug_report`)
 
@@ -757,15 +829,27 @@ Errors (registration refused, copy below):
   task's workflow, not the tree;
 - a non-`tdd_exempt` task with a `tdd` gate in its resolved workflow and
   empty `steps` or empty `verify`;
-- a `workflow` that fails `workflow.Validate` for its level.
+- a `workflow` that fails `workflow.Validate` for its level;
+- a task with no `workflow` (plans assign every role; decision 15);
+- a task `role_hint` that disagrees with its workflow's run role;
+- a task with both `steps` and `units`, or with more than 8 units;
+- a story with `after_tasks` or a root with `integration.final_review`
+  whose roles aren't reviewer roles.
 
 Warnings (registration succeeds; returned in the result as `warnings[]` and
 shown on the board's plan review screen):
 - task titles matching `(?i)^(write|add) (a )?failing test|^(red|green)\b|make .* pass$|^fix review|^address review|^review\b`
   → "Looks like a TDD phase or review step split out as its own task.
   Fold it into the task's steps.";
-- a task whose `steps` contain no step mentioning a test while its
-  workflow has a `tdd` gate.
+- a task whose `steps` (or any unit's steps) contain no step mentioning
+  a test while its workflow has a `tdd` gate;
+- **batching** (C4): a single-unit task (only `steps`, or one unit) with
+  no `solo` reason → "Task <ref> is a single unit. Batch it with related
+  units (3–5 per task) or say why it stands alone in `solo`."; a task with
+  more than 5 units → "Task <ref> has <n> units; split above 5 unless
+  they're same-shape edits."; a story whose tasks are all single-unit and
+  number ≥ 3 → "Story <ref> has <n> single-unit tasks; they look
+  batchable."
 
 `RegisterArtifactResult` gains `Warnings []string`; `swarm_artifact`
 returns it.
@@ -797,17 +881,67 @@ returns it.
    root gets `integration`. Separate design tasks (template
    `design-reviewed`) block the UI build tasks that implement them.
    Dependencies only where a task needs another's output (pipeline by
-   default, barrier by exception).
+   default, barrier by exception). Write superpowers-sized tasks as
+   **units**, then batch them into work packages with `swarm-batching`
+   (3–5 units each) and assign each package's workflow from the role
+   assignment table (C5) — never leave a role to the orchestrator.
 6. **Completeness critic.** Before asking for plan approval, spawn a
    `reviewer` on the spike with the plan path, brief: "What is missing or
    wrong: acceptance criteria not covered by any task, tasks that aren't
    self-contained, missing verify commands, wrong dependencies, split TDD
-   phases." Fold its findings in (or record why not) and re-register.
+   phases, packages that fail the batching test or could be merged, and any
+   task whose workflow roles don't fit its work." Fold its findings in (or record why not) and re-register.
 7. **Plan approval + materialize** (unchanged).
 
 Debug spikes: `superpowers:systematic-debugging` as today, with optional
 `research` tasks for evidence gathering, and the bug's tasks using the
 `debug` template.
+
+### C4. Batching into work packages
+
+Why (research notes, 2026-09-24):
+- Superpowers itself scopes "2–5 minutes" to **steps**, and since v6.0.0
+  its writing-plans "Task Right-Sizing" says a task is "the smallest unit
+  that carries its own test cycle and is worth a fresh reviewer's gate…
+  split only where a reviewer could meaningfully reject one task while
+  approving its neighbor"; its release notes report one fix round instead
+  of two to four for plans sized this way. v6.3.0's
+  subagent-driven-development adds "Batch small same-shape work" into one
+  dispatch. Our observed over-granularity is planners treating steps as
+  tasks — and every swarm task paying a spawn + review loop.
+- Review effectiveness falls with size and file count (Google "Small CLs":
+  ~100 lines reasonable, 1000 too large; SmartBear/Cisco: 200–400 LOC per
+  review; Microsoft (Bosu et al. 2015): usefulness of comments drops as
+  files grow). Agents are near-perfect on minutes-long tasks (METR), so the
+  fixed per-task overhead dominates tiny tasks; Anthropic reports
+  multi-agent runs at ~15× chat tokens and notes coding parallelises less
+  than research.
+- Existing skills with compatible heuristics: addyosmani/agent-skills
+  `planning-and-task-breakdown` (S/M tasks, ≤ ~5 files), citypaul
+  `planning` (vertical slices, 1–3 sentence test). Both MIT; we credit
+  them and write original text.
+
+Rules are in `skills/swarm-batching/SKILL.md` (A4). What code enforces:
+`units`/`solo` on task nodes and items (C1, B3), per-unit TDD evidence
+(B5), unit-aware brief rendering (B6), batching warnings at plan
+registration (C2), unit-tagged findings (B5). Size bounds in lines/files
+are guidance for planners and reviewers only — the daemon can't know them
+before the work exists.
+
+### C5. Role assignment table (plans pick; nobody guesses)
+
+| Work in the package | Workflow |
+|---|---|
+| Backend/library/CLI behaviour change | `tdd-reviewed` (coder → reviewer) |
+| Any change to UI code (web or native) | `ui-tdd-reviewed` (coder → reviewer + ui_reviewer) |
+| New screen/flow/component design before building | `design-reviewed` (designer → ui_reviewer), blocking the UI package |
+| Bug fix with a reproducible defect | `debug` (debugger → reviewer) |
+| Rename, config, docs-only, generated files, vendoring | `mechanical` (mechanical, no review) — or steps `[{run: mechanical}, {review: [reviewer]}]` when a license/provenance check matters |
+| Open question / evidence gathering | `research` (researcher) |
+| Security-sensitive change | its own package (`solo: "security"`), `tdd-reviewed` with `max_rounds: 4`; the workflow `context` names the security focus for the reviewer |
+
+`swarm-spike`, `swarm-workflows` and `swarm-batching` carry this table;
+the completeness critic checks it.
 
 ## Screens
 
@@ -841,6 +975,7 @@ Agent-facing errors (tool results):
 - Commit gate: `"Commit your work before completing: <repo> is dirty"` / `"… HEAD is <sha7>, checkpoint says <sha7>"` / `"Completed needs git: [{repo, branch, sha, dirty:false}]."`
 - Artifact gates: `"Completed needs your design file in artifacts (under ~/.swarm/designs/<ROOT>/)."` and the research equivalent.
 - Verdict: `"Reviewers must complete with verdict: pass, changes_requested or blocked."`, `"verdict pass can't carry critical or major findings."`, `"Only reviewers set a verdict."`
+- Batching/role copy: `"Task <ref> has no workflow. Plans assign every role: pick a template or write steps."`, `"Task <ref> role_hint <x> doesn't match its workflow (<y>)."`, `"Task <ref> has both steps and units; use one."`, `"Task <ref> has <n> units (max 8)."`, `"TDD evidence missing for unit(s) <n,…>: record red then green with \"unit\": <n>."`, plus the C2 warnings.
 - Tree errors: `"Task <ref> is a review task. Reviews run inside each task's workflow; remove it and give the reviewed task a reviewed template."`, `"Task <ref> needs steps and verify commands (its workflow has a tdd gate)."`, `"Task <ref> workflow: <validation error>."`
 - Workflow validation: `"step <id>: set exactly one of run or review"`, `"step <id>: <role> can't run a step"`, `"step <id>: <role> can't review"`, `"step <id>: of/fix must name an earlier run step"`, `"max_rounds must be 1–5"`, `"unknown template \"<name>\""`, `"after_tasks is only for stories"`, `"integration is only for epics and bugs"`.
 - Hook: `"[swarm] The Workflow tool is disabled in Swarm sessions. Use swarm_spawn or swarm_workflow."`
@@ -862,8 +997,8 @@ Board copy: "Workflow", "Round {n} of {max}", "Running", "Succeeded",
 - `internal/runtime/workflow.go` (+ `workflow_test.go`): start, advance, resume, cancel, recovery scan, relays.
 - `internal/db/schema/0010_designer_and_artifact_kinds.sql`, `0011_workflows.sql`.
 - `internal/mcpserver/workflow.go` (`swarm_workflow`) + tests.
-- `skills/swarm-{spike,workflows,coder,reviewer,ui-reviewer,designer,debugger,mechanical,researcher,advisor}/SKILL.md`.
-- `skills/vendor/**` (eight skills + `README.md`).
+- `skills/swarm-{spike,workflows,coder,reviewer,ui-reviewer,designer,debugger,mechanical,researcher,advisor,batching}/SKILL.md` (`swarm-batching` is drafted in this change and adopted by the plan).
+- `skills/vendor/**` (eleven skills: eight UI/design/mobile + three ponytail, and `README.md`).
 - `web/src/components/WorkflowSection.tsx` (+ test).
 - `scripts/e2e/workflow_test.go`.
 

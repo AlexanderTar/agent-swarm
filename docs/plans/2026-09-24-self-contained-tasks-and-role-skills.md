@@ -1,65 +1,122 @@
 # Self-contained Tasks, Workflow Engine and Role Skills — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan package-by-package. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **This plan is written in the shape it introduces.** Every task is a
-> self-contained deliverable: its TDD cycle is *steps inside the task*, and
-> its review → fix → re-verify loop is part of the task's acceptance, not a
-> separate task. A task is finished only when all its steps are checked, its
-> Verify commands pass, it is committed, and its review loop ended in a pass.
+> **This plan dogfoods `skills/swarm-batching/SKILL.md`.** Work is grouped
+> into **work packages** (tasks). Each package holds 3–5 **units**, where a
+> unit is what superpowers calls a task: its own red → green cycle and its
+> own commit. Each package has one workflow, which means one build and one
+> review loop, plus one Verify set. Every package states its workflow, so
+> its roles are assigned here and not by whoever executes the plan. A
+> package is finished only when all of the following are true:
+> - every unit's steps are checked
+> - every unit is committed
+> - the package's Verify commands pass
+> - its review loop ended in a pass
 
-**Goal:** Replace micro-task plans and orchestrator-driven review loops with self-contained tasks whose build → review → fix → verify loop is run by the daemon from a declarative workflow; give every agent role its own skill (plus a new `designer` role and vendored UI/design skills); make spikes do deep research and emit per-task workflows.
+**Goal:** Replace micro-task plans and orchestrator-driven review loops with work packages whose build → review → fix → verify loop is run by the daemon from a declarative, planner-assigned workflow. Give every agent role its own skill, plus a new `designer` role and vendored UI/design/mobile/ponytail skills. Make spikes do deep research and emit batched, role-assigned packages.
 
-**Architecture:** Three parts (spec: `docs/specs/2026-09-24-self-contained-tasks-and-role-skills.md`). (A) Recursive skill packaging with one on-disk copy under `~/.swarm/skills` symlinked into each agent kind, role skills named in each kickoff, eight vendored skills, a `designer` role, and the native `Workflow` tool blocked. (B) A pure `internal/workflow` package (DSL, templates, validation, `Next` planner) plus an engine in `internal/runtime/workflow.go` that starts, advances, escalates and finishes per-task workflows, with new tables (`workflows`, `workflow_runs`), review verdicts on checkpoints, per-step gates (tdd/commit/verify/artifact), and multi-agent-safe task semantics. (C) swarm-tree nodes carry `workflow`/`steps`/`verify`, plan registration rejects split review tasks and warns on split TDD phases, and the spike skill runs a research → design → plan → critic flow.
+**Architecture:** See `docs/specs/2026-09-24-self-contained-tasks-and-role-skills.md`.
+- **(A) Skills and roles.** Recursive skill packaging with one on-disk copy under `~/.swarm/skills`, linked into each agent kind. Role skills are named in each agent's kickoff. Eleven vendored skills, the `swarm-batching` rules, a `designer` role, and the native `Workflow` tool blocked.
+- **(B) Workflow engine.**
+  - A pure `internal/workflow` package: DSL, templates, validation, and a `Next` planner.
+  - An engine in `internal/runtime/workflow.go` backed by new tables `workflows` and `workflow_runs`.
+  - Review verdicts, and per-step gates (tdd per unit, commit, verify, artifact).
+  - Task semantics that are safe with several agents on one task.
+- **(C) Planning.** swarm-tree packages carry `workflow`, `units`, `solo` and `verify`. Registering a plan enforces role assignment and warns on unbatched or split work. The spike skill runs research → design → plan → critic.
 
-**Tech Stack:** Go (stdlib `embed`, `io/fs`, `database/sql` on SQLite, `testing`), React + TypeScript + Vitest + Biome (`web/`), Swift + XCTest (`apps/menubar/`), bash e2e harness (`scripts/e2e`).
+**Tech Stack:** Go (stdlib `embed`, `io/fs`, `database/sql` on SQLite, `testing`), React + TypeScript + Vitest + Biome (`web/`), Swift + XCTest (`apps/menubar/`), Go e2e harness (`scripts/e2e`).
 
 **Spec:** `docs/specs/2026-09-24-self-contained-tasks-and-role-skills.md`
+
+## Batching summary (dogfood check)
+
+- **Units:** 52 superpowers-sized units in 12 work packages, an average of 4.3 units per package.
+- **Review loops:**
+  - The first draft of this plan had 22 tasks, so 22 build/review loops.
+  - Treating every unit as a task would mean 52 loops.
+  - This plan has 12, plus one story review and one final integration review.
+- **Packages below 3 units:** only P5 (schema migrations, 2 units), with `solo: "table-rebuilding migrations"`. Batching test: keep risky or irreversible work apart.
+- **Split decisions:**
+  - UI (P11) is separate because it needs a different reviewer (`ui_reviewer`).
+  - Vendoring (P2) is separate because it needs a license/provenance review, not a code review.
+  - The DSL (P6) lands before its consumers (contract first).
+  - Checkpoint semantics (P8) and the engine (P9) are separate because together they exceed the ~500 changed-line bound.
+- **Folded in, not separate:**
+  - README and docs changes go into the package whose behaviour they describe.
+  - The final smoke test is the epic's `integration` step.
+  - Skill mirror syncs happen inside each unit.
 
 ## Global Constraints
 
 - Everything ships together in one release; no compatibility shims between daemon, web and menubar.
-- Legacy behaviour is preserved exactly for tasks whose `workflow_json` is NULL (existing epics, board-created tasks). Every change to checkpoint/transition code must keep today's tests for legacy tasks green.
-- Never delete or weaken an existing test to make a new one pass. Tests whose expectations change intentionally are listed in the task that changes them.
+- Legacy behaviour is preserved exactly for tasks whose `workflow_json` is NULL (existing epics, board-created tasks). Every change to checkpoint, transition or spawn code keeps today's legacy-task tests green.
+- Never delete or weaken an existing test to make a new one pass. Tests whose expectations change intentionally are named in the unit that changes them.
 - After any edit under `skills/`, run `make skills-sync`; `go test ./internal/install/...` enforces the mirror.
-- Each task ends with `go build ./... && go vet ./...` plus its package tests green; web tasks also `cd web && pnpm test && pnpm biome check`; menubar tasks `cd apps/menubar && swift test`.
-- Commit at the end of every task (and after each review fix round) with a conventional message (`feat(scope): …`, `fix(scope): …`, `docs(skills): …`), signed, following the repo's existing commit style.
-- Hot files: `internal/runtime/checkpoint.go`, `internal/runtime/agents.go`, `internal/items/transition.go`. Pull/rebase before starting a task that touches them.
-- Review loop (every task): after the green + commit steps, request review with `superpowers:requesting-code-review` against the task's Acceptance; handle feedback with `superpowers:receiving-code-review`; fix, re-run Verify, commit; repeat until the reviewer passes (max 3 rounds, then escalate to the human).
+- **One commit per unit** (conventional message, e.g. `feat(install): …`, signed, repo style). Review fix rounds add commits; never amend.
+- Every Go unit keeps `go build ./... && go vet ./...` green. Web units also run `cd web && pnpm test && pnpm biome check`. Menubar units also run `cd apps/menubar && swift test`.
+- Hot files: `internal/runtime/checkpoint.go`, `internal/runtime/agents.go`, `internal/items/transition.go`. Pull or rebase before starting P7–P10.
+- **Package review loop** (every package, once, after all its units are committed):
+  1. Run the package Verify set.
+  2. Request review with `superpowers:requesting-code-review` against the package Acceptance, walking the diff unit by unit.
+  3. Handle findings with `superpowers:receiving-code-review`. Fix, re-run Verify, and commit.
+  4. Repeat until the review passes. Stop after the workflow's `max_rounds` and escalate to the human.
+  5. If one unit collects all the findings two rounds in a row, split it into a follow-up package instead of re-running the whole package (`swarm-batching` split trigger).
 
 ## Review Focus
 
-Spec inputs most likely to be under-tested — reviewers check these explicitly:
+Spec inputs most likely to be under-tested. Reviewers check these explicitly:
 
 1. Legacy tasks (no workflow) behave byte-for-byte as before across checkpoint, transition and spawn paths.
 2. Engine idempotency: a repeated `advance` (daemon restart, duplicate trigger) never double-spawns (`UNIQUE (workflow_id, step_id, round, role)`).
 3. `closeCompletedSiblings` no longer tears down a builder when a reviewer completes on the same task, and vice versa.
-4. Symlinked skills are actually discovered by each agent CLI (Task 2 empirical check drives the copy fallback).
-5. Relay suppression: the orchestrator receives exactly one `workflow_succeeded` per successful task, and still receives `blocked`/`failed`/questions from step agents.
+4. Symlinked skills are actually discovered by each agent CLI. The P1 empirical check decides where the copy fallback is used.
+5. Relay suppression: the orchestrator receives exactly one `workflow_succeeded` per successful package. It still receives `blocked`/`failed` checkpoints and questions from step agents.
+6. No role is ever inferred. A task without a workflow is rejected at plan registration and on orchestrator `swarm_items create`.
 
 ---
 
-## Phase A — Skill platform, role skills, designer role
+## Story A — Skills and roles
 
-### Task 1: Recursive skill embed, registry and `~/.swarm/skills` sync
+### P1: Skill distribution
+**Workflow:** `tdd-reviewed` (coder → reviewer) · **Units:** 4
 
 **Files:**
-- Modify: `internal/install/skills.go`, `internal/install/skills_test.go`, `Makefile` (`skills-sync`), `cmd/swarm/daemon.go`
-- Create: `internal/install/skills/` becomes a full mirror of `skills/`
+- `internal/install/{skills.go,skills_test.go,claude.go,codex.go,agy.go,cursor.go,muse.go,doctor.go,uninstall.go}`
+- `internal/adapter/claude.go` and its test
+- `internal/migrate/{integrations.go,recover_test.go}`
+- `Makefile`
+- `cmd/swarm/daemon.go`
 
-**Interfaces:**
-- Produces: `type Skill struct{ Name, Dir string; Vendored bool }`; `func Skills() ([]Skill, error)`; `func SkillFS() fs.FS`; `func SyncSkills(home string) (changed []string, err error)`; `const ManagedMarker = ".swarm-managed"`.
-- Keeps (for callers until Task 2): `SkillNames` now derived from `Skills()`; `SkillBody(name)` reads `<Dir>/SKILL.md`.
+**Interfaces (produces):**
+- `type Skill struct{ Name, Dir string; Vendored bool }`
+- `func Skills() ([]Skill, error)`
+- `func SkillFS() fs.FS`
+- `func SkillNames() []string`
+- `func SyncSkills(home string) ([]string, error)`
+- `const ManagedMarker = ".swarm-managed"`
+- `func LinkSkills(root, skillsHome string, mode LinkMode) (skipped []string, err error)`
+- `func WriteSkills(c Config, k Kind) (changed, skipped []string, err error)`
+- `func CheckSkills(c Config, k Kind) Check`
 
 **Acceptance:**
-- Every file under `skills/` (nested dirs, LICENSE, scripts, data) is embedded and extracted to `~/.swarm/skills/<name>/…`; vendored skills are flattened by name.
-- Files removed from the embed are deleted on the next sync; each extracted dir has `.swarm-managed`.
-- `make skills-sync` mirrors the tree with deletes; the drift test compares every file.
-- The daemon runs `SyncSkills` at startup.
+- The whole `skills/` tree is embedded (nested dirs, LICENSE, scripts, data) and extracted to `~/.swarm/skills/<name>/`, with vendored skills flattened by name.
+- Stale files are pruned, and each extracted dir gets a `.swarm-managed` marker.
+- The daemon syncs skills at startup.
+- `make skills-sync` mirrors the tree with deletes, and the drift test compares every file.
+- Every kind's skills root links to `~/.swarm/skills/<name>`, or holds a managed copy where the CLI can't follow symlinks.
+- A user-owned skill with the same name is left untouched and reported.
+- Claude spawns get links in `<cwd>/.claude/skills/`.
+- Uninstall removes only swarm entries.
+- Doctor checks skills for every kind, and warns when `python3` is missing.
 
-**Verify:** `make skills-sync && go test ./internal/install/... && go build ./... && go vet ./...`
+**Verify:**
+- `make skills-sync`
+- `go test ./internal/install/... ./internal/adapter/... ./internal/migrate/...`
+- `go build ./... && go vet ./...`
 
-- [ ] **Step 1: Write failing tests** in `internal/install/skills_test.go`:
+#### Unit 1.1: Embed, registry, sync
+- [ ] Write the failing tests in `internal/install/skills_test.go`:
 
 ```go
 func TestSkillsRegistryMatchesTree(t *testing.T) {
@@ -75,7 +132,7 @@ func TestSkillsRegistryMatchesTree(t *testing.T) {
 		if fm["name"] != s.Name || path.Base(s.Dir) != s.Name { t.Errorf("%s: frontmatter/dir mismatch", s.Dir) }
 		if strings.TrimSpace(fm["description"]) == "" { t.Errorf("%s: empty description", s.Name) }
 	}
-	for _, want := range []string{"swarm", "swarm-orchestrator"} {
+	for _, want := range []string{"swarm", "swarm-orchestrator", "swarm-batching"} {
 		if !names[want] { t.Errorf("missing %s", want) }
 	}
 }
@@ -91,616 +148,770 @@ func TestSyncSkillsWritesNestedFilesAndPrunes(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) { t.Fatalf("stale file survived sync") }
 }
 
-func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) {
-	// walk ../../skills and SkillFS(); every file present in both, bytes equal
-}
+func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) { /* walk ../../skills vs SkillFS(); same file set, same bytes */ }
 ```
 
-- [ ] **Step 2: Run red.** `go test ./internal/install/ -run 'TestSkillsRegistry|TestSyncSkills|TestEmbeddedMirror'` → compile errors (`Skills`, `SyncSkills`, `SkillFS` undefined). Record as red.
-- [ ] **Step 3: Implement.** Replace the two-file embed with `//go:embed all:skills` → `var skillsFS embed.FS`; `SkillFS()` returns `fs.Sub(skillsFS, "skills")`. `Skills()` walks the FS: a dir containing `SKILL.md` is a skill; `Vendored = strings.HasPrefix(dir, "vendor/")`. `SyncSkills` writes every file with `WriteIfChanged` into `<home>/.swarm/skills/<name>/<rel>`, preserving the executable bit for files under `scripts/`, writes the marker, then deletes files under each managed dir that are not in the embed. `SkillNames` becomes `func SkillNames() []string` (update its 4 call sites: `WriteSkills`, `adapter/claude.go`, `uninstall.go`, `migrate/integrations.go`).
-- [ ] **Step 4: Makefile.** `skills-sync: rsync -a --delete skills/ internal/install/skills/`. Run it.
-- [ ] **Step 5: Daemon start.** In `cmd/swarm/daemon.go`, before the reconcile loop starts, call `install.SyncSkills(home)` and log changed count; a failure logs and continues (skills are not fatal to the daemon).
-- [ ] **Step 6: Run green**, then the full Verify line. Existing `TestWriteSkills*` count assertions (`skills_test.go:66`) and `internal/migrate/recover_test.go:479-517` now derive their expected count from `len(SkillNames())` — update them to do so (intentional change).
-- [ ] **Step 7: Commit** `feat(install): embed and sync the full skills tree`.
-- [ ] **Step 8: Review loop** (Global Constraints).
+- [ ] Run `go test ./internal/install/ -run 'TestSkillsRegistry|TestSyncSkills|TestEmbeddedMirror'`. Expect a compile failure and record it as red (unit 1).
+- [ ] Implement the embed and sync:
+  - Replace the current embed with `//go:embed all:skills`. `SkillFS()` returns `fs.Sub(..., "skills")`.
+  - `Skills()` treats every dir holding a `SKILL.md` as a skill; `Vendored` is set when the dir is under `vendor/`.
+  - `SyncSkills` writes each file with `WriteIfChanged`, keeps the exec bit under `scripts/`, writes the marker, and prunes files that are no longer embedded.
+  - `SkillNames()` becomes a function. Update its callers in `WriteSkills`, `adapter/claude.go`, `uninstall.go` and `migrate/integrations.go`.
+  - Update the count assertions in `skills_test.go:66` and `migrate/recover_test.go:479-517` to derive from `len(SkillNames())`. This is an intentional change.
+- [ ] Change `Makefile` `skills-sync` to `rsync -a --delete skills/ internal/install/skills/` and run it.
+- [ ] In `cmd/swarm/daemon.go`, call `install.SyncSkills(home)` before the reconcile loop. Log failures; they are not fatal.
+- [ ] Run green and record it (unit 1). Commit: `feat(install): embed and sync the full skills tree`.
 
-### Task 2: Per-kind skill exposure by symlink (user-owned safe), Claude per-spawn links, doctor
+#### Unit 1.2: Per-kind links, user-owned safety, uninstall
+- [ ] **Empirical check first.** For each installed CLI (claude, codex, agy, cursor-agent, muse), symlink a throwaway skill into its skills root and confirm whether the CLI lists or uses it. Set `skillLinkMode[kind]` from the result. A CLI that isn't installed defaults to `Copy`. Put the findings in the commit message.
+- [ ] Write the failing tests and record red:
+  - `TestWriteSkillsSymlinksEveryManagedSkill`
+  - `TestWriteSkillsSkipsUserOwnedSameName`
+  - `TestWriteSkillsReplacesStaleSwarmCopy`
+  - `TestUninstallRemovesOnlySwarmSkills`
+- [ ] Implement `LinkSkills` and `WriteSkills`. An entry counts as swarm-owned if it is a symlink into `skillsHome`, or a dir containing the marker.
+- [ ] Run green. Commit: `feat(install): link swarm skills into every agent kind`.
+
+#### Unit 1.3: Claude per-spawn links
+- [ ] Write the failing test `TestClaudeProjectConfigLinksSkills` in `internal/adapter/claude_test.go`. Red.
+- [ ] Make `writeProjectSwarmConfig` call `LinkSkills(<cwd>/.claude/skills, ~/.swarm/skills, skillLinkMode[Claude])`.
+- [ ] Run green. Commit: `feat(adapter): link skills into claude spawn dirs`.
+
+#### Unit 1.4: Doctor
+- [ ] Write the failing tests `TestDoctorChecksSkillsForEveryKind` and `TestDoctorWarnsWithoutPython3`. Red.
+- [ ] Add `CheckSkills` to every kind's `Check*`, and add a warn-level `python3` base check. Refresh the README's `swarm doctor` line (folded docs).
+- [ ] Run green. Commit: `feat(doctor): skills check per kind and python3 warning`.
+
+### P2: Vendored skills
+**Workflow:** steps `[{id: "vendor", run: "mechanical", gates: ["commit", "verify"]}, {id: "review", review: ["reviewer"], loop: {fix: "vendor", max_rounds: 2}}]` (a license/provenance check matters) · **Units:** 5 (same-shape edits)
 
 **Files:**
-- Modify: `internal/install/skills.go`, `internal/install/{claude,codex,agy,cursor,muse}.go` (Check*), `internal/install/doctor.go`, `internal/install/uninstall.go`, `internal/adapter/claude.go` (`writeProjectSwarmConfig`), tests alongside each.
-
-**Interfaces:**
-- Consumes: `Skills()`, `SyncSkills`, `ManagedMarker` (Task 1).
-- Produces: `func WriteSkills(c Config, k Kind) (changed []string, skipped []string, err error)`; `func LinkSkills(root, skillsHome string, mode LinkMode) (skipped []string, err error)` with `LinkMode` `Symlink|Copy`; `var skillLinkMode = map[Kind]LinkMode{…}` set from the empirical check below; `func CheckSkills(c Config, k Kind) Check`.
+- `skills/vendor/**`: 11 skills plus `README.md`
+- `internal/install/skills_test.go`
+- `README.md` (License section)
 
 **Acceptance:**
-- For every kind, `<skills-root>/<name>` is a symlink to `~/.swarm/skills/<name>` (or a managed copy where the CLI can't follow symlinks).
-- An existing non-swarm entry with the same name is left untouched and reported by doctor: `skill <name> for <kind> is user-owned; swarm's copy is not installed there`.
-- Claude spawns get symlinks in `<cwd>/.claude/skills/` instead of copied files.
-- Uninstall removes only swarm symlinks/managed dirs.
-- Doctor has a skills check for every kind and a `python3` warn check.
+- Sources, pinned commits, license files and modifications match spec A2 exactly. That includes the ponytail rows: fixed `full` level, and no slash-command persistence section.
+- Each vendored skill has a `VENDORED.md` in the spec's format.
+- A test enforces that every vendored skill has a license file and a `VENDORED.md`.
+- The same test bans these strings anywhere under `skills/vendor/`: `CLAUDE_PLUGIN_ROOT`, `submit-expo-feedback`, `raw.githubusercontent.com`, `/ponytail `.
+- The ui-ux-pro-max search script runs.
 
-**Verify:** `go test ./internal/install/... ./internal/adapter/... ./internal/migrate/... && go build ./... && go vet ./...`
+**Verify:**
+- `make skills-sync`
+- `go test ./internal/install/...`
+- `python3 skills/vendor/ui-ux-pro-max/scripts/search.py "dashboard" --domain style | head -5`
 
-- [ ] **Step 1: Empirical symlink check (spike step, record results in the commit message).** For each installed CLI (claude, codex, agy, cursor-agent, muse), create a throwaway skill dir symlinked into its skills root and ask the CLI to list skills (or start a session and ask it to name available skills). Record which follow symlinks. Set `skillLinkMode` accordingly (default `Symlink`; `Copy` for any that don't). If a CLI isn't installed locally, default it to `Copy` and note that in the commit message.
-- [ ] **Step 2: Write failing tests:** `TestWriteSkillsSymlinksEveryManagedSkill`, `TestWriteSkillsSkipsUserOwnedSameName` (pre-create a real dir with a user `SKILL.md`; assert untouched and returned in `skipped`), `TestWriteSkillsReplacesStaleSwarmCopy` (an old `.swarm-managed` dir becomes a symlink), `TestUninstallRemovesOnlySwarmSkills`, `TestClaudeProjectConfigLinksSkills` (in `adapter/claude_test.go`: `<cwd>/.claude/skills/swarm` is a symlink into the fake home), `TestDoctorChecksSkillsForEveryKind`, `TestDoctorWarnsWithoutPython3`.
-- [ ] **Step 3: Run red** (`go test ./internal/install/ ./internal/adapter/ -run 'Skills|Doctor|ProjectConfig'`) — failures on missing funcs/behaviour. Record red.
-- [ ] **Step 4: Implement** `LinkSkills` (swarm-owned = symlink whose target is under `skillsHome`, or a dir with `ManagedMarker`); `WriteSkills` calls `SyncSkills` then `LinkSkills`; `writeProjectSwarmConfig` calls `LinkSkills(<cwd>/.claude/skills, ~/.swarm/skills, skillLinkMode[Claude])`; `CheckSkills` verifies each skill resolves to a readable `SKILL.md`; add `python3` to `doctor.go` base checks as warn.
-- [ ] **Step 5: Run green**, then full Verify.
-- [ ] **Step 6: Commit** `feat(install): link swarm skills into every agent kind`.
-- [ ] **Step 7: Review loop.**
+#### Unit 2.1: Provenance test and vendor README
+- [ ] Write the failing test `TestVendoredSkillsHaveLicenseAndProvenance`. It covers the expected set of 11 names, the license files, the `VENDORED.md` fields and the banned strings. Red.
+- [ ] Write `skills/vendor/README.md` (name, source, license, which role skills use it) and the README License line. Commit: `test(skills): vendored skill provenance checks`.
 
-### Task 3: Vendor eight third-party skills with licenses and provenance
+#### Unit 2.2: web-design-guidelines and building-components
+- [ ] Vendor web-design-guidelines together with `vercel-labs/web-interface-guidelines/command.md` saved as `references/rules.md`. Change SKILL.md to read the local file.
+  - Upstream has no LICENSE file, so write the MIT text crediting Vercel and note that in `VENDORED.md`.
+- [ ] Vendor building-components under Apache-2.0.
+- [ ] Commit: `feat(skills): vendor web design and component skills`.
+
+#### Unit 2.3: ui-ux-pro-max
+- [ ] Vendor v2.13.0 without `scripts/tests/`. Rewrite the `search.py` paths to be relative to the skill dir, and keep the data provenance files.
+- [ ] Run the search script (Verify line). Commit: `feat(skills): vendor ui-ux-pro-max`.
+
+#### Unit 2.4: Mobile skills
+- [ ] Vendor the mobile skills:
+  - `expo-native-ui` and `expo-design-system`, with the "Submitting Feedback" sections removed
+  - `vercel-react-native-skills`
+  - `mobile-ios-design` and `mobile-android-design`
+- [ ] Commit: `feat(skills): vendor mobile design skills`.
+
+#### Unit 2.5: ponytail
+- [ ] Vendor `ponytail`, `ponytail-review` and `ponytail-debt` from DietrichGebert/ponytail@`e3ba2aa`, with the MIT license.
+  - In `ponytail`, replace "Persistence" and the intensity-switch commands with: "Swarm runs ponytail at **full** level for coders and mechanical agents; there is no mode switching in swarm sessions."
+- [ ] Run the provenance test green. Commit: `feat(skills): vendor ponytail skills`.
+
+### P3: Builder and reviewer skills
+**Workflow:** `tdd-reviewed` (coder → reviewer; tests assert skill content) · **Units:** 5
 
 **Files:**
-- Create: `skills/vendor/{web-design-guidelines,building-components,ui-ux-pro-max,expo-native-ui,expo-design-system,vercel-react-native-skills,mobile-ios-design,mobile-android-design}/**`, each with `LICENSE` and `VENDORED.md`; `skills/vendor/README.md`
-- Modify: `internal/install/skills_test.go`, `README.md` (License section line), mirror via `make skills-sync`
+- `skills/swarm/SKILL.md`
+- `skills/swarm-{coder,reviewer,ui-reviewer,designer}/SKILL.md`
+- `skills/swarm-batching/SKILL.md` (adopt the draft)
+- `internal/install/skills_test.go`
 
-**Interfaces:**
-- Consumes: Task 1 registry (vendored dirs are discovered automatically).
+**Acceptance:** Content per spec A4 and decisions 13–15.
+- `swarm`: protocol only. Adds the "one step of a workflow" rule, lists `Workflow` among the disabled tools, and rule 9a points to `swarm-advisor`.
+- `swarm-coder`:
+  - covers package execution unit by unit, TDD per unit with `unit`-tagged entries, and one commit per unit
+  - covers the `completed` git contract and handling fix rounds
+  - references `ponytail`, with the precedence rule
+  - references the superpowers skills `test-driven-development`, `verification-before-completion` and `receiving-code-review`
+- `swarm-reviewer`:
+  - references `superpowers:requesting-code-review`
+  - defines the verdict and findings contract and walks the package unit by unit
+  - treats a missing unit as `major`
+  - uses `ponytail-review` as its second lens
+- `swarm-ui-reviewer` adds the vendored UI and mobile skills.
+- `swarm-designer` covers the design artifact contract.
+- `swarm-batching` is adopted as drafted, and gains a pointer to the plan-registration warnings once P12 lands.
+- Tests assert each skill names its required references, and that every `superpowers:<x>` reference is one of the 15 v6.4.1 skill names.
+
+**Verify:**
+- `make skills-sync`
+- `go test ./internal/install/...`
+
+#### Unit 3.1: Reference-checking tests
+- [ ] Write `TestRoleSkillsReferenceTheirSkills` (a table from skill to required substrings, covering the five skills in this package) and `TestSuperpowersReferencesAreKnown`. Red. Commit with unit 3.2.
+
+#### Unit 3.2: Core `swarm` rewrite
+- [ ] Rewrite `skills/swarm/SKILL.md` as protocol only. TDD rule 11 moves to `swarm-coder` and `swarm-debugger`. Add the workflow-step rule and the disabled-tool list.
+- [ ] Commit: `docs(skills): core swarm protocol for workflow steps`.
+
+#### Unit 3.3: `swarm-coder`
+- [ ] Write it per spec A4, including the ponytail precedence rule and package execution. Its test row goes green. Commit.
+
+#### Unit 3.4: `swarm-reviewer` and `swarm-ui-reviewer`
+- [ ] Write both. Their test rows go green. Commit.
+
+#### Unit 3.5: `swarm-designer` and adopting `swarm-batching`
+- [ ] Write `swarm-designer`. Review the draft `swarm-batching` against spec C4/C5 and fix any drift. Add its test row, which requires the role assignment table and the size-bounds table.
+- [ ] All green. Commit: `docs(skills): designer skill; adopt swarm-batching`.
+
+### P4: Support-role skills and kickoff
+**Workflow:** `tdd-reviewed` · **Units:** 4
+
+**Files:**
+- `skills/swarm-{debugger,mechanical,researcher,advisor}/SKILL.md`
+- stubs for `skills/swarm-{spike,workflows}/SKILL.md`
+- `internal/advisor/*` (prompt)
+- `internal/runtime/{text.go,text_test.go,agents.go}`
+- `internal/install/skills_test.go`
+
+**Interfaces (produces):**
+- `func RoleSkills(role Role, itemType items.Type) []string`
+- `Kickoff(name, role, itemType, key, title)` and `ResumeKickoff(...)`, both with the new `itemType` parameter
 
 **Acceptance:**
-- Sources, pinned commits, license files and modifications exactly as the spec's A2 table; `VENDORED.md` in the spec's format with the real commit sha.
-- web-design-guidelines reads `references/rules.md` (vendored `command.md`) — no runtime WebFetch; ui-ux-pro-max has no `scripts/tests/`, and every `search.py` invocation is relative to the skill dir; expo skills have no "Submitting Feedback" section.
-- A test enforces license + VENDORED.md presence and forbids the strings `CLAUDE_PLUGIN_ROOT`, `submit-expo-feedback` and `raw.githubusercontent.com` anywhere under `skills/vendor/`.
-- `python3 skills/vendor/ui-ux-pro-max/scripts/search.py "dashboard" --domain style` runs and returns results.
+- The skills match spec A4:
+  - `swarm-debugger`: systematic-debugging, and a regression test first.
+  - `swarm-mechanical`: ≤ 60 lines, and references `ponytail`.
+  - `swarm-researcher`: brainstorming on its own sub-question, the deep-research loop, the notes format.
+  - `swarm-advisor`: original text, a mermaid diagram, and a CC BY-NC inspiration credit.
+- The simulated advisor prompt uses the same decision rules.
+- The kickoff lists the skills in spike table A3, including `swarm-batching` for orchestrators. Spikes get `swarm-spike`.
+- Every role gets the mandate.
+- Every name `RoleSkills` returns exists in `install.Skills()`. That includes `swarm-spike` and `swarm-workflows`, created here as valid stubs and filled in by P12.
 
-**Verify:** `make skills-sync && go test ./internal/install/... && python3 skills/vendor/ui-ux-pro-max/scripts/search.py "dashboard" --domain style | head -5`
+**Verify:**
+- `make skills-sync`
+- `go test ./internal/install/... ./internal/advisor/... ./internal/runtime/ -run 'Kickoff|RoleSkills'`
+- `go build ./... && go vet ./...`
 
-- [ ] **Step 1: Write failing test** `TestVendoredSkillsHaveLicenseAndProvenance` (for each `Vendored` skill: `LICENSE*` and `VENDORED.md` exist; VENDORED.md contains `Source:`, `License:`, `Changes:`; banned strings absent). Run red — fails because no vendored skills exist yet (test asserts the eight expected names are present).
-- [ ] **Step 2: Fetch sources** at their current default-branch commits (shallow clones into a scratch dir), copy only the skill folders listed in the spec, plus `vercel-labs/web-interface-guidelines/command.md` → `web-design-guidelines/references/rules.md` and upstream LICENSE files (web-design-guidelines: write MIT text "Copyright (c) Vercel, Inc." and note in VENDORED.md that upstream has no LICENSE file and states MIT in its README).
-- [ ] **Step 3: Apply the modifications** listed in the spec; record each in `VENDORED.md`.
-- [ ] **Step 4: Write `skills/vendor/README.md`** (table: name, source, license, why we vendor it, which role skills use it) and the README License line.
-- [ ] **Step 5: Run green** + Verify line (python check included).
-- [ ] **Step 6: Commit** `feat(skills): vendor UI, design and mobile skills with provenance`.
-- [ ] **Step 7: Review loop** — reviewer additionally checks each license file against upstream.
+#### Unit 4.1: `swarm-debugger` and `swarm-mechanical`
+- [ ] Add the test rows (red), write both skills (green), commit.
 
-### Task 4: `designer` role end-to-end
+#### Unit 4.2: `swarm-researcher`
+- [ ] Add the test row (red), write the skill (green), commit.
 
-**Files:**
-- Create: `internal/db/schema/0010_designer_and_artifact_kinds.sql`
-- Modify: `internal/kinds/kinds.go`, `internal/runtime/{types.go,titles.go,agents.go (OverridableRoles)}`, `internal/settings/settings.go`, `web/src/{types.ts,copy.ts,components/AgentFields.tsx,mock/fixtures.ts,copy.test.ts}`, `apps/menubar/Sources/SwarmBarKit/{Wire.swift,Copy.swift,SettingsModel.swift}` + tests.
+#### Unit 4.3: `swarm-advisor` and the advisor prompt
+- [ ] Write the failing tests `TestAdvisorSkillHasMermaidAndCredit` and `TestAdvisorSystemPromptDecisionRules`. Red.
+- [ ] Write the skill and update the prompt builder in `internal/advisor`. Green. Commit.
 
-**Interfaces:**
-- Produces: `kinds.RoleDesigner = "designer"`; artifact kinds `design`, `research` allowed by the DB.
-
-**Acceptance:**
-- `designer` is a valid agent role everywhere (DB CHECK, settings validation, overrides, catalog roles, emoji 🎨, labels "Designer" in web and menubar, Settings defaults row).
-- Default settings: `designer: {agent: claude, model: opus}`.
-- `artifacts.kind` accepts `design` and `research`.
-- `chore` added to web `ItemType` and its label (bug found in research).
-
-**Verify:** `go test ./internal/kinds/... ./internal/settings/... ./internal/runtime/... ./internal/db/... && cd web && pnpm test && pnpm biome check && cd ../apps/menubar && swift test`
-
-- [ ] **Step 1: Write failing tests:** Go `TestSettingsDefaultsIncludeDesigner`, `TestSpawnDesignerRoleAccepted` (runtime, fake kind; insert succeeds), `TestMigration0010AllowsDesignerAndDesignArtifacts` (db); web `copy.test.ts` asserts `ROLE_LABEL.designer === "Designer"` and `ITEM_TYPE_LABEL.chore`; Swift `testRoleDecodesDesigner`, `testDefaultsOrderIncludesDesigner`.
-- [ ] **Step 2: Run red** in each toolchain; record.
-- [ ] **Step 3: Implement** the Go side and migration (copy `0008`'s table-rebuild pattern for `agents`; rebuild `artifacts` with the widened kind CHECK, preserving rows and indexes; `PRAGMA foreign_keys` handling identical to `0008`).
-- [ ] **Step 4: Implement** web and menubar mirrors.
-- [ ] **Step 5: Run green**, full Verify.
-- [ ] **Step 6: Commit** `feat: add designer agent role`.
-- [ ] **Step 7: Review loop.**
-
-### Task 5: Block the native `Workflow` tool
-
-**Files:** Modify `internal/hook/handler.go`, `internal/hook/handler_test.go`.
-
-**Acceptance:** PreToolUse for tool names `Workflow`/`workflow` in a swarm session is blocked with `[swarm] The Workflow tool is disabled in Swarm sessions. Use swarm_spawn or swarm_workflow.`; outside swarm sessions nothing changes.
-
-**Verify:** `go test ./internal/hook/... && go vet ./...`
-
-- [ ] **Step 1: Failing test** `TestPreToolUseBlocksWorkflowTool` (mirror the existing `Agent` block test) and `TestWorkflowToolAllowedOutsideSwarm`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement** — add the names to the blocked set with the new reason string.
-- [ ] **Step 4: Run green**; commit `feat(hook): block the native Workflow tool in swarm sessions`.
-- [ ] **Step 5: Review loop.**
-
-### Task 6: Role skills — core protocol, coder, reviewer, ui-reviewer, designer
-
-**Files:**
-- Modify: `skills/swarm/SKILL.md`
-- Create: `skills/swarm-coder/SKILL.md`, `skills/swarm-reviewer/SKILL.md`, `skills/swarm-ui-reviewer/SKILL.md`, `skills/swarm-designer/SKILL.md`
-- Modify: `internal/install/skills_test.go` (content assertions)
-
-**Acceptance (content per spec A4):**
-- `swarm`: protocol only; TDD rule moved out; new "one step of a workflow" rule; `Workflow` listed among disabled tools; rule 9a points to `swarm-advisor`.
-- `swarm-coder` references `superpowers:test-driven-development`, `superpowers:verification-before-completion`, `superpowers:receiving-code-review`; states "commit your own work" and the `completed` git contract (`dirty:false`, HEAD sha); explains red/green verification entries and `## Steps`/`## Verify`/`## Workflow`.
-- `swarm-reviewer` references `superpowers:requesting-code-review`; defines verdict + findings contract and severity rule; "never edit files".
-- `swarm-ui-reviewer` references `swarm-reviewer` + `web-design-guidelines`, `building-components`, `ui-ux-pro-max` (pro-rules checklist), `mobile-ios-design`, `mobile-android-design`, `expo-native-ui`, `expo-design-system`, `vercel-react-native-skills`.
-- `swarm-designer` references `superpowers:brainstorming`, `ui-ux-pro-max`, `building-components`, mobile skills; defines the design artifact path and sections; "no product code".
-- A test asserts each skill mentions the skill names above (so renames upstream get caught) and that every `superpowers:<x>` reference is in a known list of superpowers v6 skill names.
-
-**Verify:** `make skills-sync && go test ./internal/install/...`
-
-- [ ] **Step 1: Failing test** `TestRoleSkillsReferenceTheirSkills` (table: skill → required substrings) and `TestSuperpowersReferencesAreKnown` (regex `superpowers:([a-z-]+)` over all non-vendored skills; allowed set = the 15 v6.4.1 skill names). Run red.
-- [ ] **Step 2: Write the skills** per spec A4 (≤ ~200 lines each; frontmatter `name`/`description`; opening line "Follow the `swarm` skill first; this adds to it.").
-- [ ] **Step 3: Run green**; commit `docs(skills): core protocol and coder/reviewer/ui-reviewer/designer role skills`.
-- [ ] **Step 4: Review loop** — reviewer reads each skill as the target agent would: is every instruction actionable with the tools that role has?
-
-### Task 7: Role skills — debugger, mechanical, researcher, advisor (+ advisor prompt)
-
-**Files:**
-- Create: `skills/swarm-{debugger,mechanical,researcher,advisor}/SKILL.md`
-- Modify: `internal/advisor/*` (system prompt text), `internal/install/skills_test.go`
-
-**Acceptance (spec A4):**
-- `swarm-debugger` → `superpowers:systematic-debugging`, `superpowers:test-driven-development` (regression test first), advisor before root cause.
-- `swarm-mechanical` is short (≤ 60 lines): exact change, no refactors, verify, commit, `blocked` if judgement needed.
-- `swarm-researcher` → `superpowers:brainstorming` on its own sub-question (no user dialogue), the deep-research loop and notes format, notes path, never invent.
-- `swarm-advisor` is original text with the mermaid diagram and the CC BY-NC inspiration credit; the simulated advisor's system prompt in `internal/advisor` states the same decision rules (one decision, decisive answer, evidence over authority, read-only).
-
-**Verify:** `make skills-sync && go test ./internal/install/... ./internal/advisor/...`
-
-- [ ] **Step 1: Failing tests:** extend `TestRoleSkillsReferenceTheirSkills`; `TestAdvisorSkillHasMermaidAndCredit`; `TestAdvisorSystemPromptDecisionRules` (asserts key phrases in the prompt builder's output). Run red.
-- [ ] **Step 2: Write the skills and update the advisor prompt.**
-- [ ] **Step 3: Run green**; commit `docs(skills): debugger, mechanical, researcher and advisor skills`.
-- [ ] **Step 4: Review loop.**
-
-### Task 8: Kickoff names the role skill; mandate for every role
-
-**Files:** Modify `internal/runtime/text.go`, `internal/runtime/text_test.go`, callers of `Kickoff`/`ResumeKickoff` in `internal/runtime/agents.go`.
-
-**Interfaces:**
-- Produces: `func Kickoff(name string, role Role, itemType items.Type, key, title string) string`, same extra param on `ResumeKickoff`; `func RoleSkills(role Role, itemType items.Type) []string`.
-
-**Acceptance:**
-- Kickoff lists exactly the spec A3 table's skills per role; a spike orchestrator gets `swarm-spike` instead of `swarm-orchestrator`.
-- Every role gets the mandate sentence.
-- A test asserts every name returned by `RoleSkills` for every role exists in `install.Skills()` (catches a role skill that was never written). Until Task 20 lands, `swarm-spike` and `swarm-workflows` must exist — create them in this task as stubs with valid frontmatter and a one-line body "Filled in by Task 20" so the test can pass; Task 20 replaces them.
-
-**Verify:** `go test ./internal/runtime/ -run 'Kickoff|RoleSkills' && go test ./internal/install/... && go build ./... && go vet ./...`
-
-- [ ] **Step 1: Failing tests** `TestKickoffNamesRoleSkill` (table over roles + spike), `TestRoleSkillsExist`, `TestKickoffMandateForEveryRole`. Existing `text_test.go` assertions on the old kickoff string are updated to the new format (intentional).
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement** the table and signature change; update call sites (they already have the item).
-- [ ] **Step 4: Run green**; commit `feat(runtime): kickoff names each role's skill`.
-- [ ] **Step 5: Review loop.**
+#### Unit 4.4: Kickoff role-skill table
+- [ ] Write the failing tests `TestKickoffNamesRoleSkill` (a table over roles plus the spike case), `TestRoleSkillsExist` and `TestKickoffMandateForEveryRole`. Red.
+  - Old kickoff-string assertions in `text_test.go` are updated. This is an intentional change.
+- [ ] Implement the table, the new signatures and the call sites. Add the `swarm-spike` and `swarm-workflows` stubs (valid frontmatter, body "Filled in by P12").
+- [ ] Green. Commit: `feat(runtime): kickoff names each role's skill`.
 
 ---
 
-## Phase B — Multi-agent tasks and the workflow engine
+## Story B — Workflow engine and multi-agent tasks
+**Story workflow:** `after_tasks: {id: "story-review", review: ["reviewer"]}`. These packages interact through shared runtime state, so one cross-package review runs before the story is done.
 
-### Task 9: `internal/workflow` — DSL types, templates, validation, resolve, render
+### P5: Schema migrations
+**Workflow:** `tdd-reviewed`, `max_rounds: 4` · **Units:** 2 · **Solo:** `"table-rebuilding migrations"` (irreversible work gets its own package)
 
-**Files:** Create `internal/workflow/{spec.go,templates.go,validate.go,resolve.go,render.go}` and `*_test.go`.
-
-**Interfaces:**
-- Produces (exactly as spec B2): `Gate`, `Loop`, `Step`, `Integration`, `Spec`; `type Level int` (`LevelTask`, `LevelStory`, `LevelRoot`); `Validate(Level, Spec) error`; `Resolve(Spec, tddExempt bool) (Spec, error)`; `DefaultFor(roleHint string) Spec`; `Render(Spec, stepID string, round int) string`; `Templates map[string]Spec`; `func (s Spec) Step(id string) (Step, bool)`; `func (s Spec) MaxRoundsFor(stepID string) int`.
+**Files:**
+- `internal/db/schema/0010_designer_and_artifact_kinds.sql`
+- `internal/db/schema/0011_workflows.sql`
+- `internal/db/*_test.go`
+- `internal/db/testdata` (a fixture copy of a populated v2 DB)
 
 **Acceptance:**
-- The six templates resolve to the spec's table.
-- Every validation rule in spec B2 has a test with the spec's exact error copy.
-- `Resolve` expands a template, applies `max_rounds` override to every loop, defaults `retries` to 1, removes `tdd` gates when `tddExempt`, and fills `of` with the nearest preceding run step.
-- `Render` output matches the spec B6 example for `tdd-reviewed`/`build`/round 2 (golden test).
+- `0010` rebuilds `agents`, adding `'designer'` to its role CHECK. It rebuilds `artifacts`, adding `'design'` and `'research'` to its kind CHECK. Both rebuilds preserve every row, index and foreign key, following the `0008` pattern.
+- `0011` adds everything from spec B1:
+  - on `items`: `workflow_json`, `steps_json`, `units_json`, `solo`, `verify_json`
+  - on `checkpoints`: `verdict` and `findings_json`
+  - on `workflows`: `extra_rounds`
+  - the `workflows` and `workflow_runs` tables, the unique live-workflow index and the runs agent index
+- Both migrations apply on a fresh DB and on the populated fixture, and row counts are unchanged.
 
-**Verify:** `go test ./internal/workflow/... && go vet ./internal/workflow/...`
+**Verify:** `go test ./internal/db/... -count=1 && go build ./...`
 
-- [ ] **Step 1: Failing tests.** `TestTemplatesResolve` (table: template → expected step list), `TestValidateErrors` (table: spec → exact error string, one row per rule), `TestResolveDropsTDDWhenExempt`, `TestResolveMaxRoundsOverride`, `TestDefaultForRoleHints`, `TestRenderBuildStepGolden` (golden file `testdata/render_build_r2.txt`).
-- [ ] **Step 2: Run red** (package doesn't exist).
-- [ ] **Step 3: Implement.** Templates:
+#### Unit 5.1: Migration 0010
+- [ ] Write the failing test `TestMigration0010PreservesRowsAndWidensChecks`: populate the fixture, migrate, then assert counts and that an insert of role `designer` / kind `design` succeeds. Red.
+- [ ] Write the migration. Green. Commit.
 
-```go
-var Templates = map[string]Spec{
-	"tdd-reviewed":    reviewed("build", "coder", []Gate{GateTDD, GateCommit, GateVerify}, []string{"reviewer"}, 3),
-	"ui-tdd-reviewed": reviewed("build", "coder", []Gate{GateTDD, GateCommit, GateVerify}, []string{"reviewer", "ui_reviewer"}, 3),
-	"design-reviewed": reviewed("design", "designer", []Gate{GateArtifactDesign}, []string{"ui_reviewer"}, 2),
-	"debug":           reviewed("fix", "debugger", []Gate{GateTDD, GateCommit, GateVerify}, []string{"reviewer"}, 3),
-	"mechanical":      {Steps: []Step{{ID: "change", Run: "mechanical", Gates: []Gate{GateCommit, GateVerify}}}},
-	"research":        {Steps: []Step{{ID: "research", Run: "researcher", Gates: []Gate{GateArtifactNotes}}}},
-}
+#### Unit 5.2: Migration 0011
+- [ ] Write the failing tests `TestMigration0011Schema` (columns, tables, indexes and CHECKs) and `TestOneLiveWorkflowPerItem` (the second `running` row fails). Red.
+- [ ] Write the migration. Green. Commit.
 
-func reviewed(id, role string, gates []Gate, reviewers []string, rounds int) Spec {
-	return Spec{Steps: []Step{
-		{ID: id, Run: role, Gates: gates},
-		{ID: "review", Review: reviewers, Of: id, Loop: &Loop{Fix: id, MaxRounds: rounds, OnExhausted: "escalate"}},
-	}}
-}
-```
+### P6: Workflow model (`internal/workflow`)
+**Workflow:** `tdd-reviewed` · **Units:** 4 · This package is the contract every later package consumes.
 
-- [ ] **Step 4: Run green**; `go vet`; commit `feat(workflow): declarative task workflow DSL`.
-- [ ] **Step 5: Review loop.**
+**Files:** `internal/workflow/{spec.go,templates.go,validate.go,resolve.go,render.go,next.go}` and their tests, plus `testdata/`.
 
-### Task 10: `internal/workflow` — the `Next` planner
-
-**Files:** Create `internal/workflow/next.go`, `internal/workflow/next_test.go`.
-
-**Interfaces:**
-- Produces:
+**Interfaces (produces):**
+- Spec B2 types: `Gate`, `Loop`, `Step`, `Integration`, `Spec`.
+- `Level`, `Validate`, `Resolve`, `RunRole`, `Render`, `Templates`.
+- `Run`, `Finding{Severity, File string; Line, Unit int; Summary string}`, `Action`, `Next`, defined as follows:
 
 ```go
-type RunState string // "waiting","active","completed","failed","cancelled"
-type Verdict string  // "","pass","changes_requested","blocked"
-
 type Run struct {
 	StepID      string
 	Round       int
 	Role        string
-	State       RunState
-	Verdict     Verdict
+	State       RunState // waiting|active|completed|failed|cancelled
+	Verdict     Verdict  // ""|pass|changes_requested|blocked
 	Findings    []Finding
 	SHA         string
 	AutoRetries int
 }
-
-type Finding struct{ Severity, File string; Line int; Summary string }
-
-type ActionKind string // "spawn","retry_fix","auto_retry","wait","succeed","escalate"
-
 type Action struct {
-	Kind     ActionKind
+	Kind     ActionKind // spawn|retry_fix|auto_retry|wait|succeed|escalate
 	StepID   string
-	Roles    []string   // spawn: roles to spawn (review steps: all reviewers)
+	Roles    []string
 	Round    int
-	Findings []Finding  // retry_fix: merged findings of the round
-	Run      *Run       // auto_retry: which run
-	SHA      string     // succeed / spawn review: sha under review
-	Reason   string     // escalate
+	Findings []Finding
+	Run      *Run
+	SHA      string
+	Reason   string
 }
-
 func Next(s Spec, runs []Run, round, extraRounds int) Action
 ```
 
-**Acceptance:** `Next` is total and deterministic over the cases in spec B4's table, including: first spawn; wait while active/waiting; review spawn with the builder's sha after build completes; all-pass → succeed with that sha; any `changes_requested` and `round < max+extra` → `retry_fix` with merged findings (stable order: reviewer role order, then file, line); exhausted → escalate `"review rounds exhausted (3/3)"`; any `blocked` → escalate `"reviewer blocked: <summary>"`; failed run with `AutoRetries < retries` → `auto_retry`, else escalate `"<role> <state> twice"`; single-step templates succeed after the run completes; a completed run step without sha when the step has the commit gate is impossible by construction (gate) but `Next` escalates defensively with `"build completed without a sha"`.
+**Acceptance:**
+- The six templates resolve to spec B2's table.
+- Every validation rule has a test with the spec's exact copy.
+- `Resolve` expands templates, applies the `max_rounds` override, defaults `retries` to 1, drops `tdd` when the task is exempt, and fills `of`.
+- `RunRole` returns the first run step's role.
+- The `Render` golden output matches spec B6.
+- `Next` is total and deterministic over every case in spec B4's table, including:
+  - merged findings in a stable order
+  - escalation copy for rounds exhausted, a blocked verdict, a double failure, or a missing sha
 
-**Verify:** `go test ./internal/workflow/... -run Next -count=1 && go vet ./internal/workflow/...`
+**Verify:** `go test ./internal/workflow/... -count=1 && go vet ./internal/workflow/...`
 
-- [ ] **Step 1: Failing table test** `TestNext` with ≥ 14 rows covering every case above (runs built with a small helper `r(step, round, role, state, verdict)`).
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement** `Next`: find the current round's runs per step in spec order; the first step whose runs are missing → spawn; any non-terminal → wait; evaluate review aggregation; handle failures first (auto-retry/escalate) before verdict logic.
-- [ ] **Step 4: Run green**; commit `feat(workflow): pure next-action planner`.
-- [ ] **Step 5: Review loop** — reviewer tries to construct a runs table where `Next` loops or double-spawns.
+#### Unit 6.1: Types and templates
+- [ ] Write the failing test `TestTemplatesResolve`. Red.
+- [ ] Implement the types and the `Templates` map using a `reviewed(id, role, gates, reviewers, rounds)` helper:
+  - `tdd-reviewed`
+  - `ui-tdd-reviewed`
+  - `design-reviewed` (2 rounds)
+  - `debug`
+  - `mechanical`
+  - `research`
+- [ ] Green. Commit.
 
-### Task 11: Schema + items carry workflow, steps and verify
+#### Unit 6.2: Validation
+- [ ] Write the failing test `TestValidateErrors`: a table with one row per spec B2 rule, each checked against the exact error. Red. Implement. Green. Commit.
+
+#### Unit 6.3: Resolve, RunRole, Render
+- [ ] Write the failing tests `TestResolveDropsTDDWhenExempt`, `TestResolveMaxRoundsOverride`, `TestRunRole` and `TestRenderBuildStepGolden` (golden file `testdata/render_build_r2.txt`). Red. Implement. Green. Commit.
+
+#### Unit 6.4: `Next` planner
+- [ ] Write the failing test `TestNext` with at least 14 rows covering spec B4. Build the runs with a helper `r(step, round, role, state, verdict)`. Red.
+- [ ] Implement `Next`:
+  - Failures are handled first.
+  - Then the first step with no runs in this round gets a spawn.
+  - Any step that isn't finished yet → wait.
+  - Review verdicts are aggregated.
+  - Single-step templates succeed once their run completes.
+- [ ] Green. Commit: `feat(workflow): pure next-action planner`.
+
+### P7: Roles, guards and item fields
+**Workflow:** `tdd-reviewed` · **Units:** 4
 
 **Files:**
-- Create: `internal/db/schema/0011_workflows.sql` (spec B1 + `workflows.extra_rounds`)
-- Modify: `internal/items/{model.go,store.go}`, `internal/items/store_test.go`, `internal/mcpserver/orchestrator.go` (`swarm_items` fields), `internal/mcpserver/tools.go` (`swarm_read` item output), `internal/httpapi/items.go` (wire output), `web/src/types.ts` (Item fields)
+- `internal/kinds/kinds.go`
+- `internal/runtime/{types.go,titles.go,agents.go}` (`OverridableRoles`)
+- `internal/settings/settings.go`
+- `internal/hook/handler.go` and its tests
+- `internal/items/{model.go,store.go}` and their tests
+- `internal/mcpserver/{orchestrator.go,tools.go}` and their tests
+- `internal/httpapi/items.go`
+- `web/src/types.ts` (Item fields only)
 
-**Interfaces:**
-- Produces: `items.Item.Workflow *workflow.Spec`, `Steps []string`, `Verify []string`; same on `CreateInput` and `Patch`; wire JSON `workflow`, `steps`, `verify`.
-
-**Acceptance:**
-- Migration applies on a copy of a real DB fixture (`testdata`) and on a fresh DB.
-- `CreateTx`/`UpdateTx` validate (`workflow.Validate` at the item's level) and store the resolved spec; only orchestrator/daemon actors may set them (same rule/copy style as `tdd_exempt`).
-- `swarm_items create/update` accept the fields; `swarm_read` and `GET /api/items/:key` return them.
-
-**Verify:** `go test ./internal/db/... ./internal/items/... ./internal/mcpserver/... ./internal/httpapi/... && go build ./... && go vet ./... && cd web && pnpm test`
-
-- [ ] **Step 1: Failing tests** `TestMigration0011`, `TestCreateTaskStoresResolvedWorkflow`, `TestCreateRejectsInvalidWorkflow`, `TestUserCannotSetWorkflow`, `TestSwarmItemsAcceptsWorkflowStepsVerify`, `TestSwarmReadReturnsWorkflowFields`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement** migration, model, store (JSON columns; `scanItem` updated), MCP schema + handler, HTTP wire, web types.
-- [ ] **Step 4: Run green**; commit `feat(items): store workflow, steps and verify on items`.
-- [ ] **Step 5: Review loop.**
-
-### Task 12: Multi-agent-safe tasks: verdicts, sibling close by role+step, per-agent completion, dep wake-ups
-
-**Files:** Modify `internal/runtime/{checkpoint.go,model.go,reconcile.go}`, `internal/items/transition.go`, `internal/mcpserver/tools.go` (`swarm_checkpoint` schema), tests: `internal/runtime/checkpoint_test.go`, `internal/items/transition_test.go`, `internal/runtime/reconcile_test.go`.
-
-**Interfaces:**
-- Produces: `CheckpointInput.Verdict string`, `CheckpointInput.Findings []workflow.Finding`; `Checkpoint.Verdict`, `.Findings`; helper `func (s *Store) workflowRunFor(ctx, tx, agentID string) (*workflowRunRow, error)` (nil for legacy agents) — the row type lives in `workflow.go` created here as a stub with just the query.
+**Interfaces (produces):**
+- `kinds.RoleDesigner`
+- On `items.Item`, `CreateInput` and `Patch`: `Workflow *workflow.Spec`, `Steps []string`, `Units []Unit`, `Solo string`, `Verify []string`
+- The same fields on the wire
 
 **Acceptance:**
-- `verdict` rules per spec B5 with exact copy; stored in the new columns.
-- `closeCompletedSiblings` closes only same-role (and, for workflow agents, same-step) siblings. **Intentional test change:** any existing test asserting a coder's `completed` closes a reviewer on the same item is updated to the new rule; legacy same-role duplicate closing is still covered.
-- `completedCurrent` is per agent (spec B5); a test reproduces today's bug (agent A completed at attempt 1, agent B retried to attempt 2 and not completed → Done was refused) and shows it fixed.
-- `OnDepUnblocked` wakes all distinct parents of active agents on the item.
+- `designer` is a valid role across kinds, settings (default `claude`/`opus`), overrides and the catalog. Its emoji is 🎨.
+- `Workflow` and `workflow` tool names are blocked in swarm sessions with the spec copy. They are still allowed outside swarm.
+- Items store the resolved workflow and set `role_hint = RunRole(workflow)`.
+- A task may not have both `steps` and `units`, and may have at most 8 units.
+- Only an orchestrator or the daemon may set these fields.
+- An orchestrator `swarm_items create` of a task without a `workflow` is refused with the spec copy. A task the user creates on the board may omit it.
+- `swarm_items` accepts the new fields, and `swarm_read` and `GET /api/items/:key` return them.
 
-**Verify:** `go test ./internal/runtime/... ./internal/items/... ./internal/mcpserver/... && go build ./... && go vet ./...`
+**Verify:**
+- `go test ./internal/kinds/... ./internal/settings/... ./internal/hook/... ./internal/items/... ./internal/mcpserver/... ./internal/httpapi/... ./internal/runtime/...`
+- `go build ./... && go vet ./...`
+- `cd web && pnpm test`
 
-- [ ] **Step 1: Failing tests** `TestReviewerCompletedDoesNotCloseBuilder`, `TestBuilderCompletedDoesNotCloseReviewer`, `TestSameRoleSiblingStillClosed`, `TestVerdictRequiredForWorkflowReviewer`, `TestVerdictRefusedForCoder`, `TestPassVerdictRefusesMajorFindings`, `TestCompletedCurrentIsPerAgent`, `TestDepUnblockedWakesAllParents`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.** Sibling query adds `AND a2.role = ? AND COALESCE((SELECT step_id FROM workflow_runs WHERE agent_id = a2.id ORDER BY round DESC LIMIT 1), '') = ?` with the caller's role and step. `completedCurrent`: select the latest `completed` checkpoint on the item from a gated-role (or designer/researcher) agent and compare its attempt to that agent's own `MAX(attempt)`.
-- [ ] **Step 4: Run green** + full Verify; commit `fix(runtime): make tasks safe for multiple agents`.
-- [ ] **Step 5: Review loop** — Review Focus items 1 and 3.
+#### Unit 7.1: Designer role plumbing (Go)
+- [ ] Write the failing tests `TestSettingsDefaultsIncludeDesigner`, `TestSpawnDesignerRoleAccepted` and `TestOverridableRolesIncludeDesigner`. Red. Implement. Green. Commit.
 
-### Task 13: Step gates — tdd, commit, verify, artifact
+#### Unit 7.2: Block the native Workflow tool
+- [ ] Write the failing tests `TestPreToolUseBlocksWorkflowTool` and `TestWorkflowToolAllowedOutsideSwarm`. Red. Implement. Green. Commit.
 
-**Files:** Modify `internal/runtime/checkpoint.go`, `internal/runtime/artifacts.go` (`registerArtifactAsDaemon`), tests in `checkpoint_test.go`, `artifacts_test.go`.
+#### Unit 7.3: Item fields in the store
+- [ ] Write the failing tests:
+  - `TestCreateTaskStoresResolvedWorkflowAndRoleHint`
+  - `TestCreateRejectsInvalidWorkflow`
+  - `TestCreateRejectsStepsAndUnits`
+  - `TestOrchestratorTaskNeedsWorkflow`
+  - `TestBoardTaskMayOmitWorkflow`
+  - `TestUserCannotSetWorkflow`
+- [ ] Red. Implement the model, `scanItem` and the create/update validation. Green. Commit.
 
-**Interfaces:**
-- Produces: `func tddOK(entries []Verify) string`, `func verifyDeclaredOK(declared []string, entries []Verify) string`, `func (s *Store) commitOK(ctx, agentID string, git []GitRef) (sha string, msg string)`, `func (s *Store) artifactGate(ctx, tx, it items.Item, rootKey string, gate workflow.Gate, paths []string) (string, error)`, `func (s *Store) registerArtifactAsDaemon(ctx, tx, itemID, kind, path string) error`.
+#### Unit 7.4: Wire the fields through MCP and HTTP
+- [ ] Write the failing tests `TestSwarmItemsAcceptsWorkflowUnitsVerify`, `TestSwarmReadReturnsWorkflowFields` and `TestItemJSONIncludesWorkflowFields`. Red.
+- [ ] Implement, and update the web `Item` type. Green. Commit.
 
-**Acceptance:**
-- For agents with a workflow run, the step's gates replace `verifyOK`; legacy agents unchanged (existing gate tests untouched and green).
-- Each gate enforces the spec B5 rule with the exact copy; `tdd` skipped for `tdd_exempt`; the commit gate stores the sha on the run row; artifact gates register `design`/`research` artifacts on the task.
+### P8: Checkpoint semantics
+**Workflow:** `tdd-reviewed` · **Units:** 5 · Every unit touches `internal/runtime/checkpoint.go`, so they share context.
 
-**Verify:** `go test ./internal/runtime/... -run 'Gate|TDD|Verify|Commit|Artifact' && go test ./internal/runtime/... && go vet ./...`
+**Files:**
+- `internal/runtime/{checkpoint.go,model.go,reconcile.go,artifacts.go}`
+- `internal/items/transition.go`
+- `internal/mcpserver/tools.go` (`swarm_checkpoint` schema)
+- tests: `checkpoint_test.go`, `transition_test.go`, `reconcile_test.go`, `artifacts_test.go`
 
-- [ ] **Step 1: Failing tests** `TestTDDGateNeedsRedBeforeGreen` (green only → refused; red then green across two checkpoints of one attempt → ok; red in attempt 1 and green in attempt 2 → refused), `TestTDDGateSkippedWhenExempt`, `TestVerifyGateMatchesDeclaredCommands` (containment + whitespace normalisation), `TestCommitGateRefusesDirtyWorktree`, `TestCommitGateRefusesShaMismatch`, `TestCommitGateStoresSha`, `TestDesignArtifactGateRegistersArtifact`, `TestLegacyCoderKeepsVerifyOK`. Use a real temp git repo for commit tests (existing helpers in `runtime/helpers_test.go`).
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement** the gate functions and wire them into the `CompletedCkp` block behind `workflowRunFor != nil`.
-- [ ] **Step 4: Run green**; commit `feat(runtime): enforce per-step workflow gates`.
-- [ ] **Step 5: Review loop.**
-
-### Task 14: Engine core — start, advance, fix rounds, succeed, escalate, budget
-
-**Files:** Create/extend `internal/runtime/workflow.go`, `internal/runtime/workflow_test.go`; modify `internal/runtime/{limits.go,agents.go,text.go,checkpoint.go (relay suppression)}`, `internal/hook/handler.go` (use `SubagentSlots`).
-
-**Interfaces:**
-- Produces:
-
-```go
-type StartWorkflowInput struct {
-	ItemKey   string
-	Worktrees []WorkflowWorktree // {WorktreeID, Mode}
-	Context   []string
-	SessionID, RequestID string
-}
-type WorkflowState struct {
-	ID, State, Escalation string
-	Round, MaxRounds       int
-	Runs                   []WorkflowRunView
-}
-func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowInput) (WorkflowState, error)
-func (s *Store) WorkflowFor(ctx context.Context, itemKey string) (*WorkflowState, error)
-func (s *Store) advance(ctx context.Context, workflowID string) error
-func (s *Store) SubagentSlots(ctx context.Context, parentID string) (used, max int, err error)
-func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round int, ctxLines []string) BriefInput
-```
+**Interfaces (produces):**
+- `CheckpointInput.Verdict` and `.Findings`
+- `Verify.Unit`
+- `workflowRunFor(ctx, tx, agentID)`, whose run-row type is defined here
+- `tddOK(entries, units)`, `verifyDeclaredOK`, `commitOK`, `artifactGate`, `registerArtifactAsDaemon`
 
 **Acceptance:**
-- Start validates per spec B4 with exact copy and returns the state.
-- `advance` applies every `Next` action as spec B4 describes: spawns run/review agents with daemon-rendered briefs (spec B6, including `## Steps` and `## Workflow` sections added to `RenderBrief`), shares rw worktrees to builders and creates/shares/removes review worktrees, retries builders with rendered findings, moves the task InReview ↔ InProgress and to Done (daemon actor), and sends `workflow_succeeded` / `workflow_escalated` relays plus the `workflow.escalated` notification.
-- Idempotent: calling `advance` twice in a row spawns nothing extra (Review Focus 2).
-- Budget: runs beyond `max_concurrent_subagents` are inserted `waiting` and spawned FIFO when slots free; the hook uses `SubagentSlots` (hook tests unchanged and green).
-- `WriteCheckpoint` suppresses `accepted`/`progress`/`completed` relays for workflow agents (Review Focus 5).
+- Verdict rules and copy follow spec B5.
+- Siblings are closed only when they have the same role and the same step.
+- `completedCurrent` is per agent. This fixes the cross-agent attempt bug, which a test reproduces.
+- `OnDepUnblocked` wakes every distinct parent.
+- For workflow agents the step's gates apply:
+  - tdd: per unit for batched tasks, and skipped when the task is exempt
+  - verify: declared commands, matched by containment and normalised whitespace
+  - commit: clean, sha equals HEAD, sha stored on the run
+  - artifact: registers `design`/`research`
+- Legacy agents keep `verifyOK`, and existing legacy tests stay untouched and green.
+- Any existing test asserting that a coder's `completed` closes a reviewer is updated to the new rule. This is an intentional change.
 
-**Verify:** `go test ./internal/runtime/... ./internal/hook/... -count=1 && go build ./... && go vet ./...`
+**Verify:**
+- `go test ./internal/runtime/... ./internal/items/... ./internal/mcpserver/... -count=1`
+- `go build ./... && go vet ./...`
 
-- [ ] **Step 1: Failing tests** (runtime with the fake adapter and a temp git repo): `TestStartWorkflowValidates` (no workflow / running exists / no rw worktree / deps open), `TestWorkflowHappyPath` (build completed with gates → reviewer spawned on review worktree at sha → pass → task Done, one `workflow_succeeded` relay, review worktree removed), `TestWorkflowFixRound` (changes_requested → builder retried with findings note in its `assignment_update`, task back to InProgress, round 2), `TestWorkflowEscalatesWhenRoundsExhausted`, `TestWorkflowParallelReviewers` (ui template spawns reviewer + ui_reviewer together; mixed verdicts → fix round), `TestWorkflowAutoRetryOnCrash`, `TestAdvanceIsIdempotent`, `TestWorkflowWaitsForBudgetFIFO`, `TestWorkflowRelaysSuppressed`, `TestRenderBriefStepsAndWorkflowSections`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement** `SubagentSlots` (move the hook's query into `limits.go`, hook calls it), `BriefForStep` + `RenderBrief` sections, `StartWorkflow`, `advance` (per-workflow mutex keyed by id; each action's DB writes in one tx, side effects after commit, run rows inserted with `INSERT … ON CONFLICT DO NOTHING` on the unique key and the spawn skipped if no row was inserted).
-- [ ] **Step 4: Run green** + full Verify; commit `feat(runtime): daemon workflow engine`.
-- [ ] **Step 5: Review loop** — Review Focus 2 and 5; the reviewer adds one adversarial test if they can break idempotency.
+#### Unit 8.1: Verdicts and findings
+- [ ] Write the failing tests `TestVerdictRequiredForWorkflowReviewer`, `TestVerdictRefusedForCoder` and `TestPassVerdictRefusesMajorFindings`. Red. Implement storage, validation and the schema. Green. Commit.
 
-### Task 15: Engine triggers, recovery, Done gating, resume and cancel
+#### Unit 8.2: Close siblings by role and step
+- [ ] Write the failing tests `TestReviewerCompletedDoesNotCloseBuilder`, `TestBuilderCompletedDoesNotCloseReviewer` and `TestSameRoleSiblingStillClosed`. Red.
+- [ ] Implement the query change. It filters on the caller's role and on the step from that agent's latest `workflow_runs` row. Green. Commit.
 
-**Files:** Modify `internal/runtime/{workflow.go,checkpoint.go,reconcile.go}`, `internal/items/transition.go`; tests.
+#### Unit 8.3: Per-agent completion and dependency wake-ups
+- [ ] Write the failing tests `TestCompletedCurrentIsPerAgent` and `TestDepUnblockedWakesAllParents`. Red. Implement. Green. Commit.
 
-**Interfaces:**
-- Produces: `func (s *Store) ResumeWorkflow(ctx, orch Agent, itemKey, decision, note, sessionID, requestID string) (WorkflowState, error)`, `func (s *Store) CancelWorkflow(ctx, orch Agent, itemKey string) (WorkflowState, error)`, `func (s *Store) recoverWorkflows(ctx) error` (called from `Reconcile`).
+#### Unit 8.4: tdd and verify gates
+- [ ] Write the failing tests:
+  - `TestTDDGateNeedsRedBeforeGreen` (green only; red then green across checkpoints; red and green in different attempts)
+  - `TestTDDGatePerUnit` (unit 2 missing → error names unit 2)
+  - `TestTDDGateSkippedWhenExempt`
+  - `TestVerifyGateMatchesDeclaredCommands`
+  - `TestLegacyCoderKeepsVerifyOK`
+- [ ] Red. Implement. Green. Commit.
+
+#### Unit 8.5: Commit and artifact gates
+- [ ] Write the failing tests `TestCommitGateRefusesDirtyWorktree`, `TestCommitGateRefusesShaMismatch`, `TestCommitGateStoresSha` and `TestDesignArtifactGateRegistersArtifact`. They use a real temp git repo via `runtime/helpers_test.go`. Red. Implement. Green. Commit.
+
+### P9: Workflow engine
+**Workflow:** `tdd-reviewed`, `max_rounds: 4` · **Units:** 5
+
+**Files:**
+- `internal/runtime/{workflow.go,workflow_test.go,limits.go,agents.go,text.go,checkpoint.go,reconcile.go}`
+- `internal/items/transition.go`
+- `internal/hook/handler.go` (uses `SubagentSlots`)
+
+**Interfaces (produces):**
+- `StartWorkflowInput`, `WorkflowState`
+- `StartWorkflow`, `WorkflowFor`, `advance`, `ResumeWorkflow`, `CancelWorkflow`, `recoverWorkflows`
+- `SubagentSlots(ctx, parentID) (used, max int, err error)`
+- `BriefForStep(it, spec, stepID, round, ctxLines) BriefInput`
+- `RenderBrief` gains the `Units`/`Steps` and `Workflow` sections
 
 **Acceptance:**
-- `advance` is triggered after commit by: completed/failed checkpoints of workflow agents, session death of workflow agents in `reconcile.go`, a child of the owner leaving a budget slot, start/resume.
-- Recovery scan: running workflows whose latest run is terminal and `updated_at` is > 30 s old are advanced; test simulates "commit happened, advance never ran".
-- `checkTask`: Done on a workflow task only by daemon after success (or `accept`); orchestrator `swarm_items update status:"done"` refused with spec copy.
-- `resume` retry/accept/fail and `cancel` behave per spec B7 (extra round recorded in `extra_rounds`; accept is recorded; fail/cancel → task Ready, active run agents cancelled).
+- **Briefs.** Engine-spawned agents get daemon-rendered briefs per spec B6, collapsing unit steps when over the length cap.
+- **Start.** Start is validated per spec B4.
+- **Advance.** Advance applies every `Next` action:
+  - Build agents get the rw worktree shared to them. Reviewers get a review worktree at the sha, which is created, shared and then removed.
+  - A fix round retries the builder with the rendered findings, grouped by reviewer and unit.
+  - The task moves InReview ↔ InProgress, and to Done only by the daemon.
+  - `workflow_succeeded` and `workflow_escalated` relays are sent, plus the `workflow.escalated` notification.
+- **Idempotency.** Repeated advances are no-ops: `ON CONFLICT DO NOTHING` on the run key, and no spawn unless a row was inserted.
+- **Budget.** When the budget is full, runs wait and start in FIFO order. The hook uses `SubagentSlots`, and its existing tests stay green.
+- **Relays.** The engine suppresses relays of `accepted`, `progress` and `completed` checkpoints to the orchestrator.
+- **Triggers.** Advance runs after a checkpoint, after a session death, after a slot is released, and on start/resume. A stall older than 30 s is recovered.
+- **Done gating.** An orchestrator cannot mark a workflow task Done.
+- **Resume and cancel** follow spec B7, with extra rounds recorded.
 
-**Verify:** `go test ./internal/runtime/... ./internal/items/... -count=1 && go vet ./...`
+**Verify:**
+- `go test ./internal/runtime/... ./internal/items/... ./internal/hook/... -count=1`
+- `go build ./... && go vet ./...`
 
-- [ ] **Step 1: Failing tests** `TestCheckpointTriggersAdvance`, `TestCrashTriggersAdvance`, `TestSlotReleaseSpawnsWaitingRun`, `TestRecoverStalledWorkflow`, `TestOrchestratorCannotMarkWorkflowTaskDone`, `TestResumeRetryGrantsExtraRound`, `TestResumeAccept`, `TestResumeFail`, `TestCancelWorkflow`, `TestResumeRefusedWhenNotEscalated`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run green**; commit `feat(runtime): workflow triggers, recovery, resume and cancel`.
-- [ ] **Step 5: Review loop.**
+#### Unit 9.1: Slots and briefs
+- [ ] Write the failing tests `TestSubagentSlotsMatchesHookCount` and `TestRenderBriefUnitsAndWorkflowSections` (including the cap collapse). Red.
+- [ ] Move the hook query into `limits.go`, and implement `BriefForStep` and the new `RenderBrief` sections. Green. Commit.
 
-### Task 16: MCP surface — `swarm_workflow`, spawn validation, checkpoint verdicts, read crew
+#### Unit 9.2: Start and spawning steps
+- [ ] Write the failing tests:
+  - `TestStartWorkflowValidates` (no workflow, one already running, no rw worktree, dependencies open)
+  - `TestWorkflowSpawnsBuilderWithSharedWorktree`
+  - `TestWorkflowSpawnsReviewersOnReviewWorktree`
+  - `TestWorkflowParallelReviewers`
+  - `TestAdvanceIsIdempotent`
+- [ ] Red. Implement `StartWorkflow` and the spawn half of `advance`, using a per-workflow mutex, one tx per action, and side effects after commit. Green. Commit.
 
-**Files:** Create `internal/mcpserver/workflow.go` + test; modify `internal/mcpserver/{orchestrator.go,tools.go,server.go}` + tests.
+#### Unit 9.3: Rounds, success, escalation, relays
+- [ ] Write the failing tests `TestWorkflowHappyPath`, `TestWorkflowFixRound`, `TestWorkflowEscalatesWhenRoundsExhausted`, `TestWorkflowAutoRetryOnCrash` and `TestWorkflowRelaysSuppressed`. Red. Implement. Green. Commit.
 
-**Acceptance (spec B7):**
-- `swarm_workflow` ops start/status/resume/cancel for orchestrators only, with `required` in its schema and idempotency via `request_id` (same two-phase pattern as `swarm_control`).
-- `swarm_spawn`: role enum validated with spec copy; refused for build/design/research roles on workflow tasks; `worktrees` honoured (shared + in brief header); `advisor`/`cwd` removed from the schema.
-- `swarm_checkpoint` exposes `verdict` + `findings`; `swarm_read` returns `workflow_state` and `crew` for tasks.
+#### Unit 9.4: Triggers and recovery
+- [ ] Write the failing tests `TestCheckpointTriggersAdvance`, `TestCrashTriggersAdvance`, `TestSlotReleaseSpawnsWaitingRun` and `TestRecoverStalledWorkflow`. Red. Implement. Green. Commit.
 
-**Verify:** `go test ./internal/mcpserver/... && go build ./... && go vet ./...`
+#### Unit 9.5: Resume, cancel, Done gating
+- [ ] Write the failing tests:
+  - `TestOrchestratorCannotMarkWorkflowTaskDone`
+  - `TestResumeRetryGrantsExtraRound`
+  - `TestResumeAccept`
+  - `TestResumeFail`
+  - `TestCancelWorkflow`
+  - `TestResumeRefusedWhenNotEscalated`
+- [ ] Red. Implement. Green. Commit.
 
-- [ ] **Step 1: Failing tests** `TestSwarmWorkflowToolsOnlyForOrchestrators`, `TestSwarmWorkflowStartStatusResumeCancel`, `TestSwarmWorkflowIdempotentStart`, `TestSwarmSpawnRejectsUnknownRole`, `TestSwarmSpawnRefusesWorkflowTask`, `TestSwarmSpawnSharesWorktrees`, `TestSwarmCheckpointVerdictSchema`, `TestSwarmReadCrew`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run green**; commit `feat(mcp): swarm_workflow and multi-agent task surface`.
-- [ ] **Step 5: Review loop.**
+### P10: Orchestrator surface, story and integration gates, e2e
+**Workflow:** `tdd-reviewed` · **Units:** 4
 
-### Task 17: Story `after_tasks` review and root `integration` gate
+**Files:**
+- `internal/mcpserver/{workflow.go,orchestrator.go,tools.go,server.go}` and their tests
+- `internal/runtime/{workflow.go,checkpoint.go}`
+- `internal/items/transition.go` (`deriveStory`)
+- `scripts/e2e/{workflow_test.go,tdd_test.go,harness_test.go}`
 
-**Files:** Modify `internal/runtime/{workflow.go,checkpoint.go}`, `internal/items/transition.go` (`deriveStory`), tests.
+**Acceptance:**
+- `swarm_workflow` supports start, status, resume and cancel. It is orchestrator-only, has `required` set in its schema, and is idempotent via `request_id`.
+- `swarm_spawn`:
+  - validates the role enum with the spec copy
+  - refuses build/design/research roles on workflow tasks
+  - honours `worktrees`, sharing them and putting them in the brief header
+  - drops `advisor`/`cwd` from its schema
+- `swarm_read` returns `workflow_state` and `crew`.
+- Story `after_tasks` follows spec B8:
+  - a `story_ready_for_review` relay
+  - start with a read-only worktree
+  - `deriveStory` waits for the review
+  - changes requested → escalate
+- The `integrated` gate checks the integration verify commands and a passing final review.
+- The e2e scenarios pass:
+  - happy path, one fix round, escalation, `resume accept`
+  - a batched package with per-unit evidence
+- `tdd_test.go` uses the new copy for workflow tasks and the legacy copy for legacy tasks.
 
-**Acceptance (spec B8):**
-- When all tasks of a story with `after_tasks` are Done, the owner gets `story_ready_for_review`; `swarm_workflow start` on the story with an `ro` worktree runs the single review step; `deriveStory` yields Done only after that workflow succeeded; `changes_requested` escalates.
-- `integrated` checkpoints on a root with `integration` require each `integration.verify` recorded `ok:true` and, if `final_review` is set, a reviewer checkpoint on the root with `verdict: pass` whose git sha equals the integrated sha; exact copy per spec.
+**Verify:**
+- `go test ./internal/mcpserver/... ./internal/runtime/... ./internal/items/...`
+- `make e2e`
 
-**Verify:** `go test ./internal/runtime/... ./internal/items/... && go vet ./...`
+#### Unit 10.1: `swarm_workflow`
+- [ ] Write the failing tests `TestSwarmWorkflowToolsOnlyForOrchestrators`, `TestSwarmWorkflowStartStatusResumeCancel` and `TestSwarmWorkflowIdempotentStart`. Red. Implement. Green. Commit.
 
-- [ ] **Step 1: Failing tests** `TestStoryReadyForReviewRelay`, `TestStoryDoneWaitsForAfterTasksReview`, `TestStoryReviewChangesEscalates`, `TestIntegratedNeedsIntegrationVerify`, `TestIntegratedNeedsFinalReviewPass`, `TestStoryWithoutAfterTasksUnchanged`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run green**; commit `feat(runtime): story reviews and integration gate`.
-- [ ] **Step 5: Review loop.**
+#### Unit 10.2: Spawn, checkpoint and read changes
+- [ ] Write the failing tests:
+  - `TestSwarmSpawnRejectsUnknownRole`
+  - `TestSwarmSpawnRefusesWorkflowTask`
+  - `TestSwarmSpawnSharesWorktrees`
+  - `TestSwarmCheckpointVerdictSchema`
+  - `TestSwarmReadCrew`
+- [ ] Red. Implement. Green. Commit.
 
-### Task 18: Board and menubar — workflow section, crew, round badge, step suffix
+#### Unit 10.3: Story and integration gates
+- [ ] Write the failing tests:
+  - `TestStoryReadyForReviewRelay`
+  - `TestStoryDoneWaitsForAfterTasksReview`
+  - `TestStoryReviewChangesEscalates`
+  - `TestIntegratedNeedsIntegrationVerify`
+  - `TestIntegratedNeedsFinalReviewPass`
+  - `TestStoryWithoutAfterTasksUnchanged`
+- [ ] Red. Implement. Green. Commit.
 
-**Files:** Create `web/src/components/WorkflowSection.tsx` + test; modify `web/src/panels/Details.tsx`, the kanban task card component under `web/src/views/`, `web/src/{types.ts,copy.ts,api.ts}`, `web/src/mock/fixtures.ts`; `internal/httpapi` (include `workflow_state`, `crew` in item detail and `step` in agents payload); `apps/menubar/Sources/SwarmBarKit/{Wire.swift,Copy.swift}` + tests.
-
-**Acceptance (spec Screens + copy):**
-- Details shows the Workflow section for workflow tasks exactly as specified (state chip, round, steps with runs, verdict chips, expandable findings, escalation banner); hidden for legacy tasks.
-- Kanban task cards show crew emoji (max 3 + "+n") and "R{n}" when round > 1.
-- Plan review screen lists `warnings` under "Plan warnings" (data arrives in Task 19; render when present).
-- Menubar agent rows show "Role · step r{n}" when `step` is present.
-- Verify visually with the `run` skill / Playwright screenshot of the mock board (light + dark).
-
-**Verify:** `go test ./internal/httpapi/... && cd web && pnpm test && pnpm biome check && cd ../apps/menubar && swift test`
-
-- [ ] **Step 1: Failing tests** `WorkflowSection.test.tsx` (renders runs/verdicts/findings/escalation; hidden without workflow), kanban card test (crew + round badge), `Details.test.tsx` addition, Swift `testAgentRowStepSuffix`, Go `TestItemDetailIncludesWorkflowState`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run green**; screenshot check; commit `feat(web,menubar): show task workflows and crews`.
-- [ ] **Step 5: Review loop** — `ui_reviewer`-style pass using `web-design-guidelines` on the changed components.
-
-### Task 19: e2e — workflow scenario and stale TDD scenario
-
-**Files:** Create `scripts/e2e/workflow_test.go`; modify `scripts/e2e/tdd_test.go`, `scripts/e2e/harness_test.go` (helpers for `swarm_workflow` and reviewer checkpoints).
-
-**Acceptance (spec Verification 5):** scenario passes end-to-end with fake agents: start → builder red/green + clean commit → reviewer `changes_requested` → builder receives findings → completes → reviewer `pass` → task Done, exactly one `workflow_succeeded` relay, review worktree removed; escalation after max rounds; `resume accept`. `tdd_test.go` expects the new TDD gate copy on a workflow task and still checks legacy `verifyOK` copy on a legacy task.
-
-**Verify:** `make e2e`
-
-- [ ] **Step 1: Write the scenarios** (they fail: harness lacks helpers / behaviour).
-- [ ] **Step 2: Run red** (`make e2e`), record.
-- [ ] **Step 3: Implement harness helpers**; fix any real bug found (in the owning package, with a unit test first).
-- [ ] **Step 4: Run green**; commit `test(e2e): workflow engine scenarios`.
-- [ ] **Step 5: Review loop.**
+#### Unit 10.4: e2e
+- [ ] Write the scenarios and the harness helpers for `swarm_workflow`, reviewer verdicts and unit-tagged verification. Run `make e2e` and record the red.
+- [ ] Fix any real bug in its owning package, test first. Green. Commit.
 
 ---
 
-## Phase C — Planning and spikes
+## Story C — Planning, spikes and surfaces
 
-### Task 20: swarm-tree workflow/steps/verify, materialize, plan validation
+### P11: Board and menubar
+**Workflow:** `ui-tdd-reviewed` (coder → reviewer + ui_reviewer) · **Units:** 5
 
-**Files:** Modify `internal/runtime/{artifacts.go,materialize.go}`, `internal/mcpserver/orchestrator.go` (`swarm_artifact` result `warnings`), `web/src` plan review (warnings wiring from Task 18), tests `artifacts_test.go`, `materialize_test.go`.
-
-**Interfaces:**
-- Produces: `TreeNode.Workflow *workflow.Spec`, `.Steps []string`, `.Verify []string`; `RegisterArtifactResult.Warnings []string`; `func lintTree(t Tree) (errs []error, warnings []string)`.
-
-**Acceptance (spec C1–C2):**
-- Trees with the new fields parse (still `DisallowUnknownFields`), validate per level, and materialize copies resolved workflow (defaulting from `role_hint` for tasks), steps and verify to items; root/story workflows copied too.
-- Errors and warnings exactly per spec C2 copy; warnings returned by `swarm_artifact` and shown on the board.
-- Old-format trees (no workflow fields) still register and materialize; their tasks get `DefaultFor(role_hint)` — except reviewer-role tasks, which are now an error (intentional change; update any fixture in `runtime/testdata` that contains one).
-
-**Verify:** `go test ./internal/runtime/... -run 'Tree|Artifact|Materialize' && go test ./internal/runtime/... && cd web && pnpm test`
-
-- [ ] **Step 1: Failing tests** `TestParseTreeWithWorkflowFields`, `TestTreeRejectsReviewTasks`, `TestTreeRequiresStepsAndVerifyForTDDTasks`, `TestTreeWarnsOnSplitTDDTitles` (table of titles from the spec regex, plus negatives such as "Add retry to failing uploads"), `TestMaterializeCopiesWorkflowStepsVerify`, `TestMaterializeDefaultsWorkflowFromRoleHint`, `TestSwarmArtifactReturnsWarnings`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run green**; commit `feat(runtime): workflows in swarm-tree plans`.
-- [ ] **Step 5: Review loop.**
-
-### Task 21: swarm-workflows, swarm-spike, swarm-orchestrator skills
-
-**Files:** Replace stubs `skills/swarm-workflows/SKILL.md`, `skills/swarm-spike/SKILL.md`; rewrite `skills/swarm-orchestrator/SKILL.md`; extend `internal/install/skills_test.go`.
-
-**Acceptance (spec A4 + C3):**
-- `swarm-workflows`: DSL reference (fields, templates table, gates, levels, engine behaviour, escalation handling) and authoring guidance (pipeline-by-default deps, adversarial verify via multiple reviewer roles, loop-until-pass bounds, completeness critic, no silent caps); includes a complete worked task node example that the test parses with `ParseTree` + `workflow.Validate` (so the doc can't drift from the code).
-- `swarm-spike`: the seven-step method of spec C3, referencing `superpowers:brainstorming`, `superpowers:writing-plans`, `superpowers:systematic-debugging`; research via `research` template tasks and notes synthesis; design tasks via `design-reviewed`; the completeness critic; self-contained task rules with a "bad → good" example (split RED/GREEN/review tasks → one task with steps).
-- `swarm-orchestrator`: delivery only — `swarm_workflow start` for workflow tasks, escalation handling, budget, story `after_tasks`, root `integration`; references `superpowers:dispatching-parallel-agents`, `superpowers:subagent-driven-development`, `superpowers:finishing-a-development-branch`, `swarm-workflows`; removes the old "spawn a reviewer after completed / retry with note / mark done" instructions for workflow tasks (kept, shortened, for legacy tasks).
-
-**Verify:** `make skills-sync && go test ./internal/install/... ./internal/runtime/...`
-
-- [ ] **Step 1: Failing tests** `TestWorkflowsSkillExampleValidates`, extend `TestRoleSkillsReferenceTheirSkills` for the three skills, `TestOrchestratorSkillNoLongerHandRollsReviews` (asserts the old "After a worker's `completed`, spawn a `reviewer`" sentence is gone).
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Write the skills.**
-- [ ] **Step 4: Run green**; commit `docs(skills): workflow, spike and orchestrator skills`.
-- [ ] **Step 5: Review loop** — reviewer dry-runs the spike skill against a toy request and checks the produced tree would pass `lintTree`.
-
-### Task 22: README and final end-to-end smoke
-
-**Files:** Modify `README.md`.
+**Files:**
+- `web/src/{types.ts,copy.ts,api.ts,components/AgentFields.tsx,components/WorkflowSection.tsx,panels/Details.tsx,mock/fixtures.ts}`
+- the kanban card component under `web/src/views/`
+- tests for the above
+- `internal/httpapi` (item detail `workflow_state`/`crew`; `step` in the agents payload)
+- `apps/menubar/Sources/SwarmBarKit/{Wire.swift,Copy.swift,SettingsModel.swift}` and their tests
 
 **Acceptance:**
-- README "How work flows", "How agents talk to Swarm" (tools incl. `swarm_workflow`), roles (designer), skills (role skills + vendored list + licenses line), and board sections reflect the release.
-- Manual smoke (spec Verification 6–7) done and summarised in the commit message: per-kind skill discovery; a small feature spike → research tasks → design task → plan with a warning → materialize → delivery via the engine to an accepted epic.
+- Spec Screens and copy, exactly:
+  - Designer and chore labels in web and menubar, including the Settings defaults row.
+  - A Workflow section in Details (hidden for legacy tasks). It shows findings with a unit tag.
+  - A kanban crew row and round badge.
+  - "Plan warnings" on the plan review screen.
+  - A menubar step suffix.
+- Screenshots of the mock board in light and dark are checked with the `run` skill or Playwright.
 
-**Verify:** `make test && make e2e`
+**Verify:**
+- `go test ./internal/httpapi/...`
+- `cd web && pnpm test && pnpm biome check`
+- `cd apps/menubar && swift test`
 
-- [ ] **Step 1: Update README.**
-- [ ] **Step 2: Run the manual smoke**; fix any defect found in its owning package (test first) before continuing.
-- [ ] **Step 3: `make test && make e2e` green**; commit `docs: self-contained tasks, workflow engine and role skills`.
-- [ ] **Step 4: Review loop** — final whole-branch review (`superpowers:requesting-code-review` over the full diff against the spec).
+#### Unit 11.1: Designer and chore labels
+- [ ] Write the failing tests: web `copy.test.ts` (`ROLE_LABEL.designer`, `ITEM_TYPE_LABEL.chore`), Swift `testRoleDecodesDesigner` and `testDefaultsOrderIncludesDesigner`. Red. Implement. Green. Commit.
+
+#### Unit 11.2: HTTP payload fields
+- [ ] Write the failing tests `TestItemDetailIncludesWorkflowState` and `TestAgentsPayloadIncludesStep`. Red. Implement. Green. Commit.
+
+#### Unit 11.3: `WorkflowSection`
+- [ ] Write the failing tests: `WorkflowSection.test.tsx` (runs, verdicts, unit-tagged findings, escalation; hidden when there is no workflow) and the `Details.test.tsx` addition. Red. Implement. Green. Commit.
+
+#### Unit 11.4: Kanban crew and plan warnings
+- [ ] Write the failing tests for the kanban card (crew row, "+n", "R2" badge) and for the plan review warnings list. Red. Implement. Green. Commit.
+
+#### Unit 11.5: Menubar step suffix
+- [ ] Write the failing test `testAgentRowStepSuffix`. Red. Implement. Green. Take the screenshots. Commit.
+
+### P12: Planning emits role-assigned packages
+**Workflow:** `tdd-reviewed` · **Units:** 5
+
+**Files:**
+- `internal/runtime/{artifacts.go,materialize.go}` and their tests
+- `internal/mcpserver/orchestrator.go` (`swarm_artifact` warnings)
+- `skills/swarm-{workflows,spike,orchestrator,batching}/SKILL.md`
+- `internal/install/skills_test.go`
+- `README.md`
+
+**Interfaces (produces):**
+- `TreeNode.Workflow`, `.Steps`, `.Units []TreeUnit`, `.Solo`, `.Verify`
+- `RegisterArtifactResult.Warnings`
+- `func lintTree(Tree) (errs []error, warnings []string)`
+
+**Acceptance:**
+- Trees carrying the new fields parse (still `DisallowUnknownFields`) and validate per level.
+- Materialize copies the resolved workflow, steps/units, `solo` and verify, and derives `role_hint`.
+- Plan registration returns errors and warnings with the exact spec C2 copy. The errors cover:
+  - a missing workflow
+  - a `role_hint` mismatch
+  - review tasks
+  - steps and units together
+  - more than 8 units
+  - reviewer roles on stories or roots
+- The warnings cover:
+  - split TDD titles
+  - no test step
+  - single-unit tasks with no `solo`
+  - more than 5 units
+  - stories made entirely of single-unit tasks
+- `swarm-workflows` has the DSL reference, the role assignment table and a worked example that a test parses and validates.
+- `swarm-spike` covers the seven-step method, batching via `swarm-batching`, and pre-assigning roles for research and design tasks.
+- `swarm-orchestrator`:
+  - covers delivery via `swarm_workflow`
+  - covers escalation handling, folding follow-ups with no micro-tasks, story reviews, and root integration (including a `ponytail-debt` pass)
+  - references `dispatching-parallel-agents`, `subagent-driven-development` and `finishing-a-development-branch`
+- `swarm-batching` points to the plan-registration warnings.
+- The README reflects the release: roles, skills, vendored licenses, `swarm_workflow`, and how work flows.
+
+**Verify:**
+- `make skills-sync`
+- `go test ./internal/runtime/... ./internal/install/... ./internal/mcpserver/...`
+- `cd web && pnpm test`
+
+#### Unit 12.1: Tree fields and materialize
+- [ ] Write the failing tests `TestParseTreeWithWorkflowUnitsSolo`, `TestMaterializeCopiesWorkflowUnitsVerify` and `TestMaterializeDerivesRoleHint`. Red. Implement. Green. Commit.
+
+#### Unit 12.2: Plan lint
+- [ ] Write the failing tests:
+  - `TestTreeRequiresWorkflow`
+  - `TestTreeRejectsRoleHintMismatch`
+  - `TestTreeRejectsReviewTasks`
+  - `TestTreeRequiresStepsAndVerifyForTDDTasks`
+  - `TestTreeWarnsOnSplitTDDTitles` (positives from the spec regex; negatives such as "Add retry to failing uploads")
+  - `TestTreeWarnsOnUnbatchedTasks`
+  - `TestSwarmArtifactReturnsWarnings`
+- [ ] Red. Implement `lintTree`. Green. Commit.
+  - Fixtures in `runtime/testdata` that relied on role_hint-only tasks or had review tasks are updated to carry workflows. This is an intentional change.
+
+#### Unit 12.3: `swarm-workflows`
+- [ ] Write the failing test `TestWorkflowsSkillExampleValidates`: extract the fenced example, run it through `ParseTree`, `lintTree` and `Validate`, and expect no errors and no warnings. Red.
+- [ ] Write the skill. Green. Commit.
+
+#### Unit 12.4: `swarm-spike`
+- [ ] Add the test row (references to `superpowers:brainstorming`, `writing-plans`, `systematic-debugging` and `swarm-batching`, plus the phrase "assign every role"). Red.
+- [ ] Write the skill, including a bad → good example: split RED/GREEN/review tasks → one package with units. Green. Commit.
+
+#### Unit 12.5: `swarm-orchestrator` and README
+- [ ] Write the failing test `TestOrchestratorSkillNoLongerHandRollsReviews`: the old "After a worker's `completed`, spawn a `reviewer`" sentence is gone, and the three superpowers references and `ponytail-debt` are present. Red.
+- [ ] Rewrite the skill, add the pointer to `swarm-batching`, and update the README. Green. Commit.
 
 ---
+
+## Integration (epic level, run by the orchestrator)
+
+- **Merge order:** P1, P5, P6, P2, P3, P4, P7, P8, P9, P10, P11, P12.
+- **Verify:** `make test`, then `make e2e`.
+- **Final review:** `reviewer` over the whole branch against the spec (`superpowers:requesting-code-review`).
+- **Before accepting:**
+  - Run `ponytail-debt` and list any `ponytail:` shortcuts introduced.
+  - Do the manual smoke from spec Verification 6–7. Per agent kind, check that skills (including vendored and ponytail skills) are discovered. Then take one small feature spike → research tasks → design task → a plan that triggers a batching warning → materialize → engine delivery → accepted epic.
 
 ## Work breakdown
 
-The same plan expressed in the swarm-tree format this work introduces (it
-validates once Task 20 lands). Steps are abbreviated; the task sections
-above are authoritative.
+This is the plan in the swarm-tree format it introduces; it validates once P12 lands. Unit steps are abbreviated, and the package sections above are authoritative.
 
 ```swarm-tree
 {
   "root": {"type": "epic", "title": "Self-contained tasks, workflow engine and role skills",
     "brief": "See docs/specs/2026-09-24-self-contained-tasks-and-role-skills.md", "acceptance": ["All spec Verification steps pass"],
-    "workflow": {"integration": {"merge_order": ["a-embed","a-link","a-vendor","a-designer","a-hook","a-skills1","a-skills2","a-kickoff","b-dsl","b-next","b-items","b-multi","b-gates","b-engine","b-triggers","b-mcp","b-story","b-ui","b-e2e","c-tree","c-skills","c-readme"],
+    "workflow": {"integration": {"merge_order": ["p1","p5","p6","p2","p3","p4","p7","p8","p9","p10","p11","p12"],
       "verify": ["make test", "make e2e"], "final_review": ["reviewer"]}}},
   "children": [
-    {"ref": "s-a", "type": "story", "title": "Skill platform, role skills, designer role", "brief": "Spec Part A", "acceptance": ["Spec A1-A6 met"],
-      "workflow": {"after_tasks": {"id": "story-review", "review": ["reviewer"]}},
+    {"ref": "s-a", "type": "story", "title": "Skills and roles", "brief": "Spec Part A", "acceptance": ["Spec A1-A6 met"],
       "children": [
-        {"ref": "a-embed", "type": "task", "title": "Recursive skill embed, registry and ~/.swarm/skills sync", "brief": "Plan Task 1", "acceptance": ["Plan Task 1 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write registry/sync/mirror tests; run; record red", "Embed all:skills, Skills(), SyncSkills, SkillNames()", "Makefile rsync mirror; daemon start sync", "Run green; update count tests", "Commit"],
-          "verify": ["make skills-sync", "go test ./internal/install/...", "go vet ./..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "a-link", "type": "task", "title": "Per-kind skill symlinks, Claude per-spawn links, doctor", "brief": "Plan Task 2", "acceptance": ["Plan Task 2 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Empirically check symlink discovery per CLI; set link modes", "Write link/skip/uninstall/doctor tests; record red", "Implement LinkSkills, WriteSkills, CheckSkills, python3 check", "Run green", "Commit"],
-          "verify": ["go test ./internal/install/... ./internal/adapter/... ./internal/migrate/...", "go vet ./..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "a-vendor", "type": "task", "title": "Vendor eight UI/design/mobile skills", "brief": "Plan Task 3", "acceptance": ["Plan Task 3 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write license/provenance test; record red", "Copy pinned sources and licenses", "Apply and record modifications", "Write vendor README", "Run green incl. search.py", "Commit"],
-          "verify": ["make skills-sync", "go test ./internal/install/...", "python3 skills/vendor/ui-ux-pro-max/scripts/search.py dashboard --domain style"], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "a-designer", "type": "task", "title": "Designer role end-to-end", "brief": "Plan Task 4", "acceptance": ["Plan Task 4 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write Go/web/Swift tests; record red", "Migration 0010 and Go role plumbing", "Web and menubar mirrors", "Run green", "Commit"],
-          "verify": ["go test ./internal/...", "cd web && pnpm test", "cd apps/menubar && swift test"], "workflow": {"template": "ui-tdd-reviewed"}},
-        {"ref": "a-hook", "type": "task", "title": "Block the native Workflow tool", "brief": "Plan Task 5", "acceptance": ["Plan Task 5 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write hook tests; record red", "Add blocked names and copy", "Run green", "Commit"],
-          "verify": ["go test ./internal/hook/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "a-skills1", "type": "task", "title": "Core, coder, reviewer, ui-reviewer, designer skills", "brief": "Plan Task 6", "acceptance": ["Plan Task 6 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write skill reference tests; record red", "Write the five skills", "Run green", "Commit"],
+        {"ref": "p1", "type": "task", "title": "Skill distribution", "brief": "Plan P1", "acceptance": ["Plan P1 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "Embed, registry, sync", "steps": ["Write registry/sync/mirror tests; record red (unit 1)", "Embed all:skills, Skills, SyncSkills, SkillNames; Makefile rsync; daemon sync", "Record green; commit"]},
+            {"title": "Per-kind links and uninstall", "steps": ["Empirical symlink check per CLI", "Write link/skip/uninstall tests; record red (unit 2)", "Implement LinkSkills/WriteSkills; record green; commit"]},
+            {"title": "Claude per-spawn links", "steps": ["Write TestClaudeProjectConfigLinksSkills; record red (unit 3)", "Link in writeProjectSwarmConfig; record green; commit"]},
+            {"title": "Doctor", "steps": ["Write doctor tests; record red (unit 4)", "CheckSkills per kind, python3 warn, README line; record green; commit"]}],
+          "verify": ["make skills-sync", "go test ./internal/install/... ./internal/adapter/... ./internal/migrate/...", "go vet ./..."],
+          "workflow": {"template": "tdd-reviewed"}},
+        {"ref": "p2", "type": "task", "title": "Vendored skills", "brief": "Plan P2", "acceptance": ["Plan P2 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "Provenance test and vendor README", "steps": ["Write TestVendoredSkillsHaveLicenseAndProvenance; run; fails", "Write vendor README and README license line; commit"]},
+            {"title": "web-design-guidelines and building-components", "steps": ["Vendor with local rules.md and licenses", "Commit"]},
+            {"title": "ui-ux-pro-max", "steps": ["Vendor trimmed, relative script paths", "Run search.py", "Commit"]},
+            {"title": "Mobile skills", "steps": ["Vendor expo x2 (feedback stripped), RN, iOS, Android", "Commit"]},
+            {"title": "ponytail", "steps": ["Vendor ponytail, ponytail-review, ponytail-debt; fixed full level", "Provenance test green", "Commit"]}],
+          "verify": ["make skills-sync", "go test ./internal/install/...", "python3 skills/vendor/ui-ux-pro-max/scripts/search.py dashboard --domain style"],
+          "workflow": {"steps": [{"id": "vendor", "run": "mechanical", "gates": ["commit", "verify"]},
+            {"id": "review", "review": ["reviewer"], "loop": {"fix": "vendor", "max_rounds": 2}}]}},
+        {"ref": "p3", "type": "task", "title": "Builder and reviewer skills", "brief": "Plan P3", "acceptance": ["Plan P3 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "Reference-checking tests", "steps": ["Write TestRoleSkillsReferenceTheirSkills and TestSuperpowersReferencesAreKnown; record red (unit 1)"]},
+            {"title": "Core swarm rewrite", "steps": ["Rewrite swarm skill; its test rows green (unit 2)", "Commit"]},
+            {"title": "swarm-coder", "steps": ["Write skill incl. ponytail precedence and unit execution; record green (unit 3)", "Commit"]},
+            {"title": "swarm-reviewer and swarm-ui-reviewer", "steps": ["Write both; record green (unit 4)", "Commit"]},
+            {"title": "swarm-designer and adopt swarm-batching", "steps": ["Write designer; check batching draft vs spec; record green (unit 5)", "Commit"]}],
           "verify": ["make skills-sync", "go test ./internal/install/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "a-skills2", "type": "task", "title": "Debugger, mechanical, researcher, advisor skills", "brief": "Plan Task 7", "acceptance": ["Plan Task 7 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write skill and advisor prompt tests; record red", "Write the four skills; align advisor prompt", "Run green", "Commit"],
-          "verify": ["make skills-sync", "go test ./internal/install/... ./internal/advisor/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "a-kickoff", "type": "task", "title": "Kickoff names each role's skill", "brief": "Plan Task 8", "acceptance": ["Plan Task 8 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write kickoff tests; record red", "RoleSkills table, signature change, stub spike/workflows skills", "Run green", "Commit"],
-          "verify": ["go test ./internal/runtime/... ./internal/install/..."], "workflow": {"template": "tdd-reviewed"}}
+        {"ref": "p4", "type": "task", "title": "Support-role skills and kickoff", "brief": "Plan P4", "acceptance": ["Plan P4 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "swarm-debugger and swarm-mechanical", "steps": ["Test rows red (unit 1)", "Write skills; green; commit"]},
+            {"title": "swarm-researcher", "steps": ["Test row red (unit 2)", "Write skill; green; commit"]},
+            {"title": "swarm-advisor and advisor prompt", "steps": ["Advisor tests red (unit 3)", "Write skill and prompt; green; commit"]},
+            {"title": "Kickoff role-skill table", "steps": ["Kickoff tests red (unit 4)", "RoleSkills table, signatures, spike/workflows stubs; green; commit"]}],
+          "verify": ["make skills-sync", "go test ./internal/install/... ./internal/advisor/... ./internal/runtime/...", "go vet ./..."],
+          "workflow": {"template": "tdd-reviewed"}}
       ]},
-    {"ref": "s-b", "type": "story", "title": "Multi-agent tasks and the workflow engine", "brief": "Spec Part B", "acceptance": ["Spec B1-B9 met"],
+    {"ref": "s-b", "type": "story", "title": "Workflow engine and multi-agent tasks", "brief": "Spec Part B", "acceptance": ["Spec B1-B8 met"],
       "workflow": {"after_tasks": {"id": "story-review", "review": ["reviewer"]}},
       "children": [
-        {"ref": "b-dsl", "type": "task", "title": "Workflow DSL: types, templates, validation, resolve, render", "brief": "Plan Task 9", "acceptance": ["Plan Task 9 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write template/validation/render tests; record red", "Implement package", "Run green", "Commit"], "verify": ["go test ./internal/workflow/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "b-next", "type": "task", "title": "Next-action planner", "brief": "Plan Task 10", "acceptance": ["Plan Task 10 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write TestNext table; record red", "Implement Next", "Run green", "Commit"], "verify": ["go test ./internal/workflow/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "b-items", "type": "task", "title": "Schema and items carry workflow, steps, verify", "brief": "Plan Task 11", "acceptance": ["Plan Task 11 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write migration/store/MCP tests; record red", "Migration 0011, model, store, MCP, HTTP, web types", "Run green", "Commit"], "verify": ["go test ./internal/...", "cd web && pnpm test"], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "b-multi", "type": "task", "title": "Multi-agent-safe tasks", "brief": "Plan Task 12", "acceptance": ["Plan Task 12 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write sibling/verdict/completion/wake tests; record red", "Implement", "Run green", "Commit"], "verify": ["go test ./internal/runtime/... ./internal/items/... ./internal/mcpserver/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "b-gates", "type": "task", "title": "Step gates", "brief": "Plan Task 13", "acceptance": ["Plan Task 13 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write gate tests; record red", "Implement gates and daemon artifact registration", "Run green", "Commit"], "verify": ["go test ./internal/runtime/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "b-engine", "type": "task", "title": "Engine core", "brief": "Plan Task 14", "acceptance": ["Plan Task 14 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write engine tests; record red", "SubagentSlots, briefs, StartWorkflow, advance", "Run green", "Commit"], "verify": ["go test ./internal/runtime/... ./internal/hook/..."], "workflow": {"template": "tdd-reviewed", "max_rounds": 4}},
-        {"ref": "b-triggers", "type": "task", "title": "Triggers, recovery, Done gating, resume, cancel", "brief": "Plan Task 15", "acceptance": ["Plan Task 15 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write trigger/recovery/resume tests; record red", "Implement", "Run green", "Commit"], "verify": ["go test ./internal/runtime/... ./internal/items/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "b-mcp", "type": "task", "title": "MCP surface", "brief": "Plan Task 16", "acceptance": ["Plan Task 16 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write MCP tests; record red", "Implement swarm_workflow and changes", "Run green", "Commit"], "verify": ["go test ./internal/mcpserver/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "b-story", "type": "task", "title": "Story reviews and integration gate", "brief": "Plan Task 17", "acceptance": ["Plan Task 17 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write story/integration tests; record red", "Implement", "Run green", "Commit"], "verify": ["go test ./internal/runtime/... ./internal/items/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "b-ui", "type": "task", "title": "Board and menubar workflow UI", "brief": "Plan Task 18", "acceptance": ["Plan Task 18 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write component/Swift/Go tests; record red", "Implement UI and wire data", "Run green; screenshot light and dark", "Commit"], "verify": ["cd web && pnpm test && pnpm biome check", "cd apps/menubar && swift test", "go test ./internal/httpapi/..."], "workflow": {"template": "ui-tdd-reviewed"}},
-        {"ref": "b-e2e", "type": "task", "title": "e2e workflow scenarios", "brief": "Plan Task 19", "acceptance": ["Plan Task 19 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write scenarios; run make e2e; record red", "Harness helpers; fix real bugs test-first", "Run green", "Commit"], "verify": ["make e2e"], "workflow": {"template": "tdd-reviewed"}}
+        {"ref": "p5", "type": "task", "title": "Schema migrations", "brief": "Plan P5", "acceptance": ["Plan P5 acceptance"], "repos": ["agent-swarm"],
+          "solo": "table-rebuilding migrations",
+          "units": [
+            {"title": "Migration 0010", "steps": ["Write TestMigration0010PreservesRowsAndWidensChecks; record red (unit 1)", "Write migration; green; commit"]},
+            {"title": "Migration 0011", "steps": ["Write schema and one-live-workflow tests; record red (unit 2)", "Write migration; green; commit"]}],
+          "verify": ["go test ./internal/db/... -count=1"], "workflow": {"template": "tdd-reviewed", "max_rounds": 4}},
+        {"ref": "p6", "type": "task", "title": "Workflow model", "brief": "Plan P6", "acceptance": ["Plan P6 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "Types and templates", "steps": ["TestTemplatesResolve red (unit 1)", "Implement; green; commit"]},
+            {"title": "Validation", "steps": ["TestValidateErrors red (unit 2)", "Implement; green; commit"]},
+            {"title": "Resolve, RunRole, Render", "steps": ["Tests incl. golden red (unit 3)", "Implement; green; commit"]},
+            {"title": "Next planner", "steps": ["TestNext table red (unit 4)", "Implement; green; commit"]}],
+          "verify": ["go test ./internal/workflow/... -count=1", "go vet ./internal/workflow/..."], "workflow": {"template": "tdd-reviewed"}},
+        {"ref": "p7", "type": "task", "title": "Roles, guards and item fields", "brief": "Plan P7", "acceptance": ["Plan P7 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "Designer role plumbing", "steps": ["Role tests red (unit 1)", "Implement; green; commit"]},
+            {"title": "Block the Workflow tool", "steps": ["Hook tests red (unit 2)", "Implement; green; commit"]},
+            {"title": "Item fields in the store", "steps": ["Store tests red (unit 3)", "Implement; green; commit"]},
+            {"title": "MCP and HTTP wire", "steps": ["Wire tests red (unit 4)", "Implement; green; commit"]}],
+          "verify": ["go test ./internal/...", "go vet ./...", "cd web && pnpm test"], "workflow": {"template": "tdd-reviewed"}},
+        {"ref": "p8", "type": "task", "title": "Checkpoint semantics", "brief": "Plan P8", "acceptance": ["Plan P8 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "Verdicts and findings", "steps": ["Verdict tests red (unit 1)", "Implement; green; commit"]},
+            {"title": "Close siblings by role and step", "steps": ["Sibling tests red (unit 2)", "Implement; green; commit"]},
+            {"title": "Per-agent completion and dependency wake-ups", "steps": ["Tests red (unit 3)", "Implement; green; commit"]},
+            {"title": "tdd and verify gates", "steps": ["Gate tests incl. per-unit red (unit 4)", "Implement; green; commit"]},
+            {"title": "Commit and artifact gates", "steps": ["Gate tests red (unit 5)", "Implement; green; commit"]}],
+          "verify": ["go test ./internal/runtime/... ./internal/items/... ./internal/mcpserver/... -count=1", "go vet ./..."],
+          "workflow": {"template": "tdd-reviewed"}},
+        {"ref": "p9", "type": "task", "title": "Workflow engine", "brief": "Plan P9", "acceptance": ["Plan P9 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "Slots and briefs", "steps": ["Tests red (unit 1)", "Implement; green; commit"]},
+            {"title": "Start and spawning steps", "steps": ["Tests incl. idempotency red (unit 2)", "Implement; green; commit"]},
+            {"title": "Rounds, success, escalation, relays", "steps": ["Tests red (unit 3)", "Implement; green; commit"]},
+            {"title": "Triggers and recovery", "steps": ["Tests red (unit 4)", "Implement; green; commit"]},
+            {"title": "Resume, cancel, Done gating", "steps": ["Tests red (unit 5)", "Implement; green; commit"]}],
+          "verify": ["go test ./internal/runtime/... ./internal/items/... ./internal/hook/... -count=1", "go vet ./..."],
+          "workflow": {"template": "tdd-reviewed", "max_rounds": 4}},
+        {"ref": "p10", "type": "task", "title": "Orchestrator surface, story and integration gates, e2e", "brief": "Plan P10", "acceptance": ["Plan P10 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "swarm_workflow", "steps": ["Tool tests red (unit 1)", "Implement; green; commit"]},
+            {"title": "Spawn, checkpoint and read changes", "steps": ["Tests red (unit 2)", "Implement; green; commit"]},
+            {"title": "Story and integration gates", "steps": ["Tests red (unit 3)", "Implement; green; commit"]},
+            {"title": "e2e", "steps": ["Scenarios red via make e2e (unit 4)", "Harness helpers, fix bugs test-first; green; commit"]}],
+          "verify": ["go test ./internal/mcpserver/... ./internal/runtime/... ./internal/items/...", "make e2e"],
+          "workflow": {"template": "tdd-reviewed"}}
       ]},
-    {"ref": "s-c", "type": "story", "title": "Planning and spikes", "brief": "Spec Part C", "acceptance": ["Spec C1-C3 met"],
+    {"ref": "s-c", "type": "story", "title": "Planning, spikes and surfaces", "brief": "Spec Part C, B9", "acceptance": ["Spec C1-C5 and B9 met"],
       "children": [
-        {"ref": "c-tree", "type": "task", "title": "swarm-tree workflow fields, materialize, plan lint", "brief": "Plan Task 20", "acceptance": ["Plan Task 20 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write tree/lint/materialize tests; record red", "Implement", "Run green", "Commit"], "verify": ["go test ./internal/runtime/...", "cd web && pnpm test"], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "c-skills", "type": "task", "title": "swarm-workflows, swarm-spike, swarm-orchestrator skills", "brief": "Plan Task 21", "acceptance": ["Plan Task 21 acceptance"], "role_hint": "coder", "repos": ["agent-swarm"],
-          "steps": ["Write skill tests incl. example validation; record red", "Write the skills", "Run green", "Commit"], "verify": ["make skills-sync", "go test ./internal/install/... ./internal/runtime/..."], "workflow": {"template": "tdd-reviewed"}},
-        {"ref": "c-readme", "type": "task", "title": "README and final smoke", "brief": "Plan Task 22", "acceptance": ["Plan Task 22 acceptance"], "role_hint": "mechanical", "repos": ["agent-swarm"],
-          "steps": ["Update README", "Manual smoke per spec", "make test and make e2e", "Commit"], "verify": ["make test", "make e2e"], "workflow": {"template": "mechanical"}}
+        {"ref": "p11", "type": "task", "title": "Board and menubar", "brief": "Plan P11", "acceptance": ["Plan P11 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "Designer and chore labels", "steps": ["Web and Swift label tests red (unit 1)", "Implement; green; commit"]},
+            {"title": "HTTP payload fields", "steps": ["Go payload tests red (unit 2)", "Implement; green; commit"]},
+            {"title": "WorkflowSection", "steps": ["Component tests red (unit 3)", "Implement; green; commit"]},
+            {"title": "Kanban crew and plan warnings", "steps": ["Tests red (unit 4)", "Implement; green; commit"]},
+            {"title": "Menubar step suffix", "steps": ["Swift test red (unit 5)", "Implement; green; screenshots; commit"]}],
+          "verify": ["go test ./internal/httpapi/...", "cd web && pnpm test && pnpm biome check", "cd apps/menubar && swift test"],
+          "workflow": {"template": "ui-tdd-reviewed"}},
+        {"ref": "p12", "type": "task", "title": "Planning emits role-assigned packages", "brief": "Plan P12", "acceptance": ["Plan P12 acceptance"], "repos": ["agent-swarm"],
+          "units": [
+            {"title": "Tree fields and materialize", "steps": ["Tests red (unit 1)", "Implement; green; commit"]},
+            {"title": "Plan lint", "steps": ["Lint tests red (unit 2)", "Implement lintTree; green; commit"]},
+            {"title": "swarm-workflows", "steps": ["Example-validation test red (unit 3)", "Write skill; green; commit"]},
+            {"title": "swarm-spike", "steps": ["Test row red (unit 4)", "Write skill; green; commit"]},
+            {"title": "swarm-orchestrator and README", "steps": ["Test red (unit 5)", "Rewrite skill and README; green; commit"]}],
+          "verify": ["make skills-sync", "go test ./internal/runtime/... ./internal/install/... ./internal/mcpserver/...", "cd web && pnpm test"],
+          "workflow": {"template": "tdd-reviewed"}}
       ]}
   ],
   "deps": [
-    {"item": "a-link", "blocked_by": "a-embed"},
-    {"item": "a-vendor", "blocked_by": "a-embed"},
-    {"item": "a-skills1", "blocked_by": "a-embed"},
-    {"item": "a-skills2", "blocked_by": "a-embed"},
-    {"item": "a-kickoff", "blocked_by": "a-skills1"},
-    {"item": "a-kickoff", "blocked_by": "a-skills2"},
-    {"item": "b-next", "blocked_by": "b-dsl"},
-    {"item": "b-items", "blocked_by": "b-dsl"},
-    {"item": "b-items", "blocked_by": "a-designer"},
-    {"item": "b-multi", "blocked_by": "b-items"},
-    {"item": "b-gates", "blocked_by": "b-multi"},
-    {"item": "b-engine", "blocked_by": "b-next"},
-    {"item": "b-engine", "blocked_by": "b-gates"},
-    {"item": "b-triggers", "blocked_by": "b-engine"},
-    {"item": "b-mcp", "blocked_by": "b-triggers"},
-    {"item": "b-story", "blocked_by": "b-triggers"},
-    {"item": "b-ui", "blocked_by": "b-mcp"},
-    {"item": "b-e2e", "blocked_by": "b-mcp"},
-    {"item": "b-e2e", "blocked_by": "b-story"},
-    {"item": "c-tree", "blocked_by": "b-items"},
-    {"item": "c-skills", "blocked_by": "c-tree"},
-    {"item": "c-skills", "blocked_by": "a-kickoff"},
-    {"item": "c-skills", "blocked_by": "b-mcp"},
-    {"item": "c-readme", "blocked_by": "c-skills"},
-    {"item": "c-readme", "blocked_by": "b-e2e"},
-    {"item": "c-readme", "blocked_by": "b-ui"}
+    {"item": "p2", "blocked_by": "p1"},
+    {"item": "p3", "blocked_by": "p1"},
+    {"item": "p4", "blocked_by": "p3"},
+    {"item": "p7", "blocked_by": "p5"},
+    {"item": "p7", "blocked_by": "p6"},
+    {"item": "p8", "blocked_by": "p7"},
+    {"item": "p9", "blocked_by": "p8"},
+    {"item": "p10", "blocked_by": "p9"},
+    {"item": "p11", "blocked_by": "p10"},
+    {"item": "p12", "blocked_by": "p4"},
+    {"item": "p12", "blocked_by": "p10"}
   ]
 }
 ```
