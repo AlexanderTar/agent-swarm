@@ -1161,6 +1161,18 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"ponytail",
 			"blocked",
 		}},
+		{"swarm-researcher", []string{
+			"Follow the `swarm` skill first",
+			"superpowers:brainstorming",
+			"no user dialogue",
+			"~/.swarm/research/",
+			"### Takeaway",
+			"### Cited findings",
+			"### Inferences",
+			"### Gaps",
+			"artifacts",
+			"Never invent",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.skill, func(t *testing.T) {
