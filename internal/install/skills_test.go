@@ -1243,10 +1243,14 @@ func TestSwarmMechanicalSkillIsAtMost60Lines(t *testing.T) {
 	}
 }
 
-// knownSuperpowersSkills is the fixed set of 15 superpowers v6.4.1 skill
-// names (P3 brief). Any `superpowers:<x>` reference in a non-vendored skill
-// must name one of these -- a typo'd or invented superpowers skill name would
-// otherwise silently tell an agent to "follow" a skill that doesn't exist.
+// knownSuperpowersSkills is the fixed set of 15 real superpowers v6.4.1 skill
+// names (P3 brief) -- the upstream skill catalog these names were verified
+// against, a separate and newer release than the v6.3.0 plugin cache other
+// tests in this repo pin for adapter/parity fixtures (internal/adapter,
+// internal/catalog): the two version numbers are not a typo of each other.
+// Any `superpowers:<x>` reference in a non-vendored skill must name one of
+// these -- a typo'd or invented superpowers skill name would otherwise
+// silently tell an agent to "follow" a skill that doesn't exist.
 var knownSuperpowersSkills = map[string]bool{
 	"brainstorming":                  true,
 	"diagnosing-superpowers":         true,
@@ -1268,8 +1272,9 @@ var knownSuperpowersSkills = map[string]bool{
 var superpowersRefRe = regexp.MustCompile(`superpowers:([a-zA-Z][a-zA-Z0-9-]*)`)
 
 // TestSuperpowersReferencesAreKnown scans every non-vendored skill for
-// `superpowers:<name>` references and checks each against the fixed set of
-// 15 real superpowers v6.4.1 skill names. Vendored skills are third-party
+// `superpowers:<name>` references and checks each against
+// knownSuperpowersSkills, the fixed set of 15 real superpowers v6.4.1 skill
+// names. Vendored skills are third-party
 // content (P2) and are exempt. It also asserts at least one reference was
 // found at all: the regex trivially "passes" over a tree with zero
 // `superpowers:` references, which would hide a typo'd prefix (e.g. every
