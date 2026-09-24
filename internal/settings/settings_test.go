@@ -68,8 +68,9 @@ func TestDefaults(t *testing.T) {
 		kinds.RoleDebugger:     {kinds.Claude, "opus", ""},
 		kinds.RoleMechanical:   {kinds.Claude, "haiku", ""},
 		kinds.RoleAdvisor:      {kinds.Claude, "fable", ""},
+		kinds.RoleDesigner:     {kinds.Claude, "opus", ""},
 	}
-	if len(d.Roles) != 8 {
+	if len(d.Roles) != 9 {
 		t.Fatalf("roles = %v", d.Roles)
 	}
 	for r, w := range want {
@@ -89,6 +90,16 @@ func TestDefaults(t *testing.T) {
 	}
 	if want := (RoleDefault{kinds.Claude, "sonnet", ""}); d.FallbackDefault != want {
 		t.Errorf("fallback default = %+v, want %+v", d.FallbackDefault, want)
+	}
+}
+
+// TestSettingsDefaultsIncludeDesigner is spec A5: designer defaults to
+// claude/opus like reviewer/ui_reviewer/debugger.
+func TestSettingsDefaultsIncludeDesigner(t *testing.T) {
+	d := Defaults(nil)
+	want := RoleDefault{kinds.Claude, "opus", ""}
+	if d.Roles[kinds.RoleDesigner] != want {
+		t.Errorf("designer default = %+v, want %+v", d.Roles[kinds.RoleDesigner], want)
 	}
 }
 

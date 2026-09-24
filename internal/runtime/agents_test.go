@@ -1504,6 +1504,34 @@ func TestSpawnDefaultsKindAndModel(t *testing.T) {
 	}
 }
 
+// TestSpawnDesignerRoleAccepted is spec A5: designer is a valid role end to
+// end, including the migration 0010 agents.role CHECK and the settings
+// default (claude/opus) resolved the same way any other role is.
+func TestSpawnDesignerRoleAccepted(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Adapters[Claude] = fa
+	ctx := context.Background()
+	_, _ = s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','1','[{"id":"opus","label":"Opus","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}]','opus','test',1,1)`)
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Role != RoleDesigner || a.Kind != Claude || a.Model != "opus" {
+		t.Fatalf("agent = %+v", a)
+	}
+}
+
+// TestOverridableRolesIncludeDesigner is spec A5: designer's role default is
+// overridable like every other worker role.
+func TestOverridableRolesIncludeDesigner(t *testing.T) {
+	if !slices.Contains(OverridableRoles, RoleDesigner) {
+		t.Fatalf("OverridableRoles = %v, missing designer", OverridableRoles)
+	}
+}
+
 // TestSpawnUsesRoleDefaultModelNotCatalogFirst guards against the model
 // fallback silently defaulting to whichever model the catalog happens to
 // list first (Claude's catalog puts the "fable" alias first) instead of the

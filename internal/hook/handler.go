@@ -434,6 +434,15 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}, nil
 		}
 
+		// A6: the native Workflow tool is disabled in Swarm sessions -- use
+		// swarm_spawn (single step) or swarm_workflow (the multi-step engine).
+		if in.ToolName == "Workflow" || in.ToolName == "workflow" {
+			return adapter.HookDecision{
+				Block:  true,
+				Reason: "[swarm] The Workflow tool is disabled in Swarm sessions. Use swarm_spawn or swarm_workflow.",
+			}, nil
+		}
+
 		isNativeFork := in.ToolName == "Agent" ||
 			in.ToolName == "Task" ||
 			in.ToolName == "Fork" ||

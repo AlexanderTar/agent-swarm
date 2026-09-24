@@ -14,6 +14,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
@@ -82,25 +83,32 @@ func itemsTool(s *Server) ToolDef {
 			"key":{"type":"string"},"parent":{"type":"string"},"type":{"type":"string"},
 			"title":{"type":"string"},"brief":{"type":"string"},"acceptance":{"type":"array"},
 			"priority":{"type":"integer"},"role_hint":{"type":"string"},"tdd_exempt":{"type":"string"},
+			"workflow":{"type":"object"},"steps":{"type":"array"},"units":{"type":"array"},
+			"solo":{"type":"string"},"verify":{"type":"array"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
 			"blocked_by":{"type":"string"},"request_id":{"type":"string"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Op         string   `json:"op"`
-				Key        string   `json:"key"`
-				Parent     string   `json:"parent"`
-				Type       string   `json:"type"`
-				Title      string   `json:"title"`
-				Brief      string   `json:"brief"`
-				Acceptance []string `json:"acceptance"`
-				Priority   *int     `json:"priority"`
-				RoleHint   string   `json:"role_hint"`
-				TddExempt  string   `json:"tdd_exempt"`
-				Repos      []string `json:"repos"`
-				Revision   int      `json:"revision"`
-				Status     string   `json:"status"`
-				BlockedBy  string   `json:"blocked_by"`
-				RequestID  string   `json:"request_id"`
+				Op         string         `json:"op"`
+				Key        string         `json:"key"`
+				Parent     string         `json:"parent"`
+				Type       string         `json:"type"`
+				Title      string         `json:"title"`
+				Brief      string         `json:"brief"`
+				Acceptance []string       `json:"acceptance"`
+				Priority   *int           `json:"priority"`
+				RoleHint   string         `json:"role_hint"`
+				TddExempt  string         `json:"tdd_exempt"`
+				Workflow   *workflow.Spec `json:"workflow"`
+				Steps      []string       `json:"steps"`
+				Units      []items.Unit   `json:"units"`
+				Solo       string         `json:"solo"`
+				Verify     []string       `json:"verify"`
+				Repos      []string       `json:"repos"`
+				Revision   int            `json:"revision"`
+				Status     string         `json:"status"`
+				BlockedBy  string         `json:"blocked_by"`
+				RequestID  string         `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -125,7 +133,8 @@ func itemsTool(s *Server) ToolDef {
 						out, err = s.RT.Items.CreateTx(ctx, tx, items.CreateInput{
 							Type: items.Type(in.Type), ParentKey: in.Parent, Title: in.Title, Brief: in.Brief,
 							Acceptance: in.Acceptance, Priority: in.Priority, RoleHint: in.RoleHint,
-							TddExempt: in.TddExempt, Repos: in.Repos, Status: items.Status(in.Status),
+							TddExempt: in.TddExempt, Workflow: in.Workflow, Steps: in.Steps, Units: in.Units,
+							Solo: in.Solo, Verify: in.Verify, Repos: in.Repos, Status: items.Status(in.Status),
 						}, actor)
 						return err
 					}); err != nil {
@@ -148,6 +157,21 @@ func itemsTool(s *Server) ToolDef {
 				}
 				if in.TddExempt != "" {
 					p.TddExempt = &in.TddExempt
+				}
+				if in.Workflow != nil {
+					p.Workflow = in.Workflow
+				}
+				if in.Steps != nil {
+					p.Steps = &in.Steps
+				}
+				if in.Units != nil {
+					p.Units = &in.Units
+				}
+				if in.Solo != "" {
+					p.Solo = &in.Solo
+				}
+				if in.Verify != nil {
+					p.Verify = &in.Verify
 				}
 				if in.Status != "" {
 					st := items.Status(in.Status)

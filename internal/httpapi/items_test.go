@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 type itemJSON struct {
@@ -286,5 +287,61 @@ func TestItemWireShape(t *testing.T) {
 	_, b = e.api("GET", "/api/items?view=flat&q=From", nil)
 	if !strings.Contains(string(b), `"origin_spike_key":"SPIKE-1"`) || !strings.Contains(string(b), `"spike_intent":null`) {
 		t.Fatalf("spike-born item = %s", b)
+	}
+}
+
+// TestItemJSONIncludesWorkflowFields is spec B3/B7's wire requirement: null
+// for an unset workflow/solo, arrays never null for steps/units/verify
+// (contracts §3.1, itemWire's existing convention for every other optional
+// field), and the resolved workflow content when one is set.
+func TestItemJSONIncludesWorkflowFields(t *testing.T) {
+	e := newEnv(t)
+	epic, err := e.items.Create(bg, items.CreateInput{Type: items.Epic, Title: "E"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, err := e.items.Create(bg, items.CreateInput{Type: items.Story, ParentKey: epic.Key, Title: "S"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	board, err := e.items.Create(bg, items.CreateInput{Type: items.Task, ParentKey: story.Key, Title: "Board task"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, b := e.api("GET", "/api/items/"+board.Key, nil)
+	raw := decode[struct {
+		Item map[string]any `json:"item"`
+	}](t, b)
+	if v, ok := raw.Item["workflow"]; !ok || v != nil {
+		t.Errorf("workflow = %v (present %v), want null", v, ok)
+	}
+	if v, ok := raw.Item["solo"]; !ok || v != nil {
+		t.Errorf("solo = %v (present %v), want null", v, ok)
+	}
+	for _, k := range []string{"steps", "units", "verify"} {
+		if _, ok := raw.Item[k].([]any); !ok {
+			t.Errorf("%s = %v, want an array", k, raw.Item[k])
+		}
+	}
+
+	orch := items.Orchestrator("agt_1", epic.ID)
+	flowed, err := e.items.Create(bg, items.CreateInput{Type: items.Task, ParentKey: story.Key, Title: "Flowed",
+		Workflow: &workflow.Spec{Template: "tdd-reviewed"}}, orch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, b = e.api("GET", "/api/items/"+flowed.Key, nil)
+	raw2 := decode[struct {
+		Item map[string]any `json:"item"`
+	}](t, b)
+	wf, ok := raw2.Item["workflow"].(map[string]any)
+	if !ok {
+		t.Fatalf("workflow = %v, want an object", raw2.Item["workflow"])
+	}
+	if steps, ok := wf["steps"].([]any); !ok || len(steps) != 2 {
+		t.Fatalf("workflow steps = %v", wf["steps"])
+	}
+	if raw2.Item["role_hint"] != "coder" {
+		t.Errorf("role_hint = %v", raw2.Item["role_hint"])
 	}
 }

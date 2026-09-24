@@ -1353,7 +1353,7 @@ func (s *Store) Cancel(ctx context.Context, name, sessionID, requestID string) (
 // Spawn's own role-default resolution does at line 748. A RoleAdvisor entry
 // in role_overrides would therefore be silently dead, so it's refused here
 // rather than accepted and ignored (docs/specs/2026-09-23-orchestrator-role-overrides.md).
-var OverridableRoles = []Role{RoleOrchestrator, RoleCoder, RoleReviewer, RoleUIReviewer, RoleResearcher, RoleDebugger, RoleMechanical}
+var OverridableRoles = []Role{RoleOrchestrator, RoleCoder, RoleReviewer, RoleUIReviewer, RoleResearcher, RoleDebugger, RoleMechanical, RoleDesigner}
 
 func joinRoles(roles []Role) string {
 	ss := make([]string, len(roles))
