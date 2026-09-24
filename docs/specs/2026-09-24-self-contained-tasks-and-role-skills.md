@@ -174,7 +174,7 @@ flowchart TD
 
 - `internal/install/skills/` becomes a full mirror of `skills/`, and
   `//go:embed all:skills` replaces the two-file embed. `make skills-sync`
-  becomes `rsync -a --delete skills/ internal/install/skills/`; the drift
+  becomes a mirror with deletes (`rm -rf` + `cp -R`); the drift
   test walks the whole tree and compares every file byte-for-byte.
 - `install.Skills()` returns the registry derived from the embedded tree:
   `[]Skill{Name, Dir, Vendored bool}` where `Name` is the frontmatter
@@ -182,7 +182,7 @@ flowchart TD
   has frontmatter `name` equal to its directory basename and a non-empty
   `description`, and every `vendor/*` dir has `LICENSE` (or `LICENSE.md`)
   and `VENDORED.md`.
-- **One on-disk copy.** `install.SyncSkills(home)` extracts the embedded
+- **One on-disk copy.** `install.SyncSkills(home)` (`home` = the swarm home, honouring `--home`/`SWARM_HOME`) extracts the embedded
   tree to `~/.swarm/skills/<name>/` (vendored skills flattened by name),
   writing with `WriteIfChanged` and deleting files that are no longer in the
   embed. Each extracted dir gets a `.swarm-managed` marker. The daemon calls
@@ -1028,7 +1028,7 @@ Board copy: "Workflow", "Round {n} of {max}", "Running", "Succeeded",
 1. `make skills-sync && go test ./internal/install/...` — tree drift, frontmatter, vendored license/VENDORED checks, symlink install, user-owned skip.
 2. `go test ./internal/workflow/...` — templates resolve; every validation error; `Next` table tests covering pass on round 1, changes→fix→pass, exhausted rounds, blocked verdict, crash with/without auto-retry, parallel reviewers with mixed verdicts, waiting for budget.
 3. `go test ./internal/runtime/... ./internal/items/... ./internal/mcpserver/... ./internal/hook/...` — gates (tdd/commit/verify/artifact), verdict validation, sibling close by role+step, per-agent `completedCurrent`, Done gating, relay suppression, budget waiting/FIFO, recovery scan, materialize copying workflow/steps/verify, tree errors/warnings, spawn refusals, Workflow hook block.
-4. `go build ./... && go vet ./...`; `cd web && pnpm test && pnpm biome check`; `cd apps/menubar && swift test`.
+4. `go build ./... && go vet ./...`; `cd web && pnpm typecheck && pnpm test`; `cd apps/menubar && swift test`.
 5. `make e2e` — new `workflow_test.go` scenario with fake agents: start workflow → builder completed (red→green, clean git) → reviewer `changes_requested` → builder retried with findings in its assignment update → completed → reviewer `pass` → task Done, one `workflow_succeeded` relay, review worktree removed; plus escalation after `max_rounds`, and `resume accept`. Existing scenario 19 updated to the new TDD copy.
 6. Manual smoke per agent kind (claude, codex, agy, cursor, muse): spawn a coder; confirm `swarm-coder` and a vendored skill (e.g. `web-design-guidelines`) are discoverable in the session; run `ui-ux-pro-max`'s search script with python3.
 7. Manual end-to-end: a small feature spike through research tasks, design task, plan with warnings, materialize, and delivery with the engine.

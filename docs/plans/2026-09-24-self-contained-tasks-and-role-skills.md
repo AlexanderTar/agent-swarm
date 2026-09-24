@@ -54,7 +54,7 @@
 - Never delete or weaken an existing test to make a new one pass. Tests whose expectations change intentionally are named in the unit that changes them.
 - After any edit under `skills/`, run `make skills-sync`; `go test ./internal/install/...` enforces the mirror.
 - **One commit per unit** (conventional message, e.g. `feat(install): …`, signed, repo style). Review fix rounds add commits; never amend.
-- Every Go unit keeps `go build ./... && go vet ./...` green. Web units also run `cd web && pnpm test && pnpm biome check`. Menubar units also run `cd apps/menubar && swift test`.
+- Every Go unit keeps `go build ./... && go vet ./...` green. Web units also run `cd web && pnpm typecheck && pnpm test`. Menubar units also run `cd apps/menubar && swift test`.
 - Hot files: `internal/runtime/checkpoint.go`, `internal/runtime/agents.go`, `internal/items/transition.go`. Pull or rebase before starting P7–P10.
 - **Package review loop** (every package, once, after all its units are committed):
   1. Run the package Verify set.
@@ -93,7 +93,7 @@ Spec inputs most likely to be under-tested. Reviewers check these explicitly:
 - `func Skills() ([]Skill, error)`
 - `func SkillFS() fs.FS`
 - `func SkillNames() []string`
-- `func SyncSkills(home string) ([]string, error)`
+- `func SyncSkills(home string) ([]string, error)` (`home` is the swarm home, e.g. `~/.swarm`; writes `<home>/skills`)
 - `const ManagedMarker = ".swarm-managed"`
 - `func LinkSkills(root, skillsHome string, mode LinkMode) (skipped []string, err error)`
 - `func WriteSkills(c Config, k Kind) (changed, skipped []string, err error)`
@@ -140,9 +140,9 @@ func TestSkillsRegistryMatchesTree(t *testing.T) {
 func TestSyncSkillsWritesNestedFilesAndPrunes(t *testing.T) {
 	home := t.TempDir()
 	if _, err := SyncSkills(home); err != nil { t.Fatal(err) }
-	marker := filepath.Join(home, ".swarm", "skills", "swarm", ManagedMarker)
+	marker := filepath.Join(home, "skills", "swarm", ManagedMarker)
 	if _, err := os.Stat(marker); err != nil { t.Fatalf("marker: %v", err) }
-	stale := filepath.Join(home, ".swarm", "skills", "swarm", "stale.md")
+	stale := filepath.Join(home, "skills", "swarm", "stale.md")
 	os.WriteFile(stale, []byte("x"), 0o644)
 	if _, err := SyncSkills(home); err != nil { t.Fatal(err) }
 	if _, err := os.Stat(stale); !os.IsNotExist(err) { t.Fatalf("stale file survived sync") }
@@ -158,8 +158,8 @@ func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) { /* walk ../../skills
   - `SyncSkills` writes each file with `WriteIfChanged`, keeps the exec bit under `scripts/`, writes the marker, and prunes files that are no longer embedded.
   - `SkillNames()` becomes a function. Update its callers in `WriteSkills`, `adapter/claude.go`, `uninstall.go` and `migrate/integrations.go`.
   - Update the count assertions in `skills_test.go:66` and `migrate/recover_test.go:479-517` to derive from `len(SkillNames())`. This is an intentional change.
-- [ ] Change `Makefile` `skills-sync` to `rsync -a --delete skills/ internal/install/skills/` and run it.
-- [ ] In `cmd/swarm/daemon.go`, call `install.SyncSkills(home)` before the reconcile loop. Log failures; they are not fatal.
+- [ ] Change `Makefile` `skills-sync` to mirror with deletes (`rm -rf internal/install/skills && cp -R skills internal/install/skills`; rsync isn't always installed) and run it.
+- [ ] In `cmd/swarm/daemon.go`, call `install.SyncSkills(cfg.Home)` (the swarm home) before the reconcile loop, then relink kinds that already hold swarm-owned skills. Log failures; they are not fatal.
 - [ ] Run green and record it (unit 1). Commit: `feat(install): embed and sync the full skills tree`.
 
 #### Unit 1.2: Per-kind links, user-owned safety, uninstall
@@ -679,7 +679,7 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action
 
 **Verify:**
 - `go test ./internal/httpapi/...`
-- `cd web && pnpm test && pnpm biome check`
+- `cd web && pnpm typecheck && pnpm test`
 - `cd apps/menubar && swift test`
 
 #### Unit 11.1: Designer and chore labels
@@ -795,7 +795,7 @@ This is the plan in the swarm-tree format it introduces; it validates once P12 l
       "children": [
         {"ref": "p1", "type": "task", "title": "Skill distribution", "brief": "Plan P1", "acceptance": ["Plan P1 acceptance"], "repos": ["agent-swarm"],
           "units": [
-            {"title": "Embed, registry, sync", "steps": ["Write registry/sync/mirror tests; record red (unit 1)", "Embed all:skills, Skills, SyncSkills, SkillNames; Makefile rsync; daemon sync", "Record green; commit"]},
+            {"title": "Embed, registry, sync", "steps": ["Write registry/sync/mirror tests; record red (unit 1)", "Embed all:skills, Skills, SyncSkills, SkillNames; Makefile mirror; daemon sync", "Record green; commit"]},
             {"title": "Per-kind links and uninstall", "steps": ["Empirical symlink check per CLI", "Write link/skip/uninstall tests; record red (unit 2)", "Implement LinkSkills/WriteSkills; record green; commit"]},
             {"title": "Claude per-spawn links", "steps": ["Write TestClaudeProjectConfigLinksSkills; record red (unit 3)", "Link in writeProjectSwarmConfig; record green; commit"]},
             {"title": "Doctor", "steps": ["Write doctor tests; record red (unit 4)", "CheckSkills per kind, python3 warn, README line; record green; commit"]}],
@@ -887,7 +887,7 @@ This is the plan in the swarm-tree format it introduces; it validates once P12 l
             {"title": "WorkflowSection", "steps": ["Component tests red (unit 3)", "Implement; green; commit"]},
             {"title": "Kanban crew and plan warnings", "steps": ["Tests red (unit 4)", "Implement; green; commit"]},
             {"title": "Menubar step suffix", "steps": ["Swift test red (unit 5)", "Implement; green; screenshots; commit"]}],
-          "verify": ["go test ./internal/httpapi/...", "cd web && pnpm test && pnpm biome check", "cd apps/menubar && swift test"],
+          "verify": ["go test ./internal/httpapi/...", "cd web && pnpm typecheck && pnpm test", "cd apps/menubar && swift test"],
           "workflow": {"template": "ui-tdd-reviewed"}},
         {"ref": "p12", "type": "task", "title": "Planning emits role-assigned packages", "brief": "Plan P12", "acceptance": ["Plan P12 acceptance"], "repos": ["agent-swarm"],
           "units": [
