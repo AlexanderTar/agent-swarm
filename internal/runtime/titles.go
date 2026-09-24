@@ -14,6 +14,7 @@ var roleEmoji = map[Role]string{
 	RoleResearcher:   "🔬",
 	RoleDebugger:     "🐛",
 	RoleMechanical:   "⚙️",
+	RoleDesigner:     "🎨",
 }
 
 // groupPalette is what a root item's tree hashes into: a colour circle that

@@ -44,6 +44,7 @@ const (
 	RoleDebugger     Role = "debugger"
 	RoleMechanical   Role = "mechanical"
 	RoleAdvisor      Role = "advisor" // Settings only; never an agent row (L28)
+	RoleDesigner     Role = "designer"
 )
 
-var SettingsRoles = []Role{RoleOrchestrator, RoleAdvisor, RoleCoder, RoleReviewer, RoleUIReviewer, RoleResearcher, RoleDebugger, RoleMechanical}
+var SettingsRoles = []Role{RoleOrchestrator, RoleAdvisor, RoleCoder, RoleReviewer, RoleUIReviewer, RoleResearcher, RoleDebugger, RoleMechanical, RoleDesigner}

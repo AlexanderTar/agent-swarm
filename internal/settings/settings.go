@@ -66,6 +66,7 @@ var roleDefaults = map[kinds.Role]RoleDefault{
 	kinds.RoleDebugger:     {kinds.Claude, "opus", ""},
 	kinds.RoleMechanical:   {kinds.Claude, "haiku", ""},
 	kinds.RoleAdvisor:      {kinds.Claude, "fable", ""},
+	kinds.RoleDesigner:     {kinds.Claude, "opus", ""},
 }
 
 // Defaults: Claude plus any installed agent, in settings order.
