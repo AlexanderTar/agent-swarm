@@ -1148,6 +1148,19 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"| Work in the package | Workflow |",
 			"| Units per package |",
 		}},
+		{"swarm-debugger", []string{
+			"Follow the `swarm` skill first",
+			"superpowers:systematic-debugging",
+			"regression test",
+			"root cause",
+			"progress",
+			"swarm-advisor",
+		}},
+		{"swarm-mechanical", []string{
+			"Follow the `swarm` skill first",
+			"ponytail",
+			"blocked",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.skill, func(t *testing.T) {
@@ -1162,6 +1175,19 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// P4 unit 4.1 acceptance: swarm-mechanical is a light skill, at most 60 lines
+// (frontmatter included) -- the mechanical role does the smallest of the work
+// packages, so its own skill stays proportionally small.
+func TestSwarmMechanicalSkillIsAtMost60Lines(t *testing.T) {
+	body, err := fs.ReadFile(install.SkillFS(), path.Join("swarm-mechanical", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(body), "\n"); n > 60 {
+		t.Errorf("swarm-mechanical/SKILL.md has %d lines, want <= 60", n)
 	}
 }
 
