@@ -312,6 +312,9 @@ public struct Settings: Codable, Sendable, Equatable {
     /// own global CLAUDE.md/AGENTS.md files (docs/specs/2026-09-22-isolated-mcp-and-custom-instructions.md).
     /// "" = none configured.
     public var instructions: String = ""
+    /// Passes --remote-control to a spawned orchestrator's claude process
+    /// (every other role ignores it regardless). Off by default.
+    public var enableRemoteControl: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case roles, notifications, instructions
@@ -322,6 +325,7 @@ public struct Settings: Codable, Sendable, Equatable {
         case scanExcludes = "scan_excludes", scanIntervalSec = "scan_interval_sec"
         case menubarCompact = "menubar_compact", usagePollSec = "usage_poll_sec"
         case pauseDeadlineSec = "pause_deadline_sec"
+        case enableRemoteControl = "enable_remote_control"
     }
 
     /// §6.5 defaults with §2.1 A3 roles. Used before the first successful load.
@@ -342,7 +346,7 @@ public struct Settings: Codable, Sendable, Equatable {
         maxConcurrentSubagents: 3,
         maxConcurrentAgents: 4, maxAgentsPerRoot: 4,
         scanExcludes: ["~/Library", "~/.Trash", "~/Downloads"], scanIntervalSec: 21600,
-        menubarCompact: false, usagePollSec: 300, pauseDeadlineSec: 120)
+        menubarCompact: false, usagePollSec: 300, pauseDeadlineSec: 120, enableRemoteControl: false)
 
     /// `.fallback` isn't a `roles` dictionary key (see `SettingsRole`'s own
     /// doc comment): it reads/writes `fallbackDefault` directly, which is
@@ -365,7 +369,7 @@ public struct Settings: Codable, Sendable, Equatable {
                 maxConcurrentAgents: Int = 4, maxAgentsPerRoot: Int = 4,
                 scanExcludes: [String] = [], scanIntervalSec: Int = 21600,
                 menubarCompact: Bool = false, usagePollSec: Int = 300, pauseDeadlineSec: Int = 120,
-                instructions: String = "") {
+                instructions: String = "", enableRemoteControl: Bool = false) {
         self.enabledAgents = enabledAgents
         self.roles = roles
         self.fallbackDefault = fallbackDefault
@@ -379,6 +383,7 @@ public struct Settings: Codable, Sendable, Equatable {
         self.usagePollSec = usagePollSec
         self.pauseDeadlineSec = pauseDeadlineSec
         self.instructions = instructions
+        self.enableRemoteControl = enableRemoteControl
     }
 
     public init(from decoder: Decoder) throws {
@@ -400,6 +405,9 @@ public struct Settings: Codable, Sendable, Equatable {
         usagePollSec = try c.decode(Int.self, forKey: .usagePollSec)
         pauseDeadlineSec = try c.decode(Int.self, forKey: .pauseDeadlineSec)
         instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
+        // decodeIfPresent, not decode: this field is new -- a daemon that
+        // predates it sends no enable_remote_control key at all.
+        enableRemoteControl = try c.decodeIfPresent(Bool.self, forKey: .enableRemoteControl) ?? false
     }
 
     /// Hand-written (like `RoleDefault.encode`) so an empty `instructions` -- the common case --
@@ -420,6 +428,7 @@ public struct Settings: Codable, Sendable, Equatable {
         try c.encode(usagePollSec, forKey: .usagePollSec)
         try c.encode(pauseDeadlineSec, forKey: .pauseDeadlineSec)
         if !instructions.isEmpty { try c.encode(instructions, forKey: .instructions) }
+        try c.encode(enableRemoteControl, forKey: .enableRemoteControl)
     }
 
     public func pref(_ level: NotificationLevel) -> NotifyPref {
