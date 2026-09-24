@@ -401,31 +401,31 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action
 **Verify:** `go test ./internal/workflow/... -count=1 && go vet ./internal/workflow/...`
 
 #### Unit 6.1: Types and templates
-- [ ] Write the failing test `TestTemplatesResolve`. Red.
-- [ ] Implement the types and the `Templates` map using a `reviewed(id, role, gates, reviewers, rounds)` helper:
+- [x] Write the failing test `TestTemplatesResolve`. Red.
+- [x] Implement the types and the `Templates` map using a `reviewed(id, role, gates, reviewers, rounds)` helper:
   - `tdd-reviewed`
   - `ui-tdd-reviewed`
   - `design-reviewed` (2 rounds)
   - `debug`
   - `mechanical`
   - `research`
-- [ ] Green. Commit.
+- [x] Green. Commit.
 
 #### Unit 6.2: Validation
-- [ ] Write the failing test `TestValidateErrors`: a table with one row per spec B2 rule, each checked against the exact error. Red. Implement. Green. Commit.
+- [x] Write the failing test `TestValidateErrors`: a table with one row per spec B2 rule, each checked against the exact error. Red. Implement. Green. Commit.
 
 #### Unit 6.3: Resolve, RunRole, Render
-- [ ] Write the failing tests `TestResolveDropsTDDWhenExempt`, `TestResolveMaxRoundsOverride`, `TestRunRole` and `TestRenderBuildStepGolden` (golden file `testdata/render_build_r2.txt`). Red. Implement. Green. Commit.
+- [x] Write the failing tests `TestResolveDropsTDDWhenExempt`, `TestResolveMaxRoundsOverride`, `TestRunRole` and `TestRenderBuildStepGolden` (golden file `testdata/render_build_r2.txt`). Red. Implement. Green. Commit.
 
 #### Unit 6.4: `Next` planner
-- [ ] Write the failing test `TestNext` with at least 14 rows covering spec B4. Build the runs with a helper `r(step, round, role, state, verdict)`. Red.
-- [ ] Implement `Next`:
+- [x] Write the failing test `TestNext` with at least 14 rows covering spec B4. Build the runs with a helper `r(step, round, role, state, verdict)`. Red.
+- [x] Implement `Next`:
   - Failures are handled first.
   - Then the first step with no runs in this round gets a spawn.
   - Any step that isn't finished yet → wait.
   - Review verdicts are aggregated.
   - Single-step templates succeed once their run completes.
-- [ ] Green. Commit: `feat(workflow): pure next-action planner`.
+- [x] Green. Commit: `feat(workflow): pure next-action planner`.
 
 ### P7: Roles, guards and item fields
 **Workflow:** `tdd-reviewed` · **Units:** 4
