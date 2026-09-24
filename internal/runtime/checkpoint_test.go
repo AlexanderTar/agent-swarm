@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1900,7 +1901,8 @@ func TestDesignArtifactGateRegistersArtifact(t *testing.T) {
 
 	if _, err := s.WriteCheckpoint(ctx, dSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "designed"}); err == nil {
 		t.Fatal("expected an artifact-missing error")
-	} else if want := fmt.Sprintf("Completed needs your design file in artifacts (under ~/.swarm/designs/%s/).", it.RootKey); err.Error() != want {
+	} else if want := fmt.Sprintf("Completed needs your design file in artifacts (under %s/).",
+		filepath.Join(s.Home, "designs", it.RootKey)); err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
 
@@ -1978,5 +1980,148 @@ func TestOrchestratorCompletedOnWorkflowTaskDoesNotCloseBuilder(t *testing.T) {
 	}
 	if got := liveSessionState(t, s, coder.ID); got != Running {
 		t.Fatalf("workflow task: orchestrator's completed closed the builder anyway: state = %s, want running", got)
+	}
+}
+
+// Finding 8: registerArtifactAsDaemon records a new revision whenever the
+// file's content changed since the head revision (a fix round's revised
+// design notes must not be silently dropped), and dedupes when it's
+// byte-identical to what's already the head revision.
+func TestRegisterArtifactAsDaemonRecordsRevisionsAndDedupes(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designer, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "design"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeFile(t, "v1")
+
+	register := func() {
+		t.Helper()
+		if err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+			return s.registerArtifactAsDaemon(ctx, tx, it.ID, designer.ID, "design", path)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	headRevision := func() int {
+		t.Helper()
+		var rev int
+		if err := s.DB.QueryRowContext(ctx, `SELECT head_revision FROM artifacts WHERE item_id = ? AND path = ?`,
+			it.ID, path).Scan(&rev); err != nil {
+			t.Fatal(err)
+		}
+		return rev
+	}
+	countRevisions := func() int {
+		t.Helper()
+		var n int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifact_revisions ar
+			JOIN artifacts a ON a.id = ar.artifact_id WHERE a.item_id = ? AND a.path = ?`,
+			it.ID, path).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	register()
+	if headRevision() != 1 {
+		t.Fatalf("head_revision = %d, want 1", headRevision())
+	}
+
+	register() // identical content: dedupe
+	if headRevision() != 1 || countRevisions() != 1 {
+		t.Fatalf("dedupe failed: head=%d revisions=%d", headRevision(), countRevisions())
+	}
+
+	if err := os.WriteFile(path, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	register() // new content: revision bumps
+	if headRevision() != 2 || countRevisions() != 2 {
+		t.Fatalf("new content should bump revision: head=%d revisions=%d", headRevision(), countRevisions())
+	}
+}
+
+// Finding 8: expandHome resolves a leading "~" against a given home dir
+// (parameterized rather than calling os.UserHomeDir() itself, so this is a
+// plain deterministic unit test, not dependent on the real environment).
+func TestExpandHomeResolvesTilde(t *testing.T) {
+	cases := []struct{ in, home, want string }{
+		{"~/designs/x/flow.md", "/home/agent", "/home/agent/designs/x/flow.md"},
+		{"~", "/home/agent", "/home/agent"},
+		{"/already/absolute", "/home/agent", "/already/absolute"},
+		{"relative/path", "/home/agent", "relative/path"},
+	}
+	for _, c := range cases {
+		if got := expandHome(c.in, c.home); got != c.want {
+			t.Errorf("expandHome(%q, %q) = %q, want %q", c.in, c.home, got, c.want)
+		}
+	}
+}
+
+// Finding 8: the artifact gate cleans ".."/"." segments before matching
+// against its own directory -- a path that only resolves under the gate's
+// directory after normalization must still be accepted.
+func TestArtifactGateCleansDotDotSegments(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "design", Run: "designer", Gates: []workflow.Gate{workflow.GateArtifactDesign}},
+		{ID: "review", Review: []string{"ui_reviewer"}, Of: "design"},
+	}})
+	designer, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "design it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dSes, err := s.LatestSession(ctx, designer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, designer.ID, "design", "designer", 1)
+
+	dir := filepath.Join(s.Home, "designs", it.RootKey)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cleanPath := filepath.Join(dir, "flow.md")
+	if err := os.WriteFile(cleanPath, []byte("# Flow\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Same file, written with a redundant "sub/.." detour -- Clean should
+	// normalize it to cleanPath before the prefix check.
+	messyPath := filepath.Join(dir, "sub", "..", "flow.md")
+
+	if _, err := s.WriteCheckpoint(ctx, dSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "designed",
+		Artifacts: []string{messyPath}}); err != nil {
+		t.Fatalf("a path that only cleans to under the gate's directory should be accepted: %v", err)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE item_id = ? AND path = ?`,
+		it.ID, cleanPath).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("artifact registered under the CLEANED path = %d, want 1", count)
 	}
 }

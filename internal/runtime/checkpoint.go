@@ -620,36 +620,51 @@ func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in Checkpoi
 // artifact gate found (spec B5), as the daemon rather than through
 // swarm_artifact's orchestrator-only RegisterArtifact -- a designer or
 // researcher, not necessarily an orchestrator, writes these. It runs inside
-// WriteCheckpoint's own transaction. A path already registered on the item
-// is left alone (first registration only; these single-file design/research
-// notes don't carry RegisterArtifact's revision/section-approval machinery).
+// WriteCheckpoint's own transaction, on every completed checkpoint the
+// artifact gate passes: a fix round's revised file gets a new revision
+// (finding 8), deduped when the content is byte-identical to the current
+// head revision (so an unchanged file across rounds doesn't pile up
+// pointless revisions).
 func (s *Store) registerArtifactAsDaemon(ctx context.Context, tx *sql.Tx, itemID, agentID, kind, path string) error {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("artifact: %w", err)
 	}
-	var exists int
-	err = tx.QueryRowContext(ctx, `SELECT 1 FROM artifacts WHERE item_id = ? AND path = ?`, itemID, path).Scan(&exists)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	newSHA := sha256Hex(string(body))
+	var artifactID string
+	var revision int
+	var prevSHA string
+	err = tx.QueryRowContext(ctx, `SELECT a.id, a.head_revision, r.sha256 FROM artifacts a
+		JOIN artifact_revisions r ON r.artifact_id = a.id AND r.revision = a.head_revision
+		WHERE a.item_id = ? AND a.path = ?`, itemID, path).Scan(&artifactID, &revision, &prevSHA)
+	now := db.Millis(s.Now())
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		artifactID, revision = ids.New("art"), 1
+		if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts
+			(id, item_id, kind, path, head_revision, created_by, created_at)
+			VALUES (?, ?, ?, ?, 1, ?, ?)`, artifactID, itemID, kind, path, agentID, now); err != nil {
+			return err
+		}
+	case err != nil:
 		return err
+	case prevSHA == newSHA:
+		return nil // dedupe: identical content already the head revision
+	default:
+		revision++
+		if _, err := tx.ExecContext(ctx, `UPDATE artifacts SET head_revision = ? WHERE id = ?`,
+			revision, artifactID); err != nil {
+			return err
+		}
 	}
 	sections := SplitSections(string(body))
 	sectionsJSON, err := json.Marshal(sections)
 	if err != nil {
 		return err
 	}
-	artifactID, now := ids.New("art"), db.Millis(s.Now())
-	if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts
-		(id, item_id, kind, path, head_revision, created_by, created_at)
-		VALUES (?, ?, ?, ?, 1, ?, ?)`, artifactID, itemID, kind, path, agentID, now); err != nil {
-		return err
-	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO artifact_revisions
 		(artifact_id, revision, sha256, content, sections_json, created_at)
-		VALUES (?, 1, ?, ?, ?, ?)`, artifactID, sha256Hex(string(body)), string(body), string(sectionsJSON), now)
+		VALUES (?, ?, ?, ?, ?, ?)`, artifactID, revision, newSHA, string(body), string(sectionsJSON), now)
 	return err
 }
 
@@ -657,9 +672,12 @@ func (s *Store) registerArtifactAsDaemon(ctx context.Context, tx *sql.Tx, itemID
 // B5): artifacts must contain a readable file under
 // ~/.swarm/<dir>/<ROOT-KEY>/, which is then registered on the task.
 func (s *Store) artifactGate(ctx context.Context, tx *sql.Tx, it items.Item, a Agent, in CheckpointInput, kind, dir string) error {
-	prefix := filepath.Join(s.Home, dir, it.RootKey) + string(filepath.Separator)
-	for _, p := range in.Artifacts {
-		if !strings.HasPrefix(p, prefix) {
+	root := filepath.Join(s.Home, dir, it.RootKey)
+	prefix := root + string(filepath.Separator)
+	home, _ := os.UserHomeDir() // "" on failure: expandHome then leaves a leading ~ alone, matched by nothing
+	for _, raw := range in.Artifacts {
+		p := filepath.Clean(expandHome(raw, home))
+		if p != root && !strings.HasPrefix(p, prefix) {
 			continue
 		}
 		if fi, err := os.Stat(p); err != nil || fi.IsDir() {
@@ -667,12 +685,31 @@ func (s *Store) artifactGate(ctx context.Context, tx *sql.Tx, it items.Item, a A
 		}
 		return s.registerArtifactAsDaemon(ctx, tx, it.ID, a.ID, kind, p)
 	}
-	noun, thing := "design file", "designs"
+	noun := "design file"
 	if kind == "research" {
-		noun, thing = "research notes", "research"
+		noun = "research notes"
 	}
+	// The real, resolved directory (finding 8) -- not a hardcoded
+	// "~/.swarm/..." that would mislead when SWARM_HOME differs.
 	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
-		"Completed needs your %s in artifacts (under ~/.swarm/%s/%s/).", noun, thing, it.RootKey)}
+		"Completed needs your %s in artifacts (under %s/).", noun, root)}
+}
+
+// expandHome resolves a leading "~" (or "~/...") in p against home, leaving
+// every other path (absolute, relative, or already resolved) untouched.
+// Takes home as a parameter rather than calling os.UserHomeDir() itself, so
+// it's a plain deterministic function to test (finding 8).
+func expandHome(p, home string) string {
+	if home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		return filepath.Join(home, rest)
+	}
+	return p
 }
 
 // requiredArtifactKind returns the artifact kind a root item's completed
