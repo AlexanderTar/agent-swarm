@@ -1334,24 +1334,26 @@ func TestNextCarriedStaleReviewIsDroppedAndRespawned(t *testing.T) {
 	})
 }
 
-// TestNextPinnedFromIgnoresStaleReviews covers probe4 S12 (decision 2,
-// minor): a stale review's changes_requested/blocked verdict from the
-// previous round must not drive pinnedFrom - it never happened against the
-// sha that step actually reviewed, so it isn't a real signal that a fix
-// loop needs retrying.
-func TestNextPinnedFromIgnoresStaleReviews(t *testing.T) {
+// TestNextPinnedFromStaleReviewStillPinsFixStep covers probe4 S12 and the
+// resume-path fix to f97734e (P6 fix1, Important): a stale review row's own
+// sha can't be trusted, but which step it belongs to can. The only way such
+// a row survives to the previous round at all is an orchestrator resume
+// after the same-round stale-review escalation (spec ~737: retry re-runs
+// the fix step, then the review at the fresh sha) - so pinnedFrom must
+// still pin from that row's fix step, whether the row carries a
+// changes_requested/blocked verdict or (having itself been the escalated
+// row) a pass.
+func TestNextPinnedFromStaleReviewStillPinsFixStep(t *testing.T) {
 	two := twoPairsSpec(t)
 
 	t.Run("S12 literal: a stale ra CR at r1 doesn't change the (already-0) pin", func(t *testing.T) {
 		// ra's own recorded sha ("a0") never matched what "a" actually
 		// completed with ("a1") even back in round 1 - a corrupted/bogus
-		// row. rb's own review passed (fresh, sha matches b). With the
-		// stale ra CR correctly ignored, nothing at round 1 explains the
-		// bump to round 2, so pinnedFrom falls back to its default (pin
-		// everything) - which happens to be index 0 here too, same as
-		// (incorrectly) trusting ra's stale fix target ("a", also index
-		// 0). This case can't tell the two implementations apart on its
-		// own; see the "clearly distinguishing" case below for that.
+		// row. rb's own review passed (fresh, sha matches b). A stale CR
+		// still pins (from "a", ra's fix step), which happens to be index
+		// 0 - the same as the "pin everything" default - so this case
+		// can't tell a filtered and an unfiltered implementation apart on
+		// its own; see the next case for that.
 		runs := []Run{
 			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
 			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictChangesRequested, "a0"),
@@ -1366,15 +1368,13 @@ func TestNextPinnedFromIgnoresStaleReviews(t *testing.T) {
 		}
 	})
 
-	t.Run("clearly distinguishing: a stale rb CR (fix index 2) must not narrow the pin away from the correct default (0)", func(t *testing.T) {
+	t.Run("a stale CR pins at its own fix step (b), not wherever it happens to coincide", func(t *testing.T) {
 		// ra passed cleanly (fresh). rb's CR is stale: rb's own recorded
 		// sha ("stale") never matches what "b" actually completed with
-		// ("b1"). If the stale CR were (wrongly) trusted, it would pin
-		// from "b" (index 2), leaving a/ra carried forward and returning
-		// Wait on b's round-2 active row. Correctly ignored, nothing at
-		// round 1 explains the bump, so it falls back to pinning
-		// everything (index 0) - and with no round-2 "a" row, that's a
-		// fresh Spawn of "a", not a Wait on "b".
+		// ("b1"). Its sha can't be trusted, but its step id can: pinnedFrom
+		// pins from "b" (rb's fix step, index 2), leaving a/ra carried
+		// forward - and with b's round-2 row still active, Next waits on
+		// it, exactly as it did before f97734e.
 		runs := []Run{
 			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
 			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictPass, "a1"),
@@ -1383,9 +1383,34 @@ func TestNextPinnedFromIgnoresStaleReviews(t *testing.T) {
 			rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""),
 		}
 		got := Next(two, runs, 2, 0)
-		want := Action{Kind: ActionSpawn, StepID: "a", Roles: []string{"coder"}, Round: 2}
+		want := Action{Kind: ActionWait, StepID: "b", Round: 2}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("Next() = %+v, want %+v (a stale review must not narrow the pin)", got, want)
+			t.Fatalf("Next() = %+v, want %+v (a stale review must pin at its own fix step)", got, want)
+		}
+	})
+
+	t.Run("a stale PASS row (stale-escalation, then resumed) also pins at its fix step", func(t *testing.T) {
+		// ra passed fresh (sha matches a). "b" actually completed round 1
+		// with "b1new" (after an in-round retry), but rb's row recorded
+		// "b1" - the sha it reviewed before that retry landed. At round 1
+		// this would itself have escalated
+		// (TestNextStaleReviewInCurrentRoundEscalates/S1); the only way it
+		// can be sitting at the previous round at all is a resume after
+		// that escalation. It carries no changes_requested/blocked verdict
+		// to trigger the ordinary pin, but its staleness alone still means
+		// "b" is the fix loop that needs re-pinning - not "pin
+		// everything", which would otherwise wrongly respawn "a".
+		runs := []Run{
+			rsha("a", 1, "coder", RunStateCompleted, VerdictNone, "a1"),
+			rsha("ra", 1, "reviewer", RunStateCompleted, VerdictPass, "a1"),
+			rsha("b", 1, "mechanical", RunStateCompleted, VerdictNone, "b1new"),
+			rsha("rb", 1, "reviewer", RunStateCompleted, VerdictPass, "b1"),
+			rsha("b", 2, "mechanical", RunStateActive, VerdictNone, ""),
+		}
+		got := Next(two, runs, 2, 1)
+		want := Action{Kind: ActionWait, StepID: "b", Round: 2}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("Next() = %+v, want %+v (a stale pass row must still pin, not fall through to \"pin everything\")", got, want)
 		}
 	})
 }
