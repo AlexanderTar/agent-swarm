@@ -75,7 +75,7 @@ func TestEveryNoticeCarriesThePreamble(t *testing.T) {
 // whose "workers keep the advisory form" assertion no longer holds.
 func TestKickoffMandateForEveryRole(t *testing.T) {
 	for _, r := range []Role{RoleOrchestrator, RoleCoder, RoleReviewer, RoleUIReviewer,
-		Role("designer"), RoleDebugger, RoleMechanical, RoleResearcher} {
+		RoleDesigner, RoleDebugger, RoleMechanical, RoleResearcher} {
 		if got := Kickoff("a", r, items.Task, "TASK-1", "t"); !strings.Contains(got, "MUST follow") || !strings.Contains(got, "superpowers") {
 			t.Errorf("%s kickoff lacks the skills mandate: %q", r, got)
 		}
@@ -87,8 +87,6 @@ func TestKickoffMandateForEveryRole(t *testing.T) {
 
 // P4 A3: RoleSkills is the kickoff/role-skill table. The orchestrator gets a
 // different list for a spike item (swarm-spike instead of swarm-orchestrator).
-// kinds.RoleDesigner lands in a parallel package (P7); until it merges this
-// uses the raw string Role("designer") the same way RoleSkills does.
 func TestKickoffNamesRoleSkill(t *testing.T) {
 	cases := []struct {
 		role     Role
@@ -100,7 +98,7 @@ func TestKickoffNamesRoleSkill(t *testing.T) {
 		{RoleCoder, items.Task, []string{"swarm", "swarm-coder"}},
 		{RoleReviewer, items.Task, []string{"swarm", "swarm-reviewer"}},
 		{RoleUIReviewer, items.Task, []string{"swarm", "swarm-ui-reviewer"}},
-		{Role("designer"), items.Task, []string{"swarm", "swarm-designer"}},
+		{RoleDesigner, items.Task, []string{"swarm", "swarm-designer"}},
 		{RoleDebugger, items.Task, []string{"swarm", "swarm-debugger"}},
 		{RoleMechanical, items.Task, []string{"swarm", "swarm-mechanical"}},
 		{RoleResearcher, items.Task, []string{"swarm", "swarm-researcher"}},
@@ -140,7 +138,7 @@ func TestRoleSkillsExist(t *testing.T) {
 		names[s.Name] = true
 	}
 	roles := []Role{RoleOrchestrator, RoleCoder, RoleReviewer, RoleUIReviewer,
-		Role("designer"), RoleDebugger, RoleMechanical, RoleResearcher}
+		RoleDesigner, RoleDebugger, RoleMechanical, RoleResearcher}
 	itemTypes := []items.Type{items.Epic, items.Story, items.Task, items.Bug, items.Spike, items.Chore}
 	for _, r := range roles {
 		for _, it := range itemTypes {

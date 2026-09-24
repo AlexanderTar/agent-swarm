@@ -159,9 +159,7 @@ func CompactionNotice() string {
 
 // RoleSkills is A3's kickoff table: the skill(s) a role's kickoff names. An
 // orchestrator on a spike item gets swarm-spike instead of swarm-orchestrator
-// (Kickoff/ResumeKickoff take itemType for exactly this). kinds.RoleDesigner
-// lands in a parallel package (P7); until it merges, the designer row is
-// written inline as Role("designer") — swap for the constant at merge.
+// (Kickoff/ResumeKickoff take itemType for exactly this).
 func RoleSkills(role Role, itemType items.Type) []string {
 	switch role {
 	case RoleOrchestrator:
@@ -175,7 +173,7 @@ func RoleSkills(role Role, itemType items.Type) []string {
 		return []string{"swarm", "swarm-reviewer"}
 	case RoleUIReviewer:
 		return []string{"swarm", "swarm-ui-reviewer"}
-	case Role("designer"): // kinds.RoleDesigner (P7); swap for the constant once it merges
+	case RoleDesigner:
 		return []string{"swarm", "swarm-designer"}
 	case RoleDebugger:
 		return []string{"swarm", "swarm-debugger"}
@@ -184,6 +182,9 @@ func RoleSkills(role Role, itemType items.Type) []string {
 	case RoleResearcher:
 		return []string{"swarm", "swarm-researcher"}
 	}
+	// Every role is validated at spawn (agents.go); this default is never a
+	// role inference, only a defensive fallback for a role RoleSkills doesn't
+	// otherwise list.
 	return []string{"swarm"}
 }
 
