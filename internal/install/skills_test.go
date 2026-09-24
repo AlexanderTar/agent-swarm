@@ -1190,6 +1190,33 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 	}
 }
 
+// P4 unit 4.3 acceptance: swarm-advisor is an original rewrite (locked decision
+// 9) inspired by, not copied from, scdenney/open-science-skills codex/advisor
+// (CC BY-NC 4.0) -- it must carry the mermaid diagram from spec A4 and the
+// exact credit footer, and it must reference the swarm skill and its own
+// decision rules.
+func TestAdvisorSkillHasMermaidAndCredit(t *testing.T) {
+	body, err := fs.ReadFile(install.SkillFS(), path.Join("swarm-advisor", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		"Follow the `swarm` skill first",
+		"```mermaid",
+		"flowchart",
+		"One decision per consult",
+		"Advice is evidence, not authority",
+		"follow-up",
+		"checkpoint",
+		"Structure inspired by the `advisor` skill in scdenney/open-science-skills (CC BY-NC 4.0); this text is original.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("swarm-advisor: missing %q", want)
+		}
+	}
+}
+
 // P4 unit 4.1 acceptance: swarm-mechanical is a light skill, at most 60 lines
 // (frontmatter included) -- the mechanical role does the smallest of the work
 // packages, so its own skill stays proportionally small.

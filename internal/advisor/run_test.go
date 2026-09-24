@@ -241,6 +241,20 @@ func TestAskFailureAndTimeoutMessages(t *testing.T) {
 	}
 }
 
+// P4 unit 4.3: the simulated advisor's own system prompt (run by claude/codex/
+// agy/cursor as a read-only advisor) follows the same decision rules as the
+// swarm-advisor skill (spec A4): one decision per consult, an answer grounded
+// in the evidence it actually read rather than a menu of options.
+func TestAdvisorSystemPromptDecisionRules(t *testing.T) {
+	for _, want := range []string{
+		"one decision", "actually read", "Do not edit files",
+	} {
+		if !strings.Contains(Prompt, want) {
+			t.Errorf("advisor Prompt missing %q: %s", want, Prompt)
+		}
+	}
+}
+
 // §11.6: 240 s, stdin closed.
 func TestRunnerTimeoutAndClosedStdin(t *testing.T) {
 	s, seed := newAdvisorService(t)

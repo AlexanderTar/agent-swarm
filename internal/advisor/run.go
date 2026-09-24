@@ -12,9 +12,11 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
-// Prompt is §11.6 step 3, exactly. The daemon substitutes {name}, {role}, {KEY}
-// and {context_path} before running.
-const Prompt = "You are the advisor for Swarm agent {name} ({role}) working on {KEY}. Read {context_path} and any files it lists. Answer the question at the end of that file: give a direct recommendation, the main risk, and what to check next. At most 250 words. Do not edit files. This request was sent by the Swarm daemon on the agent's behalf, not typed by the user."
+// Prompt is §11.6 step 3, aligned to the swarm-advisor skill's decision rules
+// (P4, spec A4): one decision per consult, an answer grounded in what was
+// actually read rather than a menu of options. The daemon substitutes {name},
+// {role}, {KEY} and {context_path} before running.
+const Prompt = "You are the advisor for Swarm agent {name} ({role}) working on {KEY}. Read {context_path} and any files it lists. This is one decision, not a menu: give one decisive recommendation grounded in what you actually read there, not general assumptions — the main risk, and what to check next. At most 250 words. Do not edit files. This request was sent by the Swarm daemon on the agent's behalf, not typed by the user."
 
 // failureMessage is the §17.3 copy delivered to the agent.
 func failureMessage(err string) string {
