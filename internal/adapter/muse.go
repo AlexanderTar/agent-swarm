@@ -421,10 +421,21 @@ func (m *Muse) ParseHook(event string, stdin []byte) (HookInput, error) {
 			return HookInput{}, err
 		}
 	}
+	// Mirrors Claude.ParseHook: a shell tool's tool_input.command, when
+	// present, feeds isClaudeCommand/blocksWorktreeMutation/AttrCheck.
+	var cmd string
+	if len(raw.ToolInput) > 0 {
+		var inputWithCmd struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(raw.ToolInput, &inputWithCmd)
+		cmd = inputWithCmd.Command
+	}
 	return HookInput{
 		ProviderSessionID: raw.SessionID,
 		Event:             event,
 		ToolName:          raw.ToolName,
+		Command:           cmd,
 		Cwd:               raw.Cwd,
 		RawToolInput:      raw.ToolInput,
 		ToolResponse:      raw.ToolResponse,

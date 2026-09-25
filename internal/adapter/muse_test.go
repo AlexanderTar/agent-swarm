@@ -787,6 +787,35 @@ func TestMuseParseHookReadsProbedFixtures(t *testing.T) {
 	}
 }
 
+// TestMuseParseHookExtractsCommandFromToolInput mirrors Claude.ParseHook: a
+// tool_input.command string (a shell tool's argument) plumbs into
+// HookInput.Command, which isClaudeCommand/blocksWorktreeMutation/AttrCheck
+// key on. The probed fixtures' own tool (submit_reminder_decision) carries
+// no "command" field, so this locks in the "absent means empty" half too.
+func TestMuseParseHookExtractsCommandFromToolInput(t *testing.T) {
+	m := newMuse(Deps{})
+
+	withCmd, err := m.ParseHook("PreToolUse", []byte(`{"session_id":"s","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withCmd.Command != "rm -rf /" {
+		t.Fatalf("Command = %q, want %q", withCmd.Command, "rm -rf /")
+	}
+
+	pre, err := os.ReadFile("testdata/muse-hook-pretooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noCmd, err := m.ParseHook("PreToolUse", pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noCmd.Command != "" {
+		t.Fatalf("Command = %q, want empty (submit_reminder_decision has no command field)", noCmd.Command)
+	}
+}
+
 // TestMuseHookOutputStaysNil locks in the Task 4 probe's item-3 finding:
 // muse's own plugin docs (native-plugin-contract.md, capability-examples.json)
 // specify a manifest schema, not a hook stdout/decision contract, and the
