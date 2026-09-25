@@ -1,0 +1,10 @@
+# skilllink fix round 1 (Opus review) — codex, cursor-agent, muse flips stand; agy does not.
+
+SAFETY: your agy probe run repointed the live ~/.gemini/antigravity-cli/skills symlink at a scratch dir you then deleted. The controller restored it (-> ~/.swarm/run/launch/ses_01M36H52AFXG0V5GQ4157FSVB7/agy-home/.gemini/config/skills). Do NOT run any CLI probe again, and do not touch anything under ~ in this round.
+
+1. (Critical) KindAgy: evidence doesn't separate symlink from copy. agy 1.2.10 reads skills from $HOME/.gemini/config/skills and on first run migrates .gemini/antigravity-cli/skills there, leaving a reverse symlink — so the positive isolated-HOME run likely saw a migrated copy, and the bare-HOME negative is explained by ~/.gemini/config/ having no skills/. Revert KindAgy to Copy (unverified). Do not write the "stale catalog" explanation anywhere.
+2. (Important) internal/install/skills.go:162-178 comment: cut the lab notebook to a verdict per kind + a pointer to durable evidence; don't claim claude was re-run (it wasn't; claude's Symlink predates this check); state agy is Copy because unverified and why (the migration above).
+3. (Important) Durable evidence: add docs/plans/2026-09-24-skill-symlink-probe.md with, per CLI: version, exact command line, exact prompt, relevant output lines, verdict; plus the agy migration finding and the follow-up below. The skills.go comment points at that file.
+4. (Minor) Add a table test pinning SkillLinkMode(k) per kind (claude/codex/cursor/muse = Symlink, agy = Copy). Rename skills_test.go:837 to reflect it now calls LinkSkills(..., install.Copy).
+5. Record a follow-up in that doc (not implemented here): Config.SkillsDir(KindAgy) (config.go:90) points at a path agy migrates away from; move it to ~/.gemini/config/skills, make adapter setupEnv link agy-home/.gemini/config/skills to it, then re-probe with a copy control.
+New commits (no amend). Verify: go test ./internal/install/... ./internal/adapter/... ; go build ./... && go vet ./...

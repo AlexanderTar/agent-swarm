@@ -317,17 +317,36 @@ func TestClaudeLaunchWritesProjectScopeMCPConfig(t *testing.T) {
 	}
 }
 
+// seedSkillsHome stands in for the daemon's own SyncSkills, which in
+// production has already populated Deps.Home/skills/<name> before any agent
+// is ever spawned (unit 1.1). testDeps gives Home and UserHome unrelated temp
+// dirs, so tests that exercise the per-spawn skill link must seed this
+// themselves.
+func seedSkillsHome(t *testing.T, home string) {
+	t.Helper()
+	for _, name := range install.SkillNames() {
+		p := filepath.Join(home, "skills", name, "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, install.SkillBody(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // Same bug, skill side: Skill(swarm) was "Unknown skill: swarm" 100% of the
 // time under --setting-sources project,local (verified live, zero-delay
 // repro) because ~/.claude/skills is "user" scope. Project-scope copies in
 // the session's own cwd fix it without reopening the excluded user scope.
 func TestClaudeLaunchWritesProjectScopeSkills(t *testing.T) {
 	d := testDeps(t)
+	seedSkillsHome(t, d.Home)
 	s := claudeSpec(t, d)
 	if _, err := newClaude(d).Launch(s); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range install.SkillNames {
+	for _, name := range install.SkillNames() {
 		got, err := os.ReadFile(filepath.Join(s.Cwd, ".claude", "skills", name, "SKILL.md"))
 		if err != nil {
 			t.Fatalf("expected %s skill reachable in the session cwd: %v", name, err)
@@ -341,6 +360,7 @@ func TestClaudeLaunchWritesProjectScopeSkills(t *testing.T) {
 // Resume() shares flags() with Launch(); this must not regress on resume.
 func TestClaudeResumeWritesProjectScopeSkillsAndMCP(t *testing.T) {
 	d := testDeps(t)
+	seedSkillsHome(t, d.Home)
 	s := claudeSpec(t, d)
 	s.ProviderSessionID = "11111111-2222-4333-8444-555555555555"
 	if _, err := newClaude(d).Resume(s); err != nil {
@@ -351,6 +371,70 @@ func TestClaudeResumeWritesProjectScopeSkillsAndMCP(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.Cwd, ".claude", "skills", "swarm", "SKILL.md")); err != nil {
 		t.Errorf("resume: expected the swarm skill in the session cwd: %v", err)
+	}
+}
+
+// A1, unit 1.3: the per-spawn skill exposure is a real symlink into
+// ~/.swarm/skills (Deps.Home/skills here), matching swarm install's own
+// choice for Claude (Symlink mode), not a copy of every file — the
+// ui-ux-pro-max data alone is 3.1 MB.
+func TestClaudeProjectConfigLinksSkills(t *testing.T) {
+	d := testDeps(t)
+	seedSkillsHome(t, d.Home)
+	s := claudeSpec(t, d)
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	skillsHome := filepath.Join(d.Home, "skills")
+	for _, name := range install.SkillNames() {
+		link := filepath.Join(s.Cwd, ".claude", "skills", name)
+		fi, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("%s: %v", link, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s is not a symlink", link)
+		}
+		target, err := os.Readlink(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(skillsHome, name); target != want {
+			t.Errorf("%s -> %s, want %s", link, target, want)
+		}
+	}
+}
+
+// Review round 1, Major 2: a pre-existing real (non-symlink) skill directory
+// in the spawn's own scratch cwd -- left by an older, copy-based
+// writeProjectSwarmConfig, or simply stale from a previous launch this same
+// cwd was somehow reused for -- is swarm-owned by construction: every file
+// under this cwd is the daemon's own (internal/runtime/agents.go creates it
+// fresh right before Launch/Resume, never a real git worktree the user
+// touches). It must be replaced with v2's own symlink, not left alone as if
+// it were the user's.
+func TestClaudeProjectConfigAdoptsAPreExistingRealSkillDir(t *testing.T) {
+	d := testDeps(t)
+	seedSkillsHome(t, d.Home)
+	s := claudeSpec(t, d)
+	old := filepath.Join(s.Cwd, ".claude", "skills", "swarm")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "SKILL.md"), []byte("stale copy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+
+	fi, err := os.Lstat(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the pre-existing real skill dir in the spawn cwd was not replaced with v2's symlink")
 	}
 }
 

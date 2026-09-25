@@ -297,3 +297,29 @@ func TestResolveRouteIsGone(t *testing.T) {
 	}
 }
 
+func TestArtifactRouteReturnsRevisionWarnings(t *testing.T) {
+	s, seed := newArtifactServer(t)
+	_, err := s.RT.DB.ExecContext(context.Background(), `UPDATE artifact_revisions SET warnings_json = '["old warning"]' WHERE artifact_id = ? AND revision = 1`, seed.ArtifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.RT.DB.ExecContext(context.Background(), `UPDATE artifact_revisions SET warnings_json = '["new warning"]' WHERE artifact_id = ? AND revision = 2`, seed.ArtifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ revision, want string }{{"1", "old warning"}, {"2", "new warning"}} {
+		rec := s.get(t, "/api/artifacts/"+seed.ArtifactID+"?revision="+tc.revision)
+		if rec.Code != 200 {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body)
+		}
+		var body struct {
+			Warnings []string `json:"warnings"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Warnings) != 1 || body.Warnings[0] != tc.want {
+			t.Fatalf("revision %s warnings=%v", tc.revision, body.Warnings)
+		}
+	}
+}

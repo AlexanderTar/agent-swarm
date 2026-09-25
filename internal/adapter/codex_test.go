@@ -420,4 +420,3 @@ func TestCodexIsolatedHomeToleratesMissingHooksSkillsAndPlugins(t *testing.T) {
 		t.Fatalf("Launch must not fail when hooks/skills/plugins are absent: %v", err)
 	}
 }
-

@@ -1,0 +1,6 @@
+# PA fix round 2 (Opus re-review: findings 1,3,4,5,6,7 ADDRESSED)
+1. (Important, new) agy.go:232: `resolved` (EvalSymlinks) vs unresolved `newRoot` differ when the home path has a symlink (macOS /var→/private/var) → salvage copies the new root into itself, deletes swarm-owned entries, aborts before WriteSkills. Fix: compare with os.SameFile (or EvalSymlinks(newRoot)). Extend TestWriteAgyRepairsAChainThatResolvesBackToTheNewRoot with a swarm-owned symlink entry (red first). Reviewer repro: scratchpad/rr-pa1/head/internal/install/zz_review_test.go.
+2. (Finding 2 remainder) plan docs/plans/2026-09-24-self-contained-tasks-and-role-skills.md:~796 PA Acceptance: say the repair runs on `swarm install` and `swarm migrate` step 9.
+3. (Minor) agy.go:199 first-hop check: also match against EvalSymlinks(<Home>/run/launch). Test with an aliased home.
+4. (Minor) Move symlink handling into copyTree (plugins.go:394-414): on d.Type()&os.ModeSymlink recreate the link, resolving a relative target against the source dir to an absolute path; then the salvage loop's special case (agy.go:254-266) can go. Tests: nested symlink-to-dir inside a salvaged skill; relative target stays resolvable. Check other copyTree callers aren't changed in a way that breaks them (run their tests).
+New commits; append "Fix round 2"; reply with the short contract.

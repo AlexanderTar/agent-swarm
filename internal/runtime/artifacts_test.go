@@ -249,3 +249,15 @@ func TestOneMegabyteCap(t *testing.T) {
 		t.Fatal("a file over 1 MB must be refused")
 	}
 }
+
+func TestParseTreeWithWorkflowUnitsSolo(t *testing.T) {
+	body := "## Work breakdown\n```swarm-tree\n" + `{"root":{"type":"epic","title":"E","workflow":{"integration":{"verify":["go test ./..."]}}},"children":[{"ref":"s","type":"story","title":"S","workflow":{"after_tasks":{"id":"review","review":["reviewer"]}},"children":[{"ref":"t","type":"task","title":"T","workflow":{"template":"tdd-reviewed"},"units":[{"title":"A","steps":["Write a test"]}],"solo":"focused","verify":["go test ./..."]}]}]}` + "\n```"
+	tree, err := ParseTree(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := tree.Children[0].Children[0]
+	if task.Workflow == nil || task.Workflow.Template != "tdd-reviewed" || len(task.Units) != 1 || task.Solo != "focused" || len(task.Verify) != 1 {
+		t.Fatalf("task = %+v", task)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -160,6 +161,15 @@ func (s *Store) check(ctx context.Context, tx *sql.Tx, it Item, to Status, by Ac
 	switch it.Type {
 	case Story:
 		if to == Done {
+			if daemon && it.Workflow != nil && it.Workflow.AfterTasks != nil {
+				succeeded, err := s.workflowSucceeded(ctx, tx, it.ID)
+				if err != nil {
+					return err
+				}
+				if succeeded {
+					return nil
+				}
+			}
 			return deny("Couldn't move %s to Done. Complete all child tasks and their checkpoints first.", it.Key)
 		}
 		return generic // derived; only reconciliation moves stories
@@ -171,7 +181,74 @@ func (s *Store) check(ctx context.Context, tx *sql.Tx, it Item, to Status, by Ac
 	return s.checkTask(ctx, tx, it, to, daemon, orch, generic)
 }
 
+// workflowDoneCopy is spec B5's Done-on-workflow-task copy, verbatim.
+const workflowDoneCopy = "%s is finished by its workflow. It moves to Done when the workflow succeeds; use swarm_workflow resume to accept or fail it."
+
+// workflowSucceeded reports whether itemID's latest workflows row (if any)
+// is 'succeeded' -- spec B4/B5: the engine (P9) owns Done for a workflow
+// task, checkTask never reaches it through completedCurrent's legacy path.
+func (s *Store) workflowSucceeded(ctx context.Context, tx *sql.Tx, itemID string) (bool, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, `SELECT state FROM workflows WHERE item_id = ? ORDER BY created_at DESC LIMIT 1`,
+		itemID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return state == "succeeded", nil
+}
+
+// workflowFailedOrCancelled reports whether itemID's latest workflows row is
+// 'failed' or 'cancelled' -- spec B7: a resume {decision:"fail"} or a
+// cancel both move the task back to Ready as the daemon, which needs its
+// own transition.go case (InProgress/InReview -> Ready has no other path).
+func (s *Store) workflowFailedOrCancelled(ctx context.Context, tx *sql.Tx, itemID string) (bool, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, `SELECT state FROM workflows WHERE item_id = ? ORDER BY created_at DESC LIMIT 1`,
+		itemID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return state == "failed" || state == "cancelled", nil
+}
+
 func (s *Store) checkTask(ctx context.Context, tx *sql.Tx, it Item, to Status, daemon, orch bool, generic *Error) error {
+	if it.Workflow != nil {
+		switch to {
+		case Done:
+			// spec B5 "Done.": a workflow task's Done is entirely engine-
+			// driven (P9's applySucceed calls TransitionTx as the daemon
+			// actor once the workflow itself is already 'succeeded' --
+			// including after an orchestrator's swarm_workflow resume
+			// {decision:"accept"}, which marks the workflow succeeded
+			// before this ever runs). Any other caller, or a daemon call
+			// before the workflow actually succeeded, is refused with the
+			// same copy swarm_items update surfaces.
+			succeeded, err := s.workflowSucceeded(ctx, tx, it.ID)
+			if err != nil {
+				return err
+			}
+			if daemon && succeeded {
+				return nil
+			}
+			return deny(workflowDoneCopy, it.Key)
+		case Ready:
+			if daemon && (it.Status == InProgress || it.Status == InReview) {
+				terminal, err := s.workflowFailedOrCancelled(ctx, tx, it.ID)
+				if err != nil {
+					return err
+				}
+				if terminal {
+					return nil
+				}
+			}
+		}
+	}
 	switch {
 	case to == Done:
 		ok, err := s.completedCurrent(ctx, tx, it)
@@ -273,9 +350,35 @@ func (s *Store) acceptedSince(ctx context.Context, q querier, it Item) (bool, er
 		it.ID, db.Millis(it.UpdatedAt))
 }
 
+// completedCurrent reports whether the item has a "current" completed
+// checkpoint. Legacy tasks (workflow_json IS NULL, it.Workflow == nil) keep
+// the original, unchanged formula byte-for-byte (Review Focus 1). A
+// workflow task instead fixes the cross-agent attempt bug (spec B5/Context):
+// the original MAX(attempt) was taken across every checkpoint on the item,
+// mixing each agent's own independent attempt/session counter -- a
+// reviewer's own review-attempt sequence could mask or falsely validate a
+// builder's completed checkpoint. The fix looks only at "build role"
+// (fix round 1, R2: any role except reviewer/ui_reviewer/orchestrator)
+// checkpoints, picks the temporally latest completed one among them, and
+// checks it against THAT SAME agent's own
+// latest attempt -- not the item-wide max -- so a later attempt from a
+// DIFFERENT agent (e.g. a sibling reviewer) can never invalidate it, while a
+// later attempt from the SAME agent (a fix-round retry) still does.
 func (s *Store) completedCurrent(ctx context.Context, q querier, it Item) (bool, error) {
-	return exists(ctx, q, `SELECT 1 FROM checkpoints WHERE item_id = ? AND kind = 'completed'
-		AND attempt = (SELECT MAX(attempt) FROM checkpoints WHERE item_id = ?)`, it.ID, it.ID)
+	if it.Workflow == nil {
+		return exists(ctx, q, `SELECT 1 FROM checkpoints WHERE item_id = ? AND kind = 'completed'
+			AND attempt = (SELECT MAX(attempt) FROM checkpoints WHERE item_id = ?)`, it.ID, it.ID)
+	}
+	// "Build roles" (fix round 1, R2): any role except reviewer/ui_reviewer/
+	// orchestrator, not just coder/debugger/mechanical -- a design-reviewed
+	// or research template's designer/researcher step must be able to
+	// finish its own task too.
+	return exists(ctx, q, `SELECT 1 FROM checkpoints c JOIN agents ag ON ag.id = c.agent_id
+		WHERE c.item_id = ? AND c.kind = 'completed' AND ag.role NOT IN ('reviewer','ui_reviewer','orchestrator')
+		AND c.created_at = (SELECT MAX(c2.created_at) FROM checkpoints c2 JOIN agents ag2 ON ag2.id = c2.agent_id
+			WHERE c2.item_id = ? AND c2.kind = 'completed' AND ag2.role NOT IN ('reviewer','ui_reviewer','orchestrator'))
+		AND c.attempt = (SELECT MAX(attempt) FROM checkpoints WHERE item_id = ? AND agent_id = c.agent_id)`,
+		it.ID, it.ID, it.ID)
 }
 
 func (s *Store) openApproval(ctx context.Context, q querier, it Item) (bool, error) {
@@ -392,7 +495,24 @@ func (s *Store) deriveStory(ctx context.Context, tx *sql.Tx, it Item) error {
 	var want Status
 	switch {
 	case fin == n && done > 0:
-		want = Done
+		if it.Workflow != nil && it.Workflow.AfterTasks != nil {
+			succeeded, err := s.workflowSucceeded(ctx, tx, it.ID)
+			if err != nil {
+				return err
+			}
+			if succeeded {
+				want = Done
+			} else {
+				want = InReview
+				if s.StoryReadyForReview != nil {
+					if err := s.StoryReadyForReview(ctx, tx, it); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			want = Done
+		}
 	case fin == n:
 		return nil // every child cancelled: leave the story as it is
 	case fin+review == n:

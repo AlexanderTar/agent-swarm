@@ -374,3 +374,28 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 
 	return true, nil
 }
+
+// SubagentSlots reports parentAgentID's max_concurrent_subagents budget (P9
+// spec B4): used is the same "queued or live-active" count
+// internal/hook/handler.go computed inline before this move (a queued child
+// holds its slot; an active child NotAZombieSlot excludes -- crashed,
+// interrupted, failed, paused, or already self-terminal -- does not, so a
+// dead child can't pin the budget at capacity forever). max is
+// settings.MaxConcurrentSubagents, defaulting to 3 if misconfigured to <= 0
+// (Settings.Get already applies its own default, so this only guards a
+// corrupt override). The engine's advance (Spawn action) and the hook's
+// swarm_spawn budget check share this one query so they can never disagree.
+func (s *Store) SubagentSlots(ctx context.Context, parentAgentID string) (used, max int, err error) {
+	cfg, err := s.Settings.Get(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	max = cfg.MaxConcurrentSubagents
+	if max <= 0 {
+		max = 3
+	}
+	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents
+		WHERE parent_agent_id = ? AND (state = 'queued' OR (state = 'active' AND `+NotAZombieSlot+`))`,
+		parentAgentID).Scan(&used)
+	return used, max, err
+}

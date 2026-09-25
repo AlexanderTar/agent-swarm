@@ -17,6 +17,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // roleOverridesOut normalizes an Agent's RoleOverrides for the wire: a nil
@@ -32,6 +33,11 @@ func roleOverridesOut(m map[runtime.Role]settings.RoleDefault) map[runtime.Role]
 
 func objSchema(props string) json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{` + props + `},"additionalProperties":true}`)
+}
+
+func objSchemaRequired(props string, required []string) json.RawMessage {
+	reqJSON, _ := json.Marshal(required)
+	return json.RawMessage(fmt.Sprintf(`{"type":"object","required":%s,"properties":{%s},"additionalProperties":true}`, reqJSON, props))
 }
 
 func decode(args json.RawMessage, v any) error {
@@ -83,29 +89,39 @@ func checkpointTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_checkpoint",
 		Description: "Record progress: accepted, progress, blocked, handoff, completed or failed, with the verification evidence TDD requires.",
-		Schema: objSchema(`"kind":{"type":"string"},"item":{"type":"string"},"summary":{"type":"string"},
+		Schema: objSchemaRequired(`"kind":{"type":"string"},"item":{"type":"string"},"summary":{"type":"string"},
 			"resolution":{"type":"string"},"next":{"type":"array"},"blockers":{"type":"array"},
 			"git":{"type":"array","items":{"type":"object","properties":{
 				"repo":{"type":"string"},"branch":{"type":"string"},"sha":{"type":"string"},"dirty":{"type":"boolean"}},
 				"required":["repo","sha"]}},
 			"verification":{"type":"array","items":{"type":"object","properties":{
-				"cmd":{"type":"string"},"phase":{"type":"string"},"ok":{"type":"boolean"},"note":{"type":"string"}},
+				"cmd":{"type":"string"},"phase":{"type":"string"},"ok":{"type":"boolean"},"note":{"type":"string"},
+				"unit":{"type":"integer"}},
 				"required":["cmd","ok"]}},
 			"artifacts":{"type":"array"},"processed":{"type":"array"},
-			"request_id":{"type":"string"}`),
+			"verdict":{"type":"string","enum":["","pass","changes_requested","blocked"]},
+			"findings":{"type":"array","items":{"type":"object","properties":{
+				"severity":{"type":"string","enum":["critical","major","minor","nit"]},
+				"file":{"type":"string","description":"omit for a package-wide finding"},
+				"line":{"type":"integer"},
+				"unit":{"type":"integer"},"summary":{"type":"string"}},
+				"required":["severity","summary"]}},
+			"request_id":{"type":"string"}`, []string{"kind", "summary"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Kind         string           `json:"kind"`
-				ItemKey      string           `json:"item"`
-				Summary      string           `json:"summary"`
-				Resolution   string           `json:"resolution"`
-				Next         []string         `json:"next"`
-				Blockers     []string         `json:"blockers"`
-				Git          []runtime.GitRef `json:"git"`
-				Verification []runtime.Verify `json:"verification"`
-				Artifacts    []string         `json:"artifacts"`
-				Processed    []string         `json:"processed"`
-				RequestID    string           `json:"request_id"`
+				Kind         string             `json:"kind"`
+				ItemKey      string             `json:"item"`
+				Summary      string             `json:"summary"`
+				Resolution   string             `json:"resolution"`
+				Next         []string           `json:"next"`
+				Blockers     []string           `json:"blockers"`
+				Git          []runtime.GitRef   `json:"git"`
+				Verification []runtime.Verify   `json:"verification"`
+				Artifacts    []string           `json:"artifacts"`
+				Processed    []string           `json:"processed"`
+				Verdict      string             `json:"verdict"`
+				Findings     []workflow.Finding `json:"findings"`
+				RequestID    string             `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -114,6 +130,7 @@ func checkpointTool(s *Server) ToolDef {
 				Kind: runtime.CheckpointKind(in.Kind), ItemKey: in.ItemKey, Summary: in.Summary,
 				Resolution: in.Resolution, Next: in.Next, Blockers: in.Blockers,
 				Git: in.Git, Verification: in.Verification, Artifacts: in.Artifacts, Processed: in.Processed,
+				Verdict: in.Verdict, Findings: in.Findings,
 				RequestID: in.RequestID,
 			})
 			if err != nil {
@@ -279,6 +296,11 @@ func (s *Server) agentOut(ctx context.Context, a runtime.Agent) map[string]any {
 	} else {
 		out["parent"] = nil
 	}
+	if s.RT != nil {
+		if step, ok, err := s.RT.StepForAgent(ctx, a.ID); err == nil && ok {
+			out["step"] = step
+		}
+	}
 	return out
 }
 
@@ -323,16 +345,17 @@ func readTool(s *Server) ToolDef {
 				return nil, err
 			}
 			out := map[string]any{
-				"items": []items.Item{}, "artifacts": []any{}, "agents": []any{},
+				"items": []any{}, "artifacts": []any{}, "agents": []any{},
 				"checkpoints": []any{}, "repos": []repos.Repo{}, "confirmed_repos": []repos.Repo{},
 			}
+			var collectedItems []items.Item
 			itemSeen := map[string]bool{}
 			addItem := func(it items.Item) {
 				if itemSeen[it.Key] {
 					return
 				}
 				itemSeen[it.Key] = true
-				out["items"] = append(out["items"].([]items.Item), it)
+				collectedItems = append(collectedItems, it)
 			}
 
 			// refs mix item keys, art_ ids and agent names (§8.1); route each by
@@ -369,7 +392,7 @@ func readTool(s *Server) ToolDef {
 				}
 			}
 			// checkpoints: the latest one per item resolved above.
-			for _, it := range out["items"].([]items.Item) {
+			for _, it := range collectedItems {
 				cps, err := s.RT.Checkpoints(ctx, it.Key, 1, time.Time{})
 				if err != nil {
 					return nil, err
@@ -491,6 +514,47 @@ func readTool(s *Server) ToolDef {
 					cursor = latest
 				}
 			}
+			itemsOut := make([]any, 0, len(collectedItems))
+			for _, it := range collectedItems {
+				data, err := json.Marshal(it)
+				if err != nil {
+					return nil, err
+				}
+				var itemMap map[string]any
+				if err := json.Unmarshal(data, &itemMap); err != nil {
+					return nil, err
+				}
+				ws, hasWf, err := s.RT.WorkflowFor(ctx, it.Key)
+				if err != nil {
+					return nil, err
+				}
+				if hasWf {
+					runs := ws.Runs
+					if runs == nil {
+						runs = []runtime.WorkflowRunView{}
+					}
+					itemMap["workflow_state"] = map[string]any{
+						"state":      ws.State,
+						"round":      ws.Round,
+						"escalation": ws.Escalation,
+						"runs":       runs,
+					}
+					crew := []map[string]any{}
+					for _, r := range ws.Runs {
+						if r.AgentName != "" {
+							crew = append(crew, map[string]any{
+								"agent": r.AgentName,
+								"role":  r.Role,
+								"step":  r.StepID,
+								"state": r.State,
+							})
+						}
+					}
+					itemMap["crew"] = crew
+				}
+				itemsOut = append(itemsOut, itemMap)
+			}
+			out["items"] = itemsOut
 			out["reset"] = reset
 			out["cursor"] = cursor
 			return out, nil

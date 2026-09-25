@@ -470,16 +470,20 @@ func TestAgyIsolatedHomeCarriesOnboardingState(t *testing.T) {
 // P0 (2026-09-23), superseding the 2026-09-22 fix of the same name: that fix
 // symlinked ~/.gemini/skills/, which turned out to be the wrong path -- a
 // live spawn's own reported skill listing never included "swarm" while it
-// did include agy's genuinely-discovered built-ins. Per
-// antigravity.google/docs/skills/, agy's real global skills directory is
-// ~/.gemini/antigravity-cli/skills/ (Config.SkillsDir(KindAgy) now matches),
-// which is INSIDE the directory the onboarding-isolation fix already
-// symlinks whole -- so correcting the install path needs no separate
-// isolation glue for skills at all. Hooks (~/.gemini/config/hooks.json)
-// still live outside antigravity-cli and still need their own symlink.
+// did include agy's genuinely-discovered built-ins.
+//
+// A7 (2026-09-25), superseding this fix's own ~/.gemini/antigravity-cli/skills/
+// path: agy actually reads skills from $HOME/.gemini/config/skills and
+// migrates antigravity-cli/skills away from there on first run in a fresh
+// HOME -- which chained the REAL antigravity-cli/skills one hop deeper into
+// a session's own launch folder every time (docs/plans/2026-09-24-skill-symlink-probe.md,
+// "Follow-up"). Config.SkillsDir(KindAgy) and setupEnv now both point at
+// config/skills directly (package PA), so this test plants there instead.
+// Hooks (~/.gemini/config/hooks.json) still live outside antigravity-cli and
+// still need their own symlink.
 func TestAgyIsolatedHomeCarriesSkillsAndHooks(t *testing.T) {
 	d := testDeps(t)
-	skillsDir := filepath.Join(d.UserHome, ".gemini", "antigravity-cli", "skills", "swarm")
+	skillsDir := filepath.Join(d.UserHome, ".gemini", "config", "skills", "swarm")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -502,9 +506,16 @@ func TestAgyIsolatedHomeCarriesSkillsAndHooks(t *testing.T) {
 	}
 	agyHome := l.Env["HOME"]
 
-	gotSkill, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "antigravity-cli", "skills", "swarm", "SKILL.md"))
+	skillsLink := filepath.Join(agyHome, ".gemini", "config", "skills")
+	if fi, err := os.Lstat(skillsLink); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %s to be a symlink into the real config/skills: %v", skillsLink, err)
+	}
+	if target, err := os.Readlink(skillsLink); err != nil || target != filepath.Join(d.UserHome, ".gemini", "config", "skills") {
+		t.Fatalf("skills symlink target = %q, %v", target, err)
+	}
+	gotSkill, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "config", "skills", "swarm", "SKILL.md"))
 	if err != nil {
-		t.Fatalf("expected the swarm skill reachable in the isolated home via the antigravity-cli symlink: %v", err)
+		t.Fatalf("expected the swarm skill reachable in the isolated home via the config/skills symlink: %v", err)
 	}
 	if string(gotSkill) != skillBody {
 		t.Errorf("skill body = %q, want %q", gotSkill, skillBody)
@@ -550,6 +561,109 @@ func TestAgyIsolatedHomeCarriesSuperpowersPlugin(t *testing.T) {
 	}
 	if string(got) != pluginBody {
 		t.Errorf("plugin body = %q, want %q", got, pluginBody)
+	}
+}
+
+// A7 (2026-09-25): agy actually reads skills from $HOME/.gemini/config/skills
+// (Config.SkillsDir(KindAgy) now matches, package PA) and migrates
+// ~/.gemini/antigravity-cli/skills away from on first run in a fresh HOME --
+// the exact thing setupEnv gave every spawn (docs/plans/2026-09-24-skill-symlink-probe.md,
+// "Follow-up"). setupEnv now links agy-home/.gemini/config/skills straight at
+// the real ~/.gemini/config/skills (creating it if missing) and gives
+// agy-home its own .migrated marker, so a spawned agy never has a reason to
+// migrate anything -- and if it tried, it would only ever write into its own
+// isolated agy-home tree, never back into the real one.
+func TestAgySetupEnvLinksConfigSkillsAndMigratedMarker(t *testing.T) {
+	d := testDeps(t)
+
+	l, err := newAgy(d).Launch(agySpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyHome := l.Env["HOME"]
+
+	realSkills := filepath.Join(d.UserHome, ".gemini", "config", "skills")
+	linkSkills := filepath.Join(agyHome, ".gemini", "config", "skills")
+	fi, err := os.Lstat(linkSkills)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %s to be a symlink: %v", linkSkills, err)
+	}
+	if target, err := os.Readlink(linkSkills); err != nil || target != realSkills {
+		t.Fatalf("symlink target = %q, %v, want %q", target, err, realSkills)
+	}
+	if _, err := os.Stat(realSkills); err != nil {
+		t.Fatalf("expected the real skills dir created when missing: %v", err)
+	}
+
+	migrated := filepath.Join(agyHome, ".gemini", "config", ".migrated")
+	if fi, err := os.Lstat(migrated); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("expected a plain .migrated marker in agy-home (never a symlink back to the real one): %v, %v", fi, err)
+	}
+
+	// The real antigravity-cli/skills path (the thing that used to get
+	// rewired) must never be touched by setupEnv now that skills route
+	// through .gemini/config/skills directly.
+	if _, err := os.Lstat(filepath.Join(d.UserHome, ".gemini", "antigravity-cli", "skills")); err == nil {
+		t.Error("setupEnv must not create or touch the real antigravity-cli/skills path")
+	}
+}
+
+// The real .migrated marker's bytes are read, not linked to: a symlink back
+// to it would give a spawned agy a write path into the real ~/.gemini/config
+// tree, the exact class of thing PA exists to remove.
+func TestAgySetupEnvCopiesRealMigratedMarkerContent(t *testing.T) {
+	d := testDeps(t)
+	realMigrated := filepath.Join(d.UserHome, ".gemini", "config", ".migrated")
+	if err := os.MkdirAll(filepath.Dir(realMigrated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(realMigrated, []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newAgy(d).Launch(agySpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyHome := l.Env["HOME"]
+	migrated := filepath.Join(agyHome, ".gemini", "config", ".migrated")
+	fi, err := os.Lstat(migrated)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("expected a plain (non-symlink) .migrated marker: %v, %v", fi, err)
+	}
+	got, err := os.ReadFile(migrated)
+	if err != nil || string(got) != "v2\n" {
+		t.Fatalf(".migrated content = %q, %v, want %q", got, err, "v2\n")
+	}
+}
+
+// setupEnv also runs on Resume, and agyHome is keyed by session ID (agy.go:42),
+// so a Resume of an already-spawned session reuses the same agy-home. The
+// exact live incident this package fixes has real content sitting at a past
+// session's agy-home/.gemini/config/skills (a chain hop's terminal
+// directory) -- setupEnv must never delete that out from under a Resume.
+func TestAgySetupEnvNeverDeletesExistingConfigSkillsContent(t *testing.T) {
+	d := testDeps(t)
+	spec := agySpec(t)
+	agyHome := filepath.Join(d.launchDir(spec.SessionID), "agy-home")
+	preexisting := filepath.Join(agyHome, ".gemini", "config", "skills", "swarm", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(preexisting), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(preexisting, []byte("# live content, do not delete"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := newAgy(d).Resume(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(preexisting)
+	if err != nil {
+		t.Fatalf("setupEnv deleted pre-existing agy-home content on Resume: %v", err)
+	}
+	if string(got) != "# live content, do not delete" {
+		t.Errorf("content = %q, want unchanged", got)
 	}
 }
 

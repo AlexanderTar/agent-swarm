@@ -33,7 +33,7 @@ func TestDaemonServesTheP2Routes(t *testing.T) {
 	addr := make(chan string, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go serve(ctx, daemonConfig{Home: home, Port: 0, Background: false,
+	go serve(ctx, daemonConfig{UserHome: t.TempDir(), Home: home, Port: 0, Background: false,
 		ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: func(string, ...any) {},
 		Ready: func(a string) { addr <- a }})
 	base := "http://" + <-addr
@@ -74,7 +74,7 @@ func TestDaemonWritesItsOwnTmuxConf(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	addr := make(chan string, 1)
-	go serve(ctx, daemonConfig{Home: home, Port: 0, Background: false, ScanRoot: t.TempDir(),
+	go serve(ctx, daemonConfig{UserHome: t.TempDir(), Home: home, Port: 0, Background: false, ScanRoot: t.TempDir(),
 		Embedder: offlineEmb{}, Log: func(string, ...any) {}, Ready: func(a string) { addr <- a }})
 	<-addr
 	b, err := os.ReadFile(filepath.Join(home, "tmux.conf"))

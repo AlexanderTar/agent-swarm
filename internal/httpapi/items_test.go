@@ -2,12 +2,17 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 type itemJSON struct {
@@ -287,4 +292,182 @@ func TestItemWireShape(t *testing.T) {
 	if !strings.Contains(string(b), `"origin_spike_key":"SPIKE-1"`) || !strings.Contains(string(b), `"spike_intent":null`) {
 		t.Fatalf("spike-born item = %s", b)
 	}
+}
+
+// TestItemJSONIncludesWorkflowFields is spec B3/B7's wire requirement: null
+// for an unset workflow/solo, arrays never null for steps/units/verify
+// (contracts §3.1, itemWire's existing convention for every other optional
+// field), and the resolved workflow content when one is set.
+func TestItemJSONIncludesWorkflowFields(t *testing.T) {
+	e := newEnv(t)
+	epic, err := e.items.Create(bg, items.CreateInput{Type: items.Epic, Title: "E"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, err := e.items.Create(bg, items.CreateInput{Type: items.Story, ParentKey: epic.Key, Title: "S"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	board, err := e.items.Create(bg, items.CreateInput{Type: items.Task, ParentKey: story.Key, Title: "Board task"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, b := e.api("GET", "/api/items/"+board.Key, nil)
+	raw := decode[struct {
+		Item map[string]any `json:"item"`
+	}](t, b)
+	if v, ok := raw.Item["workflow"]; !ok || v != nil {
+		t.Errorf("workflow = %v (present %v), want null", v, ok)
+	}
+	if v, ok := raw.Item["solo"]; !ok || v != nil {
+		t.Errorf("solo = %v (present %v), want null", v, ok)
+	}
+	for _, k := range []string{"steps", "units", "verify"} {
+		if _, ok := raw.Item[k].([]any); !ok {
+			t.Errorf("%s = %v, want an array", k, raw.Item[k])
+		}
+	}
+
+	orch := items.Orchestrator("agt_1", epic.ID)
+	flowed, err := e.items.Create(bg, items.CreateInput{Type: items.Task, ParentKey: story.Key, Title: "Flowed",
+		Workflow: &workflow.Spec{Template: "tdd-reviewed"}}, orch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, b = e.api("GET", "/api/items/"+flowed.Key, nil)
+	raw2 := decode[struct {
+		Item map[string]any `json:"item"`
+	}](t, b)
+	wf, ok := raw2.Item["workflow"].(map[string]any)
+	if !ok {
+		t.Fatalf("workflow = %v, want an object", raw2.Item["workflow"])
+	}
+	if steps, ok := wf["steps"].([]any); !ok || len(steps) != 2 {
+		t.Fatalf("workflow steps = %v", wf["steps"])
+	}
+	if raw2.Item["role_hint"] != "coder" {
+		t.Errorf("role_hint = %v", raw2.Item["role_hint"])
+	}
+}
+
+func TestItemDetailIncludesWorkflowState(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+
+	// Legacy task has no workflow
+	rec := s.get(t, "/api/items/"+seed.TaskKey)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var legacyRes map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &legacyRes); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := legacyRes["workflow_state"]; ok {
+		t.Errorf("expected workflow_state to be absent for legacy task, got: %v", legacyRes["workflow_state"])
+	}
+	if _, ok := legacyRes["crew"]; ok {
+		t.Errorf("expected crew to be absent for legacy task, got: %v", legacyRes["crew"])
+	}
+
+	epic, err := s.items.Get(bg, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workerID, orchID string
+	if err := s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = 'task-worker'`).Scan(&workerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = 'root-orchestrator'`).Scan(&orchID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create workflow task
+	flowed, err := s.items.Create(bg, items.CreateInput{
+		Type:      items.Task,
+		ParentKey: seed.StoryKey,
+		Title:     "Flowed task",
+		Workflow:  &workflow.Spec{Template: "tdd-reviewed"},
+	}, items.Orchestrator(orchID, epic.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := db.Millis(time.Now())
+	wfID := ids.New("wf")
+	if _, err := s.DB.ExecContext(bg, `INSERT INTO workflows
+		(id, item_id, root_item_id, owner_agent_id, state, round, escalation, worktrees_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'running', 1, '', '[]', ?, ?)`,
+		wfID, flowed.ID, epic.ID, orchID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	runID := ids.New("wfr")
+	if _, err := s.DB.ExecContext(bg, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build', 1, 'coder', ?, 'active', ?)`,
+		runID, wfID, workerID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = s.get(t, "/api/items/"+flowed.Key)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, ok := res["workflow_state"].(map[string]any)
+	if !ok {
+		t.Fatalf("workflow_state missing or not map: %v", res["workflow_state"])
+	}
+	if ws["state"] != "running" {
+		t.Errorf("workflow_state.state = %v, want running", ws["state"])
+	}
+	if r, ok := ws["round"].(float64); !ok || int(r) != 1 {
+		t.Errorf("workflow_state.round = %v, want 1", ws["round"])
+	}
+	if ws["escalation"] != "" {
+		t.Errorf("workflow_state.escalation = %v, want empty string", ws["escalation"])
+	}
+	runs, ok := ws["runs"].([]any)
+	if !ok || len(runs) < 1 {
+		t.Fatalf("workflow_state.runs = %v, want array with at least 1 run", ws["runs"])
+	}
+
+	crew, ok := res["crew"].([]any)
+	if !ok || len(crew) < 1 {
+		t.Fatalf("crew = %v, want array with at least 1 member", res["crew"])
+	}
+	m, ok := crew[0].(map[string]any)
+	if !ok {
+		t.Fatalf("crew[0] not a map: %v", crew[0])
+	}
+	if m["agent"] != "task-worker" || m["role"] != "coder" || m["step"] != "build" || m["state"] != "active" {
+		t.Errorf("crew[0] = %v, want agent=task-worker, role=coder, step=build, state=active", m)
+	}
+
+	// The kanban consumes the flat item list, so its round badge needs the
+	// same workflow round in that payload.
+	rec = s.get(t, "/api/items?view=flat")
+	if rec.Code != 200 {
+		t.Fatalf("list status = %d: %s", rec.Code, rec.Body)
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range list.Items {
+		if item["key"] != flowed.Key {
+			continue
+		}
+		state, ok := item["workflow_state"].(map[string]any)
+		if !ok || state["round"] != float64(1) {
+			t.Fatalf("flat item workflow_state = %v", item["workflow_state"])
+		}
+		return
+	}
+	t.Fatalf("flowed task missing from flat list")
 }

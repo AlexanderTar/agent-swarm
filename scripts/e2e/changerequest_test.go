@@ -89,7 +89,7 @@ func TestScenario02ChangeRequestAndStaleApproval(t *testing.T) {
 	planBody := "# Plan\n\n## Work breakdown\n\n```swarm-tree\n" +
 		`{"root":{"type":"epic","title":"Ship it","brief":"","acceptance":["It works."]},
  "children":[{"ref":"s1","type":"story","title":"S","brief":"","acceptance":[],
-   "children":[{"ref":"t1","type":"task","title":"T","brief":"","acceptance":[],"role_hint":"coder","repos":[]}]}]}` +
+   "children":[{"ref":"t1","type":"task","title":"T","brief":"","acceptance":[],"role_hint":"coder","repos":[],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]}]}` +
 		"\n```\n\n## Verification\n\ngo test ./...\n"
 	planPath := filepath.Join(t.TempDir(), "plan.md")
 	if err := os.WriteFile(planPath, []byte(planBody), 0o644); err != nil {

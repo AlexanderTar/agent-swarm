@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -177,9 +178,16 @@ func TestMuseLaunchIsolatesXDGConfigHomeWithLiteralSwarmEnv(t *testing.T) {
 	if m["provider"] != "meta" || m["model"] != "muse-spark-1.3" {
 		t.Errorf("unrelated real settings keys were not cloned: %v", m)
 	}
+	// Q1 (controller ruling): ALL operator MCP servers are dropped, not
+	// carried through -- matches codex's precedent (its config.toml/MCP
+	// servers are never read either). Only the swarm entry this launch
+	// injects may be present.
 	servers, _ := m["mcpServers"].(map[string]any)
-	if _, ok := servers["notion"]; !ok {
-		t.Errorf("unrelated real MCP server was dropped: %v", servers)
+	if _, ok := servers["notion"]; ok {
+		t.Errorf("operator's other MCP servers must be dropped, not carried through: %v", servers)
+	}
+	if len(servers) != 1 {
+		t.Errorf("mcpServers = %v, want exactly the swarm entry", servers)
 	}
 	swarm, _ := servers["swarm"].(map[string]any)
 	if swarm["command"] != s.Bin {
@@ -210,12 +218,13 @@ func TestMuseLaunchIsolatesXDGConfigHomeWithLiteralSwarmEnv(t *testing.T) {
 		}
 	}
 
-	// auth.json and the user skills dir are symlinked in so provider login
-	// and installed skills still work from the isolated config dir -- and
-	// must point AT the real files, not just be a symlink of some kind.
+	// auth.json is symlinked in so provider login still works from the
+	// isolated config dir -- and must point AT the real file, not just be a
+	// symlink of some kind. (Q1 hygiene fix, PM.4: skills/ is no longer a
+	// whole-dir symlink to the real ~/.config/muse/skills -- see
+	// TestMuseSetupEnvLinksOnlySwarmManagedSkills.)
 	for _, tc := range []struct{ name, wantTarget string }{
 		{"auth.json", filepath.Join(realDir, "auth.json")},
-		{"skills", filepath.Join(realDir, "skills")},
 	} {
 		p := filepath.Join(xdgConfigHome, "muse", tc.name)
 		fi, err := os.Lstat(p)
@@ -397,6 +406,320 @@ func TestMuseProcessNames(t *testing.T) {
 	for _, s := range reject {
 		if anyMatch(a.ProcessNames(), s) {
 			t.Errorf("%q should be rejected", s)
+		}
+	}
+}
+
+// TestMuseSetupEnvDropsOperatorMCPServersAndForeignContext pins Q1/Q3 of the
+// controller ruling: the isolated settings.json keeps every other real key
+// (proves clone-then-mutate, not rebuild -- needed to preserve
+// runtime_capabilities' plugin trust hash and the tui.foreign_context_notice
+// flag, see docs/plans/2026-09-25-muse-isolation-probe.md), drops every
+// operator MCP server down to swarm-only, and sets
+// context.foreign_personal_skills/foreign_personal_rules to false (confirmed
+// live settings.json keys -- probe Finding 2b: they suppress the
+// $HOME/.claude and $HOME/.codex skill+rules leak; HOME isolation, unit
+// PM.2, closes the remaining $HOME/.agents gap these keys don't reach).
+func TestMuseSetupEnvDropsOperatorMCPServersAndForeignContext(t *testing.T) {
+	d := testDeps(t)
+	realDir := filepath.Join(d.UserHome, ".config", "muse")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realSettings := `{"schema_version":1,"provider":"meta",` +
+		`"runtime_capabilities":{"plugin:superpowers:hook:session-start":{"enabled":true,"trusted_definition_hash":"sha256:abc"}},` +
+		`"tui":{"foreign_context_notice_shown":true},` +
+		`"mcpServers":{"notion":{"mode":"optional","url":"https://mcp.notion.com/mcp"},` +
+		`"vercel":{"mode":"optional","url":"https://mcp.vercel.com"}}}`
+	if err := os.WriteFile(filepath.Join(realDir, "settings.json"), []byte(realSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(l.Env["XDG_CONFIG_HOME"], "muse", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	servers, _ := m["mcpServers"].(map[string]any)
+	if len(servers) != 1 {
+		t.Errorf("mcpServers = %v, want only swarm", servers)
+	}
+	if _, ok := servers["notion"]; ok {
+		t.Error("notion must be dropped")
+	}
+	if _, ok := servers["vercel"]; ok {
+		t.Error("vercel must be dropped")
+	}
+	if _, ok := servers["swarm"]; !ok {
+		t.Error("swarm entry must be present")
+	}
+
+	ctx, _ := m["context"].(map[string]any)
+	if ctx["foreign_personal_skills"] != false {
+		t.Errorf("context.foreign_personal_skills = %v, want false", ctx["foreign_personal_skills"])
+	}
+	if ctx["foreign_personal_rules"] != false {
+		t.Errorf("context.foreign_personal_rules = %v, want false", ctx["foreign_personal_rules"])
+	}
+
+	// Clone-then-mutate, not rebuild: other real keys must survive untouched.
+	rc, _ := m["runtime_capabilities"].(map[string]any)
+	hook, _ := rc["plugin:superpowers:hook:session-start"].(map[string]any)
+	if hook["trusted_definition_hash"] != "sha256:abc" {
+		t.Errorf("runtime_capabilities trust hash was not preserved: %v", rc)
+	}
+	tui, _ := m["tui"].(map[string]any)
+	if tui["foreign_context_notice_shown"] != true {
+		t.Errorf("tui.foreign_context_notice_shown was not preserved: %v", tui)
+	}
+}
+
+// TestMuseSetupEnvLinksOnlySwarmManagedSkills: the whole real
+// ~/.config/muse/skills dir is never symlinked wholesale (hygiene fix, PM.4)
+// -- matches claude.go's writeProjectSwarmConfig, which links each
+// swarm-managed skill individually from the shared ~/.swarm/skills copy
+// rather than exposing whatever else a user might have installed directly
+// under a kind's own skills root.
+func TestMuseSetupEnvLinksOnlySwarmManagedSkills(t *testing.T) {
+	d := testDeps(t)
+	seedSkillsHome(t, d.Home)
+	// A personal skill living directly under the real muse skills dir (not
+	// swarm-managed) must not reach the isolated config.
+	if err := os.MkdirAll(filepath.Join(d.UserHome, ".config", "muse", "skills", "my-personal-skill"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillsHome := filepath.Join(d.Home, "skills")
+	skillsRoot := filepath.Join(l.Env["XDG_CONFIG_HOME"], "muse", "skills")
+	for _, name := range install.SkillNames() {
+		link := filepath.Join(skillsRoot, name)
+		fi, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("%s: %v", link, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s is not a symlink", link)
+		}
+		if target, err := os.Readlink(link); err != nil || target != filepath.Join(skillsHome, name) {
+			t.Errorf("%s -> %q, %v; want %q", link, target, err, filepath.Join(skillsHome, name))
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(skillsRoot, "my-personal-skill")); !os.IsNotExist(err) {
+		t.Errorf("a personal skill from the real ~/.config/muse/skills must not be linked in, got err=%v", err)
+	}
+}
+
+// TestMuseSetupEnvIsolatesHOMEExceptOtherAgentsPersonalRoots is the fix for
+// the user's report (PR #20): a spawned muse independently scans
+// $HOME/.claude/skills, $HOME/.codex/skills and $HOME/.agents/skills (and
+// loads $HOME/.claude/CLAUDE.md) regardless of any XDG_CONFIG_HOME
+// isolation -- proven live (docs/plans/2026-09-25-muse-isolation-probe.md,
+// Finding 2/2b): isolating XDG_CONFIG_HOME alone removed zero of 13 foreign
+// skills. HOME must be isolated too, using a denylist (mirrors the existing
+// ~/.config sibling loop's shape) rather than an allowlist: a shell-tool
+// call still needs the real .gitconfig, .ssh, toolchains, etc., which an
+// unprobed allowlist would silently break.
+func TestMuseSetupEnvIsolatesHOMEExceptOtherAgentsPersonalRoots(t *testing.T) {
+	d := testDeps(t)
+	for _, dir := range []string{".claude", ".codex", ".cursor", ".agents", ".gemini", ".muse"} {
+		if err := os.MkdirAll(filepath.Join(d.UserHome, dir, "skills"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Fix round 1, minor 3: Claude Code's other top-level config file
+	// (~/.claude.json, not the ~/.claude dir) must be denylisted too.
+	if err := os.WriteFile(filepath.Join(d.UserHome, ".claude.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A fake real ~/.config/gcloud: proves the HOME/.config -> XDG_CONFIG_HOME
+	// link (fix round 1, important 2) still resolves tools that hardcode
+	// ~/.config/<name> (gcloud, solana), through the existing sibling loop.
+	if err := os.MkdirAll(filepath.Join(d.UserHome, ".config", "gcloud"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Ordinary things a shell-tool call needs: must survive the isolation.
+	if err := os.WriteFile(filepath.Join(d.UserHome, ".gitconfig"), []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(d.UserHome, "go", "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := l.Env["HOME"]
+	if home == "" {
+		t.Fatal("Launch must set HOME to an isolated per-launch dir")
+	}
+	if home == d.UserHome {
+		t.Fatal("HOME must not be the real UserHome")
+	}
+	for _, excluded := range []string{".claude", ".codex", ".cursor", ".agents", ".gemini", ".muse", ".claude.json"} {
+		if _, err := os.Lstat(filepath.Join(home, excluded)); !os.IsNotExist(err) {
+			t.Errorf("isolated HOME must not carry %s through, got err=%v", excluded, err)
+		}
+	}
+	// Fix round 1, important 2: HOME/.config is not simply absent -- it must
+	// be its own symlink to the isolated XDG_CONFIG_HOME, so a tool that
+	// hardcodes ~/.config/<name> (gcloud, solana) still resolves through the
+	// sibling-symlink loop already isolating XDG_CONFIG_HOME, while
+	// ~/.config/muse itself keeps resolving to the isolated copy.
+	cfgLink := filepath.Join(home, ".config")
+	fi, err := os.Lstat(cfgLink)
+	if err != nil {
+		t.Fatalf(".config: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("HOME/.config should be a symlink to the isolated XDG_CONFIG_HOME")
+	}
+	if target, err := os.Readlink(cfgLink); err != nil || target != l.Env["XDG_CONFIG_HOME"] {
+		t.Errorf("HOME/.config -> %q, %v; want %q", target, err, l.Env["XDG_CONFIG_HOME"])
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "gcloud")); err != nil {
+		t.Errorf("HOME/.config/gcloud must resolve through to the real one: %v", err)
+	}
+	for _, name := range []string{".gitconfig", "go"} {
+		p := filepath.Join(home, name)
+		fi, err := os.Lstat(p)
+		if err != nil {
+			t.Errorf("isolated HOME missing ordinary entry %s: %v", name, err)
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s should be a symlink to the real one", name)
+			continue
+		}
+		if target, err := os.Readlink(p); err != nil || target != filepath.Join(d.UserHome, name) {
+			t.Errorf("%s symlink target = %q, %v; want %q", name, target, err, filepath.Join(d.UserHome, name))
+		}
+	}
+}
+
+// TestMuseSetupEnvExcludesSwarmHomeByPath is fix round 1, important 1: the
+// swarm home (m.d.Home, ~/.swarm in production) must be excluded from the
+// isolated HOME by absolute path, not by a fixed name -- unlike the other
+// denylist entries, its name is not a constant (Config.Home/--home/
+// SWARM_HOME can point anywhere) and it commonly nests directly under the
+// real UserHome. Excluding it by name would either miss a custom home or
+// (worse) accidentally exclude an unrelated real dotfile that happens to be
+// named ".swarm". This closes the find -L symlink cycle a nested swarm home
+// otherwise creates (isolated HOME lives under
+// <swarm home>/run/launch/<sid>/muse-home/, so symlinking the swarm home
+// back into itself is a cycle for any recursive walk); it does NOT close
+// absolute-path token exposure (a shell tool that
+// already knows or guesses the real swarm home's absolute path, e.g. from
+// s.Bin's own path, can still read ~/.swarm/run/tokens/* directly -- HOME
+// isolation only controls what a relative/$HOME-rooted lookup finds).
+func TestMuseSetupEnvExcludesSwarmHomeByPath(t *testing.T) {
+	d := testDeps(t)
+	d.Home = filepath.Join(d.UserHome, ".swarm")
+	if err := os.MkdirAll(d.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d.UserHome, ".gitconfig"), []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := l.Env["HOME"]
+	if _, err := os.Lstat(filepath.Join(home, ".swarm")); !os.IsNotExist(err) {
+		t.Errorf("isolated HOME must not carry the swarm home (.swarm) through, got err=%v", err)
+	}
+	p := filepath.Join(home, ".gitconfig")
+	if target, err := os.Readlink(p); err != nil || target != filepath.Join(d.UserHome, ".gitconfig") {
+		t.Errorf(".gitconfig symlink target = %q, %v; want %q", target, err, filepath.Join(d.UserHome, ".gitconfig"))
+	}
+}
+
+// TestMuseSetupEnvPinsDataStateCacheToRealHome: once HOME is isolated, an
+// unset XDG_DATA_HOME/XDG_STATE_HOME/XDG_CACHE_HOME would fall through the
+// *isolated* HOME (muse's own fallback is $HOME/.local/share etc., confirmed
+// from the binary's embedded docs strings), silently moving muse's plugin
+// store and session registry away from the real one. The plugin store's own
+// integrity check rejects every partial reconstruction we tried (probe
+// Finding 5), so these must be pinned explicitly to the real UserHome-rooted
+// paths, not left unset.
+func TestMuseSetupEnvPinsDataStateCacheToRealHome(t *testing.T) {
+	d := testDeps(t)
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"XDG_DATA_HOME":  filepath.Join(d.UserHome, ".local", "share"),
+		"XDG_STATE_HOME": filepath.Join(d.UserHome, ".local", "state"),
+		"XDG_CACHE_HOME": filepath.Join(d.UserHome, ".cache"),
+	}
+	for k, v := range want {
+		if l.Env[k] != v {
+			t.Errorf("%s = %q, want %q", k, l.Env[k], v)
+		}
+	}
+}
+
+// TestMuseResumeUsesSameIsolation: Resume must isolate identically to
+// Launch -- the exact same key set and the exact same pinned values -- so a
+// relaunch never regains access to the operator's real HOME. Fix round 1,
+// minor 5: compares the two env maps directly (both calls share one
+// SessionID, hence one launchDir, so setupEnv is deterministic across them)
+// rather than only spot-checking a few keys against the isolated HOME.
+func TestMuseResumeUsesSameIsolation(t *testing.T) {
+	d := testDeps(t)
+	if err := os.MkdirAll(filepath.Join(d.UserHome, ".claude", "skills"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := museSpec(t)
+	launch, err := newMuse(d).Launch(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ProviderSessionID = "prov-xyz" // Resume's only difference from Launch's Spec
+	resume, err := newMuse(d).Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resume.Env) != len(launch.Env) {
+		t.Fatalf("Resume.Env has %d keys, Launch.Env has %d: %v vs %v",
+			len(resume.Env), len(launch.Env), resume.Env, launch.Env)
+	}
+	for k, v := range launch.Env {
+		if resume.Env[k] != v {
+			t.Errorf("Resume.Env[%s] = %q, want Launch's %q", k, resume.Env[k], v)
+		}
+	}
+
+	home := resume.Env["HOME"]
+	if home == "" || home == d.UserHome {
+		t.Fatalf("Resume must also isolate HOME, got %q", home)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".claude")); !os.IsNotExist(err) {
+		t.Errorf("Resume's isolated HOME must not carry .claude through, got err=%v", err)
+	}
+	for k, want := range map[string]string{
+		"XDG_DATA_HOME":  filepath.Join(d.UserHome, ".local", "share"),
+		"XDG_STATE_HOME": filepath.Join(d.UserHome, ".local", "state"),
+		"XDG_CACHE_HOME": filepath.Join(d.UserHome, ".cache"),
+	} {
+		if resume.Env[k] != want {
+			t.Errorf("Resume.Env[%s] = %q, want %q", k, resume.Env[k], want)
 		}
 	}
 }

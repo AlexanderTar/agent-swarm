@@ -68,11 +68,28 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatalf("agents.role_overrides: %v", err)
 		}
 	}
+	assertHasWorkflowColumns := func() {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT workflow_json, steps_json, units_json, solo, verify_json FROM items LIMIT 0`).Scan(&n, &n, &n, &n, &n); err != sql.ErrNoRows {
+			t.Fatalf("items workflow columns: %v", err)
+		}
+		if err := d.QueryRow(`SELECT verdict, findings_json FROM checkpoints LIMIT 0`).Scan(&n, &n); err != sql.ErrNoRows {
+			t.Fatalf("checkpoints.verdict/findings_json: %v", err)
+		}
+	}
 	assertHasFailureText()
 	assertHasRoleOverrides()
+	assertHasWorkflowColumns()
 	d.Close()
 
 	// Simulate a database that only ever ran migration 1 (pre-2026-09-20 production).
+	// This must strip every column later migrations added by ALTER TABLE, not
+	// just the two the incident was about: 0012_workflows.sql adds columns to
+	// items and checkpoints without rebuilding either table, so a real v1
+	// database's items/checkpoints tables never had them either -- leaving
+	// them in place here would make 0003_add_chore.sql's items rebuild (which
+	// expects exactly the v1 column set) fail with a column-count mismatch.
 	raw, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +103,28 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN role_overrides`); err != nil {
 		t.Fatal(err)
 	}
+	for _, col := range []string{"workflow_json", "steps_json", "units_json", "solo", "verify_json"} {
+		if _, err := raw.Exec(`ALTER TABLE items DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := raw.Exec(`ALTER TABLE artifact_revisions DROP COLUMN warnings_json`); err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"verdict", "findings_json"} {
+		if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 0012_workflows.sql also creates two new tables (plain CREATE TABLE, not
+	// IF NOT EXISTS), so replaying it against this "v1" database must not
+	// find them already there.
+	if _, err := raw.Exec(`DROP TABLE workflow_runs`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`DROP TABLE workflows`); err != nil {
+		t.Fatal(err)
+	}
 	raw.Close()
 
 	d, err = db.Open(ctx, path)
@@ -95,6 +134,7 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	defer d.Close()
 	assertHasFailureText()
 	assertHasRoleOverrides()
+	assertHasWorkflowColumns()
 	var v int
 	d.QueryRow("PRAGMA user_version").Scan(&v)
 	if v != db.SchemaVersion {
@@ -317,82 +357,8 @@ func TestNativeAdviceIsUniquePerSourceRequest(t *testing.T) {
 	}
 }
 
-// Live incident (2026-09-25): untagged runtime.GitRef/Verify marshaled
-// uppercase keys (Repo/SHA/Cmd/OK) into checkpoints.git_json/verify_json and
-// accept-request binding_json. The web approval page reads lowercase
-// (g.sha), so opening an accept request crashed on sha.slice. Tags fix new
-// writes; this proves a database parked at version 9 gets its existing rows
-// rewritten to lowercase on its next open.
-func TestMigration0010LowercasesGitVerifyKeys(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "swarm.db")
-	d, err := db.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, stmt := range []string{
-		`INSERT INTO items (id, key, type, root_id, title, status, created_at, updated_at)
-			VALUES ('itm_1', 'EPIC-1', 'epic', 'itm_1', 'test epic', 'in_review', 0, 0)`,
-		`INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, brief, state, created_at)
-			VALUES ('agt_1', 'agt_1', 'claude', 'm', 'orchestrator', 'itm_1', 'itm_1', 'b', 'active', 0)`,
-		`INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, state, cwd_kind, started_at)
-			VALUES ('ses_1', 'agt_1', 1, 1, 'tok', 'tm', '/tmp', 'running', 'neutral', 0)`,
-		`INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary, git_json, verify_json, created_at)
-			VALUES ('ckp_1', 'ses_1', 'agt_1', 'itm_1', 'integrated', 1, 's',
-				'[{"Repo":"r","Branch":"b","SHA":"abc","Dirty":false}]',
-				'[{"Cmd":"c","Phase":"green","OK":true,"Note":"n"}]', 0)`,
-		`INSERT INTO requests (id, kind, item_id, prompt, state, binding_json, created_at)
-			VALUES ('req_1', 'accept_epic', 'itm_1', 'p', 'open',
-				'{"item_revision":1,"integrated_checkpoint":"ckp_1","git":[{"Repo":"r","Branch":"b","SHA":"abc","Dirty":false}]}', 0)`,
-	} {
-		if _, err := d.Exec(stmt); err != nil {
-			t.Fatal(err)
-		}
-	}
-	d.Close()
-
-	raw, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := raw.Exec("PRAGMA user_version = 9"); err != nil {
-		t.Fatal(err)
-	}
-	raw.Close()
-
-	d, err = db.Open(ctx, path)
-	if err != nil {
-		t.Fatalf("reopen must apply migration 0010, not fail: %v", err)
-	}
-	defer d.Close()
-	for _, q := range []struct {
-		name, query string
-	}{
-		{"checkpoints.git_json", `SELECT git_json FROM checkpoints WHERE id = 'ckp_1'`},
-		{"checkpoints.verify_json", `SELECT verify_json FROM checkpoints WHERE id = 'ckp_1'`},
-		{"requests.binding_json", `SELECT binding_json FROM requests WHERE id = 'req_1'`},
-	} {
-		var body string
-		if err := d.QueryRow(q.query).Scan(&body); err != nil {
-			t.Fatal(err)
-		}
-		for _, upper := range []string{`"Repo":`, `"Branch":`, `"SHA":`, `"Dirty":`, `"Cmd":`, `"Phase":`, `"OK":`, `"Note":`} {
-			if strings.Contains(body, upper) {
-				t.Errorf("%s still contains %s: %s", q.name, upper, body)
-			}
-		}
-	}
-	var body string
-	if err := d.QueryRow(`SELECT binding_json FROM requests WHERE id = 'req_1'`).Scan(&body); err != nil {
-		t.Fatal(err)
-	}
-	for _, lower := range []string{`"repo":`, `"branch":`, `"sha":`} {
-		if !strings.Contains(body, lower) {
-			t.Errorf("binding_json missing %s: %s", lower, body)
-		}
-	}
-	var v int
-	d.QueryRow("PRAGMA user_version").Scan(&v)
-	if v != db.SchemaVersion {
-		t.Fatalf("user_version = %d, want %d after catching up", v, db.SchemaVersion)
-	}
-}
+/* NOTE: TestMigration0010LowercasesGitVerifyKeys lived here until the
+   main-branch merge added migrations after 0010: its downgrade-user_version
+   replay trick only works when 0010 is the last migration, so it moved to
+   schema_0010_lowercase_test.go (same name, same assertions) built on the
+   migration-helper fixture instead. */

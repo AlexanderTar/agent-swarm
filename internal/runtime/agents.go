@@ -38,6 +38,7 @@ type SpawnInput struct {
 	Name          string
 	Brief         BriefInput
 	RepoPaths     []string
+	Worktrees     []WorkflowWorktree
 	// SessionID is the calling orchestrator's own MCP session, and RequestID
 	// is I11's idempotency key scoped to it (empty means "no idempotency,
 	// just run once"). Neither is the spawned agent's own session.
@@ -852,6 +853,14 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
+	if len(in.Worktrees) > 0 && s.Worktree != nil {
+		wtIDs := make([]string, len(in.Worktrees))
+		for i, wt := range in.Worktrees {
+			wtIDs[i] = wt.WorktreeID
+		}
+		unlock := s.Worktree.LockWorktrees(wtIDs...)
+		defer unlock()
+	}
 	ran, err := IdemTx(ctx, s, in.SessionID, in.RequestID, "swarm_spawn", &result, func(tx *sql.Tx) error {
 		admitted, err := s.Admit(ctx, tx, in.Role, it.RootID)
 		if err != nil {
@@ -872,6 +881,32 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		if err != nil {
 			return err
 		}
+		for _, wt := range in.Worktrees {
+			if s.Worktree != nil {
+				if err := s.Worktree.ShareTx(ctx, tx, wt.WorktreeID, a.ID, wt.Mode); err != nil {
+					return err
+				}
+			} else {
+				if wt.Mode != "rw" && wt.Mode != "ro" {
+					return fmt.Errorf("worktree: unknown share mode %q", wt.Mode)
+				}
+				var state string
+				if err := tx.QueryRowContext(ctx, `SELECT state FROM worktrees WHERE id = ?`, wt.WorktreeID).Scan(&state); err != nil {
+					return err
+				}
+				if state != "active" {
+					return fmt.Errorf("worktree: %s is not active", wt.WorktreeID)
+				}
+				_, err := tx.ExecContext(ctx, `INSERT INTO worktree_reservations
+					(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)
+					ON CONFLICT(worktree_id, agent_id) DO UPDATE SET mode = excluded.mode, released_at = NULL`,
+					wt.WorktreeID, a.ID, wt.Mode, nowMs)
+				if err != nil {
+					return err
+				}
+			}
+		}
+
 		var seq int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM messages`).Scan(&seq); err != nil {
 			return err
@@ -940,7 +975,7 @@ type spawnResult struct {
 	Queued bool
 }
 
-func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID string) (Session, error) {
+func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID string) (result Session, retErr error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM sessions WHERE agent_id = ?`, a.ID)
 	if err == nil {
 		for rows.Next() {
@@ -1008,15 +1043,26 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 	if err != nil {
 		return Session{}, err
 	}
+	// Every error after the insert must retire this session. Launch, pre-run,
+	// and stale-pane cleanup can fail before Tmux.Start; leaving their rows
+	// spawning would make a later exhausted retry look live forever.
+	defer func() {
+		if retErr != nil {
+			if err := s.failSession(context.WithoutCancel(ctx), a, ses, retErr.Error()); err != nil {
+				s.logf("start session %s: record failure: %v", a.Name, err)
+			}
+		}
+	}()
 
-	var itemKey, itemTitle string
-	_ = s.DB.QueryRowContext(ctx, `SELECT key, title FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey, &itemTitle)
+	var itemKey, itemTitle, itemTypeStr string
+	_ = s.DB.QueryRowContext(ctx, `SELECT key, title, type FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey, &itemTitle, &itemTypeStr)
+	itemType := items.Type(itemTypeStr)
 
 	var kickoff string
 	if resume {
-		kickoff = ResumeKickoff(a.Name, a.Role, itemKey, itemTitle)
+		kickoff = ResumeKickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	} else {
-		kickoff = Kickoff(a.Name, a.Role, itemKey, itemTitle)
+		kickoff = Kickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	}
 
 	// Settings read failure is unrelated to the spawn itself: fail open (same
@@ -1095,9 +1141,6 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		return Session{}, err
 	}
 	if err := s.Tmux.Start(ctx, a.Name, cwd, env, l.Argv); err != nil {
-		// Leave a clear "failed" row instead of an orphaned "spawning" one
-		// that only the next reconcile tick would (confusingly) resolve.
-		_ = s.failSession(ctx, a, ses, err.Error())
 		return Session{}, err
 	}
 
@@ -1352,7 +1395,7 @@ func (s *Store) Cancel(ctx context.Context, name, sessionID, requestID string) (
 // Spawn's own role-default resolution does at line 748. A RoleAdvisor entry
 // in role_overrides would therefore be silently dead, so it's refused here
 // rather than accepted and ignored (docs/specs/2026-09-23-orchestrator-role-overrides.md).
-var OverridableRoles = []Role{RoleOrchestrator, RoleCoder, RoleReviewer, RoleUIReviewer, RoleResearcher, RoleDebugger, RoleMechanical}
+var OverridableRoles = []Role{RoleOrchestrator, RoleCoder, RoleReviewer, RoleUIReviewer, RoleResearcher, RoleDebugger, RoleMechanical, RoleDesigner}
 
 func joinRoles(roles []Role) string {
 	ss := make([]string, len(roles))
@@ -1505,17 +1548,11 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	}
 
 	if note != "" {
-		payload, _ := json.Marshal(map[string]string{"note": note})
-		nowMs := s.now().UnixMilli()
-		_ = s.tx(ctx, func(tx *sql.Tx) error {
-			var seq int64
-			_ = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM messages`).Scan(&seq)
-			_, err := tx.ExecContext(ctx, `INSERT INTO messages
-				(id, seq, kind, wake_class, priority, origin, to_agent_id, root_item_id, item_id, payload_json, state, created_at)
-				VALUES (?, ?, 'assignment_update', 'immediate', 1, 'daemon', ?, ?, ?, ?, 'pending', ?)`,
-				ids.New("msg"), seq, a.ID, a.RootItemID, a.ItemID, string(payload), nowMs)
-			return err
-		})
+		// deliverNote (workflow.go, P9 fix round 2 finding 9: deduped with
+		// what used to be a second copy of this exact INSERT here).
+		if err := s.deliverNote(ctx, a.ID, note); err != nil {
+			s.logf("retry %s: deliver note: %v", a.Name, err)
+		}
 	}
 
 	if a.State != AgentActive {

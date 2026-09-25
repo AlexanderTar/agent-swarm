@@ -31,6 +31,12 @@ function Snapshot({ r }: { r: Request }) {
   }
   return (
     <div className="space-y-3">
+      {r.kind === "approve_plan" && art.data?.warnings && art.data.warnings.length > 0 && (
+        <section aria-label="Plan warnings" className="rounded border border-warn bg-warn/10 p-2 text-warn">
+          <h3 className="font-semibold">Plan warnings</h3>
+          <ul className="list-disc pl-5">{art.data.warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul>
+        </section>
+      )}
       {art.data ? <Markdown>{art.data.markdown}</Markdown> : <p className="text-muted">…</p>}
       {r.kind === "approve_section" && !full && (
         <button type="button" onClick={() => setFull(true)} className="text-accent">{C.viewFullSpec}</button>

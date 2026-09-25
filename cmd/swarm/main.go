@@ -19,7 +19,7 @@ Commands:
   install [--plugins] [--yes]      set up launchd, agent integrations and the superpowers plugins
   uninstall                        remove the launchd job and agent integrations (keeps data)
   migrate [--dry-run | --resume | --rollback]   import Agent Swarm 1.x data and cut over
-  doctor [--json] [--legacy]       check prerequisites, agents, Ollama, signing; --legacy reports 1.x state
+  doctor [--json] [--legacy]       check prerequisites, agents, skills, Ollama, signing; --legacy reports 1.x state
   status                           daemon, items, repositories, knowledge base
   items [--type T] [--status S] [-q TEXT]
   repos [--rescan] | repos add PATH

@@ -59,7 +59,7 @@ func byName(t *testing.T, checks []Check) map[string]Check {
 	for _, c := range checks {
 		m[c.Name] = c
 	}
-	if len(m) != 8 {
+	if len(m) != 9 { // A1 added "python3" to the base checks
 		t.Fatalf("checks = %+v", checks)
 	}
 	return m
@@ -76,6 +76,9 @@ func TestDoctorAllGood(t *testing.T) {
 		"Launch agent":   PlistPath(Config{LaunchAgentsDir: e.d.LaunchAgentsDir}),
 		"Daemon":         "Running (version dev, schema 1).",
 		"Data":           "No Agent Swarm 1.x data.",
+		// python3 warns rather than fails (A1): "all good" still reports its
+		// absence, since newDoctorEnv's LookPath only knows claude and codex.
+		"python3": "python3 isn't installed. ui-ux-pro-max's search script needs it: install it if you use that skill.",
 	}
 	for name, c := range byName(t, e.d.Checks(bg)) {
 		if !c.OK || c.Detail != want[name] {

@@ -28,6 +28,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/hook"
 	"github.com/AlexanderTar/agent-swarm/internal/httpapi"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/mcpserver"
@@ -48,7 +49,15 @@ const (
 )
 
 type daemonConfig struct {
-	Home       string
+	Home     string
+	UserHome string // real user's HOME (C1); "" means os.UserHomeDir(). Every
+	// cmd/swarm test that opens a daemon MUST pass a temp dir here: the daemon's
+	// startup skills refresh writes into UserHome-relative per-kind skill roots
+	// (~/.claude/skills, ...), and a test that leaves this empty relinks/recopies
+	// the real operator's live skill roots. This already happened once (see
+	// docs/specs/2026-09-24-self-contained-tasks-and-role-skills.md's P1 fix
+	// notes); TestMain in main_test.go is the last-resort net for a test that
+	// forgets.
 	Port       int
 	Background bool        // start the KB, repo, catalog and prune loops
 	ScanRoot   string      // folder scanned for repos; "" means the user's home
@@ -169,7 +178,10 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		d.Close()
 		return nil, err
 	}
-	userHome, _ := os.UserHomeDir()
+	userHome := cfg.UserHome
+	if userHome == "" {
+		userHome, _ = os.UserHomeDir()
+	}
 	if cfg.ScanRoot == "" {
 		cfg.ScanRoot = userHome
 	}
@@ -216,6 +228,30 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		}
 	}
 
+	// A1: refresh the shared skills copy under cfg.Home from the binary's
+	// embedded tree on every start, then re-link every already-installed
+	// kind's own skills root against it -- so upgrading the binary alone (no
+	// `swarm install` re-run) still picks up skill changes and repairs drift.
+	// Never fatal: a skills problem here must not stop the daemon starting.
+	// cfg.Home, not userHome: a custom --home/SWARM_HOME must not split where
+	// this writes from where WriteSkills/CheckSkills/the claude adapter look.
+	//
+	// C1: SyncAndRefreshSkills itself only re-links (touches UserHome-relative
+	// paths like ~/.claude/skills) when cfg.Home is the canonical default swarm
+	// home for userHome; otherwise it still syncs the shared copy under
+	// cfg.Home but leaves every kind's own skills root alone. See its doc
+	// comment for why.
+	skillsCfg := install.Config{UserHome: userHome, Home: cfg.Home}
+	if skillErrs, err := install.SyncAndRefreshSkills(skillsCfg); err != nil {
+		cfg.Log("sync skills: %v", err)
+	} else {
+		for k, kerr := range skillErrs {
+			if kerr != nil {
+				cfg.Log("refresh %s skills: %v", k, kerr)
+			}
+		}
+	}
+
 	it := &items.Store{DB: d, Events: ev, Now: now}
 
 	// R9 / safety invariant S-1: the socket name comes from spawn.SocketFromEnv,
@@ -244,10 +280,11 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		Adapters: rt.Adapters, Run: execx.RunFor(240 * time.Second), Now: now, Log: cfg.Log,
 		MaxConcurrent: 2, Timeout: 240 * time.Second, Deliver: rt.DeliverAdvice}
 	rt.Advisor = adv
-	wt.OnRetained = rt.OnWorktreeRetained // the §17.5 "Worktree kept" notification
-	it.RequestPayload = rt.RequestPayload // R5: full Request on request.*
-	it.RequestOpened = rt.OnRequestOpened // §17.5 for the daemon-opened accept requests
-	it.DepUnblocked = rt.OnDepUnblocked   // wake whatever was blocked_by an item that just finished
+	wt.OnRetained = rt.OnWorktreeRetained             // the §17.5 "Worktree kept" notification
+	it.RequestPayload = rt.RequestPayload             // R5: full Request on request.*
+	it.RequestOpened = rt.OnRequestOpened             // §17.5 for the daemon-opened accept requests
+	it.DepUnblocked = rt.OnDepUnblocked               // wake whatever was blocked_by an item that just finished
+	it.StoryReadyForReview = rt.OnStoryReadyForReview // relay story_ready_for_review when all tasks finish
 	// Safety invariant S-4: SourcesFromEnv returns nil unless SWARM_USAGE=live,
 	// which only the installed launchd plist sets. Every other daemon — a
 	// test's, e2e's, `make dev`'s, one started by hand in a worktree — gets no

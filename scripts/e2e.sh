@@ -80,4 +80,4 @@ for _ in $(seq 1 50); do
 done
 token="$(cat "$SWARM_HOME/run/daemon.token")"
 export SWARM_E2E_TOKEN="$token" SWARM_E2E_URL="http://127.0.0.1:$port" SWARM_E2E_HOME="$SWARM_HOME"
-go test -tags e2e -count=1 -v ./scripts/e2e/...
+go test -tags e2e -count=1 -v ./scripts/e2e/... "$@"

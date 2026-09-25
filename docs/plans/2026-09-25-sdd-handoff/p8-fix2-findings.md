@@ -1,0 +1,7 @@
+# P8 fix round 2 (Opus re-review: all 11 findings + R1-R3 ADDRESSED; legacy guarantee intact)
+1. (Important, new breakage) checkpoint.go:218 — stepFor only walks spec.Steps; a story spec keeps its review step in AfterTasks with Steps empty (Next next.go:123 and render.go:15 promote it). Every story after_tasks reviewer's completed is refused "workflow step "story-review" not found…". Fix: fall back to *spec.AfterTasks when its ID matches (reuse the same promotion Next/Render use rather than a third copy if practical). Test (red first): a story after_tasks reviewer completes with a verdict.
+2. (Minor, fold in) checkpoint.go:278 findFixStepFor returns only the first review step whose fix target matches. With two review steps sharing Of/Fix (review-code passed, review-ui changes_requested on unit 1), the gate demands every unit instead of unit 1. Check every matching review step: blocking if any blocks, merge findings. Test red first.
+3. (Minor) Commit tests for two R3 behaviours currently unpinned: blocked with zero findings still needs one pair (:441); unit-tagged finding on a non-batched task is package-wide (:447).
+4. (Minor) registerArtifactAsDaemon revision bump (:661) must call staleApprovals like RegisterArtifact (artifacts.go:405) so open approve_section requests don't stay pinned to old content. Test.
+5. (Nit) remove the no-op `p != root` at :682.
+Verify: go test ./internal/runtime/... ./internal/items/... ./internal/mcpserver/... ./internal/workflow/... -count=1 ; go build ./... && go vet ./...

@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // Preamble is §9.1, used in every injected notice, the kickoff prompt and the brief header.
@@ -141,6 +144,16 @@ type BriefInput struct {
 	Objective                              string
 	Acceptance, ScopeIn, ScopeOut, Context []string
 	Verify, StopWhen                       []string
+	// Steps and Units are spec B6: the item's own execution script (a
+	// single-unit task has Steps, a batched one has Units -- never both).
+	// Empty for a legacy (non-workflow) spawn.
+	Steps []string
+	Units []items.Unit
+	// Workflow is the pre-rendered "## Workflow" section (workflow.Render),
+	// spec B6/B4. Empty for a legacy spawn. Its presence, not the item's own
+	// shape, is what gates the cap-collapse cascade below (Review Focus 1:
+	// a legacy over-long brief must keep refusing outright).
+	Workflow string
 }
 
 func PendingNotice(n int, name, key string) string {
@@ -155,37 +168,97 @@ func CompactionNotice() string {
 	return "[swarm] Your context was compacted. Call swarm_sync, then swarm_read with your root filter, before continuing. " + ShortPreamble
 }
 
-// skills is §9.3's {skills}: orchestrators also get swarm-orchestrator (D4).
-func skills(role Role) string {
-	if role == RoleOrchestrator {
-		return "`swarm` and `swarm-orchestrator`"
+// RoleSkills is A3's kickoff table: the skill(s) a role's kickoff names. An
+// orchestrator on a spike item gets swarm-spike instead of swarm-orchestrator
+// (Kickoff/ResumeKickoff take itemType for exactly this).
+func RoleSkills(role Role, itemType items.Type) []string {
+	switch role {
+	case RoleOrchestrator:
+		if itemType == items.Spike {
+			return []string{"swarm", "swarm-spike", "swarm-workflows", "swarm-batching"}
+		}
+		return []string{"swarm", "swarm-orchestrator", "swarm-workflows", "swarm-batching"}
+	case RoleCoder:
+		return []string{"swarm", "swarm-coder"}
+	case RoleReviewer:
+		return []string{"swarm", "swarm-reviewer"}
+	case RoleUIReviewer:
+		return []string{"swarm", "swarm-ui-reviewer"}
+	case RoleDesigner:
+		return []string{"swarm", "swarm-designer"}
+	case RoleDebugger:
+		return []string{"swarm", "swarm-debugger"}
+	case RoleMechanical:
+		return []string{"swarm", "swarm-mechanical"}
+	case RoleResearcher:
+		return []string{"swarm", "swarm-researcher"}
 	}
-	return "`swarm`"
+	// Every role is validated at spawn (agents.go); this default is never a
+	// role inference, only a defensive fallback for a role RoleSkills doesn't
+	// otherwise list.
+	return []string{"swarm"}
 }
 
-// mandate is R3's instruction-level enforcement: orchestrators MUST follow the
-// skills' superpowers workflows (the lapsed runs skipped them despite the skill
-// text). Workers keep the advisory form; a daemon-side gate is out of scope.
-func mandate(role Role) string {
-	if role == RoleOrchestrator {
-		return " You MUST follow the skill(s) above, including their superpowers workflows — do not improvise around them."
+// joinSkillNames renders a role's skill list as backticked names joined for
+// prose: "`a`", "`a` and `b`", "`a`, `b` and `c`".
+func joinSkillNames(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = "`" + n + "`"
 	}
-	return ""
+	if len(quoted) <= 1 {
+		return strings.Join(quoted, "")
+	}
+	return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
 }
 
-func Kickoff(name string, role Role, key, title string) string {
+// skills is §9.3's {skills}, from the A3 table.
+func skills(role Role, itemType items.Type) string {
+	return joinSkillNames(RoleSkills(role, itemType))
+}
+
+// mandate is A3's instruction-level enforcement, for every role: the lapsed
+// spec-less runs skipped a skill's superpowers workflows despite the skill
+// text, so every kickoff — not just the orchestrator's — now carries the
+// MUST-level mandate. A daemon-side gate is out of scope.
+const mandateText = " You MUST follow the skill(s) above, including the superpowers skills they name — do not improvise around them."
+
+func Kickoff(name string, role Role, itemType items.Type, key, title string) string {
 	return fmt.Sprintf("You are swarm agent %s (%s) for %s: %s. Use the %s skill(s).%s Call swarm_sync now to get your assignment. %s",
-		name, role, key, title, skills(role), mandate(role), Preamble)
+		name, role, key, title, skills(role, itemType), mandateText, Preamble)
 }
 
 // ResumeKickoff's notice omits the title (§9.3); title is kept for signature symmetry with Kickoff.
-func ResumeKickoff(name string, role Role, key, title string) string {
+func ResumeKickoff(name string, role Role, itemType items.Type, key, title string) string {
 	return fmt.Sprintf("You are swarm agent %s (%s) for %s, resuming after a pause. Use the %s skill(s).%s Call swarm_sync now; it returns your assignment and your last checkpoint. %s",
-		name, role, key, skills(role), mandate(role), ShortPreamble)
+		name, role, key, skills(role, itemType), mandateText, ShortPreamble)
 }
 
-// RenderBrief renders §9.4. Empty sections are left out.
+// RenderBrief renders §9.4. Empty sections are left out. Spec B6: for a
+// workflow spawn (in.Workflow set), a brief that overflows the cap first
+// truncates Context to a single swarm_read pointer, then -- if still over
+// cap -- collapses each unit's steps to its title plus the same pointer. A
+// legacy (non-workflow) spawn never cascades: it just refuses, unchanged
+// (Review Focus 1).
 func RenderBrief(in BriefInput) (string, error) {
+	if out := renderBriefOnce(in, false, false); len(out) <= maxBrief {
+		return out, nil
+	} else if in.Workflow == "" {
+		return "", errors.New(ErrBriefTooLong)
+	}
+	if out := renderBriefOnce(in, false, true); len(out) <= maxBrief {
+		return out, nil
+	}
+	if out := renderBriefOnce(in, true, true); len(out) <= maxBrief {
+		return out, nil
+	}
+	return "", errors.New(ErrBriefTooLong)
+}
+
+// renderBriefOnce does the actual rendering; RenderBrief calls it up to
+// three times (full, context-truncated, then also unit-collapsed) to find
+// one that fits the cap.
+func renderBriefOnce(in BriefInput, collapseUnits, truncateContext bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s · %s\n", in.Key, in.Title)
 	parent := in.ParentName
@@ -221,12 +294,54 @@ func RenderBrief(in BriefInput) (string, error) {
 			fmt.Fprintf(&b, "Out: %s\n", strings.Join(in.ScopeOut, ", "))
 		}
 	}
-	bullets("Context", in.Context)
+	switch {
+	case len(in.Units) > 0:
+		b.WriteString("\n## Units\n")
+		for i, u := range in.Units {
+			if collapseUnits {
+				fmt.Fprintf(&b, "%d. %s (steps: swarm_read %s)\n", i+1, u.Title, in.Key)
+				continue
+			}
+			fmt.Fprintf(&b, "%d. %s\n", i+1, u.Title)
+			for _, st := range u.Steps {
+				fmt.Fprintf(&b, "   - %s\n", st)
+			}
+		}
+	case len(in.Steps) > 0:
+		b.WriteString("\n## Steps\n")
+		for i, st := range in.Steps {
+			fmt.Fprintf(&b, "%d. %s\n", i+1, st)
+		}
+	}
+	if truncateContext && len(in.Context) > 0 {
+		fmt.Fprintf(&b, "\n## Context\n- (context truncated; swarm_read %s)\n", in.Key)
+	} else {
+		bullets("Context", in.Context)
+	}
 	bullets("Verify", in.Verify)
 	bullets("Stop when", in.StopWhen)
-	out := strings.TrimRight(b.String(), "\n")
-	if len(out) > maxBrief {
-		return "", errors.New(ErrBriefTooLong)
+	if in.Workflow != "" {
+		fmt.Fprintf(&b, "\n%s\n", in.Workflow)
 	}
-	return out, nil
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// BriefForStep builds an engine-spawned step agent's brief content (spec
+// B6): Objective/Acceptance/Steps/Units/Verify come straight from the item,
+// Context is the caller-resolved lines (workflow start's own context, plus
+// design/research artifact paths -- the engine's own job, not this
+// function's), and Workflow is the step's own "## Workflow" section
+// (workflow.Render). The identity fields (Key, Title, Name, Role,
+// ParentName, RootKey, Worktrees) are filled by the caller/Spawn, not here --
+// same split BriefInput already had before this package existed.
+func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round int, ctxLines []string) BriefInput {
+	return BriefInput{
+		Objective:  it.Brief,
+		Acceptance: it.Acceptance,
+		Verify:     it.Verify,
+		Context:    ctxLines,
+		Steps:      it.Steps,
+		Units:      it.Units,
+		Workflow:   workflow.Render(spec, stepID, round),
+	}
 }

@@ -139,4 +139,19 @@ describe("SpawnSheet (§16.10)", () => {
       },
     });
   });
+
+  it("shows the Designer default and submits its override", async () => {
+    const onClose = vi.fn();
+    const { user, daemon } = renderWithDaemon(<SpawnSheet itemKey="EPIC-20" onClose={onClose} />, { daemon: roomy(), events: false });
+    const sheet = await screen.findByRole("dialog", { name: "Start orchestrator" });
+    await user.click(within(sheet).getByText("Worker Roles"));
+    const designer = within(sheet).getByRole("group", { name: "Designer" });
+    expect(within(designer).getByRole("combobox", { name: "Agent" })).toHaveValue("claude");
+    expect(within(designer).getByRole("combobox", { name: "Model" })).toHaveValue("opus");
+    await user.selectOptions(within(designer).getByRole("combobox", { name: "Model" }), "sonnet");
+    await user.click(within(sheet).getByRole("button", { name: "Start orchestrator" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const post = daemon.calls.find((c) => c.path === "/api/items/EPIC-20/orchestrator");
+    expect(post?.body).toMatchObject({ roles: { designer: { agent: "claude", model: "sonnet" } } });
+  });
 });

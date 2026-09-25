@@ -88,7 +88,7 @@ func TestScenario24RepoConfirmation(t *testing.T) {
 	// materialize and check the epic keeps the confirmed set
 	reportBody := "# Report\n\n## Work breakdown\n\n```swarm-tree\n" +
 		`{"root":{"type":"bug","title":"Fix it","brief":"","acceptance":["It works."]},
- "children":[{"ref":"t1","type":"task","title":"T","brief":"","acceptance":[],"role_hint":"coder","repos":["repo-b"]}]}` +
+ "children":[{"ref":"t1","type":"task","title":"T","brief":"","acceptance":[],"role_hint":"coder","repos":["repo-b"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]}` +
 		"\n```\n\n## Verification\n\ngo test ./...\n"
 	reportPath := filepath.Join(t.TempDir(), "report.md")
 	writeFileT(t, reportPath, reportBody)

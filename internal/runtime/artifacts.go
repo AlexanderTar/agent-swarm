@@ -16,6 +16,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 const maxArtifactBytes = 1 << 20 // 1 MB
@@ -31,19 +32,30 @@ type ArtifactResult struct {
 	Revision      int
 	Sections      []ArtifactSection
 	StaleRequests []string
+	Warnings      []string
+}
+
+type TreeUnit struct {
+	Title string   `json:"title"`
+	Steps []string `json:"steps"`
 }
 
 // TreeNode is one node of a swarm-tree block (I10).
 type TreeNode struct {
-	Ref        string     `json:"ref,omitempty"`
-	Type       string     `json:"type"`
-	Title      string     `json:"title"`
-	Brief      string     `json:"brief"`
-	Acceptance []string   `json:"acceptance"`
-	RoleHint   string     `json:"role_hint,omitempty"`
-	TddExempt  *string    `json:"tdd_exempt,omitempty"`
-	Repos      []string   `json:"repos,omitempty"`
-	Children   []TreeNode `json:"children,omitempty"`
+	Ref        string         `json:"ref,omitempty"`
+	Type       string         `json:"type"`
+	Title      string         `json:"title"`
+	Brief      string         `json:"brief"`
+	Acceptance []string       `json:"acceptance"`
+	RoleHint   string         `json:"role_hint,omitempty"`
+	Workflow   *workflow.Spec `json:"workflow,omitempty"`
+	Steps      []string       `json:"steps,omitempty"`
+	Units      []TreeUnit     `json:"units,omitempty"`
+	Solo       string         `json:"solo,omitempty"`
+	Verify     []string       `json:"verify,omitempty"`
+	TddExempt  *string        `json:"tdd_exempt,omitempty"`
+	Repos      []string       `json:"repos,omitempty"`
+	Children   []TreeNode     `json:"children,omitempty"`
 }
 
 // TreeDep is one swarm-tree dependency edge.
@@ -334,10 +346,16 @@ func (s *Store) RegisterArtifact(ctx context.Context, sessionID, op, itemKey, ki
 	}
 	sections := SplitSections(string(body))
 	var tree *Tree
+	warnings := []string{}
 	if kind == "plan" || kind == "debug_report" {
 		t, err := ParseTree(string(body))
 		if err != nil {
 			return ArtifactResult{}, err
+		}
+		if lintErrors, lintWarnings := lintTree(t); len(lintErrors) > 0 {
+			return ArtifactResult{}, lintErrors[0]
+		} else {
+			warnings = lintWarnings
 		}
 		tree = &t
 	}
@@ -396,17 +414,21 @@ func (s *Store) RegisterArtifact(ctx context.Context, sessionID, op, itemKey, ki
 			}
 			treeJSON = sql.NullString{String: string(b), Valid: true}
 		}
+		warningsJSON, err := json.Marshal(warnings)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_revisions
-			(artifact_id, revision, sha256, content, sections_json, tree_json, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, artifactID, revision, sha256Hex(string(body)), string(body),
-			string(sectionsJSON), treeJSON, db.Millis(s.Now())); err != nil {
+ (artifact_id, revision, sha256, content, sections_json, tree_json, warnings_json, created_at)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, artifactID, revision, sha256Hex(string(body)), string(body),
+			string(sectionsJSON), treeJSON, string(warningsJSON), db.Millis(s.Now())); err != nil {
 			return err
 		}
 		stale, err := s.staleApprovals(ctx, tx, artifactID, sectionsChanged(prevSections, sections))
 		if err != nil {
 			return err
 		}
-		out = ArtifactResult{ArtifactID: artifactID, Revision: revision, Sections: sections, StaleRequests: stale}
+		out = ArtifactResult{ArtifactID: artifactID, Revision: revision, Sections: sections, StaleRequests: stale, Warnings: warnings}
 		return nil
 	})
 	return out, err
@@ -433,9 +455,9 @@ func (s *Store) ArtifactMarkdown(ctx context.Context, artifactID string, revisio
 		revision = art.HeadRevision
 	}
 	art.Revision = revision
-	var content, sectionsJSON string
-	err = s.DB.QueryRowContext(ctx, `SELECT content, sections_json FROM artifact_revisions
-		WHERE artifact_id = ? AND revision = ?`, artifactID, revision).Scan(&content, &sectionsJSON)
+	var content, sectionsJSON, warningsJSON string
+	err = s.DB.QueryRowContext(ctx, `SELECT content, sections_json, warnings_json FROM artifact_revisions
+		WHERE artifact_id = ? AND revision = ?`, artifactID, revision).Scan(&content, &sectionsJSON, &warningsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return art, "", &items.Error{Code: items.CodeNotFound, Message: "Unknown revision."}
 	}
@@ -443,6 +465,7 @@ func (s *Store) ArtifactMarkdown(ctx context.Context, artifactID string, revisio
 		return art, "", err
 	}
 	json.Unmarshal([]byte(sectionsJSON), &art.Sections)
+	json.Unmarshal([]byte(warningsJSON), &art.Warnings)
 	if sectionID == "" {
 		return art, content, nil
 	}

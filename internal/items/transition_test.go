@@ -3,6 +3,7 @@ package items_test
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/events"
@@ -542,6 +543,114 @@ func TestSpikeTransitions(t *testing.T) {
 	sp3 := mk(t, s, items.Spike, "", "Dropped")
 	if err := move(t, s, sp3.Key, items.Cancelled, user); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestCompletedCurrentIsPerAgent reproduces the cross-agent attempt bug (spec
+// B5/Context): completedCurrent used to take MAX(attempt) across every
+// checkpoint on the item, mixing each agent's own independent attempt
+// counter. A workflow task's reviewer cycles through its own review
+// attempts on a totally different counter than the builder's -- that must
+// never mask or invalidate the builder's own completed checkpoint.
+func TestCompletedCurrentIsPerAgent(t *testing.T) {
+	s := newStore(t)
+	_, st, _ := tree(t, s)
+	daemon := items.Daemon()
+
+	// Positive case: the reviewer's own attempt counter (5) is way ahead of
+	// the coder's (1) -- must not stop the coder's completed@1 from counting.
+	taskA := mk(t, s, items.Task, st.Key, "Batched fix")
+	setWorkflowJSON(t, s.DB, taskA)
+	setStatus(t, s, taskA, items.InProgress)
+	coderAgent, coderSes := seedSessionRole(t, s.DB, taskA, "coder", "running")
+	seedCheckpointFor(t, s.DB, taskA, coderAgent, coderSes, "completed", 1, later(s))
+	reviewerAgent, reviewerSes := seedSessionRole(t, s.DB, taskA, "reviewer", "running")
+	seedCheckpointFor(t, s.DB, taskA, reviewerAgent, reviewerSes, "progress", 5, later(s))
+	if err := move(t, s, taskA.Key, items.InReview, daemon); err != nil {
+		t.Fatalf("the reviewer's unrelated attempt counter must not block the coder's own completed: %v", err)
+	}
+	wantStatus(t, s, taskA.Key, items.InReview)
+
+	// Negative case: the SAME coder later posts a non-completed checkpoint at
+	// a higher attempt -- its own stale completed@1 must stop counting.
+	taskB := mk(t, s, items.Task, st.Key, "Batched fix, retried")
+	setWorkflowJSON(t, s.DB, taskB)
+	setStatus(t, s, taskB, items.InProgress)
+	coderAgent2, coderSes2 := seedSessionRole(t, s.DB, taskB, "coder", "running")
+	seedCheckpointFor(t, s.DB, taskB, coderAgent2, coderSes2, "completed", 1, later(s))
+	seedCheckpointFor(t, s.DB, taskB, coderAgent2, coderSes2, "progress", 2, later(s))
+	wantDenied(t, move(t, s, taskB.Key, items.InReview, daemon),
+		"Couldn't update status. The item remains In progress.")
+}
+
+// Fix round 1, R2: completedCurrent's workflow branch counts "build roles"
+// -- any role except reviewer/ui_reviewer/orchestrator, not just
+// coder/debugger/mechanical -- so a design-reviewed template's designer step
+// can finish too.
+func TestCompletedCurrentCountsDesignerOnAWorkflowTask(t *testing.T) {
+	s := newStore(t)
+	_, st, _ := tree(t, s)
+	daemon := items.Daemon()
+
+	task := mk(t, s, items.Task, st.Key, "Design the flow")
+	setWorkflowJSON(t, s.DB, task)
+	setStatus(t, s, task, items.InProgress)
+	designerAgent, designerSes := seedSessionRole(t, s.DB, task, "designer", "running")
+	seedCheckpointFor(t, s.DB, task, designerAgent, designerSes, "completed", 1, later(s))
+	if err := move(t, s, task.Key, items.InReview, daemon); err != nil {
+		t.Fatalf("a designer's completed on a workflow task must count: %v", err)
+	}
+	wantStatus(t, s, task.Key, items.InReview)
+}
+
+func TestWorkflowSucceededGatesDone(t *testing.T) {
+	s := newStore(t)
+	_, _, task := tree(t, s)
+	setWorkflowJSON(t, s.DB, task)
+	daemon := items.Daemon()
+	// No workflows row: Done is engine-only.
+	err := move(t, s, task.Key, items.Done, daemon)
+	if code(err) != items.CodeTransitionDenied || !strings.Contains(err.Error(), "finished by its workflow") {
+		t.Fatalf("Done without a workflow row: err = %v, want transition_denied finished-by-workflow", err)
+	}
+	agentID, _ := seedSession(t, s.DB, task, "running")
+	exec(t, s.DB, `INSERT INTO workflows (id, item_id, root_item_id, owner_agent_id, state, worktrees_json, created_at, updated_at)
+		VALUES ('wfl_1', ?, ?, ?, 'succeeded', '[]', ?, ?)`,
+		task.ID, task.RootID, agentID, later(s), later(s))
+	if err := move(t, s, task.Key, items.Done, daemon); err != nil {
+		t.Fatalf("Done with a succeeded workflow: err = %v, want nil", err)
+	}
+	wantStatus(t, s, task.Key, items.Done)
+}
+
+func TestWorkflowFailedOrCancelledResetsToReady(t *testing.T) {
+	for _, state := range []string{"failed", "cancelled", "running"} {
+		s := newStore(t)
+		_, _, task := tree(t, s)
+		setWorkflowJSON(t, s.DB, task)
+		daemon := items.Daemon()
+		agentID, _ := seedSession(t, s.DB, task, "running")
+		exec(t, s.DB, `INSERT INTO workflows (id, item_id, root_item_id, owner_agent_id, state, worktrees_json, created_at, updated_at)
+			VALUES ('wfl_1', ?, ?, ?, ?, '[]', ?, ?)`,
+			task.ID, task.RootID, agentID, state, later(s), later(s))
+		setStatus(t, s, task, items.InProgress)
+		err := move(t, s, task.Key, items.Ready, daemon)
+		if state == "running" {
+			if code(err) != items.CodeTransitionDenied {
+				t.Fatalf("state %s: Ready reset err = %v, want transition_denied", state, err)
+			}
+		} else {
+			if err != nil {
+				t.Fatalf("state %s: Ready reset err = %v, want nil", state, err)
+			}
+			wantStatus(t, s, task.Key, items.Ready)
+		}
+		// Done stays engine-only for every non-succeeded state.
+		setStatus(t, s, task, items.InProgress)
+		if err := move(t, s, task.Key, items.Done, daemon); code(err) != items.CodeTransitionDenied ||
+			!strings.Contains(err.Error(), "finished by its workflow") {
+			t.Fatalf("state %s: Done err = %v, want transition_denied finished-by-workflow", state, err)
+		}
 	}
 }
 

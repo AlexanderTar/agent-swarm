@@ -434,6 +434,15 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}, nil
 		}
 
+		// A6: the native Workflow tool is disabled in Swarm sessions -- use
+		// swarm_spawn (single step) or swarm_workflow (the multi-step engine).
+		if in.ToolName == "Workflow" || in.ToolName == "workflow" {
+			return adapter.HookDecision{
+				Block:  true,
+				Reason: "[swarm] The Workflow tool is disabled in Swarm sessions. Use swarm_spawn or swarm_workflow.",
+			}, nil
+		}
+
 		isNativeFork := in.ToolName == "Agent" ||
 			in.ToolName == "Task" ||
 			in.ToolName == "Fork" ||
@@ -482,25 +491,14 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		isSpawn := (in.IsSwarmTool && strings.Contains(in.ToolName, "swarm_spawn")) || strings.Contains(in.ToolName, "swarm_spawn")
 
 		if isSpawn && s.AgentID != "" && h.RT != nil && h.RT.Settings != nil {
-			cfg, err := h.RT.Settings.Get(ctx)
-			if err != nil {
-				return adapter.HookDecision{}, err
-			}
-
-			maxSubagents := cfg.MaxConcurrentSubagents
-			if maxSubagents <= 0 {
-				maxSubagents = 3
-			}
-
 			// A queued child holds its slot (matches Admit's own comment in
 			// limits.go), but an 'active' child whose latest session died to
 			// interrupted/crashed/failed does not (runtime.NotAZombieSlot,
 			// 2026-09-22 zombie-slot fix) -- otherwise a forgotten dead child
 			// pins the parent's subagent budget at capacity forever.
-			var active int
-			err = h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents
-				WHERE parent_agent_id = ? AND (state = 'queued' OR (state = 'active' AND `+runtime.NotAZombieSlot+`))`,
-				s.AgentID).Scan(&active)
+			// SubagentSlots (P9) owns this exact query, shared with the
+			// engine's own budget check, so the two can never disagree.
+			active, maxSubagents, err := h.RT.SubagentSlots(ctx, s.AgentID)
 			if err != nil {
 				return adapter.HookDecision{}, err
 			}

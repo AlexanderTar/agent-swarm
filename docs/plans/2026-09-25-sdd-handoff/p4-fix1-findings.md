@@ -1,0 +1,9 @@
+# P4 fix round 1 (Opus review)
+
+0. First: `git merge --no-edit claude/happy-ptolemy-fke4jx` into pkg/p4 (P7 has merged there and added kinds.RoleDesigner). Replace the inline `kinds.Role("designer")` in RoleSkills with `kinds.RoleDesigner`. Resolve any conflicts; run make skills-sync.
+1. (Important) internal/advisor/run.go:19 Prompt only partly follows swarm-advisor's decision rules: rule 5 (unresolved high-impact uncertainty goes to the parent or user) has no advisor-side version, so the prompt pushes "one decisive recommendation" even when context can't support one. Add e.g. "If what you read doesn't settle the decision and the stakes are high, say so plainly and recommend the agent take it to its parent or the user rather than guessing." Pin a matching substring ("parent or the user") in TestAdvisorSystemPromptDecisionRules. Red first.
+2. (Minor) skills/swarm-advisor/SKILL.md:12 "Your advisor never sees your conversation — the daemon builds a fresh, self-contained briefing" is wrong: BuildContext (internal/advisor/context.go, queue.go:212) forwards up to 30 truncated transcript turns; the native Claude advisor sees full history. Reword: it sees at most a truncated slice of your recent transcript; you write the question and `focus` paths. Also update the spec A4 advisor wording to match (it's plan-mandated text) in a docs(spec) commit.
+3. (Minor) skills/swarm-debugger/SKILL.md step 1: red entry lacks "cmd" and "unit"; add "cmd" and "tag `unit` when your brief has `## Units`" (match swarm-coder's shape).
+4. (Minor) internal/runtime/text.go RoleSkills default `return []string{"swarm"}`: add a comment that roles are validated at spawn, so the fallback is never a role inference; keep behaviour.
+5. (Nit) fix the knownSuperpowersSkills comment/version mismatch (names are from 6.4.1).
+Verify: make skills-sync; go test ./internal/install/... ./internal/advisor/... ./internal/runtime/... ; go build ./... && go vet ./... (go test ./... safe).

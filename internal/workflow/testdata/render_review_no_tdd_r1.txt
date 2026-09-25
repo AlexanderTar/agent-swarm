@@ -1,0 +1,3 @@
+## Workflow
+You are reviewing step "design" (designer), round 1 of at most 2.
+Give a verdict: pass, changes_requested or blocked. pass can't carry a critical or major finding. Each finding: {severity, file, line, unit (batched tasks), summary}. A blocked verdict escalates to the orchestrator.

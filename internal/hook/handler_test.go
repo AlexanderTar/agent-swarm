@@ -28,7 +28,7 @@ func seed(t *testing.T, pending int, state runtime.SessionState) (*Handler, stri
 	ev := events.New(d, now)
 	st := &runtime.Store{DB: d, Events: ev, Items: &items.Store{DB: d, Events: ev, Now: now},
 		Settings: &settings.Store{DB: d, Events: ev, Now: now},
-		Now: now, Log: func(string, ...any) {}}
+		Now:      now, Log: func(string, ...any) {}}
 	_, err := d.ExecContext(ctx, `
 		INSERT INTO items (id, key, type, root_id, title, status, created_at, updated_at)
 		VALUES ('itm_1','TASK-101','task','itm_1','Build the login form','in_progress',1,1);
@@ -686,6 +686,52 @@ func TestPreToolUseBlocksNativeForksAndSubagents(t *testing.T) {
 	}
 }
 
+// TestPreToolUseBlocksWorkflowTool is spec A6: the native Workflow tool is
+// disabled in Swarm sessions, both spellings ("Workflow" the tool name,
+// "workflow" as some adapters lowercase it).
+func TestPreToolUseBlocksWorkflowTool(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+
+	wantReason := "[swarm] The Workflow tool is disabled in Swarm sessions. Use swarm_spawn or swarm_workflow."
+
+	for _, tool := range []string{"Workflow", "workflow"} {
+		t.Run(tool, func(t *testing.T) {
+			stdin := []byte(fmt.Sprintf(`{"session_id":"p1","tool_name":"%s","tool_input":{}}`, tool))
+			out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, stdin)
+			if err != nil {
+				t.Fatalf("%s: %v", tool, err)
+			}
+			var m map[string]map[string]string
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatalf("%s unmarshal: %v", tool, err)
+			}
+			if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
+				t.Fatalf("%s: want deny, got %s", tool, out)
+			}
+			if m["hookSpecificOutput"]["permissionDecisionReason"] != wantReason {
+				t.Fatalf("%s: reason = %q, want %q", tool, m["hookSpecificOutput"]["permissionDecisionReason"], wantReason)
+			}
+		})
+	}
+}
+
+// TestWorkflowToolAllowedOutsideSwarm: a PreToolUse call for a session Swarm
+// doesn't manage (no row in sessions) is a no-op, same as any other tool --
+// the block only applies inside a Swarm session.
+func TestWorkflowToolAllowedOutsideSwarm(t *testing.T) {
+	h, _ := seed(t, 0, runtime.Running)
+	ctx := context.Background()
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", "not-a-swarm-session",
+		[]byte(`{"session_id":"p1","tool_name":"Workflow","tool_input":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("output = %s, want no-op outside a swarm session", out)
+	}
+}
+
 func TestPreToolUseBlocksNestedClaudeShellCommand(t *testing.T) {
 	h, ses := seed(t, 0, runtime.Running)
 	ctx := context.Background()
@@ -1069,9 +1115,6 @@ func TestPostToolUseNonQuestionToolDoesNotResolveOpenQuestionRequest(t *testing.
 	}
 }
 
-
-
-
 // A message the agent has already synced (state 'delivered') is not "new": no
 // nudge on PostToolUse and no Stop block. Only 'pending' counts.
 func TestReadButUnackedMessagesNeitherNudgeNorBlockStop(t *testing.T) {
@@ -1230,7 +1273,7 @@ func TestHumanPromptClosesOpenRowsButDaemonPromptsDoNot(t *testing.T) {
 		}
 		return
 	}
-	for _, daemon := range []string{runtime.IdleToken, runtime.Kickoff("login-form-coder", runtime.RoleCoder, "TASK-101", "T"),
+	for _, daemon := range []string{runtime.IdleToken, runtime.Kickoff("login-form-coder", runtime.RoleCoder, items.Task, "TASK-101", "T"),
 		runtime.PendingNotice(1, "login-form-coder", "TASK-101"), ""} {
 		submit(daemon)
 		if got := state(); got != "open" {

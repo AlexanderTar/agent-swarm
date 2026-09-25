@@ -161,10 +161,10 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 	planBody := "# Plan\n\n## Work breakdown\n\n```swarm-tree\n" +
 		`{"root":{"type":"epic","title":"Ship the login form","brief":"","acceptance":["It works."]},
  "children":[{"ref":"s1","type":"story","title":"Server","brief":"","acceptance":[],
-   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoADir) + `"]},
-               {"ref":"t2","type":"task","title":"Login route","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoADir) + `"]}]},
+   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoADir) + `"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"},
+               {"ref":"t2","type":"task","title":"Login route","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoADir) + `"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]},
   {"ref":"s2","type":"story","title":"Client","brief":"","acceptance":[],
-   "children":[{"ref":"t3","type":"task","title":"Login screen","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoADir) + `"]}]}],
+   "children":[{"ref":"t3","type":"task","title":"Login screen","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoADir) + `"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]}],
  "deps":[{"item":"t2","blocked_by":"t1"}]}` +
 		"\n```\n\n## Verification\n\ngo test ./...\n"
 	planPath := filepath.Join(t.TempDir(), "plan.md")

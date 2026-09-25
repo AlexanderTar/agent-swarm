@@ -217,6 +217,12 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.withdrawOrphanedRequests(ctx); err != nil {
 		return err
 	}
+	// P9 (spec B4): crash recovery for a daemon restart between a
+	// checkpoint's commit and the advance() call that should have followed
+	// it immediately after.
+	if err := s.recoverWorkflows(ctx); err != nil {
+		return err
+	}
 	return s.sweepFinishedRoots(ctx)
 }
 
@@ -439,6 +445,11 @@ func (s *Store) alreadyRelayedForCheckpoint(ctx context.Context, checkpointID st
 // relay. "dependency_added" was already reserved as an immediate wake in
 // ImmediateRelayEvents (inbox.go) since the message-inbox design landed, but
 // nothing ever raised it until now.
+//
+// Spec B5: every distinct parent gets woken, not one arbitrary agent's --
+// `agents.item_id` has no uniqueness constraint, so more than one agent can
+// be actively assigned to the same blocked item (e.g. a workflow task's
+// builder and reviewer both live on it), each under a different ancestor.
 func (s *Store) OnDepUnblocked(ctx context.Context, tx *sql.Tx, doneID string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT i.id, i.key FROM items i
 		JOIN item_deps d ON d.item_id = i.id
@@ -461,38 +472,52 @@ func (s *Store) OnDepUnblocked(ctx context.Context, tx *sql.Tx, doneID string) e
 		return err
 	}
 	for _, d := range waiting {
-		var agentID, agentName, parentAgentID, rootItemID string
-		err := tx.QueryRowContext(ctx, `SELECT id, name, COALESCE(parent_agent_id, ''), root_item_id
-			FROM agents WHERE item_id = ? AND state = 'active'`, d.id).
-			Scan(&agentID, &agentName, &parentAgentID, &rootItemID)
-		if err == sql.ErrNoRows {
-			continue // nobody currently assigned to the blocked item: nothing to wake
-		}
+		agRows, err := tx.QueryContext(ctx, `SELECT id, name, root_item_id
+			FROM agents WHERE item_id = ? AND state = 'active'`, d.id)
 		if err != nil {
 			return err
 		}
-		if parentAgentID == "" {
-			continue // a top-level orchestrator itself: nothing above it to relay to
+		type activeAgent struct{ id, name, rootItemID string }
+		var agents []activeAgent
+		for agRows.Next() {
+			var ag activeAgent
+			if err := agRows.Scan(&ag.id, &ag.name, &ag.rootItemID); err != nil {
+				agRows.Close()
+				return err
+			}
+			agents = append(agents, ag)
 		}
-		// The unguarded relay straight to parentAgentID used to assume the
-		// parent was alive to receive it -- the identical no-liveness-check
-		// bug notifyUndeliveredMessages' own parent fallback had (Bug 5):
-		// walk up to the nearest live ancestor instead, and skip the relay
-		// entirely if the whole chain above is dead.
-		ancestor, ok, err := s.nearestLiveAncestor(ctx, agentID)
-		if err != nil {
+		agRows.Close()
+		if err := agRows.Err(); err != nil {
 			return err
 		}
-		if !ok {
-			continue // nobody live left above this agent to relay to
-		}
-		payload, err := json.Marshal(map[string]any{"event": "dependency_added", "agent": agentName, "item": d.key})
-		if err != nil {
-			return err
-		}
-		if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: ancestor.ID,
-			RootItemID: rootItemID, ItemID: d.id, Payload: payload}); err != nil {
-			return err
+
+		woken := map[string]bool{} // ancestor id already relayed to, for this dependant item
+		for _, ag := range agents {
+			// The unguarded relay straight to parent_agent_id used to assume
+			// the parent was alive to receive it -- the identical
+			// no-liveness-check bug notifyUndeliveredMessages' own parent
+			// fallback had (Bug 5): walk up to the nearest live ancestor
+			// instead (this also handles "a top-level orchestrator itself:
+			// nothing above it to relay to" -- nearestLiveAncestor returns
+			// ok=false right away when the agent has no parent at all), and
+			// skip the relay entirely if the whole chain above is dead.
+			ancestor, ok, err := s.nearestLiveAncestor(ctx, ag.id)
+			if err != nil {
+				return err
+			}
+			if !ok || woken[ancestor.ID] {
+				continue
+			}
+			woken[ancestor.ID] = true
+			payload, err := json.Marshal(map[string]any{"event": "dependency_added", "agent": ag.name, "item": d.key})
+			if err != nil {
+				return err
+			}
+			if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: ancestor.ID,
+				RootItemID: ag.rootItemID, ItemID: d.id, Payload: payload}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -527,7 +552,29 @@ func (s *Store) OnDepUnblocked(ctx context.Context, tx *sql.Tx, doneID string) e
 // race, and must still be handled immediately.
 const spawnGracePeriod = 10 * time.Second
 
+// resolveDead is P9's wrapper around resolveDeadInner: after whatever
+// session/agent transition the inner call makes, it triggers the engine's
+// two remaining B4 triggers that live in reconcile rather than
+// checkpoint.go -- a workflow run that just went terminal with no
+// checkpoint of its own (crash/interrupted) advances its own workflow, and
+// ANY child finishing frees a budget slot that may let a sibling
+// workflow's waiting run start (spec B4 Budget/Triggers). Both are
+// best-effort: a failure here is logged, never allowed to break the
+// reconcile tick that already committed its own real state change.
 func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bool) error {
+	err := s.resolveDeadInner(ctx, r, p, paneKnown)
+	if err != nil {
+		return err
+	}
+	if r.ParentAgentID != "" {
+		if aerr := s.advanceWaitingForOwner(context.WithoutCancel(ctx), r.ParentAgentID); aerr != nil {
+			s.logf("reconcile: advance waiting runs for %s: %v", r.ParentAgentID, aerr)
+		}
+	}
+	return nil
+}
+
+func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKnown bool) error {
 	now := s.Now()
 	if !paneKnown {
 		basis := r.StartedAt
@@ -586,6 +633,15 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 	// A pausing session that was sent interrupt keys (L11) ends interrupted, never
 	// crashed, whatever attempt-scoped checkpoint it left behind.
 	if r.State.Pausing() && s.getInterrupted(r.SessionID) != nil {
+		// Opus review, fix round 2, finding 6: this branch is exclusively a
+		// DELIBERATE pause (swarm_control pause) hitting its interrupt
+		// deadline -- getInterrupted is only ever set by TickPause's own
+		// interrupt() (pause.go). It is not a crash, so a workflow run
+		// here must be left exactly as it is (still 'active', waiting): a
+		// human's later swarm_control resume is what starts it going again,
+		// not the engine. An earlier version of this branch marked the run
+		// 'failed' the same as a crash, which made AutoRetry immediately
+		// un-pause the agent with a fresh Retry() -- defeating the pause.
 		return s.tx(ctx, func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'interrupted', exit_code = ?,
 				ended_at = ? WHERE id = ?`, exitCode, db.Millis(now), r.SessionID); err != nil {
@@ -635,7 +691,9 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 		}
 		ancestor, ancestorOk, _ := s.nearestLiveAncestor(ctx, r.AgentID)
 
-		return s.tx(ctx, func(tx *sql.Tx) error {
+		var run workflowRun
+		var hasRun bool
+		err := s.tx(ctx, func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'crashed', exit_code = ?,
 				ended_at = ? WHERE id = ?`, exitCode, db.Millis(now), r.SessionID); err != nil {
 				return err
@@ -643,6 +701,19 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.crashed", AgentName: r.AgentName,
 				ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
 				return err
+			}
+			// P9 (spec B4): a crashed workflow agent (no terminal checkpoint
+			// at all) is the engine's own crash signal too.
+			var werr error
+			run, hasRun, werr = s.workflowRunFor(ctx, tx, r.AgentID)
+			if werr != nil {
+				return werr
+			}
+			if hasRun {
+				if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ? WHERE id = ? AND state IN ('active', 'waiting')`,
+					db.Millis(now), run.ID); err != nil {
+					return err
+				}
 			}
 			if ancestorOk {
 				payload, err := json.Marshal(map[string]any{
@@ -662,6 +733,12 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 			}
 			return nil
 		})
+		if err == nil && hasRun {
+			if aerr := s.advance(context.WithoutCancel(ctx), run.WorkflowID); aerr != nil {
+				s.logf("reconcile: advance %s: %v", run.WorkflowID, aerr)
+			}
+		}
+		return err
 	}
 }
 

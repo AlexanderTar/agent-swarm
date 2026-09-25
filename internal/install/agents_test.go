@@ -72,11 +72,21 @@ func TestAgentsRemovesTheV1IntegrationsBeforeWritingTheNewOnes(t *testing.T) {
 	if s := out.String(); strings.Index(s, "wrote ") >= 0 && strings.LastIndex(s, "removed ") > strings.Index(s, "wrote ") {
 		t.Errorf("a writer ran before removal finished:\n%s", s)
 	}
-	// Removal happened.
-	for _, link := range []string{c.Claude("skills", "swarm"), c.Cursor("plugins", "local", "swarm")} {
-		if fi, err := os.Lstat(link); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			t.Errorf("%s is still a v1 symlink", link)
+	// Removal happened. A1 (unit 1.2): Claude's own v2 skill exposure is
+	// legitimately a symlink into ~/.swarm/skills, so only a symlink pointing
+	// somewhere else there is the v1 leftover.
+	claudeLink := c.Claude("skills", "swarm")
+	for _, link := range []string{claudeLink, c.Cursor("plugins", "local", "swarm")} {
+		fi, err := os.Lstat(link)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			continue
 		}
+		if link == claudeLink {
+			if target, err := os.Readlink(link); err == nil && target == filepath.Join(c.Home, "skills", "swarm") {
+				continue
+			}
+		}
+		t.Errorf("%s is still a v1 symlink", link)
 	}
 	toml, _ := os.ReadFile(c.Codex("config.toml"))
 	if strings.Contains(string(toml), "mcp_servers.swarm") {
@@ -171,9 +181,9 @@ func TestAgentsDispatchesMuseToWriteMuse(t *testing.T) {
 	c := fakeHome(t)
 	f := &execx.Fake{Responses: map[string]execx.Result{
 		"launchctl bootout gui/501/dev.swarm.updater": {},
-		"muse plugins list --json":                   {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
-		"muse plugins update superpowers":            {Out: "updated"},
-		"muse plugins update elements-of-style":      {Out: "updated"},
+		"muse plugins list --json":                    {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
+		"muse plugins update superpowers":             {Out: "updated"},
+		"muse plugins update elements-of-style":       {Out: "updated"},
 	}}
 	o := agentsOpts(t, c, f, install.KindMuse)
 	if err := install.Agents(context.Background(), o); err != nil {

@@ -5,6 +5,8 @@ package e2e
 import (
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 // countActiveAgents is the same global count internal/runtime's Admit uses
@@ -16,7 +18,7 @@ import (
 func (h *harness) countActiveAgents(t *testing.T) int {
 	t.Helper()
 	var n int
-	if err := h.db(t).QueryRow(`SELECT COUNT(*) FROM agents WHERE state = 'active'`).Scan(&n); err != nil {
+	if err := h.db(t).QueryRow(`SELECT COUNT(*) FROM agents WHERE state = 'active' AND ` + runtime.NotAZombieSlot).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n

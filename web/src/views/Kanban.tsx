@@ -6,12 +6,12 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { AgentIcon, Key, TypeIcon } from "../components/icons";
 import { MoveToMenu } from "../components/MoveToMenu";
 import { useToast } from "../components/Toast";
-import { C } from "../copy";
+import { C, ROLE_EMOJI } from "../copy";
 import { useMutation } from "../data/hooks";
 import { displayState, stateLabel } from "../logic/agentActions";
 import {
   type Lane, agentLine, agentsByItem, blockedLine, buildLanes, columnCounts, columnTitle, columnsFor, DEFAULT_COLLAPSED_COLUMNS,
-  dropId, effectiveCollapsed, effectiveGrouping, emptyState, needsLine, parentLine, parseDropId, progressLine,
+  crewForCard, dropId, effectiveCollapsed, effectiveGrouping, emptyState, needsLine, parentLine, parseDropId, progressLine,
 } from "../logic/kanban";
 import { checkMove, failureMessage } from "../logic/transitions";
 import { buildIndex, isFilterActive } from "../logic/tree";
@@ -28,6 +28,7 @@ function Card(p: {
   disabled: boolean;
   parent: string | null;
   agent: { agent: AgentNode; extra: number } | null;
+  crew: ReturnType<typeof crewForCard>;
   onSelect(): void;
   onMove(status: ItemStatus): void;
 }) {
@@ -60,6 +61,7 @@ function Card(p: {
       <div className="flex items-center gap-1.5">
         <TypeIcon type={card.type} />
         <Key>{card.key}</Key>
+        {card.type === "task" && (card.workflow_state?.round ?? 0) > 1 && <span className="rounded bg-accent/10 px-1 text-[11px] text-accent">R{card.workflow_state?.round}</span>}
         {needs && <span className="ml-auto rounded bg-warn/15 px-1 text-[11px] text-warn">{needs}</span>}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: stops card selection */}
         <span className={needs ? "" : "ml-auto"} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
@@ -76,6 +78,10 @@ function Card(p: {
           <span className="ml-auto text-muted">{stateLabel(displayState(p.agent.agent))}</span>
         </p>
       )}
+      {p.crew && <div aria-label="Crew" className="flex items-center gap-0.5 text-xs" title="Active workflow crew">
+        {p.crew.roles.map((role, i) => <span key={i} role="img" aria-label={role}>{ROLE_EMOJI[role]}</span>)}
+        {p.crew.extra > 0 && <span className="text-muted">+{p.crew.extra}</span>}
+      </div>}
       {blocked && <p className="text-bad">{blocked}</p>}
       {progress && <p className="text-muted">{progress}</p>}
       {p.pending && <p className="text-accent">{C.updating}</p>}
@@ -275,6 +281,7 @@ export function Kanban(p: KanbanProps) {
                             disabled={!p.connected}
                             parent={parentLine(c, idx.byKey, group)}
                             agent={agentLine(c, byItem)}
+                            crew={crewForCard(c, byItem)}
                             onSelect={() => p.onSelect(c.key)}
                             onMove={(s2) => void move(c, s2)}
                           />

@@ -38,6 +38,12 @@ type fakeTmux struct {
 	panes    []Pane
 	n        map[string]int
 	clk      *testClock // the Store's clock, so a test can advance it: tm.clk.Advance(d)
+	// startErr, when set, is returned by every Start call instead of
+	// succeeding -- fix round 2, finding 2's "Spawn returns an error after
+	// committing the agent row" case (agents.go's startSession runs
+	// Tmux.Start after the agent row is already committed).
+	startErr error
+	onKill   func()
 }
 
 func newFakeTmux() *fakeTmux {
@@ -45,6 +51,9 @@ func newFakeTmux() *fakeTmux {
 		n: map[string]int{}}
 }
 func (f *fakeTmux) Start(ctx context.Context, name, cwd string, env map[string]string, argv []string) error {
+	if f.startErr != nil {
+		return f.startErr
+	}
 	f.started = append(f.started, name+"|"+cwd+"|"+strings.Join(argv, " "))
 	f.env[name] = env
 	return nil
@@ -75,6 +84,9 @@ func (f *fakeTmux) Env(ctx context.Context, name, key string) (string, error) {
 }
 func (f *fakeTmux) Kill(ctx context.Context, name string) error {
 	f.killed = append(f.killed, name)
+	if f.onKill != nil {
+		f.onKill()
+	}
 	return nil
 }
 func (f *fakeTmux) RenameWindow(ctx context.Context, name, title string) error {
@@ -155,6 +167,7 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 		After: clk.After,
 		Go:    func(f func()) { f() }, // D28: inline, so the assertions are deterministic
 	}
+	it.StoryReadyForReview = s.OnStoryReadyForReview
 	return s, tm, fa
 }
 
@@ -1504,6 +1517,34 @@ func TestSpawnDefaultsKindAndModel(t *testing.T) {
 	}
 }
 
+// TestSpawnDesignerRoleAccepted is spec A5: designer is a valid role end to
+// end, including the migration 0010 agents.role CHECK and the settings
+// default (claude/opus) resolved the same way any other role is.
+func TestSpawnDesignerRoleAccepted(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Adapters[Claude] = fa
+	ctx := context.Background()
+	_, _ = s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','1','[{"id":"opus","label":"Opus","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}]','opus','test',1,1)`)
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Role != RoleDesigner || a.Kind != Claude || a.Model != "opus" {
+		t.Fatalf("agent = %+v", a)
+	}
+}
+
+// TestOverridableRolesIncludeDesigner is spec A5: designer's role default is
+// overridable like every other worker role.
+func TestOverridableRolesIncludeDesigner(t *testing.T) {
+	if !slices.Contains(OverridableRoles, RoleDesigner) {
+		t.Fatalf("OverridableRoles = %v, missing designer", OverridableRoles)
+	}
+}
+
 // TestSpawnUsesRoleDefaultModelNotCatalogFirst guards against the model
 // fallback silently defaulting to whichever model the catalog happens to
 // list first (Claude's catalog puts the "fable" alias first) instead of the
@@ -2128,5 +2169,48 @@ func TestSetRoleOverrideOnlyEverTouchesTheCallersOwnRow(t *testing.T) {
 	}
 	if len(loadedB.RoleOverrides) != 0 {
 		t.Fatalf("orchB.RoleOverrides = %+v, want empty (orchA's SetRoleOverride must not touch it)", loadedB.RoleOverrides)
+	}
+}
+
+func TestSpawnSharesWorktreesAtomically(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	root := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: root.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repoID := "repo-test-1"
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO repos (id, name, path, default_branch, source, created_at, updated_at) VALUES (?, 'repo1', '/tmp/repo1', 'main', 'manual', 1000, 1000)`, repoID); err != nil {
+		t.Fatal(err)
+	}
+
+	wtID := "wt-test-1"
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktrees (id, repo_id, path, branch, base_ref, base_sha, state, owner_agent_id, root_item_id, created_at)
+		VALUES (?, ?, '/tmp/repo1-wt', 'branch-1', 'main', 'sha1', 'active', ?, ?, 1000)`, wtID, repoID, orch.ID, root.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey:       "TASK-1",
+		Role:          RoleCoder,
+		Kind:          Fake,
+		Model:         "fake-1",
+		ParentAgentID: orch.ID,
+		Brief:         BriefInput{Objective: "do it"},
+		Worktrees:     []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}},
+	})
+	if err != nil {
+		t.Fatalf("Spawn error: %v", err)
+	}
+
+	var mode string
+	err = s.DB.QueryRowContext(ctx, `SELECT mode FROM worktree_reservations WHERE worktree_id = ? AND agent_id = ? AND released_at IS NULL`, wtID, agent.ID).Scan(&mode)
+	if err != nil {
+		t.Fatalf("expected worktree reservation in DB: %v", err)
+	}
+	if mode != "rw" {
+		t.Fatalf("reservation mode = %q, want rw", mode)
 	}
 }

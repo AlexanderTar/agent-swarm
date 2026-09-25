@@ -112,7 +112,7 @@ func WriteCodex(c Config) ([]string, error) {
 		changed = append(changed, cfgPath)
 	}
 
-	skills, err := WriteSkills(c, KindCodex)
+	skills, _, err := WriteSkills(c, KindCodex)
 	return append(changed, skills...), err
 }
 
@@ -346,7 +346,7 @@ func dropSwarmHookEntries(m map[string]any) error {
 // CheckCodex is doctor's codex block: hooks, the leftover MCP table (§11.1: a
 // failure, not a warning) and account attribution (§25).
 func CheckCodex(ctx context.Context, c Config, run execx.Runner) []Check {
-	return []Check{codexHookCheck(c), codexMCPCheck(c), codexAttributionCheck(c)}
+	return []Check{codexHookCheck(c), codexMCPCheck(c), codexAttributionCheck(c), CheckSkills(c, KindCodex)}
 }
 
 func codexHookCheck(c Config) Check {

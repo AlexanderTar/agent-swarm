@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_LABEL, C, ROLE_LABEL, SESSION_LABEL, STATUS_LABEL, T, TYPE_PLURAL } from "./copy";
+import { AGENT_LABEL, C, ITEM_TYPE_LABEL, ROLE_LABEL, SESSION_LABEL, STATUS_LABEL, T, TYPE_PLURAL } from "./copy";
 
 describe("copy (§17)", () => {
   it("has the item status labels (§17.2)", () => {
@@ -18,7 +18,9 @@ describe("copy (§17)", () => {
   });
 
   it("has the role, type and agent labels", () => {
-    expect(ROLE_LABEL).toMatchObject({ ui_reviewer: "UI reviewer", orchestrator: "Orchestrator", advisor: "Advisor" });
+    expect(ROLE_LABEL).toMatchObject({ ui_reviewer: "UI reviewer", orchestrator: "Orchestrator", advisor: "Advisor", designer: "Designer" });
+    expect(ROLE_LABEL.designer).toBe("Designer");
+    expect(ITEM_TYPE_LABEL.chore).toBe("Chore");
     expect(TYPE_PLURAL.spike).toBe("Spikes");
     expect(AGENT_LABEL).toMatchObject({ claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor", muse: "Muse" });
   });

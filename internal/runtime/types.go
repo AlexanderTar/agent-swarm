@@ -25,6 +25,7 @@ const (
 	RoleDebugger     = kinds.RoleDebugger
 	RoleMechanical   = kinds.RoleMechanical
 	RoleAdvisor      = kinds.RoleAdvisor
+	RoleDesigner     = kinds.RoleDesigner
 )
 
 var AgentKinds = kinds.AgentKinds

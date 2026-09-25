@@ -1,0 +1,4 @@
+# Ruling follow-ups (controller) — apply in P8 unit 8.4's first commit (spec edits) and implement in the gate
+1. tdd gate scope is "this step's attempts in the current round" (not "this attempt"): a crash re-attempt (AutoRetry) in the same round keeps evidence recorded by earlier attempts of the same step/round; a fix round (new round) starts fresh per ruling-tdd-fix-rounds.md.
+2. Fix-round package-wide case (untagged finding on a batched task): the "at least one pair" may be on any unit or untagged; if missing, the error uses the non-batched copy "TDD evidence missing: … in this attempt." (adapt "attempt" wording to the round scope consistently with item 1, in both spec copy list and code).
+3. Spec B6 rendered brief line (~spec :734) "you receive their findings as an assignment update in this same session" → "…as an assignment update; the retry is a new session of the same agent — `swarm_read` your prior checkpoints first."

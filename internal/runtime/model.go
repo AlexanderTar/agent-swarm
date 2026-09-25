@@ -175,6 +175,12 @@ type Verify struct {
 	Phase string `json:"phase"`
 	OK    bool   `json:"ok"`
 	Note  string `json:"note,omitempty"`
+	// Unit is 1-based, set on a batched (units) task's TDD evidence so the
+	// tdd gate (spec B5) can require red-before-green per unit. 0 means
+	// "not tagged to a unit" -- a non-batched task, or a package-wide entry
+	// on a batched one (a fix-round finding with no unit). omitempty keeps
+	// it out of verify_json unless set, matching the lowercase-keys shape.
+	Unit int `json:"unit,omitempty"`
 }
 
 type Checkpoint struct {
@@ -245,6 +251,7 @@ type Artifact struct {
 	Kind, Path             string
 	HeadRevision, Revision int
 	Sections               []ArtifactSection
+	Warnings               []string
 	CreatedBy              string
 	CreatedAt              time.Time
 }

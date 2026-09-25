@@ -1,0 +1,9 @@
+# P1 fix round 2 (Opus re-review of round 1: C1, I1, I2, M2 all ADDRESSED)
+
+1. (Important, new breakage) internal/install/skills_test.go:655 TestWriteSkillsAdoptsAPreA1RealSkillDirectoryInCopyMode (:648) builds its "pre-A1" fixture from install.SkillBody("swarm") — the CURRENT body. P3 (merging next) changes skills/swarm/SKILL.md, so this test goes red once P3 lands. TestWriteClaudeAdoptsAPreA1RealSkillDirectory (:730) has the same coupling for swarm-orchestrator.
+   Fix: pin both fixtures to frozen historical bodies saved as testdata (e.g. `git show 90918bd:skills/swarm/SKILL.md` and a historical swarm-orchestrator body whose hash is in the list). Fix the comment at pre_a1_hashes.go:5 ("including the current one") to say the list is frozen at A1 and must not track the current body.
+2. (Minor, fold in) internal/install/skills.go:713 CheckSkills uses adopt=false, so doctor can call a marker-less swarm-installed pre-A1 dir "user-owned". Doctor is read-only: pass adopt=true (or report "pre-A1 install; run swarm install"). Test it.
+3. (Fold in — the Critical gate is untested) No test isolates the gate at skills.go:565. TestOpenDaemonWithACustomHomeLeavesTheRealUserHomeSkillsUntouched would pass without it because the marker check alone protects that fixture. Add a gate-only test: seed UserHome roots with entries that the daemon's OWN temp home installed (markers naming that home / links into it), open the daemon with a non-default home, and assert the roots are untouched.
+4. (Fold in) cmd/swarm TestMain: also unset SWARM_HOME and SWARM_URL so a runner with them exported can't reach the real home.
+
+Verify: make skills-sync; go test ./internal/install/... ./internal/adapter/... ./internal/migrate/... ./cmd/... ; go build ./... && go vet ./... . Keep the real-home before/after listing check around any cmd/swarm run.

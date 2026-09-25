@@ -43,6 +43,10 @@
         "agent": "claude",
         "model": "haiku"
       },
+      "designer": {
+        "agent": "claude",
+        "model": "opus"
+      },
       "advisor": {
         "agent": "claude",
         "model": "fable"

@@ -178,6 +178,7 @@ const settings = (): Settings => ({
     debugger: { agent: "claude", model: "opus" },
     mechanical: { agent: "claude", model: "haiku" },
     advisor: { agent: "claude", model: "fable" },
+    designer: { agent: "claude", model: "opus" },
   },
   fallback_default: { agent: "claude", model: "sonnet" },
   notifications: { info: { center: true, sound: true }, attention: { center: true, sound: true }, action: { center: true, sound: true } },

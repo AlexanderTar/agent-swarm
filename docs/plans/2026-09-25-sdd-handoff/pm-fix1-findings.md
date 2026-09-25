@@ -1,0 +1,9 @@
+# PM fix round 1 (Opus review: design items present; leak channels closed — denylist covers every HOME path muse reads)
+1. (Important, ruling) muse.go:111-120: exclude the swarm home from the isolated HOME by PATH, not name: `if museHomeDenylist[e.Name()] || filepath.Join(m.d.UserHome, e.Name()) == filepath.Clean(m.d.Home) { continue }`. Add a `ponytail:` comment that a Home nested deeper under ~ still cycles via its parent. Docs must say this removes the find -L cycle; it does NOT close token exposure (absolute paths). Test (red first): d.Home = UserHome/.swarm → HOME/.swarm IsNotExist while .gitconfig still linked.
+2. (Important) muse.go:93: after building xdgConfigHome, symlink HOME/.config → xdgConfigHome so tools that hardcode ~/.config/<name> (gcloud, solana) keep resolving through the sibling links, and ~/.config/muse resolves to the isolated copy. Change test (b): assert Readlink(HOME/.config) == env XDG_CONFIG_HOME (and create a fake UserHome/.config/gcloud to prove it resolves).
+3. (Minor) add `.claude.json` to museHomeDenylist.
+4. (Minor) muse.go:63-90 doc comments: separate the denylist var comment from setupEnv's doc; remove the stale "cloned first so every other MCP server keeps working" (contradicts Q1); fix :243-244 ("only XDG_CONFIG_HOME isolated"); remove the resolved TODO(probe) at :300.
+5. (Minor) muse_test.go:847-870: Resume test compares key set + pinned values against Launch's.
+6. (Minor) probe doc :206-218, :272: record that there were two muse sessions (01a0d78b-9da4…, 01a0d78b-b80a…) 7 s apart; future probes exit with /exit, not kill-session. Spec A8 trade-off text: add "including tui-history.jsonl prompt history".
+Don't touch the real home (no cleanup there — the controller leaves the leftover registry file for the user to decide).
+Verify: go test ./internal/adapter/... ./internal/install/... ; go build ./... && go vet ./... ; go test ./... once.

@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +15,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // worker spawns a coder on TASK-1 under an orchestrator and returns both sessions.
@@ -1088,5 +1092,1417 @@ func TestCheckpointRelayHeldWhileExhausted(t *testing.T) {
 	}
 	if rows != 1 {
 		t.Fatalf("suppressed rows = %d, want 1", rows)
+	}
+}
+
+// --- Unit 8.1: verdicts and findings (spec B5) ---
+
+func TestVerdictRequiredForWorkflowReviewer(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateVerify}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, rev.ID, "review", "reviewer", 1)
+
+	_, err = s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed"})
+	if err == nil {
+		t.Fatal("expected a verdict-required error")
+	}
+	want := `Reviewers must complete with verdict: pass, changes_requested or blocked.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed",
+		Verdict: "pass"}); err != nil {
+		t.Fatalf("a valid verdict should be accepted: %v", err)
+	}
+}
+
+func TestVerdictRefusedForCoder(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	_, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}},
+		Verdict:      "pass"})
+	if err == nil {
+		t.Fatal("expected a verdict-refused error")
+	}
+	if want := "Only reviewers set a verdict."; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// Finding 6: an invalid verdict value is refused up front with the spec's
+// copy, on ANY checkpoint kind -- not just left to hit the raw SQL CHECK
+// constraint on checkpoints.verdict (an ugly, unclear error), and not only
+// checked within the completed+hasRun+reviewer path.
+func TestInvalidVerdictValueRefused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+
+	_, err = s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: Progress, Summary: "midway", Verdict: "bogus"})
+	if err == nil {
+		t.Fatal("expected an invalid-verdict error")
+	}
+	if want := "Reviewers must complete with verdict: pass, changes_requested or blocked."; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// Finding 7: an unknown finding severity is refused server-side (not just
+// left to the MCP schema's own advisory enum).
+func TestFindingSeverityValidated(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+
+	_, err = s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: Progress, Summary: "reviewing",
+		Findings: []workflow.Finding{{Severity: "urgent", File: "a.go", Summary: "huh"}}})
+	if err == nil {
+		t.Fatal("expected a finding-severity error")
+	}
+	want := `finding severity "urgent" must be critical, major, minor or nit.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	// A package-wide finding (no file) with a valid severity is fine.
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: Progress, Summary: "reviewing",
+		Findings: []workflow.Finding{{Severity: "nit", Summary: "package-wide nit"}}}); err != nil {
+		t.Fatalf("a valid severity with no file should be accepted: %v", err)
+	}
+}
+
+func TestPassVerdictRefusesMajorFindings(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder"},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, _ := s.LatestSession(ctx, rev.ID)
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, rev.ID, "review", "reviewer", 1)
+
+	_, err = s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed",
+		Verdict:  "pass",
+		Findings: []workflow.Finding{{Severity: "major", File: "a.go", Line: 3, Summary: "leaks a file handle"}}})
+	if err == nil {
+		t.Fatal("expected a pass-with-major-finding error")
+	}
+	if want := "verdict pass can't carry critical or major findings."; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	// A minor finding is fine with pass.
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed",
+		Verdict:  "pass",
+		Findings: []workflow.Finding{{Severity: "minor", File: "a.go", Line: 3, Summary: "nit"}}}); err != nil {
+		t.Fatalf("pass with only a minor finding should be accepted: %v", err)
+	}
+}
+
+// --- Unit 8.2: close siblings only by same role + same workflow step (spec B5) ---
+
+// buildAndReview spawns a coder (build) and a reviewer (review) on TASK-1,
+// each with its own workflow_runs row on the same workflow/round, and
+// returns both live sessions.
+func buildAndReview(t *testing.T, s *Store) (orch Agent, coder Agent, coderSes Session, rev Agent, revSes Session) {
+	t.Helper()
+	ctx := context.Background()
+	orch, coder, coderSes = worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder"},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	var err error
+	rev, _, err = s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revSes, err = s.LatestSession(ctx, rev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 1)
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'review', 1, 'reviewer', ?, 'active', ?)`,
+		ids.New("wfr"), wfID, rev.ID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+	return orch, coder, coderSes, rev, revSes
+}
+
+func liveSessionState(t *testing.T, s *Store, agentID string) SessionState {
+	t.Helper()
+	ses, err := s.LatestSession(context.Background(), agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ses.State
+}
+
+func TestReviewerCompletedDoesNotCloseBuilder(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coder, _, _, revSes := buildAndReview(t, s)
+	if _, err := s.WriteCheckpoint(ctx, revSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "reviewed",
+		Verdict: "pass"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, coder.ID); got != Running {
+		t.Fatalf("coder session state = %s, want unchanged (running) -- a reviewer's completed must not close it", got)
+	}
+}
+
+func TestBuilderCompletedDoesNotCloseReviewer(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, coderSes, rev, _ := buildAndReview(t, s)
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, rev.ID); got != Running {
+		t.Fatalf("reviewer session state = %s, want unchanged (running) -- a builder's completed must not close it", got)
+	}
+}
+
+// A second coder assigned to the same item and step, in the same round, is
+// still closed by the first coder's completed -- the role+step rule narrows
+// who gets torn down, it doesn't disable teardown altogether.
+func TestSameRoleSiblingStillClosed(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes, _, _ := buildAndReview(t, s)
+	coder2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it too"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfID := func() string {
+		var id string
+		if err := s.DB.QueryRowContext(ctx, `SELECT workflow_id FROM workflow_runs WHERE agent_id = ?`, coder.ID).
+			Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}()
+	// round 2, not 1: the real UNIQUE(workflow_id, step_id, round, role)
+	// constraint forbids two runs for the same step/round/role, so a second
+	// live coder on the same step can only be modeled as an earlier round's
+	// run that's still (unrealistically, but validly) live -- same role and
+	// same step is exactly what this test checks, round included or not.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build', 2, 'coder', ?, 'active', ?)`,
+		ids.New("wfr"), wfID, coder2.ID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, coder2.ID); got != Completed {
+		t.Fatalf("second coder (same role, same step) session state = %s, want completed", got)
+	}
+}
+
+// Finding 10: same role, DIFFERENT step -- must not be closed. The role
+// filter alone isn't the whole story once the caller has a run; step must
+// also match.
+func TestSameRoleDifferentStepNotClosed(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes, _, _ := buildAndReview(t, s)
+	coder2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "a different build step"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflowID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT workflow_id FROM workflow_runs WHERE agent_id = ?`, coder.ID).
+		Scan(&workflowID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build2', 1, 'coder', ?, 'active', ?)`,
+		ids.New("wfr"), workflowID, coder2.ID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, coder2.ID); got != Running {
+		t.Fatalf("different-step same-role sibling closed: state = %s, want unchanged (running)", got)
+	}
+}
+
+// --- Unit 8.4: tdd and verify gates (spec B5, ruling-tdd-followups.md) ---
+
+const tddMissingRound = `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round.`
+
+// buildOnly spawns a coder on a single-unit (non-batched) workflow task with
+// the given build-step gates and returns the coder's session and the
+// workflow's id.
+func buildOnly(t *testing.T, s *Store, gates ...workflow.Gate) (coder Agent, coderSes Session, workflowID string) {
+	t.Helper()
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: gates},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ = seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 1)
+	return coder, coderSes, workflowID
+}
+
+func TestTDDGateNeedsRedBeforeGreen(t *testing.T) {
+	t.Run("green only", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+		_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./x", Phase: "green", OK: true}}})
+		if err == nil {
+			t.Fatal("expected a TDD-evidence-missing error")
+		}
+		if err.Error() != tddMissingRound {
+			t.Fatalf("err = %q, want %q", err, tddMissingRound)
+		}
+	})
+
+	t.Run("red then green across checkpoints", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "red",
+			Verification: []Verify{{Cmd: "go test ./x", Phase: "red", OK: false}}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./x", Phase: "green", OK: true}}}); err != nil {
+			t.Fatalf("red then green should satisfy the tdd gate: %v", err)
+		}
+	})
+
+	t.Run("red and green in different attempts", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		ctx := context.Background()
+		coder, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+		// A red entry recorded under a DIFFERENT attempt number (e.g. an
+		// earlier crashed session of the same agent, same round) must still
+		// count -- the gate's scope is the round, not the attempt.
+		red := jsonArray([]Verify{{Cmd: "go test ./x", Phase: "red", OK: false}})
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO checkpoints
+			(id, session_id, agent_id, item_id, kind, attempt, summary, verify_json, daemon_written, created_at)
+			VALUES (?, ?, ?, ?, 'progress', 99, 'red from a crashed attempt', ?, 0, ?)`,
+			ids.New("ckp"), coderSes.ID, coder.ID, coder.ItemID, red, db.Millis(s.Now())); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+			Verification: []Verify{{Cmd: "go test ./x", Phase: "green", OK: true}}}); err != nil {
+			t.Fatalf("a red from a different attempt, same round, should satisfy the tdd gate: %v", err)
+		}
+	})
+}
+
+func TestTDDGatePerUnit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	setItemUnits(t, s, "TASK-1", "Unit one", "Unit two")
+
+	// unit 1's evidence lands on a non-gated progress checkpoint first: a
+	// failed completed checkpoint below writes nothing at all (the whole
+	// transaction rolls back on a gate error), so this is the only way to
+	// give unit 1 evidence that survives into the next attempt.
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1 done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected unit 2 to still be missing evidence")
+	}
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 2},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 2},
+		}}); err != nil {
+		t.Fatalf("both units now covered (unit 1 from the earlier progress checkpoint carries forward): %v", err)
+	}
+}
+
+func TestTDDGateSkippedWhenExempt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET tdd_exempt = 'docs' WHERE key = 'TASK-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "docs updated"}); err != nil {
+		t.Fatalf("an exempt task needs no TDD evidence even with the tdd gate declared: %v", err)
+	}
+}
+
+func TestVerifyGateMatchesDeclaredCommands(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateVerify)
+	setItemVerify(t, s, "TASK-1", "go test ./...")
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected a verify-gate error")
+	}
+	want := `Declared verify commands not recorded as passing: go test ./....`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	// whitespace-normalized containment: extra internal spacing, and more
+	// command than just the declared one, both still match.
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "cd /repo &&   go   test    ./...   -v", OK: true}}}); err != nil {
+		t.Fatalf("a normalized, containing command should satisfy the verify gate: %v", err)
+	}
+}
+
+// Diligence test (not brief-named, but the crux of both controller rulings
+// this unit implements): a fix round (round > 1) narrows tdd evidence to
+// only the units the previous round's reviewer actually flagged -- unit 3
+// (untouched, unnamed) needs nothing new, unlike round 1's "every unit".
+func TestTDDGateFixRoundScopesToNamedUnits(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two", "three")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "b.go", Summary: "fix unit 2", Unit: 2},
+	})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 2},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 2},
+		}}); err != nil {
+		t.Fatalf("only unit 2 was named by the fix brief; units 1 and 3 need no new evidence: %v", err)
+	}
+}
+
+// R3, fix round 1 finding 1: a package-wide finding (no unit at all) in a
+// genuine fix round needs at least one red-before-green pair somewhere --
+// nothing at all is refused with the generic round copy, not the
+// unit(s)-list copy (there's no specific unit to name).
+func TestTDDGatePackageWideFindingNeedsAnyPairRoundCopy(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "x.go", Summary: "general cleanup, no single unit"},
+	})
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed"})
+	if err == nil {
+		t.Fatal("expected the generic round copy, not a silent pass")
+	}
+	if err.Error() != tddMissingRound {
+		t.Fatalf("err = %q, want %q", err, tddMissingRound)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatalf("one pair anywhere should satisfy a package-wide finding: %v", err)
+	}
+}
+
+// R3, fix round 1 finding 1: round-1 evidence must not carry into round 2's
+// own fix-round requirement -- a NEW workflow_runs row for the retried
+// agent starts the evidence window over.
+func TestTDDGateRoundEvidenceDoesNotCarryForward(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 1)
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "round 1 evidence",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "x.go", Summary: "still broken"},
+	})
+	// A fresh round-2 run row for the SAME coder agent (production's Retry
+	// resumes the same agent, a new session generation/attempt).
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build', 2, 'coder', ?, 'active', ?)`,
+		ids.New("wfr"), workflowID, coder.ID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed"})
+	if err == nil {
+		t.Fatal("round 1's evidence must not satisfy round 2's own requirement")
+	}
+	if err.Error() != tddMissingRound {
+		t.Fatalf("err = %q, want %q", err, tddMissingRound)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatalf("fresh round-2 evidence should satisfy it: %v", err)
+	}
+}
+
+// R3, fix round 1 finding 1: a multi-loop spec (design -> review-design ->
+// build -> review-build) can put build's first-ever run at round 2 (because
+// review-design's own loop spent round 1) -- that must still need every
+// unit, not be mistaken for a fix round of review-build, which has never
+// run at all.
+func TestTDDGateMultiLoopFirstRunNeedsEveryUnit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "design", Run: "designer"},
+		{ID: "review-design", Review: []string{"ui_reviewer"}, Of: "design", Loop: &workflow.Loop{Fix: "design"}},
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review-build", Review: []string{"reviewer"}, Of: "build", Loop: &workflow.Loop{Fix: "build"}},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	// The decoy: review-design (a DIFFERENT step) requested changes at
+	// round 1, tagged "unit 1" -- a step-unaware reader would mistake this
+	// for build's own fix brief and wrongly treat unit 1 as already
+	// covered/required instead of needing every unit from scratch.
+	seedReviewFindingsAs(t, s, workflowID, "review-design", 1, "ui_reviewer", "changes_requested",
+		[]workflow.Finding{{Severity: "major", File: "d.go", Summary: "fix the design", Unit: 1}})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected unit 2 to be required (build's own first run needs every unit)")
+	}
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// R3, fix round 1: a review step that only ever PASSED at round-1 (no
+// changes_requested/blocked) is not a fix round, even though it has
+// findings and targets this exact build step -- the round only bumped
+// because of some other retry, nothing here was actually asked to change.
+func TestTDDGateReviewStepPassedOnlyNeedsEveryUnit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindingsAs(t, s, workflowID, "review", 1, "reviewer", "pass",
+		[]workflow.Finding{{Severity: "minor", File: "a.go", Summary: "nit", Unit: 1}})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected unit 2 to still be required -- a pass-only round is not a fix round")
+	}
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// R3, fix round 1 finding 1: findings from BOTH reviewer roles of the same
+// review step, same round, merge -- a passing ui_reviewer who still left a
+// finding counts too (same inclusive rule as B4's mergeFindings).
+func TestTDDGateFixRoundMergesFindingsFromBothReviewers(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer", "ui_reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindingsAs(t, s, workflowID, "review", 1, "reviewer", "changes_requested",
+		[]workflow.Finding{{Severity: "major", File: "a.go", Summary: "fix unit 1", Unit: 1}})
+	seedReviewFindingsAs(t, s, workflowID, "review", 1, "ui_reviewer", "pass",
+		[]workflow.Finding{{Severity: "minor", File: "b.go", Summary: "nit on unit 2", Unit: 2}})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected unit 2 (from the passing ui_reviewer's own finding) to still be required")
+	}
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// A coder with NO workflow run (legacy) must keep exactly verifyOK's
+// behaviour -- any single entry with a non-empty cmd, no red/green needed --
+// even after the gates refactor.
+func TestLegacyCoderKeepsVerifyOK(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./..."}},
+		Git:          []GitRef{{Repo: "proj", Branch: "task/task-1", SHA: "abc1234"}}}); err != nil {
+		t.Fatalf("legacy verifyOK should accept any non-empty cmd: %v", err)
+	}
+}
+
+// --- Unit 8.5: commit and artifact gates (spec B5), real temp git repos ---
+
+// seedCommitRepo creates a real one-commit git repo, registers it and gives
+// coder an rw worktree reservation on it (its own checkout doubling as the
+// worktree path, same as this file's other git fixtures). Returns the repo
+// dir and its HEAD sha.
+func seedCommitRepo(t *testing.T, s *Store, coder Agent) (dir, head string) {
+	t.Helper()
+	ctx := context.Background()
+	dir = gitRepoNoSigning(t)
+	commitFile(t, dir, "a.txt", "hi")
+	head = strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+	repoID := ids.New("repo")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO repos (id, path, name, default_branch, source, created_at, updated_at)
+		VALUES (?, ?, 'proj', 'main', 'manual', 1, 1)`, repoID, dir); err != nil {
+		t.Fatal(err)
+	}
+	seedRWWorktreeAt(t, s, repoID, coder.ID, coder.RootItemID, dir)
+	return dir, head
+}
+
+func TestCommitGateRefusesDirtyWorktree(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+	dir, head := seedCommitRepo(t, s, coder)
+	// The worktree is genuinely dirty; the checkpoint's own claim of
+	// dirty:false must not be trusted over it.
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("uncommitted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}})
+	if err == nil {
+		t.Fatal("expected a dirty-worktree error")
+	}
+	if want := "Commit your work before completing: proj is dirty"; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+func TestCommitGateRefusesShaMismatch(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+	_, head := seedCommitRepo(t, s, coder)
+
+	stale := "1111111111111111111111111111111111111a"
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: stale, Dirty: false}}})
+	if err == nil {
+		t.Fatal("expected a sha-mismatch error")
+	}
+	want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s", head[:7], stale[:7])
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+func TestCommitGateStoresSha(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, workflowID := buildOnly(t, s, workflow.GateCommit)
+	_, head := seedCommitRepo(t, s, coder)
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatalf("a clean worktree with a matching sha should pass the commit gate: %v", err)
+	}
+	var stored string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(sha, '') FROM workflow_runs WHERE workflow_id = ?`,
+		workflowID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != head {
+		t.Fatalf("workflow_runs.sha = %q, want %q", stored, head)
+	}
+}
+
+// Finding 5: zero rw worktrees shared with the agent must refuse, not
+// silently pass (before this fix, an empty rwWorktreesFor loop never
+// touched `sha` and returned nil).
+func TestCommitGateRefusesWithNoRWWorktree(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: "abc1234", Dirty: false}}})
+	if err == nil {
+		t.Fatal("expected a no-rw-worktree error")
+	}
+	if want := "Commit your work before completing: no rw worktree shared with you"; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// Finding 5: an rw worktree whose repo has no matching git entry in the
+// checkpoint gets its own named error, not a confusing sha-mismatch against
+// an empty declared sha.
+func TestCommitGateRefusesMissingGitEntryForRepo(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateCommit)
+	seedCommitRepo(t, s, coder) // repo "proj", but the checkpoint below never mentions it
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "other-repo", Branch: "main", SHA: "abc1234", Dirty: false}}})
+	if err == nil {
+		t.Fatal("expected a no-git-entry error")
+	}
+	if want := "Commit your work before completing: no git entry for proj"; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+func TestDesignArtifactGateRegistersArtifact(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "design", Run: "designer", Gates: []workflow.Gate{workflow.GateArtifactDesign}},
+		{ID: "review", Review: []string{"ui_reviewer"}, Of: "design"},
+	}})
+	designer, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "design it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dSes, err := s.LatestSession(ctx, designer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, designer.ID, "design", "designer", 1)
+
+	if _, err := s.WriteCheckpoint(ctx, dSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "designed"}); err == nil {
+		t.Fatal("expected an artifact-missing error")
+	} else if want := fmt.Sprintf("Completed needs your design file in artifacts (under %s/).",
+		filepath.Join(s.Home, "designs", it.RootKey)); err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+
+	dir := filepath.Join(s.Home, "designs", it.RootKey)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "flow.md")
+	if err := os.WriteFile(path, []byte("# Flow\n\nThree screens.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, dSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "designed",
+		Artifacts: []string{path}}); err != nil {
+		t.Fatalf("a readable design file under the gate's path should pass: %v", err)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE item_id = ? AND kind = 'design' AND path = ?`,
+		it.ID, path).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("design artifact not registered: count = %d", count)
+	}
+}
+
+// --- Fix round 1 (Opus review + controller rulings R1-R3) ---
+
+// Finding 4: applyGates used to fail OPEN when run.step_id names no step in
+// the item's own workflow (stepFor's zero-value Step has no Gates, so the
+// loop over them does nothing) -- a corrupted or stale run row silently
+// skipped every gate instead of refusing.
+func TestApplyGatesRefusesUnknownWorkflowStep(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "does-not-exist", "coder", 1)
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"})
+	if err == nil {
+		t.Fatal("expected an unknown-workflow-step error, not a silent pass")
+	}
+	want := `workflow step "does-not-exist" not found on TASK-1; ask your orchestrator.`
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
+// Finding 2 / R1: on a WORKFLOW task, the orchestrator-override exemption
+// from closeCompletedSiblings' role filter no longer applies -- only legacy
+// tasks keep it. An orchestrator "verifying it myself" on a workflow task
+// must not tear down the builder out from under it.
+func TestOrchestratorCompletedOnWorkflowTaskDoesNotCloseBuilder(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, _ := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder"},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	oSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{Kind: CompletedCkp,
+		ItemKey: "TASK-1", Summary: "verified myself"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := liveSessionState(t, s, coder.ID); got != Running {
+		t.Fatalf("workflow task: orchestrator's completed closed the builder anyway: state = %s, want running", got)
+	}
+}
+
+// Finding 9: a malformed verify_json in a prior checkpoint must surface as
+// an error from the tdd/verify gates, not be silently swallowed by
+// verifySince's json.Unmarshal (which used to discard the error and just
+// leave that checkpoint's entries out, masking real evidence).
+func TestVerifySinceSurfacesUnmarshalErrors(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	coder, coderSes, _ := buildOnly(t, s, workflow.GateTDD)
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO checkpoints
+		(id, session_id, agent_id, item_id, kind, attempt, summary, verify_json, daemon_written, created_at)
+		VALUES (?, ?, ?, ?, 'progress', 1, 'corrupted row', '{not valid json', 0, ?)`,
+		ids.New("ckp"), coderSes.ID, coder.ID, coder.ItemID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}})
+	if err == nil {
+		t.Fatal("expected the malformed verify_json to surface as an error")
+	}
+}
+
+// Finding 8: registerArtifactAsDaemon records a new revision whenever the
+// file's content changed since the head revision (a fix round's revised
+// design notes must not be silently dropped), and dedupes when it's
+// byte-identical to what's already the head revision.
+func TestRegisterArtifactAsDaemonRecordsRevisionsAndDedupes(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designer, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "design"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeFile(t, "v1")
+
+	register := func() {
+		t.Helper()
+		if err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+			return s.registerArtifactAsDaemon(ctx, tx, it.ID, designer.ID, "design", path)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	headRevision := func() int {
+		t.Helper()
+		var rev int
+		if err := s.DB.QueryRowContext(ctx, `SELECT head_revision FROM artifacts WHERE item_id = ? AND path = ?`,
+			it.ID, path).Scan(&rev); err != nil {
+			t.Fatal(err)
+		}
+		return rev
+	}
+	countRevisions := func() int {
+		t.Helper()
+		var n int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifact_revisions ar
+			JOIN artifacts a ON a.id = ar.artifact_id WHERE a.item_id = ? AND a.path = ?`,
+			it.ID, path).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	register()
+	if headRevision() != 1 {
+		t.Fatalf("head_revision = %d, want 1", headRevision())
+	}
+
+	register() // identical content: dedupe
+	if headRevision() != 1 || countRevisions() != 1 {
+		t.Fatalf("dedupe failed: head=%d revisions=%d", headRevision(), countRevisions())
+	}
+
+	if err := os.WriteFile(path, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	register() // new content: revision bumps
+	if headRevision() != 2 || countRevisions() != 2 {
+		t.Fatalf("new content should bump revision: head=%d revisions=%d", headRevision(), countRevisions())
+	}
+}
+
+// Finding 8: expandHome resolves a leading "~" against a given home dir
+// (parameterized rather than calling os.UserHomeDir() itself, so this is a
+// plain deterministic unit test, not dependent on the real environment).
+func TestExpandHomeResolvesTilde(t *testing.T) {
+	cases := []struct{ in, home, want string }{
+		{"~/designs/x/flow.md", "/home/agent", "/home/agent/designs/x/flow.md"},
+		{"~", "/home/agent", "/home/agent"},
+		{"/already/absolute", "/home/agent", "/already/absolute"},
+		{"relative/path", "/home/agent", "relative/path"},
+	}
+	for _, c := range cases {
+		if got := expandHome(c.in, c.home); got != c.want {
+			t.Errorf("expandHome(%q, %q) = %q, want %q", c.in, c.home, got, c.want)
+		}
+	}
+}
+
+// Finding 8: the artifact gate cleans ".."/"." segments before matching
+// against its own directory -- a path that only resolves under the gate's
+// directory after normalization must still be accepted.
+func TestArtifactGateCleansDotDotSegments(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "design", Run: "designer", Gates: []workflow.Gate{workflow.GateArtifactDesign}},
+		{ID: "review", Review: []string{"ui_reviewer"}, Of: "design"},
+	}})
+	designer, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "design it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dSes, err := s.LatestSession(ctx, designer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, designer.ID, "design", "designer", 1)
+
+	dir := filepath.Join(s.Home, "designs", it.RootKey)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cleanPath := filepath.Join(dir, "flow.md")
+	if err := os.WriteFile(cleanPath, []byte("# Flow\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Same file, written with a redundant "sub/.." detour -- Clean should
+	// normalize it to cleanPath before the prefix check.
+	messyPath := filepath.Join(dir, "sub", "..", "flow.md")
+
+	if _, err := s.WriteCheckpoint(ctx, dSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "designed",
+		Artifacts: []string{messyPath}}); err != nil {
+		t.Fatalf("a path that only cleans to under the gate's directory should be accepted: %v", err)
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE item_id = ? AND path = ?`,
+		it.ID, cleanPath).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("artifact registered under the CLEANED path = %d, want 1", count)
+	}
+}
+
+// --- Fix round 2 ---
+
+// Finding 1 (Important, new breakage): a resolved story spec keeps its
+// review step in AfterTasks, with Steps empty (Next/Render both promote it
+// before looking anything up) -- stepFor only ever looked at spec.Steps, so
+// a story's after_tasks reviewer with a workflow run was refused "workflow
+// step ... not found" on every completed checkpoint.
+func TestApplyGatesAcceptsStoryAfterTasksReviewStep(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s) // EPIC-1 > STORY-1 > TASK-1, all ready
+	setItemWorkflow(t, s, "STORY-1", workflow.Spec{
+		AfterTasks: &workflow.Step{ID: "story-review", Review: []string{"reviewer"}},
+	})
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "STORY-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", Brief: BriefInput{Objective: "review the story"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkflowRun(t, s, it.ID, w.RootItemID, w.ID, w.ID, "story-review", "reviewer", 1)
+
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "review done",
+		Verdict: "pass"}); err != nil {
+		t.Fatalf("a story after_tasks reviewer with a workflow run must be able to complete: %v", err)
+	}
+}
+
+// Finding 2 (Minor): two review steps can share the same fix target (e.g.
+// review-code and review-ui both review "build"). findFixStepFor used to
+// return only the FIRST match -- if that one happened to pass while the
+// OTHER requested changes on a specific unit, the gate fell back to "every
+// unit" instead of narrowing to what was actually named.
+func TestTDDGateMergesAcrossMultipleReviewStepsForSameBuildStep(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review-code", Review: []string{"reviewer"}, Of: "build"},
+		{ID: "review-ui", Review: []string{"ui_reviewer"}, Of: "build"},
+	}})
+	setItemUnits(t, s, "TASK-1", "one", "two")
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	// review-code (first in Steps order) passed clean; review-ui requested
+	// changes on unit 1 only.
+	seedReviewFindingsAs(t, s, workflowID, "review-code", 1, "reviewer", "pass", nil)
+	seedReviewFindingsAs(t, s, workflowID, "review-ui", 1, "ui_reviewer", "changes_requested",
+		[]workflow.Finding{{Severity: "major", File: "a.go", Summary: "fix unit 1", Unit: 1}})
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: Progress, Summary: "unit 1",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false, Unit: 1},
+			{Cmd: "go test ./x", Phase: "green", OK: true, Unit: 1},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed"}); err != nil {
+		t.Fatalf("only unit 1 should be required (review-ui's finding, merged with review-code's clean pass): %v", err)
+	}
+}
+
+// Finding 3 (Minor): pins an R3 behaviour that was implemented but never
+// directly tested -- a genuine fix round (blocked verdict) with zero
+// structured findings still needs at least one red-before-green pair
+// somewhere, it is never "nothing required".
+func TestTDDGateBlockedWithZeroFindingsStillNeedsAPair(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	seedReviewFindingsAs(t, s, workflowID, "review", 1, "reviewer", "blocked", nil)
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "resumed"})
+	if err == nil {
+		t.Fatal("a blocked verdict with zero findings must still require one pair, not pass silently")
+	}
+	if err.Error() != tddMissingRound {
+		t.Fatalf("err = %q, want %q", err, tddMissingRound)
+	}
+
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "resumed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatalf("one pair should satisfy it: %v", err)
+	}
+}
+
+// Finding 3 (Minor): pins another R3 behaviour -- a unit-tagged finding on
+// a NON-batched task (no units at all) is treated as package-wide, since
+// there's no unit space for that tag to address; an untagged pair
+// satisfies it.
+func TestTDDGateUnitTaggedFindingOnNonBatchedTaskIsPackageWide(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, coder, coderSes := worker(t, s)
+	setItemWorkflow(t, s, "TASK-1", workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateTDD}},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}})
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, _ := seedWorkflowRun(t, s, it.ID, orch.RootItemID, orch.ID, coder.ID, "build", "coder", 2)
+	// The task has no units at all; this finding still carries a (stray)
+	// unit tag.
+	seedReviewFindings(t, s, workflowID, 1, []workflow.Finding{
+		{Severity: "major", File: "a.go", Summary: "still broken", Unit: 5},
+	})
+
+	_, err = s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed"})
+	if err == nil {
+		t.Fatal("expected the generic round copy, not a silent pass or a unit(s)-list error")
+	}
+	if err.Error() != tddMissingRound {
+		t.Fatalf("err = %q, want %q", err, tddMissingRound)
+	}
+
+	// An UNTAGGED pair (not "unit 5") satisfies it.
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "fixed",
+		Verification: []Verify{
+			{Cmd: "go test ./x", Phase: "red", OK: false},
+			{Cmd: "go test ./x", Phase: "green", OK: true},
+		}}); err != nil {
+		t.Fatalf("an untagged pair should satisfy a package-wide requirement: %v", err)
+	}
+}
+
+// Finding 4 (Minor): registerArtifactAsDaemon's revision bump must call
+// staleApprovals, same as RegisterArtifact (artifacts.go), so an open
+// approve_section request doesn't stay pinned to content a fix round has
+// already superseded.
+func TestRegisterArtifactAsDaemonStalesOpenApprovals(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designer, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "design"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeFile(t, "v1")
+	register := func(body string) {
+		t.Helper()
+		if body != "" {
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+			return s.registerArtifactAsDaemon(ctx, tx, it.ID, designer.ID, "design", path)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	register("")
+
+	var artifactID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT id FROM artifacts WHERE item_id = ? AND path = ?`,
+		it.ID, path).Scan(&artifactID); err != nil {
+		t.Fatal(err)
+	}
+	reqID := ids.New("req")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests
+		(id, kind, agent_id, item_id, artifact_id, section_id, prompt, state, artifact_revision, created_at)
+		VALUES (?, 'approve_section', ?, ?, ?, 'document', 'Approve the design.', 'open', 1, ?)`,
+		reqID, designer.ID, it.ID, artifactID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	register("v2") // revised content -> the "document" section's hash moves
+
+	var state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE id = ?`, reqID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "stale" {
+		t.Fatalf("open approve_section request state = %q, want stale", state)
+	}
+}
+
+func TestIntegratedNeedsIntegrationVerify(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	oSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := workflow.Spec{Integration: &workflow.Integration{
+		Verify: []string{"go test ./...", "make lint"},
+	}}
+	setItemWorkflow(t, s, "EPIC-1", spec)
+
+	// Missing make lint
+	_, err = s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{
+		Kind:         Integrated,
+		Summary:      "merged",
+		Git:          []GitRef{{Repo: "proj", Branch: "main", SHA: "deadbee"}},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing make lint verify, got nil")
+	}
+	want := "Integration verify not recorded as passing: make lint."
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
+
+	// With both passing
+	if _, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{
+		Kind:    Integrated,
+		Summary: "merged",
+		Git:     []GitRef{{Repo: "proj", Branch: "main", SHA: "deadbee"}},
+		Verification: []Verify{
+			{Cmd: "go test ./...", Phase: "green", OK: true},
+			{Cmd: "make lint", Phase: "green", OK: true},
+		},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestIntegratedNeedsFinalReviewPass(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	oSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := workflow.Spec{Integration: &workflow.Integration{
+		Verify:      []string{"go test ./..."},
+		FinalReview: []string{"reviewer"},
+	}}
+	setItemWorkflow(t, s, "EPIC-1", spec)
+	if _, err := s.DB.ExecContext(ctx, "UPDATE items SET tdd_exempt = 'docs' WHERE key = 'EPIC-1'"); err != nil {
+		t.Fatal(err)
+	}
+
+	sha := "abcdef123456"
+	// Without passing review on sha
+	_, err = s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{
+		Kind:         Integrated,
+		Summary:      "merged",
+		Git:          []GitRef{{Repo: "proj", Branch: "main", SHA: sha}},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing final review, got nil")
+	}
+	want := "Integration needs a passing final review of abcdef1."
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
+
+	// Spawn reviewer on EPIC-1 and complete with verdict: pass on the sha
+	rev, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey:       "EPIC-1",
+		Role:          RoleReviewer,
+		Kind:          Fake,
+		Model:         "fake-1",
+		ParentAgentID: orch.ID,
+		Brief:         BriefInput{Objective: "final review"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, err := s.LatestSession(ctx, rev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{
+		Kind:    CompletedCkp,
+		Summary: "looks good",
+		Verdict: "pass",
+		Git:     []GitRef{{Repo: "proj", Branch: "main", SHA: sha}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now integrated checkpoint succeeds
+	if _, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{
+		Kind:         Integrated,
+		Summary:      "merged",
+		Git:          []GitRef{{Repo: "proj", Branch: "main", SHA: sha}},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

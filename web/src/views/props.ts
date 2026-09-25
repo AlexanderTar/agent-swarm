@@ -1,4 +1,4 @@
-import type { AgentNode, CardLevel, Filter, Grouping, Item, Request } from "../types";
+import type { AgentNode, CardLevel, Filter, Grouping, Item, ItemType, Request } from "../types";
 
 export interface ViewProps {
   items: Item[];

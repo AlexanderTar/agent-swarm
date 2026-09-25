@@ -55,6 +55,40 @@ func TestWriteIfChangedLeavesNoTempFileBehind(t *testing.T) {
 	}
 }
 
+// Review round 2, I1: round 1 added a mode self-heal to WriteIfChanged
+// itself (content-equal but a drifted mode still got chmod'd), but that
+// applied to *every* caller, including EditJSON and the codex/agy/cursor/muse
+// writers that rewrite a user's own config file with a fixed mode argument
+// (0644, say). That reset a file the operator had deliberately chmod'd 0600
+// back to 0644 on every content-equal no-op install, and reported wrote=true
+// for what must be a true no-op. The self-heal's original intent (a synced
+// skill's drifted exec bit repairing itself) moved to
+// TestSyncSkillsFixesADriftedFileMode in skills_test.go, which exercises it
+// through the skills-only writeSkillFileSynced wrapper instead.
+func TestWriteIfChangedLeavesAContentEqualFileAtItsOwnModeEvenWhenTheModeArgDiffers(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "mcp.json")
+	if _, err := install.WriteIfChanged(p, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o600); err != nil { // the operator tightened it by hand
+		t.Fatal(err)
+	}
+	wrote, err := install.WriteIfChanged(p, []byte("{}"), 0o644) // same content, a different mode arg
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote {
+		t.Error("want wrote=false: content-equal must be a true no-op")
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want the operator's own 0600 left alone", fi.Mode().Perm())
+	}
+}
+
 func TestEditJSONKeepsEveryOtherKeyAndSkipsNoOps(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "mcp.json")
 	// A fixture shaped like the operator's ~/.cursor/mcp.json: other servers must survive.
