@@ -484,12 +484,22 @@ func (s *Store) itemKey(ctx context.Context, tx *sql.Tx, id string) (string, err
 	return key, err
 }
 
+// errAnswerNeedsReplyTo/errAnswerBadReplyTo are Send's kind:"answer" validation
+// messages (F7, F9): an answer must name the question (or blocked-relay) it
+// replies to, and that reply_to must resolve to something the target actually
+// owes an answer for.
+const errAnswerNeedsReplyTo = "An answer must set reply_to to the question's message id."
+const errAnswerBadReplyTo = "reply_to %q is not a question from %s (or a blocked relay for %s) awaiting an answer."
+
 // Send is swarm_send (§8.1). "parent" resolves through agents.parent_agent_id; a
 // cross-root target or an unknown name is refused. origin is always 'agent'.
 // requestID is I11's idempotency key (empty means "no idempotency, just run
 // once"): a repeated (session, requestID) pair replays the first message's id
-// instead of enqueueing a second message.
-func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind, body, correlationID, requestID string) (string, error) {
+// instead of enqueueing a second message. replyTo is stored in messages.reply_to
+// for kind:"answer" (validated against the question/blocked-relay it answers) and
+// in messages.correlation_id for every other kind (unvalidated, e.g. a finding's
+// free-form thread hook).
+func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind, body, replyTo, requestID string) (string, error) {
 	if len(body) > 4000 {
 		return "", &items.Error{Code: items.CodeBadRequest, Message: "A message body is limited to 4000 characters."}
 	}
@@ -533,13 +543,37 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 			return &items.Error{Code: items.CodeBadRequest,
 				Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
 		}
+		var correlationID string
+		switch kind {
+		case "answer":
+			if replyTo == "" {
+				return &items.Error{Code: items.CodeBadRequest, Message: errAnswerNeedsReplyTo}
+			}
+			var ok int
+			err := tx.QueryRowContext(ctx, `SELECT 1 FROM messages m
+				WHERE m.id = ? AND m.to_agent_id = ?
+				  AND ((m.kind = 'question' AND m.from_agent_id = ?)
+				    OR (m.kind = 'relay' AND json_extract(m.payload_json, '$.event') = 'blocked'
+				        AND json_extract(m.payload_json, '$.agent') = ?))`,
+				replyTo, a.ID, target.ID, target.Name).Scan(&ok)
+			if errors.Is(err, sql.ErrNoRows) {
+				return &items.Error{Code: items.CodeBadRequest,
+					Message: fmt.Sprintf(errAnswerBadReplyTo, replyTo, target.Name, target.Name)}
+			}
+			if err != nil {
+				return err
+			}
+		default:
+			correlationID = replyTo
+			replyTo = ""
+		}
 		payload, err := json.Marshal(map[string]string{"body": body})
 		if err != nil {
 			return err
 		}
 		m, err := s.enqueue(ctx, tx, Message{Kind: kind, Origin: "agent",
 			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
-			RootItemID: a.RootItemID, CorrelationID: correlationID, Payload: payload})
+			RootItemID: a.RootItemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
 		id = m.ID
 		return err
 	})

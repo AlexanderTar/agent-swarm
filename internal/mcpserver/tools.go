@@ -235,7 +235,7 @@ func sendTool(s *Server) ToolDef {
 		Name:        "swarm_send",
 		Description: "Send a short message to another agent in the same top-level item, or to your parent.",
 		Schema: objSchemaRequired(`"to":{"type":"string","description":"Recipient agent name, or 'parent' for your orchestrator"},"kind":{"type":"string","enum":["question","answer","finding"],"description":"Message kind; omitted or relay stores as finding"},
-			"body":{"type":"string"},"reply_to":{"type":"string"},"request_id":{"type":"string"}`,
+			"body":{"type":"string"},"reply_to":{"type":"string","description":"Required for kind answer: the msg_id of the question it answers"},"request_id":{"type":"string"}`,
 			[]string{"to", "body"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
@@ -257,10 +257,6 @@ func sendTool(s *Server) ToolDef {
 			default:
 				return nil, fmt.Errorf("kind must be question, answer or finding, got %q", in.Kind)
 			}
-			// runtime.Store.Send's last-but-one parameter is named correlationID and
-			// is the only thread-tracking hook it exposes (internal/runtime is
-			// outside this batch's file ownership); §8.1's reply_to input maps onto
-			// it.
 			id, err := s.RT.Send(ctx, c.SessionID, in.To, runtime.MessageKind(kind), in.Body, in.ReplyTo, in.RequestID)
 			if err != nil {
 				return nil, err

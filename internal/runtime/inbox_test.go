@@ -1020,3 +1020,64 @@ func TestHoldIfExhaustedNilUsageNeverHolds(t *testing.T) {
 		t.Fatal("holdIfExhausted = true with nil Usage, want false (fail open)")
 	}
 }
+
+func TestAnswerNeedsAValidReplyTo(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	q, err := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(ctx, orchSes, w.Name, "answer", "postgres", "", ""); err == nil ||
+		!strings.Contains(err.Error(), errAnswerNeedsReplyTo) {
+		t.Fatalf("missing reply_to err = %v", err)
+	}
+	if _, err := s.Send(ctx, orchSes, w.Name, "answer", "postgres", "msg_bogus", ""); err == nil {
+		t.Fatal("bogus reply_to accepted")
+	}
+	a, err := s.Send(ctx, orchSes, w.Name, "answer", "postgres", q, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replyTo, corr sql.NullString
+	s.DB.QueryRowContext(ctx, `SELECT reply_to, correlation_id FROM messages WHERE id = ?`, a).Scan(&replyTo, &corr)
+	if replyTo.String != q || corr.Valid {
+		t.Fatalf("reply_to=%v correlation_id=%v", replyTo, corr)
+	}
+}
+
+func TestAnswerMayReplyToABlockedRelay(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		payload, _ := json.Marshal(map[string]any{"event": "blocked", "agent": w.Name})
+		_, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: orch.ID,
+			RootItemID: orch.RootItemID, Payload: payload})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var relayID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT id FROM messages WHERE kind = 'relay' AND to_agent_id = ?`, orch.ID).Scan(&relayID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(ctx, orchSes, w.Name, "answer", "go ahead", relayID, ""); err != nil {
+		t.Fatalf("answer to blocked relay = %v, want accepted", err)
+	}
+	_ = wSes
+}
+
+func TestFindingAcceptsAnUnvalidatedReplyTo(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "done", "msg_does_not_exist", ""); err != nil {
+		t.Fatalf("finding with arbitrary reply_to = %v, want accepted", err)
+	}
+	_ = w
+}
