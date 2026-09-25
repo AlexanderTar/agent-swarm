@@ -1640,6 +1640,11 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	} else if hit {
 		return out, nil
 	}
+	// Batch 3: Retry consults the replacement coordinator before the state
+	// guard, so a refused retry names the operation it would race.
+	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
+		return Agent{}, err
+	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
 		return Agent{}, err
