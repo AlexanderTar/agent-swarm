@@ -489,8 +489,8 @@ func (s *Store) itemKey(ctx context.Context, tx *sql.Tx, id string) (string, err
 // messages (F7, F9): an answer must name the question (or blocked-relay) it
 // replies to, and that reply_to must resolve to something the target actually
 // owes an answer for.
-const errAnswerNeedsReplyTo = "An answer must set reply_to to the question's message id."
-const errAnswerBadReplyTo = "reply_to %q is not a question from %s (or a blocked relay for %s) awaiting an answer."
+const errAnswerNeedsReplyTo = "An answer needs reply_to: the msg_id of the question (or blocked relay) you are answering."
+const errAnswerBadReplyTo = "reply_to %s is not a question or blocked relay from %s addressed to you."
 
 // Send is swarm_send (§8.1). "parent" resolves through agents.parent_agent_id; a
 // cross-root target or an unknown name is refused. origin is always 'agent'.
@@ -559,7 +559,7 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 				replyTo, a.ID, target.ID, target.Name).Scan(&ok)
 			if errors.Is(err, sql.ErrNoRows) {
 				return &items.Error{Code: items.CodeBadRequest,
-					Message: fmt.Sprintf(errAnswerBadReplyTo, replyTo, target.Name, target.Name)}
+					Message: fmt.Sprintf(errAnswerBadReplyTo, replyTo, target.Name)}
 			}
 			if err != nil {
 				return err
