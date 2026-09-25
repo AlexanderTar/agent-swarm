@@ -284,6 +284,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	it.RequestPayload = rt.RequestPayload // R5: full Request on request.*
 	it.RequestOpened = rt.OnRequestOpened // §17.5 for the daemon-opened accept requests
 	it.DepUnblocked = rt.OnDepUnblocked   // wake whatever was blocked_by an item that just finished
+	it.StoryReadyForReview = rt.OnStoryReadyForReview // relay story_ready_for_review when all tasks finish
 	// Safety invariant S-4: SourcesFromEnv returns nil unless SWARM_USAGE=live,
 	// which only the installed launchd plist sets. Every other daemon — a
 	// test's, e2e's, `make dev`'s, one started by hand in a worktree — gets no

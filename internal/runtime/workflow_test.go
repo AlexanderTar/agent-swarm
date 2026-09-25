@@ -2744,3 +2744,276 @@ func TestStaleChangesRequestedEscalatesWithoutFixRound(t *testing.T) {
 		t.Fatalf("round 2 runs = %d; want none", round2)
 	}
 }
+
+func TestStoryReadyForReviewRelay(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	s.Events.Notify()
+	ep := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	storySpec := workflow.Spec{AfterTasks: &workflow.Step{ID: "story-review", Review: []string{"reviewer"}}}
+	setItemWorkflow(t, s, "STORY-1", storySpec)
+
+	// Complete TASK-1
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Orchestrator receives story_ready_for_review relay
+	events := relayEvents(t, s, orch.ID)
+	if n := countEvent(events, "story_ready_for_review"); n != 1 {
+		t.Fatalf("story_ready_for_review relays = %d (events=%v), want exactly 1", n, events)
+	}
+
+	var payloadRaw string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND json_extract(payload_json, '$.event') = 'story_ready_for_review'`, orch.ID).Scan(&payloadRaw); err != nil {
+		t.Fatal(err)
+	}
+	var p struct {
+		Event string `json:"event"`
+		Story string `json:"story"`
+	}
+	if err := json.Unmarshal([]byte(payloadRaw), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Story != "STORY-1" {
+		t.Fatalf("payload story = %q, want STORY-1", p.Story)
+	}
+}
+
+func TestStoryDoneWaitsForAfterTasksReview(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	s.Events.Notify()
+	ep := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	storySpec := workflow.Spec{AfterTasks: &workflow.Step{ID: "story-review", Review: []string{"reviewer"}}}
+	setItemWorkflow(t, s, "STORY-1", storySpec)
+
+	// Complete TASK-1
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Story is NOT Done yet -- it's waiting for review (InReview)
+	story, err := s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if story.Status == items.Done {
+		t.Fatalf("story status = %s; want not Done (waiting for after_tasks review)", story.Status)
+	}
+
+	// Start workflow on story with read-only worktree
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{
+		ItemKey:   "STORY-1",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "ro"}},
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow on story with ro worktree failed: %v", err)
+	}
+	if st.State != "running" {
+		t.Fatalf("workflow state = %s, want running", st.State)
+	}
+
+	// Reviewer completes with pass
+	revSes := agentSessionForStep(t, s, st.ID, "story-review")
+	if _, err := s.WriteCheckpoint(ctx, revSes.ID, CheckpointInput{
+		Kind:    CompletedCkp,
+		Summary: "looks good",
+		Verdict: "pass",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Workflow succeeded and story moves to Done
+	wf, _, err := s.WorkflowFor(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.State != "succeeded" {
+		t.Fatalf("workflow state = %s, want succeeded", wf.State)
+	}
+	story, err = s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if story.Status != items.Done {
+		t.Fatalf("story status = %s, want Done", story.Status)
+	}
+}
+
+func TestStoryReviewChangesEscalates(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	s.Events.Notify()
+	ep := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	storySpec := workflow.Spec{AfterTasks: &workflow.Step{ID: "story-review", Review: []string{"reviewer"}}}
+	setItemWorkflow(t, s, "STORY-1", storySpec)
+
+	// Complete TASK-1
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start workflow on story with read-only worktree
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{
+		ItemKey:   "STORY-1",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "ro"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reviewer completes with changes_requested
+	revSes := agentSessionForStep(t, s, st.ID, "story-review")
+	if _, err := s.WriteCheckpoint(ctx, revSes.ID, CheckpointInput{
+		Kind:     CompletedCkp,
+		Summary:  "needs rework",
+		Verdict:  "changes_requested",
+		Findings: []workflow.Finding{{Severity: "major", File: "main.go", Summary: "missing check"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Workflow escalates and story remains NOT Done
+	wf, _, err := s.WorkflowFor(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.State != "escalated" {
+		t.Fatalf("workflow state = %s, want escalated", wf.State)
+	}
+	events := relayEvents(t, s, orch.ID)
+	if n := countEvent(events, "workflow_escalated"); n != 1 {
+		t.Fatalf("workflow_escalated relays = %d (events=%v), want exactly 1", n, events)
+	}
+	story, err := s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if story.Status == items.Done {
+		t.Fatalf("story status = %s; want not Done when review changes requested", story.Status)
+	}
+}
+
+func TestStoryWithoutAfterTasksUnchanged(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Story has NO workflow
+	// Complete TASK-1
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Story transitions to Done immediately
+	story, err := s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if story.Status != items.Done {
+		t.Fatalf("story status = %s, want Done", story.Status)
+	}
+
+	// No story_ready_for_review relay
+	events := relayEvents(t, s, orch.ID)
+	if n := countEvent(events, "story_ready_for_review"); n != 0 {
+		t.Fatalf("story_ready_for_review relays = %d, want 0", n)
+	}
+}
+

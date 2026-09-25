@@ -2395,3 +2395,115 @@ func TestRegisterArtifactAsDaemonStalesOpenApprovals(t *testing.T) {
 		t.Fatalf("open approve_section request state = %q, want stale", state)
 	}
 }
+
+func TestIntegratedNeedsIntegrationVerify(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	oSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := workflow.Spec{Integration: &workflow.Integration{
+		Verify: []string{"go test ./...", "make lint"},
+	}}
+	setItemWorkflow(t, s, "EPIC-1", spec)
+
+	// Missing make lint
+	_, err = s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{
+		Kind:    Integrated,
+		Summary: "merged",
+		Git:     []GitRef{{Repo: "proj", Branch: "main", SHA: "deadbee"}},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing make lint verify, got nil")
+	}
+	want := "Integration verify not recorded as passing: make lint."
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
+
+	// With both passing
+	if _, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{
+		Kind:    Integrated,
+		Summary: "merged",
+		Git:     []GitRef{{Repo: "proj", Branch: "main", SHA: "deadbee"}},
+		Verification: []Verify{
+			{Cmd: "go test ./...", Phase: "green", OK: true},
+			{Cmd: "make lint", Phase: "green", OK: true},
+		},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestIntegratedNeedsFinalReviewPass(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	oSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := workflow.Spec{Integration: &workflow.Integration{
+		Verify:      []string{"go test ./..."},
+		FinalReview: []string{"reviewer"},
+	}}
+	setItemWorkflow(t, s, "EPIC-1", spec)
+	if _, err := s.DB.ExecContext(ctx, "UPDATE items SET tdd_exempt = 'docs' WHERE key = 'EPIC-1'"); err != nil {
+		t.Fatal(err)
+	}
+
+	sha := "abcdef123456"
+	// Without passing review on sha
+	_, err = s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{
+		Kind:         Integrated,
+		Summary:      "merged",
+		Git:          []GitRef{{Repo: "proj", Branch: "main", SHA: sha}},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing final review, got nil")
+	}
+	want := "Integration needs a passing final review of abcdef1."
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
+
+	// Spawn reviewer on EPIC-1 and complete with verdict: pass on the sha
+	rev, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey:       "EPIC-1",
+		Role:          RoleReviewer,
+		Kind:          Fake,
+		Model:         "fake-1",
+		ParentAgentID: orch.ID,
+		Brief:         BriefInput{Objective: "final review"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rSes, err := s.LatestSession(ctx, rev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{
+		Kind:     CompletedCkp,
+		Summary:  "looks good",
+		Verdict:  "pass",
+		Git:      []GitRef{{Repo: "proj", Branch: "main", SHA: sha}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now integrated checkpoint succeeds
+	if _, err := s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{
+		Kind:         Integrated,
+		Summary:      "merged",
+		Git:          []GitRef{{Repo: "proj", Branch: "main", SHA: sha}},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+

@@ -171,6 +171,26 @@ func (s *Store) callerOwnsRWWorktree(ctx context.Context, wts []WorkflowWorktree
 	return false, nil
 }
 
+// callerOwnsWorktree reports whether wts names at least one worktree
+// that is currently active and owned by ownerAgentID (stories accept mode "ro" or "rw").
+func (s *Store) callerOwnsWorktree(ctx context.Context, wts []WorkflowWorktree, ownerAgentID string) (bool, error) {
+	for _, w := range wts {
+		var owner string
+		err := s.DB.QueryRowContext(ctx, `SELECT owner_agent_id FROM worktrees WHERE id = ? AND state = 'active'`,
+			w.WorktreeID).Scan(&owner)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if owner == ownerAgentID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // StartWorkflow is swarm_workflow op:"start" (spec B4/B7): validates, inserts
 // the workflows row (round 1, running) and calls advance.
 func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowInput) (WorkflowState, error) {
@@ -178,7 +198,7 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if err != nil {
 		return WorkflowState{}, err
 	}
-	if it.Type != items.Task || it.Workflow == nil {
+	if (it.Type != items.Task && it.Type != items.Story) || it.Workflow == nil {
 		return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("%s has no workflow.", it.Key)}
 	}
 	if it.RootID != orch.RootItemID {
@@ -199,12 +219,22 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if err := s.validateWorktrees(ctx, in.Worktrees); err != nil {
 		return WorkflowState{}, err
 	}
-	ok, err := s.callerOwnsRWWorktree(ctx, in.Worktrees, orch.ID)
-	if err != nil {
-		return WorkflowState{}, err
-	}
-	if !ok {
-		return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: "Start needs a read-write worktree you own."}
+	if it.Type == items.Story {
+		ok, err := s.callerOwnsWorktree(ctx, in.Worktrees, orch.ID)
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		if !ok {
+			return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: "Start needs a worktree you own."}
+		}
+	} else {
+		ok, err := s.callerOwnsRWWorktree(ctx, in.Worktrees, orch.ID)
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		if !ok {
+			return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: "Start needs a read-write worktree you own."}
+		}
 	}
 
 	wfID := ids.New("wf")
@@ -868,6 +898,12 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 			return false, err
 		}
 		brief.Worktrees = wts
+	} else if it.Type == items.Story {
+		wts, err := s.BriefWorktrees(ctx, wf.worktrees())
+		if err != nil {
+			return false, err
+		}
+		brief.Worktrees = wts
 	}
 
 	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: it.Key, Role: Role(run.Role), ParentAgentID: wf.OwnerAgentID,
@@ -1329,6 +1365,64 @@ func (s *Store) applyEscalate(ctx context.Context, wf wfRow, it items.Item, acti
 		return s.notify(ctx, tx, NotifyInput{Kind: "workflow.escalated", ItemKey: it.Key,
 			Args: map[string]string{"KEY": it.Key, "reason": action.Reason}})
 	})
+}
+
+// OnStoryReadyForReview is the items.Store.StoryReadyForReview hook: every task
+// of a story is Done and the story has an after_tasks review workflow. The daemon relays
+// story_ready_for_review to the orchestrator (spec B8).
+func (s *Store) OnStoryReadyForReview(ctx context.Context, tx *sql.Tx, story items.Item) error {
+	var runningOrSucceeded int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM workflows WHERE item_id = ? AND state IN ('running', 'succeeded') LIMIT 1`, story.ID).Scan(&runningOrSucceeded)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	var alreadyRelayed int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM messages WHERE kind = 'relay' AND item_id = ?
+		AND json_extract(payload_json, '$.event') = 'story_ready_for_review'
+		AND created_at >= COALESCE((SELECT MAX(created_at) FROM workflows WHERE item_id = ?), 0) LIMIT 1`,
+		story.ID, story.ID).Scan(&alreadyRelayed)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	var orchID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM agents WHERE root_item_id = ? AND role = 'orchestrator' AND state = 'active'
+		ORDER BY created_at DESC LIMIT 1`, story.RootID).Scan(&orchID)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = tx.QueryRowContext(ctx, `SELECT id FROM agents WHERE root_item_id = ? AND role = 'orchestrator'
+			ORDER BY created_at DESC LIMIT 1`, story.RootID).Scan(&orchID)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"event": "story_ready_for_review",
+		"story": story.Key,
+		"item":  story.Key,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = s.enqueue(ctx, tx, Message{
+		Kind:       "relay",
+		Origin:     "daemon",
+		ToAgentID:  orchID,
+		RootItemID: story.RootID,
+		ItemID:     story.ID,
+		Payload:    payload,
+	})
+	return err
 }
 
 // advanceWaitingForOwner triggers advance for every 'running' workflow

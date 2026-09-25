@@ -167,6 +167,7 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 		After: clk.After,
 		Go:    func(f func()) { f() }, // D28: inline, so the assertions are deterministic
 	}
+	it.StoryReadyForReview = s.OnStoryReadyForReview
 	return s, tm, fa
 }
 
