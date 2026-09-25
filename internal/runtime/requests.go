@@ -154,6 +154,17 @@ func (s *Store) RequestByID(ctx context.Context, id string) (Request, error) {
 	return s.requestTx(ctx, s.DB, id)
 }
 
+// repointRequestsTx moves an agent's open requests onto its newest session.
+// Requests are keyed by canonical agent id, so they survive a replacement
+// by construction; the session pointer follows so session-scoped views
+// (ResolveSessionPrompts, the terminal answer flow) keep working on the
+// live generation instead of the retired predecessor.
+func (s *Store) repointRequestsTx(ctx context.Context, tx *sql.Tx, agentID, sessionID string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE requests SET session_id = ?
+		WHERE agent_id = ? AND state = 'open'`, sessionID, agentID)
+	return err
+}
+
 // Requests lists open requests, optionally scoped to one item.
 func (s *Store) Requests(ctx context.Context, itemKey string) ([]Request, error) {
 	query, args := `SELECT id FROM requests WHERE state = 'open'`, []any{}
