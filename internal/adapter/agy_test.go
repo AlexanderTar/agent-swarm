@@ -637,6 +637,36 @@ func TestAgySetupEnvCopiesRealMigratedMarkerContent(t *testing.T) {
 	}
 }
 
+// setupEnv also runs on Resume, and agyHome is keyed by session ID (agy.go:42),
+// so a Resume of an already-spawned session reuses the same agy-home. The
+// exact live incident this package fixes has real content sitting at a past
+// session's agy-home/.gemini/config/skills (a chain hop's terminal
+// directory) -- setupEnv must never delete that out from under a Resume.
+func TestAgySetupEnvNeverDeletesExistingConfigSkillsContent(t *testing.T) {
+	d := testDeps(t)
+	spec := agySpec(t)
+	agyHome := filepath.Join(d.launchDir(spec.SessionID), "agy-home")
+	preexisting := filepath.Join(agyHome, ".gemini", "config", "skills", "swarm", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(preexisting), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(preexisting, []byte("# live content, do not delete"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := newAgy(d).Resume(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(preexisting)
+	if err != nil {
+		t.Fatalf("setupEnv deleted pre-existing agy-home content on Resume: %v", err)
+	}
+	if string(got) != "# live content, do not delete" {
+		t.Errorf("content = %q, want unchanged", got)
+	}
+}
+
 func TestAgyInstructionsOmittedWhenUnset(t *testing.T) {
 	d := testDeps(t)
 	spec := agySpec(t)

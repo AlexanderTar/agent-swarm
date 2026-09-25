@@ -327,3 +327,45 @@ that question was about agy's *migration* behavior at the old
 `setupEnv` (package PA.2) links `config/skills` directly and gives every
 spawn its own `.migrated` marker — a spawned agy now has no first-run
 migration left to trigger at all.
+
+### Follow-up run: does agy read/migrate from the old path at all when `.migrated` is present?
+
+Decision 2 (spec A7) assumes a spawn's `.migrated` marker means agy has no
+reason to touch the old `antigravity-cli/skills` location — but the two
+runs above never seeded that location with real content, so they didn't
+directly exercise the assumption. One more sealed run closed this: a
+third scratch `HOME` (same seal discipline: no symlink to any real
+directory, only the four auth files copied in, `env` checked clean, real
+home diffed before/after) was built with:
+
+- `home-migcheck/.gemini/antigravity-cli/skills/dummy-old/SKILL.md` — a
+  **real**, non-empty directory at the *old* location, with decoy content
+  (`OLD-LOCATION-CONTENT-4471`) distinct from anything else in this probe.
+- `.gemini/config/.migrated` — present (empty, matching the real one).
+- `.gemini/config/skills/zz-swarm-symlink-probe` — a symlink to a probe
+  source outside `$HOME`, with a fresh codeword (`OTTER-9013`) so this
+  run's evidence is unambiguous.
+
+Prompt: same as before, plus "Also tell me if a skill named dummy-old
+exists." Output:
+```
+### Available Skills
+- `agy-customizations`
+- `antigravity-guide`
+- `zz-swarm-symlink-probe`
+
+### Skill Queries
+- **`zz-swarm-symlink-probe`**: This skill exists (.../home-migcheck/.gemini/config/skills/zz-swarm-symlink-probe/SKILL.md). The probe codeword is **`OTTER-9013`**.
+- **`dummy-old`**: This skill does **not** exist.
+```
+agy never surfaced `dummy-old` at all. `find $SCRATCH/home-migcheck -newer <stamp>` showed no write under either `.gemini/config/skills` or `.gemini/antigravity-cli/skills`; the old-location directory was byte-identical afterward, and `.gemini/config/skills` still held only the probe symlink — no copy-in from the old location, no repointing of the old location into a symlink. The real home diffed identical before → after this run too.
+
+**Confirms decision 2's assumption directly:** with `Config.SkillsDir(KindAgy)`
+at `config/skills`, agy 1.2.11 does not read, migrate, or otherwise touch
+`antigravity-cli/skills` at all — not just when nothing is there, but even
+when a real, non-empty legacy directory is sitting at that path. The
+`.migrated` marker's exact role in this was not isolated (a fourth run
+without it was not deemed necessary: agy's skill discovery evidently never
+consults the old path once a value is present at the new one, full stop),
+but the outcome decision 2 depends on — no read-through, no clobbering —
+is confirmed either way.

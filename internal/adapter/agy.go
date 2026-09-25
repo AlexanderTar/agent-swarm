@@ -78,9 +78,27 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 		return nil, err
 	}
 	symConfigSkills := filepath.Join(agyHome, ".gemini", "config", "skills")
-	_ = os.RemoveAll(symConfigSkills)
-	if err := os.Symlink(realConfigSkills, symConfigSkills); err != nil {
-		return nil, err
+	// setupEnv also runs on Resume, and agyHome is keyed by session ID, so a
+	// Resume of an already-spawned session reuses the same agy-home -- which
+	// may hold real, already-migrated content (the exact live chain this
+	// package fixes has its terminal directory sitting at a past session's
+	// agy-home/.gemini/config/skills). Never RemoveAll here: only create the
+	// link when nothing is there yet, and leave anything else -- a real dir,
+	// or a symlink pointing elsewhere -- untouched rather than risk deleting
+	// live content out from under a Resume.
+	if fi, err := os.Lstat(symConfigSkills); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		if err := os.Symlink(realConfigSkills, symConfigSkills); err != nil {
+			return nil, err
+		}
+	} else if fi.Mode()&os.ModeSymlink != 0 {
+		if cur, err := os.Readlink(symConfigSkills); err != nil || cur != realConfigSkills {
+			a.d.Log("agy: %s is a symlink to %q, not the real config/skills; leaving it alone", symConfigSkills, cur)
+		}
+	} else {
+		a.d.Log("agy: %s already exists and is not a symlink; leaving it alone (a legacy agy-home keeps reading its own content)", symConfigSkills)
 	}
 	realMigrated := filepath.Join(a.d.UserHome, ".gemini", "config", ".migrated")
 	migratedBody, err := os.ReadFile(realMigrated)
