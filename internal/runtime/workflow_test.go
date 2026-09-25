@@ -501,6 +501,54 @@ func TestStartWorkflowValidates(t *testing.T) {
 			t.Fatalf("err = %v, want %q", err, want)
 		}
 	})
+
+	// Fix round 2, finding 2: validateWorktrees, untested until an advisor
+	// review of this very round flagged it as a gap.
+	t.Run("bogus worktree id", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+		_, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+			Worktrees: []WorkflowWorktree{{WorktreeID: "wt_does_not_exist", Mode: "rw"}}})
+		want := "worktree wt_does_not_exist not found."
+		if err == nil || err.Error() != want {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("bad worktree mode", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+		wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+		_, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+			Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rwx"}}})
+		want := `worktree ` + wtID + `: mode must be "rw" or "ro".`
+		if err == nil || err.Error() != want {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	})
+}
+
+// TestWorkflowsOneLiveErrMapsConstraintText pins workflowsOneLiveErr's exact
+// string match against sqlite's ACTUAL error text for this violation --
+// verified empirically (a throwaway probe test against the real driver),
+// not assumed from the workflows_one_live index's own name: sqlite names
+// the underlying column, "UNIQUE constraint failed: workflows.item_id", not
+// the index. An earlier version of this match string looked for
+// "workflows_one_live" itself and could never have matched anything.
+func TestWorkflowsOneLiveErrMapsConstraintText(t *testing.T) {
+	raw := fmt.Errorf("constraint failed: UNIQUE constraint failed: workflows.item_id (2067)")
+	got := workflowsOneLiveErr(raw, "TASK-1")
+	want := "TASK-1 already has a running workflow."
+	if got == nil || got.Error() != want {
+		t.Fatalf("workflowsOneLiveErr = %v, want %q", got, want)
+	}
+	if workflowsOneLiveErr(nil, "TASK-1") != nil {
+		t.Fatal("workflowsOneLiveErr(nil, ...) should pass nil through unchanged")
+	}
+	other := fmt.Errorf("some unrelated error")
+	if workflowsOneLiveErr(other, "TASK-1") != other {
+		t.Fatal("workflowsOneLiveErr should pass an unrelated error through unchanged")
+	}
 }
 
 func TestWorkflowSpawnsBuilderWithSharedWorktree(t *testing.T) {
@@ -1279,13 +1327,19 @@ func TestRetryFixClosesLiveBuilderBeforeRetrying(t *testing.T) {
 // closeSessionForRetry only guarantees the OLD session is closed (retryable)
 // before Retry() runs -- Retry() itself can still fail for an unrelated
 // reason (here, the retried attempt's own startSession/Tmux.Start failing).
-// A bare 'waiting' round-2 row left behind by that failure is invisible to
-// the directive's intent: fillWaitingRuns' generic path doesn't know this
+// A bare 'waiting' round-2 row left behind by that failure was invisible to
+// the directive's intent: fillWaitingRuns' generic path doesn't know the
 // row was ever meant for the SAME builder and would spawn an unrelated
-// fresh agent for it on the very next advance -- exactly the "spawn a fresh
-// builder" outcome the directive forbids, just reached through a different
-// door. It must be marked 'failed' instead, so Next's ordinary crash
-// handling (AutoRetry, then Escalate) owns it.
+// fresh agent for it on the very next advance, with no retry-budget
+// accounting at all.
+//
+// Marking the row 'failed' instead does NOT prevent a fresh spawn outright
+// -- the directive's own text says a fresh spawn IS legitimate once the
+// builder "can't be retried for a reason other than 'still live'", which is
+// exactly this case. What it fixes is HOW that fresh spawn is reached:
+// through Next's ordinary crash handling (AutoRetry while budget remains,
+// only THEN Escalate or fresh-spawn), with I4's findings-bearing brief,
+// instead of bypassing retry-budget accounting entirely.
 func TestRetryFixMarksFailedWhenRetryErrorsAfterClose(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
@@ -1296,6 +1350,7 @@ func TestRetryFixMarksFailedWhenRetryErrorsAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	coderAgentID := agentIDForStep(t, s, st.ID, "build")
 	coderSes := agentSessionForStep(t, s, st.ID, "build")
 	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
 		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
@@ -1309,7 +1364,8 @@ func TestRetryFixMarksFailedWhenRetryErrorsAfterClose(t *testing.T) {
 
 	reviewerSes := agentSessionForStep(t, s, st.ID, "review")
 	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "needs work",
-		Verdict: "changes_requested"}); err != nil {
+		Verdict: "changes_requested", Findings: []workflow.Finding{{Severity: "major", File: "b.go", Line: 7,
+			Summary: "still off by one after the retry"}}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1319,10 +1375,38 @@ func TestRetryFixMarksFailedWhenRetryErrorsAfterClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	if round2State != "failed" {
-		t.Fatalf("round 2 build run state = %s, want failed (never left silently waiting -- that would let a later advance fresh-spawn an unrelated agent over it)", round2State)
+		t.Fatalf("round 2 build run state = %s, want failed (never left silently waiting, with no retry-budget accounting)", round2State)
 	}
 	if round2Agent != "" {
 		t.Fatalf("round 2 build run agent = %q, want empty (never claimed by prevAgentID or anyone else on a Retry failure)", round2Agent)
+	}
+
+	// Once startSession can succeed again, the SAME crash-handling path
+	// (AutoRetry, budget spent) reaches a compliant fresh spawn: a
+	// DIFFERENT agent than the original builder, auto_retries bumped to 1,
+	// and -- I4 -- the round-1 findings rendered into its very first brief.
+	tm.startErr = nil
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	var autoRetries int
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, ''), auto_retries FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build' AND round = 2`, st.ID).Scan(&round2State, &round2Agent, &autoRetries); err != nil {
+		t.Fatal(err)
+	}
+	if round2State != "active" || round2Agent == "" || round2Agent == coderAgentID {
+		t.Fatalf("round 2 build run = state %s agent %q, want active/non-empty/DIFFERENT from the original builder %s",
+			round2State, round2Agent, coderAgentID)
+	}
+	if autoRetries != 1 {
+		t.Fatalf("auto_retries = %d, want 1 (budget-accounted, not bypassed)", autoRetries)
+	}
+	freshBuilder, err := s.agentByID(ctx, round2Agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(freshBuilder.Brief, "still off by one after the retry") {
+		t.Errorf("fresh builder's brief missing round 1's findings:\n%s", freshBuilder.Brief)
 	}
 }
 

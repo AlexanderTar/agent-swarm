@@ -212,16 +212,7 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 			wfID, it.ID, it.RootID, orch.ID, string(ctxJSON), string(wtJSON), db.Millis(now), db.Millis(now))
 		return err
 	}); err != nil {
-		// The SELECT above is only advisory: two concurrent Starts for the
-		// same item can both pass it and race the INSERT, and only one wins
-		// against workflows_one_live (0011_workflows.sql's own UNIQUE
-		// partial index, the DB's actual guarantee). Map that race to the
-		// same friendly refusal the advisory check already gives the
-		// non-concurrent case, instead of a raw sqlite constraint error.
-		if strings.Contains(err.Error(), "workflows_one_live") {
-			return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("%s already has a running workflow.", it.Key)}
-		}
-		return WorkflowState{}, err
+		return WorkflowState{}, workflowsOneLiveErr(err, it.Key)
 	}
 
 	// The workflows row is already committed -- a caller ctx that gets
@@ -238,6 +229,23 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	}
 	st, _, err := s.workflowStateByID(ctx, wfID)
 	return st, err
+}
+
+// workflowsOneLiveErr maps a workflows_one_live unique-index violation to
+// StartWorkflow's own friendly "already has a running workflow" refusal --
+// the advisory pre-check (StartWorkflow's own `existing` SELECT) only
+// prevents the common, non-concurrent case; two concurrent Starts for the
+// same item can both pass it and race the INSERT, and only one wins against
+// this actual DB-level guarantee (0011_workflows.sql's own UNIQUE partial
+// index). Passed through unchanged when err is nil or doesn't match: sqlite
+// reports this specific violation by column, not by index name --
+// "UNIQUE constraint failed: workflows.item_id" -- confirmed empirically
+// (fix round 2 self-review), not assumed from the index's own name.
+func workflowsOneLiveErr(err error, itemKey string) error {
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: workflows.item_id") {
+		return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("%s already has a running workflow.", itemKey)}
+	}
+	return err
 }
 
 // WorkflowFor returns itemKey's latest workflow (any state) and its runs
