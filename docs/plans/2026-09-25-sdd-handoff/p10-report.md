@@ -4,7 +4,7 @@ Worktree: `/Users/alexandertar/GitHub/agent-swarm--p10`, branch `pkg/p10`.
 
 Commits:
 1. `414c4c0` feat(mcpserver): swarm_workflow tool for orchestrators (unit 10.1)
-2. `[pending]` feat(mcpserver): spawn, checkpoint and read changes (unit 10.2)
+2. `11603a0` feat(mcpserver): spawn, checkpoint and read changes (unit 10.2)
 
 ---
 
