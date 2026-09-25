@@ -141,4 +141,11 @@ P9 re-review of fix round 3: Needs fixes (release worktree_reservations rows on 
 P9 fix round 4 committed b6079f9..edb6989 (release exhausted workflow agent reservations).
 P9 scoped re-review of fix round 4 (pro): Approved (transactional atomicity, session safety, test coverage; no issues).
 Task P9: complete (commits b36a5fd..edb6989, review clean).
+Task P10: complete (commits 3060c57..a60d694, review clean) — merged 9988e61.
+Task P11 (Board and menubar UI):
+- Worktree /Users/alexandertar/GitHub/agent-swarm--p11 on branch pkg/p11 based on 9988e61.
+- Unit 11.1: Designer and chore labels committed (11fca8b).
+- Unit 11.2: HTTP payload fields (workflow_state, crew on item detail; step on agents) committed (47898f1).
+- Operating Rule established: all units within a package ("P") must be addressed sequentially by the same coder agent and reviewed together at the package boundary.
+- Paused per user directive before Unit 11.3; handoff at docs/plans/2026-09-25-p11-handoff.md.
 
