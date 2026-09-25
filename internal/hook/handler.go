@@ -172,8 +172,10 @@ func normalize(kind runtime.AgentKind, event string) string {
 //	  suppresses it entirely); PostToolUse carries no result field, so agy stays
 //	  agent_reported (spec 2.3.5). Fixtures: testdata/agy-hook-{pre,post}tooluse-ask_question.json.
 //	codex request_user_input: UNCONFIRMED live (Task 4b hit a persistent backend 401
-//	  unrelated to Swarm before the tool call was ever reached, spec 1.7). Kept refused
-//	  on source-code confidence (registry.rs/request_user_input.rs); retry once resolved.
+//	  unrelated to Swarm before the tool call was ever reached, spec 1.7). Source-code
+//	  confidence alone (registry.rs/request_user_input.rs) is not enough to refuse
+//	  swarm_ask on: codex joins cursor's exception (swarm_ask kind:"question" stays
+//	  available) until a live retry produces the T4b fixtures.
 //	muse request_user_input: confirmed live to dispatch NO hook at all, ever -- not
 //	  "fires but can't deny" but no event to intercept in the first place, while the same
 //	  plugin's hooks fired correctly for muse's other tool calls in the same turn
@@ -184,9 +186,9 @@ func normalize(kind runtime.AgentKind, event string) string {
 //	  PreToolUse/PostToolUse at all. Also not in this list, same exception as muse.
 //
 // Where a block is honored, a parented agent's question is relayed instead
-// (nativeQuestionRelay). Where no hook fires at all (cursor, muse), a
-// parented agent still has no other way to reach the user; swarm_ask stays
-// available and Task 9 does not refuse it for these two kinds.
+// (nativeQuestionRelay). Where the hook is absent or unconfirmed (cursor,
+// muse, codex), a parented agent still has no other way to reach the user;
+// swarm_ask stays available and Task 9 does not refuse it for these kinds.
 func isQuestionTool(name string) bool {
 	switch name {
 	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input", "AskQuestion":
