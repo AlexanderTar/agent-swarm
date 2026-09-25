@@ -538,6 +538,17 @@ func TestMuseSetupEnvIsolatesHOMEExceptOtherAgentsPersonalRoots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Fix round 1, minor 3: Claude Code's other top-level config file
+	// (~/.claude.json, not the ~/.claude dir) must be denylisted too.
+	if err := os.WriteFile(filepath.Join(d.UserHome, ".claude.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A fake real ~/.config/gcloud: proves the HOME/.config -> XDG_CONFIG_HOME
+	// link (fix round 1, important 2) still resolves tools that hardcode
+	// ~/.config/<name> (gcloud, solana), through the existing sibling loop.
+	if err := os.MkdirAll(filepath.Join(d.UserHome, ".config", "gcloud"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	// Ordinary things a shell-tool call needs: must survive the isolation.
 	if err := os.WriteFile(filepath.Join(d.UserHome, ".gitconfig"), []byte("[user]\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -557,10 +568,29 @@ func TestMuseSetupEnvIsolatesHOMEExceptOtherAgentsPersonalRoots(t *testing.T) {
 	if home == d.UserHome {
 		t.Fatal("HOME must not be the real UserHome")
 	}
-	for _, excluded := range []string{".claude", ".codex", ".cursor", ".agents", ".gemini", ".config", ".muse"} {
+	for _, excluded := range []string{".claude", ".codex", ".cursor", ".agents", ".gemini", ".muse", ".claude.json"} {
 		if _, err := os.Lstat(filepath.Join(home, excluded)); !os.IsNotExist(err) {
 			t.Errorf("isolated HOME must not carry %s through, got err=%v", excluded, err)
 		}
+	}
+	// Fix round 1, important 2: HOME/.config is not simply absent -- it must
+	// be its own symlink to the isolated XDG_CONFIG_HOME, so a tool that
+	// hardcodes ~/.config/<name> (gcloud, solana) still resolves through the
+	// sibling-symlink loop already isolating XDG_CONFIG_HOME, while
+	// ~/.config/muse itself keeps resolving to the isolated copy.
+	cfgLink := filepath.Join(home, ".config")
+	fi, err := os.Lstat(cfgLink)
+	if err != nil {
+		t.Fatalf(".config: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("HOME/.config should be a symlink to the isolated XDG_CONFIG_HOME")
+	}
+	if target, err := os.Readlink(cfgLink); err != nil || target != l.Env["XDG_CONFIG_HOME"] {
+		t.Errorf("HOME/.config -> %q, %v; want %q", target, err, l.Env["XDG_CONFIG_HOME"])
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "gcloud")); err != nil {
+		t.Errorf("HOME/.config/gcloud must resolve through to the real one: %v", err)
 	}
 	for _, name := range []string{".gitconfig", "go"} {
 		p := filepath.Join(home, name)
@@ -576,6 +606,45 @@ func TestMuseSetupEnvIsolatesHOMEExceptOtherAgentsPersonalRoots(t *testing.T) {
 		if target, err := os.Readlink(p); err != nil || target != filepath.Join(d.UserHome, name) {
 			t.Errorf("%s symlink target = %q, %v; want %q", name, target, err, filepath.Join(d.UserHome, name))
 		}
+	}
+}
+
+// TestMuseSetupEnvExcludesSwarmHomeByPath is fix round 1, important 1: the
+// swarm home (m.d.Home, ~/.swarm in production) must be excluded from the
+// isolated HOME by absolute path, not by a fixed name -- unlike the other
+// denylist entries, its name is not a constant (Config.Home/--home/
+// SWARM_HOME can point anywhere) and it commonly nests directly under the
+// real UserHome. Excluding it by name would either miss a custom home or
+// (worse) accidentally exclude an unrelated real dotfile that happens to be
+// named ".swarm". This closes the find -L symlink cycle a nested swarm home
+// otherwise creates (isolated HOME lives under
+// <swarm home>/run/launch/<sid>/muse-home/, so symlinking the swarm home
+// back into itself is a cycle for any recursive walk); it does NOT close
+// absolute-path token exposure (a shell tool that
+// already knows or guesses the real swarm home's absolute path, e.g. from
+// s.Bin's own path, can still read ~/.swarm/run/tokens/* directly -- HOME
+// isolation only controls what a relative/$HOME-rooted lookup finds).
+func TestMuseSetupEnvExcludesSwarmHomeByPath(t *testing.T) {
+	d := testDeps(t)
+	d.Home = filepath.Join(d.UserHome, ".swarm")
+	if err := os.MkdirAll(d.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d.UserHome, ".gitconfig"), []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := l.Env["HOME"]
+	if _, err := os.Lstat(filepath.Join(home, ".swarm")); !os.IsNotExist(err) {
+		t.Errorf("isolated HOME must not carry the swarm home (.swarm) through, got err=%v", err)
+	}
+	p := filepath.Join(home, ".gitconfig")
+	if target, err := os.Readlink(p); err != nil || target != filepath.Join(d.UserHome, ".gitconfig") {
+		t.Errorf(".gitconfig symlink target = %q, %v; want %q", target, err, filepath.Join(d.UserHome, ".gitconfig"))
 	}
 }
 
@@ -605,29 +674,52 @@ func TestMuseSetupEnvPinsDataStateCacheToRealHome(t *testing.T) {
 	}
 }
 
-// TestMuseResumeUsesSameIsolation: Resume must isolate identically to Launch
-// so a relaunch never regains access to the operator's real HOME.
+// TestMuseResumeUsesSameIsolation: Resume must isolate identically to
+// Launch -- the exact same key set and the exact same pinned values -- so a
+// relaunch never regains access to the operator's real HOME. Fix round 1,
+// minor 5: compares the two env maps directly (both calls share one
+// SessionID, hence one launchDir, so setupEnv is deterministic across them)
+// rather than only spot-checking a few keys against the isolated HOME.
 func TestMuseResumeUsesSameIsolation(t *testing.T) {
 	d := testDeps(t)
 	if err := os.MkdirAll(filepath.Join(d.UserHome, ".claude", "skills"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s := museSpec(t)
-	s.ProviderSessionID = "prov-xyz"
-	l, err := newMuse(d).Resume(s)
+	launch, err := newMuse(d).Launch(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	home := l.Env["HOME"]
+	s.ProviderSessionID = "prov-xyz" // Resume's only difference from Launch's Spec
+	resume, err := newMuse(d).Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resume.Env) != len(launch.Env) {
+		t.Fatalf("Resume.Env has %d keys, Launch.Env has %d: %v vs %v",
+			len(resume.Env), len(launch.Env), resume.Env, launch.Env)
+	}
+	for k, v := range launch.Env {
+		if resume.Env[k] != v {
+			t.Errorf("Resume.Env[%s] = %q, want Launch's %q", k, resume.Env[k], v)
+		}
+	}
+
+	home := resume.Env["HOME"]
 	if home == "" || home == d.UserHome {
 		t.Fatalf("Resume must also isolate HOME, got %q", home)
 	}
 	if _, err := os.Lstat(filepath.Join(home, ".claude")); !os.IsNotExist(err) {
 		t.Errorf("Resume's isolated HOME must not carry .claude through, got err=%v", err)
 	}
-	for _, k := range []string{"XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
-		if l.Env[k] == "" {
-			t.Errorf("Resume must also pin %s", k)
+	for k, want := range map[string]string{
+		"XDG_DATA_HOME":  filepath.Join(d.UserHome, ".local", "share"),
+		"XDG_STATE_HOME": filepath.Join(d.UserHome, ".local", "state"),
+		"XDG_CACHE_HOME": filepath.Join(d.UserHome, ".cache"),
+	} {
+		if resume.Env[k] != want {
+			t.Errorf("Resume.Env[%s] = %q, want %q", k, resume.Env[k], want)
 		}
 	}
 }

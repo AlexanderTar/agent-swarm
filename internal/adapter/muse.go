@@ -61,12 +61,16 @@ func museMCPEnv(s Spec) map[string]any {
 }
 
 // setupEnv writes custom instructions to the workspace AGENTS.md (cursor
-// pattern §11.1: workspace trust, --trust-workspace, is what loads them) and
-// isolates muse's XDG_CONFIG_HOME to a per-launch copy of the real
-// settings.json with the swarm server's env patched in -- the only place
-// the four SWARM_* vars can reach the swarm MCP subprocess muse spawns (see
-// museMCPEnv). The real settings.json is cloned first so every other MCP
-// server and setting the operator configured keeps working; auth.json is
+// pattern §11.1: workspace trust, --trust-workspace, is what loads them),
+// isolates muse's HOME (spec A8: closes the $HOME/.claude|.codex|.agents
+// "foreign personal" skill+rules leak -- see the museHomeDenylist doc), and
+// isolates XDG_CONFIG_HOME to a per-launch copy of the real settings.json
+// with mcpServers replaced by swarm-only and the swarm server's env patched
+// in -- the only place the four SWARM_* vars can reach the swarm MCP
+// subprocess muse spawns (see museMCPEnv). The real settings.json is cloned
+// first only so unrelated settings (trust hashes, tui flags) and
+// schema_version survive -- every operator MCP server is dropped, not kept
+// (Q1, controller ruling: matches codex's precedent). auth.json is
 // symlinked in so provider login still works. trust.json is not needed:
 // --yolo already trusts the workspace for this run without saving it.
 //
@@ -76,7 +80,12 @@ func museMCPEnv(s Spec) map[string]any {
 // other XDG_CONFIG_HOME-rooted tool muse's shell tool runs (git, gh, ...)
 // would otherwise see an empty config. Every real ~/.config sibling except
 // muse/ is symlinked into the isolated dir so they keep resolving (agy.go's
-// pattern for the same reason, one level up).
+// pattern for the same reason, one level up). HOME/.config itself is then
+// symlinked to that isolated XDG_CONFIG_HOME dir (fix round 1, important 2),
+// so a tool that hardcodes ~/.config/<name> instead of honouring
+// $XDG_CONFIG_HOME (gcloud, solana) still resolves through the same sibling
+// links, and ~/.config/muse still resolves to the isolated copy either way.
+
 // museHomeDenylist is every real `~` entry setupEnv must NOT symlink into an
 // isolated HOME: other coding agents' personal roots (the actual leak --
 // docs/plans/2026-09-25-muse-isolation-probe.md, Finding 2/2b: muse scans
@@ -89,8 +98,8 @@ func museMCPEnv(s Spec) map[string]any {
 // commit and push per unit and an unprobed allowlist is a strong risk of
 // production breakage.
 var museHomeDenylist = map[string]bool{
-	".claude": true, ".codex": true, ".cursor": true, ".agents": true,
-	".gemini": true, ".config": true, ".muse": true,
+	".claude": true, ".claude.json": true, ".codex": true, ".cursor": true,
+	".agents": true, ".gemini": true, ".config": true, ".muse": true,
 }
 
 func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
@@ -108,9 +117,37 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 	if err := os.MkdirAll(homeDir, 0o700); err != nil {
 		return nil, err
 	}
+	// xdgConfigHome's path is needed below, before it's built, to link
+	// HOME/.config to it (fix round 1, important 2).
+	xdgConfigHome := filepath.Join(m.d.launchDir(s.SessionID), "muse-config")
+	// The swarm home itself (m.d.Home, ~/.swarm in production) is excluded by
+	// absolute path, not by a fixed name in museHomeDenylist: its name isn't
+	// a constant (Config.Home/--home/SWARM_HOME can point anywhere), and
+	// unlike the fixed dotfile names above, a name-based exclusion could
+	// either miss a custom home or wrongly exclude an unrelated real
+	// dotfile that happens to be named ".swarm". Fix round 1, important 1:
+	// without this, a swarm home nested under the real UserHome (the
+	// production shape) gets symlinked into the isolated HOME, and since
+	// that isolated HOME itself lives under
+	// <swarm home>/run/launch/<sid>/muse-home/, that is a symlink cycle for
+	// any recursive walk (find -L, grep -R) a spawned agent's shell tool
+	// runs from $HOME. This does NOT close absolute-path token exposure: a
+	// shell tool that already knows or guesses the real swarm home's
+	// absolute path (e.g. from s.Bin's own path) can still read
+	// ~/.swarm/run/tokens/* directly -- HOME isolation only controls what a
+	// relative/$HOME-rooted lookup finds.
+	// ponytail: only excludes m.d.Home when it sits directly under
+	// UserHome (today's production shape); a swarm home nested deeper
+	// (e.g. ~/foo/.swarm) still cycles via its own parent directory, which
+	// this single-level check can't see. Widen to a full ancestor walk if
+	// that configuration is ever supported.
+	swarmHome := filepath.Clean(m.d.Home)
 	if entries, err := os.ReadDir(m.d.UserHome); err == nil {
 		for _, e := range entries {
 			if museHomeDenylist[e.Name()] {
+				continue
+			}
+			if filepath.Join(m.d.UserHome, e.Name()) == swarmHome {
 				continue
 			}
 			if err := symlinkIfExists(filepath.Join(m.d.UserHome, e.Name()),
@@ -121,8 +158,26 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
+	// HOME/.config resolves to the same isolated XDG_CONFIG_HOME dir (not
+	// just excluded/absent): a tool that hardcodes ~/.config/<name> instead
+	// of honouring $XDG_CONFIG_HOME (gcloud, solana) still needs it to
+	// resolve, through the same real-sibling links built below. Removed
+	// first if already present (idempotent, matching symlinkIfExists/
+	// applyLink's own pattern): Launch and Resume share one launchDir per
+	// session, so a second setupEnv call for the same session must replace
+	// rather than fail on the existing link.
+	homeConfigLink := filepath.Join(homeDir, ".config")
+	if _, err := os.Lstat(homeConfigLink); err == nil {
+		if err := os.Remove(homeConfigLink); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.Symlink(xdgConfigHome, homeConfigLink); err != nil {
+		return nil, err
+	}
 
-	xdgConfigHome := filepath.Join(m.d.launchDir(s.SessionID), "muse-config")
 	museDir := filepath.Join(xdgConfigHome, "muse")
 	if err := os.MkdirAll(museDir, 0o700); err != nil {
 		return nil, err
@@ -240,8 +295,10 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 // "--image" also satisfies). --model takes the raw Spark slug,
 // --reasoning-effort the tier ladder, and --yolo --trust-workspace is the
 // always-yolo posture other agents get from --dangerously-skip-permissions.
-// XDG_CONFIG_HOME is isolated per launch (see setupEnv) for the swarm MCP
-// server's env; workspace trust still loads the workspace skills and AGENTS.md.
+// HOME and XDG_CONFIG_HOME are both isolated per launch (see setupEnv) --
+// HOME to keep other agents' personal skills/rules out, XDG_CONFIG_HOME for
+// the swarm MCP server's env; workspace trust still loads the workspace
+// skills and AGENTS.md.
 func (m *Muse) Launch(s Spec) (Launch, error) {
 	env, err := m.setupEnv(s)
 	if err != nil {
@@ -296,8 +353,10 @@ func (m *Muse) IdlePrompt() *regexp.Regexp     { return museIdle }
 func (m *Muse) Busy() *regexp.Regexp           { return museBusy }
 func (m *Muse) Idle(capture string) bool       { return idle(m, capture) }
 
-// StartupDialogs is empty: --yolo disables approval prompts.
-// TODO(probe): confirm no first-run onboarding wizard blocks a fresh HOME.
+// StartupDialogs is empty: --yolo disables approval prompts. A fresh,
+// isolated HOME (spec A8) was confirmed live not to trigger any blocking
+// first-run/foreign-context dialog -- see PM.1's live TUI probe,
+// docs/plans/2026-09-25-muse-isolation-probe.md.
 func (m *Muse) StartupDialogs() []Dialog { return nil }
 func (m *Muse) PromptPatterns() []PromptMatcher {
 	return nil // TODO(probe): record muse's permission/continue prompts live
