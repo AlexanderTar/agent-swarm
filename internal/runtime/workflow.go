@@ -961,9 +961,25 @@ func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, acti
 				return err
 			}
 			if _, err := s.Retry(ctx, prev.Name, renderFindings(action.Findings), "", ""); err != nil {
-				return err
-			}
-			if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET agent_id = ?, state = 'active'
+				// The session is already closed (retryable); this is a
+				// genuine Retry failure (a fallback preflight, or the
+				// retried attempt's own startSession failing to start),
+				// not the "still live" case above. Leaving the round's row
+				// silently 'waiting' would violate the directive just the
+				// same as the removed fallback did: fillWaitingRuns'
+				// generic path doesn't know this row was ever meant for
+				// prevAgentID and would spawn an unrelated fresh agent for
+				// it on the very next advance. Mark it 'failed' instead --
+				// same pattern applyAutoRetry's own Retry-failure fallback
+				// uses -- so Next's ordinary crash handling (AutoRetry
+				// while budget remains, then Escalate) owns it instead.
+				if _, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?
+					WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ? AND state = 'waiting'`,
+					db.Millis(s.now()), wf.ID, action.StepID, action.Round, step.Run); uerr != nil {
+					return uerr
+				}
+				s.logf("advance: retry fix %s: %v", prev.Name, err)
+			} else if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET agent_id = ?, state = 'active'
 				WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ?`,
 				prevAgentID, wf.ID, action.StepID, action.Round, step.Run); err != nil {
 				return err

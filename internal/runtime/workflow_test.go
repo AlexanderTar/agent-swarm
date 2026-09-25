@@ -1274,6 +1274,58 @@ func TestRetryFixClosesLiveBuilderBeforeRetrying(t *testing.T) {
 	}
 }
 
+// TestRetryFixMarksFailedWhenRetryErrorsAfterClose closes a gap the user
+// directive's own removal of the "fall back to fresh spawn" path left open:
+// closeSessionForRetry only guarantees the OLD session is closed (retryable)
+// before Retry() runs -- Retry() itself can still fail for an unrelated
+// reason (here, the retried attempt's own startSession/Tmux.Start failing).
+// A bare 'waiting' round-2 row left behind by that failure is invisible to
+// the directive's intent: fillWaitingRuns' generic path doesn't know this
+// row was ever meant for the SAME builder and would spawn an unrelated
+// fresh agent for it on the very next advance -- exactly the "spawn a fresh
+// builder" outcome the directive forbids, just reached through a different
+// door. It must be marked 'failed' instead, so Next's ordinary crash
+// handling (AutoRetry, then Escalate) owns it.
+func TestRetryFixMarksFailedWhenRetryErrorsAfterClose(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The old session is still live -- closeSessionForRetry will close it
+	// fine. Only the RETRIED attempt's own tmux Start fails (Retry()'s own
+	// startSession call), a failure unrelated to "still live".
+	tm.startErr = fmt.Errorf("tmux: fake refuses to start")
+
+	reviewerSes := agentSessionForStep(t, s, st.ID, "review")
+	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "needs work",
+		Verdict: "changes_requested"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var round2State, round2Agent string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build' AND round = 2`, st.ID).Scan(&round2State, &round2Agent); err != nil {
+		t.Fatal(err)
+	}
+	if round2State != "failed" {
+		t.Fatalf("round 2 build run state = %s, want failed (never left silently waiting -- that would let a later advance fresh-spawn an unrelated agent over it)", round2State)
+	}
+	if round2Agent != "" {
+		t.Fatalf("round 2 build run agent = %q, want empty (never claimed by prevAgentID or anyone else on a Retry failure)", round2Agent)
+	}
+}
+
 // TestResumeRetryMixedFailureAndChangesRequested is Opus review finding 5:
 // resumeBumpsRound's hand-rolled reimplementation of internal/workflow's
 // own pinnedFrom priority got a mixed case wrong. Next's failure-handling
