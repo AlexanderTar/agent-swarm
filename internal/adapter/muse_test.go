@@ -401,6 +401,117 @@ func TestMuseProcessNames(t *testing.T) {
 	}
 }
 
+// TestMuseSetupEnvIsolatesHOMEExceptOtherAgentsPersonalRoots is the fix for
+// the user's report (PR #20): a spawned muse independently scans
+// $HOME/.claude/skills, $HOME/.codex/skills and $HOME/.agents/skills (and
+// loads $HOME/.claude/CLAUDE.md) regardless of any XDG_CONFIG_HOME
+// isolation -- proven live (docs/plans/2026-09-25-muse-isolation-probe.md,
+// Finding 2/2b): isolating XDG_CONFIG_HOME alone removed zero of 13 foreign
+// skills. HOME must be isolated too, using a denylist (mirrors the existing
+// ~/.config sibling loop's shape) rather than an allowlist: a shell-tool
+// call still needs the real .gitconfig, .ssh, toolchains, etc., which an
+// unprobed allowlist would silently break.
+func TestMuseSetupEnvIsolatesHOMEExceptOtherAgentsPersonalRoots(t *testing.T) {
+	d := testDeps(t)
+	for _, dir := range []string{".claude", ".codex", ".cursor", ".agents", ".gemini", ".muse"} {
+		if err := os.MkdirAll(filepath.Join(d.UserHome, dir, "skills"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Ordinary things a shell-tool call needs: must survive the isolation.
+	if err := os.WriteFile(filepath.Join(d.UserHome, ".gitconfig"), []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(d.UserHome, "go", "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := l.Env["HOME"]
+	if home == "" {
+		t.Fatal("Launch must set HOME to an isolated per-launch dir")
+	}
+	if home == d.UserHome {
+		t.Fatal("HOME must not be the real UserHome")
+	}
+	for _, excluded := range []string{".claude", ".codex", ".cursor", ".agents", ".gemini", ".config", ".muse"} {
+		if _, err := os.Lstat(filepath.Join(home, excluded)); !os.IsNotExist(err) {
+			t.Errorf("isolated HOME must not carry %s through, got err=%v", excluded, err)
+		}
+	}
+	for _, name := range []string{".gitconfig", "go"} {
+		p := filepath.Join(home, name)
+		fi, err := os.Lstat(p)
+		if err != nil {
+			t.Errorf("isolated HOME missing ordinary entry %s: %v", name, err)
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s should be a symlink to the real one", name)
+			continue
+		}
+		if target, err := os.Readlink(p); err != nil || target != filepath.Join(d.UserHome, name) {
+			t.Errorf("%s symlink target = %q, %v; want %q", name, target, err, filepath.Join(d.UserHome, name))
+		}
+	}
+}
+
+// TestMuseSetupEnvPinsDataStateCacheToRealHome: once HOME is isolated, an
+// unset XDG_DATA_HOME/XDG_STATE_HOME/XDG_CACHE_HOME would fall through the
+// *isolated* HOME (muse's own fallback is $HOME/.local/share etc., confirmed
+// from the binary's embedded docs strings), silently moving muse's plugin
+// store and session registry away from the real one. The plugin store's own
+// integrity check rejects every partial reconstruction we tried (probe
+// Finding 5), so these must be pinned explicitly to the real UserHome-rooted
+// paths, not left unset.
+func TestMuseSetupEnvPinsDataStateCacheToRealHome(t *testing.T) {
+	d := testDeps(t)
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"XDG_DATA_HOME":  filepath.Join(d.UserHome, ".local", "share"),
+		"XDG_STATE_HOME": filepath.Join(d.UserHome, ".local", "state"),
+		"XDG_CACHE_HOME": filepath.Join(d.UserHome, ".cache"),
+	}
+	for k, v := range want {
+		if l.Env[k] != v {
+			t.Errorf("%s = %q, want %q", k, l.Env[k], v)
+		}
+	}
+}
+
+// TestMuseResumeUsesSameIsolation: Resume must isolate identically to Launch
+// so a relaunch never regains access to the operator's real HOME.
+func TestMuseResumeUsesSameIsolation(t *testing.T) {
+	d := testDeps(t)
+	if err := os.MkdirAll(filepath.Join(d.UserHome, ".claude", "skills"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := museSpec(t)
+	s.ProviderSessionID = "prov-xyz"
+	l, err := newMuse(d).Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := l.Env["HOME"]
+	if home == "" || home == d.UserHome {
+		t.Fatalf("Resume must also isolate HOME, got %q", home)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".claude")); !os.IsNotExist(err) {
+		t.Errorf("Resume's isolated HOME must not carry .claude through, got err=%v", err)
+	}
+	for _, k := range []string{"XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+		if l.Env[k] == "" {
+			t.Errorf("Resume must also pin %s", k)
+		}
+	}
+}
+
 func TestMuseInstalled(t *testing.T) {
 	d := testDeps(t)
 	d.Run = (&execx.Fake{Responses: map[string]execx.Result{

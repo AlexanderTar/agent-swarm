@@ -76,6 +76,22 @@ func museMCPEnv(s Spec) map[string]any {
 // would otherwise see an empty config. Every real ~/.config sibling except
 // muse/ is symlinked into the isolated dir so they keep resolving (agy.go's
 // pattern for the same reason, one level up).
+// museHomeDenylist is every real `~` entry setupEnv must NOT symlink into an
+// isolated HOME: other coding agents' personal roots (the actual leak --
+// docs/plans/2026-09-25-muse-isolation-probe.md, Finding 2/2b: muse scans
+// these directly off $HOME regardless of any XDG_CONFIG_HOME isolation),
+// `.config` (already isolated separately, below, matching muse's own
+// XDG_CONFIG_HOME override), and `.muse` (would shadow the isolated
+// XDG_CONFIG_HOME's own muse/ dir if HOME's fallback were ever consulted).
+// Everything else (`.gitconfig`, `.ssh`, toolchains, ...) is symlinked
+// through unchanged -- a denylist, not an allowlist, because swarm agents
+// commit and push per unit and an unprobed allowlist is a strong risk of
+// production breakage.
+var museHomeDenylist = map[string]bool{
+	".claude": true, ".codex": true, ".cursor": true, ".agents": true,
+	".gemini": true, ".config": true, ".muse": true,
+}
+
 func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 	if s.Instructions != "" && s.Cwd != "" {
 		if err := os.MkdirAll(s.Cwd, 0o755); err != nil {
@@ -85,6 +101,24 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 			[]byte(s.Instructions), 0o644); err != nil {
 			return nil, err
 		}
+	}
+
+	homeDir := filepath.Join(m.d.launchDir(s.SessionID), "muse-home")
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		return nil, err
+	}
+	if entries, err := os.ReadDir(m.d.UserHome); err == nil {
+		for _, e := range entries {
+			if museHomeDenylist[e.Name()] {
+				continue
+			}
+			if err := symlinkIfExists(filepath.Join(m.d.UserHome, e.Name()),
+				filepath.Join(homeDir, e.Name())); err != nil {
+				return nil, err
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
 
 	xdgConfigHome := filepath.Join(m.d.launchDir(s.SessionID), "muse-config")
@@ -153,7 +187,25 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 		return nil, err
 	}
 
-	return map[string]string{"XDG_CONFIG_HOME": xdgConfigHome}, nil
+	// XDG_DATA_HOME/STATE/CACHE must be pinned to the real, UserHome-rooted
+	// paths explicitly, not left unset: muse's own fallback for each is
+	// $HOME/.local/share etc. (binary's embedded docs strings), and HOME is
+	// now isolated above, so an unset value would silently move muse's
+	// plugin store and session registry off the real one. The plugin
+	// store's own integrity/ownership check rejects every partial
+	// reconstruction under an isolated data dir we tried (probe Finding 5:
+	// a symlinked store root, a symlinked installed.json, and a copied
+	// installed.json + symlinked cache/marketplaces + copied .installed.lock
+	// were all rejected) -- sharing the real one is the only proven-working
+	// way to keep the superpowers plugin (locked decision 7) and
+	// DiscoverSession's real session-registry read working.
+	return map[string]string{
+		"HOME":            homeDir,
+		"XDG_CONFIG_HOME": xdgConfigHome,
+		"XDG_DATA_HOME":   filepath.Join(m.d.UserHome, ".local", "share"),
+		"XDG_STATE_HOME":  filepath.Join(m.d.UserHome, ".local", "state"),
+		"XDG_CACHE_HOME":  filepath.Join(m.d.UserHome, ".cache"),
+	}, nil
 }
 
 // Launch is §11.1. `muse [OPTIONS] [PROMPT]` takes the kickoff as a bare
