@@ -147,7 +147,8 @@ func checkpointTool(s *Server) ToolDef {
 func askTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_ask",
-		Description: "Ask a question, request an approval, propose repos to confirm, or withdraw an earlier ask, and block for the answer.",
+		Description: "Request an approval, propose repos to confirm, forward a native answer, or withdraw an earlier ask. " +
+			"Returns at once with the request id; the answer arrives later as a message.",
 		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, or withdraw"},"prompt":{"type":"string"},"options":{"type":"array"},
 			"artifact":{"type":"string","description":"Artifact id for approval kinds"},"section":{"type":"string","description":"Section id for per-section approval"},"withdraw":{"type":"string"},
 			"repos":{"type":"array","items":{"type":"object","properties":{

@@ -913,3 +913,11 @@ func TestSharedToolSchemasDeclareRequired(t *testing.T) {
 		}
 	}
 }
+
+func TestAskToolDescriptionSaysItReturnsAtOnce(t *testing.T) {
+	d := askTool(nil)
+	if strings.Contains(d.Description, "block for the answer") ||
+		!strings.Contains(d.Description, "Returns at once with the request id") {
+		t.Fatalf("description = %q", d.Description)
+	}
+}
