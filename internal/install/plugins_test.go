@@ -278,6 +278,9 @@ func TestSyncVendorsCursorPluginsAsRealFoldersNotSymlinks(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(vendor, "skills", "brainstorming", "SKILL.md"), []byte("# b"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.Symlink("SKILL.md", filepath.Join(vendor, "skills", "brainstorming", "AGENTS.md")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	f := &execx.Fake{Responses: map[string]execx.Result{
 		"cursor-agent plugin marketplace add https://github.com/obra/superpowers-marketplace":                    {Out: "added"},
@@ -298,6 +301,14 @@ func TestSyncVendorsCursorPluginsAsRealFoldersNotSymlinks(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(local, "skills", "brainstorming", "SKILL.md")); err != nil {
 		t.Errorf("the copy is incomplete: %v", err)
+	}
+	alias := filepath.Join(local, "skills", "brainstorming", "AGENTS.md")
+	fi, err = os.Lstat(alias)
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("nested link must become a regular file: %v, %v", fi, err)
+	}
+	if got, err := os.ReadFile(alias); err != nil || string(got) != "# b" {
+		t.Errorf("nested link contents = %q, %v; want # b", got, err)
 	}
 }
 

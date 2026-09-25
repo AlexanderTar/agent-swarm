@@ -3,16 +3,12 @@ package install
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"testing/fstest"
 )
 
-// Fix round 3, controller ruling item 5: copyTree dereferences every symlink
-// it finds, including one that points back at one of its own ancestors --
-// without the visited-set + max-depth guards, that would recurse forever.
-// b/loop -> a, where a is copyTree's own root, so walking into loop tries to
-// expand a's contents (including b, including loop) again, and again.
+// A cycle must be skipped before any partial copy of that entry is created;
+// independent siblings still get copied.
 func TestCopyTreeDetectsASymlinkCycle(t *testing.T) {
 	root := t.TempDir()
 	a := filepath.Join(root, "a")
@@ -23,13 +19,38 @@ func TestCopyTreeDetectsASymlinkCycle(t *testing.T) {
 	if err := os.Symlink(a, filepath.Join(b, "loop")); err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(t.TempDir(), "dst")
-	err := copyTree(a, dst)
-	if err == nil {
-		t.Fatal("expected a clear error on a symlink cycle, got nil (or it hung)")
+	if err := os.WriteFile(filepath.Join(b, "sibling.md"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "cycle") && !strings.Contains(err.Error(), "depth") {
-		t.Errorf("error should clearly name the cycle/depth guard: %v", err)
+	dst := filepath.Join(t.TempDir(), "dst")
+	if err := copyTree(a, dst); err != nil {
+		t.Fatalf("cycle should be skipped: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "b", "loop")); !os.IsNotExist(err) {
+		t.Errorf("cycle entry should be absent, got %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "b", "sibling.md")); err != nil || string(got) != "keep" {
+		t.Errorf("sibling = %q, %v; want keep", got, err)
+	}
+}
+
+func TestCopyTreeSkipsSelfReferentialLink(t *testing.T) {
+	src := t.TempDir()
+	if err := os.Symlink("loop", filepath.Join(src, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "sibling.md"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "dst")
+	if err := copyTree(src, dst); err != nil {
+		t.Fatalf("self-referential link should be skipped: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "loop")); !os.IsNotExist(err) {
+		t.Errorf("loop entry should be absent: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "sibling.md")); err != nil || string(got) != "keep" {
+		t.Errorf("sibling = %q, %v; want keep", got, err)
 	}
 }
 

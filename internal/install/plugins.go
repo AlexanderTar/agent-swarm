@@ -3,12 +3,15 @@ package install
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
@@ -408,10 +411,24 @@ func (p Plugins) vendorForCursor(ctx context.Context, m MarketplacePlugin, actio
 // cycle (an entry that links back to one of its own ancestors, directly or
 // through another link): each newly dereferenced directory's real
 // (EvalSymlinks'd) path is added to visited before recursing into it, and a
-// path already in visited errors out immediately rather than recursing
-// forever; the depth counter is a second, unconditional backstop.
+// path already in visited is skipped before copying; the depth counter is a
+// second, unconditional backstop.
+// ponytail: following a link copies its whole target with no size cap. Add a
+// cap if vendored or legacy trees ever link to huge directories.
 func copyTree(src, dst string) error {
-	return copyTreeGuarded(src, dst, map[string]bool{}, 0)
+	visited := map[string]bool{}
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		resolved, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			return err
+		}
+		visited[resolved] = true
+	}
+	return copyTreeGuarded(src, dst, visited, 0)
 }
 
 const maxCopyTreeDepth = 32
@@ -444,26 +461,41 @@ func copyTreeGuarded(src, dst string, visited map[string]bool, depth int) error 
 		// again (not inline here) so its own visited/depth guards apply to
 		// whatever it contains too, including further symlinks.
 		if d.Type()&os.ModeSymlink != 0 {
-			real, err := filepath.EvalSymlinks(p)
+			resolved, err := filepath.EvalSymlinks(p)
 			if err != nil {
+				// EvalSymlinks uses an unexported plain error for a link
+				// loop; some platforms return syscall.ELOOP instead.
+				if errors.Is(err, syscall.ELOOP) || err.Error() == "EvalSymlinks: too many links" {
+					log.Printf("copyTree: skipping symlink cycle at %s: %v", p, err)
+					return nil
+				}
+				if os.IsNotExist(err) {
+					log.Printf("copyTree: skipping dangling link %s: %v", p, err)
+					return nil
+				}
 				return err
 			}
-			realInfo, err := os.Stat(real)
+			resolvedInfo, err := os.Stat(resolved)
 			if err != nil {
+				if os.IsNotExist(err) {
+					log.Printf("copyTree: skipping dangling link %s: %v", p, err)
+					return nil
+				}
 				return err
 			}
-			if !realInfo.IsDir() {
-				return CopyFile(real, target)
+			if !resolvedInfo.IsDir() {
+				return CopyFile(resolved, target)
 			}
-			if visited[real] {
-				return fmt.Errorf("copyTree: symlink cycle detected at %s (resolves to %s, already being copied)", p, real)
+			if visited[resolved] {
+				log.Printf("copyTree: skipping symlink cycle at %s (resolves to %s)", p, resolved)
+				return nil
 			}
 			nextVisited := make(map[string]bool, len(visited)+1)
 			for k := range visited {
 				nextVisited[k] = true
 			}
-			nextVisited[real] = true
-			return copyTreeGuarded(real, target, nextVisited, depth+1)
+			nextVisited[resolved] = true
+			return copyTreeGuarded(resolved, target, nextVisited, depth+1)
 		}
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)

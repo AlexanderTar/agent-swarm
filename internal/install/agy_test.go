@@ -409,7 +409,8 @@ func TestWriteAgyRepairSalvagesASymlinkedLegacyEntry(t *testing.T) {
 	// the legacy chain and ~/.swarm/skills (skillsHome) -- deliberately not
 	// the shared skills copy, so this pins that repair recreates the link
 	// as-is (an unrelated, user-owned target) rather than only working by
-	// accident for links that happen to already resolve into skillsHome.
+	// accident for links that happen to already resolve into skillsHome. Links
+	// into run/launch take the deep-copy path instead.
 	linkTarget := filepath.Join(t.TempDir(), "vendored-thing")
 	if err := os.MkdirAll(linkTarget, 0o755); err != nil {
 		t.Fatal(err)
@@ -521,11 +522,9 @@ func TestWriteAgyRepairSalvagesANestedSymlinkInsideARealDirAndItSurvivesAReap(t 
 	}
 }
 
-// Fix round 2, finding 4: a RELATIVE symlink target must be resolved
-// against the source directory to an absolute path before being written at
-// the destination -- dst lives in a different directory than src, so
-// copying the relative text as-is would point at the wrong place (or
-// nothing) once read back from dst.
+// A relative top-level link into run/launch must be resolved against its
+// source directory, then deep-copied into the new root. This keeps the
+// salvaged content readable after the source session is reaped.
 func TestWriteAgyRepairResolvesARelativeSymlinkTargetToAbsolute(t *testing.T) {
 	c := fakeHome(t)
 	launchSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
@@ -560,11 +559,118 @@ func TestWriteAgyRepairResolvesARelativeSymlinkTargetToAbsolute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read back THROUGH the recreated link at the new root: if the relative
-	// text had been copied verbatim, this would resolve against newRoot's
-	// own directory instead of launchSkills's, and fail.
+	// The destination holds real copied content, not a link back to the
+	// session directory.
+	fi, err := os.Lstat(filepath.Join(c.Gemini("config", "skills"), "rel"))
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("relative link should be deep-copied: %v, %v", fi, err)
+	}
 	if _, err := os.Stat(filepath.Join(c.Gemini("config", "skills"), "rel", "SKILL.md")); err != nil {
 		t.Errorf("relative link did not resolve from the new location: %v", err)
+	}
+}
+
+// A file link inside a session must become independent of that session.
+func TestWriteAgyRepairSalvagesFileLinkAfterSessionReap(t *testing.T) {
+	c := fakeHome(t)
+	session := filepath.Join(c.Home, "run", "launch", "ses_x")
+	skills := filepath.Join(session, "agy-home", ".gemini", "config", "skills")
+	skill := filepath.Join(skills, "legacy")
+	if err := os.MkdirAll(skill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("# legacy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("SKILL.md", filepath.Join(skill, "alias.md")); err != nil {
+		t.Fatal(err)
+	}
+	old := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(old), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(skills, old); err != nil {
+		t.Fatal(err)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{"agy mcp add --type stdio swarm " + c.Bin + " mcp": {}}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(session); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(c.Gemini("config", "skills"), "legacy", "alias.md")
+	fi, err := os.Lstat(alias)
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("salvaged alias must be a real file: %v, %v", fi, err)
+	}
+	if got, err := os.ReadFile(alias); err != nil || string(got) != "# legacy" {
+		t.Errorf("alias after reap = %q, %v", got, err)
+	}
+}
+
+func TestWriteAgyRepairSkipsDanglingTopLevelLink(t *testing.T) {
+	c := fakeHome(t)
+	skills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	if err := os.MkdirAll(filepath.Join(skills, "good"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skills, "good", "SKILL.md"), []byte("good"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("missing", filepath.Join(skills, "broken")); err != nil {
+		t.Fatal(err)
+	}
+	old := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(old), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(skills, old); err != nil {
+		t.Fatal(err)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{"agy mcp add --type stdio swarm " + c.Bin + " mcp": {}}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+	root := c.Gemini("config", "skills")
+	if _, err := os.Lstat(filepath.Join(root, "broken")); !os.IsNotExist(err) {
+		t.Errorf("dangling entry should be absent: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "good", "SKILL.md")); err != nil || string(got) != "good" {
+		t.Errorf("sibling = %q, %v", got, err)
+	}
+}
+
+func TestWriteAgyRepairSkipsDanglingNestedLink(t *testing.T) {
+	c := fakeHome(t)
+	skills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	skill := filepath.Join(skills, "good")
+	if err := os.MkdirAll(skill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("good"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("missing", filepath.Join(skill, "broken")); err != nil {
+		t.Fatal(err)
+	}
+	old := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(old), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(skills, old); err != nil {
+		t.Fatal(err)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{"agy mcp add --type stdio swarm " + c.Bin + " mcp": {}}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(c.Gemini("config", "skills"), "good")
+	if _, err := os.Lstat(filepath.Join(root, "broken")); !os.IsNotExist(err) {
+		t.Errorf("dangling entry should be absent: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "SKILL.md")); err != nil || string(got) != "good" {
+		t.Errorf("sibling = %q, %v", got, err)
 	}
 }
 
