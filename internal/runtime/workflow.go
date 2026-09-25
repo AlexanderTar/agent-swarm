@@ -194,6 +194,18 @@ func (s *Store) callerOwnsWorktree(ctx context.Context, wts []WorkflowWorktree, 
 // StartWorkflow is swarm_workflow op:"start" (spec B4/B7): validates, inserts
 // the workflows row (round 1, running) and calls advance.
 func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowInput) (WorkflowState, error) {
+	var st WorkflowState
+	if hit, err := PeekIdempotent(ctx, s, in.SessionID, in.RequestID, &st); err != nil {
+		return WorkflowState{}, err
+	} else if hit {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
+	}
+
 	it, err := s.Items.Get(ctx, in.ItemKey)
 	if err != nil {
 		return WorkflowState{}, err
@@ -247,14 +259,34 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if err != nil {
 		return WorkflowState{}, err
 	}
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
+	ran, err := IdemTx(ctx, s, in.SessionID, in.RequestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO workflows
 			(id, item_id, root_item_id, owner_agent_id, state, round, extra_rounds, context_json, worktrees_json, created_at, updated_at)
 			VALUES (?, ?, ?, ?, 'running', 1, 0, ?, ?, ?, ?)`,
 			wfID, it.ID, it.RootID, orch.ID, string(ctxJSON), string(wtJSON), db.Millis(now), db.Millis(now))
-		return err
-	}); err != nil {
+		if err != nil {
+			return err
+		}
+		st = WorkflowState{
+			ID:          wfID,
+			ItemKey:     it.Key,
+			State:       "running",
+			Round:       1,
+			ExtraRounds: 0,
+			Runs:        []WorkflowRunView{},
+		}
+		return nil
+	})
+	if err != nil {
 		return WorkflowState{}, workflowsOneLiveErr(err, it.Key)
+	}
+	if !ran {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
 	}
 
 	// The workflows row is already committed -- a caller ctx that gets
@@ -269,9 +301,19 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if err := s.advance(context.WithoutCancel(ctx), wfID); err != nil {
 		s.logf("start workflow: advance %s: %v", wfID, err)
 	}
-	st, _, err := s.workflowStateByID(ctx, wfID)
-	return st, err
+	st, _, err = s.workflowStateByID(ctx, wfID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if in.RequestID != "" {
+		if body, berr := json.Marshal(st); berr == nil {
+			_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE caller = ? AND request_id = ?`,
+				string(body), in.SessionID, in.RequestID)
+		}
+	}
+	return st, nil
 }
+
 
 // workflowsOneLiveErr maps a workflows_one_live unique-index violation to
 // StartWorkflow's own friendly "already has a running workflow" refusal --
@@ -970,6 +1012,8 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 	}
 
 	return true, nil
+
+
 }
 
 // applyRetryFix applies a RetryFix action (spec B4): bumps workflows.round
@@ -1612,7 +1656,19 @@ func (s *Store) deliverNote(ctx context.Context, agentID, note string) error {
 // escalated workflow -- ownership isn't re-checked here the way Start's is,
 // since only the workflow's own owner can ever see it escalated to them in
 // the first place via their inbox relay).
-func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decision, note, requestID string) (WorkflowState, error) {
+func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decision, note, sessionID, requestID string) (WorkflowState, error) {
+	var st WorkflowState
+	if hit, err := PeekIdempotent(ctx, s, sessionID, requestID, &st); err != nil {
+		return WorkflowState{}, err
+	} else if hit {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
+	}
+
 	it, err := s.Items.Get(ctx, itemKey)
 	if err != nil {
 		return WorkflowState{}, err
@@ -1637,55 +1693,123 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 		return WorkflowState{}, notWaitingOnYou(it.Key, state)
 	}
 
-	switch decision {
-	case "retry":
-		runs, err := s.loadWorkflowRuns(ctx, wf.ID)
-		if err != nil {
-			return WorkflowState{}, err
+	var lostRace bool
+	var bumped bool
+	ran, err := IdemTx(ctx, s, sessionID, requestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
+		switch decision {
+		case "retry":
+			runs, err := s.loadWorkflowRuns(ctx, wf.ID)
+			if err != nil {
+				return err
+			}
+			newRound := wf.Round
+			bumped = it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round, wf.ExtraRounds)
+			if bumped {
+				newRound++
+			}
+			// Fix round 2, finding 8: guarded on state='escalated', the same as
+			// StartWorkflow's own insert and applySucceed/applyEscalate's own
+			// guarded flips -- a concurrent resume (or a fresh escalation
+			// racing this one) must not double-apply.
+			res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'running', round = ?,
+				extra_rounds = extra_rounds + 1, escalation = NULL, updated_at = ? WHERE id = ? AND state = 'escalated'`,
+				newRound, db.Millis(s.now()), wf.ID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				lostRace = true
+				return nil
+			}
+			// Persist the note into workflows.context_json BEFORE advance runs
+			if note != "" {
+				raw, err := json.Marshal(append(wf.contextLines(), note))
+				if err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE workflows SET context_json = ? WHERE id = ?`, string(raw), wf.ID); err != nil {
+					return err
+				}
+			}
+			st = WorkflowState{
+				ID:          wf.ID,
+				ItemKey:     it.Key,
+				State:       "running",
+				Round:       newRound,
+				ExtraRounds: wf.ExtraRounds + 1,
+			}
+			return nil
+
+		case "accept":
+			res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'succeeded', updated_at = ?
+				WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				lostRace = true
+				return nil
+			}
+			if _, err := s.Items.TransitionTx(ctx, tx, it.Key, items.Done, items.Daemon()); err != nil {
+				return err
+			}
+			st = WorkflowState{
+				ID:          wf.ID,
+				ItemKey:     it.Key,
+				State:       "succeeded",
+				Round:       wf.Round,
+				ExtraRounds: wf.ExtraRounds,
+			}
+			return nil
+
+		case "fail":
+			res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'failed', updated_at = ?
+				WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				lostRace = true
+				return nil
+			}
+			if err := s.tryTransition(ctx, tx, it.Key, items.Ready); err != nil {
+				return err
+			}
+			st = WorkflowState{
+				ID:          wf.ID,
+				ItemKey:     it.Key,
+				State:       "failed",
+				Round:       wf.Round,
+				ExtraRounds: wf.ExtraRounds,
+			}
+			return nil
+
+		default:
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: `decision must be "retry", "accept" or "fail".`}
 		}
-		newRound := wf.Round
-		bumped := it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round, wf.ExtraRounds)
-		if bumped {
-			newRound++
-		}
-		// Fix round 2, finding 8: guarded on state='escalated', the same as
-		// StartWorkflow's own insert and applySucceed/applyEscalate's own
-		// guarded flips -- a concurrent resume (or a fresh escalation
-		// racing this one) must not double-apply.
-		res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'running', round = ?,
-			extra_rounds = extra_rounds + 1, escalation = NULL, updated_at = ? WHERE id = ? AND state = 'escalated'`,
-			newRound, db.Millis(s.now()), wf.ID)
-		if err != nil {
-			return WorkflowState{}, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			// Lost the race; report the current state, not our stale
-			// pre-image, and skip every side effect below -- we don't own
-			// this transition.
-			st, _, err := s.workflowStateByID(ctx, wf.ID)
-			return st, err
-		}
-		// Persist the note into workflows.context_json BEFORE advance runs
-		// (fix round 2, finding 4): spawnRunAgent already folds
-		// wf.contextLines() into every brief, so a round bump's fresh spawn
-		// (bumped==true -- no existing agent, no session to message) picks
-		// it up there. Reusing this existing channel is what lets it reach
-		// an agent that doesn't exist yet at all.
-		if note != "" {
-			if err := s.appendWorkflowContext(ctx, wf.ID, note); err != nil {
-				return WorkflowState{}, err
+	})
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if lostRace {
+		st, _, err := s.workflowStateByID(ctx, wf.ID)
+		return st, err
+	}
+	if !ran {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
 			}
 		}
+		return st, nil
+	}
+
+	switch decision {
+	case "retry":
 		if err := s.advance(context.WithoutCancel(ctx), wf.ID); err != nil {
 			return WorkflowState{}, err
 		}
-		// Only deliver the message-based note when the round wasn't bumped:
-		// that's the RetryFix path, retrying the SAME pre-existing agent
-		// whose brief already went out earlier -- the persisted context
-		// line above won't reach it (it never gets a new brief), so it
-		// still needs deliverNote's explicit assignment_update. A bumped
-		// round's fresh spawn already has the note in its very first
-		// brief; sending it again here would just be a duplicate.
 		if note != "" && !bumped {
 			var activeAgentID string
 			err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id, '') FROM workflow_runs
@@ -1700,22 +1824,7 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 				}
 			}
 		}
-	case "accept":
-		res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'succeeded', updated_at = ?
-			WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
-		if err != nil {
-			return WorkflowState{}, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			st, _, err := s.workflowStateByID(ctx, wf.ID)
-			return st, err
-		}
-		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			_, err := s.Items.TransitionTx(ctx, tx, it.Key, items.Done, items.Daemon())
-			return err
-		}); err != nil {
-			return WorkflowState{}, err
-		}
+	case "accept", "fail":
 		runs, err := s.loadWorkflowRuns(ctx, wf.ID)
 		if err != nil {
 			return WorkflowState{}, err
@@ -1723,35 +1832,19 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 		if err := s.removeAllReviewWorktrees(ctx, wf, runs); err != nil {
 			return WorkflowState{}, err
 		}
-	case "fail":
-		res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'failed', updated_at = ?
-			WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
-		if err != nil {
-			return WorkflowState{}, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			st, _, err := s.workflowStateByID(ctx, wf.ID)
-			return st, err
-		}
-		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			return s.tryTransition(ctx, tx, it.Key, items.Ready)
-		}); err != nil {
-			return WorkflowState{}, err
-		}
-		runs, err := s.loadWorkflowRuns(ctx, wf.ID)
-		if err != nil {
-			return WorkflowState{}, err
-		}
-		if err := s.removeAllReviewWorktrees(ctx, wf, runs); err != nil {
-			return WorkflowState{}, err
-		}
-	default:
-		return WorkflowState{}, &items.Error{Code: items.CodeBadRequest,
-			Message: `decision must be "retry", "accept" or "fail".`}
 	}
 
-	st, _, err := s.workflowStateByID(ctx, wf.ID)
-	return st, err
+	st, _, err = s.workflowStateByID(ctx, wf.ID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if requestID != "" {
+		if body, berr := json.Marshal(st); berr == nil {
+			_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE caller = ? AND request_id = ?`,
+				string(body), sessionID, requestID)
+		}
+	}
+	return st, nil
 }
 
 // removeAllReviewWorktrees releases+removes every review worktree recorded
@@ -1772,7 +1865,19 @@ func (s *Store) removeAllReviewWorktrees(ctx context.Context, wf wfRow, runs []w
 // CancelWorkflow is swarm_workflow op:"cancel" (spec B7): cancels every
 // active run's agent, marks the workflow cancelled, moves the task back to
 // Ready, and removes any review worktree.
-func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, requestID string) (WorkflowState, error) {
+func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, sessionID, requestID string) (WorkflowState, error) {
+	var st WorkflowState
+	if hit, err := PeekIdempotent(ctx, s, sessionID, requestID, &st); err != nil {
+		return WorkflowState{}, err
+	} else if hit {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
+	}
+
 	it, err := s.Items.Get(ctx, itemKey)
 	if err != nil {
 		return WorkflowState{}, err
@@ -1812,20 +1917,47 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, request
 		return WorkflowState{}, err
 	}
 
-	// State flips FIRST, before any agent is actually cancelled (finding
-	// 8): belt-and-suspenders alongside the lock above -- any advance that
-	// somehow still reaches this workflow mid-cancel sees a non-'running'/
-	// 'escalated' state and refuses to spawn, the same guard StartWorkflow/
-	// applySpawn/applyRetryFix already rely on everywhere else.
-	res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled', updated_at = ?
-		WHERE id = ? AND state IN ('running', 'escalated')`, db.Millis(s.now()), wf.ID)
+	var lostRace bool
+	ran, err := IdemTx(ctx, s, sessionID, requestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled', updated_at = ?
+			WHERE id = ? AND state IN ('running', 'escalated')`, db.Millis(s.now()), wf.ID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			lostRace = true
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'cancelled', ended_at = ?
+			WHERE workflow_id = ? AND state IN ('active', 'waiting')`, db.Millis(s.now()), wf.ID); err != nil {
+			return err
+		}
+		if err := s.tryTransition(ctx, tx, it.Key, items.Ready); err != nil {
+			return err
+		}
+		st = WorkflowState{
+			ID:          wf.ID,
+			ItemKey:     it.Key,
+			State:       "cancelled",
+			Round:       wf.Round,
+			ExtraRounds: wf.ExtraRounds,
+		}
+		return nil
+	})
 	if err != nil {
 		return WorkflowState{}, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		// Already resolved by a concurrent call; report its current state.
+	if lostRace {
 		st, _, err := s.workflowStateByID(ctx, wf.ID)
 		return st, err
+	}
+	if !ran {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
 	}
 
 	for _, r := range runs {
@@ -1845,24 +1977,21 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, request
 			s.logf("cancel workflow: cancel agent %s: %v", a.Name, err)
 		}
 	}
-	// Mark every active/waiting run cancelled too (finding 8): Cancel above
-	// only ever touches the agent/session, never workflow_runs itself --
-	// left alone, swarm_read would keep reporting a cancelled workflow's
-	// last runs as 'active'/'waiting' forever.
-	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'cancelled', ended_at = ?
-		WHERE workflow_id = ? AND state IN ('active', 'waiting')`, db.Millis(s.now()), wf.ID); err != nil {
-		return WorkflowState{}, err
-	}
 
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
-		return s.tryTransition(ctx, tx, it.Key, items.Ready)
-	}); err != nil {
-		return WorkflowState{}, err
-	}
 	if err := s.removeAllReviewWorktrees(ctx, wf, runs); err != nil {
 		return WorkflowState{}, err
 	}
 
-	st, _, err := s.workflowStateByID(ctx, wf.ID)
-	return st, err
+	st, _, err = s.workflowStateByID(ctx, wf.ID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if requestID != "" {
+		if body, berr := json.Marshal(st); berr == nil {
+			_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE caller = ? AND request_id = ?`,
+				string(body), sessionID, requestID)
+		}
+	}
+	return st, nil
 }
+

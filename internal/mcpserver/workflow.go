@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -98,12 +97,6 @@ func workflowTool(s *Server) ToolDef {
 				if err != nil {
 					return nil, err
 				}
-				var st runtime.WorkflowState
-				if hit, err := runtime.PeekIdempotent(ctx, s.RT, c.SessionID, in.RequestID, &st); err != nil {
-					return nil, err
-				} else if hit {
-					return workflowStateOut(st), nil
-				}
 				wts := make([]runtime.WorkflowWorktree, len(in.Worktrees))
 				for i, w := range in.Worktrees {
 					wts[i] = runtime.WorkflowWorktree{
@@ -111,7 +104,7 @@ func workflowTool(s *Server) ToolDef {
 						Mode:       w.Mode,
 					}
 				}
-				st, err = s.RT.StartWorkflow(ctx, orch, runtime.StartWorkflowInput{
+				st, err := s.RT.StartWorkflow(ctx, orch, runtime.StartWorkflowInput{
 					ItemKey:   in.Item,
 					Worktrees: wts,
 					Context:   in.Context,
@@ -120,13 +113,6 @@ func workflowTool(s *Server) ToolDef {
 				})
 				if err != nil {
 					return nil, err
-				}
-				if in.RequestID != "" {
-					if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
-						return nil
-					}); err != nil {
-						return nil, err
-					}
 				}
 				return workflowStateOut(st), nil
 
@@ -148,22 +134,9 @@ func workflowTool(s *Server) ToolDef {
 				if err != nil {
 					return nil, err
 				}
-				var st runtime.WorkflowState
-				if hit, err := runtime.PeekIdempotent(ctx, s.RT, c.SessionID, in.RequestID, &st); err != nil {
-					return nil, err
-				} else if hit {
-					return workflowStateOut(st), nil
-				}
-				st, err = s.RT.ResumeWorkflow(ctx, orch, in.Item, in.Decision, in.Note, in.RequestID)
+				st, err := s.RT.ResumeWorkflow(ctx, orch, in.Item, in.Decision, in.Note, c.SessionID, in.RequestID)
 				if err != nil {
 					return nil, err
-				}
-				if in.RequestID != "" {
-					if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
-						return nil
-					}); err != nil {
-						return nil, err
-					}
 				}
 				return workflowStateOut(st), nil
 
@@ -172,24 +145,12 @@ func workflowTool(s *Server) ToolDef {
 				if err != nil {
 					return nil, err
 				}
-				var st runtime.WorkflowState
-				if hit, err := runtime.PeekIdempotent(ctx, s.RT, c.SessionID, in.RequestID, &st); err != nil {
-					return nil, err
-				} else if hit {
-					return workflowStateOut(st), nil
-				}
-				st, err = s.RT.CancelWorkflow(ctx, orch, in.Item, in.RequestID)
+				st, err := s.RT.CancelWorkflow(ctx, orch, in.Item, c.SessionID, in.RequestID)
 				if err != nil {
 					return nil, err
 				}
-				if in.RequestID != "" {
-					if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
-						return nil
-					}); err != nil {
-						return nil, err
-					}
-				}
 				return workflowStateOut(st), nil
+
 
 			default:
 				return nil, fmt.Errorf("unknown swarm_workflow op %q", in.Op)

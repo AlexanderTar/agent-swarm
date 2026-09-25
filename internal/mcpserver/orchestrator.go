@@ -570,8 +570,9 @@ func spawnTool(s *Server) ToolDef {
 				return nil, err
 			}
 			var briefWts []runtime.BriefWorktree
+			var wts []runtime.WorkflowWorktree
 			if len(in.Worktrees) > 0 {
-				wts := make([]runtime.WorkflowWorktree, len(in.Worktrees))
+				wts = make([]runtime.WorkflowWorktree, len(in.Worktrees))
 				for i, wt := range in.Worktrees {
 					wts[i] = runtime.WorkflowWorktree{
 						WorktreeID: wt.Worktree,
@@ -584,6 +585,7 @@ func spawnTool(s *Server) ToolDef {
 					return nil, err
 				}
 			}
+
 			agent, queued, err := s.RT.Spawn(ctx, runtime.SpawnInput{
 				ItemKey: in.Item, Role: runtime.Role(in.Role), Kind: runtime.AgentKind(in.Agent),
 				Model: in.Model, Effort: in.Effort, ParentAgentID: a.ID, Name: in.Name,
@@ -593,6 +595,7 @@ func spawnTool(s *Server) ToolDef {
 					Context: in.Brief.Context, Verify: in.Brief.Verify, StopWhen: in.Brief.StopWhen,
 					Worktrees: briefWts,
 				},
+				Worktrees: wts,
 				SessionID: c.SessionID, RequestID: in.RequestID,
 			})
 			if err != nil {
@@ -600,11 +603,7 @@ func spawnTool(s *Server) ToolDef {
 				// §17.3 copy; wrapping them here would break an exact-match test.
 				return nil, err
 			}
-			for _, wt := range in.Worktrees {
-				if err := s.RT.Worktree.Share(ctx, wt.Worktree, agent.ID, wt.Mode); err != nil {
-					return nil, err
-				}
-			}
+
 			// A queued spawn gets no session until the queue later drains it
 			// (Task 13's limiter): "session" is "" rather than a fabricated id.
 			var sessionID string

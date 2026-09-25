@@ -311,3 +311,170 @@ func TestSwarmWorkflowIdempotentStart(t *testing.T) {
 		t.Fatalf("start with different request_id err = %v, want 'already has a running workflow'", err)
 	}
 }
+
+func TestSwarmWorkflowIdempotentResume(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(
+		`{"op":"create","repo":"%s","branch":"wf-resume-branch","base":"main"}`, seed.RepoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wtRes struct {
+		ID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wtRes); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.RT.Items.Update(ctx, seed.TaskKey, items.Patch{
+		Workflow: &workflow.Spec{Template: "mechanical"},
+		Steps:    &[]string{"step 1"},
+		Verify:   &[]string{"true"},
+		Revision: 1,
+	}, items.Daemon())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startOut, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"start","item":"%s","worktrees":[{"worktree":"%s","mode":"rw"}]}`,
+		seed.TaskKey, wtRes.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var startRes struct {
+		Workflow string `json:"workflow"`
+	}
+	if err := json.Unmarshal(mustJSON(startOut), &startRes); err != nil {
+		t.Fatal(err)
+	}
+
+	// Escalate
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE workflows SET state = 'escalated', escalation = 'test' WHERE id = ?`, startRes.Workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := "req-resume-idem-1"
+	out1, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"resume","item":"%s","decision":"retry","note":"try again","request_id":"%s"}`,
+		seed.TaskKey, reqID))
+	if err != nil {
+		t.Fatalf("first resume call err = %v", err)
+	}
+	var res1 struct {
+		Workflow string `json:"workflow"`
+		State    string `json:"state"`
+		Round    int    `json:"round"`
+	}
+	if err := json.Unmarshal(mustJSON(out1), &res1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Repeated call with the exact same request_id must succeed and return identical result
+	out2, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"resume","item":"%s","decision":"retry","note":"try again","request_id":"%s"}`,
+		seed.TaskKey, reqID))
+	if err != nil {
+		t.Fatalf("second resume call (idempotent replay) err = %v", err)
+	}
+	var res2 struct {
+		Workflow string `json:"workflow"`
+		State    string `json:"state"`
+		Round    int    `json:"round"`
+	}
+	if err := json.Unmarshal(mustJSON(out2), &res2); err != nil {
+		t.Fatal(err)
+	}
+	if res1 != res2 {
+		t.Fatalf("idempotent replay mismatch: res1 = %+v, res2 = %+v", res1, res2)
+	}
+
+	// Resume with DIFFERENT request_id must fail because workflow is now running
+	_, err = s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"resume","item":"%s","decision":"retry","note":"try again","request_id":"req-different"}`,
+		seed.TaskKey))
+	if err == nil || !strings.Contains(err.Error(), "isn't waiting on you") {
+		t.Fatalf("resume with different request_id err = %v, want isn't waiting on you", err)
+	}
+}
+
+func TestSwarmWorkflowIdempotentCancel(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(
+		`{"op":"create","repo":"%s","branch":"wf-cancel-branch","base":"main"}`, seed.RepoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wtRes struct {
+		ID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wtRes); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.RT.Items.Update(ctx, seed.TaskKey, items.Patch{
+		Workflow: &workflow.Spec{Template: "mechanical"},
+		Steps:    &[]string{"step 1"},
+		Verify:   &[]string{"true"},
+		Revision: 1,
+	}, items.Daemon())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"start","item":"%s","worktrees":[{"worktree":"%s","mode":"rw"}]}`,
+		seed.TaskKey, wtRes.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := "req-cancel-idem-1"
+	out1, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"cancel","item":"%s","request_id":"%s"}`,
+		seed.TaskKey, reqID))
+	if err != nil {
+		t.Fatalf("first cancel call err = %v", err)
+	}
+	var res1 struct {
+		Workflow string `json:"workflow"`
+		State    string `json:"state"`
+	}
+	if err := json.Unmarshal(mustJSON(out1), &res1); err != nil {
+		t.Fatal(err)
+	}
+	if res1.State != "cancelled" {
+		t.Fatalf("cancel state = %q, want 'cancelled'", res1.State)
+	}
+
+	// Repeated call with the exact same request_id must succeed and return identical result
+	out2, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"cancel","item":"%s","request_id":"%s"}`,
+		seed.TaskKey, reqID))
+	if err != nil {
+		t.Fatalf("second cancel call (idempotent replay) err = %v", err)
+	}
+	var res2 struct {
+		Workflow string `json:"workflow"`
+		State    string `json:"state"`
+	}
+	if err := json.Unmarshal(mustJSON(out2), &res2); err != nil {
+		t.Fatal(err)
+	}
+	if res1 != res2 {
+		t.Fatalf("idempotent replay mismatch: res1 = %+v, res2 = %+v", res1, res2)
+	}
+
+	// Cancel with DIFFERENT request_id must fail because workflow is already cancelled
+	_, err = s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"cancel","item":"%s","request_id":"req-different"}`,
+		seed.TaskKey))
+	if err == nil || !strings.Contains(err.Error(), "isn't waiting on you") {
+		t.Fatalf("cancel with different request_id err = %v, want isn't waiting on you", err)
+	}
+}
+

@@ -489,4 +489,96 @@ go build ./... && go vet ./...
 - In `killPane`: Direct PID kill allows tmux's `remain-on-exit` pane setting to reflect pane death immediately, avoiding 10-second wait timeouts in dead-pane resolution.
 - Maintained exact error copy compatibility: legacy tasks without a workflow retain the old single-command verification check and message, while workflow tasks strictly require red-before-green verification with the new round-scoped copy (and unit tags when units are present).
 
+---
+
+## Fix round 1
+
+### Findings Addressed
+1. **Critical 1: Idempotency broken for `swarm_workflow` tools (start, resume, cancel)**
+   - Root cause: `internal/mcpserver/workflow.go` executed `StartWorkflow`, `ResumeWorkflow`, and `CancelWorkflow` outside of an idempotency transaction, only calling an empty `IdemTx` afterward. If a failure or crash intervened, state was mutated without an idempotency record, causing subsequent retries to fail with conflict errors (e.g. "already has a running workflow").
+   - Fix:
+     - `internal/runtime/workflow.go`: `StartWorkflow` peeks idempotency up front with `PeekIdempotent` and records the workflow insertion atomically inside `IdemTx`. `ResumeWorkflow` and `CancelWorkflow` now accept `sessionID` and `requestID`, peek idempotency up front, and atomically commit the state mutation and idempotency record within `IdemTx`.
+     - `internal/mcpserver/workflow.go`: Removed redundant split-transaction `PeekIdempotent`/`IdemTx` wrappers, delegating idempotency atomically to runtime methods.
+     - Added comprehensive tests covering atomic idempotency on start, resume, and cancel in both `internal/mcpserver/workflow_test.go` (`TestSwarmWorkflowIdempotentResume`, `TestSwarmWorkflowIdempotentCancel`) and `internal/runtime/workflow_test.go` (`TestWorkflowIdempotencyStartResumeCancel`).
+
+2. **Critical 2: Race condition with worktree sharing on spawn**
+   - Root cause: In `swarm_spawn`, `s.RT.Worktree.Share` was invoked after `s.RT.Spawn` returned. Because `Spawn` committed the agent to the DB and started its session, the agent process could boot up before `Share` ran, resulting in missing worktree reservations.
+   - Fix:
+     - Added `Worktrees []WorkflowWorktree` to `SpawnInput` in `internal/runtime/agents.go`.
+     - Added `LockWorktrees` (mutex-ordering helper) and `ShareTx` (in-transaction reservation) to `internal/worktree/worktree.go`.
+     - `s.Spawn` now reserves worktrees atomically within the agent insertion transaction inside `IdemTx`.
+     - Updated `internal/mcpserver/orchestrator.go` to convert and pass `Worktrees` into `SpawnInput`, removing the post-spawn `Worktree.Share` loop.
+     - Added `TestSpawnSharesWorktreesAtomically` in `internal/runtime/agents_test.go` proving reservations exist immediately upon `Spawn` return.
+
+### TDD Evidence
+
+#### RED
+```bash
+go test ./internal/runtime/... -run "TestWorkflowIdempotency|TestSpawnSharesWorktreesAtomically"
+# Output:
+# github.com/AlexanderTar/agent-swarm/internal/runtime [github.com/AlexanderTar/agent-swarm/internal/runtime.test]
+internal/runtime/agents_test.go:2201:3: unknown field Worktrees in struct literal of type SpawnInput
+internal/runtime/workflow_test.go:3071:84: too many arguments in call to s.ResumeWorkflow
+	have (context.Context, Agent, string, string, string, string, string)
+	want (context.Context, Agent, string, string, string, string)
+internal/runtime/workflow_test.go:3096:62: too many arguments in call to s.CancelWorkflow
+	have (context.Context, Agent, string, string, string)
+	want (context.Context, Agent, string, string)
+FAIL	github.com/AlexanderTar/agent-swarm/internal/runtime [build failed]
+```
+
+#### GREEN
+```bash
+go test ./internal/runtime/... -run "TestWorkflowIdempotency|TestSpawnSharesWorktreesAtomically" -v
+# Output:
+=== RUN   TestSpawnSharesWorktreesAtomically
+--- PASS: TestSpawnSharesWorktreesAtomically (0.04s)
+=== RUN   TestWorkflowIdempotencyStartResumeCancel
+--- PASS: TestWorkflowIdempotencyStartResumeCancel (0.28s)
+PASS
+ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	0.745s
+
+go test ./internal/mcpserver/... -run "TestSwarmWorkflow" -v
+# Output:
+=== RUN   TestSwarmWorkflowToolsOnlyForOrchestrators
+--- PASS: TestSwarmWorkflowToolsOnlyForOrchestrators (0.18s)
+=== RUN   TestSwarmWorkflowStartStatusResumeCancel
+--- PASS: TestSwarmWorkflowStartStatusResumeCancel (0.22s)
+=== RUN   TestSwarmWorkflowIdempotentStart
+--- PASS: TestSwarmWorkflowIdempotentStart (0.29s)
+=== RUN   TestSwarmWorkflowIdempotentResume
+--- PASS: TestSwarmWorkflowIdempotentResume (0.24s)
+=== RUN   TestSwarmWorkflowIdempotentCancel
+--- PASS: TestSwarmWorkflowIdempotentCancel (0.25s)
+PASS
+ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	1.699s
+```
+
+### Full Verification
+```bash
+go test ./internal/mcpserver/... ./internal/runtime/... ./internal/items/... -count=1
+# ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	14.793s
+# ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	30.358s
+# ok  	github.com/AlexanderTar/agent-swarm/internal/items	2.181s
+
+go build ./... && go vet ./...
+# Exit 0
+
+make e2e
+# PASS
+# ok  	github.com/AlexanderTar/agent-swarm/scripts/e2e	112.484s
+```
+
+### Files Changed
+- `internal/worktree/worktree.go` (added `LockWorktrees`, `ShareTx`)
+- `internal/runtime/agents.go` (added `Worktrees` to `SpawnInput`, atomic reservation in `Spawn`)
+- `internal/runtime/agents_test.go` (added `TestSpawnSharesWorktreesAtomically`)
+- `internal/runtime/workflow.go` (atomic `IdemTx` in `StartWorkflow`, `ResumeWorkflow`, `CancelWorkflow`)
+- `internal/runtime/workflow_test.go` (updated signatures, added `TestWorkflowIdempotencyStartResumeCancel`)
+- `internal/mcpserver/orchestrator.go` (passed `Worktrees` to `SpawnInput`, removed post-spawn `Share`)
+- `internal/mcpserver/workflow.go` (delegated idempotency to runtime methods, removed redundant split `IdemTx`)
+- `internal/mcpserver/workflow_test.go` (added `TestSwarmWorkflowIdempotentResume`, `TestSwarmWorkflowIdempotentCancel`)
+- `docs/plans/2026-09-25-sdd-handoff/p10-report.md` (appended Fix round 1 documentation)
+
+
 

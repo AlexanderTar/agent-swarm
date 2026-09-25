@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -349,6 +350,53 @@ func (s *Service) repoPath(ctx context.Context, repoID string) (string, error) {
 // create/review are: PeekIdempotent before this side effect runs, a trivial
 // IdemTx to record the result after -- not folded into one transaction with
 // the assignment_update message.
+// LockWorktrees locks the in-memory mutexes for the given worktree IDs in sorted,
+// deduplicated order. The returned func unlocks them in reverse order.
+func (s *Service) LockWorktrees(wtIDs ...string) func() {
+	if len(wtIDs) == 0 {
+		return func() {}
+	}
+	sorted := slices.Clone(wtIDs)
+	slices.Sort(sorted)
+	var unique []string
+	for i, id := range sorted {
+		if id == "" {
+			continue
+		}
+		if i == 0 || id != sorted[i-1] {
+			unique = append(unique, id)
+		}
+	}
+	for _, id := range unique {
+		lockFor(id).Lock()
+	}
+	return func() {
+		for i := len(unique) - 1; i >= 0; i-- {
+			lockFor(unique[i]).Unlock()
+		}
+	}
+}
+
+// ShareTx records agentID's reservation on the worktree inside an active transaction.
+// The caller is responsible for acquiring LockWorktrees before entering the transaction.
+func (s *Service) ShareTx(ctx context.Context, tx *sql.Tx, wtID, agentID, mode string) error {
+	if mode != "rw" && mode != "ro" {
+		return fmt.Errorf("worktree: unknown share mode %q", mode)
+	}
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM worktrees WHERE id = ?`, wtID).Scan(&state); err != nil {
+		return err
+	}
+	if state != "active" {
+		return fmt.Errorf("worktree: %s is not active", wtID)
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO worktree_reservations
+		(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT(worktree_id, agent_id) DO UPDATE SET mode = excluded.mode, released_at = NULL`,
+		wtID, agentID, mode, db.Millis(s.Now()))
+	return err
+}
+
 func (s *Service) Share(ctx context.Context, wtID, agentID, mode string) error {
 	if mode != "rw" && mode != "ro" {
 		return fmt.Errorf("worktree: unknown share mode %q", mode)
@@ -369,6 +417,7 @@ func (s *Service) Share(ctx context.Context, wtID, agentID, mode string) error {
 		wtID, agentID, mode, db.Millis(s.Now()))
 	return err
 }
+
 
 // Release clears agentID's reservation on the worktree.
 func (s *Service) Release(ctx context.Context, wtID, agentID string) error {
