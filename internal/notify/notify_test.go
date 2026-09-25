@@ -37,7 +37,11 @@ func TestRulesCoverSection175(t *testing.T) {
 		// was written: a role's configured agent was confirmed out of usage
 		// and the daemon substituted the configured fallback instead of
 		// stalling.
-		"agent.fallback_used":     {"info", "Fallback agent used", "{name} switched to {agent} because {from} is out of usage.", "swarm.info"},
+		"agent.fallback_used": {"info", "Fallback agent used", "{name} switched to {agent} because {from} is out of usage.", "swarm.info"},
+		// Added by docs/specs/2026-09-24-self-contained-tasks-and-role-skills.md
+		// (P9, spec B4/B7): raised when a workflow escalates to its owning
+		// orchestrator, needing a swarm_workflow resume decision.
+		"workflow.escalated":      {"attention", "Workflow needs a decision", "{KEY}: workflow needs a decision — {reason}", "swarm.agent"},
 		"worktree.retained":       {"attention", "Worktree kept", "The worktree for {ROOT-KEY} has {detail} and was kept.", "swarm.info"},
 		"tmux.unknown":            {"attention", "Unknown tmux session", "{name} is running but Swarm has no record of it.", "swarm.info"},
 		"request.confirm_repos":   {"action", "Confirm repositories", "{KEY}: {name} proposes {N} repositories{expansion}.", "swarm.approval"},

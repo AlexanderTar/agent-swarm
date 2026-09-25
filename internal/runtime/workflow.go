@@ -66,10 +66,10 @@ type wfRow struct {
 // wfRunRow is one workflow_runs table row.
 type wfRunRow struct {
 	ID, WorkflowID, StepID, Role, AgentID, State, Verdict, SHA, ReviewWorktreeID string
-	FindingsJSON                                                                string
-	Round, AutoRetries                                                          int
-	CreatedAt                                                                   time.Time
-	EndedAt                                                                     *time.Time
+	FindingsJSON                                                                 string
+	Round, AutoRetries                                                           int
+	CreatedAt                                                                    time.Time
+	EndedAt                                                                      *time.Time
 }
 
 func (r wfRunRow) findings() []workflow.Finding {
@@ -1034,4 +1034,230 @@ func (s *Store) briefWorktrees(ctx context.Context, wts []WorkflowWorktree) ([]B
 		out = append(out, BriefWorktree{Repo: repo, Path: path, Branch: branch, BaseSHA7: workflow.SHA7(base), Mode: w.Mode})
 	}
 	return out, nil
+}
+
+// notWaitingOnYou is spec B7's resume-refusal copy.
+func notWaitingOnYou(key, state string) error {
+	return &items.Error{Code: items.CodeConflict, Message: fmt.Sprintf("%s's workflow isn't waiting on you (state: %s).", key, state)}
+}
+
+// resumeBumpsRound classifies why the workflow escalated, from its own run
+// rows at the round it escalated at (spec B7), mirroring
+// internal/workflow's own pinnedFrom priority (unexported there, so
+// reimplemented against the same exported Run shape): a changes_requested
+// or blocked verdict still sitting at that round only needs a bigger
+// extraRounds budget for Next to retry it in place (RetryFix bumps the
+// round itself). A failed/cancelled run, or a review row whose sha no
+// longer matches what it reviewed (stale), needs the round bumped by
+// resume itself -- Next then sees a fresh round with no row yet and spawns
+// the fix step clean, rather than retrying evidence that's no longer
+// trustworthy.
+func resumeBumpsRound(spec workflow.Spec, runs []wfRunRow, round int) bool {
+	steps := spec.EffectiveSteps()
+	for _, st := range steps {
+		if len(st.Review) == 0 {
+			continue
+		}
+		for _, r := range runs {
+			if r.StepID == st.ID && r.Round == round &&
+				(r.Verdict == string(workflow.VerdictChangesRequested) || r.Verdict == string(workflow.VerdictBlocked)) {
+				return false
+			}
+		}
+	}
+	for _, r := range runs {
+		if r.Round == round && (r.State == string(workflow.RunStateFailed) || r.State == string(workflow.RunStateCancelled)) {
+			return true
+		}
+	}
+	completedSHA := map[string]string{}
+	for _, r := range runs {
+		if r.State == string(workflow.RunStateCompleted) && r.Round <= round {
+			completedSHA[r.StepID] = r.SHA
+		}
+	}
+	for _, st := range steps {
+		if len(st.Review) == 0 || st.Of == "" {
+			continue
+		}
+		want := completedSHA[st.Of]
+		if want == "" {
+			continue
+		}
+		for _, r := range runs {
+			if r.StepID == st.ID && r.Round == round && r.SHA != "" && r.SHA != want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// deliverNote sends note to agentID as an assignment_update -- the same
+// message shape Retry's own note delivery uses (agents.go), reused here so
+// a resume's orchestrator note reaches whichever agent advance() just
+// spawned or retried, on top of any findings note that spawn/retry already
+// sent (spec B7: "note appended to the findings").
+func (s *Store) deliverNote(ctx context.Context, agentID, note string) error {
+	a, err := s.agentByID(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]string{"note": note})
+	if err != nil {
+		return err
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var seq int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM messages`).Scan(&seq); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO messages
+			(id, seq, kind, wake_class, priority, origin, to_agent_id, root_item_id, item_id, payload_json, state, created_at)
+			VALUES (?, ?, 'assignment_update', 'immediate', 1, 'daemon', ?, ?, ?, ?, 'pending', ?)`,
+			ids.New("msg"), seq, a.ID, a.RootItemID, a.ItemID, string(payload), db.Millis(s.now()))
+		return err
+	})
+}
+
+// ResumeWorkflow is swarm_workflow op:"resume" (spec B7). orch is the
+// calling orchestrator (unused beyond validating the call reaches an
+// escalated workflow -- ownership isn't re-checked here the way Start's is,
+// since only the workflow's own owner can ever see it escalated to them in
+// the first place via their inbox relay).
+func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decision, note, requestID string) (WorkflowState, error) {
+	it, err := s.Items.Get(ctx, itemKey)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	wf, ok, err := s.latestWorkflowRow(ctx, it.ID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if !ok || wf.State != "escalated" {
+		state := "none"
+		if ok {
+			state = wf.State
+		}
+		return WorkflowState{}, notWaitingOnYou(it.Key, state)
+	}
+
+	switch decision {
+	case "retry":
+		runs, err := s.loadWorkflowRuns(ctx, wf.ID)
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		newRound := wf.Round
+		if it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round) {
+			newRound++
+		}
+		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'running', round = ?,
+			extra_rounds = extra_rounds + 1, escalation = NULL, updated_at = ? WHERE id = ?`,
+			newRound, db.Millis(s.now()), wf.ID); err != nil {
+			return WorkflowState{}, err
+		}
+		if err := s.advance(ctx, wf.ID); err != nil {
+			return WorkflowState{}, err
+		}
+		if note != "" {
+			var activeAgentID string
+			err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id, '') FROM workflow_runs
+				WHERE workflow_id = ? AND state = 'active' ORDER BY round DESC, created_at DESC LIMIT 1`, wf.ID).
+				Scan(&activeAgentID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return WorkflowState{}, err
+			}
+			if activeAgentID != "" {
+				if err := s.deliverNote(ctx, activeAgentID, note); err != nil {
+					return WorkflowState{}, err
+				}
+			}
+		}
+	case "accept":
+		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'succeeded', updated_at = ? WHERE id = ?`,
+			db.Millis(s.now()), wf.ID); err != nil {
+			return WorkflowState{}, err
+		}
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			_, err := s.Items.TransitionTx(ctx, tx, it.Key, items.Done, items.Daemon())
+			return err
+		}); err != nil {
+			return WorkflowState{}, err
+		}
+	case "fail":
+		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'failed', updated_at = ? WHERE id = ?`,
+			db.Millis(s.now()), wf.ID); err != nil {
+			return WorkflowState{}, err
+		}
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			return s.tryTransition(ctx, tx, it.Key, items.Ready)
+		}); err != nil {
+			return WorkflowState{}, err
+		}
+	default:
+		return WorkflowState{}, &items.Error{Code: items.CodeBadRequest,
+			Message: `decision must be "retry", "accept" or "fail".`}
+	}
+
+	st, _, err := s.workflowStateByID(ctx, wf.ID)
+	return st, err
+}
+
+// CancelWorkflow is swarm_workflow op:"cancel" (spec B7): cancels every
+// active run's agent, marks the workflow cancelled, moves the task back to
+// Ready, and removes any review worktree.
+func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, requestID string) (WorkflowState, error) {
+	it, err := s.Items.Get(ctx, itemKey)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	wf, ok, err := s.latestWorkflowRow(ctx, it.ID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if !ok || (wf.State != "running" && wf.State != "escalated") {
+		state := "none"
+		if ok {
+			state = wf.State
+		}
+		return WorkflowState{}, notWaitingOnYou(it.Key, state)
+	}
+	runs, err := s.loadWorkflowRuns(ctx, wf.ID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	for _, r := range runs {
+		if r.State != "active" || r.AgentID == "" {
+			continue
+		}
+		a, err := s.agentByID(ctx, r.AgentID)
+		if err != nil {
+			continue
+		}
+		if _, err := s.Cancel(ctx, a.Name, "", requestID); err != nil {
+			s.logf("cancel workflow: cancel agent %s: %v", a.Name, err)
+		}
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled', updated_at = ?
+		WHERE id = ? AND state IN ('running', 'escalated')`, db.Millis(s.now()), wf.ID); err != nil {
+		return WorkflowState{}, err
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.tryTransition(ctx, tx, it.Key, items.Ready)
+	}); err != nil {
+		return WorkflowState{}, err
+	}
+	found := make([]struct{ wt, agent string }, 0, len(runs))
+	for _, r := range runs {
+		if r.ReviewWorktreeID != "" {
+			found = append(found, struct{ wt, agent string }{r.ReviewWorktreeID, r.AgentID})
+		}
+	}
+	if err := s.releaseAndRemove(ctx, wf, found); err != nil {
+		return WorkflowState{}, err
+	}
+
+	st, _, err := s.workflowStateByID(ctx, wf.ID)
+	return st, err
 }

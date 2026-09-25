@@ -948,3 +948,204 @@ func TestRecoverStalledWorkflow(t *testing.T) {
 		t.Fatalf("task status = %s, want done", item.Status)
 	}
 }
+
+// TestOrchestratorCannotMarkWorkflowTaskDone is spec B5's Done rule: an
+// orchestrator's own swarm_items-style transition attempt is refused, no
+// workflows row required -- it.Workflow != nil alone is enough to gate it.
+func TestOrchestratorCannotMarkWorkflowTaskDone(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	_, err := s.Items.Transition(ctx, taskKey, items.Done, items.Orchestrator(orch.ID, orch.RootItemID))
+	want := fmt.Sprintf("%s is finished by its workflow. It moves to Done when the workflow succeeds; "+
+		"use swarm_workflow resume to accept or fail it.", taskKey)
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// escalateViaRoundsExhausted drives a workflow through build -> completed,
+// review -> changes_requested with a one-round loop, landing it escalated
+// (spec B4 "rounds exhausted"), and returns the coder's agent id for
+// callers that need it.
+func escalateViaRoundsExhausted(t *testing.T, s *Store, orch Agent, taskKey string, wfID string, head string) (coderAgentID string) {
+	t.Helper()
+	ctx := context.Background()
+	coderAgentID = agentIDForStep(t, s, wfID, "build")
+	coderSes := agentSessionForStep(t, s, wfID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	// Same real-elapsed-time simulation TestWorkflowFixRound uses: by the
+	// time a reviewer resumes/retries the builder, reconcile has already
+	// retired its now-idle session.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, coderAgentID); err != nil {
+		t.Fatal(err)
+	}
+	reviewerSes := agentSessionForStep(t, s, wfID, "review")
+	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "nope",
+		Verdict:  "changes_requested",
+		Findings: []workflow.Finding{{Severity: "major", File: "a.go", Summary: "off by one"}}}); err != nil {
+		t.Fatal(err)
+	}
+	return coderAgentID
+}
+
+func TestResumeAccept(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 1))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	escalateViaRoundsExhausted(t, s, orch, taskKey, st.ID, head)
+
+	escalated, ok, err := s.WorkflowFor(ctx, taskKey)
+	if err != nil || !ok || escalated.State != "escalated" {
+		t.Fatalf("setup: state = %+v ok=%v err=%v, want escalated", escalated, ok, err)
+	}
+
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "accept", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "succeeded" {
+		t.Fatalf("workflow state = %s, want succeeded", final.State)
+	}
+	item, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != items.Done {
+		t.Fatalf("task status = %s, want done", item.Status)
+	}
+}
+
+func TestResumeFail(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 1))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	escalateViaRoundsExhausted(t, s, orch, taskKey, st.ID, head)
+
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "fail", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "failed" {
+		t.Fatalf("workflow state = %s, want failed", final.State)
+	}
+	item, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != items.Ready {
+		t.Fatalf("task status = %s, want ready", item.Status)
+	}
+}
+
+func TestResumeRefusedWhenNotEscalated(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	if _, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "")
+	want := fmt.Sprintf("%s's workflow isn't waiting on you (state: running).", taskKey)
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+func TestResumeRetryGrantsExtraRound(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 1))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderAgentID := escalateViaRoundsExhausted(t, s, orch, taskKey, st.ID, head)
+
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "please double check the edge case", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "running" {
+		t.Fatalf("workflow state = %s, want running", final.State)
+	}
+	if final.ExtraRounds != 1 {
+		t.Fatalf("extra_rounds = %d, want 1", final.ExtraRounds)
+	}
+	if final.Round != 2 {
+		t.Fatalf("round = %d, want 2 (RetryFix's own bump, extra_rounds alone made room for it)", final.Round)
+	}
+
+	var round2Agent, round2State string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id, ''), state FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build' AND round = 2`, st.ID).Scan(&round2Agent, &round2State); err != nil {
+		t.Fatal(err)
+	}
+	if round2Agent != coderAgentID || round2State != "active" {
+		t.Fatalf("round 2 build run = agent %s state %s, want %s/active", round2Agent, round2State, coderAgentID)
+	}
+
+	var noteCount int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE to_agent_id = ? AND kind = 'assignment_update' AND payload_json LIKE '%double check the edge case%'`,
+		coderAgentID).Scan(&noteCount); err != nil {
+		t.Fatal(err)
+	}
+	if noteCount != 1 {
+		t.Fatalf("orchestrator's resume note delivered = %d, want 1", noteCount)
+	}
+}
+
+func TestCancelWorkflow(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderAgentID := agentIDForStep(t, s, st.ID, "build")
+
+	final, err := s.CancelWorkflow(ctx, orch, taskKey, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "cancelled" {
+		t.Fatalf("workflow state = %s, want cancelled", final.State)
+	}
+	item, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != items.Ready {
+		t.Fatalf("task status = %s, want ready", item.Status)
+	}
+	coder, err := s.agentByID(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coder.State != AgentFinished {
+		t.Fatalf("builder agent state = %s, want finished", coder.State)
+	}
+}
