@@ -1552,14 +1552,23 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		if err := s.Preflight(ctx, PreflightInput{Kind: fbKind, Model: fbModel, Effort: fbEffort, Role: a.Role}); err != nil {
 			return Agent{}, err
 		}
+		// The kind swap above can flip whether "native" advisor mode still
+		// applies (it's Claude-only): re-resolve with the agent's existing
+		// advisor kind/model/effort as an explicit choice, so mode gets
+		// recomputed for fbKind instead of surviving stale from spawn time.
+		advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, fbKind,
+			&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorEffort})
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ? WHERE id = ?`,
-				string(fbKind), fbModel, fbEffort, a.ID)
+			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ?,
+				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, '')
+				WHERE id = ?`,
+				string(fbKind), fbModel, fbEffort, string(advKind), advModel, advEffort, advMode, a.ID)
 			return err
 		}); err != nil {
 			return Agent{}, err
 		}
 		a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
+		a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode = string(advKind), advModel, advEffort, advMode
 	}
 
 	if note != "" {

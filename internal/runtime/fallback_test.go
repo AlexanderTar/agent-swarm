@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
@@ -474,6 +476,62 @@ func TestRetrySubstitutionDropsAnEffortTheFallbackCannotSupport(t *testing.T) {
 	}
 }
 
+// kindSensitiveAdvisor mirrors internal/advisor.Mode's real rule (native
+// only for a Claude session with a Claude advisor) instead of the fixed
+// fakeAdvisor used elsewhere -- needed here because the whole point of these
+// tests is that mode must be *recomputed* for the post-fallback sessionKind,
+// not just returned constant.
+type kindSensitiveAdvisor struct{}
+
+func (kindSensitiveAdvisor) Mode(sessionKind, advisorKind AgentKind, model string, capable bool) string {
+	if model == "" || model == "none" {
+		return ""
+	}
+	if sessionKind == Claude && advisorKind == Claude && capable {
+		return "native"
+	}
+	return "simulated"
+}
+
+func (kindSensitiveAdvisor) Ask(context.Context, string, string, []string, time.Duration) (Advice, error) {
+	return Advice{}, errors.New("not used in this test")
+}
+
+// TestRetryReResolvesAdvisorModeOnKindSwap is a regression test: a usage
+// fallback swap inside Retry must re-run resolveAdvisor for the new
+// sessionKind, or a Claude agent's "native" mode survives onto a substituted
+// Codex session that has neither the native advisor tool nor swarm_advise
+// (mcpserver only adds swarm_advise for mode == "simulated").
+func TestRetryReResolvesAdvisorModeOnKindSwap(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	s.Advisor = kindSensitiveAdvisor{}
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Retry me", Intent: "feature", Kind: Claude, Model: "claude-sonnet-5",
+		Advisor: &AdvisorChoice{Kind: Claude, Model: "claude-fable-5-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, mode := advisorCols(t, s, a.ID); mode != "native" {
+		t.Fatalf("advisor mode before retry = %q, want native", mode)
+	}
+	crashLatestSession(t, s, a)
+	s.Usage = fakeUsage{Claude: true}
+	out, err := s.Retry(ctx, a.Name, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != Codex {
+		t.Fatalf("agent kind = %s, want substituted to Codex", out.Kind)
+	}
+	if out.AdvisorMode != "simulated" {
+		t.Fatalf("out.AdvisorMode = %q, want simulated (recomputed for the Codex session)", out.AdvisorMode)
+	}
+	if _, _, _, mode := advisorCols(t, s, a.ID); mode != "simulated" {
+		t.Fatalf("persisted advisor mode = %q, want simulated", mode)
+	}
+}
+
 func TestRetryBothExhaustedReturnsErrorNoNewSession(t *testing.T) {
 	s, tm := newStoreWithFallback(t)
 	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
@@ -577,6 +635,50 @@ func TestDrainQueueSubstitutesExhaustedFallback(t *testing.T) {
 	n := notified(t, s, "agent.fallback_used")
 	if n.Args["agent"] != "Codex" || n.Args["from"] != "Claude" {
 		t.Fatalf("fallback_used args = %+v", n.Args)
+	}
+}
+
+// TestDrainQueueReResolvesAdvisorModeOnKindSwap is startQueued's counterpart
+// to TestRetryReResolvesAdvisorModeOnKindSwap: a queued agent admitted after
+// its usage fallback substitutes Claude for Codex must have its advisor mode
+// recomputed too, not left at the stale "native" from spawn time.
+func TestDrainQueueReResolvesAdvisorModeOnKindSwap(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	s.Advisor = kindSensitiveAdvisor{}
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	setLimits(t, s, 1, 4)
+	seedEpicWithTwoTasks(t, s)
+	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Advisor: &AdvisorChoice{Kind: Claude, Model: "claude-fable-5-1"},
+		Brief: BriefInput{Objective: "one"}})
+	if err != nil || queued {
+		t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+	}
+	second, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Advisor: &AdvisorChoice{Kind: Claude, Model: "claude-fable-5-1"},
+		Brief: BriefInput{Objective: "two"}})
+	if err != nil || !queued {
+		t.Fatalf("second = %v, queued = %v, err = %v", second.Name, queued, err)
+	}
+	if _, _, _, mode := advisorCols(t, s, second.ID); mode != "native" {
+		t.Fatalf("advisor mode before drain = %q, want native", mode)
+	}
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, first.ID)
+	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID)
+	s.Usage = fakeUsage{Claude: true}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	drained := agentRow(t, s, second.Name)
+	if drained.Kind != Codex {
+		t.Fatalf("drained kind = %s, want substituted to Codex", drained.Kind)
+	}
+	if drained.AdvisorMode != "simulated" {
+		t.Fatalf("drained.AdvisorMode = %q, want simulated (recomputed for the Codex session)", drained.AdvisorMode)
+	}
+	if _, _, _, mode := advisorCols(t, s, second.ID); mode != "simulated" {
+		t.Fatalf("persisted advisor mode = %q, want simulated", mode)
 	}
 }
 

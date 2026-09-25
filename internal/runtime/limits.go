@@ -268,6 +268,16 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 			RepoPaths: repoPaths,
 		})
 	}
+	if substituted {
+		// The kind swap above can flip whether "native" advisor mode still
+		// applies (it's Claude-only): re-resolve with the agent's existing
+		// advisor kind/model/effort as an explicit choice, so mode gets
+		// recomputed for the new a.Kind instead of surviving stale from
+		// spawn time (same pattern as Retry in agents.go).
+		advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, a.Kind,
+			&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorEffort})
+		a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode = string(advKind), advModel, advEffort, advMode
+	}
 	ad, ok := s.Adapters[a.Kind]
 	if !ok {
 		return false, fmt.Errorf("no adapter for %s", a.Kind)
@@ -302,8 +312,10 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 			// then) -- persisting them keeps the row consistent with
 			// preflightErr's own text, which names whichever kind Preflight
 			// actually ran against.
-			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ?, effort = ? WHERE id = ?`,
-				string(a.Kind), a.Model, a.Effort, a.ID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ?, effort = ?,
+				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, '')
+				WHERE id = ?`,
+				string(a.Kind), a.Model, a.Effort, a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.ID); err != nil {
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO sessions
@@ -332,8 +344,10 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 			return nil
 		}
 
-		_, err = tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ?, effort = ? WHERE id = ?`,
-			string(a.Kind), a.Model, a.Effort, a.ID)
+		_, err = tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ?, effort = ?,
+			advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, '')
+			WHERE id = ?`,
+			string(a.Kind), a.Model, a.Effort, a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.ID)
 		return err
 	})
 	if err != nil {

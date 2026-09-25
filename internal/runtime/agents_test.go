@@ -1730,12 +1730,31 @@ func TestSpawnPassesAdvisorModelToSpecWhenNative(t *testing.T) {
 	seedEpicWithTask(t, s)
 
 	_, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
-		Advisor: &AdvisorChoice{Kind: Codex, Model: "fable"}, Brief: BriefInput{Objective: "task"}})
+		Advisor: &AdvisorChoice{Kind: Claude, Model: "fable"}, Brief: BriefInput{Objective: "task"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fa.LastSpec.AdvisorModel != "fable" {
 		t.Fatalf("LastSpec.AdvisorModel = %q, want %q (native advisor mode)", fa.LastSpec.AdvisorModel, "fable")
+	}
+}
+
+// TestSpawnOmitsAdvisorModelWhenSimulated is TestSpawnPassesAdvisorModelToSpecWhenNative's
+// negative case: a simulated-mode agent must not get Spec.AdvisorModel set,
+// since simulated mode uses swarm_advise, not the Claude CLI's built-in tool.
+func TestSpawnOmitsAdvisorModelWhenSimulated(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "simulated"}
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	_, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Advisor: &AdvisorChoice{Kind: Claude, Model: "fable"}, Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastSpec.AdvisorModel != "" {
+		t.Fatalf("LastSpec.AdvisorModel = %q, want empty (simulated advisor mode)", fa.LastSpec.AdvisorModel)
 	}
 }
 
@@ -1798,6 +1817,25 @@ func TestStartOrchestratorUsesSettingsAdvisorDefault(t *testing.T) {
 	kind, model, _, mode := advisorCols(t, s, a.ID)
 	if kind != "claude" || model != "fable" || mode != "simulated" {
 		t.Fatalf("advisor kind/model/mode = %q/%q/%q, want claude/fable/simulated", kind, model, mode)
+	}
+}
+
+// TestStartOrchestratorPassesAdvisorModelToSpecWhenNative is
+// TestSpawnPassesAdvisorModelToSpecWhenNative's StartOrchestrator
+// counterpart: the same Spec.AdvisorModel wiring must reach
+// StartOrchestrator's launch, not just Spawn's.
+func TestStartOrchestratorPassesAdvisorModelToSpecWhenNative(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "native"}
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	_, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1",
+		Advisor: &AdvisorChoice{Kind: Claude, Model: "fable"}})
+	if err != nil || queued {
+		t.Fatalf("err = %v, queued = %v", err, queued)
+	}
+	if fa.LastSpec.AdvisorModel != "fable" {
+		t.Fatalf("LastSpec.AdvisorModel = %q, want %q (native advisor mode)", fa.LastSpec.AdvisorModel, "fable")
 	}
 }
 
