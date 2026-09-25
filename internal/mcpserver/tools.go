@@ -73,11 +73,22 @@ func syncTool(s *Server) ToolDef {
 			if res.Unacked == nil {
 				res.Unacked = []runtime.UnackedRef{}
 			}
+			// Batch 2 successor recovery: every generation's first sync
+			// carries the durable assignment plus the recovery bundle
+			// (operation, manifest path/hash, predecessor session, cursor,
+			// workflow binding), independent of acked inbox rows.
+			rec, err := s.RT.SyncRecovery(ctx, c.SessionID)
+			if err != nil {
+				return nil, err
+			}
 			return map[string]any{
 				"messages":      res.Messages,
 				"unacked":       res.Unacked,
 				"more":          res.More,
 				"session_state": res.SessionState,
+				"assignment":    assignmentOut(rec.Assignment),
+				"recovery":      recoveryBundleOut(rec.Recovery),
+				"first_sync":    rec.FirstSync,
 			}, nil
 		},
 	}
@@ -282,6 +293,11 @@ type readInput struct {
 	// an explicit "since_seq":0 (a fresh cursor: scan every event ever issued).
 	SinceSeq *int64   `json:"since_seq"`
 	Fields   []string `json:"fields"`
+	// Batch 2 successor recovery: agent-scoped paginated checkpoint history
+	// with full fields/provenance plus readable requests, worktrees and
+	// artifact revisions/hashes. Handled by recoveryOut (recovery.go); the
+	// general refs/filter/repos/since_seq paths below are untouched.
+	Recovery *recoveryInput `json:"recovery"`
 }
 
 func (s *Server) agentOut(ctx context.Context, a runtime.Agent) map[string]any {
@@ -337,7 +353,8 @@ func readTool(s *Server) ToolDef {
 		Schema: objSchema(`"refs":{"type":"array","items":{"type":"string"}},
 			"filter":{"type":"object"},
 			"repos":{"type":"object","properties":{"q":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer"}}},
-			"since_seq":{"type":"integer"},"fields":{"type":"array","items":{"type":"string"}}`),
+			"since_seq":{"type":"integer"},"fields":{"type":"array","items":{"type":"string"}},
+			"recovery":{"type":"object","properties":{"agent":{"type":"string"},"limit":{"type":"integer"},"cursor":{"type":"integer"}}}`),
 		Unbound: true,
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in readInput
@@ -557,6 +574,13 @@ func readTool(s *Server) ToolDef {
 			out["items"] = itemsOut
 			out["reset"] = reset
 			out["cursor"] = cursor
+			if in.Recovery != nil {
+				rec, err := s.recoveryOut(ctx, in.Recovery)
+				if err != nil {
+					return nil, err
+				}
+				out["recovery"] = rec
+			}
 			return out, nil
 		},
 	}
