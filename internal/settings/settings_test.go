@@ -336,4 +336,3 @@ func TestSettingsInstructionsRoundTrip(t *testing.T) {
 		t.Fatalf("Get returned instructions %q, want %q", reloaded.Instructions, s.Instructions)
 	}
 }
-

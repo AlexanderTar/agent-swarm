@@ -766,4 +766,3 @@ func TestSwarmWorkflowIdempotentCancel(t *testing.T) {
 		t.Fatalf("cancel with different request_id err = %v, want isn't waiting on you", err)
 	}
 }
-

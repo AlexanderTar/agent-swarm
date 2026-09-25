@@ -493,4 +493,3 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 	}
 	return woken, rows.Err()
 }
-

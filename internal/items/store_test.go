@@ -451,7 +451,7 @@ func TestCreateRejectsMalformedUnits(t *testing.T) {
 	want2 := "Unit 2 needs a title and at least one step."
 	if _, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "SecondBad",
 		Workflow: &workflow.Spec{Template: "tdd-reviewed"},
-		Units: []items.Unit{{Title: "ok", Steps: []string{"s"}}, {Title: "", Steps: []string{"s"}}}}, orch); err == nil || err.Error() != want2 {
+		Units:    []items.Unit{{Title: "ok", Steps: []string{"s"}}, {Title: "", Steps: []string{"s"}}}}, orch); err == nil || err.Error() != want2 {
 		t.Fatalf("second unit: err = %v, want %q", err, want2)
 	}
 }

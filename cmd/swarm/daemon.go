@@ -280,10 +280,10 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		Adapters: rt.Adapters, Run: execx.RunFor(240 * time.Second), Now: now, Log: cfg.Log,
 		MaxConcurrent: 2, Timeout: 240 * time.Second, Deliver: rt.DeliverAdvice}
 	rt.Advisor = adv
-	wt.OnRetained = rt.OnWorktreeRetained // the §17.5 "Worktree kept" notification
-	it.RequestPayload = rt.RequestPayload // R5: full Request on request.*
-	it.RequestOpened = rt.OnRequestOpened // §17.5 for the daemon-opened accept requests
-	it.DepUnblocked = rt.OnDepUnblocked   // wake whatever was blocked_by an item that just finished
+	wt.OnRetained = rt.OnWorktreeRetained             // the §17.5 "Worktree kept" notification
+	it.RequestPayload = rt.RequestPayload             // R5: full Request on request.*
+	it.RequestOpened = rt.OnRequestOpened             // §17.5 for the daemon-opened accept requests
+	it.DepUnblocked = rt.OnDepUnblocked               // wake whatever was blocked_by an item that just finished
 	it.StoryReadyForReview = rt.OnStoryReadyForReview // relay story_ready_for_review when all tasks finish
 	// Safety invariant S-4: SourcesFromEnv returns nil unless SWARM_USAGE=live,
 	// which only the installed launchd plist sets. Every other daemon — a

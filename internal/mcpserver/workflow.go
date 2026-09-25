@@ -151,7 +151,6 @@ func workflowTool(s *Server) ToolDef {
 				}
 				return workflowStateOut(st), nil
 
-
 			default:
 				return nil, fmt.Errorf("unknown swarm_workflow op %q", in.Op)
 			}

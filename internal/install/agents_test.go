@@ -181,9 +181,9 @@ func TestAgentsDispatchesMuseToWriteMuse(t *testing.T) {
 	c := fakeHome(t)
 	f := &execx.Fake{Responses: map[string]execx.Result{
 		"launchctl bootout gui/501/dev.swarm.updater": {},
-		"muse plugins list --json":                   {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
-		"muse plugins update superpowers":            {Out: "updated"},
-		"muse plugins update elements-of-style":      {Out: "updated"},
+		"muse plugins list --json":                    {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
+		"muse plugins update superpowers":             {Out: "updated"},
+		"muse plugins update elements-of-style":       {Out: "updated"},
 	}}
 	o := agentsOpts(t, c, f, install.KindMuse)
 	if err := install.Agents(context.Background(), o); err != nil {

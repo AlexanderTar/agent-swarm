@@ -2214,4 +2214,3 @@ func TestSpawnSharesWorktreesAtomically(t *testing.T) {
 		t.Fatalf("reservation mode = %q, want rw", mode)
 	}
 }
-

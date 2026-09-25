@@ -921,4 +921,3 @@ func (s *Store) ResolveQuestion(ctx context.Context, id, answer, via string) (Re
 	})
 	return out, err
 }
-

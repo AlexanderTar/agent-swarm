@@ -46,7 +46,6 @@ type SpawnInput struct {
 	RequestID string
 }
 
-
 type PreflightInput struct {
 	Kind      AgentKind
 	Model     string

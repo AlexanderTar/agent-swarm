@@ -2411,9 +2411,9 @@ func TestIntegratedNeedsIntegrationVerify(t *testing.T) {
 
 	// Missing make lint
 	_, err = s.WriteCheckpoint(ctx, oSes.ID, CheckpointInput{
-		Kind:    Integrated,
-		Summary: "merged",
-		Git:     []GitRef{{Repo: "proj", Branch: "main", SHA: "deadbee"}},
+		Kind:         Integrated,
+		Summary:      "merged",
+		Git:          []GitRef{{Repo: "proj", Branch: "main", SHA: "deadbee"}},
 		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}},
 	})
 	if err == nil {
@@ -2488,10 +2488,10 @@ func TestIntegratedNeedsFinalReviewPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.WriteCheckpoint(ctx, rSes.ID, CheckpointInput{
-		Kind:     CompletedCkp,
-		Summary:  "looks good",
-		Verdict:  "pass",
-		Git:      []GitRef{{Repo: "proj", Branch: "main", SHA: sha}},
+		Kind:    CompletedCkp,
+		Summary: "looks good",
+		Verdict: "pass",
+		Git:     []GitRef{{Repo: "proj", Branch: "main", SHA: sha}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2506,4 +2506,3 @@ func TestIntegratedNeedsFinalReviewPass(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
-

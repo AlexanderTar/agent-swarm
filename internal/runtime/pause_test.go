@@ -2061,5 +2061,3 @@ func TestHandoffCheckpointMovesRunningSessionToStopping(t *testing.T) {
 		t.Fatalf("expected tmux kill on %s, got %v", a.Name, tm.killed)
 	}
 }
-
-

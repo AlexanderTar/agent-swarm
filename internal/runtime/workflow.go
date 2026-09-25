@@ -316,7 +316,6 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	return st, nil
 }
 
-
 // workflowsOneLiveErr maps a workflows_one_live unique-index violation to
 // StartWorkflow's own friendly "already has a running workflow" refusal --
 // the advisory pre-check (StartWorkflow's own `existing` SELECT) only
@@ -1033,7 +1032,6 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 	}
 
 	return true, nil
-
 
 }
 
@@ -2037,4 +2035,3 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, session
 	}
 	return st, nil
 }
-

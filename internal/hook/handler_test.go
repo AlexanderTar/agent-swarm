@@ -28,7 +28,7 @@ func seed(t *testing.T, pending int, state runtime.SessionState) (*Handler, stri
 	ev := events.New(d, now)
 	st := &runtime.Store{DB: d, Events: ev, Items: &items.Store{DB: d, Events: ev, Now: now},
 		Settings: &settings.Store{DB: d, Events: ev, Now: now},
-		Now: now, Log: func(string, ...any) {}}
+		Now:      now, Log: func(string, ...any) {}}
 	_, err := d.ExecContext(ctx, `
 		INSERT INTO items (id, key, type, root_id, title, status, created_at, updated_at)
 		VALUES ('itm_1','TASK-101','task','itm_1','Build the login form','in_progress',1,1);
@@ -1114,9 +1114,6 @@ func TestPostToolUseNonQuestionToolDoesNotResolveOpenQuestionRequest(t *testing.
 		t.Fatalf("expected request to remain open, got err=%v, state=%s", err, state)
 	}
 }
-
-
-
 
 // A message the agent has already synced (state 'delivered') is not "new": no
 // nudge on PostToolUse and no Stop block. Only 'pending' counts.

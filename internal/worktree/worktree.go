@@ -418,7 +418,6 @@ func (s *Service) Share(ctx context.Context, wtID, agentID, mode string) error {
 	return err
 }
 
-
 // Release clears agentID's reservation on the worktree.
 func (s *Service) Release(ctx context.Context, wtID, agentID string) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE worktree_reservations SET released_at = ?

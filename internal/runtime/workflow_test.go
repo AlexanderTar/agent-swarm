@@ -2163,7 +2163,6 @@ func TestResumeCancelRefuseForeignOrchestrator(t *testing.T) {
 		t.Fatalf("cancel err = %v, want %q", err, want)
 	}
 
-
 	var wfState string
 	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE item_id = (SELECT id FROM items WHERE key = ?)`,
 		taskKey).Scan(&wfState); err != nil {
@@ -3030,7 +3029,6 @@ func TestWorkflowIdempotencyStartResumeCancel(t *testing.T) {
 	sessID := "sess-idem-1"
 	reqStart := "req-wf-start-1"
 
-
 	st1, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{
 		ItemKey:   taskKey,
 		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}},
@@ -3119,5 +3117,3 @@ func TestWorkflowIdempotencyStartResumeCancel(t *testing.T) {
 		t.Fatalf("CancelWorkflow replay mismatch: %+v vs %+v", canSt1, canSt2)
 	}
 }
-
-
