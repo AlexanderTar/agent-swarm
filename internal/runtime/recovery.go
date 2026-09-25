@@ -3,9 +3,12 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // AssignmentView is the durable assignment swarm_sync returns on every
@@ -139,4 +142,185 @@ func (s *Store) recoveryBundleTx(ctx context.Context, tx *sql.Tx, agentID string
 		return nil, false, err
 	}
 	return &b, true, nil
+}
+
+// RecoveryCheckpoint is one checkpoint with full fields plus provenance:
+// which session and generation wrote it. swarm_read strips
+// next/blockers/git/verification/artifacts/provenance from checkpoint
+// output; this history keeps all of it so the successor replays the
+// predecessor's evidence instead of re-doing (or inventing) it.
+type RecoveryCheckpoint struct {
+	Checkpoint
+	Generation int
+	Verdict    string
+	Findings   []workflow.Finding
+}
+
+// RecoveryHistory returns the agent's checkpoints across all its
+// generations, newest first, paginated by a stable created_at cursor
+// (rows strictly older than before; zero before means "from the top").
+// Default limit 50, max 200.
+func (s *Store) RecoveryHistory(ctx context.Context, agentID string, limit int, before time.Time) ([]RecoveryCheckpoint, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if _, err := s.agentByID(ctx, agentID); err != nil {
+		return nil, err
+	}
+	cutoff := int64(1) << 62
+	if !before.IsZero() {
+		cutoff = db.Millis(before)
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT c.id, c.session_id, c.agent_id, c.item_id, c.kind, c.attempt,
+		COALESCE(c.resolution, ''), c.summary, c.next_json, c.blockers_json, c.git_json, c.verify_json,
+		c.artifacts_json, c.processed_json, c.daemon_written, c.created_at,
+		COALESCE(c.verdict, ''), COALESCE(c.findings_json, '[]'), s.generation
+		FROM checkpoints c JOIN sessions s ON s.id = c.session_id
+		WHERE c.agent_id = ? AND c.created_at < ?
+		ORDER BY c.created_at DESC, c.rowid DESC LIMIT ?`, agentID, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RecoveryCheckpoint
+	for rows.Next() {
+		var c RecoveryCheckpoint
+		var kind string
+		var nextJSON, blockersJSON, gitJSON, verifyJSON, artifactsJSON, processedJSON string
+		var daemonWritten int
+		var created int64
+		var findingsJSON string
+		if err := rows.Scan(&c.ID, &c.SessionID, &c.AgentID, &c.ItemID, &kind, &c.Attempt,
+			&c.Resolution, &c.Summary, &nextJSON, &blockersJSON, &gitJSON, &verifyJSON, &artifactsJSON,
+			&processedJSON, &daemonWritten, &created, &c.Verdict, &findingsJSON, &c.Generation); err != nil {
+			return nil, err
+		}
+		c.Kind = CheckpointKind(kind)
+		json.Unmarshal([]byte(nextJSON), &c.Next)
+		json.Unmarshal([]byte(blockersJSON), &c.Blockers)
+		json.Unmarshal([]byte(gitJSON), &c.Git)
+		json.Unmarshal([]byte(verifyJSON), &c.Verification)
+		json.Unmarshal([]byte(artifactsJSON), &c.Artifacts)
+		json.Unmarshal([]byte(processedJSON), &c.Processed)
+		json.Unmarshal([]byte(findingsJSON), &c.Findings)
+		c.DaemonWritten = daemonWritten != 0
+		c.CreatedAt = db.FromMillis(created)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// RecoveryWorktree is one worktree the agent owns, with the recorded HEAD
+// the successor re-checks on disk before editing.
+type RecoveryWorktree struct {
+	ID, Path, Branch, BaseSHA, State string
+}
+
+// RecoveryArtifactRevision is one stored revision with its content hash.
+type RecoveryArtifactRevision struct {
+	Revision int
+	SHA256   string
+}
+
+// RecoveryArtifact is one readable artifact with all its revisions/hashes.
+type RecoveryArtifact struct {
+	ID, Kind, Path string
+	HeadRevision   int
+	Revisions      []RecoveryArtifactRevision
+}
+
+// RecoveryRequest is one agent- or item-owned request, which survives
+// replacement across sessions (Batch 1: requests follow the agent).
+type RecoveryRequest struct {
+	ID, Kind, State string
+}
+
+// RecoveryResourcesResult is the successor's resource discovery: readable
+// requests, worktrees (IDs/paths) and artifact revisions/hashes.
+type RecoveryResourcesResult struct {
+	Worktrees []RecoveryWorktree
+	Artifacts []RecoveryArtifact
+	Requests  []RecoveryRequest
+}
+
+// RecoveryResources returns the agent's owned worktrees, its item's and
+// own artifacts with revisions/hashes, and its surviving requests.
+func (s *Store) RecoveryResources(ctx context.Context, agentID string) (RecoveryResourcesResult, error) {
+	var out RecoveryResourcesResult
+	a, err := s.agentByID(ctx, agentID)
+	if err != nil {
+		return out, err
+	}
+	wrows, err := s.DB.QueryContext(ctx, `SELECT id, path, COALESCE(branch, ''), base_sha, state
+		FROM worktrees WHERE owner_agent_id = ? ORDER BY path`, agentID)
+	if err != nil {
+		return out, err
+	}
+	for wrows.Next() {
+		var w RecoveryWorktree
+		if err := wrows.Scan(&w.ID, &w.Path, &w.Branch, &w.BaseSHA, &w.State); err != nil {
+			wrows.Close()
+			return out, err
+		}
+		out.Worktrees = append(out.Worktrees, w)
+	}
+	wrows.Close()
+	if err := wrows.Err(); err != nil {
+		return out, err
+	}
+	arows, err := s.DB.QueryContext(ctx, `SELECT id, kind, path, head_revision FROM artifacts
+		WHERE item_id = ? OR created_by = ? ORDER BY path`, a.ItemID, agentID)
+	if err != nil {
+		return out, err
+	}
+	for arows.Next() {
+		var art RecoveryArtifact
+		if err := arows.Scan(&art.ID, &art.Kind, &art.Path, &art.HeadRevision); err != nil {
+			arows.Close()
+			return out, err
+		}
+		rrows, err := s.DB.QueryContext(ctx, `SELECT revision, sha256 FROM artifact_revisions
+			WHERE artifact_id = ? ORDER BY revision`, art.ID)
+		if err != nil {
+			arows.Close()
+			return out, err
+		}
+		for rrows.Next() {
+			var r RecoveryArtifactRevision
+			if err := rrows.Scan(&r.Revision, &r.SHA256); err != nil {
+				rrows.Close()
+				arows.Close()
+				return out, err
+			}
+			art.Revisions = append(art.Revisions, r)
+		}
+		rrows.Close()
+		if err := rrows.Err(); err != nil {
+			arows.Close()
+			return out, err
+		}
+		out.Artifacts = append(out.Artifacts, art)
+	}
+	arows.Close()
+	if err := arows.Err(); err != nil {
+		return out, err
+	}
+	qrows, err := s.DB.QueryContext(ctx, `SELECT id, kind, state FROM requests
+		WHERE agent_id = ? ORDER BY created_at`, agentID)
+	if err != nil {
+		return out, err
+	}
+	for qrows.Next() {
+		var r RecoveryRequest
+		if err := qrows.Scan(&r.ID, &r.Kind, &r.State); err != nil {
+			qrows.Close()
+			return out, err
+		}
+		out.Requests = append(out.Requests, r)
+	}
+	qrows.Close()
+	return out, qrows.Err()
 }
