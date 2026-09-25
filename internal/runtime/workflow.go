@@ -1719,6 +1719,8 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
 				lostRace = true
+				st.ID = wf.ID
+				st.ItemKey = it.Key
 				return nil
 			}
 			// Persist the note into workflows.context_json BEFORE advance runs
@@ -1748,6 +1750,8 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
 				lostRace = true
+				st.ID = wf.ID
+				st.ItemKey = it.Key
 				return nil
 			}
 			if _, err := s.Items.TransitionTx(ctx, tx, it.Key, items.Done, items.Daemon()); err != nil {
@@ -1770,6 +1774,8 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
 				lostRace = true
+				st.ID = wf.ID
+				st.ItemKey = it.Key
 				return nil
 			}
 			if err := s.tryTransition(ctx, tx, it.Key, items.Ready); err != nil {
@@ -1794,6 +1800,12 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 	}
 	if lostRace {
 		st, _, err := s.workflowStateByID(ctx, wf.ID)
+		if err == nil && ran && requestID != "" {
+			if raw, err := json.Marshal(st); err == nil {
+				_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE session_id = ? AND request_id = ?`,
+					string(raw), sessionID, requestID)
+			}
+		}
 		return st, err
 	}
 	if !ran {
@@ -1926,6 +1938,8 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, session
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
 			lostRace = true
+			st.ID = wf.ID
+			st.ItemKey = it.Key
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'cancelled', ended_at = ?
@@ -1949,6 +1963,12 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, session
 	}
 	if lostRace {
 		st, _, err := s.workflowStateByID(ctx, wf.ID)
+		if err == nil && ran && requestID != "" {
+			if raw, err := json.Marshal(st); err == nil {
+				_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE session_id = ? AND request_id = ?`,
+					string(raw), sessionID, requestID)
+			}
+		}
 		return st, err
 	}
 	if !ran {
