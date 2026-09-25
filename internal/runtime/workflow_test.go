@@ -3,9 +3,12 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
@@ -689,5 +692,259 @@ func TestAdvanceIsIdempotent(t *testing.T) {
 	}
 	if before != after {
 		t.Fatalf("build run's agent id changed: %q -> %q", before, after)
+	}
+}
+
+// setMaxSubagents sets max_concurrent_subagents directly (mirrors
+// limits_test.go's setLimits for the shared max_concurrent_agents pool).
+func setMaxSubagents(t *testing.T, s *Store, n int) {
+	t.Helper()
+	now := s.now().UnixMilli()
+	if _, err := s.DB.ExecContext(context.Background(), `INSERT INTO settings (key, value_json, updated_at)
+		VALUES ('max_concurrent_subagents', ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+		fmt.Sprintf("%d", n), now); err != nil {
+		t.Fatal(err)
+	}
+	s.Events.Notify()
+}
+
+// TestCheckpointTriggersAdvance is unit 9.4's dedicated pin for spec B4's
+// first trigger: WriteCheckpoint itself, with no direct s.advance() call
+// anywhere in this test, must move a finished build step straight into a
+// spawned review step.
+func TestCheckpointTriggersAdvance(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var role, state, agentID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT role, state, COALESCE(agent_id, '')
+		FROM workflow_runs WHERE workflow_id = ? AND step_id = 'review'`, st.ID).Scan(&role, &state, &agentID); err != nil {
+		t.Fatal(err)
+	}
+	if role != "reviewer" || state != "active" || agentID == "" {
+		t.Fatalf("review run = role %q state %q agent %q, want reviewer/active/non-empty -- "+
+			"WriteCheckpoint's own post-commit trigger should have spawned it", role, state, agentID)
+	}
+}
+
+// TestCrashTriggersAdvance is spec B4's second trigger: a session dying
+// with NO checkpoint at all (a genuine crash, via reconcile) marks the
+// workflow run failed and advances its workflow, same as an explicit
+// FailedCkp would -- here landing on AutoRetry (default retries: 1) since
+// nothing has exhausted it yet.
+func TestCrashTriggersAdvance(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderAgentID := agentIDForStep(t, s, st.ID, "build")
+	coder, err := s.agentByID(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+
+	panes(tm, Pane{Session: coder.Name, Dead: true, DeadStatus: 1, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[coder.Name] = map[string]string{"SWARM_SESSION": coderSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var state, agentID string
+	var autoRetries int
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, auto_retries, COALESCE(agent_id, '')
+		FROM workflow_runs WHERE workflow_id = ? AND step_id = 'build'`, st.ID).Scan(&state, &autoRetries, &agentID); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || autoRetries != 1 || agentID != coderAgentID {
+		t.Fatalf("build run after crash = state %s retries %d agent %s, want active/1/%s",
+			state, autoRetries, agentID, coderAgentID)
+	}
+	newSes, err := s.LatestSession(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSes.ID == coderSes.ID {
+		t.Fatalf("expected the crash to start a new session via Retry, got the same one back")
+	}
+}
+
+// TestSlotReleaseSpawnsWaitingRun is spec B4's third trigger: any child of
+// the owner finishing frees a subagent slot that lets a SIBLING workflow's
+// budget-blocked run start. TASK-1's build step has Retries:0, so its crash
+// escalates straight away instead of re-occupying the slot with an
+// auto-retry -- the freed slot must go to TASK-2's still-waiting build run.
+func TestSlotReleaseSpawnsWaitingRun(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	setMaxSubagents(t, s, 1)
+
+	ep := seedEpicWithTwoTasks(t, s)
+	zero := 0
+	spec1, err := workflow.Resolve(workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder"},
+		{ID: "review", Review: []string{"reviewer"}, Of: "build"},
+	}, Retries: &zero}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setItemWorkflow(t, s, "TASK-1", spec1)
+	setItemWorkflow(t, s, "TASK-2", buildReviewSpec(t))
+
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt1, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	wt2, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+
+	st1, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: "TASK-1",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wt1, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st2, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: "TASK-2",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wt2, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var state, agentID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, '')
+		FROM workflow_runs WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&state, &agentID); err != nil {
+		t.Fatal(err)
+	}
+	if state != "waiting" || agentID != "" {
+		t.Fatalf("TASK-2 build run = state %s agent %q, want waiting/empty (TASK-1 already holds the one slot)", state, agentID)
+	}
+
+	coder1AgentID := agentIDForStep(t, s, st1.ID, "build")
+	coder1, err := s.agentByID(ctx, coder1AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coder1Ses := agentSessionForStep(t, s, st1.ID, "build")
+
+	panes(tm, Pane{Session: coder1.Name, Dead: true, DeadStatus: 1, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[coder1.Name] = map[string]string{"SWARM_SESSION": coder1Ses.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var wf1State string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE id = ?`, st1.ID).Scan(&wf1State); err != nil {
+		t.Fatal(err)
+	}
+	if wf1State != "escalated" {
+		t.Fatalf("TASK-1 workflow state = %s, want escalated", wf1State)
+	}
+
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, '')
+		FROM workflow_runs WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&state, &agentID); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || agentID == "" {
+		t.Fatalf("TASK-2 build run after the slot freed = state %s agent %q, want active/non-empty", state, agentID)
+	}
+}
+
+// TestRecoverStalledWorkflow is spec B4's fourth trigger: a workflow whose
+// runs are all already terminal, but whose workflows row hasn't moved in
+// over 30s, is a daemon-restart gap (a checkpoint committed, but the
+// advance() that should have followed it never ran) -- the reconcile
+// loop's stall scan must recover it on its own, with no checkpoint or
+// direct s.advance() call in this test at all.
+func TestRecoverStalledWorkflow(t *testing.T) {
+	s, tm, clk := clockStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderAgentID := agentIDForStep(t, s, st.ID, "build")
+
+	// Hand-seed both steps already finished, entirely via direct SQL --
+	// never through WriteCheckpoint or s.advance -- simulating a daemon
+	// that crashed right after the reviewer's own commit, before the
+	// advance() call that should have followed it.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'completed', sha = ?
+		WHERE workflow_id = ? AND step_id = 'build'`, head, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	reviewer, _, err := s.Spawn(ctx, SpawnInput{ItemKey: taskKey, Role: RoleReviewer, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, verdict, sha, created_at)
+		VALUES (?, ?, 'review', 1, 'reviewer', ?, 'completed', 'pass', ?, ?)`,
+		ids.New("wfr"), st.ID, reviewer.ID, head, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+	// Neither agent's session ever got a real checkpoint (bypassed above):
+	// retire both sessions directly so reconcile's per-session dead-pane
+	// scan leaves them alone and only the stall scan below touches this
+	// workflow.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed'
+		WHERE agent_id IN (?, ?)`, coderAgentID, reviewer.ID); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(31 * time.Second)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET updated_at = ?
+		WHERE id = ?`, db.Millis(s.Now().Add(-31*time.Second)), st.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var wfState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE id = ?`, st.ID).Scan(&wfState); err != nil {
+		t.Fatal(err)
+	}
+	if wfState != "succeeded" {
+		t.Fatalf("workflow state = %s, want succeeded (recovered by the stall scan)", wfState)
+	}
+	item, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != items.Done {
+		t.Fatalf("task status = %s, want done", item.Status)
 	}
 }

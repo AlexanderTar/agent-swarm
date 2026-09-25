@@ -357,6 +357,16 @@ func (s *Store) advance(ctx context.Context, workflowID string) error {
 	}
 
 	action := workflow.Next(*it.Workflow, toWorkflowRuns(runs), wf.Round, wf.ExtraRounds)
+	if action.Kind != workflow.ActionWait {
+		// Every applied action -- including a Spawn that only inserted a
+		// 'waiting' row, still budget-blocked -- touches updated_at, so
+		// recoverWorkflows' 30s stall scan (below) never mistakes real,
+		// recent progress for a stuck workflow.
+		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET updated_at = ? WHERE id = ?`,
+			db.Millis(s.now()), wf.ID); err != nil {
+			return err
+		}
+	}
 	switch action.Kind {
 	case workflow.ActionSpawn:
 		if err := s.applySpawn(ctx, wf, it, action); err != nil {
@@ -959,6 +969,51 @@ func (s *Store) applyEscalate(ctx context.Context, wf wfRow, it items.Item, acti
 		return s.notify(ctx, tx, NotifyInput{Kind: "workflow.escalated", ItemKey: it.Key,
 			Args: map[string]string{"KEY": it.Key, "reason": action.Reason}})
 	})
+}
+
+// advanceWaitingForOwner triggers advance for every 'running' workflow
+// owned by ownerAgentID that has at least one 'waiting' run (spec B4
+// Budget/Triggers: any child of the owner finishing frees a subagent slot
+// that may let a sibling workflow's waiting run start now).
+func (s *Store) advanceWaitingForOwner(ctx context.Context, ownerAgentID string) error {
+	ids, err := s.queryIDs(ctx, `SELECT DISTINCT w.id FROM workflows w
+		JOIN workflow_runs r ON r.workflow_id = w.id
+		WHERE w.owner_agent_id = ? AND w.state = 'running' AND r.state = 'waiting'`, ownerAgentID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := s.advance(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stallThreshold is spec B4's crash-recovery window (see recoverWorkflows).
+const stallThreshold = 30 * time.Second
+
+// recoverWorkflows is the reconcile loop's stall-recovery scan (spec B4):
+// every 'running' workflow that has at least one run recorded, none of
+// which is 'waiting' or 'active' (nothing left for it to be doing, or
+// waiting on budget for), and whose own updated_at is older than
+// stallThreshold gets a fresh advance -- the daemon-restart gap between a
+// checkpoint's commit and the advance() call that should have followed it.
+func (s *Store) recoverWorkflows(ctx context.Context) error {
+	ids, err := s.queryIDs(ctx, `SELECT w.id FROM workflows w
+		WHERE w.state = 'running' AND w.updated_at < ?
+			AND EXISTS (SELECT 1 FROM workflow_runs r WHERE r.workflow_id = w.id)
+			AND NOT EXISTS (SELECT 1 FROM workflow_runs r WHERE r.workflow_id = w.id AND r.state IN ('waiting', 'active'))`,
+		db.Millis(s.now().Add(-stallThreshold)))
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := s.advance(ctx, id); err != nil {
+			s.logf("reconcile: recover workflow %s: %v", id, err)
+		}
+	}
+	return nil
 }
 
 // briefWorktrees resolves wts (worktree id + mode) into the BriefWorktree

@@ -217,6 +217,12 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.withdrawOrphanedRequests(ctx); err != nil {
 		return err
 	}
+	// P9 (spec B4): crash recovery for a daemon restart between a
+	// checkpoint's commit and the advance() call that should have followed
+	// it immediately after.
+	if err := s.recoverWorkflows(ctx); err != nil {
+		return err
+	}
 	return s.sweepFinishedRoots(ctx)
 }
 
@@ -546,7 +552,29 @@ func (s *Store) OnDepUnblocked(ctx context.Context, tx *sql.Tx, doneID string) e
 // race, and must still be handled immediately.
 const spawnGracePeriod = 10 * time.Second
 
+// resolveDead is P9's wrapper around resolveDeadInner: after whatever
+// session/agent transition the inner call makes, it triggers the engine's
+// two remaining B4 triggers that live in reconcile rather than
+// checkpoint.go -- a workflow run that just went terminal with no
+// checkpoint of its own (crash/interrupted) advances its own workflow, and
+// ANY child finishing frees a budget slot that may let a sibling
+// workflow's waiting run start (spec B4 Budget/Triggers). Both are
+// best-effort: a failure here is logged, never allowed to break the
+// reconcile tick that already committed its own real state change.
 func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bool) error {
+	err := s.resolveDeadInner(ctx, r, p, paneKnown)
+	if err != nil {
+		return err
+	}
+	if r.ParentAgentID != "" {
+		if aerr := s.advanceWaitingForOwner(ctx, r.ParentAgentID); aerr != nil {
+			s.logf("reconcile: advance waiting runs for %s: %v", r.ParentAgentID, aerr)
+		}
+	}
+	return nil
+}
+
+func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKnown bool) error {
 	now := s.Now()
 	if !paneKnown {
 		basis := r.StartedAt
@@ -605,7 +633,9 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 	// A pausing session that was sent interrupt keys (L11) ends interrupted, never
 	// crashed, whatever attempt-scoped checkpoint it left behind.
 	if r.State.Pausing() && s.getInterrupted(r.SessionID) != nil {
-		return s.tx(ctx, func(tx *sql.Tx) error {
+		var run workflowRun
+		var hasRun bool
+		err := s.tx(ctx, func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'interrupted', exit_code = ?,
 				ended_at = ? WHERE id = ?`, exitCode, db.Millis(now), r.SessionID); err != nil {
 				return err
@@ -613,6 +643,20 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.interrupted", AgentName: r.AgentName,
 				ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
 				return err
+			}
+			// P9 (spec B4): an interrupted workflow agent's run is the
+			// engine's own crash signal -- mark it failed so Next sees it
+			// (AutoRetry/Escalate), the same as an explicit FailedCkp.
+			var werr error
+			run, hasRun, werr = s.workflowRunFor(ctx, tx, r.AgentID)
+			if werr != nil {
+				return werr
+			}
+			if hasRun {
+				if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ? WHERE id = ?`,
+					db.Millis(now), run.ID); err != nil {
+					return err
+				}
 			}
 			if r.ParentAgentID == "" {
 				return nil
@@ -625,6 +669,12 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 				RootItemID: r.RootItemID, ItemID: r.ItemID, Payload: payload})
 			return err
 		})
+		if err == nil && hasRun {
+			if aerr := s.advance(ctx, run.WorkflowID); aerr != nil {
+				s.logf("reconcile: advance %s: %v", run.WorkflowID, aerr)
+			}
+		}
+		return err
 	}
 	kind, hasTerminal, err := s.terminalCheckpointKind(ctx, r.AgentID, r.ItemID, r.Attempt)
 	if err != nil {
@@ -654,7 +704,9 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 		}
 		ancestor, ancestorOk, _ := s.nearestLiveAncestor(ctx, r.AgentID)
 
-		return s.tx(ctx, func(tx *sql.Tx) error {
+		var run workflowRun
+		var hasRun bool
+		err := s.tx(ctx, func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'crashed', exit_code = ?,
 				ended_at = ? WHERE id = ?`, exitCode, db.Millis(now), r.SessionID); err != nil {
 				return err
@@ -662,6 +714,19 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.crashed", AgentName: r.AgentName,
 				ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
 				return err
+			}
+			// P9 (spec B4): a crashed workflow agent (no terminal checkpoint
+			// at all) is the engine's own crash signal too.
+			var werr error
+			run, hasRun, werr = s.workflowRunFor(ctx, tx, r.AgentID)
+			if werr != nil {
+				return werr
+			}
+			if hasRun {
+				if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ? WHERE id = ?`,
+					db.Millis(now), run.ID); err != nil {
+					return err
+				}
 			}
 			if ancestorOk {
 				payload, err := json.Marshal(map[string]any{
@@ -681,6 +746,12 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 			}
 			return nil
 		})
+		if err == nil && hasRun {
+			if aerr := s.advance(ctx, run.WorkflowID); aerr != nil {
+				s.logf("reconcile: advance %s: %v", run.WorkflowID, aerr)
+			}
+		}
+		return err
 	}
 }
 
