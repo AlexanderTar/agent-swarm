@@ -831,28 +831,28 @@ adapter. Phase 1 probes, controller ruling and live-TUI evidence:
 - [x] Run green. Commit: `feat(adapter): isolate muse's HOME, pin its real data/state/cache dirs`.
 
 #### Unit PM.3: settings clone-then-mutate
-- [ ] Write the failing test `TestMuseSetupEnvDropsOperatorMCPServersAndForeignContext`
+- [x] Write the failing test `TestMuseSetupEnvDropsOperatorMCPServersAndForeignContext`
       (fake real `settings.json` has an extra operator MCP server and an arbitrary unknown
       top-level key; assert the isolated `settings.json` has exactly one `mcpServers` key
       — `swarm` — keeps the arbitrary key, and has `context.foreign_personal_skills` and
       `context.foreign_personal_rules` both `false`). Record red.
-- [ ] Implement: after unmarshalling the real `settings.json` (unchanged), replace
+- [x] Implement: after unmarshalling the real `settings.json` (unchanged), replace
       `mcpServers` with the swarm-only map (unchanged from today) and set
       `settings["context"] = map[string]any{"foreign_personal_skills": false,
       "foreign_personal_rules": false}` (merging into any existing `context` map rather
       than clobbering unrelated keys, if the real file has one).
-- [ ] Run green. Commit: `feat(adapter): drop operator MCP servers and foreign personal context from muse spawns`.
+- [x] Run green. Commit: `feat(adapter): drop operator MCP servers and foreign personal context from muse spawns`.
 
 #### Unit PM.4: swarm-managed skills only
-- [ ] Write the failing test `TestMuseSetupEnvLinksOnlySwarmManagedSkills` (fake
+- [x] Write the failing test `TestMuseSetupEnvLinksOnlySwarmManagedSkills` (fake
       `UserHome/.config/muse/skills` has a real personal skill dir alongside nothing else;
       a separate fake swarm skills home has `swarm`/`swarm-orchestrator`; assert the
       isolated `skills/` dir contains symlinks only for the swarm-managed names, resolving
       into the swarm skills home, not the fake personal one). Record red.
-- [ ] Implement: replace the whole-dir `symlinkIfExists(realSkillsDir, museDir/skills)`
+- [x] Implement: replace the whole-dir `symlinkIfExists(realSkillsDir, museDir/skills)`
       call with `install.LinkSkills(filepath.Join(museDir, "skills"),
       skillsHome, install.SkillLinkMode(install.KindMuse))`.
-- [ ] Run green. Commit: `feat(adapter): link only swarm-managed skills into muse spawns`.
+- [x] Run green. Commit: `feat(adapter): link only swarm-managed skills into muse spawns`.
 
 ---
 
