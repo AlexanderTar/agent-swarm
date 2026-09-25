@@ -19,8 +19,9 @@ const ShortPreamble = "Delivered by the Swarm daemon as part of the user's orche
 // IsDaemonPrompt reports whether a UserPromptSubmit text was written by the
 // daemon, not typed by the user. Every daemon prompt is either the idle token
 // (wake.go PasteLine), carries ShortPreamble (Kickoff, ResumeKickoff,
-// PendingNotice, ControlNotice, CompactionNotice) or starts with "[swarm]"
-// (also the quota-reset wake notice in wake.go, which has no preamble).
+// SuccessorKickoff, PendingNotice, PauseHandoffNotice, CompactionNotice) or
+// starts with "[swarm]" (also the quota-reset wake notice in wake.go, which
+// has no preamble).
 func IsDaemonPrompt(prompt string) bool {
 	p := strings.TrimSpace(prompt)
 	return p == IdleToken || strings.HasPrefix(p, "[swarm]") || strings.Contains(p, ShortPreamble)
@@ -160,8 +161,12 @@ func PendingNotice(n int, name, key string) string {
 	return fmt.Sprintf("[swarm] %d new message(s) for %s (%s). Call swarm_sync. %s", n, name, key, Preamble)
 }
 
-func ControlNotice(name, key string) string {
-	return fmt.Sprintf("[swarm] PAUSE requested for %s (%s). Stop current work now, call swarm_sync, write a handoff checkpoint, then stop. %s", name, key, ShortPreamble)
+// PausePreservationNotice is the live pause notice: the normative
+// PauseHandoffNotice plus the preservation checklist the predecessor follows
+// before stopping. It replaces the legacy one-line control notice on every
+// live path (native wake, tmux paste, hook Stop block).
+func PausePreservationNotice(name, itemKey string) string {
+	return PauseHandoffNotice("PAUSE", name, itemKey) + " " + PreservationChecklist
 }
 
 func CompactionNotice() string {

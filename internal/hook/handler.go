@@ -597,7 +597,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		if s.State.Pausing() && !s.HasHandoff {
 			return adapter.HookDecision{
 				Block:  true,
-				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
+				Reason: runtime.PausePreservationNotice(s.AgentName, s.ItemKey),
 			}, nil
 		}
 		if s.Pending > 0 && s.StopBlocks < maxStopBlocks {

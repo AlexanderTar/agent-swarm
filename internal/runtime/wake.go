@@ -179,7 +179,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 			notice = PendingNotice(r.Pending, r.AgentName, r.ItemKey) // fallback, never block a wake on a render error
 		}
 		if r.HasControl {
-			notice = ControlNotice(r.AgentName, r.ItemKey)
+			notice = PausePreservationNotice(r.AgentName, r.ItemKey)
 		}
 		ad, ok := s.Adapters[r.Kind]
 		if !ok {
@@ -252,8 +252,8 @@ func (s *Store) alreadyNotifiedUndeliverable(ctx context.Context, agentID string
 }
 
 // tryPaste checks the three §11.3 conditions and pastes the caller-supplied notice
-// (the same rich Inbox notice native wake gets, or ControlNotice for a control batch
-// — never the bare IdleToken). The daemon never logs a full process listing: other
+// (the same rich Inbox notice native wake gets, or PausePreservationNotice for a
+// control batch — never the bare IdleToken). The daemon never logs a full process listing: other
 // tools' bearer tokens show up there (P0-4).
 func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pasteNotice string) error {
 	fail := func(reason string) error {

@@ -234,7 +234,7 @@ func TestStopBlocksForAPendingHandoffThenForMessagesUpToThreeTimes(t *testing.T)
 	}
 	var m map[string]string
 	json.Unmarshal(out, &m)
-	if m["decision"] != "block" || m["reason"] != runtime.ControlNotice("login-form-coder", "TASK-101") {
+	if m["decision"] != "block" || m["reason"] != runtime.PausePreservationNotice("login-form-coder", "TASK-101") {
 		t.Fatalf("pause stop = %s", out)
 	}
 

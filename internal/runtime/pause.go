@@ -872,7 +872,14 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 		return Agent{}, &items.Error{Code: items.CodeConflict, Message: stillStopping}
 	}
 	resume := ses.ProviderSessionID != ""
-	newSes, err := s.startSession(ctx, a, ses.Attempt, ses.Generation+1, resume, ses.ProviderSessionID)
+	// A provider resume reattaches (ResumeKickoff); a fresh launch after a
+	// pause is a successor generation (SuccessorKickoff in resume mode plus
+	// the durable-state-wins addition).
+	succMode := ""
+	if !resume {
+		succMode = "resume"
+	}
+	newSes, err := s.startSession(ctx, a, ses.Attempt, ses.Generation+1, resume, ses.ProviderSessionID, succMode)
 	if err != nil {
 		return Agent{}, err
 	}

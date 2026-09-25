@@ -578,6 +578,95 @@ func (s *Store) admitOperation(ctx context.Context, op Operation, a Agent, lates
 	return parked, err
 }
 
+// successorKickoff composes the section-4 fresh-session kickoff for a
+// successor generation: the SuccessorKickoff template for mode (one of
+// "handoff", "recovery" or "resume") plus whichever normative additions
+// apply. A resume rides ResumeAddition (durable state wins); a handoff
+// orchestrator with live children names them via OrchestratorHandoffAddition
+// (absent children means no addition, never an invented list); a recovering
+// reviewer gets ReviewerRecoveryAddition; and a successor whose predecessor
+// left no usable manifest gets BrokenPredecessorWarning with the observed
+// paths and checkpoints instead of a fabricated history.
+func (s *Store) successorKickoff(ctx context.Context, a Agent, itemType items.Type, itemKey, itemTitle, mode string) string {
+	out := SuccessorKickoff(a.Name, a.Role, itemType, itemKey, itemTitle, mode)
+	if mode == "resume" {
+		return out + " " + ResumeAddition
+	}
+	if a.Role == RoleOrchestrator && mode == "handoff" {
+		if kids := s.liveChildNames(ctx, a.ID); len(kids) > 0 {
+			out += " " + OrchestratorHandoffAddition(kids)
+		}
+	}
+	if isReviewerRole(a.Role) && mode == "recovery" {
+		out += " " + ReviewerRecoveryAddition
+	}
+	if paths, ckpts, ok := s.brokenPredecessorEvidence(ctx, a.ID); ok {
+		out += " " + BrokenPredecessorWarning(paths, ckpts)
+	}
+	return out
+}
+
+// liveChildNames returns the names of the agent's direct children whose
+// latest session is still live: the handoff leaves them running, so the
+// successor must reconcile rather than report them complete.
+func (s *Store) liveChildNames(ctx context.Context, agentID string) []string {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, name FROM agents WHERE parent_agent_id = ? ORDER BY name`, agentID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			continue
+		}
+		ses, err := s.LatestSession(ctx, id)
+		if err != nil || !ses.State.Live() {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// brokenPredecessorEvidence reports whether the agent's latest operation
+// left no usable handoff manifest, with the owned worktree paths and
+// checkpoint IDs observed for the warning. ok is false when a manifest was
+// recorded (the predecessor saved); otherwise the successor must inspect
+// first rather than inherit an invented history.
+func (s *Store) brokenPredecessorEvidence(ctx context.Context, agentID string) (paths, ckpts []string, ok bool) {
+	var manifestPath string
+	err := s.DB.QueryRowContext(ctx, `SELECT manifest_path FROM agent_operations
+		WHERE agent_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1`, agentID).Scan(&manifestPath)
+	if err == nil && manifestPath != "" {
+		return nil, nil, false
+	}
+	wrows, err := s.DB.QueryContext(ctx, `SELECT path FROM worktrees
+		WHERE owner_agent_id = ? ORDER BY path`, agentID)
+	if err == nil {
+		for wrows.Next() {
+			var p string
+			if err := wrows.Scan(&p); err == nil {
+				paths = append(paths, p)
+			}
+		}
+		wrows.Close()
+	}
+	crows, err := s.DB.QueryContext(ctx, `SELECT id FROM checkpoints
+		WHERE agent_id = ? ORDER BY created_at, rowid`, agentID)
+	if err == nil {
+		for crows.Next() {
+			var id string
+			if err := crows.Scan(&id); err == nil {
+				ckpts = append(ckpts, id)
+			}
+		}
+		crows.Close()
+	}
+	return paths, ckpts, true
+}
+
 // startSuccessor launches the next generation on the same canonical agent
 // row: same id, same name, same attempt; only the session id, generation,
 // token and provider session change. Open requests follow the agent onto
@@ -592,7 +681,14 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 			s.logf("replacement: deliver note to %s: %v", a.Name, err)
 		}
 	}
-	succ, err := s.startSession(ctx, a, latest.Attempt, latest.Generation+1, false, "")
+	// The successor continues the same assignment: its kickoff is the
+	// section-4 template for the operation mode (pause never reaches here;
+	// it lands succeeded at stop with no successor).
+	succMode := "handoff"
+	if op.Mode == ModeRecover {
+		succMode = "recovery"
+	}
+	succ, err := s.startSession(ctx, a, latest.Attempt, latest.Generation+1, false, "", succMode)
 	if err != nil {
 		_ = s.setPhase(ctx, op.ID, PhaseBlocked, err.Error())
 		return nil

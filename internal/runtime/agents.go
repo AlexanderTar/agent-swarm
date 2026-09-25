@@ -327,7 +327,7 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		return "", Agent{}, false, err
 	}
 
-	ses, err := s.startSession(ctx, a, 1, 1, false, "")
+	ses, err := s.startSession(ctx, a, 1, 1, false, "", "")
 	if err != nil {
 		return "", Agent{}, false, err
 	}
@@ -528,7 +528,7 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return a, true, nil
 	}
 
-	ses, err := s.startSession(ctx, a, 1, 1, false, "")
+	ses, err := s.startSession(ctx, a, 1, 1, false, "", "")
 	if err != nil {
 		return Agent{}, false, err
 	}
@@ -610,7 +610,7 @@ func (s *Store) restartOrchestratorInPlace(ctx context.Context, a Agent) (Agent,
 	}
 	a.State = AgentActive
 	a.FinishedAt = nil
-	newSes, err := s.startSession(ctx, a, ses.Attempt+1, ses.Generation+1, false, "")
+	newSes, err := s.startSession(ctx, a, ses.Attempt+1, ses.Generation+1, false, "", "")
 	if err != nil {
 		return Agent{}, false, err
 	}
@@ -1064,7 +1064,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return result.Agent, false, nil
 	}
 
-	ses, err := s.startSession(ctx, result.Agent, 1, 1, false, "")
+	ses, err := s.startSession(ctx, result.Agent, 1, 1, false, "", "")
 	if err != nil {
 		return Agent{}, false, err
 	}
@@ -1085,7 +1085,11 @@ type spawnResult struct {
 	Queued bool
 }
 
-func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID string) (result Session, retErr error) {
+// succMode is "" for a brand-new assignment, or one of "handoff", "recovery"
+// or "resume" when this session continues the same agent's prior work: the
+// kickoff is then the section-4 SuccessorKickoff template (with its normative
+// additions) instead of the fresh-assignment Kickoff.
+func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID, succMode string) (result Session, retErr error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM sessions WHERE agent_id = ?`, a.ID)
 	if err == nil {
 		for rows.Next() {
@@ -1169,9 +1173,12 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 	itemType := items.Type(itemTypeStr)
 
 	var kickoff string
-	if resume {
+	switch {
+	case resume:
 		kickoff = ResumeKickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
-	} else {
+	case succMode != "":
+		kickoff = s.successorKickoff(ctx, a, itemType, itemKey, itemTitle, succMode)
+	default:
 		kickoff = Kickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	}
 
@@ -1692,7 +1699,7 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 
 	nextAttempt := ses.Attempt + 1
 	nextGeneration := ses.Generation + 1
-	newSes, err := s.startSession(ctx, a, nextAttempt, nextGeneration, false, "")
+	newSes, err := s.startSession(ctx, a, nextAttempt, nextGeneration, false, "", "")
 	if err != nil {
 		return Agent{}, err
 	}

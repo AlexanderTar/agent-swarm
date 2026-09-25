@@ -357,7 +357,7 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 
 	a.State = AgentActive
 
-	ses, err := s.startSession(ctx, a, 1, 1, false, "")
+	ses, err := s.startSession(ctx, a, 1, 1, false, "", "")
 	if err != nil {
 		return true, err
 	}

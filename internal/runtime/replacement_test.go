@@ -155,6 +155,166 @@ func TestReplacementRecoverRoundTrip(t *testing.T) {
 	notified(t, s, "agent.retried")
 }
 
+// TestRecoverSuccessorKickoffCarriesContinuityText pins the section-4
+// wiring: a recover successor launches with the SuccessorKickoff template
+// (not the fresh-assignment Kickoff). With no manifest from the
+// predecessor, the broken-predecessor warning rides along: inspect first,
+// never invent results.
+func TestRecoverSuccessorKickoffCarriesContinuityText(t *testing.T) {
+	s, tm, fa := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: wSes.TmuxName})
+	if _, err := s.RequestReplacement(ctx, w.ID, ModeRecover, "rkick", ""); err != nil {
+		t.Fatalf("request err = %v", err)
+	}
+	panes(tm)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatalf("resume err = %v", err)
+	}
+	got := fa.LastSpec.Kickoff
+	for _, want := range []string{
+		"continuing in a fresh session after interrupted recovery",
+		"Call swarm_sync first",
+		"the predecessor left no usable manifest",
+		"never reset/clean",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("successor kickoff missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "to get your assignment. ") {
+		t.Fatalf("successor kickoff uses the fresh-assignment Kickoff:\n%s", got)
+	}
+}
+
+// TestHandoffSuccessorNamesLiveChildren pins the orchestrator addition:
+// a handoff leaves children running, so the orchestrator successor's
+// kickoff names the still-live child and its reconcile duty -- never an
+// invented checkpoint. (No manifest was saved here, so the broken
+// predecessor warning rides along too.)
+func TestHandoffSuccessorNamesLiveChildren(t *testing.T) {
+	s, tm, fa := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, orchSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: orchSes.TmuxName})
+	if _, err := s.RequestReplacement(ctx, orch.ID, ModeHandoff, "hok", ""); err != nil {
+		t.Fatalf("request err = %v", err)
+	}
+	panes(tm)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatalf("resume err = %v", err)
+	}
+	got := fa.LastSpec.Kickoff
+	for _, want := range []string{
+		"continuing in a fresh session after handoff",
+		"Your children keep running",
+		w.Name,
+		"or fabricate their checkpoints",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("orchestrator successor kickoff missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestHandoffSuccessorWithManifestOmitsBrokenWarning pins the other half:
+// when the predecessor saved (manifest recorded), the handoff successor
+// carries no broken-predecessor warning.
+func TestHandoffSuccessorWithManifestOmitsBrokenWarning(t *testing.T) {
+	s, tm, fa := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: wSes.TmuxName})
+	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "hm", "")
+	if err != nil {
+		t.Fatalf("request err = %v", err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, PauseRequested); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "saving"}); err != nil {
+		t.Fatalf("handoff checkpoint err = %v", err)
+	}
+	var manifestPath string
+	if err := s.DB.QueryRowContext(ctx, `SELECT manifest_path FROM agent_operations WHERE id = ?`,
+		op.ID).Scan(&manifestPath); err != nil || manifestPath == "" {
+		t.Fatalf("manifest_path = %q, err = %v (want recorded)", manifestPath, err)
+	}
+	// The predecessor pane dies after saving: the handoff successor admits
+	// only once the session settles into a retryable state.
+	if err := s.SetSessionState(ctx, wSes.ID, Interrupted); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatalf("resume err = %v", err)
+	}
+	got := fa.LastSpec.Kickoff
+	if !strings.Contains(got, "continuing in a fresh session after handoff") {
+		t.Fatalf("successor kickoff missing handoff continuity:\n%s", got)
+	}
+	if strings.Contains(got, "left no usable manifest") {
+		t.Fatalf("successor kickoff warns of a broken predecessor despite the manifest:\n%s", got)
+	}
+}
+
+// TestReviewerRecoverySuccessorCarriesVerdictReminder pins the reviewer
+// addition: a recovering reviewer's kickoff re-reads the review target and
+// the recorded verdict evidence before setting a verdict.
+func TestReviewerRecoverySuccessorCarriesVerdictReminder(t *testing.T) {
+	s, tm, fa := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	rev, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revSes, err := s.LatestSession(ctx, rev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, revSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: revSes.TmuxName})
+	if _, err := s.RequestReplacement(ctx, rev.ID, ModeRecover, "rrev", ""); err != nil {
+		t.Fatalf("request err = %v", err)
+	}
+	panes(tm)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatalf("resume err = %v", err)
+	}
+	got := fa.LastSpec.Kickoff
+	for _, want := range []string{
+		"continuing in a fresh session after interrupted recovery",
+		"`swarm-reviewer`",
+		"Re-read the review target",
+		"never passes on memory alone",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reviewer successor kickoff missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // TestReconcileSkipsSessionUnderReplacement proves the operation driver
 // owns its sessions: a live session with no pane and an in-flight operation
 // is left alone by Reconcile, and only resolves as crashed once the
