@@ -1304,7 +1304,7 @@ const materializePlanBody = "# Plan\n\n## Work breakdown\n\n" +
 	"```swarm-tree\n" +
 	`{"root":{"type":"epic","title":"Ship auth","brief":"","acceptance":["It works."]},
  "children":[{"ref":"s1","type":"story","title":"Server","brief":"","acceptance":[],
-   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"]}]}],
+   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]}],
  "deps":[]}` + "\n```\n\n## Verification\n\ngo test ./...\n"
 
 // TestMaterializeToolResultUsesSnakeCaseKeys is a bonus finding from the fix
@@ -2109,5 +2109,24 @@ func TestSwarmReadCrew(t *testing.T) {
 	}
 	if _, ok := legacyRes.Items[0]["crew"]; ok {
 		t.Fatalf("legacy item must not contain crew: %+v", legacyRes.Items[0])
+	}
+}
+
+func TestSwarmArtifactReturnsWarnings(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	body := "## Work breakdown\n```swarm-tree\n" + `{"root":{"type":"epic","title":"Epic"},"children":[{"ref":"s","type":"story","title":"Story","children":[{"ref":"t","type":"task","title":"Build feature","workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."]}]}]}` + "\n```\n"
+	p := writeSpec(t, body)
+	out, err := s.call(context.Background(), seed.Caller, "swarm_artifact", `{"op":"register","item":"`+seed.RootKey+`","kind":"plan","path":"`+p+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "single unit") {
+		t.Fatalf("warnings=%v", result.Warnings)
 	}
 }

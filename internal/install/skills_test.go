@@ -1377,3 +1377,41 @@ func TestSkillLinkModePerKind(t *testing.T) {
 		}
 	}
 }
+
+func TestSpikeSkillSevenStepMethod(t *testing.T) {
+	body := string(install.SkillBody("swarm-spike"))
+	for _, want := range []string{"1. Frame", "2. Deep research", "3. Design", "4. Spec approval", "5. Plan", "6. Completeness critic", "7. Plan approval", "superpowers:brainstorming", "superpowers:writing-plans", "superpowers:systematic-debugging", "swarm-batching", "assign every role", "Bad:", "Good:"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("swarm-spike missing %q", want)
+		}
+	}
+}
+
+func TestOrchestratorSkillNoLongerHandRollsReviews(t *testing.T) {
+	body := string(install.SkillBody("swarm-orchestrator"))
+	if strings.Contains(body, "After a worker's `completed`, spawn a `reviewer`") {
+		t.Fatal("workflow reviews belong to the daemon")
+	}
+	for _, want := range []string{"superpowers:dispatching-parallel-agents", "superpowers:subagent-driven-development", "superpowers:finishing-a-development-branch", "ponytail-debt", "swarm_workflow start", "swarm_workflow resume", "story_ready_for_review", "one coder agent for the whole task", "after all units are committed", "same coder"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("swarm-orchestrator missing %q", want)
+		}
+	}
+}
+
+func TestOrchestratorStoryAndRootReviewUseIntegratedHead(t *testing.T) {
+	body := string(install.SkillBody("swarm-orchestrator"))
+	for _, want := range []string{
+		"merge the completed story task branches into the orchestrator integration worktree",
+		"before `swarm_workflow start`",
+		"`worktrees: [{worktree: <integration>, mode: ro}]`",
+		"story with `after_tasks` waits for its workflow to succeed before Done",
+		"legacy story without `after_tasks` derives Done from its completed tasks",
+		"manually spawn the root final reviewer with `swarm_spawn`",
+		"record the `integrated` gate",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("swarm-orchestrator missing %q", want)
+		}
+	}
+}

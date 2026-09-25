@@ -230,8 +230,8 @@ const planBody = "# Plan\n\n## Work breakdown\n\n" +
 	"```swarm-tree\n" +
 	`{"root":{"type":"epic","title":"Ship auth","brief":"","acceptance":["It works."]},
  "children":[{"ref":"s1","type":"story","title":"Server","brief":"","acceptance":[],
-   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"]},
-               {"ref":"t2","type":"task","title":"Login route","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"]}]}],
+   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"},
+               {"ref":"t2","type":"task","title":"Login route","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]}],
  "deps":[{"item":"t2","blocked_by":"t1"}]}` + "\n```\n\n## Verification\n\ngo test ./...\n"
 
 func writeFile(t *testing.T, body string) string {

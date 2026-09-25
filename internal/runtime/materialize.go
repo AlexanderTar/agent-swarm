@@ -11,6 +11,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // MaterializeResult is Materialize's result.
@@ -143,8 +144,13 @@ func (s *Store) createTree(ctx context.Context, tx *sql.Tx, spike items.Item, tr
 		}
 		return out
 	}
+	rootWorkflow, err := resolvedTreeWorkflow(tree.Root)
+	if err != nil {
+		return MaterializeResult{}, err
+	}
 	root, err := s.Items.CreateTx(ctx, tx, items.CreateInput{
-		Type: rootType, Title: tree.Root.Title, Brief: tree.Root.Brief,
+		Workflow: rootWorkflow,
+		Type:     rootType, Title: tree.Root.Title, Brief: tree.Root.Brief,
 		Acceptance: tree.Root.Acceptance, Status: items.Draft,
 		Repos: spike.Repos, OriginSpikeID: spike.ID,
 	}, items.Daemon())
@@ -160,9 +166,22 @@ func (s *Store) createTree(ctx context.Context, tx *sql.Tx, spike items.Item, tr
 			if n.TddExempt != nil {
 				tddExempt = *n.TddExempt
 			}
+			resolved, err := resolvedTreeWorkflow(n)
+			if err != nil {
+				return err
+			}
+			units := make([]items.Unit, len(n.Units))
+			for i, u := range n.Units {
+				units[i] = items.Unit{Title: u.Title, Steps: u.Steps}
+			}
+			role := n.RoleHint
+			if resolved != nil && n.Type == "task" {
+				role = workflow.RunRole(*resolved)
+			}
 			it, err := s.Items.CreateTx(ctx, tx, items.CreateInput{
+				Workflow: resolved, Steps: n.Steps, Units: units, Solo: n.Solo, Verify: n.Verify,
 				Type: items.Type(n.Type), ParentKey: parentKey, Title: n.Title, Brief: n.Brief,
-				Acceptance: n.Acceptance, Status: items.Ready, RoleHint: n.RoleHint,
+				Acceptance: n.Acceptance, Status: items.Ready, RoleHint: role,
 				TddExempt: tddExempt, Repos: resolveRepos(n.Repos),
 			}, items.Daemon())
 			if err != nil {
@@ -209,11 +228,11 @@ func (s *Store) copyArtifacts(ctx context.Context, tx *sql.Tx, rootKey string, s
 			WHERE id = ?`, srcID).Scan(&kind, &path, &headRev, &createdBy); err != nil {
 			return err
 		}
-		var sha, content, sectionsJSON string
+		var sha, content, sectionsJSON, warningsJSON string
 		var treeJSON sql.NullString
-		if err := tx.QueryRowContext(ctx, `SELECT sha256, content, sections_json, tree_json
+		if err := tx.QueryRowContext(ctx, `SELECT sha256, content, sections_json, tree_json, warnings_json
 			FROM artifact_revisions WHERE artifact_id = ? AND revision = ?`, srcID, headRev).
-			Scan(&sha, &content, &sectionsJSON, &treeJSON); err != nil {
+			Scan(&sha, &content, &sectionsJSON, &treeJSON, &warningsJSON); err != nil {
 			return err
 		}
 		newID := ids.New("art")
@@ -223,9 +242,8 @@ func (s *Store) copyArtifacts(ctx context.Context, tx *sql.Tx, rootKey string, s
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_revisions
-			(artifact_id, revision, sha256, content, sections_json, tree_json, created_at)
-			VALUES (?, 1, ?, ?, ?, ?, ?)`, newID, sha, content, sectionsJSON, treeJSON,
-			db.Millis(s.Now())); err != nil {
+			(artifact_id, revision, sha256, content, sections_json, tree_json, warnings_json, created_at)
+ VALUES (?, 1, ?, ?, ?, ?, ?, ?)`, newID, sha, content, sectionsJSON, treeJSON, warningsJSON, db.Millis(s.Now())); err != nil {
 			return err
 		}
 	}
@@ -326,4 +344,15 @@ func (s *Store) Materialize(ctx context.Context, sessionID, spikeKey, specID, pl
 		return s.notifyItemCreated(ctx, tx, spike, out.Root, tree.Root.Title, rootType)
 	})
 	return out, err
+}
+
+func resolvedTreeWorkflow(n TreeNode) (*workflow.Spec, error) {
+	if n.Workflow == nil {
+		return nil, nil
+	}
+	resolved, err := workflow.Resolve(*n.Workflow, n.TddExempt != nil)
+	if err != nil {
+		return nil, err
+	}
+	return &resolved, nil
 }

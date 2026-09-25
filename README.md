@@ -8,15 +8,15 @@ Agent Swarm is a local tool with three parts:
 - **A web board** at http://127.0.0.1:7777 with hierarchy, kanban and dependency-graph views.
 - **A menu bar app** (Swarm.app) showing running agents, requests that need you, usage per agent, and notifications.
 
-Supported agents: Claude Code (default), Codex, Antigravity CLI (`agy`) and Cursor CLI (`cursor-agent`).
+Supported agents: Claude Code (default), Codex, Antigravity CLI (`agy`), Cursor CLI (`cursor-agent`) and Muse. Delivery roles are orchestrator, coder, reviewer, UI reviewer, designer, researcher, debugger and mechanical worker.
 
 ## How work flows
 
 1. **Start a spike.** From the menu bar (New orchestrator), the board (New spike) or `swarm new`. Give it a name, pick feature or debug, and optionally suggest repositories.
 2. **Confirm repositories.** The spike works out which repositories the work needs, suggests any you missed, and asks you to confirm. Agents only create worktrees in confirmed repositories.
-3. **Answer and approve.** The spike agent brainstorms with the superpowers skills, asks you questions, and sends each spec section for approval. Approvals happen only in the menu bar or on the board.
-4. **Get an epic (or a bug).** Once the spec and plan are approved, the spike creates an epic with stories and tasks (or a bug with tasks) and dependencies.
-5. **Start delivery.** Press Start orchestrator on the epic. The orchestrator creates worktrees, spawns coders and reviewers, merges, and asks you to accept the result.
+3. **Research, design and approve.** The spike delegates research questions, uses a designer and UI reviewer for new screens, and asks you to approve each spec section. Approvals happen in the menu bar or on the board.
+4. **Get an epic (or a bug).** The plan assigns a workflow to every task and batches related TDD units into packages. You see plan lint and batching warnings before approval. Materialization creates the approved tree, including its roles, verify commands and dependencies.
+5. **Start delivery.** Press Start orchestrator on the epic. The orchestrator creates worktrees and calls `swarm_workflow start` for each Ready package. One coder executes its units in order; the daemon starts one package review after the units are committed. Story review and root integration follow, then you accept the result.
 6. **Supervise.** Open any agent's terminal from the menu bar or board, pause one agent or everything, and read checkpoints instead of transcripts.
 
 Specs and plans live in `~/.swarm/specs` and `~/.swarm/plans`, not in your repositories. Commits and PRs are made under your name and signature, with no agent attribution.
@@ -53,7 +53,7 @@ open /Applications/Swarm.app
 
 - writes `~/Library/LaunchAgents/dev.swarm.daemon.plist` and starts the daemon on 127.0.0.1:7777
 - writes `~/.swarm/tmux.conf` (agents run on a private tmux socket, `tmux -L swarm`)
-- for each installed agent, installs the superpowers plugins it supports, and adds the `swarm` MCP server, the Swarm hooks (inactive outside Swarm sessions) and the `swarm` skill
+- for each installed agent, installs the superpowers plugins it supports, and adds the `swarm` MCP server, the Swarm hooks (inactive outside Swarm sessions) and the Swarm role skills (`swarm`, `swarm-orchestrator`, `swarm-spike`, `swarm-workflows`, `swarm-batching` and worker/reviewer skills)
 - scans your home folder for git repositories (hidden folders, `~/Library`, `~/Music`, `~/Pictures`, `~/Movies`, and `~/Downloads` are skipped by default; change exclusions in Settings)
 - removes hooks and config left by Agent Swarm 1.x
 - links `swarm` into `~/.local/bin`
@@ -210,4 +210,4 @@ make dev       # daemon on :17777 with a scratch ~/.swarm-dev
 
 MIT
 
-Vendored skills under `skills/vendor/` keep their own licenses; see each `VENDORED.md`.
+Vendored skills under `skills/vendor/` keep their own licenses; see each `VENDORED.md` and `skills/vendor/README.md` for provenance. This includes UI and mobile design guidance and the ponytail simplicity/debt skills.

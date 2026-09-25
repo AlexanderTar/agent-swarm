@@ -247,6 +247,7 @@ type Artifact struct {
 	Kind, Path             string
 	HeadRevision, Revision int
 	Sections               []ArtifactSection
+	Warnings               []string
 	CreatedBy              string
 	CreatedAt              time.Time
 }
