@@ -1211,7 +1211,7 @@ func TestPackageUnitsKeepOneCoderAndOneReviewBoundary(t *testing.T) {
 		}},
 		{"swarm-batching", []string{
 			"same coder agent",
-			"one review at the package boundary",
+			"when review is required, it happens once at the package boundary",
 		}},
 		{"swarm-coder", []string{
 			"all units in the same assignment",

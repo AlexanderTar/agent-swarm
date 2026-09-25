@@ -13,7 +13,7 @@ Every delegated task costs a fixed amount no matter how small it is: an agent sp
 
 - **Step**: one action, 2–5 minutes. Examples: write the failing test, run it, implement, run it again, commit. The "bite-sized" granularity in `superpowers:writing-plans` describes steps. **Steps are never tasks.**
 - **Unit**: the smallest piece of work that carries its own test cycle and commit. A superpowers "task" is a unit. A unit has a title and ordered steps, starts with a failing test, and ends committed; it is not a separate agent assignment or review gate.
-- **Work package**: a swarm-tree `task` holding 1–5 units, each listed in `units[]`. The same coder agent executes its units sequentially. Each package has one workflow and one review at the package boundary. The default package holds 3–5 units.
+- **Work package**: a swarm-tree `task` holding 1–5 units, each listed in `units[]`. The same coder agent executes its units sequentially. Each package has one workflow; when review is required, it happens once at the package boundary. The default package holds 3–5 units.
 
 ## The batching test
 
