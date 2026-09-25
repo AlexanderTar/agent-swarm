@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
@@ -21,7 +22,7 @@ import (
 var orchestratorRole = []runtime.Role{runtime.RoleOrchestrator}
 
 func orchestratorTools(s *Server) []ToolDef {
-	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s), catalogTool(s)}
+	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s), catalogTool(s), workflowTool(s)}
 }
 
 // §17.3 copy owned by this file.
@@ -506,13 +507,12 @@ func spawnTool(s *Server) ToolDef {
 		Name:        "swarm_spawn",
 		Description: "Spawn a worker agent on an item, filling agent, model, effort and advisor defaults from Settings. Supports explicit agent and model overrides, with automatic model-to-agent resolution.",
 		Roles:       orchestratorRole,
-		Schema: objSchema(`"item":{"type":"string"},"role":{"type":"string"},"agent":{"type":"string"},
+		Schema: objSchemaRequired(`"item":{"type":"string"},"role":{"type":"string"},"agent":{"type":"string"},
 			"model":{"type":"string"},"effort":{"type":"string"},"name":{"type":"string"},
-			"advisor":{},"cwd":{"type":"string"},
 			"brief":{"type":"object"},
 			"worktrees":{"type":"array","items":{"type":"object","properties":{
 				"worktree":{"type":"string"},"mode":{"type":"string","enum":["rw","ro"]}}}},
-			"request_id":{"type":"string"}`),
+			"request_id":{"type":"string"}`, []string{"item", "role", "brief"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Item   string `json:"item"`
@@ -544,10 +544,20 @@ func spawnTool(s *Server) ToolDef {
 			if err := decode(args, &in); err != nil {
 				return nil, err
 			}
+			var validRoles = []string{"orchestrator", "coder", "reviewer", "ui_reviewer", "designer", "researcher", "debugger", "mechanical"}
+			if !slices.Contains(validRoles, in.Role) {
+				return nil, fmt.Errorf("Unknown role %q. Roles: orchestrator, coder, reviewer, ui_reviewer, designer, researcher, debugger, mechanical.", in.Role)
+			}
 			// I12: refuse while the item has an open dependency.
 			it, err := s.RT.Items.Get(ctx, in.Item)
 			if err != nil {
 				return nil, err
+			}
+			if it.Type == items.Task && it.Workflow != nil {
+				var gatedRoles = []string{"coder", "debugger", "mechanical", "designer", "researcher"}
+				if slices.Contains(gatedRoles, in.Role) {
+					return nil, fmt.Errorf("%s runs a workflow. Start it with swarm_workflow start instead of spawning %s directly.", in.Item, in.Role)
+				}
 			}
 			if len(it.BlockedBy) > 0 {
 				return nil, dependenciesOpen(it.BlockedBy)
@@ -559,6 +569,23 @@ func spawnTool(s *Server) ToolDef {
 			if err := promoteDraft(ctx, s, it, items.Orchestrator(a.ID, a.RootItemID)); err != nil {
 				return nil, err
 			}
+			var briefWts []runtime.BriefWorktree
+			var wts []runtime.WorkflowWorktree
+			if len(in.Worktrees) > 0 {
+				wts = make([]runtime.WorkflowWorktree, len(in.Worktrees))
+				for i, wt := range in.Worktrees {
+					wts[i] = runtime.WorkflowWorktree{
+						WorktreeID: wt.Worktree,
+						Mode:       wt.Mode,
+					}
+				}
+				var err error
+				briefWts, err = s.RT.BriefWorktrees(ctx, wts)
+				if err != nil {
+					return nil, err
+				}
+			}
+
 			agent, queued, err := s.RT.Spawn(ctx, runtime.SpawnInput{
 				ItemKey: in.Item, Role: runtime.Role(in.Role), Kind: runtime.AgentKind(in.Agent),
 				Model: in.Model, Effort: in.Effort, ParentAgentID: a.ID, Name: in.Name,
@@ -566,7 +593,9 @@ func spawnTool(s *Server) ToolDef {
 					Objective: in.Brief.Objective, Acceptance: in.Brief.Acceptance,
 					ScopeIn: in.Brief.ScopeIn, ScopeOut: in.Brief.ScopeOut,
 					Context: in.Brief.Context, Verify: in.Brief.Verify, StopWhen: in.Brief.StopWhen,
+					Worktrees: briefWts,
 				},
+				Worktrees: wts,
 				SessionID: c.SessionID, RequestID: in.RequestID,
 			})
 			if err != nil {
@@ -574,6 +603,7 @@ func spawnTool(s *Server) ToolDef {
 				// §17.3 copy; wrapping them here would break an exact-match test.
 				return nil, err
 			}
+
 			// A queued spawn gets no session until the queue later drains it
 			// (Task 13's limiter): "session" is "" rather than a fabricated id.
 			var sessionID string

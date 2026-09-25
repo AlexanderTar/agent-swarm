@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -1570,7 +1571,8 @@ func TestSpawnOnReadyTaskPromotesDraftParentStory(t *testing.T) {
 	if got := statusOf(t, s, seed.StoryKey); got != items.Draft {
 		t.Fatalf("fixture: story = %s, must start draft", got)
 	}
-	if _, err := s.call(ctx, seed.Caller, "swarm_spawn", spawnArgs(it.Key)); err != nil {
+	args := `{"item":"` + it.Key + `","role":"reviewer","brief":{"objective":"x"},"worktrees":[]}`
+	if _, err := s.call(ctx, seed.Caller, "swarm_spawn", args); err != nil {
 		t.Fatal(err)
 	}
 	if got := statusOf(t, s, seed.StoryKey); got != items.Ready {
@@ -1883,5 +1885,229 @@ func TestSwarmCatalogIsOrchestratorOnly(t *testing.T) {
 	}
 	if !slices.Contains(names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleOrchestrator})), "swarm_catalog") {
 		t.Fatal("an orchestrator must see swarm_catalog")
+	}
+}
+
+func TestSwarmSpawnRejectsUnknownRole(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	// 1. Unknown role rejected with exact copy
+	_, err := s.call(ctx, seed.Caller, "swarm_spawn",
+		`{"item":"`+seed.TaskKey+`","role":"wizard","brief":{"objective":"magic"}}`)
+	want := `Unknown role "wizard". Roles: orchestrator, coder, reviewer, ui_reviewer, designer, researcher, debugger, mechanical.`
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+
+	// 2. Schema has dropped advisor and cwd, and added required: ["item", "role", "brief"]
+	var spawnDef ToolDef
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name == "swarm_spawn" {
+			spawnDef = d
+			break
+		}
+	}
+	if spawnDef.Name == "" {
+		t.Fatal("swarm_spawn tool not found")
+	}
+	var schema struct {
+		Required   []string       `json:"required"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(spawnDef.Schema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range []string{"item", "role", "brief"} {
+		if !slices.Contains(schema.Required, req) {
+			t.Fatalf("schema.Required = %v, want it to contain %q", schema.Required, req)
+		}
+	}
+	if _, ok := schema.Properties["advisor"]; ok {
+		t.Fatalf("schema properties must not contain advisor: %v", schema.Properties)
+	}
+	if _, ok := schema.Properties["cwd"]; ok {
+		t.Fatalf("schema properties must not contain cwd: %v", schema.Properties)
+	}
+}
+
+func TestSwarmSpawnRefusesWorkflowTask(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	created, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"create","type":"task","parent":"`+seed.StoryKey+`","title":"Workflow Task","workflow":{"template":"tdd-reviewed"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(mustJSON(created), &c); err != nil {
+		t.Fatal(err)
+	}
+
+	// Gated roles: coder, debugger, mechanical, designer, researcher
+	gated := []string{"coder", "debugger", "mechanical", "designer", "researcher"}
+	for _, role := range gated {
+		_, err := s.call(ctx, seed.Caller, "swarm_spawn",
+			fmt.Sprintf(`{"item":"%s","role":"%s","brief":{"objective":"do something"}}`, c.Key, role))
+		want := fmt.Sprintf("%s runs a workflow. Start it with swarm_workflow start instead of spawning %s directly.", c.Key, role)
+		if err == nil || err.Error() != want {
+			t.Fatalf("role %s: err = %v, want %q", role, err, want)
+		}
+	}
+}
+
+func TestSwarmSpawnSharesWorktrees(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		fmt.Sprintf(`{"op":"create","repo":"%s","branch":"task/worker-wt"}`, seed.RepoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wtRes struct {
+		WorktreeID string `json:"worktree_id"`
+		Path       string `json:"path"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wtRes); err != nil {
+		t.Fatal(err)
+	}
+
+	spawnOut, err := s.call(ctx, seed.Caller, "swarm_spawn",
+		fmt.Sprintf(`{"item":"%s","role":"coder","brief":{"objective":"build with wt"},"worktrees":[{"worktree":"%s","mode":"rw"}]}`,
+			seed.TaskKey, wtRes.WorktreeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnRes struct {
+		Agent string `json:"agent"`
+	}
+	if err := json.Unmarshal(mustJSON(spawnOut), &spawnRes); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, err := s.RT.Agent(ctx, spawnRes.Agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Worktree is shared with the agent
+	var mode string
+	err = s.RT.DB.QueryRowContext(ctx,
+		`SELECT mode FROM worktree_reservations WHERE worktree_id = ? AND agent_id = ? AND released_at IS NULL`,
+		wtRes.WorktreeID, agent.ID).Scan(&mode)
+	if err != nil {
+		t.Fatalf("expected worktree reservation for %s: %v", agent.ID, err)
+	}
+	if mode != "rw" {
+		t.Fatalf("reservation mode = %q, want rw", mode)
+	}
+
+	// Brief header rendered the worktree
+	if !strings.Contains(agent.Brief, "worktrees:\n") || !strings.Contains(agent.Brief, wtRes.Path) || !strings.Contains(agent.Brief, "task/worker-wt") {
+		t.Fatalf("agent.Brief does not contain expected worktree header:\n%s", agent.Brief)
+	}
+}
+
+func TestSwarmReadCrew(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree",
+		fmt.Sprintf(`{"op":"create","repo":"%s","branch":"task/flow-wt"}`, seed.RepoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wtRes struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wtRes); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := s.call(ctx, seed.Caller, "swarm_items",
+		fmt.Sprintf(`{"op":"create","type":"task","parent":"%s","title":"Flow Task","workflow":{"template":"tdd-reviewed"}}`, seed.StoryKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(mustJSON(created), &c); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start workflow
+	_, err = s.call(ctx, seed.Caller, "swarm_workflow",
+		fmt.Sprintf(`{"op":"start","item":"%s","worktrees":[{"worktree":"%s","mode":"rw"}]}`, c.Key, wtRes.WorktreeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read workflow task via swarm_read
+	readOut, err := s.call(ctx, seed.Caller, "swarm_read", fmt.Sprintf(`{"refs":["%s"]}`, c.Key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Items []struct {
+			Key           string `json:"key"`
+			WorkflowState *struct {
+				State      string `json:"state"`
+				Round      int    `json:"round"`
+				Escalation string `json:"escalation"`
+				Runs       []any  `json:"runs"`
+			} `json:"workflow_state"`
+			Crew []struct {
+				Agent string `json:"agent"`
+				Role  string `json:"role"`
+				Step  string `json:"step"`
+				State string `json:"state"`
+			} `json:"crew"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(mustJSON(readOut), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(res.Items))
+	}
+	item := res.Items[0]
+	if item.WorkflowState == nil {
+		t.Fatal("expected workflow_state to be present on workflow item")
+	}
+	if item.WorkflowState.State != "running" || item.WorkflowState.Round != 1 || len(item.WorkflowState.Runs) == 0 {
+		t.Fatalf("unexpected workflow_state: %+v", item.WorkflowState)
+	}
+	if len(item.Crew) == 0 {
+		t.Fatal("expected crew to be populated for running workflow")
+	}
+	crewMember := item.Crew[0]
+	if crewMember.Agent == "" || crewMember.Role != "coder" || crewMember.Step != "build" || crewMember.State != "active" {
+		t.Fatalf("unexpected crew member: %+v", crewMember)
+	}
+
+	// Read legacy task: must NOT have workflow_state or crew
+	legacyOut, err := s.call(ctx, seed.Caller, "swarm_read", fmt.Sprintf(`{"refs":["%s"]}`, seed.TaskKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyRes struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(mustJSON(legacyOut), &legacyRes); err != nil {
+		t.Fatal(err)
+	}
+	if len(legacyRes.Items) != 1 {
+		t.Fatalf("expected 1 legacy item, got %d", len(legacyRes.Items))
+	}
+	if _, ok := legacyRes.Items[0]["workflow_state"]; ok {
+		t.Fatalf("legacy item must not contain workflow_state: %+v", legacyRes.Items[0])
+	}
+	if _, ok := legacyRes.Items[0]["crew"]; ok {
+		t.Fatalf("legacy item must not contain crew: %+v", legacyRes.Items[0])
 	}
 }

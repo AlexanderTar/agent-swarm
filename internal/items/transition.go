@@ -161,6 +161,15 @@ func (s *Store) check(ctx context.Context, tx *sql.Tx, it Item, to Status, by Ac
 	switch it.Type {
 	case Story:
 		if to == Done {
+			if daemon && it.Workflow != nil && it.Workflow.AfterTasks != nil {
+				succeeded, err := s.workflowSucceeded(ctx, tx, it.ID)
+				if err != nil {
+					return err
+				}
+				if succeeded {
+					return nil
+				}
+			}
 			return deny("Couldn't move %s to Done. Complete all child tasks and their checkpoints first.", it.Key)
 		}
 		return generic // derived; only reconciliation moves stories
@@ -486,7 +495,24 @@ func (s *Store) deriveStory(ctx context.Context, tx *sql.Tx, it Item) error {
 	var want Status
 	switch {
 	case fin == n && done > 0:
-		want = Done
+		if it.Workflow != nil && it.Workflow.AfterTasks != nil {
+			succeeded, err := s.workflowSucceeded(ctx, tx, it.ID)
+			if err != nil {
+				return err
+			}
+			if succeeded {
+				want = Done
+			} else {
+				want = InReview
+				if s.StoryReadyForReview != nil {
+					if err := s.StoryReadyForReview(ctx, tx, it); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			want = Done
+		}
 	case fin == n:
 		return nil // every child cancelled: leave the story as it is
 	case fin+review == n:

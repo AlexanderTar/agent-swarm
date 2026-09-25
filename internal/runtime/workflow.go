@@ -25,6 +25,8 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
+var errLostRace = errors.New("workflow transition lost race")
+
 // WorkflowWorktree is one {worktree, mode} pair -- swarm_workflow start's own
 // input (spec B7) and what workflows.worktrees_json stores.
 type WorkflowWorktree struct {
@@ -43,9 +45,17 @@ type StartWorkflowInput struct {
 // WorkflowRunView is one workflow_runs row the way swarm_workflow/swarm_read
 // report it (spec B3/B7).
 type WorkflowRunView struct {
-	ID, StepID, Role, AgentID, AgentName, State, Verdict, SHA string
-	Round, AutoRetries                                        int
-	Findings                                                  []workflow.Finding
+	ID          string             `json:"id,omitempty"`
+	StepID      string             `json:"step"`
+	Role        string             `json:"role"`
+	AgentID     string             `json:"agent_id,omitempty"`
+	AgentName   string             `json:"agent"`
+	State       string             `json:"state"`
+	Verdict     string             `json:"verdict"`
+	SHA         string             `json:"sha"`
+	Round       int                `json:"round"`
+	AutoRetries int                `json:"auto_retries,omitempty"`
+	Findings    []workflow.Finding `json:"findings"`
 }
 
 // WorkflowState is swarm_workflow's result shape (spec B7): the workflow's
@@ -84,8 +94,12 @@ func (r wfRunRow) toRun() workflow.Run {
 }
 
 func (r wfRunRow) toView() WorkflowRunView {
+	f := r.findings()
+	if f == nil {
+		f = []workflow.Finding{}
+	}
 	return WorkflowRunView{ID: r.ID, StepID: r.StepID, Role: r.Role, AgentID: r.AgentID, State: r.State,
-		Verdict: r.Verdict, SHA: r.SHA, Round: r.Round, AutoRetries: r.AutoRetries, Findings: r.findings()}
+		Verdict: r.Verdict, SHA: r.SHA, Round: r.Round, AutoRetries: r.AutoRetries, Findings: f}
 }
 
 // workflowLocks is the per-workflow mutex the engine holds across a whole
@@ -159,14 +173,46 @@ func (s *Store) callerOwnsRWWorktree(ctx context.Context, wts []WorkflowWorktree
 	return false, nil
 }
 
+// callerOwnsWorktree reports whether wts names at least one worktree
+// that is currently active and owned by ownerAgentID (stories accept mode "ro" or "rw").
+func (s *Store) callerOwnsWorktree(ctx context.Context, wts []WorkflowWorktree, ownerAgentID string) (bool, error) {
+	for _, w := range wts {
+		var owner string
+		err := s.DB.QueryRowContext(ctx, `SELECT owner_agent_id FROM worktrees WHERE id = ? AND state = 'active'`,
+			w.WorktreeID).Scan(&owner)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if owner == ownerAgentID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // StartWorkflow is swarm_workflow op:"start" (spec B4/B7): validates, inserts
 // the workflows row (round 1, running) and calls advance.
 func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowInput) (WorkflowState, error) {
+	var st WorkflowState
+	if hit, err := PeekIdempotent(ctx, s, in.SessionID, in.RequestID, &st); err != nil {
+		return WorkflowState{}, err
+	} else if hit {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
+	}
+
 	it, err := s.Items.Get(ctx, in.ItemKey)
 	if err != nil {
 		return WorkflowState{}, err
 	}
-	if it.Type != items.Task || it.Workflow == nil {
+	if (it.Type != items.Task && it.Type != items.Story) || it.Workflow == nil {
 		return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("%s has no workflow.", it.Key)}
 	}
 	if it.RootID != orch.RootItemID {
@@ -187,12 +233,22 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if err := s.validateWorktrees(ctx, in.Worktrees); err != nil {
 		return WorkflowState{}, err
 	}
-	ok, err := s.callerOwnsRWWorktree(ctx, in.Worktrees, orch.ID)
-	if err != nil {
-		return WorkflowState{}, err
-	}
-	if !ok {
-		return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: "Start needs a read-write worktree you own."}
+	if it.Type == items.Story {
+		ok, err := s.callerOwnsWorktree(ctx, in.Worktrees, orch.ID)
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		if !ok {
+			return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: "Start needs a worktree you own."}
+		}
+	} else {
+		ok, err := s.callerOwnsRWWorktree(ctx, in.Worktrees, orch.ID)
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		if !ok {
+			return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: "Start needs a read-write worktree you own."}
+		}
 	}
 
 	wfID := ids.New("wf")
@@ -205,14 +261,34 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if err != nil {
 		return WorkflowState{}, err
 	}
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
+	ran, err := IdemTx(ctx, s, in.SessionID, in.RequestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO workflows
 			(id, item_id, root_item_id, owner_agent_id, state, round, extra_rounds, context_json, worktrees_json, created_at, updated_at)
 			VALUES (?, ?, ?, ?, 'running', 1, 0, ?, ?, ?, ?)`,
 			wfID, it.ID, it.RootID, orch.ID, string(ctxJSON), string(wtJSON), db.Millis(now), db.Millis(now))
-		return err
-	}); err != nil {
+		if err != nil {
+			return err
+		}
+		st = WorkflowState{
+			ID:          wfID,
+			ItemKey:     it.Key,
+			State:       "running",
+			Round:       1,
+			ExtraRounds: 0,
+			Runs:        []WorkflowRunView{},
+		}
+		return nil
+	})
+	if err != nil {
 		return WorkflowState{}, workflowsOneLiveErr(err, it.Key)
+	}
+	if !ran {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
 	}
 
 	// The workflows row is already committed -- a caller ctx that gets
@@ -227,9 +303,19 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if err := s.advance(context.WithoutCancel(ctx), wfID); err != nil {
 		s.logf("start workflow: advance %s: %v", wfID, err)
 	}
-	st, _, err := s.workflowStateByID(ctx, wfID)
-	return st, err
+	st, _, err = s.workflowStateByID(ctx, wfID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if in.RequestID != "" {
+		if body, berr := json.Marshal(st); berr == nil {
+			_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE caller = ? AND request_id = ?`,
+				string(body), in.SessionID, in.RequestID)
+		}
+	}
+	return st, nil
 }
+
 
 // workflowsOneLiveErr maps a workflows_one_live unique-index violation to
 // StartWorkflow's own friendly "already has a running workflow" refusal --
@@ -845,13 +931,19 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 				shareRW = append(shareRW, w)
 			}
 		}
-		wts, err := s.briefWorktrees(ctx, shareRW)
+		wts, err := s.BriefWorktrees(ctx, shareRW)
 		if err != nil {
 			return false, err
 		}
 		brief.Worktrees = wts
 	} else if run.ReviewWorktreeID != "" {
-		wts, err := s.briefWorktrees(ctx, []WorkflowWorktree{{WorktreeID: run.ReviewWorktreeID, Mode: "ro"}})
+		wts, err := s.BriefWorktrees(ctx, []WorkflowWorktree{{WorktreeID: run.ReviewWorktreeID, Mode: "ro"}})
+		if err != nil {
+			return false, err
+		}
+		brief.Worktrees = wts
+	} else if it.Type == items.Story {
+		wts, err := s.BriefWorktrees(ctx, wf.worktrees())
 		if err != nil {
 			return false, err
 		}
@@ -922,6 +1014,8 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 	}
 
 	return true, nil
+
+
 }
 
 // applyRetryFix applies a RetryFix action (spec B4): bumps workflows.round
@@ -1319,6 +1413,64 @@ func (s *Store) applyEscalate(ctx context.Context, wf wfRow, it items.Item, acti
 	})
 }
 
+// OnStoryReadyForReview is the items.Store.StoryReadyForReview hook: every task
+// of a story is Done and the story has an after_tasks review workflow. The daemon relays
+// story_ready_for_review to the orchestrator (spec B8).
+func (s *Store) OnStoryReadyForReview(ctx context.Context, tx *sql.Tx, story items.Item) error {
+	var runningOrSucceeded int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM workflows WHERE item_id = ? AND state IN ('running', 'succeeded') LIMIT 1`, story.ID).Scan(&runningOrSucceeded)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	var alreadyRelayed int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM messages WHERE kind = 'relay' AND item_id = ?
+		AND json_extract(payload_json, '$.event') = 'story_ready_for_review'
+		AND created_at >= COALESCE((SELECT MAX(created_at) FROM workflows WHERE item_id = ?), 0) LIMIT 1`,
+		story.ID, story.ID).Scan(&alreadyRelayed)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	var orchID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM agents WHERE root_item_id = ? AND role = 'orchestrator' AND state = 'active'
+		ORDER BY created_at DESC LIMIT 1`, story.RootID).Scan(&orchID)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = tx.QueryRowContext(ctx, `SELECT id FROM agents WHERE root_item_id = ? AND role = 'orchestrator'
+			ORDER BY created_at DESC LIMIT 1`, story.RootID).Scan(&orchID)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"event": "story_ready_for_review",
+		"story": story.Key,
+		"item":  story.Key,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = s.enqueue(ctx, tx, Message{
+		Kind:       "relay",
+		Origin:     "daemon",
+		ToAgentID:  orchID,
+		RootItemID: story.RootID,
+		ItemID:     story.ID,
+		Payload:    payload,
+	})
+	return err
+}
+
 // advanceWaitingForOwner triggers advance for every 'running' workflow
 // owned by ownerAgentID that has at least one 'waiting' run (spec B4
 // Budget/Triggers: any child of the owner finishing frees a subagent slot
@@ -1414,10 +1566,10 @@ func (s *Store) recoverWorkflows(ctx context.Context) error {
 	return nil
 }
 
-// briefWorktrees resolves wts (worktree id + mode) into the BriefWorktree
+// BriefWorktrees resolves wts (worktree id + mode) into the BriefWorktree
 // header lines Spawn's brief renders (spec B6: "fixes today's never-
 // populated brief worktree header").
-func (s *Store) briefWorktrees(ctx context.Context, wts []WorkflowWorktree) ([]BriefWorktree, error) {
+func (s *Store) BriefWorktrees(ctx context.Context, wts []WorkflowWorktree) ([]BriefWorktree, error) {
 	out := make([]BriefWorktree, 0, len(wts))
 	for _, w := range wts {
 		var repo, path, branch, base string
@@ -1506,7 +1658,19 @@ func (s *Store) deliverNote(ctx context.Context, agentID, note string) error {
 // escalated workflow -- ownership isn't re-checked here the way Start's is,
 // since only the workflow's own owner can ever see it escalated to them in
 // the first place via their inbox relay).
-func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decision, note, requestID string) (WorkflowState, error) {
+func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decision, note, sessionID, requestID string) (WorkflowState, error) {
+	var st WorkflowState
+	if hit, err := PeekIdempotent(ctx, s, sessionID, requestID, &st); err != nil {
+		return WorkflowState{}, err
+	} else if hit {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
+	}
+
 	it, err := s.Items.Get(ctx, itemKey)
 	if err != nil {
 		return WorkflowState{}, err
@@ -1531,55 +1695,133 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 		return WorkflowState{}, notWaitingOnYou(it.Key, state)
 	}
 
-	switch decision {
-	case "retry":
-		runs, err := s.loadWorkflowRuns(ctx, wf.ID)
+	var bumped bool
+	ran, err := IdemTx(ctx, s, sessionID, requestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
+		switch decision {
+		case "retry":
+			runs, err := s.loadWorkflowRuns(ctx, wf.ID)
+			if err != nil {
+				return err
+			}
+			newRound := wf.Round
+			bumped = it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round, wf.ExtraRounds)
+			if bumped {
+				newRound++
+			}
+			// Fix round 2, finding 8: guarded on state='escalated', the same as
+			// StartWorkflow's own insert and applySucceed/applyEscalate's own
+			// guarded flips -- a concurrent resume (or a fresh escalation
+			// racing this one) must not double-apply.
+			res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'running', round = ?,
+				extra_rounds = extra_rounds + 1, escalation = NULL, updated_at = ? WHERE id = ? AND state = 'escalated'`,
+				newRound, db.Millis(s.now()), wf.ID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return errLostRace
+			}
+			// Persist the note into workflows.context_json BEFORE advance runs
+			if note != "" {
+				raw, err := json.Marshal(append(wf.contextLines(), note))
+				if err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE workflows SET context_json = ? WHERE id = ?`, string(raw), wf.ID); err != nil {
+					return err
+				}
+			}
+			st = WorkflowState{
+				ID:          wf.ID,
+				ItemKey:     it.Key,
+				State:       "running",
+				Round:       newRound,
+				ExtraRounds: wf.ExtraRounds + 1,
+			}
+			return nil
+
+		case "accept":
+			res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'succeeded', updated_at = ?
+				WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return errLostRace
+			}
+			if _, err := s.Items.TransitionTx(ctx, tx, it.Key, items.Done, items.Daemon()); err != nil {
+				return err
+			}
+			st = WorkflowState{
+				ID:          wf.ID,
+				ItemKey:     it.Key,
+				State:       "succeeded",
+				Round:       wf.Round,
+				ExtraRounds: wf.ExtraRounds,
+			}
+			return nil
+
+		case "fail":
+			res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'failed', updated_at = ?
+				WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return errLostRace
+			}
+			if err := s.tryTransition(ctx, tx, it.Key, items.Ready); err != nil {
+				return err
+			}
+			st = WorkflowState{
+				ID:          wf.ID,
+				ItemKey:     it.Key,
+				State:       "failed",
+				Round:       wf.Round,
+				ExtraRounds: wf.ExtraRounds,
+			}
+			return nil
+
+		default:
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: `decision must be "retry", "accept" or "fail".`}
+		}
+	})
+	if errors.Is(err, errLostRace) {
+		st, _, err := s.workflowStateByID(ctx, wf.ID)
 		if err != nil {
 			return WorkflowState{}, err
 		}
-		newRound := wf.Round
-		bumped := it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round, wf.ExtraRounds)
-		if bumped {
-			newRound++
-		}
-		// Fix round 2, finding 8: guarded on state='escalated', the same as
-		// StartWorkflow's own insert and applySucceed/applyEscalate's own
-		// guarded flips -- a concurrent resume (or a fresh escalation
-		// racing this one) must not double-apply.
-		res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'running', round = ?,
-			extra_rounds = extra_rounds + 1, escalation = NULL, updated_at = ? WHERE id = ? AND state = 'escalated'`,
-			newRound, db.Millis(s.now()), wf.ID)
-		if err != nil {
-			return WorkflowState{}, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			// Lost the race; report the current state, not our stale
-			// pre-image, and skip every side effect below -- we don't own
-			// this transition.
-			st, _, err := s.workflowStateByID(ctx, wf.ID)
-			return st, err
-		}
-		// Persist the note into workflows.context_json BEFORE advance runs
-		// (fix round 2, finding 4): spawnRunAgent already folds
-		// wf.contextLines() into every brief, so a round bump's fresh spawn
-		// (bumped==true -- no existing agent, no session to message) picks
-		// it up there. Reusing this existing channel is what lets it reach
-		// an agent that doesn't exist yet at all.
-		if note != "" {
-			if err := s.appendWorkflowContext(ctx, wf.ID, note); err != nil {
-				return WorkflowState{}, err
+		if requestID != "" {
+			if raw, err := json.Marshal(st); err == nil {
+				_ = s.tx(ctx, func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(ctx, `INSERT INTO idempotency (caller, request_id, tool, result_json, created_at)
+						VALUES (?, ?, 'swarm_workflow', ?, ?)
+						ON CONFLICT(caller, request_id) DO UPDATE SET result_json = excluded.result_json`,
+						sessionID, requestID, string(raw), db.Millis(s.now()))
+					return err
+				})
 			}
 		}
+		return st, nil
+	}
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if !ran {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
+	}
+
+	switch decision {
+	case "retry":
 		if err := s.advance(context.WithoutCancel(ctx), wf.ID); err != nil {
 			return WorkflowState{}, err
 		}
-		// Only deliver the message-based note when the round wasn't bumped:
-		// that's the RetryFix path, retrying the SAME pre-existing agent
-		// whose brief already went out earlier -- the persisted context
-		// line above won't reach it (it never gets a new brief), so it
-		// still needs deliverNote's explicit assignment_update. A bumped
-		// round's fresh spawn already has the note in its very first
-		// brief; sending it again here would just be a duplicate.
 		if note != "" && !bumped {
 			var activeAgentID string
 			err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id, '') FROM workflow_runs
@@ -1594,22 +1836,7 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 				}
 			}
 		}
-	case "accept":
-		res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'succeeded', updated_at = ?
-			WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
-		if err != nil {
-			return WorkflowState{}, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			st, _, err := s.workflowStateByID(ctx, wf.ID)
-			return st, err
-		}
-		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			_, err := s.Items.TransitionTx(ctx, tx, it.Key, items.Done, items.Daemon())
-			return err
-		}); err != nil {
-			return WorkflowState{}, err
-		}
+	case "accept", "fail":
 		runs, err := s.loadWorkflowRuns(ctx, wf.ID)
 		if err != nil {
 			return WorkflowState{}, err
@@ -1617,35 +1844,19 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 		if err := s.removeAllReviewWorktrees(ctx, wf, runs); err != nil {
 			return WorkflowState{}, err
 		}
-	case "fail":
-		res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'failed', updated_at = ?
-			WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
-		if err != nil {
-			return WorkflowState{}, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			st, _, err := s.workflowStateByID(ctx, wf.ID)
-			return st, err
-		}
-		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			return s.tryTransition(ctx, tx, it.Key, items.Ready)
-		}); err != nil {
-			return WorkflowState{}, err
-		}
-		runs, err := s.loadWorkflowRuns(ctx, wf.ID)
-		if err != nil {
-			return WorkflowState{}, err
-		}
-		if err := s.removeAllReviewWorktrees(ctx, wf, runs); err != nil {
-			return WorkflowState{}, err
-		}
-	default:
-		return WorkflowState{}, &items.Error{Code: items.CodeBadRequest,
-			Message: `decision must be "retry", "accept" or "fail".`}
 	}
 
-	st, _, err := s.workflowStateByID(ctx, wf.ID)
-	return st, err
+	st, _, err = s.workflowStateByID(ctx, wf.ID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if requestID != "" {
+		if body, berr := json.Marshal(st); berr == nil {
+			_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE caller = ? AND request_id = ?`,
+				string(body), sessionID, requestID)
+		}
+	}
+	return st, nil
 }
 
 // removeAllReviewWorktrees releases+removes every review worktree recorded
@@ -1666,7 +1877,19 @@ func (s *Store) removeAllReviewWorktrees(ctx context.Context, wf wfRow, runs []w
 // CancelWorkflow is swarm_workflow op:"cancel" (spec B7): cancels every
 // active run's agent, marks the workflow cancelled, moves the task back to
 // Ready, and removes any review worktree.
-func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, requestID string) (WorkflowState, error) {
+func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, sessionID, requestID string) (WorkflowState, error) {
+	var st WorkflowState
+	if hit, err := PeekIdempotent(ctx, s, sessionID, requestID, &st); err != nil {
+		return WorkflowState{}, err
+	} else if hit {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
+	}
+
 	it, err := s.Items.Get(ctx, itemKey)
 	if err != nil {
 		return WorkflowState{}, err
@@ -1706,20 +1929,59 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, request
 		return WorkflowState{}, err
 	}
 
-	// State flips FIRST, before any agent is actually cancelled (finding
-	// 8): belt-and-suspenders alongside the lock above -- any advance that
-	// somehow still reaches this workflow mid-cancel sees a non-'running'/
-	// 'escalated' state and refuses to spawn, the same guard StartWorkflow/
-	// applySpawn/applyRetryFix already rely on everywhere else.
-	res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled', updated_at = ?
-		WHERE id = ? AND state IN ('running', 'escalated')`, db.Millis(s.now()), wf.ID)
+	ran, err := IdemTx(ctx, s, sessionID, requestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled', updated_at = ?
+			WHERE id = ? AND state IN ('running', 'escalated')`, db.Millis(s.now()), wf.ID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return errLostRace
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'cancelled', ended_at = ?
+			WHERE workflow_id = ? AND state IN ('active', 'waiting')`, db.Millis(s.now()), wf.ID); err != nil {
+			return err
+		}
+		if err := s.tryTransition(ctx, tx, it.Key, items.Ready); err != nil {
+			return err
+		}
+		st = WorkflowState{
+			ID:          wf.ID,
+			ItemKey:     it.Key,
+			State:       "cancelled",
+			Round:       wf.Round,
+			ExtraRounds: wf.ExtraRounds,
+		}
+		return nil
+	})
+	if errors.Is(err, errLostRace) {
+		st, _, err := s.workflowStateByID(ctx, wf.ID)
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		if requestID != "" {
+			if raw, err := json.Marshal(st); err == nil {
+				_ = s.tx(ctx, func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(ctx, `INSERT INTO idempotency (caller, request_id, tool, result_json, created_at)
+						VALUES (?, ?, 'swarm_workflow', ?, ?)
+						ON CONFLICT(caller, request_id) DO UPDATE SET result_json = excluded.result_json`,
+						sessionID, requestID, string(raw), db.Millis(s.now()))
+					return err
+				})
+			}
+		}
+		return st, nil
+	}
 	if err != nil {
 		return WorkflowState{}, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		// Already resolved by a concurrent call; report its current state.
-		st, _, err := s.workflowStateByID(ctx, wf.ID)
-		return st, err
+	if !ran {
+		if st.ID != "" {
+			if latest, ok, err := s.workflowStateByID(ctx, st.ID); err == nil && ok {
+				return latest, nil
+			}
+		}
+		return st, nil
 	}
 
 	for _, r := range runs {
@@ -1739,24 +2001,21 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, request
 			s.logf("cancel workflow: cancel agent %s: %v", a.Name, err)
 		}
 	}
-	// Mark every active/waiting run cancelled too (finding 8): Cancel above
-	// only ever touches the agent/session, never workflow_runs itself --
-	// left alone, swarm_read would keep reporting a cancelled workflow's
-	// last runs as 'active'/'waiting' forever.
-	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'cancelled', ended_at = ?
-		WHERE workflow_id = ? AND state IN ('active', 'waiting')`, db.Millis(s.now()), wf.ID); err != nil {
-		return WorkflowState{}, err
-	}
 
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
-		return s.tryTransition(ctx, tx, it.Key, items.Ready)
-	}); err != nil {
-		return WorkflowState{}, err
-	}
 	if err := s.removeAllReviewWorktrees(ctx, wf, runs); err != nil {
 		return WorkflowState{}, err
 	}
 
-	st, _, err := s.workflowStateByID(ctx, wf.ID)
-	return st, err
+	st, _, err = s.workflowStateByID(ctx, wf.ID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if requestID != "" {
+		if body, berr := json.Marshal(st); berr == nil {
+			_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE caller = ? AND request_id = ?`,
+				string(body), sessionID, requestID)
+		}
+	}
+	return st, nil
 }
+

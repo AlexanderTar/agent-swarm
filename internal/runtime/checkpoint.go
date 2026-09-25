@@ -212,6 +212,93 @@ func hasMajorOrCritical(fs []workflow.Finding) bool {
 	return false
 }
 
+func shaMatches(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	if len(a) >= 7 && len(b) >= 7 {
+		return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
+	}
+	return false
+}
+
+func (s *Store) hasIntegrationVerifyPassed(ctx context.Context, tx *sql.Tx, itemID string, currentVerify []Verify, cmd string) (bool, error) {
+	for _, v := range currentVerify {
+		if v.Cmd == cmd && v.OK {
+			return true, nil
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT verify_json FROM checkpoints WHERE item_id = ?`, itemID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return false, err
+		}
+		var vs []Verify
+		if err := json.Unmarshal([]byte(raw), &vs); err != nil {
+			continue
+		}
+		for _, v := range vs {
+			if v.Cmd == cmd && v.OK {
+				return true, nil
+			}
+		}
+	}
+	return false, rows.Err()
+}
+
+func (s *Store) hasFinalReviewPassed(ctx context.Context, tx *sql.Tx, itemID string, integratedSHA string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT c.git_json FROM checkpoints c
+		JOIN agents a ON a.id = c.agent_id
+		WHERE c.item_id = ? AND c.verdict = 'pass' AND a.role IN ('reviewer', 'ui_reviewer')`, itemID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return false, err
+		}
+		var refs []GitRef
+		if err := json.Unmarshal([]byte(raw), &refs); err == nil {
+			for _, ref := range refs {
+				if shaMatches(ref.SHA, integratedSHA) {
+					return true, nil
+				}
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+
+	wfRows, err := tx.QueryContext(ctx, `SELECT r.sha FROM workflow_runs r
+		JOIN workflows w ON w.id = r.workflow_id
+		WHERE w.item_id = ? AND r.verdict = 'pass' AND r.role IN ('reviewer', 'ui_reviewer')`, itemID)
+	if err != nil {
+		return false, err
+	}
+	defer wfRows.Close()
+	for wfRows.Next() {
+		var runSHA sql.NullString
+		if err := wfRows.Scan(&runSHA); err != nil {
+			return false, err
+		}
+		if runSHA.Valid && shaMatches(runSHA.String, integratedSHA) {
+			return true, nil
+		}
+	}
+	return false, wfRows.Err()
+}
+
 // applyGates enforces the completed step's declared gates (spec B5) for an
 // agent with a workflow run -- the replacement for verifyOK on such agents.
 // Unit 8.1 only wires the dispatch (no gate does anything yet, so a step
@@ -1060,6 +1147,39 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if len(in.Git) == 0 || len(in.Verification) == 0 {
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "An integrated checkpoint needs git and verification."}
+			}
+			if it.Workflow != nil && it.Workflow.Integration != nil {
+				for _, cmd := range it.Workflow.Integration.Verify {
+					passed, err := s.hasIntegrationVerifyPassed(ctx, tx, it.ID, in.Verification, cmd)
+					if err != nil {
+						return err
+					}
+					if !passed {
+						return &items.Error{Code: items.CodeBadRequest,
+							Message: fmt.Sprintf("Integration verify not recorded as passing: %s.", cmd)}
+					}
+				}
+				if len(it.Workflow.Integration.FinalReview) > 0 {
+					var integratedSHA string
+					for _, g := range in.Git {
+						if g.SHA != "" {
+							integratedSHA = g.SHA
+							break
+						}
+					}
+					sha7 := integratedSHA
+					if len(sha7) > 7 {
+						sha7 = sha7[:7]
+					}
+					passed, err := s.hasFinalReviewPassed(ctx, tx, it.ID, integratedSHA)
+					if err != nil {
+						return err
+					}
+					if !passed {
+						return &items.Error{Code: items.CodeBadRequest,
+							Message: fmt.Sprintf("Integration needs a passing final review of %s.", sha7)}
+					}
+				}
 			}
 		}
 		if in.Resolution != "" {

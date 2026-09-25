@@ -38,12 +38,14 @@ type SpawnInput struct {
 	Name          string
 	Brief         BriefInput
 	RepoPaths     []string
+	Worktrees     []WorkflowWorktree
 	// SessionID is the calling orchestrator's own MCP session, and RequestID
 	// is I11's idempotency key scoped to it (empty means "no idempotency,
 	// just run once"). Neither is the spawned agent's own session.
 	SessionID string
 	RequestID string
 }
+
 
 type PreflightInput struct {
 	Kind      AgentKind
@@ -852,6 +854,14 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
+	if len(in.Worktrees) > 0 && s.Worktree != nil {
+		wtIDs := make([]string, len(in.Worktrees))
+		for i, wt := range in.Worktrees {
+			wtIDs[i] = wt.WorktreeID
+		}
+		unlock := s.Worktree.LockWorktrees(wtIDs...)
+		defer unlock()
+	}
 	ran, err := IdemTx(ctx, s, in.SessionID, in.RequestID, "swarm_spawn", &result, func(tx *sql.Tx) error {
 		admitted, err := s.Admit(ctx, tx, in.Role, it.RootID)
 		if err != nil {
@@ -872,6 +882,32 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		if err != nil {
 			return err
 		}
+		for _, wt := range in.Worktrees {
+			if s.Worktree != nil {
+				if err := s.Worktree.ShareTx(ctx, tx, wt.WorktreeID, a.ID, wt.Mode); err != nil {
+					return err
+				}
+			} else {
+				if wt.Mode != "rw" && wt.Mode != "ro" {
+					return fmt.Errorf("worktree: unknown share mode %q", wt.Mode)
+				}
+				var state string
+				if err := tx.QueryRowContext(ctx, `SELECT state FROM worktrees WHERE id = ?`, wt.WorktreeID).Scan(&state); err != nil {
+					return err
+				}
+				if state != "active" {
+					return fmt.Errorf("worktree: %s is not active", wt.WorktreeID)
+				}
+				_, err := tx.ExecContext(ctx, `INSERT INTO worktree_reservations
+					(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)
+					ON CONFLICT(worktree_id, agent_id) DO UPDATE SET mode = excluded.mode, released_at = NULL`,
+					wt.WorktreeID, a.ID, wt.Mode, nowMs)
+				if err != nil {
+					return err
+				}
+			}
+		}
+
 		var seq int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM messages`).Scan(&seq); err != nil {
 			return err

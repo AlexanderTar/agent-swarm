@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 func newTestServerWithSettings(t *testing.T) (*Server, func()) {
@@ -698,5 +699,91 @@ func TestSyncToolReturnsAnUnackedListEvenWhenEmpty(t *testing.T) {
 	}
 	if !strings.Contains(string(mustJSON(out)), `"unacked":[]`) {
 		t.Fatalf("out = %s", mustJSON(out))
+	}
+}
+
+func TestSwarmCheckpointVerdictSchema(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+
+	// 1. Check schema of swarm_checkpoint
+	var ckpDef ToolDef
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name == "swarm_checkpoint" {
+			ckpDef = d
+			break
+		}
+	}
+	if ckpDef.Name == "" {
+		t.Fatal("swarm_checkpoint tool not found")
+	}
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties struct {
+			Verdict struct {
+				Type string   `json:"type"`
+				Enum []string `json:"enum"`
+			} `json:"verdict"`
+			Findings struct {
+				Type  string `json:"type"`
+				Items struct {
+					Required   []string       `json:"required"`
+					Properties map[string]any `json:"properties"`
+				} `json:"items"`
+			} `json:"findings"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(ckpDef.Schema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range []string{"kind", "summary"} {
+		if !slices.Contains(schema.Required, req) {
+			t.Fatalf("checkpoint schema.Required = %v, want %q", schema.Required, req)
+		}
+	}
+	for _, v := range []string{"pass", "changes_requested", "blocked"} {
+		if !slices.Contains(schema.Properties.Verdict.Enum, v) {
+			t.Fatalf("schema verdict enum = %v, want %q", schema.Properties.Verdict.Enum, v)
+		}
+	}
+	for _, req := range []string{"severity", "summary"} {
+		if !slices.Contains(schema.Properties.Findings.Items.Required, req) {
+			t.Fatalf("schema findings items required = %v, want %q", schema.Properties.Findings.Items.Required, req)
+		}
+	}
+	for _, prop := range []string{"severity", "file", "line", "unit", "summary"} {
+		if _, ok := schema.Properties.Findings.Items.Properties[prop]; !ok {
+			t.Fatalf("schema findings items properties missing %q: %v", prop, schema.Properties.Findings.Items.Properties)
+		}
+	}
+
+	// 2. Non-reviewer sets verdict -> refused
+	_, err := s.call(ctx, seed.Caller, "swarm_checkpoint",
+		`{"kind":"progress","summary":"test","verdict":"pass"}`)
+	if err == nil || err.Error() != "Only reviewers set a verdict." {
+		t.Fatalf("err = %v, want 'Only reviewers set a verdict.'", err)
+	}
+
+	// 3. Reviewer caller
+	revAgentID, revSessionID, _ := seedAgentAndSession(t, s, runtime.RoleReviewer, "", "")
+	revAgent, err := s.RT.AgentByID(ctx, revAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revCaller := Caller{SessionID: revSessionID, AgentID: revAgentID, AgentName: revAgent.Name, Role: runtime.RoleReviewer}
+
+	// Invalid verdict
+	_, err = s.call(ctx, revCaller, "swarm_checkpoint",
+		`{"kind":"completed","summary":"test","verdict":"invalid"}`)
+	if err == nil || err.Error() != "Reviewers must complete with verdict: pass, changes_requested or blocked." {
+		t.Fatalf("err = %v, want 'Reviewers must complete with verdict: pass, changes_requested or blocked.'", err)
+	}
+
+	// Invalid finding severity
+	_, err = s.call(ctx, revCaller, "swarm_checkpoint",
+		`{"kind":"completed","summary":"test","verdict":"changes_requested","findings":[{"severity":"invalid","summary":"bad"}]}`)
+	wantSev := `finding severity "invalid" must be critical, major, minor or nit.`
+	if err == nil || err.Error() != wantSev {
+		t.Fatalf("err = %v, want %q", err, wantSev)
 	}
 }

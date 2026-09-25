@@ -1121,7 +1121,7 @@ func TestResumeAccept(t *testing.T) {
 		t.Fatalf("setup: state = %+v ok=%v err=%v, want escalated", escalated, ok, err)
 	}
 
-	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "accept", "", "")
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "accept", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1149,7 @@ func TestResumeFail(t *testing.T) {
 	}
 	escalateViaRoundsExhausted(t, s, orch, taskKey, st.ID, head)
 
-	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "fail", "", "")
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "fail", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1174,7 +1174,7 @@ func TestResumeRefusedWhenNotEscalated(t *testing.T) {
 		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "")
+	_, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "", "")
 	want := fmt.Sprintf("%s's workflow isn't waiting on you (state: running).", taskKey)
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
@@ -1193,7 +1193,8 @@ func TestResumeRetryGrantsExtraRound(t *testing.T) {
 	}
 	coderAgentID := escalateViaRoundsExhausted(t, s, orch, taskKey, st.ID, head)
 
-	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "please double check the edge case", "")
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "please double check the edge case", "", "")
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1239,7 +1240,7 @@ func TestCancelWorkflow(t *testing.T) {
 	}
 	coderAgentID := agentIDForStep(t, s, st.ID, "build")
 
-	final, err := s.CancelWorkflow(ctx, orch, taskKey, "")
+	final, err := s.CancelWorkflow(ctx, orch, taskKey, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1605,7 +1606,7 @@ func TestResumeRetryMixedFailureAndChangesRequested(t *testing.T) {
 		t.Fatalf("setup: state = %+v ok=%v err=%v, want escalated", escalated, ok, err)
 	}
 
-	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "")
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1902,7 +1903,7 @@ func TestShareFailureDoesNotDoubleSpawn(t *testing.T) {
 	}
 	startedBefore := len(tm.started)
 
-	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "")
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2155,12 +2156,13 @@ func TestResumeCancelRefuseForeignOrchestrator(t *testing.T) {
 	}
 
 	want := taskKey + " is outside your assignment."
-	if _, err := s.ResumeWorkflow(ctx, foreign, taskKey, "retry", "", ""); err == nil || err.Error() != want {
+	if _, err := s.ResumeWorkflow(ctx, foreign, taskKey, "retry", "", "", ""); err == nil || err.Error() != want {
 		t.Fatalf("resume err = %v, want %q", err, want)
 	}
-	if _, err := s.CancelWorkflow(ctx, foreign, taskKey, ""); err == nil || err.Error() != want {
+	if _, err := s.CancelWorkflow(ctx, foreign, taskKey, "", ""); err == nil || err.Error() != want {
 		t.Fatalf("cancel err = %v, want %q", err, want)
 	}
+
 
 	var wfState string
 	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE item_id = (SELECT id FROM items WHERE key = ?)`,
@@ -2214,9 +2216,10 @@ func TestCancelledWorkflowIgnoresLaterSlotRelease(t *testing.T) {
 		t.Fatalf("TASK-2 build run = %s, want waiting", t2State)
 	}
 
-	if _, err := s.CancelWorkflow(ctx, orch, "TASK-1", ""); err != nil {
+	if _, err := s.CancelWorkflow(ctx, orch, "TASK-1", "", ""); err != nil {
 		t.Fatal(err)
 	}
+
 	startedBefore := len(tm.started)
 
 	// The slot-release trigger, reaching this owner right after cancel --
@@ -2462,7 +2465,7 @@ func TestResumeRetryAfterBlocked(t *testing.T) {
 	// Spawn{build, Round:2, Findings:[]} -- the round-1 blocked verdict's
 	// findings never reached the fresh builder at all, since a fresh spawn
 	// has no prior brief to update and no session to message.
-	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "please pick JWT", "")
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "please pick JWT", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2744,3 +2747,377 @@ func TestStaleChangesRequestedEscalatesWithoutFixRound(t *testing.T) {
 		t.Fatalf("round 2 runs = %d; want none", round2)
 	}
 }
+
+func TestStoryReadyForReviewRelay(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	s.Events.Notify()
+	ep := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	storySpec := workflow.Spec{AfterTasks: &workflow.Step{ID: "story-review", Review: []string{"reviewer"}}}
+	setItemWorkflow(t, s, "STORY-1", storySpec)
+
+	// Complete TASK-1
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Orchestrator receives story_ready_for_review relay
+	events := relayEvents(t, s, orch.ID)
+	if n := countEvent(events, "story_ready_for_review"); n != 1 {
+		t.Fatalf("story_ready_for_review relays = %d (events=%v), want exactly 1", n, events)
+	}
+
+	var payloadRaw string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND json_extract(payload_json, '$.event') = 'story_ready_for_review'`, orch.ID).Scan(&payloadRaw); err != nil {
+		t.Fatal(err)
+	}
+	var p struct {
+		Event string `json:"event"`
+		Story string `json:"story"`
+	}
+	if err := json.Unmarshal([]byte(payloadRaw), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Story != "STORY-1" {
+		t.Fatalf("payload story = %q, want STORY-1", p.Story)
+	}
+}
+
+func TestStoryDoneWaitsForAfterTasksReview(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	s.Events.Notify()
+	ep := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	storySpec := workflow.Spec{AfterTasks: &workflow.Step{ID: "story-review", Review: []string{"reviewer"}}}
+	setItemWorkflow(t, s, "STORY-1", storySpec)
+
+	// Complete TASK-1
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Story is NOT Done yet -- it's waiting for review (InReview)
+	story, err := s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if story.Status == items.Done {
+		t.Fatalf("story status = %s; want not Done (waiting for after_tasks review)", story.Status)
+	}
+
+	// Start workflow on story with read-only worktree
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{
+		ItemKey:   "STORY-1",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "ro"}},
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow on story with ro worktree failed: %v", err)
+	}
+	if st.State != "running" {
+		t.Fatalf("workflow state = %s, want running", st.State)
+	}
+
+	// Reviewer completes with pass
+	revSes := agentSessionForStep(t, s, st.ID, "story-review")
+	if _, err := s.WriteCheckpoint(ctx, revSes.ID, CheckpointInput{
+		Kind:    CompletedCkp,
+		Summary: "looks good",
+		Verdict: "pass",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Workflow succeeded and story moves to Done
+	wf, _, err := s.WorkflowFor(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.State != "succeeded" {
+		t.Fatalf("workflow state = %s, want succeeded", wf.State)
+	}
+	story, err = s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if story.Status != items.Done {
+		t.Fatalf("story status = %s, want Done", story.Status)
+	}
+}
+
+func TestStoryReviewChangesEscalates(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	s.Events.Notify()
+	ep := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	storySpec := workflow.Spec{AfterTasks: &workflow.Step{ID: "story-review", Review: []string{"reviewer"}}}
+	setItemWorkflow(t, s, "STORY-1", storySpec)
+
+	// Complete TASK-1
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start workflow on story with read-only worktree
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{
+		ItemKey:   "STORY-1",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "ro"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reviewer completes with changes_requested
+	revSes := agentSessionForStep(t, s, st.ID, "story-review")
+	if _, err := s.WriteCheckpoint(ctx, revSes.ID, CheckpointInput{
+		Kind:     CompletedCkp,
+		Summary:  "needs rework",
+		Verdict:  "changes_requested",
+		Findings: []workflow.Finding{{Severity: "major", File: "main.go", Summary: "missing check"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Workflow escalates and story remains NOT Done
+	wf, _, err := s.WorkflowFor(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.State != "escalated" {
+		t.Fatalf("workflow state = %s, want escalated", wf.State)
+	}
+	events := relayEvents(t, s, orch.ID)
+	if n := countEvent(events, "workflow_escalated"); n != 1 {
+		t.Fatalf("workflow_escalated relays = %d (events=%v), want exactly 1", n, events)
+	}
+	story, err := s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if story.Status == items.Done {
+		t.Fatalf("story status = %s; want not Done when review changes requested", story.Status)
+	}
+}
+
+func TestStoryWithoutAfterTasksUnchanged(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Story has NO workflow
+	// Complete TASK-1
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "TASK-1", items.Done, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Story transitions to Done immediately
+	story, err := s.Items.Get(ctx, "STORY-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if story.Status != items.Done {
+		t.Fatalf("story status = %s, want Done", story.Status)
+	}
+
+	// No story_ready_for_review relay
+	events := relayEvents(t, s, orch.ID)
+	if n := countEvent(events, "story_ready_for_review"); n != 0 {
+		t.Fatalf("story_ready_for_review relays = %d, want 0", n)
+	}
+}
+
+func TestWorkflowIdempotencyStartResumeCancel(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+
+	// 1. Start idempotency
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 1))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	sessID := "sess-idem-1"
+	reqStart := "req-wf-start-1"
+
+
+	st1, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{
+		ItemKey:   taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}},
+		SessionID: sessID,
+		RequestID: reqStart,
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow err = %v", err)
+	}
+
+	// Idempotency row must exist in DB
+	var tool string
+	err = s.DB.QueryRowContext(ctx, `SELECT tool FROM idempotency WHERE caller = ? AND request_id = ?`,
+		sessID, reqStart).Scan(&tool)
+	if err != nil {
+		t.Fatalf("idempotency row missing for start: %v", err)
+	}
+	if tool != "swarm_workflow" {
+		t.Fatalf("idempotency tool = %q, want 'swarm_workflow'", tool)
+	}
+
+	// Replay must return the identical workflow state and NOT error with "already has a running workflow"
+	st2, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{
+		ItemKey:   taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}},
+		SessionID: sessID,
+		RequestID: reqStart,
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow replay err = %v", err)
+	}
+	if st1.ID != st2.ID || st1.State != st2.State {
+		t.Fatalf("StartWorkflow replay mismatch: %+v vs %+v", st1, st2)
+	}
+
+	// 2. Resume idempotency
+	// Escalate the workflow first
+	escalateViaRoundsExhausted(t, s, orch, taskKey, st1.ID, head)
+
+	reqResume := "req-wf-resume-1"
+	resSt1, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "try again", sessID, reqResume)
+	if err != nil {
+		t.Fatalf("ResumeWorkflow err = %v", err)
+	}
+	if resSt1.State != "running" {
+		t.Fatalf("ResumeWorkflow state = %q, want 'running'", resSt1.State)
+	}
+
+	err = s.DB.QueryRowContext(ctx, `SELECT tool FROM idempotency WHERE caller = ? AND request_id = ?`,
+		sessID, reqResume).Scan(&tool)
+	if err != nil {
+		t.Fatalf("idempotency row missing for resume: %v", err)
+	}
+
+	// Replay must succeed and return same state, not fail with "isn't waiting on you"
+	resSt2, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "try again", sessID, reqResume)
+	if err != nil {
+		t.Fatalf("ResumeWorkflow replay err = %v", err)
+	}
+	if resSt1.ID != resSt2.ID || resSt1.State != resSt2.State || resSt1.Round != resSt2.Round {
+		t.Fatalf("ResumeWorkflow replay mismatch: %+v vs %+v", resSt1, resSt2)
+	}
+
+	// 3. Cancel idempotency
+	reqCancel := "req-wf-cancel-1"
+	canSt1, err := s.CancelWorkflow(ctx, orch, taskKey, sessID, reqCancel)
+	if err != nil {
+		t.Fatalf("CancelWorkflow err = %v", err)
+	}
+	if canSt1.State != "cancelled" {
+		t.Fatalf("CancelWorkflow state = %q, want 'cancelled'", canSt1.State)
+	}
+
+	err = s.DB.QueryRowContext(ctx, `SELECT tool FROM idempotency WHERE caller = ? AND request_id = ?`,
+		sessID, reqCancel).Scan(&tool)
+	if err != nil {
+		t.Fatalf("idempotency row missing for cancel: %v", err)
+	}
+
+	// Replay must succeed and return same state, not fail with "isn't waiting on you"
+	canSt2, err := s.CancelWorkflow(ctx, orch, taskKey, sessID, reqCancel)
+	if err != nil {
+		t.Fatalf("CancelWorkflow replay err = %v", err)
+	}
+	if canSt1.ID != canSt2.ID || canSt1.State != canSt2.State {
+		t.Fatalf("CancelWorkflow replay mismatch: %+v vs %+v", canSt1, canSt2)
+	}
+}
+
+

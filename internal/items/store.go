@@ -34,6 +34,10 @@ type Store struct {
 	// on it (item_deps, blocked_by_id = doneItemID). nil does nothing, same as
 	// the other hooks.
 	DepUnblocked func(ctx context.Context, tx *sql.Tx, doneItemID string) error
+	// StoryReadyForReview fires when every child task of a story is Done and the
+	// story has an after_tasks workflow. It relays story_ready_for_review to the
+	// orchestrator.
+	StoryReadyForReview func(ctx context.Context, tx *sql.Tx, story Item) error
 }
 
 type CreateInput struct {

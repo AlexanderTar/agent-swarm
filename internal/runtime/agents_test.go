@@ -167,6 +167,7 @@ func newStore(t *testing.T) (*Store, *fakeTmux, *adapter.Fake) {
 		After: clk.After,
 		Go:    func(f func()) { f() }, // D28: inline, so the assertions are deterministic
 	}
+	it.StoryReadyForReview = s.OnStoryReadyForReview
 	return s, tm, fa
 }
 
@@ -2170,3 +2171,47 @@ func TestSetRoleOverrideOnlyEverTouchesTheCallersOwnRow(t *testing.T) {
 		t.Fatalf("orchB.RoleOverrides = %+v, want empty (orchA's SetRoleOverride must not touch it)", loadedB.RoleOverrides)
 	}
 }
+
+func TestSpawnSharesWorktreesAtomically(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	root := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: root.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repoID := "repo-test-1"
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO repos (id, name, path, default_branch, source, created_at, updated_at) VALUES (?, 'repo1', '/tmp/repo1', 'main', 'manual', 1000, 1000)`, repoID); err != nil {
+		t.Fatal(err)
+	}
+
+	wtID := "wt-test-1"
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktrees (id, repo_id, path, branch, base_ref, base_sha, state, owner_agent_id, root_item_id, created_at)
+		VALUES (?, ?, '/tmp/repo1-wt', 'branch-1', 'main', 'sha1', 'active', ?, ?, 1000)`, wtID, repoID, orch.ID, root.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, _, err := s.Spawn(ctx, SpawnInput{
+		ItemKey:       "TASK-1",
+		Role:          RoleCoder,
+		Kind:          Fake,
+		Model:         "fake-1",
+		ParentAgentID: orch.ID,
+		Brief:         BriefInput{Objective: "do it"},
+		Worktrees:     []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}},
+	})
+	if err != nil {
+		t.Fatalf("Spawn error: %v", err)
+	}
+
+	var mode string
+	err = s.DB.QueryRowContext(ctx, `SELECT mode FROM worktree_reservations WHERE worktree_id = ? AND agent_id = ? AND released_at IS NULL`, wtID, agent.ID).Scan(&mode)
+	if err != nil {
+		t.Fatalf("expected worktree reservation in DB: %v", err)
+	}
+	if mode != "rw" {
+		t.Fatalf("reservation mode = %q, want rw", mode)
+	}
+}
+
