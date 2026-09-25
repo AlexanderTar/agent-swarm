@@ -1773,6 +1773,98 @@ func TestApplySpawnReplayAttachesReviewWorktree(t *testing.T) {
 	}
 }
 
+// TestFIFOAcrossWorkflows is Opus review finding 7: an owner's whole
+// subagent budget is one shared pool across every workflow it owns
+// (SubagentSlots counts every child of the owner, not per-workflow) -- a
+// freed slot used to go to whichever sibling workflow's own advance
+// happened to run first, not whichever one had been waiting longest.
+// TASK-2's build run is seeded 'waiting' strictly before TASK-3's; a direct
+// advance on TASK-3 alone (simulating some OTHER trigger reaching it first,
+// out of turn -- not the slot-release trigger, whose own FIFO ordering is
+// covered by TestSlotReleaseSpawnsWaitingRun's two-workflow case) must yield
+// the freed slot to TASK-2 instead of spawning immediately.
+func TestFIFOAcrossWorkflows(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	setMaxSubagents(t, s, 1)
+
+	ep := seedEpicWithThreeTasks(t, s)
+	for _, key := range []string{"TASK-1", "TASK-2", "TASK-3"} {
+		setItemWorkflow(t, s, key, buildReviewSpec(t))
+	}
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Occupy the one slot with an unrelated, non-workflow child so neither
+	// TASK-2 nor TASK-3's Start can spawn immediately -- both build runs
+	// land 'waiting', TASK-2's strictly before TASK-3's.
+	occupier, _, err := s.Spawn(ctx, SpawnInput{ItemKey: ep.Key, Role: RoleReviewer, Kind: Fake, Model: "fake-1",
+		ParentAgentID: orch.ID, Brief: BriefInput{Objective: "hold the slot"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wt2, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st2, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: "TASK-2",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wt2, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt3, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st3, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: "TASK-3",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wt3, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertWaiting := func(workflowID, label string) {
+		t.Helper()
+		var state string
+		if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
+			WHERE workflow_id = ? AND step_id = 'build'`, workflowID).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state != "waiting" {
+			t.Fatalf("%s build run = %s, want waiting (slot held by the occupier)", label, state)
+		}
+	}
+	assertWaiting(st2.ID, "TASK-2")
+	assertWaiting(st3.ID, "TASK-3")
+
+	// Free the slot directly (not through any trigger that itself decides
+	// ordering) so a bare advance on TASK-3 alone is the only thing that
+	// could jump the queue.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, occupier.ID); err != nil {
+		t.Fatal(err)
+	}
+	startedBefore := len(tm.started)
+
+	if err := s.advance(ctx, st3.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertWaiting(st3.ID, "TASK-3 (after its own advance)")
+	if len(tm.started) != startedBefore {
+		t.Fatalf("TASK-3 spawned out of turn: started = %v", tm.started)
+	}
+
+	if err := s.advance(ctx, st2.ID); err != nil {
+		t.Fatal(err)
+	}
+	var st2State, st2Agent string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&st2State, &st2Agent); err != nil {
+		t.Fatal(err)
+	}
+	if st2State != "active" || st2Agent == "" {
+		t.Fatalf("TASK-2 build run = state %s agent %q, want active/non-empty (oldest waiting run gets the slot)", st2State, st2Agent)
+	}
+}
+
 // --- Fix round 1 ---
 
 // TestDesignThenBuildStatusFlow is the interaction flagged in the P9 brief

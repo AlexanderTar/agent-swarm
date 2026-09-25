@@ -723,6 +723,16 @@ func (s *Store) fillWaitingRuns(ctx context.Context, workflowID string) error {
 		if used >= max {
 			return nil
 		}
+		older, err := s.olderWaitingRunElsewhere(ctx, wf.OwnerAgentID, workflowID, run.CreatedAt)
+		if err != nil {
+			return err
+		}
+		if older {
+			// Fix round 2, finding 7: an older waiting run in a sibling
+			// workflow the same owner runs goes first -- yield this slot to
+			// it rather than spawning here out of turn.
+			return nil
+		}
 		spawned, err := s.spawnRunAgent(ctx, wf, it, run)
 		if err != nil {
 			return err
@@ -1254,11 +1264,17 @@ func (s *Store) applyEscalate(ctx context.Context, wf wfRow, it items.Item, acti
 // advanceWaitingForOwner triggers advance for every 'running' workflow
 // owned by ownerAgentID that has at least one 'waiting' run (spec B4
 // Budget/Triggers: any child of the owner finishing frees a subagent slot
-// that may let a sibling workflow's waiting run start now).
+// that may let a sibling workflow's waiting run start now), oldest waiting
+// run first (fix round 2, finding 7): the owner's whole budget is one shared
+// pool across every workflow it owns (SubagentSlots counts every child of
+// ownerAgentID, not per-workflow), so a slot freeing here must go to
+// whichever sibling workflow has been waiting longest, not whichever one
+// this DISTINCT happened to list first.
 func (s *Store) advanceWaitingForOwner(ctx context.Context, ownerAgentID string) error {
-	ids, err := s.queryIDs(ctx, `SELECT DISTINCT w.id FROM workflows w
+	ids, err := s.queryIDs(ctx, `SELECT w.id FROM workflows w
 		JOIN workflow_runs r ON r.workflow_id = w.id
-		WHERE w.owner_agent_id = ? AND w.state = 'running' AND r.state = 'waiting'`, ownerAgentID)
+		WHERE w.owner_agent_id = ? AND w.state = 'running' AND r.state = 'waiting'
+		GROUP BY w.id ORDER BY MIN(r.created_at)`, ownerAgentID)
 	if err != nil {
 		return err
 	}
@@ -1268,6 +1284,29 @@ func (s *Store) advanceWaitingForOwner(ctx context.Context, ownerAgentID string)
 		}
 	}
 	return nil
+}
+
+// olderWaitingRunElsewhere reports whether ownerAgentID has a 'waiting' run,
+// created strictly before excludeCreatedAt, in some running workflow other
+// than workflowID (fix round 2, finding 7). advanceWaitingForOwner's own
+// FIFO ordering (above) only ever governs a slot-release trigger; this is
+// the belt-and-suspenders half for every OTHER trigger (a checkpoint, the
+// stall scan) that can call fillWaitingRuns on a newer sibling workflow
+// directly, out of turn -- best-effort fairness (a TOCTOU race between two
+// concurrent triggers on two different, unlocked workflows can still let
+// both spawn or both yield), not a hard budget guarantee; SubagentSlots
+// itself still caps total usage correctly either way.
+func (s *Store) olderWaitingRunElsewhere(ctx context.Context, ownerAgentID, workflowID string, excludeCreatedAt time.Time) (bool, error) {
+	var exists int
+	err := s.DB.QueryRowContext(ctx, `SELECT 1 FROM workflows w
+		JOIN workflow_runs r ON r.workflow_id = w.id
+		WHERE w.owner_agent_id = ? AND w.id != ? AND w.state = 'running' AND r.state = 'waiting'
+			AND r.created_at < ? LIMIT 1`,
+		ownerAgentID, workflowID, db.Millis(excludeCreatedAt)).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // stallThreshold is spec B4's crash-recovery window (see recoverWorkflows).
