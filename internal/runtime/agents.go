@@ -940,7 +940,7 @@ type spawnResult struct {
 	Queued bool
 }
 
-func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID string) (Session, error) {
+func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID string) (result Session, retErr error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM sessions WHERE agent_id = ?`, a.ID)
 	if err == nil {
 		for rows.Next() {
@@ -1008,6 +1008,16 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 	if err != nil {
 		return Session{}, err
 	}
+	// Every error after the insert must retire this session. Launch, pre-run,
+	// and stale-pane cleanup can fail before Tmux.Start; leaving their rows
+	// spawning would make a later exhausted retry look live forever.
+	defer func() {
+		if retErr != nil {
+			if err := s.failSession(context.WithoutCancel(ctx), a, ses, retErr.Error()); err != nil {
+				s.logf("start session %s: record failure: %v", a.Name, err)
+			}
+		}
+	}()
 
 	var itemKey, itemTitle, itemTypeStr string
 	_ = s.DB.QueryRowContext(ctx, `SELECT key, title, type FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey, &itemTitle, &itemTypeStr)
@@ -1096,9 +1106,6 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		return Session{}, err
 	}
 	if err := s.Tmux.Start(ctx, a.Name, cwd, env, l.Argv); err != nil {
-		// Leave a clear "failed" row instead of an orphaned "spawning" one
-		// that only the next reconcile tick would (confusingly) resolve.
-		_ = s.failSession(ctx, a, ses, err.Error())
 		return Session{}, err
 	}
 

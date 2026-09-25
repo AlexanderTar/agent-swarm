@@ -2129,13 +2129,13 @@ func TestResumeCancelRefuseForeignOrchestrator(t *testing.T) {
 	}
 }
 
-// TestCancelRacingSlotReleaseSpawnsNothing is Opus review finding 8: a
-// cancelled workflow must never spawn again, even if a slot-release trigger
+// TestCancelledWorkflowIgnoresLaterSlotRelease is Opus review finding 8: a
+// cancelled workflow must never spawn again when a later slot-release trigger
 // (advanceWaitingForOwner -- e.g. cancelling one active run's agent frees
 // the owner's own budget) reaches it right after CancelWorkflow returns.
 // CancelWorkflow's state flip (guarded, first) plus its own per-workflow
-// lock is what makes this deterministic rather than a real race.
-func TestCancelRacingSlotReleaseSpawnsNothing(t *testing.T) {
+// lock keeps the cancellation ordered with other advances.
+func TestCancelledWorkflowIgnoresLaterSlotRelease(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
 	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
@@ -2471,8 +2471,9 @@ func TestReplayAdvanceAttachesReviewWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	var state, agent, wt string
-	_ = s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id,''), COALESCE(review_worktree_id,'') FROM workflow_runs WHERE workflow_id=? AND step_id='review'`, st.ID).Scan(&state, &agent, &wt)
-	t.Logf("normal path: review row state=%s agent=%q wt=%q", state, agent, wt)
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id,''), COALESCE(review_worktree_id,'') FROM workflow_runs WHERE workflow_id=? AND step_id='review'`, st.ID).Scan(&state, &agent, &wt); err != nil {
+		t.Fatal(err)
+	}
 	// Rewind to crash state: row inserted, never attached, never spawned.
 	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state='waiting', agent_id=NULL, review_worktree_id=NULL WHERE workflow_id=? AND step_id='review'`, st.ID); err != nil {
 		t.Fatal(err)
@@ -2480,12 +2481,206 @@ func TestReplayAdvanceAttachesReviewWorktree(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state='finished' WHERE role='reviewer'`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state='finished' WHERE id=?`, agentIDForStep(t, s, st.ID, "build")); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.advance(ctx, st.ID); err != nil {
 		t.Fatal(err)
 	}
-	_ = s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id,''), COALESCE(review_worktree_id,'') FROM workflow_runs WHERE workflow_id=? AND step_id='review'`, st.ID).Scan(&state, &agent, &wt)
-	t.Logf("after replay advance: review row state=%s agent=%q wt=%q", state, agent, wt)
-	if agent != "" && wt == "" {
-		t.Errorf("I3 NOT CLOSED: reviewer spawned with no review worktree on replay")
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id,''), COALESCE(review_worktree_id,'') FROM workflow_runs WHERE workflow_id=? AND step_id='review'`, st.ID).Scan(&state, &agent, &wt); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || agent == "" || wt == "" {
+		t.Fatalf("replayed reviewer = state %s agent %q worktree %q; want active, nonempty agent and worktree", state, agent, wt)
+	}
+}
+
+func TestRetryFixRoundAndBoundRunCommitTogether(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, task := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wt, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: task, Worktrees: []WorkflowWorktree{{WorktreeID: wt, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := agentIDForStep(t, s, st.ID, "build")
+	wf, ok, err := s.workflowRowByID(ctx, st.ID)
+	if err != nil || !ok {
+		t.Fatalf("workflow row: %v, %v", ok, err)
+	}
+	it, err := s.itemByIDForEngine(ctx, wf.ItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := workflow.Action{Kind: workflow.ActionRetryFix, StepID: "build", Round: 2}
+	if _, err := s.DB.ExecContext(ctx, `CREATE TRIGGER reject_fix_run BEFORE INSERT ON workflow_runs
+   WHEN NEW.round = 2 BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.applyRetryFix(ctx, wf, it, action); err == nil {
+		t.Fatal("expected insert failure")
+	}
+	var round, rows int
+	if err := s.DB.QueryRowContext(ctx, `SELECT round FROM workflows WHERE id=?`, st.ID).Scan(&round); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_runs WHERE workflow_id=? AND round=2`, st.ID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if round != 1 || rows != 0 {
+		t.Fatalf("after failed insert: round=%d rows=%d; want 1,0", round, rows)
+	}
+	if _, err := s.DB.ExecContext(ctx, `DROP TRIGGER reject_fix_run`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.applyRetryFix(ctx, wf, it, action); err != nil {
+		t.Fatal(err)
+	}
+	var agent, state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id,''), state FROM workflow_runs WHERE workflow_id=? AND round=2 AND step_id='build'`, st.ID).Scan(&agent, &state); err != nil {
+		t.Fatal(err)
+	}
+	if agent != old || state != "active" {
+		t.Fatalf("round 2 run=%s/%s; want %s/active", agent, state, old)
+	}
+}
+
+func TestExhaustedFixRetryFinalizesBuilder(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, task := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wt, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: task, Worktrees: []WorkflowWorktree{{WorktreeID: wt, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := agentIDForStep(t, s, st.ID, "build")
+	ses := agentSessionForStep(t, s, st.ID, "build")
+	if _, err = s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done", Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	tm.startErr = fmt.Errorf("tmux refuses to start")
+	rev := agentSessionForStep(t, s, st.ID, "review")
+	if _, err = s.WriteCheckpoint(ctx, rev.ID, CheckpointInput{Kind: CompletedCkp, Summary: "needs work", Verdict: "changes_requested", Findings: []workflow.Finding{{Severity: "major", File: "a.go", Line: 1, Summary: "fix"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err = s.advance(ctx, st.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wf, _, err := s.WorkflowFor(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.State != "escalated" {
+		t.Fatalf("setup state=%s", wf.State)
+	}
+	// Model normal cleanup of the completed reviewer; isolate failed builder.
+	if _, err = s.DB.ExecContext(ctx, `UPDATE agents SET state='finished' WHERE role='reviewer'`); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.agentByID(ctx, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := s.LatestSession(ctx, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.liveDescendants(ctx, s.DB, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("exhausted builder agent state=%s session=%s workflow=%s liveDescendants=%d; blocks reclaim", a.State, latest.State, wf.State, n)
+	}
+}
+
+func TestExhaustedAutoRetryEarlyStartFailureFinalizesBuilder(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, task := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wt, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: task, Worktrees: []WorkflowWorktree{{WorktreeID: wt, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	builderID := agentIDForStep(t, s, st.ID, "build")
+	et := &erroringTmux{fakeTmux: tm}
+	s.Tmux = et
+	tm.onKill = func() { et.killErr = fmt.Errorf("stale pane kill failed") }
+	ses := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: FailedCkp, Summary: "crashed"}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := s.LatestSession(ctx, builderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Attempt != 2 || latest.State != Failed {
+		t.Fatalf("retry session = attempt %d state %s; want 2/failed", latest.Attempt, latest.State)
+	}
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	wf, _, err := s.WorkflowFor(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.State != "escalated" {
+		t.Fatalf("workflow state = %s; want escalated", wf.State)
+	}
+	builder, err := s.agentByID(ctx, builderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builder.State != AgentFinished {
+		t.Fatalf("builder state = %s; want finished", builder.State)
+	}
+	n, err := s.liveDescendants(ctx, s.DB, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("live descendants = %d; want 0", n)
+	}
+}
+
+func TestStaleChangesRequestedEscalatesWithoutFixRound(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, task := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wt, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: task, Worktrees: []WorkflowWorktree{{WorktreeID: wt, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coder := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coder.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done", Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	// The reviewer is reviewing head; the build SHA then moves before its verdict.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET sha='new-build-sha' WHERE workflow_id=? AND step_id='build'`, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	reviewer := agentSessionForStep(t, s, st.ID, "review")
+	if _, err := s.WriteCheckpoint(ctx, reviewer.ID, CheckpointInput{Kind: CompletedCkp, Summary: "changes needed", Verdict: "changes_requested", Findings: []workflow.Finding{{Severity: "major", File: "a.go", Summary: "stale finding"}}}); err != nil {
+		t.Fatal(err)
+	}
+	wf, _, err := s.WorkflowFor(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.State != "escalated" || wf.Round != 1 {
+		t.Fatalf("workflow = %s round %d; want escalated round 1", wf.State, wf.Round)
+	}
+	var round2 int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_runs WHERE workflow_id=? AND round=2`, st.ID).Scan(&round2); err != nil {
+		t.Fatal(err)
+	}
+	if round2 != 0 {
+		t.Fatalf("round 2 runs = %d; want none", round2)
 	}
 }

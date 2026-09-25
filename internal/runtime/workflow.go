@@ -934,19 +934,49 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 // findings as an assignment update, and releases+removes the finished
 // round's review worktree(s).
 func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, action workflow.Action) error {
-	res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET round = ?, updated_at = ? WHERE id = ? AND round = ?`,
-		action.Round, db.Millis(s.now()), wf.ID, wf.Round)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil // already bumped by a concurrent/duplicate advance
-	}
 	step, ok := stepFor(it.Workflow, action.StepID)
 	if !ok {
 		return fmt.Errorf("advance: workflow step %q not found on %s", action.StepID, it.Key)
 	}
-	inserted, err := s.insertWaitingRun(ctx, wf.ID, action.StepID, action.Round, step.Run, "")
+	prevAgentID, err := s.runAgentIDAt(ctx, wf.ID, action.StepID, wf.Round)
+	if err != nil {
+		return err
+	}
+	var prev Agent
+	if prevAgentID != "" {
+		prev, err = s.agentByID(ctx, prevAgentID)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			prevAgentID = ""
+		}
+	}
+	// The round and its already-bound run are one durable transition. A
+	// crash cannot expose a new round with a missing or unowned builder.
+	inserted := false
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE workflows SET round = ?, updated_at = ? WHERE id = ? AND round = ?`,
+			action.Round, db.Millis(s.now()), wf.ID, wf.Round)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		state := "active"
+		if prevAgentID == "" {
+			state = "waiting"
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO workflow_runs
+			(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+			VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)`,
+			ids.New("wfr"), wf.ID, action.StepID, action.Round, step.Run, prevAgentID, state, db.Millis(s.now()))
+		if err == nil {
+			inserted = true
+		}
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -956,66 +986,36 @@ func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, acti
 	if err := s.markInProgress(ctx, it.Key); err != nil {
 		return err
 	}
-
-	// wf.Round is still the pre-bump round here (the UPDATE above only
-	// changed the DB row; this local copy is untouched) -- the exact round
-	// the builder's still-current run sits at, before the new round-2 row
-	// insertWaitingRun just added would otherwise outrank it in a "latest"
-	// lookup.
-	prevAgentID, err := s.runAgentIDAt(ctx, wf.ID, action.StepID, wf.Round)
-	if err != nil {
-		return err
-	}
 	if prevAgentID != "" {
-		prev, err := s.agentByID(ctx, prevAgentID)
-		if err != nil {
-			// The agent itself no longer exists (its row is gone) -- the
-			// only legitimate reason to fresh-spawn per the user directive.
-			// Leave the new round's row 'waiting'; fillWaitingRuns spawns a
-			// fresh agent, and spawnRunAgent (I4) renders this round's
-			// findings into its brief so they still reach it.
-			if !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-		} else {
-			// Claim the next round before touching the old session. A crash
-			// after Retry then cannot leave an unowned waiting row that
-			// fillWaitingRuns would spawn as a second builder.
-			if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET agent_id = ?, state = 'active'
-				WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ? AND state = 'waiting'`,
-				prevAgentID, wf.ID, action.StepID, action.Round, step.Run); err != nil {
-				return err
-			}
-			// USER DIRECTIVE: never spawn a fresh builder while the old
-			// one's session is still live. Close it out ourselves first --
-			// the same way the daemon already ends a completed session
-			// (resolveAlive's killCompletedAfter path: kill the pane, mark
-			// the session terminal) -- so Retry can act on it immediately.
-			// No fallback to a fresh spawn here: once closed, Retry must
-			// succeed (an error now is a real failure, not a timing gap).
-			if err := s.closeSessionForRetry(ctx, prev); err != nil {
-				return err
-			}
-			if _, err := s.Retry(ctx, prev.Name, renderFindings(action.Findings), "", ""); err != nil {
-				// The session is already closed (retryable); this is a
-				// genuine Retry failure (a fallback preflight, or the
-				// retried attempt's own startSession failing to start),
-				// not the "still live" case above. Leaving the round's row
-				// silently 'waiting' would violate the directive just the
-				// same as the removed fallback did: fillWaitingRuns'
-				// generic path doesn't know this row was ever meant for
-				// prevAgentID and would spawn an unrelated fresh agent for
-				// it on the very next advance. Mark it 'failed' instead --
-				// same pattern applyAutoRetry's own Retry-failure fallback
-				// uses -- so Next's ordinary crash handling (AutoRetry
-				// while budget remains, then Escalate) owns it instead.
-				if _, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?
+		// USER DIRECTIVE: never spawn a fresh builder while the old
+		// one's session is still live. Close it out ourselves first --
+		// the same way the daemon already ends a completed session
+		// (resolveAlive's killCompletedAfter path: kill the pane, mark
+		// the session terminal) -- so Retry can act on it immediately.
+		// No fallback to a fresh spawn here: once closed, Retry must
+		// succeed (an error now is a real failure, not a timing gap).
+		if err := s.closeSessionForRetry(ctx, prev); err != nil {
+			return err
+		}
+		if _, err := s.Retry(ctx, prev.Name, renderFindings(action.Findings), "", ""); err != nil {
+			// The session is already closed (retryable); this is a
+			// genuine Retry failure (a fallback preflight, or the
+			// retried attempt's own startSession failing to start),
+			// not the "still live" case above. Leaving the round's row
+			// silently 'waiting' would violate the directive just the
+			// same as the removed fallback did: fillWaitingRuns'
+			// generic path doesn't know this row was ever meant for
+			// prevAgentID and would spawn an unrelated fresh agent for
+			// it on the very next advance. Mark it 'failed' instead --
+			// same pattern applyAutoRetry's own Retry-failure fallback
+			// uses -- so Next's ordinary crash handling (AutoRetry
+			// while budget remains, then Escalate) owns it instead.
+			if _, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?
 					WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ? AND state = 'active'`,
-					db.Millis(s.now()), wf.ID, action.StepID, action.Round, step.Run); uerr != nil {
-					return uerr
-				}
-				s.logf("advance: retry fix %s: %v", prev.Name, err)
+				db.Millis(s.now()), wf.ID, action.StepID, action.Round, step.Run); uerr != nil {
+				return uerr
 			}
+			s.logf("advance: retry fix %s: %v", prev.Name, err)
 		}
 	}
 
@@ -1285,6 +1285,17 @@ func (s *Store) applyEscalate(ctx context.Context, wf wfRow, it items.Item, acti
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
 			return nil
+		}
+		// A failed retry can exhaust the budget while its agent row still
+		// says active. Such a child blocks descendant checks and worktree
+		// reclaim even though it has no running session.
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = ?
+			WHERE state = 'active' AND id IN
+			(SELECT agent_id FROM workflow_runs WHERE workflow_id = ? AND state = 'failed' AND agent_id IS NOT NULL)
+			AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.agent_id = agents.id
+				AND se.state IN ('spawning','running','pause_requested','quiescing','stopping'))`,
+			db.Millis(s.now()), wf.ID); err != nil {
+			return err
 		}
 		payload, err := json.Marshal(map[string]any{"event": "workflow_escalated", "item": it.Key,
 			"reason": action.Reason, "round": wf.Round, "last_findings": lastFindings(runs)})
