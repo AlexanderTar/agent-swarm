@@ -437,6 +437,61 @@ adds to it." Contents:
 `workflow`); the reason text names `swarm_spawn` / `swarm_workflow`.
 `skills/swarm` rule 5 lists it.
 
+### A8. muse spawn isolation
+
+User report, PR #20: a swarm-spawned muse got the operator's full `HOME`
+and context — every other adapter's kind (claude, codex, agy, cursor)
+isolates its config/creds/skills surface from a spawned agent; muse did
+not. Probes (`docs/plans/2026-09-25-muse-isolation-probe.md`): today's
+`Muse.setupEnv` isolates only `XDG_CONFIG_HOME`, never `HOME`, so a
+spawned muse independently scans `$HOME/.claude/skills`,
+`$HOME/.codex/skills`, `$HOME/.agents/skills` and loads
+`~/.claude/CLAUDE.md` regardless of any `XDG_CONFIG_HOME` isolation; its
+cloned `settings.json` also carries every operator MCP server's live
+credentials through unmutated.
+
+**Design:**
+- `setupEnv` isolates `HOME` per launch: a fresh directory symlinking in
+  every real `~` entry except `.claude`, `.codex`, `.cursor`, `.agents`,
+  `.gemini` (other agents' personal roots — the leak) and `.config`
+  (already handled by the existing `XDG_CONFIG_HOME` isolation) and
+  `.muse`. `Resume` uses the same `setupEnv`.
+- `settings.json` is still cloned from the real file (preserves
+  `runtime_capabilities["plugin:superpowers:hook:session-start"]`'s trust
+  hash and `tui.foreign_context_notice_shown`, both load-bearing — see the
+  probe doc's live-TUI evidence), then mutated: `mcpServers` replaced with
+  swarm-only (**Q1: all operator MCP servers dropped**, matching codex's
+  precedent — context7/neon/notion/railway/revenuecat/vercel do not reach
+  a spawned muse), `context.foreign_personal_skills` and
+  `context.foreign_personal_rules` set to `false` (confirmed real
+  settings.json keys; they suppress the `.claude`/`.codex` skill+rules
+  leak — `HOME` isolation above is what closes the remaining `.agents`
+  gap, since muse treats `.agents` as one of its own personal-skill roots,
+  not "foreign").
+- Only swarm-managed skills are linked into the isolated
+  `XDG_CONFIG_HOME/muse/skills` via `install.LinkSkills`/
+  `install.SkillsHome` (matching `claude.go`'s `writeProjectSwarmConfig`),
+  not the whole real `~/.config/muse/skills` dir.
+- **Q2 (trade-off, locked):** `XDG_DATA_HOME`, `XDG_STATE_HOME` and
+  `XDG_CACHE_HOME` are pinned explicitly to the real paths
+  (`m.d.UserHome`-relative), not isolated. muse's plugin store enforces an
+  integrity/ownership check that rejects every partial reconstruction
+  (symlinked store root, symlinked `installed.json`, copied
+  `installed.json` + symlinked `cache`/`marketplaces` + copied
+  `.installed.lock` — all rejected, the last with
+  `plugin_package_retention_refused`). Sharing the real data dir is the
+  only proven-working way to keep the superpowers plugin available
+  (locked decision 7) and keep `DiscoverSession`'s real session-registry
+  read working; it also means spawned muse sessions' transcripts/logs
+  land in the operator's real `~/.local/share/muse`, and every other real
+  plugin (not just superpowers) stays visible to spawned agents — the
+  same trade-off claude-kind spawns already make by sharing their plugin
+  cache.
+- **Q3:** a live-TUI probe (`docs/plans/2026-09-25-muse-isolation-probe.md`,
+  plan unit PM.1) confirmed no blocking first-run/foreign-context dialog
+  under this env, so `Muse.StartupDialogs()` needs no new entry for this
+  change.
+
 ## Part B — Multi-agent tasks and the workflow engine
 
 ### B1. DB models (migration `0011_workflows.sql`)
