@@ -483,15 +483,34 @@ Locked decisions:
    re-written by `WriteSkills` right afterward anyway) — then repoint
    `~/.gemini/antigravity-cli/skills` at `~/.gemini/config/skills`,
    matching the shape agy's own post-migration setup leaves. Nothing
-   under `run/launch` is ever deleted. A symlinked legacy entry is
-   recreated as a symlink at the destination rather than copied through
-   (fix round 1, finding 1: walking through it the way a plain directory
-   copy does aborts the whole install once the link's target turns out to
-   be a directory). Detection checks the chain's first hop, not only its
-   fully-resolved target (fix round 1, finding 4): this also repoints a
-   dangling first hop (nothing left to salvage) and a first hop that
-   resolves all the way back to the new root itself (nothing to salvage
-   either, and copying the root into itself would be unsafe).
+   under `run/launch` is ever deleted. Detection checks the chain's first
+   hop, not only its fully-resolved target (fix round 1, finding 4; fix
+   round 3 also resolves `c.Home` itself first before joining
+   `run/launch`, so a merely-missing `run/launch` directory can't hide an
+   aliased dangling chain): this also repoints a dangling first hop
+   (nothing left to salvage) and a first hop that resolves all the way
+   back to the new root itself (nothing to salvage either, checked with a
+   same-directory comparison — `os.SameFile`, not a string equality,
+   since a home path with its own symlink, e.g. macOS's
+   `/var` → `/private/var`, makes the resolved and unresolved spellings
+   of the identical directory two different strings — fix round 2,
+   finding 1). Salvaging a directory's contents uses `copyTree`
+   (`internal/install/plugins.go`, shared with cursor's vendored-plugin
+   copy), which **dereferences every symlink it finds** into real content
+   — a link to a file becomes a real file, a link to a directory becomes
+   a real directory holding a recursive copy — guarded against a symlink
+   cycle by a visited-real-paths set plus a max depth (fix round 3,
+   controller ruling, superseding fix round 2's approach of recreating
+   every symlinked entry as a symlink: that broke both cursor's own "the
+   result is a real folder" contract for its unrelated vendored-plugin
+   copy, and made salvaged content dangle the moment the swarm session it
+   was salvaged from was later reaped, since a recreated symlink still
+   pointed back into `run/launch`). The one exception: a **top-level**
+   legacy entry that is itself a symlink whose resolved target lies
+   *outside* `run/launch` (the user's own skill, linked in from somewhere
+   else entirely — not wreckage from the migration chain this repair
+   exists to clean up) is preserved as a symlink to that absolute
+   resolved target, not deep-copied.
 4. Doctor's agy skills check (`CheckSkills`) already looks at the new
    root. A separate warn-level check (`agySkillsRootLegacyCheck`, OK
    true) fires when `~/.gemini/antigravity-cli/skills`'s first hop
