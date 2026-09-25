@@ -348,3 +348,33 @@ func TestReadMixedRefsReturnsKnownResults(t *testing.T) {
 		t.Fatalf("items = %d, want 0", n)
 	}
 }
+
+// TestItemsUpdateRejectsRevisionLatest (F11): optimistic concurrency stays
+// explicit. A "latest" shortcut is refused with a message naming the
+// integer contract instead of decoding into zero or guessing current.
+func TestItemsUpdateRejectsRevisionLatest(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	_, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","title":"Renamed","revision":"latest"}`)
+	if err == nil {
+		t.Fatal(`revision "latest" must be refused`)
+	} else if !strings.Contains(err.Error(), "must be") || !strings.Contains(err.Error(), "integer") {
+		t.Fatalf("err = %q, want an explicit integer-revision refusal", err)
+	}
+	// The explicit integer path still works and still conflicts when stale.
+	it, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","title":"Renamed","revision":1}`)
+	if err != nil {
+		t.Fatalf("integer revision update: %v", err)
+	}
+	var got struct {
+		Revision int `json:"revision"`
+	}
+	if err := json.Unmarshal(mustJSON(it), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != 2 {
+		t.Fatalf("revision = %d, want 2", got.Revision)
+	}
+}

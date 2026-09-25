@@ -72,6 +72,28 @@ func promoteDraft(ctx context.Context, s *Server, it items.Item, actor items.Act
 	return err
 }
 
+// parseItemRevision decodes swarm_items update's revision (F11: optimistic
+// concurrency stays explicit). An absent revision decodes to zero, which
+// UpdateTx refuses as a stale conflict exactly as before. A "latest"
+// shortcut — or any other non-integer — is refused explicitly with the
+// integer contract instead of decoding into zero or guessing current; the
+// caller reads the real revision from swarm_read (now carried on every
+// checkpoint relay too).
+func parseItemRevision(raw json.RawMessage) (int, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, nil
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil && str == "latest" {
+		return 0, &items.Error{Code: items.CodeBadRequest, Message: `revision must be the item's current integer revision; "latest" is not accepted. Read the revision from swarm_read first.`}
+	}
+	return 0, &items.Error{Code: items.CodeBadRequest, Message: "revision must be the item's current integer revision."}
+}
+
 // itemsTool is §8.1, read directly from the real spec (fix round 1): op is
 // exactly create|update|link|unlink — reading and listing items is
 // swarm_read's job (its refs/filter cover exactly that), not swarm_items'.
@@ -106,10 +128,14 @@ func itemsTool(s *Server) ToolDef {
 				Solo       string         `json:"solo"`
 				Verify     []string       `json:"verify"`
 				Repos      []string       `json:"repos"`
-				Revision   int            `json:"revision"`
-				Status     string         `json:"status"`
-				BlockedBy  string         `json:"blocked_by"`
-				RequestID  string         `json:"request_id"`
+				// Revision stays raw JSON so a "latest" shortcut (or any
+				// non-integer) is refused explicitly by parseItemRevision
+				// (F11) instead of decoding into zero and failing later
+				// as a confusing stale conflict.
+				Revision  json.RawMessage `json:"revision"`
+				Status    string          `json:"status"`
+				BlockedBy string          `json:"blocked_by"`
+				RequestID string          `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -143,7 +169,11 @@ func itemsTool(s *Server) ToolDef {
 				}
 				return out, nil
 			case "update":
-				p := items.Patch{Revision: in.Revision}
+				revision, err := parseItemRevision(in.Revision)
+				if err != nil {
+					return nil, err
+				}
+				p := items.Patch{Revision: revision}
 				if in.Title != "" {
 					p.Title = &in.Title
 				}
