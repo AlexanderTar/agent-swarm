@@ -56,6 +56,7 @@ export interface Item {
   role_hint: string | null;
   tdd_exempt: TddExempt | null;
   workflow?: Workflow | null;
+  workflow_state?: Pick<WorkflowState, "state" | "round">;
   steps?: string[];
   units?: Unit[];
   solo?: string | null;
@@ -233,7 +234,7 @@ export interface Artifact {
   sections: ArtifactSection[];
   created_at: number;
 }
-export interface ArtifactResponse { artifact: Artifact; markdown: string }
+export interface ArtifactResponse { artifact: Artifact; markdown: string; warnings?: string[] }
 
 export interface Advice {
   id: string;

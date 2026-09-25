@@ -56,6 +56,18 @@ describe("Review (§16.11)", () => {
     await waitFor(() => expect(lastPost(d)?.path).toBe("/api/requests/req_report/approve"));
   });
 
+  it("shows plan validation warnings above the plan snapshot", async () => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/artifacts/art_plan?revision=1", headers: { Authorization: `Bearer ${d.db.token}` } });
+    d.override("GET /api/artifacts/art_plan", { status: 200, body: {
+      ...(base.body as object), warnings: ["Task t-1 is a single unit. Batch it with related units."],
+    } });
+    setup("req_plan", d);
+    const heading = await screen.findByRole("heading", { name: "Plan warnings" });
+    expect(screen.getByText("Task t-1 is a single unit. Batch it with related units.")).toBeInTheDocument();
+    expect(heading.compareDocumentPosition(screen.getByText("Two stories.")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("shows the accept-epic binding, verification, children and plan, and sends the binding back", async () => {
     const d = createMockDaemon();
     const { user } = setup("req_accept", d);

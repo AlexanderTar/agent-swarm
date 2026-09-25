@@ -27,6 +27,11 @@ export const ROLE_LABEL: Record<Role | "advisor", string> = {
   designer: "Designer",
 };
 
+export const ROLE_EMOJI: Record<Role, string> = {
+  orchestrator: "🧭", coder: "💻", reviewer: "🔍", ui_reviewer: "🎨",
+  designer: "✏️", researcher: "📚", debugger: "🐛", mechanical: "🔧",
+};
+
 export const AGENT_LABEL: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor", muse: "Muse", fake: "Fake" };
 // README §19 troubleshooting: how each agent signs in.
 export const AGENT_LOGIN_CMD: Record<AgentKind, string> = {

@@ -53,6 +53,23 @@ const cell = (lane: string, status: string) => screen.getByTestId(`cell-${lane}-
 const toastRegion = () => screen.getAllByRole("status").find((el) => el.getAttribute("aria-live") === "polite") as HTMLElement;
 
 describe("Kanban view (§16.7)", () => {
+  it("shows active workflow crew and a badge after round one", async () => {
+    const d = createMockDaemon();
+    const task = d.db.items.find((i) => i.key === "TASK-101")!;
+    task.workflow = { template: "tdd-reviewed", steps: [{ id: "build", run: "coder" }], max_rounds: 3 };
+    task.workflow_state = { state: "running", round: 2 };
+    const coder = d.db.agents[0]?.children.find((a) => a.item_key === "TASK-101");
+    if (!coder) throw new Error("TASK-101 coder fixture missing");
+    d.db.agents[0]!.children.push(
+      { ...coder, id: "reviewer-2", name: "critic", role: "reviewer" },
+      { ...coder, id: "designer-3", name: "designer", role: "designer" },
+      { ...coder, id: "ui-4", name: "ui", role: "ui_reviewer" },
+    );
+    renderWithDaemon(<Host />, { daemon: d, events: false });
+    const c = await screen.findByTestId("card-TASK-101");
+    expect(within(c).getByText("R2")).toBeInTheDocument();
+    expect(within(c).getByLabelText("Crew")).toHaveTextContent("💻🔍✏️+1");
+  });
   it("builds lanes, headers and collapsed columns for task cards", async () => {
     renderWithDaemon(<Host />, { events: false });
     const lane = await screen.findByTestId("lane-EPIC-12");

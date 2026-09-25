@@ -446,5 +446,28 @@ func TestItemDetailIncludesWorkflowState(t *testing.T) {
 	if m["agent"] != "task-worker" || m["role"] != "coder" || m["step"] != "build" || m["state"] != "active" {
 		t.Errorf("crew[0] = %v, want agent=task-worker, role=coder, step=build, state=active", m)
 	}
-}
 
+	// The kanban consumes the flat item list, so its round badge needs the
+	// same workflow round in that payload.
+	rec = s.get(t, "/api/items?view=flat")
+	if rec.Code != 200 {
+		t.Fatalf("list status = %d: %s", rec.Code, rec.Body)
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range list.Items {
+		if item["key"] != flowed.Key {
+			continue
+		}
+		state, ok := item["workflow_state"].(map[string]any)
+		if !ok || state["round"] != float64(1) {
+			t.Fatalf("flat item workflow_state = %v", item["workflow_state"])
+		}
+		return
+	}
+	t.Fatalf("flowed task missing from flat list")
+}

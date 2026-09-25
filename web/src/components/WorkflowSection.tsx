@@ -1,11 +1,6 @@
 import type { ItemDetail, Workflow } from "../types";
-import { ROLE_LABEL } from "../copy";
+import { ROLE_EMOJI, ROLE_LABEL } from "../copy";
 import type { Role, WorkflowFinding } from "../types";
-
-export const ROLE_EMOJI: Record<Role, string> = {
-  orchestrator: "🧭", coder: "💻", reviewer: "🔍", ui_reviewer: "🎨",
-  designer: "✏️", researcher: "📚", debugger: "🐛", mechanical: "🔧",
-};
 
 const VERDICT = {
   pass: { label: "Pass", className: "bg-good/10 text-good" },

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Filter } from "../types";
 import { makeAgent } from "./agentActions";
 import {
-  agentLine, agentsByItem, blockedLine, buildLanes, columnCounts, columnTitle, columnsFor, DEFAULT_COLLAPSED_COLUMNS,
+  agentLine, agentsByItem, blockedLine, buildLanes, columnCounts, columnTitle, columnsFor, crewForCard, DEFAULT_COLLAPSED_COLUMNS,
   dropId, effectiveCollapsed, effectiveGrouping, emptyState, needsLine, parentLine, parseDropId, progressLine,
 } from "./kanban";
 import { buildIndex, makeItem } from "./tree";
@@ -102,6 +102,12 @@ describe("card lines", () => {
     const byItem = agentsByItem([orch]);
     expect(agentLine(t1, byItem)).toEqual({ agent: a1, extra: 1 });
     expect(agentLine(t2, byItem)).toBeNull();
+  });
+
+  it("keeps only active task agents for the three visible crew roles", () => {
+    const active = ["coder", "reviewer", "designer", "ui_reviewer"].map((role, i) => makeAgent({ name: `a${i}`, role: role as "coder", item_key: "TASK-101" }));
+    const finished = makeAgent({ name: "done", role: "debugger", item_key: "TASK-101", state: "finished" });
+    expect(crewForCard({ ...t1, workflow: { template: "tdd-reviewed" } }, agentsByItem([...active, finished]))).toEqual({ roles: ["coder", "reviewer", "designer"], extra: 1 });
   });
 
   it("encodes drop targets", () => {
