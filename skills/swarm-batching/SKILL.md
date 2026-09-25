@@ -12,8 +12,8 @@ Every delegated task costs a fixed amount no matter how small it is: an agent sp
 ## Vocabulary
 
 - **Step**: one action, 2–5 minutes. Examples: write the failing test, run it, implement, run it again, commit. The "bite-sized" granularity in `superpowers:writing-plans` describes steps. **Steps are never tasks.**
-- **Unit**: the smallest piece of work that carries its own test cycle and could be reviewed on its own. A superpowers "task" is a unit. A unit has a title and ordered steps, starts with a failing test, and ends committed.
-- **Work package**: a swarm-tree `task` holding 1–5 units, each listed in `units[]`. Each package has one workflow, which normally means one reviewed loop. The default package holds 3–5 units.
+- **Unit**: the smallest piece of work that carries its own test cycle and commit. A superpowers "task" is a unit. A unit has a title and ordered steps, starts with a failing test, and ends committed; it is not a separate agent assignment or review gate.
+- **Work package**: a swarm-tree `task` holding 1–5 units, each listed in `units[]`. The same coder agent executes its units sequentially. Each package has one workflow and one review at the package boundary. The default package holds 3–5 units.
 
 ## The batching test
 
@@ -86,7 +86,7 @@ If a package needs two rows (UI plus backend), use the stricter workflow. If the
 
 ## Executing a package (coders, debuggers, mechanical agents)
 
-- Work unit by unit, in order. Each unit gets its own red → green cycle. Record verification entries with `"unit": <n>`, and make one commit per unit. That lets a reviewer read the history as the unit list.
+- Keep all units with the same coder agent in one task assignment. Work unit by unit, in order. Each unit gets its own red → green cycle. Record verification entries with `"unit": <n>`, and make one commit per unit. That lets a reviewer read the history as the unit list.
 - Run the package's `verify` commands once all units are done, then write `completed`.
 - If a unit turns out not to belong, finish the others. Explain which unit and why in your `completed` summary; don't silently skip it.
 
