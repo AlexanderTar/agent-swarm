@@ -350,6 +350,20 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, err
 	}
 
+	// Continuity: a stop, crash or session-cancel with an unfinished
+	// assignment stays recoverable. When the exact same assignment already
+	// has a logical orchestrator that is recoverable, restart it in place
+	// (same canonical id, same name) instead of minting a suffixed second
+	// agent. An active one still conflicts below; a terminal one (item
+	// done/cancelled, user-cancelled, valid completed checkpoint) falls
+	// through to the normal path. The match is the exact assignment
+	// (item_id), never the root alone.
+	if rec, ok, err := s.recoverableOrchestrator(ctx, it); err != nil {
+		return Agent{}, false, err
+	} else if ok {
+		return s.restartOrchestratorInPlace(ctx, rec)
+	}
+
 	var existing int
 	err = s.DB.QueryRowContext(ctx, `SELECT 1 FROM agents WHERE root_item_id = ? AND role = 'orchestrator' AND state IN ('queued', 'active')`, it.RootID).Scan(&existing)
 	if err == nil {
@@ -524,6 +538,102 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		}
 	})
 
+	return a, false, nil
+}
+
+// recoverableOrchestrator finds the existing logical orchestrator for the
+// exact assignment (item_id + orchestrator role) and reports whether it is
+// recoverable: present but not live, with an unfinished assignment. An
+// active orchestrator (queued, or active with a live latest session) is not
+// recoverable -- the caller conflicts. Neither is a terminal one: an
+// acknowledged agent is history, a user-cancelled agent (auto_restart = 0)
+// stays stopped by its owner's explicit action, a done/cancelled item is
+// terminal, and a valid completed checkpoint already finished the agent.
+func (s *Store) recoverableOrchestrator(ctx context.Context, it items.Item) (Agent, bool, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx, `SELECT id FROM agents WHERE item_id = ? AND role = 'orchestrator'
+		ORDER BY created_at DESC, rowid DESC LIMIT 1`, it.ID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Agent{}, false, nil
+	}
+	if err != nil {
+		return Agent{}, false, err
+	}
+	a, err := s.agentByID(ctx, id)
+	if err != nil {
+		return Agent{}, false, err
+	}
+	if a.State == AgentQueued {
+		return Agent{}, false, nil
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		return Agent{}, false, err
+	}
+	if a.State == AgentActive && ses.State.Live() {
+		return Agent{}, false, nil
+	}
+	if a.State == AgentAcknowledged || !s.autoRestart(ctx, a.ID) {
+		return Agent{}, false, nil
+	}
+	if it.Status == items.Done || it.Status == items.Cancelled {
+		return Agent{}, false, nil
+	}
+	if kind, has, err := s.terminalCheckpointKind(ctx, a.ID, a.ItemID, ses.Attempt); err != nil {
+		return Agent{}, false, err
+	} else if has && kind == CompletedCkp {
+		return Agent{}, false, nil
+	}
+	return a, true, nil
+}
+
+// restartOrchestratorInPlace restarts a recoverable orchestrator on its own
+// row: same id, same name (resolveName is never consulted, so no suffix),
+// new session at the next attempt and generation. Like Retry it reuses the
+// stored kind/model/effort (already vetted at first start) and is
+// slot-neutral (the agent row never left 'active', so no admission check).
+func (s *Store) restartOrchestratorInPlace(ctx context.Context, a Agent) (Agent, bool, error) {
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		return Agent{}, false, err
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active', finished_at = NULL WHERE id = ?`, a.ID); err != nil {
+			return err
+		}
+		if err := s.EnsureLineageTx(ctx, tx, a); err != nil {
+			return err
+		}
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+	}); err != nil {
+		return Agent{}, false, err
+	}
+	a.State = AgentActive
+	a.FinishedAt = nil
+	newSes, err := s.startSession(ctx, a, ses.Attempt+1, ses.Generation+1, false, "")
+	if err != nil {
+		return Agent{}, false, err
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.appendLineageTx(ctx, tx, a, newSes.ID, newSes.Generation, a.ID)
+	}); err != nil {
+		return Agent{}, false, err
+	}
+	// Best-effort like the spawn paths' own notifications: the session is
+	// already running, so a notify failure must not fail the recovery.
+	_ = s.tx(ctx, func(tx *sql.Tx) error {
+		itemKey, err := s.itemKey(ctx, tx, a.ItemID)
+		if err != nil {
+			return err
+		}
+		return s.notify(ctx, tx, NotifyInput{Kind: "agent.retried", AgentName: a.Name,
+			ItemKey: itemKey, Args: map[string]string{"name": a.Name, "N": fmt.Sprint(newSes.Attempt), "KEY": itemKey}})
+	})
+	s.go_(func() {
+		if err := s.watchStartup(context.WithoutCancel(ctx), a, newSes, s.Adapters[a.Kind]); err != nil {
+			s.logf("spawn: watchStartup %s: %v", a.Name, err)
+		}
+	})
 	return a, false, nil
 }
 

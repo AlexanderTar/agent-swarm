@@ -171,6 +171,15 @@ func (s *Store) operationByKey(ctx context.Context, agentID, requestKey string) 
 	return op, nil
 }
 
+// operationOwnsSession reports whether the agent has an in-flight
+// replacement operation: while it does, the operation driver owns every
+// transition of the agent's sessions and the reconciler must not resolve
+// them (crashed, paused, or otherwise) on its own.
+func (s *Store) operationOwnsSession(ctx context.Context, agentID string) (bool, error) {
+	_, ok, err := s.PendingOperation(ctx, agentID)
+	return ok, err
+}
+
 // PendingOperation reports the agent's in-flight operation, if any.
 func (s *Store) PendingOperation(ctx context.Context, agentID string) (Operation, bool, error) {
 	var op Operation

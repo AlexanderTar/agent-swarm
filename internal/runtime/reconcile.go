@@ -223,6 +223,12 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.recoverWorkflows(ctx); err != nil {
 		return err
 	}
+	// Continuity: advance replacement operations from their durable phase.
+	// A restart between the intent commit and the successor launch resumes
+	// here instead of wedging the agent behind the partial unique index.
+	if err := s.ResumeOperations(ctx); err != nil {
+		return err
+	}
 	return s.sweepFinishedRoots(ctx)
 }
 
@@ -607,6 +613,15 @@ func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKno
 		if now.Sub(basis) < spawnGracePeriod {
 			return nil // give the next tick(s) a chance to see the pane again
 		}
+	}
+	// Continuity: a session owned by an in-flight replacement operation is
+	// the operation driver's to transition (stopping -> interrupted/paused
+	// -> successor). Resolving it here as crashed would corrupt the walk
+	// with a second, racing transition and a bogus crash relay.
+	if owned, err := s.operationOwnsSession(ctx, r.AgentID); err != nil {
+		return err
+	} else if owned {
+		return nil
 	}
 	if r.State == Stopping {
 		return s.tx(ctx, func(tx *sql.Tx) error {

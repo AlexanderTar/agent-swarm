@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
@@ -154,9 +155,118 @@ func TestReplacementRecoverRoundTrip(t *testing.T) {
 	notified(t, s, "agent.retried")
 }
 
+// TestReconcileSkipsSessionUnderReplacement proves the operation driver
+// owns its sessions: a live session with no pane and an in-flight operation
+// is left alone by Reconcile, and only resolves as crashed once the
+// operation is gone.
+func TestReconcileSkipsSessionUnderReplacement(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	old := s.Now().Add(-time.Hour).UnixMilli()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET started_at = ? WHERE id = ?`, old, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A known-dead pane skips the spawn grace window deterministically.
+	panes(tm, Pane{Session: wSes.TmuxName, Dead: true, DeadStatus: 1})
+	now := db.Millis(s.Now())
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO agent_operations
+		(id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+		VALUES ('op_owned', ?, 'recover', 'stopping', 'k', ?, ?, ?, ?)`,
+		w.ID, wSes.ID, wSes.Generation, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile err = %v", err)
+	}
+	ses, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Running {
+		t.Fatalf("session under operation resolved to %q, want untouched running", ses.State)
+	}
+	for _, k := range s.Notify.(*fakeNotifier).kinds() {
+		if k == "agent.crashed" {
+			t.Fatal("bogus crash notification for a session owned by an operation")
+		}
+	}
+	// Operation gone: the same tick now resolves the dead session as crashed.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agent_operations SET phase = 'succeeded' WHERE id = 'op_owned'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile err = %v", err)
+	}
+	ses, err = s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ses.State != Crashed {
+		t.Fatalf("session = %q after operation cleared, want crashed", ses.State)
+	}
+}
+
 func tokenPath(t *testing.T, s *Store, sessionID string) string {
 	t.Helper()
 	return filepath.Join(s.Home, "run", "tokens", sessionID)
 }
 
 func tokenStat(path string) (os.FileInfo, error) { return os.Stat(path) }
+
+// TestStartRecoversSameOrchestrator pins the lifecycle contract: a
+// stop/crash with an unfinished assignment stays recoverable, and a later
+// StartOrchestrator for the exact same assignment restarts the existing
+// logical orchestrator in place -- same canonical id, same name (never a
+// suffixed second agent), new session generation. An active orchestrator
+// still conflicts.
+func TestStartRecoversSameOrchestrator(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil || queued {
+		t.Fatalf("start err = %v, queued = %v", err, queued)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Active orchestrator: starting again conflicts, no new row.
+	if _, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"}); err == nil {
+		t.Fatal("expected conflict while orchestrator is active")
+	}
+	// Crash with the assignment unfinished: still recoverable.
+	if err := s.SetSessionState(ctx, ses.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	again, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil || queued {
+		t.Fatalf("recover err = %v, queued = %v", err, queued)
+	}
+	if again.ID != orch.ID {
+		t.Fatalf("recovered id = %s, want %s (same canonical agent)", again.ID, orch.ID)
+	}
+	if again.Name != orch.Name {
+		t.Fatalf("recovered name = %q, want %q (never a suffixed agent)", again.Name, orch.Name)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents
+		WHERE role = 'orchestrator' AND root_item_id = ?`, orch.RootItemID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("orchestrator rows = %d, want 1 (no suffixed second agent)", n)
+	}
+	succ, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succ.ID == ses.ID || succ.Generation != ses.Generation+1 {
+		t.Fatalf("successor = %s gen %d, want new session at gen %d",
+			succ.ID, succ.Generation, ses.Generation+1)
+	}
+}
