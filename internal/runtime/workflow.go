@@ -901,8 +901,22 @@ func (s *Store) applyAutoRetry(ctx context.Context, wf wfRow, action workflow.Ac
 		sessionState = string(ses.State)
 	}
 	note := fmt.Sprintf("Your previous session ended without finishing (%s). Resume from your last checkpoint.", sessionState)
-	_, err = s.Retry(ctx, a.Name, note, "", "")
-	return err
+	if _, err := s.Retry(ctx, a.Name, note, "", ""); err != nil {
+		// The row is already claimed 'active' above (the idempotency guard
+		// against a concurrent duplicate advance); a Retry() failure here
+		// (fallback preflight, missing adapter -- the tmux duplicate-session
+		// cause is closed by WriteCheckpoint's own pane kill, but Retry()
+		// can still fail for other reasons) must not leave it stuck there
+		// with no live session and nothing to resolveDead/recoverWorkflows
+		// it -- fall back to 'failed' (auto_retries already incremented) so
+		// the next advance either retries again or, once the budget is
+		// spent, escalates instead of hanging forever.
+		if _, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed' WHERE id = ?`, row.ID); uerr != nil {
+			return uerr
+		}
+		s.logf("advance: auto-retry %s: %v", a.Name, err)
+	}
+	return nil
 }
 
 // runViews is one workflow_succeeded relay payload's "runs" field (spec B4).

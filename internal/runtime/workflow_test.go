@@ -325,7 +325,7 @@ func TestWorkflowEscalatesWhenRoundsExhausted(t *testing.T) {
 }
 
 func TestWorkflowAutoRetryOnCrash(t *testing.T) {
-	s, _, _ := newStore(t)
+	s, tm, _ := newStore(t)
 	ctx := context.Background()
 	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
 	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
@@ -336,10 +336,38 @@ func TestWorkflowAutoRetryOnCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	coderAgentID := agentIDForStep(t, s, st.ID, "build")
+	coder, err := s.agentByID(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	startedBefore := len(tm.started)
 
 	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: FailedCkp, Summary: "crashed"}); err != nil {
 		t.Fatal(err)
+	}
+
+	// Fix round 1, finding 7: the writer's own pane is still alive right
+	// when its FailedCkp lands (unlike every other Retry() call site, which
+	// only ever follows a confirmed-dead pane) -- WriteCheckpoint must kill
+	// it before AutoRetry's Retry() starts a new tmux session under the
+	// same name, or real tmux's "duplicate session" refusal would strand
+	// the run. WriteCheckpoint runs single-threaded and calls the kill
+	// (post-commit, before s.advance) strictly before Retry()/startSession
+	// can run, so proving both happened is proving the order: fakeTmux
+	// can't reorder calls it never received concurrently.
+	found := false
+	for _, name := range tm.killed {
+		if name == coder.Name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("coder's old pane (%s) was never killed: killed = %v", coder.Name, tm.killed)
+	}
+	if len(tm.started) <= startedBefore {
+		t.Fatalf("expected a new tmux session started for the auto-retry, started = %v", tm.started)
 	}
 
 	var state, agentID string
