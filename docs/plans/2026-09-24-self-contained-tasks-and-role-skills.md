@@ -512,26 +512,26 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action
 - `go build ./... && go vet ./...`
 
 #### Unit 8.1: Verdicts and findings
-- [ ] Write the failing tests `TestVerdictRequiredForWorkflowReviewer`, `TestVerdictRefusedForCoder` and `TestPassVerdictRefusesMajorFindings`. Red. Implement storage, validation and the schema. Green. Commit.
+- [x] Write the failing tests `TestVerdictRequiredForWorkflowReviewer`, `TestVerdictRefusedForCoder` and `TestPassVerdictRefusesMajorFindings`. Red. Implement storage, validation and the schema. Green. Commit.
 
 #### Unit 8.2: Close siblings by role and step
-- [ ] Write the failing tests `TestReviewerCompletedDoesNotCloseBuilder`, `TestBuilderCompletedDoesNotCloseReviewer` and `TestSameRoleSiblingStillClosed`. Red.
-- [ ] Implement the query change. It filters on the caller's role and on the step from that agent's latest `workflow_runs` row. Green. Commit.
+- [x] Write the failing tests `TestReviewerCompletedDoesNotCloseBuilder`, `TestBuilderCompletedDoesNotCloseReviewer` and `TestSameRoleSiblingStillClosed`. Red.
+- [x] Implement the query change. It filters on the caller's role and on the step from that agent's latest `workflow_runs` row. Green. Commit.
 
 #### Unit 8.3: Per-agent completion and dependency wake-ups
-- [ ] Write the failing tests `TestCompletedCurrentIsPerAgent` and `TestDepUnblockedWakesAllParents`. Red. Implement. Green. Commit.
+- [x] Write the failing tests `TestCompletedCurrentIsPerAgent` and `TestDepUnblockedWakesAllParents`. Red. Implement. Green. Commit.
 
 #### Unit 8.4: tdd and verify gates
-- [ ] Write the failing tests:
+- [x] Write the failing tests:
   - `TestTDDGateNeedsRedBeforeGreen` (green only; red then green across checkpoints; red and green in different attempts)
   - `TestTDDGatePerUnit` (unit 2 missing → error names unit 2)
   - `TestTDDGateSkippedWhenExempt`
   - `TestVerifyGateMatchesDeclaredCommands`
   - `TestLegacyCoderKeepsVerifyOK`
-- [ ] Red. Implement. Green. Commit.
+- [x] Red. Implement. Green. Commit.
 
 #### Unit 8.5: Commit and artifact gates
-- [ ] Write the failing tests `TestCommitGateRefusesDirtyWorktree`, `TestCommitGateRefusesShaMismatch`, `TestCommitGateStoresSha` and `TestDesignArtifactGateRegistersArtifact`. They use a real temp git repo via `runtime/helpers_test.go`. Red. Implement. Green. Commit.
+- [x] Write the failing tests `TestCommitGateRefusesDirtyWorktree`, `TestCommitGateRefusesShaMismatch`, `TestCommitGateStoresSha` and `TestDesignArtifactGateRegistersArtifact`. They use a real temp git repo via `runtime/helpers_test.go`. Red. Implement. Green. Commit.
 
 ### P9: Workflow engine
 **Workflow:** `tdd-reviewed`, `max_rounds: 4` · **Units:** 5
