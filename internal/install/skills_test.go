@@ -1197,6 +1197,42 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 	}
 }
 
+// A package is one coder assignment and one review boundary. Keep this
+// contract visible at dispatch, package execution, and coder execution.
+func TestPackageUnitsKeepOneCoderAndOneReviewBoundary(t *testing.T) {
+	cases := []struct {
+		skill    string
+		requires []string
+	}{
+		{"swarm-orchestrator", []string{
+			"one coder agent for the whole task",
+			"after all units are committed",
+			"same coder",
+		}},
+		{"swarm-batching", []string{
+			"same coder agent",
+			"when review is required, it happens once at the package boundary",
+		}},
+		{"swarm-coder", []string{
+			"all units in the same assignment",
+			"review happens after the whole package",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.skill, func(t *testing.T) {
+			body, err := fs.ReadFile(install.SkillFS(), path.Join(tc.skill, "SKILL.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, phrase := range tc.requires {
+				if !strings.Contains(string(body), phrase) {
+					t.Errorf("%s missing package contract %q", tc.skill, phrase)
+				}
+			}
+		})
+	}
+}
+
 // P4 unit 4.3 acceptance: swarm-advisor is an original rewrite (locked decision
 // 9) inspired by, not copied from, scdenney/open-science-skills codex/advisor
 // (CC BY-NC 4.0) -- it must carry the mermaid diagram from spec A4 and the

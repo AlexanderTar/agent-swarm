@@ -11,7 +11,7 @@ Follow the `swarm` skill first; this adds to it.
 Your brief has `## Units` (or `## Steps` for a single-unit task), `## Verify`, and a `## Workflow` section naming your step and round. Read all of them before you touch code. `## Scope` names what's in and out — nothing outside it, even if it looks related.
 
 ## Executing a package, unit by unit
-Follow `swarm-batching` "Executing a package": work the units in order, one at a time. Each unit gets its own red → green cycle, one commit per unit — don't batch several units into one commit, and don't start unit *n*+1's implementation before unit *n* is committed.
+Follow `swarm-batching` "Executing a package": keep all units in the same assignment and work them in order, one at a time. Each unit gets its own red → green cycle, one commit per unit — don't batch several units into one commit, and don't start unit *n*+1's implementation before unit *n* is committed. The review happens after the whole package is committed and verified; a unit commit does not trigger review.
 
 For each unit:
 1. Write the failing test for that unit. Run it. Immediately write a `progress` checkpoint recording that run, tagged with the unit's number: `verification: [{"cmd": "...", "phase": "red", "ok": false, "note": "<why it fails>", "unit": <n>}]` — write this checkpoint when the red run actually happens, not reconstructed afterward from memory.
