@@ -210,20 +210,23 @@ func legacyAgySkillsChain(c Config) (resolved string, ok bool) {
 	// run/launch subdirectory -- resolving the joined path directly would
 	// silently skip this whole fallback (and so miss an aliased dangling
 	// chain) whenever run/launch itself happened not to exist yet.
-	launchRoot := filepath.Join(c.Home, "run", "launch")
-	matched := underDir(target, launchRoot)
-	if !matched {
-		if resolvedHome, err := filepath.EvalSymlinks(c.Home); err == nil {
-			matched = underDir(target, filepath.Join(resolvedHome, "run", "launch"))
-		}
-	}
-	if !matched {
+	if !underLaunchRoot(c, target) {
 		return "", false
 	}
 	if r, err := filepath.EvalSymlinks(target); err == nil {
 		resolved = r
 	}
 	return resolved, true
+}
+
+// underLaunchRoot accepts either spelling of the launch path when c.Home
+// itself is a symlink (for example, /var and /private/var on macOS).
+func underLaunchRoot(c Config, p string) bool {
+	if underDir(p, filepath.Join(c.Home, "run", "launch")) {
+		return true
+	}
+	resolvedHome, err := filepath.EvalSymlinks(c.Home)
+	return err == nil && underDir(p, filepath.Join(resolvedHome, "run", "launch"))
 }
 
 // repairAgySkillsRoot is A7 decision 3, run only from WriteAgy (i.e. only an
@@ -276,12 +279,6 @@ func repairAgySkillsRoot(c Config) error {
 			if err != nil {
 				return err
 			}
-			launchRoot := filepath.Join(c.Home, "run", "launch")
-			var resolvedLaunchRoot string
-			resolvedHome, evalErr := filepath.EvalSymlinks(c.Home)
-			if evalErr == nil {
-				resolvedLaunchRoot = filepath.Join(resolvedHome, "run", "launch")
-			}
 			for _, e := range entries {
 				dst := filepath.Join(newRoot, e.Name())
 				owned, err := isSwarmOwned(dst, skillsHome, true) // explicit `swarm install`: adopt
@@ -307,12 +304,10 @@ func repairAgySkillsRoot(c Config) error {
 				// ones) into real content, so salvaged content survives the
 				// source session later being reaped.
 				if e.Type()&os.ModeSymlink != 0 {
-					real, err := filepath.EvalSymlinks(src)
+					resolvedSrc, err := filepath.EvalSymlinks(src)
 					if err == nil {
-						outside := !underDir(real, launchRoot) &&
-							!(evalErr == nil && underDir(real, resolvedLaunchRoot))
-						if outside {
-							if err := os.Symlink(real, dst); err != nil {
+						if !underLaunchRoot(c, resolvedSrc) {
+							if err := os.Symlink(resolvedSrc, dst); err != nil {
 								return err
 							}
 							continue
