@@ -225,8 +225,8 @@ public final class AppModel {
     public var compact: Bool { compactSwitch.effective(setting: state.settings.menubarCompact) }
 
     public var label: MenuLabel {
-        MenuLabel.make(activeCount: state.activeCount, connected: connected, enabled: state.settings.enabledAgents,
-                       usage: state.usage, compact: compact, format: format)
+        MenuLabel.make(activeCount: state.activeCount, connected: connected, needsYou: openRequests.count,
+                       enabled: state.settings.enabledAgents, usage: state.usage, compact: compact, format: format)
     }
 
     /// "6 active", or "? active" while the daemon is down.

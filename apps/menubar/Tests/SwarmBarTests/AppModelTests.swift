@@ -149,6 +149,7 @@ final class AppModelTests: XCTestCase {
         await m.refresh()
         // Only HITL requests appear in openRequests
         XCTAssertEqual(m.openRequests.map(\.id), ["req_question"])
+        XCTAssertEqual(m.label.badge, .yellow, "an open request wins over the active-agent green")
         XCTAssertEqual(m.visibleRequests.map(\.id), ["req_question"])
         XCTAssertNil(m.viewAllRequests)
         XCTAssertEqual(m.visibleRequests.map(RequestLine.text), ["Which validation library?"])

@@ -60,8 +60,8 @@ public enum LabelRenderer {
     }
 }
 
-/// The menu bar item: the template label image, plus a colored corner dot — green while an agent
-/// is live, red while the daemon is offline, none while connected but idle. The dot has to live
+/// The menu bar item: the template label image, plus a colored corner dot — yellow while
+/// something needs the user, green while an agent is live, none otherwise. The dot has to live
 /// outside the template image (see `MenuBarLabelView.badgeOffset`).
 public struct MenuBarLabelImage: View {
     let label: MenuLabel
@@ -72,7 +72,7 @@ public struct MenuBarLabelImage: View {
         switch label.badge {
         case .none: return nil
         case .green: return .green
-        case .red: return .red
+        case .yellow: return .yellow
         }
     }
 
@@ -86,6 +86,7 @@ public struct MenuBarLabelImage: View {
                         .offset(x: MenuBarLabelView.badgeOffset.x, y: MenuBarLabelView.badgeOffset.y)
                 }
             }
-            .accessibilityLabel(label.badge == .green ? Copy.agentsWorking : Copy.appTitle)
+            .accessibilityLabel(label.badge == .yellow ? Copy.needsYouBadge
+                                 : label.badge == .green ? Copy.agentsWorking : Copy.appTitle)
     }
 }

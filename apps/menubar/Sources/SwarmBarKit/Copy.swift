@@ -49,6 +49,7 @@ public enum Copy {
     public static let live = "Live"
     public static let offline = "Offline"
     public static let agentsWorking = "Agents are working"
+    public static let needsYouBadge = "Swarm needs you"
     public static func removeFolder(_ path: String) -> String { "Remove \(path)" }
     /// DisplayState.label returns nil for .running (it's the unlabelled default state); this is
     /// only the accessibility-string fallback for that case, not a DisplayState value.
