@@ -567,7 +567,7 @@ func (s *Store) resolveDead(ctx context.Context, r liveRow, p Pane, paneKnown bo
 		return err
 	}
 	if r.ParentAgentID != "" {
-		if aerr := s.advanceWaitingForOwner(ctx, r.ParentAgentID); aerr != nil {
+		if aerr := s.advanceWaitingForOwner(context.WithoutCancel(ctx), r.ParentAgentID); aerr != nil {
 			s.logf("reconcile: advance waiting runs for %s: %v", r.ParentAgentID, aerr)
 		}
 	}
@@ -734,7 +734,7 @@ func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKno
 			return nil
 		})
 		if err == nil && hasRun {
-			if aerr := s.advance(ctx, run.WorkflowID); aerr != nil {
+			if aerr := s.advance(context.WithoutCancel(ctx), run.WorkflowID); aerr != nil {
 				s.logf("reconcile: advance %s: %v", run.WorkflowID, aerr)
 			}
 		}

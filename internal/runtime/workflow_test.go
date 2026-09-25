@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1322,24 +1323,8 @@ func TestRetryFixClosesLiveBuilderBeforeRetrying(t *testing.T) {
 	}
 }
 
-// TestRetryFixMarksFailedWhenRetryErrorsAfterClose closes a gap the user
-// directive's own removal of the "fall back to fresh spawn" path left open:
-// closeSessionForRetry only guarantees the OLD session is closed (retryable)
-// before Retry() runs -- Retry() itself can still fail for an unrelated
-// reason (here, the retried attempt's own startSession/Tmux.Start failing).
-// A bare 'waiting' round-2 row left behind by that failure was invisible to
-// the directive's intent: fillWaitingRuns' generic path doesn't know the
-// row was ever meant for the SAME builder and would spawn an unrelated
-// fresh agent for it on the very next advance, with no retry-budget
-// accounting at all.
-//
-// Marking the row 'failed' instead does NOT prevent a fresh spawn outright
-// -- the directive's own text says a fresh spawn IS legitimate once the
-// builder "can't be retried for a reason other than 'still live'", which is
-// exactly this case. What it fixes is HOW that fresh spawn is reached:
-// through Next's ordinary crash handling (AutoRetry while budget remains,
-// only THEN Escalate or fresh-spawn), with I4's findings-bearing brief,
-// instead of bypassing retry-budget accounting entirely.
+// A failed Retry keeps the next round bound to the original builder, so
+// AutoRetry can retry that same agent without spawning another builder.
 func TestRetryFixMarksFailedWhenRetryErrorsAfterClose(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
@@ -1377,14 +1362,11 @@ func TestRetryFixMarksFailedWhenRetryErrorsAfterClose(t *testing.T) {
 	if round2State != "failed" {
 		t.Fatalf("round 2 build run state = %s, want failed (never left silently waiting, with no retry-budget accounting)", round2State)
 	}
-	if round2Agent != "" {
-		t.Fatalf("round 2 build run agent = %q, want empty (never claimed by prevAgentID or anyone else on a Retry failure)", round2Agent)
+	if round2Agent != coderAgentID {
+		t.Fatalf("round 2 build run agent = %q, want original builder %q even after Retry failure", round2Agent, coderAgentID)
 	}
 
-	// Once startSession can succeed again, the SAME crash-handling path
-	// (AutoRetry, budget spent) reaches a compliant fresh spawn: a
-	// DIFFERENT agent than the original builder, auto_retries bumped to 1,
-	// and -- I4 -- the round-1 findings rendered into its very first brief.
+	// Once startSession can succeed again, AutoRetry must reuse this builder.
 	tm.startErr = nil
 	if err := s.advance(ctx, st.ID); err != nil {
 		t.Fatal(err)
@@ -1394,19 +1376,125 @@ func TestRetryFixMarksFailedWhenRetryErrorsAfterClose(t *testing.T) {
 		WHERE workflow_id = ? AND step_id = 'build' AND round = 2`, st.ID).Scan(&round2State, &round2Agent, &autoRetries); err != nil {
 		t.Fatal(err)
 	}
-	if round2State != "active" || round2Agent == "" || round2Agent == coderAgentID {
-		t.Fatalf("round 2 build run = state %s agent %q, want active/non-empty/DIFFERENT from the original builder %s",
+	if round2State != "active" || round2Agent != coderAgentID {
+		t.Fatalf("round 2 build run = state %s agent %q, want active/original builder %s",
 			round2State, round2Agent, coderAgentID)
 	}
 	if autoRetries != 1 {
 		t.Fatalf("auto_retries = %d, want 1 (budget-accounted, not bypassed)", autoRetries)
 	}
-	freshBuilder, err := s.agentByID(ctx, round2Agent)
+}
+
+func TestFailedWorkflowCheckpointClosesPaneAfterRetryExhausted(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(freshBuilder.Brief, "still off by one after the retry") {
-		t.Errorf("fresh builder's brief missing round 1's findings:\n%s", freshBuilder.Brief)
+	coderID := agentIDForStep(t, s, st.ID, "build")
+	coder, err := s.agentByID(ctx, coderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		ses, err := s.LatestSession(ctx, coderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := len(tm.killed)
+		if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: FailedCkp, Summary: "boom"}); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(tm.killed[before:], coder.Name) {
+			t.Fatalf("failure %d left failed builder pane running", i+1)
+		}
+	}
+	final, _, err := s.WorkflowFor(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "escalated" {
+		t.Fatalf("workflow state = %s, want escalated", final.State)
+	}
+}
+
+func TestFailedCheckpointAdvanceSurvivesRequestCancellation(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderID := agentIDForStep(t, s, st.ID, "build")
+	ses := agentSessionForStep(t, s, st.ID, "build")
+	requestCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	tm.onKill = cancel // cancellation happens after the checkpoint transaction commits
+	if _, err := s.WriteCheckpoint(requestCtx, ses.ID, CheckpointInput{Kind: FailedCkp, Summary: "boom"}); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var retries int
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, auto_retries FROM workflow_runs WHERE workflow_id=? AND step_id='build'`, st.ID).Scan(&state, &retries); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || retries != 1 {
+		t.Fatalf("run after canceled request = %s, retries=%d; want active, 1", state, retries)
+	}
+	latest, err := s.LatestSession(ctx, coderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Attempt != 2 {
+		t.Fatalf("latest attempt = %d, want 2", latest.Attempt)
+	}
+}
+
+func TestRecoverClaimedFixRunWithOlderCompletedSession(t *testing.T) {
+	s, _, clk := clockStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderID := agentIDForStep(t, s, st.ID, "build")
+	ses := agentSessionForStep(t, s, st.ID, "build")
+	clk.Advance(time.Second)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state='completed' WHERE workflow_id=? AND round=1`, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build', 2, 'coder', ?, 'active', ?)`, ids.New("wfr"), st.ID, coderID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, ses.ID, Completed); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(31 * time.Second)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET round=2, updated_at=? WHERE id=?`, db.Millis(s.Now().Add(-31*time.Second)), st.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recoverWorkflows(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var retries int
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, auto_retries FROM workflow_runs WHERE workflow_id=? AND round=2`, st.ID).Scan(&state, &retries); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || retries != 1 {
+		t.Fatalf("recovered fix run = %s, retries=%d; want active, 1", state, retries)
 	}
 }
 
@@ -2362,5 +2450,42 @@ func TestResumeRetryAfterBlocked(t *testing.T) {
 	}
 	if !strings.Contains(builder.Brief, "please pick JWT") {
 		t.Errorf("fresh builder's brief missing the resume note:\n%s", builder.Brief)
+	}
+}
+
+// A replay returns Wait when every review role row exists; the waiting-run path must attach the SHA worktree.
+func TestReplayAdvanceAttachesReviewWorktree(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	setMaxSubagents(t, s, 1) // keep reviewer waiting behind the builder slot
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	var state, agent, wt string
+	_ = s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id,''), COALESCE(review_worktree_id,'') FROM workflow_runs WHERE workflow_id=? AND step_id='review'`, st.ID).Scan(&state, &agent, &wt)
+	t.Logf("normal path: review row state=%s agent=%q wt=%q", state, agent, wt)
+	// Rewind to crash state: row inserted, never attached, never spawned.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state='waiting', agent_id=NULL, review_worktree_id=NULL WHERE workflow_id=? AND step_id='review'`, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state='finished' WHERE role='reviewer'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id,''), COALESCE(review_worktree_id,'') FROM workflow_runs WHERE workflow_id=? AND step_id='review'`, st.ID).Scan(&state, &agent, &wt)
+	t.Logf("after replay advance: review row state=%s agent=%q wt=%q", state, agent, wt)
+	if agent != "" && wt == "" {
+		t.Errorf("I3 NOT CLOSED: reviewer spawned with no review worktree on replay")
 	}
 }

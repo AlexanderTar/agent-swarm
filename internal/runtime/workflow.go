@@ -482,6 +482,14 @@ func (s *Store) healStrandedActiveRuns(ctx context.Context, runs []wfRunRow) ([]
 			newState = string(workflow.RunStateCancelled)
 		case Failed, Crashed:
 			newState = string(workflow.RunStateFailed)
+		case Completed:
+			// RetryFix claims the next round before closing the previous
+			// session. A crash in that gap leaves this older completed
+			// session attached to an active run that never started.
+			if !ses.StartedAt.Before(r.CreatedAt) {
+				continue
+			}
+			newState = string(workflow.RunStateFailed)
 		default:
 			continue
 		}
@@ -807,6 +815,18 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 	if !ok {
 		return false, fmt.Errorf("advance: workflow step %q not found on %s", run.StepID, it.Key)
 	}
+	if step.Run == "" && run.SHA != "" && run.ReviewWorktreeID == "" {
+		wtID, err := s.reviewWorktreeFor(ctx, wf, run.StepID, run.Round, run.SHA)
+		if err != nil {
+			return false, err
+		}
+		if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET review_worktree_id = ?
+			WHERE workflow_id = ? AND step_id = ? AND round = ? AND review_worktree_id IS NULL`,
+			wtID, wf.ID, run.StepID, run.Round); err != nil {
+			return false, err
+		}
+		run.ReviewWorktreeID = wtID
+	}
 	artifactLines, err := s.artifactContextLines(ctx, it.ID)
 	if err != nil {
 		return false, err
@@ -958,6 +978,14 @@ func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, acti
 				return err
 			}
 		} else {
+			// Claim the next round before touching the old session. A crash
+			// after Retry then cannot leave an unowned waiting row that
+			// fillWaitingRuns would spawn as a second builder.
+			if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET agent_id = ?, state = 'active'
+				WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ? AND state = 'waiting'`,
+				prevAgentID, wf.ID, action.StepID, action.Round, step.Run); err != nil {
+				return err
+			}
 			// USER DIRECTIVE: never spawn a fresh builder while the old
 			// one's session is still live. Close it out ourselves first --
 			// the same way the daemon already ends a completed session
@@ -982,15 +1010,11 @@ func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, acti
 				// uses -- so Next's ordinary crash handling (AutoRetry
 				// while budget remains, then Escalate) owns it instead.
 				if _, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?
-					WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ? AND state = 'waiting'`,
+					WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ? AND state = 'active'`,
 					db.Millis(s.now()), wf.ID, action.StepID, action.Round, step.Run); uerr != nil {
 					return uerr
 				}
 				s.logf("advance: retry fix %s: %v", prev.Name, err)
-			} else if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET agent_id = ?, state = 'active'
-				WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ?`,
-				prevAgentID, wf.ID, action.StepID, action.Round, step.Run); err != nil {
-				return err
 			}
 		}
 	}
@@ -1020,7 +1044,9 @@ func (s *Store) closeSessionForRetry(ctx context.Context, a Agent) error {
 	if !ses.State.Live() {
 		return nil
 	}
-	_ = s.Tmux.Kill(ctx, ses.TmuxName)
+	if err := s.Tmux.Kill(ctx, ses.TmuxName); err != nil {
+		return err
+	}
 	return s.SetSessionState(ctx, ses.ID, Completed)
 }
 
@@ -1355,6 +1381,7 @@ func (s *Store) recoverWorkflows(ctx context.Context) error {
 				SELECT 1 FROM workflow_runs r
 				JOIN sessions se ON se.agent_id = r.agent_id
 				WHERE r.workflow_id = w.id AND r.state = 'active'
+					AND se.id = (SELECT id FROM sessions WHERE agent_id = r.agent_id ORDER BY attempt DESC LIMIT 1)
 					AND se.state IN ('spawning','running','pause_requested','quiescing','stopping'))`,
 		db.Millis(s.now().Add(-stallThreshold)))
 	if err != nil {

@@ -43,6 +43,7 @@ type fakeTmux struct {
 	// committing the agent row" case (agents.go's startSession runs
 	// Tmux.Start after the agent row is already committed).
 	startErr error
+	onKill   func()
 }
 
 func newFakeTmux() *fakeTmux {
@@ -83,6 +84,9 @@ func (f *fakeTmux) Env(ctx context.Context, name, key string) (string, error) {
 }
 func (f *fakeTmux) Kill(ctx context.Context, name string) error {
 	f.killed = append(f.killed, name)
+	if f.onKill != nil {
+		f.onKill()
+	}
 	return nil
 }
 func (f *fakeTmux) RenameWindow(ctx context.Context, name, title string) error {

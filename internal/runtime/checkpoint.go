@@ -1013,6 +1013,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 	// this checkpoint's agent belongs to.
 	var wfRun workflowRun
 	var wfHasRun bool
+	var failedWorkflowPane string
 	ran, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
 		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
@@ -1201,6 +1202,9 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		// AutoRetry crash re-attempt reuses the same row via a fresh
 		// advance, not a second insert).
 		if hasRun && (in.Kind == CompletedCkp || in.Kind == FailedCkp) {
+			if in.Kind == FailedCkp {
+				failedWorkflowPane = a.Name
+			}
 			state := "completed"
 			if in.Kind == FailedCkp {
 				state = "failed"
@@ -1217,10 +1221,9 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				// engine's own AutoRetry (Store.Retry requires a
 				// retryableStates session) waiting on that tick. A
 				// workflow agent's own report doesn't need to wait for it.
-				// (No tmux kill needed here: startSession already kills any
-				// stale pane under the same name before starting a new one
-				// -- agents.go's own P0-crash-1 fix -- so marking the
-				// session state is the only thing Retry() actually needs.)
+				// The pane is closed after commit, before AutoRetry. When
+				// retries are exhausted that close is still necessary because
+				// reconcile no longer scans this terminal session.
 				if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'failed', ended_at = ? WHERE id = ?`,
 					db.Millis(now), sessionID); err != nil {
 					return err
@@ -1390,17 +1393,25 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		// -kill sessions a first, successful call already closed.
 		return out, err
 	}
+	postCommitCtx := context.WithoutCancel(ctx)
 	for _, t := range toClose {
 		if ad := s.Adapters[t.Kind]; ad != nil {
 			_ = s.Tmux.Keys(ctx, t.TmuxName, ad.InterruptKeys()...)
 		}
 		_ = s.Tmux.Kill(ctx, t.TmuxName)
 	}
+	if failedWorkflowPane != "" {
+		// The failed session is terminal in the DB, so reconcile no longer
+		// scans it. End its pane even when AutoRetry is exhausted.
+		if err := s.Tmux.Kill(postCommitCtx, failedWorkflowPane); err != nil {
+			s.logf("checkpoint: kill failed workflow pane %s: %v", failedWorkflowPane, err)
+		}
+	}
 	// P9 (spec B4): a completed or failed checkpoint from a workflow agent
 	// triggers advance after commit -- the engine reads the state this
 	// checkpoint just wrote (workflow_runs.state, verdict/findings).
 	if wfHasRun && (in.Kind == CompletedCkp || in.Kind == FailedCkp) {
-		if err := s.advance(ctx, wfRun.WorkflowID); err != nil {
+		if err := s.advance(postCommitCtx, wfRun.WorkflowID); err != nil {
 			s.logf("checkpoint: advance %s: %v", wfRun.WorkflowID, err)
 		}
 	}
