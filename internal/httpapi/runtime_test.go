@@ -544,4 +544,3 @@ func TestAgentsPayloadIncludesStep(t *testing.T) {
 		t.Errorf("task-worker step = %v, want review r2", workerNode2["step"])
 	}
 }
-

@@ -43,5 +43,3 @@ export type SheetState =
   | { kind: "spike"; caption?: string }
   | { kind: "item"; type: "epic" | "bug" | "story" | "task"; parentKey?: string }
   | { kind: "spawn"; itemKey: string };
-
-

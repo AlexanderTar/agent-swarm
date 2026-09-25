@@ -351,4 +351,3 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(Copy.defaultsRowLabel(.designer), "Designer")
     }
 }
-
