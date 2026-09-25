@@ -1377,3 +1377,12 @@ func TestSkillLinkModePerKind(t *testing.T) {
 		}
 	}
 }
+
+func TestSpikeSkillSevenStepMethod(t *testing.T) {
+	body := string(install.SkillBody("swarm-spike"))
+	for _, want := range []string{"1. Frame", "2. Deep research", "3. Design", "4. Spec approval", "5. Plan", "6. Completeness critic", "7. Plan approval", "superpowers:brainstorming", "superpowers:writing-plans", "superpowers:systematic-debugging", "swarm-batching", "assign every role", "Bad:", "Good:"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("swarm-spike missing %q", want)
+		}
+	}
+}
