@@ -1425,15 +1425,13 @@ func (s *Store) deliverNote(ctx context.Context, agentID, note string) error {
 	if err != nil {
 		return err
 	}
+	// enqueue owns seq/wake_class/priority/state/created_at itself (fix
+	// round 2, finding 9): this used to hand-roll the exact same INSERT
+	// Retry's own note delivery did (agents.go), a second copy of the same
+	// message shape.
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		var seq int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM messages`).Scan(&seq); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO messages
-			(id, seq, kind, wake_class, priority, origin, to_agent_id, root_item_id, item_id, payload_json, state, created_at)
-			VALUES (?, ?, 'assignment_update', 'immediate', 1, 'daemon', ?, ?, ?, ?, 'pending', ?)`,
-			ids.New("msg"), seq, a.ID, a.RootItemID, a.ItemID, string(payload), db.Millis(s.now()))
+		_, err := s.enqueue(ctx, tx, Message{Kind: "assignment_update", Origin: "daemon",
+			ToAgentID: a.ID, RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload})
 		return err
 	})
 }

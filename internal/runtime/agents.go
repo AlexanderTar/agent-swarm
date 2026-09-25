@@ -1506,17 +1506,11 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	}
 
 	if note != "" {
-		payload, _ := json.Marshal(map[string]string{"note": note})
-		nowMs := s.now().UnixMilli()
-		_ = s.tx(ctx, func(tx *sql.Tx) error {
-			var seq int64
-			_ = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM messages`).Scan(&seq)
-			_, err := tx.ExecContext(ctx, `INSERT INTO messages
-				(id, seq, kind, wake_class, priority, origin, to_agent_id, root_item_id, item_id, payload_json, state, created_at)
-				VALUES (?, ?, 'assignment_update', 'immediate', 1, 'daemon', ?, ?, ?, ?, 'pending', ?)`,
-				ids.New("msg"), seq, a.ID, a.RootItemID, a.ItemID, string(payload), nowMs)
-			return err
-		})
+		// deliverNote (workflow.go, P9 fix round 2 finding 9: deduped with
+		// what used to be a second copy of this exact INSERT here).
+		if err := s.deliverNote(ctx, a.ID, note); err != nil {
+			s.logf("retry %s: deliver note: %v", a.Name, err)
+		}
 	}
 
 	if a.State != AgentActive {
