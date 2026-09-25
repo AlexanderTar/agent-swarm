@@ -167,11 +167,11 @@ func TestHandoffManifestPreservesScratchArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	ckpt, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff,
-		Summary:           "saving half-done unit",
-		Next:              []string{"finish unit 2"},
-		Blockers:          []string{"waiting on review"},
-		Verification:      []Verify{{Cmd: "go test ./...", OK: true}},
-		Artifacts:         []string{},
+		Summary:      "saving half-done unit",
+		Next:         []string{"finish unit 2"},
+		Blockers:     []string{"waiting on review"},
+		Verification: []Verify{{Cmd: "go test ./...", OK: true}},
+		Artifacts:    []string{},
 	})
 	if err != nil {
 		t.Fatalf("handoff checkpoint err = %v", err)
@@ -190,7 +190,7 @@ func TestHandoffManifestPreservesScratchArtifacts(t *testing.T) {
 		t.Fatalf("manifest not on disk: %v", err)
 	}
 	var decoded struct {
-		SchemaVersion int `json:"schema_version"`
+		SchemaVersion int    `json:"schema_version"`
 		AgentID       string `json:"agent_id"`
 		OperationID   string `json:"operation_id"`
 		Predecessor   string `json:"predecessor_session_id"`
@@ -198,8 +198,8 @@ func TestHandoffManifestPreservesScratchArtifacts(t *testing.T) {
 		Assignment    struct {
 			ItemKey string `json:"item_key"`
 		} `json:"assignment"`
-		Next     []string `json:"next_action"`
-		Blockers []string `json:"blockers"`
+		Next      []string `json:"next_action"`
+		Blockers  []string `json:"blockers"`
 		Worktrees []struct {
 			Path string `json:"path"`
 			Head string `json:"recorded_head"`

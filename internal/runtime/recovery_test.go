@@ -204,7 +204,7 @@ func TestRecoveryHistoryAcrossGenerations(t *testing.T) {
 	for _, rev := range []struct {
 		n int
 		h string
-	}{ {1, "aaa"}, {2, "bbb"} } {
+	}{{1, "aaa"}, {2, "bbb"}} {
 		if _, err := s.DB.ExecContext(ctx, `INSERT INTO artifact_revisions
 			(artifact_id, revision, sha256, content, sections_json, created_at)
 			VALUES ('art_hist', ?, ?, 'body', '[]', ?)`, rev.n, rev.h, now); err != nil {

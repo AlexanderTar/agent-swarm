@@ -265,12 +265,12 @@ type HandoffManifest struct {
 		Title   string `json:"title"`
 		Brief   string `json:"brief"`
 	} `json:"assignment"`
-	Workflow *WorkflowBinding `json:"workflow_binding,omitempty"`
-	Next     []string         `json:"next_action"`
-	Blockers []string         `json:"blockers"`
-	Worktrees []ManifestWorktree `json:"worktrees"`
-	Artifacts []ManifestArtifact `json:"artifacts"`
-	Verification []Verify `json:"verification"`
+	Workflow     *WorkflowBinding   `json:"workflow_binding,omitempty"`
+	Next         []string           `json:"next_action"`
+	Blockers     []string           `json:"blockers"`
+	Worktrees    []ManifestWorktree `json:"worktrees"`
+	Artifacts    []ManifestArtifact `json:"artifacts"`
+	Verification []Verify           `json:"verification"`
 	// Commands reserves the owned-command-handle list. No durable
 	// command-handle table exists in this codebase (worker-lifecycle
 	// retention is Batch 3-4 scope), so this is always empty rather than

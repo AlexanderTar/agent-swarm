@@ -127,5 +127,3 @@ func (s *Server) recoveryAgentID(ctx context.Context, ref string) (string, error
 	}
 	return a.ID, nil
 }
-
-
