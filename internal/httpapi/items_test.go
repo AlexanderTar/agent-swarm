@@ -2,11 +2,15 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
@@ -345,3 +349,102 @@ func TestItemJSONIncludesWorkflowFields(t *testing.T) {
 		t.Errorf("role_hint = %v", raw2.Item["role_hint"])
 	}
 }
+
+func TestItemDetailIncludesWorkflowState(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+
+	// Legacy task has no workflow
+	rec := s.get(t, "/api/items/"+seed.TaskKey)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var legacyRes map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &legacyRes); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := legacyRes["workflow_state"]; ok {
+		t.Errorf("expected workflow_state to be absent for legacy task, got: %v", legacyRes["workflow_state"])
+	}
+	if _, ok := legacyRes["crew"]; ok {
+		t.Errorf("expected crew to be absent for legacy task, got: %v", legacyRes["crew"])
+	}
+
+	epic, err := s.items.Get(bg, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workerID, orchID string
+	if err := s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = 'task-worker'`).Scan(&workerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = 'root-orchestrator'`).Scan(&orchID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create workflow task
+	flowed, err := s.items.Create(bg, items.CreateInput{
+		Type:      items.Task,
+		ParentKey: seed.StoryKey,
+		Title:     "Flowed task",
+		Workflow:  &workflow.Spec{Template: "tdd-reviewed"},
+	}, items.Orchestrator(orchID, epic.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := db.Millis(time.Now())
+	wfID := ids.New("wf")
+	if _, err := s.DB.ExecContext(bg, `INSERT INTO workflows
+		(id, item_id, root_item_id, owner_agent_id, state, round, escalation, worktrees_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'running', 1, '', '[]', ?, ?)`,
+		wfID, flowed.ID, epic.ID, orchID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	runID := ids.New("wfr")
+	if _, err := s.DB.ExecContext(bg, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build', 1, 'coder', ?, 'active', ?)`,
+		runID, wfID, workerID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = s.get(t, "/api/items/"+flowed.Key)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, ok := res["workflow_state"].(map[string]any)
+	if !ok {
+		t.Fatalf("workflow_state missing or not map: %v", res["workflow_state"])
+	}
+	if ws["state"] != "running" {
+		t.Errorf("workflow_state.state = %v, want running", ws["state"])
+	}
+	if r, ok := ws["round"].(float64); !ok || int(r) != 1 {
+		t.Errorf("workflow_state.round = %v, want 1", ws["round"])
+	}
+	if ws["escalation"] != "" {
+		t.Errorf("workflow_state.escalation = %v, want empty string", ws["escalation"])
+	}
+	runs, ok := ws["runs"].([]any)
+	if !ok || len(runs) < 1 {
+		t.Fatalf("workflow_state.runs = %v, want array with at least 1 run", ws["runs"])
+	}
+
+	crew, ok := res["crew"].([]any)
+	if !ok || len(crew) < 1 {
+		t.Fatalf("crew = %v, want array with at least 1 member", res["crew"])
+	}
+	m, ok := crew[0].(map[string]any)
+	if !ok {
+		t.Fatalf("crew[0] not a map: %v", crew[0])
+	}
+	if m["agent"] != "task-worker" || m["role"] != "coder" || m["step"] != "build" || m["state"] != "active" {
+		t.Errorf("crew[0] = %v, want agent=task-worker, role=coder, step=build, state=active", m)
+	}
+}
+

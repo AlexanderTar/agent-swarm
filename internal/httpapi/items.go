@@ -262,6 +262,35 @@ func (s *Server) getItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out["artifacts"] = artifactWires
+		ws, hasWf, err := s.RT.WorkflowFor(ctx, key)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		if hasWf {
+			runs := ws.Runs
+			if runs == nil {
+				runs = []runtime.WorkflowRunView{}
+			}
+			out["workflow_state"] = map[string]any{
+				"state":      ws.State,
+				"round":      ws.Round,
+				"escalation": ws.Escalation,
+				"runs":       runs,
+			}
+			crew := []map[string]any{}
+			for _, r := range ws.Runs {
+				if r.AgentName != "" {
+					crew = append(crew, map[string]any{
+						"agent": r.AgentName,
+						"role":  r.Role,
+						"step":  r.StepID,
+						"state": r.State,
+					})
+				}
+			}
+			out["crew"] = crew
+		}
 	}
 	lists := map[string][]items.Item{"ancestors": ancestors, "children": children, "blocked_by": blockedBy, "blocks": blocks}
 	wired := map[string][]itemWire{}
