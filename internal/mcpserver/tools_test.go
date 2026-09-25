@@ -395,11 +395,28 @@ func TestSendWithoutOrDistinctRequestIDsEachSend(t *testing.T) {
 	}
 }
 
-func TestReadToolRefusesAnUnknownRef(t *testing.T) {
+// Batch 4 (F6) intentional contract change: one unknown ref no longer
+// fails the whole call. It comes back as a per-ref error entry with the
+// valid results beside it (see TestReadMixedRefsReturnsKnownResults).
+func TestReadToolReportsAnUnknownRefAsAnError(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()
-	if _, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["TASK-does-not-exist"]}`); err == nil {
-		t.Fatal("an unknown ref must be refused")
+	out, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["TASK-does-not-exist"]}`)
+	if err != nil {
+		t.Fatalf("an unknown ref must be a per-ref error, not a call failure: %v", err)
+	}
+	var res struct {
+		Errors []struct {
+			Ref     string `json:"ref"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Errors) != 1 || res.Errors[0].Ref != "TASK-does-not-exist" || res.Errors[0].Code == "" {
+		t.Fatalf("errors = %+v, want one entry for the unknown ref", res.Errors)
 	}
 }
 
