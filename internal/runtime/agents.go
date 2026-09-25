@@ -295,6 +295,10 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		Brief:         briefText,
 		State:         AgentActive,
 		RoleOverrides: in.Roles,
+		AdvisorKind:   string(advKind),
+		AdvisorModel:  advModel,
+		AdvisorEffort: advEffort,
+		AdvisorMode:   advMode,
 		CreatedAt:     s.now(),
 	}
 
@@ -455,6 +459,10 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		RootItemID:    it.RootID,
 		Brief:         briefText,
 		RoleOverrides: in.Roles,
+		AdvisorKind:   string(advKind),
+		AdvisorModel:  advModel,
+		AdvisorEffort: advEffort,
+		AdvisorMode:   advMode,
 		CreatedAt:     s.now(),
 	}
 
@@ -849,6 +857,10 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		RootItemID:    it.RootID,
 		ParentAgentID: parentID,
 		Brief:         briefText,
+		AdvisorKind:   string(advKind),
+		AdvisorModel:  advModel,
+		AdvisorEffort: advEffort,
+		AdvisorMode:   advMode,
 		CreatedAt:     s.now(),
 	}
 
@@ -1084,6 +1096,9 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		SettingsDir:       filepath.Join(s.Home, "run", "launch", ses.ID),
 		Bin:               s.Bin,
 		Instructions:      cfg.Instructions,
+	}
+	if a.AdvisorMode == "native" {
+		spec.AdvisorModel = a.AdvisorModel
 	}
 
 	var l adapter.Launch

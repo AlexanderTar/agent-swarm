@@ -1719,6 +1719,26 @@ func TestSpawnExplicitAdvisorChoiceOverridesSettings(t *testing.T) {
 	}
 }
 
+// TestSpawnPassesAdvisorModelToSpecWhenNative is a regression test: a native-
+// mode agent's chosen advisor model must reach adapter.Spec.AdvisorModel, or
+// the Claude launch settings never get an advisorModel and the worker has no
+// advisor tool at all.
+func TestSpawnPassesAdvisorModelToSpecWhenNative(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "native"}
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	_, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Advisor: &AdvisorChoice{Kind: Codex, Model: "fable"}, Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastSpec.AdvisorModel != "fable" {
+		t.Fatalf("LastSpec.AdvisorModel = %q, want %q (native advisor mode)", fa.LastSpec.AdvisorModel, "fable")
+	}
+}
+
 // TestSpawnPassesSettingsInstructionsToSpec is Task 6: Settings.Instructions,
 // once persisted, must reach the adapter.Spec that Launch/Resume receives on
 // every spawn -- not just get stored and never read.
