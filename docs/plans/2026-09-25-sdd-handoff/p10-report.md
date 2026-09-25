@@ -5,6 +5,7 @@ Worktree: `/Users/alexandertar/GitHub/agent-swarm--p10`, branch `pkg/p10`.
 Commits:
 1. `414c4c0` feat(mcpserver): swarm_workflow tool for orchestrators (unit 10.1)
 2. `11603a0` feat(mcpserver): spawn, checkpoint and read changes (unit 10.2)
+3. `091353c` feat(runtime): story after_tasks and integration gates (unit 10.3)
 
 ---
 
@@ -216,3 +217,109 @@ go test ./internal/mcpserver/... ./internal/runtime/... ./internal/items/... -co
 ### Judgment calls & Self-review
 - In `TestSpawnOnReadyTaskPromotesDraftParentStory`, updated `swarm_spawn` invocation to spawn a reviewer instead of a coder. Spawning a coder on a task with a workflow is now gated by Spec B7/Unit 10.2, whereas reviewers remain spawnable, preserving the test's intent (verifying that spawning on a ready task promotes its draft parent story).
 - Added `json` tags to `WorkflowRunView` so serialized runs in both `swarm_workflow` and `swarm_read` match the spec's wire names (`step`, `agent`, etc.) while ensuring `findings` defaults to an empty slice `[]` rather than JSON `null`.
+
+---
+
+## Unit 10.3 — Story and integration gates
+
+### Implementation details
+
+1. **`internal/items/store.go` & `internal/items/transition.go`**:
+   - Added `StoryReadyForReview` hook to `items.Store`: `func(ctx context.Context, tx *sql.Tx, story Item) error`.
+   - In `deriveStory`: when all tasks are Done (`fin == n && done > 0`) and the story has `it.Workflow != nil && it.Workflow.AfterTasks != nil`:
+     - Checks `s.workflowSucceeded(ctx, tx, it.ID)`. If not succeeded, keeps/transitions story to `InReview` and invokes `s.StoryReadyForReview(ctx, tx, it)`.
+     - When `workflowSucceeded` is true, transitions story to `Done`.
+     - Legacy behavior is unchanged: when `it.Workflow == nil` or `AfterTasks == nil`, transitions to `Done` once tasks are Done.
+   - In `check`: allows `daemon` to transition a story with `it.Workflow != nil && it.Workflow.AfterTasks != nil` to `Done` when `workflowSucceeded` is true.
+
+2. **`internal/runtime/workflow.go`**:
+   - Implemented `OnStoryReadyForReview`: finds the root item's orchestrator, checks if already running/succeeded or already relayed since the latest workflow, and enqueues a `story_ready_for_review` relay with payload `{"event": "story_ready_for_review", "story": story.Key, "item": story.Key}`.
+   - In `StartWorkflow`: allows `it.Type == items.Story` alongside `items.Task`. For stories, relaxes the `rw` worktree requirement to accept caller-owned read-only worktrees (`mode: "ro"`).
+   - In `spawnRunAgent`: when spawning a reviewer for a story workflow (where `run.ReviewWorktreeID == ""` and `step.Run == ""`), passes the story workflow's worktree (`wf.worktrees()`) to `brief.Worktrees`.
+
+3. **`internal/runtime/checkpoint.go`**:
+   - In `WriteCheckpoint` for `in.Kind == Integrated`:
+     - When root item has `it.Workflow != nil && it.Workflow.Integration != nil`:
+       - Checks each `integration.verify` command using `hasIntegrationVerifyPassed`. If missing: `"Integration verify not recorded as passing: <cmd>."`.
+       - If `len(it.Workflow.Integration.FinalReview) > 0`, checks using `hasFinalReviewPassed` that a reviewer run with `verdict: "pass"` on the integrated git SHA exists (checking both `checkpoints` and `workflow_runs`). If missing: `"Integration needs a passing final review of <sha7>."`.
+
+4. **`cmd/swarm/daemon.go` & `internal/runtime/agents_test.go`**:
+   - Wired `it.StoryReadyForReview = rt.OnStoryReadyForReview` in `cmd/swarm/daemon.go` and `newStore`.
+
+### TDD Evidence
+
+#### RED
+Command:
+```bash
+go test ./internal/runtime ./internal/items -run 'TestStory|TestIntegrated' -count=1
+```
+Output:
+```
+--- FAIL: TestIntegratedNeedsIntegrationVerify (0.03s)
+    checkpoint_test.go:2420: expected error for missing make lint verify, got nil
+--- FAIL: TestIntegratedNeedsFinalReviewPass (0.03s)
+    checkpoint_test.go:2464: expected error for missing final review, got nil
+--- FAIL: TestStoryReadyForReviewRelay (0.03s)
+    workflow_test.go:2788: story_ready_for_review relays = 0 (events=[accepted completed]), want exactly 1
+--- FAIL: TestStoryDoneWaitsForAfterTasksReview (0.03s)
+    workflow_test.go:2851: story status = done; want not Done (waiting for after_tasks review)
+--- FAIL: TestStoryReviewChangesEscalates (0.15s)
+    workflow_test.go:2938: STORY-1 has no workflow.
+FAIL
+FAIL	github.com/AlexanderTar/agent-swarm/internal/runtime	0.962s
+ok  	github.com/AlexanderTar/agent-swarm/internal/items	0.243s [no tests to run]
+FAIL
+```
+
+#### GREEN
+Command:
+```bash
+go test ./internal/runtime -run 'TestStory|TestIntegrated' -v -count=1
+```
+Output:
+```
+=== RUN   TestIntegratedRequiresGitAndVerificationAndIsOrchestratorOnly
+--- PASS: TestIntegratedRequiresGitAndVerificationAndIsOrchestratorOnly (0.04s)
+=== RUN   TestIntegratedNeedsIntegrationVerify
+--- PASS: TestIntegratedNeedsIntegrationVerify (0.03s)
+=== RUN   TestIntegratedNeedsFinalReviewPass
+--- PASS: TestIntegratedNeedsFinalReviewPass (0.03s)
+=== RUN   TestStoryReadyForReviewRelay
+--- PASS: TestStoryReadyForReviewRelay (0.03s)
+=== RUN   TestStoryDoneWaitsForAfterTasksReview
+--- PASS: TestStoryDoneWaitsForAfterTasksReview (0.16s)
+=== RUN   TestStoryReviewChangesEscalates
+--- PASS: TestStoryReviewChangesEscalates (0.17s)
+=== RUN   TestStoryWithoutAfterTasksUnchanged
+--- PASS: TestStoryWithoutAfterTasksUnchanged (0.03s)
+PASS
+ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	0.818s
+```
+
+### Verification
+```bash
+go build ./... && go vet ./...
+# Exit 0, clean build and vet
+
+go test ./internal/items/... ./internal/runtime/... ./internal/mcpserver/... -count=1
+# Output:
+# ok  	github.com/AlexanderTar/agent-swarm/internal/items	1.929s
+# ok  	github.com/AlexanderTar/agent-swarm/internal/runtime	28.668s
+# ok  	github.com/AlexanderTar/agent-swarm/internal/mcpserver	13.286s
+```
+
+### Files Changed
+- `cmd/swarm/daemon.go` (modified)
+- `internal/items/store.go` (modified)
+- `internal/items/transition.go` (modified)
+- `internal/runtime/agents_test.go` (modified)
+- `internal/runtime/checkpoint.go` (modified)
+- `internal/runtime/checkpoint_test.go` (modified)
+- `internal/runtime/workflow.go` (modified)
+- `internal/runtime/workflow_test.go` (modified)
+- `docs/plans/2026-09-25-sdd-handoff/p10-report.md` (modified)
+
+### Judgment calls & Self-review
+- In `internal/items/transition.go`: Updated `check` for `case Story` to permit the daemon to transition a story to `Done` once its workflow has succeeded (in addition to `deriveStory`'s automated transition). This ensures that `applySucceed`'s direct transition on workflow success completes properly.
+- `hasFinalReviewPassed` checks both `checkpoints` and `workflow_runs` for reviewer verdicts on the integrated SHA, providing coverage whether the reviewer was executed via `swarm_spawn` or as a workflow step.
+
