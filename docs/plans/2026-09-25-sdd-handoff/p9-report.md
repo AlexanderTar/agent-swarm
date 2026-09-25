@@ -386,3 +386,69 @@ Clean pass, no `WARNING: DATA RACE` anywhere in the output.
 - `internal/items/transition.go`
 - `internal/notifyrules/notifyrules.go`
 - `internal/notify/notify_test.go`
+
+## Fix round 2 (re-review findings)
+
+Commit on `pkg/p9`: `4820c88dfbcb09fb72fda1894a18089754853836` (`fix(runtime): keep workflow retries bound to their builder`). The integration ledger was not edited.
+
+- **Builder continuity and crash recovery:** `applyRetryFix` now assigns the original builder's `agent_id` and marks the next-round row active *before* closing the old session or calling `Retry`. A Retry failure marks that same row failed while retaining its agent ID; `AutoRetry` therefore retries the original agent. `healStrandedActiveRuns` recognizes a claimed fix run whose latest session is an older Completed session. The recovery scan considers only each agent's latest session when deciding whether an active run is live. `closeSessionForRetry` now propagates a tmux kill failure instead of marking a still-running pane Completed. This closes the reported crash and Retry-error paths that could spawn two live builders.
+- **Post-commit triggers:** completed and failed checkpoint advances use `context.WithoutCancel(ctx)` after their transaction. Reconcile's post-transition workflow and slot-release advances do the same. A test cancels the request immediately after the failed checkpoint commits and confirms AutoRetry still starts attempt 2 on the same agent.
+- **Review replay:** `spawnRunAgent` now creates or reuses the shared review worktree whenever a waiting review row has a SHA but no `review_worktree_id`, then attaches it before rendering the brief and spawning. This covers the real `advance` replay path where `Next` returns Wait because all review role rows already exist.
+- **Failed pane after exhaustion:** the failed workflow checkpoint closes its own pane after commit, before AutoRetry advances. The re-review's pane concern was confirmed: the second failed checkpoint previously escalated while leaving its terminal session's pane running, which reconcile would not scan. The new test checks the pane close on both the retrying and exhausted attempts. This self-close is gated to workflow runs; the legacy sibling teardown path keeps its prior context and behavior.
+
+Red/green evidence: `TestRetryFixMarksFailedWhenRetryErrorsAfterClose` failed because round 2 had an empty agent ID; `TestReplayAdvanceAttachesReviewWorktree` failed because a replayed reviewer spawned with no worktree; `TestFailedWorkflowCheckpointClosesPaneAfterRetryExhausted` failed on the second failure because no pane kill occurred. All pass after the fix. `TestFailedCheckpointAdvanceSurvivesRequestCancellation` was also confirmed red by temporarily restoring the old `advance(ctx, ...)` call (run remained failed with zero retries), then green with the committed call. `TestRecoverClaimedFixRunWithOlderCompletedSession` covers the Completed-session recovery path.
+
+Final verification:
+
+```
+go test ./internal/runtime/... ./internal/items/... ./internal/hook/... ./internal/workflow/... -count=1  PASS
+go build ./... && go vet ./...                                                        PASS
+go test -race ./internal/runtime/ -run Workflow -count=1                             PASS
+git diff --check                                                                      PASS
+go test ./... -count=1                                                                 FAIL: internal/httpapi TestBoardServedAtRoot (GET /kanban = 503); all other packages passed
+```
+
+The full-suite failure is the same documented pre-existing `internal/httpapi` baseline failure; this commit does not touch that package. No temporary probe files remain in the worktree. Remaining non-blocking concerns from fix round 1 still apply: cross-workflow FIFO is best-effort, and an exhausted Retry can leave an agent record marked active even with no live session. P10 request ID idempotency remains outside P9.
+
+## Fix round 3 (scoped re-review)
+
+Commit on `pkg/p9`: `b6079f9d8b9cc59435e946ef9856261341059da1` (`fix(runtime): atomically bind fix rounds and retire exhausted agents`). Integration ledger left to the controller.
+
+- `applyRetryFix` resolves the old builder before the write, then advances the workflow round and inserts the next run already bound to that builder in one SQL transaction. An injected INSERT failure rolls the round back; after a successful commit the new row is active and names the original builder. The prior `TestRecoverClaimedFixRunWithOlderCompletedSession` covers recovery after the bound commit and before the new retry starts. The reviewer scratch state with a committed round change and an unbound inserted row is now unreachable through `applyRetryFix`.
+- Escalation marks failed-run agents finished when they have no live session. This aligns agent-list state with `liveDescendants` and allows worktree reclaim. `startSession` now records every error after its session INSERT as a failed session, including adapter launch, pre-run, and tmux kill errors that previously left `spawning` rows; the tmux Start path uses the same cleanup.
+- Tests added for transaction rollback/bound commit, exhausted fix retry descendant cleanup, and early start failure followed by exhausted auto-retry. The stale `changes_requested` case now has a runtime regression test. Review replay asserts a successful read, active row, nonempty agent ID, and nonempty review worktree. The sequential cancel test was renamed to describe its actual ordering check.
+
+Red evidence before implementation: the reviewer probes `TestRecoverRoundBumpNeverSpawnsSecondBuilder` and `TestExhaustedFixRetryFinalizesBuilder` failed with two live coder sessions and one active descendant respectively. The first probe models a partial database state that atomic commit now prevents; it was replaced by an injected transaction-failure test. Green targeted run: `go test ./internal/runtime -run 'TestRetryFixRoundAndBoundRunCommitTogether|TestExhaustedFixRetryFinalizesBuilder|TestExhaustedAutoRetryEarlyStartFailureFinalizesBuilder|TestStaleChangesRequestedEscalatesWithoutFixRound|TestReplayAdvanceAttachesReviewWorktree|TestCancelledWorkflowIgnoresLaterSlotRelease' -count=1` (covered by the package run below; individual subsets also passed).
+
+Final verification:
+
+```
+go test ./internal/runtime/... ./internal/items/... ./internal/hook/... ./internal/workflow/... -count=1  PASS
+go build ./... && go vet ./...                                                        PASS
+go test -race ./internal/runtime/ -run Workflow -count=1                             PASS
+git diff --check                                                                      PASS
+go test ./... -count=1                                                                 FAIL: internal/httpapi TestBoardServedAtRoot (GET /kanban = 503); all other packages passed
+```
+
+The full-suite failure is the same pre-existing `internal/httpapi` baseline failure documented in prior rounds; this commit does not touch that package. Cross-workflow FIFO remains best-effort, and P10 request-ID idempotency remains outside P9. A persistent tmux kill error while closing the old builder can leave its bound run active until the external tmux problem is resolved; it cannot spawn a second builder from that run.
+
+## Fix round 4 (scoped reclaim finding)
+
+Commit on `pkg/p9`: `edb698932d11fa7325e6d07f2aca66910a082f53` (`fix(runtime): release exhausted workflow agent reservations`). Integration ledger left to the controller.
+
+- `applyEscalate` now releases every unreleased worktree reservation held by a failed-run agent that is finished and has no live session. This happens in the same transaction that escalates the workflow and retires exhausted agents. A still-live agent retains its reservation, and the query is scoped to failed runs of the escalating workflow.
+- `TestExhaustedFixRetryFinalizesBuilder` now exercises the real reclaim candidate gate after the owner finishes and the grace period elapses. Before the fix it failed with `candidates=[]` because the retired builder retained its shared worktree reservation. It passes after the fix.
+
+Verification after the change:
+
+```
+go test ./internal/runtime -run '^TestExhaustedFixRetryFinalizesBuilder$' -count=1  PASS (red before fix, green after)
+go test ./internal/runtime/... ./internal/items/... ./internal/hook/... ./internal/workflow/... -count=1  PASS
+go build ./...                                                                   PASS
+go vet ./...                                                                     PASS
+go test -race ./internal/runtime/ -run Workflow -count=1                        PASS
+git diff --check                                                                 PASS
+go test ./... -count=1                                                            FAIL: internal/httpapi TestBoardServedAtRoot (GET /kanban = 503); all other packages passed
+```
+
+The full-suite failure is the same documented `internal/httpapi` baseline failure. This commit changes only `internal/runtime/workflow.go` and its test. The prior rounds' cross-workflow FIFO and P10 request-ID limitations remain unchanged.

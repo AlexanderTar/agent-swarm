@@ -134,3 +134,11 @@ PAUSED 2026-09-25.
 RESUMED 2026-09-25. PA fix round 4 committed 2519214..6d35ec4; scoped round-5 review found a nested-parent cycle left a partial destination entry.
 Ruling: the round-5 nested-parent cycle is load-bearing for PA's skip-and-continue contract, so fix it before merge with a focused red/green correction and scoped review — cost if wrong: one extra correction dispatch after the review cap.
 PA correction b65e1fb passes scoped review (nested cycle absent, sibling copied, top-level directory links preserved). PA complete; merged as 689302e. Integration go build ./... and go vet ./... passed; go test ./... failed only the pre-existing internal/httpapi/TestBoardServedAtRoot (GET /kanban = 503).
+P9 fix round 2 committed 9704206..4820c88 (user directive gap, orphaned active builder, I3 replay review worktree, I2 ctx, failed pane).
+P9 re-review of fix round 2: Needs fixes (1: atomic round bump + bound run, 2: orphan active agent cleanup on escalation, 3: coverage & naming). Notes: p9-fix2-findings.md.
+P9 fix round 3 committed 4820c88..b6079f9 (atomically bind fix rounds, retire exhausted agents).
+P9 re-review of fix round 3: Needs fixes (release worktree_reservations rows on escalation). Notes: p9-fix3-findings.md.
+P9 fix round 4 committed b6079f9..edb6989 (release exhausted workflow agent reservations).
+P9 scoped re-review of fix round 4 (pro): Approved (transactional atomicity, session safety, test coverage; no issues).
+Task P9: complete (commits b36a5fd..edb6989, review clean).
+
