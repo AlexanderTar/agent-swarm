@@ -1398,3 +1398,20 @@ func TestOrchestratorSkillNoLongerHandRollsReviews(t *testing.T) {
 		}
 	}
 }
+
+func TestOrchestratorStoryAndRootReviewUseIntegratedHead(t *testing.T) {
+	body := string(install.SkillBody("swarm-orchestrator"))
+	for _, want := range []string{
+		"merge the completed story task branches into the orchestrator integration worktree",
+		"before `swarm_workflow start`",
+		"`worktrees: [{worktree: <integration>, mode: ro}]`",
+		"story with `after_tasks` waits for its workflow to succeed before Done",
+		"legacy story without `after_tasks` derives Done from its completed tasks",
+		"manually spawn the root final reviewer with `swarm_spawn`",
+		"record the `integrated` gate",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("swarm-orchestrator missing %q", want)
+		}
+	}
+}
