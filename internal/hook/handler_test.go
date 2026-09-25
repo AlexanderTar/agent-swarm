@@ -899,6 +899,40 @@ func TestQuestionToolInterceptionCreatesHITLRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("cursor AskQuestion", func(t *testing.T) {
+		h, ses := seed(t, 0, runtime.Running)
+		_, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'cursor' WHERE id = 'agt_1'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input, _ := json.Marshal(map[string]any{
+			"session_id": "p1",
+			"tool_name":  "AskQuestion",
+			"tool_input": map[string]any{
+				"question": "Deploy to staging?",
+				"options":  []string{"yes", "no"},
+			},
+		})
+		out, err := h.Handle(ctx, runtime.Cursor, "PreToolUse", ses, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("question tool must not be blocked, got %s", out)
+		}
+
+		var count, isHITL int
+		var prompt, kind string
+		err = h.DB.QueryRowContext(ctx, `SELECT COUNT(*), is_hitl, prompt, kind FROM requests WHERE session_id = ?`, ses).
+			Scan(&count, &isHITL, &prompt, &kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 || isHITL != 1 || prompt != "Deploy to staging?" || kind != "question" {
+			t.Fatalf("expected 1 hitl question request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
+		}
+	})
+
 	t.Run("agy ask_question", func(t *testing.T) {
 		h, ses := seed(t, 0, runtime.Running)
 		_, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'agy' WHERE id = 'agt_1'`)
@@ -1339,7 +1373,7 @@ func TestQuestionToolPostToolUseClosesOnlyTheMatchingRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.RT.Now = func() time.Time { return now().Add(time.Minute) }
-	a, err := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "A?"})
+	a, err := h.RT.AskQuestion(ctx, ses, "A?", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1365,7 +1399,7 @@ func TestQuestionToolPostToolUseClosesOnlyTheMatchingRow(t *testing.T) {
 func TestQuestionToolPostToolUseWithoutToolInputClosesNothing(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	if _, err := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "A?"}); err != nil {
+	if _, err := h.RT.AskQuestion(ctx, ses, "A?", nil); err != nil {
 		t.Fatal(err)
 	}
 	post, _ := json.Marshal(map[string]any{"session_id": "p1", "tool_name": "AskUserQuestion", "tool_response": map[string]any{"answer": "yes"}})
@@ -1416,7 +1450,7 @@ func TestPostToolUseResolvesOnlyTheMatchingPermissionPrompt(t *testing.T) {
 func TestHumanPromptClosesOpenRowsButDaemonPromptsDoNot(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	q, _ := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "which?"})
+	q, _ := h.RT.AskQuestion(ctx, ses, "which?", nil)
 	submit := func(prompt string) {
 		t.Helper()
 		in, _ := json.Marshal(map[string]any{"session_id": "p1", "prompt": prompt})
@@ -1446,7 +1480,7 @@ func TestHumanPromptClosesOpenRowsButDaemonPromptsDoNot(t *testing.T) {
 func TestAgyPromptlessSubmitNeverClosesRows(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	q, _ := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "which?"})
+	q, _ := h.RT.AskQuestion(ctx, ses, "which?", nil)
 	in, _ := json.Marshal(map[string]any{"conversationId": "c1"})
 	if _, err := h.Handle(ctx, runtime.Agy, "PreInvocation", ses, in); err != nil {
 		t.Fatal(err)
@@ -1463,7 +1497,7 @@ func TestAgyPromptlessSubmitNeverClosesRows(t *testing.T) {
 func TestHumanPromptInANewSessionClosesTheRowOfTheOldOne(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	q, _ := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "which?"})
+	q, _ := h.RT.AskQuestion(ctx, ses, "which?", nil)
 	if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = 'ses_1';
 		INSERT INTO sessions (id,agent_id,attempt,generation,token_hash,tmux_name,cwd,state,cwd_kind,started_at)
 		VALUES ('ses_2','agt_1',1,2,'hash2','login-form-coder-2','/tmp/w','running','neutral',2)`); err != nil {

@@ -377,6 +377,25 @@ func (s *Store) finishOpen(ctx context.Context, tx *sql.Tx, reqID, agentName, it
 	return s.requestTx(ctx, tx, reqID)
 }
 
+// errQuestionUseNativeTool is swarm_ask's refusal for kind:"question" when
+// the caller's kind has a hooked native question tool (spec section 1.7):
+// the hook opens the Needs-you row itself, so swarm_ask would only ever
+// duplicate it. muse is deliberately absent from the copy below, unlike the
+// spec's section 4.1 code block: Task 4's live probe (2026-09-25/26,
+// docs/plans/2026-09-25-needs-you-and-child-approval-routing.md) found
+// muse's request_user_input never dispatches a hook at all, so muse joins
+// cursor's exception instead (spec section 1.7's final verdict, which
+// supersedes 4.1's pre-probe draft).
+const errQuestionUseNativeTool = "Ask the user with your own native question tool " +
+	"(claude AskUserQuestion, codex request_user_input, agy ask_question). " +
+	"Swarm shows it in Needs you and closes it when the user answers."
+
+// questionHookKinds are the kinds whose native question tool Swarm
+// intercepts via a hook (spec section 1.7). cursor and muse are absent on
+// purpose: neither ever dispatches a hook for its native question tool, so
+// swarm_ask kind:"question" stays their only path to Needs you.
+var questionHookKinds = map[AgentKind]bool{Claude: true, Codex: true, Agy: true}
+
 // Ask is swarm_ask (§8.1).
 func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request, error) {
 	if in.Withdraw != "" {
@@ -387,6 +406,23 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 	}
 	switch in.Kind {
 	case "question":
+		refused := false
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+			if err != nil {
+				return err
+			}
+			if err := requireTopLevel(a); err != nil {
+				return err
+			}
+			refused = questionHookKinds[a.Kind]
+			return nil
+		}); err != nil {
+			return Request{}, err
+		}
+		if refused {
+			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: errQuestionUseNativeTool}
+		}
 		return s.askQuestion(ctx, sessionID, in)
 	case "approval":
 		return s.askApproval(ctx, sessionID, in)

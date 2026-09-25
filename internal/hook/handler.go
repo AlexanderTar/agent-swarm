@@ -189,7 +189,7 @@ func normalize(kind runtime.AgentKind, event string) string {
 // available and Task 9 does not refuse it for these two kinds.
 func isQuestionTool(name string) bool {
 	switch name {
-	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input":
+	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input", "AskQuestion":
 		return true
 	}
 	return false

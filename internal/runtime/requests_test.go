@@ -55,6 +55,35 @@ func TestAskQuestionOpensARequestAndNotifies(t *testing.T) {
 	}
 }
 
+// TestSwarmAskQuestionIsRefusedForHookedKindsOnly is Task 9 (spec section
+// 1.7): claude, codex and agy have a live- or source-confirmed hook for
+// their native question tool, so swarm_ask kind:"question" is refused for
+// them. cursor and muse do not -- cursor's AskQuestion never fires a hook at
+// all (confirmed, forum bug 161836), and muse's request_user_input the same
+// (confirmed live, Task 4) -- so both keep swarm_ask as their only path to
+// Needs you.
+func TestSwarmAskQuestionIsRefusedForHookedKindsOnly(t *testing.T) {
+	for _, tc := range []struct {
+		kind    AgentKind
+		refused bool
+	}{{Claude, true}, {Codex, true}, {Agy, true}, {Muse, false}, {Cursor, false}} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Ask me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+			if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = ? WHERE id = ?`, string(tc.kind), a.ID); err != nil {
+				t.Fatal(err)
+			}
+			ses, _ := s.LatestSession(ctx, a.ID)
+			_, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "Anything?"})
+			refused := err != nil && strings.Contains(err.Error(), errQuestionUseNativeTool)
+			if refused != tc.refused {
+				t.Fatalf("err = %v, refused = %v, want %v", err, refused, tc.refused)
+			}
+		})
+	}
+}
+
 func TestHITLRequestWire(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
