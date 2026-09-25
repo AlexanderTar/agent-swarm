@@ -149,7 +149,7 @@ func askTool(s *Server) ToolDef {
 		Name: "swarm_ask",
 		Description: "Request an approval, propose repos to confirm, forward a native answer, or withdraw an earlier ask. " +
 			"Returns at once with the request id; the answer arrives later as a message.",
-		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, or withdraw. question is refused for claude, codex and agy (they have a native question tool Swarm hooks instead); cursor and muse keep it, since neither's native question tool is hookable."},"prompt":{"type":"string"},"options":{"type":"array"},
+		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, or withdraw. question is refused for claude and agy (they have a native question tool Swarm hooks instead); cursor, muse and codex keep it, since their native question tool is either not hookable or not yet confirmed."},"prompt":{"type":"string"},"options":{"type":"array"},
 			"artifact":{"type":"string","description":"Artifact id for approval kinds"},"section":{"type":"string","description":"Section id for per-section approval"},"withdraw":{"type":"string"},
 			"repos":{"type":"array","items":{"type":"object","properties":{
 				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
