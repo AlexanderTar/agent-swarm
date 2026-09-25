@@ -909,3 +909,75 @@ Verify set from `pa-fix4-findings.md`, then commit (new commits, one per
 logical unit, never amend) and append a proper "Fix round 4" section
 (replacing this paused one, or added after it) with full RED/GREEN
 evidence.
+
+## Fix round 4 — completed
+
+Branch `pkg/pa`, starting at `2519214`; two new commits:
+
+- `7bd1a6f` `fix(install): skip broken links and cycles while copying trees`
+- `6d35ec4` `refactor(install): share launch-root containment check`
+
+The copy contract intentionally changed: a detected symlink cycle now logs
+its path and is skipped; it no longer aborts the whole copy. The source
+directory's resolved path seeds the visited set, so a link back to that
+root is skipped before a partial copy lands. A top-level symlink is added
+to the set when first followed, allowing legitimate top-level linked
+directories to be salvaged. `EvalSymlinks`/`Stat` missing-target errors
+similarly log one line naming the link and skip it. Self-referential links
+that produce Go's `EvalSymlinks: too many links` (or `ELOOP`) also skip.
+Other filesystem errors and the depth backstop remain errors. The code
+notes the unbounded size of followed directory targets (`ponytail:`).
+
+Regression coverage now checks Cursor's nested relative `AGENTS.md ->
+SKILL.md` becomes a real file with content; a salvaged `alias.md -> SKILL.md`
+remains readable after `run/launch/ses_x` is removed; top-level and nested
+dangling links are absent while sibling content is copied; and ancestor
+cycles and self-referential links are absent while siblings are copied.
+The stale Agy test comments now describe deep-copy behavior. The duplicated
+launch-root test uses `underLaunchRoot`, and local variables named `real`
+were renamed.
+
+RED: `go test ./internal/install -run
+'TestCopyTreeDetectsASymlinkCycle|TestSyncVendorsCursorPluginsAsRealFoldersNotSymlinks|TestWriteAgyRepair(SalvagesFileLinkAfterSessionReap|SkipsDanglingTopLevelLink|SkipsDanglingNestedLink)'
+-count=1` failed on ancestor cycle and both dangling-link tests. The two
+relative file-link tests already passed; they pin existing behavior.
+After the first implementation, the package suite exposed the top-level
+relative directory link being mistaken for a cycle; seeding only real
+source directories corrected it. Separately, `go test ./internal/install
+-run TestCopyTreeSkipsSelfReferentialLink -count=1` failed with
+`EvalSymlinks: too many links` before its handling was added.
+
+GREEN: the targeted tests and `go test ./internal/install/...
+./internal/adapter/... ./cmd/...` passed after the final changes.
+`go build ./...`, `go vet ./...`, and `git diff --check` passed. A single
+`go test ./...` run failed only in `internal/httpapi/TestBoardServedAtRoot`
+(`GET /kanban = 503`); rerunning that test alone produced the same failure.
+This is the pre-existing board/web-bundle baseline failure recorded above,
+outside package PA. The PA working tree is clean. No merge, push, real-home
+repair, or `agy` invocation was performed in this round.
+
+## Fix round 5 — nested-parent cycle correction
+
+Branch `pkg/pa`, starting at `6d35ec4`; new commit `b65e1fb`
+(`Skip nested-parent copyTree symlink cycles before copying`). A link at
+`a/b/loop -> .` resolves to the ordinary directory `a/b`, which the prior
+visited set did not contain. The copier created `dst/b/loop` and only then
+detected the cycle inside the recursive call. `copyTreeGuarded` now checks a
+directory link against the active ordinary ancestors of its `WalkDir` path
+before creating the destination. The existing visited set still covers the
+roots reached through links. Links to completed sibling directories remain
+valid; a top-level linked directory still expands normally. The stale plan
+acceptance text now says cycles are skipped and logged before the destination
+is created.
+
+RED: `go test ./internal/install -run
+'^TestCopyTreeSkipsLinkToNestedParentBeforeCreatingDestination$' -count=1`
+failed because `dst/b/loop` existed. A second regression pinned top-level
+directory-link behavior and caught an initial ancestor-check loop with
+`-timeout=5s`; the check was corrected before GREEN.
+
+GREEN: `go test ./internal/install -run '^TestCopyTree' -count=1`,
+`go test ./internal/install/... ./internal/adapter/... ./cmd/...`,
+`go build ./...`, `go vet ./...`, and `git diff --check` all passed.
+The PA worktree is clean after the commit. The depth backstop and non-cycle
+filesystem errors remain as before. No merge or push was performed.

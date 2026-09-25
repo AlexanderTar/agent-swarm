@@ -26,7 +26,7 @@ commits) was merged in at `23b5368`.
 | Symlink check (skill link mode per CLI) | merged | integration branch |
 | PM muse spawn isolation (user request) | merged | integration branch |
 | P9 workflow engine | fix round 1 committed (`b749c63..9704206`); partial Opus re-review says needs fixes: the user directive is still open (claim the fix-round row for the old agent before closing its session and calling `Retry`), the orphaned `active` builder after a failed `Retry` must be fixed, and I3 isn't fixed on the real replay path. Details: `p9-rereview1-partial.md` and the last P9 entry in `progress.md`. Probes: `probes/*.go.txt` (rename to `_test.go` inside `internal/runtime` to run) | `pkg/p9`, worktree `../agent-swarm--p9` |
-| PA agy skills root (user request) | fix round 4 in progress; see `pa-report.md` "Fix round 4 — paused" and `pa-fix4-findings.md` | `pkg/pa`, worktree `../agent-swarm--pa` |
+| PA agy skills root (user request) | merged at `689302e`; round 5 corrected nested symlink cycles and passed scoped review | integration branch |
 | P10, P11, P12 | not started | — |
 
 Every merge was verified with `go build ./... && go vet ./... && go test ./...`;
