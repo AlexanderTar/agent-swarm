@@ -21,7 +21,7 @@ import (
 var orchestratorRole = []runtime.Role{runtime.RoleOrchestrator}
 
 func orchestratorTools(s *Server) []ToolDef {
-	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s), catalogTool(s)}
+	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s), catalogTool(s), workflowTool(s)}
 }
 
 // §17.3 copy owned by this file.
