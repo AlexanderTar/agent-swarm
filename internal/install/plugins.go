@@ -407,12 +407,10 @@ func (p Plugins) vendorForCursor(ctx context.Context, m MarketplacePlugin, actio
 // content is never this package's call to make but a session's own cleanup
 // routinely does exactly that.
 //
-// maxCopyTreeDepth and the visited set together guard against a symlink
-// cycle (an entry that links back to one of its own ancestors, directly or
-// through another link): each newly dereferenced directory's real
-// (EvalSymlinks'd) path is added to visited before recursing into it, and a
-// path already in visited is skipped before copying; the depth counter is a
-// second, unconditional backstop.
+// maxCopyTreeDepth and the visited set guard against symlink cycles through
+// recursively followed links. Each link is also checked against its ordinary
+// directory ancestors before creating its destination; the depth counter is
+// a second, unconditional backstop.
 // ponytail: following a link copies its whole target with no size cap. Add a
 // cap if vendored or legacy trees ever link to huge directories.
 func copyTree(src, dst string) error {
@@ -486,7 +484,11 @@ func copyTreeGuarded(src, dst string, visited map[string]bool, depth int) error 
 			if !resolvedInfo.IsDir() {
 				return CopyFile(resolved, target)
 			}
-			if visited[resolved] {
+			ancestor, err := isCopyTreeAncestor(src, p, resolved)
+			if err != nil {
+				return err
+			}
+			if visited[resolved] || ancestor {
 				log.Printf("copyTree: skipping symlink cycle at %s (resolves to %s)", p, resolved)
 				return nil
 			}
@@ -502,6 +504,28 @@ func copyTreeGuarded(src, dst string, visited map[string]bool, depth int) error 
 		}
 		return CopyFile(p, target)
 	})
+}
+
+// isCopyTreeAncestor checks the directories active in this WalkDir call.
+// Keeping them separate from visited lets links to completed sibling trees
+// remain valid, while a link back to a nested parent is skipped immediately.
+func isCopyTreeAncestor(src, p, resolved string) (bool, error) {
+	src = filepath.Clean(src)
+	if filepath.Clean(p) == src {
+		return false, nil // The source itself may be a legitimate directory link.
+	}
+	for parent := filepath.Dir(p); ; parent = filepath.Dir(parent) {
+		realParent, err := filepath.EvalSymlinks(parent)
+		if err != nil {
+			return false, err
+		}
+		if realParent == resolved {
+			return true, nil
+		}
+		if filepath.Clean(parent) == src {
+			return false, nil
+		}
+	}
 }
 
 // SuperpowersOK is §12.4's usability check: the listed files must exist.

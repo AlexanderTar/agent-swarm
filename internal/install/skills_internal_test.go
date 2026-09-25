@@ -34,6 +34,53 @@ func TestCopyTreeDetectsASymlinkCycle(t *testing.T) {
 	}
 }
 
+func TestCopyTreeSkipsLinkToNestedParentBeforeCreatingDestination(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "a")
+	b := filepath.Join(a, "b")
+	if err := os.MkdirAll(b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".", filepath.Join(b, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b, "sibling.md"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "dst")
+	if err := copyTree(a, dst); err != nil {
+		t.Fatalf("nested-parent cycle should be skipped: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "b", "loop")); !os.IsNotExist(err) {
+		t.Errorf("cycle entry should be absent, got %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "b", "sibling.md")); err != nil || string(got) != "keep" {
+		t.Errorf("sibling = %q, %v; want keep", got, err)
+	}
+}
+
+func TestCopyTreeFollowsTopLevelDirectoryLink(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "file.md"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(src, link); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "dst")
+	if err := copyTree(link, dst); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "file.md")); err != nil || string(got) != "keep" {
+		t.Errorf("file = %q, %v; want keep", got, err)
+	}
+}
+
 func TestCopyTreeSkipsSelfReferentialLink(t *testing.T) {
 	src := t.TempDir()
 	if err := os.Symlink("loop", filepath.Join(src, "loop")); err != nil {
