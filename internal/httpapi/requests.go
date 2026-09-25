@@ -205,7 +205,7 @@ func (s *Server) getArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"artifact": aw, "markdown": md})
+	writeJSON(w, http.StatusOK, map[string]any{"artifact": aw, "markdown": md, "warnings": art.Warnings})
 }
 
 func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) {

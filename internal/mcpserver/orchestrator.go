@@ -280,6 +280,7 @@ func artifactTool(s *Server) ToolDef {
 				"revision":       res.Revision,
 				"sections":       sections,
 				"stale_requests": stale,
+				"warnings":       res.Warnings,
 			}, nil
 		},
 	}

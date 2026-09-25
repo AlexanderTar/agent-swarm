@@ -108,6 +108,9 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := raw.Exec(`ALTER TABLE artifact_revisions DROP COLUMN warnings_json`); err != nil {
+		t.Fatal(err)
+	}
 	for _, col := range []string{"verdict", "findings_json"} {
 		if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN ` + col); err != nil {
 			t.Fatal(err)

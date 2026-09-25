@@ -228,11 +228,11 @@ func (s *Store) copyArtifacts(ctx context.Context, tx *sql.Tx, rootKey string, s
 			WHERE id = ?`, srcID).Scan(&kind, &path, &headRev, &createdBy); err != nil {
 			return err
 		}
-		var sha, content, sectionsJSON string
+		var sha, content, sectionsJSON, warningsJSON string
 		var treeJSON sql.NullString
-		if err := tx.QueryRowContext(ctx, `SELECT sha256, content, sections_json, tree_json
+		if err := tx.QueryRowContext(ctx, `SELECT sha256, content, sections_json, tree_json, warnings_json
 			FROM artifact_revisions WHERE artifact_id = ? AND revision = ?`, srcID, headRev).
-			Scan(&sha, &content, &sectionsJSON, &treeJSON); err != nil {
+			Scan(&sha, &content, &sectionsJSON, &treeJSON, &warningsJSON); err != nil {
 			return err
 		}
 		newID := ids.New("art")
@@ -242,9 +242,8 @@ func (s *Store) copyArtifacts(ctx context.Context, tx *sql.Tx, rootKey string, s
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_revisions
-			(artifact_id, revision, sha256, content, sections_json, tree_json, created_at)
-			VALUES (?, 1, ?, ?, ?, ?, ?)`, newID, sha, content, sectionsJSON, treeJSON,
-			db.Millis(s.Now())); err != nil {
+			(artifact_id, revision, sha256, content, sections_json, tree_json, warnings_json, created_at)
+ VALUES (?, 1, ?, ?, ?, ?, ?, ?)`, newID, sha, content, sectionsJSON, treeJSON, warningsJSON, db.Millis(s.Now())); err != nil {
 			return err
 		}
 	}
