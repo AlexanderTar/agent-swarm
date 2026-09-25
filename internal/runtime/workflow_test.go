@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1147,5 +1149,173 @@ func TestCancelWorkflow(t *testing.T) {
 	}
 	if coder.State != AgentFinished {
 		t.Fatalf("builder agent state = %s, want finished", coder.State)
+	}
+}
+
+// --- Fix round 1 ---
+
+// TestDesignThenBuildStatusFlow is the interaction flagged in the P9 brief
+// (from P8's own review): completedCurrent counts a designer's completion
+// the same as a coder's, so a design step's CompletedCkp can flip the task
+// to InReview before the build step has even started -- applySpawn's
+// markInProgress (spec B4: "the task moves InReview <-> InProgress") must
+// bring it back to InProgress once build actually spawns. It also exercises
+// two fix-round-1 fixes together: a review step over a step with no commit
+// gate (design, gated on artifact:design instead) must spawn with no sha to
+// check a worktree out at (finding 3), and the build step's brief must see
+// the registered design artifact's path in its Context (finding 4, spec
+// B6).
+func TestDesignThenBuildStatusFlow(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	spec, err := workflow.Resolve(workflow.Spec{Steps: []workflow.Step{
+		{ID: "design", Run: "designer", Gates: []workflow.Gate{workflow.GateArtifactDesign}},
+		{ID: "review-design", Review: []string{"ui_reviewer"}, Of: "design"},
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateCommit}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orch, taskKey := seedWorkflowTask(t, s, spec)
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	designDir := filepath.Join(s.Home, "designs", task.RootKey)
+	if err := os.MkdirAll(designDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	designPath := filepath.Join(designDir, "flow.md")
+	if err := os.WriteFile(designPath, []byte("# Design\n\nDo the thing.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	designerSes := agentSessionForStep(t, s, st.ID, "design")
+	if _, err := s.WriteCheckpoint(ctx, designerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "designed",
+		Artifacts: []string{designPath}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The design step's own completion (a build role, per completedCurrent)
+	// already flips the task to InReview -- before build has even spawned.
+	afterDesign, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterDesign.Status != items.InReview {
+		t.Fatalf("status after design completes = %s, want in_review", afterDesign.Status)
+	}
+
+	// The design review spawned with no sha (design has no commit gate) --
+	// finding 3: this must not have errored advance() out before it could
+	// reach fillWaitingRuns.
+	var reviewRole, reviewState, reviewAgent string
+	if err := s.DB.QueryRowContext(ctx, `SELECT role, state, COALESCE(agent_id, '')
+		FROM workflow_runs WHERE workflow_id = ? AND step_id = 'review-design'`, st.ID).
+		Scan(&reviewRole, &reviewState, &reviewAgent); err != nil {
+		t.Fatal(err)
+	}
+	if reviewRole != "ui_reviewer" || reviewState != "active" || reviewAgent == "" {
+		t.Fatalf("review-design run = role %q state %q agent %q, want ui_reviewer/active/non-empty", reviewRole, reviewState, reviewAgent)
+	}
+
+	reviewerSes := agentSessionForStep(t, s, st.ID, "review-design")
+	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "looks good",
+		Verdict: "pass"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build just spawned: markInProgress must have brought the task back.
+	afterBuildSpawn, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterBuildSpawn.Status != items.InProgress {
+		t.Fatalf("status after build spawns = %s, want in_progress", afterBuildSpawn.Status)
+	}
+	var buildAgent string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st.ID).Scan(&buildAgent); err != nil {
+		t.Fatal(err)
+	}
+	if buildAgent == "" {
+		t.Fatal("build run has no agent")
+	}
+	builder, err := s.agentByID(ctx, buildAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(builder.Brief, designPath) {
+		t.Errorf("builder's brief missing the design artifact's path in Context:\n%s", builder.Brief)
+	}
+
+	// Finish the loop so the fixture doesn't leak a dangling test assertion
+	// about a workflow that never resolves.
+	if _, err := s.WriteCheckpoint(ctx, agentSessionForStep(t, s, st.ID, "build").ID, CheckpointInput{Kind: CompletedCkp,
+		Summary: "done", Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestResumeRetryAfterBlocked is fix round 1, finding 2: a blocked verdict
+// escalates unconditionally in internal/workflow.Next (no round/budget
+// check at all -- unlike changes_requested), so extra_rounds alone can
+// never un-escalate it. resumeBumpsRound must bump the round for a blocked
+// escalation too, landing on a fresh Spawn at the new round (matching
+// internal/workflow/next_test.go's own blocked-resume cases).
+func TestResumeRetryAfterBlocked(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	reviewerSes := agentSessionForStep(t, s, st.ID, "review")
+	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "blocked on a decision",
+		Verdict: "blocked"}); err != nil {
+		t.Fatal(err)
+	}
+
+	escalated, ok, err := s.WorkflowFor(ctx, taskKey)
+	if err != nil || !ok || escalated.State != "escalated" {
+		t.Fatalf("setup: state = %+v ok=%v err=%v, want escalated", escalated, ok, err)
+	}
+
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "running" {
+		t.Fatalf("workflow state = %s, want running (not re-escalated)", final.State)
+	}
+	if final.Round != 2 {
+		t.Fatalf("round = %d, want 2", final.Round)
+	}
+	if final.ExtraRounds != 1 {
+		t.Fatalf("extra_rounds = %d, want 1", final.ExtraRounds)
+	}
+
+	var round2State, round2Agent string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build' AND round = 2`, st.ID).Scan(&round2State, &round2Agent); err != nil {
+		t.Fatal(err)
+	}
+	if round2State != "active" || round2Agent == "" {
+		t.Fatalf("round 2 build run = state %s agent %q, want active/non-empty (a fresh spawn)", round2State, round2Agent)
 	}
 }

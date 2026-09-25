@@ -466,6 +466,15 @@ func (s *Store) applySpawn(ctx context.Context, wf wfRow, it items.Item, action 
 	if len(newRoles) == 0 {
 		return nil // pure replay: every role's row already existed
 	}
+	if action.SHA == "" {
+		// The reviewed step declared no commit gate (e.g. design-reviewed's
+		// designer step, gated on artifact:design instead) -- there is no
+		// git sha to check out a review worktree at, and none is needed:
+		// the reviewer reads the registered design/research artifact
+		// (spec B6 Context), not a worktree. Leave review_worktree_id
+		// unset; spawnRunAgent already treats that as "nothing to share".
+		return nil
+	}
 	wtID, err := s.reviewWorktreeFor(ctx, wf, action.StepID, action.Round, action.SHA)
 	if err != nil {
 		return err
@@ -601,12 +610,41 @@ func (s *Store) fillWaitingRuns(ctx context.Context, workflowID string) error {
 // spawnRunAgent spawns run's step agent (build or review) and, on success,
 // claims the row (agent_id + state -> active). It reports spawned=false,
 // nil error when another caller already claimed the row first.
+// artifactContextLines is spec B6's Context addition: paths of design/
+// research artifacts registered on itemID itself and on the items it
+// depends on (registerArtifactAsDaemon, P8, is what writes these rows) --
+// how a build step finds the design a designer step already produced.
+func (s *Store) artifactContextLines(ctx context.Context, itemID string) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT path FROM artifacts
+		WHERE kind IN ('design', 'research') AND (item_id = ?
+			OR item_id IN (SELECT blocked_by_id FROM item_deps WHERE item_id = ?))
+		ORDER BY path`, itemID, itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		out = append(out, path)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run wfRunRow) (bool, error) {
 	step, ok := stepFor(it.Workflow, run.StepID)
 	if !ok {
 		return false, fmt.Errorf("advance: workflow step %q not found on %s", run.StepID, it.Key)
 	}
-	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, wf.contextLines())
+	artifactLines, err := s.artifactContextLines(ctx, it.ID)
+	if err != nil {
+		return false, err
+	}
+	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
+	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, ctxLines)
 
 	var shareRW []WorkflowWorktree
 	if step.Run != "" {
@@ -1000,10 +1038,17 @@ const stallThreshold = 30 * time.Second
 // stallThreshold gets a fresh advance -- the daemon-restart gap between a
 // checkpoint's commit and the advance() call that should have followed it.
 func (s *Store) recoverWorkflows(ctx context.Context) error {
+	// Only 'active' excludes -- not 'waiting' too (fix round 1, finding 6):
+	// a workflow with an active run is genuinely in flight (its own
+	// checkpoint/crash trigger will advance it), but a 'waiting' row with
+	// nothing active is exactly the stranded case this scan exists to
+	// catch -- e.g. the slot-release trigger that should have picked it up
+	// never fired (its owner's last other child finished before this
+	// workflow's own run went 'waiting', so no later slot ever freed).
 	ids, err := s.queryIDs(ctx, `SELECT w.id FROM workflows w
 		WHERE w.state = 'running' AND w.updated_at < ?
 			AND EXISTS (SELECT 1 FROM workflow_runs r WHERE r.workflow_id = w.id)
-			AND NOT EXISTS (SELECT 1 FROM workflow_runs r WHERE r.workflow_id = w.id AND r.state IN ('waiting', 'active'))`,
+			AND NOT EXISTS (SELECT 1 FROM workflow_runs r WHERE r.workflow_id = w.id AND r.state = 'active')`,
 		db.Millis(s.now().Add(-stallThreshold)))
 	if err != nil {
 		return err
@@ -1054,13 +1099,29 @@ func notWaitingOnYou(key, state string) error {
 // trustworthy.
 func resumeBumpsRound(spec workflow.Spec, runs []wfRunRow, round int) bool {
 	steps := spec.EffectiveSteps()
+	// Next's own priority (next.go): blockedReason is checked first and
+	// escalates unconditionally, with no round/budget involved at all -- a
+	// bigger extraRounds budget alone can never un-escalate it, so resume
+	// must bump the round (the blocked row becomes a carried-forward,
+	// previous-round row that pinnedFrom's verdict phase pins from,
+	// spawning the fix step fresh). Only changes_requested, checked after
+	// blocked in Next, is the "just needed a bigger budget" shape.
 	for _, st := range steps {
 		if len(st.Review) == 0 {
 			continue
 		}
 		for _, r := range runs {
-			if r.StepID == st.ID && r.Round == round &&
-				(r.Verdict == string(workflow.VerdictChangesRequested) || r.Verdict == string(workflow.VerdictBlocked)) {
+			if r.StepID == st.ID && r.Round == round && r.Verdict == string(workflow.VerdictBlocked) {
+				return true
+			}
+		}
+	}
+	for _, st := range steps {
+		if len(st.Review) == 0 {
+			continue
+		}
+		for _, r := range runs {
+			if r.StepID == st.ID && r.Round == round && r.Verdict == string(workflow.VerdictChangesRequested) {
 				return false
 			}
 		}
@@ -1235,7 +1296,12 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, request
 		if err != nil {
 			continue
 		}
-		if _, err := s.Cancel(ctx, a.Name, "", requestID); err != nil {
+		// "" not requestID: that's swarm_workflow cancel's own idempotency
+		// key for this WHOLE call (P10's MCP wrapper). Reusing it per agent
+		// would make Cancel's own PeekIdempotent replay the first agent's
+		// result for every agent after it -- the second parallel reviewer
+		// would never actually be cancelled.
+		if _, err := s.Cancel(ctx, a.Name, "", ""); err != nil {
 			s.logf("cancel workflow: cancel agent %s: %v", a.Name, err)
 		}
 	}
