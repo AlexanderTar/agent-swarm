@@ -814,9 +814,9 @@ launch folder (see `docs/plans/2026-09-24-skill-symlink-probe.md`,
 - [x] Implement `legacyAgySkillsChain`, `repairAgySkillsRoot` (called from `WriteAgy`, before `WriteSkills`) and `agySkillsRootLegacyCheck` (added to `CheckAgy`). Green. Commit.
 
 #### Unit PA.4: Sealed re-probe + link mode + probe doc
-- [ ] Build a scratch `HOME` under the scratchpad with no symlink to any real directory; copy (not link) only the auth/onboarding files agy needs; create `$HOME/.gemini/config/.migrated`; symlink the probe skill at `$HOME/.gemini/config/skills/zz-swarm-symlink-probe` to a dir outside `$HOME`; run agy headless and ask for the probe codeword; before and after, diff `ls -la ~/.gemini/antigravity-cli/skills ~/.gemini/config ~/.gemini/antigravity-cli` on the real home — any difference stops the unit and reports BLOCKED.
-- [ ] Run the same prompt against a real (non-symlink) copy of the probe at the same scratch location as a control.
-- [ ] Set `skillLinkMode[KindAgy]` from the result; update `TestSkillLinkModePerKind` and its comment if it changed. Append a dated section (and update the Verdicts row) to `docs/plans/2026-09-24-skill-symlink-probe.md` with the exact command, prompt and output lines. Commit.
+- [x] Build a scratch `HOME` under the scratchpad with no symlink to any real directory; copy (not link) only the auth/onboarding files agy needs; create `$HOME/.gemini/config/.migrated`; symlink the probe skill at `$HOME/.gemini/config/skills/zz-swarm-symlink-probe` to a dir outside `$HOME`; run agy headless and ask for the probe codeword; before and after, diff `ls -la ~/.gemini/antigravity-cli/skills ~/.gemini/config ~/.gemini/antigravity-cli` on the real home — any difference stops the unit and reports BLOCKED. (Zero drift observed across the whole re-probe.)
+- [x] Run the same prompt against a real (non-symlink) copy of the probe at the same scratch location as a control.
+- [x] Set `skillLinkMode[KindAgy]` from the result (agy 1.2.11: Symlink); update `TestSkillLinkModePerKind` and its comment. Append a dated section (and update the Verdicts row) to `docs/plans/2026-09-24-skill-symlink-probe.md` with the exact command, prompt and output lines. Commit.
 
 ---
 

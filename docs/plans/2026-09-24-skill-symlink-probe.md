@@ -23,7 +23,7 @@ at `Config.SkillsDir(KindAgy)` itself.
 |---|---|---|
 | claude | Symlink | Predates this check; not re-run 2026-09-24. |
 | codex | Symlink | Verified below. |
-| agy | **Copy** (unverified for Symlink) | See "agy" section — the check's own probe run corrupted the evidence via a migration side effect, and ruled out a clean re-test this round per a strict no-more-CLI-probes rule from review. |
+| agy | **Symlink** (re-verified 2026-09-25) | See "agy — 2026-09-25 re-probe" below. The 2026-09-24 Copy verdict was against the wrong path (`~/.gemini/antigravity-cli/skills`, which agy migrates away from); against the corrected `Config.SkillsDir(KindAgy)` (`~/.gemini/config/skills`, package PA / spec A7), a sealed scratch-HOME probe found agy 1.2.11 follows a symlink placed there with zero migration side effect. |
 | cursor-agent | Symlink | Verified below. |
 | muse | Symlink | Verified below. |
 
@@ -226,3 +226,104 @@ clean, repeatable signal *and* stop this:
    confirm directly whether it's a copy or a move (e.g. `stat` the source
    for an inode/device match, or watch for a `rename`/`unlink` vs a fresh
    write) rather than inferring it.
+
+## agy — 2026-09-25 re-probe (package PA), agy 1.2.11: Symlink, sealed
+
+This is the follow-up above, items 1-3, carried out as package PA of
+`docs/plans/2026-09-24-self-contained-tasks-and-role-skills.md` (spec A7).
+`Config.SkillsDir(KindAgy)` now points at `~/.gemini/config/skills` (the
+path agy actually reads and migrates to), so this re-probe places the
+symlink there directly instead of at the old, migrated-away-from
+`~/.gemini/antigravity-cli/skills`.
+
+### Method (sealed)
+
+Two scratch `HOME`s were built entirely under this task's scratchpad, with
+**no symlink to any real directory** anywhere inside either one (checked
+with `find $SCRATCH -type l`, both before and after each run):
+
+- `home-symlink/.gemini/antigravity-cli/{antigravity-oauth-token,
+  antigravity_state.pbtxt, installation_id, settings.json}` — copied
+  (`cp`, not linked) from the real `~/.gemini/antigravity-cli/`; these are
+  the only files agy needs for auth/onboarding. `settings.json`'s
+  `trustedWorkspaces` was rewritten (in the copy only) to name only the
+  scratch cwd, so no other host path leaked into the sandbox by accident.
+- `home-symlink/.gemini/config/.migrated` — an empty file, matching the
+  real one's content (confirmed empty via `cat` before the probe started).
+- `home-symlink/.gemini/config/skills/zz-swarm-symlink-probe` — a symlink
+  to `probe-src/zz-swarm-symlink-probe/SKILL.md`
+  (`description: "Probe skill; when asked for the probe codeword, answer
+  NARWHAL-4482"`), a directory outside both scratch `HOME`s.
+- `home-control` mirrors `home-symlink` exactly, except
+  `.gemini/config/skills/zz-swarm-symlink-probe` is a real copy of the
+  probe directory (the control), not a symlink.
+- No stray `GEMINI`/`ANTIGRAVITY`/`XDG` environment variable was present
+  (`env | grep -iE 'gemini|antigravity|xdg'`, empty); `HOME` was set
+  explicitly on each invocation, not inherited.
+
+Before starting, and after each run, the real home was snapshotted
+(`ls -la ~/.gemini/antigravity-cli/skills ~/.gemini/config
+~/.gemini/antigravity-cli`) and diffed against the previous snapshot. All
+three diffs (before → after run 1, after run 1 → before run 2, before →
+after run 2) were empty — **zero drift on the real home across the whole
+re-probe.**
+
+Command (symlink run, from the scratch cwd, `agy 1.2.11`):
+```
+cd $SCRATCH/cwd-symlink && HOME=$SCRATCH/home-symlink agy --print-timeout 150s \
+  --dangerously-skip-permissions \
+  -p "List your available skills by name. If a skill named zz-swarm-symlink-probe exists, use it and tell me the probe codeword."
+```
+Output:
+```
+Here are the available skills:
+
+- `agy-customizations`
+- `antigravity-guide`
+- `zz-swarm-symlink-probe` ([SKILL.md](file:///$SCRATCH/home-symlink/.gemini/config/skills/zz-swarm-symlink-probe/SKILL.md))
+
+The probe codeword is **NARWHAL-4482**.
+```
+The cited file path is the symlink's own path under
+`agy-home/.gemini/config/skills/` (not some other migrated location), and
+`find $SCRATCH/home-symlink -newer <pre-run stamp>` showed no write
+anywhere under `.gemini/config/skills` — only ordinary session-state
+writes elsewhere in `.gemini/antigravity-cli/` (conversation db, cache,
+brain/, etc., the same kind of state any agy session writes). The probe
+source file (`probe-src/zz-swarm-symlink-probe/SKILL.md`) was still
+present, unchanged, and still a plain file afterward (not moved) —
+agy read straight through the symlink; it did not copy, move, or migrate
+the target.
+
+Control command (real copy, not symlink), same prompt, `HOME=$SCRATCH/home-control`:
+```
+cd $SCRATCH/cwd-control && HOME=$SCRATCH/home-control agy --print-timeout 150s \
+  --dangerously-skip-permissions \
+  -p "List your available skills by name. If a skill named zz-swarm-symlink-probe exists, use it and tell me the probe codeword."
+```
+Output:
+```
+The available skills are:
+
+- `agy-customizations` (...)
+- `antigravity-guide` (...)
+- `zz-swarm-symlink-probe` ([SKILL.md](file:///$SCRATCH/home-control/.gemini/config/skills/zz-swarm-symlink-probe/SKILL.md))
+
+The probe codeword is **NARWHAL-4482**.
+```
+Identical result, as expected for a real (non-symlink) copy.
+
+### Verdict
+
+agy 1.2.11 discovers and reads a skill whose directory is a symlink,
+placed directly at `Config.SkillsDir(KindAgy)`
+(`~/.gemini/config/skills`), with no migration side effect. **Verdict:
+Symlink.** `skillLinkMode[KindAgy]` is now `Symlink`
+(`internal/install/skills.go`), matching every other kind.
+
+This does not reopen the copy-vs-move question from the 2026-09-24 run:
+that question was about agy's *migration* behavior at the old
+(`antigravity-cli/skills`) path, which no longer matters once
+`setupEnv` (package PA.2) links `config/skills` directly and gives every
+spawn its own `.migrated` marker — a spawned agy now has no first-run
+migration left to trigger at all.

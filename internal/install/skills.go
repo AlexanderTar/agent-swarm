@@ -162,18 +162,19 @@ const (
 // skillLinkMode is §A1's per-kind choice. claude's Symlink predates this
 // check (not re-run here). codex, cursor-agent, and muse were empirically
 // verified 2026-09-24 to discover a skill whose directory is a symlink.
-// agy stays Copy: that same probe run showed agy 1.2.10 migrates
-// .gemini/antigravity-cli/skills (Config.SkillsDir(KindAgy)) to
-// $HOME/.gemini/config/skills on first run, leaving a reverse symlink behind
-// -- so the positive result seen against a fresh HOME was reading a migrated
-// copy, not proof of following a symlink placed there, and the mode stays
-// unverified/Copy until SkillsDir(KindAgy) points at the location agy
-// actually migrates to. See docs/plans/2026-09-24-skill-symlink-probe.md for
-// the exact commands, output, and the follow-up this implies.
+// agy is Symlink too, re-verified 2026-09-25 (A7, package PA) against the
+// corrected Config.SkillsDir(KindAgy) (~/.gemini/config/skills, the path agy
+// 1.2.11 actually reads) in a sealed scratch HOME with no path back into any
+// real directory: agy read a symlinked skill placed there directly, with no
+// migration side effect. The earlier 2026-09-24 probe's Copy verdict was
+// against the wrong path (~/.gemini/antigravity-cli/skills), which agy
+// migrates away from on first run -- see
+// docs/plans/2026-09-24-skill-symlink-probe.md for both runs' exact
+// commands and output.
 var skillLinkMode = map[Kind]LinkMode{
 	KindClaude: Symlink,
 	KindCodex:  Symlink,
-	KindAgy:    Copy,
+	KindAgy:    Symlink,
 	KindCursor: Symlink,
 	KindMuse:   Symlink,
 }

@@ -455,9 +455,10 @@ Locked decisions:
 
 1. `Config.SkillsDir(KindAgy)` = `~/.gemini/config/skills`. Doctor,
    uninstall and `WriteSkills` follow automatically since they all derive
-   the path from this method. Link mode for agy stays whatever the A1
-   symlink-following re-probe (decision 5 below) finds, default `Copy`
-   until proven `Symlink`.
+   the path from this method. Link mode for agy is set by the re-probe
+   (decision 5 below): re-verified 2026-09-25 against agy 1.2.11 as
+   `Symlink` (the 2026-09-24 `Copy` verdict was against the wrong,
+   pre-A7 path).
 2. `setupEnv` creates the real `~/.gemini/config/skills` if missing
    (`0o755`) and symlinks `<agy-home>/.gemini/config/skills` straight at
    it — no longer relying on the `.gemini/antigravity-cli` symlink plus
