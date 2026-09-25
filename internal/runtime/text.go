@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // Preamble is §9.1, used in every injected notice, the kickoff prompt and the brief header.
@@ -143,6 +144,16 @@ type BriefInput struct {
 	Objective                              string
 	Acceptance, ScopeIn, ScopeOut, Context []string
 	Verify, StopWhen                       []string
+	// Steps and Units are spec B6: the item's own execution script (a
+	// single-unit task has Steps, a batched one has Units -- never both).
+	// Empty for a legacy (non-workflow) spawn.
+	Steps []string
+	Units []items.Unit
+	// Workflow is the pre-rendered "## Workflow" section (workflow.Render),
+	// spec B6/B4. Empty for a legacy spawn. Its presence, not the item's own
+	// shape, is what gates the cap-collapse cascade below (Review Focus 1:
+	// a legacy over-long brief must keep refusing outright).
+	Workflow string
 }
 
 func PendingNotice(n int, name, key string) string {
@@ -223,8 +234,31 @@ func ResumeKickoff(name string, role Role, itemType items.Type, key, title strin
 		name, role, key, skills(role, itemType), mandateText, ShortPreamble)
 }
 
-// RenderBrief renders §9.4. Empty sections are left out.
+// RenderBrief renders §9.4. Empty sections are left out. Spec B6: for a
+// workflow spawn (in.Workflow set), a brief that overflows the cap first
+// truncates Context to a single swarm_read pointer, then -- if still over
+// cap -- collapses each unit's steps to its title plus the same pointer. A
+// legacy (non-workflow) spawn never cascades: it just refuses, unchanged
+// (Review Focus 1).
 func RenderBrief(in BriefInput) (string, error) {
+	if out := renderBriefOnce(in, false, false); len(out) <= maxBrief {
+		return out, nil
+	} else if in.Workflow == "" {
+		return "", errors.New(ErrBriefTooLong)
+	}
+	if out := renderBriefOnce(in, false, true); len(out) <= maxBrief {
+		return out, nil
+	}
+	if out := renderBriefOnce(in, true, true); len(out) <= maxBrief {
+		return out, nil
+	}
+	return "", errors.New(ErrBriefTooLong)
+}
+
+// renderBriefOnce does the actual rendering; RenderBrief calls it up to
+// three times (full, context-truncated, then also unit-collapsed) to find
+// one that fits the cap.
+func renderBriefOnce(in BriefInput, collapseUnits, truncateContext bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s · %s\n", in.Key, in.Title)
 	parent := in.ParentName
@@ -260,12 +294,54 @@ func RenderBrief(in BriefInput) (string, error) {
 			fmt.Fprintf(&b, "Out: %s\n", strings.Join(in.ScopeOut, ", "))
 		}
 	}
-	bullets("Context", in.Context)
+	switch {
+	case len(in.Units) > 0:
+		b.WriteString("\n## Units\n")
+		for i, u := range in.Units {
+			if collapseUnits {
+				fmt.Fprintf(&b, "%d. %s (steps: swarm_read %s)\n", i+1, u.Title, in.Key)
+				continue
+			}
+			fmt.Fprintf(&b, "%d. %s\n", i+1, u.Title)
+			for _, st := range u.Steps {
+				fmt.Fprintf(&b, "   - %s\n", st)
+			}
+		}
+	case len(in.Steps) > 0:
+		b.WriteString("\n## Steps\n")
+		for i, st := range in.Steps {
+			fmt.Fprintf(&b, "%d. %s\n", i+1, st)
+		}
+	}
+	if truncateContext && len(in.Context) > 0 {
+		fmt.Fprintf(&b, "\n## Context\n- (context truncated; swarm_read %s)\n", in.Key)
+	} else {
+		bullets("Context", in.Context)
+	}
 	bullets("Verify", in.Verify)
 	bullets("Stop when", in.StopWhen)
-	out := strings.TrimRight(b.String(), "\n")
-	if len(out) > maxBrief {
-		return "", errors.New(ErrBriefTooLong)
+	if in.Workflow != "" {
+		fmt.Fprintf(&b, "\n%s\n", in.Workflow)
 	}
-	return out, nil
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// BriefForStep builds an engine-spawned step agent's brief content (spec
+// B6): Objective/Acceptance/Steps/Units/Verify come straight from the item,
+// Context is the caller-resolved lines (workflow start's own context, plus
+// design/research artifact paths -- the engine's own job, not this
+// function's), and Workflow is the step's own "## Workflow" section
+// (workflow.Render). The identity fields (Key, Title, Name, Role,
+// ParentName, RootKey, Worktrees) are filled by the caller/Spawn, not here --
+// same split BriefInput already had before this package existed.
+func BriefForStep(it items.Item, spec workflow.Spec, stepID string, round int, ctxLines []string) BriefInput {
+	return BriefInput{
+		Objective:  it.Brief,
+		Acceptance: it.Acceptance,
+		Verify:     it.Verify,
+		Context:    ctxLines,
+		Steps:      it.Steps,
+		Units:      it.Units,
+		Workflow:   workflow.Render(spec, stepID, round),
+	}
 }

@@ -1008,6 +1008,12 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in CheckpointInput) (CheckpointResult, error) {
 	var out CheckpointResult
 	var toClose []siblingTeardown
+	// P9: hoisted out of the closure the same way toClose is, so the
+	// post-commit advance() trigger below can see which workflow (if any)
+	// this checkpoint's agent belongs to.
+	var wfRun workflowRun
+	var wfHasRun bool
+	var failedWorkflowPane string
 	ran, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
 		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
@@ -1112,14 +1118,14 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					itemTypePlural(it.Type))}
 		}
 
-		var run workflowRun
-		var hasRun bool
-		if in.Kind == CompletedCkp {
-			run, hasRun, err = s.workflowRunFor(ctx, tx, a.ID)
-			if err != nil {
-				return err
-			}
+		// P9: read unconditionally, not just for CompletedCkp -- relay
+		// suppression (spec B4) needs hasRun for Accepted/Progress too, and
+		// the run-state update below needs it for FailedCkp.
+		run, hasRun, err := s.workflowRunFor(ctx, tx, a.ID)
+		if err != nil {
+			return err
 		}
+		wfRun, wfHasRun = run, hasRun
 		if in.Kind == CompletedCkp && hasRun {
 			// Gates replace verifyOK for an agent with a workflow run (spec
 			// B5): the step's own declared gates decide, not a blanket
@@ -1189,6 +1195,39 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET verdict = ?, findings_json = ?
 				WHERE id = ?`, string(verdict), jsonArray(in.Findings), run.ID); err != nil {
 				return err
+			}
+		}
+		// P9 (spec B4): the engine owns a run's state/ended_at from here on.
+		// Completed/failed are this run's own terminal checkpoint (an
+		// AutoRetry crash re-attempt reuses the same row via a fresh
+		// advance, not a second insert).
+		if hasRun && (in.Kind == CompletedCkp || in.Kind == FailedCkp) {
+			if in.Kind == FailedCkp {
+				failedWorkflowPane = a.Name
+			}
+			state := "completed"
+			if in.Kind == FailedCkp {
+				state = "failed"
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = ?, ended_at = ? WHERE id = ?`,
+				state, db.Millis(now), run.ID); err != nil {
+				return err
+			}
+			if in.Kind == FailedCkp {
+				// A voluntary FailedCkp is this session's own terminal
+				// signal too (spec B4): normally reconcile's resolveDead
+				// discovers a terminal checkpoint asynchronously and marks
+				// the session 'failed' from there, which would leave the
+				// engine's own AutoRetry (Store.Retry requires a
+				// retryableStates session) waiting on that tick. A
+				// workflow agent's own report doesn't need to wait for it.
+				// The pane is closed after commit, before AutoRetry. When
+				// retries are exhausted that close is still necessary because
+				// reconcile no longer scans this terminal session.
+				if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'failed', ended_at = ? WHERE id = ?`,
+					db.Millis(now), sessionID); err != nil {
+					return err
+				}
 			}
 		}
 		if err := s.onPausingCheckpoint(ctx, tx, ses, in.Kind); err != nil {
@@ -1294,7 +1333,14 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
-		if a.ParentAgentID != "" {
+		// P9 (spec B4 Relays): for an agent with a workflow run, the engine
+		// owns accepted/progress/completed -- WriteCheckpoint must not also
+		// relay them to the parent (that would double the orchestrator's
+		// own workflow_succeeded/escalated relay with a redundant raw
+		// checkpoint one). blocked/failed/handoff and swarm_send questions
+		// still reach the orchestrator exactly as today.
+		suppressed := hasRun && (in.Kind == Accepted || in.Kind == Progress || in.Kind == CompletedCkp)
+		if a.ParentAgentID != "" && !suppressed {
 			body, err := json.Marshal(map[string]any{
 				"event": string(in.Kind), "agent": a.Name, "item": itemKey,
 				"checkpoint": map[string]any{"summary": in.Summary, "resolution": in.Resolution,
@@ -1347,11 +1393,27 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		// -kill sessions a first, successful call already closed.
 		return out, err
 	}
+	postCommitCtx := context.WithoutCancel(ctx)
 	for _, t := range toClose {
 		if ad := s.Adapters[t.Kind]; ad != nil {
 			_ = s.Tmux.Keys(ctx, t.TmuxName, ad.InterruptKeys()...)
 		}
 		_ = s.Tmux.Kill(ctx, t.TmuxName)
+	}
+	if failedWorkflowPane != "" {
+		// The failed session is terminal in the DB, so reconcile no longer
+		// scans it. End its pane even when AutoRetry is exhausted.
+		if err := s.Tmux.Kill(postCommitCtx, failedWorkflowPane); err != nil {
+			s.logf("checkpoint: kill failed workflow pane %s: %v", failedWorkflowPane, err)
+		}
+	}
+	// P9 (spec B4): a completed or failed checkpoint from a workflow agent
+	// triggers advance after commit -- the engine reads the state this
+	// checkpoint just wrote (workflow_runs.state, verdict/findings).
+	if wfHasRun && (in.Kind == CompletedCkp || in.Kind == FailedCkp) {
+		if err := s.advance(postCommitCtx, wfRun.WorkflowID); err != nil {
+			s.logf("checkpoint: advance %s: %v", wfRun.WorkflowID, err)
+		}
 	}
 	return out, nil
 }

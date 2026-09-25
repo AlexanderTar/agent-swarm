@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -171,7 +172,74 @@ func (s *Store) check(ctx context.Context, tx *sql.Tx, it Item, to Status, by Ac
 	return s.checkTask(ctx, tx, it, to, daemon, orch, generic)
 }
 
+// workflowDoneCopy is spec B5's Done-on-workflow-task copy, verbatim.
+const workflowDoneCopy = "%s is finished by its workflow. It moves to Done when the workflow succeeds; use swarm_workflow resume to accept or fail it."
+
+// workflowSucceeded reports whether itemID's latest workflows row (if any)
+// is 'succeeded' -- spec B4/B5: the engine (P9) owns Done for a workflow
+// task, checkTask never reaches it through completedCurrent's legacy path.
+func (s *Store) workflowSucceeded(ctx context.Context, tx *sql.Tx, itemID string) (bool, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, `SELECT state FROM workflows WHERE item_id = ? ORDER BY created_at DESC LIMIT 1`,
+		itemID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return state == "succeeded", nil
+}
+
+// workflowFailedOrCancelled reports whether itemID's latest workflows row is
+// 'failed' or 'cancelled' -- spec B7: a resume {decision:"fail"} or a
+// cancel both move the task back to Ready as the daemon, which needs its
+// own transition.go case (InProgress/InReview -> Ready has no other path).
+func (s *Store) workflowFailedOrCancelled(ctx context.Context, tx *sql.Tx, itemID string) (bool, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, `SELECT state FROM workflows WHERE item_id = ? ORDER BY created_at DESC LIMIT 1`,
+		itemID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return state == "failed" || state == "cancelled", nil
+}
+
 func (s *Store) checkTask(ctx context.Context, tx *sql.Tx, it Item, to Status, daemon, orch bool, generic *Error) error {
+	if it.Workflow != nil {
+		switch to {
+		case Done:
+			// spec B5 "Done.": a workflow task's Done is entirely engine-
+			// driven (P9's applySucceed calls TransitionTx as the daemon
+			// actor once the workflow itself is already 'succeeded' --
+			// including after an orchestrator's swarm_workflow resume
+			// {decision:"accept"}, which marks the workflow succeeded
+			// before this ever runs). Any other caller, or a daemon call
+			// before the workflow actually succeeded, is refused with the
+			// same copy swarm_items update surfaces.
+			succeeded, err := s.workflowSucceeded(ctx, tx, it.ID)
+			if err != nil {
+				return err
+			}
+			if daemon && succeeded {
+				return nil
+			}
+			return deny(workflowDoneCopy, it.Key)
+		case Ready:
+			if daemon && (it.Status == InProgress || it.Status == InReview) {
+				terminal, err := s.workflowFailedOrCancelled(ctx, tx, it.ID)
+				if err != nil {
+					return err
+				}
+				if terminal {
+					return nil
+				}
+			}
+		}
+	}
 	switch {
 	case to == Done:
 		ok, err := s.completedCurrent(ctx, tx, it)

@@ -38,6 +38,12 @@ type fakeTmux struct {
 	panes    []Pane
 	n        map[string]int
 	clk      *testClock // the Store's clock, so a test can advance it: tm.clk.Advance(d)
+	// startErr, when set, is returned by every Start call instead of
+	// succeeding -- fix round 2, finding 2's "Spawn returns an error after
+	// committing the agent row" case (agents.go's startSession runs
+	// Tmux.Start after the agent row is already committed).
+	startErr error
+	onKill   func()
 }
 
 func newFakeTmux() *fakeTmux {
@@ -45,6 +51,9 @@ func newFakeTmux() *fakeTmux {
 		n: map[string]int{}}
 }
 func (f *fakeTmux) Start(ctx context.Context, name, cwd string, env map[string]string, argv []string) error {
+	if f.startErr != nil {
+		return f.startErr
+	}
 	f.started = append(f.started, name+"|"+cwd+"|"+strings.Join(argv, " "))
 	f.env[name] = env
 	return nil
@@ -75,6 +84,9 @@ func (f *fakeTmux) Env(ctx context.Context, name, key string) (string, error) {
 }
 func (f *fakeTmux) Kill(ctx context.Context, name string) error {
 	f.killed = append(f.killed, name)
+	if f.onKill != nil {
+		f.onKill()
+	}
 	return nil
 }
 func (f *fakeTmux) RenameWindow(ctx context.Context, name, title string) error {
