@@ -234,6 +234,83 @@ func ResumeKickoff(name string, role Role, itemType items.Type, key, title strin
 		name, role, key, skills(role, itemType), mandateText, ShortPreamble)
 }
 
+// Continuity prompts (spec §4, normative templates for pause, handoff and
+// recovery). They reuse Preamble, RoleSkills and the checkpoint format,
+// and never add "[swarm]" to a new notice.
+
+// PauseHandoffNotice is the pause/handoff notice. mode is "PAUSE" or
+// "HANDOFF"; tail selects the matching last line.
+func PauseHandoffNotice(mode, name, itemKey string) string {
+	tail := "Pause: wait for Resume."
+	if mode == "HANDOFF" {
+		tail = "Handoff: a fresh session for this same agent starts after preservation and termination."
+	}
+	return fmt.Sprintf("%s requested for %s (%s). Stop taking new work and call swarm_sync. "+
+		"Safely finish or interrupt your current operation, collect its status, and preserve your work. "+
+		"You may use tools needed to save files, wait for or stop your own commands, inspect git, "+
+		"commit task-owned changes, and write the handoff manifest/checkpoint. Do not delegate, start "+
+		"another workflow step, push, deploy, or report the assignment completed. If preservation fails, "+
+		"record the blocker and surviving paths; do not claim a clean handoff. %s %s",
+		mode, sanitizeOneLine(name), sanitizeOneLine(itemKey), tail, Preamble)
+}
+
+// PreservationChecklist is the core-swarm-skill preservation checklist the
+// predecessor follows after the notice: manifest first, then the handoff
+// checkpoint (summary of at most 500 runes), then end the turn.
+const PreservationChecklist = "Stop new work, save edits, wait for or interrupt owned commands with " +
+	"real exit status. Inspect each rw worktree, stage task-owned paths only, signed commit when dirty " +
+	"(ro trees and live children's work excluded; failures turn the handoff blocked with the dirty paths). " +
+	"Snapshot specs, plans and scratch with IDs, revisions and hashes, plus units, next action, blockers, " +
+	"tests, resources, questions and workflow binding. Write the handoff manifest first, then " +
+	"swarm_checkpoint kind handoff with a summary of at most 500 runes, then end the turn. " +
+	"An orchestrator handoff leaves children running and records their IDs and decisions without " +
+	"fabricating their checkpoints; a pause group keeps the child-first protocol with a combined snapshot."
+
+// SuccessorKickoff is the fresh-session kickoff for the same agent after a
+// handoff, an interrupted recovery, or a resume. mode is one of "handoff",
+// "recovery" or "resume".
+func SuccessorKickoff(name string, role Role, itemKey, title, mode string) string {
+	after := "handoff"
+	if mode == "recovery" {
+		after = "interrupted recovery"
+	} else if mode == "resume" {
+		after = "pause, resuming"
+	}
+	return fmt.Sprintf("You are swarm agent %s (%s) for %s: %s, continuing in a fresh session after %s. "+
+		"Identity and assignment unchanged. Use the %s skill(s).%s Call swarm_sync first; read assignment and "+
+		"recovery manifest. Read all checkpoint pages, referenced specs/plans/artifacts, and current "+
+		"item/worktree/workflow state. Reuse exact worktrees/branches; check HEAD/status before editing. "+
+		"Continue the unfinished unit and next action; do not repeat completed work or reset the plan. "+
+		"Checkpoint acceptance naming the predecessor and next action. On incomplete recovery or divergence, "+
+		"inspect and report before overwriting. %s",
+		name, role, itemKey, title, after, joinSkillNames(RoleSkills(role, items.Task)), mandateText, Preamble)
+}
+
+// ResumeAddition rides on the successor kickoff for a resume: durable
+// state wins over whatever this session remembers.
+const ResumeAddition = "Reload durable state even if this session remembers work; durable state wins."
+
+// BrokenPredecessorWarning ships with recovery when the predecessor saved
+// nothing usable: inspect first, never reset/clean or invent test results.
+func BrokenPredecessorWarning(paths, checkpoints []string) string {
+	return fmt.Sprintf("incomplete recovery: the predecessor left no usable manifest. Observed paths: %s. "+
+		"Observed checkpoints: %s. Inspect dirty and untracked files first; never reset/clean or invent test results.",
+		strings.Join(paths, ", "), strings.Join(checkpoints, ", "))
+}
+
+// OrchestratorHandoffAddition records the live children a handoff leaves
+// running: their IDs and decisions, never fabricated checkpoints.
+func OrchestratorHandoffAddition(childNames []string) string {
+	return fmt.Sprintf("Your children keep running through this handoff (%s): record their IDs and decisions, "+
+		"reconcile their progress after resume, and never report their work complete without fabricating their checkpoints.",
+		strings.Join(childNames, ", "))
+}
+
+// ReviewerRecoveryAddition reminds a recovering reviewer what its verdict
+// evidence must cover.
+const ReviewerRecoveryAddition = "Re-read the review target and the recorded verdict evidence before " +
+	"setting a verdict; a recovered review never passes on memory alone."
+
 // RenderBrief renders §9.4. Empty sections are left out. Spec B6: for a
 // workflow spawn (in.Workflow set), a brief that overflows the cap first
 // truncates Context to a single swarm_read pointer, then -- if still over

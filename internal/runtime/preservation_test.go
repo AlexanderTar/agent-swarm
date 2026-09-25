@@ -114,7 +114,11 @@ func TestHandoffManifestPreservesScratchArtifacts(t *testing.T) {
 	}
 
 	// Handoff operation (predecessor pane alive, so it parks) and the
-	// handoff checkpoint, manifest last per the binding order.
+	// handoff checkpoint, manifest last per the binding order. The disk
+	// HEAD agrees with the recorded one, so checkpoint binding validates.
+	oldHEAD := readDiskHEAD
+	readDiskHEAD = func(string) (string, error) { return "deadbee", nil }
+	defer func() { readDiskHEAD = oldHEAD }()
 	panes(tm, Pane{Session: wSes.TmuxName})
 	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "h1", "")
 	if err != nil {
@@ -215,5 +219,84 @@ func TestHandoffManifestPreservesScratchArtifacts(t *testing.T) {
 	sum := fmt.Sprintf("%x", sha256.Sum256(raw))
 	if gotHash != sum {
 		t.Fatalf("op manifest_hash = %q, want sha256 %q", gotHash, sum)
+	}
+}
+
+// TestPauseCannotClaimReadyAfterFailedSave pins checkpoint binding: a
+// handoff checkpoint written while a handoff operation is pending assembles
+// the manifest and validates it before ready can be claimed. When
+// preservation failed (here: the worktree is unreadable, so no observed
+// HEAD exists), the ready claim is refused and the operation lands
+// explicitly blocked -- never a fabricated success.
+func TestPauseCannotClaimReadyAfterFailedSave(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	now := db.Millis(s.Now())
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO repos (id, name, path, default_branch, source, created_at, updated_at)
+		VALUES ('repo_fail', 'repo1', '/tmp/repo1', 'main', 'manual', ?, ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktrees (id, repo_id, path, branch, base_ref, base_sha, state, owner_agent_id, root_item_id, created_at)
+		VALUES ('wt_fail', 'repo_fail', '/tmp/does-not-exist-wt', 'b', 'main', 'deadbee', 'active', ?, ?, ?)`,
+		w.ID, it.RootID, now); err != nil {
+		t.Fatal(err)
+	}
+	oldHEAD := readDiskHEAD
+	readDiskHEAD = func(string) (string, error) { return "", fmt.Errorf("no git here") }
+	defer func() { readDiskHEAD = oldHEAD }()
+
+	panes(tm, Pane{Session: wSes.TmuxName})
+	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "hfail", "")
+	if err != nil {
+		t.Fatalf("request err = %v", err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, PauseRequested); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "claiming ready"})
+	if err == nil {
+		t.Fatal("handoff checkpoint with failed preservation must refuse the ready claim")
+	}
+	var phase, operr string
+	if err := s.DB.QueryRowContext(ctx, `SELECT phase, error FROM agent_operations WHERE id = ?`,
+		op.ID).Scan(&phase, &operr); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "blocked" {
+		t.Fatalf("op phase = %q, want blocked", phase)
+	}
+	if operr == "" {
+		t.Fatal("op error empty, want the explicit preservation failure")
+	}
+}
+
+// TestHandoffSummaryRuneLimit pins the 500-rune summary bound on the
+// binding path: 500 multi-byte runes fit, 501 do not. Bytes are not the
+// unit -- a rune-safe cut never lands mid character.
+func TestHandoffSummaryRuneLimit(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	ok := ""
+	for i := 0; i < 500; i++ {
+		ok += "é"
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: ok}); err != nil {
+		t.Fatalf("500-rune summary refused: %v", err)
+	}
+	tooLong := ok + "é"
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Progress, Summary: tooLong}); err == nil {
+		t.Fatal("501-rune summary accepted, want refusal")
 	}
 }

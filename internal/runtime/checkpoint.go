@@ -1101,6 +1101,9 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 	var wfRun workflowRun
 	var wfHasRun bool
 	var failedWorkflowPane string
+	// Batch 2 checkpoint binding: hoisted like wfRun, so the post-commit
+	// manifest assembly below knows which agent's handoff to bind.
+	var bindAgentID string
 	ran, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
 		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
@@ -1111,6 +1114,9 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		}
 		if ses.State.Pausing() && !slices.Contains(pauseAllowedKinds, in.Kind) {
 			return errors.New(pausedTool)
+		}
+		if in.Kind == Handoff && ses.State.Pausing() {
+			bindAgentID = a.ID
 		}
 
 		assignmentKey, err := s.itemKey(ctx, tx, a.ItemID)
@@ -1533,6 +1539,17 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 	if wfHasRun && (in.Kind == CompletedCkp || in.Kind == FailedCkp) {
 		if err := s.advance(postCommitCtx, wfRun.WorkflowID); err != nil {
 			s.logf("checkpoint: advance %s: %v", wfRun.WorkflowID, err)
+		}
+	}
+	// Batch 2 checkpoint binding: a handoff checkpoint written while
+	// pausing claims preservation is saved. With a pending handoff/recover
+	// operation the daemon assembles the manifest and validates it before
+	// ready can be claimed; any failure refuses the claim here (the
+	// operation is already marked blocked) while the checkpoint itself
+	// stands as evidence of the attempt.
+	if bindAgentID != "" {
+		if err := s.bindHandoffCheckpoint(postCommitCtx, bindAgentID, out.CheckpointID); err != nil {
+			return out, err
 		}
 	}
 	return out, nil

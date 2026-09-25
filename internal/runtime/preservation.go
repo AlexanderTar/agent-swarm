@@ -391,6 +391,120 @@ func writeAtomic(dir, name string, raw []byte) (string, error) {
 	return final, nil
 }
 
+// ValidatePreservationReady is the daemon's gate before ready can be
+// claimed: it validates operation ownership, the manifest hash, worktree
+// HEADs and writer absence. Any failure marks the operation explicitly
+// blocked (with the reason) and returns an error -- never a fabricated
+// success. A terminal operation is already decided and needs no gate.
+func (s *Store) ValidatePreservationReady(ctx context.Context, opID string) error {
+	op, err := s.getOperation(ctx, opID)
+	if err != nil {
+		return err
+	}
+	if isTerminalPhase(op.Phase) {
+		return nil
+	}
+	fail := func(format string, args ...any) error {
+		msg := fmt.Sprintf(format, args...)
+		if err := s.blockOperation(ctx, opID, msg); err != nil {
+			s.logf("preservation: block %s: %v", opID, err)
+		}
+		return &items.Error{Code: items.CodeConflict, Message: msg}
+	}
+	var manifestPath, manifestHash, predecessorID string
+	err = s.DB.QueryRowContext(ctx, `SELECT manifest_path, manifest_hash,
+		COALESCE(session_id, '') FROM agent_operations WHERE id = ?`, opID).Scan(
+		&manifestPath, &manifestHash, &predecessorID)
+	if err != nil {
+		return fail("preservation: operation row unreadable: %v", err)
+	}
+	if manifestPath == "" || manifestHash == "" {
+		return fail("preservation: no manifest recorded for %s; save before claiming ready.", opID)
+	}
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fail("preservation: manifest %s unreadable: %v.", manifestPath, err)
+	}
+	if sum := fmt.Sprintf("%x", sha256.Sum256(raw)); sum != manifestHash {
+		return fail("preservation: manifest hash mismatch for %s; save again before claiming ready.", opID)
+	}
+	var m HandoffManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return fail("preservation: manifest %s is not JSON: %v.", manifestPath, err)
+	}
+	if m.OperationID != opID || m.AgentID != op.AgentID {
+		return fail("preservation: manifest ownership mismatch for %s.", opID)
+	}
+	for _, w := range m.Worktrees {
+		head, err := readDiskHEAD(w.Path)
+		if err != nil || head == "" {
+			return fail("preservation: worktree %s unreadable; record the blocker and surviving paths instead of claiming ready.", w.Path)
+		}
+		if w.ObservedHead == "" {
+			return fail("preservation: worktree %s has no observed HEAD; save again before claiming ready.", w.Path)
+		}
+		if head != w.ObservedHead {
+			return fail("preservation: worktree %s moved under handoff (manifest %s, disk %s); save again before claiming ready.",
+				w.Path, shortSHA(w.ObservedHead), shortSHA(head))
+		}
+	}
+	if len(m.Worktrees) > 0 {
+		paths := make([]any, len(m.Worktrees))
+		place := make([]string, len(m.Worktrees))
+		for i, w := range m.Worktrees {
+			paths[i] = w.Path
+			place[i] = "?"
+		}
+		var live int
+		q := fmt.Sprintf(`SELECT COUNT(*) FROM sessions s JOIN worktrees w ON w.owner_agent_id = s.agent_id
+			WHERE w.path IN (%s) AND s.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
+			AND s.id <> ?`, strings.Join(place, ","))
+		if err := s.DB.QueryRowContext(ctx, q, append(paths, predecessorID)...).Scan(&live); err != nil {
+			return fail("preservation: writer check failed: %v", err)
+		}
+		if live > 0 {
+			return fail("preservation: a live writer still owns a handoff worktree; stop it before claiming ready.")
+		}
+	}
+	return nil
+}
+
+// blockOperation marks the operation explicitly blocked with the reason.
+func (s *Store) blockOperation(ctx context.Context, opID, reason string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE agent_operations SET phase = 'blocked',
+		error = ?, updated_at = ? WHERE id = ?`, reason, db.Millis(s.Now()), opID)
+	return err
+}
+
+// bindHandoffCheckpoint is WriteCheckpoint's post-commit binding: a
+// handoff checkpoint written while a handoff/recover operation is pending
+// claims preservation is saved, so the daemon assembles the manifest and
+// validates it here. No pending operation means nothing to bind. Any
+// failure refuses the ready claim (ValidatePreservationReady already
+// marked the operation blocked); the checkpoint itself stands as evidence
+// of the attempt.
+func (s *Store) bindHandoffCheckpoint(ctx context.Context, agentID, checkpointID string) error {
+	op, ok, err := s.PendingOperation(ctx, agentID)
+	if err != nil || !ok {
+		return err
+	}
+	if op.Mode != ModeHandoff && op.Mode != ModeRecover {
+		return nil
+	}
+	if _, err := s.WriteHandoffManifest(ctx, op.ID, checkpointID); err != nil {
+		_ = s.blockOperation(ctx, op.ID, err.Error())
+		return err
+	}
+	return s.ValidatePreservationReady(ctx, op.ID)
+}
+
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
+	}
+	return s
+}
+
 // checkpointByIDTx reads one checkpoint with the fields the manifest
 // needs. (Checkpoints() is item-scoped; the manifest names its checkpoint
 // by id.)

@@ -21,9 +21,12 @@ const killAfterHandoff = 5 * time.Second
 const killAfterInterrupt = 10 * time.Second
 const defaultPauseDeadlineSec = 120
 
-// pauseAllowedTools is the daemon-side allow-list during a pause (C3). The hooks
+// pauseAllowedTools is the daemon-side allow-list during a pause. The hooks
 // deny the rest, but the daemon enforces it whatever the hooks do.
-var pauseAllowedTools = []string{"swarm_sync", "swarm_read"}
+// swarm_artifact stays open so the predecessor can snapshot specs/plans
+// into the registry while preserving; swarm_spawn and swarm_workflow stay
+// denied (delegation, new workflow steps).
+var pauseAllowedTools = []string{"swarm_sync", "swarm_read", "swarm_artifact"}
 
 // PauseAllowed gates one MCP tool call for a session state. swarm_checkpoint and
 // swarm_ask are gated further by their own handlers: only handoff, blocked and

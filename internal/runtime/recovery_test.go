@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,3 +228,77 @@ func TestRecoveryHistoryAcrossGenerations(t *testing.T) {
 		t.Fatalf("revisions = %+v, want both hashes", res.Artifacts[0].Revisions)
 	}
 }
+
+// Spec §4 prompts are normative templates: these goldens pin pause,
+// fresh handoff, resumed history, broken predecessor, live-children
+// orchestrator and reviewer wordings. New notices never carry [swarm].
+func TestPauseNoticeGolden(t *testing.T) {
+	got := PauseHandoffNotice("PAUSE", "login-coder", "TASK-101")
+	want := "PAUSE requested for login-coder (TASK-101). Stop taking new work and call swarm_sync. " +
+		"Safely finish or interrupt your current operation, collect its status, and preserve your work. " +
+		"You may use tools needed to save files, wait for or stop your own commands, inspect git, " +
+		"commit task-owned changes, and write the handoff manifest/checkpoint. Do not delegate, start " +
+		"another workflow step, push, deploy, or report the assignment completed. If preservation fails, " +
+		"record the blocker and surviving paths; do not claim a clean handoff. Pause: wait for Resume. " +
+		Preamble
+	if got != want {
+		t.Fatalf("pause notice mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestFreshHandoffKickoffGolden(t *testing.T) {
+	got := SuccessorKickoff("login-coder", RoleCoder, "TASK-101", "Build it", "handoff")
+	if !startsWith(got, "You are swarm agent login-coder (coder) for TASK-101: Build it, continuing in a fresh session after handoff. ") {
+		t.Fatalf("kickoff head mismatch: %q", got)
+	}
+	for _, want := range []string{"Call swarm_sync first", "Continue the unfinished unit and next action",
+		"do not repeat completed work", Preamble} {
+		if !contains(got, want) {
+			t.Fatalf("kickoff missing %q: %q", want, got)
+		}
+	}
+	if contains(got, "[swarm]") {
+		t.Fatalf("kickoff must not add [swarm]: %q", got)
+	}
+}
+
+func TestResumedHistoryGolden(t *testing.T) {
+	got := SuccessorKickoff("login-coder", RoleCoder, "TASK-101", "Build it", "resume") + " " + ResumeAddition
+	for _, want := range []string{"resuming", "durable state wins"} {
+		if !contains(got, want) {
+			t.Fatalf("resume kickoff missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestBrokenPredecessorGolden(t *testing.T) {
+	got := BrokenPredecessorWarning([]string{"/tmp/repo1-wt"}, []string{"ckp_9"})
+	for _, want := range []string{"incomplete recovery", "/tmp/repo1-wt", "ckp_9",
+		"never reset/clean", "invent test results"} {
+		if !contains(got, want) {
+			t.Fatalf("broken-predecessor warning missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestLiveChildrenOrchestratorGolden(t *testing.T) {
+	got := OrchestratorHandoffAddition([]string{"lane-a", "lane-b"})
+	for _, want := range []string{"lane-a", "lane-b", "keep running", "without fabricating their checkpoints"} {
+		if !contains(got, want) {
+			t.Fatalf("orchestrator addition missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestReviewerKickoffGolden(t *testing.T) {
+	got := SuccessorKickoff("ui-1", RoleReviewer, "TASK-101", "Review it", "handoff")
+	for _, want := range []string{"ui-1", "reviewer", "swarm-reviewer", "Call swarm_sync first"} {
+		if !contains(got, want) {
+			t.Fatalf("reviewer kickoff missing %q: %q", want, got)
+		}
+	}
+}
+
+func startsWith(s, prefix string) bool { return strings.HasPrefix(s, prefix) }
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }
