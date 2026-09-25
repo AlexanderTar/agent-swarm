@@ -201,12 +201,20 @@ func legacyAgySkillsChain(c Config) (resolved string, ok bool) {
 	// stored text could have been written against either form depending on
 	// when and how it was created, and a home path with its own symlink
 	// (e.g. macOS's /var -> /private/var) makes those two forms genuinely
-	// different strings for the identical directory.
+	// different strings for the identical directory. The resolved form
+	// resolves c.Home FIRST and then joins "run/launch" (fix round 3,
+	// minor), rather than resolving the already-joined <Home>/run/launch
+	// path directly: filepath.EvalSymlinks requires the path it's given to
+	// exist, and c.Home (the swarm home itself, e.g. ~/.swarm) is far more
+	// likely to already exist than one specific dangling chain's own
+	// run/launch subdirectory -- resolving the joined path directly would
+	// silently skip this whole fallback (and so miss an aliased dangling
+	// chain) whenever run/launch itself happened not to exist yet.
 	launchRoot := filepath.Join(c.Home, "run", "launch")
 	matched := underDir(target, launchRoot)
 	if !matched {
-		if resolvedLaunchRoot, err := filepath.EvalSymlinks(launchRoot); err == nil {
-			matched = underDir(target, resolvedLaunchRoot)
+		if resolvedHome, err := filepath.EvalSymlinks(c.Home); err == nil {
+			matched = underDir(target, filepath.Join(resolvedHome, "run", "launch"))
 		}
 	}
 	if !matched {
@@ -268,6 +276,12 @@ func repairAgySkillsRoot(c Config) error {
 			if err != nil {
 				return err
 			}
+			launchRoot := filepath.Join(c.Home, "run", "launch")
+			var resolvedLaunchRoot string
+			resolvedHome, evalErr := filepath.EvalSymlinks(c.Home)
+			if evalErr == nil {
+				resolvedLaunchRoot = filepath.Join(resolvedHome, "run", "launch")
+			}
 			for _, e := range entries {
 				dst := filepath.Join(newRoot, e.Name())
 				owned, err := isSwarmOwned(dst, skillsHome, true) // explicit `swarm install`: adopt
@@ -280,10 +294,32 @@ func repairAgySkillsRoot(c Config) error {
 				if err := os.RemoveAll(dst); err != nil {
 					return err
 				}
-				// copyTree itself recreates a symlinked entry (whether the
-				// top-level entry or something nested inside it) as a symlink
-				// rather than walking through it (fix round 2, finding 4).
-				if err := copyTree(filepath.Join(resolved, e.Name()), dst); err != nil {
+				src := filepath.Join(resolved, e.Name())
+				// Fix round 3, controller ruling: a TOP-LEVEL entry that is
+				// itself a symlink whose resolved target lies OUTSIDE
+				// run/launch (the user's own skill, linked in from somewhere
+				// else entirely -- not part of the migration-chain wreckage
+				// this repair exists to clean up) is preserved as a symlink to
+				// that absolute resolved target, not deep-copied. Everything
+				// else -- a real file or directory, or a symlink whose target
+				// is itself still inside run/launch -- goes through copyTree,
+				// which dereferences every symlink it finds (including nested
+				// ones) into real content, so salvaged content survives the
+				// source session later being reaped.
+				if e.Type()&os.ModeSymlink != 0 {
+					real, err := filepath.EvalSymlinks(src)
+					if err == nil {
+						outside := !underDir(real, launchRoot) &&
+							!(evalErr == nil && underDir(real, resolvedLaunchRoot))
+						if outside {
+							if err := os.Symlink(real, dst); err != nil {
+								return err
+							}
+							continue
+						}
+					}
+				}
+				if err := copyTree(src, dst); err != nil {
 					return err
 				}
 			}

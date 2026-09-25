@@ -389,9 +389,37 @@ func (p Plugins) vendorForCursor(ctx context.Context, m MarketplacePlugin, actio
 	return copyTree(vendor, local)
 }
 
-// copyTree copies src to dst, skipping .git. Symlinks inside the tree are copied as
-// regular files, so the result is the real folder cursor needs (P0-8).
+// copyTree copies src to dst, skipping .git. A symlink anywhere inside the
+// tree is DEREFERENCED, not recreated (fix round 3, controller ruling,
+// replacing fix round 2's approach of recreating the link itself): a link to
+// a file becomes a real file holding the target's content, and a link to a
+// directory becomes a real directory holding a recursive copy of the
+// target's own contents. This is what keeps two separate contracts true at
+// once: cursor's local plugin copy must be a real folder tree with no
+// symlink anywhere in it (vendorForCursor's own comment above, P0-8), and
+// content this package salvages out of a swarm session's run/launch folder
+// (agy.go's repairAgySkillsRoot) must survive that session later being
+// reaped -- a recreated symlink pointing back into run/launch would dangle
+// the moment the session's folder is deleted, since deleting run/launch
+// content is never this package's call to make but a session's own cleanup
+// routinely does exactly that.
+//
+// maxCopyTreeDepth and the visited set together guard against a symlink
+// cycle (an entry that links back to one of its own ancestors, directly or
+// through another link): each newly dereferenced directory's real
+// (EvalSymlinks'd) path is added to visited before recursing into it, and a
+// path already in visited errors out immediately rather than recursing
+// forever; the depth counter is a second, unconditional backstop.
 func copyTree(src, dst string) error {
+	return copyTreeGuarded(src, dst, map[string]bool{}, 0)
+}
+
+const maxCopyTreeDepth = 32
+
+func copyTreeGuarded(src, dst string, visited map[string]bool, depth int) error {
+	if depth > maxCopyTreeDepth {
+		return fmt.Errorf("copyTree: max depth (%d) exceeded copying %s: possible symlink cycle", maxCopyTreeDepth, src)
+	}
 	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -407,27 +435,35 @@ func copyTree(src, dst string) error {
 			return nil
 		}
 		target := filepath.Join(dst, rel)
-		// A symlinked entry (the walk's root itself, or anything nested under
-		// it) is recreated as a symlink at the destination, checked before
-		// d.IsDir() since a symlink-to-directory's own DirEntry.Type() is
-		// ModeSymlink, not ModeDir -- WalkDir uses Lstat throughout and never
-		// follows it, so this is the only place that ever sees it (fix round
-		// 2, finding 4; folded in from a special case repairAgySkillsRoot used
-		// to carry only for its own top-level entries, missing anything nested
-		// deeper inside a salvaged directory). A relative link target is
-		// resolved against the SOURCE directory to an absolute path before
-		// being written at the destination: dst lives in a different
-		// directory than src, so copying the relative text as-is would point
-		// at the wrong place (or nothing at all) once read back from dst.
+		// A symlinked entry (WalkDir uses Lstat throughout, so this is the
+		// only place that ever sees the link itself rather than what it
+		// points at) is dereferenced: EvalSymlinks resolves it (and any
+		// further chain), and whether the real target is a file or a
+		// directory decides whether it's copied in directly or expanded
+		// recursively. A directory target recurses through copyTreeGuarded
+		// again (not inline here) so its own visited/depth guards apply to
+		// whatever it contains too, including further symlinks.
 		if d.Type()&os.ModeSymlink != 0 {
-			linkTarget, err := os.Readlink(p)
+			real, err := filepath.EvalSymlinks(p)
 			if err != nil {
 				return err
 			}
-			if !filepath.IsAbs(linkTarget) {
-				linkTarget = filepath.Join(filepath.Dir(p), linkTarget)
+			realInfo, err := os.Stat(real)
+			if err != nil {
+				return err
 			}
-			return os.Symlink(linkTarget, target)
+			if !realInfo.IsDir() {
+				return CopyFile(real, target)
+			}
+			if visited[real] {
+				return fmt.Errorf("copyTree: symlink cycle detected at %s (resolves to %s, already being copied)", p, real)
+			}
+			nextVisited := make(map[string]bool, len(visited)+1)
+			for k := range visited {
+				nextVisited[k] = true
+			}
+			nextVisited[real] = true
+			return copyTreeGuarded(real, target, nextVisited, depth+1)
 		}
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)

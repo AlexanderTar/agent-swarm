@@ -3,9 +3,35 @@ package install
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
+
+// Fix round 3, controller ruling item 5: copyTree dereferences every symlink
+// it finds, including one that points back at one of its own ancestors --
+// without the visited-set + max-depth guards, that would recurse forever.
+// b/loop -> a, where a is copyTree's own root, so walking into loop tries to
+// expand a's contents (including b, including loop) again, and again.
+func TestCopyTreeDetectsASymlinkCycle(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "a")
+	b := filepath.Join(a, "b")
+	if err := os.MkdirAll(b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(a, filepath.Join(b, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "dst")
+	err := copyTree(a, dst)
+	if err == nil {
+		t.Fatal("expected a clear error on a symlink cycle, got nil (or it hung)")
+	}
+	if !strings.Contains(err.Error(), "cycle") && !strings.Contains(err.Error(), "depth") {
+		t.Errorf("error should clearly name the cycle/depth guard: %v", err)
+	}
+}
 
 // Review round 1, Major 4: syncSkills is the fs.FS-generic primitive behind
 // SyncSkills (bound to the real embedded tree); tested here against a

@@ -389,8 +389,16 @@ func TestWriteAgyRepairsALegacySkillsChainIntoRunLaunch(t *testing.T) {
 // vendored skill some previous swarm install itself linked in) used to abort
 // the whole repair -- copyTree's filepath.WalkDir follows the symlink, then
 // tries to os.ReadFile what turns out to be a directory, erroring the entire
-// `swarm install` for agy before hooks/MCP/WriteSkills ever run. The fix
-// recreates the link itself at the destination instead of walking through it.
+// `swarm install` for agy before hooks/MCP/WriteSkills ever run.
+//
+// Fix round 3, controller ruling: a TOP-LEVEL legacy entry that is itself a
+// symlink whose resolved target lies OUTSIDE run/launch (the user's own
+// skill, linked in from somewhere else entirely) is preserved AS a symlink
+// to that absolute RESOLVED target -- not deep-copied (fix round 2 had it
+// deep copy nothing and instead recreate every symlinked entry as-is,
+// including this one; round 3 narrows that to only this specific shape and
+// deep-copies everything else, see the nested-symlink and
+// resolves-back-to-root tests below).
 func TestWriteAgyRepairSalvagesASymlinkedLegacyEntry(t *testing.T) {
 	c := fakeHome(t)
 	launchSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
@@ -432,22 +440,37 @@ func TestWriteAgyRepairSalvagesASymlinkedLegacyEntry(t *testing.T) {
 	linkDst := filepath.Join(newRoot, "linked")
 	fi, err := os.Lstat(linkDst)
 	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected %s to be a symlink (recreated, not copied through): %v", linkDst, err)
+		t.Fatalf("expected %s to be a symlink (preserved, not deep-copied): %v", linkDst, err)
 	}
-	if got, err := os.Readlink(linkDst); err != nil || got != linkTarget {
-		t.Errorf("linked entry target = %q, %v, want %q", got, err, linkTarget)
+	// The recreated link's target is linkTarget's fully RESOLVED form (fix
+	// round 3: "recreated as a symlink to that absolute resolved target"),
+	// which on a temp dir with its own symlink component (macOS's
+	// /var -> /private/var) differs textually from the original, unresolved
+	// linkTarget even though both name the same directory.
+	wantTarget, err := filepath.EvalSymlinks(linkTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(linkDst); err != nil || got != wantTarget {
+		t.Errorf("linked entry target = %q, %v, want %q", got, err, wantTarget)
 	}
 }
 
-// Fix round 2, finding 4: a symlink nested INSIDE a salvaged real directory
-// (not the top-level entry copyTree's walk root itself) must also be
-// recreated as a symlink, not walked through. This is what moving the
-// handling into copyTree itself (rather than repairAgySkillsRoot's own
-// top-level-only special case, fix round 1) actually buys: the same
-// recursive walk now catches a symlink at any depth.
-func TestWriteAgyRepairSalvagesANestedSymlinkInsideARealDir(t *testing.T) {
+// Fix round 2, finding 4, superseded by fix round 3's controller ruling: a
+// symlink nested INSIDE a salvaged real directory (not the top-level entry
+// itself) must become a REAL directory holding a copy of the target's
+// contents, not a recreated symlink. Round 2 had copyTree recreate every
+// symlink it found, including this one; the controller's round-3 ruling
+// narrowed "preserve as a symlink" to only a TOP-LEVEL legacy entry whose
+// target lies outside run/launch (see TestWriteAgyRepairSalvagesASymlinkedLegacyEntry)
+// -- everything else, including anything nested, is deep-copied by
+// copyTree so it survives the source session later being reaped (proven
+// here directly: the fixture is deleted after WriteAgy runs, and the
+// salvaged content must still be readable).
+func TestWriteAgyRepairSalvagesANestedSymlinkInsideARealDirAndItSurvivesAReap(t *testing.T) {
 	c := fakeHome(t)
-	launchSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	sesDir := filepath.Join(c.Home, "run", "launch", "ses_x")
+	launchSkills := filepath.Join(sesDir, "agy-home", ".gemini", "config", "skills")
 	skillDir := filepath.Join(launchSkills, "sk")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -479,16 +502,22 @@ func TestWriteAgyRepairSalvagesANestedSymlinkInsideARealDir(t *testing.T) {
 	}
 
 	newRoot := c.Gemini("config", "skills")
-	nestedLink := filepath.Join(newRoot, "sk", "refs")
-	fi, err := os.Lstat(nestedLink)
-	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected %s to be a symlink: %v", nestedLink, err)
-	}
-	if got, err := os.Readlink(nestedLink); err != nil || got != refsTarget {
-		t.Errorf("nested link target = %q, %v, want %q", got, err, refsTarget)
+	nestedDir := filepath.Join(newRoot, "sk", "refs")
+	fi, err := os.Lstat(nestedDir)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		t.Fatalf("expected %s to be a REAL directory (deep-copied, not a symlink): %v, %v", nestedDir, fi, err)
 	}
 	if _, err := os.Stat(filepath.Join(newRoot, "sk", "SKILL.md")); err != nil {
 		t.Errorf("the rest of the real dir must still be copied: %v", err)
+	}
+
+	// The session this content came from is reaped (ordinary swarm session
+	// lifecycle): the salvaged copy must not dangle.
+	if err := os.RemoveAll(sesDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(newRoot, "sk", "refs", "notes.md")); err != nil {
+		t.Errorf("salvaged nested-directory content dangled after the source session was reaped: %v", err)
 	}
 }
 
