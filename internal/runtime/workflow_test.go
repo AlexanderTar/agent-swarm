@@ -1594,6 +1594,185 @@ func TestHealStrandedActiveRunCrashBetweenClaimAndRetry(t *testing.T) {
 	}
 }
 
+// TestShareFailureDoesNotDoubleSpawn is Opus review finding 2: a Worktree.
+// Share error between Spawn returning an agent and the row being claimed
+// used to leave the row 'waiting' with a live agent already attached to it
+// -- the next trigger (the stall scan) would spawn a SECOND builder on the
+// same row, orphaning the first, live one. spawnRunAgent now claims the row
+// right after Spawn returns, before Share, so a Share failure (logged, not
+// fatal) can't do that: the run ends up 'active' with exactly one agent, and
+// a later advance has nothing waiting left to spawn again.
+func TestShareFailureDoesNotDoubleSpawn(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	reviewerSes := agentSessionForStep(t, s, st.ID, "review")
+	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "blocked",
+		Verdict: "blocked"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.WorkflowFor(ctx, taskKey); err != nil || !ok {
+		t.Fatal(err)
+	}
+
+	// Take the rw worktree out of 'active' right before the resume's fresh
+	// round-2 build spawn tries to Share it again -- worktree.Service.Share
+	// refuses a non-active worktree.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'removed' WHERE id = ?`, wtID); err != nil {
+		t.Fatal(err)
+	}
+	startedBefore := len(tm.started)
+
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "running" || final.Round != 2 {
+		t.Fatalf("state = %s round = %d, want running/2", final.State, final.Round)
+	}
+	if len(tm.started)-startedBefore != 1 {
+		t.Fatalf("started %d agents for the round-2 spawn, want exactly 1: %v", len(tm.started)-startedBefore, tm.started)
+	}
+
+	var round2State, round2Agent string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build' AND round = 2`, st.ID).Scan(&round2State, &round2Agent); err != nil {
+		t.Fatal(err)
+	}
+	if round2State != "active" || round2Agent == "" {
+		t.Fatalf("round 2 build run = state %s agent %q, want active/non-empty despite the Share failure", round2State, round2Agent)
+	}
+
+	// A later trigger (the stall scan, or any other advance) must find
+	// nothing left 'waiting' to spawn a second builder over.
+	startedBefore = len(tm.started)
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.started) != startedBefore {
+		t.Fatalf("a second advance started another agent: %v", tm.started)
+	}
+}
+
+// TestRepeatedSpawnFailureEscalates is Opus review finding 2: Spawn can
+// return an error AFTER already committing the agent row (agents.go's own
+// startSession, which runs Tmux.Start after the agent row commits) -- there
+// is no id left to recover on that path. Marking the run 'failed' (instead
+// of leaving it 'waiting' for the stall scan to retry -- and orphan another
+// agent -- every 30s forever) means it genuinely counts toward auto_retries
+// via applyAutoRetry's existing AgentID=="" branch, and a repeated failure
+// escalates once the budget (default 1) is spent, same as any other crash.
+func TestRepeatedSpawnFailureEscalates(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	tm.startErr = fmt.Errorf("tmux: fake refuses to start")
+
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// StartWorkflow's own advance already ran the FIRST failed spawn
+	// attempt (build run now 'failed', auto_retries 0). Two more manual
+	// advances stand in for the stall scan's own later triggers: the first
+	// auto-retries it (back to 'waiting', auto_retries 1) and immediately
+	// re-attempts the spawn within that same advance (fails again, back to
+	// 'failed'); the second sees auto_retries (1) no longer under the
+	// default budget (1) and escalates.
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var wfState, runState, escalation string
+	var autoRetries int
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, escalation FROM workflows WHERE id = ?`, st.ID).
+		Scan(&wfState, &escalation); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, auto_retries FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st.ID).Scan(&runState, &autoRetries); err != nil {
+		t.Fatal(err)
+	}
+	if wfState != "escalated" {
+		t.Fatalf("workflow state = %s, want escalated (repeated spawn failure)", wfState)
+	}
+	if runState != "failed" || autoRetries != 1 {
+		t.Fatalf("build run = state %s retries %d, want failed/1", runState, autoRetries)
+	}
+	if !strings.Contains(escalation, "failed") {
+		t.Fatalf("escalation reason = %q, want it to mention the failure", escalation)
+	}
+}
+
+// TestApplySpawnReplayAttachesReviewWorktree is Opus review finding 3: a
+// review worktree used to be created/attached only for the roles THIS
+// applySpawn call itself inserted (newRoles) -- on replay after a crash
+// between insertWaitingRun committing a role's row and the attach step ever
+// running, every PRE-EXISTING role's row was left without one forever
+// (newRoles empty -> the whole attach block skipped). Simulated here by
+// calling applySpawn a second time directly against rows that already exist
+// with no review_worktree_id, exactly the shape a crash-then-replay leaves
+// behind.
+func TestApplySpawnReplayAttachesReviewWorktree(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf, ok, err := s.workflowRowByID(ctx, st.ID)
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	it, err := s.itemByIDForEngine(ctx, wf.ItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the crash: the review step's row already exists (as a real
+	// applySpawn's insertWaitingRun would have left it) but never got its
+	// review_worktree_id attached.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, state, sha, created_at)
+		VALUES (?, ?, 'review', 1, 'reviewer', 'waiting', ?, ?)`,
+		ids.New("wfr"), st.ID, head, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	action := workflow.Action{Kind: workflow.ActionSpawn, StepID: "review", Roles: []string{"reviewer"}, Round: 1, SHA: head}
+	if err := s.applySpawn(ctx, wf, it, action); err != nil {
+		t.Fatal(err)
+	}
+
+	var reviewWT string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(review_worktree_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'review' AND round = 1 AND role = 'reviewer'`, st.ID).Scan(&reviewWT); err != nil {
+		t.Fatal(err)
+	}
+	if reviewWT == "" {
+		t.Fatal("replayed applySpawn left the pre-existing reviewer row with no review_worktree_id")
+	}
+}
+
 // --- Fix round 1 ---
 
 // TestDesignThenBuildStatusFlow is the interaction flagged in the P9 brief
@@ -1729,7 +1908,8 @@ func TestResumeRetryAfterBlocked(t *testing.T) {
 	}
 	reviewerSes := agentSessionForStep(t, s, st.ID, "review")
 	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "blocked on a decision",
-		Verdict: "blocked"}); err != nil {
+		Verdict: "blocked", Findings: []workflow.Finding{{Severity: "major", File: "auth.go", Line: 12,
+			Summary: "which provider should this use?"}}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1738,7 +1918,11 @@ func TestResumeRetryAfterBlocked(t *testing.T) {
 		t.Fatalf("setup: state = %+v ok=%v err=%v, want escalated", escalated, ok, err)
 	}
 
-	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "")
+	// Fix round 2, finding 4: a resume after blocked/stale used to yield
+	// Spawn{build, Round:2, Findings:[]} -- the round-1 blocked verdict's
+	// findings never reached the fresh builder at all, since a fresh spawn
+	// has no prior brief to update and no session to message.
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "please pick JWT", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1759,5 +1943,15 @@ func TestResumeRetryAfterBlocked(t *testing.T) {
 	}
 	if round2State != "active" || round2Agent == "" {
 		t.Fatalf("round 2 build run = state %s agent %q, want active/non-empty (a fresh spawn)", round2State, round2Agent)
+	}
+	builder, err := s.agentByID(ctx, round2Agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(builder.Brief, "which provider should this use?") {
+		t.Errorf("fresh builder's brief missing round 1's blocked findings:\n%s", builder.Brief)
+	}
+	if !strings.Contains(builder.Brief, "please pick JWT") {
+		t.Errorf("fresh builder's brief missing the resume note:\n%s", builder.Brief)
 	}
 }

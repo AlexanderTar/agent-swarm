@@ -111,6 +111,30 @@ func dependenciesOpenErr(keys []string) error {
 	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("dependencies_open: %s", strings.Join(keys, ", "))}
 }
 
+// validateWorktrees is spec B4/B7 Start validation (fix round 2, finding 2):
+// every {worktree, mode} pair must name a real worktree and a real mode. A
+// bogus id used to sail through Start silently -- briefWorktrees and
+// rwRepoCandidates both just skip an unknown id (sql.ErrNoRows) -- and only
+// surface much later as a blank brief worktree header, or an "advance: no
+// rw worktree to review" error deep inside the engine, instead of a clear
+// refusal at Start time.
+func (s *Store) validateWorktrees(ctx context.Context, wts []WorkflowWorktree) error {
+	for _, w := range wts {
+		if w.Mode != "rw" && w.Mode != "ro" {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(`worktree %s: mode must be "rw" or "ro".`, w.WorktreeID)}
+		}
+		var exists int
+		err := s.DB.QueryRowContext(ctx, `SELECT 1 FROM worktrees WHERE id = ?`, w.WorktreeID).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("worktree %s not found.", w.WorktreeID)}
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // callerOwnsRWWorktree reports whether wts names at least one 'rw' worktree
 // that is currently active and owned by ownerAgentID (spec B4's Start
 // validation).
@@ -160,6 +184,9 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	if len(it.BlockedBy) > 0 {
 		return WorkflowState{}, dependenciesOpenErr(it.BlockedBy)
 	}
+	if err := s.validateWorktrees(ctx, in.Worktrees); err != nil {
+		return WorkflowState{}, err
+	}
 	ok, err := s.callerOwnsRWWorktree(ctx, in.Worktrees, orch.ID)
 	if err != nil {
 		return WorkflowState{}, err
@@ -185,11 +212,29 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 			wfID, it.ID, it.RootID, orch.ID, string(ctxJSON), string(wtJSON), db.Millis(now), db.Millis(now))
 		return err
 	}); err != nil {
+		// The SELECT above is only advisory: two concurrent Starts for the
+		// same item can both pass it and race the INSERT, and only one wins
+		// against workflows_one_live (0011_workflows.sql's own UNIQUE
+		// partial index, the DB's actual guarantee). Map that race to the
+		// same friendly refusal the advisory check already gives the
+		// non-concurrent case, instead of a raw sqlite constraint error.
+		if strings.Contains(err.Error(), "workflows_one_live") {
+			return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("%s already has a running workflow.", it.Key)}
+		}
 		return WorkflowState{}, err
 	}
 
-	if err := s.advance(ctx, wfID); err != nil {
-		return WorkflowState{}, err
+	// The workflows row is already committed -- a caller ctx that gets
+	// cancelled right as this runs (e.g. the MCP call's own deadline) must
+	// not abort mid-spawn and leave the committed start with no advance
+	// having ever run against it; context.WithoutCancel lets it finish
+	// (fix round 2, finding 2's "run post-commit advances under
+	// context.WithoutCancel"). An advance error here doesn't fail the
+	// already-committed Start either (minor cleanup item): the workflow
+	// exists and is 'running', so recoverWorkflows' stall scan will pick
+	// it up within stallThreshold regardless.
+	if err := s.advance(context.WithoutCancel(ctx), wfID); err != nil {
+		s.logf("start workflow: advance %s: %v", wfID, err)
 	}
 	st, _, err := s.workflowStateByID(ctx, wfID)
 	return st, err
@@ -506,18 +551,10 @@ func (s *Store) applySpawn(ctx context.Context, wf wfRow, it items.Item, action 
 		return s.markInProgress(ctx, it.Key)
 	}
 
-	var newRoles []string
 	for _, role := range action.Roles {
-		inserted, err := s.insertWaitingRun(ctx, wf.ID, action.StepID, action.Round, role, action.SHA)
-		if err != nil {
+		if _, err := s.insertWaitingRun(ctx, wf.ID, action.StepID, action.Round, role, action.SHA); err != nil {
 			return err
 		}
-		if inserted {
-			newRoles = append(newRoles, role)
-		}
-	}
-	if len(newRoles) == 0 {
-		return nil // pure replay: every role's row already existed
 	}
 	if action.SHA == "" {
 		// The reviewed step declared no commit gate (e.g. design-reviewed's
@@ -528,11 +565,26 @@ func (s *Store) applySpawn(ctx context.Context, wf wfRow, it items.Item, action 
 		// unset; spawnRunAgent already treats that as "nothing to share".
 		return nil
 	}
+	// Attach the shared review worktree to every row at (step, round) that
+	// doesn't have one yet -- not just whichever roles THIS call happened
+	// to insert (fix round 2, finding 3): a crash between insertWaitingRun
+	// committing a role's row and this attach step used to leave every
+	// PRE-EXISTING role's row permanently without one on replay, since
+	// newRoles was empty (every row already existed) and this whole block
+	// was skipped entirely -- the reviewer(s) would then spawn with no
+	// worktree at all.
+	pending, err := s.reviewRolesMissingWorktree(ctx, wf.ID, action.StepID, action.Round)
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil // every role at (step, round) already has one
+	}
 	wtID, err := s.reviewWorktreeFor(ctx, wf, action.StepID, action.Round, action.SHA)
 	if err != nil {
 		return err
 	}
-	for _, role := range newRoles {
+	for _, role := range pending {
 		if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET review_worktree_id = ?
 			WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ?`,
 			wtID, wf.ID, action.StepID, action.Round, role); err != nil {
@@ -540,6 +592,27 @@ func (s *Store) applySpawn(ctx context.Context, wf wfRow, it items.Item, action 
 		}
 	}
 	return nil
+}
+
+// reviewRolesMissingWorktree returns the roles among (workflowID, stepID,
+// round)'s rows that don't have a review_worktree_id yet.
+func (s *Store) reviewRolesMissingWorktree(ctx context.Context, workflowID, stepID string, round int) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT role FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = ? AND round = ? AND review_worktree_id IS NULL`,
+		workflowID, stepID, round)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var r string
+		if err := rows.Scan(&r); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // repoCandidate is one rw worktree's repo, for picking which repo a review
@@ -621,12 +694,14 @@ func (s *Store) oldestWaitingRun(ctx context.Context, workflowID string) (wfRunR
 }
 
 // fillWaitingRuns spawns workflowID's waiting runs, oldest first, while
-// SubagentSlots has room (spec B4 Budget: FIFO). Each spawn attempt claims
-// its row first (state waiting -> active guarded by a WHERE ... AND
-// state='waiting', so a concurrent fill can't double-spawn the same row);
-// a Spawn error leaves the row waiting for the next trigger to retry, except
-// when Spawn itself never got an agent id at all, in which case the row is
-// left untouched (still waiting) rather than silently dropped.
+// SubagentSlots has room (spec B4 Budget: FIFO). spawnRunAgent claims its
+// row (state waiting -> active) right after Spawn returns an agent, before
+// any further side effect, so a concurrent fill can't double-spawn the same
+// row and a later Share failure can't strand a live agent with no row
+// pointing at it (fix round 2, finding 2). A Spawn error itself -- no
+// agent id to claim with at all -- marks the row 'failed' instead of
+// leaving it 'waiting' for the stall scan to retry (and orphan another
+// agent) every 30s forever; see spawnRunAgent's own comment.
 func (s *Store) fillWaitingRuns(ctx context.Context, workflowID string) error {
 	wf, ok, err := s.workflowRowByID(ctx, workflowID)
 	if err != nil || !ok {
@@ -687,6 +762,33 @@ func (s *Store) artifactContextLines(ctx context.Context, itemID string) ([]stri
 	return out, rows.Err()
 }
 
+// roundFindingLines renders a fresh (round > 1) build step spawn's most
+// recent fix-round findings into brief Context lines (fix round 2, finding
+// 4). A normal fix loop always retries the SAME builder agent
+// (applyRetryFix's Retry() call, which delivers findings as an
+// assignment_update message) -- a fresh spawn at round > 1 is only reached
+// via ResumeWorkflow's own resumeBumpsRound bumping the round after a
+// crashed/stale escalation, and that agent has no prior brief to update and
+// no session to message: its first brief is the only chance these findings
+// have to ever reach it. Reuses P8's own R3 lookup
+// (findFixStepsFor/fixRoundFindings) rather than a third copy.
+func (s *Store) roundFindingLines(ctx context.Context, workflowID string, spec *workflow.Spec, buildStepID string, round int) ([]string, error) {
+	var findings []workflow.Finding
+	for _, fixStep := range findFixStepsFor(spec, buildStepID) {
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			fnd, _, ferr := s.fixRoundFindings(ctx, tx, workflowID, fixStep.ID, round-1)
+			findings = append(findings, fnd...)
+			return ferr
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if len(findings) == 0 {
+		return nil, nil
+	}
+	return []string{"Previous round's review findings:\n" + renderFindings(findings)}, nil
+}
+
 func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run wfRunRow) (bool, error) {
 	step, ok := stepFor(it.Workflow, run.StepID)
 	if !ok {
@@ -697,6 +799,13 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 		return false, err
 	}
 	ctxLines := append(append([]string{}, wf.contextLines()...), artifactLines...)
+	if step.Run != "" && run.Round > 1 {
+		findingLines, err := s.roundFindingLines(ctx, wf.ID, it.Workflow, run.StepID, run.Round)
+		if err != nil {
+			return false, err
+		}
+		ctxLines = append(ctxLines, findingLines...)
+	}
 	brief := BriefForStep(it, *it.Workflow, run.StepID, run.Round, ctxLines)
 
 	var shareRW []WorkflowWorktree
@@ -722,27 +831,67 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: it.Key, Role: Role(run.Role), ParentAgentID: wf.OwnerAgentID,
 		Brief: brief})
 	if err != nil {
-		return false, err
+		// Opus review, fix round 2, finding 2: Spawn can return an error
+		// AFTER already committing the agent row and its assignment
+		// message (agents.go's own startSession/watchStartup failure path
+		// -- the agent row exists, but Spawn has no id left to hand back on
+		// that path). There is no id here to record, so the row can't be
+		// reunited with that orphaned agent; but leaving it 'waiting' would
+		// make the stall scan retry Spawn on it every 30s forever, each
+		// attempt creating one more orphan. Mark it 'failed' instead (no
+		// agent_id): the next advance's Next() sees a failed run with no
+		// agent and, via applyAutoRetry's existing AgentID=="" branch,
+		// bumps auto_retries and puts it back to 'waiting' -- genuinely
+		// counted this time, so repeated failures escalate rather than
+		// spawning forever. Reported as spawned=true (not an error): this
+		// row is handled, and a sibling waiting row (a parallel reviewer)
+		// must still get its own spawn attempt.
+		s.logf("advance: spawn %s/%s round %d: %v", run.StepID, run.Role, run.Round, err)
+		res, uerr := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ?
+			WHERE id = ? AND state = 'waiting'`, db.Millis(s.now()), run.ID)
+		if uerr != nil {
+			return false, uerr
+		}
+		n, rerr := res.RowsAffected()
+		return n > 0, rerr
 	}
 
-	for _, w := range shareRW {
-		if err := s.Worktree.Share(ctx, w.WorktreeID, a.ID, "rw"); err != nil {
-			return false, err
-		}
-	}
-	if step.Run == "" && run.ReviewWorktreeID != "" {
-		if err := s.Worktree.Share(ctx, run.ReviewWorktreeID, a.ID, "ro"); err != nil {
-			return false, err
-		}
-	}
-
+	// Claim the row right away -- before Share -- so a Share error, a
+	// crash, or a cancelled ctx between here and the claim below can never
+	// leave a live, running agent with no row pointing at it (finding 2):
+	// the stall scan would otherwise see this row still 'waiting' and
+	// spawn a second builder alongside the first, live one.
 	res, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET agent_id = ?, state = 'active'
 		WHERE id = ? AND state = 'waiting'`, a.ID, run.ID)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
-	return n > 0, err
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		// The row was claimed by a concurrent call between the read and
+		// here -- stop this pass; a fresh advance already owns it.
+		return false, nil
+	}
+
+	for _, w := range shareRW {
+		if err := s.Worktree.Share(ctx, w.WorktreeID, a.ID, "rw"); err != nil {
+			// Logged, not failed (finding 2): the row is already claimed
+			// and the agent is already running -- a worktree it can't
+			// reach is a lesser failure than stranding or duplicating the
+			// whole run over it.
+			s.logf("advance: share %s with %s: %v", w.WorktreeID, a.Name, err)
+		}
+	}
+	if step.Run == "" && run.ReviewWorktreeID != "" {
+		if err := s.Worktree.Share(ctx, run.ReviewWorktreeID, a.ID, "ro"); err != nil {
+			s.logf("advance: share %s with %s: %v", run.ReviewWorktreeID, a.Name, err)
+		}
+	}
+
+	return true, nil
 }
 
 // applyRetryFix applies a RetryFix action (spec B4): bumps workflows.round
@@ -1210,6 +1359,25 @@ func resumeBumpsRound(spec workflow.Spec, runs []wfRunRow, round, extraRounds in
 	return workflow.Next(spec, toWorkflowRuns(runs), round, extraRounds+1).Kind == workflow.ActionEscalate
 }
 
+// appendWorkflowContext appends line to workflowID's own workflows.
+// context_json (fix round 2, finding 4): the same Context lines StartWorkflow
+// populates from swarm_workflow start's own input, and spawnRunAgent already
+// folds into every brief it renders -- reused here so a resume's note
+// reaches whichever agent advance() spawns fresh right after, not just an
+// existing one deliverNote can message.
+func (s *Store) appendWorkflowContext(ctx context.Context, workflowID, line string) error {
+	row, ok, err := s.workflowRowByID(ctx, workflowID)
+	if err != nil || !ok {
+		return err
+	}
+	raw, err := json.Marshal(append(row.contextLines(), line))
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx, `UPDATE workflows SET context_json = ? WHERE id = ?`, string(raw), workflowID)
+	return err
+}
+
 // deliverNote sends note to agentID as an assignment_update -- the same
 // message shape Retry's own note delivery uses (agents.go), reused here so
 // a resume's orchestrator note reaches whichever agent advance() just
@@ -1266,7 +1434,8 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 			return WorkflowState{}, err
 		}
 		newRound := wf.Round
-		if it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round, wf.ExtraRounds) {
+		bumped := it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round, wf.ExtraRounds)
+		if bumped {
 			newRound++
 		}
 		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'running', round = ?,
@@ -1274,10 +1443,28 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 			newRound, db.Millis(s.now()), wf.ID); err != nil {
 			return WorkflowState{}, err
 		}
-		if err := s.advance(ctx, wf.ID); err != nil {
+		// Persist the note into workflows.context_json BEFORE advance runs
+		// (fix round 2, finding 4): spawnRunAgent already folds
+		// wf.contextLines() into every brief, so a round bump's fresh spawn
+		// (bumped==true -- no existing agent, no session to message) picks
+		// it up there. Reusing this existing channel is what lets it reach
+		// an agent that doesn't exist yet at all.
+		if note != "" {
+			if err := s.appendWorkflowContext(ctx, wf.ID, note); err != nil {
+				return WorkflowState{}, err
+			}
+		}
+		if err := s.advance(context.WithoutCancel(ctx), wf.ID); err != nil {
 			return WorkflowState{}, err
 		}
-		if note != "" {
+		// Only deliver the message-based note when the round wasn't bumped:
+		// that's the RetryFix path, retrying the SAME pre-existing agent
+		// whose brief already went out earlier -- the persisted context
+		// line above won't reach it (it never gets a new brief), so it
+		// still needs deliverNote's explicit assignment_update. A bumped
+		// round's fresh spawn already has the note in its very first
+		// brief; sending it again here would just be a duplicate.
+		if note != "" && !bumped {
 			var activeAgentID string
 			err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id, '') FROM workflow_runs
 				WHERE workflow_id = ? AND state = 'active' ORDER BY round DESC, created_at DESC LIMIT 1`, wf.ID).
