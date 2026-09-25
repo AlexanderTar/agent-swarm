@@ -1013,17 +1013,6 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 	// this checkpoint's agent belongs to.
 	var wfRun workflowRun
 	var wfHasRun bool
-	// P9 fix round 1, finding 7: the writer's own pane is (unlike every
-	// pre-existing Retry() call site, which only ever follows resolveDead
-	// confirming the pane already dead) very likely still alive right when
-	// a workflow agent's own FailedCkp lands -- it just made this very MCP
-	// call from inside that live session. AutoRetry's Retry() starts a new
-	// tmux session under the SAME name (agents.go startSession ->
-	// Tmux.Start -> `tmux new-session -s <name>`), which real tmux refuses
-	// with "duplicate session" while the old one is still up. Close it out
-	// the same way closeCompletedSiblings closes a torn-down sibling's pane
-	// -- after commit, before advance() can reach Retry().
-	var toCloseFailedSelf *siblingTeardown
 	ran, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
 		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
@@ -1228,11 +1217,14 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				// engine's own AutoRetry (Store.Retry requires a
 				// retryableStates session) waiting on that tick. A
 				// workflow agent's own report doesn't need to wait for it.
+				// (No tmux kill needed here: startSession already kills any
+				// stale pane under the same name before starting a new one
+				// -- agents.go's own P0-crash-1 fix -- so marking the
+				// session state is the only thing Retry() actually needs.)
 				if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'failed', ended_at = ? WHERE id = ?`,
 					db.Millis(now), sessionID); err != nil {
 					return err
 				}
-				toCloseFailedSelf = &siblingTeardown{TmuxName: ses.TmuxName, Kind: a.Kind}
 			}
 		}
 		if err := s.onPausingCheckpoint(ctx, tx, ses, in.Kind); err != nil {
@@ -1403,14 +1395,6 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			_ = s.Tmux.Keys(ctx, t.TmuxName, ad.InterruptKeys()...)
 		}
 		_ = s.Tmux.Kill(ctx, t.TmuxName)
-	}
-	if toCloseFailedSelf != nil {
-		// Must happen before advance() below: AutoRetry's Retry() needs
-		// this exact pane gone first (see the hoisted var's doc comment).
-		if ad := s.Adapters[toCloseFailedSelf.Kind]; ad != nil {
-			_ = s.Tmux.Keys(ctx, toCloseFailedSelf.TmuxName, ad.InterruptKeys()...)
-		}
-		_ = s.Tmux.Kill(ctx, toCloseFailedSelf.TmuxName)
 	}
 	// P9 (spec B4): a completed or failed checkpoint from a workflow agent
 	// triggers advance after commit -- the engine reads the state this

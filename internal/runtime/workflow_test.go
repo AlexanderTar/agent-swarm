@@ -218,15 +218,10 @@ func TestWorkflowFixRound(t *testing.T) {
 		WHERE workflow_id = ? AND step_id = 'review'`, st.ID).Scan(&oldReviewWt); err != nil {
 		t.Fatal(err)
 	}
-	// In the real system, by the time a reviewer finishes and requests
-	// changes, reconcile's async pane-close (resolveAlive/resolveDead) has
-	// already retired the builder's now-idle session to 'completed' --
-	// RetryFix's own Retry() call requires exactly that (retryableStates).
-	// Simulate that elapsed time directly rather than pull reconcile's
-	// whole polling loop into this synchronous test.
-	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, coderAgentID); err != nil {
-		t.Fatal(err)
-	}
+	// applyRetryFix now closes the builder's still-live session itself
+	// (fix round 2, the user directive) -- no need to simulate reconcile's
+	// async pane-close first; see TestRetryFixClosesLiveBuilderBeforeRetrying
+	// for the dedicated still-live case.
 	reviewerSes := agentSessionForStep(t, s, st.ID, "review")
 	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "needs work",
 		Verdict:  "changes_requested",
@@ -1007,12 +1002,6 @@ func escalateViaRoundsExhausted(t *testing.T, s *Store, orch Agent, taskKey stri
 		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
 		t.Fatal(err)
 	}
-	// Same real-elapsed-time simulation TestWorkflowFixRound uses: by the
-	// time a reviewer resumes/retries the builder, reconcile has already
-	// retired its now-idle session.
-	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, coderAgentID); err != nil {
-		t.Fatal(err)
-	}
 	reviewerSes := agentSessionForStep(t, s, wfID, "review")
 	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "nope",
 		Verdict:  "changes_requested",
@@ -1177,6 +1166,110 @@ func TestCancelWorkflow(t *testing.T) {
 	}
 	if coder.State != AgentFinished {
 		t.Fatalf("builder agent state = %s, want finished", coder.State)
+	}
+}
+
+// --- Fix round 2 (Opus review + user directive) ---
+
+// TestRetryFixClosesLiveBuilderBeforeRetrying is the binding user directive:
+// a fix round must never spawn a fresh builder while the old builder's
+// session is still live. Unlike TestWorkflowFixRound, this test does NOT
+// simulate reconcile having already closed the coder's session -- it's
+// still genuinely live (Running) when the reviewer's changes_requested
+// checkpoint lands, exactly the case the directive names. applyRetryFix
+// must close it itself (kill the pane, mark the session terminal) before
+// retrying the SAME agent -- never fall back to a fresh spawn just because
+// the old session hadn't been closed yet.
+func TestRetryFixClosesLiveBuilderBeforeRetrying(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderAgentID := agentIDForStep(t, s, st.ID, "build")
+	coder, err := s.agentByID(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The coder's session is still genuinely live here -- nothing in this
+	// test marks it 'completed' or kills its pane first.
+	stillLive, err := s.LatestSession(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stillLive.State.Live() {
+		t.Fatalf("setup: coder session state = %s, want a live state (test premise)", stillLive.State)
+	}
+
+	reviewerSes := agentSessionForStep(t, s, st.ID, "review")
+	if _, err := s.WriteCheckpoint(ctx, reviewerSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "needs work",
+		Verdict:  "changes_requested",
+		Findings: []workflow.Finding{{Severity: "major", File: "a.go", Line: 3, Summary: "off by one"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The old pane must have been killed, and its session moved to a
+	// terminal state -- the daemon closing it out the same way it already
+	// ends a completed session (resolveAlive's own killCompletedAfter path).
+	killed := false
+	for _, name := range tm.killed {
+		if name == coder.Name {
+			killed = true
+			break
+		}
+	}
+	if !killed {
+		t.Fatalf("coder's live pane was never killed: killed = %v", tm.killed)
+	}
+	// LatestSession orders by generation/attempt DESC, so once Retry has run
+	// it would return the NEW session, not the one we killed -- look the
+	// old one up directly by id instead to check its own final state.
+	var closedState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM sessions WHERE id = ?`, coderSes.ID).Scan(&closedState); err != nil {
+		t.Fatal(err)
+	}
+	if SessionState(closedState).Live() {
+		t.Fatalf("old session state = %s, want terminal (closed before retrying)", closedState)
+	}
+
+	// The SAME agent was retried (a brand new session, same agent id) --
+	// never a fresh, different builder.
+	var round2Agent, round2State string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id, ''), state FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build' AND round = 2`, st.ID).Scan(&round2Agent, &round2State); err != nil {
+		t.Fatal(err)
+	}
+	if round2Agent != coderAgentID || round2State != "active" {
+		t.Fatalf("round 2 build run = agent %s state %s, want %s/active (same agent, never a fresh spawn)",
+			round2Agent, round2State, coderAgentID)
+	}
+	newSes, err := s.LatestSession(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSes.ID == coderSes.ID {
+		t.Fatalf("expected a new session after the retry, got the same one back")
+	}
+
+	// Never two live builder sessions for this agent at once: the old one
+	// is terminal (checked above); only the new one may be live.
+	var liveCount int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ?
+		AND state IN ('spawning','running','pause_requested','quiescing','stopping')`, coderAgentID).Scan(&liveCount); err != nil {
+		t.Fatal(err)
+	}
+	if liveCount > 1 {
+		t.Fatalf("live session count for the builder = %d, want at most 1", liveCount)
 	}
 }
 

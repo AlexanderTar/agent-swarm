@@ -734,26 +734,33 @@ func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, acti
 	if prevAgentID != "" {
 		prev, err := s.agentByID(ctx, prevAgentID)
 		if err != nil {
-			return err
-		}
-		if _, err := s.Retry(ctx, prev.Name, renderFindings(action.Findings), "", ""); err != nil {
-			var ie *items.Error
-			if !(errors.As(err, &ie) && ie.Code == items.CodeConflict) {
+			// The agent itself no longer exists (its row is gone) -- the
+			// only legitimate reason to fresh-spawn per the user directive.
+			// Leave the new round's row 'waiting'; fillWaitingRuns spawns a
+			// fresh agent, and spawnRunAgent (I4) renders this round's
+			// findings into its brief so they still reach it.
+			if !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
-			// The builder's session isn't retryable yet (spec B4 names
-			// Retry(builder, note), which needs the OLD session already
-			// terminal -- normally true by the time a review comes back,
-			// since reconcile's async pane-close has retired it, but not
-			// guaranteed if that hasn't ticked yet). Leave the new round's
-			// row 'waiting' rather than get the whole workflow stuck
-			// retrying the same failing Retry() forever: fillWaitingRuns
-			// spawns a fresh agent for it instead.
-			s.logf("advance: %s not retryable yet (%v); spawning fresh for the fix round instead", prev.Name, err)
-		} else if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET agent_id = ?, state = 'active'
-			WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ?`,
-			prevAgentID, wf.ID, action.StepID, action.Round, step.Run); err != nil {
-			return err
+		} else {
+			// USER DIRECTIVE: never spawn a fresh builder while the old
+			// one's session is still live. Close it out ourselves first --
+			// the same way the daemon already ends a completed session
+			// (resolveAlive's killCompletedAfter path: kill the pane, mark
+			// the session terminal) -- so Retry can act on it immediately.
+			// No fallback to a fresh spawn here: once closed, Retry must
+			// succeed (an error now is a real failure, not a timing gap).
+			if err := s.closeSessionForRetry(ctx, prev); err != nil {
+				return err
+			}
+			if _, err := s.Retry(ctx, prev.Name, renderFindings(action.Findings), "", ""); err != nil {
+				return err
+			}
+			if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET agent_id = ?, state = 'active'
+				WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ?`,
+				prevAgentID, wf.ID, action.StepID, action.Round, step.Run); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -765,6 +772,25 @@ func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, acti
 		}
 	}
 	return nil
+}
+
+// closeSessionForRetry ends a's current session synchronously if it's still
+// live -- the user directive: a fix round must never spawn a fresh builder
+// while the old one's session is still live. Mirrors resolveAlive's own
+// killCompletedAfter path (kill the pane, mark the session terminal) rather
+// than waiting for reconcile's own tick to get there asynchronously, so
+// Retry (which requires a retryableStates session) can act immediately. A
+// no-op when the session is already terminal.
+func (s *Store) closeSessionForRetry(ctx context.Context, a Agent) error {
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		return err
+	}
+	if !ses.State.Live() {
+		return nil
+	}
+	_ = s.Tmux.Kill(ctx, ses.TmuxName)
+	return s.SetSessionState(ctx, ses.ID, Completed)
 }
 
 // runAgentIDAt returns (workflowID, stepID)'s agent_id at exactly round, or
