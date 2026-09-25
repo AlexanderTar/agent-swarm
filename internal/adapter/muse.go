@@ -403,14 +403,27 @@ func (m *Muse) HookOutput(string, HookDecision) ([]byte, error) { return nil, ni
 
 func (m *Muse) ParseHook(event string, stdin []byte) (HookInput, error) {
 	var raw struct {
-		SessionID string `json:"session_id"`
+		SessionID    string          `json:"session_id"`
+		ToolName     string          `json:"tool_name"`
+		Cwd          string          `json:"cwd"`
+		ToolInput    json.RawMessage `json:"tool_input"`
+		ToolResponse json.RawMessage `json:"tool_response"`
+		Prompt       string          `json:"prompt"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
 			return HookInput{}, err
 		}
 	}
-	return HookInput{ProviderSessionID: raw.SessionID, Event: event}, nil
+	return HookInput{
+		ProviderSessionID: raw.SessionID,
+		Event:             event,
+		ToolName:          raw.ToolName,
+		Cwd:               raw.Cwd,
+		RawToolInput:      raw.ToolInput,
+		ToolResponse:      raw.ToolResponse,
+		Prompt:            raw.Prompt,
+	}, nil
 }
 
 var museVersionRe = regexp.MustCompile(`\d+(\.\d+)+`)

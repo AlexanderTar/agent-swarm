@@ -738,3 +738,51 @@ func TestMuseInstalled(t *testing.T) {
 		t.Error("missing binary must not report installed")
 	}
 }
+
+// TestMuseParseHookReadsProbedFixtures replays the Task 4 live-probe fixtures
+// (internal/adapter/testdata/muse-hook-*.json). The PreToolUse/PostToolUse
+// fixtures capture a sibling tool call (submit_reminder_decision), not
+// request_user_input: the probe found muse never dispatches a hook event for
+// request_user_input at all (see the HookOutput doc comment), so there is no
+// request_user_input payload to replay. ParseHook is still exercised
+// generically, since the daemon's hook handler needs these fields for every
+// muse tool call, not just request_user_input.
+func TestMuseParseHookReadsProbedFixtures(t *testing.T) {
+	m := newMuse(Deps{})
+
+	pre, err := os.ReadFile("testdata/muse-hook-pretooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := m.ParseHook("PreToolUse", pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ToolName != "submit_reminder_decision" || len(in.RawToolInput) == 0 || in.ProviderSessionID == "" {
+		t.Fatalf("PreToolUse = %+v", in)
+	}
+
+	post, err := os.ReadFile("testdata/muse-hook-posttooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err = m.ParseHook("PostToolUse", post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ToolName != "submit_reminder_decision" || len(in.ToolResponse) == 0 {
+		t.Fatalf("PostToolUse = %+v", in)
+	}
+
+	prompt, err := os.ReadFile("testdata/muse-hook-userpromptsubmit.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err = m.ParseHook("UserPromptSubmit", prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Prompt == "" || in.ProviderSessionID == "" {
+		t.Fatalf("UserPromptSubmit = %+v", in)
+	}
+}
