@@ -87,7 +87,12 @@ func (c Config) SkillsDir(k Kind) string {
 	case KindCodex:
 		return c.Codex("skills")
 	case KindAgy:
-		return c.Gemini("antigravity-cli", "skills")
+		// A7 (2026-09-25): agy 1.2.10 reads skills from $HOME/.gemini/config/skills
+		// and migrates ~/.gemini/antigravity-cli/skills away from on first run in a
+		// fresh HOME, so ~/.gemini/antigravity-cli/skills is not durable (see
+		// docs/plans/2026-09-24-skill-symlink-probe.md, "Follow-up"). This is the
+		// location agy actually reads and migrates to.
+		return c.Gemini("config", "skills")
 	case KindCursor:
 		return c.Cursor("skills")
 	case KindMuse:
