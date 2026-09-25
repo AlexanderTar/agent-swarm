@@ -771,6 +771,91 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action
 
 ---
 
+### PM: muse spawn isolation
+**Workflow:** `tdd-reviewed` (solo — user-requested fix, no separate spec story) · **Units:** 4
+
+**Context:** user report, PR #20 — swarm-spawned muse agents got the operator's full
+`HOME` (all of `~/.claude`, `~/.codex`, `~/.agents` personal skills/rules, plus every
+operator MCP server credential in `~/.config/muse/settings.json`), unlike every other
+adapter. Phase 1 probes, controller ruling and live-TUI evidence:
+`docs/plans/2026-09-25-muse-isolation-probe.md`. Spec: `A8. muse spawn isolation`.
+
+**Files:**
+- `internal/adapter/muse.go` and `internal/adapter/muse_test.go`
+
+**Interfaces (produces):**
+- `Muse.setupEnv(s Spec) (map[string]string, error)` now returns `HOME`,
+  `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` (was
+  `XDG_CONFIG_HOME` only).
+
+**Acceptance:**
+- A spawned muse's `HOME` is a fresh per-launch directory that symlinks in every real `~`
+  entry except `.claude`, `.codex`, `.cursor`, `.agents`, `.gemini`, `.config`, `.muse`.
+- `settings.json` is the real file cloned then mutated: `mcpServers` replaced with
+  swarm-only, `context.foreign_personal_skills`/`context.foreign_personal_rules` set to
+  `false`; every other real key (trust hashes, `tui` flags, `model`) preserved.
+- Only swarm-managed skills (`install.LinkSkills`/`install.SkillsHome`) are linked into
+  the isolated `XDG_CONFIG_HOME/muse/skills`, not the whole real dir.
+- `XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` are pinned to the real paths
+  (`m.d.UserHome/.local/share` etc.), not left to fall through the isolated `HOME`.
+- `Resume` uses the same `setupEnv`, so the isolation is identical on relaunch.
+- Live-TUI probe (PM.1) confirms no blocking first-run/foreign-context dialog under this
+  env; `StartupDialogs()` unchanged.
+
+**Verify:**
+- `go test ./internal/adapter/... ./internal/install/...`
+- `go build ./... && go vet ./...`
+- `go test ./... -count=1`
+
+#### Unit PM.1: Live TUI probe
+- [x] Reproduce the proposed env by hand in a scratch tmux session (denylist-isolated
+      `HOME`, isolated `XDG_CONFIG_HOME` with cloned-then-mutated `settings.json` and
+      swarm-only skills, `XDG_DATA_HOME`/state/cache pinned to the real paths); launch
+      muse interactively exactly as `Muse.argv` would.
+- [x] Capture the pane at 5s / 15s / 30s; confirm no blocking dialog. Record commands, env
+      and captures in `docs/plans/2026-09-25-muse-isolation-probe.md`.
+- [x] Commit the probe doc: `docs(plan): live TUI probe for muse spawn isolation`.
+
+#### Unit PM.2: `HOME` denylist isolation + pinned data/state/cache
+- [x] Write the failing tests in `internal/adapter/muse_test.go` (temp `UserHome`,
+      `launchDir`): `TestMuseSetupEnvIsolatesHOMEExceptOtherAgentsPersonalRoots` (fake
+      `UserHome` has `.claude`, `.codex`, `.agents`, `.cursor`, `.gemini` plus an ordinary
+      dotfile e.g. `.gitconfig`; assert the returned `HOME`'s dir has no `.claude` etc.
+      entries but does have a `.gitconfig` symlink resolving into the fake `UserHome`);
+      `TestMuseSetupEnvPinsDataStateCacheToRealHome` (assert `XDG_DATA_HOME` ==
+      `<fake UserHome>/.local/share`, same for state/cache); `TestMuseResumeUsesSameIsolation`
+      (Resume's env map equals Launch's shape). Record red.
+- [x] Implement: in `setupEnv`, isolate `HOME` to a fresh per-launch dir, symlinking real
+      `~` entries except the denylist; add `XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME`
+      to the returned map, pinned to `m.d.UserHome`-relative real paths.
+- [x] Run green. Commit: `feat(adapter): isolate muse's HOME, pin its real data/state/cache dirs`.
+
+#### Unit PM.3: settings clone-then-mutate
+- [x] Write the failing test `TestMuseSetupEnvDropsOperatorMCPServersAndForeignContext`
+      (fake real `settings.json` has an extra operator MCP server and an arbitrary unknown
+      top-level key; assert the isolated `settings.json` has exactly one `mcpServers` key
+      — `swarm` — keeps the arbitrary key, and has `context.foreign_personal_skills` and
+      `context.foreign_personal_rules` both `false`). Record red.
+- [x] Implement: after unmarshalling the real `settings.json` (unchanged), replace
+      `mcpServers` with the swarm-only map (unchanged from today) and set
+      `settings["context"] = map[string]any{"foreign_personal_skills": false,
+      "foreign_personal_rules": false}` (merging into any existing `context` map rather
+      than clobbering unrelated keys, if the real file has one).
+- [x] Run green. Commit: `feat(adapter): drop operator MCP servers and foreign personal context from muse spawns`.
+
+#### Unit PM.4: swarm-managed skills only
+- [x] Write the failing test `TestMuseSetupEnvLinksOnlySwarmManagedSkills` (fake
+      `UserHome/.config/muse/skills` has a real personal skill dir alongside nothing else;
+      a separate fake swarm skills home has `swarm`/`swarm-orchestrator`; assert the
+      isolated `skills/` dir contains symlinks only for the swarm-managed names, resolving
+      into the swarm skills home, not the fake personal one). Record red.
+- [x] Implement: replace the whole-dir `symlinkIfExists(realSkillsDir, museDir/skills)`
+      call with `install.LinkSkills(filepath.Join(museDir, "skills"),
+      skillsHome, install.SkillLinkMode(install.KindMuse))`.
+- [x] Run green. Commit: `feat(adapter): link only swarm-managed skills into muse spawns`.
+
+---
+
 ## Integration (epic level, run by the orchestrator)
 
 - **Merge order:** P1, P5, P6, P2, P3, P4, P7, P8, P9, P10, P11, P12.
