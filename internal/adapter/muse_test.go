@@ -177,9 +177,16 @@ func TestMuseLaunchIsolatesXDGConfigHomeWithLiteralSwarmEnv(t *testing.T) {
 	if m["provider"] != "meta" || m["model"] != "muse-spark-1.3" {
 		t.Errorf("unrelated real settings keys were not cloned: %v", m)
 	}
+	// Q1 (controller ruling): ALL operator MCP servers are dropped, not
+	// carried through -- matches codex's precedent (its config.toml/MCP
+	// servers are never read either). Only the swarm entry this launch
+	// injects may be present.
 	servers, _ := m["mcpServers"].(map[string]any)
-	if _, ok := servers["notion"]; !ok {
-		t.Errorf("unrelated real MCP server was dropped: %v", servers)
+	if _, ok := servers["notion"]; ok {
+		t.Errorf("operator's other MCP servers must be dropped, not carried through: %v", servers)
+	}
+	if len(servers) != 1 {
+		t.Errorf("mcpServers = %v, want exactly the swarm entry", servers)
 	}
 	swarm, _ := servers["swarm"].(map[string]any)
 	if swarm["command"] != s.Bin {
@@ -398,6 +405,78 @@ func TestMuseProcessNames(t *testing.T) {
 		if anyMatch(a.ProcessNames(), s) {
 			t.Errorf("%q should be rejected", s)
 		}
+	}
+}
+
+// TestMuseSetupEnvDropsOperatorMCPServersAndForeignContext pins Q1/Q3 of the
+// controller ruling: the isolated settings.json keeps every other real key
+// (proves clone-then-mutate, not rebuild -- needed to preserve
+// runtime_capabilities' plugin trust hash and the tui.foreign_context_notice
+// flag, see docs/plans/2026-09-25-muse-isolation-probe.md), drops every
+// operator MCP server down to swarm-only, and sets
+// context.foreign_personal_skills/foreign_personal_rules to false (confirmed
+// live settings.json keys -- probe Finding 2b: they suppress the
+// $HOME/.claude and $HOME/.codex skill+rules leak; HOME isolation, unit
+// PM.2, closes the remaining $HOME/.agents gap these keys don't reach).
+func TestMuseSetupEnvDropsOperatorMCPServersAndForeignContext(t *testing.T) {
+	d := testDeps(t)
+	realDir := filepath.Join(d.UserHome, ".config", "muse")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realSettings := `{"schema_version":1,"provider":"meta",` +
+		`"runtime_capabilities":{"plugin:superpowers:hook:session-start":{"enabled":true,"trusted_definition_hash":"sha256:abc"}},` +
+		`"tui":{"foreign_context_notice_shown":true},` +
+		`"mcpServers":{"notion":{"mode":"optional","url":"https://mcp.notion.com/mcp"},` +
+		`"vercel":{"mode":"optional","url":"https://mcp.vercel.com"}}}`
+	if err := os.WriteFile(filepath.Join(realDir, "settings.json"), []byte(realSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(l.Env["XDG_CONFIG_HOME"], "muse", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	servers, _ := m["mcpServers"].(map[string]any)
+	if len(servers) != 1 {
+		t.Errorf("mcpServers = %v, want only swarm", servers)
+	}
+	if _, ok := servers["notion"]; ok {
+		t.Error("notion must be dropped")
+	}
+	if _, ok := servers["vercel"]; ok {
+		t.Error("vercel must be dropped")
+	}
+	if _, ok := servers["swarm"]; !ok {
+		t.Error("swarm entry must be present")
+	}
+
+	ctx, _ := m["context"].(map[string]any)
+	if ctx["foreign_personal_skills"] != false {
+		t.Errorf("context.foreign_personal_skills = %v, want false", ctx["foreign_personal_skills"])
+	}
+	if ctx["foreign_personal_rules"] != false {
+		t.Errorf("context.foreign_personal_rules = %v, want false", ctx["foreign_personal_rules"])
+	}
+
+	// Clone-then-mutate, not rebuild: other real keys must survive untouched.
+	rc, _ := m["runtime_capabilities"].(map[string]any)
+	hook, _ := rc["plugin:superpowers:hook:session-start"].(map[string]any)
+	if hook["trusted_definition_hash"] != "sha256:abc" {
+		t.Errorf("runtime_capabilities trust hash was not preserved: %v", rc)
+	}
+	tui, _ := m["tui"].(map[string]any)
+	if tui["foreign_context_notice_shown"] != true {
+		t.Errorf("tui.foreign_context_notice_shown was not preserved: %v", tui)
 	}
 }
 

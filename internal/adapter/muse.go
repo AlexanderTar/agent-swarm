@@ -159,17 +159,31 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 		// `schema_version`").
 		settings["schema_version"] = 1
 	}
-	servers, _ := settings["mcpServers"].(map[string]any)
-	if servers == nil {
-		servers = map[string]any{}
+	// Q1 (controller ruling): every operator MCP server is dropped, not just
+	// added to -- codex's precedent (its config.toml/MCP servers are never
+	// read at all). A spawned muse gets swarm and nothing else the operator
+	// configured for their own interactive use (context7/neon/notion/
+	// railway/revenuecat/vercel and their live credentials, confirmed
+	// present in this operator's real settings.json -- probe Finding 1).
+	settings["mcpServers"] = map[string]any{
+		"swarm": map[string]any{
+			"mode":    "optional",
+			"command": s.Bin,
+			"args":    []string{"mcp"},
+			"env":     museMCPEnv(s),
+		},
 	}
-	servers["swarm"] = map[string]any{
-		"mode":    "optional",
-		"command": s.Bin,
-		"args":    []string{"mcp"},
-		"env":     museMCPEnv(s),
+	// Q3/Finding 2b: suppresses muse's own $HOME/.claude and $HOME/.codex
+	// "foreign personal" skill+rules import (confirmed live settings.json
+	// keys). Merged into any existing context map so an operator's other
+	// context settings, if any, survive.
+	ctx, _ := settings["context"].(map[string]any)
+	if ctx == nil {
+		ctx = map[string]any{}
 	}
-	settings["mcpServers"] = servers
+	ctx["foreign_personal_skills"] = false
+	ctx["foreign_personal_rules"] = false
+	settings["context"] = ctx
 	body, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return nil, err
