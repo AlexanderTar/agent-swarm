@@ -128,6 +128,17 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`DROP TABLE workflows`); err != nil {
 		t.Fatal(err)
 	}
+	// 0015_recovery_preservation.sql adds columns to agent_operations and
+	// sessions with plain ALTER TABLE, so a simulated v1 database must not
+	// still carry them when the migrations replay (same precedent as 0014).
+	for _, col := range []string{"manifest_path", "manifest_hash", "checkpoint_id"} {
+		if _, err := raw.Exec(`ALTER TABLE agent_operations DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := raw.Exec(`ALTER TABLE sessions DROP COLUMN first_sync_at`); err != nil {
+		t.Fatal(err)
+	}
 	// 0014_agent_continuity.sql likewise creates its tables with plain
 	// CREATE TABLE, so replaying it must not find them already there.
 	if _, err := raw.Exec(`DROP TABLE agent_operations`); err != nil {
