@@ -355,6 +355,10 @@ func (s *Store) advance(ctx context.Context, workflowID string) error {
 	if err != nil {
 		return err
 	}
+	runs, err = s.healStrandedActiveRuns(ctx, runs)
+	if err != nil {
+		return err
+	}
 
 	action := workflow.Next(*it.Workflow, toWorkflowRuns(runs), wf.Round, wf.ExtraRounds)
 	if action.Kind != workflow.ActionWait {
@@ -394,6 +398,55 @@ func (s *Store) advance(ctx context.Context, workflowID string) error {
 		// anyway -- it may be exactly what Wait is waiting on.
 	}
 	return s.fillWaitingRuns(ctx, wf.ID)
+}
+
+// healStrandedActiveRuns marks an 'active' run 'failed' or 'cancelled' when
+// its own agent's latest session is no longer live (Opus review, fix round
+// 2, finding 1): a startup failure via watchStartup->failSession, a direct
+// swarm_control cancel, or a daemon crash between applyAutoRetry's own
+// 'active' claim and its Retry() call all leave the run 'active' with a dead
+// session and nothing left to ever advance it -- Next just Waits forever on
+// it, and recoverWorkflows' stall scan used to skip any workflow with an
+// active run at all, stranded or not. Only a session state that actually
+// signals a crash heals it (Failed/Crashed -> failed matches AutoRetry's own
+// budget; Cancelled -> cancelled matches Next's immediate escalate for a
+// cancelled run); Interrupted (a deliberate pause past its deadline, finding
+// 6) and Paused are left untouched, neither is a crash.
+func (s *Store) healStrandedActiveRuns(ctx context.Context, runs []wfRunRow) ([]wfRunRow, error) {
+	for i := range runs {
+		r := &runs[i]
+		if r.State != string(workflow.RunStateActive) || r.AgentID == "" {
+			continue
+		}
+		ses, err := s.LatestSession(ctx, r.AgentID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue // no session recorded yet -- a genuine race, not a stranding
+			}
+			return nil, err
+		}
+		if ses.State.Live() {
+			continue
+		}
+		var newState string
+		switch ses.State {
+		case Cancelled:
+			newState = string(workflow.RunStateCancelled)
+		case Failed, Crashed:
+			newState = string(workflow.RunStateFailed)
+		default:
+			continue
+		}
+		res, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = ?, ended_at = ? WHERE id = ? AND state = 'active'`,
+			newState, db.Millis(s.now()), r.ID)
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			r.State = newState
+		}
+	}
+	return runs, nil
 }
 
 // itemByIDForEngine is items.Store.GetTx's read, addressed by id instead of
@@ -1085,10 +1138,23 @@ func (s *Store) recoverWorkflows(ctx context.Context) error {
 	// catch -- e.g. the slot-release trigger that should have picked it up
 	// never fired (its owner's last other child finished before this
 	// workflow's own run went 'waiting', so no later slot ever freed).
+	//
+	// The exclusion itself narrowed further in fix round 2 (finding 1): an
+	// 'active' run only means "genuinely in flight" while its own agent's
+	// session is actually still live. A stranded active run (dead session,
+	// nothing left to trigger it) used to hide its whole workflow from this
+	// scan forever; now only a LIVE session's active run does. advance()'s
+	// own healStrandedActiveRuns call (run under this same scan's advance,
+	// right below) is what actually resolves a stranded run once this scan
+	// stops excluding its workflow.
 	ids, err := s.queryIDs(ctx, `SELECT w.id FROM workflows w
 		WHERE w.state = 'running' AND w.updated_at < ?
 			AND EXISTS (SELECT 1 FROM workflow_runs r WHERE r.workflow_id = w.id)
-			AND NOT EXISTS (SELECT 1 FROM workflow_runs r WHERE r.workflow_id = w.id AND r.state = 'active')`,
+			AND NOT EXISTS (
+				SELECT 1 FROM workflow_runs r
+				JOIN sessions se ON se.agent_id = r.agent_id
+				WHERE r.workflow_id = w.id AND r.state = 'active'
+					AND se.state IN ('spawning','running','pause_requested','quiescing','stopping'))`,
 		db.Millis(s.now().Add(-stallThreshold)))
 	if err != nil {
 		return err

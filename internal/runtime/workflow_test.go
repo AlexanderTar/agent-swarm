@@ -1445,6 +1445,155 @@ func agentSessionForStep2(t *testing.T, s *Store, agentID string) Session {
 	return ses
 }
 
+// TestHealStrandedActiveRunStartupFailure is Opus review finding 1, path 1:
+// a startup failure (watchStartup -> failSession) marks the session
+// 'failed' but never touches the workflow run, which stays 'active' with
+// nothing left to ever advance it -- Next just Waits forever, and the old
+// recoverWorkflows exclusion ("any active run") hid this workflow from the
+// stall scan too. Simulated the same way failSession itself would leave
+// things (direct SetSessionState, no WriteCheckpoint) so the run is
+// genuinely stranded before advance ever runs again.
+func TestHealStrandedActiveRunStartupFailure(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderAgentID := agentIDForStep(t, s, st.ID, "build")
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+
+	// failSession's own effect, without ever touching workflow_runs -- the
+	// stranding this finding describes.
+	if err := s.SetSessionState(ctx, coderSes.ID, Failed); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var state string
+	var autoRetries int
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, auto_retries FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st.ID).Scan(&state, &autoRetries); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || autoRetries != 1 {
+		t.Fatalf("build run after heal = state %s retries %d, want active/1 (healed to failed, then auto-retried)", state, autoRetries)
+	}
+	newSes, err := s.LatestSession(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSes.ID == coderSes.ID {
+		t.Fatalf("expected the heal's auto-retry to start a new session, got the same stranded one back")
+	}
+}
+
+// TestHealStrandedActiveRunDirectCancel is Opus review finding 1, path 2: a
+// direct swarm_control cancel of a workflow agent (not swarm_workflow
+// cancel, which cancels the whole workflow itself) marks the session
+// 'cancelled' but the run stays 'active'. Next escalates immediately on a
+// cancelled run (it never auto-retries one -- see internal/workflow/next.go),
+// so healing to 'cancelled' here must not un-cancel it.
+func TestHealStrandedActiveRunDirectCancel(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coder, err := s.agentByID(ctx, agentIDForStep(t, s, st.ID, "build"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm.env[coder.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, coder.ID)}
+
+	if _, err := s.Cancel(ctx, coder.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var wfState, runState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE id = ?`, st.ID).Scan(&wfState); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st.ID).Scan(&runState); err != nil {
+		t.Fatal(err)
+	}
+	if runState != "cancelled" {
+		t.Fatalf("build run state = %s, want cancelled", runState)
+	}
+	if wfState != "escalated" {
+		t.Fatalf("workflow state = %s, want escalated (a cancelled run never auto-retries)", wfState)
+	}
+}
+
+// TestHealStrandedActiveRunCrashBetweenClaimAndRetry is Opus review finding
+// 1, path 3: applyAutoRetry's own 'active' claim (workflow.go) commits
+// before its Retry() call -- a daemon crash in that exact window leaves the
+// run 'active' with the same, now-dead session (still 'failed', never
+// retried). recoverWorkflows' stall scan is what has to notice this one:
+// nothing else will ever trigger this workflow again.
+func TestHealStrandedActiveRunCrashBetweenClaimAndRetry(t *testing.T) {
+	s, tm, clk := clockStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderAgentID := agentIDForStep(t, s, st.ID, "build")
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+
+	// applyAutoRetry's claim, committed; the crash means Retry() (and the
+	// updated_at bump advance() would otherwise do) never happened.
+	if err := s.SetSessionState(ctx, coderSes.ID, Failed); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(31 * time.Second)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET updated_at = ?
+		WHERE id = ?`, db.Millis(s.Now().Add(-31*time.Second)), st.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	panes(tm, Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var state string
+	var autoRetries int
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, auto_retries FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st.ID).Scan(&state, &autoRetries); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || autoRetries != 1 {
+		t.Fatalf("build run after stall-scan heal = state %s retries %d, want active/1", state, autoRetries)
+	}
+	newSes, err := s.LatestSession(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSes.ID == coderSes.ID {
+		t.Fatalf("expected the stall scan's heal + auto-retry to start a new session, got the same stranded one back")
+	}
+}
+
 // --- Fix round 1 ---
 
 // TestDesignThenBuildStatusFlow is the interaction flagged in the P9 brief
