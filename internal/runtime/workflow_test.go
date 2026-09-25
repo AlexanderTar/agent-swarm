@@ -2596,6 +2596,23 @@ func TestExhaustedFixRetryFinalizesBuilder(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("exhausted builder agent state=%s session=%s workflow=%s liveDescendants=%d; blocks reclaim", a.State, latest.State, wf.State, n)
 	}
+	// Once the owner has finished and its grace period has elapsed, the
+	// exhausted builder must no longer hold the shared worktree out of the
+	// real reclaim candidate query.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state='completed' WHERE agent_id=?`, orch.ID); err != nil {
+		t.Fatal(err)
+	}
+	finishReclaimAgent(t, s, orch.ID, s.Now().Add(-2*time.Hour))
+	candidates, err := s.Worktree.Candidates(ctx, reclaimGateWhere, db.Millis(s.Now().Add(-reclaimGrace)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range candidates {
+		if candidate.ID == wt {
+			return
+		}
+	}
+	t.Fatalf("worktree %s is not eligible for reclaim after exhausted builder retires; candidates=%v", wt, candidates)
 }
 
 func TestExhaustedAutoRetryEarlyStartFailureFinalizesBuilder(t *testing.T) {

@@ -1297,6 +1297,18 @@ func (s *Store) applyEscalate(ctx context.Context, wf wfRow, it items.Item, acti
 			db.Millis(s.now()), wf.ID); err != nil {
 			return err
 		}
+		// A retired child must give up every shared worktree reservation in
+		// the same transaction as its agent state change. Reclaim excludes
+		// another agent's unreleased reservation even after that agent ends.
+		if _, err := tx.ExecContext(ctx, `UPDATE worktree_reservations SET released_at = ?
+			WHERE released_at IS NULL AND agent_id IN (
+				SELECT a.id FROM agents a JOIN workflow_runs r ON r.agent_id = a.id
+				WHERE r.workflow_id = ? AND r.state = 'failed' AND a.state = 'finished'
+				AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.agent_id = a.id
+					AND se.state IN ('spawning','running','pause_requested','quiescing','stopping')))`,
+			db.Millis(s.now()), wf.ID); err != nil {
+			return err
+		}
 		payload, err := json.Marshal(map[string]any{"event": "workflow_escalated", "item": it.Key,
 			"reason": action.Reason, "round": wf.Round, "last_findings": lastFindings(runs)})
 		if err != nil {
