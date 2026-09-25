@@ -84,38 +84,17 @@ func (h *harness) enableFake(t *testing.T) {
 	// t.Cleanup that restores max_concurrent_agents were ever skipped (a
 	// panic, say), every later test still gets it raised back up here rather
 	// than staying stuck at 1.
-	for _, kv := range [][2]string{{"max_concurrent_agents", "200"}, {"max_agents_per_root", "50"}} {
+	for _, kv := range [][2]string{
+		{"max_concurrent_agents", "200"},
+		{"max_agents_per_root", "50"},
+		{"enabled_agents", `["fake"]`},
+		{"roles", `{"orchestrator":{"agent":"fake","model":"fake-1"},"coder":{"agent":"fake","model":"fake-1"},"reviewer":{"agent":"fake","model":"fake-1"},"ui_reviewer":{"agent":"fake","model":"fake-1"},"designer":{"agent":"fake","model":"fake-1"},"researcher":{"agent":"fake","model":"fake-1"},"debugger":{"agent":"fake","model":"fake-1"},"mechanical":{"agent":"fake","model":"fake-1"}}`},
+	} {
 		if _, err := d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)
 			ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
 			kv[0], kv[1], now); err != nil {
 			t.Fatal(err)
 		}
-	}
-
-	var cur map[string]any
-	h.doT(t, http.MethodGet, "/api/settings", nil, &cur)
-	agents, _ := cur["enabled_agents"].([]any)
-	for _, a := range agents {
-		if a == "fake" {
-			return
-		}
-	}
-	agents = append(agents, "fake")
-	raw, err := json.Marshal(agents)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// kinds.AgentKinds (settings.go's validate) deliberately excludes "fake"
-	// — it's a test-only kind, never meant to reach a real user's settings
-	// picker — so PUT /api/settings 400s on it every time. internal/runtime's
-	// own tests hit the same wall and clear it the same way
-	// (agents_test.go:125): write the row with raw SQL instead of going
-	// through Store.Put's validation.
-	_, err = d.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES ('enabled_agents', ?, ?)
-		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
-		string(raw), now)
-	if err != nil {
-		t.Fatal(err)
 	}
 	// Preflight also checks Catalog.ModelsFor, which reads model_catalog — a
 	// cache internal/catalog.Refresh fills from Fetchers, and "fake" has no
@@ -561,6 +540,15 @@ func (h *harness) killPane(t *testing.T, agentName string) {
 	if socket == "" {
 		t.Fatal("SWARM_TMUX_SOCKET is not set")
 	}
+	out, err := exec.Command("tmux", "-L", socket, "display-message", "-p", "-t", agentName, "#{pane_pid}").CombinedOutput()
+	if err == nil {
+		pid := strings.TrimSpace(string(out))
+		if pid != "" {
+			if _, kerr := exec.Command("kill", "-9", pid).CombinedOutput(); kerr == nil {
+				return
+			}
+		}
+	}
 	if out, err := exec.Command("tmux", "-L", socket, "kill-window", "-t", agentName).CombinedOutput(); err != nil {
 		t.Fatalf("tmux kill-window %s: %v: %s", agentName, err, out)
 	}
@@ -859,4 +847,174 @@ func throwawayGPGKey(t *testing.T) (gnupgHome, keyID string) {
 		t.Fatalf("the keyring in use is not the throwaway one:\n%s", out)
 	}
 	return dir, keyID
+}
+
+// confirmRepo adds repoID to rootKey's confirmed_repos_json so worktrees can be created against it.
+func (h *harness) confirmRepo(t *testing.T, rootKey, repoID string) {
+	t.Helper()
+	d, err := sql.Open("sqlite", "file:"+filepath.Join(h.home, "swarm.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	var raw sql.NullString
+	if err := d.QueryRow(`SELECT confirmed_repos_json FROM items WHERE key = ?`, rootKey).Scan(&raw); err != nil {
+		t.Fatalf("read confirmed_repos_json for %s: %v", rootKey, err)
+	}
+	var repos []string
+	if raw.Valid && raw.String != "" {
+		_ = json.Unmarshal([]byte(raw.String), &repos)
+	}
+	for _, id := range repos {
+		if id == repoID {
+			return
+		}
+	}
+	repos = append(repos, repoID)
+	data, _ := json.Marshal(repos)
+	if _, err := d.Exec(`UPDATE items SET confirmed_repos_json = ?, updated_at = ? WHERE key = ?`, string(data), time.Now().UnixMilli(), rootKey); err != nil {
+		t.Fatalf("update confirmed_repos_json for %s: %v", rootKey, err)
+	}
+}
+
+// workflowStart calls swarm_workflow with op:"start" as orch.
+func (h *harness) workflowStart(t *testing.T, orch, itemKey string, worktrees []map[string]any, context []string) map[string]any {
+	t.Helper()
+	args := map[string]any{
+		"op":        "start",
+		"item":      itemKey,
+		"worktrees": worktrees,
+	}
+	if len(context) > 0 {
+		args["context"] = context
+	}
+	return h.mustTool(t, orch, "swarm_workflow", args)
+}
+
+// workflowStatus calls swarm_workflow with op:"status" as orch.
+func (h *harness) workflowStatus(t *testing.T, orch, itemKey string) map[string]any {
+	t.Helper()
+	return h.mustTool(t, orch, "swarm_workflow", map[string]any{
+		"op":   "status",
+		"item": itemKey,
+	})
+}
+
+// workflowResume calls swarm_workflow with op:"resume" as orch.
+func (h *harness) workflowResume(t *testing.T, orch, itemKey, decision, note string) map[string]any {
+	t.Helper()
+	args := map[string]any{
+		"op":       "resume",
+		"item":     itemKey,
+		"decision": decision,
+	}
+	if note != "" {
+		args["note"] = note
+	}
+	return h.mustTool(t, orch, "swarm_workflow", args)
+}
+
+// workflowCancel calls swarm_workflow with op:"cancel" as orch.
+func (h *harness) workflowCancel(t *testing.T, orch, itemKey string) map[string]any {
+	t.Helper()
+	return h.mustTool(t, orch, "swarm_workflow", map[string]any{
+		"op":   "cancel",
+		"item": itemKey,
+	})
+}
+
+// waitForWorkflowState polls workflowStatus until it equals wantState.
+func (h *harness) waitForWorkflowState(t *testing.T, orch, itemKey, wantState string, timeout time.Duration) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := h.toolOut(t, orch, "swarm_workflow", map[string]any{"op": "status", "item": itemKey})
+		if err == nil {
+			if st, _ := out["state"].(string); st == wantState {
+				return out
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("workflow for %s did not reach state %q within %s (last=%+v, err=%v)", itemKey, wantState, timeout, out, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// activeWorkflowRun returns the active agentName, role, and round for stepID (or any active run if stepID is empty).
+func (h *harness) activeWorkflowRun(t *testing.T, orch, itemKey, stepID string) (agentName, role string, round int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		out := h.workflowStatus(t, orch, itemKey)
+		if runs, ok := out["runs"].([]any); ok {
+			for _, r := range runs {
+				rm := r.(map[string]any)
+				st, _ := rm["step"].(string)
+				ag, _ := rm["agent"].(string)
+				ro, _ := rm["role"].(string)
+				rd, _ := rm["round"].(float64)
+				state, _ := rm["state"].(string)
+				if (stepID == "" || st == stepID) && ag != "" && state == "active" {
+					return ag, ro, int(rd)
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no active run for step %q on %s within 10s", stepID, itemKey)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// checkpointReviewer completes a review run with verdict and optional findings.
+func (h *harness) checkpointReviewer(t *testing.T, reviewer, verdict string, findings []map[string]any) map[string]any {
+	t.Helper()
+	args := map[string]any{
+		"kind":    "completed",
+		"summary": "review completed with verdict " + verdict,
+		"verdict": verdict,
+	}
+	if findings != nil {
+		args["findings"] = findings
+	}
+	return h.mustTool(t, reviewer, "swarm_checkpoint", args)
+}
+
+// checkpointProgressTDD writes a progress checkpoint with a red verification entry (unit optional).
+func (h *harness) checkpointProgressTDD(t *testing.T, agentName, cmd string, unit int) map[string]any {
+	t.Helper()
+	v := map[string]any{
+		"cmd":   cmd,
+		"phase": "red",
+		"ok":    false,
+	}
+	if unit > 0 {
+		v["unit"] = unit
+	}
+	return h.mustTool(t, agentName, "swarm_checkpoint", map[string]any{
+		"kind":         "progress",
+		"summary":      fmt.Sprintf("failing test (unit %d)", unit),
+		"verification": []map[string]any{v},
+	})
+}
+
+// checkpointCompletedTDD writes a completed checkpoint with git ref and green verification entry (unit optional).
+func (h *harness) checkpointCompletedTDD(t *testing.T, agentName, cmd, repo, branch, sha string, unit int) map[string]any {
+	t.Helper()
+	v := map[string]any{
+		"cmd":   cmd,
+		"phase": "green",
+		"ok":    true,
+	}
+	if unit > 0 {
+		v["unit"] = unit
+	}
+	return h.mustTool(t, agentName, "swarm_checkpoint", map[string]any{
+		"kind":         "completed",
+		"summary":      fmt.Sprintf("passing test (unit %d)", unit),
+		"git":          []map[string]any{{"repo": repo, "branch": branch, "sha": sha, "dirty": false}},
+		"verification": []map[string]any{v},
+	})
 }
