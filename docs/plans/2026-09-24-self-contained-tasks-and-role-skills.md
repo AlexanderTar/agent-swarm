@@ -769,6 +769,55 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action
 - [ ] Write the failing test `TestOrchestratorSkillNoLongerHandRollsReviews`: the old "After a worker's `completed`, spawn a `reviewer`" sentence is gone, and the three superpowers references and `ponytail-debt` are present. Red.
 - [ ] Rewrite the skill, add the pointer to `swarm-batching`, and update the README. Green. Commit.
 
+### PA: agy skills root
+
+Filed 2026-09-25 (PR #20), after P1 shipped: agy's real skills location
+turned out to differ from `Config.SkillsDir(KindAgy)`, and every
+swarm-spawned agy session's first run chained the *real*
+`~/.gemini/antigravity-cli/skills` one hop deeper into that session's own
+launch folder (see `docs/plans/2026-09-24-skill-symlink-probe.md`,
+"Follow-up"). See spec A7.
+
+**Workflow:** `tdd-reviewed` (coder → reviewer) · **Units:** 4
+
+**Files:**
+- `internal/install/{config.go,config_test.go,agy.go,agy_test.go}`
+- `internal/adapter/{agy.go,agy_test.go}`
+- `docs/plans/2026-09-24-skill-symlink-probe.md`
+
+**Interfaces (produces):**
+- `Config.SkillsDir(KindAgy)` now returns `~/.gemini/config/skills`.
+- `legacyAgySkillsChain(c Config) (resolved string, ok bool)`, `repairAgySkillsRoot(c Config) error` (internal/install/agy.go).
+
+**Acceptance:**
+- `Config.SkillsDir(KindAgy)` is `~/.gemini/config/skills`; doctor, uninstall and `WriteSkills` follow it automatically (they all derive the path from this method).
+- A spawned agy's `setupEnv` links `<agy-home>/.gemini/config/skills` straight at the real `~/.gemini/config/skills` (creating it if missing), and gives agy-home its own `.migrated` marker (a byte copy of the real one, never a symlink to it) so a spawned agy has no first-run skills migration left to perform and never gets a write path back into the real `~/.gemini/config` tree.
+- `swarm install` repairs an existing `~/.gemini/antigravity-cli/skills` that chains into a swarm session's `run/launch/` folder: salvage its entries into the new root (never overwriting a user-owned same-named entry there), then repoint the old path at the new root. Nothing under `run/launch` is ever deleted. This never runs from the daemon or from a test against the real home.
+- Doctor warns (never fails) when `~/.gemini/antigravity-cli/skills` still resolves into a `run/launch/` session folder.
+- The agy symlink-following verdict is re-probed in a sealed scratch `HOME` with no symlink back into any real directory, and `skillLinkMode[KindAgy]` is set from the result (default stays `Copy` until proven `Symlink`).
+
+**Verify:**
+- `go test ./internal/install/... ./internal/adapter/... ./cmd/...`
+- `go build ./... && go vet ./...`
+- `go test ./...` once
+
+#### Unit PA.1: `SkillsDir(KindAgy)` → `~/.gemini/config/skills`
+- [x] Update the failing assertion in `TestSkillsDirPerAgent` (`internal/install/config_test.go`) to expect `/fake/home/.gemini/config/skills`. Red.
+- [x] Point `Config.SkillsDir(KindAgy)` at `c.Gemini("config", "skills")`. Green. Commit.
+
+#### Unit PA.2: `setupEnv` links `config/skills` + `.migrated`
+- [x] Write the failing tests `TestAgySetupEnvLinksConfigSkillsAndMigratedMarker` and `TestAgySetupEnvCopiesRealMigratedMarkerContent` (`internal/adapter/agy_test.go`), asserting `agy-home/.gemini/config/skills` is a symlink to the real `~/.gemini/config/skills` (created if missing), `agy-home/.gemini/config/.migrated` exists as a plain file (never a symlink), and the real `~/.gemini/antigravity-cli/skills` is never touched. Red.
+- [x] Implement in `setupEnv`; update the stale `TestAgyIsolatedHomeCarriesSkillsAndHooks` to plant at and assert the new `config/skills` path. Green. Commit.
+
+#### Unit PA.3: Install repair + doctor warn
+- [x] Write the failing tests `TestWriteAgyRepairsALegacySkillsChainIntoRunLaunch`, `TestWriteAgyLeavesAHealthySkillsRootAlone` and `TestCheckAgyWarnsWhenSkillsRootIsInsideARunLaunchSession` (`internal/install/agy_test.go`), with a fake chain in a temp home (`<home>/run/launch/ses_x/agy-home/.gemini/config/skills`, with content) linked from `antigravity-cli/skills`. Red.
+- [x] Implement `legacyAgySkillsChain`, `repairAgySkillsRoot` (called from `WriteAgy`, before `WriteSkills`) and `agySkillsRootLegacyCheck` (added to `CheckAgy`). Green. Commit.
+
+#### Unit PA.4: Sealed re-probe + link mode + probe doc
+- [ ] Build a scratch `HOME` under the scratchpad with no symlink to any real directory; copy (not link) only the auth/onboarding files agy needs; create `$HOME/.gemini/config/.migrated`; symlink the probe skill at `$HOME/.gemini/config/skills/zz-swarm-symlink-probe` to a dir outside `$HOME`; run agy headless and ask for the probe codeword; before and after, diff `ls -la ~/.gemini/antigravity-cli/skills ~/.gemini/config ~/.gemini/antigravity-cli` on the real home — any difference stops the unit and reports BLOCKED.
+- [ ] Run the same prompt against a real (non-symlink) copy of the probe at the same scratch location as a control.
+- [ ] Set `skillLinkMode[KindAgy]` from the result; update `TestSkillLinkModePerKind` and its comment if it changed. Append a dated section (and update the Verdicts row) to `docs/plans/2026-09-24-skill-symlink-probe.md` with the exact command, prompt and output lines. Commit.
+
 ---
 
 ## Integration (epic level, run by the orchestrator)

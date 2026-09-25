@@ -437,6 +437,70 @@ adds to it." Contents:
 `workflow`); the reason text names `swarm_spawn` / `swarm_workflow`.
 `skills/swarm` rule 5 lists it.
 
+### A7. agy skills root
+
+Filed 2026-09-25 (PR #20) as a fix to A1's own agy path, discovered live:
+agy 1.2.10 actually reads skills from `$HOME/.gemini/config/skills`, not
+`$HOME/.gemini/antigravity-cli/skills` (`Config.SkillsDir(KindAgy)`
+pre-A7), and migrates the latter away from on first run in a fresh `HOME`.
+`adapter/agy.go`'s `setupEnv` gives every swarm-spawned session a fresh
+`HOME` whose `.gemini/antigravity-cli` is symlinked whole to the *real*
+`~/.gemini/antigravity-cli` — so each new session's first run chained the
+real `~/.gemini/antigravity-cli/skills` one hop deeper into that session's
+own launch folder, with no permanent, session-independent home. See
+`docs/plans/2026-09-24-skill-symlink-probe.md`, "Follow-up", for the full
+incident.
+
+Locked decisions:
+
+1. `Config.SkillsDir(KindAgy)` = `~/.gemini/config/skills`. Doctor,
+   uninstall and `WriteSkills` follow automatically since they all derive
+   the path from this method. Link mode for agy stays whatever the A1
+   symlink-following re-probe (decision 5 below) finds, default `Copy`
+   until proven `Symlink`.
+2. `setupEnv` creates the real `~/.gemini/config/skills` if missing
+   (`0o755`) and symlinks `<agy-home>/.gemini/config/skills` straight at
+   it — no longer relying on the `.gemini/antigravity-cli` symlink plus
+   agy's own migration to get there. It also gives agy-home its own
+   `.migrated` marker at `<agy-home>/.gemini/config/.migrated`: a byte
+   copy of the real `~/.gemini/config/.migrated` (or an empty file if the
+   real one doesn't exist yet), never a symlink to it — a symlink there
+   would hand a spawned agy a write path back into the real
+   `~/.gemini/config` tree, exactly what this fix removes. The existing
+   `antigravity-cli` / `hooks.json` / `plugins` symlinks are unchanged.
+   Result: a spawned agy never has a first-run skills migration left to
+   perform, and never rewrites the real `~/.gemini/antigravity-cli/skills`.
+3. Repair of an existing broken install runs only from an explicit
+   `swarm install` (`WriteAgy`, never the daemon, never a test against the
+   real home): if the real `~/.gemini/antigravity-cli/skills` is a symlink
+   whose chain resolves under `<swarm home>/run/launch/`, copy the
+   resolved tree's entries into `~/.gemini/config/skills` — never
+   overwriting an entry already there that is user-owned per the P1
+   ownership rules (a swarm-owned or pre-A1-shipped `swarm*` entry is
+   re-written by `WriteSkills` right afterward anyway) — then repoint
+   `~/.gemini/antigravity-cli/skills` at `~/.gemini/config/skills`,
+   matching the shape agy's own post-migration setup leaves. Nothing
+   under `run/launch` is ever deleted.
+4. Doctor's agy skills check (`CheckSkills`) already looks at the new
+   root. A separate warn-level check (`agySkillsRootLegacyCheck`, OK
+   true) fires when `~/.gemini/antigravity-cli/skills` still resolves
+   into `<swarm home>/run/launch/`: "agy skills live inside a swarm
+   session folder; run swarm install to move them."
+5. Re-probe, sealed: a scratch `HOME` under the scratchpad with no symlink
+   to any real directory. Copy (not link) only the auth/onboarding files
+   agy needs from `~/.gemini/antigravity-cli` into it. Create
+   `$HOME/.gemini/config/.migrated`. Put the probe skill at
+   `$HOME/.gemini/config/skills/zz-swarm-symlink-probe` as a symlink to a
+   dir outside `$HOME`; run agy headless and ask it for the probe
+   codeword; run the same prompt again against a real (non-symlink) copy
+   of the probe at the same location as a control. Before and after each
+   run, diff `ls -la ~/.gemini/antigravity-cli/skills ~/.gemini/config
+   ~/.gemini/antigravity-cli` on the real home — any difference stops the
+   unit and reports BLOCKED rather than attempting a repair. Set
+   `skillLinkMode[KindAgy]` from the result and append the evidence
+   (version, exact command, prompt, output lines) to
+   `docs/plans/2026-09-24-skill-symlink-probe.md`.
+
 ## Part B — Multi-agent tasks and the workflow engine
 
 ### B1. DB models (migration `0011_workflows.sql`)
@@ -1043,6 +1107,7 @@ Agent-facing errors (tool results):
 - Workflow validation: `"step <id>: set exactly one of run or review"`, `"step <id>: <role> can't run a step"`, `"step <id>: <role> can't review"`, `"step <id>: of/fix must name an earlier run step"`, `"max_rounds must be 1–5"`, `"unknown template \"<name>\""`, `"after_tasks is only for stories"`, `"integration is only for epics and bugs"`.
 - Hook: `"[swarm] The Workflow tool is disabled in Swarm sessions. Use swarm_spawn or swarm_workflow."`
 - Integrated gate: `"Integration verify not recorded as passing: <cmd>."`, `"Integration needs a passing final review of <sha7>."`
+- Doctor (A7 decision 4), agy skills root, warn-level: `"agy skills live inside a swarm session folder; run swarm install to move them"`.
 
 Relays (JSON, to orchestrator): `workflow_succeeded`, `workflow_escalated`,
 `story_ready_for_review`. Notification (menubar/board, category

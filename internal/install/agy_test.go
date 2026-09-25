@@ -301,6 +301,127 @@ func TestCheckAgyFailsOnANestedPreInvocationAndOnAMissingBinary(t *testing.T) {
 	}
 }
 
+// A7 decision 3: an old ~/.gemini/antigravity-cli/skills symlink chaining
+// into a swarm session's launch folder (the exact shape a spawned agy's own
+// first-run migration used to leave behind, pre-PA) must be repaired by an
+// explicit `swarm install`: salvage what's there into the new root, then
+// repoint the old path at the new root -- agy's own post-migration shape.
+// Never delete anything under run/launch, and never clobber an entry that
+// already exists at the new root and is user-owned.
+func TestWriteAgyRepairsALegacySkillsChainIntoRunLaunch(t *testing.T) {
+	c := fakeHome(t)
+	launchSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	// Unique to the legacy chain (not a registered skill name): must be salvaged.
+	if err := os.MkdirAll(filepath.Join(launchSkills, "custom-user-skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(launchSkills, "custom-user-skill", "SKILL.md"), []byte("# mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A registered name too, so the test can also prove run/launch survives.
+	if err := os.MkdirAll(filepath.Join(launchSkills, "swarm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(launchSkills, "swarm", "SKILL.md"), []byte("# old swarm"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(launchSkills, oldPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// A pre-existing user-owned entry at the NEW root with the same name as a
+	// legacy one: repair must never clobber it.
+	newRoot := c.Gemini("config", "skills")
+	if err := os.MkdirAll(filepath.Join(newRoot, "custom-user-skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newRoot, "custom-user-skill", "SKILL.md"), []byte("# theirs, keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+
+	fi, err := os.Lstat(oldPath)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected antigravity-cli/skills to be a symlink after repair: %v", err)
+	}
+	if target, err := os.Readlink(oldPath); err != nil || target != newRoot {
+		t.Errorf("antigravity-cli/skills points at %q, %v, want %q (agy's own post-migration shape)", target, err, newRoot)
+	}
+
+	kept, err := os.ReadFile(filepath.Join(newRoot, "custom-user-skill", "SKILL.md"))
+	if err != nil || string(kept) != "# theirs, keep me" {
+		t.Errorf("a user-owned entry at the new root was overwritten: %q, %v", kept, err)
+	}
+
+	if _, err := os.Stat(filepath.Join(launchSkills, "swarm", "SKILL.md")); err != nil {
+		t.Errorf("run/launch content was deleted; PA.3 must never delete under run/launch: %v", err)
+	}
+}
+
+// A plain, healthy skills root (already at the new location, or nothing
+// there yet) must never be treated as a legacy chain.
+func TestWriteAgyLeavesAHealthySkillsRootAlone(t *testing.T) {
+	c := fakeHome(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if _, err := os.Lstat(oldPath); err == nil {
+		t.Errorf("no legacy chain existed; repair must not create %s", oldPath)
+	}
+}
+
+// A7 decision 4: doctor warns (does not fail) when the legacy
+// ~/.gemini/antigravity-cli/skills path resolves into a swarm session's
+// launch folder, since that state can exist before `swarm install` has had a
+// chance to repair it.
+func TestCheckAgyWarnsWhenSkillsRootIsInsideARunLaunchSession(t *testing.T) {
+	c := fakeHome(t)
+	launchSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	if err := os.MkdirAll(launchSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(launchSkills, oldPath); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &execx.Fake{Responses: map[string]execx.Result{}}
+	ch := findCheck(t, install.CheckAgy(context.Background(), c, f.Runner()), "agy skills root")
+	if !ch.OK || !strings.Contains(ch.Detail, "swarm session folder") {
+		t.Errorf("check = %+v, want OK with a swarm-session-folder warning", ch)
+	}
+
+	// Once repointed at the new root (what repair does), no warning.
+	if err := os.Remove(oldPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(c.Gemini("config", "skills"), oldPath); err != nil {
+		t.Fatal(err)
+	}
+	ch2 := findCheck(t, install.CheckAgy(context.Background(), c, f.Runner()), "agy skills root")
+	if !ch2.OK || strings.Contains(ch2.Detail, "swarm session folder") {
+		t.Errorf("check after repointing = %+v", ch2)
+	}
+}
+
 // findCheck is shared by the four agent test files.
 func findCheck(t *testing.T, cs []install.Check, name string) install.Check {
 	t.Helper()
