@@ -134,4 +134,17 @@ this is the "session/log files excepted" carve-out in the PM brief's snapshot ru
 violation: it's the real, intended consequence of Q2 (shared real data dir). No other file
 under either tree changed; `plugins/installed.json` diffed identical.
 
-tmux session killed at the end of the probe (`tmux kill-session -t museprobe1`).
+**Fix round 1 correction:** the probe's session actually registered as **two** entries in
+the real session store, not one — `01a0d78b-9da4-7bf3-93e7-fc959c5bca99` (session.jsonl
+mtime 08:50:56) and `01a0d78b-b80a-78d2-a9e1-464013cc0eac` (mtime 08:51:03), 7 seconds
+apart. Cause: the probe ended with `tmux kill-session -t museprobe1`, which SIGKILLs the
+pane's process group without giving muse a chance to exit cleanly; muse appears to
+register a fresh session entry on that kind of abrupt disconnect rather than reusing the
+one already open. Both are ordinary muse session directories under
+`~/.local/share/muse/sessions/2026/09/25/` (transcripts, `session.peer-history.sqlite3`,
+etc. — no isolation-relevant content, this probe's own single "reply with exactly: probe
+ok" exchange) and the controller has decided to leave them for the user to clean up or
+keep, rather than have this probe write to the real home a second time to remove them.
+**Future probes should end the muse TUI with its own `/exit` command (typed into the
+pane, then a short wait for the prompt to return) instead of killing the tmux session
+out from under it**, so exactly one session entry is registered per probe run.

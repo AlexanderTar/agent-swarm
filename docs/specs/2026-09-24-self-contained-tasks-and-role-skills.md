@@ -482,11 +482,11 @@ credentials through unmutated.
   `plugin_package_retention_refused`). Sharing the real data dir is the
   only proven-working way to keep the superpowers plugin available
   (locked decision 7) and keep `DiscoverSession`'s real session-registry
-  read working; it also means spawned muse sessions' transcripts/logs
-  land in the operator's real `~/.local/share/muse`, and every other real
-  plugin (not just superpowers) stays visible to spawned agents — the
-  same trade-off claude-kind spawns already make by sharing their plugin
-  cache.
+  read working; it also means spawned muse sessions' transcripts/logs —
+  including `tui-history.jsonl` prompt history — land in the operator's
+  real `~/.local/share/muse`, and every other real plugin (not just
+  superpowers) stays visible to spawned agents — the same trade-off
+  claude-kind spawns already make by sharing their plugin cache.
 - **Q3:** a live-TUI probe (`docs/plans/2026-09-25-muse-isolation-probe.md`,
   plan unit PM.1) confirmed no blocking first-run/foreign-context dialog
   under this env, so `Muse.StartupDialogs()` needs no new entry for this
