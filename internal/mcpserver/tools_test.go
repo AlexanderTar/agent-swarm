@@ -395,6 +395,45 @@ func TestSendWithoutOrDistinctRequestIDsEachSend(t *testing.T) {
 	}
 }
 
+// Omitted kind (and explicit relay, which no agent can ever mean — it is a
+// daemon-origin kind) must store finding, the generic agent message kind.
+func TestSendDefaultsOmittedKindToFinding(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	for _, body := range []string{
+		`{"to":"` + seed.Caller.AgentName + `","body":"no kind"}`,
+		`{"to":"` + seed.Caller.AgentName + `","kind":"relay","body":"explicit relay"}`,
+	} {
+		if _, err := s.call(ctx, seed.Caller, "swarm_send", body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var kinds []string
+	rows, err := s.RT.DB.QueryContext(ctx, `SELECT kind FROM messages WHERE to_agent_id = ? ORDER BY seq`, seed.Caller.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		kinds = append(kinds, k)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(kinds) != 2 {
+		t.Fatalf("stored kinds = %v, want exactly 2 messages", kinds)
+	}
+	for _, k := range kinds {
+		if k != "finding" {
+			t.Errorf("stored kind = %q, want finding", k)
+		}
+	}
+}
+
 func TestReadToolRefusesAnUnknownRef(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()
@@ -784,5 +823,78 @@ func TestSwarmCheckpointVerdictSchema(t *testing.T) {
 	wantSev := `finding severity "invalid" must be critical, major, minor or nit.`
 	if err == nil || err.Error() != wantSev {
 		t.Fatalf("err = %v, want %q", err, wantSev)
+	}
+}
+
+// swarm_ask approvals without a named kind leave the daemon to infer intent;
+// pin kind as required and document the approval fields.
+func TestAskToolSchemaRequiresKind(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties struct {
+			Artifact struct {
+				Description string `json:"description"`
+			} `json:"artifact"`
+			Section struct {
+				Description string `json:"description"`
+			} `json:"section"`
+		} `json:"properties"`
+	}
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name == "swarm_ask" {
+			if err := json.Unmarshal(d.Schema, &schema); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !slices.Contains(schema.Required, "kind") {
+		t.Errorf("swarm_ask required = %v, want kind", schema.Required)
+	}
+	if schema.Properties.Artifact.Description == "" || schema.Properties.Section.Description == "" {
+		t.Errorf("swarm_ask artifact/section need descriptions")
+	}
+}
+
+// Every shared tool must declare what it actually needs: clients that
+// validate arguments before sending can only see the schema, so an omitted
+// `required` turns every missing field into a runtime round-trip. sync/read
+// stay all-optional by design (any filter combo is valid) — pinned here too.
+func TestSharedToolSchemasDeclareRequired(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	caller := seed.Caller
+	caller.AdvisorMode = "simulated"
+	required := map[string][]string{}
+	for _, d := range s.ToolsFor(caller) {
+		var schema struct {
+			Required []string `json:"required"`
+		}
+		if err := json.Unmarshal(d.Schema, &schema); err != nil {
+			t.Fatal(err)
+		}
+		required[d.Name] = schema.Required
+	}
+	for tool, want := range map[string][]string{
+		"swarm_blocker":      {"reason"},
+		"swarm_send":         {"to", "body"},
+		"swarm_advise":       {"question"},
+		"swarm_instructions": {"op"},
+		"swarm_kb":           {"op"},
+	} {
+		got, ok := required[tool]
+		if !ok {
+			t.Errorf("%s not visible to orchestrator caller", tool)
+			continue
+		}
+		for _, w := range want {
+			if !slices.Contains(got, w) {
+				t.Errorf("%s required = %v, want %q", tool, got, w)
+			}
+		}
+	}
+	for _, tool := range []string{"swarm_sync", "swarm_read"} {
+		if got := required[tool]; len(got) != 0 {
+			t.Errorf("%s required = %v, want empty (all-optional by design)", tool, got)
+		}
 	}
 }

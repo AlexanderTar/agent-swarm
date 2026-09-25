@@ -53,8 +53,8 @@ func syncTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_sync",
 		Description: "Acknowledge handled messages (`ack`) and fetch the agent's inbox: assignments, questions, control notices and advice, newest-priority first. Messages delivered three times without an ack are listed in `unacked` by id and kind only.",
-		Schema: objSchema(`"ack":{"type":"array","items":{"type":"string"}},
-			"limit":{"type":"integer"}`),
+		Schema: objSchema(`"ack":{"type":"array","items":{"type":"string"},"description":"Message ids already handled"},
+			"limit":{"type":"integer","description":"Max messages to return"}`),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Ack   []string `json:"ack"`
@@ -148,8 +148,8 @@ func askTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_ask",
 		Description: "Ask a question, request an approval, propose repos to confirm, or withdraw an earlier ask, and block for the answer.",
-		Schema: objSchema(`"kind":{"type":"string"},"prompt":{"type":"string"},"options":{"type":"array"},
-			"artifact":{"type":"string"},"section":{"type":"string"},"withdraw":{"type":"string"},
+		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, or withdraw"},"prompt":{"type":"string"},"options":{"type":"array"},
+			"artifact":{"type":"string","description":"Artifact id for approval kinds"},"section":{"type":"string","description":"Section id for per-section approval"},"withdraw":{"type":"string"},
 			"repos":{"type":"array","items":{"type":"object","properties":{
 				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
 				"reason":{"type":"string"},"source":{"type":"string","enum":["","dropped"]}},
@@ -158,7 +158,8 @@ func askTool(s *Server) ToolDef {
 				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
 				"reason":{"type":"string"}},
 				"required":["repo","reason"]}},
-			"request_id":{"type":"string"}`),
+			"request_id":{"type":"string"}`,
+			[]string{"kind"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Kind      string                  `json:"kind"`
@@ -201,7 +202,8 @@ func blockerTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_blocker",
 		Description: "Log a genuine blocker that requires user or orchestrator intervention to proceed.",
-		Schema:      objSchema(`"reason":{"type":"string"},"options":{"type":"array","items":{"type":"string"}}`),
+		Schema: objSchemaRequired(`"reason":{"type":"string"},"options":{"type":"array","items":{"type":"string"}}`,
+			[]string{"reason"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Reason  string   `json:"reason"`
@@ -231,8 +233,9 @@ func sendTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_send",
 		Description: "Send a short message to another agent in the same top-level item, or to your parent.",
-		Schema: objSchema(`"to":{"type":"string"},"kind":{"type":"string","enum":["question","answer","finding"]},
-			"body":{"type":"string"},"reply_to":{"type":"string"},"request_id":{"type":"string"}`),
+		Schema: objSchemaRequired(`"to":{"type":"string","description":"Recipient agent name, or 'parent' for your orchestrator"},"kind":{"type":"string","enum":["question","answer","finding"],"description":"Message kind; omitted or relay stores as finding"},
+			"body":{"type":"string"},"reply_to":{"type":"string"},"request_id":{"type":"string"}`,
+			[]string{"to", "body"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				To        string `json:"to"`
@@ -245,8 +248,8 @@ func sendTool(s *Server) ToolDef {
 				return nil, err
 			}
 			kind := in.Kind
-			if kind == "" {
-				kind = "relay"
+			if kind == "" || kind == "relay" {
+				kind = "finding"
 			}
 			// runtime.Store.Send's last-but-one parameter is named correlationID and
 			// is the only thread-tracking hook it exposes (internal/runtime is
@@ -334,10 +337,10 @@ func readTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_read",
 		Description: "Read items, artifacts, agents and checkpoints by ref or filter, search repos, and get changes since a cursor.",
-		Schema: objSchema(`"refs":{"type":"array","items":{"type":"string"}},
-			"filter":{"type":"object"},
-			"repos":{"type":"object","properties":{"q":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer"}}},
-			"since_seq":{"type":"integer"},"fields":{"type":"array","items":{"type":"string"}}`),
+		Schema: objSchema(`"refs":{"type":"array","items":{"type":"string"},"description":"Item, artifact, agent or checkpoint refs to fetch"},
+			"filter":{"type":"object","description":"Filter listing by root, type, status or query"},
+			"repos":{"type":"object","description":"Repo search","properties":{"q":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer"}}},
+			"since_seq":{"type":"integer","description":"Event cursor to list changes since"},"fields":{"type":"array","items":{"type":"string"}}`),
 		Unbound: true,
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in readInput
@@ -590,7 +593,7 @@ func kbReadOnlyTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_kb",
 		Description: "Search or read the Swarm knowledge base.",
-		Schema:      objSchema(kbSearchGetSchema),
+		Schema:      objSchemaRequired(kbSearchGetSchema, []string{"op"}),
 		Unbound:     true,
 		Handler:     kbHandler(s, false),
 	}
@@ -600,7 +603,7 @@ func kbFullTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_kb",
 		Description: "Search, read or write a knowledge base document: a durable decision, spec or note other agents can find later.",
-		Schema:      objSchema(kbFullSchema),
+		Schema:      objSchemaRequired(kbFullSchema, []string{"op"}),
 		Handler:     kbHandler(s, true),
 	}
 }
@@ -722,8 +725,9 @@ func advisorTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_advise",
 		Description: "Ask the simulated advisor a question and wait briefly for its answer, or move on and receive it as a later message.",
-		Schema: objSchema(`"question":{"type":"string"},"focus":{"type":"array","items":{"type":"string"}},
-			"wait_seconds":{"type":"integer"}`),
+		Schema: objSchemaRequired(`"question":{"type":"string"},"focus":{"type":"array","items":{"type":"string"}},
+			"wait_seconds":{"type":"integer"}`,
+			[]string{"question"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			if s.Advisor == nil {
 				return nil, errors.New("no advisor is configured for this agent")
@@ -769,8 +773,9 @@ func instructionsTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_instructions",
 		Description: "Read or update durable Swarm instructions injected into agents.",
-		Schema:      objSchema(`"op":{"type":"string","enum":["get","set"]},"instructions":{"type":"string"}`),
-		Unbound:     true,
+		Schema: objSchemaRequired(`"op":{"type":"string","enum":["get","set"]},"instructions":{"type":"string"}`,
+			[]string{"op"}),
+		Unbound: true,
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Op           string `json:"op"`

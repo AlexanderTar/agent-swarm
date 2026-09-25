@@ -506,6 +506,88 @@ func TestArtifactToolSchemaAllowsRevise(t *testing.T) {
 	}
 }
 
+// swarm_artifact's guessing loop (muse calling repeatedly) comes from a
+// schema with no required fields and no value hints. Pin both.
+func TestArtifactToolSchemaRequiresFields(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties struct {
+			Op struct {
+				Enum []string `json:"enum"`
+			} `json:"op"`
+			Kind struct {
+				Enum        []string `json:"enum"`
+				Description string   `json:"description"`
+			} `json:"kind"`
+			Path struct {
+				Description string `json:"description"`
+			} `json:"path"`
+			Item struct {
+				Description string `json:"description"`
+			} `json:"item"`
+		} `json:"properties"`
+	}
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name == "swarm_artifact" {
+			if err := json.Unmarshal(d.Schema, &schema); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, want := range []string{"op", "item", "kind", "path"} {
+		if !slices.Contains(schema.Required, want) {
+			t.Errorf("swarm_artifact required = %v, want %q", schema.Required, want)
+		}
+	}
+	for _, want := range []string{"spec", "plan", "debug_report", "note", "design", "research"} {
+		if !slices.Contains(schema.Properties.Kind.Enum, want) {
+			t.Errorf("swarm_artifact kind enum = %v, want %q", schema.Properties.Kind.Enum, want)
+		}
+	}
+	if schema.Properties.Path.Description == "" || schema.Properties.Item.Description == "" {
+		t.Errorf("swarm_artifact path/item need descriptions, got %q / %q",
+			schema.Properties.Path.Description, schema.Properties.Item.Description)
+	}
+}
+
+// Same contract as the shared tools: every orchestrator tool declares the
+// fields its handler actually rejects when empty, so validating clients fail
+// fast instead of guessing through runtime round-trips.
+func TestOrchestratorToolSchemasDeclareRequired(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	caller := seed.Caller
+	caller.SpikeOrchestrator = true
+	required := map[string][]string{}
+	for _, d := range s.ToolsFor(caller) {
+		var schema struct {
+			Required []string `json:"required"`
+		}
+		if err := json.Unmarshal(d.Schema, &schema); err != nil {
+			t.Fatal(err)
+		}
+		required[d.Name] = schema.Required
+	}
+	for tool, want := range map[string][]string{
+		"swarm_items":          {"op"},
+		"swarm_worktree":       {"op"},
+		"swarm_control":        {"target", "action"},
+		"swarm_role_overrides": {"op"},
+		"swarm_materialize":    {"spike"},
+	} {
+		got, ok := required[tool]
+		if !ok {
+			t.Errorf("%s not visible to orchestrator caller", tool)
+			continue
+		}
+		for _, w := range want {
+			if !slices.Contains(got, w) {
+				t.Errorf("%s required = %v, want %q", tool, got, w)
+			}
+		}
+	}
+}
+
 // ---------- coverage: the remaining swarm_items/swarm_control/swarm_worktree/
 // swarm_materialize branches the tests above don't reach ----------
 

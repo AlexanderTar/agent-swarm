@@ -80,14 +80,15 @@ func itemsTool(s *Server) ToolDef {
 		Name:        "swarm_items",
 		Description: "Create or update an item, or link/unlink a dependency, inside your own top-level item's tree.",
 		Roles:       orchestratorRole,
-		Schema: objSchema(`"op":{"type":"string","enum":["create","update","link","unlink"]},
+		Schema: objSchemaRequired(`"op":{"type":"string","enum":["create","update","link","unlink"]},
 			"key":{"type":"string"},"parent":{"type":"string"},"type":{"type":"string"},
 			"title":{"type":"string"},"brief":{"type":"string"},"acceptance":{"type":"array"},
 			"priority":{"type":"integer"},"role_hint":{"type":"string"},"tdd_exempt":{"type":"string"},
 			"workflow":{"type":"object"},"steps":{"type":"array"},"units":{"type":"array"},
 			"solo":{"type":"string"},"verify":{"type":"array"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
-			"blocked_by":{"type":"string"},"request_id":{"type":"string"}`),
+			"blocked_by":{"type":"string"},"request_id":{"type":"string"}`,
+			[]string{"op"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Op         string         `json:"op"`
@@ -250,8 +251,11 @@ func artifactTool(s *Server) ToolDef {
 		// (internal/runtime, outside this batch) ignores `op` and infers
 		// register-vs-revise itself from whether a row already exists for the
 		// item+path).
-		Schema: objSchema(`"op":{"type":"string","enum":["register","revise"]},"item":{"type":"string"},
-			"kind":{"type":"string"},"path":{"type":"string"},"request_id":{"type":"string"}`),
+		Schema: objSchemaRequired(`"op":{"type":"string","enum":["register","revise"]},"item":{"type":"string","description":"Top-level item KEY (not id) the artifact belongs to"},
+			"kind":{"type":"string","enum":["spec","plan","debug_report","note","design","research"],"description":"Artifact kind, not a filename"},
+			"path":{"type":"string","description":"Existing file under ~/.swarm/specs or ~/.swarm/plans with '## '-headed sections; plans end with a swarm-tree block"},
+			"request_id":{"type":"string"}`,
+			[]string{"op", "item", "kind", "path"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Op        string `json:"op"`
@@ -348,10 +352,11 @@ func worktreeTool(s *Server) ToolDef {
 		Name:        "swarm_worktree",
 		Description: "Create, share, review, release or remove a git worktree for a repo confirmed on your top-level item.",
 		Roles:       orchestratorRole,
-		Schema: objSchema(`"op":{"type":"string","enum":["create","share","review","release","remove"]},
+		Schema: objSchemaRequired(`"op":{"type":"string","enum":["create","share","review","release","remove"]},
 			"repo":{"type":"string"},"branch":{"type":"string"},"base":{"type":"string"},
 			"sha":{"type":"string"},"worktree":{"type":"string"},"agent":{"type":"string"},"mode":{"type":"string"},
-			"request_id":{"type":"string"}`),
+			"request_id":{"type":"string"}`,
+			[]string{"op"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Op        string `json:"op"`
@@ -629,9 +634,10 @@ func controlTool(s *Server) ToolDef {
 		Name:        "swarm_control",
 		Description: "Pause, resume, cancel or retry an agent in your own subtree.",
 		Roles:       orchestratorRole,
-		Schema: objSchema(`"target":{"type":"string"},
+		Schema: objSchemaRequired(`"target":{"type":"string"},
 			"action":{"type":"string","enum":["pause","resume","cancel","retry"]},
-			"scope":{"type":"string"},"note":{"type":"string"},"request_id":{"type":"string"}`),
+			"scope":{"type":"string"},"note":{"type":"string"},"request_id":{"type":"string"}`,
+			[]string{"target", "action"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Target    string `json:"target"`
@@ -713,9 +719,10 @@ func roleOverridesTool(s *Server) ToolDef {
 		Description: "Set or clear your OWN future role->agent/model/effort default (checked before the live global Settings when you spawn). " +
 			"Self only -- there is no target-agent parameter. set requires role, agent and model (effort optional); clear requires role.",
 		Roles: orchestratorRole,
-		Schema: objSchema(`"op":{"type":"string","enum":["set","clear"]},
+		Schema: objSchemaRequired(`"op":{"type":"string","enum":["set","clear"]},
 			"role":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"effort":{"type":"string"},
-			"request_id":{"type":"string"}`),
+			"request_id":{"type":"string"}`,
+			[]string{"op"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Op        string `json:"op"`
@@ -824,8 +831,9 @@ func materializeTool(s *Server) ToolDef {
 		// 2, item 4). RT.Materialize still independently checks the caller is
 		// that spike's orchestrator (a.ItemID != spike.ID), so passing it
 		// explicitly adds no privilege the caller didn't already have.
-		Schema: objSchema(`"spike":{"type":"string"},"spec":{"type":"string"},"plan":{"type":"string"},"report":{"type":"string"},
-			"request_id":{"type":"string"}`),
+		Schema: objSchemaRequired(`"spike":{"type":"string"},"spec":{"type":"string"},"plan":{"type":"string"},"report":{"type":"string"},
+			"request_id":{"type":"string"}`,
+			[]string{"spike"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
 				Spike     string `json:"spike"`
