@@ -157,13 +157,30 @@ func CheckAgy(ctx context.Context, c Config, run execx.Runner) []Check {
 	return []Check{agyHooksCheck(c), CheckSkills(c, KindAgy), agySkillsRootLegacyCheck(c)}
 }
 
-// legacyAgySkillsChain resolves ~/.gemini/antigravity-cli/skills (agy's
-// pre-A7 skills location) and reports whether it is currently a symlink
-// chaining into a swarm session's launch folder -- the exact shape a
-// spawned agy's own first-run migration used to leave behind, before every
-// new session's first run chained it one hop deeper (A7, package PA; see
-// docs/plans/2026-09-24-skill-symlink-probe.md, "Follow-up"). ok is false for
-// anything else: missing, a real directory, or a symlink pointing elsewhere
+// legacyAgySkillsChain reports whether ~/.gemini/antigravity-cli/skills
+// (agy's pre-A7 skills location) is currently a symlink whose FIRST hop
+// points somewhere under a swarm session's run/launch folder -- the exact
+// shape a spawned agy's own first-run migration used to leave behind (A7,
+// package PA; see docs/plans/2026-09-24-skill-symlink-probe.md,
+// "Follow-up"). resolved is the chain's fully-resolved target when it
+// resolves cleanly, and empty when it doesn't (fix round 1, finding 4):
+//
+//   - a dangling first hop (a later hop was deleted, e.g. a reaped session):
+//     ok is still true (there is still a legacy link to repoint), resolved
+//     is empty (nothing to salvage).
+//   - a first hop into run/launch whose chain resolves all the way back to
+//     the healthy Config.SkillsDir(KindAgy) itself (possible once a spawn's
+//     own agy-home/.gemini/config/skills is itself a symlink to the real
+//     config/skills, per PA.2's setupEnv): ok is true, resolved is that
+//     healthy path -- repairAgySkillsRoot must not try to copy it into
+//     itself.
+//
+// Checking only the first hop (not the fully-resolved target, which the
+// pre-fix-round-1 version compared instead) is what catches both: a fully
+// dangling or redirected-elsewhere chain still LOOKS like the legacy shape
+// at its first hop even when where it ends up isn't inside run/launch (or
+// doesn't exist) any more. ok is false for anything else: missing, a real
+// directory, or a first hop pointing somewhere other than run/launch
 // (including the healthy post-repair case, a symlink straight at
 // Config.SkillsDir(KindAgy)).
 func legacyAgySkillsChain(c Config) (resolved string, ok bool) {
@@ -179,29 +196,30 @@ func legacyAgySkillsChain(c Config) (resolved string, ok bool) {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(filepath.Dir(oldPath), target)
 	}
-	resolved, err = filepath.EvalSymlinks(target)
-	if err != nil {
-		return "", false // dangling: not this specific shape
-	}
-	launchRoot, err := filepath.EvalSymlinks(filepath.Join(c.Home, "run", "launch"))
-	if err != nil {
-		launchRoot = filepath.Join(c.Home, "run", "launch") // not created yet: compare unresolved
-	}
-	rel, err := filepath.Rel(launchRoot, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !underDir(target, filepath.Join(c.Home, "run", "launch")) {
 		return "", false
+	}
+	if r, err := filepath.EvalSymlinks(target); err == nil {
+		resolved = r
 	}
 	return resolved, true
 }
 
 // repairAgySkillsRoot is A7 decision 3, run only from WriteAgy (i.e. only an
-// explicit `swarm install`, never the daemon): when
+// explicit `swarm install` or `swarm migrate`'s step 9, which calls the same
+// install.Agents -> WriteAgy path -- never the daemon): when
 // ~/.gemini/antigravity-cli/skills chains into a swarm session's launch
 // folder, salvage whatever is there into Config.SkillsDir(KindAgy) (never
 // overwriting an entry already at the new root that is user-owned -- a
 // swarm-owned one is rewritten by WriteSkills right after this runs anyway),
 // then repoint the old path at the new root, matching the shape agy's own
 // post-migration setup leaves. Nothing under run/launch is ever deleted.
+//
+// resolved from legacyAgySkillsChain can be empty (a dangling chain --
+// nothing to salvage) or equal to newRoot itself (the chain resolved all the
+// way back to the healthy root -- also nothing to salvage, and reading
+// newRoot's own entries to copy them into itself would be both pointless and
+// unsafe); both skip straight to repointing (fix round 1, finding 4).
 func repairAgySkillsRoot(c Config) error {
 	resolved, ok := legacyAgySkillsChain(c)
 	if !ok {
@@ -211,28 +229,46 @@ func repairAgySkillsRoot(c Config) error {
 	if err := os.MkdirAll(newRoot, 0o755); err != nil {
 		return err
 	}
-	skillsHome, err := SkillsHome(c.Home)
-	if err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(resolved)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		dst := filepath.Join(newRoot, e.Name())
-		owned, err := isSwarmOwned(dst, skillsHome, true) // explicit `swarm install`: adopt
+	if resolved != "" && resolved != newRoot {
+		skillsHome, err := SkillsHome(c.Home)
 		if err != nil {
 			return err
 		}
-		if !owned {
-			continue // a user-owned entry already at the new root: never overwrite it
-		}
-		if err := os.RemoveAll(dst); err != nil {
+		entries, err := os.ReadDir(resolved)
+		if err != nil {
 			return err
 		}
-		if err := copyTree(filepath.Join(resolved, e.Name()), dst); err != nil {
-			return err
+		for _, e := range entries {
+			dst := filepath.Join(newRoot, e.Name())
+			owned, err := isSwarmOwned(dst, skillsHome, true) // explicit `swarm install`: adopt
+			if err != nil {
+				return err
+			}
+			if !owned {
+				continue // a user-owned entry already at the new root: never overwrite it
+			}
+			if err := os.RemoveAll(dst); err != nil {
+				return err
+			}
+			src := filepath.Join(resolved, e.Name())
+			if e.Type()&os.ModeSymlink != 0 {
+				// Fix round 1, finding 1: copyTree's filepath.WalkDir follows a
+				// symlinked entry, then tries to read its target as a file --
+				// erroring out (and aborting the whole `swarm install` for agy)
+				// the moment the target turns out to be a directory. Recreate the
+				// link itself at the destination instead of walking through it.
+				linkTarget, err := os.Readlink(src)
+				if err != nil {
+					return err
+				}
+				if err := os.Symlink(linkTarget, dst); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := copyTree(src, dst); err != nil {
+				return err
+			}
 		}
 	}
 	oldPath := c.Gemini("antigravity-cli", "skills")
@@ -245,13 +281,26 @@ func repairAgySkillsRoot(c Config) error {
 // agySkillsRootLegacyCheck is A7 decision 4: warn (never fail) doctor when
 // the legacy antigravity-cli/skills path still chains into a swarm session's
 // launch folder -- the exact state repairAgySkillsRoot fixes on `swarm
-// install`, but doctor must be able to say so even before that repair runs.
+// install` (or `swarm migrate`'s step 9), but doctor must be able to say so
+// even before that repair runs. A dangling first hop into run/launch (e.g. a
+// reaped intermediate session) gets the same warning: legacyAgySkillsChain
+// reports ok=true for it too (fix round 1, finding 4), since there is still
+// a legacy link that needs repointing even though nothing is left to
+// salvage. Nothing at the old path at all (never installed, or already
+// cleaned up some other way) gets a distinct, neutral message -- fix round
+// 1, finding 3: that case used to fall into the same "is not inside a
+// session folder" text as a healthy symlink pointing somewhere unrelated,
+// which reads as reassurance for a case that has nothing to reassure about.
 func agySkillsRootLegacyCheck(c Config) Check {
 	const name = "agy skills root"
+	oldPath := c.Gemini("antigravity-cli", "skills")
 	if _, ok := legacyAgySkillsChain(c); ok {
 		return Check{name, true, "agy skills live inside a swarm session folder; run swarm install to move them"}
 	}
-	return Check{name, true, c.Gemini("antigravity-cli", "skills") + " is not inside a session folder"}
+	if _, err := os.Lstat(oldPath); os.IsNotExist(err) {
+		return Check{name, true, "nothing at " + oldPath + " yet"}
+	}
+	return Check{name, true, oldPath + " is not inside a session folder"}
 }
 
 func agyHooksCheck(c Config) Check {

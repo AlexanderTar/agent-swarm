@@ -311,11 +311,22 @@ func TestCheckAgyFailsOnANestedPreInvocationAndOnAMissingBinary(t *testing.T) {
 func TestWriteAgyRepairsALegacySkillsChainIntoRunLaunch(t *testing.T) {
 	c := fakeHome(t)
 	launchSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
-	// Unique to the legacy chain (not a registered skill name): must be salvaged.
+	// A name that also exists (user-owned) at the new root already: must
+	// survive there untouched, never overwritten from the legacy copy.
 	if err := os.MkdirAll(filepath.Join(launchSkills, "custom-user-skill"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(launchSkills, "custom-user-skill", "SKILL.md"), []byte("# mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A legacy-only name, no conflict at the new root at all: must actually
+	// land there (fix round 1, finding 5 -- the original version of this
+	// test only proved survival at the SOURCE, never that salvage lands
+	// content at the destination).
+	if err := os.MkdirAll(filepath.Join(launchSkills, "legacy-only-skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(launchSkills, "legacy-only-skill", "SKILL.md"), []byte("# salvage me"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// A registered name too, so the test can also prove run/launch survives.
@@ -367,6 +378,65 @@ func TestWriteAgyRepairsALegacySkillsChainIntoRunLaunch(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(launchSkills, "swarm", "SKILL.md")); err != nil {
 		t.Errorf("run/launch content was deleted; PA.3 must never delete under run/launch: %v", err)
 	}
+
+	salvaged, err := os.ReadFile(filepath.Join(newRoot, "legacy-only-skill", "SKILL.md"))
+	if err != nil || string(salvaged) != "# salvage me" {
+		t.Errorf("legacy-only entry was not salvaged into the new root: %q, %v", salvaged, err)
+	}
+}
+
+// Fix round 1, finding 1: a legacy dir holding a symlinked entry (e.g. a
+// vendored skill some previous swarm install itself linked in) used to abort
+// the whole repair -- copyTree's filepath.WalkDir follows the symlink, then
+// tries to os.ReadFile what turns out to be a directory, erroring the entire
+// `swarm install` for agy before hooks/MCP/WriteSkills ever run. The fix
+// recreates the link itself at the destination instead of walking through it.
+func TestWriteAgyRepairSalvagesASymlinkedLegacyEntry(t *testing.T) {
+	c := fakeHome(t)
+	launchSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	if err := os.MkdirAll(launchSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The symlink's target: some OTHER real location entirely, outside both
+	// the legacy chain and ~/.swarm/skills (skillsHome) -- deliberately not
+	// the shared skills copy, so this pins that repair recreates the link
+	// as-is (an unrelated, user-owned target) rather than only working by
+	// accident for links that happen to already resolve into skillsHome.
+	linkTarget := filepath.Join(t.TempDir(), "vendored-thing")
+	if err := os.MkdirAll(linkTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linkTarget, "SKILL.md"), []byte("# vendored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(linkTarget, filepath.Join(launchSkills, "linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(launchSkills, oldPath); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatalf("WriteAgy must not abort on a symlinked legacy entry: %v", err)
+	}
+
+	newRoot := c.Gemini("config", "skills")
+	linkDst := filepath.Join(newRoot, "linked")
+	fi, err := os.Lstat(linkDst)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %s to be a symlink (recreated, not copied through): %v", linkDst, err)
+	}
+	if got, err := os.Readlink(linkDst); err != nil || got != linkTarget {
+		t.Errorf("linked entry target = %q, %v, want %q", got, err, linkTarget)
+	}
 }
 
 // A plain, healthy skills root (already at the new location, or nothing
@@ -382,6 +452,134 @@ func TestWriteAgyLeavesAHealthySkillsRootAlone(t *testing.T) {
 	oldPath := c.Gemini("antigravity-cli", "skills")
 	if _, err := os.Lstat(oldPath); err == nil {
 		t.Errorf("no legacy chain existed; repair must not create %s", oldPath)
+	}
+}
+
+// Fix round 1, finding 5: the old path being a REAL directory (never the
+// legacy symlink-into-run/launch shape) must be left untouched by repair.
+func TestWriteAgyLeavesARealAntigravityCliSkillsDirAlone(t *testing.T) {
+	c := fakeHome(t)
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Join(oldPath, "builtin-thing"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldPath, "builtin-thing", "SKILL.md"), []byte("# builtin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(oldPath)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		t.Fatalf("a real antigravity-cli/skills dir must survive untouched: %v, %v", fi, err)
+	}
+	if _, err := os.Stat(filepath.Join(oldPath, "builtin-thing", "SKILL.md")); err != nil {
+		t.Errorf("content under the real dir was lost: %v", err)
+	}
+}
+
+// Fix round 1, finding 5: the old path already pointing straight at the new
+// root (the healthy, post-repair or fresh-install shape) is a no-op.
+func TestWriteAgyLeavesAnAlreadyHealthySymlinkAlone(t *testing.T) {
+	c := fakeHome(t)
+	newRoot := c.Gemini("config", "skills")
+	if err := os.MkdirAll(newRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(newRoot, oldPath); err != nil {
+		t.Fatal(err)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(oldPath)
+	if err != nil || target != newRoot {
+		t.Errorf("an already-healthy symlink must be left alone: %q, %v", target, err)
+	}
+}
+
+// Fix round 1, finding 4: a first hop into run/launch that DANGLES further
+// down the chain (e.g. a reaped intermediate session) must still be treated
+// as the legacy shape -- the fully-resolved check alone missed this, since
+// filepath.EvalSymlinks errors on a dangling target and the old code bailed
+// out entirely instead of still repointing the (unsalvageable) old path.
+func TestWriteAgyRepairsADanglingLegacyChain(t *testing.T) {
+	c := fakeHome(t)
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	danglingTarget := filepath.Join(c.Home, "run", "launch", "ses_reaped", "agy-home", ".gemini", "config", "skills")
+	if err := os.Symlink(danglingTarget, oldPath); err != nil { // target never created: dangling
+		t.Fatal(err)
+	}
+
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatalf("WriteAgy must not abort on a dangling legacy chain: %v", err)
+	}
+	newRoot := c.Gemini("config", "skills")
+	target, err := os.Readlink(oldPath)
+	if err != nil || target != newRoot {
+		t.Errorf("a dangling legacy chain must still be repointed at the new root: %q, %v", target, err)
+	}
+}
+
+// Fix round 1, finding 4: a first hop into run/launch whose chain resolves
+// all the way back to the healthy new root itself (possible once a spawn's
+// own agy-home/.gemini/config/skills is itself a symlink to the real
+// config/skills, per PA.2's setupEnv) must still be detected and repointed,
+// with nothing to copy (the content is already the new root's own).
+func TestWriteAgyRepairsAChainThatResolvesBackToTheNewRoot(t *testing.T) {
+	c := fakeHome(t)
+	newRoot := c.Gemini("config", "skills")
+	if err := os.MkdirAll(newRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newRoot, "already-healthy.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A spawn's own agy-home config/skills, itself a symlink to the real new
+	// root (exactly what PA.2's setupEnv produces).
+	agyHomeConfigSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	if err := os.MkdirAll(filepath.Dir(agyHomeConfigSkills), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(newRoot, agyHomeConfigSkills); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(agyHomeConfigSkills, oldPath); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(oldPath)
+	if err != nil || target != newRoot {
+		t.Errorf("must be repointed straight at the new root: %q, %v", target, err)
+	}
+	if _, err := os.Stat(filepath.Join(newRoot, "already-healthy.txt")); err != nil {
+		t.Errorf("the new root's own content must survive: %v", err)
 	}
 }
 
@@ -419,6 +617,39 @@ func TestCheckAgyWarnsWhenSkillsRootIsInsideARunLaunchSession(t *testing.T) {
 	ch2 := findCheck(t, install.CheckAgy(context.Background(), c, f.Runner()), "agy skills root")
 	if !ch2.OK || strings.Contains(ch2.Detail, "swarm session folder") {
 		t.Errorf("check after repointing = %+v", ch2)
+	}
+}
+
+// Fix round 1, finding 3: a dangling old link whose first hop is still
+// inside run/launch (e.g. a reaped intermediate session) must get the same
+// warning as a live chain, not the generic "is not inside a session folder"
+// (which reads as "this is fine" when it plainly is not).
+func TestCheckAgyWarnsOnADanglingLegacyChainIntoRunLaunch(t *testing.T) {
+	c := fakeHome(t)
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(c.Home, "run", "launch", "ses_reaped", "agy-home", ".gemini", "config", "skills")
+	if err := os.Symlink(dangling, oldPath); err != nil {
+		t.Fatal(err)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{}}
+	ch := findCheck(t, install.CheckAgy(context.Background(), c, f.Runner()), "agy skills root")
+	if !ch.OK || !strings.Contains(ch.Detail, "swarm session folder") {
+		t.Errorf("dangling chain into run/launch = %+v, want the same warning as a live chain", ch)
+	}
+}
+
+// Fix round 1, finding 3: nothing at all at the old path (never installed,
+// or already cleaned up some other way) must not print "is not inside a
+// session folder" -- there is nothing to say either way.
+func TestCheckAgyReportsNothingWhenTheOldPathDoesNotExist(t *testing.T) {
+	c := fakeHome(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{}}
+	ch := findCheck(t, install.CheckAgy(context.Background(), c, f.Runner()), "agy skills root")
+	if !ch.OK || strings.Contains(ch.Detail, "is not inside a session folder") {
+		t.Errorf("missing old path = %+v, want a neutral OK, not the session-folder phrasing", ch)
 	}
 }
 

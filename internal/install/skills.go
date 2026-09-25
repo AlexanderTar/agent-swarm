@@ -215,6 +215,16 @@ func SkillsHome(home string) (string, error) {
 // marker) and a marker-less pre-A1 directory (isPreA1CoreSkillDir). With
 // adopt=false, both read as foreign (not owned) so an implicit daemon-startup
 // refresh never mutates them.
+// underDir reports whether target lies at or under root, by plain path
+// comparison (neither argument is symlink-resolved here -- a caller that
+// wants that resolves first). Shared by isSwarmOwned's symlink-ownership
+// check and agy.go's legacy skills chain detection (A7, package PA fix
+// round 1), so the "is this path under that directory" logic exists once.
+func underDir(target, root string) bool {
+	rel, err := filepath.Rel(root, target)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func isSwarmOwned(dst, skillsHome string, adopt bool) (bool, error) {
 	fi, err := os.Lstat(dst)
 	if os.IsNotExist(err) {
@@ -231,8 +241,7 @@ func isSwarmOwned(dst, skillsHome string, adopt bool) (bool, error) {
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(filepath.Dir(dst), target)
 		}
-		rel, err := filepath.Rel(skillsHome, target)
-		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+		return underDir(target, skillsHome), nil
 	}
 	if fi.IsDir() {
 		body, err := os.ReadFile(filepath.Join(dst, ManagedMarker))
