@@ -448,6 +448,144 @@ func TestPasteRetryIntervalEnforced(t *testing.T) {
 	}
 }
 
+func TestWakeBackoffIsExponentialWithFiveMinuteCap(t *testing.T) {
+	cases := map[int]time.Duration{
+		0: 5 * time.Second, 1: 10 * time.Second, 2: 20 * time.Second,
+		3: 40 * time.Second, 4: 80 * time.Second, 5: 160 * time.Second,
+		6: 5 * time.Minute, 10: 5 * time.Minute, 31: 5 * time.Minute,
+		100: 5 * time.Minute,
+	}
+	for n, want := range cases {
+		if got := backoffForFailures(n); got != want {
+			t.Errorf("backoffForFailures(%d) = %v, want %v", n, got, want)
+		}
+	}
+}
+
+func TestWakeFailureBackoffGatesAndResets(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "BackoffGate", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "zsh"}) // never pasteable: every pass records a failure
+
+	at.Advance(25 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.getPasteAttempts(ses.ID); n != 1 {
+		t.Fatalf("first failure: attempts = %d, want 1", n)
+	}
+
+	// backoff(1) = 10s: 5s later must skip
+	at.Advance(5 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.getPasteAttempts(ses.ID); n != 1 {
+		t.Fatalf("within 10s backoff: attempts = %d, want 1", n)
+	}
+
+	// 6s more (11s after failure) exceeds backoff(1): second failure fires
+	at.Advance(6 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.getPasteAttempts(ses.ID); n != 2 {
+		t.Fatalf("after 10s backoff: attempts = %d, want 2", n)
+	}
+
+	// backoff(2) = 20s: 19s later must skip
+	at.Advance(19 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.getPasteAttempts(ses.ID); n != 2 {
+		t.Fatalf("within 20s backoff: attempts = %d, want 2", n)
+	}
+
+	// 2s more (21s after) exceeds backoff(2): third failure fires
+	at.Advance(2 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.getPasteAttempts(ses.ID); n != 3 {
+		t.Fatalf("after 20s backoff: attempts = %d, want 3", n)
+	}
+
+	// Success resets: next failure must gate at 10s again, not 40s (backoff(3)).
+	// Advance past the 30s success cooldown first, or WakeDue skips before
+	// reaching the paste (no failure recorded).
+	if err := s.markWoken(ctx, ses.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(35 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.getPasteAttempts(ses.ID); n != 1 {
+		t.Fatalf("after reset: attempts = %d, want 1", n)
+	}
+	at.Advance(5 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.getPasteAttempts(ses.ID); n != 1 {
+		t.Fatalf("after reset within 10s: attempts = %d, want 1", n)
+	}
+}
+
+type captureFailTmux struct {
+	*fakeTmux
+	failName string
+}
+
+func (c *captureFailTmux) Capture(ctx context.Context, name string, lines int) (string, error) {
+	if name == c.failName {
+		return "", errors.New("capture boom")
+	}
+	return c.fakeTmux.Capture(ctx, name, lines)
+}
+
+// One bad pane must not starve the rest of the tick: A Capture-errors every
+// pass while B is idle with pending, so B is still pasted and WakeDue still
+// returns nil, with A's failure counted under exponential backoff.
+func TestWakeDueIsolatesPerSessionPasteErrors(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	at := tm.clk
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "IsoFail", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	_, b, _, _ := s.StartSpike(ctx, SpikeInput{Name: "IsoOK", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	sesA, _ := s.LatestSession(ctx, a.ID)
+	sesB, _ := s.LatestSession(ctx, b.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": sesA.ID}
+	tm.env[b.Name] = map[string]string{"SWARM_SESSION": sesB.ID}
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"}, Pane{Session: b.Name, Command: "swarm-fake-agent"})
+	s.Tmux = &captureFailTmux{fakeTmux: tm, failName: a.Name}
+
+	at.Advance(25 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatalf("per-session paste errors must not fail the tick: %v", err)
+	}
+	found := false
+	for _, p := range tm.pasted {
+		if strings.HasPrefix(p, b.Name+"|") {
+			found = true
+		}
+		if strings.HasPrefix(p, a.Name+"|") {
+			t.Fatalf("failing session must not be pasted: %q", p)
+		}
+	}
+	if !found {
+		t.Fatal("healthy session was not pasted while its peer failed")
+	}
+	if n, _ := s.getPasteAttempts(sesA.ID); n != 1 {
+		t.Fatalf("failing session attempts = %d, want 1", n)
+	}
+}
+
 func TestUndeliverableNotificationOnlyFiresOncePerBatch(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
