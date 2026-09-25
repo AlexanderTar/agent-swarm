@@ -5,12 +5,12 @@ import (
 	"testing"
 )
 
-// TestMigration0011Schema pins down every column, table, index and CHECK
+// TestMigration0012Schema pins down every column, table, index and CHECK
 // spec B1 (plus B3's items.units_json/solo and B7's workflows.extra_rounds)
 // calls for.
-func TestMigration0011Schema(t *testing.T) {
-	raw := openFixtureAtVersion(t, 10) // post-0010, pre-0011
-	continueMigrating(t, raw, 10)      // applies 0011
+func TestMigration0012Schema(t *testing.T) {
+	raw := openFixtureAtVersion(t, 11) // post-0011, pre-0012
+	continueMigrating(t, raw, 11)      // applies 0012 (0013 warnings rides along, unasserted)
 
 	exec := func(query string, args ...any) error {
 		t.Helper()
@@ -103,8 +103,8 @@ func TestMigration0011Schema(t *testing.T) {
 // workflows_one_live: at most one 'running' or 'escalated' workflow row per
 // item, but any number of terminal ones.
 func TestOneLiveWorkflowPerItem(t *testing.T) {
-	raw := openFixtureAtVersion(t, 10)
-	continueMigrating(t, raw, 10)
+	raw := openFixtureAtVersion(t, 11)
+	continueMigrating(t, raw, 11)
 
 	exec := func(query string, args ...any) error {
 		t.Helper()

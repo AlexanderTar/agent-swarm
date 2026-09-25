@@ -20,6 +20,25 @@ const controlPasteDelay = 5 * time.Second
 const pasteRetry = 30 * time.Second
 const undeliverableAfter = 5 * time.Minute
 
+// wakeFailBase/wakeFailCap shape the unified retry backoff for failed wake
+// attempts across both transports (native and tmux paste). Deterministic, no
+// jitter, so tests pin exact ticks. Cap equals undeliverableAfter so the
+// longest retry spacing coincides with the alert threshold.
+const wakeFailBase = 5 * time.Second
+const wakeFailCap = 5 * time.Minute
+
+// backoffForFailures returns base * 2^n capped at cap (n = consecutive failures).
+func backoffForFailures(n int) time.Duration {
+	if n > 30 { // 5s is ~2^32ns; shifts past bit 62 could wrap small-positive
+		return wakeFailCap
+	}
+	d := wakeFailBase << n
+	if d <= 0 || d > wakeFailCap {
+		return wakeFailCap
+	}
+	return d
+}
+
 // wakeRow is one live session with at least one pending immediate message,
 // enough to decide the §11.3 wake order for it.
 type wakeRow struct {
@@ -166,16 +185,24 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		// 1. native wake, once per message batch
+		// 1. native wake, once per message batch. A native error feeds the
+		// unified exponential backoff via recordWakeFailure; a
+		// delivered=false (no subscriber, or a paste-only kind like muse)
+		// deliberately does not, and falls through to the paste gates below
+		// — recording every per-tick false would hold paste-only sessions
+		// behind permanent backoff.
 		if !r.NativeTried {
 			delivered, err := ad.Wake(ctx, adapter.WakeTarget{SessionID: r.SessionID,
 				ProviderSessionID: r.ProviderID, TmuxName: r.TmuxName, Notice: notice})
 			if err != nil {
-				s.logf("wake: native wake for %s: %v", r.AgentName, err)
+				s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
+				s.logf("wake: native wake for %s: %v (fail=%d backoff=%s)", r.AgentName, err, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
 			}
 			if delivered {
 				if err := s.markWoken(ctx, r.SessionID, true); err != nil {
-					return err
+					s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
+					s.logf("wake: markWoken for %s: %v (fail=%d backoff=%s)", r.AgentName, err, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
+					continue
 				}
 				continue // a sync must follow; if it does not, the next pass pastes
 			}
@@ -192,12 +219,12 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		if r.LastSeenAt != nil && s.Now().Sub(*r.LastSeenAt) < delay {
 			continue
 		}
-		if r.PasteAttempts > 0 && r.LastPasteAttemptAt != nil && s.Now().Sub(*r.LastPasteAttemptAt) < pasteRetry {
+		if r.PasteAttempts > 0 && r.LastPasteAttemptAt != nil && s.Now().Sub(*r.LastPasteAttemptAt) < backoffForFailures(r.PasteAttempts) {
 			continue
 		}
-		if err := s.tryPaste(ctx, ad, r, notice); err != nil {
-			return err
-		}
+		// tryPaste never fails the tick: per-session errors are logged and
+		// counted with backoff inside, so one bad pane cannot starve the rest.
+		_ = s.tryPaste(ctx, ad, r, notice)
 	}
 	return nil
 }
@@ -229,23 +256,30 @@ func (s *Store) alreadyNotifiedUndeliverable(ctx context.Context, agentID string
 // — never the bare IdleToken). The daemon never logs a full process listing: other
 // tools' bearer tokens show up there (P0-4).
 func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pasteNotice string) error {
-	ok := false
-	if matchesAny(ad.ProcessNames(), r.PaneCommand) && !isShell(r.PaneCommand) {
-		capture, err := s.Tmux.Capture(ctx, r.TmuxName, 15)
-		if err != nil {
-			return err
-		}
-		ok = ad.Idle(capture)
-	} else {
-		s.logf("wake: pane command %q for %s matches no ProcessNames pattern, skipping idle paste", r.PaneCommand, r.AgentName)
+	fail := func(reason string) error {
+		s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
+		s.logf("wake: paste for %s skipped/failed (%s; fail=%d backoff=%s)", r.AgentName, reason, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
+		return nil
 	}
-	if ok {
-		if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
-			return err
-		}
-		return s.markWoken(ctx, r.SessionID, false)
+	if !(matchesAny(ad.ProcessNames(), r.PaneCommand) && !isShell(r.PaneCommand)) {
+		return fail(fmt.Sprintf("pane command %q matches no ProcessNames pattern", r.PaneCommand))
 	}
-	return s.recordPasteAttempt(ctx, r.SessionID, r.PasteAttempts+1, s.Now())
+	capture, err := s.Tmux.Capture(ctx, r.TmuxName, 15)
+	if err != nil {
+		return fail("capture failed")
+	}
+	if !ad.Idle(capture) {
+		return fail("pane not idle")
+	}
+	if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {
+		return fail("paste failed")
+	}
+	if err := s.markWoken(ctx, r.SessionID, false); err != nil {
+		s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
+		s.logf("wake: markWoken for %s failed (fail=%d backoff=%s)", r.AgentName, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
+		return nil
+	}
+	return nil
 }
 
 // raiseUndeliverable raises agent.undeliverable once per batch. A notification
@@ -277,8 +311,9 @@ func (s *Store) raiseUndeliverable(ctx context.Context, r wakeRow) error {
 	return nil
 }
 
-// markWoken records a successful wake (native or pasted) and resets the paste
-// backoff, so a later, unrelated message batch starts its own count from zero.
+// markWoken records a successful wake (native or pasted) and resets the
+// wake-failure backoff, so a later, unrelated message batch starts its own
+// count from zero.
 func (s *Store) markWoken(ctx context.Context, sessionID string, native bool) error {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET last_wake_at = ? WHERE id = ?`,
 		db.Millis(s.Now()), sessionID); err != nil {
@@ -291,6 +326,26 @@ func (s *Store) markWoken(ctx context.Context, sessionID string, native bool) er
 func (s *Store) recordPasteAttempt(ctx context.Context, sessionID string, n int, at time.Time) error {
 	s.recordPasteAttemptMem(sessionID, n, at)
 	return nil
+}
+
+// recordWakeFailure counts one consecutive wake failure (native error or any
+// paste skip/failure) toward the unified exponential backoff. snapshot is the
+// tick-start count from wakeCandidates: setting snapshot+1 (not incrementing
+// the live map) caps a tick with both a native and a paste failure at a single
+// step, while still refreshing the timestamp for the backoff gate.
+func (s *Store) recordWakeFailure(ctx context.Context, sessionID string, snapshot int, at time.Time) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.pasteAttempts == nil {
+		s.pasteAttempts = map[string]int{}
+	}
+	if s.lastPasteAttemptAt == nil {
+		s.lastPasteAttemptAt = map[string]time.Time{}
+	}
+	if cur := s.pasteAttempts[sessionID]; cur < snapshot+1 {
+		s.pasteAttempts[sessionID] = snapshot + 1
+	}
+	s.lastPasteAttemptAt[sessionID] = at
 }
 
 func (s *Store) recordPasteAttemptMem(sessionID string, n int, at time.Time) {

@@ -331,14 +331,16 @@ func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) { /* walk ../../skills
 **Workflow:** `tdd-reviewed`, `max_rounds: 4` · **Units:** 2 · **Solo:** `"table-rebuilding migrations"` (irreversible work gets its own package)
 
 **Files:**
-- `internal/db/schema/0010_designer_and_artifact_kinds.sql`
-- `internal/db/schema/0011_workflows.sql`
+- `internal/db/schema/0011_designer_and_artifact_kinds.sql`
+- `internal/db/schema/0012_workflows.sql`
 - `internal/db/*_test.go`
 - `internal/db/testdata` (a fixture copy of a populated v2 DB)
 
+(Renumbered from 0010/0011: main's lowercase-keys migration took 0010 first.)
+
 **Acceptance:**
-- `0010` rebuilds `agents`, adding `'designer'` to its role CHECK. It rebuilds `artifacts`, adding `'design'` and `'research'` to its kind CHECK. Both rebuilds preserve every row, index and foreign key, following the `0008` pattern.
-- `0011` adds everything from spec B1:
+- `0011` rebuilds `agents`, adding `'designer'` to its role CHECK. It rebuilds `artifacts`, adding `'design'` and `'research'` to its kind CHECK. Both rebuilds preserve every row, index and foreign key, following the `0008` pattern.
+- `0012` adds everything from spec B1:
   - on `items`: `workflow_json`, `steps_json`, `units_json`, `solo`, `verify_json`
   - on `checkpoints`: `verdict` and `findings_json`
   - on `workflows`: `extra_rounds`
@@ -347,12 +349,12 @@ func TestEmbeddedMirrorMatchesCanonicalTree(t *testing.T) { /* walk ../../skills
 
 **Verify:** `go test ./internal/db/... -count=1 && go build ./...`
 
-#### Unit 5.1: Migration 0010
-- [x] Write the failing test `TestMigration0010PreservesRowsAndWidensChecks`: populate the fixture, migrate, then assert counts and that an insert of role `designer` / kind `design` succeeds. Red.
+#### Unit 5.1: Migration 0011 (was 0010 before main's lowercase-keys migration)
+- [x] Write the failing test `TestMigration0011PreservesRowsAndWidensChecks`: populate the fixture, migrate, then assert counts and that an insert of role `designer` / kind `design` succeeds. Red.
 - [x] Write the migration. Green. Commit.
 
-#### Unit 5.2: Migration 0011
-- [x] Write the failing tests `TestMigration0011Schema` (columns, tables, indexes and CHECKs) and `TestOneLiveWorkflowPerItem` (the second `running` row fails). Red.
+#### Unit 5.2: Migration 0012 (was 0011)
+- [x] Write the failing tests `TestMigration0012Schema` (columns, tables, indexes and CHECKs) and `TestOneLiveWorkflowPerItem` (the second `running` row fails). Red.
 - [x] Write the migration. Green. Commit.
 
 ### P6: Workflow model (`internal/workflow`)

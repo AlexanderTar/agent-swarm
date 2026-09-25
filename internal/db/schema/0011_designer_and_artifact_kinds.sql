@@ -1,4 +1,4 @@
--- 0010_designer_and_artifact_kinds.sql: add 'designer' to agents.role CHECK;
+-- 0011_designer_and_artifact_kinds.sql: add 'designer' to agents.role CHECK;
 -- add 'design' and 'research' to artifacts.kind CHECK (spec A5). SQLite has
 -- no ALTER TABLE ... ALTER CONSTRAINT, so both rebuilds follow 0008's
 -- table-rebuild pattern (create new, copy rows, drop old, rename new into

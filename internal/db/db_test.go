@@ -85,7 +85,7 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 
 	// Simulate a database that only ever ran migration 1 (pre-2026-09-20 production).
 	// This must strip every column later migrations added by ALTER TABLE, not
-	// just the two the incident was about: 0011_workflows.sql adds columns to
+	// just the two the incident was about: 0012_workflows.sql adds columns to
 	// items and checkpoints without rebuilding either table, so a real v1
 	// database's items/checkpoints tables never had them either -- leaving
 	// them in place here would make 0003_add_chore.sql's items rebuild (which
@@ -116,7 +116,7 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 0011_workflows.sql also creates two new tables (plain CREATE TABLE, not
+	// 0012_workflows.sql also creates two new tables (plain CREATE TABLE, not
 	// IF NOT EXISTS), so replaying it against this "v1" database must not
 	// find them already there.
 	if _, err := raw.Exec(`DROP TABLE workflow_runs`); err != nil {
@@ -356,3 +356,9 @@ func TestNativeAdviceIsUniquePerSourceRequest(t *testing.T) {
 		t.Fatalf("sessions.needs_compaction_notice: %v", err)
 	}
 }
+
+/* NOTE: TestMigration0010LowercasesGitVerifyKeys lived here until the
+   main-branch merge added migrations after 0010: its downgrade-user_version
+   replay trick only works when 0010 is the last migration, so it moved to
+   schema_0010_lowercase_test.go (same name, same assertions) built on the
+   migration-helper fixture instead. */

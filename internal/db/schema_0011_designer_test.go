@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestMigration0010PreservesRowsAndWidensChecks pins down 0010's SQLite
+// TestMigration0011PreservesRowsAndWidensChecks pins down 0011's SQLite
 // table-rebuild (agents, artifacts have no ALTER TABLE ... ALTER CONSTRAINT):
 // every existing row -- and every row referencing agents/artifacts -- must
 // survive untouched, byte for byte and column for column, every index and
@@ -21,8 +21,8 @@ import (
 // values without changing anything positional). The checks below compare
 // rows by column name and diff the index and foreign key lists directly, to
 // catch exactly that.
-func TestMigration0010PreservesRowsAndWidensChecks(t *testing.T) {
-	raw := openFixtureAtVersion(t, 9) // pre-0010: today's schema, before this migration exists
+func TestMigration0011PreservesRowsAndWidensChecks(t *testing.T) {
+	raw := openFixtureAtVersion(t, 10) // pre-0011: schema after main's 0010, before this migration exists
 
 	exec := func(query string, args ...any) {
 		t.Helper()
@@ -103,7 +103,7 @@ func TestMigration0010PreservesRowsAndWidensChecks(t *testing.T) {
 		}
 	}
 
-	continueMigratingTo(t, raw, 9, 10) // applies 0010, and only 0010
+	continueMigratingTo(t, raw, 10, 11) // applies 0011, and only 0011
 
 	// Row counts are unchanged.
 	for table, want := range beforeCounts {

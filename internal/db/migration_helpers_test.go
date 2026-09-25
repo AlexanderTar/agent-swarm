@@ -1,7 +1,7 @@
 package db
 
-// Test helpers shared by the schema migration tests (schema_0010_test.go,
-// schema_0011_test.go). They drive the real migration runner (migrationFiles
+// Test helpers shared by the schema migration tests (schema_0011_designer_test.go,
+// schema_0012_workflows_test.go). They drive the real migration runner (migrationFiles
 // + applyMigrations, the same functions (*DB).migrate uses) instead of
 // duplicating its logic, so a fixture built here is exactly what a database
 // left at an older schema version actually looks like.

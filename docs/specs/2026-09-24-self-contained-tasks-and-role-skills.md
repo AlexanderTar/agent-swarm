@@ -613,7 +613,7 @@ credentials through unmutated.
 
 ## Part B — Multi-agent tasks and the workflow engine
 
-### B1. DB models (migration `0011_workflows.sql`)
+### B1. DB models (migration `0012_workflows.sql` — renumbered from 0011 when main's lowercase-keys migration took 0010)
 
 ```sql
 ALTER TABLE items ADD COLUMN workflow_json TEXT;   -- resolved workflow (B2); NULL = legacy task
@@ -1233,7 +1233,7 @@ Board copy: "Workflow", "Round {n} of {max}", "Running", "Succeeded",
 **New**
 - `internal/workflow/{spec.go,templates.go,validate.go,resolve.go,next.go,render.go}` + tests.
 - `internal/runtime/workflow.go` (+ `workflow_test.go`): start, advance, resume, cancel, recovery scan, relays.
-- `internal/db/schema/0010_designer_and_artifact_kinds.sql`, `0011_workflows.sql`.
+- `internal/db/schema/0011_designer_and_artifact_kinds.sql`, `0012_workflows.sql` (renumbered; main's `0010` came first).
 - `internal/mcpserver/workflow.go` (`swarm_workflow`) + tests.
 - `skills/swarm-{spike,workflows,coder,reviewer,ui-reviewer,designer,debugger,mechanical,researcher,advisor,batching}/SKILL.md` (`swarm-batching` is drafted in this change and adopted by the plan).
 - `skills/vendor/**` (eleven skills: eight UI/design/mobile + three ponytail, and `README.md`).

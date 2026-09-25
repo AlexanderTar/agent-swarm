@@ -117,3 +117,41 @@ func TestStoreTxNotifiesOnlyAfterCommit(t *testing.T) {
 	default:
 	}
 }
+
+// GitRef and Verify marshal into the lowercase wire keys the MCP schema and
+// the web client expect (repo/branch/sha/dirty, cmd/phase/ok/note). Uppercase
+// keys crash the approval page (sha7 on undefined) and blank verification
+// lines, so this pins the shape.
+func TestGitRefAndVerifyMarshalLowercaseWireKeys(t *testing.T) {
+	got, err := json.Marshal(GitRef{Repo: "r", Branch: "b", SHA: "abc123", Dirty: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var g map[string]any
+	if err := json.Unmarshal(got, &g); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"repo", "branch", "sha", "dirty"} {
+		if _, ok := g[k]; !ok {
+			t.Errorf("GitRef wire keys = %s, want lowercase %q present", got, k)
+		}
+	}
+	for _, k := range []string{"Repo", "Branch", "SHA", "Dirty"} {
+		if _, ok := g[k]; ok {
+			t.Errorf("GitRef wire keys = %s, want no uppercase %q", got, k)
+		}
+	}
+	vot, err := json.Marshal(Verify{Cmd: "go test ./...", Phase: "green", OK: true, Note: "n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(vot, &v); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"cmd", "phase", "ok", "note"} {
+		if _, ok := v[k]; !ok {
+			t.Errorf("Verify wire keys = %s, want lowercase %q present", vot, k)
+		}
+	}
+}

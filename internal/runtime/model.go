@@ -164,19 +164,23 @@ type Session struct {
 }
 
 type GitRef struct {
-	Repo, Branch, SHA string
-	Dirty             bool
+	Repo   string `json:"repo"`
+	Branch string `json:"branch"`
+	SHA    string `json:"sha"`
+	Dirty  bool   `json:"dirty,omitempty"`
 }
 
 type Verify struct {
-	Cmd, Phase string
-	OK         bool
-	Note       string
+	Cmd   string `json:"cmd"`
+	Phase string `json:"phase"`
+	OK    bool   `json:"ok"`
+	Note  string `json:"note,omitempty"`
 	// Unit is 1-based, set on a batched (units) task's TDD evidence so the
 	// tdd gate (spec B5) can require red-before-green per unit. 0 means
 	// "not tagged to a unit" -- a non-batched task, or a package-wide entry
-	// on a batched one (a fix-round finding with no unit).
-	Unit int
+	// on a batched one (a fix-round finding with no unit). omitempty keeps
+	// it out of verify_json unless set, matching the lowercase-keys shape.
+	Unit int `json:"unit,omitempty"`
 }
 
 type Checkpoint struct {

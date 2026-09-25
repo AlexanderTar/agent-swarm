@@ -331,7 +331,7 @@ const sqliteConstraintUnique = 2067
 // the advisory pre-check (StartWorkflow's own `existing` SELECT) only
 // prevents the common, non-concurrent case; two concurrent Starts for the
 // same item can both pass it and race the INSERT, and only one wins against
-// this actual DB-level guarantee (0011_workflows.sql's own UNIQUE partial
+// this actual DB-level guarantee (0012_workflows.sql's own UNIQUE partial
 // index). Two paths map, either is enough: the driver's own typed error
 // with this exact extended code (robust against message rewording), or the
 // driver's exact sentence including the code, pinned by

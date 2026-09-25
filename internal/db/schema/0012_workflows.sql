@@ -1,4 +1,4 @@
--- 0011_workflows.sql: the workflow engine schema (spec B1). NULL
+-- 0012_workflows.sql: the workflow engine schema (spec B1). NULL
 -- workflow_json on an item means it's a legacy task with no workflow.
 ALTER TABLE items ADD COLUMN workflow_json TEXT;
 ALTER TABLE items ADD COLUMN steps_json    TEXT;
