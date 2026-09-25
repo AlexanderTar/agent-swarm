@@ -430,7 +430,7 @@ func readTool(s *Server) ToolDef {
 						}
 					}
 				default:
-					found, err = s.RT.Repos.Recent(ctx, limit)
+					found, err = s.RT.Repos.Search(ctx, "", limit)
 				}
 				if err != nil {
 					return nil, err
