@@ -82,7 +82,34 @@ func musePluginManifest(c Config) map[string]any {
 // each hook here -- before any muse TUI ever launches -- is what lets
 // StartupDialogs stay empty (muse.go:360): the "Review plugin hooks" trust
 // dialog (muse.go:377) only exists for a plugin awaiting review, and this
-// step clears that state at install time, not first launch.
+// step clears that state at install time, not first launch. The trust
+// record itself lands in settings.json's runtime_capabilities key (probed
+// live), which setupEnv's per-launch isolated copy already carries through
+// unmodified (it unmarshals the whole real settings.json before touching
+// only mcpServers/context) -- no extra plumbing needed for that part.
+//
+// KNOWN GAP (probed live 2026-09-26, scratch plugin + `muse plugins hook
+// test ... --fixture`, cleaned up after): the hook subprocess's own env is
+// NOT the invoking process's env passed through -- it is sandboxed to the
+// same small fixed allowlist museMCPEnv's doc comment already found for
+// muse's MCP subprocesses (HOME, PATH, USER, LANG, TERM, SHELL, PWD,
+// LOGNAME, SHLVL, plus muse's own PLUGIN_*/MUSE_PLUGIN_* vars) -- an
+// explicit `SWARM_SESSION=x muse plugins hook test ...` did not reach the
+// hook script's env at all. `cmd/swarm/hook.go`'s client silently no-ops
+// without SWARM_SESSION/SWARM_TOKEN_FILE/SWARM_URL in its own env
+// (client.go:29-31, "a hook in a session the user started by hand"), so
+// this plugin's hooks are UNREACHABLE end to end today: the manifest is
+// installed and trusted correctly (both probed working above), but
+// `swarm hook muse <event>` never sees the session's identity when muse
+// actually invokes it. Fixing this needs a wrapper that carries the
+// session's SWARM_* values through some channel other than env -- e.g. a
+// per-launch file keyed by the session's cwd (present in every hook's
+// stdin payload), read by a small script this plugin's "command" points at
+// instead of the swarm binary directly. That wrapper is out of this task's
+// scope (Task 7's file list); Task 9's refusal logic and the handler tests
+// in Task 8 are unaffected (they exercise the daemon-side decision, not
+// this transport), but a top-level muse agent's swarm_ask kind:"question"
+// fallback is real and load-bearing until this is fixed.
 func WriteMuse(ctx context.Context, c Config, run execx.Runner) ([]string, error) {
 	var changed []string
 	p := c.Muse("settings.json")
