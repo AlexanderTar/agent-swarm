@@ -1315,15 +1315,19 @@ func TestSuperpowersReferencesAreKnown(t *testing.T) {
 // docs/plans/2026-09-24-skill-symlink-probe.md: claude, codex, and
 // cursor-agent are Symlink (claude predates the check; codex and
 // cursor-agent were verified 2026-09-24). muse is Symlink (verified
-// 2026-09-24). agy is Copy: the same check found agy 1.2.10 migrates
-// Config.SkillsDir(KindAgy) to a different on-disk location on first run,
-// so a symlink placed at SkillsDir(KindAgy) is not a reliable signal there
-// yet.
+// 2026-09-24).
+//
+// agy is Symlink too, re-verified 2026-09-25 (A7, package PA) in a sealed
+// scratch HOME with no path back into any real directory: agy 1.2.11 read a
+// skill symlinked straight at $HOME/.gemini/config/skills (the corrected
+// Config.SkillsDir(KindAgy)) with zero migration side effect -- the earlier
+// 2026-09-24 Copy verdict was against the wrong path
+// (~/.gemini/antigravity-cli/skills), which agy migrates away from.
 func TestSkillLinkModePerKind(t *testing.T) {
 	want := map[install.Kind]install.LinkMode{
 		install.KindClaude: install.Symlink,
 		install.KindCodex:  install.Symlink,
-		install.KindAgy:    install.Copy,
+		install.KindAgy:    install.Symlink,
 		install.KindCursor: install.Symlink,
 		install.KindMuse:   install.Symlink,
 	}

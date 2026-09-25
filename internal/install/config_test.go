@@ -45,15 +45,22 @@ func TestConfigPathsDeriveFromUserHomeOnly(t *testing.T) {
 // itself ever reads skills from. Per antigravity.google/docs/skills/ (and
 // confirmed live: a spawned agy's own reported skill listing never included
 // "swarm" while it did include agy's built-in ones), agy's real global
-// skills directory is ~/.gemini/antigravity-cli/skills/ -- nested inside the
-// same antigravity-cli directory the onboarding-isolation fix already
-// symlinks whole, so a corrected path needs no separate isolation glue.
+// skills directory is ~/.gemini/antigravity-cli/skills/.
+//
+// A7 (2026-09-25): that path was itself wrong -- agy 1.2.10 reads skills from
+// $HOME/.gemini/config/skills and migrates ~/.gemini/antigravity-cli/skills
+// away on first run in a given HOME, repointing it into whatever HOME ran
+// first (see docs/plans/2026-09-24-skill-symlink-probe.md, "Follow-up"). Every
+// swarm-spawned agy session got its own fresh HOME, so each new session's
+// first run chained the REAL ~/.gemini/antigravity-cli/skills one hop deeper
+// into that session's own launch folder. SkillsDir(KindAgy) now points at the
+// location agy actually reads and migrates to, so nothing needs migrating.
 func TestSkillsDirPerAgent(t *testing.T) {
 	c := install.Config{UserHome: "/fake/home"}
 	want := map[install.Kind]string{
 		install.KindClaude: "/fake/home/.claude/skills",
 		install.KindCodex:  "/fake/home/.codex/skills",
-		install.KindAgy:    "/fake/home/.gemini/antigravity-cli/skills",
+		install.KindAgy:    "/fake/home/.gemini/config/skills",
 		install.KindCursor: "/fake/home/.cursor/skills",
 		install.KindMuse:   "/fake/home/.config/muse/skills",
 	}

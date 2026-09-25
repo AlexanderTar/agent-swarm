@@ -3,12 +3,15 @@ package install
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
@@ -389,9 +392,49 @@ func (p Plugins) vendorForCursor(ctx context.Context, m MarketplacePlugin, actio
 	return copyTree(vendor, local)
 }
 
-// copyTree copies src to dst, skipping .git. Symlinks inside the tree are copied as
-// regular files, so the result is the real folder cursor needs (P0-8).
+// copyTree copies src to dst, skipping .git. A symlink anywhere inside the
+// tree is DEREFERENCED, not recreated (fix round 3, controller ruling,
+// replacing fix round 2's approach of recreating the link itself): a link to
+// a file becomes a real file holding the target's content, and a link to a
+// directory becomes a real directory holding a recursive copy of the
+// target's own contents. This is what keeps two separate contracts true at
+// once: cursor's local plugin copy must be a real folder tree with no
+// symlink anywhere in it (vendorForCursor's own comment above, P0-8), and
+// content this package salvages out of a swarm session's run/launch folder
+// (agy.go's repairAgySkillsRoot) must survive that session later being
+// reaped -- a recreated symlink pointing back into run/launch would dangle
+// the moment the session's folder is deleted, since deleting run/launch
+// content is never this package's call to make but a session's own cleanup
+// routinely does exactly that.
+//
+// maxCopyTreeDepth and the visited set guard against symlink cycles through
+// recursively followed links. Each link is also checked against its ordinary
+// directory ancestors before creating its destination; the depth counter is
+// a second, unconditional backstop.
+// ponytail: following a link copies its whole target with no size cap. Add a
+// cap if vendored or legacy trees ever link to huge directories.
 func copyTree(src, dst string) error {
+	visited := map[string]bool{}
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		resolved, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			return err
+		}
+		visited[resolved] = true
+	}
+	return copyTreeGuarded(src, dst, visited, 0)
+}
+
+const maxCopyTreeDepth = 32
+
+func copyTreeGuarded(src, dst string, visited map[string]bool, depth int) error {
+	if depth > maxCopyTreeDepth {
+		return fmt.Errorf("copyTree: max depth (%d) exceeded copying %s: possible symlink cycle", maxCopyTreeDepth, src)
+	}
 	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -407,11 +450,82 @@ func copyTree(src, dst string) error {
 			return nil
 		}
 		target := filepath.Join(dst, rel)
+		// A symlinked entry (WalkDir uses Lstat throughout, so this is the
+		// only place that ever sees the link itself rather than what it
+		// points at) is dereferenced: EvalSymlinks resolves it (and any
+		// further chain), and whether the real target is a file or a
+		// directory decides whether it's copied in directly or expanded
+		// recursively. A directory target recurses through copyTreeGuarded
+		// again (not inline here) so its own visited/depth guards apply to
+		// whatever it contains too, including further symlinks.
+		if d.Type()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(p)
+			if err != nil {
+				// EvalSymlinks uses an unexported plain error for a link
+				// loop; some platforms return syscall.ELOOP instead.
+				if errors.Is(err, syscall.ELOOP) || err.Error() == "EvalSymlinks: too many links" {
+					log.Printf("copyTree: skipping symlink cycle at %s: %v", p, err)
+					return nil
+				}
+				if os.IsNotExist(err) {
+					log.Printf("copyTree: skipping dangling link %s: %v", p, err)
+					return nil
+				}
+				return err
+			}
+			resolvedInfo, err := os.Stat(resolved)
+			if err != nil {
+				if os.IsNotExist(err) {
+					log.Printf("copyTree: skipping dangling link %s: %v", p, err)
+					return nil
+				}
+				return err
+			}
+			if !resolvedInfo.IsDir() {
+				return CopyFile(resolved, target)
+			}
+			ancestor, err := isCopyTreeAncestor(src, p, resolved)
+			if err != nil {
+				return err
+			}
+			if visited[resolved] || ancestor {
+				log.Printf("copyTree: skipping symlink cycle at %s (resolves to %s)", p, resolved)
+				return nil
+			}
+			nextVisited := make(map[string]bool, len(visited)+1)
+			for k := range visited {
+				nextVisited[k] = true
+			}
+			nextVisited[resolved] = true
+			return copyTreeGuarded(resolved, target, nextVisited, depth+1)
+		}
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
 		return CopyFile(p, target)
 	})
+}
+
+// isCopyTreeAncestor checks the directories active in this WalkDir call.
+// Keeping them separate from visited lets links to completed sibling trees
+// remain valid, while a link back to a nested parent is skipped immediately.
+func isCopyTreeAncestor(src, p, resolved string) (bool, error) {
+	src = filepath.Clean(src)
+	if filepath.Clean(p) == src {
+		return false, nil // The source itself may be a legitimate directory link.
+	}
+	for parent := filepath.Dir(p); ; parent = filepath.Dir(parent) {
+		realParent, err := filepath.EvalSymlinks(parent)
+		if err != nil {
+			return false, err
+		}
+		if realParent == resolved {
+			return true, nil
+		}
+		if filepath.Clean(parent) == src {
+			return false, nil
+		}
+	}
 }
 
 // SuperpowersOK is §12.4's usability check: the listed files must exist.

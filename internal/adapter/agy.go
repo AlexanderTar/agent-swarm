@@ -61,12 +61,57 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 	} else if err := os.MkdirAll(symAntigravityCLI, 0o700); err != nil {
 		return nil, err
 	}
-	// The swarm and swarm-orchestrator skills now install to
-	// ~/.gemini/antigravity-cli/skills/ (Config.SkillsDir(KindAgy)) -- inside
-	// the directory just symlinked above, so no separate glue is needed for
-	// them. swarm's hook wiring (~/.gemini/config/hooks.json) lives outside
-	// antigravity-cli, though, and without it a spawned agy has no hook
-	// interception at all. Symlink it.
+	// A7 (2026-09-25, package PA): agy actually reads skills from
+	// $HOME/.gemini/config/skills (Config.SkillsDir(KindAgy)) and migrates
+	// ~/.gemini/antigravity-cli/skills away from on first run in a fresh HOME
+	// -- which every swarm spawn used to give it, chaining the REAL
+	// ~/.gemini/antigravity-cli/skills one hop deeper into that session's own
+	// launch folder on every new session (docs/plans/2026-09-24-skill-symlink-probe.md,
+	// "Follow-up"). Link the real config/skills directly instead, and give
+	// agy-home its own `.migrated` marker (a plain copy of the real one's
+	// bytes, never a symlink to it -- a symlink there would just hand a
+	// spawned agy a write path back into the real ~/.gemini/config tree,
+	// exactly what this fix removes) so a spawned agy has no first-run
+	// migration left to perform at all.
+	realConfigSkills := filepath.Join(a.d.UserHome, ".gemini", "config", "skills")
+	if err := os.MkdirAll(realConfigSkills, 0o755); err != nil {
+		return nil, err
+	}
+	symConfigSkills := filepath.Join(agyHome, ".gemini", "config", "skills")
+	// setupEnv also runs on Resume, and agyHome is keyed by session ID, so a
+	// Resume of an already-spawned session reuses the same agy-home -- which
+	// may hold real, already-migrated content (the exact live chain this
+	// package fixes has its terminal directory sitting at a past session's
+	// agy-home/.gemini/config/skills). Never RemoveAll here: only create the
+	// link when nothing is there yet, and leave anything else -- a real dir,
+	// or a symlink pointing elsewhere -- untouched rather than risk deleting
+	// live content out from under a Resume.
+	if fi, err := os.Lstat(symConfigSkills); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		if err := os.Symlink(realConfigSkills, symConfigSkills); err != nil {
+			return nil, err
+		}
+	} else if fi.Mode()&os.ModeSymlink != 0 {
+		if cur, err := os.Readlink(symConfigSkills); err != nil || cur != realConfigSkills {
+			a.d.Log("agy: %s is a symlink to %q, not the real config/skills; leaving it alone", symConfigSkills, cur)
+		}
+	} else {
+		a.d.Log("agy: %s already exists and is not a symlink; leaving it alone (a legacy agy-home keeps reading its own content)", symConfigSkills)
+	}
+	realMigrated := filepath.Join(a.d.UserHome, ".gemini", "config", ".migrated")
+	migratedBody, err := os.ReadFile(realMigrated)
+	if err != nil {
+		migratedBody = nil // no real marker yet: an empty one in agy-home is enough
+	}
+	if err := writeFileAtomic(filepath.Join(agyHome, ".gemini", "config", ".migrated"), migratedBody, 0o644); err != nil {
+		return nil, err
+	}
+
+	// swarm's hook wiring (~/.gemini/config/hooks.json) lives outside
+	// antigravity-cli, and without it a spawned agy has no hook interception
+	// at all. Symlink it.
 	if err := symlinkIfExists(filepath.Join(a.d.UserHome, ".gemini", "config", "hooks.json"),
 		filepath.Join(agyHome, ".gemini", "config", "hooks.json")); err != nil {
 		return nil, err

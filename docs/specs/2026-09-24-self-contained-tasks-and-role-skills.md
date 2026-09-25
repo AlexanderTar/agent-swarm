@@ -437,6 +437,125 @@ adds to it." Contents:
 `workflow`); the reason text names `swarm_spawn` / `swarm_workflow`.
 `skills/swarm` rule 5 lists it.
 
+### A7. agy skills root
+
+Filed 2026-09-25 (PR #20) as a fix to A1's own agy path, discovered live:
+agy 1.2.10 actually reads skills from `$HOME/.gemini/config/skills`, not
+`$HOME/.gemini/antigravity-cli/skills` (`Config.SkillsDir(KindAgy)`
+pre-A7), and migrates the latter away from on first run in a fresh `HOME`.
+`adapter/agy.go`'s `setupEnv` gives every swarm-spawned session a fresh
+`HOME` whose `.gemini/antigravity-cli` is symlinked whole to the *real*
+`~/.gemini/antigravity-cli` — so each new session's first run chained the
+real `~/.gemini/antigravity-cli/skills` one hop deeper into that session's
+own launch folder, with no permanent, session-independent home. See
+`docs/plans/2026-09-24-skill-symlink-probe.md`, "Follow-up", for the full
+incident.
+
+Locked decisions:
+
+1. `Config.SkillsDir(KindAgy)` = `~/.gemini/config/skills`. Doctor,
+   uninstall and `WriteSkills` follow automatically since they all derive
+   the path from this method. Link mode for agy is set by the re-probe
+   (decision 5 below): re-verified 2026-09-25 against agy 1.2.11 as
+   `Symlink` (the 2026-09-24 `Copy` verdict was against the wrong,
+   pre-A7 path).
+2. `setupEnv` creates the real `~/.gemini/config/skills` if missing
+   (`0o755`) and symlinks `<agy-home>/.gemini/config/skills` straight at
+   it — no longer relying on the `.gemini/antigravity-cli` symlink plus
+   agy's own migration to get there. It also gives agy-home its own
+   `.migrated` marker at `<agy-home>/.gemini/config/.migrated`: a byte
+   copy of the real `~/.gemini/config/.migrated` (or an empty file if the
+   real one doesn't exist yet), never a symlink to it — a symlink there
+   would hand a spawned agy a write path back into the real
+   `~/.gemini/config` tree, exactly what this fix removes. The existing
+   `antigravity-cli` / `hooks.json` / `plugins` symlinks are unchanged.
+   Result: a spawned agy never has a first-run skills migration left to
+   perform, and never rewrites the real `~/.gemini/antigravity-cli/skills`.
+3. Repair of an existing broken install runs only from an explicit
+   `swarm install` (`WriteAgy`, never the daemon, never a test against the
+   real home) — including via `swarm migrate`'s step 9 (`cmd/swarm/migrate.go`'s
+   `DoInstall`), which is the same explicit-user-command install path, not a
+   separate one: if the real `~/.gemini/antigravity-cli/skills` is a symlink
+   whose FIRST hop resolves under `<swarm home>/run/launch/`, copy the
+   resolved tree's entries into `~/.gemini/config/skills` — never
+   overwriting an entry already there that is user-owned per the P1
+   ownership rules (a swarm-owned or pre-A1-shipped `swarm*` entry is
+   re-written by `WriteSkills` right afterward anyway) — then repoint
+   `~/.gemini/antigravity-cli/skills` at `~/.gemini/config/skills`,
+   matching the shape agy's own post-migration setup leaves. Nothing
+   under `run/launch` is ever deleted. Detection checks the chain's first
+   hop, not only its fully-resolved target (fix round 1, finding 4; fix
+   round 3 also resolves `c.Home` itself first before joining
+   `run/launch`, so a merely-missing `run/launch` directory can't hide an
+   aliased dangling chain): this also repoints a dangling first hop
+   (nothing left to salvage) and a first hop that resolves all the way
+   back to the new root itself (nothing to salvage either, checked with a
+   same-directory comparison — `os.SameFile`, not a string equality,
+   since a home path with its own symlink, e.g. macOS's
+   `/var` → `/private/var`, makes the resolved and unresolved spellings
+   of the identical directory two different strings — fix round 2,
+   finding 1). Salvaging a directory's contents uses `copyTree`
+   (`internal/install/plugins.go`, shared with cursor's vendored-plugin
+   copy), which **dereferences every symlink it finds** into real content
+   — a link to a file becomes a real file, a link to a directory becomes
+   a real directory holding a recursive copy — guarded against a symlink
+   cycle by a visited-real-paths set plus a max depth (fix round 3,
+   controller ruling, superseding fix round 2's approach of recreating
+   every symlinked entry as a symlink: that broke both cursor's own "the
+   result is a real folder" contract for its unrelated vendored-plugin
+   copy, and made salvaged content dangle the moment the swarm session it
+   was salvaged from was later reaped, since a recreated symlink still
+   pointed back into `run/launch`). The one exception: a **top-level**
+   legacy entry that is itself a symlink whose resolved target lies
+   *outside* `run/launch` (the user's own skill, linked in from somewhere
+   else entirely — not wreckage from the migration chain this repair
+   exists to clean up) is preserved as a symlink to that absolute
+   resolved target, not deep-copied.
+4. Doctor's agy skills check (`CheckSkills`) already looks at the new
+   root. A separate warn-level check (`agySkillsRootLegacyCheck`, OK
+   true) fires when `~/.gemini/antigravity-cli/skills`'s first hop
+   resolves into `<swarm home>/run/launch/` (live or dangling —
+   fix round 1, finding 3): "agy skills live inside a swarm session
+   folder; run swarm install to move them." Nothing at the old path at
+   all gets a distinct, neutral message ("nothing at ... yet") rather
+   than the generic "is not inside a session folder" text, which is
+   reserved for something actually present there that isn't the legacy
+   shape.
+5. Re-probe, sealed: a scratch `HOME` under the scratchpad with no symlink
+   to any real directory. Copy (not link) only the auth/onboarding files
+   agy needs from `~/.gemini/antigravity-cli` into it. Create
+   `$HOME/.gemini/config/.migrated`. Put the probe skill at
+   `$HOME/.gemini/config/skills/zz-swarm-symlink-probe` as a symlink to a
+   dir outside `$HOME`; run agy headless and ask it for the probe
+   codeword; run the same prompt again against a real (non-symlink) copy
+   of the probe at the same location as a control. Before and after each
+   run, diff `ls -la ~/.gemini/antigravity-cli/skills ~/.gemini/config
+   ~/.gemini/antigravity-cli` on the real home — any difference stops the
+   unit and reports BLOCKED rather than attempting a repair. Set
+   `skillLinkMode[KindAgy]` from the result and append the evidence
+   (version, exact command, prompt, output lines) to
+   `docs/plans/2026-09-24-skill-symlink-probe.md`. Also probe the actual
+   two-hop production shape (fix round 1, finding 6): `$HOME/.gemini/config/skills`
+   itself a symlink (what `setupEnv` creates), pointing at a directory
+   whose own entries are themselves symlinks (what `Symlink`-mode
+   `WriteSkills` creates) — not just a single flat symlink, which is all
+   the first probe exercised.
+
+**Accepted trade-offs** (fix round 1, finding 7):
+- `setupEnv` runs `os.MkdirAll` on the real `~/.gemini/config/skills`
+  every spawn and resume, not only the first time it's missing —
+  harmless (a no-op once it exists) but a repeated stat+mkdir per launch,
+  accepted rather than caching "already checked this run."
+- A legacy agy-home (one whose `agy-home/.gemini/config/skills` already
+  held a real directory from before this fix, not a symlink) keeps using
+  that stale, un-refreshed private copy for as long as that session's
+  `Resume` keeps reusing the same agy-home (PA.2's fix on principle:
+  `setupEnv` never deletes existing content there — see fix round 1,
+  finding 4 in the PA report). It never sees the shared, live-synced
+  skills tree until that session ends and a genuinely new session starts.
+  Accepted: correctness (never silently delete real content) over
+  freshness for an already-running session's private copy.
+
 ### A8. muse spawn isolation
 
 User report, PR #20: a swarm-spawned muse got the operator's full `HOME`
@@ -1098,6 +1217,7 @@ Agent-facing errors (tool results):
 - Workflow validation: `"step <id>: set exactly one of run or review"`, `"step <id>: <role> can't run a step"`, `"step <id>: <role> can't review"`, `"step <id>: of/fix must name an earlier run step"`, `"max_rounds must be 1–5"`, `"unknown template \"<name>\""`, `"after_tasks is only for stories"`, `"integration is only for epics and bugs"`.
 - Hook: `"[swarm] The Workflow tool is disabled in Swarm sessions. Use swarm_spawn or swarm_workflow."`
 - Integrated gate: `"Integration verify not recorded as passing: <cmd>."`, `"Integration needs a passing final review of <sha7>."`
+- Doctor (A7 decision 4), agy skills root, warn-level: `"agy skills live inside a swarm session folder; run swarm install to move them"`.
 
 Relays (JSON, to orchestrator): `workflow_succeeded`, `workflow_escalated`,
 `story_ready_for_review`. Notification (menubar/board, category
