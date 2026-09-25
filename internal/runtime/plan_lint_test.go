@@ -114,6 +114,27 @@ func TestTreeWarnsOnAllSingleUnitStory(t *testing.T) {
 	}
 }
 
+func TestTreeCapitalizesNodeTypeInWorkflowError(t *testing.T) {
+	tree := lintFixture()
+	tree.Children[0].Workflow = &workflow.Spec{AfterTasks: &workflow.Step{ID: "review", Review: []string{"coder"}}}
+	errs, _ := lintTree(tree)
+	if len(errs) == 0 || !strings.HasPrefix(errs[0].Error(), "Story s workflow:") {
+		t.Fatalf("errors=%v, want prefix %q", errs, "Story s workflow:")
+	}
+}
+
+func TestTreeIgnoresRootInlineChildren(t *testing.T) {
+	tree := lintFixture()
+	tree.Root.Children = []TreeNode{{Ref: "phantom", Type: "task", Title: "Phantom"}}
+	// A real violation in tree.Children must still be reported: without it
+	// this test would pass vacuously if traversal broke entirely.
+	tree.Children[0].Children[0].Workflow = nil
+	errs, _ := lintTree(tree)
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "Task t has no workflow") {
+		t.Fatalf("errors=%v, want exactly the real Task t violation", errs)
+	}
+}
+
 func TestPlanWarningsPersistPerRevision(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

@@ -4,9 +4,22 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
+
+// capType uppercases a node type's first rune for error messages. strings.Title
+// is deprecated and title-cases every word; types are single words and
+// user-controlled JSON, so only the first rune is touched (and "" is safe).
+func capType(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
 
 var splitTDDTitle = regexp.MustCompile(`(?i)^(write|add) (a )?failing test|^(red|green)\b|make .* pass$|^fix review|^address review|^review\b`)
 var reviewTaskTitle = regexp.MustCompile(`(?i)^(review\b|fix review\b|address review\b)`)
@@ -17,7 +30,7 @@ func lintTree(tree Tree) (errs []error, warnings []string) {
 	visit = func(n TreeNode, level workflow.Level) {
 		if n.Workflow != nil {
 			if err := workflow.Validate(level, *n.Workflow); err != nil {
-				errs = append(errs, fmt.Errorf("%s %s workflow: %w.", strings.Title(n.Type), n.Ref, err))
+				errs = append(errs, fmt.Errorf("%s %s workflow: %w.", capType(n.Type), n.Ref, err))
 			}
 		}
 		if level != workflow.LevelTask && (len(n.Steps) > 0 || len(n.Units) > 0 || n.Solo != "" || len(n.Verify) > 0) {
@@ -103,12 +116,18 @@ func lintTree(tree Tree) (errs []error, warnings []string) {
 				warnings = append(warnings, fmt.Sprintf("Story %s has %d single-unit tasks; they look batchable.", n.Ref, len(n.Children)))
 			}
 		}
-		for _, c := range n.Children {
-			childLevel := workflow.LevelTask
-			if c.Type == "story" {
-				childLevel = workflow.LevelStory
+		// Root's inline children are not part of the tree: validateTreeShape,
+		// materialize and Tree.Tasks all walk tree.Children and never touch
+		// Root.Children, so descending here would lint phantom nodes nothing
+		// else sees (and double-report a node listed in both places).
+		if level != workflow.LevelRoot {
+			for _, c := range n.Children {
+				childLevel := workflow.LevelTask
+				if c.Type == "story" {
+					childLevel = workflow.LevelStory
+				}
+				visit(c, childLevel)
 			}
-			visit(c, childLevel)
 		}
 	}
 	visit(tree.Root, workflow.LevelRoot)

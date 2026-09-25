@@ -3,6 +3,7 @@ package items_test
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/events"
@@ -600,6 +601,57 @@ func TestCompletedCurrentCountsDesignerOnAWorkflowTask(t *testing.T) {
 		t.Fatalf("a designer's completed on a workflow task must count: %v", err)
 	}
 	wantStatus(t, s, task.Key, items.InReview)
+}
+
+func TestWorkflowSucceededGatesDone(t *testing.T) {
+	s := newStore(t)
+	_, _, task := tree(t, s)
+	setWorkflowJSON(t, s.DB, task)
+	daemon := items.Daemon()
+	// No workflows row: Done is engine-only.
+	err := move(t, s, task.Key, items.Done, daemon)
+	if code(err) != items.CodeTransitionDenied || !strings.Contains(err.Error(), "finished by its workflow") {
+		t.Fatalf("Done without a workflow row: err = %v, want transition_denied finished-by-workflow", err)
+	}
+	agentID, _ := seedSession(t, s.DB, task, "running")
+	exec(t, s.DB, `INSERT INTO workflows (id, item_id, root_item_id, owner_agent_id, state, worktrees_json, created_at, updated_at)
+		VALUES ('wfl_1', ?, ?, ?, 'succeeded', '[]', ?, ?)`,
+		task.ID, task.RootID, agentID, later(s), later(s))
+	if err := move(t, s, task.Key, items.Done, daemon); err != nil {
+		t.Fatalf("Done with a succeeded workflow: err = %v, want nil", err)
+	}
+	wantStatus(t, s, task.Key, items.Done)
+}
+
+func TestWorkflowFailedOrCancelledResetsToReady(t *testing.T) {
+	for _, state := range []string{"failed", "cancelled", "running"} {
+		s := newStore(t)
+		_, _, task := tree(t, s)
+		setWorkflowJSON(t, s.DB, task)
+		daemon := items.Daemon()
+		agentID, _ := seedSession(t, s.DB, task, "running")
+		exec(t, s.DB, `INSERT INTO workflows (id, item_id, root_item_id, owner_agent_id, state, worktrees_json, created_at, updated_at)
+			VALUES ('wfl_1', ?, ?, ?, ?, '[]', ?, ?)`,
+			task.ID, task.RootID, agentID, state, later(s), later(s))
+		setStatus(t, s, task, items.InProgress)
+		err := move(t, s, task.Key, items.Ready, daemon)
+		if state == "running" {
+			if code(err) != items.CodeTransitionDenied {
+				t.Fatalf("state %s: Ready reset err = %v, want transition_denied", state, err)
+			}
+		} else {
+			if err != nil {
+				t.Fatalf("state %s: Ready reset err = %v, want nil", state, err)
+			}
+			wantStatus(t, s, task.Key, items.Ready)
+		}
+		// Done stays engine-only for every non-succeeded state.
+		setStatus(t, s, task, items.InProgress)
+		if err := move(t, s, task.Key, items.Done, daemon); code(err) != items.CodeTransitionDenied ||
+			!strings.Contains(err.Error(), "finished by its workflow") {
+			t.Fatalf("state %s: Done err = %v, want transition_denied finished-by-workflow", state, err)
+		}
+	}
 }
 
 func TestPatchStatusGoesThroughTransition(t *testing.T) {

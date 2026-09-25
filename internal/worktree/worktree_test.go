@@ -1134,3 +1134,108 @@ func recordingRunner(fake *execx.Fake, real execx.Runner) execx.Runner {
 		return real(ctx, name, args...)
 	}
 }
+
+// mustComplete fails the test if fn doesn't return in time instead of
+// hanging the suite on a lock-ordering deadlock.
+func mustComplete(t *testing.T, d time.Duration, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { defer close(done); fn() }()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("timed out after %s, suspected deadlock", d)
+	}
+}
+
+func TestLockWorktreesDeduplicatesAndReleases(t *testing.T) {
+	repo := gitRepo(t)
+	s, _ := newService(t, repo)
+	mustComplete(t, 5*time.Second, func() {
+		unlock := s.LockWorktrees("wt-lock-b", "wt-lock-a", "wt-lock-a", "")
+		unlock()
+		// Re-locking right away must work: the first unlock released all.
+		again := s.LockWorktrees("wt-lock-a")
+		again()
+		// Empty is a noop.
+		s.LockWorktrees()()
+	})
+}
+
+func TestLockWorktreesBlocksASecondLocker(t *testing.T) {
+	repo := gitRepo(t)
+	s, _ := newService(t, repo)
+	unlock := s.LockWorktrees("wt-lock-contended")
+	acquired := make(chan func(), 1)
+	go func() { acquired <- s.LockWorktrees("wt-lock-contended") }()
+	select {
+	case <-acquired:
+		t.Fatal("second LockWorktrees acquired while the first holds the lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case unlockSecond := <-acquired:
+		unlockSecond()
+	case <-time.After(5 * time.Second):
+		t.Fatal("second LockWorktrees never acquired after unlock")
+	}
+}
+
+func TestShareTxValidatesModeAndState(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	// Unknown mode is rejected before any row is touched.
+	tx, err := s.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ShareTx(ctx, tx, "wt-nope", "agt_1", "rx"); err == nil ||
+		!strings.Contains(err.Error(), `unknown share mode "rx"`) {
+		t.Fatalf("ShareTx mode err = %v, want unknown-share-mode refusal", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	// Happy path on an active worktree, both modes.
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/sharetx",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	share := func(agentID, mode string) {
+		t.Helper()
+		tx, err := s.DB.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := s.ShareTx(ctx, tx, wt.ID, agentID, mode); err != nil {
+			t.Fatalf("ShareTx(%s) = %v, want nil", mode, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	share("agt_1", "rw")
+	share("agt_2", "ro")
+	var mode string
+	if err := s.DB.QueryRowContext(ctx, `SELECT mode FROM worktree_reservations WHERE worktree_id = ? AND agent_id = ?`,
+		wt.ID, "agt_2").Scan(&mode); err != nil || mode != "ro" {
+		t.Fatalf("reservation mode = %q, %v; want ro, nil", mode, err)
+	}
+	// A worktree that left active refuses.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE worktrees SET state = 'removed' WHERE id = ?`, wt.ID); err != nil {
+		t.Fatal(err)
+	}
+	tx2, err := s.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx2.Rollback() }()
+	want := "worktree: " + wt.ID + " is not active"
+	if err := s.ShareTx(ctx, tx2, wt.ID, "agt_1", "rw"); err == nil || err.Error() != want {
+		t.Fatalf("ShareTx on removed worktree = %v, want %q", err, want)
+	}
+}

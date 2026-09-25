@@ -23,6 +23,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
+	sqlite "modernc.org/sqlite"
 )
 
 var errLostRace = errors.New("workflow transition lost race")
@@ -316,18 +317,37 @@ func (s *Store) StartWorkflow(ctx context.Context, orch Agent, in StartWorkflowI
 	return st, nil
 }
 
+// sqliteConstraintUnique is the extended result code the modernc.org/sqlite
+// driver reports for a UNIQUE violation (SQLITE_CONSTRAINT_UNIQUE): the
+// driver's *Error.Code carries it, e.g. "constraint failed: UNIQUE
+// constraint failed: workflows.item_id (2067)" -- confirmed empirically
+// against the repo's own driver build, not assumed from the index's name.
+// modernc.org/sqlite/lib defines the same constant, but importing lib here
+// for one number isn't worth it.
+const sqliteConstraintUnique = 2067
+
 // workflowsOneLiveErr maps a workflows_one_live unique-index violation to
 // StartWorkflow's own friendly "already has a running workflow" refusal --
 // the advisory pre-check (StartWorkflow's own `existing` SELECT) only
 // prevents the common, non-concurrent case; two concurrent Starts for the
 // same item can both pass it and race the INSERT, and only one wins against
 // this actual DB-level guarantee (0011_workflows.sql's own UNIQUE partial
-// index). Passed through unchanged when err is nil or doesn't match: sqlite
-// reports this specific violation by column, not by index name --
-// "UNIQUE constraint failed: workflows.item_id" -- confirmed empirically
-// (fix round 2 self-review), not assumed from the index's own name.
+// index). Two paths map, either is enough: the driver's own typed error
+// with this exact extended code (robust against message rewording), or the
+// driver's exact sentence including the code, pinned by
+// TestWorkflowsOneLiveErrMapsConstraintText. A bare column-name substring
+// without the code -- wrapped or confabulated text that never touched the
+// unique index -- passes through unchanged, as does nil.
 func workflowsOneLiveErr(err error, itemKey string) error {
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: workflows.item_id") {
+	if err == nil {
+		return nil
+	}
+	var sqlErr *sqlite.Error
+	typed := errors.As(err, &sqlErr) &&
+		sqlErr.Code() == sqliteConstraintUnique &&
+		strings.Contains(sqlErr.Error(), "workflows.item_id")
+	pinned := strings.Contains(err.Error(), "UNIQUE constraint failed: workflows.item_id (2067)")
+	if typed || pinned {
 		return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("%s already has a running workflow.", itemKey)}
 	}
 	return err
