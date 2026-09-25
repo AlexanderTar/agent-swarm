@@ -654,11 +654,12 @@ func (s *Store) registerArtifactAsDaemon(ctx context.Context, tx *sql.Tx, itemID
 	newSHA := sha256Hex(string(body))
 	var artifactID string
 	var revision int
-	var prevSHA string
-	err = tx.QueryRowContext(ctx, `SELECT a.id, a.head_revision, r.sha256 FROM artifacts a
+	var prevSHA, prevSectionsJSON string
+	err = tx.QueryRowContext(ctx, `SELECT a.id, a.head_revision, r.sha256, r.sections_json FROM artifacts a
 		JOIN artifact_revisions r ON r.artifact_id = a.id AND r.revision = a.head_revision
-		WHERE a.item_id = ? AND a.path = ?`, itemID, path).Scan(&artifactID, &revision, &prevSHA)
+		WHERE a.item_id = ? AND a.path = ?`, itemID, path).Scan(&artifactID, &revision, &prevSHA, &prevSectionsJSON)
 	now := db.Millis(s.Now())
+	bumped := false
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		artifactID, revision = ids.New("art"), 1
@@ -673,6 +674,7 @@ func (s *Store) registerArtifactAsDaemon(ctx context.Context, tx *sql.Tx, itemID
 		return nil // dedupe: identical content already the head revision
 	default:
 		revision++
+		bumped = true
 		if _, err := tx.ExecContext(ctx, `UPDATE artifacts SET head_revision = ? WHERE id = ?`,
 			revision, artifactID); err != nil {
 			return err
@@ -683,9 +685,23 @@ func (s *Store) registerArtifactAsDaemon(ctx context.Context, tx *sql.Tx, itemID
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO artifact_revisions
+	if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_revisions
 		(artifact_id, revision, sha256, content, sections_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, artifactID, revision, newSHA, string(body), string(sectionsJSON), now)
+		VALUES (?, ?, ?, ?, ?, ?)`, artifactID, revision, newSHA, string(body), string(sectionsJSON), now); err != nil {
+		return err
+	}
+	if !bumped {
+		return nil // fresh registration: no open approvals could exist yet
+	}
+	// Fix round 2, finding 4: a revision bump must stale open approvals the
+	// same way RegisterArtifact's own orchestrator-facing path does, so a
+	// fix round's revised design/notes don't leave an approve_section
+	// request pinned to superseded content.
+	var prevSections []ArtifactSection
+	if err := json.Unmarshal([]byte(prevSectionsJSON), &prevSections); err != nil {
+		return fmt.Errorf("artifact_revisions sections_json: %w", err)
+	}
+	_, err = s.staleApprovals(ctx, tx, artifactID, sectionsChanged(prevSections, sections))
 	return err
 }
 
@@ -698,7 +714,7 @@ func (s *Store) artifactGate(ctx context.Context, tx *sql.Tx, it items.Item, a A
 	home, _ := os.UserHomeDir() // "" on failure: expandHome then leaves a leading ~ alone, matched by nothing
 	for _, raw := range in.Artifacts {
 		p := filepath.Clean(expandHome(raw, home))
-		if p != root && !strings.HasPrefix(p, prefix) {
+		if !strings.HasPrefix(p, prefix) {
 			continue
 		}
 		if fi, err := os.Stat(p); err != nil || fi.IsDir() {

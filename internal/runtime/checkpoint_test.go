@@ -2334,3 +2334,64 @@ func TestTDDGateUnitTaggedFindingOnNonBatchedTaskIsPackageWide(t *testing.T) {
 		t.Fatalf("an untagged pair should satisfy a package-wide requirement: %v", err)
 	}
 }
+
+// Finding 4 (Minor): registerArtifactAsDaemon's revision bump must call
+// staleApprovals, same as RegisterArtifact (artifacts.go), so an open
+// approve_section request doesn't stay pinned to content a fix round has
+// already superseded.
+func TestRegisterArtifactAsDaemonStalesOpenApprovals(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designer, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleDesigner, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "design"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeFile(t, "v1")
+	register := func(body string) {
+		t.Helper()
+		if body != "" {
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+			return s.registerArtifactAsDaemon(ctx, tx, it.ID, designer.ID, "design", path)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	register("")
+
+	var artifactID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT id FROM artifacts WHERE item_id = ? AND path = ?`,
+		it.ID, path).Scan(&artifactID); err != nil {
+		t.Fatal(err)
+	}
+	reqID := ids.New("req")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests
+		(id, kind, agent_id, item_id, artifact_id, section_id, prompt, state, artifact_revision, created_at)
+		VALUES (?, 'approve_section', ?, ?, ?, 'document', 'Approve the design.', 'open', 1, ?)`,
+		reqID, designer.ID, it.ID, artifactID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	register("v2") // revised content -> the "document" section's hash moves
+
+	var state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE id = ?`, reqID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "stale" {
+		t.Fatalf("open approve_section request state = %q, want stale", state)
+	}
+}
