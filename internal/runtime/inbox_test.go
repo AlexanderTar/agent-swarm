@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1070,6 +1072,83 @@ func TestAnswerMayReplyToABlockedRelay(t *testing.T) {
 		t.Fatalf("answer to blocked relay = %v, want accepted", err)
 	}
 	_ = wSes
+}
+
+func TestSendQuestionStoresOptions(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	id, err := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "", "postgres", "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload string
+	s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE id = ?`, id).Scan(&payload)
+	var got struct {
+		Body    string   `json:"body"`
+		Options []string `json:"options"`
+	}
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "which db?" || !slices.Equal(got.Options, []string{"postgres", "sqlite"}) {
+		t.Fatalf("payload = %s", payload)
+	}
+}
+
+func TestSendOptionsOnlyForQuestion(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "b", "", "", "a"); err == nil {
+		t.Fatal("options on a finding must be refused")
+	}
+}
+
+func TestSendMoreThanTenOptionsRefused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	opts := make([]string, 11)
+	for i := range opts {
+		opts[i] = fmt.Sprintf("o%d", i)
+	}
+	if _, err := s.Send(ctx, wSes.ID, "parent", "question", "b", "", "", opts...); err == nil {
+		t.Fatal("more than 10 options must be refused")
+	}
+}
+
+func TestSendOptionOver200CharsRefused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	long := strings.Repeat("x", 201)
+	if _, err := s.Send(ctx, wSes.ID, "parent", "question", "b", "", "", long); err == nil {
+		t.Fatal("an option over 200 chars must be refused")
+	}
+}
+
+func TestSendApprovalStoresFixedOptionsAndFlag(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	id, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload string
+	s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE id = ?`, id).Scan(&payload)
+	var got struct {
+		Body     string   `json:"body"`
+		Options  []string `json:"options"`
+		Approval bool     `json:"approval"`
+	}
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "may I drop table x?" || !slices.Equal(got.Options, []string{"Approve", "Request changes"}) || !got.Approval {
+		t.Fatalf("payload = %s", payload)
+	}
 }
 
 func TestFindingAcceptsAnUnvalidatedReplyTo(t *testing.T) {

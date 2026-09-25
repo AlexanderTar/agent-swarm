@@ -235,15 +235,20 @@ func sendTool(s *Server) ToolDef {
 		Name:        "swarm_send",
 		Description: "Send a short message to another agent in the same top-level item, or to your parent.",
 		Schema: objSchemaRequired(`"to":{"type":"string","description":"Recipient agent name, or 'parent' for your orchestrator"},"kind":{"type":"string","enum":["question","answer","finding"],"description":"Message kind; omitted or relay stores as finding"},
-			"body":{"type":"string"},"reply_to":{"type":"string","description":"Required for kind answer: the msg_id of the question it answers"},"request_id":{"type":"string"}`,
+			"body":{"type":"string"},"reply_to":{"type":"string","description":"Required for kind answer: the msg_id of the question it answers"},
+			"options":{"type":"array","items":{"type":"string"},"description":"Choices for kind question; at most 10, each at most 200 chars"},
+			"approval":{"type":"boolean","description":"kind question to parent only: request explicit Approve/Request changes"},
+			"request_id":{"type":"string"}`,
 			[]string{"to", "body"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				To        string `json:"to"`
-				Kind      string `json:"kind"`
-				Body      string `json:"body"`
-				ReplyTo   string `json:"reply_to"`
-				RequestID string `json:"request_id"`
+				To        string   `json:"to"`
+				Kind      string   `json:"kind"`
+				Body      string   `json:"body"`
+				ReplyTo   string   `json:"reply_to"`
+				Options   []string `json:"options"`
+				Approval  bool     `json:"approval"`
+				RequestID string   `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -257,7 +262,17 @@ func sendTool(s *Server) ToolDef {
 			default:
 				return nil, fmt.Errorf("kind must be question, answer or finding, got %q", in.Kind)
 			}
-			id, err := s.RT.Send(ctx, c.SessionID, in.To, runtime.MessageKind(kind), in.Body, in.ReplyTo, in.RequestID)
+			if in.Approval {
+				if kind != "question" || in.To != "parent" {
+					return nil, fmt.Errorf("approval is only for kind question to parent")
+				}
+				id, err := s.RT.SendApproval(ctx, c.SessionID, in.Body, in.RequestID)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"msg_id": id}, nil
+			}
+			id, err := s.RT.Send(ctx, c.SessionID, in.To, runtime.MessageKind(kind), in.Body, in.ReplyTo, in.RequestID, in.Options...)
 			if err != nil {
 				return nil, err
 			}

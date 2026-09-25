@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
@@ -499,7 +500,7 @@ const errAnswerBadReplyTo = "reply_to %q is not a question from %s (or a blocked
 // for kind:"answer" (validated against the question/blocked-relay it answers) and
 // in messages.correlation_id for every other kind (unvalidated, e.g. a finding's
 // free-form thread hook).
-func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind, body, replyTo, requestID string) (string, error) {
+func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind, body, replyTo, requestID string, options ...string) (string, error) {
 	if len(body) > 4000 {
 		return "", &items.Error{Code: items.CodeBadRequest, Message: "A message body is limited to 4000 characters."}
 	}
@@ -567,13 +568,75 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 			correlationID = replyTo
 			replyTo = ""
 		}
-		payload, err := json.Marshal(map[string]string{"body": body})
+		p := map[string]any{"body": body}
+		if len(options) > 0 {
+			if kind != "question" {
+				return &items.Error{Code: items.CodeBadRequest, Message: "options are only for kind question."}
+			}
+			if len(options) > 10 {
+				return &items.Error{Code: items.CodeBadRequest, Message: "A question takes at most 10 options."}
+			}
+			for _, o := range options {
+				if utf8.RuneCountInString(o) > 200 {
+					return &items.Error{Code: items.CodeBadRequest, Message: "Each option is limited to 200 characters."}
+				}
+			}
+			p["options"] = options
+		}
+		payload, err := json.Marshal(p)
 		if err != nil {
 			return err
 		}
 		m, err := s.enqueue(ctx, tx, Message{Kind: kind, Origin: "agent",
 			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
 			RootItemID: a.RootItemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
+		id = m.ID
+		return err
+	})
+	return id, err
+}
+
+// SendApproval is Send for the fixed-choice approval shape (F5): kind is
+// always "question", to is always "parent", and the payload carries
+// options:["Approve","Request changes"] plus approval:true so the receiving
+// UI renders it as an approval instead of a free-form question.
+func (s *Store) SendApproval(ctx context.Context, sessionID, body, requestID string) (string, error) {
+	if len(body) > 4000 {
+		return "", &items.Error{Code: items.CodeBadRequest, Message: "A message body is limited to 4000 characters."}
+	}
+	var id string
+	_, err := IdemTx(ctx, s, sessionID, requestID, "swarm_send", &id, func(tx *sql.Tx) error {
+		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		if a.ParentAgentID == "" {
+			return &items.Error{Code: items.CodeBadRequest, Message: "This agent has no parent."}
+		}
+		target, err := s.agentByIDTx(ctx, tx, a.ParentAgentID)
+		if err != nil {
+			return err
+		}
+		if target.RootItemID != a.RootItemID {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: "A message can only go to an agent inside the same top-level item."}
+		}
+		can, err := s.agentCanReceive(ctx, tx, target.ID)
+		if err != nil {
+			return err
+		}
+		if !can {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
+		}
+		payload, err := json.Marshal(map[string]any{"body": body,
+			"options": []string{"Approve", "Request changes"}, "approval": true})
+		if err != nil {
+			return err
+		}
+		m, err := s.enqueue(ctx, tx, Message{Kind: "question", Origin: "agent",
+			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
+			RootItemID: a.RootItemID, Payload: payload})
 		id = m.ID
 		return err
 	})

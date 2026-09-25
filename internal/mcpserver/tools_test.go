@@ -914,6 +914,76 @@ func TestSharedToolSchemasDeclareRequired(t *testing.T) {
 	}
 }
 
+// Task 11: swarm_send question options round-trip into the parent's
+// swarm_sync message payload.
+func TestSendQuestionOptionsRoundTripThroughSync(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	workerSes, err := s.RT.LatestSession(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCaller := Caller{SessionID: workerSes.ID, AgentID: worker.ID, AgentName: worker.Name, Role: runtime.RoleCoder}
+	if _, err := s.call(ctx, workerCaller, "swarm_send",
+		`{"to":"parent","kind":"question","body":"b","options":["a","b"]}`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_sync", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mustJSON(out)), `"options":["a","b"]`) {
+		t.Fatalf("sync out = %s, want options to round-trip", mustJSON(out))
+	}
+}
+
+// Task 11: swarm_send question approval:true stores the fixed options and the
+// approval flag.
+func TestSendQuestionApprovalStoresFixedOptions(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	workerSes, err := s.RT.LatestSession(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCaller := Caller{SessionID: workerSes.ID, AgentID: worker.ID, AgentName: worker.Name, Role: runtime.RoleCoder}
+	if _, err := s.call(ctx, workerCaller, "swarm_send",
+		`{"to":"parent","kind":"question","body":"may I drop table x?","approval":true}`); err != nil {
+		t.Fatal(err)
+	}
+	var payload string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE to_agent_id = ? AND kind = 'question'`,
+		seed.Caller.AgentID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"options":["Approve","Request changes"]`) || !strings.Contains(payload, `"approval":true`) {
+		t.Fatalf("payload = %s", payload)
+	}
+}
+
+// Task 11: approval:true is refused on any kind other than question and any
+// target other than parent.
+func TestSendApprovalRefusedOnWrongKindOrTarget(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	workerSes, err := s.RT.LatestSession(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCaller := Caller{SessionID: workerSes.ID, AgentID: worker.ID, AgentName: worker.Name, Role: runtime.RoleCoder}
+	if _, err := s.call(ctx, workerCaller, "swarm_send",
+		`{"to":"parent","kind":"finding","body":"b","approval":true}`); err == nil {
+		t.Fatal("approval on kind finding must be refused")
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_send",
+		`{"to":"`+worker.Name+`","kind":"question","body":"b","approval":true}`); err == nil {
+		t.Fatal("approval to a non-parent target must be refused")
+	}
+}
+
 func TestAskToolDescriptionSaysItReturnsAtOnce(t *testing.T) {
 	d := askTool(nil)
 	if strings.Contains(d.Description, "block for the answer") ||
