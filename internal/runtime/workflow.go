@@ -1225,13 +1225,7 @@ func (s *Store) applySucceed(ctx context.Context, wf wfRow, it items.Item, actio
 	if err != nil || !relayed {
 		return err
 	}
-	found := make([]struct{ wt, agent string }, 0, len(runs))
-	for _, r := range runs {
-		if r.ReviewWorktreeID != "" {
-			found = append(found, struct{ wt, agent string }{r.ReviewWorktreeID, r.AgentID})
-		}
-	}
-	return s.releaseAndRemove(ctx, wf, found)
+	return s.removeAllReviewWorktrees(ctx, wf, runs)
 }
 
 // applyEscalate applies an Escalate action (spec B4): flips the workflow
@@ -1454,6 +1448,14 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 	if err != nil {
 		return WorkflowState{}, err
 	}
+	// Fix round 2, finding 8: only the workflow's own owner's root ever
+	// sees it escalated to them in their inbox relay in the first place, so
+	// this was never reachable in practice -- but nothing actually enforced
+	// it, the same way StartWorkflow's own root check does. Same refusal
+	// copy shape.
+	if it.RootID != orch.RootItemID {
+		return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("%s is outside your assignment.", it.Key)}
+	}
 	wf, ok, err := s.latestWorkflowRow(ctx, it.ID)
 	if err != nil {
 		return WorkflowState{}, err
@@ -1477,10 +1479,22 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 		if bumped {
 			newRound++
 		}
-		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'running', round = ?,
-			extra_rounds = extra_rounds + 1, escalation = NULL, updated_at = ? WHERE id = ?`,
-			newRound, db.Millis(s.now()), wf.ID); err != nil {
+		// Fix round 2, finding 8: guarded on state='escalated', the same as
+		// StartWorkflow's own insert and applySucceed/applyEscalate's own
+		// guarded flips -- a concurrent resume (or a fresh escalation
+		// racing this one) must not double-apply.
+		res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'running', round = ?,
+			extra_rounds = extra_rounds + 1, escalation = NULL, updated_at = ? WHERE id = ? AND state = 'escalated'`,
+			newRound, db.Millis(s.now()), wf.ID)
+		if err != nil {
 			return WorkflowState{}, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			// Lost the race; report the current state, not our stale
+			// pre-image, and skip every side effect below -- we don't own
+			// this transition.
+			st, _, err := s.workflowStateByID(ctx, wf.ID)
+			return st, err
 		}
 		// Persist the note into workflows.context_json BEFORE advance runs
 		// (fix round 2, finding 4): spawnRunAgent already folds
@@ -1518,9 +1532,14 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 			}
 		}
 	case "accept":
-		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'succeeded', updated_at = ? WHERE id = ?`,
-			db.Millis(s.now()), wf.ID); err != nil {
+		res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'succeeded', updated_at = ?
+			WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
+		if err != nil {
 			return WorkflowState{}, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			st, _, err := s.workflowStateByID(ctx, wf.ID)
+			return st, err
 		}
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
 			_, err := s.Items.TransitionTx(ctx, tx, it.Key, items.Done, items.Daemon())
@@ -1528,14 +1547,33 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 		}); err != nil {
 			return WorkflowState{}, err
 		}
-	case "fail":
-		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'failed', updated_at = ? WHERE id = ?`,
-			db.Millis(s.now()), wf.ID); err != nil {
+		runs, err := s.loadWorkflowRuns(ctx, wf.ID)
+		if err != nil {
 			return WorkflowState{}, err
+		}
+		if err := s.removeAllReviewWorktrees(ctx, wf, runs); err != nil {
+			return WorkflowState{}, err
+		}
+	case "fail":
+		res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'failed', updated_at = ?
+			WHERE id = ? AND state = 'escalated'`, db.Millis(s.now()), wf.ID)
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			st, _, err := s.workflowStateByID(ctx, wf.ID)
+			return st, err
 		}
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
 			return s.tryTransition(ctx, tx, it.Key, items.Ready)
 		}); err != nil {
+			return WorkflowState{}, err
+		}
+		runs, err := s.loadWorkflowRuns(ctx, wf.ID)
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		if err := s.removeAllReviewWorktrees(ctx, wf, runs); err != nil {
 			return WorkflowState{}, err
 		}
 	default:
@@ -1547,6 +1585,21 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 	return st, err
 }
 
+// removeAllReviewWorktrees releases+removes every review worktree recorded
+// on runs -- the same {wt, agent} collection applySucceed and CancelWorkflow
+// each built inline (dedupe, fix round 2 minor cleanup); also now reused by
+// ResumeWorkflow's accept/fail decisions, which never released a still-
+// outstanding review worktree at all.
+func (s *Store) removeAllReviewWorktrees(ctx context.Context, wf wfRow, runs []wfRunRow) error {
+	found := make([]struct{ wt, agent string }, 0, len(runs))
+	for _, r := range runs {
+		if r.ReviewWorktreeID != "" {
+			found = append(found, struct{ wt, agent string }{r.ReviewWorktreeID, r.AgentID})
+		}
+	}
+	return s.releaseAndRemove(ctx, wf, found)
+}
+
 // CancelWorkflow is swarm_workflow op:"cancel" (spec B7): cancels every
 // active run's agent, marks the workflow cancelled, moves the task back to
 // Ready, and removes any review worktree.
@@ -1554,6 +1607,11 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, request
 	it, err := s.Items.Get(ctx, itemKey)
 	if err != nil {
 		return WorkflowState{}, err
+	}
+	// Fix round 2, finding 8: same root check as ResumeWorkflow/
+	// StartWorkflow, same refusal copy shape.
+	if it.RootID != orch.RootItemID {
+		return WorkflowState{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("%s is outside your assignment.", it.Key)}
 	}
 	wf, ok, err := s.latestWorkflowRow(ctx, it.ID)
 	if err != nil {
@@ -1566,10 +1624,41 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, request
 		}
 		return WorkflowState{}, notWaitingOnYou(it.Key, state)
 	}
+
+	// Fix round 2, finding 8: held across the whole cancel (state flip,
+	// agent cancels, run cancels) -- the same lock advance()/fillWaitingRuns
+	// hold, so a slot freed mid-cancel (cancelling one active run's agent
+	// can itself free the owner's budget) can never let a LATER trigger
+	// (advanceWaitingForOwner, the stall scan) spawn a fresh run for this
+	// workflow while it's still being torn down; it just blocks until this
+	// whole call finishes, by which point state is already 'cancelled' and
+	// advance() no-ops immediately. s.Cancel (agents.go) never itself calls
+	// s.advance, so holding this lock across it is not reentrant.
+	lock := lockForWorkflow(wf.ID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	runs, err := s.loadWorkflowRuns(ctx, wf.ID)
 	if err != nil {
 		return WorkflowState{}, err
 	}
+
+	// State flips FIRST, before any agent is actually cancelled (finding
+	// 8): belt-and-suspenders alongside the lock above -- any advance that
+	// somehow still reaches this workflow mid-cancel sees a non-'running'/
+	// 'escalated' state and refuses to spawn, the same guard StartWorkflow/
+	// applySpawn/applyRetryFix already rely on everywhere else.
+	res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled', updated_at = ?
+		WHERE id = ? AND state IN ('running', 'escalated')`, db.Millis(s.now()), wf.ID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Already resolved by a concurrent call; report its current state.
+		st, _, err := s.workflowStateByID(ctx, wf.ID)
+		return st, err
+	}
+
 	for _, r := range runs {
 		if r.State != "active" || r.AgentID == "" {
 			continue
@@ -1587,22 +1676,21 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, request
 			s.logf("cancel workflow: cancel agent %s: %v", a.Name, err)
 		}
 	}
-	if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled', updated_at = ?
-		WHERE id = ? AND state IN ('running', 'escalated')`, db.Millis(s.now()), wf.ID); err != nil {
+	// Mark every active/waiting run cancelled too (finding 8): Cancel above
+	// only ever touches the agent/session, never workflow_runs itself --
+	// left alone, swarm_read would keep reporting a cancelled workflow's
+	// last runs as 'active'/'waiting' forever.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'cancelled', ended_at = ?
+		WHERE workflow_id = ? AND state IN ('active', 'waiting')`, db.Millis(s.now()), wf.ID); err != nil {
 		return WorkflowState{}, err
 	}
+
 	if err := s.tx(ctx, func(tx *sql.Tx) error {
 		return s.tryTransition(ctx, tx, it.Key, items.Ready)
 	}); err != nil {
 		return WorkflowState{}, err
 	}
-	found := make([]struct{ wt, agent string }, 0, len(runs))
-	for _, r := range runs {
-		if r.ReviewWorktreeID != "" {
-			found = append(found, struct{ wt, agent string }{r.ReviewWorktreeID, r.AgentID})
-		}
-	}
-	if err := s.releaseAndRemove(ctx, wf, found); err != nil {
+	if err := s.removeAllReviewWorktrees(ctx, wf, runs); err != nil {
 		return WorkflowState{}, err
 	}
 

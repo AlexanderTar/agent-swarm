@@ -1865,6 +1865,124 @@ func TestFIFOAcrossWorkflows(t *testing.T) {
 	}
 }
 
+// TestResumeCancelRefuseForeignOrchestrator is Opus review finding 8: in
+// practice only the workflow's own owner ever sees it escalated to them in
+// their own inbox relay -- but nothing actually enforced that a DIFFERENT
+// orchestrator (some other root item's own orchestrator) couldn't call
+// resume/cancel on it directly, the same root check StartWorkflow's own
+// validation already applies.
+func TestResumeCancelRefuseForeignOrchestrator(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	if _, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}}); err != nil {
+		t.Fatal(err)
+	}
+	ep2 := seedEpicWithTask(t, s)
+	foreign, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep2.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := taskKey + " is outside your assignment."
+	if _, err := s.ResumeWorkflow(ctx, foreign, taskKey, "retry", "", ""); err == nil || err.Error() != want {
+		t.Fatalf("resume err = %v, want %q", err, want)
+	}
+	if _, err := s.CancelWorkflow(ctx, foreign, taskKey, ""); err == nil || err.Error() != want {
+		t.Fatalf("cancel err = %v, want %q", err, want)
+	}
+
+	var wfState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE item_id = (SELECT id FROM items WHERE key = ?)`,
+		taskKey).Scan(&wfState); err != nil {
+		t.Fatal(err)
+	}
+	if wfState != "running" {
+		t.Fatalf("workflow state = %s, want running (untouched by the foreign orchestrator)", wfState)
+	}
+}
+
+// TestCancelRacingSlotReleaseSpawnsNothing is Opus review finding 8: a
+// cancelled workflow must never spawn again, even if a slot-release trigger
+// (advanceWaitingForOwner -- e.g. cancelling one active run's agent frees
+// the owner's own budget) reaches it right after CancelWorkflow returns.
+// CancelWorkflow's state flip (guarded, first) plus its own per-workflow
+// lock is what makes this deterministic rather than a real race.
+func TestCancelRacingSlotReleaseSpawnsNothing(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	setMaxSubagents(t, s, 1)
+	ep := seedEpicWithTwoTasks(t, s)
+	setItemWorkflow(t, s, "TASK-1", buildReviewSpec(t))
+	setItemWorkflow(t, s, "TASK-2", buildReviewSpec(t))
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt1, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st1, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: "TASK-1",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wt1, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt2, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st2, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: "TASK-2",
+		Worktrees: []WorkflowWorktree{{WorktreeID: wt2, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TASK-1 holds the one slot; TASK-2's build run is 'waiting' on it.
+	var t2State string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&t2State); err != nil {
+		t.Fatal(err)
+	}
+	if t2State != "waiting" {
+		t.Fatalf("TASK-2 build run = %s, want waiting", t2State)
+	}
+
+	if _, err := s.CancelWorkflow(ctx, orch, "TASK-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	startedBefore := len(tm.started)
+
+	// The slot-release trigger, reaching this owner right after cancel --
+	// exactly as if TASK-1's own cancelled coder agent's session going
+	// terminal had fired it via reconcile.
+	if err := s.advanceWaitingForOwner(ctx, orch.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var t1RunState, t1WfState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st1.ID).Scan(&t1RunState); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE id = ?`, st1.ID).Scan(&t1WfState); err != nil {
+		t.Fatal(err)
+	}
+	if t1WfState != "cancelled" || t1RunState != "cancelled" {
+		t.Fatalf("TASK-1 workflow/run state = %s/%s, want cancelled/cancelled", t1WfState, t1RunState)
+	}
+	// TASK-2, the legitimate sibling, is free to spawn now.
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&t2State); err != nil {
+		t.Fatal(err)
+	}
+	if t2State != "active" {
+		t.Fatalf("TASK-2 build run = %s, want active (freed slot went to the legitimate sibling)", t2State)
+	}
+	if len(tm.started) != startedBefore+1 {
+		t.Fatalf("started %d agents on the slot-release trigger, want exactly 1 (TASK-2's, never TASK-1's): %v",
+			len(tm.started)-startedBefore, tm.started)
+	}
+}
+
 // --- Fix round 1 ---
 
 // TestDesignThenBuildStatusFlow is the interaction flagged in the P9 brief
