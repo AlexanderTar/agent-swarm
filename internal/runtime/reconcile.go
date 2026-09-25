@@ -710,7 +710,7 @@ func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKno
 				return werr
 			}
 			if hasRun {
-				if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ? WHERE id = ?`,
+				if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ? WHERE id = ? AND state IN ('active', 'waiting')`,
 					db.Millis(now), run.ID); err != nil {
 					return err
 				}

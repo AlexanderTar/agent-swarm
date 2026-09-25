@@ -532,18 +532,6 @@ func (s *Store) insertWaitingRun(ctx context.Context, workflowID, stepID string,
 	return n > 0, err
 }
 
-// markInProgress moves it from InReview back to InProgress as the daemon
-// (spec B4: the task moves InReview <-> InProgress around every build step;
-// Done only ever happens on Succeed). A no-op (silently denied, like every
-// tryTransition call) when the item isn't currently InReview -- in
-// particular the very first spawn, still Ready: that step is the builder's
-// own future "accepted" checkpoint's job, not this one's.
-func (s *Store) markInProgress(ctx context.Context, itemKey string) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
-		return s.tryTransition(ctx, tx, itemKey, items.InProgress)
-	})
-}
-
 // applySpawn applies a Spawn action (spec B4): inserts the new run row(s) as
 // 'waiting' (idempotent), and for a review step also creates+shares the one
 // review worktree the parallel reviewers share. Actually starting an agent
@@ -555,11 +543,20 @@ func (s *Store) applySpawn(ctx context.Context, wf wfRow, it items.Item, action 
 		return fmt.Errorf("advance: workflow step %q not found on %s", action.StepID, it.Key)
 	}
 	if step.Run != "" {
-		inserted, err := s.insertWaitingRun(ctx, wf.ID, action.StepID, action.Round, step.Run, "")
-		if err != nil || !inserted {
-			return err
-		}
-		return s.markInProgress(ctx, it.Key)
+		return s.tx(ctx, func(tx *sql.Tx) error {
+			res, err := tx.ExecContext(ctx, `INSERT INTO workflow_runs
+				(id, workflow_id, step_id, round, role, state, created_at)
+				VALUES (?, ?, ?, ?, ?, 'waiting', ?)
+				ON CONFLICT(workflow_id, step_id, round, role) DO NOTHING`,
+				ids.New("wfr"), wf.ID, action.StepID, action.Round, step.Run, db.Millis(s.now()))
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				return s.tryTransition(ctx, tx, it.Key, items.InProgress)
+			}
+			return nil
+		})
 	}
 
 	for _, role := range action.Roles {
@@ -972,19 +969,17 @@ func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, acti
 			(id, workflow_id, step_id, round, role, agent_id, state, created_at)
 			VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)`,
 			ids.New("wfr"), wf.ID, action.StepID, action.Round, step.Run, prevAgentID, state, db.Millis(s.now()))
-		if err == nil {
-			inserted = true
+		if err != nil {
+			return err
 		}
-		return err
+		inserted = true
+		return s.tryTransition(ctx, tx, it.Key, items.InProgress)
 	})
 	if err != nil {
 		return err
 	}
 	if !inserted {
 		return nil
-	}
-	if err := s.markInProgress(ctx, it.Key); err != nil {
-		return err
 	}
 	if prevAgentID != "" {
 		// USER DIRECTIVE: never spawn a fresh builder while the old
@@ -995,6 +990,7 @@ func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, acti
 		// No fallback to a fresh spawn here: once closed, Retry must
 		// succeed (an error now is a real failure, not a timing gap).
 		if err := s.closeSessionForRetry(ctx, prev); err != nil {
+			s.logf("applyRetryFix: closeSessionForRetry %s: %v", prev.Name, err)
 			return err
 		}
 		if _, err := s.Retry(ctx, prev.Name, renderFindings(action.Findings), "", ""); err != nil {

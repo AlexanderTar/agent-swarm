@@ -866,6 +866,49 @@ func TestCrashTriggersAdvance(t *testing.T) {
 	}
 }
 
+// TestResolveDeadPreservesCompletedWorkflowRun verifies that if a session exits
+// without a terminal checkpoint in that attempt, resolveDead does not overwrite
+// an already-completed workflow run back to 'failed'.
+func TestResolveDeadPreservesCompletedWorkflowRun(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderAgentID := agentIDForStep(t, s, st.ID, "build")
+	coder, err := s.agentByID(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+
+	// Mark the run completed as if CompletedCkp was recorded.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'completed' WHERE workflow_id = ? AND step_id = 'build'`, st.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	panes(tm, Pane{Session: coder.Name, Dead: true, DeadStatus: 1, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[coder.Name] = map[string]string{"SWARM_SESSION": coderSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs WHERE workflow_id = ? AND step_id = 'build'`, st.ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "completed" {
+		t.Fatalf("workflow_run state after session exit = %q, want 'completed'", state)
+	}
+}
+
 // TestSlotReleaseSpawnsWaitingRun is spec B4's third trigger: any child of
 // the owner finishing frees a subagent slot that lets a SIBLING workflow's
 // budget-blocked run start. TASK-1's build step has Retries:0, so its crash
