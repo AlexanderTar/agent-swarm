@@ -3,7 +3,7 @@
 // timestamps are integer ms since the epoch, unset optional fields are null (never absent),
 // arrays are never null, and items are addressed by key everywhere the board sees them.
 
-export type ItemType = "epic" | "story" | "task" | "bug" | "spike";
+export type ItemType = "epic" | "story" | "task" | "bug" | "spike" | "chore";
 export type ItemStatus =
   | "draft" | "ready" | "in_progress" | "blocked" | "in_review" | "awaiting_approval" | "done" | "cancelled";
 export const ITEM_STATUSES: readonly ItemStatus[] = [
@@ -136,7 +136,7 @@ export interface Checkpoint {
 }
 
 export type AgentKind = "claude" | "codex" | "agy" | "cursor" | "muse" | "fake";
-export type Role = "orchestrator" | "coder" | "reviewer" | "ui_reviewer" | "researcher" | "debugger" | "mechanical";
+export type Role = "orchestrator" | "coder" | "reviewer" | "ui_reviewer" | "researcher" | "debugger" | "mechanical" | "designer";
 export type AgentState = "queued" | "active" | "finished" | "acknowledged";
 export type SessionState =
   | "spawning" | "running" | "pause_requested" | "quiescing" | "stopping" | "paused"

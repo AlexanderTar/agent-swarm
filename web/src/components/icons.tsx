@@ -1,4 +1,4 @@
-import { BookOpen, Bug, FlaskConical, Layers, Square } from "lucide-react";
+import { BookOpen, Bug, FlaskConical, Layers, Square, Wrench } from "lucide-react";
 import type { ComponentType } from "react";
 import agyUrl from "../assets/agents/agy.svg";
 import claudeUrl from "../assets/agents/claude.svg";
@@ -23,7 +23,7 @@ export function AgentIcon({ kind, className = "" }: { kind: AgentKind; className
 }
 
 const TYPE_ICON: Record<ItemType, ComponentType<{ className?: string; "aria-label"?: string; role?: string }>> = {
-  epic: Layers, story: BookOpen, task: Square, bug: Bug, spike: FlaskConical,
+  epic: Layers, story: BookOpen, task: Square, bug: Bug, spike: FlaskConical, chore: Wrench,
 };
 
 export function TypeIcon({ type, className = "" }: { type: ItemType; className?: string }) {

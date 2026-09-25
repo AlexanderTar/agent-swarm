@@ -14,7 +14,7 @@ public enum AgentKind: String, Codable, Sendable, CaseIterable {
 }
 
 public enum Role: String, Codable, Sendable {
-    case orchestrator, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical
+    case orchestrator, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical, designer
 }
 
 /// Keys of `Settings.roles`, plus "advisor" (L28) and "fallback" -- the last
@@ -24,7 +24,7 @@ public enum Role: String, Codable, Sendable {
 /// `setEffort`) can treat it exactly like a role default with no other code
 /// change (docs/specs/2026-09-19-usage-fallback-agent.md).
 public enum SettingsRole: String, Sendable, CaseIterable {
-    case orchestrator, advisor, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical, fallback
+    case orchestrator, advisor, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical, designer, fallback
 }
 
 public enum AgentState: String, Codable, Sendable {
@@ -335,6 +335,7 @@ public struct Settings: Codable, Sendable, Equatable {
             "researcher": RoleDefault(agent: .claude, model: "sonnet"),
             "debugger": RoleDefault(agent: .claude, model: "opus"),
             "mechanical": RoleDefault(agent: .claude, model: "haiku"),
+            "designer": RoleDefault(agent: .claude, model: "opus"),
             "advisor": RoleDefault(agent: .claude, model: "fable"),
         ],
         fallbackDefault: RoleDefault(agent: .claude, model: "sonnet"),

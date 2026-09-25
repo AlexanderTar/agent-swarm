@@ -146,6 +146,7 @@ public enum Copy {
         case .researcher: return "Researcher"
         case .debugger: return "Debugger"
         case .mechanical: return "Mechanical"
+        case .designer: return "Designer"
         }
     }
 
@@ -160,6 +161,7 @@ public enum Copy {
         case .researcher: return "Research"
         case .debugger: return "Debugging"
         case .mechanical: return "Mechanical"
+        case .designer: return "Designer"
         case .fallback: return "Fallback"
         }
     }

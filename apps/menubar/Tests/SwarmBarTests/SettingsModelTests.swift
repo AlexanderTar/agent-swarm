@@ -70,7 +70,7 @@ final class SettingsModelTests: XCTestCase {
     func testDefaultsGrid() async {
         let m = await model()
         let rows = m.defaultsRows
-        XCTAssertEqual(rows.map(\.label), ["Orchestrator", "Advisor", "Coding", "Code review", "UI review", "Research", "Debugging", "Mechanical", "Fallback"])
+        XCTAssertEqual(rows.map(\.label), ["Orchestrator", "Advisor", "Coding", "Code review", "UI review", "Research", "Debugging", "Mechanical", "Designer", "Fallback"])
         XCTAssertEqual(rows[0].agentOptions.map(\.label), ["Claude", "Codex", "Antigravity"])
         XCTAssertEqual(rows[0].modelOptions.map(\.label).prefix(4),
                        ["Fable 5.1 (latest)", "Opus 5 (latest)", "Sonnet 5 (latest)", "Haiku 4.5 (latest)"])
@@ -83,12 +83,14 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(rows[3].effortOptions?.first?.label, "Default (medium)")
         XCTAssertFalse(rows[3].modelOptions.contains { $0.value == "gpt-legacy" }, "hidden models stay out")
         XCTAssertNil(rows[7].effortOptions, "Haiku shows Not supported")
+        XCTAssertEqual(rows[8].agent, "claude")
+        XCTAssertEqual(rows[8].model, "opus")
         // docs/specs/2026-09-19-usage-fallback-agent.md: the Fallback row is
         // a plain default like any other -- no "no advisor" option, no
         // advisor-only model filtering.
-        XCTAssertEqual(rows[8].agent, "claude")
-        XCTAssertEqual(rows[8].model, "sonnet")
-        XCTAssertFalse(rows[8].modelOptions.contains { $0.value == "none" })
+        XCTAssertEqual(rows[9].agent, "claude")
+        XCTAssertEqual(rows[9].model, "sonnet")
+        XCTAssertFalse(rows[9].modelOptions.contains { $0.value == "none" })
         XCTAssertEqual(m.catalogLine, "Model lists updated 3h ago")
         XCTAssertEqual(m.staleNotes, ["Model list from 1d ago. Couldn't refresh: agy models timed out"])
         await m.refreshModels()
@@ -336,4 +338,17 @@ final class SettingsModelTests: XCTestCase {
         await m.save()
         XCTAssertEqual(m.saveError, "Can't save while the daemon is unavailable.")
     }
+
+    func testRoleDecodesDesigner() throws {
+        let json = "\"designer\"".data(using: .utf8)!
+        let role = try JSONDecoder().decode(Role.self, from: json)
+        XCTAssertEqual(role, .designer)
+        XCTAssertEqual(Copy.roleLabel(role), "Designer")
+    }
+
+    func testDefaultsOrderIncludesDesigner() {
+        XCTAssertTrue(SettingsModel.defaultsOrder.contains(.designer))
+        XCTAssertEqual(Copy.defaultsRowLabel(.designer), "Designer")
+    }
 }
+
