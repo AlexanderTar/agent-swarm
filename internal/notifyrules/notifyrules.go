@@ -38,6 +38,7 @@ var Rules = map[string]Rule{
 	"agent.undeliverable":     {"attention", "Couldn't deliver messages", "{name} hasn't picked up {N} message(s).", "swarm.agent"},
 	"agent.preflight_failed":  {"attention", "Couldn't start agent", "{reason}", "swarm.info"},
 	"agent.fallback_used":     {"info", "Fallback agent used", "{name} switched to {agent} because {from} is out of usage.", "swarm.info"},
+	"workflow.escalated":      {"attention", "Workflow needs a decision", "{KEY}: workflow needs a decision — {reason}", "swarm.agent"},
 	"worktree.retained":       {"attention", "Worktree kept", "The worktree for {ROOT-KEY} has {detail} and was kept.", "swarm.info"},
 	"tmux.unknown":            {"attention", "Unknown tmux session", "{name} is running but Swarm has no record of it.", "swarm.info"},
 	"request.confirm_repos":   {"action", "Confirm repositories", "{KEY}: {name} proposes {N} repositories{expansion}.", "swarm.approval"},

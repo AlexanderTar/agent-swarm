@@ -644,21 +644,321 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 	return n > 0, err
 }
 
-// applyRetryFix, applyAutoRetry, applySucceed and applyEscalate are P9 unit
-// 9.3 (rounds, success, escalation, relays) -- stubbed here only so advance's
-// switch compiles; unit 9.2's own tests never reach these actions (no
-// checkpoint is written yet, so Next never returns anything past Spawn/Wait).
+// applyRetryFix applies a RetryFix action (spec B4): bumps workflows.round
+// (guarded by the pre-bump round, so a duplicate advance is a no-op),
+// inserts the retried build step's new-round run row, moves the task back
+// InReview -> InProgress, retries the SAME builder agent with the rendered
+// findings as an assignment update, and releases+removes the finished
+// round's review worktree(s).
 func (s *Store) applyRetryFix(ctx context.Context, wf wfRow, it items.Item, action workflow.Action) error {
+	res, err := s.DB.ExecContext(ctx, `UPDATE workflows SET round = ?, updated_at = ? WHERE id = ? AND round = ?`,
+		action.Round, db.Millis(s.now()), wf.ID, wf.Round)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil // already bumped by a concurrent/duplicate advance
+	}
+	step, ok := stepFor(it.Workflow, action.StepID)
+	if !ok {
+		return fmt.Errorf("advance: workflow step %q not found on %s", action.StepID, it.Key)
+	}
+	inserted, err := s.insertWaitingRun(ctx, wf.ID, action.StepID, action.Round, step.Run, "")
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		return nil
+	}
+	if err := s.markInProgress(ctx, it.Key); err != nil {
+		return err
+	}
+
+	// wf.Round is still the pre-bump round here (the UPDATE above only
+	// changed the DB row; this local copy is untouched) -- the exact round
+	// the builder's still-current run sits at, before the new round-2 row
+	// insertWaitingRun just added would otherwise outrank it in a "latest"
+	// lookup.
+	prevAgentID, err := s.runAgentIDAt(ctx, wf.ID, action.StepID, wf.Round)
+	if err != nil {
+		return err
+	}
+	if prevAgentID != "" {
+		prev, err := s.agentByID(ctx, prevAgentID)
+		if err != nil {
+			return err
+		}
+		if _, err := s.Retry(ctx, prev.Name, renderFindings(action.Findings), "", ""); err != nil {
+			var ie *items.Error
+			if !(errors.As(err, &ie) && ie.Code == items.CodeConflict) {
+				return err
+			}
+			// The builder's session isn't retryable yet (spec B4 names
+			// Retry(builder, note), which needs the OLD session already
+			// terminal -- normally true by the time a review comes back,
+			// since reconcile's async pane-close has retired it, but not
+			// guaranteed if that hasn't ticked yet). Leave the new round's
+			// row 'waiting' rather than get the whole workflow stuck
+			// retrying the same failing Retry() forever: fillWaitingRuns
+			// spawns a fresh agent for it instead.
+			s.logf("advance: %s not retryable yet (%v); spawning fresh for the fix round instead", prev.Name, err)
+		} else if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET agent_id = ?, state = 'active'
+			WHERE workflow_id = ? AND step_id = ? AND round = ? AND role = ?`,
+			prevAgentID, wf.ID, action.StepID, action.Round, step.Run); err != nil {
+			return err
+		}
+	}
+
+	// wf.Round (the pre-bump round, captured before the UPDATE above) is the
+	// finished round whose review(s) triggered this retry.
+	for _, fixStep := range findFixStepsFor(it.Workflow, action.StepID) {
+		if err := s.removeReviewWorktrees(ctx, wf, fixStep.ID, wf.Round); err != nil {
+			s.logf("advance: remove review worktree for %s round %d: %v", fixStep.ID, wf.Round, err)
+		}
+	}
 	return nil
 }
+
+// runAgentIDAt returns (workflowID, stepID)'s agent_id at exactly round, or
+// "" if that (step, round) has no row -- a RetryFix retries the SAME
+// builder agent at its just-finished round, it never spawns a new one.
+func (s *Store) runAgentIDAt(ctx context.Context, workflowID, stepID string, round int) (string, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = ? AND round = ?`, workflowID, stepID, round).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// removeReviewWorktrees releases every reviewer's reservation and removes
+// the (deduplicated) review worktree(s) recorded on (workflowID, stepID,
+// round)'s runs.
+func (s *Store) removeReviewWorktrees(ctx context.Context, wf wfRow, stepID string, round int) error {
+	rows, err := s.DB.QueryContext(ctx, `SELECT review_worktree_id, COALESCE(agent_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = ? AND round = ? AND review_worktree_id IS NOT NULL`, wf.ID, stepID, round)
+	if err != nil {
+		return err
+	}
+	var found []struct{ wt, agent string }
+	for rows.Next() {
+		var r struct{ wt, agent string }
+		if err := rows.Scan(&r.wt, &r.agent); err != nil {
+			rows.Close()
+			return err
+		}
+		found = append(found, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	return s.releaseAndRemove(ctx, wf, found)
+}
+
+func (s *Store) releaseAndRemove(ctx context.Context, wf wfRow, found []struct{ wt, agent string }) error {
+	seen := map[string]bool{}
+	for _, r := range found {
+		if r.agent != "" {
+			if err := s.Worktree.Release(ctx, r.wt, r.agent); err != nil {
+				return err
+			}
+		}
+		if seen[r.wt] {
+			continue
+		}
+		seen[r.wt] = true
+		if _, err := s.Worktree.Remove(ctx, r.wt, wf.OwnerAgentID); err != nil {
+			// A dirty/unmerged review worktree is retained by design
+			// (worktree.Remove's own §12.2 policy); log, don't fail the
+			// action that already committed.
+			s.logf("advance: remove review worktree %s: %v", r.wt, err)
+		}
+	}
+	return nil
+}
+
+// renderFindings is spec B4's Retry note: every reviewer's findings,
+// grouped by reviewer, as "[severity] file:line summary" (action.Findings
+// already arrives grouped and sorted -- internal/workflow's own
+// mergeFindings).
+func renderFindings(findings []workflow.Finding) string {
+	if len(findings) == 0 {
+		return "Changes requested; see the workflow's checkpoints for detail."
+	}
+	var b strings.Builder
+	last := ""
+	for _, f := range findings {
+		if f.Reviewer != last {
+			if last != "" {
+				b.WriteString("\n")
+			}
+			fmt.Fprintf(&b, "%s:\n", f.Reviewer)
+			last = f.Reviewer
+		}
+		loc := f.File
+		if f.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+		}
+		fmt.Fprintf(&b, "[%s] %s %s\n", f.Severity, loc, f.Summary)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// applyAutoRetry applies an AutoRetry action (spec B4): retries the crashed
+// run's SAME agent with a resume note, bumping auto_retries -- guarded by
+// the run still being 'failed', so a duplicate advance is a no-op. If the
+// run never got an agent id in the first place (a prior spawn attempt
+// errored before Spawn returned one), it goes back to 'waiting' instead so
+// the next fillWaitingRuns pass spawns it fresh.
 func (s *Store) applyAutoRetry(ctx context.Context, wf wfRow, action workflow.Action, runs []wfRunRow) error {
-	return nil
+	if action.Run == nil {
+		return nil
+	}
+	var row *wfRunRow
+	for i := range runs {
+		r := runs[i]
+		if r.StepID == action.Run.StepID && r.Round == action.Run.Round && r.Role == action.Run.Role {
+			row = &runs[i]
+			break
+		}
+	}
+	if row == nil || row.State != string(workflow.RunStateFailed) {
+		return nil
+	}
+	if row.AgentID == "" {
+		res, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'waiting', auto_retries = auto_retries + 1
+			WHERE id = ? AND state = 'failed'`, row.ID)
+		if err != nil {
+			return err
+		}
+		_, err = res.RowsAffected()
+		return err
+	}
+	a, err := s.agentByID(ctx, row.AgentID)
+	if err != nil {
+		return err
+	}
+	res, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state = 'active', auto_retries = auto_retries + 1
+		WHERE id = ? AND state = 'failed'`, row.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	sessionState := "failed"
+	if ses, err := s.LatestSession(ctx, a.ID); err == nil {
+		sessionState = string(ses.State)
+	}
+	note := fmt.Sprintf("Your previous session ended without finishing (%s). Resume from your last checkpoint.", sessionState)
+	_, err = s.Retry(ctx, a.Name, note, "", "")
+	return err
 }
+
+// runViews is one workflow_succeeded relay payload's "runs" field (spec B4).
+func runViews(rows []wfRunRow) []map[string]any {
+	out := make([]map[string]any, len(rows))
+	for i, r := range rows {
+		out[i] = map[string]any{"step": r.StepID, "round": r.Round, "role": r.Role, "agent": r.AgentID, "state": r.State}
+		if r.Verdict != "" {
+			out[i]["verdict"] = r.Verdict
+		}
+	}
+	return out
+}
+
+// lastFindings collects every finding recorded at the highest round among
+// runs -- the "most recent findings" a workflow_escalated relay reports.
+func lastFindings(runs []wfRunRow) []workflow.Finding {
+	maxRound := 0
+	for _, r := range runs {
+		if r.Round > maxRound {
+			maxRound = r.Round
+		}
+	}
+	var out []workflow.Finding
+	for _, r := range runs {
+		if r.Round == maxRound {
+			out = append(out, r.findings()...)
+		}
+	}
+	return out
+}
+
+// applySucceed applies a Succeed action (spec B4): flips the workflow
+// 'running' -> 'succeeded' (guarded, so a duplicate advance relays nothing
+// a first call already sent -- Review Focus 5), moves the task to Done as
+// the daemon, relays workflow_succeeded to the owner, and removes every
+// review worktree.
 func (s *Store) applySucceed(ctx context.Context, wf wfRow, it items.Item, action workflow.Action, runs []wfRunRow) error {
-	return nil
+	var relayed bool
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'succeeded', updated_at = ? WHERE id = ? AND state = 'running'`,
+			db.Millis(s.now()), wf.ID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		if _, err := s.Items.TransitionTx(ctx, tx, it.Key, items.Done, items.Daemon()); err != nil {
+			var ie *items.Error
+			if !(errors.As(err, &ie) && ie.Code == items.CodeTransitionDenied) {
+				return err
+			}
+			s.logf("advance: %s stayed put moving to Done: %v", it.Key, err)
+		}
+		payload, err := json.Marshal(map[string]any{"event": "workflow_succeeded", "item": it.Key,
+			"sha": action.SHA, "rounds": wf.Round, "runs": runViews(runs)})
+		if err != nil {
+			return err
+		}
+		if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: wf.OwnerAgentID,
+			RootItemID: wf.RootItemID, ItemID: it.ID, Payload: payload}); err != nil {
+			return err
+		}
+		relayed = true
+		return nil
+	})
+	if err != nil || !relayed {
+		return err
+	}
+	found := make([]struct{ wt, agent string }, 0, len(runs))
+	for _, r := range runs {
+		if r.ReviewWorktreeID != "" {
+			found = append(found, struct{ wt, agent string }{r.ReviewWorktreeID, r.AgentID})
+		}
+	}
+	return s.releaseAndRemove(ctx, wf, found)
 }
+
+// applyEscalate applies an Escalate action (spec B4): flips the workflow
+// 'running' -> 'escalated' (guarded the same way applySucceed's is),
+// relays workflow_escalated and raises the workflow.escalated notification.
 func (s *Store) applyEscalate(ctx context.Context, wf wfRow, it items.Item, action workflow.Action, runs []wfRunRow) error {
-	return nil
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'escalated', escalation = ?, updated_at = ?
+			WHERE id = ? AND state = 'running'`, action.Reason, db.Millis(s.now()), wf.ID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		payload, err := json.Marshal(map[string]any{"event": "workflow_escalated", "item": it.Key,
+			"reason": action.Reason, "round": wf.Round, "last_findings": lastFindings(runs)})
+		if err != nil {
+			return err
+		}
+		if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: wf.OwnerAgentID,
+			RootItemID: wf.RootItemID, ItemID: it.ID, Payload: payload}); err != nil {
+			return err
+		}
+		return s.notify(ctx, tx, NotifyInput{Kind: "workflow.escalated", ItemKey: it.Key,
+			Args: map[string]string{"KEY": it.Key, "reason": action.Reason}})
+	})
 }
 
 // briefWorktrees resolves wts (worktree id + mode) into the BriefWorktree
