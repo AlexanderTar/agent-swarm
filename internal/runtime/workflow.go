@@ -1126,72 +1126,22 @@ func notWaitingOnYou(key, state string) error {
 	return &items.Error{Code: items.CodeConflict, Message: fmt.Sprintf("%s's workflow isn't waiting on you (state: %s).", key, state)}
 }
 
-// resumeBumpsRound classifies why the workflow escalated, from its own run
-// rows at the round it escalated at (spec B7), mirroring
-// internal/workflow's own pinnedFrom priority (unexported there, so
-// reimplemented against the same exported Run shape): a changes_requested
-// or blocked verdict still sitting at that round only needs a bigger
-// extraRounds budget for Next to retry it in place (RetryFix bumps the
-// round itself). A failed/cancelled run, or a review row whose sha no
-// longer matches what it reviewed (stale), needs the round bumped by
-// resume itself -- Next then sees a fresh round with no row yet and spawns
-// the fix step clean, rather than retrying evidence that's no longer
-// trustworthy.
-func resumeBumpsRound(spec workflow.Spec, runs []wfRunRow, round int) bool {
-	steps := spec.EffectiveSteps()
-	// Next's own priority (next.go): blockedReason is checked first and
-	// escalates unconditionally, with no round/budget involved at all -- a
-	// bigger extraRounds budget alone can never un-escalate it, so resume
-	// must bump the round (the blocked row becomes a carried-forward,
-	// previous-round row that pinnedFrom's verdict phase pins from,
-	// spawning the fix step fresh). Only changes_requested, checked after
-	// blocked in Next, is the "just needed a bigger budget" shape.
-	for _, st := range steps {
-		if len(st.Review) == 0 {
-			continue
-		}
-		for _, r := range runs {
-			if r.StepID == st.ID && r.Round == round && r.Verdict == string(workflow.VerdictBlocked) {
-				return true
-			}
-		}
-	}
-	for _, st := range steps {
-		if len(st.Review) == 0 {
-			continue
-		}
-		for _, r := range runs {
-			if r.StepID == st.ID && r.Round == round && r.Verdict == string(workflow.VerdictChangesRequested) {
-				return false
-			}
-		}
-	}
-	for _, r := range runs {
-		if r.Round == round && (r.State == string(workflow.RunStateFailed) || r.State == string(workflow.RunStateCancelled)) {
-			return true
-		}
-	}
-	completedSHA := map[string]string{}
-	for _, r := range runs {
-		if r.State == string(workflow.RunStateCompleted) && r.Round <= round {
-			completedSHA[r.StepID] = r.SHA
-		}
-	}
-	for _, st := range steps {
-		if len(st.Review) == 0 || st.Of == "" {
-			continue
-		}
-		want := completedSHA[st.Of]
-		if want == "" {
-			continue
-		}
-		for _, r := range runs {
-			if r.StepID == st.ID && r.Round == round && r.SHA != "" && r.SHA != want {
-				return true
-			}
-		}
-	}
-	return false
+// resumeBumpsRound answers "does this resume need the round bumped, or is
+// one more extraRounds enough?" by asking the planner itself, rather than
+// reimplementing its pinnedFrom priority by hand (Opus review, fix round 2,
+// finding 5: the hand-rolled version matched changes_requested before
+// checking for a failed/cancelled run, so a mixed case -- one parallel
+// reviewer requested changes while another crashed and exhausted its
+// retries -- granted only extra_rounds and immediately re-escalated on the
+// same crash forever; Next's own failure-handling loop runs before verdict
+// evaluation, so extra_rounds alone can never un-escalate a crash). If
+// granting one more extra round still escalates -- whatever the reason,
+// verdict-exhausted is the only shape extra_rounds alone actually fixes --
+// the round itself must bump too, so Next sees a clean round with no row
+// yet and spawns the fix step fresh rather than retrying evidence that
+// isn't trustworthy anymore (a crashed run, or a stale review row).
+func resumeBumpsRound(spec workflow.Spec, runs []wfRunRow, round, extraRounds int) bool {
+	return workflow.Next(spec, toWorkflowRuns(runs), round, extraRounds+1).Kind == workflow.ActionEscalate
 }
 
 // deliverNote sends note to agentID as an assignment_update -- the same
@@ -1250,7 +1200,7 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 			return WorkflowState{}, err
 		}
 		newRound := wf.Round
-		if it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round) {
+		if it.Workflow != nil && resumeBumpsRound(*it.Workflow, runs, wf.Round, wf.ExtraRounds) {
 			newRound++
 		}
 		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET state = 'running', round = ?,

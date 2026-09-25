@@ -1273,6 +1273,101 @@ func TestRetryFixClosesLiveBuilderBeforeRetrying(t *testing.T) {
 	}
 }
 
+// TestResumeRetryMixedFailureAndChangesRequested is Opus review finding 5:
+// resumeBumpsRound's hand-rolled reimplementation of internal/workflow's
+// own pinnedFrom priority got a mixed case wrong. Next's failure-handling
+// loop runs before verdict evaluation, so when one parallel reviewer
+// requested changes and the OTHER crashed with retries exhausted, the
+// escalation is the crash, not the changes_requested -- extra_rounds alone
+// (what the old code granted, having matched on changes_requested first)
+// can never un-escalate a crash; the round must bump.
+func TestResumeRetryMixedFailureAndChangesRequested(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	spec, err := workflow.Resolve(workflow.Spec{Steps: []workflow.Step{
+		{ID: "build", Run: "coder", Gates: []workflow.Gate{workflow.GateCommit}},
+		{ID: "review", Review: []string{"reviewer", "ui_reviewer"}, Of: "build"},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orch, taskKey := seedWorkflowTask(t, s, spec)
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var reviewerAgentID, uiReviewerAgentID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT agent_id FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'review' AND role = 'reviewer'`, st.ID).Scan(&reviewerAgentID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT agent_id FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'review' AND role = 'ui_reviewer'`, st.ID).Scan(&uiReviewerAgentID); err != nil {
+		t.Fatal(err)
+	}
+	reviewerSesID := agentSessionForStep2(t, s, reviewerAgentID).ID
+	uiReviewerSesID := agentSessionForStep2(t, s, uiReviewerAgentID).ID
+
+	if _, err := s.WriteCheckpoint(ctx, reviewerSesID, CheckpointInput{Kind: CompletedCkp, Summary: "needs work",
+		Verdict: "changes_requested", Findings: []workflow.Finding{{Severity: "minor", File: "a.go", Summary: "nit"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// ui_reviewer crashes and exhausts its one auto-retry (default retries: 1).
+	if _, err := s.WriteCheckpoint(ctx, uiReviewerSesID, CheckpointInput{Kind: FailedCkp, Summary: "crashed"}); err != nil {
+		t.Fatal(err)
+	}
+	retriedSes, err := s.LatestSession(ctx, uiReviewerAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, retriedSes.ID, CheckpointInput{Kind: FailedCkp, Summary: "crashed again"}); err != nil {
+		t.Fatal(err)
+	}
+
+	escalated, ok, err := s.WorkflowFor(ctx, taskKey)
+	if err != nil || !ok || escalated.State != "escalated" {
+		t.Fatalf("setup: state = %+v ok=%v err=%v, want escalated", escalated, ok, err)
+	}
+
+	final, err := s.ResumeWorkflow(ctx, orch, taskKey, "retry", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "running" {
+		t.Fatalf("workflow state = %s, want running (not re-escalated)", final.State)
+	}
+	if final.Round != 2 {
+		t.Fatalf("round = %d, want 2 (the crash must bump the round; extra_rounds alone can't un-escalate it)", final.Round)
+	}
+	var round2State, round2Agent string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, '') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build' AND round = 2`, st.ID).Scan(&round2State, &round2Agent); err != nil {
+		t.Fatal(err)
+	}
+	if round2State != "active" || round2Agent == "" {
+		t.Fatalf("round 2 build run = state %s agent %q, want active/non-empty", round2State, round2Agent)
+	}
+}
+
+// agentSessionForStep2 is agentSessionForStep without the step-lookup half
+// -- some tests (parallel reviewers) already have the agent id in hand.
+func agentSessionForStep2(t *testing.T, s *Store, agentID string) Session {
+	t.Helper()
+	ses, err := s.LatestSession(context.Background(), agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ses
+}
+
 // --- Fix round 1 ---
 
 // TestDesignThenBuildStatusFlow is the interaction flagged in the P9 brief
