@@ -206,6 +206,97 @@ func TestRenderBriefOmitsEmptySections(t *testing.T) {
 	}
 }
 
+// TestRenderBriefUnitsAndWorkflowSections is P9 unit 9.1 (spec B6): a
+// batched task's Units render as numbered headings with their own steps, a
+// non-workflow-shaped brief still ignores an empty Units/Steps/Workflow
+// input the way every other empty section is omitted, and once the brief
+// would overflow the cap after truncating Context, a workflow-shaped brief
+// collapses each unit's steps to its title plus a swarm_read pointer instead
+// of refusing outright.
+func TestRenderBriefUnitsAndWorkflowSections(t *testing.T) {
+	base := BriefInput{Key: "TASK-1", Title: "t", Name: "a", Role: RoleCoder, RootKey: "TASK-1",
+		Objective: "do it", Workflow: "## Workflow\nYou are step \"build\" (coder), round 1 of at most 3."}
+
+	t.Run("units and workflow render", func(t *testing.T) {
+		in := base
+		in.Units = []items.Unit{
+			{Title: "Fix the bug", Steps: []string{"write the failing test", "make it pass"}},
+			{Title: "Add tests", Steps: []string{"cover the edge case"}},
+		}
+		got, err := RenderBrief(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{
+			"## Units\n1. Fix the bug\n   - write the failing test\n   - make it pass\n2. Add tests\n   - cover the edge case",
+			"## Workflow\nYou are step \"build\" (coder), round 1 of at most 3.",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("brief missing %q, got:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("single-unit steps render", func(t *testing.T) {
+		in := base
+		in.Steps = []string{"write the failing test", "make it pass"}
+		got, err := RenderBrief(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "## Steps\n1. write the failing test\n2. make it pass"; !strings.Contains(got, want) {
+			t.Errorf("brief missing %q, got:\n%s", want, got)
+		}
+	})
+
+	t.Run("no workflow, no sections printed", func(t *testing.T) {
+		got, err := RenderBrief(BriefInput{Key: "TASK-1", Title: "t", Name: "a", Role: RoleCoder, RootKey: "TASK-1", Objective: "do it"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range []string{"## Units", "## Steps", "## Workflow"} {
+			if strings.Contains(got, h) {
+				t.Errorf("unexpected %q in brief with no workflow:\n%s", h, got)
+			}
+		}
+	})
+
+	t.Run("cap collapse: context truncated first, then unit steps collapse", func(t *testing.T) {
+		in := base
+		units := make([]items.Unit, 5)
+		for i := range units {
+			units[i] = items.Unit{Title: fmt.Sprintf("Unit %d", i+1),
+				Steps: []string{strings.Repeat("a very long step description ", 40)}}
+		}
+		in.Units = units
+		in.Context = []string{strings.Repeat("x", 200)}
+		got, err := RenderBrief(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) > 6000 {
+			t.Fatalf("brief still over cap after collapse: %d chars", len(got))
+		}
+		if !strings.Contains(got, "(context truncated; swarm_read TASK-1)") {
+			t.Errorf("missing context-truncated marker:\n%s", got)
+		}
+		if !strings.Contains(got, "1. Unit 1 (steps: swarm_read TASK-1)") {
+			t.Errorf("missing collapsed unit line:\n%s", got)
+		}
+		if strings.Contains(got, "a very long step description") {
+			t.Errorf("collapsed unit steps still present:\n%s", got)
+		}
+	})
+
+	t.Run("legacy over-long brief still refuses, no cascade", func(t *testing.T) {
+		_, err := RenderBrief(BriefInput{Key: "TASK-1", Title: "t", Name: "a", Role: RoleCoder,
+			RootKey: "TASK-1", Objective: strings.Repeat("x", 6100)})
+		if err == nil || err.Error() != ErrBriefTooLong {
+			t.Fatalf("err = %v, want ErrBriefTooLong (no Workflow set: no cascade applies)", err)
+		}
+	})
+}
+
 func TestIsDaemonPrompt(t *testing.T) {
 	for _, p := range []string{
 		IdleToken, " " + IdleToken + "\n",

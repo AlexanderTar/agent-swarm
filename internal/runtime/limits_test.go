@@ -600,6 +600,62 @@ func TestNoAckChildren(t *testing.T) {
 	}
 }
 
+// TestSubagentSlotsMatchesHookCount pins SubagentSlots (P9 unit 9.1) to the
+// exact same "used" count internal/hook/handler.go computed inline before
+// this move: queued children hold a slot, an active child excluded by
+// NotAZombieSlot (crashed session, no live process) does not, and max comes
+// from settings.MaxConcurrentSubagents.
+func TestSubagentSlotsMatchesHookCount(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 8, 8) // plenty of global/per-root room; only the subagent pool is under test
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	used, max, err := s.SubagentSlots(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if max != 3 {
+		t.Fatalf("max = %d, want the default max_concurrent_subagents (3)", max)
+	}
+	if used != 0 {
+		t.Fatalf("used = %d, want 0 before any child spawns", used)
+	}
+
+	live, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "one"}, ParentAgentID: orch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashed, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "two"}, ParentAgentID: orch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used, _, err := s.SubagentSlots(ctx, orch.ID); err != nil || used != 2 {
+		t.Fatalf("used = %d, err = %v; want 2 with both children live", used, err)
+	}
+
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'crashed' WHERE agent_id = ?`, crashed.ID); err != nil {
+		t.Fatal(err)
+	}
+	used, max, err = s.SubagentSlots(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != 1 {
+		t.Fatalf("used = %d, want 1 -- the crashed child (NotAZombieSlot) must not hold a slot", used)
+	}
+	if max != 3 {
+		t.Fatalf("max = %d, want 3", max)
+	}
+	_ = live
+}
+
 func mustExec(t *testing.T, d *db.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := d.ExecContext(context.Background(), query, args...); err != nil {
