@@ -7,6 +7,7 @@ import { ArtifactViewer } from "../components/ArtifactViewer";
 import { CheckpointList } from "../components/CheckpointList";
 import { MoveToMenu } from "../components/MoveToMenu";
 import { useToast } from "../components/Toast";
+import { WorkflowSection } from "../components/WorkflowSection";
 import { C, STATUS_LABEL, T } from "../copy";
 import { useInvalidate, useMutation } from "../data/hooks";
 import { qk, useItemDetail } from "../data/queries";
@@ -82,6 +83,7 @@ export function Details(p: DetailsProps) {
   const [viewing, setViewing] = useState<{ id: string; revision: number } | null>(null);
   const agentsRef = useRef<HTMLElement>(null);
   const patch = useMutation((api, key: string, body: PatchItemBody) => api.patchItem(key, body), ["items", "item:", "graph:"]);
+  const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
 
   useEffect(() => {
     if (p.focus === "agents" && detail.data) agentsRef.current?.scrollIntoView?.({ block: "start" });
@@ -187,6 +189,10 @@ export function Details(p: DetailsProps) {
         <h3 className="mb-1 font-semibold">{C.agents}</h3>
         <AgentList agents={d.agents} />
       </section>
+
+      <WorkflowSection workflow={item.workflow} state={d.workflow_state} onOpenTerminal={(name) => {
+        void terminal.run(name).catch((e: unknown) => toast({ message: errorText(e) }));
+      }} />
 
       <div role="tablist" className="flex gap-3 border-t border-line pt-3">
         {(["overview", "checkpoints"] as const).map((t) => (

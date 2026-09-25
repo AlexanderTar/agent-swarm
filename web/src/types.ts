@@ -90,7 +90,18 @@ export interface ItemDetail {
   agents: AgentNode[];             // agents working on this item or its subtree (tree form)
   requests: Request[];             // open requests on this item
   artifacts: Artifact[];
+  workflow_state?: WorkflowState;
+  crew?: WorkflowCrewMember[];
 }
+
+export interface WorkflowFinding { severity: string; file: string; line?: number; unit?: number; summary: string; reviewer?: string }
+export interface WorkflowRun {
+  id?: string; step: string; role: string; agent_id?: string; agent: string;
+  state: string; verdict: "" | "pass" | "changes_requested" | "blocked";
+  sha: string; round: number; auto_retries?: number; findings: WorkflowFinding[];
+}
+export interface WorkflowState { state: string; round: number; escalation: string; runs: WorkflowRun[] }
+export interface WorkflowCrewMember { agent: string; role: string; step: string; state: string }
 
 export interface CreateItemBody {
   request_id: string;
