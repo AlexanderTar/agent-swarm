@@ -2935,10 +2935,11 @@ func TestUnansweredQuestionRelaysOnceToTheOrchestrator(t *testing.T) {
 	if n := relaysWithReplyTo(t, s, q); n != 1 {
 		t.Fatalf("relays = %d, want exactly 1", n)
 	}
-	// payload event, recipient
+	// payload event, recipient, item
 	var to, payload string
 	s.DB.QueryRowContext(ctx, `SELECT to_agent_id, payload_json FROM messages WHERE kind='relay' AND reply_to=?`, q).Scan(&to, &payload)
-	if to != orch.ID || !strings.Contains(payload, `"event":"question_unanswered"`) || !strings.Contains(payload, w.Name) {
+	if to != orch.ID || !strings.Contains(payload, `"event":"question_unanswered"`) || !strings.Contains(payload, w.Name) ||
+		!strings.Contains(payload, `"item":"TASK-1"`) {
 		t.Fatalf("to=%s payload=%s", to, payload)
 	}
 }

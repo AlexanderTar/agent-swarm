@@ -589,7 +589,7 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 		}
 		m, err := s.enqueue(ctx, tx, Message{Kind: kind, Origin: "agent",
 			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
-			RootItemID: a.RootItemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
+			RootItemID: a.RootItemID, ItemID: a.ItemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
 		id = m.ID
 		return err
 	})
@@ -636,7 +636,7 @@ func (s *Store) SendApproval(ctx context.Context, sessionID, body, requestID str
 		}
 		m, err := s.enqueue(ctx, tx, Message{Kind: "question", Origin: "agent",
 			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
-			RootItemID: a.RootItemID, Payload: payload})
+			RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload})
 		id = m.ID
 		return err
 	})
