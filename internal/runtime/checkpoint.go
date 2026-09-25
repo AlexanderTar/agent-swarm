@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,9 +20,11 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 const verifyMissing = "Verification evidence missing: record what was run to verify this work before completing."
+const tddMissingCopy = `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round.`
 const pausedTool = "paused: finish your handoff and stop."
 
 var gatedRoles = []Role{RoleCoder, RoleDebugger, RoleMechanical}
@@ -76,6 +81,13 @@ type CheckpointInput struct {
 	Verification []Verify
 	Artifacts    []string
 	Processed    []string
+	// Verdict and Findings are spec B5: a reviewer/ui_reviewer agent with a
+	// workflow run must set Verdict on a completed checkpoint; every other
+	// role is refused if it sets one at all (isReviewerRole/validVerdict
+	// below own the exact rules). Findings reuses workflow.Finding rather
+	// than defining a second copy.
+	Verdict  string
+	Findings []workflow.Finding
 	// RequestID is I11's idempotency key, scoped to the calling MCP session:
 	// a repeated (session, RequestID) pair replays the first checkpoint's
 	// result instead of writing a second one. Empty means "no idempotency,
@@ -119,6 +131,622 @@ func verifyOK(prior, now []Verify) string {
 	}
 	return fmt.Sprintf(`%s %d verification %s given, but none has a non-empty "cmd" -- each entry needs {"cmd": "...", "ok": true}.`,
 		verifyMissing, len(all), plural)
+}
+
+// workflowRun is the slice of an agent's current workflow_runs row (spec B1)
+// that checkpoint gating and sibling-closing need. P9's engine (not built
+// yet) owns the row's full lifecycle (state, sha, ended_at, auto_retries);
+// P8 only reads it and writes verdict/findings/sha onto it.
+type workflowRun struct {
+	ID, WorkflowID, StepID, Role, State, SHA string
+	Round                                    int
+	// CreatedAt is when this round's row was inserted -- before any
+	// checkpoint of this round (spawn / RetryFix insert the row, then the
+	// step agent starts working), so it's the tdd/verify gates' round-scope
+	// boundary: an AutoRetry crash re-attempt reuses this same row, so
+	// evidence from an earlier attempt of the same round is >= CreatedAt
+	// too and still counts.
+	CreatedAt time.Time
+}
+
+// workflowRunFor returns agentID's latest workflow_runs row (highest round,
+// then most recent), or ok=false if it has none -- a legacy agent, or (until
+// P9 wires the engine) a workflow agent no test has seeded a row for.
+func (s *Store) workflowRunFor(ctx context.Context, tx *sql.Tx, agentID string) (workflowRun, bool, error) {
+	var r workflowRun
+	var created int64
+	err := tx.QueryRowContext(ctx, `SELECT id, workflow_id, step_id, round, role, state, COALESCE(sha, ''), created_at
+		FROM workflow_runs WHERE agent_id = ? ORDER BY round DESC, created_at DESC LIMIT 1`, agentID).
+		Scan(&r.ID, &r.WorkflowID, &r.StepID, &r.Round, &r.Role, &r.State, &r.SHA, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workflowRun{}, false, nil
+	}
+	if err != nil {
+		return workflowRun{}, false, err
+	}
+	r.CreatedAt = db.FromMillis(created)
+	return r, true, nil
+}
+
+// stepFor returns the step named stepID out of spec (nil-safe), or ok=false.
+func stepFor(spec *workflow.Spec, stepID string) (workflow.Step, bool) {
+	if spec == nil {
+		return workflow.Step{}, false
+	}
+	// EffectiveSteps, not spec.Steps directly (fix round 2, finding 1): a
+	// resolved story spec keeps its one review step in AfterTasks, with
+	// Steps empty -- Next and Render both promote it the same way before
+	// looking anything up by id.
+	for _, st := range spec.EffectiveSteps() {
+		if st.ID == stepID {
+			return st, true
+		}
+	}
+	return workflow.Step{}, false
+}
+
+// isReviewerRole reports whether r is one of the two roles that review a
+// workflow step (spec B5: only these may ever set a verdict).
+func isReviewerRole(r Role) bool { return r == RoleReviewer || r == RoleUIReviewer }
+
+// validVerdict reports whether v is one of the three verdicts a reviewer may
+// record.
+func validVerdict(v workflow.Verdict) bool {
+	return v == workflow.VerdictPass || v == workflow.VerdictChangesRequested || v == workflow.VerdictBlocked
+}
+
+// validSeverities are the only legal workflow.Finding.Severity values (fix
+// round 1, finding 7).
+var validSeverities = []string{"critical", "major", "minor", "nit"}
+
+func validSeverity(sev string) bool { return slices.Contains(validSeverities, sev) }
+
+// hasMajorOrCritical reports whether any finding is severity "major" or
+// "critical" -- a pass verdict can't carry either (spec B5).
+func hasMajorOrCritical(fs []workflow.Finding) bool {
+	for _, f := range fs {
+		if f.Severity == "major" || f.Severity == "critical" {
+			return true
+		}
+	}
+	return false
+}
+
+// applyGates enforces the completed step's declared gates (spec B5) for an
+// agent with a workflow run -- the replacement for verifyOK on such agents.
+// Unit 8.1 only wires the dispatch (no gate does anything yet, so a step
+// that only declares gates has nothing to check until a later unit fills
+// its case in); 8.4 adds tdd/verify, 8.5 adds
+// commit/artifact:design/artifact:notes.
+func (s *Store) applyGates(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput) error {
+	step, ok := stepFor(it.Workflow, run.StepID)
+	if !ok {
+		// A corrupted or stale run row (or an item whose workflow_json went
+		// missing) must refuse, not silently enforce zero gates (fix round
+		// 1, finding 4): stepFor's zero-value Step has no Gates, so the
+		// loop below would just do nothing.
+		return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+			`workflow step %q not found on %s; ask your orchestrator.`, run.StepID, it.Key)}
+	}
+	for _, g := range step.Gates {
+		var err error
+		switch g {
+		case workflow.GateTDD:
+			err = s.tddGate(ctx, tx, it, run, a, in)
+		case workflow.GateVerify:
+			err = s.verifyGate(ctx, tx, it, run, a, in)
+		case workflow.GateCommit:
+			err = s.commitGate(ctx, tx, a, in, run)
+		case workflow.GateArtifactDesign:
+			err = s.artifactGate(ctx, tx, it, a, in, "design", "designs")
+		case workflow.GateArtifactNotes:
+			err = s.artifactGate(ctx, tx, it, a, in, "research", "research")
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifySince collects every verification entry agentID recorded at or
+// after since, in order -- the tdd/verify gates' shared "this round" scope
+// (workflowRun.CreatedAt is the boundary; see its doc comment).
+func (s *Store) verifySince(ctx context.Context, tx *sql.Tx, agentID string, since time.Time) ([]Verify, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT verify_json FROM checkpoints
+		WHERE agent_id = ? AND created_at >= ? ORDER BY created_at, rowid`, agentID, db.Millis(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Verify
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var vs []Verify
+		if err := json.Unmarshal([]byte(raw), &vs); err != nil {
+			return nil, fmt.Errorf("checkpoints verify_json: %w", err)
+		}
+		out = append(out, vs...)
+	}
+	return out, rows.Err()
+}
+
+// findFixStepsFor returns every review step in spec whose loop retries
+// buildStepID (`Loop.Fix`, falling back to `Of` when `Loop.Fix` is unset --
+// spec B5, fix round 1's R3), or nil if none targets it at all (a step with
+// no review, e.g. mechanical/research; or the review step for some OTHER
+// build step in a multi-loop workflow). More than one review step can share
+// a fix target (e.g. review-code and review-ui both reviewing "build",
+// fix round 2's finding 2) -- every one of them is read, not just the
+// first match.
+func findFixStepsFor(spec *workflow.Spec, buildStepID string) []workflow.Step {
+	if spec == nil {
+		return nil
+	}
+	var out []workflow.Step
+	for _, st := range spec.EffectiveSteps() {
+		if len(st.Review) == 0 {
+			continue
+		}
+		fix := st.Of
+		if st.Loop != nil && st.Loop.Fix != "" {
+			fix = st.Loop.Fix
+		}
+		if fix == buildStepID {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// fixRoundFindings collects reviewStepID's reviewer/ui_reviewer findings at
+// round, and reports whether any of those rows actually requested changes
+// or blocked (R3): a review step can have a row at that round with only a
+// passing verdict (nothing to retry), which is NOT a fix round at all --
+// distinct from a genuine fix round whose rows simply carry zero findings
+// (e.g. a bare `blocked` verdict, no structured findings). hasBlocking is
+// that distinction; findings is every row's findings, merged (a reviewer
+// who passed but still left findings counts too, same as B4's
+// mergeFindings).
+func (s *Store) fixRoundFindings(ctx context.Context, tx *sql.Tx, workflowID, reviewStepID string, round int) (findings []workflow.Finding, hasBlocking bool, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(verdict, ''), COALESCE(findings_json, '[]') FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = ? AND round = ? AND role IN ('reviewer', 'ui_reviewer')`,
+		workflowID, reviewStepID, round)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var verdict, raw string
+		if err := rows.Scan(&verdict, &raw); err != nil {
+			return nil, false, err
+		}
+		if verdict == string(workflow.VerdictChangesRequested) || verdict == string(workflow.VerdictBlocked) {
+			hasBlocking = true
+		}
+		var fs []workflow.Finding
+		if err := json.Unmarshal([]byte(raw), &fs); err != nil {
+			return nil, false, fmt.Errorf("workflow_runs %s findings_json: %w", reviewStepID, err)
+		}
+		findings = append(findings, fs...)
+	}
+	return findings, hasBlocking, rows.Err()
+}
+
+// hasRedBeforeGreen reports whether entries contains a {phase:"red",
+// ok:false} entry for unit, followed later (in slice order) by a
+// {phase:"green", ok:true} entry for the same unit. unit 0 means
+// "untagged" (a non-batched task's own evidence).
+func hasRedBeforeGreen(entries []Verify, unit int) bool {
+	red := false
+	for _, v := range entries {
+		if v.Unit != unit {
+			continue
+		}
+		switch {
+		case v.Phase == "red" && !v.OK:
+			red = true
+		case v.Phase == "green" && v.OK && red:
+			return true
+		}
+	}
+	return false
+}
+
+// anyUnitHasRedBeforeGreen is hasRedBeforeGreen without pinning to one unit
+// -- the fix-round "package-wide" requirement (spec B5): at least one unit
+// (tagged or untagged) has its own red-before-green pair.
+func anyUnitHasRedBeforeGreen(entries []Verify) bool {
+	red := map[int]bool{}
+	for _, v := range entries {
+		switch {
+		case v.Phase == "red" && !v.OK:
+			red[v.Unit] = true
+		case v.Phase == "green" && v.OK && red[v.Unit]:
+			return true
+		}
+	}
+	return false
+}
+
+// tddOK is the pure part of the tdd gate (spec B5): entries is the round's
+// accumulated verification evidence. required is the set of unit numbers
+// that each need their own red-before-green pair (nil for a non-batched
+// task, or a fix round naming no specific unit); packageWide additionally
+// accepts any single unit's pair when no specific unit is required. It
+// returns ok, and (only when required is non-empty) which units are still
+// missing evidence.
+func tddOK(entries []Verify, required []int, packageWide bool) (ok bool, missing []int) {
+	if len(required) > 0 {
+		for _, u := range required {
+			if !hasRedBeforeGreen(entries, u) {
+				missing = append(missing, u)
+			}
+		}
+		return len(missing) == 0, missing
+	}
+	if packageWide {
+		return anyUnitHasRedBeforeGreen(entries), nil
+	}
+	return hasRedBeforeGreen(entries, 0), nil
+}
+
+func tddMissingUnitsError(missing []int) error {
+	parts := make([]string, len(missing))
+	for i, u := range missing {
+		parts[i] = strconv.Itoa(u)
+	}
+	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+		`TDD evidence missing for unit(s) %s: record red then green with "unit": <n>.`, strings.Join(parts, ","))}
+}
+
+// tddGate is the workflow tdd gate (spec B5, ruling-tdd-fix-rounds.md,
+// ruling-tdd-followups.md). Skipped entirely when the item is tdd_exempt.
+func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput) error {
+	if it.TddExempt != "" {
+		return nil
+	}
+	prior, err := s.verifySince(ctx, tx, a.ID, run.CreatedAt)
+	if err != nil {
+		return err
+	}
+	entries := append(append([]Verify{}, prior...), in.Verification...)
+	batched := len(it.Units) > 0
+
+	everyUnit := func() []int {
+		if !batched {
+			return nil
+		}
+		req := make([]int, len(it.Units))
+		for i := range it.Units {
+			req[i] = i + 1
+		}
+		return req
+	}
+
+	var required []int
+	packageWide := false
+	if fixSteps := findFixStepsFor(it.Workflow, run.StepID); len(fixSteps) > 0 {
+		// Fix round 2, finding 2: more than one review step can target the
+		// same build step. Blocking if ANY of them requested changes or
+		// blocked; findings merge across all of them (mirrors B4's
+		// mergeFindings, which does the same across a single step's
+		// several reviewer roles).
+		var findings []workflow.Finding
+		var hasBlocking bool
+		for _, fixStep := range fixSteps {
+			fnd, blocking, err := s.fixRoundFindings(ctx, tx, run.WorkflowID, fixStep.ID, run.Round-1)
+			if err != nil {
+				return err
+			}
+			findings = append(findings, fnd...)
+			hasBlocking = hasBlocking || blocking
+		}
+		switch {
+		case !hasBlocking:
+			// This step's own first run: no changes_requested/blocked row
+			// at round-1 explains a retry of it, however high the
+			// workflow's round counter climbed for some OTHER step's fix
+			// loop (a multi-loop spec) -- never mistake that for a fix
+			// round of THIS step.
+			required = everyUnit()
+		case len(findings) == 0:
+			// A genuine fix round (blocked/changes_requested), but no
+			// structured findings at all (e.g. a bare blocked verdict,
+			// resumed): still needs its one pair, never "nothing required".
+			packageWide = true
+		default:
+			units := map[int]bool{}
+			for _, f := range findings {
+				u := f.Unit
+				if !batched {
+					u = 0 // unit tags don't apply to a non-batched task
+				}
+				if u == 0 {
+					packageWide = true
+					continue
+				}
+				units[u] = true
+			}
+			for u := range units {
+				required = append(required, u)
+			}
+			sort.Ints(required)
+		}
+	} else {
+		// No review step targets this step at all (no review, e.g.
+		// mechanical/research; or this is round 1 with nothing to retry
+		// yet): always a first run.
+		required = everyUnit()
+	}
+
+	ok, missing := tddOK(entries, required, packageWide)
+	if ok {
+		return nil
+	}
+	if len(missing) > 0 {
+		return tddMissingUnitsError(missing)
+	}
+	return errors.New(tddMissingCopy)
+}
+
+// verifyDeclaredOK reports whether entries contains an ok:true entry whose
+// cmd, whitespace-normalized, equals or contains want (also
+// whitespace-normalized).
+func verifyDeclaredOK(entries []Verify, want string) bool {
+	w := normalizeWhitespace(want)
+	for _, v := range entries {
+		if v.OK && strings.Contains(normalizeWhitespace(v.Cmd), w) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// verifyGate is the workflow verify gate (spec B5): every item.Verify command
+// must be recorded ok:true, by containment, within this round's evidence.
+func (s *Store) verifyGate(ctx context.Context, tx *sql.Tx, it items.Item, run workflowRun, a Agent, in CheckpointInput) error {
+	prior, err := s.verifySince(ctx, tx, a.ID, run.CreatedAt)
+	if err != nil {
+		return err
+	}
+	entries := append(append([]Verify{}, prior...), in.Verification...)
+	var missing []string
+	for _, want := range it.Verify {
+		if !verifyDeclaredOK(entries, want) {
+			missing = append(missing, want)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+		"Declared verify commands not recorded as passing: %s.", strings.Join(missing, "; "))}
+}
+
+// rwWorktree is one read-write worktree share the commit gate checks.
+type rwWorktree struct{ Repo, Path string }
+
+// rwWorktreesFor returns every currently-held 'rw' worktree reservation for
+// agentID, repo name and worktree path, ordered by repo name for
+// deterministic sha selection when a task shares more than one repo.
+func (s *Store) rwWorktreesFor(ctx context.Context, tx *sql.Tx, agentID string) ([]rwWorktree, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT r.name, w.path FROM worktree_reservations wr
+		JOIN worktrees w ON w.id = wr.worktree_id
+		JOIN repos r ON r.id = w.repo_id
+		WHERE wr.agent_id = ? AND wr.mode = 'rw' AND wr.released_at IS NULL
+		ORDER BY r.name`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []rwWorktree
+	for rows.Next() {
+		var w rwWorktree
+		if err := rows.Scan(&w.Repo, &w.Path); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// gitHead runs `git rev-parse HEAD` at path.
+func (s *Store) gitHead(ctx context.Context, path string) (string, error) {
+	runner := s.Exec
+	if runner == nil {
+		runner = execx.Run
+	}
+	out, err := runner(ctx, "git", "-C", path, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func dirtyRepoError(repo string) error {
+	return &items.Error{Code: items.CodeBadRequest,
+		Message: fmt.Sprintf("Commit your work before completing: %s is dirty", repo)}
+}
+
+// commitGate is the workflow commit gate (spec B5): the checkpoint must
+// declare git, every declared entry must claim clean, and for each rw
+// worktree actually shared to this agent the real tree must be clean too
+// (not just trust the caller's own dirty:false) with HEAD matching the
+// entry recorded for that repo. The matched HEAD sha is stored on the run
+// (its own lifecycle -- state, ended_at -- is P9's, not touched here).
+func (s *Store) commitGate(ctx context.Context, tx *sql.Tx, a Agent, in CheckpointInput, run workflowRun) error {
+	if len(in.Git) == 0 {
+		return &items.Error{Code: items.CodeBadRequest,
+			Message: "Completed needs git: [{repo, branch, sha, dirty:false}]."}
+	}
+	byRepo := map[string]GitRef{}
+	for _, g := range in.Git {
+		if g.Dirty {
+			return dirtyRepoError(g.Repo)
+		}
+		byRepo[g.Repo] = g
+	}
+	wts, err := s.rwWorktreesFor(ctx, tx, a.ID)
+	if err != nil {
+		return err
+	}
+	if len(wts) == 0 {
+		return &items.Error{Code: items.CodeBadRequest,
+			Message: "Commit your work before completing: no rw worktree shared with you"}
+	}
+	var sha string
+	for _, wt := range wts {
+		dirty, err := s.Worktree.DirtyStrict(ctx, wt.Path)
+		if err != nil {
+			return err
+		}
+		if dirty {
+			return dirtyRepoError(wt.Repo)
+		}
+		g, ok := byRepo[wt.Repo]
+		if !ok {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"Commit your work before completing: no git entry for %s", wt.Repo)}
+		}
+		head, err := s.gitHead(ctx, wt.Path)
+		if err != nil {
+			return err
+		}
+		if head != g.SHA {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"Commit your work before completing: %s HEAD is %s, checkpoint says %s",
+				wt.Repo, workflow.SHA7(head), workflow.SHA7(g.SHA))}
+		}
+		if sha == "" {
+			sha = head
+		}
+	}
+	if sha != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET sha = ? WHERE id = ?`, sha, run.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// registerArtifactAsDaemon registers a design/research artifact the
+// artifact gate found (spec B5), as the daemon rather than through
+// swarm_artifact's orchestrator-only RegisterArtifact -- a designer or
+// researcher, not necessarily an orchestrator, writes these. It runs inside
+// WriteCheckpoint's own transaction, on every completed checkpoint the
+// artifact gate passes: a fix round's revised file gets a new revision
+// (finding 8), deduped when the content is byte-identical to the current
+// head revision (so an unchanged file across rounds doesn't pile up
+// pointless revisions).
+func (s *Store) registerArtifactAsDaemon(ctx context.Context, tx *sql.Tx, itemID, agentID, kind, path string) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("artifact: %w", err)
+	}
+	newSHA := sha256Hex(string(body))
+	var artifactID string
+	var revision int
+	var prevSHA, prevSectionsJSON string
+	err = tx.QueryRowContext(ctx, `SELECT a.id, a.head_revision, r.sha256, r.sections_json FROM artifacts a
+		JOIN artifact_revisions r ON r.artifact_id = a.id AND r.revision = a.head_revision
+		WHERE a.item_id = ? AND a.path = ?`, itemID, path).Scan(&artifactID, &revision, &prevSHA, &prevSectionsJSON)
+	now := db.Millis(s.Now())
+	bumped := false
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		artifactID, revision = ids.New("art"), 1
+		if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts
+			(id, item_id, kind, path, head_revision, created_by, created_at)
+			VALUES (?, ?, ?, ?, 1, ?, ?)`, artifactID, itemID, kind, path, agentID, now); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	case prevSHA == newSHA:
+		return nil // dedupe: identical content already the head revision
+	default:
+		revision++
+		bumped = true
+		if _, err := tx.ExecContext(ctx, `UPDATE artifacts SET head_revision = ? WHERE id = ?`,
+			revision, artifactID); err != nil {
+			return err
+		}
+	}
+	sections := SplitSections(string(body))
+	sectionsJSON, err := json.Marshal(sections)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_revisions
+		(artifact_id, revision, sha256, content, sections_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, artifactID, revision, newSHA, string(body), string(sectionsJSON), now); err != nil {
+		return err
+	}
+	if !bumped {
+		return nil // fresh registration: no open approvals could exist yet
+	}
+	// Fix round 2, finding 4: a revision bump must stale open approvals the
+	// same way RegisterArtifact's own orchestrator-facing path does, so a
+	// fix round's revised design/notes don't leave an approve_section
+	// request pinned to superseded content.
+	var prevSections []ArtifactSection
+	if err := json.Unmarshal([]byte(prevSectionsJSON), &prevSections); err != nil {
+		return fmt.Errorf("artifact_revisions sections_json: %w", err)
+	}
+	_, err = s.staleApprovals(ctx, tx, artifactID, sectionsChanged(prevSections, sections))
+	return err
+}
+
+// artifactGate is the workflow artifact:design / artifact:notes gate (spec
+// B5): artifacts must contain a readable file under
+// ~/.swarm/<dir>/<ROOT-KEY>/, which is then registered on the task.
+func (s *Store) artifactGate(ctx context.Context, tx *sql.Tx, it items.Item, a Agent, in CheckpointInput, kind, dir string) error {
+	root := filepath.Join(s.Home, dir, it.RootKey)
+	prefix := root + string(filepath.Separator)
+	home, _ := os.UserHomeDir() // "" on failure: expandHome then leaves a leading ~ alone, matched by nothing
+	for _, raw := range in.Artifacts {
+		p := filepath.Clean(expandHome(raw, home))
+		if !strings.HasPrefix(p, prefix) {
+			continue
+		}
+		if fi, err := os.Stat(p); err != nil || fi.IsDir() {
+			continue
+		}
+		return s.registerArtifactAsDaemon(ctx, tx, it.ID, a.ID, kind, p)
+	}
+	noun := "design file"
+	if kind == "research" {
+		noun = "research notes"
+	}
+	// The real, resolved directory (finding 8) -- not a hardcoded
+	// "~/.swarm/..." that would mislead when SWARM_HOME differs.
+	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+		"Completed needs your %s in artifacts (under %s/).", noun, root)}
+}
+
+// expandHome resolves a leading "~" (or "~/...") in p against home, leaving
+// every other path (absolute, relative, or already resolved) untouched.
+// Takes home as a parameter rather than calling os.UserHomeDir() itself, so
+// it's a plain deterministic function to test (finding 8).
+func expandHome(p, home string) string {
+	if home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		return filepath.Join(home, rest)
+	}
+	return p
 }
 
 // requiredArtifactKind returns the artifact kind a root item's completed
@@ -286,7 +914,21 @@ type siblingTeardown struct {
 // simply never got to close out for itself, not an abandon. The caller's own
 // agent is excluded: if it owns the item too, it is still mid-turn and must
 // not be torn down under itself.
-func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, callerAgentID string, now time.Time) ([]siblingTeardown, error) {
+//
+// Narrowed by spec B5, amended by fix round 1's R1: the filter depends on
+// the ITEM, not the caller. On a workflow task, every sibling is only torn
+// down when it has the same role as the caller (and, when the caller has a
+// workflow run, the same step too) -- a reviewer completing must not close
+// a builder, and vice versa, with NO exemption: an orchestrator directly
+// completing a workflow task on a builder's behalf is not a designed path
+// (P9's engine owns that task's lifecycle), so it gets the same narrow
+// filter as anyone else. On a legacy task, an orchestrator caller keeps the
+// original exemption and still closes every live sibling regardless of
+// role -- the s11-tool-stubs incident this function exists to fix, kept
+// byte-for-byte for legacy tasks (Review Focus 1); any other legacy caller
+// is filtered to same role (no step concept without a workflow run).
+func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, callerAgentID string,
+	callerRole Role, callerRun workflowRun, callerHasRun, isWorkflowItem bool, now time.Time) ([]siblingTeardown, error) {
 	args := []any{itemID, callerAgentID}
 	placeholders := make([]string, len(LiveStates))
 	for i, st := range LiveStates {
@@ -294,7 +936,7 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 		args = append(args, string(st))
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT s.id, s.tmux_name, COALESCE(s.provider_session_id, ''),
-			a2.id, a2.name, a2.kind, a2.root_item_id
+			a2.id, a2.name, a2.kind, a2.root_item_id, a2.role
 		FROM agents a2 JOIN sessions s ON s.id = (
 			SELECT id FROM sessions WHERE agent_id = a2.id ORDER BY generation DESC, attempt DESC LIMIT 1)
 		WHERE a2.item_id = ? AND a2.id != ? AND s.state IN (`+strings.Join(placeholders, ",")+`)`, args...)
@@ -302,14 +944,14 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 		return nil, err
 	}
 	type sibling struct {
-		sessionID, tmux, provider, agentID, name, rootItemID string
-		kind                                                 AgentKind
+		sessionID, tmux, provider, agentID, name, rootItemID, role string
+		kind                                                       AgentKind
 	}
 	var found []sibling
 	for rows.Next() {
 		var r sibling
 		var kind string
-		if err := rows.Scan(&r.sessionID, &r.tmux, &r.provider, &r.agentID, &r.name, &kind, &r.rootItemID); err != nil {
+		if err := rows.Scan(&r.sessionID, &r.tmux, &r.provider, &r.agentID, &r.name, &kind, &r.rootItemID, &r.role); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -323,6 +965,24 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 
 	var out []siblingTeardown
 	for _, r := range found {
+		// Legacy items keep the orchestrator override; workflow items never
+		// do (R1). Everyone else (any role on a legacy item, or ANY caller
+		// including an orchestrator on a workflow item) is filtered to the
+		// same role, plus the same step when the caller has a run.
+		if !(callerRole == RoleOrchestrator && !isWorkflowItem) {
+			if Role(r.role) != callerRole {
+				continue
+			}
+			if callerHasRun {
+				sibRun, sibHasRun, err := s.workflowRunFor(ctx, tx, r.agentID)
+				if err != nil {
+					return nil, err
+				}
+				if !sibHasRun || sibRun.StepID != callerRun.StepID {
+					continue
+				}
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'completed', ended_at = ? WHERE id = ?`,
 			db.Millis(now), r.sessionID); err != nil {
 			return nil, err
@@ -411,6 +1071,30 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
+		// Only a reviewer/ui_reviewer ever sets a verdict (spec B5), on any
+		// checkpoint kind -- checked up front, independent of workflow-run
+		// gating below, so a misuse is refused even for a legacy agent.
+		verdict := workflow.Verdict(in.Verdict)
+		if verdict != "" && !isReviewerRole(a.Role) {
+			return &items.Error{Code: items.CodeBadRequest, Message: "Only reviewers set a verdict."}
+		}
+		// Finding 6: an invalid enum value is refused here, on any
+		// checkpoint kind, rather than reaching the checkpoints.verdict
+		// CHECK constraint (a raw, unclear SQL error) or only being caught
+		// within the completed+hasRun+reviewer requiredness check below.
+		if verdict != "" && !validVerdict(verdict) {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: "Reviewers must complete with verdict: pass, changes_requested or blocked."}
+		}
+		// Finding 7: server-side severity validation, not just the MCP
+		// schema's advisory enum.
+		for _, f := range in.Findings {
+			if !validSeverity(f.Severity) {
+				return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+					"finding severity %q must be critical, major, minor or nit.", f.Severity)}
+			}
+		}
+
 		// completed is the universal session-terminal checkpoint (every role
 		// ends its assignment with completed or failed -- terminalCheckpointKind
 		// reads it to close the session cleanly), so it's valid on any item
@@ -428,7 +1112,36 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					itemTypePlural(it.Type))}
 		}
 
-		if in.Kind == CompletedCkp && it.TddExempt == "" {
+		var run workflowRun
+		var hasRun bool
+		if in.Kind == CompletedCkp {
+			run, hasRun, err = s.workflowRunFor(ctx, tx, a.ID)
+			if err != nil {
+				return err
+			}
+		}
+		if in.Kind == CompletedCkp && hasRun {
+			// Gates replace verifyOK for an agent with a workflow run (spec
+			// B5): the step's own declared gates decide, not a blanket
+			// "some verification was recorded". Reviewer/ui_reviewer steps
+			// also require a verdict here, independent of any declared
+			// gates (templates never put a Gate on a review step).
+			if isReviewerRole(a.Role) {
+				// Validity was already checked above; this is just
+				// requiredness -- a reviewer with a run must set one.
+				if verdict == "" {
+					return &items.Error{Code: items.CodeBadRequest,
+						Message: "Reviewers must complete with verdict: pass, changes_requested or blocked."}
+				}
+				if verdict == workflow.VerdictPass && hasMajorOrCritical(in.Findings) {
+					return &items.Error{Code: items.CodeBadRequest,
+						Message: "verdict pass can't carry critical or major findings."}
+				}
+			}
+			if err := s.applyGates(ctx, tx, it, run, a, in); err != nil {
+				return err
+			}
+		} else if in.Kind == CompletedCkp && it.TddExempt == "" {
 			gated := slices.Contains(gatedRoles, a.Role)
 			if !gated && a.Role == RoleOrchestrator && s.changedFiles(ctx, in.Git) > 0 {
 				gated = true
@@ -463,14 +1176,21 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		now := s.Now()
 		if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind,
 			attempt, resolution, summary, next_json, blockers_json, git_json, verify_json, artifacts_json,
-			processed_json, daemon_written, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+			processed_json, verdict, findings_json, daemon_written, created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
 			ckpID, sessionID, a.ID, it.ID, string(in.Kind), ses.Attempt, nullIf(in.Resolution), in.Summary,
 			jsonArray(in.Next), jsonArray(in.Blockers), jsonArray(in.Git), jsonArray(in.Verification),
-			jsonArray(in.Artifacts), jsonArray(in.Processed), db.Millis(now)); err != nil {
+			jsonArray(in.Artifacts), jsonArray(in.Processed), nullIf(in.Verdict), jsonArray(in.Findings),
+			db.Millis(now)); err != nil {
 			return err
 		}
 		out.CheckpointID = ckpID
+		if hasRun && verdict != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET verdict = ?, findings_json = ?
+				WHERE id = ?`, string(verdict), jsonArray(in.Findings), run.ID); err != nil {
+				return err
+			}
+		}
 		if err := s.onPausingCheckpoint(ctx, tx, ses, in.Kind); err != nil {
 			return err
 		}
@@ -512,7 +1232,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					return err
 				}
 			}
-			tc, err := s.closeCompletedSiblings(ctx, tx, it.ID, a.ID, now)
+			tc, err := s.closeCompletedSiblings(ctx, tx, it.ID, a.ID, a.Role, run, hasRun, it.Workflow != nil, now)
 			if err != nil {
 				return err
 			}

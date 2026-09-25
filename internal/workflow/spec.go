@@ -10,7 +10,7 @@ package workflow
 type Gate string
 
 const (
-	GateTDD            Gate = "tdd"             // red (ok:false) before green (ok:true), same attempt
+	GateTDD            Gate = "tdd"             // red (ok:false) before green (ok:true), same round
 	GateCommit         Gate = "commit"          // git present, clean, sha == worktree HEAD
 	GateVerify         Gate = "verify"          // every declared verify cmd recorded ok:true
 	GateArtifactDesign Gate = "artifact:design" // a design artifact path under ~/.swarm/designs
@@ -64,6 +64,19 @@ type Spec struct {
 	Retries     *int         `json:"retries,omitempty"`     // auto-retries for crashed/failed step agents; default 1, 0..2
 	AfterTasks  *Step        `json:"after_tasks,omitempty"` // story: one review step over the story's merged work
 	Integration *Integration `json:"integration,omitempty"`
+}
+
+// EffectiveSteps returns s.Steps, or, for a resolved story spec (which has
+// no Steps at all -- Resolve leaves a non-task-shaped spec alone), its
+// single after_tasks review step promoted into a one-element slice. Next
+// and Render both need this same promotion before looking anything up by
+// step id; it lives here once, on the type, so every caller (including
+// outside this package) shares it instead of keeping its own copy.
+func (s Spec) EffectiveSteps() []Step {
+	if len(s.Steps) == 0 && s.AfterTasks != nil {
+		return []Step{*s.AfterTasks}
+	}
+	return s.Steps
 }
 
 // Level is the swarm-tree/item level a Spec belongs to; it decides which

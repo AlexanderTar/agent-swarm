@@ -92,6 +92,39 @@ func seedCheckpoint(t *testing.T, d *db.DB, it items.Item, kind string, attempt 
 	return id
 }
 
+// seedSessionRole is seedSession with a caller-chosen role, for tests that
+// need more than one agent role active on the same item (e.g. completedCurrent's
+// gated-roles-only rule, spec B5).
+func seedSessionRole(t *testing.T, d *db.DB, it items.Item, role, state string) (agentID, sessionID string) {
+	t.Helper()
+	agentID, sessionID = ids.New("agt"), ids.New("ses")
+	exec(t, d, `INSERT INTO agents (id, name, kind, model, role, item_id, root_item_id, brief, state, created_at)
+		VALUES (?, ?, 'fake', 'm', ?, ?, ?, 'b', 'active', 1)`, agentID, agentID, role, it.ID, it.RootID)
+	exec(t, d, `INSERT INTO sessions (id, agent_id, attempt, generation, token_hash, tmux_name, cwd, state, cwd_kind, started_at)
+		VALUES (?, ?, 1, 1, ?, 'x', '/tmp', ?, 'neutral', 1)`, sessionID, agentID, sessionID, state)
+	return agentID, sessionID
+}
+
+// seedCheckpointFor writes a checkpoint row for an already-seeded (agentID,
+// sessionID) pair, so a test can post several checkpoints from the SAME
+// agent (seedCheckpoint always mints a fresh agent per call).
+func seedCheckpointFor(t *testing.T, d *db.DB, it items.Item, agentID, sessionID, kind string, attempt int, at int64) string {
+	t.Helper()
+	id := ids.New("ckp")
+	exec(t, d, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary, git_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'did it', '[]', ?)`, id, sessionID, agentID, it.ID, kind, attempt, at)
+	return id
+}
+
+// setWorkflowJSON marks it as a workflow task (a non-NULL workflow_json is
+// THE legacy/workflow discriminator -- steps/units/verify may be '[]' either
+// way). The content doesn't matter to completedCurrent, only its presence.
+func setWorkflowJSON(t *testing.T, d *db.DB, it items.Item) {
+	t.Helper()
+	exec(t, d, `UPDATE items SET workflow_json = ? WHERE id = ?`,
+		`{"steps":[{"id":"build","run":"coder"},{"id":"review","review":["reviewer"],"of":"build"}]}`, it.ID)
+}
+
 // seedRequest writes a request row and returns its id.
 func seedRequest(t *testing.T, d *db.DB, it items.Item, kind, state string) string {
 	t.Helper()

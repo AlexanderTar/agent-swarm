@@ -172,6 +172,11 @@ type Verify struct {
 	Cmd, Phase string
 	OK         bool
 	Note       string
+	// Unit is 1-based, set on a batched (units) task's TDD evidence so the
+	// tdd gate (spec B5) can require red-before-green per unit. 0 means
+	// "not tagged to a unit" -- a non-batched task, or a package-wide entry
+	// on a batched one (a fix-round finding with no unit).
+	Unit int
 }
 
 type Checkpoint struct {

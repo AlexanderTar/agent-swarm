@@ -118,11 +118,7 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action {
 	if round < 1 {
 		round = 1
 	}
-	// A resolved story spec has no Steps (Resolve leaves a non-task-shaped
-	// spec alone) - operate on its single after_tasks review step instead.
-	if len(s.Steps) == 0 && s.AfterTasks != nil {
-		s.Steps = []Step{*s.AfterTasks}
-	}
+	s.Steps = s.EffectiveSteps()
 	runs = sortedRuns(runs)
 	pinnedFromIdx := pinnedFrom(s, runs, round)
 
@@ -480,7 +476,7 @@ func staleReviews(step Step, runs []Run, want string, round int) ([]Run, *Action
 			continue
 		}
 		if run.Round == round && escalate == nil {
-			reason := fmt.Sprintf("%s reviewed %s, but %s is now at %s", run.Role, sha7(run.SHA), step.Of, sha7(want))
+			reason := fmt.Sprintf("%s reviewed %s, but %s is now at %s", run.Role, SHA7(run.SHA), step.Of, SHA7(want))
 			escalate = &Action{Kind: ActionEscalate, Reason: reason}
 			continue
 		}
@@ -490,9 +486,10 @@ func staleReviews(step Step, runs []Run, want string, round int) ([]Run, *Action
 	return fresh, escalate
 }
 
-// sha7 is the short form of a sha: its first 7 characters, or the whole
-// thing if it's shorter than that.
-func sha7(sha string) string {
+// SHA7 is the short form of a sha: its first 7 characters, or the whole
+// thing if it's shorter than that. Exported so other packages (checkpoint
+// gate error copy, spec B5) don't keep their own copy.
+func SHA7(sha string) string {
 	if len(sha) > 7 {
 		return sha[:7]
 	}
