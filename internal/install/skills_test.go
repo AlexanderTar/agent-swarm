@@ -1386,3 +1386,15 @@ func TestSpikeSkillSevenStepMethod(t *testing.T) {
 		}
 	}
 }
+
+func TestOrchestratorSkillNoLongerHandRollsReviews(t *testing.T) {
+	body := string(install.SkillBody("swarm-orchestrator"))
+	if strings.Contains(body, "After a worker's `completed`, spawn a `reviewer`") {
+		t.Fatal("workflow reviews belong to the daemon")
+	}
+	for _, want := range []string{"superpowers:dispatching-parallel-agents", "superpowers:subagent-driven-development", "superpowers:finishing-a-development-branch", "ponytail-debt", "swarm_workflow start", "swarm_workflow resume", "story_ready_for_review", "one coder agent for the whole task", "after all units are committed", "same coder"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("swarm-orchestrator missing %q", want)
+		}
+	}
+}
