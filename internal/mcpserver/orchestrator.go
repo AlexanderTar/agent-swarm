@@ -510,7 +510,11 @@ func spawnTool(s *Server) ToolDef {
 		Roles:       orchestratorRole,
 		Schema: objSchemaRequired(`"item":{"type":"string"},"role":{"type":"string"},"agent":{"type":"string"},
 			"model":{"type":"string"},"effort":{"type":"string"},"name":{"type":"string"},
-			"brief":{"type":"object"},
+			"brief":{"type":"object","properties":{
+				"objective":{"type":"string"},"acceptance":{"type":"array","items":{"type":"string"}},
+				"scope_in":{"type":"array","items":{"type":"string"}},"scope_out":{"type":"array","items":{"type":"string"}},
+				"context":{"type":"array","items":{"type":"string"}},"verify":{"type":"array","items":{"type":"string"}},
+				"stop_when":{"type":"array","items":{"type":"string"}}}},
 			"worktrees":{"type":"array","items":{"type":"object","properties":{
 				"worktree":{"type":"string"},"mode":{"type":"string","enum":["rw","ro"]}}}},
 			"request_id":{"type":"string"}`, []string{"item", "role", "brief"}),
