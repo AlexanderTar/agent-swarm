@@ -633,9 +633,16 @@ func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKno
 	// A pausing session that was sent interrupt keys (L11) ends interrupted, never
 	// crashed, whatever attempt-scoped checkpoint it left behind.
 	if r.State.Pausing() && s.getInterrupted(r.SessionID) != nil {
-		var run workflowRun
-		var hasRun bool
-		err := s.tx(ctx, func(tx *sql.Tx) error {
+		// Opus review, fix round 2, finding 6: this branch is exclusively a
+		// DELIBERATE pause (swarm_control pause) hitting its interrupt
+		// deadline -- getInterrupted is only ever set by TickPause's own
+		// interrupt() (pause.go). It is not a crash, so a workflow run
+		// here must be left exactly as it is (still 'active', waiting): a
+		// human's later swarm_control resume is what starts it going again,
+		// not the engine. An earlier version of this branch marked the run
+		// 'failed' the same as a crash, which made AutoRetry immediately
+		// un-pause the agent with a fresh Retry() -- defeating the pause.
+		return s.tx(ctx, func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'interrupted', exit_code = ?,
 				ended_at = ? WHERE id = ?`, exitCode, db.Millis(now), r.SessionID); err != nil {
 				return err
@@ -643,20 +650,6 @@ func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKno
 			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.interrupted", AgentName: r.AgentName,
 				ItemKey: r.ItemKey, Args: map[string]string{"name": r.AgentName, "KEY": r.ItemKey}}); err != nil {
 				return err
-			}
-			// P9 (spec B4): an interrupted workflow agent's run is the
-			// engine's own crash signal -- mark it failed so Next sees it
-			// (AutoRetry/Escalate), the same as an explicit FailedCkp.
-			var werr error
-			run, hasRun, werr = s.workflowRunFor(ctx, tx, r.AgentID)
-			if werr != nil {
-				return werr
-			}
-			if hasRun {
-				if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'failed', ended_at = ? WHERE id = ?`,
-					db.Millis(now), run.ID); err != nil {
-					return err
-				}
 			}
 			if r.ParentAgentID == "" {
 				return nil
@@ -669,12 +662,6 @@ func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKno
 				RootItemID: r.RootItemID, ItemID: r.ItemID, Payload: payload})
 			return err
 		})
-		if err == nil && hasRun {
-			if aerr := s.advance(ctx, run.WorkflowID); aerr != nil {
-				s.logf("reconcile: advance %s: %v", run.WorkflowID, aerr)
-			}
-		}
-		return err
 	}
 	kind, hasTerminal, err := s.terminalCheckpointKind(ctx, r.AgentID, r.ItemID, r.Attempt)
 	if err != nil {

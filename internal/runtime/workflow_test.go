@@ -1357,6 +1357,83 @@ func TestResumeRetryMixedFailureAndChangesRequested(t *testing.T) {
 	}
 }
 
+// TestPauseDeadlineLeavesWorkflowRunActive is Opus review finding 6: a
+// deliberate pause (swarm_control pause) that hits its interrupt deadline
+// ends the session 'interrupted' -- the same resolveDead branch that used
+// to also mark the workflow run 'failed' (spec B4's crash signal), which
+// then had AutoRetry immediately un-pause the agent with a fresh Retry().
+// A timed-out pause is not a crash; the run must stay exactly as it was
+// (still 'active', waiting) so a human's later swarm_control resume is
+// what starts it going again, not the engine.
+func TestPauseDeadlineLeavesWorkflowRunActive(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderAgentID := agentIDForStep(t, s, st.ID, "build")
+	coder, err := s.agentByID(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	tm.env[coder.Name] = map[string]string{"SWARM_SESSION": coderSes.ID}
+
+	if _, err := s.Pause(ctx, coder.Name, "session"); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(121 * time.Second)
+	if err := s.TickPause(ctx); err != nil { // sends interrupt keys past the deadline
+		t.Fatal(err)
+	}
+	at.Advance(11 * time.Second)
+	if err := s.TickPause(ctx); err != nil { // kills the pane, records the interrupt
+		t.Fatal(err)
+	}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.panes = []Pane{{Session: orch.Name, Command: "swarm-fake-agent"}} // the coder's pane is gone now
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err) // P0-crash-4's one fresh grace window
+	}
+	at.Advance(spawnGracePeriod + time.Second)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// LatestSession orders by generation DESC: if AutoRetry wrongly fired,
+	// it would return a brand new (higher-generation) 'running' session
+	// instead of the one we just interrupted -- assert on the ORIGINAL
+	// session's own row directly, and separately that LatestSession still
+	// finds no newer one.
+	var closedState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM sessions WHERE id = ?`, coderSes.ID).Scan(&closedState); err != nil {
+		t.Fatal(err)
+	}
+	if closedState != string(Interrupted) {
+		t.Fatalf("original session state = %s, want interrupted", closedState)
+	}
+	latest, err := s.LatestSession(ctx, coderAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.ID != coderSes.ID {
+		t.Fatalf("a new session was started (un-paused by a wrongly-fired AutoRetry) -- got %s (state %s), want the same interrupted one %s",
+			latest.ID, latest.State, coderSes.ID)
+	}
+	var runState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, st.ID).Scan(&runState); err != nil {
+		t.Fatal(err)
+	}
+	if runState != "active" {
+		t.Fatalf("workflow run state = %s, want active (a timed-out pause is not a crash)", runState)
+	}
+}
+
 // agentSessionForStep2 is agentSessionForStep without the step-lookup half
 // -- some tests (parallel reviewers) already have the agent id in hand.
 func agentSessionForStep2(t *testing.T, s *Store, agentID string) Session {
