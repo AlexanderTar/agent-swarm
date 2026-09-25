@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1980,6 +1981,68 @@ func TestCancelRacingSlotReleaseSpawnsNothing(t *testing.T) {
 	if len(tm.started) != startedBefore+1 {
 		t.Fatalf("started %d agents on the slot-release trigger, want exactly 1 (TASK-2's, never TASK-1's): %v",
 			len(tm.started)-startedBefore, tm.started)
+	}
+}
+
+// TestConcurrentAdvanceSpawnsOnce is a fix round 2 minor cleanup item: two
+// goroutines calling advance() on the SAME workflow concurrently (a
+// checkpoint trigger racing the stall scan, say) must still spawn exactly
+// one agent -- lockForWorkflow's own per-workflow mutex is what makes this
+// deterministic rather than a real race left to insertWaitingRun's ON
+// CONFLICT DO NOTHING alone.
+func TestConcurrentAdvanceSpawnsOnce(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	wtID, _, _, _ := seedOwnedRepoWorktree(t, s, orch)
+
+	it, err := s.Items.Get(ctx, taskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfID := ids.New("wf")
+	now := s.now()
+	wtJSON, err := json.Marshal([]WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A workflows row seeded directly, bypassing StartWorkflow's own single
+	// advance -- nothing has spawned yet, so the race below is meaningful.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO workflows
+		(id, item_id, root_item_id, owner_agent_id, state, round, extra_rounds, context_json, worktrees_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'running', 1, 0, '[]', ?, ?, ?)`,
+		wfID, it.ID, it.RootID, orch.ID, string(wtJSON), db.Millis(now), db.Millis(now)); err != nil {
+		t.Fatal(err)
+	}
+
+	startedBefore := len(tm.started) // the orchestrator's own spawn already counted
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = s.advance(ctx, wfID)
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(tm.started)-startedBefore != 1 {
+		t.Fatalf("started %d agents for the race, want exactly 1: %v", len(tm.started)-startedBefore, tm.started)
+	}
+	var runCount int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_runs
+		WHERE workflow_id = ? AND step_id = 'build'`, wfID).Scan(&runCount); err != nil {
+		t.Fatal(err)
+	}
+	if runCount != 1 {
+		t.Fatalf("build run rows = %d, want 1", runCount)
 	}
 }
 

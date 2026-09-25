@@ -255,14 +255,18 @@ func (s *Store) WorkflowFor(ctx context.Context, itemKey string) (WorkflowState,
 	return st, true, err
 }
 
-func (s *Store) latestWorkflowRow(ctx context.Context, itemID string) (wfRow, bool, error) {
+// wfRowColumns is the column list latestWorkflowRow and workflowRowByID both
+// select from workflows -- they differed only in their WHERE/ORDER clause,
+// never the columns or scan logic (fix round 2 minor cleanup: deduped via
+// scanWfRow below).
+const wfRowColumns = `id, item_id, root_item_id, owner_agent_id, state, round, extra_rounds,
+	COALESCE(escalation, ''), COALESCE(context_json, '[]'), worktrees_json, created_at, updated_at`
+
+func scanWfRow(row *sql.Row) (wfRow, bool, error) {
 	var r wfRow
 	var created, updated int64
-	err := s.DB.QueryRowContext(ctx, `SELECT id, item_id, root_item_id, owner_agent_id, state, round, extra_rounds,
-		COALESCE(escalation, ''), COALESCE(context_json, '[]'), worktrees_json, created_at, updated_at
-		FROM workflows WHERE item_id = ? ORDER BY created_at DESC LIMIT 1`, itemID).
-		Scan(&r.ID, &r.ItemID, &r.RootItemID, &r.OwnerAgentID, &r.State, &r.Round, &r.ExtraRounds,
-			&r.Escalation, &r.ContextJSON, &r.WorktreesJSON, &created, &updated)
+	err := row.Scan(&r.ID, &r.ItemID, &r.RootItemID, &r.OwnerAgentID, &r.State, &r.Round, &r.ExtraRounds,
+		&r.Escalation, &r.ContextJSON, &r.WorktreesJSON, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return wfRow{}, false, nil
 	}
@@ -273,22 +277,13 @@ func (s *Store) latestWorkflowRow(ctx context.Context, itemID string) (wfRow, bo
 	return r, true, nil
 }
 
+func (s *Store) latestWorkflowRow(ctx context.Context, itemID string) (wfRow, bool, error) {
+	return scanWfRow(s.DB.QueryRowContext(ctx,
+		`SELECT `+wfRowColumns+` FROM workflows WHERE item_id = ? ORDER BY created_at DESC LIMIT 1`, itemID))
+}
+
 func (s *Store) workflowRowByID(ctx context.Context, workflowID string) (wfRow, bool, error) {
-	var r wfRow
-	var created, updated int64
-	err := s.DB.QueryRowContext(ctx, `SELECT id, item_id, root_item_id, owner_agent_id, state, round, extra_rounds,
-		COALESCE(escalation, ''), COALESCE(context_json, '[]'), worktrees_json, created_at, updated_at
-		FROM workflows WHERE id = ?`, workflowID).
-		Scan(&r.ID, &r.ItemID, &r.RootItemID, &r.OwnerAgentID, &r.State, &r.Round, &r.ExtraRounds,
-			&r.Escalation, &r.ContextJSON, &r.WorktreesJSON, &created, &updated)
-	if errors.Is(err, sql.ErrNoRows) {
-		return wfRow{}, false, nil
-	}
-	if err != nil {
-		return wfRow{}, false, err
-	}
-	r.CreatedAt, r.UpdatedAt = db.FromMillis(created), db.FromMillis(updated)
-	return r, true, nil
+	return scanWfRow(s.DB.QueryRowContext(ctx, `SELECT `+wfRowColumns+` FROM workflows WHERE id = ?`, workflowID))
 }
 
 func (r wfRow) worktrees() []WorkflowWorktree {
