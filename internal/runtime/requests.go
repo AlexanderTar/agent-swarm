@@ -846,15 +846,55 @@ func (s *Store) ResolvePrompt(ctx context.Context, id, via string) (Request, err
 // ResolveQuestionByPrompt closes the session's open native-question row whose
 // prompt equals the one this tool call asked, answered via terminal. No match
 // is not an error (the tool may have been blocked, or the row swept).
+//
+// Continuity fallback: when the calling session is retired (a replacement or
+// retry repointed its open rows at the successor generation), the same
+// prompt is resolved on the agent's live rows instead, mirroring
+// ResolveAnsweredInTerminal's agent-keyed rule. A live session with no match
+// still resolves nothing.
 func (s *Store) ResolveQuestionByPrompt(ctx context.Context, sessionID, prompt, answer string) error {
 	ids, err := s.queryIDs(ctx, `SELECT id FROM requests
 		WHERE session_id = ? AND kind = 'question' AND state = 'open' AND prompt = ?
 		ORDER BY created_at DESC LIMIT 1`, sessionID, prompt)
-	if err != nil || len(ids) == 0 {
+	if err != nil {
 		return err
+	}
+	if len(ids) == 0 {
+		ids, err = s.retiredSessionRequests(ctx, sessionID, "question", prompt)
+		if err != nil {
+			return err
+		}
+	}
+	if len(ids) == 0 {
+		return nil
 	}
 	_, err = s.ResolveQuestion(ctx, ids[0], answer, "terminal")
 	return err
+}
+
+// retiredSessionRequests is the continuity fallback for the session-scoped
+// resolvers: when sessionID is retired (not the agent's live generation),
+// return the agent's open rows of the same kind (and prompt, when given)
+// instead -- a replacement repoints open requests at the successor, so the
+// predecessor's own resolvers would otherwise silently miss rows that are
+// still open. A live or unknown session falls back to nothing.
+func (s *Store) retiredSessionRequests(ctx context.Context, sessionID, kind, prompt string) ([]string, error) {
+	var agentID, state string
+	err := s.DB.QueryRowContext(ctx, `SELECT se.agent_id, se.state FROM sessions se WHERE se.id = ?`, sessionID).Scan(&agentID, &state)
+	if err != nil {
+		return nil, nil
+	}
+	if SessionState(state).Live() {
+		return nil, nil
+	}
+	query := `SELECT r.id FROM requests r WHERE r.agent_id = ? AND r.kind = ? AND r.state = 'open'`
+	args := []any{agentID, kind}
+	if prompt != "" {
+		query += ` AND (r.prompt = ? OR r.prompt = 'Permission requested')`
+		args = append(args, prompt)
+	}
+	query += ` ORDER BY r.created_at DESC LIMIT 1`
+	return s.queryIDs(ctx, query, args...)
 }
 
 // ResolveSessionPrompts resolves open prompt requests of one session once a
@@ -871,12 +911,40 @@ func (s *Store) ResolveSessionPrompts(ctx context.Context, sessionID, command st
 	if err != nil {
 		return err
 	}
+	if len(ids) == 0 {
+		// Continuity fallback for a retired session (see
+		// retiredSessionRequests): resolve every open prompt of the agent
+		// when the command is blank, else only the matching one.
+		if command == "" {
+			ids, err = s.retiredSessionRequestsAll(ctx, sessionID)
+		} else {
+			ids, err = s.retiredSessionRequests(ctx, sessionID, "prompt", command)
+		}
+		if err != nil {
+			return err
+		}
+	}
 	for _, id := range ids {
 		if _, err := s.ResolvePrompt(ctx, id, "terminal"); err != nil {
 			s.logf("resolve prompt %s: %v", id, err)
 		}
 	}
 	return nil
+}
+
+// retiredSessionRequestsAll is retiredSessionRequests without the prompt
+// filter: every open prompt row of a retired session's agent.
+func (s *Store) retiredSessionRequestsAll(ctx context.Context, sessionID string) ([]string, error) {
+	var agentID, state string
+	err := s.DB.QueryRowContext(ctx, `SELECT se.agent_id, se.state FROM sessions se WHERE se.id = ?`, sessionID).Scan(&agentID, &state)
+	if err != nil {
+		return nil, nil
+	}
+	if SessionState(state).Live() {
+		return nil, nil
+	}
+	return s.queryIDs(ctx, `SELECT id FROM requests
+		WHERE agent_id = ? AND kind = 'prompt' AND state = 'open' ORDER BY created_at`, agentID)
 }
 
 // ResolveAnsweredInTerminal closes every open question/blocker row of an agent

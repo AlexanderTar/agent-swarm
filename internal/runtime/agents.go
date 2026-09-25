@@ -1468,6 +1468,17 @@ func (s *Store) Cancel(ctx context.Context, name, sessionID, requestID string) (
 	} else if hit {
 		return out, nil
 	}
+	// Continuity: user Cancel stops execution, disables auto-restart and
+	// retains identity -- and wins over any pending replacement launch, so
+	// in-flight operations are cancelled before anything is killed.
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET auto_restart = 0 WHERE id = ?`, a.ID); err != nil {
+			return err
+		}
+		return s.cancelAgentOperationsTx(ctx, tx, a.ID)
+	}); err != nil {
+		return Agent{}, err
+	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err == nil && ses.State.Live() {
 		ad := s.Adapters[a.Kind]
@@ -1625,6 +1636,12 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
 		return Agent{}, err
+	}
+	if ses.State == Stopping {
+		// A stop is still in flight: persist the retry as a durable queued
+		// recover intent instead of failing or doubling the launch. The
+		// next operation resume executes it once the session settles.
+		return s.queueRetryIntent(ctx, a, ses, note, sessionID, requestID)
 	}
 	if !slices.Contains(retryableStates, ses.State) {
 		return Agent{}, &items.Error{Code: items.CodeConflict, Message: notRetryable}

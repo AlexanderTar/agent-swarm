@@ -530,8 +530,16 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 			return err
 		}
 		if !can {
-			return &items.Error{Code: items.CodeBadRequest,
-				Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
+			// A target owned by an in-flight replacement or a queued retry
+			// is between sessions, not gone: the message waits in its
+			// (canonical, agent-keyed) inbox for the successor instead of
+			// being refused at the stopping gap.
+			if _, ok, herr := s.pendingOperationTx(ctx, tx, target.ID); herr != nil {
+				return herr
+			} else if !ok {
+				return &items.Error{Code: items.CodeBadRequest,
+					Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
+			}
 		}
 		payload, err := json.Marshal(map[string]string{"body": body})
 		if err != nil {

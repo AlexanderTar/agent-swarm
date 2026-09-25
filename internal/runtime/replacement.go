@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -182,10 +183,17 @@ func (s *Store) operationOwnsSession(ctx context.Context, agentID string) (bool,
 
 // PendingOperation reports the agent's in-flight operation, if any.
 func (s *Store) PendingOperation(ctx context.Context, agentID string) (Operation, bool, error) {
+	return s.pendingOperationTx(ctx, s.DB, agentID)
+}
+
+// pendingOperationTx is PendingOperation inside the caller's transaction
+// (Send checks it in inbox.go before enqueueing to a target with no live
+// session).
+func (s *Store) pendingOperationTx(ctx context.Context, q txQuerier, agentID string) (Operation, bool, error) {
 	var op Operation
 	var mode, phase string
 	var created, updated int64
-	err := s.DB.QueryRowContext(ctx, `SELECT id, agent_id, mode, phase, request_key,
+	err := q.QueryRowContext(ctx, `SELECT id, agent_id, mode, phase, request_key,
 		COALESCE(session_id, ''), generation, COALESCE(note, ''), COALESCE(error, ''),
 		created_at, updated_at FROM agent_operations WHERE agent_id = ? AND phase IN
 		('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting')
@@ -201,6 +209,56 @@ func (s *Store) PendingOperation(ctx context.Context, agentID string) (Operation
 	op.Mode, op.Phase = ReplacementMode(mode), OperationPhase(phase)
 	op.CreatedAt, op.UpdatedAt = db.FromMillis(created), db.FromMillis(updated)
 	return op, true, nil
+}
+
+// queueRetryIntent persists a Retry that arrived while the latest session
+// is still stopping: a durable queued recover operation carrying the note,
+// idempotent per (caller session, request key) like every other control
+// mutation. The agent row and sessions are untouched -- no launch happens
+// here. The next ResumeOperations executes the intent once the session
+// settles into a retryable state, and Cancel wins over it meanwhile.
+func (s *Store) queueRetryIntent(ctx context.Context, a Agent, ses Session, note, callerSessionID, requestID string) (Agent, error) {
+	var out Agent
+	if _, err := IdemTx(ctx, s, callerSessionID, requestID, "swarm_control", &out, func(tx *sql.Tx) error {
+		if requestID != "" {
+			var n int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_operations
+				WHERE agent_id = ? AND request_key = ?`, a.ID, requestID).Scan(&n); err != nil {
+				return err
+			}
+			if n > 0 {
+				out = a
+				return nil
+			}
+		}
+		var activeID string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM agent_operations WHERE agent_id = ? AND phase IN
+			('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting')`, a.ID).Scan(&activeID)
+		if err == nil {
+			return &items.Error{Code: items.CodeConflict,
+				Message: fmt.Sprintf("A replacement is already in progress: %s.", activeID)}
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		now := db.Millis(s.now())
+		_, err = tx.ExecContext(ctx, `INSERT INTO agent_operations
+			(id, agent_id, mode, phase, request_key, session_id, generation, note, created_at, updated_at)
+			VALUES (?, ?, 'recover', 'queued', ?, ?, ?, ?, ?, ?)`,
+			ids.New("op"), a.ID, requestID, ses.ID, ses.Generation, note, now, now)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				return &items.Error{Code: items.CodeConflict,
+					Message: "A replacement is already in progress for this agent."}
+			}
+			return err
+		}
+		out = a
+		return nil
+	}); err != nil {
+		return Agent{}, err
+	}
+	return out, nil
 }
 
 // CancelOperation marks one operation cancelled. Terminal rows are returned
@@ -358,7 +416,7 @@ func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, e
 				return Operation{}, err
 			}
 		case PhaseQueued:
-			parked, err = s.admitOperation(ctx, op, a)
+			parked, err = s.admitOperation(ctx, op, a, latest)
 			if err != nil {
 				return Operation{}, err
 			}
@@ -490,9 +548,17 @@ func (s *Store) revokeAgentTokens(ctx context.Context, agentID string) error {
 	return nil
 }
 
-// admitOperation is the queued->starting gate: without a slot the operation
-// parks in queued and a later tick retries it.
-func (s *Store) admitOperation(ctx context.Context, op Operation, a Agent) (bool, error) {
+// admitOperation is the queued->starting gate. The successor launches only
+// once the observed predecessor session has settled into a retryable state:
+// a still-live session means someone else already recovered the agent (the
+// session-compare in advanceOperation catches a replaced row; this catches
+// the same row come back), and a paused one belongs to Resume, not to a
+// duplicate launch. Without an admission slot the operation parks in queued
+// and a later tick retries it.
+func (s *Store) admitOperation(ctx context.Context, op Operation, a Agent, latest Session) (bool, error) {
+	if latest.State.Live() || !slices.Contains(retryableStates, latest.State) {
+		return true, nil
+	}
 	parked := true
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		admitted, err := s.Admit(ctx, tx, a.Role, a.RootItemID)
@@ -518,6 +584,14 @@ func (s *Store) admitOperation(ctx context.Context, op Operation, a Agent) (bool
 // the new session, a lineage row links the generations, and the operation
 // lands on succeeded.
 func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, latest Session) error {
+	// A queued retry's note (or a handoff note) reaches the successor as an
+	// inbox message before it starts, the same delivery an immediate Retry
+	// performs.
+	if op.Note != "" {
+		if err := s.deliverNote(ctx, a.ID, op.Note); err != nil {
+			s.logf("replacement: deliver note to %s: %v", a.Name, err)
+		}
+	}
 	succ, err := s.startSession(ctx, a, latest.Attempt, latest.Generation+1, false, "")
 	if err != nil {
 		_ = s.setPhase(ctx, op.ID, PhaseBlocked, err.Error())

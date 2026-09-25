@@ -210,6 +210,191 @@ func TestReconcileSkipsSessionUnderReplacement(t *testing.T) {
 	}
 }
 
+// TestRetryDuringStoppingQueuesIntent pins the stopping race: Retry against
+// a session that is still stopping must not fail or double-launch. It
+// persists the intent as a durable queued recover operation (idempotent per
+// request key) and returns the agent unchanged; once the session settles,
+// the next resume executes the retry exactly once, delivering the note.
+func TestRetryDuringStoppingQueuesIntent(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, Stopping); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Retry(ctx, w.Name, "retry-note", orchSes.ID, "r1")
+	if err != nil {
+		t.Fatalf("retry during stopping err = %v, want queued intent", err)
+	}
+	if out.ID != w.ID {
+		t.Fatalf("retry returned %s, want canonical agent %s", out.ID, w.ID)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("sessions = %d, want 1 (no launch while stopping)", n)
+	}
+	op, ok, err := s.PendingOperation(ctx, w.ID)
+	if err != nil || !ok {
+		t.Fatalf("pending op = %+v, %v; want queued recover intent", op, err)
+	}
+	if op.Mode != ModeRecover || op.Phase != PhaseQueued || op.Note != "retry-note" {
+		t.Fatalf("intent = %+v, want queued recover with note", op)
+	}
+	// Same request key replays the same intent: still one row, still no session.
+	if _, err := s.Retry(ctx, w.Name, "retry-note", orchSes.ID, "r1"); err != nil {
+		t.Fatalf("replay err = %v", err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_operations WHERE agent_id = ?`, w.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("operations = %d, want 1 (idempotent intent)", n)
+	}
+	// The session settles: the queued intent executes exactly once.
+	if err := s.SetSessionState(ctx, wSes.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatalf("resume err = %v", err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("sessions = %d, want 2 (one successor)", n)
+	}
+	succ, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succ.Generation != wSes.Generation+1 {
+		t.Fatalf("successor generation = %d, want %d", succ.Generation, wSes.Generation+1)
+	}
+	var notes int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ?
+		AND kind = 'assignment_update' AND payload_json LIKE '%retry-note%'`, w.ID).Scan(&notes); err != nil {
+		t.Fatal(err)
+	}
+	if notes != 1 {
+		t.Fatalf("queued notes delivered = %d, want 1", notes)
+	}
+}
+
+// TestCancelWinsOverPendingLaunch pins the Cancel side of continuity: user
+// Cancel marks every in-flight operation cancelled, disables auto-restart
+// and keeps the agent row -- and no later resume may launch the successor
+// the cancelled operation was parking.
+func TestCancelWinsOverPendingLaunch(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, Stopping); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Retry(ctx, w.Name, "doomed retry", orchSes.ID, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.PendingOperation(ctx, w.ID); err != nil || !ok {
+		t.Fatalf("pending = %v, %v; want queued intent", ok, err)
+	}
+	cancelled, err := s.Cancel(ctx, w.Name, orchSes.ID, "")
+	if err != nil {
+		t.Fatalf("cancel err = %v", err)
+	}
+	if cancelled.State != AgentFinished {
+		t.Fatalf("agent state = %q, want finished", cancelled.State)
+	}
+	if s.autoRestart(ctx, w.ID) {
+		t.Fatal("auto-restart still enabled after user Cancel")
+	}
+	if _, ok, err := s.PendingOperation(ctx, w.ID); err != nil || ok {
+		t.Fatalf("pending = %v, %v; want no in-flight operation", ok, err)
+	}
+	// The session settles dead: nothing may launch anymore.
+	if err := s.SetSessionState(ctx, wSes.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("sessions = %d, want 1 (cancelled intent never launches)", n)
+	}
+}
+
+// TestSendHeldForAgentUnderOperation pins the inbox half of survival: a
+// message to an agent with no live session but an in-flight operation is
+// accepted into its canonical inbox (delivered to the successor), while the
+// same message to an operation-less dead agent is still refused.
+func TestSendHeldForAgentUnderOperation(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, Stopping); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Retry(ctx, w.Name, "", orchSes.ID, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.Send(ctx, orchSes.ID, w.Name, "question", "are you there?", "", "")
+	if err != nil {
+		t.Fatalf("send to agent under operation err = %v, want held", err)
+	}
+	if id == "" {
+		t.Fatal("empty message id")
+	}
+	// (The spawn assignment message is already pending; the held send adds one.)
+	n, err := s.PendingCount(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("pending = %d, want 2 (assignment + held message)", n)
+	}
+	// Control: no operation, dead session -- still refused.
+	w2, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "control"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSes2, err := s.LatestSession(ctx, w2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, wSes2.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(ctx, orchSes.ID, w2.Name, "question", "are you there?", "", ""); err == nil {
+		t.Fatal("send to dead agent without operation succeeded, want refusal")
+	} else if !strings.Contains(err.Error(), "has no live session") {
+		t.Fatalf("refusal = %v, want no-live-session", err)
+	}
+}
+
 func tokenPath(t *testing.T, s *Store, sessionID string) string {
 	t.Helper()
 	return filepath.Join(s.Home, "run", "tokens", sessionID)
