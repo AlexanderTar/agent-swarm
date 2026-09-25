@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -938,6 +939,82 @@ func TestQuestionToolInterceptionCreatesHITLRequest(t *testing.T) {
 			t.Fatalf("expected 1 hitl question request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
 		}
 	})
+}
+
+// TestAgyLiveHookFixturesOpenAndCloseAQuestionRow replays the byte-for-byte
+// PreToolUse/PostToolUse payloads captured from a live, non-Swarm agy session
+// asking `ask_question` (docs/plans/2026-09-25-needs-you-and-child-approval-routing.md
+// Task 4b). It is the regression guard behind spec section 1.7's agy row: a
+// top-level agy agent's ask_question opens a HITL row, and the matching
+// PostToolUse (which carries no result field, confirmed live) closes it.
+func TestAgyLiveHookFixturesOpenAndCloseAQuestionRow(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'agy' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	pre, err := os.ReadFile("../adapter/testdata/agy-hook-pretooluse-ask_question.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses, pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("question tool must not be blocked, got %s", out)
+	}
+
+	var reqID, state, prompt, kind string
+	err = h.DB.QueryRowContext(ctx, `SELECT id, state, prompt, kind FROM requests WHERE session_id = ?`, ses).
+		Scan(&reqID, &state, &prompt, &kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != "open" || kind != "question" || prompt != "Choose red or blue." {
+		t.Fatalf("got state=%q kind=%q prompt=%q, want open/question/%q", state, kind, prompt, "Choose red or blue.")
+	}
+
+	post, err := os.ReadFile("../adapter/testdata/agy-hook-posttooluse-ask_question.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Handle(ctx, runtime.Agy, "PostToolUse", ses, post); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE id = ?`, reqID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "answered" {
+		t.Fatalf("state = %q, want answered", state)
+	}
+}
+
+func TestParentedAgyLiveHookFixtureIsBlocked(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'agy', parent_agent_id = 'agt_1' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	pre, err := os.ReadFile("../adapter/testdata/agy-hook-pretooluse-ask_question.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses, pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "swarm_send") {
+		t.Fatalf("a parented agent's question tool must be blocked with the relay text, got %s", out)
+	}
+	var n int
+	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("requests = %d, want 0", n)
+	}
 }
 
 func TestPermissionRequestCreatesHITLRequest(t *testing.T) {
