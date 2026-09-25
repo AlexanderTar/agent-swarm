@@ -57,6 +57,21 @@ final class PopoverRenderTests: XCTestCase {
         XCTAssertGreaterThan(renderedSize(DaemonBanner(text: m.banner ?? "", retry: {}).frame(width: 336)).height, 0)
     }
 
+    func testNeedsYouSectionRendersMixedKindsWithoutCrashing() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let m = makeAppModel(client)
+        var s: StateResponse = try Fixture.decode("state.json")
+        s.requests = RequestKind.allCases.enumerated().map { i, kind in
+            SwarmRequest(id: "r\(i)", kind: kind, agentName: i.isMultiple(of: 2) ? "agent-\(i)" : nil,
+                         itemKey: "TASK-\(i)", itemTitle: "Item \(i)", prompt: "Prompt \(i)",
+                         createdAt: Timestamp(ms: Int64(i)))
+        }
+        client.stateResult = .success(s)
+        await m.refresh()
+        let height = renderedSize(NeedsYouSection(model: m, cap: 400).frame(width: 360)).height
+        XCTAssertGreaterThan(height, 0)
+    }
+
     func testDismissPopoverRunsSafely() {
         // Safe to call even with no status window or menubar extra window active
         StatusItemWatcher.dismissPopover()

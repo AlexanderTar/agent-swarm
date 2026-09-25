@@ -96,7 +96,7 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
-public enum RequestKind: String, Codable, Sendable {
+public enum RequestKind: String, Codable, Sendable, CaseIterable {
     case question, prompt, blocker
     case confirmRepos = "confirm_repos", approveSection = "approve_section"
     case approvePlan = "approve_plan", approveReport = "approve_report"

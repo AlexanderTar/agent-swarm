@@ -21,6 +21,10 @@ public enum Copy {
     public static let review = "Review"
     public static let openTerminal = "Open terminal"
     public static let openOrchestratorTerminal = "Open orchestrator terminal"
+    /// Needs-you row line 3, every kind (spec 1.6.3): generic, never the prompt.
+    public static let needsYouMessage = "Waiting for your input"
+    public static let openAgentTerminal = "Open agent terminal"
+    public static let openOnBoard = "Open in Swarm board"
     public static let orchestratorPaused = "Orchestrator is paused. Resume it to continue."
     public static let orchestratorNotRunning = "Orchestrator isn't running."
     public static let pause = "Pause"

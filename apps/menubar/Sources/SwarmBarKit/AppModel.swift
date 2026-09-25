@@ -56,6 +56,13 @@ public enum RequestLine {
     }
 }
 
+/// Needs-you row lines, generic across every request kind (spec 1.6.3): never the prompt.
+public enum NeedsYouRow {
+    public static func lines(_ r: SwarmRequest) -> [String] {
+        ["\(r.itemKey) · \(r.itemTitle)", r.agentName ?? r.terminalAgent ?? "—", Copy.needsYouMessage]
+    }
+}
+
 /// Everything the popover and the menu bar label show, and every action they take.
 @MainActor
 @Observable

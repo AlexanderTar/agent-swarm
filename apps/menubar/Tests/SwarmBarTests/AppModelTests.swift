@@ -594,6 +594,25 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(loaded.0, s)
         XCTAssertEqual(loaded.1, fixtureNow)
     }
+
+    func testNeedsYouRowIsGenericAndNeverShowsThePrompt() {
+        XCTAssertEqual(Copy.needsYouMessage, "Waiting for your input")
+        XCTAssertEqual(Copy.openAgentTerminal, "Open agent terminal")
+        XCTAssertEqual(Copy.openOnBoard, "Open in Swarm board")
+
+        let withAgent = SwarmRequest(id: "r", kind: .question, agentName: "go-migration-agent-debug",
+                                      itemKey: "SPIKE-16", itemTitle: "go-migration-agent-debug", prompt: "SECRET")
+        XCTAssertEqual(NeedsYouRow.lines(withAgent),
+                       ["SPIKE-16 · go-migration-agent-debug", "go-migration-agent-debug", "Waiting for your input"])
+
+        let noAgent = SwarmRequest(id: "r", kind: .acceptEpic, prompt: "SECRET")
+        XCTAssertEqual(NeedsYouRow.lines(noAgent)[1], "—")
+
+        for kind in RequestKind.allCases {
+            let r = SwarmRequest(id: "r", kind: kind, prompt: "SECRET")
+            XCTAssertFalse(NeedsYouRow.lines(r).contains(r.prompt), "\(kind) leaked the prompt")
+        }
+    }
 }
 
 /// Counts stream connection attempts from the EventStream task.
