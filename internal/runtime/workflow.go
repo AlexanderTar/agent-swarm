@@ -25,6 +25,8 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
+var errLostRace = errors.New("workflow transition lost race")
+
 // WorkflowWorktree is one {worktree, mode} pair -- swarm_workflow start's own
 // input (spec B7) and what workflows.worktrees_json stores.
 type WorkflowWorktree struct {
@@ -1693,7 +1695,6 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 		return WorkflowState{}, notWaitingOnYou(it.Key, state)
 	}
 
-	var lostRace bool
 	var bumped bool
 	ran, err := IdemTx(ctx, s, sessionID, requestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
 		switch decision {
@@ -1718,10 +1719,7 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 				return err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				lostRace = true
-				st.ID = wf.ID
-				st.ItemKey = it.Key
-				return nil
+				return errLostRace
 			}
 			// Persist the note into workflows.context_json BEFORE advance runs
 			if note != "" {
@@ -1749,10 +1747,7 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 				return err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				lostRace = true
-				st.ID = wf.ID
-				st.ItemKey = it.Key
-				return nil
+				return errLostRace
 			}
 			if _, err := s.Items.TransitionTx(ctx, tx, it.Key, items.Done, items.Daemon()); err != nil {
 				return err
@@ -1773,10 +1768,7 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 				return err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				lostRace = true
-				st.ID = wf.ID
-				st.ItemKey = it.Key
-				return nil
+				return errLostRace
 			}
 			if err := s.tryTransition(ctx, tx, it.Key, items.Ready); err != nil {
 				return err
@@ -1795,18 +1787,26 @@ func (s *Store) ResumeWorkflow(ctx context.Context, orch Agent, itemKey, decisio
 				Message: `decision must be "retry", "accept" or "fail".`}
 		}
 	})
-	if err != nil {
-		return WorkflowState{}, err
-	}
-	if lostRace {
+	if errors.Is(err, errLostRace) {
 		st, _, err := s.workflowStateByID(ctx, wf.ID)
-		if err == nil && ran && requestID != "" {
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		if requestID != "" {
 			if raw, err := json.Marshal(st); err == nil {
-				_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE session_id = ? AND request_id = ?`,
-					string(raw), sessionID, requestID)
+				_ = s.tx(ctx, func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(ctx, `INSERT INTO idempotency (caller, request_id, tool, result_json, created_at)
+						VALUES (?, ?, 'swarm_workflow', ?, ?)
+						ON CONFLICT(caller, request_id) DO UPDATE SET result_json = excluded.result_json`,
+						sessionID, requestID, string(raw), db.Millis(s.now()))
+					return err
+				})
 			}
 		}
-		return st, err
+		return st, nil
+	}
+	if err != nil {
+		return WorkflowState{}, err
 	}
 	if !ran {
 		if st.ID != "" {
@@ -1929,7 +1929,6 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, session
 		return WorkflowState{}, err
 	}
 
-	var lostRace bool
 	ran, err := IdemTx(ctx, s, sessionID, requestID, "swarm_workflow", &st, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled', updated_at = ?
 			WHERE id = ? AND state IN ('running', 'escalated')`, db.Millis(s.now()), wf.ID)
@@ -1937,10 +1936,7 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, session
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			lostRace = true
-			st.ID = wf.ID
-			st.ItemKey = it.Key
-			return nil
+			return errLostRace
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'cancelled', ended_at = ?
 			WHERE workflow_id = ? AND state IN ('active', 'waiting')`, db.Millis(s.now()), wf.ID); err != nil {
@@ -1958,18 +1954,26 @@ func (s *Store) CancelWorkflow(ctx context.Context, orch Agent, itemKey, session
 		}
 		return nil
 	})
-	if err != nil {
-		return WorkflowState{}, err
-	}
-	if lostRace {
+	if errors.Is(err, errLostRace) {
 		st, _, err := s.workflowStateByID(ctx, wf.ID)
-		if err == nil && ran && requestID != "" {
+		if err != nil {
+			return WorkflowState{}, err
+		}
+		if requestID != "" {
 			if raw, err := json.Marshal(st); err == nil {
-				_, _ = s.DB.ExecContext(ctx, `UPDATE idempotency SET result_json = ? WHERE session_id = ? AND request_id = ?`,
-					string(raw), sessionID, requestID)
+				_ = s.tx(ctx, func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(ctx, `INSERT INTO idempotency (caller, request_id, tool, result_json, created_at)
+						VALUES (?, ?, 'swarm_workflow', ?, ?)
+						ON CONFLICT(caller, request_id) DO UPDATE SET result_json = excluded.result_json`,
+						sessionID, requestID, string(raw), db.Millis(s.now()))
+					return err
+				})
 			}
 		}
-		return st, err
+		return st, nil
+	}
+	if err != nil {
+		return WorkflowState{}, err
 	}
 	if !ran {
 		if st.ID != "" {

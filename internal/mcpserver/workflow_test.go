@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
@@ -444,41 +446,246 @@ func TestSwarmWorkflowIdempotentResumeLostRace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate a concurrent transition right after latestWorkflowRow but before the UPDATE
-	// by un-escalating the workflow to running.
-	reqID := "req-resume-race-1"
-	// To test lostRace in ResumeWorkflow directly:
 	orch, err := s.RT.Agent(ctx, seed.Caller.AgentName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Calling ResumeWorkflow with a workflow that has state changed in DB between pre-check and tx:
-	// We can test that lostRace updates idempotency properly by running two concurrent resumes or
-	// verifying that calling ResumeWorkflow on a workflow whose state changed returns valid state
-	// and replays that valid state.
-	// Flip state to running:
-	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE workflows SET state = 'running' WHERE id = ?`, startRes.Workflow); err != nil {
-		t.Fatal(err)
-	}
-	// Re-set to escalated with round 1:
-	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE workflows SET state = 'escalated' WHERE id = ?`, startRes.Workflow); err != nil {
-		t.Fatal(err)
-	}
-	// First call succeeds:
-	res1, err := s.RT.ResumeWorkflow(ctx, orch, seed.TaskKey, "retry", "note", seed.Caller.SessionID, reqID)
+
+	// Hold a write lock via transaction so that ResumeWorkflow performs its initial SELECT
+	// (reading 'escalated') and then blocks waiting for s.tx / BEGIN IMMEDIATE.
+	tx, err := s.RT.DB.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res1.ID == "" || res1.State != "running" {
-		t.Fatalf("first resume res = %+v, want valid running state", res1)
+
+	reqID := "req-resume-lost-race"
+	resCh := make(chan struct {
+		st  runtime.WorkflowState
+		err error
+	}, 1)
+
+	go func() {
+		st, err := s.RT.ResumeWorkflow(ctx, orch, seed.TaskKey, "retry", "lost race note", seed.Caller.SessionID, reqID)
+		resCh <- struct {
+			st  runtime.WorkflowState
+			err error
+		}{st, err}
+	}()
+
+	// Give goroutine a moment to pass latestWorkflowRow and block on tx
+	time.Sleep(25 * time.Millisecond)
+
+	// Within tx, change state to 'running' so ResumeWorkflow's UPDATE finds 0 rows affected (errLostRace)
+	if _, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'running' WHERE id = ?`, startRes.Workflow); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
 	}
-	// Second call with same request_id replays and returns non-empty state:
-	res2, err := s.RT.ResumeWorkflow(ctx, orch, seed.TaskKey, "retry", "note", seed.Caller.SessionID, reqID)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	res := <-resCh
+	if res.err != nil {
+		t.Fatalf("ResumeWorkflow on lost race err = %v, want nil", res.err)
+	}
+	if res.st.ID != startRes.Workflow || res.st.State != "running" {
+		t.Fatalf("ResumeWorkflow on lost race returned state = %+v, want running with ID %s", res.st, startRes.Workflow)
+	}
+
+	// Idempotency replay with the same request_id must return the same state
+	replay, err := s.RT.ResumeWorkflow(ctx, orch, seed.TaskKey, "retry", "lost race note", seed.Caller.SessionID, reqID)
+	if err != nil {
+		t.Fatalf("ResumeWorkflow idempotent replay err = %v", err)
+	}
+	if replay.ID != res.st.ID || replay.State != res.st.State {
+		t.Fatalf("ResumeWorkflow replay mismatch: got %+v, want %+v", replay, res.st)
+	}
+}
+
+func TestSwarmWorkflowResumeConcurrentRace(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(
+		`{"op":"create","repo":"%s","branch":"wf-race2-branch","base":"main"}`, seed.RepoID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res2.ID == "" || res2.State != "running" {
-		t.Fatalf("replay resume res = %+v, want valid running state", res2)
+	var wtRes struct {
+		ID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wtRes); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.RT.Items.Update(ctx, seed.TaskKey, items.Patch{
+		Workflow: &workflow.Spec{Template: "mechanical"},
+		Steps:    &[]string{"step 1"},
+		Verify:   &[]string{"true"},
+		Revision: 1,
+	}, items.Daemon())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startOut, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"start","item":"%s","worktrees":[{"worktree":"%s","mode":"rw"}]}`,
+		seed.TaskKey, wtRes.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var startRes struct {
+		Workflow string `json:"workflow"`
+	}
+	if err := json.Unmarshal(mustJSON(startOut), &startRes); err != nil {
+		t.Fatal(err)
+	}
+
+	// Escalate
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE workflows SET state = 'escalated', escalation = 'test' WHERE id = ?`, startRes.Workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	orch, err := s.RT.Agent(ctx, seed.Caller.AgentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	startCh := make(chan struct{})
+	type callRes struct {
+		reqID string
+		st    runtime.WorkflowState
+		err   error
+	}
+	resCh := make(chan callRes, 2)
+
+	for i, reqID := range []string{"req-conc-1", "req-conc-2"} {
+		wg.Add(1)
+		go func(note, rID string) {
+			defer wg.Done()
+			<-startCh
+			st, err := s.RT.ResumeWorkflow(ctx, orch, seed.TaskKey, "retry", note, seed.Caller.SessionID, rID)
+			resCh <- callRes{reqID: rID, st: st, err: err}
+		}(fmt.Sprintf("note %d", i), reqID)
+	}
+
+	close(startCh)
+	wg.Wait()
+	close(resCh)
+
+	for r := range resCh {
+		if r.err != nil {
+			if !strings.Contains(r.err.Error(), "isn't waiting on you") {
+				t.Fatalf("unexpected error on concurrent resume for %s: %v", r.reqID, r.err)
+			}
+			continue
+		}
+		if r.st.State != "running" || r.st.ID != startRes.Workflow {
+			t.Fatalf("expected running state for %s, got %+v", r.reqID, r.st)
+		}
+		replay, err := s.RT.ResumeWorkflow(ctx, orch, seed.TaskKey, "retry", "replay note", seed.Caller.SessionID, r.reqID)
+		if err != nil {
+			t.Fatalf("replay failed for %s: %v", r.reqID, err)
+		}
+		if replay.State != "running" || replay.ID != startRes.Workflow {
+			t.Fatalf("replay returned unexpected state for %s: %+v", r.reqID, replay)
+		}
+	}
+}
+
+func TestSwarmWorkflowCancelLostRace(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(
+		`{"op":"create","repo":"%s","branch":"wf-canc-race-branch","base":"main"}`, seed.RepoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wtRes struct {
+		ID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wtRes); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.RT.Items.Update(ctx, seed.TaskKey, items.Patch{
+		Workflow: &workflow.Spec{Template: "mechanical"},
+		Steps:    &[]string{"step 1"},
+		Verify:   &[]string{"true"},
+		Revision: 1,
+	}, items.Daemon())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startOut, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"start","item":"%s","worktrees":[{"worktree":"%s","mode":"rw"}]}`,
+		seed.TaskKey, wtRes.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var startRes struct {
+		Workflow string `json:"workflow"`
+	}
+	if err := json.Unmarshal(mustJSON(startOut), &startRes); err != nil {
+		t.Fatal(err)
+	}
+
+	orch, err := s.RT.Agent(ctx, seed.Caller.AgentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold a write lock via transaction so CancelWorkflow performs its initial SELECT
+	// (reading 'running') and blocks waiting for s.tx / BEGIN IMMEDIATE.
+	tx, err := s.RT.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqID := "req-cancel-lost-race"
+	resCh := make(chan struct {
+		st  runtime.WorkflowState
+		err error
+	}, 1)
+
+	go func() {
+		st, err := s.RT.CancelWorkflow(ctx, orch, seed.TaskKey, seed.Caller.SessionID, reqID)
+		resCh <- struct {
+			st  runtime.WorkflowState
+			err error
+		}{st, err}
+	}()
+
+	// Give goroutine a moment to pass latestWorkflowRow and block on tx
+	time.Sleep(25 * time.Millisecond)
+
+	// Within tx, change state to 'cancelled' so CancelWorkflow's UPDATE finds 0 rows affected (errLostRace)
+	if _, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled' WHERE id = ?`, startRes.Workflow); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	res := <-resCh
+	if res.err != nil {
+		t.Fatalf("CancelWorkflow on lost race err = %v, want nil", res.err)
+	}
+	if res.st.ID != startRes.Workflow || res.st.State != "cancelled" {
+		t.Fatalf("CancelWorkflow on lost race returned state = %+v, want cancelled with ID %s", res.st, startRes.Workflow)
+	}
+
+	// Idempotency replay with the same request_id must return the same state
+	replay, err := s.RT.CancelWorkflow(ctx, orch, seed.TaskKey, seed.Caller.SessionID, reqID)
+	if err != nil {
+		t.Fatalf("CancelWorkflow idempotent replay err = %v", err)
+	}
+	if replay.ID != res.st.ID || replay.State != res.st.State {
+		t.Fatalf("CancelWorkflow replay mismatch: got %+v, want %+v", replay, res.st)
 	}
 }
 
