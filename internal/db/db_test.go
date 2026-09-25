@@ -111,6 +111,9 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE artifact_revisions DROP COLUMN warnings_json`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN auto_restart`); err != nil {
+		t.Fatal(err)
+	}
 	for _, col := range []string{"verdict", "findings_json"} {
 		if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN ` + col); err != nil {
 			t.Fatal(err)
@@ -123,6 +126,14 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := raw.Exec(`DROP TABLE workflows`); err != nil {
+		t.Fatal(err)
+	}
+	// 0014_agent_continuity.sql likewise creates its tables with plain
+	// CREATE TABLE, so replaying it must not find them already there.
+	if _, err := raw.Exec(`DROP TABLE agent_operations`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`DROP TABLE agent_lineage`); err != nil {
 		t.Fatal(err)
 	}
 	raw.Close()
