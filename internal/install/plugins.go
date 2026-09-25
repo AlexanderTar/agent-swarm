@@ -407,6 +407,28 @@ func copyTree(src, dst string) error {
 			return nil
 		}
 		target := filepath.Join(dst, rel)
+		// A symlinked entry (the walk's root itself, or anything nested under
+		// it) is recreated as a symlink at the destination, checked before
+		// d.IsDir() since a symlink-to-directory's own DirEntry.Type() is
+		// ModeSymlink, not ModeDir -- WalkDir uses Lstat throughout and never
+		// follows it, so this is the only place that ever sees it (fix round
+		// 2, finding 4; folded in from a special case repairAgySkillsRoot used
+		// to carry only for its own top-level entries, missing anything nested
+		// deeper inside a salvaged directory). A relative link target is
+		// resolved against the SOURCE directory to an absolute path before
+		// being written at the destination: dst lives in a different
+		// directory than src, so copying the relative text as-is would point
+		// at the wrong place (or nothing at all) once read back from dst.
+		if d.Type()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			if !filepath.IsAbs(linkTarget) {
+				linkTarget = filepath.Join(filepath.Dir(p), linkTarget)
+			}
+			return os.Symlink(linkTarget, target)
+		}
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}

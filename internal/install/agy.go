@@ -196,7 +196,20 @@ func legacyAgySkillsChain(c Config) (resolved string, ok bool) {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(filepath.Dir(oldPath), target)
 	}
-	if !underDir(target, filepath.Join(c.Home, "run", "launch")) {
+	// Match against both the unresolved and the (if resolvable) fully
+	// resolved run/launch root (fix round 2, finding 3): the first hop's
+	// stored text could have been written against either form depending on
+	// when and how it was created, and a home path with its own symlink
+	// (e.g. macOS's /var -> /private/var) makes those two forms genuinely
+	// different strings for the identical directory.
+	launchRoot := filepath.Join(c.Home, "run", "launch")
+	matched := underDir(target, launchRoot)
+	if !matched {
+		if resolvedLaunchRoot, err := filepath.EvalSymlinks(launchRoot); err == nil {
+			matched = underDir(target, resolvedLaunchRoot)
+		}
+	}
+	if !matched {
 		return "", false
 	}
 	if r, err := filepath.EvalSymlinks(target); err == nil {
@@ -216,10 +229,22 @@ func legacyAgySkillsChain(c Config) (resolved string, ok bool) {
 // post-migration setup leaves. Nothing under run/launch is ever deleted.
 //
 // resolved from legacyAgySkillsChain can be empty (a dangling chain --
-// nothing to salvage) or equal to newRoot itself (the chain resolved all the
-// way back to the healthy root -- also nothing to salvage, and reading
-// newRoot's own entries to copy them into itself would be both pointless and
-// unsafe); both skip straight to repointing (fix round 1, finding 4).
+// nothing to salvage) or the same directory as newRoot itself (the chain
+// resolved all the way back to the healthy root -- also nothing to salvage,
+// and reading newRoot's own entries to copy them into itself would be both
+// pointless and unsafe); both skip straight to repointing (fix round 1,
+// finding 4). "The same directory" is checked with sameDir (os.SameFile),
+// not a string comparison (fix round 2, finding 1): resolved has gone
+// through filepath.EvalSymlinks (fully resolving every hop, including any
+// symlink in c.Home itself, e.g. macOS's /var -> /private/var), while newRoot
+// is built from the unresolved c.Home. On a home path that itself has such a
+// symlink, the two strings differ even though they name the identical
+// directory -- a plain != treated that as "a distinct directory to copy
+// from", which then read newRoot's own entries, deleted each one (RemoveAll
+// on the very dst it was about to copy from, since src and dst were the same
+// path), and failed the subsequent copyTree on the now-missing source,
+// aborting the whole `swarm install` for agy after having already deleted
+// real, swarm-owned content.
 func repairAgySkillsRoot(c Config) error {
 	resolved, ok := legacyAgySkillsChain(c)
 	if !ok {
@@ -229,45 +254,38 @@ func repairAgySkillsRoot(c Config) error {
 	if err := os.MkdirAll(newRoot, 0o755); err != nil {
 		return err
 	}
-	if resolved != "" && resolved != newRoot {
-		skillsHome, err := SkillsHome(c.Home)
+	if resolved != "" {
+		same, err := sameDir(resolved, newRoot)
 		if err != nil {
 			return err
 		}
-		entries, err := os.ReadDir(resolved)
-		if err != nil {
-			return err
-		}
-		for _, e := range entries {
-			dst := filepath.Join(newRoot, e.Name())
-			owned, err := isSwarmOwned(dst, skillsHome, true) // explicit `swarm install`: adopt
+		if !same {
+			skillsHome, err := SkillsHome(c.Home)
 			if err != nil {
 				return err
 			}
-			if !owned {
-				continue // a user-owned entry already at the new root: never overwrite it
-			}
-			if err := os.RemoveAll(dst); err != nil {
+			entries, err := os.ReadDir(resolved)
+			if err != nil {
 				return err
 			}
-			src := filepath.Join(resolved, e.Name())
-			if e.Type()&os.ModeSymlink != 0 {
-				// Fix round 1, finding 1: copyTree's filepath.WalkDir follows a
-				// symlinked entry, then tries to read its target as a file --
-				// erroring out (and aborting the whole `swarm install` for agy)
-				// the moment the target turns out to be a directory. Recreate the
-				// link itself at the destination instead of walking through it.
-				linkTarget, err := os.Readlink(src)
+			for _, e := range entries {
+				dst := filepath.Join(newRoot, e.Name())
+				owned, err := isSwarmOwned(dst, skillsHome, true) // explicit `swarm install`: adopt
 				if err != nil {
 					return err
 				}
-				if err := os.Symlink(linkTarget, dst); err != nil {
+				if !owned {
+					continue // a user-owned entry already at the new root: never overwrite it
+				}
+				if err := os.RemoveAll(dst); err != nil {
 					return err
 				}
-				continue
-			}
-			if err := copyTree(src, dst); err != nil {
-				return err
+				// copyTree itself recreates a symlinked entry (whether the
+				// top-level entry or something nested inside it) as a symlink
+				// rather than walking through it (fix round 2, finding 4).
+				if err := copyTree(filepath.Join(resolved, e.Name()), dst); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -276,6 +294,24 @@ func repairAgySkillsRoot(c Config) error {
 		return err
 	}
 	return os.Symlink(newRoot, oldPath)
+}
+
+// sameDir reports whether a and b name the same directory on disk (fix
+// round 2, finding 1), regardless of how each path is spelled -- unlike a
+// plain string comparison, this is correct even when one side has gone
+// through filepath.EvalSymlinks and the other hasn't. Both paths are
+// expected to already exist (repairAgySkillsRoot's caller MkdirAlls newRoot
+// first, and resolved only reaches here after EvalSymlinks succeeded on it).
+func sameDir(a, b string) (bool, error) {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false, err
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(fa, fb), nil
 }
 
 // agySkillsRootLegacyCheck is A7 decision 4: warn (never fail) doctor when

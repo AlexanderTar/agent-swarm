@@ -439,6 +439,106 @@ func TestWriteAgyRepairSalvagesASymlinkedLegacyEntry(t *testing.T) {
 	}
 }
 
+// Fix round 2, finding 4: a symlink nested INSIDE a salvaged real directory
+// (not the top-level entry copyTree's walk root itself) must also be
+// recreated as a symlink, not walked through. This is what moving the
+// handling into copyTree itself (rather than repairAgySkillsRoot's own
+// top-level-only special case, fix round 1) actually buys: the same
+// recursive walk now catches a symlink at any depth.
+func TestWriteAgyRepairSalvagesANestedSymlinkInsideARealDir(t *testing.T) {
+	c := fakeHome(t)
+	launchSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	skillDir := filepath.Join(launchSkills, "sk")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# sk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refsTarget := t.TempDir()
+	if err := os.WriteFile(filepath.Join(refsTarget, "notes.md"), []byte("notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(refsTarget, filepath.Join(skillDir, "refs")); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(launchSkills, oldPath); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatalf("WriteAgy must not abort on a nested symlink inside a salvaged dir: %v", err)
+	}
+
+	newRoot := c.Gemini("config", "skills")
+	nestedLink := filepath.Join(newRoot, "sk", "refs")
+	fi, err := os.Lstat(nestedLink)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %s to be a symlink: %v", nestedLink, err)
+	}
+	if got, err := os.Readlink(nestedLink); err != nil || got != refsTarget {
+		t.Errorf("nested link target = %q, %v, want %q", got, err, refsTarget)
+	}
+	if _, err := os.Stat(filepath.Join(newRoot, "sk", "SKILL.md")); err != nil {
+		t.Errorf("the rest of the real dir must still be copied: %v", err)
+	}
+}
+
+// Fix round 2, finding 4: a RELATIVE symlink target must be resolved
+// against the source directory to an absolute path before being written at
+// the destination -- dst lives in a different directory than src, so
+// copying the relative text as-is would point at the wrong place (or
+// nothing) once read back from dst.
+func TestWriteAgyRepairResolvesARelativeSymlinkTargetToAbsolute(t *testing.T) {
+	c := fakeHome(t)
+	launchSkills := filepath.Join(c.Home, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	vendored := filepath.Join(filepath.Dir(launchSkills), "vend", "v")
+	if err := os.MkdirAll(vendored, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vendored, "SKILL.md"), []byte("# vendored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(launchSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A relative target, exactly as some tool might have written it:
+	// "../vend/v" from inside launchSkills.
+	if err := os.Symlink(filepath.Join("..", "vend", "v"), filepath.Join(launchSkills, "rel")); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(launchSkills, oldPath); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read back THROUGH the recreated link at the new root: if the relative
+	// text had been copied verbatim, this would resolve against newRoot's
+	// own directory instead of launchSkills's, and fail.
+	if _, err := os.Stat(filepath.Join(c.Gemini("config", "skills"), "rel", "SKILL.md")); err != nil {
+		t.Errorf("relative link did not resolve from the new location: %v", err)
+	}
+}
+
 // A plain, healthy skills root (already at the new location, or nothing
 // there yet) must never be treated as a legacy chain.
 func TestWriteAgyLeavesAHealthySkillsRootAlone(t *testing.T) {
@@ -537,6 +637,46 @@ func TestWriteAgyRepairsADanglingLegacyChain(t *testing.T) {
 	}
 }
 
+// Fix round 2, finding 3: a first hop whose stored text was spelled using
+// the fully-resolved form of the home path (e.g. macOS's
+// /var -> /private/var, exactly what t.TempDir() gives every test here)
+// must still be recognized as the legacy shape, even though
+// filepath.Join(c.Home, "run", "launch") itself is unresolved. Matching only
+// against the unresolved form missed this -- the chain went undetected
+// entirely, so neither the doctor warning nor the repair ever fired for it.
+func TestWriteAgyRepairsALegacyChainSpelledViaTheHomesOwnSymlink(t *testing.T) {
+	c := fakeHome(t)
+	resolvedHome, err := filepath.EvalSymlinks(c.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedHome == c.Home {
+		t.Skip("this machine's temp dir has no symlink component to alias")
+	}
+	launchSkills := filepath.Join(resolvedHome, "run", "launch", "ses_x", "agy-home", ".gemini", "config", "skills")
+	if err := os.MkdirAll(launchSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := c.Gemini("antigravity-cli", "skills")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(launchSkills, oldPath); err != nil {
+		t.Fatal(err)
+	}
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+	}}
+	if _, err := install.WriteAgy(context.Background(), c, f.Runner()); err != nil {
+		t.Fatal(err)
+	}
+	newRoot := c.Gemini("config", "skills")
+	target, err := os.Readlink(oldPath)
+	if err != nil || target != newRoot {
+		t.Errorf("a chain spelled via the home's own symlink must still be detected and repointed: %q, %v", target, err)
+	}
+}
+
 // Fix round 1, finding 4: a first hop into run/launch whose chain resolves
 // all the way back to the healthy new root itself (possible once a spawn's
 // own agy-home/.gemini/config/skills is itself a symlink to the real
@@ -549,6 +689,33 @@ func TestWriteAgyRepairsAChainThatResolvesBackToTheNewRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(newRoot, "already-healthy.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Fix round 2, finding 1: a swarm-owned Symlink-mode entry at the new
+	// root (the actual production shape once skillLinkMode[KindAgy] is
+	// Symlink -- every registered skill there is itself a symlink into
+	// SkillsHome) is what exposed the bug a plain-file entry (above) didn't:
+	// on a home path with its own symlink component (macOS's
+	// /var -> /private/var, which is exactly what t.TempDir() gives every
+	// test here), legacyAgySkillsChain's fully-resolved `resolved` differs
+	// textually from `newRoot` even though they name the identical
+	// directory. The pre-fix-round-2 code treated that as "a distinct
+	// directory to copy from", read newRoot's own entries, and deleted this
+	// one (RemoveAll on the very dst it was about to copy from, since src
+	// and dst were actually the same path) before failing the copy on the
+	// now-missing source -- corrupting a real install before aborting it.
+	sharedSkillsHome, err := install.SkillsHome(c.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swarmSkillReal := filepath.Join(sharedSkillsHome, "swarm")
+	if err := os.MkdirAll(swarmSkillReal, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(swarmSkillReal, "SKILL.md"), []byte("# swarm"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(swarmSkillReal, filepath.Join(newRoot, "swarm")); err != nil {
 		t.Fatal(err)
 	}
 	// A spawn's own agy-home config/skills, itself a symlink to the real new
@@ -580,6 +747,9 @@ func TestWriteAgyRepairsAChainThatResolvesBackToTheNewRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(newRoot, "already-healthy.txt")); err != nil {
 		t.Errorf("the new root's own content must survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(newRoot, "swarm", "SKILL.md")); err != nil {
+		t.Errorf("the swarm-owned symlink entry was deleted rather than left alone: %v", err)
 	}
 }
 
