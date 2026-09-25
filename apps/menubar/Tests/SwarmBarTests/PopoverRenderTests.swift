@@ -62,12 +62,13 @@ final class PopoverRenderTests: XCTestCase {
         let m = makeAppModel(client)
         var s: StateResponse = try Fixture.decode("state.json")
         s.requests = RequestKind.allCases.enumerated().map { i, kind in
-            SwarmRequest(id: "r\(i)", kind: kind, agentName: i.isMultiple(of: 2) ? "agent-\(i)" : nil,
+            SwarmRequest(id: "r\(i)", kind: kind, isHITL: true, agentName: i.isMultiple(of: 2) ? "agent-\(i)" : nil,
                          itemKey: "TASK-\(i)", itemTitle: "Item \(i)", prompt: "Prompt \(i)",
                          createdAt: Timestamp(ms: Int64(i)))
         }
         client.stateResult = .success(s)
         await m.refresh()
+        XCTAssertEqual(m.visibleRequests.count, 3, "rows actually render")
         let height = renderedSize(NeedsYouSection(model: m, cap: 400).frame(width: 360)).height
         XCTAssertGreaterThan(height, 0)
     }
