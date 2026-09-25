@@ -201,8 +201,9 @@ public enum AgentTree {
         return out
     }
 
-    /// Line 2: "Coder · TASK-101", plus the state label when not running.
+    /// Line 2: workflow step for a workflow agent, item key for a legacy agent,
+    /// plus the state label when not running.
     public static func subtitle(_ a: AgentNode) -> String {
-        ([Copy.roleLabel(a.role), a.itemKey] + [DisplayState(a).label].compactMap { $0 }).joined(separator: " · ")
+        ([Copy.roleLabel(a.role), a.step ?? a.itemKey] + [DisplayState(a).label].compactMap { $0 }).joined(separator: " · ")
     }
 }

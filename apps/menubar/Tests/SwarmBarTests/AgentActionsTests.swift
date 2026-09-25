@@ -193,4 +193,17 @@ final class AgentActionsTests: XCTestCase {
         let roles: [Role] = [.coder, .reviewer, .uiReviewer, .researcher, .debugger, .mechanical]
         XCTAssertEqual(roles.map(Copy.roleLabel), ["Coder", "Reviewer", "UI reviewer", "Researcher", "Debugger", "Mechanical"])
     }
+
+    func testAgentRowStepSuffix() throws {
+        let base = """
+        {"id":"agt_1","name":"critic","kind":"codex","model":"test","role":"reviewer",\
+        "item_key":"TASK-101","item_title":"Task","root_key":"EPIC-1","parent_name":null,\
+        "state":"active","session":null,"preflight_error":null,"children":[],"finished":[],"step":"review r2"}
+        """
+        let roundTwo = try JSONDecoder().decode(AgentNode.self, from: Data(base.utf8))
+        XCTAssertEqual(AgentTree.subtitle(roundTwo), "Reviewer · review r2 · Queued")
+        let build = try JSONDecoder().decode(AgentNode.self, from: Data(base.replacingOccurrences(of: "review r2", with: "build").replacingOccurrences(of: "reviewer", with: "coder").utf8))
+        XCTAssertEqual(AgentTree.subtitle(build), "Coder · build · Queued")
+        XCTAssertEqual(AgentTree.subtitle(AgentNode(name: "legacy", model: "test")), "Coder · TASK-1")
+    }
 }
