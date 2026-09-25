@@ -3,7 +3,7 @@ import { ROLE_EMOJI, ROLE_LABEL } from "../copy";
 import type { Role, WorkflowFinding } from "../types";
 
 const VERDICT = {
-  pass: { label: "Pass", className: "bg-good/10 text-good" },
+  pass: { label: "Pass", className: "bg-ok/10 text-ok" },
   changes_requested: { label: "Changes requested", className: "bg-warn/10 text-warn" },
   blocked: { label: "Blocked", className: "bg-bad/10 text-bad" },
 } as const;
