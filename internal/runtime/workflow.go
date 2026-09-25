@@ -43,9 +43,17 @@ type StartWorkflowInput struct {
 // WorkflowRunView is one workflow_runs row the way swarm_workflow/swarm_read
 // report it (spec B3/B7).
 type WorkflowRunView struct {
-	ID, StepID, Role, AgentID, AgentName, State, Verdict, SHA string
-	Round, AutoRetries                                        int
-	Findings                                                  []workflow.Finding
+	ID          string             `json:"id,omitempty"`
+	StepID      string             `json:"step"`
+	Role        string             `json:"role"`
+	AgentID     string             `json:"agent_id,omitempty"`
+	AgentName   string             `json:"agent"`
+	State       string             `json:"state"`
+	Verdict     string             `json:"verdict"`
+	SHA         string             `json:"sha"`
+	Round       int                `json:"round"`
+	AutoRetries int                `json:"auto_retries,omitempty"`
+	Findings    []workflow.Finding `json:"findings"`
 }
 
 // WorkflowState is swarm_workflow's result shape (spec B7): the workflow's
@@ -84,8 +92,12 @@ func (r wfRunRow) toRun() workflow.Run {
 }
 
 func (r wfRunRow) toView() WorkflowRunView {
+	f := r.findings()
+	if f == nil {
+		f = []workflow.Finding{}
+	}
 	return WorkflowRunView{ID: r.ID, StepID: r.StepID, Role: r.Role, AgentID: r.AgentID, State: r.State,
-		Verdict: r.Verdict, SHA: r.SHA, Round: r.Round, AutoRetries: r.AutoRetries, Findings: r.findings()}
+		Verdict: r.Verdict, SHA: r.SHA, Round: r.Round, AutoRetries: r.AutoRetries, Findings: f}
 }
 
 // workflowLocks is the per-workflow mutex the engine holds across a whole
@@ -845,13 +857,13 @@ func (s *Store) spawnRunAgent(ctx context.Context, wf wfRow, it items.Item, run 
 				shareRW = append(shareRW, w)
 			}
 		}
-		wts, err := s.briefWorktrees(ctx, shareRW)
+		wts, err := s.BriefWorktrees(ctx, shareRW)
 		if err != nil {
 			return false, err
 		}
 		brief.Worktrees = wts
 	} else if run.ReviewWorktreeID != "" {
-		wts, err := s.briefWorktrees(ctx, []WorkflowWorktree{{WorktreeID: run.ReviewWorktreeID, Mode: "ro"}})
+		wts, err := s.BriefWorktrees(ctx, []WorkflowWorktree{{WorktreeID: run.ReviewWorktreeID, Mode: "ro"}})
 		if err != nil {
 			return false, err
 		}
@@ -1414,10 +1426,10 @@ func (s *Store) recoverWorkflows(ctx context.Context) error {
 	return nil
 }
 
-// briefWorktrees resolves wts (worktree id + mode) into the BriefWorktree
+// BriefWorktrees resolves wts (worktree id + mode) into the BriefWorktree
 // header lines Spawn's brief renders (spec B6: "fixes today's never-
 // populated brief worktree header").
-func (s *Store) briefWorktrees(ctx context.Context, wts []WorkflowWorktree) ([]BriefWorktree, error) {
+func (s *Store) BriefWorktrees(ctx context.Context, wts []WorkflowWorktree) ([]BriefWorktree, error) {
 	out := make([]BriefWorktree, 0, len(wts))
 	for _, w := range wts {
 		var repo, path, branch, base string
