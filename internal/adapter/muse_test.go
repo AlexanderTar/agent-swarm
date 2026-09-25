@@ -786,3 +786,20 @@ func TestMuseParseHookReadsProbedFixtures(t *testing.T) {
 		t.Fatalf("UserPromptSubmit = %+v", in)
 	}
 }
+
+// TestMuseHookOutputStaysNil locks in the Task 4 probe's item-3 finding:
+// muse's own plugin docs (native-plugin-contract.md, capability-examples.json)
+// specify a manifest schema, not a hook stdout/decision contract, and the
+// live probe found no hook ever fires for the one tool Swarm would want to
+// deny (request_user_input). There is no probed deny shape to emit, so
+// HookOutput stays a fail-open no-op for every decision, matching the
+// existing doc comment's contract ("must not fail closed").
+func TestMuseHookOutputStaysNil(t *testing.T) {
+	m := newMuse(Deps{})
+	for _, d := range []HookDecision{{}, {Block: true, Reason: "x"}, {Context: "c"}} {
+		out, err := m.HookOutput("PreToolUse", d)
+		if err != nil || out != nil {
+			t.Fatalf("HookOutput(%+v) = %q, %v; want nil, nil", d, out, err)
+		}
+	}
+}

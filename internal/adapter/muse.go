@@ -399,6 +399,12 @@ func (m *Muse) InterruptKeys() []string { return []string{"C-c"} }
 // carry it. This triggers the plan's Task 4 stop-and-report clause: Task 9
 // must not refuse `swarm_ask kind:"question"` for muse without a fallback
 // (spec section 10, new OQ).
+//
+// Task 6: muse's own plugin docs (native-plugin-contract.md,
+// capability-examples.json) specify only the manifest schema, not a hook
+// stdout/decision contract, and no deny was ever exercised live (there is
+// no hook to deny request_user_input from). There is no probed shape to
+// emit, so this stays a fail-open no-op for every event and decision.
 func (m *Muse) HookOutput(string, HookDecision) ([]byte, error) { return nil, nil }
 
 func (m *Muse) ParseHook(event string, stdin []byte) (HookInput, error) {
