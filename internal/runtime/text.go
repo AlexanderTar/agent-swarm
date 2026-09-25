@@ -268,8 +268,10 @@ const PreservationChecklist = "Stop new work, save edits, wait for or interrupt 
 
 // SuccessorKickoff is the fresh-session kickoff for the same agent after a
 // handoff, an interrupted recovery, or a resume. mode is one of "handoff",
-// "recovery" or "resume".
-func SuccessorKickoff(name string, role Role, itemKey, title, mode string) string {
+// "recovery" or "resume". itemType selects the role's skill list exactly
+// like Kickoff/ResumeKickoff: a spike-item orchestrator gets swarm-spike,
+// never swarm-orchestrator.
+func SuccessorKickoff(name string, role Role, itemType items.Type, itemKey, title, mode string) string {
 	after := "handoff"
 	if mode == "recovery" {
 		after = "interrupted recovery"
@@ -283,7 +285,7 @@ func SuccessorKickoff(name string, role Role, itemKey, title, mode string) strin
 		"Continue the unfinished unit and next action; do not repeat completed work or reset the plan. "+
 		"Checkpoint acceptance naming the predecessor and next action. On incomplete recovery or divergence, "+
 		"inspect and report before overwriting. %s",
-		name, role, itemKey, title, after, joinSkillNames(RoleSkills(role, items.Task)), mandateText, Preamble)
+		name, role, itemKey, title, after, joinSkillNames(RoleSkills(role, itemType)), mandateText, Preamble)
 }
 
 // ResumeAddition rides on the successor kickoff for a resume: durable
@@ -299,10 +301,11 @@ func BrokenPredecessorWarning(paths, checkpoints []string) string {
 }
 
 // OrchestratorHandoffAddition records the live children a handoff leaves
-// running: their IDs and decisions, never fabricated checkpoints.
+// running: record their IDs and decisions, and never report their work
+// complete or fabricate their checkpoints (recovery never fabricates).
 func OrchestratorHandoffAddition(childNames []string) string {
 	return fmt.Sprintf("Your children keep running through this handoff (%s): record their IDs and decisions, "+
-		"reconcile their progress after resume, and never report their work complete without fabricating their checkpoints.",
+		"reconcile their progress after resume, and never report their work complete or fabricate their checkpoints.",
 		strings.Join(childNames, ", "))
 }
 

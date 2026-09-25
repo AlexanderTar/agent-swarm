@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
 // TestSyncRecoverySurvivesAckedAssignment pins the successor-recovery
@@ -247,7 +248,7 @@ func TestPauseNoticeGolden(t *testing.T) {
 }
 
 func TestFreshHandoffKickoffGolden(t *testing.T) {
-	got := SuccessorKickoff("login-coder", RoleCoder, "TASK-101", "Build it", "handoff")
+	got := SuccessorKickoff("login-coder", RoleCoder, items.Task, "TASK-101", "Build it", "handoff")
 	if !startsWith(got, "You are swarm agent login-coder (coder) for TASK-101: Build it, continuing in a fresh session after handoff. ") {
 		t.Fatalf("kickoff head mismatch: %q", got)
 	}
@@ -263,7 +264,7 @@ func TestFreshHandoffKickoffGolden(t *testing.T) {
 }
 
 func TestResumedHistoryGolden(t *testing.T) {
-	got := SuccessorKickoff("login-coder", RoleCoder, "TASK-101", "Build it", "resume") + " " + ResumeAddition
+	got := SuccessorKickoff("login-coder", RoleCoder, items.Task, "TASK-101", "Build it", "resume") + " " + ResumeAddition
 	for _, want := range []string{"resuming", "durable state wins"} {
 		if !contains(got, want) {
 			t.Fatalf("resume kickoff missing %q: %q", want, got)
@@ -283,19 +284,36 @@ func TestBrokenPredecessorGolden(t *testing.T) {
 
 func TestLiveChildrenOrchestratorGolden(t *testing.T) {
 	got := OrchestratorHandoffAddition([]string{"lane-a", "lane-b"})
-	for _, want := range []string{"lane-a", "lane-b", "keep running", "without fabricating their checkpoints"} {
-		if !contains(got, want) {
-			t.Fatalf("orchestrator addition missing %q: %q", want, got)
-		}
+	want := "Your children keep running through this handoff (lane-a, lane-b): record their IDs and decisions, " +
+		"reconcile their progress after resume, and never report their work complete or fabricate their checkpoints."
+	if got != want {
+		t.Fatalf("orchestrator addition mismatch:\n got: %q\nwant: %q", got, want)
 	}
 }
 
 func TestReviewerKickoffGolden(t *testing.T) {
-	got := SuccessorKickoff("ui-1", RoleReviewer, "TASK-101", "Review it", "handoff")
+	got := SuccessorKickoff("ui-1", RoleReviewer, items.Task, "TASK-101", "Review it", "handoff")
 	for _, want := range []string{"ui-1", "reviewer", "swarm-reviewer", "Call swarm_sync first"} {
 		if !contains(got, want) {
 			t.Fatalf("reviewer kickoff missing %q: %q", want, got)
 		}
+	}
+}
+
+// TestSuccessorKickoffSpikeNamesSpikeSkill pins the spike-item divergence:
+// a spike-item orchestrator's successor kickoff names swarm-spike (like
+// Kickoff/ResumeKickoff via RoleSkills), never swarm-orchestrator.
+func TestSuccessorKickoffSpikeNamesSpikeSkill(t *testing.T) {
+	got := SuccessorKickoff("spike-orch", RoleOrchestrator, items.Spike, "SPIKE-7", "Probe it", "handoff")
+	if !contains(got, "`swarm-spike`") {
+		t.Fatalf("spike successor kickoff missing `swarm-spike`: %q", got)
+	}
+	if contains(got, "`swarm-orchestrator`") {
+		t.Fatalf("spike successor kickoff names swarm-orchestrator: %q", got)
+	}
+	epic := SuccessorKickoff("epic-orch", RoleOrchestrator, items.Epic, "EPIC-1", "Ship it", "handoff")
+	if !contains(epic, "`swarm-orchestrator`") {
+		t.Fatalf("epic successor kickoff missing `swarm-orchestrator`: %q", epic)
 	}
 }
 
