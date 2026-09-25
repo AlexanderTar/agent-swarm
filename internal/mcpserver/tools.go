@@ -248,8 +248,13 @@ func sendTool(s *Server) ToolDef {
 				return nil, err
 			}
 			kind := in.Kind
-			if kind == "" || kind == "relay" {
+			if kind == "" {
 				kind = "finding"
+			}
+			switch kind {
+			case "question", "answer", "finding":
+			default:
+				return nil, fmt.Errorf("kind must be question, answer or finding, got %q", in.Kind)
 			}
 			// runtime.Store.Send's last-but-one parameter is named correlationID and
 			// is the only thread-tracking hook it exposes (internal/runtime is

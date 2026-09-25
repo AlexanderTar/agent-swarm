@@ -395,18 +395,14 @@ func TestSendWithoutOrDistinctRequestIDsEachSend(t *testing.T) {
 	}
 }
 
-// Omitted kind (and explicit relay, which no agent can ever mean — it is a
-// daemon-origin kind) must store finding, the generic agent message kind.
+// Omitted kind stores finding, the generic agent message kind. Explicit
+// relay is rejected by TestSendRejectsUnknownKind — relay is daemon-only.
 func TestSendDefaultsOmittedKindToFinding(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()
-	for _, body := range []string{
-		`{"to":"` + seed.Caller.AgentName + `","body":"no kind"}`,
-		`{"to":"` + seed.Caller.AgentName + `","kind":"relay","body":"explicit relay"}`,
-	} {
-		if _, err := s.call(ctx, seed.Caller, "swarm_send", body); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := s.call(ctx, seed.Caller, "swarm_send",
+		`{"to":"`+seed.Caller.AgentName+`","body":"no kind"}`); err != nil {
+		t.Fatal(err)
 	}
 	var kinds []string
 	rows, err := s.RT.DB.QueryContext(ctx, `SELECT kind FROM messages WHERE to_agent_id = ? ORDER BY seq`, seed.Caller.AgentID)
@@ -424,12 +420,31 @@ func TestSendDefaultsOmittedKindToFinding(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(kinds) != 2 {
-		t.Fatalf("stored kinds = %v, want exactly 2 messages", kinds)
+	if len(kinds) != 1 {
+		t.Fatalf("stored kinds = %v, want exactly 1 message", kinds)
 	}
 	for _, k := range kinds {
 		if k != "finding" {
 			t.Errorf("stored kind = %q, want finding", k)
+		}
+	}
+}
+
+// Only the strict agent kind set is accepted: invented kinds fail fast
+// instead of being stored verbatim, and relay stays daemon-only — an agent
+// sending it explicitly gets the same rejection.
+func TestSendRejectsUnknownKind(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	for _, kind := range []string{"banana", "relay"} {
+		_, err := s.call(ctx, seed.Caller, "swarm_send",
+			`{"to":"`+seed.Caller.AgentName+`","kind":"`+kind+`","body":"x"}`)
+		if err == nil {
+			t.Errorf("kind %q: want rejection, got success", kind)
+			continue
+		}
+		if !strings.Contains(err.Error(), "kind") {
+			t.Errorf("kind %q: error %q should name kind", kind, err)
 		}
 	}
 }
