@@ -179,16 +179,11 @@ func TestAgentsWithPluginsOnlyWritesNoConfiguration(t *testing.T) {
 // machine must get settings.json plus both skills with no other agent touched.
 func TestAgentsDispatchesMuseToWriteMuse(t *testing.T) {
 	c := fakeHome(t)
-	dir := c.Muse("plugin")
 	f := &execx.Fake{Responses: map[string]execx.Result{
-		"launchctl bootout gui/501/dev.swarm.updater":                    {},
-		"muse plugins list --json":                                       {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
-		"muse plugins update superpowers":                                {Out: "updated"},
-		"muse plugins update elements-of-style":                          {Out: "updated"},
-		"muse plugins install " + dir + " --scope user --json":           {Out: `{"installed":{"id":"swarm"}}`},
-		"muse plugins approve plugin:swarm:hook:PreToolUse --json":       {Out: `{"decision":"approve"}`},
-		"muse plugins approve plugin:swarm:hook:PostToolUse --json":      {Out: `{"decision":"approve"}`},
-		"muse plugins approve plugin:swarm:hook:UserPromptSubmit --json": {Out: `{"decision":"approve"}`},
+		"launchctl bootout gui/501/dev.swarm.updater": {},
+		"muse plugins list --json":                    {Out: `{"plugins":[{"record":{"id":"superpowers"}},{"record":{"id":"elements-of-style"}}]}`},
+		"muse plugins update superpowers":             {Out: "updated"},
+		"muse plugins update elements-of-style":       {Out: "updated"},
 	}}
 	o := agentsOpts(t, c, f, install.KindMuse)
 	if err := install.Agents(context.Background(), o); err != nil {

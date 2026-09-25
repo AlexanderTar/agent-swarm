@@ -30,10 +30,6 @@ func TestUninstallRemovesSwarmsOwnEntriesAndKeepsEverythingElse(t *testing.T) {
 		"codex plugin marketplace add obra/superpowers-marketplace": {},
 		"codex plugin list":                                         {Out: ""},
 		"cursor-agent plugin marketplace add https://github.com/obra/superpowers-marketplace": {},
-		"muse plugins install " + c.Muse("plugin") + " --scope user --json":                   {Out: `{"installed":{"id":"swarm"}}`},
-		"muse plugins approve plugin:swarm:hook:PreToolUse --json":                            {Out: `{"decision":"approve"}`},
-		"muse plugins approve plugin:swarm:hook:PostToolUse --json":                           {Out: `{"decision":"approve"}`},
-		"muse plugins approve plugin:swarm:hook:UserPromptSubmit --json":                      {Out: `{"decision":"approve"}`},
 	}}
 	o := agentsOpts(t, c, f, install.Kinds...)
 	o.PluginsOnly = true // skip the plugin installs; this test is about config files
