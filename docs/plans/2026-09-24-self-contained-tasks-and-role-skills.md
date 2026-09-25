@@ -817,7 +817,7 @@ adapter. Phase 1 probes, controller ruling and live-TUI evidence:
 - [x] Commit the probe doc: `docs(plan): live TUI probe for muse spawn isolation`.
 
 #### Unit PM.2: `HOME` denylist isolation + pinned data/state/cache
-- [ ] Write the failing tests in `internal/adapter/muse_test.go` (temp `UserHome`,
+- [x] Write the failing tests in `internal/adapter/muse_test.go` (temp `UserHome`,
       `launchDir`): `TestMuseSetupEnvIsolatesHOMEExceptOtherAgentsPersonalRoots` (fake
       `UserHome` has `.claude`, `.codex`, `.agents`, `.cursor`, `.gemini` plus an ordinary
       dotfile e.g. `.gitconfig`; assert the returned `HOME`'s dir has no `.claude` etc.
@@ -825,10 +825,10 @@ adapter. Phase 1 probes, controller ruling and live-TUI evidence:
       `TestMuseSetupEnvPinsDataStateCacheToRealHome` (assert `XDG_DATA_HOME` ==
       `<fake UserHome>/.local/share`, same for state/cache); `TestMuseResumeUsesSameIsolation`
       (Resume's env map equals Launch's shape). Record red.
-- [ ] Implement: in `setupEnv`, isolate `HOME` to a fresh per-launch dir, symlinking real
+- [x] Implement: in `setupEnv`, isolate `HOME` to a fresh per-launch dir, symlinking real
       `~` entries except the denylist; add `XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME`
       to the returned map, pinned to `m.d.UserHome`-relative real paths.
-- [ ] Run green. Commit: `feat(adapter): isolate muse's HOME, pin its real data/state/cache dirs`.
+- [x] Run green. Commit: `feat(adapter): isolate muse's HOME, pin its real data/state/cache dirs`.
 
 #### Unit PM.3: settings clone-then-mutate
 - [ ] Write the failing test `TestMuseSetupEnvDropsOperatorMCPServersAndForeignContext`
