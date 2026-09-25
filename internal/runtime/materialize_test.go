@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 // approvedFeatureSpike sets up a spike with one confirmed repo "chat", an approved
@@ -454,5 +455,69 @@ func TestFeatureSpikeNeedsBothArtifacts(t *testing.T) {
 	}
 	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", "", planID, "", ""); err == nil {
 		t.Fatal("a feature spike needs the spec too")
+	}
+}
+
+func TestMaterializeCopiesWorkflowUnitsVerify(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	tree, err := ParseTree(planBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree.Children[0].Children[0].Workflow = &workflow.Spec{Template: "tdd-reviewed"}
+	tree.Children[0].Children[0].Units = []TreeUnit{{Title: "Cookie", Steps: []string{"Write test", "Implement"}}}
+	tree.Children[0].Children[0].Verify = []string{"go test ./internal/runtime/..."}
+	tree.Children[0].Children[0].Solo = "isolated"
+	spike, err := s.Items.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Spike", SpikeIntent: "feature"}, items.Daemon())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	res, err := s.createTree(ctx, tx, spike, tree, items.Epic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.Items.GetTx(ctx, tx, res.Created[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Workflow == nil || len(task.Units) != 1 || task.Units[0].Title != "Cookie" || task.Solo != "isolated" || len(task.Verify) != 1 {
+		t.Fatalf("task = %+v", task)
+	}
+}
+
+func TestMaterializeDerivesRoleHint(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	tree, err := ParseTree(planBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree.Children[0].Children[0].Workflow = &workflow.Spec{Template: "debug"}
+	tree.Children[0].Children[0].RoleHint = ""
+	spike, err := s.Items.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Spike", SpikeIntent: "feature"}, items.Daemon())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	res, err := s.createTree(ctx, tx, spike, tree, items.Epic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.Items.GetTx(ctx, tx, res.Created[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.RoleHint != "debugger" {
+		t.Fatalf("role_hint = %q", task.RoleHint)
 	}
 }

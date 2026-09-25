@@ -16,6 +16,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
 const maxArtifactBytes = 1 << 20 // 1 MB
@@ -33,17 +34,27 @@ type ArtifactResult struct {
 	StaleRequests []string
 }
 
+type TreeUnit struct {
+	Title string   `json:"title"`
+	Steps []string `json:"steps"`
+}
+
 // TreeNode is one node of a swarm-tree block (I10).
 type TreeNode struct {
-	Ref        string     `json:"ref,omitempty"`
-	Type       string     `json:"type"`
-	Title      string     `json:"title"`
-	Brief      string     `json:"brief"`
-	Acceptance []string   `json:"acceptance"`
-	RoleHint   string     `json:"role_hint,omitempty"`
-	TddExempt  *string    `json:"tdd_exempt,omitempty"`
-	Repos      []string   `json:"repos,omitempty"`
-	Children   []TreeNode `json:"children,omitempty"`
+	Ref        string         `json:"ref,omitempty"`
+	Type       string         `json:"type"`
+	Title      string         `json:"title"`
+	Brief      string         `json:"brief"`
+	Acceptance []string       `json:"acceptance"`
+	RoleHint   string         `json:"role_hint,omitempty"`
+	Workflow   *workflow.Spec `json:"workflow,omitempty"`
+	Steps      []string       `json:"steps,omitempty"`
+	Units      []TreeUnit     `json:"units,omitempty"`
+	Solo       string         `json:"solo,omitempty"`
+	Verify     []string       `json:"verify,omitempty"`
+	TddExempt  *string        `json:"tdd_exempt,omitempty"`
+	Repos      []string       `json:"repos,omitempty"`
+	Children   []TreeNode     `json:"children,omitempty"`
 }
 
 // TreeDep is one swarm-tree dependency edge.
