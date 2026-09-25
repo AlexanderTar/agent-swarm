@@ -162,17 +162,31 @@ func normalize(kind runtime.AgentKind, event string) string {
 	return event
 }
 
-// isQuestionTool is the one list of native "ask the human" tools.
-// Per-adapter status (spec section 5): names and hook block shapes are read from
-// code and vendor docs only; nothing here was run against a live agent.
+// isQuestionTool is the one list of native "ask the human" tools that a
+// hook can intercept. Per-adapter status, live-probed 2026-09-25/26
+// (spec section 1.7, docs/plans/2026-09-25-needs-you-and-child-approval-routing.md
+// Tasks 4 and 4b):
 //
-//	claude AskUserQuestion: PreToolUse deny documented (code + docs VERIFIED, live UNVERIFIED).
-//	codex request_user_input, experimental_request_user_input: UNVERIFIED that PreToolUse
-//	  reaches these tools (docs say some tool paths opt out) and that the block is honored.
-//	cursor ask_question: tool name from the user's brief, UNVERIFIED (docs name no question tool).
-//	agy ask_question: name from an existing test, block shape UNVERIFIED.
+//	claude AskUserQuestion: PreToolUse deny live-tested (handler_test.go:868 and around it).
+//	agy ask_question: confirmed live. PreToolUse fires before the dialog renders (a deny
+//	  suppresses it entirely); PostToolUse carries no result field, so agy stays
+//	  agent_reported (spec 2.3.5). Fixtures: testdata/agy-hook-{pre,post}tooluse-ask_question.json.
+//	codex request_user_input: UNCONFIRMED live (Task 4b hit a persistent backend 401
+//	  unrelated to Swarm before the tool call was ever reached, spec 1.7). Kept refused
+//	  on source-code confidence (registry.rs/request_user_input.rs); retry once resolved.
+//	muse request_user_input: confirmed live to dispatch NO hook at all, ever -- not
+//	  "fires but can't deny" but no event to intercept in the first place, while the same
+//	  plugin's hooks fired correctly for muse's other tool calls in the same turn
+//	  (testdata/muse-hook-{pre,post}tooluse.json capture that sibling firing, not
+//	  request_user_input). muse is therefore NOT in this list: it joins cursor's
+//	  exception (swarm_ask kind:"question" stays available) rather than being refused.
+//	cursor AskQuestion: confirmed (Cursor staff, forum bug 161836) never to fire
+//	  PreToolUse/PostToolUse at all. Also not in this list, same exception as muse.
 //
-// Where a block is ignored, a parented agent's question opens no row and nothing else happens.
+// Where a block is honored, a parented agent's question is relayed instead
+// (nativeQuestionRelay). Where no hook fires at all (cursor, muse), a
+// parented agent still has no other way to reach the user; swarm_ask stays
+// available and Task 9 does not refuse it for these two kinds.
 func isQuestionTool(name string) bool {
 	switch name {
 	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input":

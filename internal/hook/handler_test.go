@@ -1216,6 +1216,86 @@ func TestReadButUnackedMessagesNeitherNudgeNorBlockStop(t *testing.T) {
 	}
 }
 
+// TestMuseSiblingToolHookFixturesOpenNoRowAndDoNotBlock replays the Task 4
+// live-probe PreToolUse/PostToolUse fixtures. They capture a sibling tool
+// call (submit_reminder_decision), not request_user_input -- muse never
+// dispatches a hook for its own request_user_input (spec section 1.7), so
+// there is no request_user_input payload to replay and no row to open or
+// block from this path. This locks in the true behavior instead of
+// fabricating a request_user_input payload that was never observed live.
+func TestMuseSiblingToolHookFixturesOpenNoRowAndDoNotBlock(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'muse' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	pre, err := os.ReadFile("../adapter/testdata/muse-hook-pretooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(ctx, runtime.Muse, "PreToolUse", ses, pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a sibling tool call must not be blocked, got %s", out)
+	}
+
+	post, err := os.ReadFile("../adapter/testdata/muse-hook-posttooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Handle(ctx, runtime.Muse, "PostToolUse", ses, post); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("requests = %d, want 0 (no hook ever fires for muse's own request_user_input)", n)
+	}
+}
+
+// TestMuseUserPromptSubmitClosesOpenQuestionRows replays the Task 4
+// live-probe UserPromptSubmit fixture: a top-level muse agent has no way to
+// have Swarm open its native question's row (see the sibling-tool test
+// above), so it uses swarm_ask kind:"question" directly (spec section 1.7,
+// muse joins cursor's exception). This is the fallback that still works for
+// muse: UserPromptSubmit closes whatever question/blocker rows are open when
+// the human types a reply in the terminal, same as every other kind
+// (handler.go's UserPromptSubmit case, ResolveAnsweredInTerminal).
+func TestMuseUserPromptSubmitClosesOpenQuestionRows(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'muse' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	req, err := h.RT.AskQuestion(ctx, ses, "Red or blue?", []string{"Red", "Blue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := os.ReadFile("../adapter/testdata/muse-hook-userpromptsubmit.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Handle(ctx, runtime.Muse, "UserPromptSubmit", ses, prompt); err != nil {
+		t.Fatal(err)
+	}
+
+	var state, via string
+	if err := h.DB.QueryRowContext(ctx, `SELECT state, responded_via FROM requests WHERE id = ?`, req.ID).
+		Scan(&state, &via); err != nil {
+		t.Fatal(err)
+	}
+	if state != "answered" || via != "terminal" {
+		t.Fatalf("state = %q via %q, want answered/terminal", state, via)
+	}
+}
+
 func TestParentedAgentQuestionToolIsBlockedAndOpensNoRequest(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
