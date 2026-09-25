@@ -9,6 +9,7 @@ import (
 	"regexp"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -196,8 +197,17 @@ func (m *Muse) setupEnv(s Spec) (map[string]string, error) {
 		filepath.Join(museDir, "auth.json")); err != nil {
 		return nil, err
 	}
-	if err := symlinkIfExists(filepath.Join(m.d.UserHome, ".config", "muse", "skills"),
-		filepath.Join(museDir, "skills")); err != nil {
+	// Only swarm-managed skills go in (Finding 2 hygiene, though the real
+	// $HOME/.claude|.codex|.agents leak PM.2 fixes was the actual bug): the
+	// whole real ~/.config/muse/skills dir is never symlinked wholesale, so
+	// any personal skill a user someday installs directly there does not
+	// reach a spawned muse either. Matches claude.go's writeProjectSwarmConfig.
+	skillsHome, err := install.SkillsHome(m.d.Home)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := install.LinkSkills(filepath.Join(museDir, "skills"), skillsHome,
+		install.SkillLinkMode(install.KindMuse)); err != nil {
 		return nil, err
 	}
 

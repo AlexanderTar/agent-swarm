@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -217,12 +218,13 @@ func TestMuseLaunchIsolatesXDGConfigHomeWithLiteralSwarmEnv(t *testing.T) {
 		}
 	}
 
-	// auth.json and the user skills dir are symlinked in so provider login
-	// and installed skills still work from the isolated config dir -- and
-	// must point AT the real files, not just be a symlink of some kind.
+	// auth.json is symlinked in so provider login still works from the
+	// isolated config dir -- and must point AT the real file, not just be a
+	// symlink of some kind. (Q1 hygiene fix, PM.4: skills/ is no longer a
+	// whole-dir symlink to the real ~/.config/muse/skills -- see
+	// TestMuseSetupEnvLinksOnlySwarmManagedSkills.)
 	for _, tc := range []struct{ name, wantTarget string }{
 		{"auth.json", filepath.Join(realDir, "auth.json")},
-		{"skills", filepath.Join(realDir, "skills")},
 	} {
 		p := filepath.Join(xdgConfigHome, "muse", tc.name)
 		fi, err := os.Lstat(p)
@@ -477,6 +479,45 @@ func TestMuseSetupEnvDropsOperatorMCPServersAndForeignContext(t *testing.T) {
 	tui, _ := m["tui"].(map[string]any)
 	if tui["foreign_context_notice_shown"] != true {
 		t.Errorf("tui.foreign_context_notice_shown was not preserved: %v", tui)
+	}
+}
+
+// TestMuseSetupEnvLinksOnlySwarmManagedSkills: the whole real
+// ~/.config/muse/skills dir is never symlinked wholesale (hygiene fix, PM.4)
+// -- matches claude.go's writeProjectSwarmConfig, which links each
+// swarm-managed skill individually from the shared ~/.swarm/skills copy
+// rather than exposing whatever else a user might have installed directly
+// under a kind's own skills root.
+func TestMuseSetupEnvLinksOnlySwarmManagedSkills(t *testing.T) {
+	d := testDeps(t)
+	seedSkillsHome(t, d.Home)
+	// A personal skill living directly under the real muse skills dir (not
+	// swarm-managed) must not reach the isolated config.
+	if err := os.MkdirAll(filepath.Join(d.UserHome, ".config", "muse", "skills", "my-personal-skill"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := newMuse(d).Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillsHome := filepath.Join(d.Home, "skills")
+	skillsRoot := filepath.Join(l.Env["XDG_CONFIG_HOME"], "muse", "skills")
+	for _, name := range install.SkillNames() {
+		link := filepath.Join(skillsRoot, name)
+		fi, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("%s: %v", link, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s is not a symlink", link)
+		}
+		if target, err := os.Readlink(link); err != nil || target != filepath.Join(skillsHome, name) {
+			t.Errorf("%s -> %q, %v; want %q", link, target, err, filepath.Join(skillsHome, name))
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(skillsRoot, "my-personal-skill")); !os.IsNotExist(err) {
+		t.Errorf("a personal skill from the real ~/.config/muse/skills must not be linked in, got err=%v", err)
 	}
 }
 
