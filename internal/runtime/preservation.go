@@ -80,10 +80,119 @@ func PreservationNativeAllowed(toolName string) error {
 
 var pushRe = regexp.MustCompile(`(^|[;&|()\s])git\s+push\b`)
 var deployRe = regexp.MustCompile(`(?i)(^|[;&|()\s])(deploy\b|kubectl\s+(apply|create)|terraform\s+apply|fly\s+deploy|railway\s+(up|deploy))`)
+var gitStageRe = regexp.MustCompile(`(^|[;&|()\s])git\s+(add|stage|commit)\b`)
+
+// preservationSecretComponent reports whether one path component of a file
+// the predecessor is staging looks like secret material: dot-env files,
+// key material, secret/credential names, cloud/ssh config, or token files.
+// Ordinary source names (including code that merely handles tokens, like
+// tokenizer.go) do not match.
+func preservationSecretComponent(comp string) bool {
+	c := strings.ToLower(comp)
+	if c == ".env" || strings.HasPrefix(c, ".env.") || strings.HasPrefix(c, ".env_") {
+		return true
+	}
+	for _, suf := range []string{".pem", ".key", ".p12", ".pfx", ".jks"} {
+		if strings.HasSuffix(c, suf) {
+			return true
+		}
+	}
+	for _, sub := range []string{"secret", "credential", "passwd"} {
+		if strings.Contains(c, sub) {
+			return true
+		}
+	}
+	if c == ".aws" || c == ".ssh" || c == "credentials" {
+		return true
+	}
+	if strings.Contains(c, "token") && (strings.HasPrefix(c, ".") ||
+		strings.HasSuffix(c, ".json") || strings.HasSuffix(c, ".yaml") || strings.HasSuffix(c, ".yml") ||
+		strings.HasSuffix(c, ".toml") || strings.HasSuffix(c, ".ini") || strings.HasSuffix(c, ".env") ||
+		strings.Contains(c, "api") || strings.Contains(c, "auth") || strings.Contains(c, "access") ||
+		strings.Contains(c, "refresh") || strings.Contains(c, "private")) {
+		return true
+	}
+	return false
+}
+
+// preservationSecretPath reports whether p (one staged path) is
+// secret-looking: any slash-separated component matching counts, so
+// `.aws/credentials` is caught by either half.
+func preservationSecretPath(p string) bool {
+	p = strings.Trim(p, `"'`)
+	if p == "" {
+		return false
+	}
+	for _, comp := range strings.Split(p, "/") {
+		if preservationSecretComponent(comp) {
+			return true
+		}
+	}
+	return false
+}
+
+// stagedSecretPath scans a git stage/commit command for the first
+// secret-looking staged path, or "" when there is none. The verb, flags
+// and -m/--message values are skipped, so a commit message that merely
+// mentions secrets never blocks an ordinary save.
+func stagedSecretPath(command string) string {
+	loc := gitStageRe.FindStringIndex(command)
+	if loc == nil {
+		return ""
+	}
+	// The match starts at a separator or at "git" itself; parse from the
+	// verb's own "git" so ";git add .env" scans like "git add .env".
+	tail := command[loc[0]:]
+	gi := strings.Index(tail, "git")
+	fields := strings.Fields(tail[gi:])
+	if len(fields) < 2 {
+		return ""
+	}
+	verb := fields[1]
+	rest := fields[2:]
+	for j := 0; j < len(rest); j++ {
+		f := rest[j]
+		if f == "--" {
+			for _, p := range rest[j+1:] {
+				if preservationSecretPath(p) {
+					return p
+				}
+			}
+			return ""
+		}
+		if f == "-m" || f == "--message" {
+			j++
+			if j < len(rest) && len(rest[j]) > 0 && (rest[j][0] == '"' || rest[j][0] == '\'') {
+				quote := rest[j][0]
+				for j < len(rest) && !strings.HasSuffix(rest[j], string(quote)) {
+					j++
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(f, "--message=") || strings.HasPrefix(f, "-") {
+			// A sweeping commit stages whatever is dirty -- including
+			// secrets and other agents' work -- so preservation
+			// requires explicit paths. (-m values were skipped above,
+			// so `-m "fix-all"` never trips this.)
+			if verb == "commit" && (f == "-a" || f == "--all" ||
+				(len(f) > 2 && f[0] == '-' && f[1] != '-' && strings.Contains(f[1:], "a"))) {
+				return "-a"
+			}
+			continue
+		}
+		if preservationSecretPath(f) {
+			return f
+		}
+	}
+	return ""
+}
 
 // PreservationCommandAllowed gates one shell command in preservation mode:
-// push/deploy leave the machine, everything else (inspect, stage, commit,
-// snapshot, wait on owned commands) stays under existing permissions.
+// push/deploy leave the machine, staging secret-looking paths would commit
+// what preservation must never commit, and everything else (inspect, stage,
+// commit, snapshot, wait on owned commands) stays under existing
+// permissions.
 func PreservationCommandAllowed(command string) error {
 	if pushRe.MatchString(command) {
 		return &items.Error{Code: items.CodeConflict,
@@ -92,6 +201,14 @@ func PreservationCommandAllowed(command string) error {
 	if deployRe.MatchString(command) {
 		return &items.Error{Code: items.CodeConflict,
 			Message: "preservation: deploy is denied while preserving; finish saving instead."}
+	}
+	if p := stagedSecretPath(command); p != "" {
+		if p == "-a" {
+			return &items.Error{Code: items.CodeConflict,
+				Message: "preservation: no sweeping commits while preserving; stage task-owned paths explicitly."}
+		}
+		return &items.Error{Code: items.CodeConflict,
+			Message: "preservation: never commit " + p + " while preserving; stage task-owned paths only."}
 	}
 	if strings.TrimSpace(command) == "" {
 		return &items.Error{Code: items.CodeBadRequest, Message: "preservation: empty command."}
@@ -105,6 +222,10 @@ func PreservationCommandAllowed(command string) error {
 // and writer absence before ready; any failure yields explicit blocked,
 // never a fabricated success.
 const manifestSchemaVersion = 1
+
+// liveStatesSQL is the LiveStates set for the writer-check SQL below: keep
+// in sync with LiveStates in model.go.
+const liveStatesSQL = "'spawning', 'running', 'pause_requested', 'quiescing', 'stopping'"
 
 // ManifestWorktree is one assigned worktree with its recorded HEAD (from
 // the worktree row) and the HEAD observed on disk at write time ("" when
@@ -243,9 +364,19 @@ func (s *Store) WriteHandoffManifest(ctx context.Context, opID, checkpointID str
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		// Share mode lives in worktree_reservations, not on the worktrees
+		// row: preservation never commits ro trees, so trees where this
+		// agent holds an unreleased 'ro' share are excluded from the
+		// manifest (and from the ready gate below) at the daemon layer,
+		// not just by skill prose. Trees with no share row (legacy) and
+		// 'rw' shares are still recorded.
 		wrows, err := tx.QueryContext(ctx, `SELECT id, path, COALESCE(branch, ''),
 			base_sha, state FROM worktrees
-			WHERE owner_agent_id = ? AND state IN ('active', 'retained') ORDER BY path`, agentID)
+			WHERE owner_agent_id = ? AND state IN ('active', 'retained')
+			AND NOT EXISTS (SELECT 1 FROM worktree_reservations wr
+				WHERE wr.worktree_id = worktrees.id AND wr.agent_id = ?
+				AND wr.mode = 'ro' AND wr.released_at IS NULL)
+			ORDER BY path`, agentID, agentID)
 		if err != nil {
 			return err
 		}
@@ -449,21 +580,42 @@ func (s *Store) ValidatePreservationReady(ctx context.Context, opID string) erro
 		}
 	}
 	if len(m.Worktrees) > 0 {
-		paths := make([]any, len(m.Worktrees))
+		ids := make([]any, len(m.Worktrees))
 		place := make([]string, len(m.Worktrees))
 		for i, w := range m.Worktrees {
-			paths[i] = w.Path
+			ids[i] = w.ID
 			place[i] = "?"
 		}
-		var live int
+		in := strings.Join(place, ",")
+		// Ownership: a live session owning a handoff worktree means the
+		// predecessor would commit over another agent's tree.
+		var owned int
 		q := fmt.Sprintf(`SELECT COUNT(*) FROM sessions s JOIN worktrees w ON w.owner_agent_id = s.agent_id
-			WHERE w.path IN (%s) AND s.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
-			AND s.id <> ?`, strings.Join(place, ","))
-		if err := s.DB.QueryRowContext(ctx, q, append(paths, predecessorID)...).Scan(&live); err != nil {
+			WHERE w.id IN (%s) AND s.state IN (%s)
+			AND s.id <> ?`, in, liveStatesSQL)
+		if err := s.DB.QueryRowContext(ctx, q, append(ids, predecessorID)...).Scan(&owned); err != nil {
 			return fail("preservation: writer check failed: %v", err)
 		}
-		if live > 0 {
+		if owned > 0 {
 			return fail("preservation: a live writer still owns a handoff worktree; stop it before claiming ready.")
+		}
+		// Shares: ownership is not the only way to write. A live session
+		// holding an unreleased 'rw' share on a manifest tree -- a live
+		// child still working in the parent's tree -- blocks a clean
+		// handoff the same way, so the predecessor cannot commit over
+		// live children's work. The predecessor's own session is excluded:
+		// it holds its trees' shares while saving.
+		var shared int
+		qs := fmt.Sprintf(`SELECT COUNT(*) FROM sessions s
+			JOIN worktree_reservations wr ON wr.agent_id = s.agent_id
+			JOIN worktrees w ON w.id = wr.worktree_id
+			WHERE w.id IN (%s) AND wr.mode = 'rw' AND wr.released_at IS NULL
+			AND s.state IN (%s) AND s.id <> ?`, in, liveStatesSQL)
+		if err := s.DB.QueryRowContext(ctx, qs, append(ids, predecessorID)...).Scan(&shared); err != nil {
+			return fail("preservation: writer check failed: %v", err)
+		}
+		if shared > 0 {
+			return fail("preservation: a live writer still shares a handoff worktree; stop it before claiming ready.")
 		}
 	}
 	return nil

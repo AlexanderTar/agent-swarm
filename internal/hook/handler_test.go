@@ -183,6 +183,20 @@ func TestPreToolUseDeniesNonSwarmToolsWhilePausing(t *testing.T) {
 		if pm["hookSpecificOutput"]["permissionDecision"] != "deny" {
 			t.Fatalf("%s: git push must be denied while preserving: %s", state, pushed)
 		}
+		// staging a secret is denied on the save path too
+		secrets, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
+			[]byte(`{"session_id":"p1","tool_name":"Bash","tool_input":{"command":"git add .env"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sm map[string]map[string]string
+		json.Unmarshal(secrets, &sm)
+		if sm["hookSpecificOutput"]["permissionDecision"] != "deny" {
+			t.Fatalf("%s: git add .env must be denied while preserving: %s", state, secrets)
+		}
+		if !strings.Contains(sm["hookSpecificOutput"]["permissionDecisionReason"], "never commit") {
+			t.Fatalf("%s: reason = %q, want the secrets denial", state, sm["hookSpecificOutput"]["permissionDecisionReason"])
+		}
 		// a swarm tool is still allowed
 		ok, _ := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
 			[]byte(`{"session_id":"p1","tool_name":"mcp__swarm__swarm_checkpoint"}`))

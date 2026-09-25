@@ -60,6 +60,45 @@ func TestPreservationAllowsSaveButNotNewWork(t *testing.T) {
 	}
 }
 
+// TestPreservationCommandDeniesSecretPaths pins the daemon-side half of
+// "preservation never commits secrets": staging or committing a
+// secret-looking path (dot-env files, key material, secret/credential
+// names, cloud/ssh config dirs, token files) is denied in preservation
+// mode, while ordinary saves -- including a commit message that merely
+// mentions secrets -- still pass.
+func TestPreservationCommandDeniesSecretPaths(t *testing.T) {
+	for _, cmd := range []string{
+		"git add .env",
+		"git add .env.local",
+		"git add config/secrets.json",
+		"git add deploy-key.pem",
+		"git add certs/tls.key",
+		"git add .aws/credentials",
+		"git add .ssh/id_rsa",
+		"git add tokens/api-token.yaml",
+		"git commit secrets.yaml -m save",
+		"git commit -m save -- secrets.json",
+		"git commit -a -m wip",
+		"git commit --all -m wip",
+	} {
+		if err := PreservationCommandAllowed(cmd); err == nil {
+			t.Fatalf("PreservationCommandAllowed(%q) = nil, want denial (secret path)", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		"git status",
+		"git commit -m wip",
+		"git add src/main.go",
+		"git commit -m save -- src/main.go",
+		`git commit -m "rotate secret" -- src/main.go`,
+		"go test ./...",
+	} {
+		if err := PreservationCommandAllowed(cmd); err != nil {
+			t.Fatalf("PreservationCommandAllowed(%q) = %v, want nil (ordinary save)", cmd, err)
+		}
+	}
+}
+
 // TestHandoffManifestPreservesScratchArtifacts pins the handoff manifest
 // (schema v1): written atomically under
 // <swarm home>/handoffs/<agent-id>/<operation-id>/, carrying operation,
@@ -275,6 +314,137 @@ func TestPauseCannotClaimReadyAfterFailedSave(t *testing.T) {
 	}
 	if operr == "" {
 		t.Fatal("op error empty, want the explicit preservation failure")
+	}
+}
+
+// TestHandoffManifestExcludesROTrees pins the manifest layer's mode check:
+// preservation never commits ro trees. Worktree share mode lives in
+// worktree_reservations (not on the worktrees row), so manifest assembly
+// excludes trees where the predecessor holds an unreleased 'ro' share --
+// while plain and 'rw'-shared trees are still recorded.
+func TestHandoffManifestExcludesROTrees(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	now := db.Millis(s.Now())
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO repos (id, name, path, default_branch, source, created_at, updated_at)
+		VALUES ('repo_modes', 'repo1', '/tmp/repo1', 'main', 'manual', ?, ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	trees := []struct{ id, path, mode string }{
+		{"wt_plain", "/tmp/wt-a-plain", ""},
+		{"wt_ro", "/tmp/wt-m-ro", "ro"},
+		{"wt_rw", "/tmp/wt-z-rw", "rw"},
+	}
+	for _, wt := range trees {
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktrees (id, repo_id, path, branch, base_ref, base_sha, state, owner_agent_id, root_item_id, created_at)
+			VALUES (?, 'repo_modes', ?, 'b', 'main', 'deadbee', 'active', ?, ?, ?)`,
+			wt.id, wt.path, w.ID, it.RootID, now); err != nil {
+			t.Fatal(err)
+		}
+		if wt.mode != "" {
+			if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktree_reservations
+				(worktree_id, agent_id, mode, created_at) VALUES (?, ?, ?, ?)`,
+				wt.id, w.ID, wt.mode, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	oldHEAD := readDiskHEAD
+	readDiskHEAD = func(string) (string, error) { return "deadbee", nil }
+	defer func() { readDiskHEAD = oldHEAD }()
+	panes(tm, Pane{Session: wSes.TmuxName})
+	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "hmodes", "")
+	if err != nil {
+		t.Fatalf("request err = %v", err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, PauseRequested); err != nil {
+		t.Fatal(err)
+	}
+	ckpt, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "saving"})
+	if err != nil {
+		t.Fatalf("handoff checkpoint err = %v", err)
+	}
+	manifest, err := s.WriteHandoffManifest(ctx, op.ID, ckpt.CheckpointID)
+	if err != nil {
+		t.Fatalf("WriteHandoffManifest err = %v", err)
+	}
+	got := map[string]bool{}
+	for _, wt := range manifest.Worktrees {
+		got[wt.Path] = true
+	}
+	if !got["/tmp/wt-a-plain"] || !got["/tmp/wt-z-rw"] {
+		t.Fatalf("manifest worktrees = %+v, want the plain and rw trees recorded", manifest.Worktrees)
+	}
+	if got["/tmp/wt-m-ro"] {
+		t.Fatalf("manifest worktrees = %+v, want the ro tree excluded", manifest.Worktrees)
+	}
+}
+
+// TestSharedRWTreeWithLiveWriterBlocksReady pins the daemon-side half of
+// "a shared rw tree with another live writer blocks a clean handoff": when
+// a second live session still holds an unreleased 'rw' share on a manifest
+// worktree, the ready claim is refused and the operation lands explicitly
+// blocked -- the predecessor cannot commit over live children's work.
+func TestSharedRWTreeWithLiveWriterBlocksReady(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	now := db.Millis(s.Now())
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO repos (id, name, path, default_branch, source, created_at, updated_at)
+		VALUES ('repo_shared', 'repo1', '/tmp/repo1', 'main', 'manual', ?, ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktrees (id, repo_id, path, branch, base_ref, base_sha, state, owner_agent_id, root_item_id, created_at)
+		VALUES ('wt_shared', 'repo_shared', '/tmp/repo1-shared', 'b', 'main', 'deadbee', 'active', ?, ?, ?)`,
+		w.ID, it.RootID, now); err != nil {
+		t.Fatal(err)
+	}
+	// The orchestrator's session is still live (spawning) and holds an
+	// unreleased 'rw' share on the worker's tree.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO worktree_reservations
+		(worktree_id, agent_id, mode, created_at) VALUES ('wt_shared', ?, 'rw', ?)`,
+		orch.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	oldHEAD := readDiskHEAD
+	readDiskHEAD = func(string) (string, error) { return "deadbee", nil }
+	defer func() { readDiskHEAD = oldHEAD }()
+	panes(tm, Pane{Session: wSes.TmuxName})
+	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "hshared", "")
+	if err != nil {
+		t.Fatalf("request err = %v", err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, PauseRequested); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "claiming ready"}); err == nil {
+		t.Fatal("handoff checkpoint with a live writer on a shared tree must refuse the ready claim")
+	}
+	var phase, operr string
+	if err := s.DB.QueryRowContext(ctx, `SELECT phase, error FROM agent_operations WHERE id = ?`,
+		op.ID).Scan(&phase, &operr); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "blocked" {
+		t.Fatalf("op phase = %q, want blocked", phase)
+	}
+	if operr == "" {
+		t.Fatal("op error empty, want the explicit live-writer refusal")
 	}
 }
 
