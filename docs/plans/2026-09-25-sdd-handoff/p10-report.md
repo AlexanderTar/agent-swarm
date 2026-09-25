@@ -6,7 +6,7 @@ Commits:
 1. `414c4c0` feat(mcpserver): swarm_workflow tool for orchestrators (unit 10.1)
 2. `11603a0` feat(mcpserver): spawn, checkpoint and read changes (unit 10.2)
 3. `091353c` feat(runtime): story after_tasks and integration gates (unit 10.3)
-4. `test(e2e): workflow scenarios, tdd copy and harness helpers (unit 10.4)`
+4. `01058df` test(e2e): workflow scenarios, tdd copy and harness helpers (unit 10.4)
 
 ---
 
