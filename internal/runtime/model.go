@@ -164,14 +164,17 @@ type Session struct {
 }
 
 type GitRef struct {
-	Repo, Branch, SHA string
-	Dirty             bool
+	Repo   string `json:"repo"`
+	Branch string `json:"branch"`
+	SHA    string `json:"sha"`
+	Dirty  bool   `json:"dirty,omitempty"`
 }
 
 type Verify struct {
-	Cmd, Phase string
-	OK         bool
-	Note       string
+	Cmd   string `json:"cmd"`
+	Phase string `json:"phase"`
+	OK    bool   `json:"ok"`
+	Note  string `json:"note,omitempty"`
 }
 
 type Checkpoint struct {
