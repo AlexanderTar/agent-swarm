@@ -1,0 +1,34 @@
+package runtime
+
+import (
+	"context"
+	"testing"
+)
+
+// After a workflow agent's FailedCkp exhausts AutoRetry (escalate), is the
+// writer's still-live pane ever killed?
+func TestProbeFailedCkpPaneAfterEscalate(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, buildReviewSpec(t))
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderID := agentIDForStep(t, s, st.ID, "build")
+	coder, _ := s.agentByID(ctx, coderID)
+	for i := 0; i < 2; i++ {
+		ses, err := s.LatestSession(ctx, coderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		k0 := len(tm.killed)
+		if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: FailedCkp, Summary: "boom"}); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("failure %d: kills of %s during/after checkpoint = %v", i+1, coder.Name, tm.killed[k0:])
+	}
+	final, _, _ := s.WorkflowFor(ctx, taskKey)
+	last, _ := s.LatestSession(ctx, coderID)
+	t.Logf("workflow state=%s, coder latest session=%s", final.State, last.State)
+}

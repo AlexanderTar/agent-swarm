@@ -1,0 +1,44 @@
+package runtime
+
+import (
+	"context"
+	"testing"
+)
+
+// I3 via the real replay path: every role row exists (crash after
+// insertWaitingRun, before the review-worktree attach), then advance.
+func TestProbeReplayViaAdvanceAttachesReviewWorktree(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
+	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
+	setMaxSubagents(t, s, 1) // keep reviewer waiting behind the builder slot
+	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
+		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coderSes := agentSessionForStep(t, s, st.ID, "build")
+	if _, err := s.WriteCheckpoint(ctx, coderSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done",
+		Git: []GitRef{{Repo: "proj", Branch: "main", SHA: head, Dirty: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	var state, agent, wt string
+	_ = s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id,''), COALESCE(review_worktree_id,'') FROM workflow_runs WHERE workflow_id=? AND step_id='review'`, st.ID).Scan(&state, &agent, &wt)
+	t.Logf("normal path: review row state=%s agent=%q wt=%q", state, agent, wt)
+	// Rewind to crash state: row inserted, never attached, never spawned.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE workflow_runs SET state='waiting', agent_id=NULL, review_worktree_id=NULL WHERE workflow_id=? AND step_id='review'`, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state='finished' WHERE role='reviewer'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.advance(ctx, st.ID); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id,''), COALESCE(review_worktree_id,'') FROM workflow_runs WHERE workflow_id=? AND step_id='review'`, st.ID).Scan(&state, &agent, &wt)
+	t.Logf("after replay advance: review row state=%s agent=%q wt=%q", state, agent, wt)
+	if agent != "" && wt == "" {
+		t.Errorf("I3 NOT CLOSED: reviewer spawned with no review worktree on replay")
+	}
+}
