@@ -97,6 +97,19 @@ func TestValidateItemReposRefusesAStaleVersionOrAnUnknownRepo(t *testing.T) {
 	}
 }
 
+func TestAskConfirmReposErrorNamesTheFix(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Ask me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	_, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "p",
+		Repos: []ReposProposal{{Repo: "endurio-chat", Reason: "r"}}})
+	want := `Unknown repository "endurio-chat". Pass a repository id from swarm_read {repos:{q:"endurio-chat"}}.`
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
 // Required fix 1: CommitItemRepos is the write half, called only once the
 // spawn that will use these repos has actually succeeded.
 func TestCommitItemReposWritesTheConfirmedSetAndReconciles(t *testing.T) {

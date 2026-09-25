@@ -28,7 +28,7 @@ func (s *Store) repoNameTx(ctx context.Context, tx *sql.Tx, id string) (string, 
 	var name string
 	err := tx.QueryRowContext(ctx, `SELECT name FROM repos WHERE id = ?`, id).Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("Unknown repository %s.", id)}
+		return "", &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("Unknown repository %q. Pass a repository id from swarm_read {repos:{q:%q}}.", id, id)}
 	}
 	return name, err
 }
@@ -47,7 +47,7 @@ func (s *Store) repoRefs(ctx context.Context, tx *sql.Tx, repoIDs []string) ([]r
 		r := repoRef{ID: id}
 		err := tx.QueryRowContext(ctx, `SELECT name, path FROM repos WHERE id = ?`, id).Scan(&r.Name, &r.Path)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("Unknown repository %s.", id)}
+			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("Unknown repository %q. Pass a repository id from swarm_read {repos:{q:%q}}.", id, id)}
 		}
 		if err != nil {
 			return nil, err
