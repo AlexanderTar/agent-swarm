@@ -349,6 +349,25 @@ func (s *Store) WorkflowFor(ctx context.Context, itemKey string) (WorkflowState,
 	return st, true, err
 }
 
+// StepForAgent queries workflow_runs for the agent's latest run.
+// If found, format as step_id if round <= 1, or fmt.Sprintf("%s r%d", step_id, round) if round > 1.
+// Returns (step, true, nil). If not found, returns ("", false, nil).
+func (s *Store) StepForAgent(ctx context.Context, agentID string) (string, bool, error) {
+	var stepID string
+	var round int
+	err := s.DB.QueryRowContext(ctx, `SELECT step_id, round FROM workflow_runs WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1`, agentID).Scan(&stepID, &round)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if round > 1 {
+		return fmt.Sprintf("%s r%d", stepID, round), true, nil
+	}
+	return stepID, true, nil
+}
+
 // wfRowColumns is the column list latestWorkflowRow and workflowRowByID both
 // select from workflows -- they differed only in their WHERE/ORDER clause,
 // never the columns or scan logic (fix round 2 minor cleanup: deduped via

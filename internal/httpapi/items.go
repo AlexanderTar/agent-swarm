@@ -21,22 +21,26 @@ import (
 // fields, arrays never null, origin_spike_key resolved. Outer fields shadow the embedded ones.
 type itemWire struct {
 	items.Item
-	ParentID          *string         `json:"parent_id"`
-	ParentKey         *string         `json:"parent_key"`
-	StatusBeforeBlock *string         `json:"status_before_block"`
-	RoleHint          *string         `json:"role_hint"`
-	TddExempt         *string         `json:"tdd_exempt"`
-	Workflow          *workflow.Spec  `json:"workflow"`
-	Solo              *string         `json:"solo"`
-	SpikeIntent       *string         `json:"spike_intent"`
-	OriginSpikeID     *string         `json:"origin_spike_id"`
-	OriginSpikeKey    *string         `json:"origin_spike_key"`
-	LegacyKey         *string         `json:"legacy_key"`
-	Progress          *items.Progress `json:"progress"`
-	ArchivedAt        *int64          `json:"archived_at"`
-	CreatedAt         int64           `json:"created_at"`
-	UpdatedAt         int64           `json:"updated_at"`
-	Context           bool            `json:"context"`
+	ParentID          *string        `json:"parent_id"`
+	ParentKey         *string        `json:"parent_key"`
+	StatusBeforeBlock *string        `json:"status_before_block"`
+	RoleHint          *string        `json:"role_hint"`
+	TddExempt         *string        `json:"tdd_exempt"`
+	Workflow          *workflow.Spec `json:"workflow"`
+	WorkflowState     *struct {
+		State string `json:"state"`
+		Round int    `json:"round"`
+	} `json:"workflow_state,omitempty"`
+	Solo           *string         `json:"solo"`
+	SpikeIntent    *string         `json:"spike_intent"`
+	OriginSpikeID  *string         `json:"origin_spike_id"`
+	OriginSpikeKey *string         `json:"origin_spike_key"`
+	LegacyKey      *string         `json:"legacy_key"`
+	Progress       *items.Progress `json:"progress"`
+	ArchivedAt     *int64          `json:"archived_at"`
+	CreatedAt      int64           `json:"created_at"`
+	UpdatedAt      int64           `json:"updated_at"`
+	Context        bool            `json:"context"`
 }
 
 func orNull(s string) *string {
@@ -74,6 +78,20 @@ func (s *Server) itemOut(ctx context.Context, it items.Item) (itemWire, error) {
 			return itemWire{}, err
 		}
 		w.OriginSpikeKey = &key
+	}
+	if it.Type == items.Task && it.Workflow != nil {
+		var state string
+		var round int
+		err := s.DB.QueryRowContext(ctx, `SELECT state, round FROM workflows WHERE item_id = ? ORDER BY created_at DESC LIMIT 1`, it.ID).Scan(&state, &round)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return itemWire{}, err
+		}
+		if err == nil {
+			w.WorkflowState = &struct {
+				State string `json:"state"`
+				Round int    `json:"round"`
+			}{State: state, Round: round}
+		}
 	}
 	return w, nil
 }
@@ -262,6 +280,35 @@ func (s *Server) getItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out["artifacts"] = artifactWires
+		ws, hasWf, err := s.RT.WorkflowFor(ctx, key)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		if hasWf {
+			runs := ws.Runs
+			if runs == nil {
+				runs = []runtime.WorkflowRunView{}
+			}
+			out["workflow_state"] = map[string]any{
+				"state":      ws.State,
+				"round":      ws.Round,
+				"escalation": ws.Escalation,
+				"runs":       runs,
+			}
+			crew := []map[string]any{}
+			for _, r := range ws.Runs {
+				if r.AgentName != "" {
+					crew = append(crew, map[string]any{
+						"agent": r.AgentName,
+						"role":  r.Role,
+						"step":  r.StepID,
+						"state": r.State,
+					})
+				}
+			}
+			out["crew"] = crew
+		}
 	}
 	lists := map[string][]items.Item{"ancestors": ancestors, "children": children, "blocked_by": blockedBy, "blocks": blocks}
 	wired := map[string][]itemWire{}

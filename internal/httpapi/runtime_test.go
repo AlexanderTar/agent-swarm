@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -425,5 +426,121 @@ func TestAgentPaneLinesClamping(t *testing.T) {
 	rec = s.get(t, "/api/agents/"+running+"/pane?lines=0")
 	if got := decode[paneWire](t, rec.Body.Bytes()).Lines; got != 1 {
 		t.Fatalf("lines=0 clamped to %d, want 1", got)
+	}
+}
+
+func findAgentInTree(nodes []map[string]any, name string) map[string]any {
+	for _, n := range nodes {
+		if n["name"] == name {
+			return n
+		}
+		if children, ok := n["children"].([]any); ok {
+			var childMaps []map[string]any
+			for _, c := range children {
+				if cm, ok := c.(map[string]any); ok {
+					childMaps = append(childMaps, cm)
+				}
+			}
+			if found := findAgentInTree(childMaps, name); found != nil {
+				return found
+			}
+		}
+		if finished, ok := n["finished"].([]any); ok {
+			var finMaps []map[string]any
+			for _, f := range finished {
+				if fm, ok := f.(map[string]any); ok {
+					finMaps = append(finMaps, fm)
+				}
+			}
+			if found := findAgentInTree(finMaps, name); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func TestAgentsPayloadIncludesStep(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+
+	var workerID, workerItemID, orchID string
+	if err := s.DB.QueryRowContext(bg, `SELECT id, item_id FROM agents WHERE name = 'task-worker'`).Scan(&workerID, &workerItemID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRowContext(bg, `SELECT id FROM agents WHERE name = 'root-orchestrator'`).Scan(&orchID); err != nil {
+		t.Fatal(err)
+	}
+	epic, err := s.items.Get(bg, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := db.Millis(time.Now())
+	wfID := ids.New("wf")
+	if _, err := s.DB.ExecContext(bg, `INSERT INTO workflows
+		(id, item_id, root_item_id, owner_agent_id, state, round, escalation, worktrees_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'running', 1, '', '[]', ?, ?)`,
+		wfID, workerItemID, epic.ID, orchID, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed an active run in workflow_runs with step_id = 'build', round = 1
+	runID1 := ids.New("wfr")
+	if _, err := s.DB.ExecContext(bg, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'build', 1, 'coder', ?, 'active', ?)`,
+		runID1, wfID, workerID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := s.get(t, "/api/agents")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var nodes []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &nodes); err != nil {
+		t.Fatal(err)
+	}
+
+	workerNode := findAgentInTree(nodes, "task-worker")
+	if workerNode == nil {
+		t.Fatal("task-worker not found in tree")
+	}
+	if workerNode["step"] != "build" {
+		t.Errorf("task-worker step = %v, want build", workerNode["step"])
+	}
+
+	orchNode := findAgentInTree(nodes, "root-orchestrator")
+	if orchNode == nil {
+		t.Fatal("root-orchestrator not found in tree")
+	}
+	if v, ok := orchNode["step"]; ok && v != nil {
+		t.Errorf("orchestrator step = %v, want omitted or null", v)
+	}
+
+	// round = 2: insert another run with step_id = 'review', round = 2, created_at slightly later
+	runID2 := ids.New("wfr")
+	if _, err := s.DB.ExecContext(bg, `INSERT INTO workflow_runs
+		(id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES (?, ?, 'review', 2, 'reviewer', ?, 'active', ?)`,
+		runID2, wfID, workerID, now+1000); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = s.get(t, "/api/agents")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var nodesRound2 []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &nodesRound2); err != nil {
+		t.Fatal(err)
+	}
+
+	workerNode2 := findAgentInTree(nodesRound2, "task-worker")
+	if workerNode2 == nil {
+		t.Fatal("task-worker not found in tree (round 2)")
+	}
+	if workerNode2["step"] != "review r2" {
+		t.Errorf("task-worker step = %v, want review r2", workerNode2["step"])
 	}
 }

@@ -54,7 +54,7 @@ public final class SettingsModel {
         }
     }
 
-    public static let defaultsOrder: [SettingsRole] = [.orchestrator, .advisor, .coder, .reviewer, .uiReviewer, .researcher, .debugger, .mechanical, .fallback]
+    public static let defaultsOrder: [SettingsRole] = [.orchestrator, .advisor, .coder, .reviewer, .uiReviewer, .researcher, .debugger, .mechanical, .designer, .fallback]
     static let alwaysSkipped: Set<String> = ["~/Library", "~/.Trash"]
 
     public private(set) var settings: Settings

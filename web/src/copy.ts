@@ -11,8 +11,9 @@ export const STATUS_LABEL: Record<ItemStatus, string> = {
   cancelled: "Cancelled",
 };
 
-export const TYPE_LABEL: Record<ItemType, string> = { epic: "Epic", story: "Story", task: "Task", bug: "Bug", spike: "Spike" };
-export const TYPE_PLURAL: Record<ItemType, string> = { epic: "Epics", story: "Stories", task: "Tasks", bug: "Bugs", spike: "Spikes" };
+export const TYPE_LABEL: Record<ItemType, string> = { epic: "Epic", story: "Story", task: "Task", bug: "Bug", spike: "Spike", chore: "Chore" };
+export const ITEM_TYPE_LABEL = TYPE_LABEL;
+export const TYPE_PLURAL: Record<ItemType, string> = { epic: "Epics", story: "Stories", task: "Tasks", bug: "Bugs", spike: "Spikes", chore: "Chores" };
 
 export const ROLE_LABEL: Record<Role | "advisor", string> = {
   orchestrator: "Orchestrator",
@@ -23,6 +24,12 @@ export const ROLE_LABEL: Record<Role | "advisor", string> = {
   researcher: "Researcher",
   debugger: "Debugger",
   mechanical: "Mechanical",
+  designer: "Designer",
+};
+
+export const ROLE_EMOJI: Record<Role, string> = {
+  orchestrator: "🧭", coder: "💻", reviewer: "🔍", ui_reviewer: "🎨",
+  designer: "✏️", researcher: "📚", debugger: "🐛", mechanical: "🔧",
 };
 
 export const AGENT_LABEL: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor", muse: "Muse", fake: "Fake" };

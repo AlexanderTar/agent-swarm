@@ -14,7 +14,7 @@ public enum AgentKind: String, Codable, Sendable, CaseIterable {
 }
 
 public enum Role: String, Codable, Sendable {
-    case orchestrator, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical
+    case orchestrator, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical, designer
 }
 
 /// Keys of `Settings.roles`, plus "advisor" (L28) and "fallback" -- the last
@@ -24,7 +24,7 @@ public enum Role: String, Codable, Sendable {
 /// `setEffort`) can treat it exactly like a role default with no other code
 /// change (docs/specs/2026-09-19-usage-fallback-agent.md).
 public enum SettingsRole: String, Sendable, CaseIterable {
-    case orchestrator, advisor, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical, fallback
+    case orchestrator, advisor, coder, reviewer, uiReviewer = "ui_reviewer", researcher, debugger, mechanical, designer, fallback
 }
 
 public enum AgentState: String, Codable, Sendable {
@@ -67,6 +67,7 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var kind: AgentKind
     public var model: String
     public var role: Role
+    public var step: String?
     public var itemKey: String
     public var itemTitle: String
     public var rootKey: String
@@ -78,17 +79,17 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var finished: [AgentNode]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, model, role, state, session, children, finished
+        case id, name, kind, model, role, step, state, session, children, finished
         case itemKey = "item_key", itemTitle = "item_title", rootKey = "root_key"
         case parentName = "parent_name", preflightError = "preflight_error"
     }
 
     public init(id: String = "agt_1", name: String, kind: AgentKind = .claude, model: String,
-                role: Role = .coder, itemKey: String = "TASK-1", itemTitle: String = "Task",
+                role: Role = .coder, step: String? = nil, itemKey: String = "TASK-1", itemTitle: String = "Task",
                 rootKey: String = "EPIC-1", parentName: String? = nil, state: AgentState = .active,
                 session: SessionInfo? = SessionInfo(state: .running), preflightError: String? = nil,
                 children: [AgentNode] = [], finished: [AgentNode] = []) {
-        self.id = id; self.name = name; self.kind = kind; self.model = model; self.role = role
+        self.id = id; self.name = name; self.kind = kind; self.model = model; self.role = role; self.step = step
         self.itemKey = itemKey; self.itemTitle = itemTitle; self.rootKey = rootKey
         self.parentName = parentName; self.state = state; self.session = session
         self.preflightError = preflightError; self.children = children; self.finished = finished
@@ -335,6 +336,7 @@ public struct Settings: Codable, Sendable, Equatable {
             "researcher": RoleDefault(agent: .claude, model: "sonnet"),
             "debugger": RoleDefault(agent: .claude, model: "opus"),
             "mechanical": RoleDefault(agent: .claude, model: "haiku"),
+            "designer": RoleDefault(agent: .claude, model: "opus"),
             "advisor": RoleDefault(agent: .claude, model: "fable"),
         ],
         fallbackDefault: RoleDefault(agent: .claude, model: "sonnet"),

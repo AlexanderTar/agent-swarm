@@ -1,6 +1,6 @@
 import { C, STATUS_LABEL, T, TYPE_PLURAL } from "../copy";
 import { ITEM_STATUSES } from "../types";
-import type { AgentNode, CardLevel, Filter, Grouping, Item, ItemStatus } from "../types";
+import type { AgentNode, CardLevel, Filter, Grouping, Item, ItemStatus, Role } from "../types";
 import { flattenAgents, isFinished } from "./agentActions";
 import { LEVEL_TYPES, ancestors, buildIndex, compareChildren, isFilterActive, matches } from "./tree";
 
@@ -136,6 +136,12 @@ export function agentLine(card: Item, byItem: Map<string, AgentNode[]>): { agent
   const list = byItem.get(card.key);
   const first = list?.[0];
   return first && list ? { agent: first, extra: list.length - 1 } : null;
+}
+
+export function crewForCard(card: Item, byItem: Map<string, AgentNode[]>): { roles: Role[]; extra: number } | null {
+  if (card.type !== "task" || !card.workflow) return null;
+  const active = (byItem.get(card.key) ?? []).filter((a) => a.state === "active");
+  return active.length ? { roles: active.slice(0, 3).map((a) => a.role), extra: Math.max(0, active.length - 3) } : null;
 }
 
 export const dropId = (laneId: string, status: ItemStatus) => `${laneId}|${status}`;

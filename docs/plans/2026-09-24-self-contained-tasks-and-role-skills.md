@@ -56,6 +56,7 @@
 - **One commit per unit** (conventional message, e.g. `feat(install): …`, signed, repo style). Review fix rounds add commits; never amend.
 - Every Go unit keeps `go build ./... && go vet ./...` green. Web units also run `cd web && pnpm typecheck && pnpm test`. Menubar units also run `cd apps/menubar && swift test`.
 - Hot files: `internal/runtime/checkpoint.go`, `internal/runtime/agents.go`, `internal/items/transition.go`. Pull or rebase before starting P7–P10.
+- **Single Coder Per Package & Package-Level Review:** All units within a work package ("P") are addressed sequentially by the same coder agent and reviewed together at the package boundary. Units are structural guidance for the coder's TDD cycles (failing test → red → minimal implementation → green → commit per unit), NOT separate sub-tasks for different workers. The orchestrator must not dispatch separate coder agents for individual units within a package; instead, one coder agent executes all units of the package in sequence, and reviewers review the full package diff once all units are complete.
 - **Package review loop** (every package, once, after all its units are committed):
   1. Run the package Verify set.
   2. Request review with `superpowers:requesting-code-review` against the package Acceptance, walking the diff unit by unit.
@@ -683,10 +684,10 @@ func Next(s Spec, runs []Run, round, extraRounds int) Action
 - `cd apps/menubar && swift test`
 
 #### Unit 11.1: Designer and chore labels
-- [ ] Write the failing tests: web `copy.test.ts` (`ROLE_LABEL.designer`, `ITEM_TYPE_LABEL.chore`), Swift `testRoleDecodesDesigner` and `testDefaultsOrderIncludesDesigner`. Red. Implement. Green. Commit.
+- [x] Write the failing tests: web `copy.test.ts` (`ROLE_LABEL.designer`, `ITEM_TYPE_LABEL.chore`), Swift `testRoleDecodesDesigner` and `testDefaultsOrderIncludesDesigner`. Red. Implement. Green. Commit. (`11fca8b`)
 
 #### Unit 11.2: HTTP payload fields
-- [ ] Write the failing tests `TestItemDetailIncludesWorkflowState` and `TestAgentsPayloadIncludesStep`. Red. Implement. Green. Commit.
+- [x] Write the failing tests `TestItemDetailIncludesWorkflowState` and `TestAgentsPayloadIncludesStep`. Red. Implement. Green. Commit. (`47898f1`)
 
 #### Unit 11.3: `WorkflowSection`
 - [ ] Write the failing tests: `WorkflowSection.test.tsx` (runs, verdicts, unit-tagged findings, escalation; hidden when there is no workflow) and the `Details.test.tsx` addition. Red. Implement. Green. Commit.

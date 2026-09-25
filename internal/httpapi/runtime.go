@@ -50,6 +50,7 @@ type agentNodeWire struct {
 	Model          string             `json:"model"`
 	Effort         *string            `json:"effort"`
 	Role           runtime.Role       `json:"role"`
+	Step           *string            `json:"step,omitempty"`
 	ItemKey        string             `json:"item_key"`
 	ItemTitle      string             `json:"item_title"`
 	RootKey        string             `json:"root_key"`
@@ -484,6 +485,11 @@ func (s *Server) agentNodeOut(ctx context.Context, a runtime.Agent, live map[str
 		if err == nil {
 			si := s.sessionInfoOut(ctx, ses, live)
 			w.Session = &si
+		}
+	}
+	if s.RT != nil {
+		if step, ok, err := s.RT.StepForAgent(ctx, a.ID); err == nil && ok {
+			w.Step = &step
 		}
 	}
 	return w, nil

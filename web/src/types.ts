@@ -3,7 +3,7 @@
 // timestamps are integer ms since the epoch, unset optional fields are null (never absent),
 // arrays are never null, and items are addressed by key everywhere the board sees them.
 
-export type ItemType = "epic" | "story" | "task" | "bug" | "spike";
+export type ItemType = "epic" | "story" | "task" | "bug" | "spike" | "chore";
 export type ItemStatus =
   | "draft" | "ready" | "in_progress" | "blocked" | "in_review" | "awaiting_approval" | "done" | "cancelled";
 export const ITEM_STATUSES: readonly ItemStatus[] = [
@@ -56,6 +56,7 @@ export interface Item {
   role_hint: string | null;
   tdd_exempt: TddExempt | null;
   workflow?: Workflow | null;
+  workflow_state?: Pick<WorkflowState, "state" | "round">;
   steps?: string[];
   units?: Unit[];
   solo?: string | null;
@@ -90,7 +91,18 @@ export interface ItemDetail {
   agents: AgentNode[];             // agents working on this item or its subtree (tree form)
   requests: Request[];             // open requests on this item
   artifacts: Artifact[];
+  workflow_state?: WorkflowState;
+  crew?: WorkflowCrewMember[];
 }
+
+export interface WorkflowFinding { severity: string; file: string; line?: number; unit?: number; summary: string; reviewer?: string }
+export interface WorkflowRun {
+  id?: string; step: string; role: string; agent_id?: string; agent: string;
+  state: string; verdict: "" | "pass" | "changes_requested" | "blocked";
+  sha: string; round: number; auto_retries?: number; findings: WorkflowFinding[];
+}
+export interface WorkflowState { state: string; round: number; escalation: string; runs: WorkflowRun[] }
+export interface WorkflowCrewMember { agent: string; role: string; step: string; state: string }
 
 export interface CreateItemBody {
   request_id: string;
@@ -136,7 +148,7 @@ export interface Checkpoint {
 }
 
 export type AgentKind = "claude" | "codex" | "agy" | "cursor" | "muse" | "fake";
-export type Role = "orchestrator" | "coder" | "reviewer" | "ui_reviewer" | "researcher" | "debugger" | "mechanical";
+export type Role = "orchestrator" | "coder" | "reviewer" | "ui_reviewer" | "researcher" | "debugger" | "mechanical" | "designer";
 export type AgentState = "queued" | "active" | "finished" | "acknowledged";
 export type SessionState =
   | "spawning" | "running" | "pause_requested" | "quiescing" | "stopping" | "paused"
@@ -222,7 +234,7 @@ export interface Artifact {
   sections: ArtifactSection[];
   created_at: number;
 }
-export interface ArtifactResponse { artifact: Artifact; markdown: string }
+export interface ArtifactResponse { artifact: Artifact; markdown: string; warnings?: string[] }
 
 export interface Advice {
   id: string;

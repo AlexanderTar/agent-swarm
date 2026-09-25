@@ -50,7 +50,7 @@ export function App() {
   };
   const clearFilters = () => setUrl({ q: "", type: "", status: "" });
   const newItem = (type: ItemType, parentKey?: string) =>
-    setSheet(type === "spike" ? { kind: "spike", caption: C.spikeViaNewItem } : { kind: "item", type, parentKey });
+    setSheet(type === "spike" || type === "chore" ? { kind: "spike", caption: C.spikeViaNewItem } : { kind: "item", type, parentKey });
   const review = (req: string) => setUrl({ view: "inbox", req });
   const startOrchestrator = (item: Item) => setSheet({ kind: "spawn", itemKey: item.key });
 

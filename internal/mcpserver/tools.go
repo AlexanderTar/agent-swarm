@@ -296,6 +296,11 @@ func (s *Server) agentOut(ctx context.Context, a runtime.Agent) map[string]any {
 	} else {
 		out["parent"] = nil
 	}
+	if s.RT != nil {
+		if step, ok, err := s.RT.StepForAgent(ctx, a.ID); err == nil && ok {
+			out["step"] = step
+		}
+	}
 	return out
 }
 

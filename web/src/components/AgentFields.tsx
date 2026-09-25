@@ -16,6 +16,7 @@ const WORKER_ROLES: SettingsRole[] = [
   "coder",
   "reviewer",
   "ui_reviewer",
+  "designer",
   "researcher",
   "debugger",
   "mechanical",
