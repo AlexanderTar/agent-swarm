@@ -214,6 +214,9 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.notifyUndeliveredMessages(ctx); err != nil {
 		return err
 	}
+	if err := s.notifyUnansweredQuestions(ctx); err != nil {
+		return err
+	}
 	if err := s.withdrawOrphanedRequests(ctx); err != nil {
 		return err
 	}
@@ -1262,6 +1265,97 @@ func (s *Store) undeliveredAgentMessages(ctx context.Context, cutoff time.Time) 
 		}
 	}
 	return filtered, nil
+}
+
+// questionAnswerTimeout is how long a delivered question can sit unanswered
+// before the daemon relays a reminder to whoever owes the answer (F8).
+const questionAnswerTimeout = 10 * time.Minute
+
+// notifyUnansweredQuestions relays a question_unanswered reminder, once, to
+// the agent a question was sent to once it has sat acked (delivered, never
+// answered) for longer than questionAnswerTimeout. It covers plain answers
+// (kind:"answer"), approval questions (kind:"approval_result") and blocked
+// relays already answered through a relay reply — any of those closes the
+// loop and this scan skips the question (spec §3's owed-answer scan).
+func (s *Store) notifyUnansweredQuestions(ctx context.Context) error {
+	cutoff := db.Millis(s.Now().Add(-questionAnswerTimeout))
+	rows, err := s.DB.QueryContext(ctx, `SELECT q.id, q.from_agent_id, q.to_agent_id, q.root_item_id,
+		COALESCE(q.item_id, ''), q.payload_json
+		FROM messages q
+		WHERE q.kind = 'question' AND q.origin = 'agent' AND q.state = 'acked' AND q.created_at < ?
+		AND NOT EXISTS (SELECT 1 FROM messages a WHERE a.reply_to = q.id
+		                AND a.kind IN ('answer', 'approval_result', 'relay'))`, cutoff)
+	if err != nil {
+		return err
+	}
+	type unanswered struct {
+		ID, FromAgentID, ToAgentID, RootItemID, ItemID string
+		Payload                                        string
+	}
+	var out []unanswered
+	for rows.Next() {
+		var u unanswered
+		if err := rows.Scan(&u.ID, &u.FromAgentID, &u.ToAgentID, &u.RootItemID, &u.ItemID, &u.Payload); err != nil {
+			rows.Close()
+			return err
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, u := range out {
+		already, err := s.alreadyRelayedForMessage(ctx, u.ID)
+		if err != nil {
+			return err
+		}
+		if already {
+			continue
+		}
+		var fromName string
+		if err := s.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, u.FromAgentID).Scan(&fromName); err != nil {
+			return err
+		}
+		var itemKey string
+		if u.ItemID != "" {
+			s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, u.ItemID).Scan(&itemKey)
+		}
+		var body struct {
+			Body string `json:"body"`
+		}
+		json.Unmarshal([]byte(u.Payload), &body)
+		payload, err := json.Marshal(map[string]any{"event": "question_unanswered",
+			"agent": fromName, "item": itemKey, "question": body.Body})
+		if err != nil {
+			return err
+		}
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			// Re-check under the transaction: the scan and idempotency guard
+			// both ran outside it, so an answer could have landed in the gap.
+			var state string
+			if err := tx.QueryRowContext(ctx, `SELECT state FROM messages WHERE id = ?`, u.ID).Scan(&state); err != nil {
+				return err
+			}
+			if state != "acked" {
+				return nil
+			}
+			var answered int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+				WHERE reply_to = ? AND kind IN ('answer', 'approval_result', 'relay')`, u.ID).Scan(&answered); err != nil {
+				return err
+			}
+			if answered > 0 {
+				return nil
+			}
+			_, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: u.ToAgentID,
+				RootItemID: u.RootItemID, ItemID: u.ItemID, ReplyTo: u.ID, Payload: payload})
+			return err
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // alreadyRelayedForMessage reports whether a no_recipient relay for this

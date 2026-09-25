@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -2896,5 +2897,90 @@ func TestProgressDeadlockHeldWhileExhausted(t *testing.T) {
 	}
 	if rows != 1 {
 		t.Fatalf("suppressed progress_deadlock rows = %d, want 1", rows)
+	}
+}
+
+// relaysWithReplyTo counts kind:'relay' messages whose reply_to points at q.
+func relaysWithReplyTo(t *testing.T, s *Store, q string) int {
+	t.Helper()
+	var n int
+	if err := s.DB.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM messages WHERE kind = 'relay' AND reply_to = ?`, q).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestUnansweredQuestionRelaysOnceToTheOrchestrator(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	_ = tm
+	q, _ := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "")
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE id = ?`, q)
+	at.Advance(9 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := relaysWithReplyTo(t, s, q); n != 0 {
+		t.Fatalf("early relays = %d", n)
+	}
+	at.Advance(2 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := relaysWithReplyTo(t, s, q); n != 1 {
+		t.Fatalf("relays = %d, want exactly 1", n)
+	}
+	// payload event, recipient
+	var to, payload string
+	s.DB.QueryRowContext(ctx, `SELECT to_agent_id, payload_json FROM messages WHERE kind='relay' AND reply_to=?`, q).Scan(&to, &payload)
+	if to != orch.ID || !strings.Contains(payload, `"event":"question_unanswered"`) || !strings.Contains(payload, w.Name) {
+		t.Fatalf("to=%s payload=%s", to, payload)
+	}
+}
+
+func TestAnsweredQuestionNeverRelays(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	q, _ := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "")
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE id = ?`, q)
+	if _, err := s.Send(ctx, orchSes, w.Name, "answer", "postgres", q, ""); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(11 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := relaysWithReplyTo(t, s, q); n != 0 {
+		t.Fatalf("relays after answer = %d, want 0", n)
+	}
+}
+
+func TestApprovalAnsweredViaNativeAnswerNeverRelays(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	q, _ := s.Send(ctx, wSes.ID, "parent", "question", "may I drop table x?", "", "")
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE id = ?`, q)
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		payload, _ := json.Marshal(map[string]any{"decision": "approve"})
+		_, err := s.enqueue(ctx, tx, Message{Kind: "approval_result", Origin: "daemon",
+			ToAgentID: w.ID, RootItemID: w.RootItemID, ReplyTo: q, Payload: payload})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(11 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := relaysWithReplyTo(t, s, q); n != 0 {
+		t.Fatalf("relays after approval_result = %d, want 0", n)
 	}
 }
