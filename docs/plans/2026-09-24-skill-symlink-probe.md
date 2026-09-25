@@ -369,3 +369,58 @@ without it was not deemed necessary: agy's skill discovery evidently never
 consults the old path once a value is present at the new one, full stop),
 but the outcome decision 2 depends on — no read-through, no clobbering —
 is confirmed either way.
+
+### Follow-up run 2 (fix round 1, finding 6): the actual two-hop production shape
+
+Runs 1-3 above symlinked `agy-home/.gemini/config/skills` (or, in run 3,
+`config/skills` itself) straight at a flat probe directory: one hop. In
+production, though, `setupEnv` (PA.2) makes `agy-home/.gemini/config/skills`
+a symlink to the REAL `~/.gemini/config/skills`, and — now that
+`skillLinkMode[KindAgy]` is `Symlink` (this doc's own Verdicts row, above) —
+`WriteSkills` makes every entry INSIDE that real directory its own symlink
+to `~/.swarm/skills/<name>`. That's two hops of indirection stacked, not
+one, and none of the first three runs exercised both at once.
+
+Method (same seal discipline: fresh scratch `HOME`, no symlink to any real
+directory, only the four auth files copied in, real home diffed
+immediately before and immediately after this one invocation — identical
+both times):
+
+- `prodshape-config-skills/` — a plain directory (simulates the real
+  `~/.gemini/config/skills`) whose one entry, `zz-swarm-symlink-probe`, is
+  itself a symlink to a probe source outside the scratch `HOME` (simulates
+  a `WriteSkills` `Symlink`-mode entry).
+- `home-prodshape/.gemini/config/skills` — a symlink to
+  `prodshape-config-skills/` (simulates PA.2's `setupEnv` linking
+  `agy-home/.gemini/config/skills` at the real `config/skills`).
+
+Command (same prompt as run 1, fresh codeword `WALRUS-7726`):
+```
+cd $SCRATCH/cwd-prodshape && HOME=$SCRATCH/home-prodshape agy --print-timeout 150s \
+  --dangerously-skip-permissions \
+  -p "List your available skills by name. If a skill named zz-swarm-symlink-probe exists, use it and tell me the probe codeword."
+```
+Output:
+```
+### Available Skills
+
+- **agy-customizations**
+- **antigravity-guide**
+- **zz-swarm-symlink-probe**
+
+---
+
+### Probe Codeword
+
+The skill [zz-swarm-symlink-probe](file:///$SCRATCH/home-prodshape/.gemini/config/skills/zz-swarm-symlink-probe/SKILL.md) exists.
+
+The probe codeword is: **WALRUS-7726**
+```
+`find $SCRATCH/home-prodshape/.gemini/config/skills $SCRATCH/prodshape-config-skills -newer <stamp>` was empty (nothing written anywhere in the chain), and the probe source file was unchanged afterward. Real home diffed identical immediately before and immediately after this run (a separate, ambient change to the real `antigravity-oauth-token`'s mtime was observed in the gap *before* this run started, between the previous probe session and this one — no agy invocation of this task's ran in that gap; noted in the report as unrelated, ambient real-agy activity on this machine, consistent with the reviewer's independent note about an unrelated 08:33 real-home run).
+
+**Confirms the actual production shape works end to end.** agy discovers
+and reads a skill through both hops — the directory-level symlink PA.2's
+`setupEnv` creates, and a Symlink-mode entry inside the directory it points
+to — with zero migration or write side effect either. No change to the
+Verdict or `skillLinkMode[KindAgy]`; this run closes the gap between what
+was actually tested and what production actually does.

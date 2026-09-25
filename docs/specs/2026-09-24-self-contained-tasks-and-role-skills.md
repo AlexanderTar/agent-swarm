@@ -473,20 +473,35 @@ Locked decisions:
    perform, and never rewrites the real `~/.gemini/antigravity-cli/skills`.
 3. Repair of an existing broken install runs only from an explicit
    `swarm install` (`WriteAgy`, never the daemon, never a test against the
-   real home): if the real `~/.gemini/antigravity-cli/skills` is a symlink
-   whose chain resolves under `<swarm home>/run/launch/`, copy the
+   real home) — including via `swarm migrate`'s step 9 (`cmd/swarm/migrate.go`'s
+   `DoInstall`), which is the same explicit-user-command install path, not a
+   separate one: if the real `~/.gemini/antigravity-cli/skills` is a symlink
+   whose FIRST hop resolves under `<swarm home>/run/launch/`, copy the
    resolved tree's entries into `~/.gemini/config/skills` — never
    overwriting an entry already there that is user-owned per the P1
    ownership rules (a swarm-owned or pre-A1-shipped `swarm*` entry is
    re-written by `WriteSkills` right afterward anyway) — then repoint
    `~/.gemini/antigravity-cli/skills` at `~/.gemini/config/skills`,
    matching the shape agy's own post-migration setup leaves. Nothing
-   under `run/launch` is ever deleted.
+   under `run/launch` is ever deleted. A symlinked legacy entry is
+   recreated as a symlink at the destination rather than copied through
+   (fix round 1, finding 1: walking through it the way a plain directory
+   copy does aborts the whole install once the link's target turns out to
+   be a directory). Detection checks the chain's first hop, not only its
+   fully-resolved target (fix round 1, finding 4): this also repoints a
+   dangling first hop (nothing left to salvage) and a first hop that
+   resolves all the way back to the new root itself (nothing to salvage
+   either, and copying the root into itself would be unsafe).
 4. Doctor's agy skills check (`CheckSkills`) already looks at the new
    root. A separate warn-level check (`agySkillsRootLegacyCheck`, OK
-   true) fires when `~/.gemini/antigravity-cli/skills` still resolves
-   into `<swarm home>/run/launch/`: "agy skills live inside a swarm
-   session folder; run swarm install to move them."
+   true) fires when `~/.gemini/antigravity-cli/skills`'s first hop
+   resolves into `<swarm home>/run/launch/` (live or dangling —
+   fix round 1, finding 3): "agy skills live inside a swarm session
+   folder; run swarm install to move them." Nothing at the old path at
+   all gets a distinct, neutral message ("nothing at ... yet") rather
+   than the generic "is not inside a session folder" text, which is
+   reserved for something actually present there that isn't the legacy
+   shape.
 5. Re-probe, sealed: a scratch `HOME` under the scratchpad with no symlink
    to any real directory. Copy (not link) only the auth/onboarding files
    agy needs from `~/.gemini/antigravity-cli` into it. Create
@@ -500,7 +515,27 @@ Locked decisions:
    unit and reports BLOCKED rather than attempting a repair. Set
    `skillLinkMode[KindAgy]` from the result and append the evidence
    (version, exact command, prompt, output lines) to
-   `docs/plans/2026-09-24-skill-symlink-probe.md`.
+   `docs/plans/2026-09-24-skill-symlink-probe.md`. Also probe the actual
+   two-hop production shape (fix round 1, finding 6): `$HOME/.gemini/config/skills`
+   itself a symlink (what `setupEnv` creates), pointing at a directory
+   whose own entries are themselves symlinks (what `Symlink`-mode
+   `WriteSkills` creates) — not just a single flat symlink, which is all
+   the first probe exercised.
+
+**Accepted trade-offs** (fix round 1, finding 7):
+- `setupEnv` runs `os.MkdirAll` on the real `~/.gemini/config/skills`
+  every spawn and resume, not only the first time it's missing —
+  harmless (a no-op once it exists) but a repeated stat+mkdir per launch,
+  accepted rather than caching "already checked this run."
+- A legacy agy-home (one whose `agy-home/.gemini/config/skills` already
+  held a real directory from before this fix, not a symlink) keeps using
+  that stale, un-refreshed private copy for as long as that session's
+  `Resume` keeps reusing the same agy-home (PA.2's fix on principle:
+  `setupEnv` never deletes existing content there — see fix round 1,
+  finding 4 in the PA report). It never sees the shared, live-synced
+  skills tree until that session ends and a genuinely new session starts.
+  Accepted: correctness (never silently delete real content) over
+  freshness for an already-running session's private copy.
 
 ## Part B — Multi-agent tasks and the workflow engine
 
