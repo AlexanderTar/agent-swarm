@@ -15,6 +15,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
 
 type fakeGit struct {
@@ -267,6 +268,46 @@ func TestAllOmitsStoredWorktree(t *testing.T) {
 	}
 	if !slices.Equal(ids, []string{"clone", "main"}) {
 		t.Fatalf("All IDs = %v, want [clone main]", ids)
+	}
+}
+
+func TestAllPropagatesIdentityCancellation(t *testing.T) {
+	home := realTemp(t)
+	path := mkRepo(t, home, "repo")
+	s := newService(t, home, &fakeGit{})
+	if _, err := s.DB.ExecContext(bgc, `INSERT INTO repos (id,path,name,source,created_at,updated_at) VALUES ('repo_1',?,?,'scan',1,1)`, path, "repo"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(bgc)
+	s.IdentityRun = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		cancel()
+		return nil, context.Canceled
+	}
+	all, err := s.All(ctx)
+	if !errors.Is(err, context.Canceled) || all != nil {
+		t.Fatalf("All after identity cancellation = %+v, %v; want nil, context.Canceled", all, err)
+	}
+}
+
+func TestRepoIdentityUsesOneGitOperationPerCheckout(t *testing.T) {
+	main, _, _, clone := primaryFixture(t)
+	s := newService(t, filepath.Dir(main), &fakeGit{})
+	for _, entry := range []struct{ id, path string }{{"main", main}, {"clone", clone}} {
+		if _, err := s.DB.ExecContext(bgc, `INSERT INTO repos (id,path,name,source,created_at,updated_at) VALUES (?,?,?,'scan',1,1)`, entry.id, entry.path, entry.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	operations := 0
+	s.IdentityRun = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		operations++
+		return execx.Run(ctx, name, args...)
+	}
+	all, err := s.All(bgc)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("All = %+v, %v", all, err)
+	}
+	if operations != 2 {
+		t.Fatalf("Git identity operations = %d, want one per checkout", operations)
 	}
 }
 

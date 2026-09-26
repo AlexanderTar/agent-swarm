@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
@@ -224,6 +226,25 @@ func TestReposRouteOmitsStoredWorktree(t *testing.T) {
 	}
 	if !paths[main] || !paths[clone] {
 		t.Errorf("main or independent clone missing from all: %v", paths)
+	}
+}
+
+func TestReposRouteClassifiesEachCheckoutOnce(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.repos.Scan(bg); err != nil {
+		t.Fatal(err)
+	}
+	var operations atomic.Int64
+	e.repos.IdentityRun = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		operations.Add(1)
+		return execx.Run(ctx, name, args...)
+	}
+	status, b := e.api("GET", "/api/repos", nil)
+	if body := decode[reposBody](t, b); status != 200 || len(body.All) != 3 {
+		t.Fatalf("GET = %d %s", status, b)
+	}
+	if got := operations.Load(); got != 3 {
+		t.Fatalf("Git identity operations = %d, want one per checkout", got)
 	}
 }
 

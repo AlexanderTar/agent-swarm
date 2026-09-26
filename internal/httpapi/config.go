@@ -110,7 +110,7 @@ func (s *Server) refreshCatalog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getRepos(w http.ResponseWriter, r *http.Request) {
-	ctx, q := r.Context(), r.URL.Query().Get("q")
+	ctx, q := repos.WithIdentityCache(r.Context()), r.URL.Query().Get("q")
 	matches, err := s.Repos.Search(ctx, q, 100_000)
 	if err != nil {
 		s.writeErr(w, err)

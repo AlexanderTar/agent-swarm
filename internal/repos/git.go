@@ -88,9 +88,16 @@ func PrimaryRepo(ctx context.Context, run execx.Runner, path string) bool {
 	if err != nil {
 		return false
 	}
-	metadata := func(arg string) (string, bool) {
-		value, err := git(ctx, run, root, "rev-parse", "--path-format=absolute", arg)
-		if err != nil || value == "" {
+	output, err := git(ctx, run, root, "rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir")
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(output, "\n")
+	if len(parts) != 3 {
+		return false
+	}
+	metadata := func(value string) (string, bool) {
+		if value == "" {
 			return "", false
 		}
 		if !filepath.IsAbs(value) {
@@ -99,16 +106,16 @@ func PrimaryRepo(ctx context.Context, run execx.Runner, path string) bool {
 		value, err = filepath.EvalSymlinks(value)
 		return filepath.Clean(value), err == nil
 	}
-	top, ok := metadata("--show-toplevel")
+	top, ok := metadata(parts[0])
 	if !ok || top != root {
 		return false
 	}
 	want := filepath.Join(root, ".git")
-	gitDir, ok := metadata("--absolute-git-dir")
+	gitDir, ok := metadata(parts[1])
 	if !ok || gitDir != want {
 		return false
 	}
-	commonDir, ok := metadata("--git-common-dir")
+	commonDir, ok := metadata(parts[2])
 	return ok && commonDir == want
 }
 
