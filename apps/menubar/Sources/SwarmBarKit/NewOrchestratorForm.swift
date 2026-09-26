@@ -7,7 +7,6 @@ import Observation
 public final class NewOrchestratorForm {
     public var name = ""
     public var intent: SpikeIntent = .chore
-    public var query = ""
     public var repos = ReposResponse()
     public var selection: [String] = []
     public private(set) var selectionNotice: String?
@@ -107,7 +106,6 @@ public final class NewOrchestratorForm {
     public var advisorOptions: [PickerOption] { CatalogRules.advisorOptions(catalog, enabled: settings.enabledAgents) }
 
     public var rows: [Repo] { RepoPicker.rows(repos) }
-    public var sections: [RepoPicker.Section] { RepoPicker.sections(repos) }
     public var selectedLine: String { RepoPicker.selectedLine(selection, known: rows) }
     public var scanLine: String { RepoPicker.scanLine(repos, format: format) }
 
@@ -145,10 +143,6 @@ public final class NewOrchestratorForm {
     public func toggle(_ repo: Repo) {
         guard !repo.missing else { return }
         selection = RepoPicker.toggle(selection, repo.id)
-    }
-
-    public func selectAll(_ section: RepoPicker.Section) {
-        selection = RepoPicker.selectAll(selection, section.repos)
     }
 
     public func addFolder(_ path: String) async {

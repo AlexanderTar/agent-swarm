@@ -50,10 +50,6 @@ public struct NewOrchestratorView: View {
         .glassButtons()
         .frame(minHeight: 420, idealHeight: 720)
         .task { await form.load() }
-        .task(id: form.query) {
-            try? await Task.sleep(for: .milliseconds(250))
-            if !Task.isCancelled { await form.search() }
-        }
     }
 
     private var nameField: some View {
@@ -84,21 +80,10 @@ public struct NewOrchestratorView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(Copy.repositoriesOptional)
             Text(Copy.reposCaption).font(.caption).foregroundStyle(.secondary)
-            TextField(Copy.searchRepos, text: $form.query).textFieldStyle(.roundedBorder)
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(form.sections) { section in
-                    HStack {
-                        Text(section.title).font(.caption.bold()).foregroundStyle(.secondary)
-                        Spacer()
-                        if section.groupName != nil {
-                            Button(Copy.all) { form.selectAll(section) }.buttonStyle(.link).font(.caption)
-                        }
-                    }
-                    ForEach(section.repos) { repo in
-                        RepoRow(repo: repo, selected: form.selection.contains(repo.id)) { form.toggle(repo) }
-                    }
-                }
-            }
+            RepoChooser(rows: form.rows, selection: Binding(
+                get: { Set(form.selection) },
+                set: { selected in form.selection = form.rows.map(\.id).filter(selected.contains) }
+            ))
             HStack {
                 Button(Copy.addFolder) { chooseFolder() }
                 Spacer()
@@ -106,6 +91,7 @@ public struct NewOrchestratorView: View {
                 Button(Copy.rescan) { Task { await form.rescan() } }.disabled(!form.connected)
             }
             if let error = form.repoError { Text(error).font(.caption).foregroundStyle(.red) }
+            if let notice = form.selectionNotice { Text(notice).font(.caption).foregroundStyle(.secondary) }
             if !form.selectedLine.isEmpty { Text(form.selectedLine).font(.caption) }
         }
     }
@@ -141,25 +127,35 @@ public struct NewOrchestratorView: View {
     }
 }
 
-struct RepoRow: View {
-    let repo: Repo
-    let selected: Bool
-    let toggle: () -> Void
+/// A native list supplies macOS selection, keyboard range selection, and VoiceOver row focus.
+struct RepoChooser: View {
+    let rows: [Repo]
+    @Binding var selection: Set<String>
+
+    static func visibleHeight(for count: Int) -> CGFloat { CGFloat(min(8, max(1, count))) * 32 }
 
     var body: some View {
-        Toggle(isOn: Binding(get: { selected }, set: { _ in toggle() })) {
-            VStack(alignment: .leading, spacing: 1) {
-                HStack {
-                    Text(repo.name)
-                    Text(RepoPicker.subtitle(repo)).foregroundStyle(.secondary)
-                }
-                if let note = RepoPicker.note(repo) {
-                    Text(note).font(.caption).foregroundStyle(repo.missing ? .red : .secondary)
-                }
+        List(rows, selection: $selection) { repo in
+            HStack(spacing: 12) {
+                Text(repo.name).lineLimit(1)
+                Text(RepoPicker.subtitle(repo))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
             }
+            .frame(height: 30, alignment: .leading)
+            .contentShape(Rectangle())
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(repo.name), \(repo.path)")
+            .help(repo.path)
         }
-        .toggleStyle(.checkbox)
-        .disabled(repo.missing)
-        .padding(.leading, 8)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(SubtleScrollerConfig())
+        .frame(height: Self.visibleHeight(for: rows.count))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(.separator))
+        .accessibilityLabel(Copy.repositoriesOptional)
     }
 }

@@ -22,6 +22,8 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertNotNil(form.failure)
         XCTAssertEqual(renderedSize(NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {})).width, 480)
         let repos: ReposResponse = try Fixture.decode("repos.json")
-        XCTAssertGreaterThan(renderedSize(RepoRow(repo: repos.all[4], selected: false, toggle: {})).height, 0)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 12), 256)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 0), 32)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 3), 96)
     }
 }

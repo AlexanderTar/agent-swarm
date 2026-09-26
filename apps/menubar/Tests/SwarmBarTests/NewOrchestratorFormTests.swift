@@ -113,12 +113,13 @@ final class NewOrchestratorFormTests: XCTestCase {
 
     func testReposPicker() async {
         let f = await form()
-        XCTAssertEqual(f.sections.map(\.title), ["Recent", "endurio", "AlexanderTar", "EndurioApp", "All"])
+        XCTAssertEqual(f.rows.map(\.id), ["repo_swarm", "repo_app", "repo_chat", "repo_landing"])
         XCTAssertEqual(f.scanLine, "Scanned 2h ago")
         f.toggle(f.repos.all[4])
         XCTAssertEqual(f.selection, [], "missing repos can't be selected")
         f.toggle(f.repos.recent[0])
-        f.selectAll(f.sections[1])
+        f.toggle(f.repos.all[1])
+        f.toggle(f.repos.all[3])
         XCTAssertEqual(f.selectedLine, "Selected: endurio-chat, endurio-app, endurio-landing")
         await f.search()
         await f.rescan()
