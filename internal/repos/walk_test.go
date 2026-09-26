@@ -120,6 +120,14 @@ func TestWalkOnlyPrimaryRepositories(t *testing.T) {
 	}
 }
 
+func TestWalkIncludesSeparateGitDirCheckout(t *testing.T) {
+	home, checkout := separateGitDirFixture(t)
+	checkout, _ = filepath.EvalSymlinks(checkout)
+	if got := Walk(home, nil).Repos; !slices.Equal(got, []string{checkout}) {
+		t.Fatalf("Walk repos = %v, want separate Git directory checkout %s", got, checkout)
+	}
+}
+
 func TestGroups(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root can read the locked folder")

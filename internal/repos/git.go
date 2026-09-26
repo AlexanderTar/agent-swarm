@@ -75,9 +75,14 @@ func IsRepo(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
+func hasGitMarker(path string) bool {
+	fi, err := os.Lstat(filepath.Join(path, ".git"))
+	return err == nil && (fi.IsDir() || fi.Mode().IsRegular())
+}
+
 // PrimaryRepo reports whether path is its own primary Git checkout.
 func PrimaryRepo(ctx context.Context, run execx.Runner, path string) bool {
-	if !IsRepo(path) {
+	if !hasGitMarker(path) {
 		return false
 	}
 	root, err := filepath.EvalSymlinks(path)
@@ -110,19 +115,29 @@ func PrimaryRepo(ctx context.Context, run execx.Runner, path string) bool {
 	if !ok || top != root {
 		return false
 	}
-	want := filepath.Join(root, ".git")
+	marker := filepath.Join(root, ".git")
+	markerInfo, err := os.Lstat(marker)
+	if err != nil {
+		return false
+	}
 	gitDir, ok := metadata(parts[1])
-	if !ok || gitDir != want {
+	if !ok {
 		return false
 	}
 	commonDir, ok := metadata(parts[2])
-	return ok && commonDir == want
+	if !ok || gitDir != commonDir {
+		return false
+	}
+	return !markerInfo.IsDir() || gitDir == marker
 }
 
 // MainRepoOf maps a repo to itself and a worktree to its main repo (via the
 // gitdir in its .git file). Submodules and non-repos return false.
 func MainRepoOf(path string) (string, bool) {
 	if IsRepo(path) {
+		return path, true
+	}
+	if PrimaryRepo(context.Background(), execx.Run, path) {
 		return path, true
 	}
 	body, err := os.ReadFile(filepath.Join(path, ".git"))

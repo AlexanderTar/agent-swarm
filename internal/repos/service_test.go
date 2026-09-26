@@ -271,6 +271,19 @@ func TestAllOmitsStoredWorktree(t *testing.T) {
 	}
 }
 
+func TestAddManualAndAllKeepSeparateGitDirCheckout(t *testing.T) {
+	home, checkout := separateGitDirFixture(t)
+	s := newService(t, home, &fakeGit{})
+	added, err := s.AddManual(bgc, checkout)
+	if err != nil {
+		t.Fatalf("AddManual(separate Git dir): %v", err)
+	}
+	all, err := s.All(bgc)
+	if err != nil || len(all) != 1 || all[0].ID != added.ID {
+		t.Fatalf("stored separate Git dir checkout missing: added=%+v all=%+v err=%v", added, all, err)
+	}
+}
+
 func TestAllPropagatesIdentityCancellation(t *testing.T) {
 	home := realTemp(t)
 	path := mkRepo(t, home, "repo")

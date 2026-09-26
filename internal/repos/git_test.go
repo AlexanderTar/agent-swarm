@@ -228,3 +228,25 @@ func TestPrimaryRepoIdentity(t *testing.T) {
 		}
 	}
 }
+
+func separateGitDirFixture(t *testing.T) (home, checkout string) {
+	t.Helper()
+	home = t.TempDir()
+	checkout = filepath.Join(home, "separate")
+	gitDir := filepath.Join(home, "metadata", "separate.git")
+	if err := os.MkdirAll(filepath.Dir(gitDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, "init", "-q", "--separate-git-dir", gitDir, checkout)
+	return home, checkout
+}
+
+func TestPrimaryRepoAcceptsSeparateGitDir(t *testing.T) {
+	_, checkout := separateGitDirFixture(t)
+	if PrimaryRepo(bg, execx.Run, checkout) != true {
+		t.Fatalf("separate Git directory checkout %s should be primary", checkout)
+	}
+	if main, ok := MainRepoOf(checkout); !ok || main != checkout {
+		t.Fatalf("MainRepoOf(separate Git directory) = %q, %v; want checkout", main, ok)
+	}
+}

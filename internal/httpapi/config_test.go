@@ -248,6 +248,25 @@ func TestReposRouteClassifiesEachCheckoutOnce(t *testing.T) {
 	}
 }
 
+func TestReposRouteKeepsStoredSeparateGitDirCheckout(t *testing.T) {
+	e := newEnv(t)
+	checkout := filepath.Join(e.home, "GitHub/separate")
+	gitDir := filepath.Join(e.home, "metadata", "separate.git")
+	if err := os.MkdirAll(filepath.Dir(gitDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localGit(t, "init", "-q", "--separate-git-dir", gitDir, checkout)
+	const id = "repo_separate_git_dir"
+	if _, err := e.repos.DB.ExecContext(bg, `INSERT INTO repos (id,path,name,source,created_at,updated_at) VALUES (?,?,?,'scan',1,1)`, id, checkout, "separate"); err != nil {
+		t.Fatal(err)
+	}
+	_, b := e.api("GET", "/api/repos", nil)
+	all := decode[reposBody](t, b).All
+	if !slices.ContainsFunc(all, func(r repos.Repo) bool { return r.ID == id }) {
+		t.Fatalf("stored separate Git directory checkout %s absent from all: %+v", id, all)
+	}
+}
+
 func TestCatalogRoutes(t *testing.T) {
 	e := newEnv(t)
 	status, b := e.api("GET", "/api/catalog", nil)

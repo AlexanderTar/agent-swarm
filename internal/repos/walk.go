@@ -20,7 +20,7 @@ var skipNames = map[string]bool{
 }
 
 type WalkResult struct {
-	Repos      []string            // real paths of folders whose .git is a directory
+	Repos      []string            // real paths of primary Git checkouts
 	LinkDirs   map[string][]string // folder → real targets of its directory symlinks
 	Workspaces []string            // *.code-workspace files
 	Errors     int                 // unreadable folders
@@ -99,7 +99,7 @@ func walk(ctx context.Context, home string, excludes []string) (WalkResult, erro
 			}
 			return nil
 		}
-		if IsRepo(path) && PrimaryRepo(ctx, execx.Run, path) {
+		if hasGitMarker(path) && PrimaryRepo(ctx, execx.Run, path) {
 			if real, err := filepath.EvalSymlinks(path); err == nil && !seen[real] {
 				seen[real] = true
 				res.Repos = append(res.Repos, real)
