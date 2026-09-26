@@ -347,6 +347,10 @@ public final class AppModel {
         }
     }
 
+    /// Pending handoff request keys by agent name, kept only while the last
+    /// attempt's outcome is unknown (timeout, unreachable).
+    private var handoffKeys: [String: String] = [:]
+
     public func perform(_ action: AgentAction, on agent: AgentNode) async {
         guard !action.disabled else { return }
         if action.endpoint == .terminal {
@@ -359,11 +363,21 @@ public final class AppModel {
             inFlight[agent.name] = action.endpoint
         }
         defer { if tracked { inFlight[agent.name] = nil } } // after the refresh below, also on error
+        // One request key per user handoff action: a retry after a timeout or
+        // an unreachable daemon (the POST may have landed) reuses it, so the
+        // daemon replays the same operation instead of answering 409.
+        var requestID: String?
+        if action.endpoint == .handoff {
+            requestID = handoffKeys[agent.name] ?? UUID().uuidString
+            handoffKeys[agent.name] = requestID
+        }
         do {
-            try await client.agent(agent.name, action.endpoint, scope: action.scope)
+            try await client.agent(agent.name, action.endpoint, scope: action.scope, requestID: requestID)
             actionError = nil
+            handoffKeys[agent.name] = nil
         } catch let e as DaemonError {
             actionError = e.message
+            if case .api = e { handoffKeys[agent.name] = nil }
         } catch {}
         await refresh()
     }

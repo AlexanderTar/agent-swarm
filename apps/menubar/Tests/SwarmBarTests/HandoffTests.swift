@@ -106,6 +106,17 @@ final class HandoffTests: XCTestCase {
         XCTAssertNil(AgentTree.handoffStatus(agent(.running)))
     }
 
+    // The phase label is what the row actually shows on line 2 while a
+    // handoff is in flight, in place of the raw session state.
+    func testSubtitleRendersHandoffPhase() {
+        var a = agent(.pauseRequested)
+        a.replacement = AgentReplacement(operationID: "op_1", mode: "handoff", phase: "preserving", error: "")
+        XCTAssertTrue(AgentTree.subtitle(a).hasSuffix(" · Saving handoff…"), AgentTree.subtitle(a))
+        a.replacement = AgentReplacement(operationID: "op_1", mode: "handoff", phase: "blocked", error: "dirty worktree")
+        XCTAssertTrue(AgentTree.subtitle(a).hasSuffix(" · Handoff blocked: dirty worktree"), AgentTree.subtitle(a))
+        XCTAssertFalse(AgentTree.subtitle(agent(.running)).contains("handoff"))
+    }
+
     // MARK: - row stability: a replacement never renames, regroups or reselects
 
     func testRowsStableAcrossReplacement() {
@@ -227,5 +238,26 @@ final class HandoffModelTests: XCTestCase {
         guard await capturedText(m) != nil else {
             return XCTFail("preview never recaptured after invalidation")
         }
+    }
+
+    // One user action keeps one request key: a retry after a timeout or an
+    // unreachable daemon replays the same key (the daemon returns the same
+    // operation instead of a 409), and the next action after it lands mints a
+    // new one.
+    func testHandoffRetryReusesTheRequestKey() async {
+        let m = make()
+        await m.refresh()
+        let a = runningCoder(m)
+        guard let handoff = m.actions(a).first(where: { $0.endpoint == .handoff }) else {
+            return XCTFail("running fixture agent must offer Handoff")
+        }
+        client.failNext = .timedOut
+        await m.perform(handoff, on: a)
+        await m.perform(handoff, on: a)
+        await m.perform(handoff, on: a)
+        let keys = client.handoffRequestIDs
+        XCTAssertEqual(keys.count, 3)
+        XCTAssertEqual(keys[0], keys[1], "the retry after a timeout must reuse the request key")
+        XCTAssertNotEqual(keys[1], keys[2], "a new action after success gets a new request key")
     }
 }
