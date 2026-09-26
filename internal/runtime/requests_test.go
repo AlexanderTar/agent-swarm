@@ -994,3 +994,64 @@ func TestRetiredSessionResolversFollowRepoint(t *testing.T) {
 		t.Fatalf("open prompts after retired-session resolve = %d, want 0", n)
 	}
 }
+
+// TestResolveQuestionReplyBindsByRefThenByPrompt is S12 of
+// docs/specs/2026-09-26-codex-native-approval.md: a codex question-reply
+// entry binds by its ref (surrounding text may differ), else by exact
+// prompt; an unknown ref is a silent no-op; a ref'd row repointed at a
+// successor session still resolves from the retired one.
+func TestResolveQuestionReplyBindsByRefThenByPrompt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Replies", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := s.AskQuestion(ctx, ses.ID, "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧", []string{"Approve", "Request changes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := s.AskQuestion(ctx, ses.ID, "Pick a color", []string{"Red", "Blue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ResolveQuestionReply(ctx, ses.ID, "Anything? ⟦swarm:req_UNKNOWN⟧", "Approve")
+	if err != nil || got.ID != "" {
+		t.Fatalf("unknown ref: got %+v, %v; want the zero Request and nil", got, err)
+	}
+
+	got, err = s.ResolveQuestionReply(ctx, ses.ID, "Reworded ⟦swarm:req_PLAN1⟧", "Approve")
+	if err != nil || got.ID != ref.ID || got.State != "answered" || got.ResponseText != "Approve" || got.RespondedVia != "terminal" {
+		t.Fatalf("by ref: got %+v, %v", got, err)
+	}
+
+	got, err = s.ResolveQuestionReply(ctx, ses.ID, "Pick a color", "Blue")
+	if err != nil || got.ID != plain.ID || got.ResponseText != "Blue" {
+		t.Fatalf("by prompt: got %+v, %v", got, err)
+	}
+
+	moved, err := s.AskQuestion(ctx, ses.ID, "Close SPIKE-1? ⟦swarm:req_CLOSE1⟧", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	succ, err := s.startSessionForTest(ctx, a, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, ses.ID, Interrupted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE requests SET session_id = ? WHERE agent_id = ? AND state = 'open'`,
+		succ.ID, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.ResolveQuestionReply(ctx, ses.ID, "Close SPIKE-1? ⟦swarm:req_CLOSE1⟧", "Approve")
+	if err != nil || got.ID != moved.ID || got.State != "answered" {
+		t.Fatalf("repointed: got %+v, %v", got, err)
+	}
+}

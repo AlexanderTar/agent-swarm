@@ -1326,6 +1326,32 @@ func (s *Store) ResolveQuestionByPrompt(ctx context.Context, sessionID, prompt, 
 	return s.ResolveQuestion(ctx, ids[0], answer, "terminal")
 }
 
+// ResolveQuestionReply closes the question row that one entry of a codex
+// question reply answers, via terminal (docs/specs/2026-09-26-codex-native-
+// approval.md). A question carrying a ⟦swarm:ref⟧ resolves the session's
+// agent's newest open question row bound to that ref -- agent-keyed, like
+// ResolveAnsweredInTerminal, so a row repointed at a successor session still
+// matches; a question without one resolves by exact prompt through
+// ResolveQuestionByPrompt. No match is not an error: the zero Request comes
+// back.
+func (s *Store) ResolveQuestionReply(ctx context.Context, sessionID, question, answer string) (Request, error) {
+	ref := refFromPrompt(question)
+	if ref == "" {
+		return s.ResolveQuestionByPrompt(ctx, sessionID, question, answer)
+	}
+	ids, err := s.queryIDs(ctx, `SELECT r.id FROM requests r JOIN sessions se ON se.agent_id = r.agent_id
+		WHERE se.id = ? AND r.kind = 'question' AND r.state = 'open'
+		  AND json_extract(r.binding_json, '$.ref') = ?
+		ORDER BY r.created_at DESC LIMIT 1`, sessionID, ref)
+	if err != nil {
+		return Request{}, err
+	}
+	if len(ids) == 0 {
+		return Request{}, nil
+	}
+	return s.ResolveQuestion(ctx, ids[0], answer, "terminal")
+}
+
 // retiredSessionRequests is the continuity fallback for the session-scoped
 // resolvers: when sessionID is retired (not the agent's live generation),
 // return the agent's open rows of the same kind (and prompt, when given)
