@@ -685,7 +685,24 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			extra = map[string]string{"section": sectionTitle}
 		}
 		out, err = s.finishOpen(ctx, tx, id, a.Name, key, extra)
-		return err
+		if err != nil {
+			return err
+		}
+		var warnings []string
+		if reqKind == "approve_plan" {
+			var warningsJSON string
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(warnings_json,'[]') FROM artifact_revisions
+				WHERE artifact_id = ? AND revision = ?`, in.ArtifactID, headRev).Scan(&warningsJSON); err != nil {
+				return err
+			}
+			json.Unmarshal([]byte(warningsJSON), &warnings)
+		}
+		np, err := s.nativePromptFor(ctx, tx, out, sectionTitle, warnings)
+		if err != nil {
+			return err
+		}
+		out.NativePrompt = &np
+		return nil
 	})
 	return out, err
 }

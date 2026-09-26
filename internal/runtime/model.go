@@ -271,6 +271,10 @@ type Request struct {
 	ResponseText, RespondedVia       string
 	RespondedAt                      *time.Time
 	CreatedAt                        time.Time
+	// NativePrompt is set only in-process, by askApproval/askConfirmRepos and
+	// the Ask "native_prompt" case (Task 13a/13b): it is never persisted, and
+	// requestTx never fills it.
+	NativePrompt *NativePrompt
 }
 
 type Advice struct {

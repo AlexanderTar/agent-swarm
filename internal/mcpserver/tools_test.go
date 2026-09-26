@@ -991,3 +991,34 @@ func TestAskToolDescriptionSaysItReturnsAtOnce(t *testing.T) {
 		t.Fatalf("description = %q", d.Description)
 	}
 }
+
+// TestAskConfirmReposResultHasNativePrompt is Task 13a: swarm_ask's approval
+// and confirm_repos results carry the daemon-issued native_prompt next to
+// request_id, so the orchestrator can show it verbatim.
+func TestAskConfirmReposResultHasNativePrompt(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+seed.RepoID+`","reason":"needed"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		RequestID    string `json:"request_id"`
+		NativePrompt struct {
+			Header   string   `json:"header"`
+			Question string   `json:"question"`
+			Options  []string `json:"options"`
+		} `json:"native_prompt"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.NativePrompt.Header != "Repositories" || res.NativePrompt.Question == "" ||
+		!strings.Contains(res.NativePrompt.Question, res.RequestID) {
+		t.Fatalf("result = %+v, %s", res, mustJSON(out))
+	}
+	if len(res.NativePrompt.Options) != 2 {
+		t.Fatalf("options = %v", res.NativePrompt.Options)
+	}
+}

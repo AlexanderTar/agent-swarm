@@ -171,7 +171,15 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 		}
 		out, err = s.finishOpen(ctx, tx, id, a.Name, rootKey, map[string]string{
 			"N": strconv.Itoa(len(in.Repos)), "expansion": expansionClause(len(in.Expansion))})
-		return err
+		if err != nil {
+			return err
+		}
+		np, err := s.nativePromptFor(ctx, tx, out, "", nil)
+		if err != nil {
+			return err
+		}
+		out.NativePrompt = &np
+		return nil
 	})
 	return out, err
 }

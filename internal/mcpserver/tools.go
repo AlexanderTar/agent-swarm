@@ -192,9 +192,15 @@ func askTool(s *Server) ToolDef {
 // requestOut is §8.1's swarm_ask result, exactly {"request_id","state"} - no
 // echoed-back kind/prompt/artifact_id/section_id (fix round 2, item 1: the
 // caller already sent those, so echoing them isn't a spec omission worth
-// second-guessing).
+// second-guessing). Task 13a adds "native_prompt" for the approval and
+// confirm_repos kinds, whose Request carries one; every other kind's
+// NativePrompt is nil and the key is omitted.
 func requestOut(r runtime.Request) map[string]any {
-	return map[string]any{"request_id": r.ID, "state": r.State}
+	out := map[string]any{"request_id": r.ID, "state": r.State}
+	if r.NativePrompt != nil {
+		out["native_prompt"] = r.NativePrompt
+	}
+	return out
 }
 
 // ---------- swarm_blocker ----------
