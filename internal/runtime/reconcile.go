@@ -225,6 +225,11 @@ func (s *Store) Reconcile(ctx context.Context) error {
 			return err
 		}
 	}
+	// Root-finish spec decision 5: stop workflows and agents on cancelled
+	// items before DrainQueue could admit a queued one.
+	if err := s.cancelWorkOnCancelledItems(ctx); err != nil {
+		return err
+	}
 	if err := s.TickPause(ctx); err != nil {
 		return err
 	}

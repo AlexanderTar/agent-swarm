@@ -107,3 +107,48 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 	}
 	return nil
 }
+
+// cancelWorkOnCancelledItems is Reconcile's cascade pass (spec locked
+// decision 5): work still running on a cancelled item stops. Workflows go
+// first, because Spawn has no cancelled-item guard and a running workflow row
+// could respawn a run. Then every queued or active agent assigned to a
+// cancelled item goes through the same Cancel the board uses. One failure is
+// logged, never returned, so it cannot stall the rest of Reconcile.
+func (s *Store) cancelWorkOnCancelledItems(ctx context.Context) error {
+	rows, err := s.DB.QueryContext(ctx, `SELECT i.key, i.root_id FROM workflows w JOIN items i ON i.id = w.item_id
+		WHERE i.status = 'cancelled' AND w.state IN ('running', 'escalated')
+		AND w.created_at = (SELECT MAX(created_at) FROM workflows WHERE item_id = w.item_id)`)
+	if err != nil {
+		return err
+	}
+	var wfs [][2]string
+	for rows.Next() {
+		var key, rootID string
+		if err := rows.Scan(&key, &rootID); err != nil {
+			rows.Close()
+			return err
+		}
+		wfs = append(wfs, [2]string{key, rootID})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, wf := range wfs {
+		// CancelWorkflow only reads the caller's root for its scope check.
+		if _, err := s.CancelWorkflow(ctx, Agent{RootItemID: wf[1]}, wf[0], "", ""); err != nil {
+			s.logf("reconcile: cancel workflow on cancelled %s: %v", wf[0], err)
+		}
+	}
+	names, err := s.queryIDs(ctx, `SELECT a.name FROM agents a JOIN items i ON i.id = a.item_id
+		WHERE i.status = 'cancelled' AND a.state IN ('queued', 'active')`)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if _, err := s.Cancel(ctx, name, "", ""); err != nil {
+			s.logf("reconcile: cancel %s on a cancelled item: %v", name, err)
+		}
+	}
+	return nil
+}

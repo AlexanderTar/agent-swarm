@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -191,5 +192,118 @@ func TestMaterializeDoesNotFinishTheSpikeOrchestrator(t *testing.T) {
 	latest, _ := s.LatestSession(ctx, a.ID)
 	if a.State != AgentActive || !latest.State.Live() {
 		t.Fatalf("orchestrator %s / session %s, want active and live", a.State, latest.State)
+	}
+}
+
+// Spec R4: a root Done before RootDone existed (no hook ran); closing its
+// agents records completed, live or paused.
+func TestCancelOnADoneRootRecordsCompleted(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE key = 'EPIC-1'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []Agent{orch, w} {
+		if _, err := s.Cancel(ctx, a.Name, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		ses, _ := s.LatestSession(ctx, a.ID)
+		got, _ := s.Agent(ctx, a.Name)
+		if ses.State != Completed || got.State != AgentFinished {
+			t.Fatalf("%s: session %s, agent %s; want completed/finished", a.Name, ses.State, got.State)
+		}
+	}
+}
+
+// Spec R3.
+func TestHandoffRefusedOnceTheRootIsDone(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	ses := mustSessionID(t, s, orch.ID)
+	// TestCompletedOnEpicRequiresARegisteredPlan (pre-existing, unrelated to
+	// root-finish): an epic orchestrator's own completed checkpoint needs a
+	// registered plan artifact regardless of root state.
+	if _, err := s.RegisterArtifact(ctx, ses, "register", "EPIC-1", "plan", writeFile(t, planBody), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE key = 'EPIC-1'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Handoff, Summary: "saving my place"})
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Code != items.CodeConflict || ie.Message != "Root accepted; write completed." {
+		t.Fatalf("err = %v, want conflict %q", err, "Root accepted; write completed.")
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp, Summary: "all done"}); err != nil {
+		t.Fatalf("completed after acceptance: %v", err)
+	}
+}
+
+// Spec C3, C6: after a story cancel, one Reconcile tick cancels the workflow
+// and the coder on the cascaded task; the Done sibling's coder and the
+// orchestrator are untouched; a second tick finds nothing left.
+func TestReconcileCancelsWorkOnCancelledItems(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawn := func(key string) Agent {
+		w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: key, Role: RoleCoder, Kind: Fake,
+			Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	w1, w2 := spawn("TASK-1"), spawn("TASK-2")
+	t1, _ := s.Items.Get(ctx, "TASK-1")
+	wfID, runID := seedWorkflowRun(t, s, t1.ID, t1.RootID, orch.ID, w1.ID, "build", "coder", 1)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE key = 'TASK-2'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Items.Transition(ctx, "STORY-1", items.Cancelled, items.User("board")); err != nil {
+		t.Fatal(err)
+	}
+
+	before := len(tm.killed)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var wfState, runState string
+	s.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE id = ?`, wfID).Scan(&wfState)
+	s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs WHERE id = ?`, runID).Scan(&runState)
+	if wfState != "cancelled" || runState != "cancelled" {
+		t.Fatalf("workflow %s / run %s, want cancelled/cancelled", wfState, runState)
+	}
+	ses1, _ := s.LatestSession(ctx, w1.ID)
+	got1, _ := s.Agent(ctx, w1.Name)
+	if ses1.State != Cancelled || got1.State != AgentFinished {
+		t.Fatalf("TASK-1 coder: session %s, agent %s; want cancelled/finished", ses1.State, got1.State)
+	}
+	if !slices.Contains(tm.killed[before:], ses1.TmuxName) {
+		t.Fatalf("killed = %v, want %s", tm.killed[before:], ses1.TmuxName)
+	}
+	for _, a := range []Agent{w2, orch} {
+		if got, _ := s.Agent(ctx, a.Name); got.State != AgentActive {
+			t.Fatalf("%s = %s, want active (not on a cancelled item)", a.Name, got.State)
+		}
+	}
+	if it, _ := s.Items.Get(ctx, "TASK-1"); it.Status != items.Cancelled {
+		t.Fatalf("TASK-1 = %s, want cancelled (CancelWorkflow's Ready move is denied)", it.Status)
+	}
+	after := len(tm.killed)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != after {
+		t.Fatalf("second tick killed %v, want nothing", tm.killed[after:])
 	}
 }
