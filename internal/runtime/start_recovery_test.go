@@ -160,3 +160,54 @@ func TestReplacementAfterCancelIsResumedByReconcile(t *testing.T) {
 		t.Fatalf("phase after reconcile = %q (%s), want succeeded", got.Phase, got.Error)
 	}
 }
+
+// Recovering a session that already ended (crash, cancel) keeps its audit
+// state: no Escape/kill to a dead pane, no crashed->interrupted rewrite, and
+// no interrupted notice or relay for a stop that never happened.
+func TestRecoverKeepsTerminalPredecessorAuditState(t *testing.T) {
+	for _, st := range []SessionState{Crashed, Cancelled} {
+		s, tm, _ := newStore(t)
+		ctx := context.Background()
+		seedEpicWithTask(t, s)
+		orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ses, err := s.LatestSession(ctx, orch.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st == Cancelled {
+			if _, err := s.Cancel(ctx, orch.Name, "", ""); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := s.SetSessionState(ctx, ses.ID, st); err != nil {
+			t.Fatal(err)
+		}
+		tm.killed, tm.keys = nil, nil
+		before := notifiedCount(s, "agent.interrupted")
+		again, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+		if err != nil || again.ID != orch.ID {
+			t.Fatalf("%s: recover = %s, %v; want %s", st, again.ID, err, orch.ID)
+		}
+		var got string
+		if err := s.DB.QueryRowContext(ctx, `SELECT state FROM sessions WHERE id = ?`, ses.ID).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != string(st) {
+			t.Fatalf("%s: predecessor state rewritten to %s", st, got)
+		}
+		for _, k := range tm.keys {
+			if strings.HasPrefix(k, ses.TmuxName+"|") {
+				t.Fatalf("%s: interrupt keys sent to a dead pane: %v", st, tm.keys)
+			}
+		}
+		if n := notifiedCount(s, "agent.interrupted"); n != before {
+			t.Fatalf("%s: agent.interrupted raised for an already-ended session", st)
+		}
+		succ, _ := s.LatestSession(ctx, orch.ID)
+		if succ.ID == ses.ID {
+			t.Fatalf("%s: no successor launched", st)
+		}
+	}
+}

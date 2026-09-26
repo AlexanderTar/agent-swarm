@@ -576,6 +576,16 @@ func (s *Store) waitForPreservation(ctx context.Context, op Operation, latest Se
 // mark it interrupted, mirroring resolveDead's own interrupted transition
 // including its relay to the parent.
 func (s *Store) stopPredecessor(ctx context.Context, op Operation, a Agent, ses Session) error {
+	// A session that already ended (crash, cancel, failure) keeps its audit
+	// state: there is no pane to interrupt and no stop to report, so only the
+	// phase moves on.
+	if slices.Contains(endedStates, ses.State) {
+		to := PhaseStopping
+		if op.Mode == ModePause {
+			to = PhaseSucceeded
+		}
+		return s.setPhase(ctx, op.ID, PhasePreserving, to, "")
+	}
 	if ad, ok := s.Adapters[a.Kind]; ok && ad != nil {
 		_ = s.Tmux.Keys(ctx, ses.TmuxName, ad.InterruptKeys()...)
 	}
@@ -685,6 +695,11 @@ func (s *Store) revokeAgentTokens(ctx context.Context, agentID string) error {
 	return nil
 }
 
+// endedStates are the session states an operation finds already over: the
+// retryable ones plus a user-cancelled session (Cancel keeps the identity
+// recoverable). stopPredecessor leaves them untouched, keeping the audit trail.
+var endedStates = append(slices.Clone(retryableStates), Cancelled)
+
 // admitOperation is the queued->starting gate. The successor launches only
 // once the observed predecessor session has settled into a retryable state:
 // a still-live session means someone else already recovered the agent (the
@@ -693,7 +708,7 @@ func (s *Store) revokeAgentTokens(ctx context.Context, agentID string) error {
 // duplicate launch. Without an admission slot the operation parks in queued
 // and a later tick retries it.
 func (s *Store) admitOperation(ctx context.Context, op Operation, a Agent, latest Session) (bool, error) {
-	if latest.State.Live() || !slices.Contains(retryableStates, latest.State) {
+	if latest.State.Live() || !slices.Contains(endedStates, latest.State) {
 		return true, nil
 	}
 	parked := true
