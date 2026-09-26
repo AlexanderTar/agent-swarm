@@ -377,6 +377,52 @@ func TestNativeAnswerChildApprovalObservedAndAgentReported(t *testing.T) {
 	}
 }
 
+// TestNativeAnswerRefusesASecondRowForTheSameRef is Task B4 finding 2: spec
+// 2.3.8 says a ref can be forwarded once, but the old replay guard only
+// checked the one bound question row (state = 'answered' -> its own new
+// state), not the ref as a whole. When the same child-approval prompt is
+// shown (and answered) twice, there are two 'answered' question rows bound
+// to the same ref; consuming row B with "approve" left row A still
+// 'answered', so a second native_answer with "request_changes" found row A
+// and succeeded, producing two conflicting approval_result messages for one
+// question.
+func TestNativeAnswerRefusesASecondRowForTheSameRef(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	orch, _, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+
+	q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptReq, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same prompt is shown (and answered) twice in the terminal, e.g. a
+	// re-render: two question rows now bind to the same ref.
+	hookSimulate(t, s, orchSes, *promptReq.NativePrompt, "Request changes: no")
+	hookSimulate(t, s, orchSes, *promptReq.NativePrompt, "Approve")
+
+	if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: q, Decision: "approve"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: q, Decision: "request_changes", Comment: "no"}); err == nil ||
+		!strings.Contains(err.Error(), "Already resolved") {
+		t.Fatalf("err = %v, want Already resolved -- a ref can be forwarded once, not once per row", err)
+	}
+
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE kind = 'approval_result' AND reply_to = ?`, q).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("approval_result messages = %d, want 1", n)
+	}
+}
+
 // TestNativeAnswerChildApprovalSuppressesOwedAnswerRelay is Task 13d +
 // Task 12: an approval_result counts as the owed answer, so the 10-minute
 // question_unanswered scan never fires for it.

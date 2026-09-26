@@ -266,6 +266,33 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment
 	}
 	var out Request
 	err := s.tx(ctx, func(tx *sql.Tx) error {
+		// A ref can be forwarded once (spec 2.3.8), for the ref as a whole,
+		// not just for the one bound row: the same child-approval prompt can
+		// be shown (and answered) more than once, leaving two 'answered'
+		// question rows bound to the same ref. Consuming one must refuse a
+		// later call over the other, so check the ref's outcome -- an
+		// approval_result already sent for this message, or any question row
+		// with this ref already moved past 'answered' -- before touching
+		// rowID at all.
+		var x int
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM messages
+			WHERE kind = 'approval_result' AND reply_to = ? LIMIT 1`, msgID).Scan(&x)
+		if err == nil {
+			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM requests WHERE kind = 'question'
+			AND json_extract(binding_json, '$.ref') = ? AND state IN ('approved', 'changes_requested')
+			LIMIT 1`, msgID).Scan(&x)
+		if err == nil {
+			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
 		res, err := tx.ExecContext(ctx, `UPDATE requests SET state = ? WHERE id = ? AND state = 'answered'`,
 			newState, rowID)
 		if err != nil {
