@@ -322,7 +322,7 @@ func TestRootDoneLiveAgentsEndCompletedAfterGrace(t *testing.T) {
 ```
 
 2. Run `go test ./internal/runtime/ -run TestRootDoneLiveAgentsEndCompletedAfterGrace -count=1`. It fails to compile with `s.OnRootDone undefined`.
-3. Create `internal/runtime/finish.go`:
+3. Create `internal/runtime/finish.go` with the live path only. 1.4 and 1.5 add the other branches, each driven by its own failing test:
 
 ```go
 package runtime
@@ -356,18 +356,13 @@ func (s *Store) rootIsDone(ctx context.Context, q txQuerier, rootID string) (boo
 // spawning/running session gets a daemon-written completed checkpoint on its
 // own item and attempt; resolveAlive kills the pane killCompletedAfter later
 // and resolveDeadInner ends it completed, which leaves the orchestrator a
-// minute to read approval_result and post its final message. Anything else
-// (pausing, paused, interrupted, no session) finishes here, because
-// resolveDeadInner would end a pausing session paused, not completed; a
-// leftover pane goes on Reconcile's next finished-agent pass. On a spike root
-// the spike's own live orchestrator is left alone: it is inside
-// swarm_materialize, or it already wrote completed with a resolution
-// (close_spike), and ends through that checkpoint.
+// minute to read approval_result and post its final message.
 func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error {
 	var rootKey, rootType string
 	if err := tx.QueryRowContext(ctx, `SELECT key, type FROM items WHERE id = ?`, rootID).Scan(&rootKey, &rootType); err != nil {
 		return err
 	}
+	_ = rootType // the spike guard (1.5) reads it
 	type agentRow struct {
 		id, name, itemID, sesID string
 		state                   SessionState
@@ -398,45 +393,19 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 	}
 	now := db.Millis(s.now())
 	for _, r := range todo {
-		if rootType == string(items.Spike) && r.itemID == rootID && r.state.Live() {
-			continue
-		}
-		// ponytail: in-tx, so no lockAgentOperations; a driver already past
-		// its launch commit could still start a successor (its handoff is
-		// refused and a close records completed). Take the lock post-commit
-		// if that ever shows up.
-		if err := s.cancelAgentOperationsTx(ctx, tx, r.id); err != nil {
-			return err
-		}
-		if r.state.Live() && !r.state.Pausing() {
+		if r.state.Live() {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind,
 				attempt, summary, daemon_written, created_at) VALUES (?, ?, ?, ?, 'completed', ?, ?, 1, ?)`,
 				ids.New("ckp"), r.sesID, r.id, r.itemID, r.attempt, fmt.Sprintf(rootDoneSummary, rootKey), now); err != nil {
 				return err
 			}
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'completed', ended_at = COALESCE(ended_at, ?)
-			WHERE id = ? AND state IN ('pause_requested', 'quiescing', 'stopping', 'paused', 'interrupted')`,
-			now, r.sesID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`, now, r.id); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE worktree_reservations SET released_at = ?
-			WHERE agent_id = ? AND released_at IS NULL`, now, r.id); err != nil {
-			return err
-		}
-		if err := s.publishAgentChanged(ctx, tx, r.name, rootID); err != nil {
-			return err
 		}
 	}
 	return nil
 }
 ```
 
-   `errRootAcceptedHandoff` and `rootIsDone` are unused until 1.5 and 1.4. Go allows unused package-level constants and methods, so this compiles.
+   `rootType`, `errRootAcceptedHandoff` and `rootIsDone` are not used until 1.4 to 1.6. The `_ = rootType` line keeps the unused local compiling until 1.5 deletes it. Go allows unused package-level constants and methods.
 4. Run the test. It passes.
 5. Commit `internal/runtime/finish.go internal/runtime/finish_test.go`: `feat(runtime): OnRootDone writes a daemon completed for live agents on a done root`.
 
@@ -482,8 +451,49 @@ func TestRootDoneFinishesPausedAndPausingAgentsAtOnce(t *testing.T) {
 }
 ```
 
-2. Run it with `-run TestRootDoneFinishesPausedAndPausingAgentsAtOnce`. It passes on the 1.3 code. This test pins the direct path and the operation cancel. Before committing, prove it bites: temporarily delete the `cancelAgentOperationsTx` call and watch it fail with `operation phase = "ready"`. Then temporarily change `!r.state.Pausing()` to `true` and watch it fail on the worker (`stopping` gets a checkpoint). Restore both.
-3. Commit `internal/runtime/finish_test.go`: `test(runtime): OnRootDone finishes paused and pausing agents directly`.
+2. Run `-run TestRootDoneFinishesPausedAndPausingAgentsAtOnce`. It fails with the paused orchestrator untouched (`session paused, agent active`). Once that branch exists, it fails on the `stopping` worker getting a checkpoint, and then on `operation phase = "ready"`.
+3. In `OnRootDone`, replace the loop body with:
+
+```go
+	for _, r := range todo {
+		// ponytail: in-tx, so no lockAgentOperations; a driver already past
+		// its launch commit could still start a successor (its handoff is
+		// refused and a close records completed). Take the lock post-commit
+		// if that ever shows up.
+		if err := s.cancelAgentOperationsTx(ctx, tx, r.id); err != nil {
+			return err
+		}
+		if r.state.Live() && !r.state.Pausing() {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind,
+				attempt, summary, daemon_written, created_at) VALUES (?, ?, ?, ?, 'completed', ?, ?, 1, ?)`,
+				ids.New("ckp"), r.sesID, r.id, r.itemID, r.attempt, fmt.Sprintf(rootDoneSummary, rootKey), now); err != nil {
+				return err
+			}
+			continue
+		}
+		// resolveDeadInner would end a pausing session paused, not completed,
+		// so everything that is not spawning/running finishes here; a leftover
+		// pane goes on Reconcile's next finished-agent pass.
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'completed', ended_at = COALESCE(ended_at, ?)
+			WHERE id = ? AND state IN ('pause_requested', 'quiescing', 'stopping', 'paused', 'interrupted')`,
+			now, r.sesID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`, now, r.id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE worktree_reservations SET released_at = ?
+			WHERE agent_id = ? AND released_at IS NULL`, now, r.id); err != nil {
+			return err
+		}
+		if err := s.publishAgentChanged(ctx, tx, r.name, rootID); err != nil {
+			return err
+		}
+	}
+```
+
+4. Run the 1.3 and 1.4 tests. Both pass.
+5. Commit `internal/runtime/finish.go internal/runtime/finish_test.go`: `feat(runtime): OnRootDone finishes paused and pausing agents directly`.
 
 ### 1.5 Spike close and materialize paths stay unchanged
 
@@ -550,8 +560,20 @@ func TestMaterializeDoesNotFinishTheSpikeOrchestrator(t *testing.T) {
 }
 ```
 
-2. Run `-run 'TestRootDoneLeavesTheLiveSpike|TestMaterializeDoesNotFinish'`. Both pass on the 1.3 code. Prove they bite: temporarily delete the spike `continue` guard and watch both fail with `1 daemon checkpoints`. Restore it.
-3. Commit `internal/runtime/finish_test.go`: `test(runtime): spike close and materialize keep their own finish`.
+2. Run `-run 'TestRootDoneLeavesTheLiveSpike|TestMaterializeDoesNotFinish'`. Both fail with `1 daemon checkpoints for the ... orchestrator, want 0`.
+3. In `OnRootDone`, delete `_ = rootType`, and add as the first statement of the loop body (before the `ponytail:` comment):
+
+```go
+		// The spike's own live orchestrator is inside swarm_materialize, or it
+		// already wrote completed with a resolution (close_spike); it ends
+		// through that checkpoint, not a daemon one (spec decision 1c).
+		if rootType == string(items.Spike) && r.itemID == rootID && r.state.Live() {
+			continue
+		}
+```
+
+4. Run both tests plus the 1.3 and 1.4 tests. All pass.
+5. Commit `internal/runtime/finish.go internal/runtime/finish_test.go`: `feat(runtime): spike close and materialize keep their own finish`.
 
 ### 1.6 Cancel on a done root records Completed, and a late handoff is refused
 
@@ -824,7 +846,7 @@ func (s *Store) cancelWorkOnCancelledItems(ctx context.Context) error {
 
    with
 
-   ``On `approval_result` `approved` the daemon has already moved the item to done and ends your session about a minute later: post a short final summary in chat and stop. Never write `handoff` after acceptance; Swarm refuses it (`Root accepted; write completed.`).``
+   ``On `approval_result` `approved` the daemon has already moved the item to done and ends your session about a minute later: post a short final summary in chat, write `completed` if you want it on record, and stop. Never write `handoff` after acceptance; Swarm refuses it (`Root accepted; write completed.`).``
 3. After line 51 (`  - \`swarm_control cancel\`: …`), insert a line at the same two-space sub-bullet indent:
 
    ``  - Cancelling a story or task (`swarm_items update status: "cancelled"`) also cancels every descendant that isn't Done, and Swarm cancels their agents and workflows within a few seconds. Reopening it later doesn't reopen those children.``

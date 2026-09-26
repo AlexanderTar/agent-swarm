@@ -224,7 +224,7 @@ Both come from `apps/menubar/Sources/SwarmBarKit/AgentActions.swift` (labels lin
 
 - Line 20, replace `when deciding the final branch integration and user handoff.` with `when deciding the final branch integration and what to report to the user.`
 - Line 52, replace `On \`approval_result\` \`approved\` the daemon has already moved the item to done: write \`completed\`.` with:
-  `On \`approval_result\` \`approved\` the daemon has already moved the item to done and ends your session about a minute later: post a short final summary in chat and stop. Never write \`handoff\` after acceptance; Swarm refuses it (\`Root accepted; write completed.\`).`
+  `On \`approval_result\` \`approved\` the daemon has already moved the item to done and ends your session about a minute later: post a short final summary in chat, write \`completed\` if you want it on record, and stop. Never write \`handoff\` after acceptance; Swarm refuses it (\`Root accepted; write completed.\`).`
 - After line 51 (`swarm_control cancel` bullet), add a sub-bullet at the same indent:
   `  - Cancelling a story or task (\`swarm_items update status: "cancelled"\`) also cancels every descendant that isn't Done, and Swarm cancels their agents and workflows within a few seconds. Reopening it later doesn't reopen those children.`
 
