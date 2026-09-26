@@ -218,8 +218,8 @@ func TestScenarioHandoffWorker(t *testing.T) {
 	if kept != 1 {
 		t.Fatal("successor lost the worktree reservation")
 	}
-	if !h.waitForRelay(t, orch, "interrupted", since, 10*time.Second) {
-		t.Fatal("no interrupted relay to the parent for the handed-off coder")
+	if !h.waitForRelay(t, orch, "handoff", since, 10*time.Second) {
+		t.Fatal("no handoff relay to the parent for the handed-off coder")
 	}
 
 	// Recovery read: the successor booted and took its first sync (the

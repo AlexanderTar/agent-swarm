@@ -368,6 +368,14 @@ func (s *Store) onPausingCheckpoint(ctx context.Context, tx *sql.Tx, ses Session
 
 // relayPaused tells agentID's nearest live ancestor, if it has one, that it is paused.
 func (s *Store) relayPaused(ctx context.Context, tx *sql.Tx, agentID string) error {
+	// A handoff is reported once, by the handoff checkpoint's own relay
+	// (event "handoff" with its summary): the session only rides the pause
+	// path to preserve, it is not being paused.
+	if op, ok, err := s.pendingOperationTx(ctx, tx, agentID); err != nil {
+		return err
+	} else if ok && op.Mode == ModeHandoff {
+		return nil
+	}
 	ancestor, ok, err := s.nearestLiveAncestor(ctx, agentID)
 	if err != nil || !ok {
 		return err

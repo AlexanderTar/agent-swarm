@@ -616,7 +616,24 @@ func (s *Store) stopPredecessor(ctx context.Context, op Operation, a Agent, ses 
 			ItemKey: key, Args: map[string]string{"name": a.Name, "KEY": key}}); err != nil {
 			return err
 		}
-		if op.Mode != ModePause && a.ParentAgentID != "" {
+		if op.Mode == ModeHandoff && a.ParentAgentID != "" {
+			// One relay per handoff: the handoff checkpoint already relayed
+			// event "handoff"; a predecessor that never saved (deadline, dead
+			// pane) gets the same event from here, marked unsaved.
+			var saved int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM checkpoints
+				WHERE session_id = ? AND kind = 'handoff'`, ses.ID).Scan(&saved); err != nil {
+				return err
+			}
+			if saved == 0 {
+				payload := []byte(fmt.Sprintf(`{"event":"handoff","agent":%q,"item":%q,"saved":false}`, a.Name, key))
+				if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: a.ParentAgentID,
+					RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload}); err != nil {
+					return err
+				}
+			}
+		}
+		if op.Mode == ModeRecover && a.ParentAgentID != "" {
 			payload := []byte(fmt.Sprintf(`{"event":"interrupted","agent":%q,"item":%q}`, a.Name, key))
 			if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: a.ParentAgentID,
 				RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload}); err != nil {

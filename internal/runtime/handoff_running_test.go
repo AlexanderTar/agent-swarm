@@ -142,3 +142,50 @@ func TestWakeRendersHandoffNoticeForHandoffControl(t *testing.T) {
 	}
 	t.Fatalf("pasted = %q, want the HANDOFF preservation notice", tm.pasted)
 }
+
+// One handoff is one relay to the parent: event "handoff" (carrying the
+// handoff summary), never a "paused" relay followed by an "interrupted" one.
+func TestHandoffRelaysOnceToParent(t *testing.T) {
+	for _, saves := range []bool{true, false} {
+		s, tm, _ := newStore(t)
+		ctx := context.Background()
+		orch, w, wSes := worker(t, s)
+		if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+			t.Fatal(err)
+		}
+		panes(tm, Pane{Session: wSes.TmuxName})
+		tm.env[wSes.TmuxName] = map[string]string{"SWARM_SESSION": wSes.ID}
+		if _, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "relay1", ""); err != nil {
+			t.Fatal(err)
+		}
+		if saves {
+			if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "saved unit 1"}); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			tm.clk.Advance(time.Duration(defaultPauseDeadlineSec+1) * time.Second)
+		}
+		if err := s.ResumeOperations(ctx); err != nil {
+			t.Fatal(err)
+		}
+		panes(tm)
+		if err := s.ResumeOperations(ctx); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.DB.QueryContext(ctx, `SELECT json_extract(payload_json, '$.event') FROM messages
+			WHERE kind = 'relay' AND to_agent_id = ? AND json_extract(payload_json, '$.agent') = ?`, orch.ID, w.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var events []string
+		for rows.Next() {
+			var e string
+			rows.Scan(&e)
+			events = append(events, e)
+		}
+		rows.Close()
+		if len(events) != 1 || events[0] != "handoff" {
+			t.Fatalf("saves=%v: relays to parent = %v, want exactly [handoff]", saves, events)
+		}
+	}
+}
