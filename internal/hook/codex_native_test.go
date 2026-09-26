@@ -129,3 +129,125 @@ func TestCodexAckOnlyPostToolUseLeavesTheRowOpen(t *testing.T) {
 		t.Fatalf("the ack must not answer the row: %+v", r)
 	}
 }
+
+// S4
+func TestCodexQuestionReplyBindsByRefAndEmitsTheNextStep(t *testing.T) {
+	h, ses := codexSeed(t)
+	codexHook(t, h, ses, "PreToolUse", nativeFixture(t, "PreToolUse.json"))
+	codexHook(t, h, ses, "PostToolUse", nativeFixture(t, "PostToolUse-ack.json"))
+	out := codexHook(t, h, ses, "UserPromptSubmit", nativeFixture(t, "UserPromptSubmit-question-reply.synthesized.json"))
+
+	r := questionRow(t, h, probeQuestion)
+	if r.State != "answered" || r.Via.String != "terminal" || r.Response.String != "Approve" {
+		t.Fatalf("row = %+v, want answered via terminal with the picked %q", r, "Approve")
+	}
+	want := `swarm_ask kind:"native_answer", ref:"` + probeRef + `", decision:"approve"`
+	if got := contextOf(t, out); !strings.Contains(got, want) {
+		t.Fatalf("context = %q, want it to contain %q", got, want)
+	}
+	// Observed evidence: forwarding the opposite of the picked option is refused.
+	if _, err := h.RT.Ask(context.Background(), ses, runtime.AskInput{Kind: "native_answer", Ref: probeRef,
+		Decision: "request_changes"}); err == nil || !strings.Contains(err.Error(), `"Approve"`) {
+		t.Fatalf("err = %v, want a decision mismatch against the observed \"Approve\"", err)
+	}
+}
+
+// S5: typed free text keeps Claude's blanket close (locked decision 2).
+func TestCodexTypedReplyFallsBackToAnsweredInTerminal(t *testing.T) {
+	h, ses := codexSeed(t)
+	codexHook(t, h, ses, "PreToolUse", nativeFixture(t, "PreToolUse.json"))
+	codexHook(t, h, ses, "PostToolUse", nativeFixture(t, "PostToolUse-ack.json"))
+	out := codexHook(t, h, ses, "UserPromptSubmit", nativeFixture(t, "UserPromptSubmit-typed-approve.json"))
+
+	r := questionRow(t, h, probeQuestion)
+	if r.State != "answered" || r.Via.String != "terminal" || r.Response.String != "Answered in terminal" {
+		t.Fatalf("row = %+v, want answered via terminal as %q", r, "Answered in terminal")
+	}
+	if got := contextOf(t, out); strings.Contains(got, "[swarm] Recorded") {
+		t.Fatalf("free text emits no forwarding step, got %q", got)
+	}
+	if _, err := h.RT.Ask(context.Background(), ses, runtime.AskInput{Kind: "native_answer", Ref: probeRef,
+		Decision: "approve"}); err != nil && strings.Contains(err.Error(), "No answered native prompt") {
+		t.Fatalf("native_answer must find the free-text evidence, got %v", err)
+	}
+}
+
+// S6
+func TestCodexQuestionReplyWithTwoAnswersBindsEachAndNothingElse(t *testing.T) {
+	h, ses := codexSeed(t)
+	refQ := "Approve A? ⟦swarm:req_A⟧"
+	codexHook(t, h, ses, "PreToolUse", codexPreToolUse(map[string]any{"title": refQ, "options": []string{"Approve", "Request changes"}}))
+	codexHook(t, h, ses, "PreToolUse", codexPreToolUse(map[string]any{"title": "Pick a color", "options": []string{"Red", "Blue"}}))
+	if _, err := h.RT.AskQuestion(context.Background(), ses, "which?", nil); err != nil {
+		t.Fatal(err)
+	}
+	out := codexHook(t, h, ses, "UserPromptSubmit", codexPrompt(questionReplyPrompt(
+		map[string]string{"question": refQ, "answer": "Request changes"},
+		map[string]string{"question": "Pick a color", "answer": "Blue"})))
+
+	if r := questionRow(t, h, refQ); r.State != "answered" || r.Response.String != "Request changes" {
+		t.Fatalf("ref'd row = %+v", r)
+	}
+	if r := questionRow(t, h, "Pick a color"); r.State != "answered" || r.Response.String != "Blue" {
+		t.Fatalf("plain row = %+v", r)
+	}
+	if r := questionRow(t, h, "which?"); r.State != "open" {
+		t.Fatalf("a question reply must close only the rows it names; which? = %+v", r)
+	}
+	if got := contextOf(t, out); !strings.Contains(got, `ref:"req_A", decision:"request_changes"`) {
+		t.Fatalf("context = %q", got)
+	}
+}
+
+// S7
+func TestCodexQuestionReplyWithAnUnknownRefChangesNothing(t *testing.T) {
+	h, ses := codexSeed(t)
+	codexHook(t, h, ses, "PreToolUse", nativeFixture(t, "PreToolUse.json"))
+	out := codexHook(t, h, ses, "UserPromptSubmit", codexPrompt(questionReplyPrompt(
+		map[string]string{"question": "Other? ⟦swarm:req_UNKNOWN⟧", "answer": "Approve"})))
+	if r := questionRow(t, h, probeQuestion); r.State != "open" {
+		t.Fatalf("probe row = %+v, want open", r)
+	}
+	if got := contextOf(t, out); got != "" {
+		t.Fatalf("context = %q, want none", got)
+	}
+}
+
+// S8
+func TestCodexMalformedQuestionReplyFallsBackToTheBlanketClose(t *testing.T) {
+	h, ses := codexSeed(t)
+	codexHook(t, h, ses, "PreToolUse", nativeFixture(t, "PreToolUse.json"))
+	codexHook(t, h, ses, "UserPromptSubmit", codexPrompt(
+		"<send_user_message_question_reply>not json</send_user_message_question_reply>"))
+	if r := questionRow(t, h, probeQuestion); r.State != "answered" || r.Response.String != "Answered in terminal" {
+		t.Fatalf("row = %+v, want the free-text fallback", r)
+	}
+}
+
+func TestParseQuestionReply(t *testing.T) {
+	for _, c := range []struct {
+		name, prompt string
+		ok           bool
+		want         []questionReply
+	}{
+		{"no wrapper", "ok, approved", false, nil},
+		{"not json", "<send_user_message_question_reply>x</send_user_message_question_reply>", false, nil},
+		{"empty array", "<send_user_message_question_reply>[]</send_user_message_question_reply>", false, nil},
+		{"question + answer", `<send_user_message_question_reply>[{"answer":" Approve ","question":"Q?","extra":1}]</send_user_message_question_reply>`,
+			true, []questionReply{{Question: "Q?", Answer: "Approve"}}},
+		{"title fallback, non-string answer", `<send_user_message_question_reply>[{"answer":["a","b"],"title":"T?"}]</send_user_message_question_reply>`,
+			true, []questionReply{{Question: "T?", Answer: ""}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := parseQuestionReply(c.prompt)
+			if ok != c.ok || len(got) != len(c.want) {
+				t.Fatalf("got %+v, %v; want %+v, %v", got, ok, c.want, c.ok)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("entry %d = %+v, want %+v", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}

@@ -130,6 +130,49 @@ func questionsHaveBatchedSwarmRef(raw []byte) bool {
 	return false
 }
 
+// questionReply is one entry of codex's question-reply user message: the
+// answer to a request_user_input_async question arrives on the next
+// UserPromptSubmit as
+// <send_user_message_question_reply>[{"answer":…,"question":…}]</send_user_message_question_reply>.
+type questionReply struct {
+	Question string // entry "question", or "title" when "question" is empty
+	Answer   string // trimmed; "" when absent or not a JSON string
+}
+
+var questionReplyRe = regexp.MustCompile(`(?s)<send_user_message_question_reply>(.*?)</send_user_message_question_reply>`)
+
+// parseQuestionReply extracts the entries of a codex question reply. ok is
+// false when the prompt has no wrapper, the body is not a JSON array, or the
+// array is empty -- the caller then treats the prompt as typed free text.
+// ponytail: decodes only question/title/answer from a shape reported live but
+// not yet captured in a fixture; recapture into testdata/codex/native-question
+// if codex changes it.
+func parseQuestionReply(prompt string) ([]questionReply, bool) {
+	m := questionReplyRe.FindStringSubmatch(prompt)
+	if m == nil {
+		return nil, false
+	}
+	var raw []struct {
+		Question string          `json:"question"`
+		Title    string          `json:"title"`
+		Answer   json.RawMessage `json:"answer"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(m[1])), &raw); err != nil || len(raw) == 0 {
+		return nil, false
+	}
+	out := make([]questionReply, 0, len(raw))
+	for _, r := range raw {
+		q := r.Question
+		if q == "" {
+			q = r.Title
+		}
+		var a string
+		_ = json.Unmarshal(r.Answer, &a) // a non-string answer stays ""
+		out = append(out, questionReply{Question: q, Answer: strings.TrimSpace(a)})
+	}
+	return out, true
+}
+
 // extractToolResponseText reads the answer text out of a question tool's
 // PostToolUse tool_response. A real claude AskUserQuestion result has the
 // shape {questions, answers:{<question text>: <chosen label(s)>}, annotations}
@@ -494,12 +537,33 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{}, nil
 
 	case "UserPromptSubmit":
-		if in.Prompt != "" && !runtime.IsDaemonPrompt(in.Prompt) && h.RT != nil && s.AgentID != "" {
+		var parts []string
+		// A codex question reply names the rows it answers: bind exactly
+		// those (by ref, else prompt) and never run the blanket close below.
+		// Any other human prompt is typed free text and keeps it (the same
+		// rule as claude, spec 2026-09-26-codex-native-approval decision 2).
+		if replies, ok := parseQuestionReply(in.Prompt); ok && h.RT != nil && s.ID != "" {
+			for _, r := range replies {
+				answer := r.Answer
+				if answer == "" {
+					answer = runtime.ResolvedInTerminal
+				}
+				req, err := h.RT.ResolveQuestionReply(ctx, s.ID, capPrompt(r.Question), answer)
+				if err != nil {
+					h.logf("hook: bind question reply for %s: %v", s.ID, err)
+					continue
+				}
+				// Never rate-limited, as in PostToolUse: a missed forward
+				// strands the user's approval.
+				if next := runtime.NativeAnswerNextStep(req); next != "" {
+					parts = append(parts, next)
+				}
+			}
+		} else if in.Prompt != "" && !runtime.IsDaemonPrompt(in.Prompt) && h.RT != nil && s.AgentID != "" {
 			if err := h.RT.ResolveAnsweredInTerminal(ctx, s.AgentID); err != nil {
 				h.logf("hook: close rows after human prompt for %s: %v", s.ID, err)
 			}
 		}
-		var parts []string
 		if s.NeedsCompaction {
 			parts = append(parts, runtime.CompactionNotice())
 			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 0 WHERE id = ?`, s.ID); err != nil {
