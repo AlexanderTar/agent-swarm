@@ -845,10 +845,21 @@ recorded in the spec's probe table as P-C5.
 
 ### Task 14: batch 2 full check, live verification, and review
 
-1. Run `go build ./... && go vet ./... && go test ./... -count=1`.
+1. Run `go build ./... && go vet ./... && go test ./... -count=1`. DONE
+   2026-09-26: full repo suite green, `gofmt -l .` clean, `make skills-sync`
+   produces no diff.
 2. **Live** (after merge, `make install-daemon`): the spec's "Live" steps.
-   - Spawn a claude, codex and agy worker; none shows a trust dialog.
-   - Check the three trust artefacts.
-   - Re-run `ls -la` on an agy-home after an agy session finishes, to confirm
-     the entries are still symlinks (Q2).
-3. Request review (Opus reviewer). Scope: `git diff <batch-1-tip>...HEAD`.
+   NOT DONE this session (no daemon restart was authorized) -- Task 14a's
+   scratch-HOME probe (done) verified the Claude lock/key mechanism live,
+   but spawning real claude/codex/agy workers against the installed daemon,
+   and the agy-home Q2 re-check, are still open.
+3. Request review (Opus reviewer). Scope: `git diff origin/main...HEAD` (9
+   commits, `0451f52..e604c79`). NOT DONE this session.
+
+**Status (2026-09-26, implementer session):** Tasks 18, 14a, 9, 15, 11, 12,
+16, 17, 13 are all done and committed, each its own TDD commit. D4's
+live-session-has-no-entry WARN is explicitly deferred (see the spec's
+"Implementation note" under decision 10) pending a scope decision (new
+daemon endpoint vs. a DB handle for `swarm doctor`). Remaining before this
+branch can merge: the live verification steps above, and an Opus review
+pass.
