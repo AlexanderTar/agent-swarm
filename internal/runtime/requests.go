@@ -453,8 +453,8 @@ func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) erro
 
 // reaskQuestionNext / blockerOpenNext are the request_open relay's next step
 // for a still-open plain question and blocker (epic-approval-lane copy).
-const reaskQuestionNext = "Ask the user again with the same text and options: claude and agy with your " +
-	"native question tool, cursor, muse and codex with swarm_ask kind:\"question\". Swarm keeps one Needs-you row for it."
+const reaskQuestionNext = "Ask the user again with the same text and options: claude, agy and codex with your " +
+	"native question tool, cursor and muse with swarm_ask kind:\"question\". Swarm keeps one Needs-you row for it."
 const blockerOpenNext = "Your blocker is still open in Needs you. The user's answer arrives as a " +
 	"user_answer message; don't ask again."
 
@@ -674,26 +674,23 @@ func (s *Store) finishOpen(ctx context.Context, tx *sql.Tx, reqID, agentName, it
 // errQuestionUseNativeTool is swarm_ask's refusal for kind:"question" when
 // the caller's kind has a hooked native question tool (spec section 1.7):
 // the hook opens the Needs-you row itself, so swarm_ask would only ever
-// duplicate it. muse and codex are deliberately absent from the copy below,
-// unlike the spec's section 4.1 code block: Task 4's live probe
-// (2026-09-25/26, docs/plans/2026-09-25-needs-you-and-child-approval-
-// routing.md) found muse's request_user_input never dispatches a hook at
-// all, and Task 4b's live check for codex's request_user_input never
-// completed (every codex model call returned a backend 401), so both join
-// cursor's exception instead (spec section 1.7's final verdict, which
-// supersedes 4.1's pre-probe draft) until a live retry produces codex's
-// T4b fixtures.
+// duplicate it. muse is deliberately absent from the copy below: Task 4's
+// live probe (2026-09-25/26, docs/plans/2026-09-25-needs-you-and-child-
+// approval-routing.md) found its request_user_input never dispatches a hook
+// at all, so it joins cursor's exception. codex's request_user_input_async
+// was confirmed live on 2026-09-26 (docs/specs/2026-09-26-codex-native-
+// approval.md), superseding Task 4b's unfinished check.
 const errQuestionUseNativeTool = "Ask the user with your own native question tool " +
-	"(claude AskUserQuestion, agy ask_question). " +
+	"(claude AskUserQuestion, agy ask_question, codex request_user_input). " +
 	"Swarm shows it in Needs you and closes it when the user answers."
 
 // questionHookKinds are the kinds whose native question tool Swarm
-// intercepts via a hook (spec section 1.7). cursor, muse and codex are
-// absent on purpose: cursor and muse never dispatch a hook for their
-// native question tool at all, and codex's hook is unconfirmed (Task 4b's
-// live check never ran), so all three keep swarm_ask kind:"question" as
-// their only path to Needs you.
-var questionHookKinds = map[AgentKind]bool{Claude: true, Agy: true}
+// intercepts via a hook (spec section 1.7; codex added 2026-09-26,
+// docs/specs/2026-09-26-codex-native-approval.md). cursor and muse are
+// absent on purpose: neither dispatches a hook for its native question
+// tool at all, so both keep swarm_ask kind:"question" as their only path
+// to Needs you.
+var questionHookKinds = map[AgentKind]bool{Claude: true, Agy: true, Codex: true}
 
 // Ask is swarm_ask (§8.1).
 func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request, error) {

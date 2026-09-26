@@ -502,8 +502,9 @@ func latestEventPayload(t *testing.T, s *Store, eventType string) string {
 }
 
 // TestNativePromptForMsgRefusedForUnhookedOrchestratorKinds is finding 1
-// (docs/specs/2026-09-25-needs-you-and-child-approval-routing.md §6): cursor,
-// muse and codex have no native question hook (spec 1.7), so a child's
+// (docs/specs/2026-09-25-needs-you-and-child-approval-routing.md §6): cursor
+// and muse have no native question hook (spec 1.7; codex gained one
+// 2026-09-26, see TestNativePromptForMsgAllowedForCodex), so a child's
 // approval question sent to one of them can never grow a bound, hook-
 // answered question row -- native_answer would always refuse with
 // errNoNativeEvidence and the child would wait forever. native_prompt must
@@ -511,7 +512,7 @@ func latestEventPayload(t *testing.T, s *Store, eventType string) string {
 // instead of building a prompt nothing can ever answer.
 func TestNativePromptForMsgRefusedForUnhookedOrchestratorKinds(t *testing.T) {
 	ctx := context.Background()
-	for _, kind := range []AgentKind{Cursor, Muse, Codex} {
+	for _, kind := range []AgentKind{Cursor, Muse} {
 		t.Run(string(kind), func(t *testing.T) {
 			s, _, _ := newStore(t)
 			orch, _, wSes := worker(t, s)
@@ -535,6 +536,31 @@ func TestNativePromptForMsgRefusedForUnhookedOrchestratorKinds(t *testing.T) {
 				t.Fatalf("native_answer err = %v, want a refusal pointing at swarm_send", err)
 			}
 		})
+	}
+}
+
+// TestNativePromptForMsgAllowedForCodex is the codex case of the test above,
+// inverted (docs/specs/2026-09-26-codex-native-approval.md S11): codex's
+// request_user_input_async is hooked, so a child's approval question gets a
+// native prompt instead of errChildApprovalNoNativePath.
+func TestNativePromptForMsgAllowedForCodex(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	orch, _, wSes := worker(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'codex' WHERE id = ?`, orch.ID); err != nil {
+		t.Fatal(err)
+	}
+	orchSes := mustSessionID(t, s, orch.ID)
+	q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
+	if err != nil {
+		t.Fatalf("codex has a native approval hook now, got %v", err)
+	}
+	if out.NativePrompt == nil || !strings.HasSuffix(out.NativePrompt.Question, "⟦swarm:"+q+"⟧") {
+		t.Fatalf("native prompt = %+v, want a question ending in the %s ref token", out.NativePrompt, q)
 	}
 }
 

@@ -56,19 +56,17 @@ func TestAskQuestionOpensARequestAndNotifies(t *testing.T) {
 }
 
 // TestSwarmAskQuestionIsRefusedForHookedKindsOnly is Task 9 (spec section
-// 1.7): claude and agy have a live-confirmed hook for their native question
-// tool, so swarm_ask kind:"question" is refused for them. codex, cursor and
-// muse do not -- codex's request_user_input hook is unconfirmed (Task 4b's
-// live check never ran: every codex model call hit a backend 401), cursor's
+// 1.7), updated 2026-09-26 (docs/specs/2026-09-26-codex-native-approval.md):
+// claude, agy and codex have a live-confirmed hook for their native question
+// tool, so swarm_ask kind:"question" is refused for them. cursor's
 // AskQuestion never fires a hook at all (confirmed, forum bug 161836), and
-// muse's request_user_input the same (confirmed live, Task 4) -- so all
-// three keep swarm_ask as their only path to Needs you until a live retry
-// produces codex's T4b fixtures.
+// muse's request_user_input the same (confirmed live, Task 4), so both keep
+// swarm_ask as their only path to Needs you.
 func TestSwarmAskQuestionIsRefusedForHookedKindsOnly(t *testing.T) {
 	for _, tc := range []struct {
 		kind    AgentKind
 		refused bool
-	}{{Claude, true}, {Codex, false}, {Agy, true}, {Muse, false}, {Cursor, false}} {
+	}{{Claude, true}, {Codex, true}, {Agy, true}, {Muse, false}, {Cursor, false}} {
 		t.Run(string(tc.kind), func(t *testing.T) {
 			s, _, _ := newStore(t)
 			ctx := context.Background()
