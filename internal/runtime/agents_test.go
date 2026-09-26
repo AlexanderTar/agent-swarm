@@ -2279,3 +2279,25 @@ func TestSpawnSharesWorktreesAtomically(t *testing.T) {
 		t.Fatalf("reservation mode = %q, want rw", mode)
 	}
 }
+
+func TestStartupResendsDialogKeysWhileTheDialogStaysVisible(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.Dialogs = []adapter.Dialog{{Match: regexp.MustCompile(`Trust me\?`), Keys: []string{"Enter"}, Title: "Trust this project"}}
+	var caps []string
+	for i := 0; i < 24; i++ { // ~12s of polls: sends at 0s, 5s, 10s, no escalation yet
+		caps = append(caps, "Trust me?\n")
+	}
+	tm.captures["retry-me"] = append(caps, "─────\n❯ \n─────\n")
+	if _, _, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Retry me", Intent: "feature", Kind: Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	sent := 0
+	for _, k := range tm.keys {
+		if k == "retry-me|Enter" {
+			sent++
+		}
+	}
+	if sent != 3 {
+		t.Fatalf("sent %d times, want 3 (t=0,5,10s)", sent)
+	}
+}

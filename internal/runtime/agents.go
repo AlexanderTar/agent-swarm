@@ -1246,8 +1246,28 @@ func stripANSI(s string) string { return adapter.StripANSI(s) }
 const startupStallTimeout = 30 * time.Second
 const startupCeiling = 10 * time.Minute
 
+// dialogRetryEvery, dialogMaxSends and dialogEscalateAfter govern how long a
+// startup or live-session dialog is retried before it is handed to the user
+// as a Needs-you row (P0-crash-1 follow-up, 2026-09-26 incident: a dialog's
+// keys were sent once and never again, so a swallowed or too-early key press
+// left the pane stuck for days with nothing surfaced).
+const dialogRetryEvery = 5 * time.Second
+const dialogMaxSends = 3
+const dialogEscalateAfter = 15 * time.Second
+
+// dialogState tracks one (session, dialog) pair's retry/escalation progress.
+// In-memory like lastAliveAt: it is rebuilt from scratch on daemon restart,
+// which just means one extra key press or a slightly later escalation, never
+// a wrong one.
+type dialogState struct {
+	firstSeen time.Time
+	lastSent  time.Time
+	sends     int
+	reqID     string
+}
+
 func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapter.Adapter) error {
-	answered := map[int]bool{}
+	st := map[int]*dialogState{}
 	ceiling := s.Now().Add(startupCeiling)
 	stallDeadline := s.Now().Add(startupStallTimeout)
 	lastCapture := ""
@@ -1267,8 +1287,10 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 			return s.failSession(ctx, a, ses, lastLines(capture, 40))
 		}
 		plain := stripANSI(capture)
+		now := s.Now()
 		for i, d := range ad.StartupDialogs() {
-			if answered[i] || !d.Match.MatchString(plain) {
+			if !d.Match.MatchString(plain) {
+				delete(st, i)
 				continue
 			}
 			if d.Require != nil && !d.Require.MatchString(plain) {
@@ -1277,10 +1299,20 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 			if d.Fail {
 				return s.failSession(ctx, a, ses, lastLines(capture, 40))
 			}
-			if err := s.Tmux.Keys(ctx, ses.TmuxName, d.Keys...); err != nil {
-				return err
+			dst := st[i]
+			if dst == nil {
+				dst = &dialogState{firstSeen: now}
+				st[i] = dst
 			}
-			answered[i] = true
+			if len(d.Keys) > 0 && dst.sends < dialogMaxSends &&
+				(dst.sends == 0 || now.Sub(dst.lastSent) >= dialogRetryEvery) {
+				if err := s.Tmux.Keys(ctx, ses.TmuxName, d.Keys...); err != nil {
+					return err
+				}
+				dst.sends++
+				dst.lastSent = now
+				s.logf("startup: %s: sent %v for dialog %q (send %d of %d)", a.Name, d.Keys, d.Title, dst.sends, dialogMaxSends)
+			}
 		}
 		// A session that clears its startup dialogs and launches straight into
 		// continuous, genuinely busy work (2026-09-20, live incident: "s1-review-2"
