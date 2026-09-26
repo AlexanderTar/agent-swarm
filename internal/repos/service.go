@@ -57,6 +57,7 @@ type Service struct {
 	Stat         func(string) (os.FileInfo, error)    // nil means os.Stat (missing detection)
 	Log          func(format string, args ...any)     // nil means no logging
 	Ctx          context.Context                      // bounds shared scans (daemon lifetime); nil means Background
+	Joined       func()                               // test hook: called when Scan joins an already-running scan
 
 	mu        sync.Mutex
 	cur       *scanCall
@@ -75,12 +76,16 @@ type scanCall struct {
 func (s *Service) Scan(ctx context.Context) (ScanStats, error) {
 	s.mu.Lock()
 	c := s.cur
+	joining := c != nil
 	if c == nil {
 		c = &scanCall{done: make(chan struct{})}
 		s.cur = c
 		go s.runScan(c)
 	}
 	s.mu.Unlock()
+	if joining && s.Joined != nil {
+		s.Joined()
+	}
 	select {
 	case <-c.done:
 		return c.stats, c.err

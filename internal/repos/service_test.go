@@ -406,8 +406,11 @@ func TestLeaderCancelDoesNotStopTheSharedScan(t *testing.T) {
 	leader := make(chan error, 1)
 	go func() { _, err := s.Scan(leaderCtx); leader <- err }()
 	<-g.start
+	joined := make(chan struct{})
+	s.Joined = func() { close(joined) }
 	joiner := make(chan ScanStats, 1)
 	go func() { st, _ := s.Scan(bgc); joiner <- st }()
+	<-joined // wait until the joiner has actually attached to the shared scan
 	cancelLeader()
 	if err := <-leader; !errors.Is(err, context.Canceled) {
 		t.Fatalf("leader err = %v", err)

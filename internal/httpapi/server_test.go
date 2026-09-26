@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -250,8 +251,15 @@ func TestSessionAuth(t *testing.T) {
 
 // The board (Task 29's web.Handler/web.Dist) is mounted at "/" for every
 // non-/api path once Deps.Web is wired (cmd/swarm daemon.go, P3 Task 33).
+//
+// This uses a fixture FS rather than the real web.Dist: web.Dist is only
+// populated by `pnpm build` (web/dist is gitignored, so a fresh worktree has
+// only web/dist/.gitkeep) and web/embed_test.go already covers Handler's own
+// serving logic against a fixture. This test only needs to prove the Server
+// wires Deps.Web into the "/" route for non-API paths.
 func TestBoardServedAtRoot(t *testing.T) {
-	e := newEnv(t, func(d *Deps) { d.Web = web.Handler(web.Dist) })
+	fixture := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>board</title>")}}
+	e := newEnv(t, func(d *Deps) { d.Web = web.Handler(fixture) })
 	status, body := e.call("GET", "/kanban", nil, "")
 	if status != 200 {
 		t.Fatalf("GET /kanban = %d", status)
