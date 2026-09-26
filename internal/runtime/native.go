@@ -25,6 +25,12 @@ type NativePrompt struct {
 	Options  []string `json:"options"`
 }
 
+// ResolvedInTerminal is the hook's PostToolUse fallback response text for a
+// question tool call whose adapter reports no answer content (agy, spec
+// 1.7): it proves the prompt was answered, but never the option -- never
+// something the user actually typed.
+const ResolvedInTerminal = "Resolved in terminal"
+
 // approveOptions is every native prompt's fixed choice pair (spec section 6).
 var approveOptions = []string{"Approve", "Request changes"}
 
@@ -41,6 +47,12 @@ func refFromPrompt(p string) string {
 	}
 	return ""
 }
+
+// HasRefToken reports whether p contains a well-formed ⟦swarm:<ref>⟧ token
+// (the same shape refFromPrompt parses), not merely the "⟦swarm:" prefix --
+// used by the hook's batched-question guard so an unterminated or malformed
+// mention of the token syntax doesn't false-positive.
+func HasRefToken(p string) bool { return refRe.MatchString(p) }
 
 // truncateWithToken is extractQuestion's 1000-rune cap (handler.go:70-72),
 // applied here so the ref token always survives it: body is truncated from
@@ -161,12 +173,13 @@ func NativeAnswerNextStep(req Request) string {
 	// trimmed == "" or "Resolved in terminal" is the daemon's own placeholder
 	// for an adapter with no response text (agy, spec 1.7) -- never something
 	// the user typed, so it must not be quoted back as their text.
-	if trimmed == "" || trimmed == "Resolved in terminal" {
+	if trimmed == "" || trimmed == ResolvedInTerminal {
 		return fmt.Sprintf(`[swarm] Recorded an answer for %s. Forward it now: `+
 			`swarm_ask kind:"native_answer", ref:%q, decision: the option the user picked`, binding.Ref, binding.Ref)
 	}
 	return fmt.Sprintf(`[swarm] Recorded %q for %s. Forward it now: `+
-		`swarm_ask kind:"native_answer", ref:%q, decide approve or request_changes from the user's text %q`,
+		`swarm_ask kind:"native_answer", ref:%q, decide approve or request_changes from the user's text %q; `+
+		`if the text is neither an approval nor a change request, ask the user again instead of forwarding.`,
 		trimmed, binding.Ref, binding.Ref, trimmed)
 }
 
@@ -275,7 +288,7 @@ func matchDecisionEvidence(responseText, label, callerComment string) (evidence,
 		return "", "", fmt.Errorf(errDecisionMismatch, trimmed, label)
 	}
 	comment = callerComment
-	if comment == "" && trimmed != "" && trimmed != "Resolved in terminal" {
+	if comment == "" && trimmed != "" && trimmed != ResolvedInTerminal {
 		comment = trimmed
 	}
 	return EvidenceAgentReported, comment, nil

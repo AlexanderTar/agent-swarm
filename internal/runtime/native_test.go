@@ -52,7 +52,8 @@ func TestNativeAnswerNextStep(t *testing.T) {
 		{"approve", "Approve", []string{`Recorded "Approve" for req_X`, `decision:"approve"`}, nil},
 		{"request_changes", "Request changes", []string{`Recorded "Request changes" for req_X`, `decision:"request_changes"`}, nil},
 		{"typed free text", "Approve, but drop endurio-docs", []string{
-			`decide approve or request_changes from the user's text "Approve, but drop endurio-docs"`}, nil},
+			`decide approve or request_changes from the user's text "Approve, but drop endurio-docs"`,
+			"if the text is neither an approval nor a change request, ask the user again instead of forwarding"}, nil},
 		{"agy placeholder", "Resolved in terminal", []string{"the option the user picked"},
 			[]string{`the user's text "Resolved in terminal"`}},
 	} {
