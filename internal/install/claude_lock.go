@@ -132,7 +132,10 @@ func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 // reads it, hands edit the decoded projects map (never nil), and writes the
 // result back to the target only when edit reports a change and the bytes
 // did not move underneath it (re-read-compare, up to 3 attempts). Every
-// other top-level key and every untouched entry keeps its exact bytes.
+// other top-level key and every untouched entry keeps its JSON value, but
+// the file is re-serialized (sorted keys, compact, HTML-escaped).
+// ponytail: whole-file re-marshal; splice the projects bytes into the
+// original buffer if a dotfiles-tracked ~/.claude.json needs stable diffs.
 //
 // It refuses, returning an error and writing nothing, when the file is
 // missing (ErrClaudeConfigMissing), 0-byte or whitespace-only, the literal
