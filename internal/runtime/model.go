@@ -394,8 +394,18 @@ type Store struct {
 	// counting from its own StartedAt, exactly like a session on its first tick.
 	lastAliveAt map[string]time.Time
 	// promptState is per (session|title) retry/escalation state for visible
-	// prompts; in-memory like lastAliveAt.
+	// prompts reconcile itself matches and drives; in-memory like
+	// lastAliveAt. hasEscalatedPrompt also checks the DB directly (an open
+	// request row survives a restart that wipes this map), which is how it
+	// sees a dialog escalated by watchStartup instead of by reconcile.
 	promptState map[string]*dialogState
+	// activeWatchStartup marks sessions with a live watchStartup goroutine
+	// currently polling them. Reconcile defers a Spawning session's dialogs to
+	// watchStartup only while this is true; once it isn't (a daemon restart
+	// dropped the goroutine, in-memory like the rest of this block), reconcile
+	// takes over matching, retrying and escalating that session's dialogs
+	// itself instead of leaving it silently stuck.
+	activeWatchStartup map[string]bool
 	// lastTitle is the Ghostty tab title (sessionTitle's output) each live
 	// session had as of the last tick that set it, so a tick whose status,
 	// role and tree haven't changed skips the tmux rename-window call instead

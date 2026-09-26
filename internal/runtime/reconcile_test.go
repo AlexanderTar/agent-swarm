@@ -1106,6 +1106,109 @@ func TestEscalatedPromptSuppressesNoAckForAChild(t *testing.T) {
 	}
 }
 
+// A child that escalated its trust dialog during startup -- exactly the
+// 2026-09-26 incident's path, since all five stuck sessions were children --
+// must be suppressed the same way a live-session escalation is:
+// hasEscalatedPrompt's DB check finds the open row watchStartup opened via
+// OpenDialogPrompt directly, by title, even though the session is still
+// Spawning and reconcile never touches its dialogs directly while
+// watchStartup owns them. Before this fix, hasEscalatedPrompt only consulted
+// reconcile's own in-memory promptState, so this child still got
+// no-ack-relayed to its parent at ackTimeout and its pane killed out from
+// under its open row.
+func TestEscalatedStartupDialogSuppressesNoAckForASpawningChild(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	tm.captures[w.Name] = []string{"Do you trust this?\n"}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	if _, err := s.DB.Exec(`UPDATE sessions SET state='spawning' WHERE id=?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate watchStartup already having escalated this child's trust
+	// dialog to an open Needs-you row, and still actively owning it.
+	req, _, err := s.OpenDialogPrompt(ctx, wSes.ID, "Trust prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.setWatchStartupActive(wSes.ID, true)
+
+	for i := 0; i < 30; i++ { // well past ackTimeout (2m)
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		at.Advance(5 * time.Second)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE id = ?`, req.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("dialog row state = %q, want open (still escalated, untouched by reconcile)", state)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 0 {
+		t.Fatalf("agent.no_ack count = %d, want 0 while the startup dialog is escalated", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+	if relays != 0 {
+		t.Fatalf("relay no_ack count = %d, want 0 while the startup dialog is escalated", relays)
+	}
+}
+
+// A daemon restart wipes reconcile's in-memory promptState but not the open
+// request row in the DB. Before the DB check in hasEscalatedPrompt, the very
+// first Reconcile tick after a restart would treat an already-escalated
+// dialog as brand new (fresh firstSeen, no reqID yet), so a child that had
+// already sat past ackTimeout before the restart got no-ack-relayed on that
+// first tick, before its escalation timer even had a chance to run again.
+func TestEscalatedPromptRowSurvivingARestartSuppressesNoAckImmediately(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	tm.captures[w.Name] = []string{"Do you trust this?\n"}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	// Seed the row a pre-restart tick would have opened, without touching any
+	// in-memory state (promptState, activeWatchStartup) -- simulating that a
+	// restart just wiped it, and w had already sat here well past ackTimeout
+	// before the restart.
+	if _, _, err := s.OpenDialogPrompt(ctx, wSes.ID, "Trust prompt"); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(3 * time.Minute) // already well past ackTimeout (2m) pre-restart
+
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, wSes.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("dialog row state = %q, want still open", state)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 0 {
+		t.Fatalf("agent.no_ack count = %d, want 0 on the very first tick after a restart", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+	if relays != 0 {
+		t.Fatalf("relay no_ack count = %d, want 0 on the very first tick after a restart", relays)
+	}
+}
+
 func TestProgressDeadlockRelaysAfterFiveMinutesIdle(t *testing.T) {
 	s, tm, at := clockStore(t)
 	ctx := context.Background()
@@ -1972,7 +2075,10 @@ func TestPromptPatternRetriesThenOpensARowAndResolvesWhenCleared(t *testing.T) {
 	}
 }
 
-func TestReconcileLeavesSpawningSessionsDialogsToWatchStartup(t *testing.T) {
+// While a watchStartup goroutine is actually alive for this session (the
+// normal case), reconcile must leave its dialogs alone: matching here too
+// would double-press keys and open a duplicate row.
+func TestReconcileLeavesSpawningSessionsDialogsToAnActiveWatchStartup(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "SpawningDlg", Intent: "feature", Kind: Fake, Model: "fake-1"})
@@ -1986,16 +2092,48 @@ func TestReconcileLeavesSpawningSessionsDialogsToWatchStartup(t *testing.T) {
 	if _, err := s.DB.Exec(`UPDATE sessions SET state='spawning' WHERE id=?`, ses.ID); err != nil {
 		t.Fatal(err)
 	}
+	s.setWatchStartupActive(ses.ID, true)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if len(tm.keys) != 0 {
-		t.Fatalf("keys = %v, want none: a spawning session's dialogs belong to watchStartup", tm.keys)
+		t.Fatalf("keys = %v, want none: a spawning session's dialogs belong to an active watchStartup", tm.keys)
 	}
 	var n int
 	s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses.ID).Scan(&n)
 	if n != 0 {
 		t.Fatalf("requests = %d, want 0", n)
+	}
+}
+
+// After a daemon restart, no watchStartup goroutine is re-attached to a
+// session left in 'spawning' -- only watchStartup itself ever moves a
+// session out of that state, so without this fix such a session (dialog
+// unanswered from before the restart, or never even pressed) would sit
+// stuck forever, exactly the incident this batch fixes. Reconcile must take
+// its dialogs over itself once no watchStartup owns it.
+func TestReconcileTakesOverASpawningSessionsDialogWhenNoWatchStartupIsActive(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "OrphanedSpawn", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	tm.captures[a.Name] = []string{"Do you trust this?\n"}
+	if _, err := s.DB.Exec(`UPDATE sessions SET state='spawning' WHERE id=?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	// No s.setWatchStartupActive call: simulates a daemon restart, where the
+	// in-memory active-goroutine set is empty even though the DB still says
+	// 'spawning'.
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.keys) != 1 || tm.keys[0] != a.Name+"|Enter" {
+		t.Fatalf("keys = %v, want [%s|Enter]: reconcile must retry an orphaned spawning session's dialog", tm.keys, a.Name)
 	}
 }
 

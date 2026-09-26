@@ -1304,6 +1304,15 @@ type dialogState struct {
 }
 
 func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapter.Adapter) error {
+	// setWatchStartupActive tells reconcile it can safely defer this
+	// session's dialogs to this goroutine (covers every return path below);
+	// once it isn't set any more -- this goroutine exited, or a daemon
+	// restart dropped it without ever running this defer -- reconcile takes
+	// the session's dialogs over itself instead of leaving it stuck (see
+	// resolveAlive's ownedByWatchStartup and hasEscalatedPrompt's DB check,
+	// which covers an escalation surviving the restart via its open row).
+	s.setWatchStartupActive(ses.ID, true)
+	defer s.setWatchStartupActive(ses.ID, false)
 	st := map[int]*dialogState{}
 	ceiling := s.Now().Add(startupCeiling)
 	stallDeadline := s.Now().Add(startupStallTimeout)
@@ -1372,6 +1381,11 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 					s.logf("startup: %s: open dialog prompt %q: %v", a.Name, d.Title, err)
 				} else {
 					dst.reqID = req.ID
+					// hasEscalatedPrompt's DB check (reconcile.go) picks this
+					// open row up directly by title, so a Spawning child stuck
+					// here is still suppressed from a no-ack relay to its
+					// parent without watchStartup mirroring anything into
+					// reconcile's own in-memory state.
 					s.logf("startup: %s: dialog %q still visible after %s, opened %s", a.Name, d.Title, dialogEscalateAfter, req.ID)
 				}
 			}
