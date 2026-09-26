@@ -29,8 +29,10 @@ func (k AgentKind) Display() string {
 		return "Cursor"
 	case Muse:
 		return "Muse"
+	case Fake:
+		return "Fake"
 	}
-	return "Fake"
+	return "unknown agent"
 }
 
 type Role string

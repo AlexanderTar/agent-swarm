@@ -132,13 +132,21 @@ func cmdNew(args []string, stdout, stderr io.Writer) int {
 			Title string `json:"title"`
 		} `json:"item"`
 		Agent struct {
-			Name  string `json:"name"`
-			State string `json:"state"`
+			Name           string  `json:"name"`
+			State          string  `json:"state"`
+			PreflightError *string `json:"preflight_error"`
 		} `json:"agent"`
 		Queued bool `json:"queued"`
 	}
 	if err := c.do("POST", "/api/spikes", body, &resp); err != nil {
 		return fail(stderr, err)
+	}
+	// A preflight failure leaves the agent row's State "active" on the wire
+	// (there is no failed AgentState) with preflight_error set instead, so
+	// State alone is never enough to say the agent actually started.
+	if resp.Agent.PreflightError != nil && *resp.Agent.PreflightError != "" {
+		fmt.Fprintf(stdout, "%s created, but %s failed to start: %s\n", resp.Item.Key, resp.Agent.Name, *resp.Agent.PreflightError)
+		return 1
 	}
 	suffix := ""
 	if resp.Queued {

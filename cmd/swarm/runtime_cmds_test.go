@@ -98,6 +98,29 @@ func TestNewSpike(t *testing.T) {
 	}
 }
 
+// A preflight failure leaves the agent row State "active" on the wire (there
+// is no failed AgentState), with preflight_error set instead. The CLI must
+// read that field and print the failure, never "is active".
+func TestNewPrintsAPreflightFailureNotIsActive(t *testing.T) {
+	srv, _, home := stubDaemon(t, map[string]string{
+		"POST /api/spikes": `{"item":{"key":"SPIKE-4","title":"Look into it"},
+			"agent":{"name":"look-into-it","state":"active","preflight_error":"No agent kind given and no default is set for spikes; pass --agent."},"queued":false}`,
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	code := run([]string{"new", "--home", home, "--url", srv.URL, "--name", "Look into it",
+		"--intent", "feature", "--request", "do it"}, &out, &out)
+	if code == 0 {
+		t.Fatalf("a preflight failure must be a non-zero exit, got 0: %s", out.String())
+	}
+	if strings.Contains(out.String(), "is active") {
+		t.Fatalf("output must not claim the agent is active on a preflight failure: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "No agent kind given") {
+		t.Fatalf("output must surface the preflight error: %q", out.String())
+	}
+}
+
 func TestNewRequiresNameAndIntent(t *testing.T) {
 	srv, _, home := stubDaemon(t, nil)
 	defer srv.Close()

@@ -12,3 +12,12 @@ func TestAgentKindDisplay(t *testing.T) {
 		}
 	}
 }
+
+// An empty kind is not the same as Fake: a caller that never resolved a kind
+// (e.g. a spike with no default) must not have its error message claim "Fake"
+// is what failed.
+func TestAgentKindDisplayOfEmptyKindIsNotFake(t *testing.T) {
+	if got := AgentKind("").Display(); got == "Fake" {
+		t.Errorf(`AgentKind("").Display() = %q, must not be "Fake"`, got)
+	}
+}
