@@ -59,6 +59,75 @@ func TestNativeWakeSkipsThePaste(t *testing.T) {
 	}
 }
 
+// TestNativeWakeResolvesAgyLaunchModel is the P0 model-passthrough fix
+// (docs/specs/2026-09-26-agy-launch-model.md): WakeDue's native-wake step
+// must resolve the agent's catalog base model to its agy launch id before
+// building the WakeTarget, the same way startSession resolves it for
+// launch/resume.
+func TestNativeWakeResolvesAgyLaunchModel(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.WakeOK = true
+	s.Adapters[Agy] = fa
+	seedAgyCatalog(t, s.DB)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude", "fake", "agy"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	at := tm.clk
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "AgyWake", Intent: "feature",
+		Kind: Agy, Model: "gemini-3.8-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.PreflightError != "" {
+		t.Fatalf("preflight error: %s", a.PreflightError)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	panes(tm, Pane{Session: a.Name, Command: "agy"})
+	at.Advance(25 * time.Second)
+	if err := s.WakeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastWakeTarget.Model != "gemini-3.8-flash-high" {
+		t.Fatalf("WakeTarget.Model = %q, want the suffixed default-effort launch id", fa.LastWakeTarget.Model)
+	}
+}
+
+// TestWakeOnQuotaResetResolvesAgyLaunchModel mirrors
+// TestNativeWakeResolvesAgyLaunchModel for the quota-reset wake path.
+func TestWakeOnQuotaResetResolvesAgyLaunchModel(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.WakeOK = true
+	s.Adapters[Agy] = fa
+	seedAgyCatalog(t, s.DB)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude", "fake", "agy"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	at := tm.clk
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "AgyQuotaReset", Intent: "feature",
+		Kind: Agy, Model: "gemini-3.8-flash", Effort: "medium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.PreflightError != "" {
+		t.Fatalf("preflight error: %s", a.PreflightError)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "agy"})
+	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"} // idle
+	s.DB.ExecContext(ctx, `UPDATE sessions SET waiting = 1 WHERE id = ?`, ses.ID)
+
+	cutoff := at.Now().Add(-2 * time.Minute)
+	if _, err := s.WakeOnQuotaReset(ctx, Agy, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastWakeTarget.Model != "gemini-3.8-flash-medium" {
+		t.Fatalf("WakeTarget.Model = %q, want the suffixed medium-effort launch id", fa.LastWakeTarget.Model)
+	}
+}
+
 // 2026-09-22 live incident: s11-seams filed a progress checkpoint reading
 // like a finished report (TASK-107) and its orchestrator never got pinged
 // -- progress was deferred-wake-class, so it just sat pending until
