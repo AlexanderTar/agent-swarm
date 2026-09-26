@@ -1127,6 +1127,7 @@ func TestQuotaResetWakeResurfacesOnlyWhatIsNotVisible(t *testing.T) {
 ```
 
    In the `ad.Wake(...)` call, replace `Notice: QuotaResetNotice(),` with `Notice: notice,`.
+   If the B4 test hangs or reports `database is locked` (the `s.tx` write runs while the `rows` cursor from `s.DB.QueryContext` is open), collect the rows into a slice and close the cursor before the loop, the same way `wakeCandidates` does.
 4. Run `go test ./internal/runtime/ -run 'TestWakeOnQuotaReset|TestQuotaResetWakeResurfaces' -count=1`. It must PASS; existing quota tests have no open requests, so their notice is unchanged.
 5. Commit `internal/runtime/wake.go internal/runtime/approval_lane_test.go` with message `feat(runtime): quota-reset wake re-surfaces open requests the session can't see`.
 

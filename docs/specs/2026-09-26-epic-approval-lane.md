@@ -134,7 +134,7 @@ const blockerOpenNext = "..."   // copy below
 func OpenRequestsReminder(n int) string
 ```
 
-No exported signature changes. `mcpserver.requestOut` calls `runtime.NativePromptNextStep(r.ID)` in place of its inline `fmt.Sprintf`.
+No existing exported signature changes; two exported helpers are added (`NativePromptNextStep`, `OpenRequestsReminder`). `mcpserver.requestOut` calls `runtime.NativePromptNextStep(r.ID)` in place of its inline `fmt.Sprintf`.
 
 ### Relay payload (`messages.kind = 'relay'`, `origin = 'daemon'`, `request_id` set)
 
