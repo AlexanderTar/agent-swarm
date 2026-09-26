@@ -245,3 +245,38 @@ func TestNativeAnswerStaleAcceptIsRefused(t *testing.T) {
 		t.Fatalf("err = %v, want conflict %q", err, want)
 	}
 }
+
+// Spec E8.
+func TestCloseSpikeRelaysNativePrompt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Nothing", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, a.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp,
+		Summary: "nothing to build", Resolution: "no_change"}); err != nil {
+		t.Fatal(err)
+	}
+	var reqID string
+	s.DB.QueryRowContext(ctx, `SELECT id FROM requests WHERE kind = 'close_spike'`).Scan(&reqID)
+	p, n := relayFor(t, s, a.ID, reqID)
+	if n != 1 {
+		t.Fatalf("%d relays for close_spike, want 1", n)
+	}
+	np := decodeNP(t, p)
+	if np.Header != "Close spike" || np.Question != "Close SPIKE-1? ⟦swarm:"+reqID+"⟧" {
+		t.Fatalf("native_prompt = %+v", np)
+	}
+	hookSimulate(t, s, ses, np, "Approve")
+	if _, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: reqID, Decision: "approve"}); err != nil {
+		t.Fatal(err)
+	}
+	if it, _ := s.Items.Get(ctx, "SPIKE-1"); it.Status != items.Done {
+		t.Fatalf("spike status = %s, want done", it.Status)
+	}
+}
