@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -476,6 +477,133 @@ func TestAgyIsolatedHomeCarriesOnboardingState(t *testing.T) {
 	}
 	if string(got) != onboarded {
 		t.Errorf("got %q, want %q", got, onboarded)
+	}
+}
+
+// D6 (dialog-needs-you spec): antigravity-cli/settings.json is a per-launch
+// COPY, not a symlink, with the session's workspace added to
+// trustedWorkspaces -- every other entry in the real directory stays
+// symlinked (so onboarding state, auth, etc. still work as
+// TestAgyIsolatedHomeCarriesOnboardingState covers), and the real
+// settings.json itself is never modified.
+func TestAgyLaunchTrustsCwdInAPerLaunchSettingsCopy(t *testing.T) {
+	d := testDeps(t)
+	real := filepath.Join(d.UserHome, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realSettings := []byte(`{"trustedWorkspaces":["/a"],"theme":"x"}`)
+	if err := os.WriteFile(filepath.Join(real, "settings.json"), realSettings, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "antigravity_state.pbtxt"), []byte("state"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(real, "conversations"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := agySpec(t)
+	l, err := newAgy(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyHome := l.Env["HOME"]
+	symDir := filepath.Join(agyHome, ".gemini", "antigravity-cli")
+
+	settingsPath := filepath.Join(symDir, "settings.json")
+	fi, err := os.Lstat(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("settings.json must be a real per-launch copy, not a symlink")
+	}
+	var got struct {
+		TrustedWorkspaces []string `json:"trustedWorkspaces"`
+		Theme             string   `json:"theme"`
+	}
+	b, _ := os.ReadFile(settingsPath)
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.TrustedWorkspaces, "/a") || !slices.Contains(got.TrustedWorkspaces, spec.Cwd) {
+		t.Fatalf("trustedWorkspaces = %v, want both /a and %s", got.TrustedWorkspaces, spec.Cwd)
+	}
+	if got.Theme != "x" {
+		t.Errorf("theme = %q, want kept", got.Theme)
+	}
+
+	for _, name := range []string{"antigravity_state.pbtxt", "conversations"} {
+		fi, err := os.Lstat(filepath.Join(symDir, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s must stay a symlink to the real entry", name)
+		}
+	}
+
+	realAfter, err := os.ReadFile(filepath.Join(real, "settings.json"))
+	if err != nil || string(realAfter) != string(realSettings) {
+		t.Errorf("the real settings.json must never be modified: %s", realAfter)
+	}
+}
+
+// D6: a legacy whole-dir symlink (from before this fix) is left alone, not
+// replaced -- a session resuming against an already-spawned agy-home must
+// not have its content pulled out from under it.
+func TestAgyLaunchLeavesALegacyWholeDirSymlinkAlone(t *testing.T) {
+	d := testDeps(t)
+	real := filepath.Join(d.UserHome, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agySpec(t)
+	agyHome := filepath.Join(d.launchDir(spec.SessionID), "agy-home")
+	if err := os.MkdirAll(filepath.Join(agyHome, ".gemini"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyLink := filepath.Join(agyHome, ".gemini", "antigravity-cli")
+	if err := os.Symlink(real, legacyLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := linkAgyCLIDir(real, legacyLink, spec.Cwd); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(legacyLink)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("a legacy whole-dir symlink must be left exactly as it is")
+	}
+	target, err := os.Readlink(legacyLink)
+	if err != nil || target != real {
+		t.Fatalf("legacy symlink target = %q, want %q", target, real)
+	}
+}
+
+// D6: when the real antigravity-cli/settings.json is missing or doesn't
+// parse, the per-launch copy is a minimal file with just this session's
+// workspace trusted.
+func TestAgyLaunchWritesMinimalSettingsWhenRealIsMissing(t *testing.T) {
+	d := testDeps(t)
+	spec := agySpec(t)
+	if _, err := newAgy(d).Launch(spec); err != nil {
+		t.Fatal(err)
+	}
+	agyHome := filepath.Join(d.launchDir(spec.SessionID), "agy-home")
+	settingsPath := filepath.Join(agyHome, ".gemini", "antigravity-cli", "settings.json")
+	b, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		TrustedWorkspaces []string `json:"trustedWorkspaces"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.TrustedWorkspaces) != 1 || got.TrustedWorkspaces[0] != spec.Cwd {
+		t.Fatalf("trustedWorkspaces = %v, want just [%s]", got.TrustedWorkspaces, spec.Cwd)
 	}
 }
 
