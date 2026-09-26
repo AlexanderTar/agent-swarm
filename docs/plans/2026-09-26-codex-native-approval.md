@@ -111,7 +111,7 @@ type qrow struct {
 func questionRow(t *testing.T, h *Handler, prompt string) qrow {
 	t.Helper()
 	var r qrow
-	if err := h.DB.QueryRowContext(context.Background(), `SELECT id, state, prompt, options_json,
+	if err := h.DB.QueryRowContext(context.Background(), `SELECT id, state, prompt, COALESCE(options_json, '[]'),
 		COALESCE(json_extract(binding_json, '$.ref'), ''), response_text, responded_via
 		FROM requests WHERE kind = 'question' AND prompt = ?`, prompt).
 		Scan(&r.ID, &r.State, &r.Prompt, &r.Options, &r.Ref, &r.Response, &r.Via); err != nil {

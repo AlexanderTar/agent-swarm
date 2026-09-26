@@ -2,6 +2,7 @@
 
 Date: 2026-09-26. Status: design locked, ready to build (one batch).
 Plan: `docs/plans/2026-09-26-codex-native-approval.md`.
+Supersedes, for codex only: `docs/specs/2026-09-25-needs-you-and-child-approval-routing.md` §1.7 (line 107, codex listed as an exception) and `docs/specs/2026-09-26-epic-approval-lane.md` lines 61 and 257 (codex on the board/`swarm_ask question` fallback).
 
 ## Context
 
