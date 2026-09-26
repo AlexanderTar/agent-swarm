@@ -591,6 +591,10 @@ func spawnTool(s *Server) ToolDef {
 			if !slices.Contains(validRoles, in.Role) {
 				return nil, fmt.Errorf("Unknown role %q. Roles: orchestrator, coder, reviewer, ui_reviewer, designer, researcher, debugger, mechanical.", in.Role)
 			}
+			// ponytail: trust-based -- any non-empty override_reason passes;
+			// the daemon can't verify the user really asked. It records and
+			// shows the claim (kind_reason) rather than guaranteeing it.
+			// Upgrade path: bind overrides to a user-originated message id.
 			if (in.Agent != "" || in.Model != "" || in.Effort != "") && strings.TrimSpace(in.OverrideReason) == "" {
 				return nil, errors.New("Pass override_reason with agent, model or effort, saying what the user asked for. Leave agent, model and effort empty to use the user's role default.")
 			}
@@ -808,7 +812,8 @@ func roleOverridesTool(s *Server) ToolDef {
 				if strings.TrimSpace(in.Reason) == "" {
 					return nil, errors.New(`Pass reason with op "set", saying what the user asked for. Role defaults come from the user's settings unless the user asks otherwise.`)
 				}
-				rd = &settings.RoleDefault{Agent: runtime.AgentKind(in.Agent), Model: in.Model, Effort: in.Effort}
+				rd = &settings.RoleDefault{Agent: runtime.AgentKind(in.Agent), Model: in.Model, Effort: in.Effort,
+					Reason: strings.TrimSpace(in.Reason)}
 			case "clear":
 				rd = nil
 			default:

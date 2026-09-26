@@ -114,6 +114,16 @@ func joinReason(a, b string) string {
 	return a + "; " + b
 }
 
+// roleOverrideReason is the kind_reason part a parent's role override adds,
+// with the user's reason when swarm_role_overrides stored one.
+func roleOverrideReason(parentName string, rd settings.RoleDefault) string {
+	r := "Role override set on " + parentName
+	if rd.Reason != "" {
+		r += ": " + rd.Reason
+	}
+	return r
+}
+
 // fallbackReason is the kind_reason part a usage fallback adds.
 func fallbackReason(orig AgentKind) string { return orig.Display() + " is out of usage" }
 
@@ -891,6 +901,9 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 			in.Kind = k
 		}
 	}
+	// missingModel is a role default's model the catalog no longer lists;
+	// the model then falls back to the kind's first one, visibly.
+	var missingModel string
 	applyRoleDefault := func(rd settings.RoleDefault) bool {
 		if rd.Agent == "" || (len(cfg.EnabledAgents) > 0 && !slices.Contains(cfg.EnabledAgents, rd.Agent)) {
 			return false
@@ -904,6 +917,8 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 					if in.Effort == "" {
 						in.Effort = rd.Effort
 					}
+				} else {
+					missingModel = rd.Model
 				}
 			} else {
 				in.Model = rd.Model
@@ -919,7 +934,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		if rd, ok := parentRoleOverrides[in.Role]; ok {
 			matched = applyRoleDefault(rd)
 			if matched {
-				kindReason = joinReason(kindReason, "Role override set on "+parentName)
+				kindReason = joinReason(kindReason, roleOverrideReason(parentName, rd))
 			}
 		}
 		if !matched {
@@ -933,12 +948,16 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 			} else {
 				in.Kind = Fake
 			}
+			kindReason = joinReason(kindReason, fmt.Sprintf("Role default for %s unavailable; using %s", in.Role, in.Kind.Display()))
 		}
 	}
 	if in.Model == "" {
 		models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
 		if len(models) > 0 {
 			in.Model = models[0].ID
+			if missingModel != "" {
+				kindReason = joinReason(kindReason, fmt.Sprintf("Role default model %s for %s unavailable; using %s", missingModel, in.Role, in.Model))
+			}
 		}
 	}
 
@@ -964,7 +983,9 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 			return true
 		}
 		rd, ok := parentRoleOverrides[in.Role]
-		if !matchEffort(rd, ok) {
+		if matchEffort(rd, ok) {
+			kindReason = joinReason(kindReason, roleOverrideReason(parentName, rd))
+		} else {
 			rd, ok = cfg.Roles[in.Role]
 			matchEffort(rd, ok)
 		}
@@ -1928,6 +1949,7 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 			return Agent{}, err
 		}
 		a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
+		a.KindReason = joinReason(a.KindReason, fallbackReason(origKind))
 		a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode = string(advKind), advModel, advEffort, advMode
 	}
 

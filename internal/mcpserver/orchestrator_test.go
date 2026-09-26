@@ -2283,3 +2283,25 @@ func TestSwarmRoleOverridesSetRequiresAReason(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Review MINOR 1: the set reason is persisted with the override (and
+// echoed back), so the children's board line can show it.
+func TestSwarmRoleOverridesSetPersistsTheReason(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.RT.Agent(ctx, seed.Caller.AgentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.RoleOverrides[runtime.RoleCoder].Reason; got != "user asked for fake" {
+		t.Fatalf("stored reason = %q", got)
+	}
+	worker := spawnWorker(t, s, seed)
+	if want := "Role override set on " + seed.Caller.AgentName + ": user asked for fake"; worker.KindReason != want {
+		t.Fatalf("worker kind_reason = %q, want %q", worker.KindReason, want)
+	}
+}

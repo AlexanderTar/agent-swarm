@@ -441,6 +441,10 @@ func TestRetrySubstitutesExhaustedFallbackAndPersistsIt(t *testing.T) {
 	if out.Kind != Codex || out.Model != "gpt-6-astra" {
 		t.Fatalf("agent = %+v, want substituted", out)
 	}
+	// Review MINOR 2: the returned agent carries the reason the row got.
+	if out.KindReason != "Claude is out of usage" {
+		t.Fatalf("returned kind_reason = %q, want %q", out.KindReason, "Claude is out of usage")
+	}
 	if row := agentRow(t, s, a.Name); row.Kind != Codex || row.Model != "gpt-6-astra" {
 		t.Fatalf("persisted row = %+v, want substituted kind/model", row)
 	}
