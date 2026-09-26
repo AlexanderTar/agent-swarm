@@ -766,3 +766,48 @@ func TestPatchStatusGoesThroughTransition(t *testing.T) {
 		t.Fatalf("transitions must emit item.changed: %d", len(evs))
 	}
 }
+
+// Spec C1, C4: cancelling a parent cancels every unfinished descendant,
+// nested story -> task included; Done work stays Done; reopening the parent
+// leaves the children cancelled.
+func TestCancelCascadesToUnfinishedDescendants(t *testing.T) {
+	s := newStore(t)
+	e, st, task := tree(t, s)
+	setStatus(t, s, task, items.InProgress)
+	done := mk(t, s, items.Task, st.Key, "Already done")
+	setStatus(t, s, done, items.Done)
+	blocked := mk(t, s, items.Task, st.Key, "Waiting")
+	setStatus(t, s, blocked, items.Blocked)
+	st2 := mk(t, s, items.Story, e.Key, "Second") // Draft
+	nested := mk(t, s, items.Task, st2.Key, "Nested")
+	setStatus(t, s, nested, items.Ready)
+
+	if err := move(t, s, e.Key, items.Cancelled, user); err != nil {
+		t.Fatal(err)
+	}
+	cascaded := []string{st.Key, task.Key, blocked.Key, st2.Key, nested.Key}
+	for _, k := range cascaded {
+		wantStatus(t, s, k, items.Cancelled)
+	}
+	wantStatus(t, s, done.Key, items.Done)
+
+	if err := move(t, s, e.Key, items.Ready, user); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, s, e.Key, items.Ready)
+	for _, k := range cascaded {
+		wantStatus(t, s, k, items.Cancelled)
+	}
+}
+
+// Spec C2: an orchestrator's story cancel reaches the story's tasks and
+// leaves the epic alone.
+func TestOrchestratorStoryCancelCascadesToItsTasks(t *testing.T) {
+	s := newStore(t)
+	e, st, task := tree(t, s)
+	if err := move(t, s, st.Key, items.Cancelled, items.Orchestrator("agt_o", e.ID)); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, s, task.Key, items.Cancelled)
+	wantStatus(t, s, e.Key, items.Ready)
+}

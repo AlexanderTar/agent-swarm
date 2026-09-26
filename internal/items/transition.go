@@ -56,6 +56,11 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 	if err := s.setStatus(ctx, tx, &it, to); err != nil {
 		return Item{}, err
 	}
+	if to == Cancelled {
+		if err := s.cancelDescendants(ctx, tx, it.ID); err != nil {
+			return Item{}, err
+		}
+	}
 	// reopen: old acceptances and close approvals no longer count; cancel: nothing is left to accept
 	if (to == Ready && (from == Done || from == Cancelled)) || to == Cancelled {
 		if err := s.staleAccepts(ctx, tx, it); err != nil {
@@ -92,6 +97,46 @@ func (s *Store) staleAccepts(ctx context.Context, tx *sql.Tx, it Item) error {
 	}
 	for _, r := range live {
 		if err := s.resolveStale(ctx, tx, r[0], r[1], it.Key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cancelDescendants cancels every descendant of parentID that is not Done or
+// Cancelled yet (root-finish spec, locked decision 4). It runs wherever the
+// parent's cancel was allowed, so there is no per-child check(). Archived
+// children are included: archiving hides an item, it does not finish it.
+func (s *Store) cancelDescendants(ctx context.Context, tx *sql.Tx, parentID string) error {
+	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE d(id) AS (
+			SELECT id FROM items WHERE parent_id = ?
+			UNION ALL SELECT i.id FROM items i JOIN d ON i.parent_id = d.id)
+		SELECT id FROM items WHERE id IN (SELECT id FROM d) AND status NOT IN ('done', 'cancelled')`, parentID)
+	if err != nil {
+		return err
+	}
+	var pending []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range pending {
+		c, err := s.getByID(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if err := s.setStatus(ctx, tx, &c, Cancelled); err != nil {
+			return err
+		}
+		if err := s.staleAccepts(ctx, tx, c); err != nil {
 			return err
 		}
 	}
