@@ -1851,6 +1851,66 @@ func TestPostToolUseAnsweredSwarmRefEmitsForwardingNextStep(t *testing.T) {
 	}
 }
 
+// TestPostToolUseNextStepIsNotRateLimitedAndDoesNotStampNoticeAt is the
+// Opus-review fix's own regression test: the native-answer next step must
+// survive the pending-notice rate limit (a recent noticeAt must still
+// suppress the pending notice itself), and appending it must not stamp
+// noticeAt -- doing so would silently suppress a later, real pending-inbox
+// notice for the full noticeGap.
+func TestPostToolUseNextStepIsNotRateLimitedAndDoesNotStampNoticeAt(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 1, runtime.Running) // Pending > 0
+	sentinelNow := time.Date(2026, 9, 27, 8, 0, 0, 0, time.UTC)
+	h.Now = func() time.Time { return sentinelNow }
+	stamped := sentinelNow.Add(-10 * time.Second) // within noticeGap (60s): canNotice = false
+	h.noticeAt = map[string]time.Time{ses: stamped}
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+
+	pre, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+	})
+	if _, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, pre); err != nil {
+		t.Fatal(err)
+	}
+
+	post, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+		"tool_response": map[string]any{
+			"questions":   []map[string]any{{"question": question}},
+			"answers":     map[string]string{question: "Approve"},
+			"annotations": map[string]any{},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := contextOf(t, out)
+	if !strings.Contains(next, "native_answer") {
+		t.Fatalf("additionalContext = %q, want the native_answer next step", next)
+	}
+	if strings.Contains(next, "message(s) waiting") || strings.Contains(next, "inbox") {
+		t.Fatalf("additionalContext = %q, want the rate-limited pending notice suppressed", next)
+	}
+
+	h.mu.Lock()
+	got := h.noticeAt[ses]
+	h.mu.Unlock()
+	if !got.Equal(stamped) {
+		t.Fatalf("noticeAt[%s] = %v, want unchanged %v (next step must not stamp it)", ses, got, stamped)
+	}
+}
+
 // TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep confirms a plain
 // question's PostToolUse (no ⟦swarm:ref⟧) is untouched.
 func TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep(t *testing.T) {
