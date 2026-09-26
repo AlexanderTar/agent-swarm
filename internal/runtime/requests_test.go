@@ -785,3 +785,53 @@ func TestRequestWireNativePending(t *testing.T) {
 		t.Fatalf("native_pending = true after the bound question closed")
 	}
 }
+
+func TestOpenDialogPromptDedupesPerSessionAndTitle(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Dlg", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	r1, created1, err := s.OpenDialogPrompt(ctx, ses.ID, "Trust this project")
+	if err != nil || !created1 {
+		t.Fatalf("first open: created=%v err=%v", created1, err)
+	}
+	r2, created2, err := s.OpenDialogPrompt(ctx, ses.ID, "Trust this project")
+	if err != nil || created2 || r2.ID != r1.ID {
+		t.Fatalf("second open: id=%s created=%v err=%v, want %s reused", r2.ID, created2, err, r1.ID)
+	}
+	if r1.Kind != KindPrompt || !r1.IsHITL || r1.Prompt != "Trust this project" {
+		t.Fatalf("row = %+v", r1)
+	}
+	n := 0
+	for _, k := range s.Notify.(*fakeNotifier).kinds() {
+		if k == "request.prompt" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("request.prompt raised %d times, want 1", n)
+	}
+}
+
+func TestResolveDialogPromptClosesOnlyThatTitle(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Dlg2", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	dlg, _, _ := s.OpenDialogPrompt(ctx, ses.ID, "Trust this project")
+	perm, _ := s.AskPrompt(ctx, ses.ID, "rm -rf build", nil)
+	if err := s.ResolveDialogPrompt(ctx, ses.ID, "Trust this project"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.RequestByID(ctx, dlg.ID)
+	if got.State != "answered" || got.RespondedVia != "terminal" {
+		t.Fatalf("dialog row = %+v, want answered via terminal", got)
+	}
+	other, _ := s.RequestByID(ctx, perm.ID)
+	if other.State != "open" {
+		t.Fatalf("permission row state = %s, want open", other.State)
+	}
+	if err := s.ResolveDialogPrompt(ctx, ses.ID, "Trust this project"); err != nil {
+		t.Fatalf("second resolve should be a no-op, got %v", err)
+	}
+}

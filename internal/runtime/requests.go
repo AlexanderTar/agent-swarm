@@ -710,6 +710,59 @@ func (s *Store) AskPrompt(ctx context.Context, sessionID, prompt string, options
 	return out, err
 }
 
+// OpenDialogPrompt opens (or returns the already-open) prompt row for a
+// dialog visible in this session's pane. Dedupe key: (session_id, prompt=title, state=open).
+func (s *Store) OpenDialogPrompt(ctx context.Context, sessionID, title string) (Request, bool, error) {
+	var out Request
+	created := false
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var id string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM requests WHERE session_id = ? AND kind = 'prompt'
+			AND state = 'open' AND prompt = ? ORDER BY created_at LIMIT 1`, sessionID, title).Scan(&id)
+		if err == nil {
+			out, err = s.requestTx(ctx, tx, id)
+			return err
+		}
+		if err != sql.ErrNoRows {
+			return err
+		}
+		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		id = ids.New("req")
+		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+			prompt, options_json, state, created_at) VALUES (?, 'prompt', 1, ?, ?, ?, ?, '[]', 'open', ?)`,
+			id, a.ID, sessionID, a.ItemID, title, db.Millis(s.Now())); err != nil {
+			return err
+		}
+		key, err := s.itemKey(ctx, tx, a.ItemID)
+		if err != nil {
+			return err
+		}
+		created = true
+		out, err = s.finishOpen(ctx, tx, id, a.Name, key, map[string]string{"prompt": title})
+		return err
+	})
+	return out, created, err
+}
+
+// ResolveDialogPrompt closes the open prompt row(s) of this session whose
+// prompt == title, as answered via "terminal". No-op when none is open.
+func (s *Store) ResolveDialogPrompt(ctx context.Context, sessionID, title string) error {
+	ids, err := s.queryIDs(ctx, `SELECT id FROM requests WHERE session_id = ? AND kind = 'prompt'
+		AND state = 'open' AND prompt = ?`, sessionID, title)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := s.ResolvePrompt(ctx, id, "terminal"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) (Request, error) {
 	if in.ArtifactID == "" {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "artifact_id is required."}
