@@ -243,3 +243,40 @@ func TestHandoffOfPausedAgentBindsItsSave(t *testing.T) {
 		t.Fatalf("successor kickoff carries the incomplete-recovery warning:\n%s", fa.LastSpec.Kickoff)
 	}
 }
+
+// The handoff checkpoint's relay says why it was written: mode "pause" for a
+// plain Pause (the agent parks, it is not being replaced), mode "handoff"
+// while a handoff operation is in flight.
+func TestHandoffCheckpointRelayCarriesMode(t *testing.T) {
+	for _, handoff := range []bool{false, true} {
+		s, tm, _ := newStore(t)
+		ctx := context.Background()
+		orch, w, wSes := worker(t, s)
+		if err := s.SetSessionState(ctx, wSes.ID, Running); err != nil {
+			t.Fatal(err)
+		}
+		panes(tm, Pane{Session: wSes.TmuxName})
+		tm.env[wSes.TmuxName] = map[string]string{"SWARM_SESSION": wSes.ID}
+		want := "pause"
+		if handoff {
+			want = "handoff"
+			if _, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "mode1", ""); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := s.Pause(ctx, w.Name, "session"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "saved"}); err != nil {
+			t.Fatal(err)
+		}
+		var mode string
+		if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(json_extract(payload_json, '$.mode'), '') FROM messages
+			WHERE kind = 'relay' AND to_agent_id = ? AND json_extract(payload_json, '$.event') = 'handoff'`,
+			orch.ID).Scan(&mode); err != nil {
+			t.Fatal(err)
+		}
+		if mode != want {
+			t.Fatalf("handoff=%v: relay mode = %q, want %q", handoff, mode, want)
+		}
+	}
+}

@@ -639,7 +639,7 @@ func (s *Store) stopPredecessor(ctx context.Context, op Operation, a Agent, ses 
 				return err
 			}
 			if saved == 0 {
-				payload := []byte(fmt.Sprintf(`{"event":"handoff","agent":%q,"item":%q,"saved":false}`, a.Name, key))
+				payload := []byte(fmt.Sprintf(`{"event":"handoff","mode":"handoff","agent":%q,"item":%q,"saved":false}`, a.Name, key))
 				if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: a.ParentAgentID,
 					RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload}); err != nil {
 					return err

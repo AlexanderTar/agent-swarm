@@ -1520,12 +1520,24 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		// sees current state. Recipients keep using that explicit revision
 		// with optimistic concurrency; there is no revision:latest shortcut.
 		if a.ParentAgentID != "" && !suppressed {
-			body, err := json.Marshal(map[string]any{
+			relay := map[string]any{
 				"event": string(in.Kind), "agent": a.Name, "item": itemKey,
 				"item_revision": final.Revision,
 				"checkpoint": map[string]any{"summary": in.Summary, "resolution": in.Resolution,
 					"next": in.Next, "blockers": in.Blockers},
-			})
+			}
+			// A handoff checkpoint is written for two reasons: mode "handoff"
+			// while a handoff operation replaces the agent, mode "pause"
+			// when it only parks for Resume.
+			if in.Kind == Handoff {
+				relay["mode"] = "pause"
+				if op, ok, err := s.pendingOperationTx(ctx, tx, a.ID); err != nil {
+					return err
+				} else if ok && op.Mode == ModeHandoff {
+					relay["mode"] = "handoff"
+				}
+			}
+			body, err := json.Marshal(relay)
 			if err != nil {
 				return err
 			}
