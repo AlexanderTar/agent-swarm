@@ -870,8 +870,16 @@ func TestStartupTimesOutAfterThirtySeconds(t *testing.T) {
 	if got := s.Notify.(*fakeNotifier).kinds(); !slices.Contains(got, "agent.preflight_failed") {
 		t.Fatalf("raised %v, want agent.preflight_failed", got)
 	}
-	if !slices.Contains(tm.killed, "stuck") {
-		t.Fatalf("killed = %v, want the failed pane killed", tm.killed)
+	// Spawn's own pre-spawn cleanup already killed "stuck" once before Start;
+	// failSession must add a second kill of its own, not just rely on that one.
+	n := 0
+	for _, k := range tm.killed {
+		if k == "stuck" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("killed = %v, want spawn's cleanup kill plus failSession's", tm.killed)
 	}
 	raised := s.Notify.(*fakeNotifier).raised
 	var reason string
