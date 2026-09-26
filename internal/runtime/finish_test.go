@@ -371,3 +371,22 @@ func TestReconcileCancelsWorkOnCancelledItems(t *testing.T) {
 		t.Fatalf("second tick killed %v, want nothing", tm.killed[after:])
 	}
 }
+
+// A handoff or recover asked through RequestReplacement (board button,
+// swarm_control) on a done root is refused like the checkpoint handoff:
+// its successor would never be finished.
+func TestReplacementRefusedOnceTheRootIsDone(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, _, _ := worker(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE key = 'EPIC-1'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []ReplacementMode{ModeHandoff, ModeRecover} {
+		_, err := s.RequestReplacement(ctx, orch.ID, mode, "", "")
+		var ie *items.Error
+		if !errors.As(err, &ie) || ie.Code != items.CodeConflict || ie.Message != errRootAcceptedHandoff {
+			t.Fatalf("%s: err = %v, want conflict %q", mode, err, errRootAcceptedHandoff)
+		}
+	}
+}

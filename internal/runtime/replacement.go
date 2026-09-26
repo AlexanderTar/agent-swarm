@@ -96,6 +96,16 @@ func (s *Store) RequestReplacement(ctx context.Context, agentID string, mode Rep
 	if err != nil {
 		return Operation{}, err
 	}
+	if mode != ModePause {
+		// A successor on an accepted root would never be finished (root-finish R3).
+		done, err := s.rootIsDone(ctx, s.DB, a.RootItemID)
+		if err != nil {
+			return Operation{}, err
+		}
+		if done {
+			return Operation{}, &items.Error{Code: items.CodeConflict, Message: errRootAcceptedHandoff}
+		}
+	}
 	ses, err := s.LatestSession(ctx, agentID)
 	if err != nil {
 		return Operation{}, &items.Error{Code: items.CodeBadRequest,
