@@ -1754,6 +1754,18 @@ func (s *Store) Cancel(ctx context.Context, name, sessionID, requestID string) (
 	}); err != nil {
 		return Agent{}, err
 	}
+	// Root-finish spec decision 2: closing an agent whose root is already
+	// Done records the work as completed, not cancelled. A paused or
+	// interrupted session on a Done root is closed too; on any other root it
+	// stays as it is, so a cancelled agent remains resumable.
+	rootDone, err := s.rootIsDone(ctx, s.DB, a.RootItemID)
+	if err != nil {
+		return Agent{}, err
+	}
+	end := Cancelled
+	if rootDone {
+		end = Completed
+	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err == nil && ses.State.Live() {
 		ad := s.Adapters[a.Kind]
@@ -1761,7 +1773,9 @@ func (s *Store) Cancel(ctx context.Context, name, sessionID, requestID string) (
 			_ = s.Tmux.Keys(ctx, ses.TmuxName, ad.InterruptKeys()...)
 		}
 		_ = s.Tmux.Kill(ctx, ses.TmuxName)
-		_ = s.SetSessionState(ctx, ses.ID, Cancelled)
+		_ = s.SetSessionState(ctx, ses.ID, end)
+	} else if err == nil && rootDone && (ses.State == Paused || ses.State == Interrupted) {
+		_ = s.SetSessionState(ctx, ses.ID, Completed)
 	}
 
 	nowMs := s.now().UnixMilli()

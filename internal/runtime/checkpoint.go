@@ -1112,6 +1112,15 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		if !ses.State.Live() {
 			return &items.Error{Code: items.CodeConflict, Message: "This session is not live."}
 		}
+		if in.Kind == Handoff {
+			done, err := s.rootIsDone(ctx, tx, a.RootItemID)
+			if err != nil {
+				return err
+			}
+			if done {
+				return &items.Error{Code: items.CodeConflict, Message: errRootAcceptedHandoff}
+			}
+		}
 		if ses.State.Pausing() && !slices.Contains(pauseAllowedKinds, in.Kind) {
 			return errors.New(pausedTool)
 		}
