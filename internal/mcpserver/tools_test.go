@@ -1023,6 +1023,30 @@ func TestAskConfirmReposResultHasNativePrompt(t *testing.T) {
 	}
 }
 
+// TestAskResultWithNativePromptCarriesNextStep is the 2026-09-26 fix
+// (native-railway-tracing finding): a result with native_prompt must also
+// say what to do once it's answered, or an orchestrator with a stale skill
+// binds the answer and never forwards it.
+func TestAskResultWithNativePromptCarriesNextStep(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+seed.RepoID+`","reason":"needed"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		RequestID string `json:"request_id"`
+		Next      string `json:"next"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Next, `native_answer`) || !strings.Contains(res.Next, res.RequestID) {
+		t.Fatalf("next = %q, want it to mention native_answer and the ref %q", res.Next, res.RequestID)
+	}
+}
+
 // TestAskNativePromptForMsgMCP is Task 13b: swarm_ask kind:"native_prompt"
 // for_msg round-trips a child's approval question into the native prompt.
 func TestAskNativePromptForMsgMCP(t *testing.T) {

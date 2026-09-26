@@ -207,6 +207,12 @@ func requestOut(r runtime.Request) map[string]any {
 	out := map[string]any{"request_id": r.ID, "state": r.State}
 	if r.NativePrompt != nil {
 		out["native_prompt"] = r.NativePrompt
+		// 2026-09-26 fix (native-railway-tracing finding): a stale skill can
+		// bind the answer and never forward it, since nothing else in this
+		// result says there is a next step. Spell it out here too.
+		out["next"] = fmt.Sprintf("Show native_prompt with your native question tool now "+
+			"(one question per call). Once the user answers, call "+
+			"swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\".", r.ID)
 	}
 	return out
 }
