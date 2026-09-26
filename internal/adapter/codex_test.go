@@ -190,7 +190,9 @@ func TestCodexLaunchWritesPerLaunchTrustIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := filepath.Join(codexHome, "config.toml")
-	original := "model = \"gpt-6-astra\"\n\n[tui]\nscreen_reader_detection_done = true\n"
+	// [hooks.state] restored (review round 3, item 5): a nested table the
+	// structured edit must keep, alongside [tui].
+	original := "model = \"gpt-6-astra\"\n\n[tui]\nscreen_reader_detection_done = true\n\n[hooks.state]\nkeep = true\n"
 	if err := os.WriteFile(cfg, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -208,6 +210,9 @@ func TestCodexLaunchWritesPerLaunchTrustIdempotently(t *testing.T) {
 	}
 	if _, ok := m["tui"]; !ok {
 		t.Errorf("[tui] must survive: %s", b)
+	}
+	if hooks, _ := m["hooks"].(map[string]any); hooks["state"] == nil {
+		t.Errorf("[hooks.state] must survive: %s", b)
 	}
 	real, _ := filepath.EvalSymlinks(spec.Cwd)
 	projects, _ := m["projects"].(map[string]any)

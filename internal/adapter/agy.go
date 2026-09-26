@@ -46,11 +46,13 @@ func symlinkIfExists(src, dst string) error {
 // If dst is already a symlink (a legacy whole-dir layout from before this
 // fix, on a Resume that reuses an already-spawned agy-home), it is left
 // exactly as it is: replacing it would risk pulling real content out from
-// under a session that's already running against it.
-func linkAgyCLIDir(real, dst, cwd string) error {
+// under a session that's already running against it. That branch logs,
+// since this session then has no per-session trust entry.
+func linkAgyCLIDir(real, dst, cwd string, logf func(string, ...any)) error {
 	if fi, err := os.Lstat(dst); err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return nil // legacy whole-dir symlink; leave it alone
+			logf("agy: %s is a legacy whole-dir symlink; leaving it, so %s is not trusted per session", dst, cwd)
+			return nil
 		}
 	} else if !os.IsNotExist(err) {
 		return err
@@ -79,8 +81,15 @@ func linkAgyCLIDir(real, dst, cwd string) error {
 // writeAgyTrustedSettings writes dst as realSettings' JSON with cwd added to
 // trustedWorkspaces (D6). A missing or unparseable real file is not an
 // error: dst becomes a minimal settings file trusting just cwd.
+//
+// The copy keeps the real file's mode (review round 3, item 5); 0o644 only
+// when there is no real file.
 func writeAgyTrustedSettings(realSettings, dst, cwd string) error {
 	var doc map[string]json.RawMessage
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(realSettings); err == nil {
+		mode = fi.Mode().Perm()
+	}
 	if raw, err := os.ReadFile(realSettings); err == nil {
 		if uerr := json.Unmarshal(raw, &doc); uerr != nil {
 			doc = nil // doesn't parse; fall through to the minimal file
@@ -105,7 +114,10 @@ func writeAgyTrustedSettings(realSettings, dst, cwd string) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(dst, out, 0o644)
+	if err := writeFileAtomic(dst, out, mode); err != nil {
+		return err
+	}
+	return os.Chmod(dst, mode) // writeFileAtomic keeps a stale copy's old mode on Resume
 }
 
 // setupEnv isolates agy's HOME so the swarm MCP config and custom instructions
@@ -130,7 +142,7 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 	// intact (everything else symlinked) but trust is scoped per session.
 	realAntigravityCLI := filepath.Join(a.d.UserHome, ".gemini", "antigravity-cli")
 	symAntigravityCLI := filepath.Join(agyHome, ".gemini", "antigravity-cli")
-	if err := linkAgyCLIDir(realAntigravityCLI, symAntigravityCLI, s.Cwd); err != nil {
+	if err := linkAgyCLIDir(realAntigravityCLI, symAntigravityCLI, s.Cwd, a.d.Log); err != nil {
 		return nil, err
 	}
 	// A7 (2026-09-25, package PA): agy actually reads skills from

@@ -568,8 +568,15 @@ func TestAgyLaunchLeavesALegacyWholeDirSymlinkAlone(t *testing.T) {
 	if err := os.Symlink(real, legacyLink); err != nil {
 		t.Fatal(err)
 	}
-	if err := linkAgyCLIDir(real, legacyLink, spec.Cwd); err != nil {
+	var logged []string
+	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	if err := linkAgyCLIDir(real, legacyLink, spec.Cwd, logf); err != nil {
 		t.Fatal(err)
+	}
+	// Review round 3, item 5: the spec asks for a log line on this branch.
+	want := "agy: " + legacyLink + " is a legacy whole-dir symlink; leaving it, so " + spec.Cwd + " is not trusted per session"
+	if len(logged) != 1 || logged[0] != want {
+		t.Errorf("logged = %q, want [%q]", logged, want)
 	}
 	fi, err := os.Lstat(legacyLink)
 	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
@@ -828,5 +835,30 @@ func TestAgyInstructionsOmittedWhenUnset(t *testing.T) {
 	rulesFile := filepath.Join(agyHome, ".gemini", "AGENTS.md")
 	if _, err := os.Stat(rulesFile); err == nil {
 		t.Errorf("expected no AGENTS.md when instructions are empty")
+	}
+}
+
+// Review round 3, item 5: the per-launch settings.json copy keeps the real
+// file's mode (a user's 0600 must not become a world-readable 0644).
+func TestAgyLaunchSettingsCopyKeepsTheRealFileMode(t *testing.T) {
+	d := testDeps(t)
+	real := filepath.Join(d.UserHome, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "settings.json"), []byte(`{"theme":"x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := agySpec(t)
+	if _, err := newAgy(d).Launch(spec); err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(d.launchDir(spec.SessionID), "agy-home", ".gemini", "antigravity-cli", "settings.json")
+	fi, err := os.Stat(copyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("settings.json copy mode = %v, want the real file's 0600", fi.Mode().Perm())
 	}
 }

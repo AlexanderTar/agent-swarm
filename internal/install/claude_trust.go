@@ -139,8 +139,8 @@ func PruneStaleClaudeTrustEntries(c Config) (int, error) {
 			if !SwarmOwnedClaudeWorkspace(c.Home, p) {
 				continue
 			}
-			if _, err := os.Stat(p); err == nil {
-				continue // still exists; not stale
+			if !isGone(p) {
+				continue // exists, or can't tell (EACCES, ...): not stale
 			}
 			delete(projects, p)
 			removed++
@@ -177,10 +177,24 @@ func CheckAndPruneClaudeTrust(ctx context.Context, c Config, run execx.Runner) [
 				v, ClaudeTrustMinVersion, ClaudeTrustMinVersion))
 		}
 	}
-	if n, err := PruneStaleClaudeTrustEntries(c); err == nil && n > 0 {
+	n, err := PruneStaleClaudeTrustEntries(c)
+	switch {
+	case errors.Is(err, ErrClaudeConfigBusy):
+		lines = append(lines, "Skipped pruning ~/.claude.json: another process holds its lock. Run swarm install again.")
+	case err != nil:
+		lines = append(lines, fmt.Sprintf("Couldn't prune ~/.claude.json: %v", err))
+	case n > 0:
 		lines = append(lines, fmt.Sprintf("Removed %d stale Swarm-owned entries from ~/.claude.json.", n))
 	}
 	return lines
+}
+
+// isGone reports whether p definitely no longer exists: only ENOENT counts.
+// Any other stat error (EACCES, EIO, ...) means "can't tell", and an entry
+// that might still be live is never pruned or counted stale over it.
+func isGone(p string) bool {
+	_, err := os.Stat(p)
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func claudeInstalledVersion(ctx context.Context, run execx.Runner) (string, bool) {
@@ -257,7 +271,7 @@ func claudeTrustEntryCounts(c Config) (stale, owned int, err error) {
 			continue
 		}
 		owned++
-		if _, err := os.Stat(p); err != nil {
+		if isGone(p) {
 			stale++
 		}
 	}

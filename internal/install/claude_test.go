@@ -463,3 +463,65 @@ func TestPruneWritesThroughASymlinkedClaudeJSON(t *testing.T) {
 		t.Fatalf("target = %s, want the stale entry gone and oauthAccount kept", b)
 	}
 }
+
+// Review round 3, item 5: CheckAndPruneClaudeTrust prints a busy skip and a
+// prune error instead of dropping them.
+func TestInstallPrintsAPruneBusySkipAndAPruneError(t *testing.T) {
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
+	}}).Runner()
+
+	c := fakeHome(t)
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(install.ClaudeJSONPath(c)+".lock", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	want := "Skipped pruning ~/.claude.json: another process holds its lock. Run swarm install again."
+	if len(lines) != 1 || lines[0] != want {
+		t.Errorf("busy: lines = %q, want [%q]", lines, want)
+	}
+
+	c = fakeHome(t)
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte("{bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines = install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "Couldn't prune ~/.claude.json: claude.json does not parse") {
+		t.Errorf("parse error: lines = %q, want one \"Couldn't prune\" line", lines)
+	}
+}
+
+// Review round 3, item 5: only ENOENT means stale. A Swarm-owned entry
+// whose stat fails any other way (EACCES here) is kept by the prune and not
+// counted by doctor.
+func TestPruneTreatsOnlyENOENTAsStale(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can stat through a 000 dir")
+	}
+	c := fakeHome(t)
+	locked := filepath.Join(c.Home, "work", "locked")
+	entry := filepath.Join(locked, "3")
+	if err := os.MkdirAll(entry, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(locked, 0o700)
+	seed := fmt.Sprintf(`{"projects":{%q:{"hasTrustDialogAccepted":true}}}`, entry)
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := install.PruneStaleClaudeTrustEntries(c); err != nil || n != 0 {
+		t.Fatalf("prune = (%d, %v), want (0, nil) for an EACCES stat", n, err)
+	}
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
+	}}).Runner()
+	if ch := install.CheckClaudeTrust(context.Background(), c, run); strings.Contains(ch.Detail, "stale") {
+		t.Fatalf("doctor = %+v, want no stale count for an EACCES stat", ch)
+	}
+}
