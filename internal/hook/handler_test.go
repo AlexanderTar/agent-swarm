@@ -1899,8 +1899,8 @@ func TestPostToolUseNextStepIsNotRateLimitedAndDoesNotStampNoticeAt(t *testing.T
 	if !strings.Contains(next, "native_answer") {
 		t.Fatalf("additionalContext = %q, want the native_answer next step", next)
 	}
-	if strings.Contains(next, "message(s) waiting") || strings.Contains(next, "inbox") {
-		t.Fatalf("additionalContext = %q, want the rate-limited pending notice suppressed", next)
+	if strings.Contains(next, "Call swarm_sync") {
+		t.Fatalf("additionalContext = %q, want the rate-limited pending notice (PendingNotice) suppressed", next)
 	}
 
 	h.mu.Lock()
