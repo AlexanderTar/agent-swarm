@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
 // finishRoot moves key to Done the raw way and fires OnRootDone in the same
@@ -131,5 +132,64 @@ func TestRootDoneFinishesPausedAndPausingAgentsAtOnce(t *testing.T) {
 	s.DB.QueryRowContext(ctx, `SELECT phase FROM agent_operations WHERE id = 'op_root_done'`).Scan(&phase)
 	if phase != "cancelled" {
 		t.Fatalf("operation phase = %q, want cancelled", phase)
+	}
+}
+
+// Spec R5: close_spike approved -> spike Done; its orchestrator already wrote
+// completed + resolution and ends through that, not a daemon checkpoint.
+func TestRootDoneLeavesTheLiveSpikeOrchestratorAlone(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Items.RootDone = s.OnRootDone
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Nothing", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, a.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp,
+		Summary: "nothing to build", Resolution: "no_change"}); err != nil {
+		t.Fatal(err)
+	}
+	var reqID string
+	s.DB.QueryRowContext(ctx, `SELECT id FROM requests WHERE kind = 'close_spike'`).Scan(&reqID)
+	if _, err := s.Approve(ctx, reqID, ApproveInput{Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	if it, _ := s.Items.Get(ctx, "SPIKE-1"); it.Status != items.Done {
+		t.Fatalf("spike status = %s, want done", it.Status)
+	}
+	if n := daemonCompleted(t, s, a.ID); n != 0 {
+		t.Fatalf("%d daemon checkpoints for the spike orchestrator, want 0", n)
+	}
+	got, _ := s.Agent(ctx, a.Name)
+	latest, _ := s.LatestSession(ctx, a.ID)
+	if got.State != AgentActive || !latest.State.Live() {
+		t.Fatalf("spike orchestrator %s / session %s, want active and live", got.State, latest.State)
+	}
+}
+
+// Spec R6: swarm_materialize moves the spike to Done inside its own call;
+// the calling orchestrator must not be finished under it.
+func TestMaterializeDoesNotFinishTheSpikeOrchestrator(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Items.RootDone = s.OnRootDone
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if it, _ := s.Items.Get(ctx, "SPIKE-1"); it.Status != items.Done {
+		t.Fatalf("spike status = %s, want done", it.Status)
+	}
+	if n := daemonCompleted(t, s, ses.AgentID); n != 0 {
+		t.Fatalf("%d daemon checkpoints for the materializing orchestrator, want 0", n)
+	}
+	a, _ := s.agentByID(ctx, ses.AgentID)
+	latest, _ := s.LatestSession(ctx, a.ID)
+	if a.State != AgentActive || !latest.State.Live() {
+		t.Fatalf("orchestrator %s / session %s, want active and live", a.State, latest.State)
 	}
 }

@@ -35,7 +35,6 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 	if err := tx.QueryRowContext(ctx, `SELECT key, type FROM items WHERE id = ?`, rootID).Scan(&rootKey, &rootType); err != nil {
 		return err
 	}
-	_ = rootType // the spike guard (1.5) reads it
 	type agentRow struct {
 		id, name, itemID, sesID string
 		state                   SessionState
@@ -66,6 +65,12 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 	}
 	now := db.Millis(s.now())
 	for _, r := range todo {
+		// The spike's own live orchestrator is inside swarm_materialize, or it
+		// already wrote completed with a resolution (close_spike); it ends
+		// through that checkpoint, not a daemon one (spec decision 1c).
+		if rootType == string(items.Spike) && r.itemID == rootID && r.state.Live() {
+			continue
+		}
 		// ponytail: in-tx, so no lockAgentOperations; a driver already past
 		// its launch commit could still start a successor (its handoff is
 		// refused and a close records completed). Take the lock post-commit
