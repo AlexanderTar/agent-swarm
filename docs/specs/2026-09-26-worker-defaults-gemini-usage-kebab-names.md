@@ -38,7 +38,8 @@ User rules, not to be reopened:
 
 Design decisions (this spec):
 - **D1.** `swarm_spawn` with any of `agent`/`model`/`effort` requires a non-empty `override_reason` stating what the user asked for; otherwise the call is refused. Rejecting beats silently ignoring: an LLM caller corrects on an error, while a silent ignore leaves it believing it got X.
-- **D2.** `swarm_role_overrides` `op:"set"` requires a non-empty `reason`, logged. `op:"clear"` needs none.
+- **D2.** `swarm_role_overrides` `op:"set"` requires a non-empty `reason`, logged and stored in the override JSON (`settings.RoleDefault.Reason`, omitempty) so children's `kind_reason` can show it. Legacy override rows without a reason keep working. `op:"clear"` needs none.
+- **D1a. Ceiling:** the `override_reason` / `reason` check is trust-based. Any non-empty string passes; the daemon cannot verify the user actually asked. It records and surfaces the claim, it does not guarantee it. Marked with a `ponytail:` comment at the check in `internal/mcpserver/orchestrator.go`. Upgrade path: bind an override to a user-originated message id.
 - **D3.** One nullable column `agents.kind_reason` records why a worker's kind/model is not the plain settings default. Set by `runtime.Spawn` (explicit override, parent role override), and by every usage-fallback substitution (`Spawn`, `startQueued`, `Retry`). NULL means "came from the user's settings".
 - **D4.** Board/HTTP start of orchestrators and spikes is unchanged: those are the user's own choices.
 - **D5.** agy: drop the known extra group `Claude and GPT models` in `ParseAgyQuota`; keep unknown groups (robust to a new or renamed Gemini group); headline is `gemini_5h` when present, else the busiest remaining 5h meter. This fixes the menubar and the false exhaustion gate in one place.
@@ -78,7 +79,9 @@ func fallbackReason(orig AgentKind) string // "<Display> is out of usage"
 
 `kind_reason` values:
 - explicit spawn override: `User override: <override_reason>`; `User override` (no colon) when a non-MCP runtime caller sets Kind/Model/Effort with an empty `OverrideReason` (only `swarm_spawn` enforces the reason)
-- parent role override applied: `Role override set on <parent name>`
+- parent role override applied: `Role override set on <parent name>`, plus `: <reason>` when the override stored one; also joined when a user override's kind/model matches the parent override and takes its effort
+- role default's agent not enabled: `Role default for <role> unavailable; using <Kind display>`
+- role default's model not in the catalog: `Role default model <model> for <role> unavailable; using <first catalog model>`
 - usage fallback: `<Original kind display> is out of usage` appended with `; ` to any earlier reason.
 
 MCP `swarm_spawn` schema adds `"override_reason":{"type":"string"}`. MCP `swarm_role_overrides` schema adds `"reason":{"type":"string"}`.
@@ -151,3 +154,4 @@ Deleted: nothing.
 - A reason UI in the board Start dialog or the menubar agent list.
 - Changing fallback selection, thresholds, or the claude/codex/cursor/muse usage parsers.
 - Showing agy's Claude & GPT quota anywhere in Swarm.
+- Gating Claude/GPT models run inside agy: the usage gate reads only agy's native Gemini quota, and the extra-model meter is not shown in the menubar (user rule L4).
