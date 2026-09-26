@@ -260,8 +260,9 @@ func (s *Store) sectionTitle(ctx context.Context, tx *sql.Tx, artifactID string,
 // approvalTerminalKinds is every approval kind that has an asking agent, so
 // its terminal is that tree's root orchestrator, same as a question or
 // blocker (spec 2.1's 21-D5 amendment, Task 13e). accept_epic/accept_fix are
-// deliberately absent: they have no asking agent at all (opened by the
-// daemon's reconciler), so they get their own item-rooted lookup below.
+// absent: they have no asking agent (the reconciler opens them), so
+// terminalAgent keeps its item-rooted lookup; nativeAnswerKind adds them for
+// native_answer once routed.
 var approvalTerminalKinds = map[RequestKind]bool{
 	KindApproveSection: true, KindApprovePlan: true, KindApproveReport: true,
 	KindConfirmRepos: true, KindCloseSpike: true,
@@ -1016,10 +1017,9 @@ func (s *Store) resolve(ctx context.Context, id, state, responseText, via, origi
 				return err
 			}
 		}
-		// accept_epic/accept_fix requests are opened by the daemon's reconciler
-		// with no asking agent (items/transition.go's reconcileRoot never sets
-		// agent_id): there is nobody to send a result message to, so this is
-		// skipped rather than trying to enqueue to an empty to_agent_id.
+		// An accept row routed to the root orchestrator (routeAcceptTx) has an
+		// agent and gets its approval_result like any approval; an unrouted one
+		// (no live orchestrator) has nobody to tell, so the enqueue is skipped.
 		if req.AgentID != "" {
 			rootID, err := s.rootItemID(ctx, tx, req.ItemID)
 			if err != nil {

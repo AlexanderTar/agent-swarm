@@ -233,7 +233,19 @@ const errNoNativeEvidence = "No answered native prompt for %s in your terminal. 
 	"from swarm_ask verbatim with your native question tool, then forward the user's answer."
 const errDecisionMismatch = "The user's native answer was %q, not %q."
 const errNativeAnswerWrongTarget = "%s is not an approve_section, approve_plan, approve_report, " +
-	"confirm_repos, or close_spike request you asked for."
+	"confirm_repos, close_spike, accept_epic or accept_fix request routed to you."
+
+// errRequestStale is native_answer's refusal for a request the reconciler
+// staled after the question was asked (reconcileRoot's binding sweep).
+const errRequestStale = "%s is stale: %s changed after the question was asked. Don't forward it; " +
+	"Swarm sends a new request when the work is ready again."
+
+// nativeAnswerKind reports whether native_answer forwards a request of kind
+// k: the asking agent's own approvals plus accept rows once routeAcceptTx
+// has bound them to the root orchestrator (2026-09-26 epic-approval-lane).
+func nativeAnswerKind(k RequestKind) bool {
+	return approvalTerminalKinds[k] || k == KindAcceptEpic || k == KindAcceptFix
+}
 
 // errChildApprovalNoNativePath is native_prompt/native_answer's refusal for
 // a child's approval question (a msg_ ref) when the caller's kind has no
@@ -412,15 +424,26 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if err != nil {
 		return Request{}, err
 	}
-	// native_answer only forwards the terminal approval kinds spec 2.3 names
-	// (approve_section/plan/report, confirm_repos, close_spike), and only for
-	// the agent that asked -- not a plain HITL question, accept_epic,
-	// accept_fix, or another agent's request, all of which req.Kind and
-	// req.AgentID alone can't otherwise be trusted to exclude once an
-	// evidence row exists (a caller can forge its own locally, Task B4
-	// finding 3).
-	if !approvalTerminalKinds[req.Kind] || req.AgentID != callerID {
+	// native_answer only forwards approval kinds (nativeAnswerKind), and only
+	// for the agent the request is routed to -- never a plain HITL question
+	// or another agent's request, which req.Kind and req.AgentID alone can't
+	// otherwise be trusted to exclude once an evidence row exists (a caller
+	// can forge its own locally, Task B4 finding 3). An accept row is routed
+	// to the root orchestrator by routeAcceptTx, so the same owner check
+	// covers it.
+	if !nativeAnswerKind(req.Kind) || req.AgentID != callerID {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(errNativeAnswerWrongTarget, in.Ref)}
+	}
+	// reconcileRoot stales an open accept row in the same tx as any revision
+	// bump or new integration: say so instead of resolve's bare
+	// "Already resolved.". The binding itself is read from the stored row
+	// below (locked decision 5).
+	if req.State == "stale" {
+		var key string
+		if err := s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, req.ItemID).Scan(&key); err != nil {
+			return Request{}, err
+		}
+		return Request{}, &items.Error{Code: items.CodeConflict, Message: fmt.Sprintf(errRequestStale, in.Ref, key)}
 	}
 	// nativeAnswer is the one agent-reachable user_action origin
 	// (requests.go's resolve doc comment): it is guarded by the evidence

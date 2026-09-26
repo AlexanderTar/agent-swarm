@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -169,5 +170,78 @@ func TestAcceptRelayIsNotHeldWhileExhausted(t *testing.T) {
 	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays`).Scan(&held)
 	if held != 0 {
 		t.Fatalf("%d suppressed_relays rows, want 0", held)
+	}
+}
+
+// routedAccept is E1's setup plus the native question shown and answered in
+// the orchestrator's terminal.
+func routedAccept(t *testing.T, answer string) (s *Store, orch Agent, orchSes string) {
+	t.Helper()
+	s, _, _ = newStore(t)
+	orch, _, _ = worker(t, s)
+	orchSes = mustSessionID(t, s, orch.ID)
+	openAcceptRow(t, s, "req_accept", "accept_epic", "EPIC-1")
+	p, _ := relayFor(t, s, orch.ID, "req_accept")
+	hookSimulate(t, s, orchSes, decodeNP(t, p), answer)
+	return s, orch, orchSes
+}
+
+func approvalResultFor(t *testing.T, s *Store, toAgentID, reqID string) map[string]any {
+	t.Helper()
+	var raw string
+	if err := s.DB.QueryRowContext(context.Background(), `SELECT payload_json FROM messages
+		WHERE to_agent_id = ? AND kind = 'approval_result' AND request_id = ?`, toAgentID, reqID).Scan(&raw); err != nil {
+		t.Fatalf("no approval_result for %s: %v", reqID, err)
+	}
+	var p map[string]any
+	json.Unmarshal([]byte(raw), &p)
+	return p
+}
+
+// Spec E2.
+func TestNativeAnswerApprovesRoutedAcceptRow(t *testing.T) {
+	s, orch, orchSes := routedAccept(t, "Approve")
+	ctx := context.Background()
+	out, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: "req_accept", Decision: "approve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "approved" || out.RespondedVia != "terminal" {
+		t.Fatalf("state/via = %s/%s", out.State, out.RespondedVia)
+	}
+	p := approvalResultFor(t, s, orch.ID, "req_accept")
+	if p["decision"] != "approved" || p["evidence"] != EvidenceObserved {
+		t.Fatalf("approval_result = %v", p)
+	}
+}
+
+// Spec E3.
+func TestNativeAnswerRequestChangesOnAcceptRow(t *testing.T) {
+	s, orch, orchSes := routedAccept(t, "Request changes: rename the flag")
+	ctx := context.Background()
+	out, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: "req_accept", Decision: "request_changes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "changes_requested" || out.ResponseText != "rename the flag" {
+		t.Fatalf("state/text = %s/%q", out.State, out.ResponseText)
+	}
+	if p := approvalResultFor(t, s, orch.ID, "req_accept"); p["decision"] != "changes_requested" {
+		t.Fatalf("approval_result = %v", p)
+	}
+}
+
+// Spec E6.
+func TestNativeAnswerStaleAcceptIsRefused(t *testing.T) {
+	s, _, orchSes := routedAccept(t, "Approve")
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE id = 'req_accept'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: "req_accept", Decision: "approve"})
+	want := "req_accept is stale: EPIC-1 changed after the question was asked. Don't forward it; Swarm sends a new request when the work is ready again."
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Code != items.CodeConflict || ie.Message != want {
+		t.Fatalf("err = %v, want conflict %q", err, want)
 	}
 }
