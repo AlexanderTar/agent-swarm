@@ -373,7 +373,7 @@ func readTool(s *Server) ToolDef {
 			"repos":{"type":"object","description":"Repo search","properties":{"q":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer"}}},
 			"since_seq":{"type":"integer","description":"Event cursor to list changes since"},"fields":{"type":"array","items":{"type":"string"}},
 			"limit":{"type":"integer"},"cursor":{"type":"string"},
-			"recovery":{"type":"object","properties":{"agent":{"type":"string"},"limit":{"type":"integer"},"cursor":{"type":"integer"}}}`),
+			"recovery":{"type":"object","properties":{"agent":{"type":"string"},"limit":{"type":"integer"},"cursor":{"type":"string"}}}`),
 		Unbound: true,
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var rawArgs map[string]json.RawMessage
@@ -733,7 +733,7 @@ func readTool(s *Server) ToolDef {
 			out["reset"] = reset
 			out["cursor"] = cursor
 			if in.Recovery != nil {
-				rec, err := s.recoveryOut(ctx, in.Recovery)
+				rec, err := s.recoveryOut(ctx, c, in.Recovery)
 				if err != nil {
 					return nil, err
 				}

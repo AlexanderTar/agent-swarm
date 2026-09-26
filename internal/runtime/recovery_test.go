@@ -2,9 +2,9 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
@@ -146,7 +146,7 @@ func TestRecoveryHistoryAcrossGenerations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hist, err := s.RecoveryHistory(ctx, w.ID, 10, time.Time{})
+	hist, _, err := s.RecoveryHistory(ctx, w.ID, 10, "")
 	if err != nil {
 		t.Fatalf("RecoveryHistory err = %v", err)
 	}
@@ -171,8 +171,9 @@ func TestRecoveryHistoryAcrossGenerations(t *testing.T) {
 		}
 	}
 
-	// Stable cursor: everything strictly before the middle checkpoint.
-	page, err := s.RecoveryHistory(ctx, w.ID, 10, hist[1].CreatedAt)
+	// Stable cursor: everything strictly after the middle checkpoint in
+	// (created_at, id) order.
+	page, _, err := s.RecoveryHistory(ctx, w.ID, 10, fmt.Sprintf("%d:%s", db.Millis(hist[1].CreatedAt), hist[1].ID))
 	if err != nil {
 		t.Fatal(err)
 	}

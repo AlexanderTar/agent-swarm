@@ -161,3 +161,74 @@ func TestReadRecoveryHistory(t *testing.T) {
 		t.Fatalf("newest summary = %v, want half", newest["summary"])
 	}
 }
+
+// IMPORTANT 4 (plan: another agent's history denied): the recovery read is
+// scoped to the caller itself and its own subtree. A sibling session cannot
+// read an unrelated agent's checkpoints, worktrees or requests.
+func TestReadRecoveryDeniesAnotherAgentsHistory(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	aID, aSes, _ := seedAgentAndSession(t, s, runtime.RoleCoder, "", "")
+	bID, _, _ := seedAgentAndSession(t, s, runtime.RoleCoder, "", "")
+	var aName, bName string
+	s.RT.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, aID).Scan(&aName)
+	s.RT.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, bID).Scan(&bName)
+	c := Caller{SessionID: aSes, Role: runtime.RoleCoder, AgentID: aID, AgentName: aName}
+	if _, err := s.call(ctx, c, "swarm_read", `{"recovery":{"agent":"`+bName+`"}}`); err == nil {
+		t.Fatal("reading another agent's recovery history must be denied")
+	}
+	if _, err := s.call(ctx, c, "swarm_read", `{"recovery":{"agent":"`+bID+`"}}`); err == nil {
+		t.Fatal("reading another agent's recovery history by id must be denied")
+	}
+	if _, err := s.call(ctx, c, "swarm_read", `{"recovery":{"agent":"`+aName+`"}}`); err != nil {
+		t.Fatalf("reading your own recovery history: %v", err)
+	}
+}
+
+// IMPORTANT 4: checkpoints sharing one created_at millisecond page exactly
+// once through the (created_at, id) cursor returned as next_cursor.
+func TestReadRecoveryPagesTiedTimestampsExactlyOnce(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	aID, aSes, itemID := seedAgentAndSession(t, s, runtime.RoleCoder, "", "")
+	var aName string
+	s.RT.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, aID).Scan(&aName)
+	const total = 205
+	for i := 0; i < total; i++ {
+		ts := int64(1000 + i/10) // ten checkpoints per millisecond
+		if _, err := s.RT.DB.ExecContext(ctx, `INSERT INTO checkpoints
+			(id, session_id, agent_id, item_id, kind, attempt, summary, created_at)
+			VALUES (?, ?, ?, ?, 'progress', 1, 's', ?)`, ids.New("ckp"), aSes, aID, itemID, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := Caller{SessionID: aSes, Role: runtime.RoleCoder, AgentID: aID, AgentName: aName}
+	seen := map[string]bool{}
+	cursor := ""
+	for page := 0; page < 10; page++ {
+		args := `{"recovery":{"agent":"` + aName + `","limit":50`
+		if cursor != "" {
+			args += `,"cursor":"` + cursor + `"`
+		}
+		out, err := s.call(ctx, c, "swarm_read", args+`}}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := out.(map[string]any)["recovery"].(map[string]any)
+		for _, cp := range rec["checkpoints"].([]any) {
+			id := cp.(map[string]any)["checkpoint_id"].(string)
+			if seen[id] {
+				t.Fatalf("checkpoint %s returned twice", id)
+			}
+			seen[id] = true
+		}
+		next, _ := rec["next_cursor"].(string)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if len(seen) != total {
+		t.Fatalf("paged %d checkpoints, want all %d exactly once", len(seen), total)
+	}
+}

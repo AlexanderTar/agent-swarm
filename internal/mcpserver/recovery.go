@@ -2,22 +2,21 @@ package mcpserver
 
 import (
 	"context"
-	"time"
+	"fmt"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 // recoveryInput is swarm_read's additive recovery read (spec §3 successor
 // recovery): agent-scoped paginated checkpoint history with full
 // fields/provenance plus readable requests, worktrees (IDs/paths) and
-// artifact revisions/hashes. cursor is a created_at-millis cursor (0 means
-// "from the top"). This object owns its own limit/cursor; the general
+// artifact revisions/hashes. cursor is the previous page's next_cursor
+// (empty means "from the top"). This object owns its own limit/cursor; the general
 // refs/filter/repos/since_seq paths are untouched.
 type recoveryInput struct {
 	Agent  string `json:"agent"`
 	Limit  int    `json:"limit"`
-	Cursor *int64 `json:"cursor"`
+	Cursor string `json:"cursor"`
 }
 
 // assignmentOut renders SyncRecovery's durable assignment for the wire.
@@ -46,10 +45,21 @@ func recoveryBundleOut(b *runtime.RecoveryBundle) any {
 
 // recoveryOut runs the swarm_read recovery object: history with full
 // fields/provenance plus resource discovery.
-func (s *Server) recoveryOut(ctx context.Context, in *recoveryInput) (map[string]any, error) {
+// The read is authorized like swarm_control: the caller may read its own
+// history and its subtree's, never an unrelated agent's.
+func (s *Server) recoveryOut(ctx context.Context, c Caller, in *recoveryInput) (map[string]any, error) {
 	agentID, err := s.recoveryAgentID(ctx, in.Agent)
 	if err != nil {
 		return nil, err
+	}
+	caller, err := callerAgent(ctx, s, c)
+	if err != nil {
+		return nil, err
+	}
+	if ok, err := s.RT.ControlsAgent(ctx, caller.ID, agentID); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("bad_request: recovery history of %s is outside your subtree", in.Agent)
 	}
 	limit := in.Limit
 	if limit <= 0 {
@@ -58,11 +68,7 @@ func (s *Server) recoveryOut(ctx context.Context, in *recoveryInput) (map[string
 	if limit > 200 {
 		limit = 200
 	}
-	var before time.Time
-	if in.Cursor != nil && *in.Cursor > 0 {
-		before = db.FromMillis(*in.Cursor)
-	}
-	hist, err := s.RT.RecoveryHistory(ctx, agentID, limit, before)
+	hist, next, err := s.RT.RecoveryHistory(ctx, agentID, limit, in.Cursor)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +117,7 @@ func (s *Server) recoveryOut(ctx context.Context, in *recoveryInput) (map[string
 		name = a.Name
 	}
 	return map[string]any{
-		"agent": name, "checkpoints": cps,
+		"agent": name, "checkpoints": cps, "next_cursor": next,
 		"worktrees": wts, "artifacts": arts, "requests": reqs,
 	}, nil
 }

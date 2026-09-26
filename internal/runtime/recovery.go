@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"time"
+	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
 
@@ -157,10 +160,12 @@ type RecoveryCheckpoint struct {
 }
 
 // RecoveryHistory returns the agent's checkpoints across all its
-// generations, newest first, paginated by a stable created_at cursor
-// (rows strictly older than before; zero before means "from the top").
-// Default limit 50, max 200.
-func (s *Store) RecoveryHistory(ctx context.Context, agentID string, limit int, before time.Time) ([]RecoveryCheckpoint, error) {
+// generations, newest first, paginated by a stable (created_at, id) cursor:
+// rows strictly after cursor in that order ("" means "from the top"), so
+// checkpoints sharing a millisecond are never dropped or repeated. next is
+// the cursor for the following page, "" when this page is the last. Default
+// limit 50, max 200.
+func (s *Store) RecoveryHistory(ctx context.Context, agentID string, limit int, cursor string) (out []RecoveryCheckpoint, next string, err error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -168,24 +173,28 @@ func (s *Store) RecoveryHistory(ctx context.Context, agentID string, limit int, 
 		limit = 200
 	}
 	if _, err := s.agentByID(ctx, agentID); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	cutoff := int64(1) << 62
-	if !before.IsZero() {
-		cutoff = db.Millis(before)
+	cutoff, cutoffID := int64(1)<<62, ""
+	if cursor != "" {
+		ms, id, ok := strings.Cut(cursor, ":")
+		n, perr := strconv.ParseInt(ms, 10, 64)
+		if !ok || perr != nil || id == "" {
+			return nil, "", &items.Error{Code: items.CodeBadRequest, Message: "recovery cursor must be a next_cursor value."}
+		}
+		cutoff, cutoffID = n, id
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT c.id, c.session_id, c.agent_id, c.item_id, c.kind, c.attempt,
 		COALESCE(c.resolution, ''), c.summary, c.next_json, c.blockers_json, c.git_json, c.verify_json,
 		c.artifacts_json, c.processed_json, c.daemon_written, c.created_at,
 		COALESCE(c.verdict, ''), COALESCE(c.findings_json, '[]'), s.generation
 		FROM checkpoints c JOIN sessions s ON s.id = c.session_id
-		WHERE c.agent_id = ? AND c.created_at < ?
-		ORDER BY c.created_at DESC, c.rowid DESC LIMIT ?`, agentID, cutoff, limit)
+		WHERE c.agent_id = ? AND (c.created_at < ? OR (c.created_at = ? AND c.id < ?))
+		ORDER BY c.created_at DESC, c.id DESC LIMIT ?`, agentID, cutoff, cutoff, cutoffID, limit+1)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
-	var out []RecoveryCheckpoint
 	for rows.Next() {
 		var c RecoveryCheckpoint
 		var kind string
@@ -196,7 +205,7 @@ func (s *Store) RecoveryHistory(ctx context.Context, agentID string, limit int, 
 		if err := rows.Scan(&c.ID, &c.SessionID, &c.AgentID, &c.ItemID, &kind, &c.Attempt,
 			&c.Resolution, &c.Summary, &nextJSON, &blockersJSON, &gitJSON, &verifyJSON, &artifactsJSON,
 			&processedJSON, &daemonWritten, &created, &c.Verdict, &findingsJSON, &c.Generation); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		c.Kind = CheckpointKind(kind)
 		json.Unmarshal([]byte(nextJSON), &c.Next)
@@ -210,7 +219,15 @@ func (s *Store) RecoveryHistory(ctx context.Context, agentID string, limit int, 
 		c.CreatedAt = db.FromMillis(created)
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[limit-1]
+		next = fmt.Sprintf("%d:%s", db.Millis(last.CreatedAt), last.ID)
+	}
+	return out, next, nil
 }
 
 // RecoveryWorktree is one worktree the agent owns, with the recorded HEAD
