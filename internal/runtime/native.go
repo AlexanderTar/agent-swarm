@@ -115,6 +115,113 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 	}
 }
 
+// errNoNativeEvidence and errDecisionMismatch are native_answer's refusals
+// (spec section 2.3 step 5, section 4.1).
+const errNoNativeEvidence = "No answered native prompt for %s in your terminal. Show the native_prompt " +
+	"from swarm_ask verbatim with your native question tool, then forward the user's answer."
+const errDecisionMismatch = "The user's native answer was %q, not %q."
+
+// decisionLabel maps native_answer's decision enum to the native prompt
+// label the bound row's response text must (case-fold) start with to count
+// as observed evidence (spec section 2.3.5).
+var decisionLabel = map[string]string{"approve": "Approve", "request_changes": "Request changes"}
+
+// matchDecisionEvidence classifies the bound question row's response text
+// against the chosen decision's label (spec section 2.3.5): a blank answer
+// or the adapter's generic "Resolved in terminal" fallback is accepted on
+// the agent's word (agent_reported); text that starts with the label is
+// observed, with anything after the label becoming the free-text comment
+// when the caller didn't send one; anything else is a mismatch.
+func matchDecisionEvidence(responseText, label, callerComment string) (evidence, comment string, err error) {
+	trimmed := strings.TrimSpace(responseText)
+	if trimmed == "" || trimmed == "Resolved in terminal" {
+		return EvidenceAgentReported, callerComment, nil
+	}
+	if len(trimmed) >= len(label) && strings.EqualFold(trimmed[:len(label)], label) {
+		comment = callerComment
+		if comment == "" {
+			comment = strings.TrimLeft(trimmed[len(label):], ": \t")
+		}
+		return EvidenceObserved, comment, nil
+	}
+	return "", "", fmt.Errorf(errDecisionMismatch, trimmed, label)
+}
+
+// nativeAnswer is swarm_ask kind:"native_answer" (spec section 2.3 steps
+// 4-6, Task 13c): it forwards the orchestrator's observed decision for a
+// request ref into a real Approve/RequestChanges/ConfirmRepos, but only
+// once it has verified a matching native-question row (Task 13b's binding)
+// really was answered in that agent's own terminal.
+func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput) (Request, error) {
+	label, ok := decisionLabel[in.Decision]
+	if !ok {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "decision must be approve or request_changes."}
+	}
+	if in.Ref == "" {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "ref is required."}
+	}
+	var rowID, responseText string
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `SELECT id, COALESCE(response_text,'') FROM requests
+			WHERE kind = 'question' AND agent_id = ? AND state = 'answered' AND responded_via = 'terminal'
+			  AND json_extract(binding_json, '$.ref') = ?
+			ORDER BY responded_at DESC LIMIT 1`, a.ID, in.Ref).Scan(&rowID, &responseText)
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(errNoNativeEvidence, in.Ref)}
+	}
+	if err != nil {
+		return Request{}, err
+	}
+	evidence, comment, err := matchDecisionEvidence(responseText, label, in.Comment)
+	if err != nil {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
+	}
+	// bindEvidence runs inside the same tx as the state change (resolve's or
+	// ConfirmRepos's own), right after the UPDATE: the audit record's (a)
+	// (spec 2.3.6) lands atomically with (b), the result message's payload.
+	bindEvidence := func(tx *sql.Tx, _ Request) error {
+		_, err := tx.ExecContext(ctx, `UPDATE requests SET
+			binding_json = json_set(COALESCE(binding_json, '{}'), '$.evidence', ?) WHERE id = ?`,
+			evidence, rowID)
+		return err
+	}
+
+	req, err := s.RequestByID(ctx, in.Ref)
+	if err != nil {
+		return Request{}, err
+	}
+	if req.Kind == KindConfirmRepos {
+		if in.Decision == "request_changes" {
+			return s.RequestChanges(ctx, in.Ref, comment, "terminal", bindEvidence)
+		}
+		var opts struct {
+			Proposed []ReposProposal `json:"proposed"`
+		}
+		json.Unmarshal(req.Options, &opts)
+		ids := make([]string, 0, len(opts.Proposed))
+		for _, p := range opts.Proposed {
+			if p.Source != "dropped" {
+				ids = append(ids, p.Repo)
+			}
+		}
+		var binding struct {
+			ReposVersion int `json:"repos_version"`
+		}
+		json.Unmarshal(req.Binding, &binding)
+		return s.ConfirmRepos(ctx, in.Ref, ids, comment, binding.ReposVersion, "terminal", bindEvidence)
+	}
+	if in.Decision == "request_changes" {
+		return s.RequestChanges(ctx, in.Ref, comment, "terminal", bindEvidence)
+	}
+	return s.Approve(ctx, in.Ref, ApproveInput{SectionSHA256: req.SectionSHA256,
+		ArtifactRevision: req.ArtifactRevision, Binding: req.Binding, Via: "terminal"}, bindEvidence)
+}
+
 // errForMsgNotApproval is swarm_ask kind:"native_prompt"'s refusal when
 // for_msg does not name an approval question addressed to the caller (Task
 // 13b). It deliberately does not accept a blocked relay, unlike Task 10's

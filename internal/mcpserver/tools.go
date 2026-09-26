@@ -160,6 +160,9 @@ func askTool(s *Server) ToolDef {
 				"reason":{"type":"string"}},
 				"required":["repo","reason"]}},
 			"for_msg":{"type":"string","description":"kind native_prompt: the msg_id of a child's approval question addressed to you"},
+			"ref":{"type":"string","description":"kind native_answer: the request_id or msg_id a native_prompt was issued for"},
+			"decision":{"type":"string","enum":["approve","request_changes"],"description":"kind native_answer: the user's observed decision"},
+			"comment":{"type":"string","description":"kind native_answer: free text for request_changes, or when the adapter reports no answer text"},
 			"request_id":{"type":"string"}`,
 			[]string{"kind"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -173,6 +176,9 @@ func askTool(s *Server) ToolDef {
 				Repos     []runtime.ReposProposal `json:"repos"`
 				Expansion []runtime.ReposProposal `json:"expansion"`
 				ForMsg    string                  `json:"for_msg"`
+				Ref       string                  `json:"ref"`
+				Decision  string                  `json:"decision"`
+				Comment   string                  `json:"comment"`
 				RequestID string                  `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
@@ -181,7 +187,7 @@ func askTool(s *Server) ToolDef {
 			req, err := s.RT.Ask(ctx, c.SessionID, runtime.AskInput{
 				Kind: in.Kind, Prompt: in.Prompt, Options: in.Options, ArtifactID: in.Artifact,
 				SectionID: in.Section, Withdraw: in.Withdraw, Repos: in.Repos, Expansion: in.Expansion,
-				ForMsg: in.ForMsg, RequestID: in.RequestID,
+				ForMsg: in.ForMsg, Ref: in.Ref, Decision: in.Decision, Comment: in.Comment, RequestID: in.RequestID,
 			})
 			if err != nil {
 				return nil, err

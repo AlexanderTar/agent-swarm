@@ -265,7 +265,8 @@ func (s *Store) CommitItemRepos(ctx context.Context, itemKey string, repoIDs []s
 // ConfirmRepos records the user's repository choice (L25, I13). It is a UI or
 // CLI action, so it writes the only repos_confirmed message the system ever
 // produces.
-func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, comment string, version int, via string) (Request, error) {
+func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, comment string, version int, via string,
+	after ...func(*sql.Tx, Request) error) (Request, error) {
 	if len(repoIDs) == 0 {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Choose at least one repository."}
 	}
@@ -298,6 +299,11 @@ func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, c
 			confirmed_json = ?, response_text = ?, responded_via = ?, responded_at = ?
 			WHERE id = ?`, jsonArray(repoIDs), nullIf(comment), nullIf(via), now, id); err != nil {
 			return err
+		}
+		for _, fn := range after {
+			if err := fn(tx, req); err != nil {
+				return err
+			}
 		}
 		// "user_action" appears here, in an allow-listed method, not in the shared
 		// resolve helper (R5).

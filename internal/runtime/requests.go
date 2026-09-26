@@ -102,7 +102,21 @@ type RequestWire struct {
 	RespondedVia     *string         `json:"responded_via"`
 	RespondedAt      *int64          `json:"responded_at"`
 	CreatedAt        int64           `json:"created_at"`
+	// ApprovalEvidence is null for a board/CLI/menubar approval (a user
+	// action by definition), and "observed" | "agent_reported" once
+	// native_answer records one (spec section 2.3.6, Task 13c).
+	ApprovalEvidence *string `json:"approval_evidence"`
 }
+
+// EvidenceObserved/EvidenceAgentReported are native_answer's two evidence
+// kinds (spec section 2.3.5): the bound question row's response text either
+// started with the chosen label ("observed"), or the adapter never surfaces
+// answer text and the forwarded decision is accepted on the agent's word
+// ("agent_reported").
+const (
+	EvidenceObserved      = "observed"
+	EvidenceAgentReported = "agent_reported"
+)
 
 // txQuerier is the read surface both *sql.DB and *sql.Tx share.
 type txQuerier interface {
@@ -247,6 +261,31 @@ func (s *Store) terminalAgent(ctx context.Context, tx *sql.Tx, r Request) *strin
 	return &name
 }
 
+// approvalEvidenceTx is the wire's approval_evidence (spec section 3, Task
+// 13c/13e): null for a board/CLI/menubar approval. For a request-kind
+// approval it is read off the bound native-question row whose binding_json
+// ref names this request id. For a message-ref approval (a bound question
+// row itself, Task 13d), it is that row's own binding_json.evidence.
+func (s *Store) approvalEvidenceTx(ctx context.Context, tx *sql.Tx, r Request) *string {
+	if r.Kind == KindQuestion {
+		var b struct {
+			Evidence *string `json:"evidence"`
+		}
+		if len(r.Binding) > 0 {
+			json.Unmarshal(r.Binding, &b)
+		}
+		return b.Evidence
+	}
+	var ev sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT json_extract(q.binding_json, '$.evidence') FROM requests q
+		WHERE q.kind = 'question' AND json_extract(q.binding_json, '$.ref') = ?
+		  AND json_extract(q.binding_json, '$.evidence') IS NOT NULL LIMIT 1`, r.ID).Scan(&ev)
+	if err != nil || !ev.Valid {
+		return nil
+	}
+	return &ev.String
+}
+
 // RequestWireTx builds the full §3.3 Request for the SSE feed and for
 // items.Store.RequestPayload (R5).
 func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (RequestWire, error) {
@@ -275,6 +314,7 @@ func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (Reque
 		}
 	}
 	w.TerminalAgent = s.terminalAgent(ctx, tx, r)
+	w.ApprovalEvidence = s.approvalEvidenceTx(ctx, tx, r)
 	if r.ArtifactID != "" {
 		id := r.ArtifactID
 		w.ArtifactID = &id
@@ -443,9 +483,11 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 		return s.askConfirmRepos(ctx, sessionID, in)
 	case "native_prompt":
 		return s.askNativePromptForMsg(ctx, sessionID, in)
+	case "native_answer":
+		return s.nativeAnswer(ctx, sessionID, in)
 	default:
 		return Request{}, &items.Error{Code: items.CodeBadRequest,
-			Message: "kind must be question, approval, confirm_repos or native_prompt."}
+			Message: "kind must be question, approval, confirm_repos, native_prompt or native_answer."}
 	}
 }
 
@@ -736,8 +778,13 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 // future handler that reuses resolve cannot smuggle a user action in by
 // reaching a shared helper that hard-codes the origin. Each of the five passes
 // "user_action" at its own call site, where the guard can see it.
+// after runs inside resolve's tx, right after the state UPDATE and before
+// RequestWireTx builds the resolved wire (Task 13c): nativeAnswer uses it to
+// write the bound question row's evidence in the same transaction as the
+// approval it forwards, so the request.resolved event already carries it.
 func (s *Store) resolve(ctx context.Context, id, state, responseText, via, origin string,
-	check func(Request) error, build func(Request) (MessageKind, any)) (Request, error) {
+	check func(Request) error, build func(Request) (MessageKind, any),
+	after ...func(*sql.Tx, Request) error) (Request, error) {
 	var out Request
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		req, err := s.requestTx(ctx, tx, id)
@@ -762,6 +809,11 @@ func (s *Store) resolve(ctx context.Context, id, state, responseText, via, origi
 			responded_via = ?, responded_at = ? WHERE id = ?`,
 			state, nullIf(responseText), nullIf(via), db.Millis(now), id); err != nil {
 			return err
+		}
+		for _, fn := range after {
+			if err := fn(tx, req); err != nil {
+				return err
+			}
 		}
 		// accept_epic/accept_fix requests are opened by the daemon's reconciler
 		// with no asking agent (items/transition.go's reconcileRoot never sets
@@ -815,10 +867,12 @@ func (s *Store) Answer(ctx context.Context, id, text, via string) (Request, erro
 		})
 }
 
-// Approve binds to the artifact's section hash and revision (L7): a stale
-// caller conflicts instead of silently approving a since-changed section.
-func (s *Store) Approve(ctx context.Context, id string, in ApproveInput) (Request, error) {
-	check := func(req Request) error {
+// approveCheck is Approve's staleness guard, extracted (Task 13c) so
+// nativeAnswer can reuse the exact same check without going through Approve
+// itself when it wants an after hook: a stale caller conflicts instead of
+// silently approving a since-changed section.
+func approveCheck(in ApproveInput) func(Request) error {
+	return func(req Request) error {
 		if req.SectionSHA256 != "" && in.SectionSHA256 != req.SectionSHA256 {
 			return &items.Error{Code: items.CodeConflict, Message: "This request changed. Review the latest version."}
 		}
@@ -851,15 +905,20 @@ func (s *Store) Approve(ctx context.Context, id string, in ApproveInput) (Reques
 		}
 		return nil
 	}
-	return s.resolve(ctx, id, "approved", "", in.Via, "user_action", check,
+}
+
+// Approve binds to the artifact's section hash and revision (L7): a stale
+// caller conflicts instead of silently approving a since-changed section.
+func (s *Store) Approve(ctx context.Context, id string, in ApproveInput, after ...func(*sql.Tx, Request) error) (Request, error) {
+	return s.resolve(ctx, id, "approved", "", in.Via, "user_action", approveCheck(in),
 		func(req Request) (MessageKind, any) {
 			return "approval_result", map[string]any{"decision": "approved",
 				"section_id": req.SectionID, "section_sha256": req.SectionSHA256}
-		})
+		}, after...)
 }
 
 // RequestChanges needs a comment describing what to change.
-func (s *Store) RequestChanges(ctx context.Context, id, comment, via string) (Request, error) {
+func (s *Store) RequestChanges(ctx context.Context, id, comment, via string, after ...func(*sql.Tx, Request) error) (Request, error) {
 	if comment == "" {
 		return Request{}, errors.New("Add a comment describing what to change.")
 	}
@@ -870,7 +929,7 @@ func (s *Store) RequestChanges(ctx context.Context, id, comment, via string) (Re
 		func(req Request) (MessageKind, any) {
 			return "approval_result", map[string]any{"decision": "changes_requested",
 				"comment": comment, "section_id": req.SectionID}
-		})
+		}, after...)
 }
 
 // ResolvePrompt marks an open prompt request answered. It only records the

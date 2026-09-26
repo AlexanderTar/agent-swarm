@@ -1064,3 +1064,44 @@ func TestAskNativePromptForMsgMCP(t *testing.T) {
 		t.Fatalf("native_prompt = %+v", res)
 	}
 }
+
+// TestAskNativeAnswerMCP is Task 13c: swarm_ask kind:"native_answer"
+// forwards an observed decision through the MCP surface.
+func TestAskNativeAnswerMCP(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	repoID := seed.RepoID
+	out, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+repoID+`","reason":"needed"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		RequestID    string `json:"request_id"`
+		NativePrompt struct {
+			Question string   `json:"question"`
+			Options  []string `json:"options"`
+		} `json:"native_prompt"`
+	}
+	json.Unmarshal(mustJSON(out), &res)
+
+	if _, err := s.RT.AskQuestion(ctx, seed.Caller.SessionID, res.NativePrompt.Question, res.NativePrompt.Options); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RT.ResolveQuestionByPrompt(ctx, seed.Caller.SessionID, res.NativePrompt.Question, "Approve"); err != nil {
+		t.Fatal(err)
+	}
+
+	out2, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"native_answer","ref":"`+res.RequestID+`","decision":"approve"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res2 struct {
+		State string `json:"state"`
+	}
+	json.Unmarshal(mustJSON(out2), &res2)
+	if res2.State != "approved" {
+		t.Fatalf("state = %q, want approved", res2.State)
+	}
+}
