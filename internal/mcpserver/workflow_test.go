@@ -242,6 +242,69 @@ func TestSwarmWorkflowStartStatusResumeCancel(t *testing.T) {
 	}
 }
 
+// TestSwarmWorkflowStartPromotesDraftTaskAndStory is the 2026-09-26
+// top-level-items spec's decision 5: swarm_workflow start promotes a Draft
+// task (and its Draft parent story) to Ready before starting, the same way
+// swarm_spawn's promoteDraft already does.
+func TestSwarmWorkflowStartPromotesDraftTaskAndStory(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(
+		`{"op":"create","repo":"%s","branch":"wf-draft-branch","base":"main"}`, seed.RepoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wtRes struct {
+		ID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wtRes); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.RT.Items.Update(ctx, seed.TaskKey, items.Patch{
+		Workflow: &workflow.Spec{Template: "mechanical"},
+		Steps:    &[]string{"step 1"},
+		Verify:   &[]string{"true"},
+		Revision: 1,
+	}, items.Daemon()); err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := s.RT.Items.Get(ctx, seed.TaskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, err := s.RT.Items.Get(ctx, seed.StoryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != items.Draft || story.Status != items.Draft {
+		t.Fatalf("fixture precondition: task = %s, story = %s, want both draft", task.Status, story.Status)
+	}
+
+	if _, err := s.call(ctx, seed.Caller, "swarm_workflow", fmt.Sprintf(
+		`{"op":"start","item":"%s","worktrees":[{"worktree":"%s","mode":"rw"}]}`,
+		seed.TaskKey, wtRes.ID)); err != nil {
+		t.Fatalf("start err = %v", err)
+	}
+
+	task, err = s.RT.Items.Get(ctx, seed.TaskKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, err = s.RT.Items.Get(ctx, seed.StoryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != items.Ready {
+		t.Errorf("task status = %s, want ready", task.Status)
+	}
+	if story.Status != items.Ready {
+		t.Errorf("story status = %s, want ready", story.Status)
+	}
+}
+
 func TestSwarmWorkflowIdempotentStart(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()

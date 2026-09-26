@@ -97,6 +97,17 @@ func workflowTool(s *Server) ToolDef {
 				if err != nil {
 					return nil, err
 				}
+				// 2026-09-26 top-level-items spec, decision 5: promote a
+				// Draft task (and its Draft parent story) to Ready before
+				// starting, the same gap swarm_spawn's promoteDraft already
+				// closes for a manually spawned worker.
+				it, err := s.RT.Items.Get(ctx, in.Item)
+				if err != nil {
+					return nil, err
+				}
+				if err := promoteDraft(ctx, s, it, items.Orchestrator(orch.ID, orch.RootItemID)); err != nil {
+					return nil, err
+				}
 				wts := make([]runtime.WorkflowWorktree, len(in.Worktrees))
 				for i, w := range in.Worktrees {
 					wts[i] = runtime.WorkflowWorktree{
