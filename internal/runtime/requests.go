@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -559,7 +560,16 @@ func (s *Store) routeAcceptTx(ctx context.Context, tx *sql.Tx, id string) error 
 // prompts (their pane is gone) and ref-bound question rows (the shadow of an
 // approval relayed on its own; msg_ refs keep question_unanswered). n is
 // how many requests still wait on the user.
-func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID string, fresh bool) (int, error) {
+//
+// since is the quota-reset cutoff a caller is retrying against (zero for the
+// session-start caller, which has no such notion). checkQuotaResets calls
+// WakeOnQuotaReset once a minute for up to an hour with the SAME cutoff,
+// before knowing whether this tick actually wakes the session (review fix,
+// epic-approval-lane): a request that already got a relay at or after since
+// counts as pending here too, even if that relay was since acked, so a
+// session that never wakes this whole cutoff cycle gets at most one relay
+// per request instead of one per tick.
+func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID string, fresh bool, since time.Time) (int, error) {
 	visible := sessionID
 	if fresh {
 		visible = ""
@@ -574,16 +584,32 @@ func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID st
 				return err
 			}
 		}
+		// A relay counts as still pending while unackedFor would still
+		// redeliver its body (pending, or delivered fewer than
+		// maxFullDeliveries times) -- once a relay is stuck at
+		// maxFullDeliveries, Sync stops resending it and it must be
+		// re-relayed here instead of being treated as pending forever. It
+		// also counts as pending, regardless of ack state, once it was
+		// created at or after `since`: that ties re-relaying to whether THIS
+		// cutoff cycle has already sent one, not to whether the agent's own
+		// swarm_sync happened to ack it in between ticks.
+		pendingCond := "(m.state <> 'acked' AND NOT (m.state = 'delivered' AND m.delivery_count >= ?))"
+		args := []any{maxFullDeliveries}
+		if !since.IsZero() {
+			pendingCond += " OR m.created_at >= ?"
+			args = append(args, db.Millis(since))
+		}
+		args = append(args, a.ID, visible, visible)
 		rows, err := tx.QueryContext(ctx, `SELECT r.id,
 			EXISTS (SELECT 1 FROM messages m WHERE m.to_agent_id = r.agent_id AND m.request_id = r.id
-				AND m.kind = 'relay' AND m.state <> 'acked')
+				AND m.kind = 'relay' AND (`+pendingCond+`))
 			FROM requests r
 			WHERE r.agent_id = ? AND r.state = 'open' AND r.kind <> 'prompt'
 			  AND NOT (r.kind = 'question' AND json_extract(r.binding_json, '$.ref') IS NOT NULL)
 			  AND NOT (r.kind IN ('question', 'blocker') AND r.session_id = ?)
 			  AND NOT EXISTS (SELECT 1 FROM requests q WHERE q.kind = 'question' AND q.state = 'open'
 				AND q.session_id = ? AND json_extract(q.binding_json, '$.ref') = r.id)
-			ORDER BY r.created_at, r.id`, a.ID, visible, visible)
+			ORDER BY r.created_at, r.id`, args...)
 		if err != nil {
 			return err
 		}

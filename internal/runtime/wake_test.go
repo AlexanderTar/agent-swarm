@@ -582,6 +582,54 @@ func TestWakeOnQuotaResetThrottlesSkipLogToOncePerSessionPerCutoff(t *testing.T)
 	}
 }
 
+// Review fix: checkQuotaResets (cmd/swarm/daemon.go) calls WakeOnQuotaReset
+// once a minute for up to an hour with the SAME cutoff. Previously,
+// resurfaceOpenRequests ran on every one of those ticks regardless of
+// whether the tick actually woke the session, so a session whose pane never
+// goes idle (or whose adapter's native Wake never succeeds) got a fresh
+// request_open relay every tick its agent had acked the last one in its
+// ordinary swarm_sync -- up to ~59 duplicates for one open request. A relay
+// already created for this cutoff must not be recreated while the session
+// still hasn't woken.
+func TestWakeOnQuotaResetDoesNotDuplicateRelayAcrossTicks(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "BusyHidden", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses := mustSessionID(t, s, a.ID)
+	path := writeFile(t, "# Spec\n\n## Data model\n\nrows\n")
+	res, err := s.RegisterArtifact(ctx, ses, "register", "SPIKE-1", "spec", path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := s.Ask(ctx, ses, AskInput{Kind: "approval", Prompt: "Review", ArtifactID: res.ArtifactID, SectionID: res.Sections[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.captures[a.Name] = []string{"still working, no prompt here\n"} // never idle -> never woken
+
+	cutoff := tm.clk.Now().Add(-2 * time.Minute)
+	if _, err := s.WakeOnQuotaReset(ctx, Fake, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if _, n := relayFor(t, s, a.ID, hidden.ID); n != 1 {
+		t.Fatalf("%d relays after tick 1, want 1", n)
+	}
+	// The session's own regular swarm_sync acks the relay, same as it would
+	// any other tick, well before the pane ever goes idle.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE request_id = ?`, hidden.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.WakeOnQuotaReset(ctx, Fake, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if _, n := relayFor(t, s, a.ID, hidden.ID); n != 1 {
+		t.Fatalf("%d relays after tick 2 (same cutoff, pane still busy), want 1 (no duplicate)", n)
+	}
+}
+
 func TestPasteRetryIntervalEnforced(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()

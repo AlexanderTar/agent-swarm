@@ -1300,7 +1300,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 	// where open requests come back to the agent. Fail open: a relay error
 	// never blocks a spawn.
 	reminder := ""
-	if n, err := s.resurfaceOpenRequests(ctx, a, ses.ID, true); err != nil {
+	if n, err := s.resurfaceOpenRequests(ctx, a, ses.ID, true, time.Time{}); err != nil {
 		s.logf("start session %s: resurface open requests: %v", a.Name, err)
 	} else if n > 0 {
 		reminder = " " + OpenRequestsReminder(n)

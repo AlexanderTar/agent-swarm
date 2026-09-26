@@ -560,7 +560,7 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 		notice := QuotaResetNotice()
 		if a, err := s.agentByID(ctx, agentID); err != nil {
 			s.logf("wake: quota-reset agent %s: %v", agentName, err)
-		} else if n, err := s.resurfaceOpenRequests(ctx, a, sessionID, false); err != nil {
+		} else if n, err := s.resurfaceOpenRequests(ctx, a, sessionID, false, cutoff); err != nil {
 			s.logf("wake: quota-reset resurface for %s: %v", agentName, err)
 		} else if n > 0 {
 			notice += " " + OpenRequestsReminder(n)

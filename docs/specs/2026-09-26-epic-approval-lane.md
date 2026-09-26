@@ -120,7 +120,16 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 
 // resurfaceOpenRequests: the one wake/restart helper (decision 2).
 // fresh=true for a new session (nothing visible), false for a same-session wake.
-func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID string, fresh bool) (n int, err error)
+// since is the quota-reset cutoff a caller is retrying against (zero for
+// startSession, which has no such notion). A request that already got a
+// relay at or after since counts as pending too, even once acked, so
+// checkQuotaResets's once-a-minute retries against the same cutoff send at
+// most one relay per request instead of one per tick (review fix,
+// 2026-09-26). That relay can still go stale under its own maxFullDeliveries
+// count within the same cutoff hour; a later WakeOnQuotaReset call for the
+// NEXT cutoff (or any startSession, since=zero) still re-relays it once it
+// does.
+func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID string, fresh bool, since time.Time) (n int, err error)
 
 // OnRequestOpened (existing) now calls routeAcceptTx first, then notifies as before.
 func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) error
@@ -278,8 +287,8 @@ It is appended after a single space to the kickoff chosen in `startSession`, and
 - `internal/runtime/native.go`: accept cases in `nativePromptFor`, `NativePromptNextStep`, `nativeAnswerKind`, `storedNativePromptTx`, stale check and reworded wrong-target copy in `nativeAnswer`.
 - `internal/runtime/requests.go`: `liveRootOrchestratorTx`, `routeAcceptTx`, `relayRequestTx`, `resurfaceOpenRequests`, `reaskQuestionNext` / `blockerOpenNext`, `OnRequestOpened` routes first, `askQuestion` dedupe, doc comments on `approvalTerminalKinds` / `resolve` updated.
 - `internal/runtime/checkpoint.go`: `relayRequestTx` after the close_spike insert.
-- `internal/runtime/agents.go`: `startSession` calls `resurfaceOpenRequests(ctx, a, ses.ID, true)` and appends the reminder.
-- `internal/runtime/wake.go`: `WakeOnQuotaReset` calls `resurfaceOpenRequests(ctx, a, sessionID, false)` and appends the reminder to the notice.
+- `internal/runtime/agents.go`: `startSession` calls `resurfaceOpenRequests(ctx, a, ses.ID, true, time.Time{})` and appends the reminder.
+- `internal/runtime/wake.go`: `WakeOnQuotaReset` calls `resurfaceOpenRequests(ctx, a, sessionID, false, cutoff)` and appends the reminder to the notice.
 - `internal/runtime/text.go`: `OpenRequestsReminder`.
 - `internal/mcpserver/tools.go`: `requestOut` uses `runtime.NativePromptNextStep`.
 - `web/src/logic/inbox.ts`, `web/src/types.ts`, `web/src/state/url.ts`, `web/src/panels/NeedsYou.tsx`, `web/src/copy.ts`: filter merge.
@@ -326,7 +335,7 @@ The `reviews` filter value, `C.reviews`, `Copy.acceptEpic` and `Copy.acceptFix` 
 | E8 | close_spike | A spike orchestrator writes `completed` + `resolution: no_change`: relay to itself with header `Close spike`. The native approve moves the spike to `done`. | `TestCloseSpikeRelaysNativePrompt` |
 | E9 | Resume re-surface | A paused spike orchestrator with an open approve_section and an open plain question resumes (fresh launch). Two relays: the approve_section `native_prompt` is byte-equal to the original `swarm_ask` one, and the question relay carries `reaskQuestionNext`. The kickoff has `2 request(s)…`. | `TestResumeResurfacesOpenRequests` |
 | E10 | Quota-reset wake, same session | These are skipped: a question asked in this session, an approval whose native question is open in this session, and a permission prompt. An approval never shown is relayed. The notice is `QuotaResetNotice() + " 1 request(s)…"`. | `TestQuotaResetWakeResurfacesOnlyWhatIsNotVisible` |
-| E11 | Exhaust / dedupe | Calling resurface twice without an ack sends one relay per request, and n counts both. The relay is enqueued even when the kind is exhausted (no `suppressed_relays` row). | `TestResurfaceSkipsRequestsWithAPendingRelay`, `TestAcceptRelayIsNotHeldWhileExhausted` |
+| E11 | Exhaust / dedupe | Calling resurface twice without an ack sends one relay per request, and n counts both. The relay is enqueued even when the kind is exhausted (no `suppressed_relays` row). A relay stuck at `maxFullDeliveries` (never acked, no longer redelivered by Sync) is re-relayed, not treated as pending forever. `WakeOnQuotaReset`'s once-a-minute retries against the same cutoff send at most one relay per request even if the agent acks it in between ticks and the session never actually wakes. | `TestResurfaceSkipsRequestsWithAPendingRelay`, `TestAcceptRelayIsNotHeldWhileExhausted`, `TestResurfaceResendsOnceARelayGoesStale`, `TestWakeOnQuotaResetDoesNotDuplicateRelayAcrossTicks` |
 | E12 | Re-ask dedupe | AskQuestion twice with the same prompt while the first is open returns the same id and moves `session_id` to the caller, so there is one Needs-you row. | `TestAskQuestionReusesOpenRowWithSamePrompt` |
 | E13 | Decline (user types free text) | Existing `matchDecisionEvidence` behaviour applies to accept rows too (agent_reported plus comment). | Covered by existing `TestMatchDecisionEvidence`; no new test |
 | E14 | Web | Approvals lists `req_accept`, `req_fix` and `req_close`. `filter=reviews` parses to `all`. | inbox/NeedsYou/url tests |

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
@@ -366,7 +367,7 @@ func TestResurfaceSkipsRequestsWithAPendingRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		n, err := s.resurfaceOpenRequests(ctx, a, ses, true)
+		n, err := s.resurfaceOpenRequests(ctx, a, ses, true, time.Time{})
 		if err != nil || n != 1 {
 			t.Fatalf("round %d: n = %d, err = %v", i, n, err)
 		}
@@ -375,7 +376,7 @@ func TestResurfaceSkipsRequestsWithAPendingRelay(t *testing.T) {
 		t.Fatalf("%d relays after two unacked rounds, want 1", n)
 	}
 	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE request_id = ?`, req.ID)
-	if _, err := s.resurfaceOpenRequests(ctx, a, ses, true); err != nil {
+	if _, err := s.resurfaceOpenRequests(ctx, a, ses, true, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, n := relayFor(t, s, a.ID, req.ID); n != 2 {
@@ -384,6 +385,47 @@ func TestResurfaceSkipsRequestsWithAPendingRelay(t *testing.T) {
 	if got := OpenRequestsReminder(2); got != "2 request(s) still wait on your user. swarm_sync delivers each as a "+
 		"request_open relay with its native prompt and next step; ask again as it says." {
 		t.Fatalf("reminder = %q", got)
+	}
+}
+
+// Review fix: a relay stuck at maxFullDeliveries (never acked) must not
+// block resurfaceOpenRequests from sending a fresh one. Sync (unackedFor)
+// stops redelivering a message's body once delivery_count reaches
+// maxFullDeliveries; the old "state <> 'acked' means pending" check treated
+// that stale relay as still pending forever, so the request was never
+// resurfaced again even though its bound session could no longer see it.
+func TestResurfaceResendsOnceARelayGoesStale(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	ctx := context.Background()
+	a, err := s.AgentByID(ctx, req.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.resurfaceOpenRequests(ctx, a, ses, true, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, n := relayFor(t, s, a.ID, req.ID); n != 1 {
+		t.Fatalf("%d relays after first resurface, want 1", n)
+	}
+	// Deliver the relay maxFullDeliveries times without acking (as in
+	// TestSyncStopsReturningABodyAfterThreeDeliveries), so it goes stale.
+	for i := 0; i < maxFullDeliveries; i++ {
+		if _, err := s.Sync(ctx, ses, nil, 20); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var state string
+	var count int
+	s.DB.QueryRowContext(ctx, `SELECT state, delivery_count FROM messages WHERE to_agent_id = ? AND request_id = ? AND kind = 'relay'`,
+		a.ID, req.ID).Scan(&state, &count)
+	if state != "delivered" || count != maxFullDeliveries {
+		t.Fatalf("relay state = %q, delivery_count = %d, want delivered/%d", state, count, maxFullDeliveries)
+	}
+	if _, err := s.resurfaceOpenRequests(ctx, a, ses, true, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, n := relayFor(t, s, a.ID, req.ID); n != 2 {
+		t.Fatalf("%d relays after the relay went stale, want 2 (a fresh one)", n)
 	}
 }
 
