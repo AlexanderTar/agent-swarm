@@ -92,7 +92,16 @@ func extractQuestion(toolName string, raw []byte) (string, []string) {
 	return prompt, options
 }
 
-func extractToolResponseText(raw []byte) string {
+// extractToolResponseText reads the answer text out of a question tool's
+// PostToolUse tool_response. A real claude AskUserQuestion result has the
+// shape {questions, answers:{<question text>: <chosen label(s)>}, annotations}
+// (confirmed from toolUseResult in a local ~/.claude transcript, never
+// answer/response/text/output/result), so prompt -- the same question text
+// extractQuestion computed for this call -- is used to pick answers' own
+// entry; a prompt that matches no key (e.g. a multi-question tool call, or a
+// truncated prompt) falls back to answers' first value rather than losing
+// the answer to the generic-key branch below.
+func extractToolResponseText(raw []byte, prompt string) string {
 	if len(raw) == 0 {
 		return ""
 	}
@@ -102,6 +111,18 @@ func extractToolResponseText(raw []byte) string {
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err == nil {
+		if answers, ok := obj["answers"].(map[string]any); ok {
+			if v, ok := answers[prompt]; ok {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+			for _, v := range answers {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
 		for _, key := range []string{"answer", "response", "text", "output", "result"} {
 			if v, ok := obj[key]; ok {
 				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
@@ -563,7 +584,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 	case "PostToolUse":
 		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
 			prompt, _ := extractQuestion(in.ToolName, in.RawToolInput)
-			answer := extractToolResponseText(in.ToolResponse)
+			answer := extractToolResponseText(in.ToolResponse, prompt)
 			if answer == "" {
 				answer = "Resolved in terminal"
 			}

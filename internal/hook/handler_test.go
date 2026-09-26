@@ -1597,3 +1597,87 @@ func TestPostToolUseStaysTerseUnderRepeatedCalls(t *testing.T) {
 		t.Fatalf("PostToolUse context = %q, want terse %q", contextOf(t, out), want)
 	}
 }
+
+// TestExtractToolResponseTextReadsAnswers is Task B4 finding 1: a real claude
+// AskUserQuestion PostToolUse tool_response has the shape
+// {questions, answers:{<question text>: <chosen label(s)>}, annotations}
+// (confirmed from toolUseResult in a local ~/.claude transcript,
+// 83e3eeed-213a-4f4f-98e8-03dc059ee72a.jsonl). extractToolResponseText must
+// read the prompt's own key out of "answers", not just answer/response/
+// text/output/result, or every claude decision looks agent_reported.
+func TestExtractToolResponseTextReadsAnswers(t *testing.T) {
+	raw := []byte(`{"questions":[{"question":"Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧","header":"Plan","options":[{"label":"Approve"},{"label":"Request changes"}]}],"answers":{"Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧":"Request changes: tighten scope"},"annotations":{}}`)
+	got := extractToolResponseText(raw, "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧")
+	if got != "Request changes: tighten scope" {
+		t.Fatalf("got %q, want the answers[prompt] value", got)
+	}
+	// A prompt that doesn't match any key falls back to the first value
+	// rather than losing the answer entirely.
+	if got := extractToolResponseText(raw, "some other prompt"); got != "Request changes: tighten scope" {
+		t.Fatalf("fallback got %q", got)
+	}
+	// The old generic keys still work for other adapters/tools.
+	if got := extractToolResponseText([]byte(`{"answer":"yes"}`), "x"); got != "yes" {
+		t.Fatalf("generic key got %q", got)
+	}
+}
+
+// TestClaudeAskUserQuestionAnswerBecomesObservedEvidence is Task B4 finding 1's
+// end-to-end regression: PreToolUse binds the row to the daemon's ref token,
+// then a PostToolUse tool_response shaped like a real claude AskUserQuestion
+// result (questions/answers/annotations) must resolve the row with the
+// user's actual chosen label as response_text, not the generic
+// "Resolved in terminal" fallback -- so native_answer's evidence
+// classification (matchDecisionEvidence) can tell an observed decision from
+// an agent's word, and a decision that disagrees with what the user picked
+// is refused.
+func TestClaudeAskUserQuestionAnswerBecomesObservedEvidence(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+
+	pre, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+	})
+	if _, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, pre); err != nil {
+		t.Fatal(err)
+	}
+
+	post, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+		"tool_response": map[string]any{
+			"questions":   []map[string]any{{"question": question}},
+			"answers":     map[string]string{question: "Approve"},
+			"annotations": map[string]any{},
+		},
+	})
+	if _, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, post); err != nil {
+		t.Fatal(err)
+	}
+
+	var responseText string
+	if err := h.DB.QueryRowContext(ctx, `SELECT COALESCE(response_text,'') FROM requests
+		WHERE session_id = ?`, ses).Scan(&responseText); err != nil {
+		t.Fatal(err)
+	}
+	if responseText != "Approve" {
+		t.Fatalf("response_text = %q, want the observed %q, not the agent_reported fallback", responseText, "Approve")
+	}
+
+	// A decision that disagrees with what the user actually picked ("Approve")
+	// is refused as a mismatch, not silently accepted as agent_reported.
+	if _, err := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "native_answer", Ref: "req_PLAN1",
+		Decision: "request_changes", Comment: "x"}); err == nil || !strings.Contains(err.Error(), `"Approve"`) {
+		t.Fatalf("err = %v, want a decision mismatch against the observed \"Approve\"", err)
+	}
+}
