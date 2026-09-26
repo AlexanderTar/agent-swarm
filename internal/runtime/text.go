@@ -285,14 +285,16 @@ func PauseHandoffNotice(mode, name, itemKey string) string {
 }
 
 // PreservationChecklist is the core-swarm-skill preservation checklist the
-// predecessor follows after the notice: manifest first, then the handoff
-// checkpoint (summary of at most 500 runes), then end the turn.
+// predecessor follows after the notice: save, then the handoff checkpoint
+// (summary of at most 500 runes) from which the daemon assembles the manifest,
+// then end the turn.
 const PreservationChecklist = "Stop new work, save edits, wait for or interrupt owned commands with " +
 	"real exit status. Inspect each rw worktree, stage task-owned paths only, signed commit when dirty " +
 	"(ro trees and live children's work excluded; failures turn the handoff blocked with the dirty paths). " +
 	"Snapshot specs, plans and scratch with IDs, revisions and hashes, plus units, next action, blockers, " +
-	"tests, resources, questions and workflow binding. Write the handoff manifest first, then " +
-	"swarm_checkpoint kind handoff with a summary of at most 500 runes, then end the turn. " +
+	"tests, resources, questions and workflow binding. Then write swarm_checkpoint kind handoff with a " +
+	"summary of at most 500 runes plus next, blockers, git, verification and artifacts; the daemon assembles " +
+	"the handoff manifest from it and validates it. Then end the turn. " +
 	"An orchestrator handoff leaves children running and records their IDs and decisions without " +
 	"fabricating their checkpoints; a pause group keeps the child-first protocol with a combined snapshot."
 

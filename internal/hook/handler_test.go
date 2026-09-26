@@ -146,7 +146,7 @@ func TestCodexCompactionNoticeArrivesOnTheNextPromptAndClears(t *testing.T) {
 // Preservation mode (spec §3, supersedes C3 deny-all): while pausing, the
 // save path (read/edit/shell/commit) stays allowed, while delegation and
 // push/deploy are denied with the preservation reason.
-func TestPreToolUseDeniesNonSwarmToolsWhilePausing(t *testing.T) {
+func TestPreToolUsePreservationPolicyWhilePausing(t *testing.T) {
 	for _, state := range []runtime.SessionState{runtime.PauseRequested, runtime.Quiescing, runtime.Stopping} {
 		h, ses := seed(t, 0, state)
 		// a save-path native tool is allowed

@@ -410,3 +410,14 @@ func TestInboxHeaderStillSatisfiesIsDaemonPrompt(t *testing.T) {
 		t.Errorf("new Inbox header must still satisfy IsDaemonPrompt: %q", got)
 	}
 }
+
+// The daemon assembles the handoff manifest from the handoff checkpoint, so
+// the checklist must not tell the agent to write the manifest itself.
+func TestPreservationChecklistLeavesTheManifestToTheDaemon(t *testing.T) {
+	if strings.Contains(PreservationChecklist, "Write the handoff manifest") {
+		t.Fatalf("checklist tells the agent to write the manifest: %s", PreservationChecklist)
+	}
+	if !strings.Contains(PreservationChecklist, "the daemon assembles the handoff manifest") {
+		t.Fatalf("checklist must say the daemon assembles the manifest: %s", PreservationChecklist)
+	}
+}
