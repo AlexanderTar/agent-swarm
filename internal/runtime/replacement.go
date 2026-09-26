@@ -837,6 +837,12 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 		if err := casPhaseTx(ctx, tx, op.ID, PhaseStarting, PhaseSucceeded, "", s.now()); err != nil {
 			return err
 		}
+		// A recovered finished row (Cancel, then Start) is active again;
+		// admitOperation already counted it against the limits.
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active', finished_at = NULL
+			WHERE id = ? AND state <> 'active'`, a.ID); err != nil {
+			return err
+		}
 		if err := s.repointRequestsTx(ctx, tx, a.ID, succ.ID); err != nil {
 			return err
 		}

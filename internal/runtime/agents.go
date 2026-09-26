@@ -554,9 +554,11 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 // recoverable: present but not live, with an unfinished assignment. An
 // active orchestrator (queued, or active with a live latest session) is not
 // recoverable -- the caller conflicts. Neither is a terminal one: an
-// acknowledged agent is history, a user-cancelled agent (auto_restart = 0)
-// stays stopped by its owner's explicit action, a done/cancelled item is
-// terminal, and a valid completed checkpoint already finished the agent.
+// acknowledged agent is history, a done/cancelled item is terminal, and a
+// valid completed checkpoint already finished the agent. A user-cancelled
+// agent (auto_restart = 0) stays recoverable: Cancel keeps its identity, and
+// auto_restart only gates restarts the daemon drives on its own, never an
+// explicit Start.
 func (s *Store) recoverableOrchestrator(ctx context.Context, it items.Item) (Agent, bool, error) {
 	var id string
 	err := s.DB.QueryRowContext(ctx, `SELECT id FROM agents WHERE item_id = ? AND role = 'orchestrator'
@@ -581,7 +583,7 @@ func (s *Store) recoverableOrchestrator(ctx context.Context, it items.Item) (Age
 	if a.State == AgentActive && ses.State.Live() {
 		return Agent{}, false, nil
 	}
-	if a.State == AgentAcknowledged || !s.autoRestart(ctx, a.ID) {
+	if a.State == AgentAcknowledged {
 		return Agent{}, false, nil
 	}
 	if it.Status == items.Done || it.Status == items.Cancelled {
@@ -596,53 +598,32 @@ func (s *Store) recoverableOrchestrator(ctx context.Context, it items.Item) (Age
 }
 
 // restartOrchestratorInPlace restarts a recoverable orchestrator on its own
-// row: same id, same name (resolveName is never consulted, so no suffix),
-// new session at the next attempt and generation. Like Retry it reuses the
-// stored kind/model/effort (already vetted at first start) and is
-// slot-neutral (the agent row never left 'active', so no admission check).
+// row through the replacement coordinator (mode recover): same id, same
+// name (resolveName is never consulted, so no suffix), a durable operation,
+// the recovery kickoff and bundle, admission for a finished row, and the
+// in-flight guard. An explicit Start re-enables auto_restart first, so a
+// parked operation is resumed by the reconciler. queued reports an operation
+// still waiting (for the old pane to die, or for an admission slot).
 func (s *Store) restartOrchestratorInPlace(ctx context.Context, a Agent) (Agent, bool, error) {
-	ses, err := s.LatestSession(ctx, a.ID)
+	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
+		return Agent{}, false, err
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET auto_restart = 1 WHERE id = ?`, a.ID); err != nil {
+		return Agent{}, false, err
+	}
+	op, err := s.RequestReplacement(ctx, a.ID, ModeRecover, "", "")
 	if err != nil {
 		return Agent{}, false, err
 	}
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active', finished_at = NULL WHERE id = ?`, a.ID); err != nil {
-			return err
-		}
-		if err := s.EnsureLineageTx(ctx, tx, a); err != nil {
-			return err
-		}
-		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
-	}); err != nil {
-		return Agent{}, false, err
+	if op.Phase == PhaseBlocked {
+		return Agent{}, false, &items.Error{Code: items.CodeConflict,
+			Message: fmt.Sprintf("Recovery %s is blocked: %s", op.ID, op.Error)}
 	}
-	a.State = AgentActive
-	a.FinishedAt = nil
-	newSes, err := s.startSession(ctx, a, ses.Attempt+1, ses.Generation+1, false, "", "")
+	out, err := s.agentByID(ctx, a.ID)
 	if err != nil {
 		return Agent{}, false, err
 	}
-	if err := s.tx(ctx, func(tx *sql.Tx) error {
-		return s.appendLineageTx(ctx, tx, a, newSes.ID, newSes.Generation, a.ID)
-	}); err != nil {
-		return Agent{}, false, err
-	}
-	// Best-effort like the spawn paths' own notifications: the session is
-	// already running, so a notify failure must not fail the recovery.
-	_ = s.tx(ctx, func(tx *sql.Tx) error {
-		itemKey, err := s.itemKey(ctx, tx, a.ItemID)
-		if err != nil {
-			return err
-		}
-		return s.notify(ctx, tx, NotifyInput{Kind: "agent.retried", AgentName: a.Name,
-			ItemKey: itemKey, Args: map[string]string{"name": a.Name, "N": fmt.Sprint(newSes.Attempt), "KEY": itemKey}})
-	})
-	s.go_(func() {
-		if err := s.watchStartup(context.WithoutCancel(ctx), a, newSes, s.Adapters[a.Kind]); err != nil {
-			s.logf("spawn: watchStartup %s: %v", a.Name, err)
-		}
-	})
-	return a, false, nil
+	return out, op.Phase != PhaseSucceeded, nil
 }
 
 // roleDefaultKindModel fills an empty Kind/Model from the role's configured
