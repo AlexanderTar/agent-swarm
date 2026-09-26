@@ -397,6 +397,7 @@ func (h *harness) spawn(t *testing.T, orchestrator, itemKey, role string) string
 	t.Helper()
 	out := h.mustTool(t, orchestrator, "swarm_spawn", map[string]any{
 		"item": itemKey, "role": role, "agent": "fake", "model": "fake-1",
+		"override_reason": "e2e harness pins the fake adapter",
 	})
 	name, _ := out["agent"].(string)
 	if name == "" {
