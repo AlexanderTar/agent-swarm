@@ -461,6 +461,11 @@ func (s *Store) setStatus(ctx context.Context, tx *sql.Tx, it *Item, to Status) 
 	if err := s.changed(ctx, tx, *it); err != nil {
 		return err
 	}
+	if to == Done && it.ID == it.RootID && s.RootDone != nil {
+		if err := s.RootDone(ctx, tx, it.ID); err != nil {
+			return err
+		}
+	}
 	if (to == Done || to == Cancelled) && s.DepUnblocked != nil {
 		return s.DepUnblocked(ctx, tx, it.ID)
 	}

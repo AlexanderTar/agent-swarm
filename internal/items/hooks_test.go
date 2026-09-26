@@ -132,3 +132,40 @@ func TestReconcileRootCallsRequestOpened(t *testing.T) {
 		t.Fatalf("hook got %s/%s, want accept_epic/open", kind, state)
 	}
 }
+
+// RootDone fires exactly when a top-level item reaches Done (spec R7): a
+// story deriving Done is not a root, an accepted epic is.
+func TestRootDoneFiresOnlyWhenARootReachesDone(t *testing.T) {
+	st := newStore(t)
+	var got []string
+	st.RootDone = func(ctx context.Context, tx *sql.Tx, id string) error {
+		got = append(got, id)
+		return nil
+	}
+	e, story, task := tree(t, st)
+	seedCheckpoint(t, st.DB, e, "accepted", 1, later(st), "")
+	if err := st.Reconcile(ctx, e.Key); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, st, task, items.Done)
+	if err := st.Reconcile(ctx, task.Key); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, st, story.Key, items.Done)
+	if len(got) != 0 {
+		t.Fatalf("RootDone fired for a non-root: %v", got)
+	}
+	seedCheckpoint(t, st.DB, e, "integrated", 1, later(st), gitJSON)
+	if err := st.Reconcile(ctx, e.Key); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, st, e.Key, items.InReview)
+	exec(t, st.DB, `UPDATE requests SET state = 'approved' WHERE item_id = ?`, e.ID)
+	if err := st.Reconcile(ctx, e.Key); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, st, e.Key, items.Done)
+	if len(got) != 1 || got[0] != e.ID {
+		t.Fatalf("RootDone calls = %v, want [%s]", got, e.ID)
+	}
+}
