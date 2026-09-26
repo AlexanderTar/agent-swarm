@@ -85,8 +85,12 @@ func seedDirtyHandoff(t *testing.T, status string) (*Store, Agent, Session, Oper
 func TestPreservationReadyBlocksOnDirtyTrackedChanges(t *testing.T) {
 	s, _, wSes, op := seedDirtyHandoff(t, " M owned.go\n?? scratch.go\n")
 	ctx := context.Background()
-	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "claiming ready"}); err == nil {
+	_, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "claiming ready"})
+	if err == nil {
 		t.Fatal("handoff checkpoint over a dirty tracked tree must refuse the ready claim")
+	}
+	if !strings.Contains(err.Error(), "owned.go") || strings.Contains(err.Error(), "scratch.go") {
+		t.Fatalf("refusal = %q, want it to name the blocking tracked path owned.go (not untracked scratch.go)", err)
 	}
 	got, _ := s.getOperation(ctx, op.ID)
 	if got.Phase != PhaseBlocked || !strings.Contains(got.Error, "owned.go") {
