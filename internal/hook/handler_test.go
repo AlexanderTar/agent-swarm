@@ -1476,6 +1476,33 @@ func TestPreToolUseAllowsMultiQuestionBatchWithoutSwarmRef(t *testing.T) {
 	}
 }
 
+// TestPreToolUseAllowsMultiQuestionBatchWithMalformedRefLikeText confirms the
+// batch check matches the real ⟦swarm:ref⟧ token shape (native.go's refRe),
+// not a bare "⟦swarm:" substring -- text that merely mentions the token
+// syntax without a well-formed, closed ref must not trip the guard.
+func TestPreToolUseAllowsMultiQuestionBatchWithMalformedRefLikeText(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+
+	in, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": "Does ⟦swarm: look right to you?"},
+				{"question": "Which region?"},
+			},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Ask one swarm approval per question call.") {
+		t.Fatalf("an unterminated, non-ref-shaped mention of the token syntax must not be denied, got %s", out)
+	}
+}
+
 func TestQuestionToolPostToolUseClosesOnlyTheMatchingRow(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
