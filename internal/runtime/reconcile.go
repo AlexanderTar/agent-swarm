@@ -745,20 +745,87 @@ func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKno
 	}
 }
 
-// markPromptAnswered reports true the first time it sees a (session, title) pair,
-// so a dialog still on screen is answered once, not every tick. In-memory like lastAliveAt.
-func (s *Store) markPromptAnswered(sessionID, title string) bool {
+// promptStep reports what promptTick decided to do this tick: press the
+// matcher's keys, and/or escalate to a Needs-you row.
+type promptStep struct{ Send, Escalate bool }
+
+// promptTick advances the retry/escalation state for a visible (session,
+// title) prompt and reports what to do this tick. It never presses keys or
+// writes to the requests table itself: the caller does that and, once it has
+// a request id for an Escalate step, records it via setPromptReqID.
+func (s *Store) promptTick(sessionID, title string, hasKeys bool, now time.Time) promptStep {
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
-	if s.promptAnswered == nil {
-		s.promptAnswered = map[string]bool{}
+	if s.promptState == nil {
+		s.promptState = map[string]*dialogState{}
 	}
 	k := sessionID + "|" + title
-	if s.promptAnswered[k] {
-		return false
+	st := s.promptState[k]
+	if st == nil {
+		st = &dialogState{firstSeen: now}
+		s.promptState[k] = st
 	}
-	s.promptAnswered[k] = true
-	return true
+	var out promptStep
+	if hasKeys && st.sends < dialogMaxSends && (st.sends == 0 || now.Sub(st.lastSent) >= dialogRetryEvery) {
+		st.sends++
+		st.lastSent = now
+		out.Send = true
+	}
+	if st.reqID == "" && now.Sub(st.firstSeen) >= dialogEscalateAfter {
+		out.Escalate = true
+	}
+	return out
+}
+
+// setPromptReqID records the request id opened for a (session, title) prompt's
+// escalation, so promptTick doesn't escalate it again.
+func (s *Store) setPromptReqID(sessionID, title, reqID string) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if st := s.promptState[sessionID+"|"+title]; st != nil {
+		st.reqID = reqID
+	}
+}
+
+// openPromptTitles returns the titles this session currently has retry or
+// escalation state for, so resolveAlive can close the ones that stopped
+// matching this tick.
+func (s *Store) openPromptTitles(sessionID string) []string {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	prefix := sessionID + "|"
+	var out []string
+	for k := range s.promptState {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, strings.TrimPrefix(k, prefix))
+		}
+	}
+	return out
+}
+
+// clearPromptState drops a (session, title) prompt's retry/escalation state,
+// so the next time it's seen it starts fresh (a new escalation window, a new
+// send budget).
+func (s *Store) clearPromptState(sessionID, title string) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	delete(s.promptState, sessionID+"|"+title)
+}
+
+// hasEscalatedPrompt reports whether this session has a live-session dialog
+// escalated to an open Needs-you row. An escalated session is blocked on the
+// user, not on the agent: it must not also raise a no-ack relay to the parent
+// or be flagged stale.
+func (s *Store) hasEscalatedPrompt(sessionID string) bool {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	prefix := sessionID + "|"
+	for k, st := range s.promptState {
+		if strings.HasPrefix(k, prefix) && st.reqID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // getLastAlive and setLastAlive guard Store.lastAliveAt (P0-crash-3), the
@@ -812,28 +879,58 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	}
 	ad, ok := s.Adapters[r.Kind]
 	idle := false
+	matchedTitle := ""
 	if ok {
 		capture, err := s.Tmux.Capture(ctx, r.TmuxName, 15)
 		if err != nil {
 			return err
 		}
 		idle = ad.Idle(capture)
-		if !idle {
+		// A spawning session's dialogs belong to watchStartup, which is
+		// already polling this pane: matching here too would double-press
+		// keys and open a duplicate row.
+		if !idle && r.State != Spawning {
+			plain := stripANSI(capture)
+			now := s.Now()
 			for _, m := range ad.PromptPatterns() {
-				if m.Match == nil || m.Action == "" || !m.Match.MatchString(capture) {
+				if m.Match == nil || !m.Match.MatchString(plain) {
 					continue
 				}
-				if m.Require != nil && !m.Require.MatchString(capture) {
+				if m.Require != nil && !m.Require.MatchString(plain) {
 					continue // guarded option not on screen: a blind key press could pick the wrong answer
 				}
-				if s.markPromptAnswered(r.SessionID, m.Title) {
+				matchedTitle = m.Title
+				hasKeys := m.Action != ""
+				step := s.promptTick(r.SessionID, m.Title, hasKeys, now)
+				if step.Send {
 					if err := s.Tmux.Keys(ctx, r.TmuxName, strings.Split(m.Action, "+")...); err != nil {
 						s.logf("reconcile: auto-answer %q for %s: %v", m.Title, r.SessionID, err)
+					} else {
+						s.logf("reconcile: %s: sent %v for prompt %q", r.SessionID, m.Action, m.Title)
+					}
+				}
+				if step.Escalate {
+					req, _, err := s.OpenDialogPrompt(ctx, r.SessionID, m.Title)
+					if err != nil {
+						s.logf("reconcile: %s: open dialog prompt %q: %v", r.SessionID, m.Title, err)
+						s.clearPromptState(r.SessionID, m.Title)
+					} else {
+						s.setPromptReqID(r.SessionID, m.Title, req.ID)
+						s.logf("reconcile: %s: prompt %q still visible after %s, opened %s", r.SessionID, m.Title, dialogEscalateAfter, req.ID)
 					}
 				}
 				break
 			}
 		}
+	}
+	for _, title := range s.openPromptTitles(r.SessionID) {
+		if title == matchedTitle {
+			continue
+		}
+		if err := s.ResolveDialogPrompt(ctx, r.SessionID, title); err != nil {
+			s.logf("reconcile: %s: resolve prompt %q: %v", r.SessionID, title, err)
+		}
+		s.clearPromptState(r.SessionID, title)
 	}
 	waiting := idle && owesNothing
 	if title := sessionTitle(waiting, r.Role, r.RootItemID, r.AgentName); title != s.getLastTitle(r.SessionID) {
@@ -849,11 +946,11 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			return err
 		}
 	}
-	if waiting {
+	if waiting || s.hasEscalatedPrompt(r.SessionID) {
 		if err := s.checkProgressDeadlock(ctx, r); err != nil {
 			return err
 		}
-		return nil // M6: a waiting session is never stale
+		return nil // M6: a waiting session is never stale; an escalated dialog is blocked on the user, not the agent
 	}
 	if r.ParentAgentID != "" && s.Now().Sub(r.StartedAt) >= ackTimeout {
 		acked, err := s.hasAnyCheckpoint(ctx, r.AgentID, r.Attempt)

@@ -393,9 +393,9 @@ type Store struct {
 	// block: a daemon restart just resets a session's grace window back to
 	// counting from its own StartedAt, exactly like a session on its first tick.
 	lastAliveAt map[string]time.Time
-	// promptAnswered marks (sessionID|title) pairs whose PromptPattern keys were
-	// already pressed, so a dialog still on screen is answered once, not every tick.
-	promptAnswered map[string]bool
+	// promptState is per (session|title) retry/escalation state for visible
+	// prompts; in-memory like lastAliveAt.
+	promptState map[string]*dialogState
 	// lastTitle is the Ghostty tab title (sessionTitle's output) each live
 	// session had as of the last tick that set it, so a tick whose status,
 	// role and tree haven't changed skips the tmux rename-window call instead

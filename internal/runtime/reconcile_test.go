@@ -1029,6 +1029,45 @@ func TestNoAckAfterTwoMinutesWithNoCheckpointNotifiesAndRelaysOnce(t *testing.T)
 	}
 }
 
+// An escalated dialog blocks on the user, not the agent: the child must not
+// also raise a no-ack relay to the parent while its Needs-you row is open.
+func TestEscalatedPromptSuppressesNoAckForAChild(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	tm.captures[w.Name] = []string{"Do you trust this?\n"}
+	tm.captures[orch.Name] = []string{"working…\n"}
+
+	// Escalate the dialog (15s), then keep going well past ackTimeout (2m).
+	for i := 0; i < 30; i++ {
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		at.Advance(5 * time.Second)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, wSes.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("dialog row state = %q, want open (escalated)", state)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 0 {
+		t.Fatalf("agent.no_ack count = %d, want 0 while the dialog is escalated", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+	if relays != 0 {
+		t.Fatalf("relay no_ack count = %d, want 0 while the dialog is escalated", relays)
+	}
+}
+
 func TestProgressDeadlockRelaysAfterFiveMinutesIdle(t *testing.T) {
 	s, tm, at := clockStore(t)
 	ctx := context.Background()
@@ -1815,7 +1854,7 @@ func TestDepUnblockedDedupesTwoAgentsUnderOneParent(t *testing.T) {
 
 // Rewritten from TestPromptDetectedInRunningSessionOpensHITLRequest (spec 8.3): a scraped
 // prompt no longer becomes a row; the daemon presses the matcher's keys once instead.
-func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {
+func TestPromptPatternAutoAnswersOnceWhenTheDialogClears(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "PromptSpy", Intent: "feature", Kind: Fake, Model: "fake-1"})
@@ -1827,7 +1866,7 @@ func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {
 	fakeAd.PromptMatchers = []adapter.PromptMatcher{
 		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Down+Enter"},
 	}
-	tm.captures[a.Name] = []string{"Some output\nDo you trust this? [y/n]\n"}
+	tm.captures[a.Name] = []string{"Some output\nDo you trust this? [y/n]\n", "─────\n❯ \n─────\n"}
 
 	for i := 0; i < 3; i++ {
 		if err := s.Reconcile(ctx); err != nil {
@@ -1850,6 +1889,75 @@ func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("requests = %d, want 0", count)
+	}
+}
+
+func TestPromptPatternRetriesThenOpensARowAndResolvesWhenCleared(t *testing.T) {
+	s, tm, clk := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "PromptEsc", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	// per-word ANSI, like Claude 2.1.278 draws highlighted text
+	tm.captures[a.Name] = []string{"\x1b[1mDo\x1b[0m \x1b[1myou\x1b[0m trust this?\n"}
+	for i := 0; i < 5; i++ { // t = 0,5,10,15,20s
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		clk.Advance(5 * time.Second)
+	}
+	pressed := 0
+	for _, k := range tm.keys {
+		if k == a.Name+"|Enter" {
+			pressed++
+		}
+	}
+	if pressed != 3 {
+		t.Fatalf("pressed %d, want 3", pressed)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("row state = %q, want open", state)
+	}
+	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&state)
+	if state != "answered" {
+		t.Fatalf("row state = %q, want answered once the dialog cleared", state)
+	}
+}
+
+func TestReconcileLeavesSpawningSessionsDialogsToWatchStartup(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "SpawningDlg", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	tm.captures[a.Name] = []string{"Do you trust this?\n"}
+	if _, err := s.DB.Exec(`UPDATE sessions SET state='spawning' WHERE id=?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.keys) != 0 {
+		t.Fatalf("keys = %v, want none: a spawning session's dialogs belong to watchStartup", tm.keys)
+	}
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses.ID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("requests = %d, want 0", n)
 	}
 }
 
