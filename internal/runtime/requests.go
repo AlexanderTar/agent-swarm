@@ -420,8 +420,9 @@ func (s *Store) RequestWireByID(ctx context.Context, id string) (RequestWire, er
 	return out, err
 }
 
-// OnRequestOpened is wired into items.Store.RequestOpened: the accept_* requests
-// the reconciler opens still get their §17.5 notification. In production
+// OnRequestOpened is wired into items.Store.RequestOpened: it routes the
+// accept_* rows the reconciler opens to the root's live orchestrator
+// (routeAcceptTx), then raises their §17.5 notification. In production
 // w.Kind is always accept_epic/accept_fix (reconcileRoot, internal/items/
 // transition.go, is the only caller of RequestOpened, and both those
 // templates need only KEY) — Args also carries name/prompt defensively,
@@ -433,6 +434,9 @@ func (s *Store) RequestWireByID(ctx context.Context, id string) (RequestWire, er
 // {resolution}, and none of those are built here. If RequestOpened is ever
 // wired to open one of those kinds, this needs its own Args for it.
 func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) error {
+	if err := s.routeAcceptTx(ctx, tx, id); err != nil {
+		return err
+	}
 	w, err := s.RequestWireTx(ctx, tx, id)
 	if err != nil {
 		return err
@@ -443,6 +447,92 @@ func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) erro
 	}
 	return s.notify(ctx, tx, NotifyInput{Kind: "request." + string(w.Kind), ItemKey: w.ItemKey,
 		RequestID: w.ID, Args: args})
+}
+
+// relayRequestTx sends req.AgentID one request_open relay: the request id,
+// its native prompt (approval kinds) and the next step (spec
+// 2026-09-26-epic-approval-lane). It is the one delivery path for a request
+// the agent did not get back from its own swarm_ask call: an accept row
+// routed to it, a close_spike its checkpoint opened, or an open request
+// re-surfaced after a restart or wake. enqueueRaw, not enqueue: the
+// exhausted-kind hold keeps only a 500-char sample and would destroy the
+// native prompt, and this is one message per open request, not a fan-in
+// flood; WakeDue already skips an exhausted kind, so nothing wakes early.
+func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error {
+	req, err := s.requestTx(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	a, err := s.agentByIDTx(ctx, tx, req.AgentID)
+	if err != nil {
+		return err
+	}
+	key, err := s.itemKey(ctx, tx, req.ItemID)
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{"event": "request_open", "agent": a.Name, "item": key,
+		"request_id": req.ID, "kind": req.Kind}
+	switch req.Kind {
+	default:
+		np, err := s.storedNativePromptTx(ctx, tx, req)
+		if err != nil {
+			return err
+		}
+		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID)
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	rootID, err := s.rootItemID(ctx, tx, req.ItemID)
+	if err != nil {
+		return err
+	}
+	_, err = s.enqueueRaw(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: req.AgentID,
+		RootItemID: rootID, ItemID: req.ItemID, RequestID: req.ID, Payload: body})
+	return err
+}
+
+// liveRootOrchestratorTx returns the live top-level orchestrator of itemID's
+// root (the agent terminalAgent names for an accept row) and its newest live
+// session; ok is false when there is none.
+func (s *Store) liveRootOrchestratorTx(ctx context.Context, tx *sql.Tx, itemID string) (agentID, sessionID string, ok bool, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT a.id, se.id FROM agents a
+		JOIN items i ON i.id = ? AND a.root_item_id = i.root_id
+		JOIN sessions se ON se.agent_id = a.id
+		WHERE a.role = 'orchestrator' AND a.parent_agent_id IS NULL AND a.state = 'active'
+		  AND se.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
+		ORDER BY se.generation DESC, se.started_at DESC LIMIT 1`, itemID).Scan(&agentID, &sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	return agentID, sessionID, err == nil, err
+}
+
+// routeAcceptTx binds a daemon-opened accept_epic/accept_fix row to its
+// root's live top-level orchestrator and relays it the native prompt, like
+// any approval that orchestrator asked for itself (locked decision 1). With
+// no live orchestrator the row stays agentless -- board and CLI still
+// resolve it -- and startSession binds and relays it when one starts
+// (resurfaceOpenRequests). Any other kind is a no-op.
+func (s *Store) routeAcceptTx(ctx context.Context, tx *sql.Tx, id string) error {
+	req, err := s.requestTx(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if req.Kind != KindAcceptEpic && req.Kind != KindAcceptFix {
+		return nil
+	}
+	agentID, sesID, ok, err := s.liveRootOrchestratorTx(ctx, tx, req.ItemID)
+	if err != nil || !ok {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET agent_id = ?, session_id = ? WHERE id = ?`,
+		agentID, sesID, id); err != nil {
+		return err
+	}
+	return s.relayRequestTx(ctx, tx, id)
 }
 
 // finishOpen is the shared tail of every ask* helper: publish request.opened

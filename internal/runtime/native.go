@@ -167,6 +167,27 @@ func NativePromptNextStep(ref string) string {
 		"forwarding only what the user picked, never a decision they did not make.", ref)
 }
 
+// storedNativePromptTx rebuilds a stored approval's native prompt exactly as
+// swarm_ask first returned it (same section title from the asked revision,
+// same plan warnings), so a re-shown question matches the original byte for
+// byte and the hook's question row binds to the same ref.
+func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Request) (NativePrompt, error) {
+	title, err := s.sectionTitle(ctx, tx, req.ArtifactID, req.ArtifactRevision, req.SectionID)
+	if err != nil {
+		return NativePrompt{}, err
+	}
+	var warnings []string
+	if req.Kind == KindApprovePlan {
+		var raw string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(warnings_json,'[]') FROM artifact_revisions
+			WHERE artifact_id = ? AND revision = ?`, req.ArtifactID, req.ArtifactRevision).Scan(&raw); err != nil {
+			return NativePrompt{}, err
+		}
+		json.Unmarshal([]byte(raw), &warnings)
+	}
+	return s.nativePromptFor(ctx, tx, req, title, warnings)
+}
+
 // NativeAnswerNextStep is the PostToolUse hook's instruction once a native
 // question row bound to a daemon-issued ref (binding_json.ref) is recorded
 // as answered: forward it. Added 2026-09-26 after native-railway-tracing
