@@ -214,6 +214,25 @@ public enum CatalogRules {
         } + [PickerOption("none", Copy.noAdvisor)]
     }
 
+    public static func advisorAgentOptions(enabled: [AgentKind]) -> [PickerOption] {
+        agentOptions(enabled: enabled) + [PickerOption("none", Copy.noAdvisor)]
+    }
+
+    public static func advisorModelOptions(_ agent: AgentKind?, catalog: [AgentCatalogEntry]) -> [PickerOption] {
+        guard let agent else { return [] }
+        return modelOptions(entry(catalog, agent), advisorOnly: agent == .claude)
+    }
+
+    public static func normalizedAdvisor(_ advisor: AdvisorChoice, settings: Settings,
+                                         catalog: [AgentCatalogEntry]) -> AdvisorChoice {
+        guard case let .pair(agent, model) = advisor, settings.enabledAgents.contains(agent) else { return .none }
+        let options = advisorModelOptions(agent, catalog: catalog)
+        guard !options.isEmpty else { return .none }
+        if options.contains(where: { $0.value == model }) { return advisor }
+        let saved = settings[.advisor]?.agent == agent ? settings[.advisor]?.model : nil
+        return .pair(agent, options.first(where: { $0.value == saved })?.value ?? options[0].value)
+    }
+
     /// The spike body's advisor; its effort comes from the Settings advisor row (§16.3), re-checked against
     /// the model the user actually picked. An unsupported level is dropped, which means that model's own
     /// default effort (§6.7): the daemon resolves a missing `effort` from the catalog.

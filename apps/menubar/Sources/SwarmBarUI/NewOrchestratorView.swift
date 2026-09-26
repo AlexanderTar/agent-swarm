@@ -96,22 +96,38 @@ public struct NewOrchestratorView: View {
         }
     }
 
+    private var advisorAgentValue: String {
+        if case let .pair(agent, _) = form.advisor { return agent.rawValue }
+        return "none"
+    }
+
+    private var advisorModelValue: String {
+        if case let .pair(_, model) = form.advisor { return model }
+        return "—"
+    }
+
     private var agentFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
+            HStack(spacing: 8) {
+                Text(Copy.agent).frame(width: 72, alignment: .leading)
                 OptionPicker(Copy.agent, options: form.agentOptions, value: form.choice.agent?.rawValue ?? "",
                              icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAgent($0) }
+                    .labelsHidden().frame(minWidth: 150)
+                Text(Copy.model).frame(width: 52, alignment: .leading)
                 OptionPicker(Copy.model, options: form.modelOptions, value: form.choice.model) { form.setModel($0) }
+                    .labelsHidden().frame(minWidth: 300)
             }
             if let error = form.errors.agent, !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
             if let error = form.errors.model { Text(error).font(.caption).foregroundStyle(.red) }
-            if let efforts = form.effortOptions {
-                OptionPicker(Copy.effort, options: efforts, value: form.choice.effort) { form.setEffort($0) }
-                    .frame(maxWidth: 260)
+            HStack(spacing: 8) {
+                Text(Copy.advisor).frame(width: 72, alignment: .leading)
+                OptionPicker(Copy.advisor, options: form.advisorAgentOptions, value: advisorAgentValue,
+                             icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAdvisorAgent($0) }
+                    .labelsHidden().frame(minWidth: 150)
+                Text(Copy.model).frame(width: 52, alignment: .leading)
+                OptionPicker("Advisor model", options: form.advisorModelOptions, value: advisorModelValue) { form.setAdvisorModel($0) }
+                    .labelsHidden().frame(minWidth: 300).disabled(form.advisor == .none)
             }
-            if let note = form.effortNote { Text(note).font(.caption).foregroundStyle(.secondary) }
-            OptionPicker(Copy.advisor, options: form.advisorOptions, value: form.advisor.encoded) { form.setAdvisor($0) }
-                .frame(maxWidth: 320)
             if let error = form.errors.advisor { Text(error).font(.caption).foregroundStyle(.red) }
             Text(Copy.defaultsFromSettings).font(.caption).foregroundStyle(.secondary)
         }

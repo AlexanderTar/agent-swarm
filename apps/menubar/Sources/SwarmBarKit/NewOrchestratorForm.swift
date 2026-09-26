@@ -59,6 +59,7 @@ public final class NewOrchestratorForm {
         async let c = try? client.catalog()
         async let r = try? client.repos(query: "")
         catalog = await c ?? []
+        advisor = CatalogRules.normalizedAdvisor(advisor, settings: settings, catalog: catalog)
         applyRepos(await r ?? ReposResponse())
         // The catalog wasn't loaded yet when Settings prefilled `choice`: re-check the stored effort
         // against it now, so a level the model no longer offers can't survive into the picker.
@@ -103,7 +104,11 @@ public final class NewOrchestratorForm {
     public var effortOptions: [PickerOption]? {
         CatalogRules.effortOptions(choice.agent, CatalogRules.resolve(CatalogRules.entry(catalog, choice.agent), choice.model))
     }
-    public var advisorOptions: [PickerOption] { CatalogRules.advisorOptions(catalog, enabled: settings.enabledAgents) }
+    public var advisorAgentOptions: [PickerOption] { CatalogRules.advisorAgentOptions(enabled: settings.enabledAgents) }
+    public var advisorModelOptions: [PickerOption] {
+        guard case let .pair(agent, _) = advisor else { return [] }
+        return CatalogRules.advisorModelOptions(agent, catalog: catalog)
+    }
 
     public var rows: [Repo] { RepoPicker.rows(repos) }
     public var selectedLine: String { RepoPicker.selectedLine(selection, known: rows) }
@@ -138,7 +143,24 @@ public final class NewOrchestratorForm {
         effortNote = nil
     }
 
-    public func setAdvisor(_ encoded: String) { advisor = AdvisorChoice(encoded: encoded) }
+    public func setAdvisorAgent(_ value: String) {
+        guard let agent = AgentKind(rawValue: value), settings.enabledAgents.contains(agent) else {
+            advisor = .none
+            return
+        }
+        let options = CatalogRules.advisorModelOptions(agent, catalog: catalog)
+        guard let first = options.first else { advisor = .none; return }
+        let current: String? = if case let .pair(kind, model) = advisor, kind == agent { model } else { nil }
+        let saved = settings[.advisor]?.agent == agent ? settings[.advisor]?.model : nil
+        let model = [current, saved].compactMap { $0 }.first(where: { candidate in options.contains { $0.value == candidate } }) ?? first.value
+        advisor = .pair(agent, model)
+    }
+
+    public func setAdvisorModel(_ value: String) {
+        guard case let .pair(agent, _) = advisor,
+              advisorModelOptions.contains(where: { $0.value == value }) else { return }
+        advisor = .pair(agent, value)
+    }
 
     public func toggle(_ repo: Repo) {
         guard !repo.missing else { return }
@@ -186,7 +208,7 @@ public final class NewOrchestratorForm {
         return CreateSpikeBody(requestId: requestID, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                                intent: intent, repos: selection, agent: agent, model: choice.model,
                                effort: choice.effort.isEmpty ? nil : choice.effort,
-                               advisor: CatalogRules.advisorPayload(advisor, settings: settings, catalog: catalog),
+                               advisor: CatalogRules.advisorPayload(CatalogRules.normalizedAdvisor(advisor, settings: settings, catalog: catalog), settings: settings, catalog: catalog),
                                request: text.isEmpty ? nil : text)
     }
 
