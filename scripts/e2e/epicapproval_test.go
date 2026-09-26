@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,5 +99,28 @@ func TestScenarioEpicApprovalLane(t *testing.T) {
 	}
 	if got := h.itemStatus(t, epic); got != "done" {
 		t.Fatalf("epic status = %s, want done", got)
+	}
+
+	// Root finish (docs/specs/2026-09-26-root-finish-and-cancel-cascade.md
+	// R1, R3): the daemon wrote the orchestrator's completed on its own item,
+	// a late handoff is refused, and once the pane goes (killPane stands in
+	// for the 60 s reaper) the session ends completed.
+	var daemonCompleted int
+	h.db(t).QueryRow(`SELECT COUNT(*) FROM checkpoints c JOIN agents a ON a.id = c.agent_id
+		WHERE a.name = ? AND c.item_id = a.item_id AND c.kind = 'completed' AND c.daemon_written = 1`,
+		orch).Scan(&daemonCompleted)
+	if daemonCompleted != 1 {
+		t.Fatalf("%d daemon completed checkpoints for %s, want 1", daemonCompleted, orch)
+	}
+	err := h.tool(t, orch, "swarm_checkpoint", map[string]any{"kind": "handoff", "summary": "saving my place"})
+	if err == nil || !strings.Contains(err.Error(), "Root accepted; write completed.") {
+		t.Fatalf("late handoff err = %v, want the root-accepted refusal", err)
+	}
+	h.killPane(t, orch)
+	if !h.waitForSessionState(t, orch, "completed", 30*time.Second) {
+		t.Fatalf("orchestrator session = %s, want completed", h.sessionState(t, orch))
+	}
+	if got := h.agentState(t, orch); got != "finished" {
+		t.Fatalf("orchestrator agent = %s, want finished", got)
 	}
 }
