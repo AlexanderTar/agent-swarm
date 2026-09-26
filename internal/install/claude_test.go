@@ -2,6 +2,8 @@ package install_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,6 +182,154 @@ func TestRemoveLegacyClaudeLeavesTheNewSkillDirectoryAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(c.Claude("skills", "swarm", "SKILL.md")); err != nil {
 		t.Fatal("the v2 skill was deleted")
+	}
+}
+
+// D3 (dialog-needs-you spec): a missing or unwritable ~/.claude.json gets a
+// warning line, but install never fails over it.
+func TestInstallWarnsWhenClaudeJSONIsMissingOrNotWritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("every file looks writable as root")
+	}
+	c := fakeHome(t)
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
+	}}).Runner()
+	// A parent directory that cannot be created in (unwritable UserHome)
+	// means ~/.claude.json can never be created either.
+	if err := os.Chmod(c.UserHome, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(c.UserHome, 0o755)
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	if len(lines) == 0 || !strings.Contains(lines[0], "missing or not writable") {
+		t.Fatalf("lines = %v, want a missing/not-writable warning", lines)
+	}
+}
+
+// D3: an installed Claude older than the verified version gets a warning
+// line with the exact wording, and install still succeeds.
+func TestInstallWarnsOnAnUntestedClaudeVersion(t *testing.T) {
+	c := fakeHome(t)
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.200 (Claude Code)\n"},
+	}}).Runner()
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	want := "Claude 2.1.200 is older than 2.1.283: the trust-dialog key was verified on 2.1.283+. Continuing, but sessions may still hit the trust dialog."
+	if len(lines) == 0 || lines[0] != want {
+		t.Fatalf("lines = %v, want [%q]", lines, want)
+	}
+}
+
+// D3: pruning removes only Swarm-owned entries whose workspace no longer
+// exists; a Swarm-owned entry that still exists, and any non-Swarm-owned
+// entry (the user's own project, even one pointing nowhere), survive.
+func TestInstallPrunesOnlyStaleSwarmOwnedEntries(t *testing.T) {
+	c := fakeHome(t)
+	staleOwned := filepath.Join(c.Home, "work", "3")     // Swarm-owned, gone
+	liveOwned := filepath.Join(c.Home, "work", "4")      // Swarm-owned, still there
+	userEntry := filepath.Join(c.UserHome, "my-project") // not Swarm-owned, also gone
+	if err := os.MkdirAll(liveOwned, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	seed := fmt.Sprintf(`{"projects":{%q:{"hasTrustDialogAccepted":true},%q:{"hasTrustDialogAccepted":true},%q:{"hasTrustDialogAccepted":true}}}`,
+		staleOwned, liveOwned, userEntry)
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := install.PruneStaleClaudeTrustEntries(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned %d, want 1", n)
+	}
+	b, _ := os.ReadFile(install.ClaudeJSONPath(c))
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Projects[staleOwned]; ok {
+		t.Error("the stale Swarm-owned entry must be removed")
+	}
+	if _, ok := doc.Projects[liveOwned]; !ok {
+		t.Error("a Swarm-owned entry whose workspace still exists must survive")
+	}
+	if _, ok := doc.Projects[userEntry]; !ok {
+		t.Error("a non-Swarm-owned entry must never be touched, even if it points nowhere")
+	}
+}
+
+// D4 (dialog-needs-you spec): doctor's "Claude trust" check FAILs when
+// ~/.claude.json isn't writable.
+func TestDoctorFailsWhenClaudeJSONNotWritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("every file looks writable as root")
+	}
+	c := fakeHome(t)
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
+	}}).Runner()
+	if err := os.Chmod(c.UserHome, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(c.UserHome, 0o755)
+	ch := install.CheckClaudeTrust(context.Background(), c, run)
+	if ch.Name != "Claude trust" || ch.OK {
+		t.Fatalf("check = %+v, want a FAIL named \"Claude trust\"", ch)
+	}
+}
+
+// D4: FAILs on a Claude version older than the one the trust key was
+// verified on, or when the version can't be determined at all.
+func TestDoctorFailsOnAnUntestedClaudeVersion(t *testing.T) {
+	c := fakeHome(t)
+	old := (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.200 (Claude Code)\n"},
+	}}).Runner()
+	if ch := install.CheckClaudeTrust(context.Background(), c, old); ch.OK {
+		t.Fatalf("check = %+v, want FAIL on an old version", ch)
+	}
+	none := (&execx.Fake{Responses: map[string]execx.Result{}}).Runner()
+	if ch := install.CheckClaudeTrust(context.Background(), c, none); ch.OK {
+		t.Fatalf("check = %+v, want FAIL when the version can't be read", ch)
+	}
+}
+
+// D4: WARNs (OK=true, with a count) on stale Swarm-owned entries; doctor
+// only ever reports, it never prunes (install does that, D3).
+func TestDoctorWarnsOnStaleSwarmOwnedEntriesWithCount(t *testing.T) {
+	c := fakeHome(t)
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
+	}}).Runner()
+	staleOwned := filepath.Join(c.Home, "work", "3")
+	seed := fmt.Sprintf(`{"projects":{%q:{"hasTrustDialogAccepted":true}}}`, staleOwned)
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ch := install.CheckClaudeTrust(context.Background(), c, run)
+	if !ch.OK || !strings.Contains(ch.Detail, "1 stale") {
+		t.Fatalf("check = %+v, want a WARN naming 1 stale entry", ch)
+	}
+	// doctor must never have pruned it
+	b, _ := os.ReadFile(install.ClaudeJSONPath(c))
+	if !strings.Contains(string(b), staleOwned) {
+		t.Fatal("doctor must never prune; the stale entry must still be there")
+	}
+}
+
+// D4: PASSes with a clean, up-to-date, writable state.
+func TestDoctorPassesWithCleanState(t *testing.T) {
+	c := fakeHome(t)
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
+	}}).Runner()
+	ch := install.CheckClaudeTrust(context.Background(), c, run)
+	if !ch.OK || !strings.Contains(ch.Detail, "2.1.283") {
+		t.Fatalf("check = %+v, want a PASS naming the version", ch)
 	}
 }
 

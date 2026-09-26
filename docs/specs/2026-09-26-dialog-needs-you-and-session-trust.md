@@ -163,6 +163,13 @@ review). They amend decision 1 and resolve Q1; nothing here reopens them.
       `projects[...]` entry at all (D1's write may have failed, or raced a
       concurrent Claude rewrite).
     - **PASS** otherwise, with the count of Swarm-owned entries.
+    - **Implementation note (flagged, not decided here):** `swarm doctor` is
+      a standalone CLI command with no DB handle (`cmd/swarm/commands.go`
+      builds `install.Doctor` from `Config` + `execx.Runner` only); the
+      live-session WARN needs either a new daemon HTTP endpoint or a direct
+      read-only DB open from the `install` package. Everything else in D4 is
+      implemented; this one WARN is deliberately left out pending that
+      choice, rather than picked unilaterally.
 11. **D8 (codex hardening, from batch-1 review):**
     - `setupEnv` calls `os.Chtimes(codexHome, now, now)` right after
       `os.MkdirAll` succeeds (best-effort; an error is logged, not returned).

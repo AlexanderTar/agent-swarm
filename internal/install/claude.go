@@ -59,5 +59,5 @@ func RemoveLegacyClaude(c Config) ([]string, error) {
 }
 
 func CheckClaude(ctx context.Context, c Config, run execx.Runner) []Check {
-	return []Check{CheckSkills(c, KindClaude)}
+	return []Check{CheckSkills(c, KindClaude), CheckClaudeTrust(ctx, c, run)}
 }
