@@ -1194,11 +1194,13 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		return Session{}, err
 	}
 
+	// Trust is per-session now (D1-D7, dialog-needs-you spec): each kind's
+	// own Launch/Resume does it, since a standalone TrustFolder(ctx, cwd)
+	// call here had no session in scope (Task 13 removed it).
 	ad, ok := s.Adapters[a.Kind]
 	if !ok {
 		return Session{}, fmt.Errorf("no adapter for %s", a.Kind)
 	}
-	_ = ad.TrustFolder(ctx, cwd)
 
 	nowMs := s.now().UnixMilli()
 	ses := Session{

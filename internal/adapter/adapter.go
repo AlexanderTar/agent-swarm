@@ -122,7 +122,9 @@ type Adapter interface {
 	HookOutput(event string, d HookDecision) ([]byte, error)
 	ParseHook(event string, stdin []byte) (HookInput, error)
 	Idle(capture string) bool
-	TrustFolder(ctx context.Context, path string) error
+	// TrustFolder is gone (Task 13, dialog-needs-you spec D1-D7): trust is
+	// per-session, so each kind's own Launch/Resume does it instead of a
+	// standalone call with no session in scope.
 	ForgetFolder(ctx context.Context, path string) error
 	// DiscoverSession lets a kind with no hook surface recover its own
 	// provider session id after launch, given the live pane's OS pid and the
@@ -171,7 +173,6 @@ func idle(a Adapter, capture string) bool {
 	return true
 }
 
-func (b base) TrustFolder(context.Context, string) error  { return nil }
 func (b base) ForgetFolder(context.Context, string) error { return nil }
 
 // errNotImplemented is what Models returns from every real adapter: P1's
