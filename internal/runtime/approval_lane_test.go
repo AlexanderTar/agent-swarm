@@ -319,3 +319,68 @@ func TestAskQuestionReusesOpenRowWithSamePrompt(t *testing.T) {
 		t.Fatalf("an answered row was reused")
 	}
 }
+
+// Spec copy: question and blocker relays.
+func TestRelayRequestForQuestionAndBlocker(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Relay", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses := mustSessionID(t, s, a.ID)
+	q, err := s.AskQuestion(ctx, ses, "Which sync strategy?", []string{"Pull", "Push"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.AskBlocker(ctx, ses, "Need a staging token.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.relayRequestTx(ctx, tx, q.ID); err != nil {
+			return err
+		}
+		return s.relayRequestTx(ctx, tx, b.ID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pq, _ := relayFor(t, s, a.ID, q.ID)
+	if pq["question"] != "Which sync strategy?" || pq["next"] != reaskQuestionNext || pq["native_prompt"] != nil {
+		t.Fatalf("question relay = %v", pq)
+	}
+	if opts, _ := pq["options"].([]any); len(opts) != 2 {
+		t.Fatalf("question relay options = %v", pq["options"])
+	}
+	pb, _ := relayFor(t, s, a.ID, b.ID)
+	if pb["question"] != "Need a staging token." || pb["next"] != blockerOpenNext {
+		t.Fatalf("blocker relay = %v", pb)
+	}
+}
+
+// Spec E11 (dedupe): an unacked relay is counted but not sent again.
+func TestResurfaceSkipsRequestsWithAPendingRelay(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	ctx := context.Background()
+	a, err := s.AgentByID(ctx, req.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		n, err := s.resurfaceOpenRequests(ctx, a, ses, true)
+		if err != nil || n != 1 {
+			t.Fatalf("round %d: n = %d, err = %v", i, n, err)
+		}
+	}
+	if _, n := relayFor(t, s, a.ID, req.ID); n != 1 {
+		t.Fatalf("%d relays after two unacked rounds, want 1", n)
+	}
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE request_id = ?`, req.ID)
+	if _, err := s.resurfaceOpenRequests(ctx, a, ses, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, n := relayFor(t, s, a.ID, req.ID); n != 2 {
+		t.Fatalf("%d relays after the ack, want 2", n)
+	}
+	if got := OpenRequestsReminder(2); got != "2 request(s) still wait on your user. swarm_sync delivers each as a "+
+		"request_open relay with its native prompt and next step; ask again as it says." {
+		t.Fatalf("reminder = %q", got)
+	}
+}

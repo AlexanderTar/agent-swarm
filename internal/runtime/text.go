@@ -198,6 +198,15 @@ func QuotaResetNotice() string {
 	return "Quota reset window passed. Resuming. " + ShortPreamble
 }
 
+// OpenRequestsReminder rides on a kickoff or quota-reset notice when
+// requests still wait on the user (epic-approval-lane decision 2). The
+// request_open relays carry each prompt durably; this line only points at
+// them, because a paste fallback or a muse resume never shows notice text.
+func OpenRequestsReminder(n int) string {
+	return fmt.Sprintf("%d request(s) still wait on your user. swarm_sync delivers each as a request_open relay "+
+		"with its native prompt and next step; ask again as it says.", n)
+}
+
 // RoleSkills is A3's kickoff table: the skill(s) a role's kickoff names. An
 // orchestrator on a spike item gets swarm-spike instead of swarm-orchestrator
 // (Kickoff/ResumeKickoff take itemType for exactly this).

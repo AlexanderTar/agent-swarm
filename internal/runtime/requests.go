@@ -450,6 +450,13 @@ func (s *Store) OnRequestOpened(ctx context.Context, tx *sql.Tx, id string) erro
 		RequestID: w.ID, Args: args})
 }
 
+// reaskQuestionNext / blockerOpenNext are the request_open relay's next step
+// for a still-open plain question and blocker (epic-approval-lane copy).
+const reaskQuestionNext = "Ask the user again with the same text and options: claude and agy with your " +
+	"native question tool, cursor, muse and codex with swarm_ask kind:\"question\". Swarm keeps one Needs-you row for it."
+const blockerOpenNext = "Your blocker is still open in Needs you. The user's answer arrives as a " +
+	"user_answer message; don't ask again."
+
 // relayRequestTx sends req.AgentID one request_open relay: the request id,
 // its native prompt (approval kinds) and the next step (spec
 // 2026-09-26-epic-approval-lane). It is the one delivery path for a request
@@ -475,6 +482,10 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 	payload := map[string]any{"event": "request_open", "agent": a.Name, "item": key,
 		"request_id": req.ID, "kind": req.Kind}
 	switch req.Kind {
+	case KindQuestion:
+		payload["question"], payload["options"], payload["next"] = req.Prompt, req.Options, reaskQuestionNext
+	case KindBlocker:
+		payload["question"], payload["next"] = req.Prompt, blockerOpenNext
 	default:
 		np, err := s.storedNativePromptTx(ctx, tx, req)
 		if err != nil {
@@ -534,6 +545,73 @@ func (s *Store) routeAcceptTx(ctx context.Context, tx *sql.Tx, id string) error 
 		return err
 	}
 	return s.relayRequestTx(ctx, tx, id)
+}
+
+// resurfaceOpenRequests is the one wake/restart helper (epic-approval-lane
+// locked decision 2). For a top-level orchestrator it first binds its root's
+// open accept rows to sessionID (a row that opened while no orchestrator
+// was live). Then it relays every open request routed to the agent that the
+// agent can't already see. On a same-session wake (fresh=false), a
+// question/blocker asked in this session, or an approval whose native
+// question row is open in it, is visible; a fresh session sees nothing. A
+// request whose last request_open relay is still unacked is counted but not
+// relayed again: swarm_sync redelivers it. Skipped entirely: permission
+// prompts (their pane is gone) and ref-bound question rows (the shadow of an
+// approval relayed on its own; msg_ refs keep question_unanswered). n is
+// how many requests still wait on the user.
+func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID string, fresh bool) (int, error) {
+	visible := sessionID
+	if fresh {
+		visible = ""
+	}
+	n := 0
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		n = 0
+		if a.Role == RoleOrchestrator && a.ParentAgentID == "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE requests SET agent_id = ?, session_id = ?
+				WHERE state = 'open' AND kind IN ('accept_epic', 'accept_fix')
+				  AND item_id IN (SELECT id FROM items WHERE root_id = ?)`, a.ID, sessionID, a.RootItemID); err != nil {
+				return err
+			}
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT r.id,
+			EXISTS (SELECT 1 FROM messages m WHERE m.to_agent_id = r.agent_id AND m.request_id = r.id
+				AND m.kind = 'relay' AND m.state <> 'acked')
+			FROM requests r
+			WHERE r.agent_id = ? AND r.state = 'open' AND r.kind <> 'prompt'
+			  AND NOT (r.kind = 'question' AND json_extract(r.binding_json, '$.ref') IS NOT NULL)
+			  AND NOT (r.kind IN ('question', 'blocker') AND r.session_id = ?)
+			  AND NOT EXISTS (SELECT 1 FROM requests q WHERE q.kind = 'question' AND q.state = 'open'
+				AND q.session_id = ? AND json_extract(q.binding_json, '$.ref') = r.id)
+			ORDER BY r.created_at, r.id`, a.ID, visible, visible)
+		if err != nil {
+			return err
+		}
+		var relay []string
+		for rows.Next() {
+			var id string
+			var pending bool
+			if err := rows.Scan(&id, &pending); err != nil {
+				rows.Close()
+				return err
+			}
+			n++
+			if !pending {
+				relay = append(relay, id)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, id := range relay {
+			if err := s.relayRequestTx(ctx, tx, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return n, err
 }
 
 // finishOpen is the shared tail of every ask* helper: publish request.opened
