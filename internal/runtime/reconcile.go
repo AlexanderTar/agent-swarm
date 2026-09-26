@@ -1368,20 +1368,21 @@ func (s *Store) forgetFinishedClaudeTrust(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT s2.cwd FROM sessions s2
+	rows, err := s.DB.QueryContext(ctx, `SELECT s2.id, s2.cwd FROM sessions s2
 		JOIN agents a ON a.id = s2.agent_id
 		WHERE a.kind = 'claude' AND a.state IN ('finished', 'acknowledged') AND s2.cwd != ''`)
 	if err != nil {
 		return err
 	}
-	var cwds []string
+	type row struct{ id, cwd string }
+	var todo []row
 	for rows.Next() {
-		var cwd string
-		if err := rows.Scan(&cwd); err != nil {
+		var r row
+		if err := rows.Scan(&r.id, &r.cwd); err != nil {
 			rows.Close()
 			return err
 		}
-		cwds = append(cwds, cwd)
+		todo = append(todo, r)
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -1389,13 +1390,23 @@ func (s *Store) forgetFinishedClaudeTrust(ctx context.Context) error {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	for _, cwd := range cwds {
-		if !swarmOwnedWorkspace(s.Home, cwd) {
+	for _, r := range todo {
+		s.bookkeepingMu.Lock()
+		done := s.forgottenClaudeTrust[r.id]
+		s.bookkeepingMu.Unlock()
+		if done || !swarmOwnedWorkspace(s.Home, r.cwd) {
 			continue
 		}
-		if err := ad.ForgetFolder(ctx, cwd); err != nil {
-			s.logf("reconcile: forget claude trust for %s: %v", cwd, err)
+		if err := ad.ForgetFolder(ctx, r.cwd); err != nil {
+			s.logf("reconcile: forget claude trust for %s: %v", r.cwd, err)
+			continue
 		}
+		s.bookkeepingMu.Lock()
+		if s.forgottenClaudeTrust == nil {
+			s.forgottenClaudeTrust = map[string]bool{}
+		}
+		s.forgottenClaudeTrust[r.id] = true
+		s.bookkeepingMu.Unlock()
 	}
 	return nil
 }

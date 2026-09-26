@@ -96,7 +96,7 @@ func TestCursorProcessNamesAndIdle(t *testing.T) {
 // regression in the flag -- or a future cursor version adding a new dialog
 // with the same wording -- still surfaces as a Needs-you row instead of
 // silently stalling the pane.
-func TestCursorHasNoStartupDialogs(t *testing.T) {
+func TestCursorStartupDialogsAreDetectOnly(t *testing.T) {
 	ds := newCursor(testDeps(t)).StartupDialogs()
 	if len(ds) != 1 {
 		t.Fatalf("dialogs = %+v, want exactly one detect-only entry", ds)
@@ -135,7 +135,8 @@ func TestCursorArgvAlwaysTrustsTheWorkspace(t *testing.T) {
 }
 
 // D7: the detect-only StartupDialogs/PromptPatterns entries must match the
-// live-captured "no flags" trust screen, and never send keys.
+// "no flags" trust screen (fixture composed from the spec's P-U2 probe
+// description, not captured live this session), and never send keys.
 func TestCursorTrustDialogIsDetectOnly(t *testing.T) {
 	fixture := pane(t, "cursor", "pane-dialog-trust.txt")
 	a := newCursor(testDeps(t))

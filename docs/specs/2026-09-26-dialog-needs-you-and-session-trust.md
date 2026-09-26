@@ -132,7 +132,13 @@ review). They amend decision 1 and resolve Q1; nothing here reopens them.
 7. **Only live sessions are eligible** (`spawning` or `running`). Panes of
    finished or acknowledged agents are killed, not surfaced.
 8. **D2 (cleanup):** the per-session Claude trust entry (D1) is removed once
-   that session's agent is deleted or reclaimed. Only entries whose path is
+   that session's agent is deleted or reclaimed. (As built: this codebase
+   has no hard-delete path for `agents`/`sessions` rows at all -- confirmed,
+   `grep -n "DELETE FROM agents\|DELETE FROM sessions"` matches nothing --
+   so "deleted" never applies today; "reclaimed" means `state IN
+   ('finished', 'acknowledged')`, checked by `forgetFinishedClaudeTrust`
+   every reconcile tick, rate-limited per session id so an already-handled
+   session is never re-checked.) Only entries whose path is
    Swarm-owned are ever touched -- under `<swarm home>/work` or `<swarm
    home>/worktrees` (`filepath.Clean` + prefix match against both roots,
    checked against both the literal and realpath keys D1 may have written.
@@ -146,11 +152,23 @@ review). They amend decision 1 and resolve Q1; nothing here reopens them.
    and that the installed Claude version is one where the trust key was
    verified live (2.1.283 or later; an older or undetectable version gets a
    warning, not a failure -- install never blocks on this). It also prunes
-   stale Swarm-owned entries: any `projects[...]` key that is Swarm-owned (D2's
-   predicate) and either no longer exists on disk, or belongs to a Swarm
-   *terminal-session* work dir (a plain `<home>/work/<n>` directory with no
-   live agent using it -- worktrees are covered by "no longer exists" once
-   `git worktree remove` runs). Never adds a parent/global grant.
+   stale Swarm-owned entries: any `projects[...]` key that is Swarm-owned
+   (D2's predicate) and no longer exists on disk. Never adds a
+   parent/global grant.
+   - **Implementation note (as built, 2026-09-26):** `swarm install` is a
+     standalone CLI command with no DB handle, same as D4's doctor check
+     below, so "no longer exists on disk" is the only staleness test
+     implemented -- a plain `<home>/work/<n>` directory is never deleted by
+     anything in this codebase today (confirmed: only `MkdirAll` sites for
+     that path), so in practice this prune only ever fires for a
+     `git worktree remove`d worktree. A work-dir's trust entry is instead
+     cleaned up by D2's reconcile-time hook the moment its owning agent
+     finishes, which needs no directory deletion to trigger. An earlier
+     draft of this decision additionally described pruning entries
+     "belonging to a terminal-session work dir" as an install-time DB-based
+     check; that was never implemented (same no-DB reason as D4's deferred
+     WARN) and is removed here rather than left to describe code that does
+     not exist.
 10. **D4 (swarm doctor):** a new "Claude trust" check:
     - **FAIL** when `~/.claude.json` doesn't exist or isn't writable, or the
       installed Claude version is untested (older than 2.1.283, or the

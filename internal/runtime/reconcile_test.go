@@ -3662,6 +3662,69 @@ func TestReconcileForgetsClaudeTrustForASwarmOwnedWorkspaceOfAFinishedAgent(t *t
 	}
 }
 
+// D2 (batch-2 review): forgetFinishedClaudeTrust must not call
+// Claude.ForgetFolder again for a session it has already handled -- calling
+// it every 5s tick forever for every finished Claude agent would mean a
+// lock acquisition and a full read/parse of ~/.claude.json per session per
+// tick, contending with Claude's own writes at any real scale. Proven here
+// by re-seeding the entry by hand between two ticks: a second, unthrottled
+// pass would remove it again.
+func TestReconcileForgetsClaudeTrustOnlyOncePerSession(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	userHome := t.TempDir()
+	claudeAd, err := adapter.New(kinds.Claude, adapter.Deps{
+		Home: s.Home, UserHome: userHome, Bin: "/usr/local/bin/swarm",
+		Run: execx.Run, Log: func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Adapters[Claude] = claudeAd
+
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "OnceOnly", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	cfg := filepath.Join(userHome, ".claude.json")
+	seed := fmt.Sprintf(`{"projects":{%q:{"hasTrustDialogAccepted":true}}}`, ses.Cwd)
+	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude', state = 'finished' WHERE id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: a.Name, Command: "claude"})
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Re-seed the entry, as if the user (or a stray write) re-trusted it by
+	// hand between ticks.
+	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var entry struct {
+		HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+	}
+	if err := json.Unmarshal(doc.Projects[ses.Cwd], &entry); err != nil {
+		t.Fatal(err)
+	}
+	if !entry.HasTrustDialogAccepted {
+		t.Fatal("a second tick must not re-forget an already-handled session's trust entry")
+	}
+}
+
 // D8 (batch-2 review): reclaimOldCodexLaunchHomes must run at most once per
 // daemon run, not on every 5s Reconcile tick -- it already self-limits in
 // effect (nothing is left to remove after the first pass), but before this
