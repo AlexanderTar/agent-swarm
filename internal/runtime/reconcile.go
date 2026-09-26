@@ -186,8 +186,26 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	finished, err := s.finishedAgentTmuxNames(ctx)
+	if err != nil {
+		return err
+	}
 	for _, p := range panes {
 		if known[p.Session] {
+			continue
+		}
+		if finished[p.Session] {
+			// The agent is done, live or dead, acted on or not: nothing is
+			// ever coming back to this pane. Left running, it's exactly how
+			// a stuck trust dialog sat unnoticed for days (2026-09-26
+			// incident): the reaper deliberately spares live panes of
+			// failed/crashed/cancelled *sessions* (P0-crash-1, above), but
+			// once the *agent* itself is finished or acknowledged, there is
+			// no human left who is going to inspect it.
+			if err := s.Tmux.Kill(ctx, p.Session); err != nil {
+				return err
+			}
+			s.logf("reconcile: killed pane %s of finished agent", p.Session)
 			continue
 		}
 		if terminalTmux[p.Session] {
@@ -895,20 +913,148 @@ func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKno
 	}
 }
 
-// markPromptAnswered reports true the first time it sees a (session, title) pair,
-// so a dialog still on screen is answered once, not every tick. In-memory like lastAliveAt.
-func (s *Store) markPromptAnswered(sessionID, title string) bool {
+// promptStep reports what promptTick decided to do this tick: press the
+// matcher's keys, and/or escalate to a Needs-you row.
+type promptStep struct{ Send, Escalate bool }
+
+// promptTick advances the retry/escalation state for a visible (session,
+// title) prompt and reports what to do this tick. It never presses keys or
+// writes to the requests table itself: the caller does that and, once it has
+// a request id for an Escalate step, records it via setPromptReqID.
+func (s *Store) promptTick(sessionID, title string, hasKeys bool, now time.Time) promptStep {
 	s.bookkeepingMu.Lock()
 	defer s.bookkeepingMu.Unlock()
-	if s.promptAnswered == nil {
-		s.promptAnswered = map[string]bool{}
+	if s.promptState == nil {
+		s.promptState = map[string]*dialogState{}
 	}
 	k := sessionID + "|" + title
-	if s.promptAnswered[k] {
-		return false
+	st := s.promptState[k]
+	if st == nil {
+		st = &dialogState{firstSeen: now}
+		s.promptState[k] = st
 	}
-	s.promptAnswered[k] = true
-	return true
+	var out promptStep
+	if hasKeys && st.sends < dialogMaxSends && (st.sends == 0 || now.Sub(st.lastSent) >= dialogRetryEvery) {
+		st.sends++
+		st.lastSent = now
+		out.Send = true
+	}
+	if st.reqID == "" && now.Sub(st.firstSeen) >= dialogEscalateAfter {
+		out.Escalate = true
+	}
+	return out
+}
+
+// setPromptReqID records the request id opened for a (session, title) prompt's
+// escalation, so promptTick doesn't escalate it again.
+func (s *Store) setPromptReqID(sessionID, title, reqID string) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if st := s.promptState[sessionID+"|"+title]; st != nil {
+		st.reqID = reqID
+	}
+}
+
+// openPromptTitles returns the titles this session currently has retry or
+// escalation state for, so resolveAlive can close the ones that stopped
+// matching this tick.
+func (s *Store) openPromptTitles(sessionID string) []string {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	prefix := sessionID + "|"
+	var out []string
+	for k := range s.promptState {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, strings.TrimPrefix(k, prefix))
+		}
+	}
+	return out
+}
+
+// clearPromptState drops a (session, title) prompt's retry/escalation state,
+// so the next time it's seen it starts fresh (a new escalation window, a new
+// send budget).
+func (s *Store) clearPromptState(sessionID, title string) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	delete(s.promptState, sessionID+"|"+title)
+}
+
+// setWatchStartupActive and hasActiveWatchStartup track which sessions a
+// watchStartup goroutine is currently polling, so resolveAlive knows when it
+// is safe to defer a Spawning session's dialogs to it versus when (a daemon
+// restart dropped the goroutine) reconcile must take them over itself.
+func (s *Store) setWatchStartupActive(sessionID string, active bool) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if active {
+		if s.activeWatchStartup == nil {
+			s.activeWatchStartup = map[string]bool{}
+		}
+		s.activeWatchStartup[sessionID] = true
+		return
+	}
+	delete(s.activeWatchStartup, sessionID)
+}
+
+func (s *Store) hasActiveWatchStartup(sessionID string) bool {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	return s.activeWatchStartup[sessionID]
+}
+
+// hasEscalatedPrompt reports whether this session has a dialog escalated to
+// an open Needs-you row. An escalated session is blocked on the user, not on
+// the agent: it must not also raise a no-ack relay to the parent or be
+// flagged stale.
+//
+// It checks two things, not just one, because reconcile's own in-memory
+// promptState (an escalation it drove itself, or a mirror of one) does not
+// survive a daemon restart, while the open request row in the DB does: a
+// session that was already escalated before a restart -- Spawning under a
+// watchStartup goroutine that is now gone, or simply Running -- must still
+// suppress no-ack the instant reconcile resumes, not just once its own
+// retry/escalation timers run their course again from zero. The DB check is
+// scoped to prompt titles this adapter's own dialogs use (the union of
+// PromptPatterns and StartupDialogs -- they share titles today for every
+// adapter, but nothing enforces that, and a mismatch would reopen this exact
+// gap for whichever dialog only StartupDialogs names), not every open
+// 'prompt' row, so an unrelated AskPrompt HITL question does not also get
+// treated as a blocking dialog here (owesNothing already covers those).
+func (s *Store) hasEscalatedPrompt(ctx context.Context, sessionID string, ad adapter.Adapter) (bool, error) {
+	s.bookkeepingMu.Lock()
+	prefix := sessionID + "|"
+	for k, st := range s.promptState {
+		if strings.HasPrefix(k, prefix) && st.reqID != "" {
+			s.bookkeepingMu.Unlock()
+			return true, nil
+		}
+	}
+	s.bookkeepingMu.Unlock()
+	if ad == nil {
+		return false, nil
+	}
+	var titles []string
+	for _, m := range ad.PromptPatterns() {
+		titles = append(titles, m.Title)
+	}
+	for _, d := range ad.StartupDialogs() {
+		titles = append(titles, d.Title)
+	}
+	if len(titles) == 0 {
+		return false, nil
+	}
+	args := make([]any, 0, len(titles)+1)
+	args = append(args, sessionID)
+	placeholders := make([]string, 0, len(titles))
+	for _, title := range titles {
+		args = append(args, title)
+		placeholders = append(placeholders, "?")
+	}
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE session_id = ? AND kind = 'prompt'
+		AND state = 'open' AND prompt IN (`+strings.Join(placeholders, ",")+`)`, args...).Scan(&n)
+	return n > 0, err
 }
 
 // getLastAlive and setLastAlive guard Store.lastAliveAt (P0-crash-3), the
@@ -962,27 +1108,71 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 	}
 	ad, ok := s.Adapters[r.Kind]
 	idle := false
+	matchedTitle := ""
+	// A spawning session's dialogs belong to watchStartup, which is already
+	// polling this pane: matching here too would double-press keys and open
+	// a duplicate row. That only holds while a watchStartup goroutine is
+	// actually alive for it -- after a daemon restart nothing re-attaches
+	// one, so a Spawning session left behind (pre-escalation and swallowed
+	// keys, or escalated and never resolved) would otherwise sit stuck
+	// forever with reconcile permanently deferring to a goroutine that no
+	// longer exists.
+	ownedByWatchStartup := r.State == Spawning && s.hasActiveWatchStartup(r.SessionID)
 	if ok {
 		capture, err := s.Tmux.Capture(ctx, r.TmuxName, 15)
 		if err != nil {
 			return err
 		}
 		idle = ad.Idle(capture)
-		if !idle {
+		if !idle && !ownedByWatchStartup {
+			plain := stripANSI(capture)
+			now := s.Now()
 			for _, m := range ad.PromptPatterns() {
-				if m.Match == nil || m.Action == "" || !m.Match.MatchString(capture) {
+				if m.Match == nil || !m.Match.MatchString(plain) {
 					continue
 				}
-				if m.Require != nil && !m.Require.MatchString(capture) {
-					continue // guarded option not on screen: a blind key press could pick the wrong answer
+				if m.Require != nil && !m.Require.MatchString(plain) {
+					// The dialog is still on screen, just mid-render (the
+					// option line hasn't drawn yet): claim the title so the
+					// resolve-on-clear loop below leaves its state and any
+					// open row alone instead of resolving it "via terminal"
+					// and recreating the send/escalation budget from zero.
+					matchedTitle = m.Title
+					continue
 				}
-				if s.markPromptAnswered(r.SessionID, m.Title) {
+				matchedTitle = m.Title
+				hasKeys := m.Action != ""
+				step := s.promptTick(r.SessionID, m.Title, hasKeys, now)
+				if step.Send {
 					if err := s.Tmux.Keys(ctx, r.TmuxName, strings.Split(m.Action, "+")...); err != nil {
 						s.logf("reconcile: auto-answer %q for %s: %v", m.Title, r.SessionID, err)
+					} else {
+						s.logf("reconcile: %s: sent %v for prompt %q", r.SessionID, m.Action, m.Title)
+					}
+				}
+				if step.Escalate {
+					req, _, err := s.OpenDialogPrompt(ctx, r.SessionID, m.Title)
+					if err != nil {
+						s.logf("reconcile: %s: open dialog prompt %q: %v", r.SessionID, m.Title, err)
+						s.clearPromptState(r.SessionID, m.Title)
+					} else {
+						s.setPromptReqID(r.SessionID, m.Title, req.ID)
+						s.logf("reconcile: %s: prompt %q still visible after %s, opened %s", r.SessionID, m.Title, dialogEscalateAfter, req.ID)
 					}
 				}
 				break
 			}
+		}
+	}
+	if !ownedByWatchStartup {
+		for _, title := range s.openPromptTitles(r.SessionID) {
+			if title == matchedTitle {
+				continue
+			}
+			if err := s.ResolveDialogPrompt(ctx, r.SessionID, title); err != nil {
+				s.logf("reconcile: %s: resolve prompt %q: %v", r.SessionID, title, err)
+			}
+			s.clearPromptState(r.SessionID, title)
 		}
 	}
 	waiting := idle && owesNothing
@@ -999,11 +1189,19 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 			return err
 		}
 	}
-	if waiting {
+	escalated := false
+	if !waiting { // waiting alone already takes the early return below
+		var err error
+		escalated, err = s.hasEscalatedPrompt(ctx, r.SessionID, ad)
+		if err != nil {
+			return err
+		}
+	}
+	if waiting || escalated {
 		if err := s.checkProgressDeadlock(ctx, r); err != nil {
 			return err
 		}
-		return nil // M6: a waiting session is never stale
+		return nil // M6: a waiting session is never stale; an escalated dialog is blocked on the user, not the agent
 	}
 	if r.ParentAgentID != "" && s.Now().Sub(r.StartedAt) >= ackTimeout {
 		acked, err := s.hasAnyCheckpoint(ctx, r.AgentID, r.Attempt)
@@ -1118,6 +1316,23 @@ func (s *Store) owesNothing(ctx context.Context, r liveRow) (bool, error) {
 func (s *Store) terminalTmuxNames(ctx context.Context) (map[string]bool, error) {
 	names, err := s.queryIDs(ctx, `SELECT DISTINCT tmux_name FROM sessions
 		WHERE state IN ('failed', 'crashed', 'cancelled')`)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out, nil
+}
+
+// finishedAgentTmuxNames returns the tmux names of every session whose owning
+// agent is finished or acknowledged: nobody is coming back to that pane, live
+// or dead. Checked before terminalTmuxNames (session-state based), since a
+// finished agent's most recent session may itself still read as terminal.
+func (s *Store) finishedAgentTmuxNames(ctx context.Context) (map[string]bool, error) {
+	names, err := s.queryIDs(ctx, `SELECT DISTINCT s.tmux_name FROM sessions s
+		JOIN agents a ON a.id = s.agent_id WHERE a.state IN ('finished', 'acknowledged')`)
 	if err != nil {
 		return nil, err
 	}

@@ -801,6 +801,44 @@ func TestReconcileKillsADeadPaneLeftByAFailedSession(t *testing.T) {
 	}
 }
 
+// P0-crash-1 follow-up (2026-09-26 incident): a live pane of an agent the
+// user has already acknowledged is never coming back to life; leaving it
+// running is how a stuck trust dialog sat unnoticed for days.
+func TestReconcileKillsLivePaneOfAnAcknowledgedAgent(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Old pane", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.DB.Exec(`UPDATE sessions SET state = 'failed' WHERE id = ?`, ses.ID)
+	s.DB.Exec(`UPDATE agents SET state = 'acknowledged' WHERE id = ?`, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "claude"})
+	before := len(tm.killed) // Spawn's own pre-spawn cleanup kill already ran once
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(tm.killed[before:], a.Name) {
+		t.Fatalf("killed by reconcile = %v, want %s among them", tm.killed[before:], a.Name)
+	}
+}
+
+// P0-crash-1's original rule still holds for an agent still active: the pane
+// is left for a human to inspect even if this session crashed.
+func TestReconcileKeepsLivePaneOfAnActiveAgentsCrashedSession(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Crashed pane", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.DB.Exec(`UPDATE sessions SET state = 'crashed' WHERE id = ?`, ses.ID)
+	panes(tm, Pane{Session: a.Name, Command: "claude"})
+	before := len(tm.killed) // Spawn's own pre-spawn cleanup kill already ran once
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != before {
+		t.Fatalf("a live pane of a still-active agent must be left for inspection: %v", tm.killed)
+	}
+}
+
 // §12.2: the sweep runs once the root is done and every agent has finished.
 func TestSweepRunsOnlyWhenTheWholeTreeIsFinished(t *testing.T) {
 	s, tm, _ := clockStore(t)
@@ -1026,6 +1064,148 @@ func TestNoAckAfterTwoMinutesWithNoCheckpointNotifiesAndRelaysOnce(t *testing.T)
 		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
 	if relays != 1 {
 		t.Fatalf("relay no_ack must fire once, not every tick: count = %d", relays)
+	}
+}
+
+// An escalated dialog blocks on the user, not the agent: the child must not
+// also raise a no-ack relay to the parent while its Needs-you row is open.
+func TestEscalatedPromptSuppressesNoAckForAChild(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	tm.captures[w.Name] = []string{"Do you trust this?\n"}
+	tm.captures[orch.Name] = []string{"working…\n"}
+
+	// Escalate the dialog (15s), then keep going well past ackTimeout (2m).
+	for i := 0; i < 30; i++ {
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		at.Advance(5 * time.Second)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, wSes.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("dialog row state = %q, want open (escalated)", state)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 0 {
+		t.Fatalf("agent.no_ack count = %d, want 0 while the dialog is escalated", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+	if relays != 0 {
+		t.Fatalf("relay no_ack count = %d, want 0 while the dialog is escalated", relays)
+	}
+}
+
+// A child that escalated its trust dialog during startup -- exactly the
+// 2026-09-26 incident's path, since all five stuck sessions were children --
+// must be suppressed the same way a live-session escalation is:
+// hasEscalatedPrompt's DB check finds the open row watchStartup opened via
+// OpenDialogPrompt directly, by title, even though the session is still
+// Spawning and reconcile never touches its dialogs directly while
+// watchStartup owns them. Before this fix, hasEscalatedPrompt only consulted
+// reconcile's own in-memory promptState, so this child still got
+// no-ack-relayed to its parent at ackTimeout and its pane killed out from
+// under its open row.
+func TestEscalatedStartupDialogSuppressesNoAckForASpawningChild(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	tm.captures[w.Name] = []string{"Do you trust this?\n"}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	if _, err := s.DB.Exec(`UPDATE sessions SET state='spawning' WHERE id=?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate watchStartup already having escalated this child's trust
+	// dialog to an open Needs-you row, and still actively owning it.
+	req, _, err := s.OpenDialogPrompt(ctx, wSes.ID, "Trust prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.setWatchStartupActive(wSes.ID, true)
+
+	for i := 0; i < 30; i++ { // well past ackTimeout (2m)
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		at.Advance(5 * time.Second)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE id = ?`, req.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("dialog row state = %q, want open (still escalated, untouched by reconcile)", state)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 0 {
+		t.Fatalf("agent.no_ack count = %d, want 0 while the startup dialog is escalated", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+	if relays != 0 {
+		t.Fatalf("relay no_ack count = %d, want 0 while the startup dialog is escalated", relays)
+	}
+}
+
+// A daemon restart wipes reconcile's in-memory promptState but not the open
+// request row in the DB. Before the DB check in hasEscalatedPrompt, the very
+// first Reconcile tick after a restart would treat an already-escalated
+// dialog as brand new (fresh firstSeen, no reqID yet), so a child that had
+// already sat past ackTimeout before the restart got no-ack-relayed on that
+// first tick, before its escalation timer even had a chance to run again.
+func TestEscalatedPromptRowSurvivingARestartSuppressesNoAckImmediately(t *testing.T) {
+	s, tm, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	panes(tm, Pane{Session: w.Name, Command: "swarm-fake-agent"},
+		Pane{Session: orch.Name, Command: "swarm-fake-agent"})
+	tm.env[w.Name] = map[string]string{"SWARM_SESSION": wSes.ID}
+	tm.env[orch.Name] = map[string]string{"SWARM_SESSION": mustSessionID(t, s, orch.ID)}
+	tm.captures[orch.Name] = []string{"working…\n"}
+	tm.captures[w.Name] = []string{"Do you trust this?\n"}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	// Seed the row a pre-restart tick would have opened, without touching any
+	// in-memory state (promptState, activeWatchStartup) -- simulating that a
+	// restart just wiped it, and w had already sat here well past ackTimeout
+	// before the restart.
+	if _, _, err := s.OpenDialogPrompt(ctx, wSes.ID, "Trust prompt"); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(3 * time.Minute) // already well past ackTimeout (2m) pre-restart
+
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, wSes.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("dialog row state = %q, want still open", state)
+	}
+	if n := notifiedCount(s, "agent.no_ack"); n != 0 {
+		t.Fatalf("agent.no_ack count = %d, want 0 on the very first tick after a restart", n)
+	}
+	var relays int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_agent_id = ? AND kind = 'relay'
+		AND payload_json LIKE '%"event":"no_ack"%'`, orch.ID).Scan(&relays)
+	if relays != 0 {
+		t.Fatalf("relay no_ack count = %d, want 0 on the very first tick after a restart", relays)
 	}
 }
 
@@ -1815,7 +1995,7 @@ func TestDepUnblockedDedupesTwoAgentsUnderOneParent(t *testing.T) {
 
 // Rewritten from TestPromptDetectedInRunningSessionOpensHITLRequest (spec 8.3): a scraped
 // prompt no longer becomes a row; the daemon presses the matcher's keys once instead.
-func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {
+func TestPromptPatternAutoAnswersOnceWhenTheDialogClears(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "PromptSpy", Intent: "feature", Kind: Fake, Model: "fake-1"})
@@ -1827,7 +2007,7 @@ func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {
 	fakeAd.PromptMatchers = []adapter.PromptMatcher{
 		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Down+Enter"},
 	}
-	tm.captures[a.Name] = []string{"Some output\nDo you trust this? [y/n]\n"}
+	tm.captures[a.Name] = []string{"Some output\nDo you trust this? [y/n]\n", "─────\n❯ \n─────\n"}
 
 	for i := 0; i < 3; i++ {
 		if err := s.Reconcile(ctx); err != nil {
@@ -1853,9 +2033,158 @@ func TestPromptPatternAutoAnswersOncePerSessionAndOpensNoRequest(t *testing.T) {
 	}
 }
 
+func TestPromptPatternRetriesThenOpensARowAndResolvesWhenCleared(t *testing.T) {
+	s, tm, clk := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "PromptEsc", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	// per-word ANSI, like Claude 2.1.278 draws highlighted text
+	tm.captures[a.Name] = []string{"\x1b[1mDo\x1b[0m \x1b[1myou\x1b[0m trust this?\n"}
+	for i := 0; i < 5; i++ { // t = 0,5,10,15,20s
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		clk.Advance(5 * time.Second)
+	}
+	pressed := 0
+	for _, k := range tm.keys {
+		if k == a.Name+"|Enter" {
+			pressed++
+		}
+	}
+	if pressed != 3 {
+		t.Fatalf("pressed %d, want 3", pressed)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("row state = %q, want open", state)
+	}
+	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&state)
+	if state != "answered" {
+		t.Fatalf("row state = %q, want answered once the dialog cleared", state)
+	}
+}
+
+// While a watchStartup goroutine is actually alive for this session (the
+// normal case), reconcile must leave its dialogs alone: matching here too
+// would double-press keys and open a duplicate row.
+func TestReconcileLeavesSpawningSessionsDialogsToAnActiveWatchStartup(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "SpawningDlg", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	tm.captures[a.Name] = []string{"Do you trust this?\n"}
+	if _, err := s.DB.Exec(`UPDATE sessions SET state='spawning' WHERE id=?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.setWatchStartupActive(ses.ID, true)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.keys) != 0 {
+		t.Fatalf("keys = %v, want none: a spawning session's dialogs belong to an active watchStartup", tm.keys)
+	}
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses.ID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("requests = %d, want 0", n)
+	}
+}
+
+// After a daemon restart, no watchStartup goroutine is re-attached to a
+// session left in 'spawning' -- only watchStartup itself ever moves a
+// session out of that state, so without this fix such a session (dialog
+// unanswered from before the restart, or never even pressed) would sit
+// stuck forever, exactly the incident this batch fixes. Reconcile must take
+// its dialogs over itself once no watchStartup owns it.
+func TestReconcileTakesOverASpawningSessionsDialogWhenNoWatchStartupIsActive(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "OrphanedSpawn", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{
+		{Match: regexp.MustCompile(`Do you trust this\?`), Title: "Trust prompt", Action: "Enter"},
+	}
+	tm.captures[a.Name] = []string{"Do you trust this?\n"}
+	if _, err := s.DB.Exec(`UPDATE sessions SET state='spawning' WHERE id=?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	// No s.setWatchStartupActive call: simulates a daemon restart, where the
+	// in-memory active-goroutine set is empty even though the DB still says
+	// 'spawning'.
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.keys) != 1 || tm.keys[0] != a.Name+"|Enter" {
+		t.Fatalf("keys = %v, want [%s|Enter]: reconcile must retry an orphaned spawning session's dialog", tm.keys, a.Name)
+	}
+}
+
 // The scrape must honor PromptMatcher.Require like watchStartup honors Dialog.Require: a
 // frame where the dialog title matches but the guarded option line is absent (a variant
 // or mid-render frame) must not get a blind key press.
+// A one-tick redraw that drops the guarded option line while the dialog title
+// is still on screen must not be read as "the dialog cleared": that would
+// resolve an already escalated row "via terminal" and reopen a fresh one on
+// the very next tick with its retry budget reset to zero.
+func TestPromptPatternRequireMissKeepsAnEscalatedRowOpen(t *testing.T) {
+	s, tm, clk := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "RequireMiss", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{{
+		Match:   regexp.MustCompile(`Do you trust this\?`),
+		Require: regexp.MustCompile(`Yes, trust it`),
+		Title:   "Trust prompt", Action: "Enter",
+	}}
+	tm.captures[a.Name] = []string{"Do you trust this?\n  Yes, trust it\n"}
+	for i := 0; i < 4; i++ { // t = 0,5,10,15s: escalates at 15s
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		clk.Advance(5 * time.Second)
+	}
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("rows = %d, want exactly 1 escalated row", n)
+	}
+
+	// The option line drops for one tick; the title stays. Must not resolve.
+	tm.captures[a.Name] = []string{"Do you trust this?\n  (rendering...)\n"}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("row state = %q after a Require-miss frame, want still open", state)
+	}
+	s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("rows = %d after a Require-miss frame, want still exactly 1 (no duplicate)", n)
+	}
+}
+
 func TestPromptPatternRequireGuardsAutoAnswer(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()

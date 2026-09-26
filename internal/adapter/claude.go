@@ -222,8 +222,8 @@ func (c *Claude) Idle(capture string) bool       { return idle(c, capture) }
 
 func (c *Claude) StartupDialogs() []Dialog {
 	return []Dialog{
-		{Match: claudeTrust, Require: claudeTrustYes, Keys: []string{"Down", "Enter"}},
-		{Match: claudeDev, Keys: []string{"Enter"}},
+		{Match: claudeTrust, Require: claudeTrustYes, Keys: []string{"Down", "Enter"}, Title: "Trust this project"},
+		{Match: claudeDev, Keys: []string{"Enter"}, Title: "Confirm local development"},
 	}
 }
 

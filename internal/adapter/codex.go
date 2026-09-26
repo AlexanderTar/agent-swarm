@@ -184,9 +184,9 @@ func (c *Codex) Idle(capture string) bool       { return idle(c, capture) }
 
 func (c *Codex) StartupDialogs() []Dialog {
 	return []Dialog{
-		{Match: codexTrust, Keys: []string{"Enter"}},
-		{Match: codexRetire, Keys: []string{"Down", "Enter"}}, // Enter alone would switch the model
-		{Match: codexHookTrust, Fail: true},                   // --dangerously-bypass-hook-trust should prevent it
+		{Match: codexTrust, Keys: []string{"Enter"}, Title: "Trust this directory"},
+		{Match: codexRetire, Keys: []string{"Down", "Enter"}, Title: "Keep the current model"}, // Enter alone would switch the model
+		{Match: codexHookTrust, Fail: true, Title: "Hook sandbox approval"},                    // --dangerously-bypass-hook-trust should prevent it
 	}
 }
 

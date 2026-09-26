@@ -244,3 +244,14 @@ func TestParseHookReadsThePromptField(t *testing.T) {
 		t.Errorf("agy Prompt = %q, want empty", in.Prompt)
 	}
 }
+
+func TestEveryStartupDialogHasATitle(t *testing.T) {
+	d := testDeps(t)
+	for _, a := range []Adapter{newClaude(d), newCodex(d), newAgy(d), newCursor(d), newMuse(d)} {
+		for i, dg := range a.StartupDialogs() {
+			if dg.Title == "" {
+				t.Errorf("%s dialog %d has no Title", a.Kind(), i)
+			}
+		}
+	}
+}

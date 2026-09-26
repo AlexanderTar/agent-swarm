@@ -549,6 +549,65 @@ func TestStartSpikeOnPreflightFailureLeavesADraftAndAFailedAgent(t *testing.T) {
 	if got := lastNotified(t, s).Kind; got != "agent.preflight_failed" {
 		t.Fatalf("notification = %q", got)
 	}
+	// The preflight-failure agent row is still actually inserted (its INSERT
+	// error is no longer swallowed, but this is the non-error path: exactly
+	// one row exists under this agent's own name).
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE name = ?`, a.Name).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("agents named %q = %d, want 1", a.Name, n)
+	}
+}
+
+// swarm new without --agent sends an empty Kind: StartSpike must resolve it
+// from the RoleOrchestrator settings default (spikes run with Role:
+// RoleOrchestrator), the same way StartOrchestrator does, and the agent row
+// in the DB must carry that resolved kind -- not stay blank.
+func TestStartSpikeWithEmptyKindUsesTheRoleDefault(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Look into it", Intent: "feature"})
+	if err != nil {
+		t.Fatalf("StartSpike must resolve a default kind, not fail: %v", err)
+	}
+	if a.Kind != Claude {
+		t.Fatalf("agent.Kind = %q, want the role default (claude)", a.Kind)
+	}
+	var kind string
+	if err := s.DB.QueryRowContext(ctx, `SELECT kind FROM agents WHERE name = ?`, a.Name).Scan(&kind); err != nil {
+		t.Fatal(err)
+	}
+	if kind != string(Claude) {
+		t.Fatalf("agent row kind = %q, want claude", kind)
+	}
+}
+
+// With no role default and no enabled agents, StartSpike must refuse with a
+// clear error instead of inserting a blank-kind agent row (which would fail
+// the CHECK constraint silently, per the diagnosed bug) or reporting success.
+func TestStartSpikeWithNoDefaultKindReturnsAClearErrorAndNoRows(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '[]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at)
+		VALUES ('roles', '{"orchestrator":{"agent":"","model":"","effort":""}}', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err := s.StartSpike(ctx, SpikeInput{Name: "Look into it", Intent: "feature"})
+	if err == nil {
+		t.Fatal("expected an error when no agent kind can be resolved")
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("agents = %d, want 0", n)
+	}
 }
 
 // §11.5: dialogs are answered once each, with the exact keys, only when required.
@@ -1053,6 +1112,37 @@ func TestStartupTimesOutAfterThirtySeconds(t *testing.T) {
 	}
 	if got := s.Notify.(*fakeNotifier).kinds(); !slices.Contains(got, "agent.preflight_failed") {
 		t.Fatalf("raised %v, want agent.preflight_failed", got)
+	}
+	// Spawn's own pre-spawn cleanup already killed "stuck" once before Start;
+	// failSession must add a second kill of its own, not just rely on that one.
+	n := 0
+	for _, k := range tm.killed {
+		if k == "stuck" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("killed = %v, want spawn's cleanup kill plus failSession's", tm.killed)
+	}
+	raised := s.Notify.(*fakeNotifier).raised
+	var reason string
+	for _, n := range raised {
+		if n.Kind == "agent.preflight_failed" {
+			reason = n.Args["reason"]
+		}
+	}
+	if reason != "Loading… Couldn't start agent." {
+		t.Fatalf("reason = %q, want %q", reason, "Loading… Couldn't start agent.")
+	}
+}
+
+func TestFirstReadableLineSkipsAnsiRules(t *testing.T) {
+	pane := "\x1b[38;5;220m────────\n\x1b[39m \x1b[1mAccessing\x1b[0m workspace:\n"
+	if got := firstReadableLine(pane); got != "Accessing workspace:" {
+		t.Fatalf("got %q", got)
+	}
+	if got := firstReadableLine("────\n   \n"); got != "" {
+		t.Fatalf("got %q, want empty", got)
 	}
 }
 
@@ -1777,6 +1867,25 @@ func TestStartOrchestratorUsesRoleDefaultModelNotCatalogFirst(t *testing.T) {
 	}
 }
 
+// When resolveRoleDefault can't resolve a kind at all (no role default, no
+// enabled agents), StartOrchestrator falls back to Fake -- and, same as
+// before the resolveRoleDefault refactor, must still pick a model for it
+// from the catalog instead of leaving in.Model empty. That fallback can never
+// itself reach a successful StartOrchestrator return (Preflight always
+// refuses Fake when EnabledAgents is empty, which is the only way this
+// branch is reached), so the model fill is exercised directly through the
+// shared fillDefaultModel helper StartOrchestrator calls.
+func TestStartOrchestratorFakeFallbackStillPicksAModel(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if got := s.fillDefaultModel(ctx, Fake, ""); got != "fake-1" {
+		t.Fatalf("fillDefaultModel(Fake, \"\") = %q, want fake-1 from the catalog", got)
+	}
+	if got := s.fillDefaultModel(ctx, Fake, "already-set"); got != "already-set" {
+		t.Fatalf("fillDefaultModel must not override an already-set model, got %q", got)
+	}
+}
+
 func TestSpawnOrchestratorConflict(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -2461,5 +2570,75 @@ func TestSpawnSharesWorktreesAtomically(t *testing.T) {
 	}
 	if mode != "rw" {
 		t.Fatalf("reservation mode = %q, want rw", mode)
+	}
+}
+
+func TestStartupResendsDialogKeysWhileTheDialogStaysVisible(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.Dialogs = []adapter.Dialog{{Match: regexp.MustCompile(`Trust me\?`), Keys: []string{"Enter"}, Title: "Trust this project"}}
+	var caps []string
+	for i := 0; i < 24; i++ { // ~12s of polls: sends at 0s, 5s, 10s, no escalation yet
+		caps = append(caps, "Trust me?\n")
+	}
+	tm.captures["retry-me"] = append(caps, "─────\n❯ \n─────\n")
+	if _, _, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Retry me", Intent: "feature", Kind: Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	sent := 0
+	for _, k := range tm.keys {
+		if k == "retry-me|Enter" {
+			sent++
+		}
+	}
+	if sent != 3 {
+		t.Fatalf("sent %d times, want 3 (t=0,5,10s)", sent)
+	}
+}
+
+func TestStartupDialogThatOutlivesRetriesOpensAPromptAndWaits(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.Dialogs = []adapter.Dialog{{Match: regexp.MustCompile(`Trust me\?`), Keys: []string{"Enter"}, Title: "Trust this project"}}
+	var caps []string
+	for i := 0; i < 200; i++ { // ~100s: well past the 30s stall timeout
+		caps = append(caps, "Trust me?\n")
+	}
+	tm.captures["stuck-dialog"] = append(caps, "─────\n❯ \n─────\n")
+	_, a, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Stuck dialog", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(context.Background(), a.ID)
+	if ses.State != Running {
+		t.Fatalf("state = %s, want running once the user cleared the dialog", ses.State)
+	}
+	var state, via string
+	if err := s.DB.QueryRow(`SELECT state, COALESCE(responded_via,'') FROM requests WHERE session_id = ? AND kind = 'prompt'`, ses.ID).Scan(&state, &via); err != nil {
+		t.Fatal(err)
+	}
+	if state != "answered" || via != "terminal" {
+		t.Fatalf("row = %s/%s, want answered/terminal", state, via)
+	}
+	if slices.Contains(s.Notify.(*fakeNotifier).kinds(), "agent.preflight_failed") {
+		t.Fatal("a human-blocked dialog must not fail the session")
+	}
+}
+
+func TestStartupDetectOnlyDialogOpensAPromptWithoutKeys(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.Dialogs = []adapter.Dialog{{Match: regexp.MustCompile(`Do you trust this workspace\?`), Title: "Trust this workspace"}}
+	var caps []string
+	for i := 0; i < 40; i++ {
+		caps = append(caps, "Do you trust this workspace?\n")
+	}
+	tm.captures["detect-only"] = append(caps, "─────\n❯ \n─────\n")
+	_, a, _, _ := s.StartSpike(context.Background(), SpikeInput{Name: "Detect only", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(context.Background(), a.ID)
+	if len(tm.keys) != 0 {
+		t.Fatalf("keys = %v, want none for a detect-only dialog", tm.keys)
+	}
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ? AND prompt = 'Trust this workspace'`, ses.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
 	}
 }

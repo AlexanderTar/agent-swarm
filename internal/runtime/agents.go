@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
@@ -178,12 +180,85 @@ func (s *Store) Preflight(ctx context.Context, in PreflightInput) error {
 	return nil
 }
 
+// resolveRoleDefault fills in kind/model/effort for role from Settings, the
+// same way StartOrchestrator always has: an explicit kind wins; else a kind
+// implied by an explicit model; else the role's Settings default (if its
+// agent is enabled); else the first enabled agent; then a model is picked
+// from the resolved kind's catalog if still empty. ok is false only when
+// none of that produced a kind at all (no role default, nothing enabled) --
+// StartOrchestrator falls back to Fake in that case; StartSpike (which never
+// had this resolution before, always sending kind "") treats it as a hard
+// error instead of silently building an agent with a blank/wrong kind.
+func (s *Store) resolveRoleDefault(ctx context.Context, role Role, kind AgentKind, model, effort string) (rKind AgentKind, rModel, rEffort string, ok bool) {
+	cfg, _ := s.Settings.Get(ctx)
+	if kind == "" && model != "" {
+		if k, found := s.resolveAgentForModel(ctx, model); found {
+			kind = k
+		}
+	}
+	if kind == "" {
+		if rd, has := cfg.Roles[role]; has && rd.Agent != "" && (len(cfg.EnabledAgents) == 0 || slices.Contains(cfg.EnabledAgents, rd.Agent)) {
+			kind = rd.Agent
+			if model == "" {
+				if s.Catalog != nil {
+					models, _, _ := s.Catalog.ModelsFor(ctx, kind)
+					if _, found := catalog.Find(models, rd.Model); found {
+						model = rd.Model
+						if effort == "" {
+							effort = rd.Effort
+						}
+					}
+				} else {
+					model = rd.Model
+					if effort == "" {
+						effort = rd.Effort
+					}
+				}
+			}
+		} else if len(cfg.EnabledAgents) > 0 {
+			kind = cfg.EnabledAgents[0]
+		}
+	}
+	if kind == "" {
+		return "", model, effort, false
+	}
+	return kind, s.fillDefaultModel(ctx, kind, model), effort, true
+}
+
+// fillDefaultModel returns model unchanged if it's already set, otherwise the
+// resolved kind's first catalog model. Shared by resolveRoleDefault's own
+// ok=true path and by StartOrchestrator's further fallback to Fake when
+// resolveRoleDefault can't resolve a kind at all -- that fallback picked a
+// model the same way before the resolveRoleDefault extraction, and must
+// keep doing so.
+func (s *Store) fillDefaultModel(ctx context.Context, kind AgentKind, model string) string {
+	if model != "" {
+		return model
+	}
+	models, _, _ := s.Catalog.ModelsFor(ctx, kind)
+	if len(models) > 0 {
+		return models[0].ID
+	}
+	return model
+}
+
 func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, bool, error) {
 	name, err := s.resolveName(ctx, in.Name, in.Name)
 	if err != nil {
 		return "", Agent{}, false, err
 	}
 
+	if kind, model, effort, ok := s.resolveRoleDefault(ctx, RoleOrchestrator, in.Kind, in.Model, in.Effort); ok {
+		in.Kind, in.Model, in.Effort = kind, model, effort
+	} else {
+		return "", Agent{}, false, errors.New("No agent kind given and no default is set for spikes; pass --agent.")
+	}
+
+	// ponytail: item creation and the agent-row INSERT below are separate
+	// transactions, so an INSERT failure (or any error between here and
+	// there) leaves this item as an orphaned draft with no agent, and a
+	// retry creates a second item instead of reusing it. Upgrade path: wrap
+	// both in one transaction.
 	it, err := s.Items.Create(ctx, items.CreateInput{
 		Type:           items.Spike,
 		Title:          in.Name,
@@ -245,7 +320,7 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 			RoleOverrides:  in.Roles,
 			CreatedAt:      s.now(),
 		}
-		_ = s.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `INSERT INTO agents
 				(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, preflight_error, created_at,
 				 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
@@ -257,7 +332,9 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 				return err
 			}
 			return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
-		})
+		}); err != nil {
+			return "", Agent{}, false, err
+		}
 		if s.Notify != nil {
 			_ = s.Notify.Raise(ctx, nil, NotifyInput{
 				Kind:      "agent.preflight_failed",
@@ -374,42 +451,11 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, &items.Error{Code: items.CodeConflict, Message: "This item already has an orchestrator."}
 	}
 
-	cfg, _ := s.Settings.Get(ctx)
-	if in.Kind == "" && in.Model != "" {
-		if k, ok := s.resolveAgentForModel(ctx, in.Model); ok {
-			in.Kind = k
-		}
-	}
-	if in.Kind == "" {
-		if rd, ok := cfg.Roles[RoleOrchestrator]; ok && rd.Agent != "" && (len(cfg.EnabledAgents) == 0 || slices.Contains(cfg.EnabledAgents, rd.Agent)) {
-			in.Kind = rd.Agent
-			if in.Model == "" {
-				if s.Catalog != nil {
-					models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
-					if _, found := catalog.Find(models, rd.Model); found {
-						in.Model = rd.Model
-						if in.Effort == "" {
-							in.Effort = rd.Effort
-						}
-					}
-				} else {
-					in.Model = rd.Model
-					if in.Effort == "" {
-						in.Effort = rd.Effort
-					}
-				}
-			}
-		} else if len(cfg.EnabledAgents) > 0 {
-			in.Kind = cfg.EnabledAgents[0]
-		} else {
-			in.Kind = Fake
-		}
-	}
-	if in.Model == "" {
-		models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
-		if len(models) > 0 {
-			in.Model = models[0].ID
-		}
+	if kind, model, effort, ok := s.resolveRoleDefault(ctx, RoleOrchestrator, in.Kind, in.Model, in.Effort); ok {
+		in.Kind, in.Model, in.Effort = kind, model, effort
+	} else {
+		in.Kind = Fake
+		in.Model = s.fillDefaultModel(ctx, in.Kind, in.Model)
 	}
 
 	origKind := in.Kind
@@ -1298,17 +1344,41 @@ func lastLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
+// firstReadableLine returns the first line of pane (after stripping ANSI and
+// trimming whitespace) that contains at least one letter or digit, so a
+// notification's reason never becomes an ANSI-colored box-drawing rule
+// (2026-09-26 incident: the notification body was an unreadable "────" line).
+// It is capped at 120 runes plus "…". Returns "" if no such line exists.
+func firstReadableLine(pane string) string {
+	for _, l := range strings.Split(stripANSI(pane), "\n") {
+		t := strings.TrimSpace(l)
+		if t == "" {
+			continue
+		}
+		readable := false
+		for _, r := range t {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				readable = true
+				break
+			}
+		}
+		if !readable {
+			continue
+		}
+		if utf8.RuneCountInString(t) > 120 {
+			runes := []rune(t)
+			t = string(runes[:120]) + "…"
+		}
+		return t
+	}
+	return ""
+}
+
 func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText string) error {
 	if err := s.SetSessionState(ctx, ses.ID, Failed); err != nil {
 		return err
 	}
-	firstLine := ""
-	for _, l := range strings.Split(paneText, "\n") {
-		if t := strings.TrimSpace(l); t != "" {
-			firstLine = t
-			break
-		}
-	}
+	firstLine := firstReadableLine(paneText)
 	reason := "Couldn't start agent."
 	if firstLine != "" {
 		reason = firstLine + " " + reason
@@ -1316,7 +1386,7 @@ func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText 
 	// The orchestrator otherwise never learns a child failed to start: it just
 	// sees no ack and has no event to act on (unlike interrupted/crashed,
 	// which already relay).
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	txErr := s.tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET failure_text = ? WHERE id = ?`, paneText, ses.ID); err != nil {
 			return err
 		}
@@ -1342,6 +1412,17 @@ func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText 
 			RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload})
 		return err
 	})
+	if txErr != nil {
+		return txErr
+	}
+	// A failed session's pane is otherwise left running forever (2026-09-26
+	// incident: three Claude panes sat stuck on an unanswered trust dialog for
+	// 2-5 days, because nothing ever killed them). The reaper (Task 7) also
+	// catches this pane within one tick if this kill is somehow missed.
+	if err := s.Tmux.Kill(ctx, ses.TmuxName); err != nil {
+		s.logf("failSession: kill %s: %v", ses.TmuxName, err)
+	}
+	return nil
 }
 
 // stripANSI strips terminal escape sequences before a StartupDialogs regex
@@ -1374,8 +1455,37 @@ func stripANSI(s string) string { return adapter.StripANSI(s) }
 const startupStallTimeout = 30 * time.Second
 const startupCeiling = 10 * time.Minute
 
+// dialogRetryEvery, dialogMaxSends and dialogEscalateAfter govern how long a
+// startup or live-session dialog is retried before it is handed to the user
+// as a Needs-you row (P0-crash-1 follow-up, 2026-09-26 incident: a dialog's
+// keys were sent once and never again, so a swallowed or too-early key press
+// left the pane stuck for days with nothing surfaced).
+const dialogRetryEvery = 5 * time.Second
+const dialogMaxSends = 3
+const dialogEscalateAfter = 15 * time.Second
+
+// dialogState tracks one (session, dialog) pair's retry/escalation progress.
+// In-memory like lastAliveAt: it is rebuilt from scratch on daemon restart,
+// which just means one extra key press or a slightly later escalation, never
+// a wrong one.
+type dialogState struct {
+	firstSeen time.Time
+	lastSent  time.Time
+	sends     int
+	reqID     string
+}
+
 func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapter.Adapter) error {
-	answered := map[int]bool{}
+	// setWatchStartupActive tells reconcile it can safely defer this
+	// session's dialogs to this goroutine (covers every return path below);
+	// once it isn't set any more -- this goroutine exited, or a daemon
+	// restart dropped it without ever running this defer -- reconcile takes
+	// the session's dialogs over itself instead of leaving it stuck (see
+	// resolveAlive's ownedByWatchStartup and hasEscalatedPrompt's DB check,
+	// which covers an escalation surviving the restart via its open row).
+	s.setWatchStartupActive(ses.ID, true)
+	defer s.setWatchStartupActive(ses.ID, false)
+	st := map[int]*dialogState{}
 	ceiling := s.Now().Add(startupCeiling)
 	stallDeadline := s.Now().Add(startupStallTimeout)
 	lastCapture := ""
@@ -1395,20 +1505,71 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 			return s.failSession(ctx, a, ses, lastLines(capture, 40))
 		}
 		plain := stripANSI(capture)
+		now := s.Now()
+		anyEscalated := false
 		for i, d := range ad.StartupDialogs() {
-			if answered[i] || !d.Match.MatchString(plain) {
+			if !d.Match.MatchString(plain) {
+				if dst := st[i]; dst != nil {
+					if dst.reqID != "" {
+						if err := s.ResolveDialogPrompt(ctx, ses.ID, d.Title); err != nil {
+							s.logf("startup: %s: resolve dialog %q: %v", a.Name, d.Title, err)
+						}
+					}
+					delete(st, i)
+				}
 				continue
 			}
 			if d.Require != nil && !d.Require.MatchString(plain) {
-				continue // the option line is not drawn yet
+				// The dialog is still on screen, just mid-render (the option
+				// line hasn't drawn yet): keep any existing retry/escalation
+				// state instead of dropping it, or a one-tick redraw would
+				// reset the send budget and, worse, resolve an already
+				// escalated row "via terminal" while the pane is still stuck.
+				if dst := st[i]; dst != nil && dst.reqID != "" {
+					anyEscalated = true
+				}
+				continue
 			}
 			if d.Fail {
 				return s.failSession(ctx, a, ses, lastLines(capture, 40))
 			}
-			if err := s.Tmux.Keys(ctx, ses.TmuxName, d.Keys...); err != nil {
-				return err
+			dst := st[i]
+			if dst == nil {
+				dst = &dialogState{firstSeen: now}
+				st[i] = dst
 			}
-			answered[i] = true
+			if len(d.Keys) > 0 && dst.sends < dialogMaxSends &&
+				(dst.sends == 0 || now.Sub(dst.lastSent) >= dialogRetryEvery) {
+				if err := s.Tmux.Keys(ctx, ses.TmuxName, d.Keys...); err != nil {
+					return err
+				}
+				dst.sends++
+				dst.lastSent = now
+				s.logf("startup: %s: sent %v for dialog %q (send %d of %d)", a.Name, d.Keys, d.Title, dst.sends, dialogMaxSends)
+			}
+			if dst.reqID == "" && now.Sub(dst.firstSeen) >= dialogEscalateAfter {
+				req, _, err := s.OpenDialogPrompt(ctx, ses.ID, d.Title)
+				if err != nil {
+					s.logf("startup: %s: open dialog prompt %q: %v", a.Name, d.Title, err)
+				} else {
+					dst.reqID = req.ID
+					// hasEscalatedPrompt's DB check (reconcile.go) picks this
+					// open row up directly by title, so a Spawning child stuck
+					// here is still suppressed from a no-ack relay to its
+					// parent without watchStartup mirroring anything into
+					// reconcile's own in-memory state.
+					s.logf("startup: %s: dialog %q still visible after %s, opened %s", a.Name, d.Title, dialogEscalateAfter, req.ID)
+				}
+			}
+			if dst.reqID != "" {
+				anyEscalated = true
+			}
+		}
+		if anyEscalated {
+			// A human-blocked pane never fails or times out on its own: it waits
+			// for the user to clear the dialog in the terminal.
+			ceiling = now.Add(startupCeiling)
+			stallDeadline = now.Add(startupStallTimeout)
 		}
 		// A session that clears its startup dialogs and launches straight into
 		// continuous, genuinely busy work (2026-09-20, live incident: "s1-review-2"
@@ -1422,6 +1583,13 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 		// a false idle read, so reusing it here to rule in "done starting" is the
 		// same signal, not a new one.
 		if ad.Idle(capture) || (ad.Busy() != nil && ad.Busy().MatchString(stripANSI(capture))) {
+			for i, d := range ad.StartupDialogs() {
+				if dst := st[i]; dst != nil && dst.reqID != "" {
+					if err := s.ResolveDialogPrompt(ctx, ses.ID, d.Title); err != nil {
+						s.logf("startup: %s: resolve dialog %q: %v", a.Name, d.Title, err)
+					}
+				}
+			}
 			s.discoverProviderSession(ctx, a, ses, ad)
 			return s.SetSessionState(ctx, ses.ID, Running)
 		}
