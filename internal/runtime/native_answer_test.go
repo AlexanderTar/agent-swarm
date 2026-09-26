@@ -210,6 +210,16 @@ func TestMatchDecisionEvidence(t *testing.T) {
 			"my comment", EvidenceAgentReported, "my comment", false},
 		{"caller comment wins over typed free text", "some free text", "Approve",
 			"caller comment", EvidenceAgentReported, "caller comment", false},
+		// finding B6-1: typed free text that merely starts with a label's
+		// letters (no exact match, no "label:" shape) is neither a mismatch
+		// nor observed -- it's agent_reported, whichever decision it's
+		// forwarded as.
+		{"approve-shaped free text forwarded as request_changes is not a mismatch",
+			"Approve, but drop endurio-docs", "Request changes",
+			"", EvidenceAgentReported, "Approve, but drop endurio-docs", false},
+		{"approve-shaped free text forwarded as approve is not observed",
+			"Approve, but drop endurio-docs", "Approve",
+			"", EvidenceAgentReported, "Approve, but drop endurio-docs", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

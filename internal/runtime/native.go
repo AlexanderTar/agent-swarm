@@ -190,28 +190,50 @@ func otherApprovalLabel(label string) string {
 	return "Approve"
 }
 
+// labelShape reports whether trimmed is exactly label (an AskUserQuestion
+// picked option, which comes back as the bare label) or label followed by
+// ":" and a free-text remark (the native prompt's own convention). Anything
+// else -- including text that merely starts with the label's letters, like
+// "Approve, but drop endurio-docs" -- is NOT this shape: that is typed free
+// text, not a picked option, even though it happens to start with a label's
+// word (finding B6-1). remainder is the text after "label:", trimmed.
+func labelShape(trimmed, label string) (matched bool, remainder string) {
+	if strings.EqualFold(trimmed, label) {
+		return true, ""
+	}
+	prefix := label + ":"
+	if len(trimmed) > len(prefix) && strings.EqualFold(trimmed[:len(prefix)], prefix) {
+		return true, strings.TrimSpace(trimmed[len(prefix):])
+	}
+	return false, ""
+}
+
 // matchDecisionEvidence classifies the bound question row's response text
 // against the chosen decision's label (spec section 2.3.5, revised spec
-// section 1.8 D1): text that starts with the label is observed, with
-// anything after the label becoming the free-text comment when the caller
-// didn't send one. A blank answer, the adapter's generic "Resolved in
-// terminal" fallback, or any other typed free text (an "Other" answer the
-// orchestrator interpreted itself) is accepted on the agent's word
-// (agent_reported) -- the typed text becomes the comment when the caller
-// sent none. The one case still refused is a mismatch: text that starts
-// with the *other* decision's own option label, meaning the user visibly
-// picked the opposite choice and the orchestrator forwarded the wrong one.
+// section 1.8 D1): text that IS the label, or the label followed by ":" and
+// a remark, is observed -- the remainder becomes the free-text comment when
+// the caller didn't send one. A blank answer, the adapter's generic
+// "Resolved in terminal" fallback, or any other typed free text (including
+// text that merely starts with a label's letters without that exact shape,
+// or mentions the other label without picking it) is accepted on the
+// agent's word (agent_reported) -- the typed text becomes the comment when
+// the caller sent none. The one case still refused is a mismatch: text that
+// IS the *other* decision's own option label, or that label followed by
+// ":", meaning the user visibly picked the opposite choice and the
+// orchestrator forwarded the wrong one (finding B6-1: refusal is narrowed to
+// this exact-or-"label:" shape so typed free text is never wrongly refused
+// or wrongly marked observed just because it starts with a label's word).
 func matchDecisionEvidence(responseText, label, callerComment string) (evidence, comment string, err error) {
 	trimmed := strings.TrimSpace(responseText)
-	if len(trimmed) >= len(label) && strings.EqualFold(trimmed[:len(label)], label) {
+	if matched, remainder := labelShape(trimmed, label); matched {
 		comment = callerComment
 		if comment == "" {
-			comment = strings.TrimLeft(trimmed[len(label):], ": \t")
+			comment = remainder
 		}
 		return EvidenceObserved, comment, nil
 	}
 	other := otherApprovalLabel(label)
-	if len(trimmed) >= len(other) && strings.EqualFold(trimmed[:len(other)], other) {
+	if matched, _ := labelShape(trimmed, other); matched {
 		return "", "", fmt.Errorf(errDecisionMismatch, trimmed, label)
 	}
 	comment = callerComment
