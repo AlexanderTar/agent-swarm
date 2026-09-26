@@ -403,11 +403,29 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	id := ids.New("itm")
 	rootID, parentID := id, sql.NullString{}
 	if in.ParentKey == "" {
-		if by.isOrchestrator() {
-			return Item{}, errf(CodeBadRequest, "Orchestrators can only create items inside their own top-level item.")
-		}
 		if hint, ok := parentHint[in.Type]; ok {
 			return Item{}, errf(CodeBadRequest, "%s", hint)
+		}
+		// An orchestrator proposing a new root item (2026-09-26 top-level
+		// items spec): always lands Draft (decision 2, refused rather than
+		// silently downgraded), any repos passed are suggestions only, and
+		// origin_spike_id records the caller's own root so the board's
+		// existing "Started from KEY" rendering resolves it. The
+		// top-level-only restriction (a child orchestrator may not propose)
+		// is enforced by the caller in internal/mcpserver, which knows
+		// ParentAgentID; this package only knows it's an orchestrator.
+		if by.isOrchestrator() {
+			if in.Status == Ready {
+				return Item{}, errf(CodeBadRequest, "A proposed top-level item starts as Draft. The user starts it.")
+			}
+			in.Status = Draft
+			if len(in.Repos) > 0 {
+				in.SuggestedRepos = append(append([]string{}, in.SuggestedRepos...), in.Repos...)
+				in.Repos = nil
+			}
+			if in.OriginSpikeID == "" {
+				in.OriginSpikeID = by.RootID
+			}
 		}
 	} else {
 		parent, err := s.getTx(ctx, tx, in.ParentKey)

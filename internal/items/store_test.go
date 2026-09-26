@@ -182,14 +182,86 @@ func TestOrchestratorStaysInItsRoot(t *testing.T) {
 	if err == nil || err.Error() != "STORY-1 is outside EPIC-1." || code(err) != items.CodeBadRequest {
 		t.Fatalf("err = %v", err)
 	}
-	_, err = s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "mine"}, items.Orchestrator("agt_1", e1.ID))
-	if err == nil || err.Error() != "Orchestrators can only create items inside their own top-level item." || code(err) != items.CodeBadRequest {
-		t.Fatalf("top-level err = %v", err)
+	// An orchestrator may now propose a brand-new top-level item (the
+	// caller-side, top-level-only restriction lives in internal/mcpserver,
+	// which knows ParentAgentID; internal/items itself no longer refuses
+	// every orchestrator create with no parent).
+	proposed, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "mine"}, items.Orchestrator("agt_1", e1.ID))
+	if err != nil || proposed.Status != items.Draft || proposed.OriginSpikeID != e1.ID {
+		t.Fatalf("propose top-level = %+v, %v", proposed, err)
 	}
 	p := "new"
 	_, err = s.Update(ctx, st2.Key, items.Patch{Title: &p, Revision: st2.Revision}, items.Orchestrator("agt_1", e1.ID))
 	if err == nil || err.Error() != "STORY-1 is outside EPIC-1." {
 		t.Fatalf("update err = %v", err)
+	}
+}
+
+// TestOrchestratorCanProposeRoot is the 2026-09-26 top-level-items spec: an
+// orchestrator proposing a new root item lands Draft, with any repos moved
+// to suggested (never confirmed) and origin_spike_id set to its own root.
+func TestOrchestratorCanProposeRoot(t *testing.T) {
+	s := newStore(t)
+	root := mk(t, s, items.Epic, "", "Root")
+	orch := items.Orchestrator("agt_1", root.ID)
+	for _, in := range []items.CreateInput{
+		{Type: items.Epic, Title: "New epic", Repos: []string{"repo_a"}},
+		{Type: items.Bug, Title: "New bug"},
+		{Type: items.Chore, Title: "New chore"},
+		{Type: items.Spike, Title: "New spike", SpikeIntent: "feature"},
+	} {
+		it, err := s.Create(ctx, in, orch)
+		if err != nil {
+			t.Fatalf("%s: %v", in.Type, err)
+		}
+		if it.Status != items.Draft {
+			t.Errorf("%s: status = %s, want draft", in.Type, it.Status)
+		}
+		if it.OriginSpikeID != root.ID {
+			t.Errorf("%s: origin_spike_id = %s, want %s", in.Type, it.OriginSpikeID, root.ID)
+		}
+		if len(in.Repos) > 0 {
+			if !slices.Equal(it.SuggestedRepos, in.Repos) || len(it.Repos) != 0 {
+				t.Errorf("%s: repos = %v, suggested = %v", in.Type, it.Repos, it.SuggestedRepos)
+			}
+		}
+		if it.RootID != it.ID {
+			t.Errorf("%s: not its own root", in.Type)
+		}
+	}
+}
+
+// TestProposedRootCannotStartReady is decision 2: a proposed top-level item
+// always starts Draft; explicitly asking for ready is refused, not silently
+// downgraded.
+func TestProposedRootCannotStartReady(t *testing.T) {
+	s := newStore(t)
+	root := mk(t, s, items.Epic, "", "Root")
+	orch := items.Orchestrator("agt_1", root.ID)
+	_, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "New epic", Status: items.Ready}, orch)
+	if err == nil || err.Error() != "A proposed top-level item starts as Draft. The user starts it." || code(err) != items.CodeBadRequest {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestProposedStoryTaskStillNeedParent: story/task always require a parent,
+// regardless of actor -- the new top-level-propose path only opens up for
+// epic/bug/chore/spike.
+func TestProposedStoryTaskStillNeedParent(t *testing.T) {
+	s := newStore(t)
+	root := mk(t, s, items.Epic, "", "Root")
+	orch := items.Orchestrator("agt_1", root.ID)
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Story, Title: "S"}, orch); err == nil ||
+		err.Error() != "A story needs a parent epic." {
+		t.Fatalf("story err = %v", err)
+	}
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Task, Title: "T"}, orch); err == nil ||
+		err.Error() != "A task needs a parent story, bug, spike or chore." {
+		t.Fatalf("task err = %v", err)
+	}
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Story, Title: "S"}, items.Daemon()); err == nil ||
+		err.Error() != "A story needs a parent epic." {
+		t.Fatalf("daemon story err = %v", err)
 	}
 }
 
