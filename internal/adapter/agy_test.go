@@ -262,6 +262,27 @@ func (c *capturingWriteCloser) Closed() bool {
 	return c.closed
 }
 
+// TestAgyWakeIncludesModel is the P0 model-passthrough fix
+// (docs/specs/2026-09-26-agy-launch-model.md): Wake ran `agy --conversation`
+// with no --model at all, so every wake turn ran on agy's global default
+// model regardless of what Swarm assigned the agent.
+func TestAgyWakeIncludesModel(t *testing.T) {
+	d := testDeps(t)
+	var gotArgv []string
+	d.StartEnv = func(ctx context.Context, env map[string]string, name string, args ...string) (*execx.Proc, error) {
+		gotArgv = append([]string{name}, args...)
+		r, w := io.Pipe()
+		return &execx.Proc{Stdin: &capturingWriteCloser{}, Stdout: r, Kill: func() { w.Close() }}, nil
+	}
+	_, _ = newAgy(d).Wake(context.Background(), WakeTarget{
+		SessionID: "ses_1", ProviderSessionID: "conv_1", Notice: "hello",
+		Model: "gemini-3.8-flash-high"})
+	joined := strings.Join(gotArgv, " ")
+	if !strings.Contains(joined, "--model gemini-3.8-flash-high") {
+		t.Fatalf("argv = %q, want --model gemini-3.8-flash-high", joined)
+	}
+}
+
 // agy now natively wakes (2026-09-22): confirmed live against Google's
 // documented `--input-format stream-json` schema and the isolated agy-home
 // setupEnv already builds. See docs/specs/2026-09-22-agy-native-wake-stream-json.md.
