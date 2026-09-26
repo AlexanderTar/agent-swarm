@@ -45,7 +45,10 @@ public struct MenuLabel: Equatable, Sendable {
             } else if monthly {
                 tooltip = "\(head.label) usage" + (head.resetsAt.map { " · resets \(format.dayMonth($0.date))" } ?? "")
             } else {
-                let same = [head] + snap.meters.filter { $0.window == head.window && $0.id != head.id }
+                // agy's Claude & GPT rows are extra models: panel only, never tracked in the label.
+                let same = [head] + snap.meters.filter {
+                    $0.window == head.window && $0.id != head.id && !(kind == .agy && $0.id.hasPrefix("cgpt_"))
+                }
                 tooltip = same.map { "\($0.label) \(Format.percent($0.usedPct))" }.joined(separator: " · ")
             }
             return Segment(agent: kind, text: text, dimmed: snap.stale, tooltip: tooltip)

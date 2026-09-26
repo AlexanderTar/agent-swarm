@@ -105,6 +105,7 @@ type Agent struct {
 	State                             AgentState
 	PreflightError                    string // set only when the agent never spawned (contracts §3.2)
 	RoleOverrides                     map[Role]settings.RoleDefault
+	KindReason                        string // why Kind/Model isn't the role default; "" = settings
 	CreatedAt                         time.Time
 	FinishedAt                        *time.Time
 }

@@ -99,15 +99,17 @@ func parseItemRevision(raw json.RawMessage) (int, error) {
 // swarm_read's job (its refs/filter cover exactly that), not swarm_items'.
 func itemsTool(s *Server) ToolDef {
 	return ToolDef{
-		Name:        "swarm_items",
-		Description: "Create or update an item, or link/unlink a dependency, inside your own top-level item's tree.",
-		Roles:       orchestratorRole,
+		Name: "swarm_items",
+		Description: "Create or update an item, or link/unlink a dependency, inside your own top-level item's " +
+			"tree. Omitting \"parent\" on create proposes a brand-new top-level item (epic/bug/chore/spike) " +
+			"instead -- only a top-level orchestrator may do this; it always starts Draft, and the user starts it.",
+		Roles: orchestratorRole,
 		Schema: objSchemaRequired(`"op":{"type":"string","enum":["create","update","link","unlink"]},
 			"key":{"type":"string"},"parent":{"type":"string"},"type":{"type":"string"},
 			"title":{"type":"string"},"brief":{"type":"string"},"acceptance":{"type":"array"},
 			"priority":{"type":"integer"},"role_hint":{"type":"string"},"tdd_exempt":{"type":"string"},
 			"workflow":{"type":"object"},"steps":{"type":"array"},"units":{"type":"array"},
-			"solo":{"type":"string"},"verify":{"type":"array"},
+			"solo":{"type":"string"},"verify":{"type":"array"},"intent":{"type":"string"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
 			"blocked_by":{"type":"string"},"request_id":{"type":"string"}`,
 			[]string{"op"}),
@@ -128,6 +130,7 @@ func itemsTool(s *Server) ToolDef {
 				Units      []items.Unit   `json:"units"`
 				Solo       string         `json:"solo"`
 				Verify     []string       `json:"verify"`
+				Intent     string         `json:"intent"`
 				Repos      []string       `json:"repos"`
 				// Revision stays raw JSON so a "latest" shortcut (or any
 				// non-integer) is refused explicitly by parseItemRevision
@@ -155,6 +158,15 @@ func itemsTool(s *Server) ToolDef {
 			// idempotency record.
 			switch in.Op {
 			case "create":
+				// 2026-09-26 top-level-items spec: only a top-level
+				// orchestrator (no parent agent of its own) may propose a
+				// brand-new root item. internal/items only knows "is this an
+				// orchestrator"; the child-vs-top-level distinction lives
+				// here, where the caller's resolved Agent already carries it.
+				if in.Parent == "" && a.ParentAgentID != "" {
+					return nil, &items.Error{Code: items.CodeBadRequest,
+						Message: "Only a top-level orchestrator can propose a top-level item. Relay it to your parent."}
+				}
 				var out items.Item
 				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_items", &out,
 					func(tx *sql.Tx) (err error) {
@@ -163,8 +175,20 @@ func itemsTool(s *Server) ToolDef {
 							Acceptance: in.Acceptance, Priority: in.Priority, RoleHint: in.RoleHint,
 							TddExempt: in.TddExempt, Workflow: in.Workflow, Steps: in.Steps, Units: in.Units,
 							Solo: in.Solo, Verify: in.Verify, Repos: in.Repos, Status: items.Status(in.Status),
+							SpikeIntent: in.Intent,
 						}, actor)
-						return err
+						if err != nil {
+							return err
+						}
+						if in.Parent == "" {
+							var originKey string
+							if err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.RootItemID).
+								Scan(&originKey); err != nil {
+								return err
+							}
+							return s.RT.NotifyItemCreated(ctx, tx, originKey, out.Key, out.Title, out.Type)
+						}
+						return nil
 					}); err != nil {
 					return nil, err
 				}
@@ -541,10 +565,10 @@ type spawnWorktreeRef struct {
 func spawnTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_spawn",
-		Description: "Spawn a worker agent on an item, filling agent, model, effort and advisor defaults from Settings. Supports explicit agent and model overrides, with automatic model-to-agent resolution.",
+		Description: "Spawn a worker agent on an item. Agent, model, effort and advisor come from the user's Settings role default. Pass agent/model/effort only when the user asked for them, with override_reason saying what the user asked for.",
 		Roles:       orchestratorRole,
 		Schema: objSchemaRequired(`"item":{"type":"string"},"role":{"type":"string"},"agent":{"type":"string"},
-			"model":{"type":"string"},"effort":{"type":"string"},"name":{"type":"string"},
+			"model":{"type":"string"},"effort":{"type":"string"},"override_reason":{"type":"string"},"name":{"type":"string"},
 			"brief":{"type":"object","properties":{
 				"objective":{"type":"string"},"acceptance":{"type":"array","items":{"type":"string"}},
 				"scope_in":{"type":"array","items":{"type":"string"}},"scope_out":{"type":"array","items":{"type":"string"}},
@@ -560,7 +584,10 @@ func spawnTool(s *Server) ToolDef {
 				Agent  string `json:"agent"`
 				Model  string `json:"model"`
 				Effort string `json:"effort"`
-				Name   string `json:"name"`
+				// OverrideReason is what the user asked for; required with
+				// any of Agent/Model/Effort (2026-09-26 worker-defaults spec).
+				OverrideReason string `json:"override_reason"`
+				Name           string `json:"name"`
 				// Advisor and Cwd are accepted (§8.1) but not yet wired to the spawned
 				// agent: runtime.SpawnInput/Spawn (internal/runtime/agents.go, outside
 				// this batch's file ownership) has no advisor_* columns in its INSERT
@@ -587,6 +614,13 @@ func spawnTool(s *Server) ToolDef {
 			var validRoles = []string{"orchestrator", "coder", "reviewer", "ui_reviewer", "designer", "researcher", "debugger", "mechanical"}
 			if !slices.Contains(validRoles, in.Role) {
 				return nil, fmt.Errorf("Unknown role %q. Roles: orchestrator, coder, reviewer, ui_reviewer, designer, researcher, debugger, mechanical.", in.Role)
+			}
+			// ponytail: trust-based -- any non-empty override_reason passes;
+			// the daemon can't verify the user really asked. It records and
+			// shows the claim (kind_reason) rather than guaranteeing it.
+			// Upgrade path: bind overrides to a user-originated message id.
+			if (in.Agent != "" || in.Model != "" || in.Effort != "") && strings.TrimSpace(in.OverrideReason) == "" {
+				return nil, errors.New("Pass override_reason with agent, model or effort, saying what the user asked for. Leave agent, model and effort empty to use the user's role default.")
 			}
 			// I12: refuse while the item has an open dependency.
 			it, err := s.RT.Items.Get(ctx, in.Item)
@@ -628,7 +662,7 @@ func spawnTool(s *Server) ToolDef {
 
 			agent, queued, err := s.RT.Spawn(ctx, runtime.SpawnInput{
 				ItemKey: in.Item, Role: runtime.Role(in.Role), Kind: runtime.AgentKind(in.Agent),
-				Model: in.Model, Effort: in.Effort, ParentAgentID: a.ID, Name: in.Name,
+				Model: in.Model, Effort: in.Effort, OverrideReason: strings.TrimSpace(in.OverrideReason), ParentAgentID: a.ID, Name: in.Name,
 				Brief: runtime.BriefInput{
 					Objective: in.Brief.Objective, Acceptance: in.Brief.Acceptance,
 					ScopeIn: in.Brief.ScopeIn, ScopeOut: in.Brief.ScopeOut,
@@ -770,11 +804,11 @@ func roleOverridesTool(s *Server) ToolDef {
 	return ToolDef{
 		Name: "swarm_role_overrides",
 		Description: "Set or clear your OWN future role->agent/model/effort default (checked before the live global Settings when you spawn). " +
-			"Self only -- there is no target-agent parameter. set requires role, agent and model (effort optional); clear requires role.",
+			"Self only -- there is no target-agent parameter. Only on the user's request: set requires role, agent, model and reason (what the user asked for; effort optional); clear requires role.",
 		Roles: orchestratorRole,
 		Schema: objSchemaRequired(`"op":{"type":"string","enum":["set","clear"]},
 			"role":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"effort":{"type":"string"},
-			"request_id":{"type":"string"}`,
+			"reason":{"type":"string"},"request_id":{"type":"string"}`,
 			[]string{"op"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
@@ -783,6 +817,7 @@ func roleOverridesTool(s *Server) ToolDef {
 				Agent     string `json:"agent"`
 				Model     string `json:"model"`
 				Effort    string `json:"effort"`
+				Reason    string `json:"reason"`
 				RequestID string `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
@@ -798,7 +833,11 @@ func roleOverridesTool(s *Server) ToolDef {
 				if in.Agent == "" || in.Model == "" {
 					return nil, errors.New("bad_request: agent and model are required to set a role override")
 				}
-				rd = &settings.RoleDefault{Agent: runtime.AgentKind(in.Agent), Model: in.Model, Effort: in.Effort}
+				if strings.TrimSpace(in.Reason) == "" {
+					return nil, errors.New(`Pass reason with op "set", saying what the user asked for. Role defaults come from the user's settings unless the user asks otherwise.`)
+				}
+				rd = &settings.RoleDefault{Agent: runtime.AgentKind(in.Agent), Model: in.Model, Effort: in.Effort,
+					Reason: strings.TrimSpace(in.Reason)}
 			case "clear":
 				rd = nil
 			default:
@@ -807,6 +846,9 @@ func roleOverridesTool(s *Server) ToolDef {
 			out, err := s.RT.SetRoleOverride(ctx, a.Name, runtime.Role(in.Role), rd, c.SessionID, in.RequestID)
 			if err != nil {
 				return nil, err
+			}
+			if rd != nil && s.Log != nil {
+				s.Log("role override: %s set %s to %s/%s: %s", a.Name, in.Role, in.Agent, in.Model, strings.TrimSpace(in.Reason))
 			}
 			return map[string]any{"role_overrides": roleOverridesOut(out.RoleOverrides)}, nil
 		},

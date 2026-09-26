@@ -121,7 +121,10 @@ func (s *Service) raise(ctx context.Context, q querier, in runtime.NotifyInput) 
 	if err != nil {
 		return err
 	}
-	kind := strings.TrimSuffix(in.Kind, ".bug")
+	kind := in.Kind
+	if strings.HasPrefix(kind, "item.created.") {
+		kind = "item.created"
+	}
 	dedupKey := fmt.Sprintf("%s:%s:%s", in.Kind, firstNonEmpty(in.AgentName, in.ItemKey), in.RequestID)
 	now := s.now()
 	var recent int

@@ -22,6 +22,18 @@ describe("AgentRow (§10.7 on the board)", () => {
     expect(within(row).getAllByRole("button").map((b) => b.textContent)).toEqual(["Terminal", "Pause", "Cancel"]);
   });
 
+  it("says why the agent isn't on the user's role default", () => {
+    const reason = "Role override set on support-chat-attachments-orchestrator-2";
+    renderWithDaemon(<AgentRow agent={makeAgent({ name: "r", role: "ui_reviewer", kind_reason: reason, session: ses("running") })} />, { events: false });
+    const line = within(screen.getByTestId("agent-r")).getByText(reason);
+    expect(line).toHaveAttribute("title", reason);
+  });
+
+  it("shows no reason line for an agent on its role default", () => {
+    renderWithDaemon(<AgentRow agent={makeAgent({ name: "d", session: ses("running") })} />, { events: false });
+    expect(screen.getByTestId("agent-d")).not.toHaveTextContent(/override|out of usage/i);
+  });
+
   it.each([
     ["paused", ses("paused"), ["Resume", "Cancel"]],
     ["interrupted", ses("interrupted"), ["Resume", "Acknowledge", "Cancel"]],

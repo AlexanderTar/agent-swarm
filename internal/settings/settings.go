@@ -22,6 +22,10 @@ type RoleDefault struct {
 	Agent  kinds.AgentKind `json:"agent"`
 	Model  string          `json:"model"`
 	Effort string          `json:"effort,omitempty"` // "" = agent default (L27)
+	// Reason is what the user asked for, set only on an orchestrator's
+	// swarm_role_overrides entry; shown in its children's kind_reason.
+	// Empty on Settings roles and on legacy override rows.
+	Reason string `json:"reason,omitempty"`
 }
 
 type NotifyPref struct {
@@ -58,15 +62,15 @@ type Settings struct {
 
 // roleDefaults is §2.1 A3; "default" effort is "".
 var roleDefaults = map[kinds.Role]RoleDefault{
-	kinds.RoleOrchestrator: {kinds.Claude, "opus", ""},
-	kinds.RoleCoder:        {kinds.Claude, "sonnet", ""},
-	kinds.RoleReviewer:     {kinds.Claude, "opus", ""},
-	kinds.RoleUIReviewer:   {kinds.Claude, "opus", ""},
-	kinds.RoleResearcher:   {kinds.Claude, "sonnet", ""},
-	kinds.RoleDebugger:     {kinds.Claude, "opus", ""},
-	kinds.RoleMechanical:   {kinds.Claude, "haiku", ""},
-	kinds.RoleAdvisor:      {kinds.Claude, "fable", ""},
-	kinds.RoleDesigner:     {kinds.Claude, "opus", ""},
+	kinds.RoleOrchestrator: {kinds.Claude, "opus", "", ""},
+	kinds.RoleCoder:        {kinds.Claude, "sonnet", "", ""},
+	kinds.RoleReviewer:     {kinds.Claude, "opus", "", ""},
+	kinds.RoleUIReviewer:   {kinds.Claude, "opus", "", ""},
+	kinds.RoleResearcher:   {kinds.Claude, "sonnet", "", ""},
+	kinds.RoleDebugger:     {kinds.Claude, "opus", "", ""},
+	kinds.RoleMechanical:   {kinds.Claude, "haiku", "", ""},
+	kinds.RoleAdvisor:      {kinds.Claude, "fable", "", ""},
+	kinds.RoleDesigner:     {kinds.Claude, "opus", "", ""},
 }
 
 // Defaults: Claude plus any installed agent, in settings order.

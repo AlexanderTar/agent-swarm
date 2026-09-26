@@ -164,3 +164,21 @@ func TestGateFalseWhenNeverPolled(t *testing.T) {
 		t.Fatal("a kind that was never polled must not count as exhausted")
 	}
 }
+
+// agy's Claude & GPT quota at 100 % must not mark agy exhausted while its
+// native Gemini quota is barely used (live 2026-09-26: a researcher fell
+// back to Claude for exactly this reason).
+func TestAgyNotExhaustedByExtraModels(t *testing.T) {
+	meters, headline, err := usage.ParseAgyQuota([]byte(`{"groups":[
+	  {"displayName":"Gemini Models","buckets":[
+	    {"window":"5h","remainingFraction":0.94,"resetTime":"2026-09-19T15:00:00Z"}]},
+	  {"displayName":"Claude and GPT models","buckets":[
+	    {"window":"5h","remainingFraction":0,"resetTime":"2026-09-19T14:00:00Z"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := usage.Snapshot{Agent: kinds.Agy, Meters: meters, HeadlineID: headline}
+	if Exhausted(snap, now) {
+		t.Fatalf("agy exhausted by its extra-model meter: %+v headline %q", meters, headline)
+	}
+}

@@ -112,6 +112,7 @@ export function makeAgent(p: Partial<AgentNode> = {}): AgentNode {
       tmux_alive: true, started_at: 0, ended_at: null,
     },
     preflight_error: null,
+    kind_reason: null,
     created_at: 0,
     finished_at: null,
     children: [],

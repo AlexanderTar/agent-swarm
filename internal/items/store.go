@@ -372,6 +372,9 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	if in.Type == Spike && in.SpikeIntent != "feature" && in.SpikeIntent != "debug" && in.SpikeIntent != "chore" {
 		return Item{}, errf(CodeBadRequest, "Spikes start with an intent. Use New spike.")
 	}
+	if in.Type != Spike && in.SpikeIntent != "" {
+		return Item{}, errf(CodeBadRequest, "Only spikes have an intent.")
+	}
 	if in.TddExempt != "" {
 		if !slices.Contains(tddValues, in.TddExempt) {
 			return Item{}, errf(CodeBadRequest, "tdd_exempt must be one of docs, config, mechanical-rename, spike-research.")
@@ -403,11 +406,39 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	id := ids.New("itm")
 	rootID, parentID := id, sql.NullString{}
 	if in.ParentKey == "" {
-		if by.isOrchestrator() {
-			return Item{}, errf(CodeBadRequest, "Orchestrators can only create items inside their own top-level item.")
-		}
 		if hint, ok := parentHint[in.Type]; ok {
 			return Item{}, errf(CodeBadRequest, "%s", hint)
+		}
+		// An orchestrator proposing a new root item (2026-09-26 top-level
+		// items spec): always lands Draft (decision 2, refused rather than
+		// silently downgraded), any repos passed are suggestions only, and
+		// origin_spike_id records the caller's own root so the board's
+		// existing "Started from KEY" rendering resolves it. The
+		// top-level-only restriction (a child orchestrator may not propose)
+		// is enforced by the caller in internal/mcpserver, which knows
+		// ParentAgentID; this package only knows it's an orchestrator.
+		if by.isOrchestrator() {
+			if in.Status == Ready {
+				return Item{}, errf(CodeBadRequest, "A proposed top-level item starts as Draft. The user starts it.")
+			}
+			in.Status = Draft
+			if len(in.Repos) > 0 {
+				for _, r := range in.Repos {
+					var exists int
+					err := tx.QueryRowContext(ctx, `SELECT 1 FROM repos WHERE id = ?`, r).Scan(&exists)
+					if errors.Is(err, sql.ErrNoRows) {
+						return Item{}, errf(CodeBadRequest, "Unknown repository %q. Pass a repository id from swarm_read {repos:{q:%q}}.", r, r)
+					}
+					if err != nil {
+						return Item{}, err
+					}
+				}
+				in.SuggestedRepos = append(append([]string{}, in.SuggestedRepos...), in.Repos...)
+				in.Repos = nil
+			}
+			if in.OriginSpikeID == "" {
+				in.OriginSpikeID = by.RootID
+			}
 		}
 	} else {
 		parent, err := s.getTx(ctx, tx, in.ParentKey)

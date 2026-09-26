@@ -183,6 +183,7 @@ export interface AgentNode {
   state: AgentState;
   session: SessionInfo | null;     // latest generation; null when never spawned
   preflight_error: string | null;  // set when spawn preflight failed (never spawned)
+  kind_reason: string | null;     // why kind/model isn't the user's role default; null = settings
   created_at: number;
   finished_at: number | null;
   children: AgentNode[];           // live and unacknowledged children

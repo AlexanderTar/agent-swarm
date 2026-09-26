@@ -24,7 +24,7 @@ final class FixtureTests: XCTestCase {
         XCTAssertEqual(s.notifications.unread, 4)
         XCTAssertEqual(s.notifications.items.count, 5)
         XCTAssertEqual(s.usage.map(\.agent), [.claude, .codex, .agy, .cursor])
-        XCTAssertEqual(s.usage[2].headline?.label, "Claude & GPT 5h")
+        XCTAssertEqual(s.usage[2].headline?.label, "Gemini 5h")
         XCTAssertEqual(s.activeCount, 4)
         XCTAssertEqual(s.settings.enabledAgents, [.claude, .codex, .agy])
         XCTAssertEqual(s.settings[.reviewer], RoleDefault(agent: .codex, model: "gpt-6-astra", effort: "high"))

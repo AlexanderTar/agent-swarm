@@ -63,15 +63,8 @@
         "id": "gemini_5h",
         "label": "Gemini 5h",
         "window": "5h",
-        "used_pct": 0,
+        "used_pct": 6,
         "resets_at": 1789666320000
-      },
-      {
-        "id": "claude_gpt_5h",
-        "label": "Claude & GPT 5h",
-        "window": "5h",
-        "used_pct": 63,
-        "resets_at": 1789659120000
       },
       {
         "id": "gemini_weekly",
@@ -81,14 +74,14 @@
         "resets_at": 1789977600000
       },
       {
-        "id": "claude_gpt_weekly",
-        "label": "Claude & GPT weekly",
-        "window": "weekly",
-        "used_pct": 40,
-        "resets_at": 1789977600000
+        "id": "cgpt_5h",
+        "label": "Claude & GPT 5h",
+        "window": "5h",
+        "used_pct": 100,
+        "resets_at": 1789662720000
       }
     ],
-    "headline_id": "claude_gpt_5h",
+    "headline_id": "gemini_5h",
     "source": "cloudcode-pa retrieveUserQuotaSummary",
     "error": null,
     "fetched_at": 1789651860000,

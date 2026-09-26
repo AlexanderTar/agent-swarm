@@ -61,11 +61,11 @@ func TestSpawnDefaultsAndValidation(t *testing.T) {
 	}
 	// a disabled agent and a bad model are refused
 	if _, err := s.call(ctx, seed.Caller, "swarm_spawn",
-		`{"item":"`+seed.TaskKey+`","role":"coder","agent":"codex","brief":{"objective":"x"},"worktrees":[]}`); err == nil {
+		`{"item":"`+seed.TaskKey+`","role":"coder","agent":"codex","override_reason":"user asked for codex","brief":{"objective":"x"},"worktrees":[]}`); err == nil {
 		t.Fatal("a disabled agent must be refused")
 	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_spawn",
-		`{"item":"`+seed.TaskKey+`","role":"coder","model":"gone-9","brief":{"objective":"x"},"worktrees":[]}`); err == nil {
+		`{"item":"`+seed.TaskKey+`","role":"coder","model":"gone-9","override_reason":"user asked for gone-9","brief":{"objective":"x"},"worktrees":[]}`); err == nil {
 		t.Fatal("a model outside the catalog must be refused")
 	}
 	// §17.3: an over-long brief
@@ -1790,7 +1790,7 @@ func TestSwarmRoleOverridesSetThenSpawnUsesIt(t *testing.T) {
 	ctx := context.Background()
 
 	out, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`)
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1817,7 +1817,7 @@ func TestSwarmRoleOverridesClearRemovesTheEntry(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
 	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`); err != nil {
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err != nil {
 		t.Fatal(err)
 	}
 	out, err := s.call(ctx, seed.Caller, "swarm_role_overrides", `{"op":"clear","role":"coder"}`)
@@ -1838,7 +1838,7 @@ func TestSwarmRoleOverridesClearRemovesTheEntry(t *testing.T) {
 func TestSwarmRoleOverridesRejectsAdvisorRole(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	if _, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"advisor","agent":"fake","model":"fake-1"}`); err == nil {
+		`{"op":"set","role":"advisor","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err == nil {
 		t.Fatal("expected an error for the advisor role")
 	}
 }
@@ -1848,7 +1848,7 @@ func TestSwarmRoleOverridesRejectsDisabledAgent(t *testing.T) {
 	// claude is a real AgentKind but not enabled (newOrchestratorServer's
 	// enabled_agents is ["fake"] only).
 	if _, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"claude","model":"claude-sonnet-5"}`); err == nil {
+		`{"op":"set","role":"coder","agent":"claude","model":"claude-sonnet-5","reason":"user asked for claude"}`); err == nil {
 		t.Fatal("expected an error for a disabled agent")
 	}
 }
@@ -1859,7 +1859,7 @@ func TestSwarmRoleOverridesIsScopedToTheCallersOwnRow(t *testing.T) {
 	other := seedOtherOrchestrator(t, s)
 
 	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`); err != nil {
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1876,7 +1876,7 @@ func TestSwarmReadShowsRoleOverrides(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
 	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`); err != nil {
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err != nil {
 		t.Fatal(err)
 	}
 	out, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["`+seed.Caller.AgentName+`"]}`)
@@ -2226,5 +2226,191 @@ func TestSwarmArtifactReturnsWarnings(t *testing.T) {
 	}
 	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "single unit") {
 		t.Fatalf("warnings=%v", result.Warnings)
+	}
+}
+
+// spawnChildOrchestrator spawns an orchestrator on its own, separate root
+// item, with ParentAgentID pointing at seed's own orchestrator -- a "child
+// orchestrator" (root_item_id's one-active-orchestrator rule means a nested
+// orchestrator can only ever run on a distinct root, never the spawner's
+// own tree; the ParentAgentID link is what makes it a child, not the root).
+func spawnChildOrchestrator(t *testing.T, s *Server, seed orchSeed) Caller {
+	t.Helper()
+	ctx := context.Background()
+	other, err := s.RT.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Child root"}, items.User("cli"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.RT.Spawn(ctx, runtime.SpawnInput{
+		ItemKey: other.Key, Role: runtime.RoleOrchestrator, Kind: runtime.Fake, Model: "fake-1",
+		ParentAgentID: seed.Caller.AgentID, Brief: runtime.BriefInput{Objective: "Own this root."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.RT.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Caller{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, Role: runtime.RoleOrchestrator}
+}
+
+// TestSwarmItemsCreateProposesTopLevelItem is the 2026-09-26 top-level-items
+// spec: a top-level orchestrator's swarm_items create with no parent
+// proposes a new root item and raises its item.created notification.
+func TestSwarmItemsCreateProposesTopLevelItem(t *testing.T) {
+	for _, tc := range []struct {
+		typ, extra, kind string
+	}{
+		{"epic", "", "item.created"},
+		{"bug", "", "item.created.bug"},
+		{"chore", "", "item.created.chore"},
+		{"spike", `,"intent":"debug"`, "item.created.spike"},
+	} {
+		t.Run(tc.typ, func(t *testing.T) {
+			s, seed := newOrchestratorServer(t)
+			ctx := context.Background()
+			out, err := s.call(ctx, seed.Caller, "swarm_items",
+				`{"op":"create","type":"`+tc.typ+`","title":"New `+tc.typ+`","brief":"b","repos":["`+seed.RepoID+`"]`+tc.extra+`}`)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.typ, err)
+			}
+			var it struct {
+				Key            string   `json:"key"`
+				Status         string   `json:"status"`
+				Repos          []string `json:"repos"`
+				SuggestedRepos []string `json:"suggested_repos"`
+				OriginSpikeID  string   `json:"origin_spike_id"`
+			}
+			json.Unmarshal(mustJSON(out), &it)
+			if it.Status != "draft" {
+				t.Fatalf("%s: status = %q, want draft", tc.typ, it.Status)
+			}
+			if len(it.Repos) != 0 || len(it.SuggestedRepos) != 1 || it.SuggestedRepos[0] != seed.RepoID {
+				t.Fatalf("%s: repos = %v, suggested = %v", tc.typ, it.Repos, it.SuggestedRepos)
+			}
+			f := s.RT.Notify.(*fakeNotifier)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			var found bool
+			for _, n := range f.raised {
+				if n.Kind == tc.kind {
+					found = true
+					if n.Args["SPIKE-KEY"] != seed.RootKey || n.Args["ROOT-KEY"] != it.Key {
+						t.Fatalf("%s: args = %v", tc.typ, n.Args)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("%s: no %s notification raised", tc.typ, tc.kind)
+			}
+			// Decision 1: no Needs-you approval gate -- the user starting
+			// the Draft item *is* the gate, so the proposer itself must not
+			// be able to Ready its own proposal (it's outside its own root).
+			if _, err := s.call(ctx, seed.Caller, "swarm_items",
+				`{"op":"update","key":"`+it.Key+`","status":"ready","revision":1}`); err == nil || !strings.Contains(err.Error(), "is outside") {
+				t.Fatalf("%s: proposer must not start its own proposal: %v", tc.typ, err)
+			}
+		})
+	}
+}
+
+// TestSwarmItemsCreateStatusReadyRefusedForProposal is decision 2: a
+// proposed top-level item cannot ask for status ready.
+func TestSwarmItemsCreateStatusReadyRefusedForProposal(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	_, err := s.call(context.Background(), seed.Caller, "swarm_items",
+		`{"op":"create","type":"epic","title":"x","status":"ready"}`)
+	if err == nil || err.Error() != "A proposed top-level item starts as Draft. The user starts it." {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestSwarmItemsCreateChildOrchestratorCannotProposeTopLevel is the
+// permission rule: only a top-level orchestrator may propose.
+func TestSwarmItemsCreateChildOrchestratorCannotProposeTopLevel(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	child := spawnChildOrchestrator(t, s, seed)
+	_, err := s.call(context.Background(), child, "swarm_items",
+		`{"op":"create","type":"epic","title":"x"}`)
+	if err == nil || err.Error() != "Only a top-level orchestrator can propose a top-level item. Relay it to your parent." {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// ---------- user-requested overrides only (2026-09-26 worker-defaults spec) ----------
+
+const wantOverrideReasonCopy = "Pass override_reason with agent, model or effort, saying what the user asked for. Leave agent, model and effort empty to use the user's role default."
+
+// An orchestrator can't pick a worker's kind/model/effort on its own: an
+// explicit choice without the user's reason is refused.
+func TestSwarmSpawnRefusesAnOverrideWithoutAReason(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	for _, field := range []string{`"agent":"fake"`, `"model":"fake-1"`, `"effort":"high"`} {
+		_, err := s.call(ctx, seed.Caller, "swarm_spawn",
+			`{"item":"`+seed.TaskKey+`","role":"coder",`+field+`,"brief":{"objective":"x"},"worktrees":[]}`)
+		if err == nil || err.Error() != wantOverrideReasonCopy {
+			t.Fatalf("%s: err = %v, want %q", field, err, wantOverrideReasonCopy)
+		}
+	}
+}
+
+// With the user's reason the override is kept and recorded on the row.
+func TestSwarmSpawnKeepsAndRecordsAReasonedOverride(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_spawn",
+		`{"item":"`+seed.TaskKey+`","role":"coder","agent":"fake","model":"fake-1","override_reason":"user asked for fake",
+		"brief":{"objective":"x"},"worktrees":[]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Agent string `json:"agent"`
+	}
+	json.Unmarshal(mustJSON(out), &res)
+	a, err := s.RT.Agent(ctx, res.Agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != runtime.Fake || a.Model != "fake-1" || a.KindReason != "User override: user asked for fake" {
+		t.Fatalf("agent = %s/%s reason %q", a.Kind, a.Model, a.KindReason)
+	}
+}
+
+func TestSwarmRoleOverridesSetRequiresAReason(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	_, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`)
+	want := `Pass reason with op "set", saying what the user asked for. Role defaults come from the user's settings unless the user asks otherwise.`
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	// clear needs no reason
+	if _, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides", `{"op":"clear","role":"coder"}`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Review MINOR 1: the set reason is persisted with the override (and
+// echoed back), so the children's board line can show it.
+func TestSwarmRoleOverridesSetPersistsTheReason(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.RT.Agent(ctx, seed.Caller.AgentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.RoleOverrides[runtime.RoleCoder].Reason; got != "user asked for fake" {
+		t.Fatalf("stored reason = %q", got)
+	}
+	worker := spawnWorker(t, s, seed)
+	if want := "Role override set on " + seed.Caller.AgentName + ": user asked for fake"; worker.KindReason != want {
+		t.Fatalf("worker kind_reason = %q, want %q", worker.KindReason, want)
 	}
 }

@@ -46,6 +46,9 @@ type SpawnInput struct {
 	// just run once"). Neither is the spawned agent's own session.
 	SessionID string
 	RequestID string
+	// OverrideReason is what the user asked for when Kind/Model/Effort are
+	// set explicitly (swarm_spawn requires it); recorded as kind_reason.
+	OverrideReason string
 }
 
 type PreflightInput struct {
@@ -95,8 +98,34 @@ func defaultName(role Role, title string) (string, error) {
 	if role == RoleOrchestrator {
 		return slug + "-orchestrator", nil
 	}
-	return slug + "-" + string(role), nil
+	// Kebab the whole name, not just the title: a role like ui_reviewer
+	// must not leak its underscore into the agent name.
+	return ids.Kebab(slug + "-" + string(role))
 }
+
+// joinReason joins two kind_reason parts with "; ", skipping empties.
+func joinReason(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return a + "; " + b
+}
+
+// roleOverrideReason is the kind_reason part a parent's role override adds,
+// with the user's reason when swarm_role_overrides stored one.
+func roleOverrideReason(parentName string, rd settings.RoleDefault) string {
+	r := "Role override set on " + parentName
+	if rd.Reason != "" {
+		r += ": " + rd.Reason
+	}
+	return r
+}
+
+// fallbackReason is the kind_reason part a usage fallback adds.
+func fallbackReason(orig AgentKind) string { return orig.Display() + " is out of usage" }
 
 // resolveName suffixes a daemon-generated name on a collision (§4) but refuses a
 // user-typed one, because the UI previewed the exact kebab (P4 carry).
@@ -858,11 +887,23 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	}
 
 	cfg, _ := s.Settings.Get(ctx)
+	// kindReason explains a kind/model that isn't the user's role default
+	// (spec 2026-09-26 L1/L2); "" means it came from Settings.
+	var kindReason string
+	if in.Kind != "" || in.Model != "" || in.Effort != "" {
+		kindReason = "User override"
+		if in.OverrideReason != "" {
+			kindReason += ": " + in.OverrideReason
+		}
+	}
 	if in.Kind == "" && in.Model != "" {
 		if k, ok := s.resolveAgentForModel(ctx, in.Model); ok {
 			in.Kind = k
 		}
 	}
+	// missingModel is a role default's model the catalog no longer lists;
+	// the model then falls back to the kind's first one, visibly.
+	var missingModel string
 	applyRoleDefault := func(rd settings.RoleDefault) bool {
 		if rd.Agent == "" || (len(cfg.EnabledAgents) > 0 && !slices.Contains(cfg.EnabledAgents, rd.Agent)) {
 			return false
@@ -876,6 +917,8 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 					if in.Effort == "" {
 						in.Effort = rd.Effort
 					}
+				} else {
+					missingModel = rd.Model
 				}
 			} else {
 				in.Model = rd.Model
@@ -890,6 +933,9 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		var matched bool
 		if rd, ok := parentRoleOverrides[in.Role]; ok {
 			matched = applyRoleDefault(rd)
+			if matched {
+				kindReason = joinReason(kindReason, roleOverrideReason(parentName, rd))
+			}
 		}
 		if !matched {
 			if rd, ok := cfg.Roles[in.Role]; ok {
@@ -902,20 +948,24 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 			} else {
 				in.Kind = Fake
 			}
+			kindReason = joinReason(kindReason, fmt.Sprintf("Role default for %s unavailable; using %s", in.Role, in.Kind.Display()))
 		}
 	}
 	if in.Model == "" {
 		models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
 		if len(models) > 0 {
 			in.Model = models[0].ID
+			if missingModel != "" {
+				kindReason = joinReason(kindReason, fmt.Sprintf("Role default model %s for %s unavailable; using %s", missingModel, in.Role, in.Model))
+			}
 		}
 	}
 
 	// A role default's Effort only ever reached in.Effort above when this
 	// call resolved Kind/Model FROM that default (in.Kind/in.Model both
-	// started empty). A caller that names its own explicit kind/model --
-	// exactly what the swarm-orchestrator skill tells orchestrators they may
-	// do -- skipped applyRoleDefault entirely, so a role override's Effort
+	// started empty). A caller that names its own explicit kind/model -- a
+	// user-requested override (swarm_spawn's override_reason) -- skipped
+	// applyRoleDefault entirely, so a role override's Effort
 	// silently never applied even when the caller's kind/model happened to
 	// match it and Effort was left blank (2026-09-24: the actual gap behind
 	// "we need to be able to override effort" -- the override always stored
@@ -933,7 +983,9 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 			return true
 		}
 		rd, ok := parentRoleOverrides[in.Role]
-		if !matchEffort(rd, ok) {
+		if matchEffort(rd, ok) {
+			kindReason = joinReason(kindReason, roleOverrideReason(parentName, rd))
+		} else {
 			rd, ok = cfg.Roles[in.Role]
 			matchEffort(rd, ok)
 		}
@@ -945,6 +997,9 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return Agent{}, false, ferr
 	}
 	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
+	if substituted {
+		kindReason = joinReason(kindReason, fallbackReason(origKind))
+	}
 
 	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
 
@@ -995,6 +1050,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		AdvisorModel:  advModel,
 		AdvisorEffort: advEffort,
 		AdvisorMode:   advMode,
+		KindReason:    kindReason,
 		CreatedAt:     s.now(),
 	}
 
@@ -1019,11 +1075,11 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, parent_agent_id, brief, state, created_at,
-			 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides, kind_reason)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, NULLIF(?, ''))`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 			a.ItemID, a.RootItemID, parentParam, a.Brief, string(a.State), nowMs,
-			string(advKind), advModel, advEffort, advMode, nil)
+			string(advKind), advModel, advEffort, advMode, nil, a.KindReason)
 		if err != nil {
 			return err
 		}
@@ -1072,6 +1128,9 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	})
 	if err != nil {
 		return Agent{}, false, err
+	}
+	if ran && result.Agent.KindReason != "" {
+		s.logf("spawn: %s on %s/%s: %s", result.Agent.Name, result.Agent.Kind, result.Agent.Model, result.Agent.KindReason)
 	}
 	// A replay must not re-raise agent.fallback_used: it already went out
 	// on the genuine first call (same rule as agent.queued just below).
@@ -1883,14 +1942,17 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 			&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorEffort})
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ?,
-				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, '')
+				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, ''),
+				kind_reason = ?
 				WHERE id = ?`,
-				string(fbKind), fbModel, fbEffort, string(advKind), advModel, advEffort, advMode, a.ID)
+				string(fbKind), fbModel, fbEffort, string(advKind), advModel, advEffort, advMode,
+				joinReason(a.KindReason, fallbackReason(origKind)), a.ID)
 			return err
 		}); err != nil {
 			return Agent{}, err
 		}
 		a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
+		a.KindReason = joinReason(a.KindReason, fallbackReason(origKind))
 		a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode = string(advKind), advModel, advEffort, advMode
 	}
 
@@ -2110,7 +2172,7 @@ func scanAgent(row *sql.Row) (Agent, error) {
 		&a.ItemID, &a.RootItemID, &a.ParentAgentID,
 		&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode,
 		&a.Brief, &state, &a.PreflightError, &created, &finished,
-		&roleOverrides,
+		&roleOverrides, &a.KindReason,
 	)
 	if err != nil {
 		return a, err
@@ -2135,7 +2197,7 @@ func (s *Store) Agent(ctx context.Context, name string) (Agent, error) {
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
 		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
 		COALESCE(preflight_error, ''), created_at, finished_at,
-		COALESCE(role_overrides, '')
+		COALESCE(role_overrides, ''), COALESCE(kind_reason, '')
 		FROM agents WHERE name = ?`, name)
 	return scanAgent(row)
 }
@@ -2146,7 +2208,7 @@ func (s *Store) agentByID(ctx context.Context, id string) (Agent, error) {
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
 		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
 		COALESCE(preflight_error, ''), created_at, finished_at,
-		COALESCE(role_overrides, '')
+		COALESCE(role_overrides, ''), COALESCE(kind_reason, '')
 		FROM agents WHERE id = ?`, id)
 	return scanAgent(row)
 }
@@ -2165,7 +2227,7 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
 		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
 		COALESCE(preflight_error, ''), created_at, finished_at,
-		COALESCE(role_overrides, '')
+		COALESCE(role_overrides, ''), COALESCE(kind_reason, '')
 		FROM agents WHERE root_item_id = ? ORDER BY created_at`, it.RootID)
 	if err != nil {
 		return nil, err
@@ -2183,7 +2245,7 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 			&a.ItemID, &a.RootItemID, &a.ParentAgentID,
 			&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode,
 			&a.Brief, &state, &a.PreflightError, &created, &finished,
-			&roleOverrides,
+			&roleOverrides, &a.KindReason,
 		); err != nil {
 			return nil, err
 		}

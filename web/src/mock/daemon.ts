@@ -257,7 +257,7 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
       item_key: it.key, item_title: it.title, root_key: it.root_key, parent_name: null, advisor: null,
       state: queued ? "queued" : "active",
       session: queued ? null : { id: `ses_${counter}`, state: "spawning", attempt: 1, generation: 1, waiting: false, stale: false, tmux_alive: true, started_at: NOW, ended_at: null },
-      preflight_error: null, created_at: NOW, finished_at: null, children: [], finished: [],
+      preflight_error: null, kind_reason: null, created_at: NOW, finished_at: null, children: [], finished: [],
     };
     db.agents.push(node);
     d.emit("agent.changed", { name, root_key: it.root_key });

@@ -16,11 +16,15 @@ import (
 // Every §17.5 row is present with its level, title, body and category.
 func TestRulesCoverSection175(t *testing.T) {
 	want := map[string][4]string{
-		"agent.accepted":         {"info", "Task accepted", "{name} started {KEY}: {title}.", "swarm.info"},
-		"item.completed":         {"info", "Task completed", "{KEY}: {title} is complete.", "swarm.info"},
-		"item.created":           {"info", "Epic ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
-		"item.created.bug":       {"info", "Bug ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
-		"item.created.chore":     {"info", "Chore ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
+		"agent.accepted":     {"info", "Task accepted", "{name} started {KEY}: {title}.", "swarm.info"},
+		"item.completed":     {"info", "Task completed", "{KEY}: {title} is complete.", "swarm.info"},
+		"item.created":       {"info", "Epic ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
+		"item.created.bug":   {"info", "Bug ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
+		"item.created.chore": {"info", "Chore ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
+		// Added by docs/specs/2026-09-26-mcp-top-level-items.md: a top-level
+		// orchestrator can now propose a spike directly, which needed its
+		// own title-only variant (spikes were never a materialize root type).
+		"item.created.spike":     {"info", "Spike ready", "{SPIKE-KEY} produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.", "swarm.item"},
 		"agent.queued":           {"info", "Agent queued", "{name} starts when an agent slot becomes available.", "swarm.info"},
 		"agent.paused":           {"attention", "Agent paused", "{name} is paused on {KEY}.", "swarm.agent"},
 		"agent.interrupted":      {"attention", "Agent stopped", "{name} stopped before {KEY} finished.", "swarm.agent"},
@@ -116,6 +120,37 @@ func TestRaiseWritesTheRowAndPublishesTheEvent(t *testing.T) {
 		"request_id", "read_at", "created_at"} {
 		if _, ok := wire[k]; !ok {
 			t.Errorf("notification.created is missing %q: %s", k, payload)
+		}
+	}
+}
+
+// TestItemCreatedVariantsCollapseToOneKind is the 2026-09-26 top-level-items
+// spec's root-cause fix: every item.created.* variant (bug, chore, spike --
+// added variants over time, only .bug was ever actually trimmed) persists
+// and publishes as the single kind "item.created", which is what the
+// menubar's category map and the rest of the system understand.
+func TestItemCreatedVariantsCollapseToOneKind(t *testing.T) {
+	d := dbtest.Open(t)
+	at := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	s := &Service{DB: d, Events: events.New(d, func() time.Time { return at }),
+		Now: func() time.Time { return at }, Log: func(string, ...any) {}}
+	ctx := context.Background()
+	for _, kind := range []string{"item.created", "item.created.bug", "item.created.chore", "item.created.spike"} {
+		if err := s.Raise(ctx, nil, runtime.NotifyInput{Kind: kind, ItemKey: "EPIC-1",
+			Args: map[string]string{"SPIKE-KEY": "SPIKE-1", "ROOT-KEY": "EPIC-1", "title": "t"}}); err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+	}
+	list, err := s.List(ctx, true, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 4 {
+		t.Fatalf("list = %+v", list)
+	}
+	for _, n := range list {
+		if n.Kind != "item.created" {
+			t.Errorf("kind = %q, want item.created", n.Kind)
 		}
 	}
 }

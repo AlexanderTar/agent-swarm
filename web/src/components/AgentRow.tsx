@@ -43,6 +43,9 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
           <AgentIcon kind={agent.kind} />
           <span className="truncate" title={agent.name}>{`${agent.name} · ${ROLE_LABEL[agent.role]}`}</span>
         </div>
+        {agent.kind_reason && (
+          <p className="truncate text-xs text-muted" title={agent.kind_reason}>{agent.kind_reason}</p>
+        )}
         <StateDot state={displayState(agent)} withLabel />
       </div>
       <div className="flex shrink-0 gap-1">
