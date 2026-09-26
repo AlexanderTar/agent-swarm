@@ -99,15 +99,17 @@ func parseItemRevision(raw json.RawMessage) (int, error) {
 // swarm_read's job (its refs/filter cover exactly that), not swarm_items'.
 func itemsTool(s *Server) ToolDef {
 	return ToolDef{
-		Name:        "swarm_items",
-		Description: "Create or update an item, or link/unlink a dependency, inside your own top-level item's tree.",
-		Roles:       orchestratorRole,
+		Name: "swarm_items",
+		Description: "Create or update an item, or link/unlink a dependency, inside your own top-level item's " +
+			"tree. Omitting \"parent\" on create proposes a brand-new top-level item (epic/bug/chore/spike) " +
+			"instead -- only a top-level orchestrator may do this; it always starts Draft, and the user starts it.",
+		Roles: orchestratorRole,
 		Schema: objSchemaRequired(`"op":{"type":"string","enum":["create","update","link","unlink"]},
 			"key":{"type":"string"},"parent":{"type":"string"},"type":{"type":"string"},
 			"title":{"type":"string"},"brief":{"type":"string"},"acceptance":{"type":"array"},
 			"priority":{"type":"integer"},"role_hint":{"type":"string"},"tdd_exempt":{"type":"string"},
 			"workflow":{"type":"object"},"steps":{"type":"array"},"units":{"type":"array"},
-			"solo":{"type":"string"},"verify":{"type":"array"},
+			"solo":{"type":"string"},"verify":{"type":"array"},"intent":{"type":"string"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
 			"blocked_by":{"type":"string"},"request_id":{"type":"string"}`,
 			[]string{"op"}),
@@ -128,6 +130,7 @@ func itemsTool(s *Server) ToolDef {
 				Units      []items.Unit   `json:"units"`
 				Solo       string         `json:"solo"`
 				Verify     []string       `json:"verify"`
+				Intent     string         `json:"intent"`
 				Repos      []string       `json:"repos"`
 				// Revision stays raw JSON so a "latest" shortcut (or any
 				// non-integer) is refused explicitly by parseItemRevision
@@ -155,6 +158,15 @@ func itemsTool(s *Server) ToolDef {
 			// idempotency record.
 			switch in.Op {
 			case "create":
+				// 2026-09-26 top-level-items spec: only a top-level
+				// orchestrator (no parent agent of its own) may propose a
+				// brand-new root item. internal/items only knows "is this an
+				// orchestrator"; the child-vs-top-level distinction lives
+				// here, where the caller's resolved Agent already carries it.
+				if in.Parent == "" && a.ParentAgentID != "" {
+					return nil, &items.Error{Code: items.CodeBadRequest,
+						Message: "Only a top-level orchestrator can propose a top-level item. Relay it to your parent."}
+				}
 				var out items.Item
 				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_items", &out,
 					func(tx *sql.Tx) (err error) {
@@ -163,8 +175,20 @@ func itemsTool(s *Server) ToolDef {
 							Acceptance: in.Acceptance, Priority: in.Priority, RoleHint: in.RoleHint,
 							TddExempt: in.TddExempt, Workflow: in.Workflow, Steps: in.Steps, Units: in.Units,
 							Solo: in.Solo, Verify: in.Verify, Repos: in.Repos, Status: items.Status(in.Status),
+							SpikeIntent: in.Intent,
 						}, actor)
-						return err
+						if err != nil {
+							return err
+						}
+						if in.Parent == "" {
+							var originKey string
+							if err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.RootItemID).
+								Scan(&originKey); err != nil {
+								return err
+							}
+							return s.RT.NotifyItemCreated(ctx, tx, originKey, out.Key, out.Title, out.Type)
+						}
+						return nil
 					}); err != nil {
 					return nil, err
 				}

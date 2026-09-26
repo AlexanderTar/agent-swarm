@@ -263,17 +263,24 @@ func (s *Store) relayMaterialized(ctx context.Context, tx *sql.Tx, a Agent, spik
 	return err
 }
 
-// notifyItemCreated raises §17.5's item.created (or item.created.bug for a
-// debug spike's bug root).
-func (s *Store) notifyItemCreated(ctx context.Context, tx *sql.Tx, spike items.Item, rootKey, rootTitle string, rootType items.Type) error {
+// NotifyItemCreated raises §17.5's item.created (or its .bug/.chore/.spike
+// variant) for a new root item. originKey is whatever produced it -- a
+// spike's own key when Materialize turns it into a root, or a proposing
+// orchestrator's own root key when internal/mcpserver's swarm_items create
+// proposes one directly (2026-09-26 top-level-items spec). Exported so
+// mcpserver can call it from inside the same tx as its CreateTx.
+func (s *Store) NotifyItemCreated(ctx context.Context, tx *sql.Tx, originKey, rootKey, rootTitle string, rootType items.Type) error {
 	kind := "item.created"
-	if rootType == items.Bug {
+	switch rootType {
+	case items.Bug:
 		kind = "item.created.bug"
-	} else if rootType == items.Chore {
+	case items.Chore:
 		kind = "item.created.chore"
+	case items.Spike:
+		kind = "item.created.spike"
 	}
 	return s.notify(ctx, tx, NotifyInput{Kind: kind, ItemKey: rootKey,
-		Args: map[string]string{"SPIKE-KEY": spike.Key, "ROOT-KEY": rootKey, "title": rootTitle}})
+		Args: map[string]string{"SPIKE-KEY": originKey, "ROOT-KEY": rootKey, "title": rootTitle}})
 }
 
 // Materialize turns an approved spike into an epic (feature) or a bug (debug),
@@ -341,7 +348,7 @@ func (s *Store) Materialize(ctx context.Context, sessionID, spikeKey, specID, pl
 		if err := s.relayMaterialized(ctx, tx, a, spikeKey, out); err != nil {
 			return err
 		}
-		return s.notifyItemCreated(ctx, tx, spike, out.Root, tree.Root.Title, rootType)
+		return s.NotifyItemCreated(ctx, tx, spike.Key, out.Root, tree.Root.Title, rootType)
 	})
 	return out, err
 }

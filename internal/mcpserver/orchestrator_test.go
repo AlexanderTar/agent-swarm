@@ -2228,3 +2228,105 @@ func TestSwarmArtifactReturnsWarnings(t *testing.T) {
 		t.Fatalf("warnings=%v", result.Warnings)
 	}
 }
+
+// spawnChildOrchestrator spawns an orchestrator on its own, separate root
+// item, with ParentAgentID pointing at seed's own orchestrator -- a "child
+// orchestrator" (root_item_id's one-active-orchestrator rule means a nested
+// orchestrator can only ever run on a distinct root, never the spawner's
+// own tree; the ParentAgentID link is what makes it a child, not the root).
+func spawnChildOrchestrator(t *testing.T, s *Server, seed orchSeed) Caller {
+	t.Helper()
+	ctx := context.Background()
+	other, err := s.RT.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Child root"}, items.User("cli"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.RT.Spawn(ctx, runtime.SpawnInput{
+		ItemKey: other.Key, Role: runtime.RoleOrchestrator, Kind: runtime.Fake, Model: "fake-1",
+		ParentAgentID: seed.Caller.AgentID, Brief: runtime.BriefInput{Objective: "Own this root."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.RT.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Caller{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, Role: runtime.RoleOrchestrator}
+}
+
+// TestSwarmItemsCreateProposesTopLevelItem is the 2026-09-26 top-level-items
+// spec: a top-level orchestrator's swarm_items create with no parent
+// proposes a new root item and raises its item.created notification.
+func TestSwarmItemsCreateProposesTopLevelItem(t *testing.T) {
+	for _, tc := range []struct {
+		typ, extra, kind string
+	}{
+		{"epic", "", "item.created"},
+		{"bug", "", "item.created.bug"},
+		{"chore", "", "item.created.chore"},
+		{"spike", `,"intent":"debug"`, "item.created.spike"},
+	} {
+		t.Run(tc.typ, func(t *testing.T) {
+			s, seed := newOrchestratorServer(t)
+			ctx := context.Background()
+			out, err := s.call(ctx, seed.Caller, "swarm_items",
+				`{"op":"create","type":"`+tc.typ+`","title":"New `+tc.typ+`","brief":"b","repos":["`+seed.RepoID+`"]`+tc.extra+`}`)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.typ, err)
+			}
+			var it struct {
+				Key            string   `json:"key"`
+				Status         string   `json:"status"`
+				Repos          []string `json:"repos"`
+				SuggestedRepos []string `json:"suggested_repos"`
+				OriginSpikeID  string   `json:"origin_spike_id"`
+			}
+			json.Unmarshal(mustJSON(out), &it)
+			if it.Status != "draft" {
+				t.Fatalf("%s: status = %q, want draft", tc.typ, it.Status)
+			}
+			if len(it.Repos) != 0 || len(it.SuggestedRepos) != 1 || it.SuggestedRepos[0] != seed.RepoID {
+				t.Fatalf("%s: repos = %v, suggested = %v", tc.typ, it.Repos, it.SuggestedRepos)
+			}
+			f := s.RT.Notify.(*fakeNotifier)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			var found bool
+			for _, n := range f.raised {
+				if n.Kind == tc.kind {
+					found = true
+					if n.Args["SPIKE-KEY"] != seed.RootKey || n.Args["ROOT-KEY"] != it.Key {
+						t.Fatalf("%s: args = %v", tc.typ, n.Args)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("%s: no %s notification raised", tc.typ, tc.kind)
+			}
+		})
+	}
+}
+
+// TestSwarmItemsCreateStatusReadyRefusedForProposal is decision 2: a
+// proposed top-level item cannot ask for status ready.
+func TestSwarmItemsCreateStatusReadyRefusedForProposal(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	_, err := s.call(context.Background(), seed.Caller, "swarm_items",
+		`{"op":"create","type":"epic","title":"x","status":"ready"}`)
+	if err == nil || err.Error() != "A proposed top-level item starts as Draft. The user starts it." {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestSwarmItemsCreateChildOrchestratorCannotProposeTopLevel is the
+// permission rule: only a top-level orchestrator may propose.
+func TestSwarmItemsCreateChildOrchestratorCannotProposeTopLevel(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	child := spawnChildOrchestrator(t, s, seed)
+	_, err := s.call(context.Background(), child, "swarm_items",
+		`{"op":"create","type":"epic","title":"x"}`)
+	if err == nil || err.Error() != "Only a top-level orchestrator can propose a top-level item. Relay it to your parent." {
+		t.Fatalf("err = %v", err)
+	}
+}
