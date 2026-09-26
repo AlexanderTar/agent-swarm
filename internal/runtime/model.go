@@ -406,6 +406,13 @@ type Store struct {
 	// takes over matching, retrying and escalating that session's dialogs
 	// itself instead of leaving it silently stuck.
 	activeWatchStartup map[string]bool
+	// codexLaunchHomesReclaim guards reclaimOldCodexLaunchHomes (D8, batch-2
+	// review): it is a one-time cleanup of pre-fix per-launch codex-home
+	// dirs, but ungated it paid a DB query and an os.ReadDir on every 5s
+	// Reconcile tick forever, long after there was ever anything left to
+	// remove. sync.Once, not a bool: Reconcile has no other lock around this
+	// call, and Once.Do is itself concurrency-safe.
+	codexLaunchHomesReclaim sync.Once
 	// lastTitle is the Ghostty tab title (sessionTitle's output) each live
 	// session had as of the last tick that set it, so a tick whose status,
 	// role and tree haven't changed skips the tmux rename-window call instead

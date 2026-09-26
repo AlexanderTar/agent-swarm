@@ -274,9 +274,14 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	} else {
 		reclaimCodexHomes(s.Home, resumableAgentIDs, snapshotAt, s.logf)
 	}
-	if err := s.reclaimOldCodexLaunchHomes(ctx); err != nil {
-		s.logf("reconcile: reclaim old codex launch homes: %v", err)
-	}
+	// D8 (batch-2 review): run at most once per daemon run. See the
+	// codexLaunchHomesReclaim field doc for why this isn't just a
+	// per-tick call left to self-limit.
+	s.codexLaunchHomesReclaim.Do(func() {
+		if err := s.reclaimOldCodexLaunchHomes(ctx); err != nil {
+			s.logf("reconcile: reclaim old codex launch homes: %v", err)
+		}
+	})
 	return s.sweepFinishedRoots(ctx)
 }
 

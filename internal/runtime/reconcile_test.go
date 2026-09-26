@@ -3557,3 +3557,55 @@ func TestReclaimOldCodexLaunchHomesRemovesOnlyTerminalSessionsCodexHome(t *testi
 		t.Errorf("a non-terminal session's old codex-home was removed: %v", err)
 	}
 }
+
+// D8 (batch-2 review): reclaimOldCodexLaunchHomes must run at most once per
+// daemon run, not on every 5s Reconcile tick -- it already self-limits in
+// effect (nothing is left to remove after the first pass), but before this
+// fix it still paid a DB query and an os.ReadDir every tick forever.
+func TestReclaimOldCodexLaunchHomesRunsOnlyOnceADaemonRun(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	_, a1, _, err := s.StartSpike(ctx, SpikeInput{Name: "Reclaim1", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses1, err := s.LatestSession(ctx, a1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE id = ?`, ses1.ID); err != nil {
+		t.Fatal(err)
+	}
+	codexHome1 := filepath.Join(s.Home, "run", "launch", ses1.ID, "codex-home")
+	if err := os.MkdirAll(codexHome1, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(codexHome1); !os.IsNotExist(err) {
+		t.Fatalf("first terminal session's old codex-home still exists: %v", err)
+	}
+
+	_, a2, _, err := s.StartSpike(ctx, SpikeInput{Name: "Reclaim2", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses2, err := s.LatestSession(ctx, a2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE id = ?`, ses2.ID); err != nil {
+		t.Fatal(err)
+	}
+	codexHome2 := filepath.Join(s.Home, "run", "launch", ses2.ID, "codex-home")
+	if err := os.MkdirAll(codexHome2, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(codexHome2); err != nil {
+		t.Fatalf("a second terminal session's old codex-home was removed on a later tick; the sweep must run only once per daemon run: %v", err)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -505,6 +506,35 @@ func TestCodexResumeLandsOnTheSameHomeAsTheOriginalLaunch(t *testing.T) {
 	if l.Env["CODEX_HOME"] != r.Env["CODEX_HOME"] {
 		t.Fatalf("Launch CODEX_HOME = %q, Resume CODEX_HOME = %q; a resume with a new session id must reuse the same agent's home",
 			l.Env["CODEX_HOME"], r.Env["CODEX_HOME"])
+	}
+}
+
+// D8 (batch-2 review, dialog-needs-you spec): resuming an old, long-lived
+// agent must refresh CODEX_HOME's mtime, so reclaimCodexHomes's snapshotAt
+// guard sees it as recently touched even though its directory is old.
+func TestSetupEnvRefreshesCodexHomeMtimeOnResume(t *testing.T) {
+	d := testDeps(t)
+	spec := codexSpec(t, d)
+	if _, err := newCodex(d).Launch(spec); err != nil {
+		t.Fatal(err)
+	}
+	codexHome := CodexHomeDir(d.Home, spec.AgentID)
+	old := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(codexHome, old, old); err != nil {
+		t.Fatal(err)
+	}
+	resumeSpec := spec
+	resumeSpec.SessionID = "ses_02"
+	resumeSpec.ProviderSessionID = "01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9"
+	if _, err := newCodex(d).Resume(resumeSpec); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(codexHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(fi.ModTime()) > 10*time.Second {
+		t.Fatalf("codex home mtime = %s, want refreshed to ~now", fi.ModTime())
 	}
 }
 

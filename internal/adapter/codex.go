@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -118,6 +119,15 @@ func (c *Codex) setupEnv(s Spec) (map[string]string, error) {
 	}
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return nil, err
+	}
+	// D8 (dialog-needs-you spec, batch-2 review): refresh the mtime on every
+	// setupEnv call, including Resume, so reclaimCodexHomes's snapshotAt
+	// guard sees a long-lived, still-in-use agent as recently touched rather
+	// than looking like a stale home from its original (possibly ancient)
+	// launch. Best-effort: a failure here must never block a launch.
+	now := time.Now()
+	if err := os.Chtimes(codexHome, now, now); err != nil {
+		c.d.Log("codex: refresh mtime of %s: %v", codexHome, err)
 	}
 	if c.d.UserHome != "" {
 		userAuth := filepath.Join(c.d.UserHome, ".codex", "auth.json")
