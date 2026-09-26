@@ -124,6 +124,30 @@ const errDecisionMismatch = "The user's native answer was %q, not %q."
 const errNativeAnswerWrongTarget = "%s is not an approve_section, approve_plan, approve_report, " +
 	"confirm_repos, or close_spike request you asked for."
 
+// errChildApprovalNoNativePath is native_prompt/native_answer's refusal for
+// a child's approval question (a msg_ ref) when the caller's kind has no
+// native question hook (questionHookKinds, spec section 1.7): cursor, muse
+// and codex never dispatch the hook that would bind an answered question
+// row to the ref, so native_answer could never find evidence for it and the
+// child would wait forever for an approval_result that never comes (finding
+// 1, docs/specs/2026-09-25-needs-you-and-child-approval-routing.md). These
+// kinds answer the child directly instead: a plain swarm_send closes the
+// question and the child treats that answer as its approval decision.
+const errChildApprovalNoNativePath = "Your agent kind has no native approval hook, so native_prompt/" +
+	"native_answer can never resolve this. Reply to the child directly: " +
+	`swarm_send(to: "<child>", kind: "answer", reply_to: %q, body: "<your decision>"); ` +
+	"the child treats that answer as the approval."
+
+// requireNativeApprovalHook refuses a child-approval (msg_ ref) native_prompt
+// or native_answer call for an agent kind whose native question tool isn't
+// hooked -- see errChildApprovalNoNativePath.
+func requireNativeApprovalHook(a Agent, msgID string) error {
+	if questionHookKinds[a.Kind] || a.Kind == Fake {
+		return nil
+	}
+	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(errChildApprovalNoNativePath, msgID)}
+}
+
 // decisionLabel maps native_answer's decision enum to the native prompt
 // label the bound row's response text must (case-fold) start with to count
 // as observed evidence (spec section 2.3.5).
@@ -170,6 +194,11 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 			return err
 		}
 		callerID = a.ID
+		if strings.HasPrefix(in.Ref, "msg_") {
+			if err := requireNativeApprovalHook(a, in.Ref); err != nil {
+				return err
+			}
+		}
 		return tx.QueryRowContext(ctx, `SELECT id, COALESCE(response_text,'') FROM requests
 			WHERE kind = 'question' AND agent_id = ? AND state = 'answered' AND responded_via = 'terminal'
 			  AND json_extract(binding_json, '$.ref') = ?
@@ -387,6 +416,9 @@ func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in 
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
+			return err
+		}
+		if err := requireNativeApprovalHook(a, in.ForMsg); err != nil {
 			return err
 		}
 		var fromName, body string

@@ -307,6 +307,43 @@ func latestEventPayload(t *testing.T, s *Store, eventType string) string {
 	return ""
 }
 
+// TestNativePromptForMsgRefusedForUnhookedOrchestratorKinds is finding 1
+// (docs/specs/2026-09-25-needs-you-and-child-approval-routing.md §6): cursor,
+// muse and codex have no native question hook (spec 1.7), so a child's
+// approval question sent to one of them can never grow a bound, hook-
+// answered question row -- native_answer would always refuse with
+// errNoNativeEvidence and the child would wait forever. native_prompt must
+// refuse up front for these kinds and point at the swarm_send fallback
+// instead of building a prompt nothing can ever answer.
+func TestNativePromptForMsgRefusedForUnhookedOrchestratorKinds(t *testing.T) {
+	ctx := context.Background()
+	for _, kind := range []AgentKind{Cursor, Muse, Codex} {
+		t.Run(string(kind), func(t *testing.T) {
+			s, _, _ := newStore(t)
+			orch, _, wSes := worker(t, s)
+			if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = ? WHERE id = ?`, string(kind), orch.ID); err != nil {
+				t.Fatal(err)
+			}
+			orchSes := mustSessionID(t, s, orch.ID)
+			q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
+			if err == nil || !strings.Contains(err.Error(), "swarm_send") ||
+				!strings.Contains(err.Error(), "kind: \"answer\"") {
+				t.Fatalf("err = %v, want a refusal pointing at swarm_send kind:\"answer\"", err)
+			}
+			// native_answer must refuse the same way even if the caller skips
+			// native_prompt and calls it directly.
+			if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: q, Decision: "approve"}); err == nil ||
+				!strings.Contains(err.Error(), "swarm_send") {
+				t.Fatalf("native_answer err = %v, want a refusal pointing at swarm_send", err)
+			}
+		})
+	}
+}
+
 // TestNativeAnswerChildApprovalObservedAndAgentReported is Task 13d: a
 // child's approval question resolves through native_answer into an
 // approval_result the child receives directly, with no separate request
