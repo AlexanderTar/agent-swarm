@@ -1,0 +1,7 @@
+  This workspace has not been trusted yet.
+
+  Trust this workspace to allow cursor-agent to read, edit, and execute
+  files in /Users/alex/.swarm/work/3 without asking each time.
+
+▶ [a] Trust this workspace
+  [q] Quit

@@ -91,10 +91,73 @@ func TestCursorProcessNamesAndIdle(t *testing.T) {
 	}
 }
 
-// §11.1: --yolo --trust --approve-mcps skip every dialog.
+// §11.1: --yolo --trust --approve-mcps skip every real approval dialog. D7
+// (dialog-needs-you spec) adds one detect-only entry (no Keys) so a
+// regression in the flag -- or a future cursor version adding a new dialog
+// with the same wording -- still surfaces as a Needs-you row instead of
+// silently stalling the pane.
 func TestCursorHasNoStartupDialogs(t *testing.T) {
-	if ds := newCursor(testDeps(t)).StartupDialogs(); len(ds) != 0 {
-		t.Fatalf("dialogs = %+v", ds)
+	ds := newCursor(testDeps(t)).StartupDialogs()
+	if len(ds) != 1 {
+		t.Fatalf("dialogs = %+v, want exactly one detect-only entry", ds)
+	}
+	if len(ds[0].Keys) != 0 {
+		t.Fatalf("dialogs[0].Keys = %v, want none (detect-only)", ds[0].Keys)
+	}
+	if ds[0].Title != "Trust this workspace" {
+		t.Fatalf("dialogs[0].Title = %q", ds[0].Title)
+	}
+}
+
+// D7: --trust and --workspace <cwd> must be on argv for both Launch and
+// Resume, every time -- a regression here is exactly what would bring the
+// dialog back.
+func TestCursorArgvAlwaysTrustsTheWorkspace(t *testing.T) {
+	d := testDeps(t)
+	spec := cursorSpec(t)
+	l, err := newCursor(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(l.Argv, " ")
+	if !strings.Contains(joined, "--trust") || !strings.Contains(joined, "--workspace "+spec.Cwd) {
+		t.Fatalf("Launch argv missing --trust/--workspace: %s", joined)
+	}
+	spec.ProviderSessionID = "chat-1"
+	r, err := newCursor(d).Resume(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(r.Argv, " ")
+	if !strings.Contains(joined, "--trust") || !strings.Contains(joined, "--workspace "+spec.Cwd) {
+		t.Fatalf("Resume argv missing --trust/--workspace: %s", joined)
+	}
+}
+
+// D7: the detect-only StartupDialogs/PromptPatterns entries must match the
+// live-captured "no flags" trust screen, and never send keys.
+func TestCursorTrustDialogIsDetectOnly(t *testing.T) {
+	fixture := pane(t, "cursor", "pane-dialog-trust.txt")
+	a := newCursor(testDeps(t))
+	ds := a.StartupDialogs()
+	if len(ds) != 1 || !ds[0].Match.MatchString(fixture) {
+		t.Fatalf("StartupDialogs = %+v, want one entry matching the fixture", ds)
+	}
+	var pm *PromptMatcher
+	for i := range a.PromptPatterns() {
+		p := a.PromptPatterns()[i]
+		if p.Title == "Trust this workspace" {
+			pm = &p
+		}
+	}
+	if pm == nil {
+		t.Fatal("no PromptPatterns entry titled \"Trust this workspace\"")
+	}
+	if pm.Action != "" {
+		t.Fatalf("Action = %q, want empty (detect-only)", pm.Action)
+	}
+	if !pm.Match.MatchString(fixture) || (pm.Require != nil && !pm.Require.MatchString(fixture)) {
+		t.Fatalf("PromptPatterns entry does not match the fixture: %+v", pm)
 	}
 }
 
