@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -405,6 +406,42 @@ func TestWakeOnQuotaReset(t *testing.T) {
 	}
 	if n2 != 0 {
 		t.Fatalf("second call: woken count = %d, want 0 (debounced)", n2)
+	}
+}
+
+// A skip here used to be silent (WakeOnQuotaReset dropped straight to the
+// next row with no log line), which hid every "pane not idle" quota-reset
+// wake behind a stuck-paste bug (2026-09-25 22:27Z, go-migration-agent-debug)
+// until the daemon was already hours into logging nothing useful about it.
+func TestWakeOnQuotaResetLogsSkipWhenPaneNotIdle(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Busy", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.captures[a.Name] = []string{"still working, no prompt here\n"} // not idle
+
+	s.DB.ExecContext(ctx, `UPDATE sessions SET waiting = 1 WHERE id = ?`, ses.ID)
+
+	var logs []string
+	s.Log = func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+
+	cutoff := tm.clk.Now().Add(-2 * time.Minute)
+	n, err := s.WakeOnQuotaReset(ctx, Fake, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("woken count = %d, want 0 (pane not idle)", n)
+	}
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, a.Name) && strings.Contains(l, ses.ID) && strings.Contains(l, "not idle") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("logs = %v, want a skip log naming %s and %s", logs, a.Name, ses.ID)
 	}
 }
 
