@@ -1,6 +1,7 @@
 # Plan: Needs you = everything waiting on the user, and a closed child → orchestrator → user loop with real native approvals
 
 - **Rev 3 (2026-09-25)**: follows the user's decisions in spec sections 1.5 and 1.6. Approvals appear in Needs you. Agent-reported approvals are accepted and flagged `agent_reported`. The green dot stays. The copy is locked. The web board follows the same rules (Tasks 17a-17b). The hook findings are in spec section 1.7. No open questions remain.
+- **Rev 4 (2026-09-26)**: adds Batch B6 (spec §1.8) — typed free text is accepted on any native approval prompt and forwarded with the meant decision (mismatch is refused only when the typed text picks the contradicting option), the "Request changes needs a comment" rule is removed, and Approve on `confirm_repos` confirms proposed + expansion repos together, minus dropped.
 
 - **Spec**: `docs/specs/2026-09-25-needs-you-and-child-approval-routing.md` (read sections 1.5-1.7 and 2 first)
 - **Base**: `origin/main` @ `bb67390`
@@ -19,7 +20,8 @@ The tasks are grouped into five build batches plus a final check. Each batch goe
 | **B3: Hook wiring + refusal** | T5, T6, T7, T8, T9 | Go (adapter, install, hook, mcpserver) | B1 and B2 | Opus, covering B2 and B3 |
 | **B4: Real native approvals** | T13a, T13b, T13c, T13d, T13e, T14 | Go (runtime, hook, httpapi, skills) | B3 | Opus, focused on B4 |
 | **B5: UI (menubar + web)** | T16, T17, then T15, T17a, T17b | Swift and web | T16/T17 start at T0; T15/T17a/T17b wait for B4 | One Opus review for all UI |
-| **Final** | T18 | Whole branch | B1–B5 | Opus review of the whole branch against the spec, then verification commands |
+| **B6: confirm_repos native routing polish** | T6.1, T6.2, T6.3, T6.4 | Go (runtime) + skills | B4 | Opus, focused on B6 |
+| **Final** | T18 | Whole branch | B1–B6 | Opus review of the whole branch against the spec, then verification commands |
 
 Rules for every batch:
 - The implementer (Sonnet) works through its tasks in plan order with TDD and commits per task.
@@ -664,6 +666,41 @@ export const needsYouRow = (r: Request): [string, string, string] =>
    - `NeedsYou.tsx`: each `<li>` becomes a `div` with `rounded bg-warn/15 px-2 py-1` (plus `ring-1 ring-warn` when selected). It holds a select `<button>` rendering `needsYouRow(r)` lines 1-3 (`truncate`, `text-muted` for line 1), and an icon `<button aria-label={C.openAgentTerminal}>`. The icon is disabled when `requestTarget` is `unavailable`, and hidden when it is null.
    - Remove `inboxRow` if it has no other users. Its test cases are ported to `needsYouRow`, not deleted.
 4. Run `pnpm test` (the whole web suite) → PASS. Commit: `feat(web): Needs-you inbox uses the generic yellow row and shared count`.
+
+---
+
+## Phase B6: confirm_repos native routing polish (spec §1.8)
+
+### Task 6.1: `confirm_repos` prompt lists every repo Approve will confirm
+**Files**: `internal/runtime/native_test.go`, `internal/runtime/native.go` (`nativePromptFor`'s `KindConfirmRepos` case, `~:85-106`)
+1. Test: extend `TestNativePromptForBuildsExactCopy`'s `confirm_repos` case (and add a second case) so a request whose `options_json` has both `proposed` (one entry marked `"source":"dropped"`) and `expansion` produces `Question` = `"Confirm <N> repositories for <KEY>: <kept1>, <kept2>, <expansion1>?\nDropped: <dropped1>."` + the ref token, where `N` counts every kept name (proposed non-dropped + all of expansion). A case with no dropped entries keeps the old one-line text (no `\nDropped:` clause).
+2. Run `go test ./internal/runtime/ -run TestNativePromptForBuildsExactCopy` → FAIL.
+3. Implement: read both `Proposed` and `Expansion` from `req.Options`, build `names` from proposed entries whose `Source != "dropped"` plus every expansion entry, and a separate `dropped` slice from proposed entries with `Source == "dropped"`; append `"\nDropped: " + strings.Join(dropped, ", ") + "."` when `len(dropped) > 0`, before `truncateWithToken`.
+4. Run it and see PASS. Also run `TestAskConfirmReposReturnsNativePrompt` (unaffected: no dropped/expansion entries there, same text as today). Commit: `feat(runtime): confirm_repos native prompt lists expansion and dropped repos`.
+
+### Task 6.2: typed free text is accepted; a contradicting option label is still refused
+**Files**: `internal/runtime/native_answer_test.go`, `internal/runtime/native.go` (`matchDecisionEvidence`, `~:186`; the comment-required check in `nativeAnswer`, `~:233`)
+1. Tests (new cases, existing ones stay and must still pass):
+   - `matchDecisionEvidence("Confirm endurio-chat and drop the docs repo", "Approve", "")` → `(EvidenceAgentReported, "Confirm endurio-chat and drop the docs repo", nil)` — typed free text with no option-label prefix is accepted and becomes the comment.
+   - `matchDecisionEvidence("Request changes: split the migration", "Approve", "")` → mismatch error (the user's text starts with the *other* label) — this already exists (`TestNativeAnswerApprovesOnlyWithMatchingEvidence` step 2) and must keep passing.
+   - `matchDecisionEvidence("actually let's go with request changes", "Approve", "")` → accepted as `agent_reported` (does not *start with* the other label, so it is free text, not a picked option).
+   - End-to-end: `hookSimulate(..., "Let's tighten scope first")` then `native_answer` with `Decision: "request_changes"` and no `Comment` succeeds, `ResponseText == "Let's tighten scope first"`, evidence `agent_reported` — this replaces the old refusal.
+2. Run `go test ./internal/runtime/ -run 'MatchDecision|NativeAnswer'` → FAIL.
+3. Implement: in `matchDecisionEvidence`, after the existing own-label prefix check, check whether `trimmed` starts with the *other* decision's label (case-fold) and return `errDecisionMismatch` only then; every other non-blank text (including the existing blank/"Resolved in terminal" case) returns `EvidenceAgentReported` with `comment` = `callerComment`, or `trimmed` when `callerComment == ""` and `trimmed` isn't blank/"Resolved in terminal". Delete `nativeAnswer`'s `if comment == "" { return …, errors.New("Add a comment describing what to change.") }` block entirely; keep the 2000-character cap check.
+4. Run it and see PASS. Run the full `go test ./internal/runtime/`. Commit: `feat(runtime): native_answer accepts typed free text, refuses only a contradicting option label`.
+
+### Task 6.3: Approve on confirm_repos confirms proposed + expansion, minus dropped
+**Files**: `internal/runtime/native_answer_test.go`, `internal/runtime/native.go` (`nativeAnswer`'s `KindConfirmRepos` branch, `~:291-306`)
+1. Test: extend `TestNativeAnswerConfirmRepos` with an `Expansion` entry alongside `Repos` on the `Ask(... "confirm_repos" ...)` call. After `hookSimulate(..., "Approve")` and `native_answer{Decision:"approve"}`, assert `out.Confirmed` contains both the proposed and expansion repo ids (order-independent). Add a second case: a proposed entry with `Source:"dropped"` is excluded from `out.Confirmed`. Add a `request_changes` case: `confirmed_repos`/`repos_version` on the root item are unchanged (read them before and after) and the outgoing message is `approval_result` with `"decision":"changes_requested"` (not `repos_confirmed`).
+2. Run `go test ./internal/runtime/ -run TestNativeAnswerConfirmRepos` → FAIL.
+3. Implement: in the `KindConfirmRepos` branch, decode both `Proposed` and `Expansion` from `req.Options` and build `ids` from proposed entries with `Source != "dropped"` plus every expansion entry (expansion entries are never `"dropped"`, but skip any that are, defensively).
+4. Run it and see PASS. Commit: `feat(runtime): native_answer confirms proposed and expansion repos together`.
+
+### Task 6.4: Skill copy for the Approve-confirms-everything contract
+**Files**: `skills/swarm-orchestrator/SKILL.md:64`
+1. No new test: `make skills-sync` re-mirrors the file, and `internal/install`'s existing skill-content test (if any, from Task 14) covers the mirrored copy — run `go test ./internal/install/` after the edit.
+2. Edit the confirm_repos sentence in the "Approving through native question tools" bullet to say: Approve on `confirm_repos` confirms every repository listed in the prompt (`repos_confirmed`); to change the list, the user picks Request changes (or types what to change) and the orchestrator re-asks `confirm_repos` with the revised `repos`/`expansion`. A typed answer to any native prompt is forwarded with whichever decision (`approve`/`request_changes`) the user meant, as free-text `comment`.
+3. Run `make skills-sync && git diff --exit-code internal/install/skills` (expect a diff before, none after) and `go test ./internal/install/`. Commit: `docs(skills): confirm_repos Approve confirms every listed repo; typed answers forward the meant decision`.
 
 ---
 

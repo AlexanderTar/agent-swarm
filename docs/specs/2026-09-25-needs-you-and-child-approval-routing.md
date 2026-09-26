@@ -106,6 +106,11 @@ Note: in **Gemini CLI**, `BeforeTool` for `ask_user` fires only *after* the user
 
 **Refused (hooked): claude, agy. Exception (native question invisible or unconfirmed, `swarm_ask question` stays available): cursor, muse, codex (pending a live retry).**
 
+### 1.8 B6: confirm_repos native routing polish (2026-09-26)
+
+1. **D1: typed free text is accepted on any daemon-issued native approval prompt.** The orchestrator interprets the user's typed ("Other") answer to a `native_prompt`, and forwards `decision: "approve" | "request_changes"` with that text as `comment`; the daemon does not refuse it as a mismatch. `native_answer` records it with `approval_evidence = agent_reported` (the typed text is the evidence — it becomes the stored `comment` when the caller sends none). Rationale: keep it simple, not too tight — the daemon cannot itself interpret free text, so it trusts the orchestrator's forwarded decision the same way it already trusts an agent-reported "Resolved in terminal" answer. `matchDecisionEvidence` (`internal/runtime/native.go`) still refuses a **mismatch**: text that (case-fold) starts with the *other* decision's option label — the user visibly picked "Approve" but the orchestrator forwarded `request_changes`, or the reverse — because that is forgeable evidence of the opposite decision, not free text. The "plain Request changes with no comment is refused" rule (`nativeAnswer`'s comment-required check) is removed: a comment is optional for `request_changes` on every path, native included; the 2000-character cap stays.
+2. **D2: Approve on `confirm_repos` confirms every listed repository in one go.** `native_answer`'s confirm_repos branch (and the native prompt's copy, section 6) treat the proposed repos and the expansion (suggested) repos as one list: Approve confirms proposed ∪ expansion, minus any entry marked `"source":"dropped"`. There is no separate approval step for the expansion set — the prompt already lists every repo Approve will confirm, so approving it once is enough. `request_changes` leaves `confirmed_repos`/`repos_version` untouched, as before.
+
 ---
 
 ## 2. Locked decisions
@@ -432,7 +437,7 @@ Native prompts (daemon-generated, exact):
 | `approve_section` | `Spike approval` | `Approve Spec section "<SectionTitle>" (rev <N>)? ⟦swarm:<req id>⟧` | `Approve`, `Request changes` |
 | `approve_plan` | `Spike approval` | `Approve the plan (rev <N>)?` + `\nWarnings:\n- <w>` when present + ` ⟦swarm:<req id>⟧` | same |
 | `approve_report` | `Spike approval` | `Approve the debug report (rev <N>)? ⟦swarm:<req id>⟧` | same |
-| `confirm_repos` | `Repositories` | `Confirm <N> repositories for <KEY>: <name1>, <name2>? ⟦swarm:<req id>⟧` | `Approve`, `Request changes` |
+| `confirm_repos` | `Repositories` | `Confirm <N> repositories for <KEY>: <name1>, <name2>?` (N/names = proposed ∪ expansion, minus dropped) + `\nDropped: <name>, <name>.` when any were dropped + ` ⟦swarm:<req id>⟧` | `Approve`, `Request changes` |
 | `close_spike` | `Close spike` | `Close <KEY>? ⟦swarm:<req id>⟧` | `Approve`, `Request changes` |
 | child approval | `<child> asks` | `<child body> ⟦swarm:<msg id>⟧` | `Approve`, `Request changes` |
 
