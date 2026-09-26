@@ -110,7 +110,7 @@ func questionsHaveBatchedSwarmRef(raw []byte) bool {
 		return false
 	}
 	for _, q := range payload.Questions {
-		if strings.Contains(q.Question, "⟦swarm:") {
+		if runtime.HasRefToken(q.Question) {
 			return true
 		}
 	}
@@ -620,7 +620,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			prompt, _ := extractQuestion(in.ToolName, in.RawToolInput)
 			answer := extractToolResponseText(in.ToolResponse, prompt)
 			if answer == "" {
-				answer = "Resolved in terminal"
+				answer = runtime.ResolvedInTerminal
 			}
 			req, err := h.RT.ResolveQuestionByPrompt(ctx, s.ID, prompt, answer)
 			if err != nil {
