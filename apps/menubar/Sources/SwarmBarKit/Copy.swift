@@ -297,6 +297,7 @@ public enum Copy {
 
     /// A stored effort slug's human label for the preview header.
     public static func humanEffort(_ slug: String) -> String {
+        if slug == "xhigh" { return "Extra high" }
         guard let first = slug.first else { return slug }
         return String(first).uppercased() + slug.dropFirst()
     }

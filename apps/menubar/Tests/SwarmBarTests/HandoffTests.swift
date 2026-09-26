@@ -54,6 +54,12 @@ final class HandoffTests: XCTestCase {
                        "login-coder · TASK-101 · Claude · Opus 4.6 (High)")
     }
 
+    func testHumanEffortLabels() {
+        XCTAssertEqual(Copy.humanEffort("high"), "High")
+        XCTAssertEqual(Copy.humanEffort("xhigh"), "Extra high")
+        XCTAssertEqual(Copy.humanEffort("max"), "Max")
+    }
+
     func testPaneHeaderOmitsEmptyEffort() {
         XCTAssertEqual(Copy.paneHeader("a", "T-1", "Claude", "Opus 4.6", nil),
                        "a · T-1 · Claude · Opus 4.6")
