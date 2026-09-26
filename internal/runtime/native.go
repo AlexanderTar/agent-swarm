@@ -72,8 +72,9 @@ func truncateWithToken(body, ref string) string {
 
 // nativePromptFor builds the daemon-issued native prompt for an approval-kind
 // request (spec section 6): approve_section, approve_plan, approve_report,
-// confirm_repos, close_spike. sectionTitle and warnings are only used by the
-// kinds that need them; passing them for the others is harmless.
+// confirm_repos, close_spike, accept_epic, accept_fix. sectionTitle and
+// warnings are only used by the kinds that need them; passing them for the
+// others is harmless.
 func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, sectionTitle string, warnings []string) (NativePrompt, error) {
 	switch req.Kind {
 	case KindApproveSection:
@@ -139,9 +140,31 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		}
 		q := fmt.Sprintf("Close %s?", key)
 		return NativePrompt{Header: "Close spike", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+	case KindAcceptEpic, KindAcceptFix:
+		var key, title string
+		if err := tx.QueryRowContext(ctx, `SELECT key, title FROM items WHERE id = ?`, req.ItemID).Scan(&key, &title); err != nil {
+			return NativePrompt{}, err
+		}
+		if req.Kind == KindAcceptFix {
+			q := fmt.Sprintf("Accept the fix for %s %q as done?", key, title)
+			return NativePrompt{Header: "Accept fix", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+		}
+		q := fmt.Sprintf("Accept %s %q as done?", key, title)
+		return NativePrompt{Header: "Accept epic", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
 	default:
 		return NativePrompt{}, nil
 	}
+}
+
+// NativePromptNextStep is the show-and-forward instruction that rides with
+// every daemon-issued native prompt: swarm_ask's result (mcpserver
+// requestOut) and the request_open relay share it verbatim (2026-09-26
+// epic-approval-lane; text unchanged from the native-railway-tracing fix).
+func NativePromptNextStep(ref string) string {
+	return fmt.Sprintf("Print the summary in chat first, not in the question. Then show native_prompt "+
+		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
+		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
+		"forwarding only what the user picked, never a decision they did not make.", ref)
 }
 
 // NativeAnswerNextStep is the PostToolUse hook's instruction once a native
