@@ -98,26 +98,51 @@ func TestNewSpike(t *testing.T) {
 	}
 }
 
-// A preflight failure leaves the agent row State "active" on the wire (there
-// is no failed AgentState), with preflight_error set instead. The CLI must
-// read that field and print the failure, never "is active".
+// A preflight failure (agent installed but, say, not signed in) leaves the
+// agent row State "active" on the wire (there is no failed AgentState), with
+// preflight_error set instead. The CLI must read that field, print the
+// failure to stderr (not stdout), and never claim "is active".
 func TestNewPrintsAPreflightFailureNotIsActive(t *testing.T) {
 	srv, _, home := stubDaemon(t, map[string]string{
 		"POST /api/spikes": `{"item":{"key":"SPIKE-4","title":"Look into it"},
-			"agent":{"name":"look-into-it","state":"active","preflight_error":"No agent kind given and no default is set for spikes; pass --agent."},"queued":false}`,
+			"agent":{"name":"look-into-it","state":"active","preflight_error":"Claude isn't installed on this Mac."},"queued":false}`,
 	})
 	defer srv.Close()
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	code := run([]string{"new", "--home", home, "--url", srv.URL, "--name", "Look into it",
-		"--intent", "feature", "--request", "do it"}, &out, &out)
+		"--intent", "feature", "--request", "do it"}, &out, &errOut)
 	if code == 0 {
-		t.Fatalf("a preflight failure must be a non-zero exit, got 0: %s", out.String())
+		t.Fatalf("a preflight failure must be a non-zero exit, got 0: stdout=%s stderr=%s", out.String(), errOut.String())
 	}
 	if strings.Contains(out.String(), "is active") {
-		t.Fatalf("output must not claim the agent is active on a preflight failure: %q", out.String())
+		t.Fatalf("stdout must not claim the agent is active on a preflight failure: %q", out.String())
 	}
-	if !strings.Contains(out.String(), "No agent kind given") {
-		t.Fatalf("output must surface the preflight error: %q", out.String())
+	if out.String() != "" {
+		t.Fatalf("a preflight failure must be reported on stderr, not stdout: %q", out.String())
+	}
+	if !strings.Contains(errOut.String(), "Claude isn't installed on this Mac.") {
+		t.Fatalf("stderr must surface the preflight error: %q", errOut.String())
+	}
+}
+
+// Distinct from a preflight failure (a 200 with preflight_error set): a
+// request-error, e.g. the 422 preflight_failed createSpike now returns when
+// StartSpike can't resolve any agent kind at all, comes back from c.do as an
+// error and goes through the existing fail() path.
+func TestNewPrintsARequestErrorFromTheDaemon(t *testing.T) {
+	srv, _, home := stubDaemon(t, nil) // no route -> 404 not_found from stubDaemon
+	defer srv.Close()
+	var out, errOut bytes.Buffer
+	code := run([]string{"new", "--home", home, "--url", srv.URL, "--name", "Look into it",
+		"--intent", "feature", "--request", "do it"}, &out, &errOut)
+	if code == 0 {
+		t.Fatalf("a request error must be a non-zero exit, got 0: %s", out.String())
+	}
+	if out.String() != "" {
+		t.Fatalf("a request error must be reported on stderr, not stdout: %q", out.String())
+	}
+	if errOut.String() == "" {
+		t.Fatal("a request error must be reported on stderr")
 	}
 }
 

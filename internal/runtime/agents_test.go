@@ -549,6 +549,16 @@ func TestStartSpikeOnPreflightFailureLeavesADraftAndAFailedAgent(t *testing.T) {
 	if got := lastNotified(t, s).Kind; got != "agent.preflight_failed" {
 		t.Fatalf("notification = %q", got)
 	}
+	// The preflight-failure agent row is still actually inserted (its INSERT
+	// error is no longer swallowed, but this is the non-error path: exactly
+	// one row exists under this agent's own name).
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE name = ?`, a.Name).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("agents named %q = %d, want 1", a.Name, n)
+	}
 }
 
 // swarm new without --agent sends an empty Kind: StartSpike must resolve it
@@ -1823,6 +1833,25 @@ func TestStartOrchestratorUsesRoleDefaultModelNotCatalogFirst(t *testing.T) {
 	}
 	if a.Kind != Claude || a.Model != "opus" {
 		t.Fatalf("agent = %+v, want role default model opus, not catalog-first fable", a)
+	}
+}
+
+// When resolveRoleDefault can't resolve a kind at all (no role default, no
+// enabled agents), StartOrchestrator falls back to Fake -- and, same as
+// before the resolveRoleDefault refactor, must still pick a model for it
+// from the catalog instead of leaving in.Model empty. That fallback can never
+// itself reach a successful StartOrchestrator return (Preflight always
+// refuses Fake when EnabledAgents is empty, which is the only way this
+// branch is reached), so the model fill is exercised directly through the
+// shared fillDefaultModel helper StartOrchestrator calls.
+func TestStartOrchestratorFakeFallbackStillPicksAModel(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if got := s.fillDefaultModel(ctx, Fake, ""); got != "fake-1" {
+		t.Fatalf("fillDefaultModel(Fake, \"\") = %q, want fake-1 from the catalog", got)
+	}
+	if got := s.fillDefaultModel(ctx, Fake, "already-set"); got != "already-set" {
+		t.Fatalf("fillDefaultModel must not override an already-set model, got %q", got)
 	}
 }
 

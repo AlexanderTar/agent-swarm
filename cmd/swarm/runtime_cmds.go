@@ -145,7 +145,7 @@ func cmdNew(args []string, stdout, stderr io.Writer) int {
 	// (there is no failed AgentState) with preflight_error set instead, so
 	// State alone is never enough to say the agent actually started.
 	if resp.Agent.PreflightError != nil && *resp.Agent.PreflightError != "" {
-		fmt.Fprintf(stdout, "%s created, but %s failed to start: %s\n", resp.Item.Key, resp.Agent.Name, *resp.Agent.PreflightError)
+		fmt.Fprintf(stderr, "%s created, but %s failed to start: %s\n", resp.Item.Key, resp.Agent.Name, *resp.Agent.PreflightError)
 		return 1
 	}
 	suffix := ""

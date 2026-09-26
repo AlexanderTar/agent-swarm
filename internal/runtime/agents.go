@@ -220,13 +220,24 @@ func (s *Store) resolveRoleDefault(ctx context.Context, role Role, kind AgentKin
 	if kind == "" {
 		return "", model, effort, false
 	}
-	if model == "" {
-		models, _, _ := s.Catalog.ModelsFor(ctx, kind)
-		if len(models) > 0 {
-			model = models[0].ID
-		}
+	return kind, s.fillDefaultModel(ctx, kind, model), effort, true
+}
+
+// fillDefaultModel returns model unchanged if it's already set, otherwise the
+// resolved kind's first catalog model. Shared by resolveRoleDefault's own
+// ok=true path and by StartOrchestrator's further fallback to Fake when
+// resolveRoleDefault can't resolve a kind at all -- that fallback picked a
+// model the same way before the resolveRoleDefault extraction, and must
+// keep doing so.
+func (s *Store) fillDefaultModel(ctx context.Context, kind AgentKind, model string) string {
+	if model != "" {
+		return model
 	}
-	return kind, model, effort, true
+	models, _, _ := s.Catalog.ModelsFor(ctx, kind)
+	if len(models) > 0 {
+		return models[0].ID
+	}
+	return model
 }
 
 func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, bool, error) {
@@ -241,6 +252,11 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		return "", Agent{}, false, errors.New("No agent kind given and no default is set for spikes; pass --agent.")
 	}
 
+	// ponytail: item creation and the agent-row INSERT below are separate
+	// transactions, so an INSERT failure (or any error between here and
+	// there) leaves this item as an orphaned draft with no agent, and a
+	// retry creates a second item instead of reusing it. Upgrade path: wrap
+	// both in one transaction.
 	it, err := s.Items.Create(ctx, items.CreateInput{
 		Type:           items.Spike,
 		Title:          in.Name,
@@ -437,6 +453,7 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		in.Kind, in.Model, in.Effort = kind, model, effort
 	} else {
 		in.Kind = Fake
+		in.Model = s.fillDefaultModel(ctx, in.Kind, in.Model)
 	}
 
 	origKind := in.Kind
