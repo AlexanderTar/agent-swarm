@@ -625,11 +625,21 @@ func (s *Store) ValidatePreservationReady(ctx context.Context, opID string) erro
 	return nil
 }
 
-// blockOperation marks the operation explicitly blocked with the reason.
+// blockOperation marks the operation explicitly blocked with the reason. The
+// write is a compare-and-swap against the nonterminal phase just read: a
+// checkpoint binding that lands after a driver moved the operation on (or
+// finished it) fails the swap instead of clobbering the newer phase.
 func (s *Store) blockOperation(ctx context.Context, opID, reason string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE agent_operations SET phase = 'blocked',
-		error = ?, updated_at = ? WHERE id = ?`, reason, db.Millis(s.Now()), opID)
-	return err
+	op, err := s.getOperation(ctx, opID)
+	if err != nil {
+		return err
+	}
+	if isTerminalPhase(op.Phase) {
+		return errPhaseRaced
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		return casPhaseTx(ctx, tx, opID, op.Phase, PhaseBlocked, reason, s.Now())
+	})
 }
 
 // bindHandoffCheckpoint is WriteCheckpoint's post-commit binding: a

@@ -1492,7 +1492,10 @@ func (s *Store) Cancel(ctx context.Context, name, sessionID, requestID string) (
 	}
 	// Continuity: user Cancel stops execution, disables auto-restart and
 	// retains identity -- and wins over any pending replacement launch, so
-	// in-flight operations are cancelled before anything is killed.
+	// in-flight operations are cancelled before anything is killed. The
+	// operation driver lock makes that atomic against a driver mid-launch:
+	// either the launch finished (and is killed below) or it never starts.
+	defer lockAgentOperations(a.ID)()
 	if err := s.tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE agents SET auto_restart = 0 WHERE id = ?`, a.ID); err != nil {
 			return err

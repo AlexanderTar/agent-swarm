@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -270,10 +271,14 @@ func (s *Store) CancelOperation(ctx context.Context, opID string) (Operation, er
 	if err != nil {
 		return Operation{}, err
 	}
+	defer lockAgentOperations(op.AgentID)()
+	if op, err = s.getOperation(ctx, opID); err != nil {
+		return Operation{}, err
+	}
 	if isTerminalPhase(op.Phase) {
 		return op, nil
 	}
-	if err := s.setPhase(ctx, opID, PhaseCancelled, "cancelled"); err != nil {
+	if err := s.setPhase(ctx, opID, op.Phase, PhaseCancelled, "cancelled"); err != nil {
 		return Operation{}, err
 	}
 	op.Phase = PhaseCancelled
@@ -361,11 +366,9 @@ func (s *Store) getOperation(ctx context.Context, opID string) (Operation, error
 	return op, nil
 }
 
-func (s *Store) setPhase(ctx context.Context, opID string, to OperationPhase, errMsg string) error {
+func (s *Store) setPhase(ctx context.Context, opID string, from, to OperationPhase, errMsg string) error {
 	if err := s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE agent_operations SET phase = ?, error = ?, updated_at = ?
-			WHERE id = ?`, string(to), errMsg, db.Millis(s.now()), opID)
-		return err
+		return casPhaseTx(ctx, tx, opID, from, to, errMsg, s.now())
 	}); err != nil {
 		return err
 	}
@@ -373,6 +376,42 @@ func (s *Store) setPhase(ctx context.Context, opID string, to OperationPhase, er
 	// refetch state and the replacement field drives handoff progress.
 	s.publishOperationProgress(ctx, opID)
 	return nil
+}
+
+// errPhaseRaced reports that an operation left the phase a writer observed:
+// another driver (or Cancel) moved it first. The writer's transaction rolls
+// back and the driver re-reads instead of overwriting the newer phase.
+var errPhaseRaced = errors.New("operation phase changed under this writer")
+
+// casPhaseTx is the one operation phase write: from -> to only while the row
+// is still in from. Run it first in a transaction so a lost race rolls back
+// every side effect written beside it.
+func casPhaseTx(ctx context.Context, tx *sql.Tx, opID string, from, to OperationPhase, errMsg string, now time.Time) error {
+	res, err := tx.ExecContext(ctx, `UPDATE agent_operations SET phase = ?, error = ?, updated_at = ?
+		WHERE id = ? AND phase = ?`, string(to), errMsg, db.Millis(now), opID, string(from))
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return errPhaseRaced
+	}
+	return nil
+}
+
+// operationLocks serializes every driver of one agent's operations (the
+// request's own walk, reconcile's ResumeOperations, Cancel), like
+// workflowLocks does for the engine: the phase CAS stops a stale overwrite,
+// the lock stops two drivers from both reaching a side effect such as a
+// successor launch.
+var operationLocks sync.Map // agent id -> *sync.Mutex
+
+func lockAgentOperations(agentID string) func() {
+	v, _ := operationLocks.LoadOrStore(agentID, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // publishOperationProgress emits one agent.changed for the operation's
@@ -402,6 +441,11 @@ func (s *Store) publishOperationProgress(ctx context.Context, opID string) {
 // a racing retry or resume double-launch a successor, so a mismatch blocks
 // the operation instead.
 func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, error) {
+	first, err := s.getOperation(ctx, opID)
+	if err != nil {
+		return Operation{}, err
+	}
+	defer lockAgentOperations(first.AgentID)()
 	for i := 0; i < len(nonterminalPhases)+2; i++ {
 		op, err := s.getOperation(ctx, opID)
 		if err != nil {
@@ -419,14 +463,14 @@ func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, e
 			return Operation{}, err
 		}
 		if latest.ID != op.SessionID {
-			_ = s.setPhase(ctx, opID, PhaseBlocked,
+			_ = s.setPhase(ctx, opID, op.Phase, PhaseBlocked,
 				fmt.Sprintf("session %s changed under this operation; refusing to act on %s.", op.SessionID, latest.ID))
 			return s.getOperation(ctx, opID)
 		}
 		var parked bool
 		switch op.Phase {
 		case PhaseRequested:
-			if err := s.setPhase(ctx, opID, PhasePreserving, ""); err != nil {
+			if err := s.setPhase(ctx, opID, PhaseRequested, PhasePreserving, ""); err != nil && !errors.Is(err, errPhaseRaced) {
 				return Operation{}, err
 			}
 		case PhasePreserving:
@@ -438,25 +482,25 @@ func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, e
 				parked = true
 				break
 			}
-			if err := s.stopPredecessor(ctx, op, a, latest); err != nil {
+			if err := s.stopPredecessor(ctx, op, a, latest); err != nil && !errors.Is(err, errPhaseRaced) {
 				return Operation{}, err
 			}
 		case PhaseStopping:
 			parked, err = s.settlePredecessor(ctx, op)
-			if err != nil {
+			if err != nil && !errors.Is(err, errPhaseRaced) {
 				return Operation{}, err
 			}
 		case PhaseReady:
-			if err := s.setPhase(ctx, opID, PhaseQueued, ""); err != nil {
+			if err := s.setPhase(ctx, opID, PhaseReady, PhaseQueued, ""); err != nil && !errors.Is(err, errPhaseRaced) {
 				return Operation{}, err
 			}
 		case PhaseQueued:
 			parked, err = s.admitOperation(ctx, op, a, latest)
-			if err != nil {
+			if err != nil && !errors.Is(err, errPhaseRaced) {
 				return Operation{}, err
 			}
 		case PhaseStarting:
-			if err := s.startSuccessor(ctx, op, a, latest); err != nil {
+			if err := s.startSuccessor(ctx, op, a, latest); err != nil && !errors.Is(err, errPhaseRaced) {
 				return Operation{}, err
 			}
 		}
@@ -504,6 +548,15 @@ func (s *Store) stopPredecessor(ctx context.Context, op Operation, a Agent, ses 
 	}
 	_ = s.Tmux.Kill(ctx, ses.TmuxName)
 	return s.tx(ctx, func(tx *sql.Tx) error {
+		// A pause replacement has no successor: the paused session is the
+		// end state, so stopping lands straight on succeeded.
+		to := PhaseStopping
+		if op.Mode == ModePause {
+			to = PhaseSucceeded
+		}
+		if err := casPhaseTx(ctx, tx, op.ID, PhasePreserving, to, "", s.now()); err != nil {
+			return err
+		}
 		key, err := s.itemKey(ctx, tx, a.ItemID)
 		if err != nil {
 			return err
@@ -527,22 +580,6 @@ func (s *Store) stopPredecessor(ctx context.Context, op Operation, a Agent, ses 
 				return err
 			}
 		}
-		phase := PhaseStopping
-		if op.Mode == ModePause {
-			// A pause replacement has no successor: the paused session is
-			// the end state, so stopping lands straight on succeeded.
-			_, err = tx.ExecContext(ctx, `UPDATE agent_operations SET phase = 'succeeded', updated_at = ? WHERE id = ?`,
-				db.Millis(s.now()), op.ID)
-			if err != nil {
-				return err
-			}
-			return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE agent_operations SET phase = ?, updated_at = ? WHERE id = ?`,
-			string(phase), db.Millis(s.now()), op.ID)
-		if err != nil {
-			return err
-		}
 		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
 }
@@ -564,7 +601,7 @@ func (s *Store) settlePredecessor(ctx context.Context, op Operation) (parked boo
 	if err := s.revokeAgentTokens(ctx, op.AgentID); err != nil {
 		return false, err
 	}
-	if err := s.setPhase(ctx, op.ID, PhaseReady, ""); err != nil {
+	if err := s.setPhase(ctx, op.ID, PhaseStopping, PhaseReady, ""); err != nil {
 		return false, err
 	}
 	return false, nil
@@ -635,8 +672,7 @@ func (s *Store) admitOperation(ctx context.Context, op Operation, a Agent, lates
 		if !admitted {
 			return nil
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_operations SET phase = 'starting', updated_at = ? WHERE id = ?`,
-			db.Millis(s.now()), op.ID); err != nil {
+		if err := casPhaseTx(ctx, tx, op.ID, PhaseQueued, PhaseStarting, "", s.now()); err != nil {
 			return err
 		}
 		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
@@ -760,8 +796,7 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 	}
 	succ, err := s.startSession(ctx, a, latest.Attempt, latest.Generation+1, false, "", succMode)
 	if err != nil {
-		_ = s.setPhase(ctx, op.ID, PhaseBlocked, err.Error())
-		return nil
+		return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
 	}
 	s.go_(func() {
 		if err := s.watchStartup(context.WithoutCancel(ctx), a, succ, s.Adapters[a.Kind]); err != nil {
@@ -769,6 +804,9 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 		}
 	})
 	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := casPhaseTx(ctx, tx, op.ID, PhaseStarting, PhaseSucceeded, "", s.now()); err != nil {
+			return err
+		}
 		if err := s.repointRequestsTx(ctx, tx, a.ID, succ.ID); err != nil {
 			return err
 		}
@@ -786,11 +824,6 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 			ItemKey: key, Args: map[string]string{"name": a.Name, "N": fmt.Sprint(succ.Attempt), "KEY": key}}); err != nil {
 			return err
 		}
-		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE agent_operations SET phase = 'succeeded', updated_at = ? WHERE id = ?`,
-			db.Millis(s.now()), op.ID)
-		return err
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
 }
