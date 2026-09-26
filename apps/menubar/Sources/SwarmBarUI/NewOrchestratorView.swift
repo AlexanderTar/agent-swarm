@@ -25,8 +25,15 @@ public struct NewOrchestratorView: View {
                     }
                     .scrollIndicators(.automatic)
                 } else {
-                    formContents(maxRows: geometry.size.height >= 700 ? 8 : 6)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    ViewThatFits(in: .vertical) {
+                        formContents(maxRows: geometry.size.height >= 700 ? 8 : 6)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        ScrollView {
+                            formContents(maxRows: 4)
+                                .background(SubtleScrollerConfig())
+                        }
+                        .scrollIndicators(.automatic)
+                    }
                 }
             }
             Divider()
@@ -174,8 +181,9 @@ struct RepoChooser: View {
     @Binding var selection: Set<String>
     var emptyTitle = "No repositories found."
 
-    static func visibleHeight(for _: Int, maxRows: Int = 8) -> CGFloat {
-        CGFloat(min(8, max(1, maxRows))) * 30
+    static func visibleHeight(for count: Int, maxRows: Int = 8) -> CGFloat {
+        let visibleRows = count == 0 ? 4 : count
+        return CGFloat(min(8, max(1, min(maxRows, visibleRows)))) * 30
     }
 
     var body: some View {

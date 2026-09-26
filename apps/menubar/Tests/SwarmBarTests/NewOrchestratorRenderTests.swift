@@ -7,6 +7,71 @@ import XCTest
 
 @MainActor
 final class NewOrchestratorRenderTests: XCTestCase {
+    func testLongSubmissionErrorAloneUsesOuterScroll() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        for index in 0..<12 {
+            client.reposResponse.all.append(Repo(id: "extra-\(index)", name: "project-\(index)",
+                                                  path: "/Users/alex/GitHub/project-\(index)"))
+        }
+        await form.load()
+        form.name = "x"
+        client.spikeResult = .failure(.api(status: 422, code: "preflight_failed",
+                                           message: String(repeating: "Repository needs attention. ", count: 28)))
+        _ = await form.submit()
+        let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 700)
+        host.layoutSubtreeIfNeeded()
+        func scrolls(in view: NSView) -> [NSScrollView] {
+            let own = (view as? NSScrollView).map { [$0] } ?? []
+            return own + view.subviews.flatMap(scrolls)
+        }
+        let views = scrolls(in: host)
+        XCTAssertEqual(views.count, 3)
+        guard views.count == 3 else { return }
+        let outer = views[0].convert(views[0].bounds, to: host)
+        XCTAssertLessThan(outer.maxY, host.bounds.height - 30)
+        XCTAssertGreaterThan(views[2].convert(views[2].bounds, to: host).maxY, outer.maxY)
+    }
+
+    func testOrdinaryTextOverflowUsesOuterScrollAndKeepsFooterOutsideIt() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        for index in 0..<12 {
+            client.reposResponse.all.append(Repo(id: "extra-\(index)", name: "project-\(index)",
+                                                  path: "/Users/alex/GitHub/project-\(index)"))
+        }
+        await form.load()
+        form.name = "x"
+        client.spikeResult = .failure(.api(status: 422, code: "preflight_failed",
+                                           message: String(repeating: "Repository needs attention. ", count: 12)))
+        _ = await form.submit()
+        form.name = "🔥"
+        form.setAgent("agy")
+        client.failNext = .api(status: 500, code: "scan_failed",
+                               message: String(repeating: "Could not scan repository. ", count: 10))
+        await form.search()
+        let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 700)
+        host.layoutSubtreeIfNeeded()
+        func scrolls(in view: NSView) -> [NSScrollView] {
+            let own = (view as? NSScrollView).map { [$0] } ?? []
+            return own + view.subviews.flatMap(scrolls)
+        }
+        let views = scrolls(in: host)
+        XCTAssertEqual(views.count, 3, "overflowing form needs a last-resort outer scroll view")
+        guard let outer = views.first, views.count == 3 else { return }
+        XCTAssertGreaterThan(views.last!.convert(views.last!.bounds, to: host).maxY,
+                             outer.convert(outer.bounds, to: host).maxY,
+                             "Request extends beyond the viewport and must be reachable by scrolling")
+        XCTAssertLessThan(outer.convert(outer.bounds, to: host).maxY, host.bounds.height - 30,
+                          "footer stays outside the form scroll view")
+    }
+
     func testRequestEditorUsesOverlayScroller() {
         let host = NSHostingView(rootView: RequestEditor(text: .constant("A request")))
         host.frame = NSRect(x: 0, y: 0, width: 500, height: 200)
@@ -135,10 +200,10 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertEqual(editor.scrollerStyle, .overlay)
         XCTAssertTrue(editor.autohidesScrollers)
         XCTAssertEqual(editor.verticalScroller?.controlSize, .small)
-        XCTAssertEqual(list.bounds.height, name == "large-text" ? 120 : 240,
-                       "empty, loading, error, and populated lists reserve the same bounded viewport")
+        XCTAssertEqual(list.bounds.height, name == "twelve-repos" ? 240 : 120,
+                       "four rows fit tightly while empty and error states keep a bounded placeholder")
         XCTAssertGreaterThanOrEqual(editor.bounds.height, 100)
-        if name == "normal" { XCTAssertGreaterThanOrEqual(editor.bounds.height, 150) }
+        if name == "normal" { XCTAssertGreaterThanOrEqual(editor.bounds.height, 250) }
         if name == "twelve-repos" { XCTAssertGreaterThanOrEqual(editor.bounds.height, 150) }
         XCTAssertLessThanOrEqual(editor.convert(editor.bounds, to: host).maxY, host.bounds.height - 45)
         XCTAssertGreaterThanOrEqual(host.fittingSize.width, 760)
@@ -173,7 +238,8 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(RequestEditor.minimumHeight, 100)
         XCTAssertEqual(RepoChooser.visibleHeight(for: 12, maxRows: 6), 180)
         XCTAssertEqual(RepoChooser.visibleHeight(for: 12), 240)
-        XCTAssertEqual(RepoChooser.visibleHeight(for: 0), 240)
-        XCTAssertEqual(RepoChooser.visibleHeight(for: 3), 240)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 0), 120)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 3), 90)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 4), 120)
     }
 }
