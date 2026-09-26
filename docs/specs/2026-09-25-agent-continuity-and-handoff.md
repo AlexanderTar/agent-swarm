@@ -1,6 +1,8 @@
 # Durable agents, safe pause and handoff (rebased on latest main)
 
-Status: proposed design for review; implementation is not started.
+Status: implemented on `feat/agent-continuity-integration` (review fixes
+applied 2026-09-26), except the Pause deferral noted in §1 and §3; follow-up
+plan `docs/plans/2026-09-26-pause-shares-replacement-operation.md`.
 Supersedes `docs/specs/2026-09-24-agent-continuity-and-handoff.md` and its
 investigation/plan, whose baselines are stale (main `f40de3f`, unmerged PR #20
 `278ded1`, local worktrees `8eaf92f`/`1fe8bd7`). Do not use those baselines.
@@ -17,6 +19,17 @@ role, assignment, parent, finished/live children, worktrees, artifacts, inbox,
 settings and progress. Handoff saves current work and starts a fresh provider
 session for the same entity. Pause performs the same preservation but waits
 for Resume instead of launching a successor.
+
+Pause deferral (current state): Pause shares Handoff's notice path (control
+message, PAUSE/HANDOFF preservation notice, Stop-hook block), its deadline
+(pause_deadline_at with TickPause interrupt/kill) and its hook policy
+(preservation-mode tool/command rules). Pause does NOT yet create an
+`agent_operations` row, assemble a manifest, or pass the ready gate; only
+Handoff and recover do. This is safe for now because nothing auto-launches
+after Pause (the session parks paused until an explicit Resume or Handoff),
+and Resume re-checks worktree HEAD/status and durable state before editing,
+so no successor ever inherits an unvalidated save. A later Handoff of a
+paused agent runs the full operation, manifest and ready gate.
 
 Also deliver: menubar right-click Handoff action; removal of the generated
 `[swarm]` prefix from agent-message delivery; preview header order name,
@@ -101,7 +114,9 @@ name; revoke predecessor credentials before successor activation; prove the
 old process and managed writers are gone before granting write access.
 Daemon restart resumes from durable phase. Cancel wins over pending launch.
 
-Preservation (shared by Pause and Handoff; Pause disables auto-launch):
+Preservation (shared by Pause and Handoff; Pause disables auto-launch; the
+operation row, manifest and ready gate are Handoff/recover-only for now, see
+the Pause deferral in §1):
 predecessor stops new work, finishes/interrupts its atomic action, and may
 use read/edit/shell/wait/commit under existing permissions — denying only
 delegation, new workflow steps, push/deploy, and completed checkpoints.
