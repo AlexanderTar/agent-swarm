@@ -120,12 +120,12 @@ final class MenuLabelTests: XCTestCase {
         XCTAssertEqual(UsageSection.rows(bare, format: format)[0].fraction, 1)
     }
 
-    /// agy's wire carries its native Gemini quota only (2026-09-26): the label
-    /// and the usage panel show Gemini, never the Claude & GPT models agy also offers.
-    func testAgyShowsNativeGeminiUsageOnly() {
+    /// agy's label tracks its native Gemini quota only; the Claude & GPT models
+    /// agy also offers are extra rows in the usage panel, never in the label or its tooltip.
+    func testAgyLabelTracksGeminiAndPanelListsExtraModels() {
         let agy = usage[2]
         XCTAssertEqual(agy.agent, .agy)
-        XCTAssertEqual(UsageSection.rows(agy, format: format).map(\.label), ["Gemini 5h", "Gemini weekly"])
+        XCTAssertEqual(UsageSection.rows(agy, format: format).map(\.label), ["Gemini 5h", "Gemini weekly", "Claude & GPT 5h"])
         let l = MenuLabel.make(activeCount: 0, connected: true, enabled: [.agy], usage: usage, compact: false, format: format)
         XCTAssertEqual(texts(l), ["agy 6%"])
         XCTAssertFalse(l.segments[0].tooltip.contains("Claude"), l.segments[0].tooltip)

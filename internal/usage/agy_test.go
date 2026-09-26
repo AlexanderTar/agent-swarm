@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -37,15 +36,14 @@ func TestAgyBuckets(t *testing.T) {
 	if m := byLabel["Gemini weekly"]; m.UsedPct != 50 {
 		t.Errorf("Gemini weekly = %+v", m)
 	}
-	// Claude & GPT inside agy are extra models, not agy's native Gemini
-	// quota: they are not reported at all (2026-09-26 spec L4).
-	for label := range byLabel {
-		if strings.HasPrefix(label, "Claude & GPT") {
-			t.Errorf("extra-model meter %q reported", label)
-		}
+	// Claude & GPT inside agy are extra models: still reported as rows for
+	// the usage panel (missing fraction = fully used, disabled skipped), but
+	// never the headline.
+	if m := byLabel["Claude & GPT 5h"]; m.ID != "cgpt_5h" || m.UsedPct != 100 {
+		t.Errorf("Claude & GPT 5h = %+v", m)
 	}
-	if len(meters) != 2 {
-		t.Errorf("meters = %+v, want only the two Gemini meters", meters)
+	if len(meters) != 3 {
+		t.Errorf("meters = %+v, want two Gemini meters and Claude & GPT 5h", meters)
 	}
 	// the headline is the native Gemini 5h bucket
 	if headline != "gemini_5h" {
@@ -54,8 +52,7 @@ func TestAgyBuckets(t *testing.T) {
 }
 
 // A missing remainingFraction counts as fully used and a disabled bucket is
-// skipped -- moved here from TestAgyBuckets, whose Claude & GPT group used
-// to carry both cases, now that that group is no longer reported.
+// skipped, on the Gemini group itself.
 func TestAgyBucketsMissingFractionAndDisabled(t *testing.T) {
 	body := `{"groups":[{"displayName":"Gemini Models","buckets":[
 	  {"window":"5h","disabled":false},
@@ -86,10 +83,8 @@ func TestAgyHeadlineIsGeminiEvenWhenExtraModelsAreBusier(t *testing.T) {
 	if headline != "gemini_5h" {
 		t.Fatalf("headline = %q, want gemini_5h", headline)
 	}
-	for _, m := range meters {
-		if strings.HasPrefix(m.ID, "cgpt") {
-			t.Fatalf("meters = %+v, want no Claude & GPT meters", meters)
-		}
+	if len(meters) != 4 {
+		t.Fatalf("meters = %+v, want Gemini and Claude & GPT rows", meters)
 	}
 }
 

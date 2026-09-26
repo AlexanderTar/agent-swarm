@@ -33,7 +33,7 @@ User rules, not to be reopened:
 - **L1.** A new worker's agent kind and model always come from the user's settings (the role default), unless the user explicitly requested an override. The request can come at orchestrator setup (spawn brief, or `swarm new`/`start` flags / board Start dialog role overrides) or interactively via the agent (the user told the orchestrator to use X).
 - **L2.** A usage fallback stays allowed (automatic, not the orchestrator's choice) but must be visible.
 - **L3.** All generated agent names are kebab-case: lowercase, `[a-z0-9-]`, repeats collapsed, trimmed. Existing DB rows are not renamed.
-- **L4.** The menubar always shows native Gemini usage for agy; the extra (Claude & GPT inside agy) models are not shown.
+- **L4.** The menubar label always tracks native Gemini usage for agy. The extra (Claude & GPT inside agy) models stay visible as rows in the usage panel, but never in the label, its tooltip, or the usage gate. (Revised 2026-09-26 at the user's request: the first cut dropped the rows entirely.)
 - **L5.** Never delete tests; port them when a contract changes.
 
 Design decisions (this spec):
@@ -42,7 +42,7 @@ Design decisions (this spec):
 - **D1a. Ceiling:** the `override_reason` / `reason` check is trust-based. Any non-empty string passes; the daemon cannot verify the user actually asked. It records and surfaces the claim, it does not guarantee it. Marked with a `ponytail:` comment at the check in `internal/mcpserver/orchestrator.go`. Upgrade path: bind an override to a user-originated message id.
 - **D3.** One nullable column `agents.kind_reason` records why a worker's kind/model is not the plain settings default. Set by `runtime.Spawn` (explicit override, parent role override), and by every usage-fallback substitution (`Spawn`, `startQueued`, `Retry`). NULL means "came from the user's settings".
 - **D4.** Board/HTTP start of orchestrators and spikes is unchanged: those are the user's own choices.
-- **D5.** agy: drop the known extra group `Claude and GPT models` in `ParseAgyQuota`; keep unknown groups (robust to a new or renamed Gemini group); headline is `gemini_5h` when present, else the busiest remaining 5h meter. This fixes the menubar and the false exhaustion gate in one place.
+- **D5.** agy: `ParseAgyQuota` still emits the known extra group `Claude and GPT models` (`cgpt_*`), but it never competes for the headline; unknown groups can (robust to a new or renamed Gemini group); headline is `gemini_5h` when present, else the busiest non-extra 5h meter. The menubar label tooltip skips agy `cgpt_*` meters. This fixes the menubar and the false exhaustion gate in one place.
 - **D6.** Name fix in `defaultName` only: `ids.Kebab(slug + "-" + string(role))`. `ids.Kebab` is the one shared normalizer.
 
 Assumption: `kind_reason` is shown on the board agent row only; the menubar agent list does not render it (its `Wire.swift` decoder ignores unknown keys).
@@ -88,7 +88,7 @@ MCP `swarm_spawn` schema adds `"override_reason":{"type":"string"}`. MCP `swarm_
 
 HTTP `AgentNode` (`internal/httpapi/runtime.go` `agentNodeWire`) adds `KindReason *string \`json:"kind_reason"\`` (null when empty). Web `types.ts` `AgentNode` adds `kind_reason: string | null`.
 
-agy meters: IDs/labels unchanged for the Gemini group (`gemini_5h`, `gemini_weekly`, labels `Gemini 5h`, `Gemini weekly`); `cgpt_*` meters no longer emitted.
+agy meters: IDs/labels unchanged for the Gemini group (`gemini_5h`, `gemini_weekly`, labels `Gemini 5h`, `Gemini weekly`); `cgpt_*` meters still emitted as panel rows, never the headline.
 
 ## Screens
 
@@ -122,7 +122,7 @@ Changed:
 - `internal/runtime/limits.go` (startQueued fallback reason)
 - `internal/mcpserver/orchestrator.go` (swarm_spawn override_reason, swarm_role_overrides reason)
 - `internal/httpapi/runtime.go` (kind_reason on AgentNode)
-- `internal/usage/agy.go` (drop cgpt group, Gemini headline)
+- `internal/usage/agy.go` (cgpt group never headline, Gemini headline)
 - `web/src/types.ts`, `web/src/components/AgentRow.tsx`, `web/src/mock/daemon.ts`, `web/src/logic/agentActions.ts` fixtures as needed
 - `skills/swarm-orchestrator/SKILL.md` + `make skills-sync` → `internal/install/skills/…`
 - Tests: `internal/runtime/agents_test.go`, `internal/runtime/fallback_test.go`, `internal/mcpserver/*_test.go`, `internal/usage/agy_test.go`, `internal/usagegate/usagegate_test.go` (if it needs a real agy case), `web/src/components/AgentRow.test.tsx`, `apps/menubar/Tests/…`
@@ -144,7 +144,7 @@ Deleted: nothing.
    - usage fallback on spawn → fallback kind, reason contains `is out of usage`; same for a queued agent drained by `startQueued`;
    - `swarm_role_overrides set` without reason → refused; with reason → set;
    - ui_reviewer default name → `<slug>-ui-reviewer`;
-   - agy quota with a 100 % cgpt group and 6 % Gemini → only Gemini meters, headline `gemini_5h`, gate not exhausted.
+   - agy quota with a 100 % cgpt group and 6 % Gemini → Gemini and cgpt meters, headline `gemini_5h`, gate not exhausted.
 5. Existing agents: tmux names and name lookups read the stored `agents.name`/`sessions.tmux_name`, so only new names change.
 
 ## Explicitly out of scope
@@ -153,5 +153,5 @@ Deleted: nothing.
 - Renaming existing agents or tmux sessions.
 - A reason UI in the board Start dialog or the menubar agent list.
 - Changing fallback selection, thresholds, or the claude/codex/cursor/muse usage parsers.
-- Showing agy's Claude & GPT quota anywhere in Swarm.
+- Tracking agy's Claude & GPT quota in the menubar label or the usage gate.
 - Gating Claude/GPT models run inside agy: the usage gate reads only agy's native Gemini quota, and the extra-model meter is not shown in the menubar (user rule L4).

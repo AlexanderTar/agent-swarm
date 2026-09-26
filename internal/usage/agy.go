@@ -73,14 +73,16 @@ type agyQuota struct {
 }
 
 var agyGroups = map[string]struct{ id, label string }{
-	"Gemini Models": {"gemini", "Gemini"},
+	"Gemini Models":         {"gemini", "Gemini"},
+	"Claude and GPT models": {"cgpt", "Claude & GPT"},
 }
 
 // agyExtraGroups are the non-Gemini models agy also offers. Their quota is
-// not agy's native usage: they are not reported (the agy app shows them),
-// and must never drive the headline -- the usage gate reads the headline,
-// so a busy extra group would mark agy exhausted while Gemini is free.
-// Unknown groups are still reported, in case Gemini's group is renamed.
+// not agy's native usage: they are reported as rows for the usage panel but
+// must never drive the headline -- the menubar label and the usage gate
+// read the headline, so a busy extra group would mark agy exhausted while
+// Gemini is free. Unknown groups can still headline, in case Gemini's group
+// is renamed.
 var agyExtraGroups = map[string]bool{"Claude and GPT models": true}
 
 // ParseAgyQuota is §13's rule: used_pct = (1 - remainingFraction) × 100, a
@@ -95,9 +97,7 @@ func ParseAgyQuota(body []byte) ([]Meter, string, error) {
 	headline := ""
 	var headlineUsed float64 = -1
 	for _, g := range q.Groups {
-		if agyExtraGroups[g.DisplayName] {
-			continue
-		}
+		extra := agyExtraGroups[g.DisplayName]
 		group, ok := agyGroups[g.DisplayName]
 		if !ok {
 			group = struct{ id, label string }{g.DisplayName, g.DisplayName}
@@ -114,7 +114,7 @@ func ParseAgyQuota(body []byte) ([]Meter, string, error) {
 			id := group.id + "_" + b.Window
 			meters = append(meters, Meter{ID: id, Label: group.label + " " + b.Window,
 				Window: b.Window, UsedPct: usedPct, ResetsAt: parseResetsAt(b.ResetTime)})
-			if b.Window == "5h" && usedPct > headlineUsed {
+			if !extra && b.Window == "5h" && usedPct > headlineUsed {
 				headline, headlineUsed = id, usedPct
 			}
 		}
