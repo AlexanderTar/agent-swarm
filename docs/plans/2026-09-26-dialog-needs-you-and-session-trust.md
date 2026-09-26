@@ -428,8 +428,21 @@ branch `feat/dialog-needs-you`.
      - Record the matched title. After the loop, for every title in
        `openPromptTitles(r.SessionID)` other than the matched one, call
        `ResolveDialogPrompt` and `clearPromptState`.
-     - `idle` is still computed first. An idle pane matches no prompt, so its
-       titles clear.
+     - `idle` is still computed first. Put the resolve-on-clear loop
+       **after** the `if !idle { ... }` block, not inside it, so an idle pane
+       closes its rows.
+     - If `OpenDialogPrompt` errors: log it and `clearPromptState`, so the
+       next tick retries. `reqID` must not stay `"pending"`.
+     - Change the waiting early return to
+       `if waiting || s.hasEscalatedPrompt(r.SessionID) {`. Keep the
+       `sessions.waiting` update keyed on `waiting` only. An escalated
+       session then skips `notifyNoAck` and the stale check.
+   - **Extra test:**
+     `TestEscalatedPromptSuppressesNoAckForAChild`. Use a child session
+     (`worker(t, s)`) past `ackTimeout` with no checkpoint, whose prompt has
+     escalated. Assert no `messages` row whose payload contains `"no_ack"` is
+     enqueued to the parent. Use the same query the existing no-ack tests use:
+     `grep -n "no_ack" internal/runtime/reconcile_test.go`.
 4. **Run** `go test ./internal/runtime/ -run 'PromptPattern|Reconcile' -count=1`.
 5. **Commit:** `fix(runtime): reconcile matches prompts on stripped text, retries, and escalates to Needs you`.
 

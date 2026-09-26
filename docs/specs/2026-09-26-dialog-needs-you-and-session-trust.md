@@ -115,7 +115,7 @@ branch `feat/dialog-needs-you` from `origin/main` 3aa22c7.
 
 | Kind | Version | Mechanism (chosen) | Evidence | Can the dialog still appear? |
 |---|---|---|---|---|
-| claude | 2.1.283 | Before launch, write `projects[<cwd>]` and `projects[<realpath cwd>]` = `{hasTrustDialogAccepted: true}` (merged into any existing entry) into the user's `~/.claude.json`. This is the same write Claude makes when the user picks "Yes, I trust this folder". It happens under `~/.claude.json.lock`. **Blocked on Q1.** | **P-C1:** `--dangerously-skip-permissions` alone still shows the dialog. **P-C2:** a per-launch `CLAUDE_CONFIG_DIR` suppresses trust but brings up the first-run theme picker and, once `.claude.json` is copied in, the "Bypass Permissions mode" accept dialog. It also moves settings, skills, transcripts (read by `advisor/transcript.go:341`) and the keychain credential slot, so it is rejected. **P-C3:** an exact-path entry in the config Claude reads suppresses the dialog for both `work-a` and worktree `wt-a`. **P-C4 (negative):** same config, a path not listed, and the dialog appears. There is no CLI flag (`claude --help`: only `-p` skips trust) and no settings key: Claude reads trust only from `projects[...]` in the global config (`DTe`/`oS`/`iS` in the binary). | Yes, if Claude changes its trust key or path normalisation, or if the entry is lost to a concurrent rewrite. The retry and the Needs-you row cover this. |
+| claude | 2.1.283 | Before launch, write `projects[<cwd>]` and `projects[<realpath cwd>]` = `{hasTrustDialogAccepted: true}` (merged into any existing entry) into the user's `~/.claude.json`. This is the same write Claude makes when the user picks "Yes, I trust this folder". It happens under `~/.claude.json.lock`. **Blocked on Q1.** | **P-C1:** `--dangerously-skip-permissions` alone still shows the dialog. **P-C2:** a per-launch `CLAUDE_CONFIG_DIR` suppresses trust but brings up the first-run theme picker and, once `.claude.json` is copied in, the "Bypass Permissions mode" accept dialog. It also moves settings, skills, transcripts (read by `advisor/transcript.go:341`) and the keychain credential slot, so it is rejected. **P-C3:** an exact-path entry in the config Claude reads suppresses the dialog for both `work-a` and worktree `wt-a`. This ran against a scratch-`HOME` *copy* of `~/.claude.json`, never the real file, so the mechanism is proven but the real-file write is not; Task 14 verifies it live. **P-C4 (negative):** same config, a path not listed, and the dialog appears. There is no CLI flag (`claude --help`: only `-p` skips trust) and no settings key: Claude reads trust only from `projects[...]` in the global config (`DTe`/`oS`/`iS` in the binary). | Yes, if Claude changes its trust key or path normalisation, or if the entry is lost to a concurrent rewrite. The retry and the Needs-you row cover this. |
 | codex | 0.157.0 | Per-launch `$CODEX_HOME/config.toml` (the launch dir `codex-home`) with `[projects."<cwd>"] trust_level = "trusted"`, plus the realpath if it differs. | **P-X1:** a fresh `CODEX_HOME` with `--dangerously-bypass-approvals-and-sandbox` shows "Folder access … Trust this folder?" for both `cx-work` and `wt-a`. **P-X2:** `-c 'projects."<path>".trust_level="trusted"'` does **not** suppress it, for either the worktree path or the repo root. **P-X3:** the per-launch `config.toml` entry suppresses it for `cx-work`, and for `wt-a` keyed by either the worktree path or the repo root. | Yes, on a version change. The dialog pattern "Trust this folder\?" (added here) with auto-answer `Enter` (option 1 is preselected), plus the retry and the row, cover it. |
 | agy | 1.2.11 | Per-launch `agy-home/.gemini/antigravity-cli/` becomes a real directory. Every entry of the real `~/.gemini/antigravity-cli/` is symlinked except `settings.json`, which is a per-launch copy with `trustedWorkspaces` ∪ {`<cwd>`}. Today the whole directory is a single symlink (`agy.go:54-63`). | **P-A1:** baseline outside home shows "Do you trust the contents of this project?". **P-A2:** the per-launch layout suppresses it for `agy-work` and `wt-a`, and the account still shows (auth intact). **P-A3 (negative):** an unlisted `work-b` shows the dialog. `agy --help` has no trust flag. | Yes, on a version change. The existing `agyTrust` pattern, plus the retry and the row, cover it. |
 | cursor | 2026.09.26 | Already done: `--trust --workspace <cwd>` (`cursor.go:39-40`). No change. | **P-U1:** `--yolo --trust --approve-mcps` shows no dialog in fresh `cur-work` or in `wt-a`. **P-U2 (negative):** a fresh dir without flags shows "▶ [a] Trust this workspace / [q] Quit". | Only if the flag is removed. Add a detect-only pattern so a regression reaches Needs you. |
@@ -165,6 +165,19 @@ matching its `PromptMatcher` twin (copy table below).
 - **Clear state when nothing matches.** If no matcher matched this tick, then
   for every `(session, title)` with state: `ResolveDialogPrompt`, and delete the
   state.
+  - This runs **outside** the `if !idle` block (`reconcile.go:821`), so a pane
+    that went idle still closes its row.
+  - If `OpenDialogPrompt` errors, reset `reqID` to `""` so the next tick
+    retries the escalation.
+- **Human-blocked sessions don't raise no-ack or stale.** A session with an
+  escalated dialog (`reqID` set in `promptState`) takes the `waiting` early
+  return. It skips `notifyNoAck` (`reconcile.go:856`) and the stale check, but
+  the `sessions.waiting` column is *not* set. Otherwise the parent
+  orchestrator would get a no_ack relay ("swarm_control cancel if genuinely
+  stuck") while the user's row is open, and a cancel would kill the pane and
+  withdraw the row.
+  - **Helper:** `func (s *Store) hasEscalatedPrompt(sessionID string) bool`,
+    under `bookkeepingMu`.
 
 ### C. Request rows
 
@@ -235,7 +248,10 @@ func linkAgyCLIDir(real, dst, cwd string) error // per-entry symlinks, settings.
 ```
 
 **Claude write protocol (`trustClaudeWorkspace`):**
-1. `os.Mkdir(<UserHome>/.claude.json.lock, 0o755)`. On `EEXIST`, retry every
+1. **Best-effort lock.** The lock-dir name is inferred from the binary's
+   proper-lockfile code (`${file}.lock`), not verified live. The real guard
+   against losing an update is step 4's re-read-compare.
+   `os.Mkdir(<UserHome>/.claude.json.lock, 0o755)`. On `EEXIST`, retry every
    100 ms for up to 2 s. A lock dir older than 10 s is stale: remove it once
    and retry.
 2. Read `~/.claude.json`. If both keys already have
