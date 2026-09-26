@@ -106,6 +106,10 @@ type RequestWire struct {
 	// action by definition), and "observed" | "agent_reported" once
 	// native_answer records one (spec section 2.3.6, Task 13c).
 	ApprovalEvidence *string `json:"approval_evidence"`
+	// NativePending is true while an approval request's bound native-question
+	// row is still open: Needs you hides the approval row in that window,
+	// because the open question row already represents it (spec 2.2.1, Task 13e).
+	NativePending bool `json:"native_pending"`
 }
 
 // EvidenceObserved/EvidenceAgentReported are native_answer's two evidence
@@ -242,8 +246,28 @@ func (s *Store) sectionTitle(ctx context.Context, tx *sql.Tx, artifactID string,
 // agent for a permission dialog (the dialog lives in its pane), the root
 // orchestrator of its tree for a question or blocker. nil for non-HITL kinds
 // and for a row with no agent.
+// approvalTerminalKinds is every approval kind that has an asking agent, so
+// its terminal is that tree's root orchestrator, same as a question or
+// blocker (spec 2.1's 21-D5 amendment, Task 13e). accept_epic/accept_fix are
+// deliberately absent: they have no asking agent at all (opened by the
+// daemon's reconciler), so they get their own item-rooted lookup below.
+var approvalTerminalKinds = map[RequestKind]bool{
+	KindApproveSection: true, KindApprovePlan: true, KindApproveReport: true,
+	KindConfirmRepos: true, KindCloseSpike: true,
+}
+
 func (s *Store) terminalAgent(ctx context.Context, tx *sql.Tx, r Request) *string {
-	if !r.IsHITL || r.AgentID == "" {
+	if r.Kind == KindAcceptEpic || r.Kind == KindAcceptFix {
+		var name string
+		err := tx.QueryRowContext(ctx, `SELECT a.name FROM agents a JOIN items i ON i.id = ?
+			WHERE a.root_item_id = i.root_id AND a.role = 'orchestrator' AND a.parent_agent_id IS NULL
+			  AND a.state IN ('queued','active') LIMIT 1`, r.ItemID).Scan(&name)
+		if err != nil {
+			return nil
+		}
+		return &name
+	}
+	if (!r.IsHITL && !approvalTerminalKinds[r.Kind]) || r.AgentID == "" {
 		return nil
 	}
 	q := `WITH RECURSIVE up(name, parent) AS (
@@ -286,6 +310,21 @@ func (s *Store) approvalEvidenceTx(ctx context.Context, tx *sql.Tx, r Request) *
 	return &ev.String
 }
 
+// nativePendingTx is the wire's native_pending (spec section 3, Task 13e):
+// true while some open native-question row is bound to this request as its
+// ref -- the daemon issued this approval's native prompt and it is still
+// waiting on the user's answer in the terminal.
+func (s *Store) nativePendingTx(ctx context.Context, tx *sql.Tx, r Request) bool {
+	var pending bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM requests q
+		WHERE q.kind = 'question' AND q.state = 'open' AND json_extract(q.binding_json, '$.ref') = ?)`,
+		r.ID).Scan(&pending)
+	if err != nil {
+		return false
+	}
+	return pending
+}
+
 // RequestWireTx builds the full §3.3 Request for the SSE feed and for
 // items.Store.RequestPayload (R5).
 func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (RequestWire, error) {
@@ -315,6 +354,7 @@ func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (Reque
 	}
 	w.TerminalAgent = s.terminalAgent(ctx, tx, r)
 	w.ApprovalEvidence = s.approvalEvidenceTx(ctx, tx, r)
+	w.NativePending = s.nativePendingTx(ctx, tx, r)
 	if r.ArtifactID != "" {
 		id := r.ArtifactID
 		w.ArtifactID = &id

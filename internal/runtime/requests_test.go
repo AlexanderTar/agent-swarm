@@ -719,14 +719,62 @@ func TestRequestWireTerminalAgent(t *testing.T) {
 		}
 		want(t, s, req.ID, &w.Name)
 	})
-	t.Run("approval kinds have none", func(t *testing.T) {
+	// Task 13e (spec 2.1's 21-D5 amendment) revises the 09-21 decision this
+	// subtest used to assert: an approval kind with an asking agent now
+	// targets that tree's root orchestrator, same as a question or blocker,
+	// instead of having no terminal at all.
+	t.Run("approval kinds with an asking agent target the root orchestrator", func(t *testing.T) {
 		s, _, _ := newStore(t)
-		_, w, wSes := worker(t, s)
+		orch, w, wSes := worker(t, s)
 		if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
 			prompt, options_json, state, created_at) VALUES ('req_close','close_spike',0,?,?,?,'x','[]','open',1)`,
 			w.ID, wSes.ID, w.ItemID); err != nil {
 			t.Fatal(err)
 		}
-		want(t, s, "req_close", nil)
+		want(t, s, "req_close", &orch.Name)
 	})
+	t.Run("accept_epic targets the root item's live orchestrator, or none", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		orch, _, _ := worker(t, s)
+		var rootItemID string
+		s.DB.QueryRowContext(ctx, `SELECT root_item_id FROM agents WHERE id = ?`, orch.ID).Scan(&rootItemID)
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, item_id,
+			prompt, options_json, state, created_at) VALUES ('req_accept','accept_epic',0,?,'x','[]','open',1)`,
+			rootItemID); err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, "req_accept", &orch.Name)
+
+		if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, orch.ID); err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, "req_accept", nil)
+	})
+}
+
+// TestRequestWireNativePending is Task 13e: an approval hides its
+// native-pending state once the bound question row closes.
+func TestRequestWireNativePending(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	ctx := context.Background()
+	if _, err := s.AskQuestion(ctx, ses, req.NativePrompt.Question, req.NativePrompt.Options); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := s.RequestWireByID(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wire.NativePending {
+		t.Fatalf("native_pending = false while the bound question is open")
+	}
+	if err := s.ResolveQuestionByPrompt(ctx, ses, req.NativePrompt.Question, "Approve"); err != nil {
+		t.Fatal(err)
+	}
+	wire, err = s.RequestWireByID(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.NativePending {
+		t.Fatalf("native_pending = true after the bound question closed")
+	}
 }
