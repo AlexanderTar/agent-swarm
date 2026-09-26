@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { NOW, seed } from "../mock/fixtures";
+import { seed } from "../mock/fixtures";
 import type { Request, SessionInfo } from "../types";
 import { makeAgent } from "./agentActions";
-import { filterRequests, inboxRow, needsYou, needsYouRow, pickRequest, requestTarget } from "./inbox";
+import { filterRequests, needsYou, needsYouRow, pickRequest, requestTarget } from "./inbox";
 
 const reqs = [...seed().requests].reverse();
 
 // Minimal Request factory for the shared Needs-you rules (spec 4.4), independent of the board fixtures.
 const req = (p: Partial<Request> & Pick<Request, "id">): Request => ({
-  id: p.id, kind: "question", is_hitl: true, agent_name: null, terminal_agent: null,
+  kind: "question", is_hitl: true, agent_name: null, terminal_agent: null,
   item_key: "TASK-1", item_title: "Task", root_key: "TASK-1", artifact_id: null, artifact_revision: null,
   section_id: null, section_title: null, section_sha256: null, prompt: "", options: [], state: "open",
   confirmed: null, binding: null, response_text: null, responded_via: null, responded_at: null,
@@ -52,9 +52,7 @@ describe("inbox rules (§16.11)", () => {
     expect(needsYouRow({ ...r, agent_name: null, terminal_agent: null })[1]).toBe("—");
   });
 
-  it("builds rows and picks a request", () => {
-    const section = reqs.find((r) => r.id === "req_section")!;
-    expect(inboxRow(section, NOW)).toEqual({ title: 'Approve "Data model"', sub: "SPIKE-3 · 12m" });
+  it("picks a request", () => {
     expect(pickRequest(filterRequests(reqs, "all"), "req_q2")?.id).toBe("req_q2");
     expect(pickRequest(filterRequests(reqs, "all"), "")?.id).toBe("req_accept");
     expect(pickRequest(filterRequests(reqs, "reviews"), "req_fix")?.id).toBe("req_fix");

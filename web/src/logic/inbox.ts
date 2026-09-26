@@ -1,8 +1,6 @@
 import { C } from "../copy";
 import type { AgentNode, InboxFilter, Request } from "../types";
 import { flattenAgents } from "./agentActions";
-import { ageCompact } from "./format";
-import { requestTitle } from "./requestTitle";
 
 // Every request waiting on the user, minus an approval whose native prompt is already open in a
 // terminal (spec 2.2.1): the bound question row already represents it.
@@ -19,11 +17,6 @@ export function filterRequests(reqs: Request[], f: InboxFilter): Request[] {
   if (f === "approvals") return set.filter((r) => !QUESTIONS.has(r.kind) && !REVIEWS.has(r.kind));
   return set;
 }
-
-export const inboxRow = (r: Request, now = Date.now()) => ({
-  title: requestTitle(r),
-  sub: `${r.item_key} · ${ageCompact(r.created_at, now)}`,
-});
 
 // The generic Needs-you row, the same for every kind (spec 2.2.2): never the agent's own text.
 export const needsYouRow = (r: Request): [string, string, string] => [
