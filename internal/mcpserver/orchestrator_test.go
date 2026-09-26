@@ -2304,6 +2304,13 @@ func TestSwarmItemsCreateProposesTopLevelItem(t *testing.T) {
 			if !found {
 				t.Fatalf("%s: no %s notification raised", tc.typ, tc.kind)
 			}
+			// Decision 1: no Needs-you approval gate -- the user starting
+			// the Draft item *is* the gate, so the proposer itself must not
+			// be able to Ready its own proposal (it's outside its own root).
+			if _, err := s.call(ctx, seed.Caller, "swarm_items",
+				`{"op":"update","key":"`+it.Key+`","status":"ready","revision":1}`); err == nil || !strings.Contains(err.Error(), "is outside") {
+				t.Fatalf("%s: proposer must not start its own proposal: %v", tc.typ, err)
+			}
 		})
 	}
 }

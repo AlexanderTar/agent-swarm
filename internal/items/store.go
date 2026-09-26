@@ -372,6 +372,9 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	if in.Type == Spike && in.SpikeIntent != "feature" && in.SpikeIntent != "debug" && in.SpikeIntent != "chore" {
 		return Item{}, errf(CodeBadRequest, "Spikes start with an intent. Use New spike.")
 	}
+	if in.Type != Spike && in.SpikeIntent != "" {
+		return Item{}, errf(CodeBadRequest, "Only spikes have an intent.")
+	}
 	if in.TddExempt != "" {
 		if !slices.Contains(tddValues, in.TddExempt) {
 			return Item{}, errf(CodeBadRequest, "tdd_exempt must be one of docs, config, mechanical-rename, spike-research.")

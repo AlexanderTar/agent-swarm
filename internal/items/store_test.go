@@ -38,7 +38,10 @@ func TestHierarchyMatrix(t *testing.T) {
 	all := []items.Type{items.Epic, items.Story, items.Task, items.Bug, items.Spike}
 	for _, pt := range all {
 		for _, ct := range all {
-			in := items.CreateInput{Type: ct, ParentKey: parents[pt].Key, Title: "child", SpikeIntent: "debug"}
+			in := items.CreateInput{Type: ct, ParentKey: parents[pt].Key, Title: "child"}
+			if ct == items.Spike {
+				in.SpikeIntent = "debug"
+			}
 			_, err := s.Create(ctx, in, items.Daemon())
 			if allowed[[2]items.Type{pt, ct}] != (err == nil) {
 				t.Errorf("%s under %s: err = %v", ct, pt, err)
@@ -228,6 +231,18 @@ func TestOrchestratorCanProposeRoot(t *testing.T) {
 		if it.RootID != it.ID {
 			t.Errorf("%s: not its own root", in.Type)
 		}
+	}
+}
+
+// TestIntentOnlyForSpikes: SpikeIntent is trust-boundary input from the
+// mcpserver's new "intent" wire field; only a spike may set it.
+func TestIntentOnlyForSpikes(t *testing.T) {
+	s := newStore(t)
+	root := mk(t, s, items.Epic, "", "Root")
+	orch := items.Orchestrator("agt_1", root.ID)
+	if _, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "e", SpikeIntent: "feature"}, orch); err == nil ||
+		err.Error() != "Only spikes have an intent." {
+		t.Fatalf("err = %v", err)
 	}
 }
 
