@@ -147,6 +147,13 @@ func (c *Codex) setupEnv(s Spec) (map[string]string, error) {
 			return nil, err
 		}
 	}
+	// D5: pre-trust s.Cwd in this launch's own CODEX_HOME, so codex never
+	// shows its folder-trust dialog. Best-effort, like Claude's pre-trust:
+	// a failure here must never block a launch -- the dialog auto-answer and
+	// the Needs-you escalation are the fallback.
+	if err := writeCodexTrust(codexHome, s.Cwd); err != nil {
+		c.d.Log("codex: pre-trust %s: %v", s.Cwd, err)
+	}
 	return map[string]string{"CODEX_HOME": codexHome}, nil
 }
 
@@ -185,6 +192,10 @@ var (
 	codexTrust     = regexp.MustCompile(`Do you trust the contents of this directory\?`)
 	codexRetire    = regexp.MustCompile(`retires on .*\n[\s\S]*Try new model`)
 	codexHookTrust = regexp.MustCompile(`Hooks can run outside the sandbox`)
+	// codexTrustFolder is codex 0.157's renamed trust dialog (D5): the older
+	// codexTrust wording is still current on some installs, so both stay.
+	codexTrustFolder    = regexp.MustCompile(`Trust this folder\?`)
+	codexTrustFolderYes = regexp.MustCompile(`Trust and continue`)
 )
 
 func (c *Codex) ProcessNames() []*regexp.Regexp { return codexProcess }
@@ -195,6 +206,7 @@ func (c *Codex) Idle(capture string) bool       { return idle(c, capture) }
 func (c *Codex) StartupDialogs() []Dialog {
 	return []Dialog{
 		{Match: codexTrust, Keys: []string{"Enter"}, Title: "Trust this directory"},
+		{Match: codexTrustFolder, Require: codexTrustFolderYes, Keys: []string{"Enter"}, Title: "Trust this folder"},
 		{Match: codexRetire, Keys: []string{"Down", "Enter"}, Title: "Keep the current model"}, // Enter alone would switch the model
 		{Match: codexHookTrust, Fail: true, Title: "Hook sandbox approval"},                    // --dangerously-bypass-hook-trust should prevent it
 	}
@@ -203,6 +215,7 @@ func (c *Codex) StartupDialogs() []Dialog {
 func (c *Codex) PromptPatterns() []PromptMatcher {
 	return []PromptMatcher{
 		{Match: codexTrust, Title: "Trust this directory", Action: "Enter"},
+		{Match: codexTrustFolder, Require: codexTrustFolderYes, Title: "Trust this folder", Action: "Enter"},
 		{Match: codexHookTrust, Title: "Hook sandbox approval", Action: "Enter"},
 	}
 }
@@ -311,15 +324,16 @@ func (c *Codex) Wake(ctx context.Context, w WakeTarget) (bool, error) {
 // ProviderSessionID for this kind.
 func (c *Codex) DiscoverSession(context.Context, int, string) (string, bool) { return "", false }
 
-// TrustFolder writes [projects."<realpath>"] trust_level = "trusted" into
-// ~/.codex/config.toml (§11.5). The edit is structured, so every other key
-// survives, and it is skipped when the entry already exists.
-func (c *Codex) TrustFolder(ctx context.Context, path string) error {
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		real = path
-	}
-	cfg := filepath.Join(c.d.UserHome, ".codex", "config.toml")
+// writeCodexTrust writes [projects."<cwd>"] trust_level = "trusted" (plus the
+// realpath entry, if it differs) into codexHome/config.toml (D5,
+// dialog-needs-you spec): codex reads trust per-CODEX_HOME, and a spawned
+// codex's CODEX_HOME is the per-agent CodexHomeDir, never ~/.codex -- the old
+// TrustFolder wrote there and was dead for every spawned session. The edit is
+// structured, so every other key survives, and it is skipped (no rewrite)
+// when every key already has the entry, so a Resume against the same
+// agent-keyed home is idempotent.
+func writeCodexTrust(codexHome, cwd string) error {
+	cfg := filepath.Join(codexHome, "config.toml")
 	raw, err := os.ReadFile(cfg)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -337,16 +351,24 @@ func (c *Codex) TrustFolder(ctx context.Context, path string) error {
 	if projects == nil {
 		projects = map[string]any{}
 	}
-	if e, ok := projects[real].(map[string]any); ok && e["trust_level"] == "trusted" {
-		return nil // already trusted; do not rewrite the file
+	keys := []string{cwd}
+	if real, err := filepath.EvalSymlinks(cwd); err == nil && real != cwd {
+		keys = append(keys, real)
 	}
-	projects[real] = map[string]any{"trust_level": "trusted"}
+	changed := false
+	for _, k := range keys {
+		if e, ok := projects[k].(map[string]any); ok && e["trust_level"] == "trusted" {
+			continue
+		}
+		projects[k] = map[string]any{"trust_level": "trusted"}
+		changed = true
+	}
+	if !changed {
+		return nil // already trusted under every key; do not rewrite the file
+	}
 	doc["projects"] = projects
 	out, err := toml.Marshal(doc)
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
 		return err
 	}
 	return writeFileAtomic(cfg, out, 0o644)
