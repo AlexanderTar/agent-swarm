@@ -3054,3 +3054,39 @@ func TestReclaimCodexHomesToleratesNoCxDir(t *testing.T) {
 		t.Fatalf("reclaimCodexHomes on a home with no cx dir: %v", err)
 	}
 }
+
+// Regression: Reconcile's codex-home sweep must key off resumable sessions
+// (everything except completed/failed/crashed/cancelled), not the narrower
+// `live` set (LiveStates excludes paused/interrupted). A paused session's
+// thread store lives inside its CODEX_HOME, and `codex resume` re-reads it
+// on resume; sweeping by `live` alone deleted a paused session's home the
+// very next tick, so the following resume hit the same "no rollout found
+// for thread id ..." this fix's Wake half was written to eliminate.
+func TestReconcileKeepsAPausedSessionsCodexHomeButRemovesADeadOnesSession(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	pausedDir := adapter.CodexHomeDir(s.Home, wSes.ID)
+	deadDir := adapter.CodexHomeDir(s.Home, "ses_long_gone")
+	if err := os.MkdirAll(pausedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(deadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(pausedDir); err != nil {
+		t.Errorf("a paused (resumable) session's codex home was removed: %v", err)
+	}
+	if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
+		t.Errorf("a codex home with no matching session row still exists: %v", err)
+	}
+}

@@ -234,28 +234,35 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.ResumeOperations(ctx); err != nil {
 		return err
 	}
-	liveIDs := make([]string, len(live))
-	for i, r := range live {
-		liveIDs[i] = r.SessionID
-	}
-	if err := reclaimCodexHomes(s.Home, liveIDs); err != nil {
+	// resumableSessionIDs, not `live`: paused/interrupted sessions are not in
+	// liveSessionRows (LiveStates excludes them) but ARE resumable -- a
+	// paused codex session's thread store lives inside its CODEX_HOME, and
+	// `codex resume` re-reads it, so deleting it the tick after pause would
+	// turn a resumable session into "no rollout found for thread id ..." on
+	// resume, a regression the old (never-cleaned) home never had.
+	resumableIDs, err := s.queryIDs(ctx, `SELECT id FROM sessions
+		WHERE state NOT IN ('completed', 'failed', 'crashed', 'cancelled')`)
+	if err != nil {
+		s.logf("reconcile: list resumable sessions for codex home reclaim: %v", err)
+	} else if err := reclaimCodexHomes(s.Home, resumableIDs); err != nil {
 		s.logf("reconcile: reclaim codex homes: %v", err)
 	}
 	return s.sweepFinishedRoots(ctx)
 }
 
 // reclaimCodexHomes removes internal/adapter.CodexHomeDir's short CODEX_HOME
-// directories (<home>/cx/<hash>) for sessions that are no longer live. codex
-// runs with --no-daemon (internal/adapter/codex.go flags()), so there is no
-// daemon process to stop here -- only the directory. There is no general
-// launch-dir GC in this codebase (run/launch/<session>/ is never cleaned up
-// today, for any adapter); this sweep is scoped to codex's own short-home
-// dirs, which are cheap to name deterministically from a live session id and
-// don't require plumbing a new teardown hook through every Tmux.Kill call
-// site.
-func reclaimCodexHomes(home string, liveSessionIDs []string) error {
-	keep := make(map[string]bool, len(liveSessionIDs))
-	for _, id := range liveSessionIDs {
+// directories (<home>/cx/<hash>) for sessions that are no longer resumable
+// (state completed/failed/crashed/cancelled -- see Reconcile's call site for
+// why this is NOT just the live set). codex runs with --no-daemon
+// (internal/adapter/codex.go flags()), so there is no daemon process to stop
+// here -- only the directory. There is no general launch-dir GC in this
+// codebase (run/launch/<session>/ is never cleaned up today, for any
+// adapter); this sweep is scoped to codex's own short-home dirs, which are
+// cheap to name deterministically from a resumable session id and don't
+// require plumbing a new teardown hook through every Tmux.Kill call site.
+func reclaimCodexHomes(home string, resumableSessionIDs []string) error {
+	keep := make(map[string]bool, len(resumableSessionIDs))
+	for _, id := range resumableSessionIDs {
 		keep[adapter.CodexHomeDirName(id)] = true
 	}
 	root := filepath.Join(home, "cx")
