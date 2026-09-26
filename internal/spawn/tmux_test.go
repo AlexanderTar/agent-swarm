@@ -457,7 +457,7 @@ func TestSocketFromEnvDefaultsToATestSocket(t *testing.T) {
 func TestCancelCopyModeIfNeededCancelsWhenPaneIsInCopyMode(t *testing.T) {
 	f := &execx.Fake{Responses: map[string]execx.Result{
 		"tmux -L swarm display -p -t sess #{pane_in_mode}": {Out: "1\n"},
-		"tmux -L swarm send-keys -t sess -X cancel":         {Out: ""},
+		"tmux -L swarm send-keys -t sess -X cancel":        {Out: ""},
 	}}
 	s := &Spawner{Socket: "swarm", Tmux: "tmux", Run: f.Runner(), Log: func(string, ...any) {}}
 	s.cancelCopyModeIfNeeded(context.Background(), "sess")
