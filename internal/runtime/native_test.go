@@ -35,6 +35,8 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	repoA := seedRepo(t, s, "endurio-chat")
+	repoB := seedRepo(t, s, "endurio-web")
+	repoC := seedRepo(t, s, "endurio-docs")
 	_ = a
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -88,6 +90,17 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 			wantHeader: "Repositories",
 			wantQ:      "Confirm 1 repositories for " + key + ": endurio-chat?" + refToken("req_REPO1"),
 			wantOpts:   []string{"Approve", "Request changes"},
+		},
+		{
+			name: "confirm_repos_with_expansion_and_dropped",
+			req: Request{ID: "req_REPO2", Kind: "confirm_repos", ItemID: it.ID,
+				Options: []byte(`{"proposed":[{"repo":"` + repoA + `","reason":"r"},` +
+					`{"repo":"` + repoC + `","reason":"stale","source":"dropped"}],` +
+					`"expansion":[{"repo":"` + repoB + `","reason":"client/server pair"}]}`)},
+			wantHeader: "Repositories",
+			wantQ: "Confirm 2 repositories for " + key + ": endurio-chat, endurio-web?" +
+				"\nDropped: endurio-docs." + refToken("req_REPO2"),
+			wantOpts: []string{"Approve", "Request changes"},
 		},
 		{
 			name:       "close_spike",

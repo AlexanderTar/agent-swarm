@@ -88,11 +88,24 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 			return NativePrompt{}, err
 		}
 		var opts struct {
-			Proposed []ReposProposal `json:"proposed"`
+			Proposed  []ReposProposal `json:"proposed"`
+			Expansion []ReposProposal `json:"expansion"`
 		}
 		json.Unmarshal(req.Options, &opts)
-		names := make([]string, 0, len(opts.Proposed))
+		names := make([]string, 0, len(opts.Proposed)+len(opts.Expansion))
+		var dropped []string
 		for _, p := range opts.Proposed {
+			name, err := s.repoNameTx(ctx, tx, p.Repo)
+			if err != nil {
+				return NativePrompt{}, err
+			}
+			if p.Source == "dropped" {
+				dropped = append(dropped, name)
+				continue
+			}
+			names = append(names, name)
+		}
+		for _, p := range opts.Expansion {
 			if p.Source == "dropped" {
 				continue
 			}
@@ -103,6 +116,9 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 			names = append(names, name)
 		}
 		q := fmt.Sprintf("Confirm %d repositories for %s: %s?", len(names), key, strings.Join(names, ", "))
+		if len(dropped) > 0 {
+			q += "\nDropped: " + strings.Join(dropped, ", ") + "."
+		}
 		return NativePrompt{Header: "Repositories", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
 	case KindCloseSpike:
 		key, err := s.itemKey(ctx, tx, req.ItemID)
