@@ -254,6 +254,7 @@ type sessionRow struct {
 	LastNoticeAt                                *time.Time
 	Pending                                     int
 	HasHandoff                                  bool
+	Handoff                                     bool // a handoff operation is in flight (HANDOFF notice, not PAUSE)
 	Kind                                        runtime.AgentKind
 	ParentAgentID                               string
 }
@@ -290,7 +291,7 @@ func (h *Handler) logf(format string, args ...any) {
 func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, error) {
 	var s sessionRow
 	var needsCompaction int
-	var hasHandoff int
+	var hasHandoff, handoffOp int
 	err := h.DB.QueryRowContext(ctx, `
 		SELECT
 			s.id,
@@ -304,7 +305,9 @@ func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, erro
 			a.kind,
 			COALESCE(a.parent_agent_id, ''),
 			(SELECT COUNT(*) FROM messages WHERE to_agent_id = s.agent_id AND state = 'pending'),
-			EXISTS (SELECT 1 FROM checkpoints WHERE session_id = s.id AND kind = 'handoff')
+			EXISTS (SELECT 1 FROM checkpoints WHERE session_id = s.id AND kind = 'handoff'),
+			EXISTS (SELECT 1 FROM agent_operations o WHERE o.agent_id = s.agent_id AND o.mode = 'handoff'
+				AND o.phase IN ('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting'))
 		FROM sessions s
 		JOIN agents a ON s.agent_id = a.id
 		JOIN items i ON a.item_id = i.id
@@ -321,12 +324,14 @@ func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, erro
 		&s.ParentAgentID,
 		&s.Pending,
 		&hasHandoff,
+		&handoffOp,
 	)
 	if err != nil {
 		return nil, err
 	}
 	s.NeedsCompaction = (needsCompaction != 0)
 	s.HasHandoff = (hasHandoff != 0)
+	s.Handoff = (handoffOp != 0)
 
 	h.mu.Lock()
 	if t, ok := h.noticeAt[s.ID]; ok {
@@ -489,11 +494,21 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
 
 	case "PreToolUse":
+		// Preservation mode (spec §3): a pausing predecessor may still use
+		// the save path -- read/edit/shell/wait/commit under its existing
+		// permissions -- while delegation, new workflow steps and
+		// push/deploy are denied. Swarm MCP tools keep their own daemon
+		// gate (PauseAllowed); completed checkpoints are refused by
+		// WriteCheckpoint's kind gate.
 		if s.State.Pausing() && !in.IsSwarmTool {
-			return adapter.HookDecision{
-				Block:  true,
-				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
-			}, nil
+			if err := runtime.PreservationNativeAllowed(in.ToolName); err != nil {
+				return adapter.HookDecision{Block: true, Reason: err.Error()}, nil
+			}
+			if in.Command != "" {
+				if err := runtime.PreservationCommandAllowed(in.Command); err != nil {
+					return adapter.HookDecision{Block: true, Reason: err.Error()}, nil
+				}
+			}
 		}
 
 		// A6: the native Workflow tool is disabled in Swarm sessions -- use
@@ -669,10 +684,11 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 
 	case "Stop":
 		if s.State.Pausing() && !s.HasHandoff {
-			return adapter.HookDecision{
-				Block:  true,
-				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
-			}, nil
+			reason := runtime.PausePreservationNotice(s.AgentName, s.ItemKey)
+			if s.Handoff {
+				reason = runtime.HandoffPreservationNotice(s.AgentName, s.ItemKey)
+			}
+			return adapter.HookDecision{Block: true, Reason: reason}, nil
 		}
 		if s.Pending > 0 && s.StopBlocks < maxStopBlocks {
 			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET stop_blocks = stop_blocks + 1 WHERE id = ?`, s.ID); err != nil {

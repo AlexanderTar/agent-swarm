@@ -44,6 +44,7 @@ Legacy tasks whose `workflow_json` is NULL still use manual `swarm_spawn` and re
 - Child lifecycle relays:
   - `event: "paused"`: Child has paused; read handoff checkpoint via `swarm_read`.
   - `event: "resumed"`: Child has resumed work; session is active.
+  - `event: "handoff"`: Child saved its work in a handoff checkpoint; read its `mode`. `mode: "pause"` means it is parking for Resume (a `paused` relay follows); treat it like any paused child. `mode: "handoff"` means it is being handed off to a fresh session of the same agent (same name, same assignment) and this is the only relay for that handoff; `saved: false` (no checkpoint) means it stopped without saving, so expect its successor to inspect before continuing. For a handoff, don't respawn or reassign it: its successor picks the work up and keeps receiving your messages.
   - `event: "crashed"`: Child crashed; inspect `exit_code` and `tail` in the relay payload before deciding to retry (`swarm_control retry`) or reassign.
   - `swarm_control cancel`: Use `action: "cancel"` to abort a runaway or obsolete child agent.
 - Merge in dependency order, run the plan's verification, then write `integrated` with the merged sha per repo and the verification results. The user's acceptance is requested only after that. Write `completed` when the daemon reports the item accepted.

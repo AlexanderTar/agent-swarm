@@ -62,7 +62,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 6, "every agent with a session")
         let coder = m.state.agents[0].children[0]
         XCTAssertTrue(m.tmuxAlive(coder))
-        XCTAssertEqual(m.actions(coder).map(\.disabled), [false, true, true])
+        XCTAssertEqual(m.actions(coder).map(\.disabled), [false, true, true, true])
         await m.perform(m.actions(coder)[1], on: coder)
         await m.pauseAll()
         await m.readAll()
@@ -280,7 +280,7 @@ final class AppModelTests: XCTestCase {
         let paused = m.state.agents[1]
         await m.perform(m.actions(paused)[0], on: paused)
         let crashed = m.state.agents[2]
-        XCTAssertEqual(m.actions(crashed).map(\.label), ["Retry", "Acknowledge", "Open terminal"])
+        XCTAssertEqual(m.actions(crashed).map(\.label), ["Retry", "Acknowledge", "Open terminal", "Handoff"])
         await m.perform(m.actions(crashed)[1], on: crashed)
         await m.perform(m.actions(orch)[0], on: orch)
         XCTAssertEqual(script.sources.count, 1, "terminal opens through Ghostty, not the daemon")
@@ -311,7 +311,7 @@ final class AppModelTests: XCTestCase {
         await m.refresh()
         let orch = m.state.agents[0]
         let before = m.actions(orch)
-        XCTAssertEqual(before.map(\.label), ["Open terminal", "Pause group", "Cancel"])
+        XCTAssertEqual(before.map(\.label), ["Open terminal", "Pause group", "Cancel", "Handoff"])
         XCTAssertTrue(m.inFlight.isEmpty)
 
         let task = await performInFlight(m, before[1], on: orch)

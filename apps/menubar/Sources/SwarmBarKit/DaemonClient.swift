@@ -25,7 +25,9 @@ public enum DaemonError: Error, Equatable, Sendable {
 public protocol DaemonClient: Sendable {
     func state() async throws -> StateResponse
     func notifications(limit: Int) async throws -> [SwarmNotification]
-    func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?) async throws
+    /// `requestID` is the handoff's idempotency key: one per user action,
+    /// reused on retries so the daemon replays the same operation.
+    func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?, requestID: String?) async throws
     func pauseAll() async throws -> Int
     func markRead(notificationID: String) async throws
     func readAll() async throws
@@ -39,6 +41,12 @@ public protocol DaemonClient: Sendable {
     func createSpike(_ body: CreateSpikeBody) async throws -> CreateSpikeResponse
     func terminalOpened(name: String) async throws
     func pane(_ name: String, lines: Int) async throws -> PaneCapture
+}
+
+public extension DaemonClient {
+    func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?) async throws {
+        try await agent(name, endpoint, scope: scope, requestID: nil)
+    }
 }
 
 /// In-memory daemon used by the tests and by `SWARM_MOCK_FIXTURES=<dir> swift run SwarmBar`.
@@ -111,7 +119,11 @@ public final class MockDaemonClient: DaemonClient {
         agentGates.removeFirst().resume()
     }
 
-    public func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?) async throws {
+    /// The request key of every handoff call, in order.
+    public private(set) var handoffRequestIDs: [String?] = []
+
+    public func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?, requestID: String?) async throws {
+        if endpoint == .handoff { handoffRequestIDs.append(requestID) }
         try record(["agent", endpoint.rawValue, name, scope?.rawValue].compactMap { $0 }.joined(separator: " "))
         if holdAgent {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in agentGates.append(cont) }

@@ -101,6 +101,40 @@ public enum AgentTree {
         nodes.flatMap { [$0] + flatten($0.children) + flatten($0.finished) }
     }
 
+    /// The right-click Handoff for one agent: enabled wherever a session (or a
+    /// recoverable one) exists to replace — running/waiting/stale,
+    /// paused/interrupted, failed/crashed, and a cancelled session whose
+    /// assignment is unfinished — disabled with "Wait for startup" while the
+    /// agent has no session yet, and absent for completed/cancelled
+    /// assignments and preflight failures (nothing to replace).
+    static func handoff(_ a: AgentNode, disabled: Bool, waiting: Bool) -> AgentAction? {
+        if isFinished(a) { return nil }
+        switch DisplayState(a) {
+        case .running, .waiting, .stale, .paused, .interrupted, .crashed, .failed, .cancelled:
+            return AgentAction(endpoint: .handoff, label: Copy.handoff, disabled: disabled, placement: .menu)
+        case .spawning, .queued:
+            guard waiting else { return nil }
+            return AgentAction(endpoint: .handoff, label: Copy.waitForStartup, disabled: true, placement: .menu)
+        case .pauseRequested, .quiescing, .stopping, .preflightFailed, .completed:
+            return nil
+        }
+    }
+
+    /// The handoff progress line for a row carrying an in-flight replacement,
+    /// nil otherwise. Driven by SSE/state: every operation phase change
+    /// publishes agent.changed, which refetches the node carrying it.
+    public static func handoffStatus(_ a: AgentNode) -> String? {
+        guard let op = a.replacement else { return nil }
+        switch op.phase {
+        case "requested", "preserving": return Copy.handoffSaving
+        case "stopping": return Copy.handoffStopping
+        case "ready", "queued": return Copy.handoffQueued
+        case "starting": return Copy.handoffStarting
+        case "blocked": return Copy.handoffBlocked(op.error ?? "")
+        default: return nil
+        }
+    }
+
     /// Exactly the §10.7 row for this agent. `tmuxAlive` gates the terminal button (§16.2);
     /// `connected == false` disables everything except the terminal (§16.2 daemon down).
     public static func actions(_ a: AgentNode, tmuxAlive: Bool, connected: Bool) -> [AgentAction] {
@@ -114,15 +148,20 @@ public enum AgentTree {
         let ack = AgentAction(endpoint: .ack, label: Copy.acknowledge, disabled: off, placement: .menu)
         let retry = AgentAction(endpoint: .retry, label: Copy.retry, disabled: off, placement: .button)
         let resume = AgentAction(endpoint: .resume, label: Copy.resume, disabled: off, placement: .button)
+        let handoff = handoff(a, disabled: off, waiting: true)
+        let withHandoff: ([AgentAction]) -> [AgentAction] = { base in
+            guard let handoff else { return base }
+            return base + [handoff]
+        }
         switch DisplayState(a) {
         case .queued:
-            return [cancel]
+            return [cancel] + (handoff.map { [$0] } ?? [])
         case .spawning:
-            return [terminal, cancel]
+            return [terminal, cancel] + (handoff.map { [$0] } ?? [])
         case .running, .waiting, .stale:
             let pause = AgentAction(endpoint: .pause, label: orch ? Copy.pauseGroup : Copy.pause, disabled: off,
                                     scope: orch ? .subtree : .session, placement: .button)
-            return [terminal, pause, cancel]
+            return withHandoff([terminal, pause, cancel])
         case .pauseRequested, .quiescing:
             return [terminal, AgentAction(endpoint: .pause, label: Copy.pausing, disabled: true, placement: .button), cancel]
         case .stopping:
@@ -130,15 +169,20 @@ public enum AgentTree {
             stopped.disabled = true
             return [terminal, AgentAction(endpoint: .pause, label: Copy.pausing, disabled: true, placement: .button), stopped]
         case .paused:
-            return [resume, cancel]
+            return withHandoff([resume, cancel])
         case .interrupted:
-            return [resume, ack, cancel]
+            return withHandoff([resume, ack, cancel])
         case .crashed, .failed:
-            return tmuxAlive ? [retry, ack, terminal] : [retry, ack]
+            return withHandoff(tmuxAlive ? [retry, ack, terminal] : [retry, ack])
         case .preflightFailed:
             return [retry, cancel]
-        case .completed, .cancelled:
+        case .completed:
             return []
+        case .cancelled:
+            // A cancelled session with an unfinished assignment is still
+            // agent-level active (isFinished checked above): replaceable.
+            // A cancelled assignment finished the agent and returns [] above.
+            return withHandoff([])
         }
     }
 
@@ -202,8 +246,10 @@ public enum AgentTree {
     }
 
     /// Line 2: workflow step for a workflow agent, item key for a legacy agent,
-    /// plus the state label when not running.
+    /// plus the handoff phase while a replacement is in flight, else the state
+    /// label when not running.
     public static func subtitle(_ a: AgentNode) -> String {
-        ([Copy.roleLabel(a.role), a.step ?? a.itemKey] + [DisplayState(a).label].compactMap { $0 }).joined(separator: " · ")
+        ([Copy.roleLabel(a.role), a.step ?? a.itemKey] + [handoffStatus(a) ?? DisplayState(a).label].compactMap { $0 })
+            .joined(separator: " · ")
     }
 }

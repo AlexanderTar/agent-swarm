@@ -21,9 +21,12 @@ const killAfterHandoff = 5 * time.Second
 const killAfterInterrupt = 10 * time.Second
 const defaultPauseDeadlineSec = 120
 
-// pauseAllowedTools is the daemon-side allow-list during a pause (C3). The hooks
+// pauseAllowedTools is the daemon-side allow-list during a pause. The hooks
 // deny the rest, but the daemon enforces it whatever the hooks do.
-var pauseAllowedTools = []string{"swarm_sync", "swarm_read"}
+// swarm_artifact stays open so the predecessor can snapshot specs/plans
+// into the registry while preserving; swarm_spawn and swarm_workflow stay
+// denied (delegation, new workflow steps).
+var pauseAllowedTools = []string{"swarm_sync", "swarm_read", "swarm_artifact"}
 
 // PauseAllowed gates one MCP tool call for a session state. swarm_checkpoint and
 // swarm_ask are gated further by their own handlers: only handoff, blocked and
@@ -365,6 +368,14 @@ func (s *Store) onPausingCheckpoint(ctx context.Context, tx *sql.Tx, ses Session
 
 // relayPaused tells agentID's nearest live ancestor, if it has one, that it is paused.
 func (s *Store) relayPaused(ctx context.Context, tx *sql.Tx, agentID string) error {
+	// A handoff is reported once, by the handoff checkpoint's own relay
+	// (event "handoff" with its summary): the session only rides the pause
+	// path to preserve, it is not being paused.
+	if op, ok, err := s.pendingOperationTx(ctx, tx, agentID); err != nil {
+		return err
+	} else if ok && op.Mode == ModeHandoff {
+		return nil
+	}
 	ancestor, ok, err := s.nearestLiveAncestor(ctx, agentID)
 	if err != nil || !ok {
 		return err
@@ -441,6 +452,11 @@ func (s *Store) pause(ctx context.Context, name, scope string) (Session, int, er
 	if err != nil {
 		return Session{}, 0, err
 	}
+	// Batch 3: the replacement coordinator owns session transitions while
+	// an operation is in flight; a direct Pause would race its driver.
+	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
+		return Session{}, 0, err
+	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
 		return Session{}, 0, err
@@ -499,28 +515,37 @@ func (s *Store) pause(ctx context.Context, name, scope string) (Session, int, er
 // pauseOne sends one session's pause control message and moves it to
 // pause_requested.
 func (s *Store) pauseOne(ctx context.Context, a Agent, ses Session, deadline time.Time, scope string) (Session, error) {
-	payload, err := json.Marshal(map[string]string{"action": "pause",
-		"deadline_at": deadline.UTC().Format(time.RFC3339), "scope": scope})
-	if err != nil {
-		return Session{}, err
-	}
-	err = s.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'pause_requested',
-			pause_scope = ?, pause_deadline_at = ? WHERE id = ?`,
-			scope, db.Millis(deadline), ses.ID); err != nil {
-			return err
-		}
-		if _, err := s.enqueue(ctx, tx, Message{Kind: "control", Origin: "daemon",
-			ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: payload}); err != nil {
-			return err
-		}
-		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.requestPreservationTx(ctx, tx, a, ses, deadline, scope, "pause")
 	})
 	if err != nil {
 		return Session{}, err
 	}
 	ses.State, ses.PauseScope, ses.PauseDeadlineAt = PauseRequested, scope, &deadline
 	return ses, nil
+}
+
+// requestPreservationTx is the pause delivery path shared by Pause and
+// Handoff: the session moves to pause_requested with a deadline and a
+// control message (action "pause" or "handoff") is enqueued, so wake, the
+// Stop hook and TickPause's interrupt/kill timers all drive the predecessor
+// through the same preservation window.
+func (s *Store) requestPreservationTx(ctx context.Context, tx *sql.Tx, a Agent, ses Session, deadline time.Time, scope, action string) error {
+	payload, err := json.Marshal(map[string]string{"action": action,
+		"deadline_at": deadline.UTC().Format(time.RFC3339), "scope": scope})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'pause_requested',
+		pause_scope = ?, pause_deadline_at = ? WHERE id = ?`,
+		scope, db.Millis(deadline), ses.ID); err != nil {
+		return err
+	}
+	if _, err := s.enqueue(ctx, tx, Message{Kind: "control", Origin: "daemon",
+		ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: payload}); err != nil {
+		return err
+	}
+	return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 }
 
 // pauseSubtree pauses every idle descendant deepest-first, then marks the
@@ -861,6 +886,11 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 	} else if hit {
 		return out, nil
 	}
+	// Batch 3: Resume must not launch a competing session while the
+	// replacement coordinator is driving one.
+	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
+		return Agent{}, err
+	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
 		return Agent{}, err
@@ -869,7 +899,14 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 		return Agent{}, &items.Error{Code: items.CodeConflict, Message: stillStopping}
 	}
 	resume := ses.ProviderSessionID != ""
-	newSes, err := s.startSession(ctx, a, ses.Attempt, ses.Generation+1, resume, ses.ProviderSessionID)
+	// A provider resume reattaches (ResumeKickoff); a fresh launch after a
+	// pause is a successor generation (SuccessorKickoff in resume mode plus
+	// the durable-state-wins addition).
+	succMode := ""
+	if !resume {
+		succMode = "resume"
+	}
+	newSes, err := s.startSession(ctx, a, ses.Attempt, ses.Generation+1, resume, ses.ProviderSessionID, succMode)
 	if err != nil {
 		return Agent{}, err
 	}

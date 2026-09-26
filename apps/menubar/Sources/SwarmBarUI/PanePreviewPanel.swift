@@ -5,16 +5,20 @@ import SwiftUI
 /// The preview's content. The window around it lives in SwarmBar.
 public struct PanePreviewPanel: View {
     let preview: PanePreviewModel
-    /// Resolves the hovered agent's name to (role label, item key) for the header, e.g.
-    /// "login-coder · Coder · TASK-101". PanePreviewModel only tracks a name (spec's locked
-    /// type), so this is a live lookup supplied by the caller rather than plumbing kind/itemKey
-    /// through the model itself. nil (the default, and every existing test's case) falls back
-    /// to the name alone.
-    let lookup: ((String) -> (kind: String, itemKey: String)?)?
+    /// Resolves the hovered agent's name to its header values, e.g.
+    /// "login-coder · TASK-101 · Claude · Opus 4.6 (High)". PanePreviewModel only tracks a name
+    /// (spec's locked type), so this is a live lookup supplied by the caller rather than plumbing
+    /// the node through the model itself. nil (the default, and every existing test's case) falls
+    /// back to the name alone.
+    let lookup: ((String) -> AgentHeader?)?
+    /// The live catalog for human model labels; unknown models fall back to their ID.
+    let catalog: [AgentCatalogEntry]
 
-    public init(preview: PanePreviewModel, lookup: ((String) -> (kind: String, itemKey: String)?)? = nil) {
+    public init(preview: PanePreviewModel, lookup: ((String) -> AgentHeader?)? = nil,
+                catalog: [AgentCatalogEntry] = []) {
         self.preview = preview
         self.lookup = lookup
+        self.catalog = catalog
     }
 
     public static let size = CGSize(width: 760, height: 320)
@@ -24,7 +28,10 @@ public struct PanePreviewPanel: View {
     private var header: String {
         guard let name = preview.agent else { return "" }
         guard let found = lookup?(name) else { return name }
-        return Copy.paneHeader(name, found.kind, found.itemKey)
+        let entry = CatalogRules.entry(catalog, found.kind)
+        return Copy.paneHeader(name, found.itemKey, Copy.agentLabel(found.kind),
+                               CatalogRules.modelLabel(entry, found.model),
+                               found.effort.map(Copy.humanEffort))
     }
 
     public var body: some View {

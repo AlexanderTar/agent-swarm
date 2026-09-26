@@ -10,12 +10,15 @@ import SwiftUI
 @MainActor
 final class PanePreviewWindow {
     private let preview: PanePreviewModel
-    private let lookup: (String) -> (kind: String, itemKey: String)?
+    private let lookup: (String) -> AgentHeader?
+    private let catalog: () -> [AgentCatalogEntry]
     private var panel: NSPanel?
 
-    init(preview: PanePreviewModel, lookup: @escaping (String) -> (kind: String, itemKey: String)? = { _ in nil }) {
+    init(preview: PanePreviewModel, lookup: @escaping (String) -> AgentHeader? = { _ in nil },
+         catalog: @escaping () -> [AgentCatalogEntry] = { [] }) {
         self.preview = preview
         self.lookup = lookup
+        self.catalog = catalog
         observe()
     }
 
@@ -61,7 +64,7 @@ final class PanePreviewWindow {
         panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.animationBehavior = .utilityWindow
-        panel.contentView = NSHostingView(rootView: PanePreviewPanel(preview: preview, lookup: lookup))
+        panel.contentView = NSHostingView(rootView: PanePreviewPanel(preview: preview, lookup: lookup, catalog: catalog()))
         return panel
     }
 
@@ -125,10 +128,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         watcher = StatusItemWatcher { [weak self] visible in self?.model.labelVisible(visible) }
         watcher?.start()
-        previewWindow = PanePreviewWindow(preview: model.preview) { [weak model] name in
-            guard let a = model.flatMap({ AgentTree.flatten($0.state.agents).first { $0.name == name } }) else { return nil }
-            return (a.kind.rawValue, a.itemKey)
-        }
+        previewWindow = PanePreviewWindow(
+            preview: model.preview,
+            lookup: { [weak model] name in
+                guard let a = model.flatMap({ AgentTree.flatten($0.state.agents).first { $0.name == name } }) else { return nil }
+                return AgentHeader(kind: a.kind, model: a.model, effort: a.effort, itemKey: a.itemKey)
+            },
+            catalog: { [weak model] in model?.catalog ?? [] })
         Task {
             await model.start()
             if ProcessInfo.processInfo.environment["SWARM_SMOKE"] != nil {
