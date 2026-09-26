@@ -155,3 +155,76 @@ func TestMainRepoOf(t *testing.T) {
 		t.Error("IsRepo must require a .git directory")
 	}
 }
+
+// gitCommand runs Git against a local temporary repository; no network is involved.
+func gitCommand(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func primaryFixture(t *testing.T) (main, linked, directoryLinked, clone string) {
+	t.Helper()
+	root := t.TempDir()
+	main = filepath.Join(root, "worktree-project")
+	linked = filepath.Join(root, "linked")
+	directoryLinked = filepath.Join(root, "directory-linked")
+	clone = filepath.Join(root, "clone")
+	gitCommand(t, "init", "-q", "-b", "main", main)
+	gitCommand(t, "-C", main, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "--allow-empty", "-m", "initial")
+	gitCommand(t, "-C", main, "remote", "add", "origin", "https://example.invalid/owner/repo.git")
+	gitCommand(t, "-C", main, "worktree", "add", "-q", "-b", "linked", linked)
+	gitCommand(t, "clone", "-q", "--no-hardlinks", main, clone)
+	gitCommand(t, "-C", clone, "remote", "set-url", "origin", "https://example.invalid/owner/repo.git")
+	gitCommand(t, "-C", main, "worktree", "add", "-q", "-b", "directory-linked", directoryLinked)
+	linkedGitDir := strings.TrimSpace(strings.TrimPrefix(string(mustReadFile(t, filepath.Join(directoryLinked, ".git"))), "gitdir: "))
+	if err := os.Remove(filepath.Join(directoryLinked, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(directoryLinked, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"HEAD", "commondir", "gitdir", "index"} {
+		body := mustReadFile(t, filepath.Join(linkedGitDir, name))
+		if name == "commondir" {
+			body = []byte(filepath.Join(main, ".git") + "\n")
+		}
+		if name == "gitdir" {
+			body = []byte(filepath.Join(directoryLinked, ".git") + "\n")
+		}
+		if err := os.WriteFile(filepath.Join(directoryLinked, ".git", name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestPrimaryRepoIdentity(t *testing.T) {
+	main, linked, directoryLinked, clone := primaryFixture(t)
+	invalid := filepath.Join(t.TempDir(), "invalid")
+	if err := os.MkdirAll(filepath.Join(invalid, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{main, true}, {linked, false}, {directoryLinked, false}, {clone, true}, {invalid, false},
+	} {
+		if got := PrimaryRepo(bg, execx.Run, tc.path); got != tc.want {
+			t.Errorf("PrimaryRepo(%s) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
