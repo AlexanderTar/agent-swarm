@@ -20,6 +20,12 @@ describe("confirm repos rules (§16.11, L25, I13)", () => {
     expect(confirmModel(req, []).proposed[0]).toMatchObject({ name: "repo_chat", repo: null, subtitle: "" });
   });
 
+  it("tolerates a stored null expansion", () => {
+    const nullExpansion = { ...req, options: { ...(req.options as object), expansion: null } } as typeof req;
+    expect(() => confirmModel(nullExpansion, knownRepos(db.repos))).not.toThrow();
+    expect(confirmModel(nullExpansion, knownRepos(db.repos)).additions).toEqual([]);
+  });
+
   it("validates and builds the payload", () => {
     expect(confirmError([])).toBe("Choose at least one repository.");
     expect(confirmError(["a"])).toBeUndefined();

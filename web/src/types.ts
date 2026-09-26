@@ -194,7 +194,7 @@ export type RequestKind =
   | "accept_epic" | "accept_fix" | "close_spike";
 export type RequestState = "open" | "approved" | "changes_requested" | "answered" | "withdrawn" | "stale";
 export interface RepoProposal { repo: string; reason: string; source: "user" | "agent" }
-export interface ConfirmReposOptions { proposed: RepoProposal[]; expansion: { repo: string; reason: string }[] }
+export interface ConfirmReposOptions { proposed: RepoProposal[]; expansion: { repo: string; reason: string }[] | null }
 export interface AcceptBinding { item_revision: number; integrated_checkpoint: string; git: GitRef[] }
 export type RequestBinding = AcceptBinding | { repos_version: number } | { resolution: string };
 

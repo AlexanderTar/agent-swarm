@@ -53,6 +53,30 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	}
 }
 
+// The orchestrator may omit expansion entirely; the stored options must
+// never carry a JSON null there, since the web board maps over it directly.
+func TestConfirmReposStoresEmptyExpansionAsAnEmptyArrayNotNull(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repoA := seedRepo(t, s, "chat")
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "NoExpansion", Intent: "feature",
+		Kind: Fake, Model: "fake-1", Repos: []string{repoA}})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos",
+		Prompt:    "just chat",
+		Repos:     []ReposProposal{{Repo: repoA, Reason: "the login form lives here"}},
+		Expansion: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(req.Options), `"expansion":null`) {
+		t.Fatalf("options must not carry a null expansion: %s", req.Options)
+	}
+	if !strings.Contains(string(req.Options), `"expansion":[]`) {
+		t.Fatalf("options must carry an empty expansion array: %s", req.Options)
+	}
+}
+
 // Required fix 1: ValidateItemRepos is the item-level (request-free) half of
 // a repo confirmation, used by the orchestrator-spawn route so it can resolve
 // paths for Preflight and refuse a bad pick BEFORE anything spawns.

@@ -154,7 +154,11 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 				return err
 			}
 		}
-		options, err := json.Marshal(map[string]any{"proposed": in.Repos, "expansion": in.Expansion})
+		expansion := in.Expansion
+		if expansion == nil {
+			expansion = []ReposProposal{}
+		}
+		options, err := json.Marshal(map[string]any{"proposed": in.Repos, "expansion": expansion})
 		if err != nil {
 			return err
 		}
