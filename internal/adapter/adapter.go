@@ -46,6 +46,7 @@ type Dialog struct {
 	Keys    []string
 	Fail    bool
 	Require *regexp.Regexp
+	Title   string
 }
 
 // PromptMatcher describes an interactive CLI prompt to be detected in live sessions.

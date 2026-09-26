@@ -174,7 +174,9 @@ func (a *Agy) Busy() *regexp.Regexp           { return agyBusy }
 // Idle also needs the ready footer: the prompt line alone appears while working.
 func (a *Agy) Idle(capture string) bool { return idle(a, capture) && agyReady.MatchString(capture) }
 
-func (a *Agy) StartupDialogs() []Dialog { return []Dialog{{Match: agyTrust, Keys: []string{"Enter"}}} }
+func (a *Agy) StartupDialogs() []Dialog {
+	return []Dialog{{Match: agyTrust, Keys: []string{"Enter"}, Title: "Trust this project"}}
+}
 func (a *Agy) PromptPatterns() []PromptMatcher {
 	return []PromptMatcher{
 		{Match: agyTrust, Title: "Trust this project", Action: "Enter"},
