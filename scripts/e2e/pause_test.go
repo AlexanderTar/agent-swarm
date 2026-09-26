@@ -49,6 +49,10 @@ func TestScenario06PauseWithHandoff(t *testing.T) {
 	if pso["permissionDecision"] != "deny" {
 		t.Fatalf("PreToolUse decision = %+v, want deny", pushed)
 	}
+	if reason, _ := pso["permissionDecisionReason"].(string); !strings.Contains(reason,
+		"preservation: git push is denied while preserving") {
+		t.Fatalf("PreToolUse denial reason = %q, want the preservation push denial", reason)
+	}
 
 	h.mustTool(t, coder, "swarm_checkpoint", map[string]any{"kind": "handoff", "summary": "pausing, handing off"})
 	h.killPane(t, coder)
