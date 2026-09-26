@@ -2,11 +2,12 @@ import AppKit
 import SwarmBarKit
 import SwiftUI
 
-/// New orchestrator window (§16.3), 480 pt wide.
+/// New orchestrator window (§16.3).
 public struct NewOrchestratorView: View {
     @Bindable var form: NewOrchestratorForm
     let onStarted: (AgentNode) -> Void
     let onCancel: () -> Void
+    @Environment(\.sizeCategory) private var sizeCategory
 
     public init(form: NewOrchestratorForm, onStarted: @escaping (AgentNode) -> Void, onCancel: @escaping () -> Void) {
         self.form = form
@@ -16,22 +17,17 @@ public struct NewOrchestratorView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(Copy.newOrchestrator).font(.title3.bold())
-                    if let failure = form.failure {
-                        Label(failure, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            GeometryReader { geometry in
+                if sizeCategory.isAccessibilityCategory || geometry.size.height < 600 {
+                    ScrollView {
+                        formContents(maxRows: 4)
+                            .background(SubtleScrollerConfig())
                     }
-                    nameField
-                    intentField
-                    reposField
-                    agentFields
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(Copy.requestOptional)
-                        TextEditor(text: $form.request).frame(minHeight: 48).border(.separator)
-                    }
+                    .scrollIndicators(.automatic)
+                } else {
+                    formContents(maxRows: form.failure == nil && geometry.size.height >= 700 ? 8 : 6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
-                .padding(16)
             }
             Divider()
             HStack {
@@ -44,12 +40,34 @@ public struct NewOrchestratorView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!form.canStart)
             }
-            .padding(12)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
         }
-        .frame(width: 480)
+        .frame(minWidth: 760, idealWidth: 820, maxWidth: .infinity,
+               minHeight: 700, idealHeight: 790)
         .glassButtons()
-        .frame(minHeight: 420, idealHeight: 720)
         .task { await form.load() }
+    }
+
+    private func formContents(maxRows: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(Copy.newOrchestrator).font(.title3.bold())
+            if let failure = form.failure {
+                Label(failure, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            }
+            nameField
+            intentField
+            reposField(maxRows: maxRows)
+            agentFields
+            VStack(alignment: .leading, spacing: 4) {
+                Text(Copy.requestOptional)
+                RequestEditor(text: $form.request)
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 12)
     }
 
     private var nameField: some View {
@@ -76,11 +94,11 @@ public struct NewOrchestratorView: View {
         }
     }
 
-    private var reposField: some View {
+    private func reposField(maxRows: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(Copy.repositoriesOptional)
             Text(Copy.reposCaption).font(.caption).foregroundStyle(.secondary)
-            RepoChooser(rows: form.rows, selection: Binding(
+            RepoChooser(rows: form.rows, maxRows: maxRows, selection: Binding(
                 get: { Set(form.selection) },
                 set: { selected in form.selection = form.rows.map(\.id).filter(selected.contains) }
             ))
@@ -110,23 +128,23 @@ public struct NewOrchestratorView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(Copy.agent).frame(width: 72, alignment: .leading)
-                OptionPicker(Copy.agent, options: form.agentOptions, value: form.choice.agent?.rawValue ?? "",
+                WideOptionPicker(Copy.agent, options: form.agentOptions, value: form.choice.agent?.rawValue ?? "",
                              icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAgent($0) }
-                    .labelsHidden().frame(minWidth: 150)
+                    .frame(width: 150)
                 Text(Copy.model).frame(width: 52, alignment: .leading)
-                OptionPicker(Copy.model, options: form.modelOptions, value: form.choice.model) { form.setModel($0) }
-                    .labelsHidden().frame(minWidth: 300)
+                WideOptionPicker(Copy.model, options: form.modelOptions, value: form.choice.model) { form.setModel($0) }
+                    .frame(minWidth: 300, maxWidth: .infinity)
             }
             if let error = form.errors.agent, !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
             if let error = form.errors.model { Text(error).font(.caption).foregroundStyle(.red) }
             HStack(spacing: 8) {
                 Text(Copy.advisor).frame(width: 72, alignment: .leading)
-                OptionPicker(Copy.advisor, options: form.advisorAgentOptions, value: advisorAgentValue,
+                WideOptionPicker(Copy.advisor, options: form.advisorAgentOptions, value: advisorAgentValue,
                              icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAdvisorAgent($0) }
-                    .labelsHidden().frame(minWidth: 150)
+                    .frame(width: 150)
                 Text(Copy.model).frame(width: 52, alignment: .leading)
-                OptionPicker("Advisor model", options: form.advisorModelOptions, value: advisorModelValue) { form.setAdvisorModel($0) }
-                    .labelsHidden().frame(minWidth: 300).disabled(form.advisor == .none)
+                WideOptionPicker("Advisor model", options: form.advisorModelOptions, value: advisorModelValue) { form.setAdvisorModel($0) }
+                    .frame(minWidth: 300, maxWidth: .infinity).disabled(form.advisor == .none)
             }
             if let error = form.errors.advisor { Text(error).font(.caption).foregroundStyle(.red) }
             Text(Copy.defaultsFromSettings).font(.caption).foregroundStyle(.secondary)
@@ -146,9 +164,12 @@ public struct NewOrchestratorView: View {
 /// A native list supplies macOS selection, keyboard range selection, and VoiceOver row focus.
 struct RepoChooser: View {
     let rows: [Repo]
+    var maxRows = 8
     @Binding var selection: Set<String>
 
-    static func visibleHeight(for count: Int) -> CGFloat { CGFloat(min(8, max(1, count))) * 32 }
+    static func visibleHeight(for count: Int, maxRows: Int = 8) -> CGFloat {
+        CGFloat(min(maxRows, max(1, count))) * 32
+    }
 
     var body: some View {
         List(rows, selection: $selection) { repo in
@@ -163,6 +184,7 @@ struct RepoChooser: View {
             }
             .frame(height: 30, alignment: .leading)
             .contentShape(Rectangle())
+            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(repo.name), \(repo.path)")
             .help(repo.path)
@@ -170,8 +192,77 @@ struct RepoChooser: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(SubtleScrollerConfig())
-        .frame(height: Self.visibleHeight(for: rows.count))
+        .frame(height: Self.visibleHeight(for: rows.count, maxRows: maxRows))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(.separator))
         .accessibilityLabel(Copy.repositoriesOptional)
+    }
+}
+
+struct RequestEditor: View {
+    @Binding var text: String
+    static let minimumHeight: CGFloat = 108
+
+    var body: some View {
+        TextEditor(text: $text)
+            .frame(minHeight: Self.minimumHeight, maxHeight: .infinity)
+            .border(.separator)
+    }
+}
+
+/// AppKit keeps the visible popup as wide as its SwiftUI frame, including at the window minimum.
+private struct WideOptionPicker: NSViewRepresentable {
+    @Environment(\.isEnabled) private var isEnabled
+    let title: String
+    let options: [PickerOption]
+    let value: String
+    let icon: ((PickerOption) -> IconName?)?
+    let onChange: (String) -> Void
+
+    init(_ title: String, options: [PickerOption], value: String,
+         icon: ((PickerOption) -> IconName?)? = nil, onChange: @escaping (String) -> Void) {
+        self.title = title
+        self.options = options
+        self.value = value
+        self.icon = icon
+        self.onChange = onChange
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.target = context.coordinator
+        popup.action = #selector(Coordinator.changed(_:))
+        popup.setAccessibilityLabel(title)
+        return popup
+    }
+
+    func updateNSView(_ popup: NSPopUpButton, context: Context) {
+        context.coordinator.onChange = onChange
+        let displayed = options.contains(where: { $0.value == value })
+            ? options : [PickerOption(value, value.isEmpty ? " " : value)] + options
+        let current = popup.itemArray.map { (($0.representedObject as? String) ?? "", $0.title) }
+        let wanted = displayed.map { ($0.value, $0.label) }
+        if !zip(current, wanted).allSatisfy({ $0 == $1 }) || current.count != wanted.count {
+            popup.removeAllItems()
+            for option in displayed {
+                let item = NSMenuItem(title: option.label, action: nil, keyEquivalent: "")
+                item.representedObject = option.value
+                if let icon = icon?(option) { item.image = Icons.image(icon) }
+                popup.menu?.addItem(item)
+            }
+        }
+        if let index = displayed.firstIndex(where: { $0.value == value }) { popup.selectItem(at: index) }
+        popup.isEnabled = isEnabled
+        popup.setAccessibilityLabel(title)
+    }
+
+    @MainActor final class Coordinator: NSObject {
+        var onChange: (String) -> Void
+        init(onChange: @escaping (String) -> Void) { self.onChange = onChange }
+        @objc func changed(_ popup: NSPopUpButton) {
+            guard let value = popup.selectedItem?.representedObject as? String else { return }
+            onChange(value)
+        }
     }
 }
