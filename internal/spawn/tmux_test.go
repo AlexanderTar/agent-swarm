@@ -448,3 +448,65 @@ func TestSocketFromEnvDefaultsToATestSocket(t *testing.T) {
 		t.Fatalf("SocketFromEnv() with the variable set = %q, want swarm-e2e", got)
 	}
 }
+
+// cancelCopyModeIfNeeded is the guard for the 2026-09-25 22:27Z bug: mouse
+// wheel scroll (mouse on, TmuxConf) puts a pane in copy-mode, and copy-mode's
+// key table has no Enter binding, so the Enter that submits a paste is
+// swallowed and the notice sits complete but unsent. When the pane reports
+// pane_in_mode=1, the cancel must be sent before anything else.
+func TestCancelCopyModeIfNeededCancelsWhenPaneIsInCopyMode(t *testing.T) {
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"tmux -L swarm display -p -t sess #{pane_in_mode}": {Out: "1\n"},
+		"tmux -L swarm send-keys -t sess -X cancel":         {Out: ""},
+	}}
+	s := &Spawner{Socket: "swarm", Tmux: "tmux", Run: f.Runner(), Log: func(string, ...any) {}}
+	s.cancelCopyModeIfNeeded(context.Background(), "sess")
+	want := []string{"tmux -L swarm display -p -t sess #{pane_in_mode}", "tmux -L swarm send-keys -t sess -X cancel"}
+	if got := f.Calls(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls = %v, want %v (cancel must be sent, in order, when in copy-mode)", got, want)
+	}
+}
+
+func TestCancelCopyModeIfNeededDoesNothingWhenPaneIsNotInCopyMode(t *testing.T) {
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"tmux -L swarm display -p -t sess #{pane_in_mode}": {Out: "0\n"},
+	}}
+	s := &Spawner{Socket: "swarm", Tmux: "tmux", Run: f.Runner(), Log: func(string, ...any) {}}
+	s.cancelCopyModeIfNeeded(context.Background(), "sess")
+	want := []string{"tmux -L swarm display -p -t sess #{pane_in_mode}"}
+	if got := f.Calls(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls = %v, want %v (no cancel when not in copy-mode)", got, want)
+	}
+}
+
+// The regression test for the actual incident: a pane pushed into copy-mode
+// (exactly what a mouse-wheel scroll under `mouse on` does) must still have
+// its pasted line submitted -- not left sitting unsent because copy-mode ate
+// the Enter.
+func TestPasteLineCancelsCopyModeSoTheLineIsSubmitted(t *testing.T) {
+	s := newSpawner(t)
+	ctx := context.Background()
+	out := filepath.Join(t.TempDir(), "typed.txt")
+	if err := s.Start(ctx, "copymode", t.TempDir(), nil,
+		[]string{"sh", "-c", "read line; printf '%s' \"$line\" > " + out + "; while :; do sleep 1; done"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the shell to start reading", func() bool {
+		_, err := s.Capture(ctx, "copymode", 5)
+		return err == nil
+	})
+	if _, err := s.run(ctx, "copy-mode", "-t", "copymode"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the pane to enter copy-mode", func() bool {
+		out, err := s.run(ctx, "display", "-p", "-t", "copymode", "#{pane_in_mode}")
+		return err == nil && strings.TrimSpace(string(out)) == "1"
+	})
+	if err := s.PasteLine(ctx, "copymode", "swarm: inbox (call swarm_sync)"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the pasted line to be submitted despite copy-mode", func() bool {
+		b, err := os.ReadFile(out)
+		return err == nil && string(b) == "swarm: inbox (call swarm_sync)"
+	})
+}

@@ -299,10 +299,30 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// cancelCopyModeIfNeeded exits copy-mode before a paste, so the Enter that
+// submits it isn't swallowed. mouse on (TmuxConf) lets a mouse-wheel scroll
+// put a pane into copy-mode, and copy-mode's key table (mode-keys emacs) has
+// no Enter binding -- Enter there is simply dropped, not passed through to
+// the program underneath. That silently left a relay notice for
+// go-migration-agent-debug sitting complete but unsent in its input box
+// (2026-09-25 22:27Z), which then made every idle check fail and every
+// quota-reset wake log "pane not idle" until the pane was touched by hand.
+// Best-effort: a failure here must not block the paste itself.
+func (s *Spawner) cancelCopyModeIfNeeded(ctx context.Context, name string) {
+	out, err := s.run(ctx, "display", "-p", "-t", name, "#{pane_in_mode}")
+	if err != nil || strings.TrimSpace(string(out)) != "1" {
+		return
+	}
+	if _, err := s.run(ctx, "send-keys", "-t", name, "-X", "cancel"); err != nil {
+		s.Log("tmux: cancel copy-mode for %s: %v", name, err)
+	}
+}
+
 // pasteViaTempFile is how the line reaches tmux: execx.Runner has no stdin, and
 // send-keys -l would interpret some characters. The buffer is reused across
 // chunks, so at most one temp file exists per paste.
 func (s *Spawner) pasteViaTempFile(ctx context.Context, name, line string) error {
+	s.cancelCopyModeIfNeeded(ctx, name)
 	f, err := os.CreateTemp("", "swarm-paste-*")
 	if err != nil {
 		return err
