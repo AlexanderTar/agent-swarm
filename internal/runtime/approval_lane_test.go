@@ -435,3 +435,48 @@ func TestResumeResurfacesOpenRequests(t *testing.T) {
 		t.Fatalf("resume kickoff lacks the reminder:\n%s", fa.LastSpec.Kickoff)
 	}
 }
+
+// Spec E10.
+func TestQuotaResetWakeResurfacesOnlyWhatIsNotVisible(t *testing.T) {
+	s, tm, fa := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Quota", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses := mustSessionID(t, s, a.ID)
+	path := writeFile(t, "# Spec\n\n## Data model\n\nrows\n\n## API\n\ncalls\n")
+	res, err := s.RegisterArtifact(ctx, ses, "register", "SPIKE-1", "spec", path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shown, err := s.Ask(ctx, ses, AskInput{Kind: "approval", Prompt: "Review", ArtifactID: res.ArtifactID, SectionID: res.Sections[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := s.Ask(ctx, ses, AskInput{Kind: "approval", Prompt: "Review", ArtifactID: res.ArtifactID, SectionID: res.Sections[1].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// shown's native question is open in this very session; q was asked here;
+	// a permission prompt never comes back.
+	if _, err := s.AskQuestion(ctx, ses, shown.NativePrompt.Question, shown.NativePrompt.Options); err != nil {
+		t.Fatal(err)
+	}
+	q, _ := s.AskQuestion(ctx, ses, "Which sync strategy?", nil)
+	p, _ := s.AskPrompt(ctx, ses, "rm -rf build", nil)
+
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"}
+	if _, err := s.WakeOnQuotaReset(ctx, Fake, tm.clk.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if want := QuotaResetNotice() + " " + OpenRequestsReminder(1); fa.LastWakeTarget.Notice != want {
+		t.Fatalf("notice = %q, want %q", fa.LastWakeTarget.Notice, want)
+	}
+	if _, n := relayFor(t, s, a.ID, hidden.ID); n != 1 {
+		t.Fatalf("hidden approval: %d relays, want 1", n)
+	}
+	for _, id := range []string{shown.ID, q.ID, p.ID} {
+		if _, n := relayFor(t, s, a.ID, id); n != 0 {
+			t.Fatalf("%s is visible or a prompt but got %d relays", id, n)
+		}
+	}
+}

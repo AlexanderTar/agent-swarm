@@ -554,10 +554,21 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 		if err := rows.Scan(&sessionID, &agentID, &agentName, &tmuxName, &state, &waiting, &model, &effort); err != nil {
 			return woken, err
 		}
+		// Epic-approval-lane decision 2: a quota-reset wake re-surfaces what
+		// this live session can't already see (fresh=false). The same write-
+		// inside-the-read-loop pattern as markWoken below.
+		notice := QuotaResetNotice()
+		if a, err := s.agentByID(ctx, agentID); err != nil {
+			s.logf("wake: quota-reset agent %s: %v", agentName, err)
+		} else if n, err := s.resurfaceOpenRequests(ctx, a, sessionID, false); err != nil {
+			s.logf("wake: quota-reset resurface for %s: %v", agentName, err)
+		} else if n > 0 {
+			notice += " " + OpenRequestsReminder(n)
+		}
 		// Attempt native wake or paste idle token if pane is idle
 		if ok {
 			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, AgentID: agentID, TmuxName: tmuxName,
-				Notice: QuotaResetNotice(),
+				Notice: notice,
 				Model:  s.resolveLaunchModel(ctx, kind, model, effort)})
 			if delivered {
 				s.markWoken(ctx, sessionID, true)
