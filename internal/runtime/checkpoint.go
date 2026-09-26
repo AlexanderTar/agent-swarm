@@ -1236,6 +1236,21 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		// runtime.Spawn now refuses those on anything but a Task, so this is
 		// defense-in-depth for an agent already assigned before that gate
 		// existed, not the primary fix.
+		// F4 (worker lifecycle): completed claims the assignment is done,
+		// so an unresolved HITL question/blocker/prompt owned by this agent
+		// refuses it by name -- answer or withdraw the request first, then
+		// complete. Other checkpoint kinds are never gated here.
+		if in.Kind == CompletedCkp {
+			blocking, err := s.openBlockingQuestionsTx(ctx, tx, a.ID)
+			if err != nil {
+				return err
+			}
+			if len(blocking) > 0 {
+				return &items.Error{Code: items.CodeBadRequest,
+					Message: fmt.Sprintf("completed is blocked by open question %s; answer or withdraw it first.",
+						strings.Join(blocking, ", "))}
+			}
+		}
 		if in.Kind == CompletedCkp && slices.Contains(gatedRoles, a.Role) &&
 			it.Type != items.Task && it.Type != items.Spike {
 			return &items.Error{Code: items.CodeBadRequest,
@@ -1466,20 +1481,8 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		// checkpoint one). blocked/failed/handoff and swarm_send questions
 		// still reach the orchestrator exactly as today.
 		suppressed := hasRun && (in.Kind == Accepted || in.Kind == Progress || in.Kind == CompletedCkp)
-		if a.ParentAgentID != "" && !suppressed {
-			body, err := json.Marshal(map[string]any{
-				"event": string(in.Kind), "agent": a.Name, "item": itemKey,
-				"checkpoint": map[string]any{"summary": in.Summary, "resolution": in.Resolution,
-					"next": in.Next, "blockers": in.Blockers},
-			})
-			if err != nil {
-				return err
-			}
-			if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon",
-				ToAgentID: a.ParentAgentID, RootItemID: a.RootItemID, ItemID: it.ID, Payload: body}); err != nil {
-				return err
-			}
-		}
+		// The enqueue itself lives below, after the final revision is
+		// known (F11 carries it in the relay).
 
 		if _, err := s.Events.Append(ctx, tx, events.CheckpointCreated,
 			map[string]string{"item": itemKey, "agent": a.Name, "kind": string(in.Kind)}); err != nil {
@@ -1511,6 +1514,26 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		}
 		out.ItemStatus = final.Status
 		out.ItemRevision = final.Revision
+		// F11: the parent relay carries the final item_revision observed
+		// after cascading transitions (ReconcileTx above can bump it again
+		// past this checkpoint's own transition), so the observing parent
+		// sees current state. Recipients keep using that explicit revision
+		// with optimistic concurrency; there is no revision:latest shortcut.
+		if a.ParentAgentID != "" && !suppressed {
+			body, err := json.Marshal(map[string]any{
+				"event": string(in.Kind), "agent": a.Name, "item": itemKey,
+				"item_revision": final.Revision,
+				"checkpoint": map[string]any{"summary": in.Summary, "resolution": in.Resolution,
+					"next": in.Next, "blockers": in.Blockers},
+			})
+			if err != nil {
+				return err
+			}
+			if _, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon",
+				ToAgentID: a.ParentAgentID, RootItemID: a.RootItemID, ItemID: it.ID, Payload: body}); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil || !ran {

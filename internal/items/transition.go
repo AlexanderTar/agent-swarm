@@ -351,9 +351,10 @@ func (s *Store) acceptedSince(ctx context.Context, q querier, it Item) (bool, er
 }
 
 // completedCurrent reports whether the item has a "current" completed
-// checkpoint. Legacy tasks (workflow_json IS NULL, it.Workflow == nil) keep
-// the original, unchanged formula byte-for-byte (Review Focus 1). A
-// workflow task instead fixes the cross-agent attempt bug (spec B5/Context):
+// checkpoint. Legacy tasks (workflow_json IS NULL, it.Workflow == nil) use
+// the same per-builder comparison as workflow tasks (F1 remainder: the old
+// item-wide MAX(attempt) let a cancelled predecessor mask the successor).
+// A workflow task instead fixes the cross-agent attempt bug (spec B5/Context):
 // the original MAX(attempt) was taken across every checkpoint on the item,
 // mixing each agent's own independent attempt/session counter -- a
 // reviewer's own review-attempt sequence could mask or falsely validate a
@@ -366,8 +367,22 @@ func (s *Store) acceptedSince(ctx context.Context, q querier, it Item) (bool, er
 // later attempt from the SAME agent (a fix-round retry) still does.
 func (s *Store) completedCurrent(ctx context.Context, q querier, it Item) (bool, error) {
 	if it.Workflow == nil {
-		return exists(ctx, q, `SELECT 1 FROM checkpoints WHERE item_id = ? AND kind = 'completed'
-			AND attempt = (SELECT MAX(attempt) FROM checkpoints WHERE item_id = ?)`, it.ID, it.ID)
+		// F1/TASK-242 remainder: the legacy formula compared the completion
+		// against the item-wide MAX(attempt), so a cancelled predecessor's
+		// attempt-2 "accepted" masked the successor's completed at attempt
+		// 1. Like the workflow branch, compare the latest relevant builder
+		// completion against THAT builder's own latest attempt: a later
+		// attempt from a different agent never invalidates it, while the
+		// same agent's own retry (or a post-reopen retry) still does.
+		// Reviewer-only completions are not builder completions. Tied
+		// timestamps all satisfy the MAX (no rowid tie-break), so one tied
+		// winner can never hide another builder's current completion.
+		return exists(ctx, q, `SELECT 1 FROM checkpoints c JOIN agents ag ON ag.id = c.agent_id
+			WHERE c.item_id = ? AND c.kind = 'completed' AND ag.role NOT IN ('reviewer','ui_reviewer','orchestrator')
+			AND c.created_at = (SELECT MAX(c2.created_at) FROM checkpoints c2 JOIN agents ag2 ON ag2.id = c2.agent_id
+				WHERE c2.item_id = ? AND c2.kind = 'completed' AND ag2.role NOT IN ('reviewer','ui_reviewer','orchestrator'))
+			AND c.attempt = (SELECT MAX(attempt) FROM checkpoints WHERE item_id = ? AND agent_id = c.agent_id)`,
+			it.ID, it.ID, it.ID)
 	}
 	// "Build roles" (fix round 1, R2): any role except reviewer/ui_reviewer/
 	// orchestrator, not just coder/debugger/mechanical -- a design-reviewed

@@ -65,20 +65,25 @@ func TestTaskTransitions(t *testing.T) {
 	}
 	wantDenied(t, move(t, s, task.Key, items.Done, user), "Couldn't move TASK-2 to Done. No agent has reported it complete on this task.")
 	wantDenied(t, move(t, s, task.Key, items.InReview, daemon), "Couldn't update status. The item remains In progress.")
-	seedCheckpoint(t, s.DB, task, "completed", 1, later(s), "")
+	// The retry sequence below must come from the SAME builder: per-builder
+	// completion (F1) means a different agent's newer attempt never stales
+	// this completion -- only the builder's own retry does.
+	bAgent, bSes := seedSessionRole(t, s.DB, task, "coder", "running")
+	seedCheckpointFor(t, s.DB, task, bAgent, bSes, "completed", 1, later(s))
 	wantDenied(t, move(t, s, task.Key, items.Done, orch), "Couldn't update status. The item remains In progress.")
 	if err := move(t, s, task.Key, items.InReview, daemon); err != nil {
 		t.Fatal(err)
 	}
 	wantDenied(t, move(t, s, task.Key, items.Done, user), "Couldn't update status. The item remains In review.")
 
-	// review asks for changes: new attempt; the old completion no longer counts
+	// review asks for changes: the same builder's new attempt; its own old
+	// completion no longer counts
 	if err := move(t, s, task.Key, items.InProgress, orch); err != nil {
 		t.Fatal(err)
 	}
-	seedCheckpoint(t, s.DB, task, "progress", 2, later(s), "")
+	seedCheckpointFor(t, s.DB, task, bAgent, bSes, "progress", 2, later(s))
 	wantDenied(t, move(t, s, task.Key, items.InReview, daemon), "Couldn't update status. The item remains In progress.")
-	seedCheckpoint(t, s.DB, task, "completed", 2, later(s), "")
+	seedCheckpointFor(t, s.DB, task, bAgent, bSes, "completed", 2, later(s))
 	if err := move(t, s, task.Key, items.InReview, daemon); err != nil {
 		t.Fatal(err)
 	}
@@ -580,6 +585,94 @@ func TestCompletedCurrentIsPerAgent(t *testing.T) {
 	seedCheckpointFor(t, s.DB, taskB, coderAgent2, coderSes2, "completed", 1, later(s))
 	seedCheckpointFor(t, s.DB, taskB, coderAgent2, coderSes2, "progress", 2, later(s))
 	wantDenied(t, move(t, s, taskB.Key, items.InReview, daemon),
+		"Couldn't update status. The item remains In progress.")
+}
+
+// TestLegacyCompletedCurrentIsPerBuilder is the legacy-task remainder of the
+// cross-agent attempt bug (F1/TASK-242): the Workflow==nil branch compared a
+// completed checkpoint against the item-wide MAX(attempt), so agent A's
+// attempt-2 accepted (then cancelled) masked agent B's completed at attempt
+// 1. The legacy comparison must be per-builder: the latest relevant builder
+// completion against THAT builder's own latest attempt.
+func TestLegacyCompletedCurrentIsPerBuilder(t *testing.T) {
+	daemon := items.Daemon()
+
+	// Cancelled predecessor at attempt 2 must not mask the successor's
+	// completed at attempt 1 (TASK-242, no workflow_json on either task).
+	s := newStore(t)
+	_, st, _ := tree(t, s)
+	task := mk(t, s, items.Task, st.Key, "Legacy fix")
+	setStatus(t, s, task, items.InProgress)
+	aAgent, aSes := seedSessionRole(t, s.DB, task, "coder", "running")
+	exec(t, s.DB, `UPDATE sessions SET attempt = 2, state = 'cancelled' WHERE id = ?`, aSes)
+	seedCheckpointFor(t, s.DB, task, aAgent, aSes, "accepted", 2, later(s))
+	bAgent, bSes := seedSessionRole(t, s.DB, task, "coder", "running")
+	seedCheckpointFor(t, s.DB, task, bAgent, bSes, "completed", 1, later(s))
+	if err := move(t, s, task.Key, items.InReview, daemon); err != nil {
+		t.Fatalf("cancelled attempt-2 must not mask completed attempt-1: %v", err)
+	}
+	if err := move(t, s, task.Key, items.Done, daemon); err != nil {
+		t.Fatalf("done after the successor completion: %v", err)
+	}
+	wantStatus(t, s, task.Key, items.Done)
+
+	// Same-agent stale: the same builder's own later attempt voids its
+	// earlier completion.
+	s2 := newStore(t)
+	_, st2, _ := tree(t, s2)
+	stale := mk(t, s2, items.Task, st2.Key, "Legacy retry")
+	setStatus(t, s2, stale, items.InProgress)
+	cAgent, cSes := seedSessionRole(t, s2.DB, stale, "coder", "running")
+	seedCheckpointFor(t, s2.DB, stale, cAgent, cSes, "completed", 1, later(s2))
+	seedCheckpointFor(t, s2.DB, stale, cAgent, cSes, "progress", 2, later(s2))
+	wantDenied(t, move(t, s2, stale.Key, items.InReview, daemon),
+		"Couldn't update status. The item remains In progress.")
+
+	// Reviewer-only completion is not a builder completion.
+	s3 := newStore(t)
+	_, st3, _ := tree(t, s3)
+	rev := mk(t, s3, items.Task, st3.Key, "Legacy review only")
+	setStatus(t, s3, rev, items.InProgress)
+	rAgent, rSes := seedSessionRole(t, s3.DB, rev, "reviewer", "running")
+	seedCheckpointFor(t, s3.DB, rev, rAgent, rSes, "completed", 1, later(s3))
+	wantDenied(t, move(t, s3, rev.Key, items.InReview, daemon),
+		"Couldn't update status. The item remains In progress.")
+
+	// Tied timestamps: two builders complete at the same instant -- the
+	// completion still counts.
+	s4 := newStore(t)
+	_, st4, _ := tree(t, s4)
+	tied := mk(t, s4, items.Task, st4.Key, "Legacy tie")
+	setStatus(t, s4, tied, items.InProgress)
+	at := later(s4)
+	dAgent, dSes := seedSessionRole(t, s4.DB, tied, "coder", "running")
+	seedCheckpointFor(t, s4.DB, tied, dAgent, dSes, "completed", 1, at)
+	eAgent, eSes := seedSessionRole(t, s4.DB, tied, "coder", "running")
+	seedCheckpointFor(t, s4.DB, tied, eAgent, eSes, "completed", 1, at)
+	if err := move(t, s4, tied.Key, items.InReview, daemon); err != nil {
+		t.Fatalf("tied builder completions must count: %v", err)
+	}
+
+	// Reopened item: after Done -> Ready and a same-agent retry, the
+	// pre-reopen completion is stale against the agent's own new attempt.
+	s5 := newStore(t)
+	_, st5, _ := tree(t, s5)
+	re := mk(t, s5, items.Task, st5.Key, "Legacy reopened")
+	setStatus(t, s5, re, items.InProgress)
+	fAgent, fSes := seedSessionRole(t, s5.DB, re, "coder", "running")
+	seedCheckpointFor(t, s5.DB, re, fAgent, fSes, "completed", 1, later(s5))
+	if err := move(t, s5, re.Key, items.InReview, daemon); err != nil {
+		t.Fatal(err)
+	}
+	if err := move(t, s5, re.Key, items.Done, daemon); err != nil {
+		t.Fatal(err)
+	}
+	if err := move(t, s5, re.Key, items.Ready, user); err != nil {
+		t.Fatal(err)
+	}
+	seedCheckpointFor(t, s5.DB, re, fAgent, fSes, "progress", 2, later(s5))
+	setStatus(t, s5, re, items.InProgress)
+	wantDenied(t, move(t, s5, re.Key, items.InReview, daemon),
 		"Couldn't update status. The item remains In progress.")
 }
 

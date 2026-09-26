@@ -291,6 +291,10 @@ type readInput struct {
 	Refs   []string `json:"refs"`
 	Filter *struct {
 		Root, Type, Status, Q string
+		// Kind selects collections (Batch 4/F6): item|agent|checkpoint|
+		// artifact|request|worktree, validated by parseReadKind. Empty
+		// means every collection, the historical behavior.
+		Kind string `json:"kind"`
 	} `json:"filter"`
 	Repos *struct {
 		Q     string `json:"q"`
@@ -299,8 +303,15 @@ type readInput struct {
 	} `json:"repos"`
 	// a pointer distinguishes "since_seq omitted" (no event scan at all) from
 	// an explicit "since_seq":0 (a fresh cursor: scan every event ever issued).
-	SinceSeq *int64   `json:"since_seq"`
-	Fields   []string `json:"fields"`
+	SinceSeq *int64 `json:"since_seq"`
+	// Fields projects allowlisted fields per collection (identity always
+	// retained); unknown fields are refused by validateReadFields.
+	Fields []string `json:"fields"`
+	// Limit/Cursor bound filter reads (Batch 4/F6): default 50, max 200,
+	// stable (updated_at, id) keyset cursor. Refs are explicit lookups and
+	// since_seq is an event poll; neither is paged.
+	Limit  int    `json:"limit"`
+	Cursor string `json:"cursor"`
 	// Batch 2 successor recovery: agent-scoped paginated checkpoint history
 	// with full fields/provenance plus readable requests, worktrees and
 	// artifact revisions/hashes. Handled by recoveryOut (recovery.go); the
@@ -349,29 +360,58 @@ func artifactOut(a runtime.Artifact) map[string]any {
 }
 
 // readTool is §8.1's catch-all state read, read directly from the real spec
-// (fix round 1 — the batch briefs never had the literal shapes). Known gap:
-// `fields` (selective field projection) is not implemented; every matched
-// item/agent/checkpoint/artifact is returned whole. Nothing in this batch's
-// own tests needs it, and no other task in this batch was found depending on
-// it either, so it is deferred rather than guessed at.
+// (fix round 1 — the batch briefs never had the literal shapes). Batch 4
+// (F6) bounds it: validated filter.kind, allowlisted field projection,
+// default-50/max-200 filter pagination with a stable cursor, per-ref errors
+// that keep the successes, and explicit unsupported-filter errors.
 func readTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_read",
-		Description: "Read items, artifacts, agents and checkpoints by ref or filter, search repos, and get changes since a cursor.",
+		Description: "Read items, artifacts, agents and checkpoints by ref or filter, search repos, and get changes since a cursor. filter.kind selects collections (item, agent, checkpoint, artifact, request, worktree); fields projects allowlisted fields; filter reads page with limit (default 50, max 200) and an opaque cursor; unresolvable refs return per-ref errors without failing the call.",
 		Schema: objSchema(`"refs":{"type":"array","items":{"type":"string"},"description":"Item, artifact, agent or checkpoint refs to fetch"},
-			"filter":{"type":"object","description":"Filter listing by root, type, status or query"},
+			"filter":{"type":"object","description":"Filter listing by root, type, status or query","properties":{"kind":{"type":"string"},"root":{"type":"string"},"type":{"type":"string"},"status":{"type":"string"},"q":{"type":"string"}}},
 			"repos":{"type":"object","description":"Repo search","properties":{"q":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer"}}},
 			"since_seq":{"type":"integer","description":"Event cursor to list changes since"},"fields":{"type":"array","items":{"type":"string"}},
+			"limit":{"type":"integer"},"cursor":{"type":"string"},
 			"recovery":{"type":"object","properties":{"agent":{"type":"string"},"limit":{"type":"integer"},"cursor":{"type":"integer"}}}`),
 		Unbound: true,
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
+			var rawArgs map[string]json.RawMessage
+			if len(args) > 0 {
+				if err := json.Unmarshal(args, &rawArgs); err != nil {
+					return nil, err
+				}
+			}
+			// Unknown filter keys are refused here, before decoding drops
+			// them silently.
+			if err := checkFilterKeys(rawArgs["filter"]); err != nil {
+				return nil, err
+			}
 			var in readInput
 			if err := decode(args, &in); err != nil {
 				return nil, err
 			}
+			kind := ""
+			if in.Filter != nil {
+				kind = in.Filter.Kind
+			}
+			var err error
+			if kind, err = parseReadKind(kind); err != nil {
+				return nil, err
+			}
+			want := func(name string) bool { return kind == "" || kind == name }
+			returned := readKinds
+			if kind != "" {
+				returned = []string{kind}
+			}
+			if err := validateReadFields(returned, in.Fields); err != nil {
+				return nil, err
+			}
 			out := map[string]any{
 				"items": []any{}, "artifacts": []any{}, "agents": []any{},
-				"checkpoints": []any{}, "repos": []repos.Repo{}, "confirmed_repos": []repos.Repo{},
+				"checkpoints": []any{}, "requests": []any{}, "worktrees": []any{},
+				"errors": []any{}, "repos": []repos.Repo{}, "confirmed_repos": []repos.Repo{},
+				"page_cursor": "", "has_more": false,
 			}
 			var collectedItems []items.Item
 			itemSeen := map[string]bool{}
@@ -382,48 +422,146 @@ func readTool(s *Server) ToolDef {
 				itemSeen[it.Key] = true
 				collectedItems = append(collectedItems, it)
 			}
+			fail := func(ref string, err error) {
+				out["errors"] = append(out["errors"].([]any), refError(ref, err))
+			}
 
-			// refs mix item keys, art_ ids and agent names (§8.1); route each by
-			// what actually resolves, since there is no single shared id space.
+			// refs mix item keys, art_/req_/wt_ ids and agent names (§8.1);
+			// route each by what actually resolves, since there is no
+			// single shared id space. A ref that resolves nowhere is a
+			// per-ref error entry (F6): the valid results still come back.
 			for _, ref := range in.Refs {
 				if strings.HasPrefix(ref, "art_") {
 					art, _, err := s.RT.ArtifactMarkdown(ctx, ref, 0, "")
 					if err != nil {
-						return nil, err
+						fail(ref, err)
+						continue
 					}
-					out["artifacts"] = append(out["artifacts"].([]any), artifactOut(art))
+					if want("artifact") {
+						projected, err := projectFields("artifact", artifactOut(art), in.Fields)
+						if err != nil {
+							return nil, err
+						}
+						out["artifacts"] = append(out["artifacts"].([]any), projected)
+					}
+					continue
+				}
+				if strings.HasPrefix(ref, "req_") {
+					req, err := s.RT.RequestByID(ctx, ref)
+					if err != nil {
+						fail(ref, err)
+						continue
+					}
+					if want("request") {
+						// The general read names kind alongside identity
+						// (the ask result's tighter {request_id,state}
+						// shape stays untouched above).
+						projected, err := projectFields("request", map[string]any{
+							"request_id": req.ID, "kind": string(req.Kind), "state": string(req.State),
+						}, in.Fields)
+						if err != nil {
+							return nil, err
+						}
+						out["requests"] = append(out["requests"].([]any), projected)
+					}
+					continue
+				}
+				if strings.HasPrefix(ref, "wt_") {
+					wt, err := s.RT.Worktree.Get(ctx, ref)
+					if err != nil {
+						fail(ref, err)
+						continue
+					}
+					if want("worktree") {
+						projected, err := projectFields("worktree", worktreeOut(wt), in.Fields)
+						if err != nil {
+							return nil, err
+						}
+						out["worktrees"] = append(out["worktrees"].([]any), projected)
+					}
 					continue
 				}
 				if it, err := s.RT.Items.Get(ctx, ref); err == nil {
-					addItem(it)
+					if want("item") {
+						addItem(it)
+					}
 					continue
 				}
 				a, err := s.RT.Agent(ctx, ref)
 				if err != nil {
-					return nil, err
+					if a, err := s.RT.AgentByID(ctx, ref); err != nil {
+						fail(ref, err)
+						continue
+					} else if want("agent") {
+						projected, err := projectFields("agent", s.agentOut(ctx, a), in.Fields)
+						if err != nil {
+							return nil, err
+						}
+						out["agents"] = append(out["agents"].([]any), projected)
+						continue
+					}
+					continue
 				}
-				out["agents"] = append(out["agents"].([]any), s.agentOut(ctx, a))
+				if want("agent") {
+					projected, err := projectFields("agent", s.agentOut(ctx, a), in.Fields)
+					if err != nil {
+						return nil, err
+					}
+					out["agents"] = append(out["agents"].([]any), projected)
+				}
 			}
 			if in.Filter != nil {
-				list, _, err := s.RT.Items.List(ctx, items.ListFilter{
-					Type: items.Type(in.Filter.Type), Status: items.Status(in.Filter.Status),
-					Q: in.Filter.Q, Root: in.Filter.Root,
-				})
-				if err != nil {
-					return nil, err
+				// root/type/status/q select items; pairing them with a
+				// non-item kind is an explicit unsupported-filter error.
+				if kind != "" && kind != "item" &&
+					(in.Filter.Root != "" || in.Filter.Type != "" || in.Filter.Status != "" || in.Filter.Q != "") {
+					return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+						"unsupported filter: root/type/status/q select items, which kind %q excludes; drop the item filter or use kind \"item\".", kind)}
 				}
-				for _, it := range list {
-					addItem(it)
+				if want("item") {
+					// Flat view: paginated reads return the match set
+					// exactly (newest first), never tree-enrichment
+					// context rows that would break page accounting.
+					list, _, err := s.RT.Items.List(ctx, items.ListFilter{
+						View: "flat",
+						Type: items.Type(in.Filter.Type), Status: items.Status(in.Filter.Status),
+						Q: in.Filter.Q, Root: in.Filter.Root,
+					})
+					if err != nil {
+						return nil, err
+					}
+					var fresh []items.Item
+					for _, it := range list {
+						if itemSeen[it.Key] {
+							continue
+						}
+						itemSeen[it.Key] = true
+						fresh = append(fresh, it)
+					}
+					sortFilterItems(fresh)
+					page, next, err := pageFilterItems(fresh, parseReadLimit(in.Limit), in.Cursor)
+					if err != nil {
+						return nil, err
+					}
+					collectedItems = append(collectedItems, page...)
+					out["page_cursor"] = next
+					out["has_more"] = next != ""
 				}
 			}
 			// checkpoints: the latest one per item resolved above.
-			for _, it := range collectedItems {
-				cps, err := s.RT.Checkpoints(ctx, it.Key, 1, time.Time{})
-				if err != nil {
-					return nil, err
-				}
-				if len(cps) > 0 {
-					out["checkpoints"] = append(out["checkpoints"].([]any), checkpointOut(it.Key, cps[0]))
+			if want("checkpoint") {
+				for _, it := range collectedItems {
+					cps, err := s.RT.Checkpoints(ctx, it.Key, 1, time.Time{})
+					if err != nil {
+						return nil, err
+					}
+					if len(cps) > 0 {
+						projected, err := projectFields("checkpoint", checkpointOut(it.Key, cps[0]), in.Fields)
+						if err != nil {
+							return nil, err
+						}
+						out["checkpoints"] = append(out["checkpoints"].([]any), projected)
+					}
 				}
 			}
 
@@ -505,7 +643,7 @@ func readTool(s *Server) ToolDef {
 								Key string `json:"key"`
 							}
 							if json.Unmarshal(e.Payload, &p) == nil && p.Key != "" {
-								if it, err := s.RT.Items.Get(ctx, p.Key); err == nil {
+								if it, err := s.RT.Items.Get(ctx, p.Key); err == nil && want("item") {
 									addItem(it)
 								}
 							}
@@ -514,8 +652,12 @@ func readTool(s *Server) ToolDef {
 								Name string `json:"name"`
 							}
 							if json.Unmarshal(e.Payload, &p) == nil && p.Name != "" {
-								if a, err := s.RT.Agent(ctx, p.Name); err == nil {
-									out["agents"] = append(out["agents"].([]any), s.agentOut(ctx, a))
+								if a, err := s.RT.Agent(ctx, p.Name); err == nil && want("agent") {
+									projected, perr := projectFields("agent", s.agentOut(ctx, a), in.Fields)
+									if perr != nil {
+										return nil, perr
+									}
+									out["agents"] = append(out["agents"].([]any), projected)
 								}
 							}
 						case events.CheckpointCreated:
@@ -523,8 +665,12 @@ func readTool(s *Server) ToolDef {
 								Item string `json:"item"`
 							}
 							if json.Unmarshal(e.Payload, &p) == nil && p.Item != "" {
-								if cps, err := s.RT.Checkpoints(ctx, p.Item, 1, time.Time{}); err == nil && len(cps) > 0 {
-									out["checkpoints"] = append(out["checkpoints"].([]any), checkpointOut(p.Item, cps[0]))
+								if cps, err := s.RT.Checkpoints(ctx, p.Item, 1, time.Time{}); err == nil && len(cps) > 0 && want("checkpoint") {
+									projected, perr := projectFields("checkpoint", checkpointOut(p.Item, cps[0]), in.Fields)
+									if perr != nil {
+										return nil, perr
+									}
+									out["checkpoints"] = append(out["checkpoints"].([]any), projected)
 								}
 							}
 						}
@@ -577,7 +723,11 @@ func readTool(s *Server) ToolDef {
 					}
 					itemMap["crew"] = crew
 				}
-				itemsOut = append(itemsOut, itemMap)
+				projected, err := projectFields("item", itemMap, in.Fields)
+				if err != nil {
+					return nil, err
+				}
+				itemsOut = append(itemsOut, projected)
 			}
 			out["items"] = itemsOut
 			out["reset"] = reset
