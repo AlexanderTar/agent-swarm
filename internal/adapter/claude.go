@@ -1,13 +1,16 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
@@ -166,6 +169,9 @@ func adoptPreExistingSkills(root string) error {
 }
 
 func (c *Claude) Launch(s Spec) (Launch, error) {
+	if err := trustClaudeWorkspace(c.d.UserHome, s.Cwd); err != nil {
+		c.d.Log("claude: pre-trust %s: %v", s.Cwd, err)
+	}
 	f, err := c.flags(s)
 	if err != nil {
 		return Launch{}, err
@@ -175,12 +181,155 @@ func (c *Claude) Launch(s Spec) (Launch, error) {
 }
 
 func (c *Claude) Resume(s Spec) (Launch, error) {
+	if err := trustClaudeWorkspace(c.d.UserHome, s.Cwd); err != nil {
+		c.d.Log("claude: pre-trust %s: %v", s.Cwd, err)
+	}
 	f, err := c.flags(s)
 	if err != nil {
 		return Launch{}, err
 	}
 	argv := append([]string{"claude", "--resume", s.ProviderSessionID}, f...)
 	return Launch{Argv: append(argv, "--", s.Kickoff), Env: map[string]string{}}, nil
+}
+
+// claudeConfigLockStaleAfter/claudeConfigLockRetryEvery/claudeConfigLockTimeout
+// are D1's mkdir-lock protocol (dialog-needs-you spec §E, confirmed live as
+// P-C5, Task 14a): Claude itself takes this same "<file>.lock" directory
+// lock around its own writes to ~/.claude.json, held only for the instant of
+// the write.
+const (
+	claudeConfigLockStaleAfter = 10 * time.Second
+	claudeConfigLockRetryEvery = 100 * time.Millisecond
+	claudeConfigLockTimeout    = 2 * time.Second
+)
+
+func claudeConfigPath(userHome string) string { return filepath.Join(userHome, ".claude.json") }
+
+// withClaudeConfigLock runs fn while holding Claude's own mkdir lock around
+// ~/.claude.json. It is best-effort: a lock that stays held for the whole
+// 2s window is treated as busy, fn is skipped, and nil is returned -- the
+// caller logs and moves on rather than blocking or failing a launch (D1: a
+// pre-trust failure never blocks a spawn; the dialog auto-answer and the
+// Needs-you escalation are the fallback).
+func withClaudeConfigLock(userHome string, fn func() error) error {
+	lock := claudeConfigPath(userHome) + ".lock"
+	deadline := time.Now().Add(claudeConfigLockTimeout)
+	for {
+		err := os.Mkdir(lock, 0o755)
+		if err == nil {
+			defer os.Remove(lock)
+			return fn()
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if fi, statErr := os.Stat(lock); statErr == nil && time.Since(fi.ModTime()) > claudeConfigLockStaleAfter {
+			_ = os.Remove(lock) // stale; best-effort, then retry immediately
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil // busy for the whole window; skip the write, don't fail the launch
+		}
+		time.Sleep(claudeConfigLockRetryEvery)
+	}
+}
+
+// trustClaudeWorkspace marks cwd (and its realpath, if it differs) trusted
+// in Claude's global config, merging into any existing project entry, under
+// Claude's own lock. It is idempotent and never rewrites the file when every
+// key already has hasTrustDialogAccepted: true (D1, dialog-needs-you spec
+// §E). Every other field of every project entry, and every other top-level
+// key, survives untouched: the doc is decoded as map[string]json.RawMessage,
+// so untouched entries keep their exact original bytes.
+func trustClaudeWorkspace(userHome, cwd string) error {
+	if userHome == "" {
+		return nil
+	}
+	keys := []string{cwd}
+	if real, err := filepath.EvalSymlinks(cwd); err == nil && real != cwd {
+		keys = append(keys, real)
+	}
+	return withClaudeConfigLock(userHome, func() error {
+		path := claudeConfigPath(userHome)
+		for attempt := 0; attempt < 3; attempt++ {
+			raw, err := os.ReadFile(path)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			mode := os.FileMode(0o600)
+			if fi, statErr := os.Stat(path); statErr == nil {
+				mode = fi.Mode().Perm()
+			}
+			var doc map[string]json.RawMessage
+			if len(raw) > 0 {
+				if err := json.Unmarshal(raw, &doc); err != nil {
+					return fmt.Errorf("claude.json does not parse: %w", err)
+				}
+			}
+			if doc == nil {
+				doc = map[string]json.RawMessage{}
+			}
+			var projects map[string]json.RawMessage
+			if len(doc["projects"]) > 0 {
+				if err := json.Unmarshal(doc["projects"], &projects); err != nil {
+					return fmt.Errorf("claude.json projects does not parse: %w", err)
+				}
+			}
+			if projects == nil {
+				projects = map[string]json.RawMessage{}
+			}
+			if claudeAllTrusted(projects, keys) {
+				return nil // already trusted under every key; do not rewrite the file
+			}
+			for _, k := range keys {
+				var entry map[string]json.RawMessage
+				if len(projects[k]) > 0 {
+					if err := json.Unmarshal(projects[k], &entry); err != nil {
+						return fmt.Errorf("claude.json projects[%s] does not parse: %w", k, err)
+					}
+				}
+				if entry == nil {
+					entry = map[string]json.RawMessage{}
+				}
+				entry["hasTrustDialogAccepted"] = json.RawMessage("true")
+				b, err := json.Marshal(entry)
+				if err != nil {
+					return err
+				}
+				projects[k] = b
+			}
+			pb, err := json.Marshal(projects)
+			if err != nil {
+				return err
+			}
+			doc["projects"] = pb
+			out, err := json.Marshal(doc)
+			if err != nil {
+				return err
+			}
+			cur, _ := os.ReadFile(path)
+			if !bytes.Equal(cur, raw) {
+				continue // the file changed under us; re-read and merge again
+			}
+			return writeFileAtomic(path, out, mode)
+		}
+		return fmt.Errorf("claude.json kept changing under us")
+	})
+}
+
+func claudeAllTrusted(projects map[string]json.RawMessage, keys []string) bool {
+	for _, k := range keys {
+		var entry struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		}
+		if len(projects[k]) == 0 {
+			return false
+		}
+		if err := json.Unmarshal(projects[k], &entry); err != nil || !entry.HasTrustDialogAccepted {
+			return false
+		}
+	}
+	return true
 }
 
 var (

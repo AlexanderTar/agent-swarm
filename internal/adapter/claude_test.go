@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
@@ -473,6 +474,204 @@ func TestClaudeResumeUsesTheProviderID(t *testing.T) {
 	}
 	if l.Argv[len(l.Argv)-2] != "--" || l.Argv[len(l.Argv)-1] != "resuming" {
 		t.Fatalf("tail = %v", l.Argv[len(l.Argv)-2:])
+	}
+}
+
+// D1 (dialog-needs-you spec): Launch pre-trusts Spec.Cwd (and its realpath)
+// in the REAL ~/.claude.json, the same per-path write Claude itself makes on
+// "Yes, I trust this folder" -- merged into any existing entry, every other
+// key of every project and every top-level key untouched.
+func TestClaudeLaunchPreTrustsCwdAndKeepsOtherEntries(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	seed := []byte(`{"numStartups":3,"projects":{"/x":{"allowedTools":["a"]},"` + jsonEscape(s.Cwd) + `":{"lastCost":1}}}`)
+	if err := os.WriteFile(cfg, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		NumStartups int                        `json:"numStartups"`
+		Projects    map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("claude.json no longer parses: %v\n%s", err, b)
+	}
+	if doc.NumStartups != 3 {
+		t.Errorf("numStartups = %d, want unchanged 3", doc.NumStartups)
+	}
+	if string(doc.Projects["/x"]) != `{"allowedTools":["a"]}` {
+		t.Errorf(`projects["/x"] = %s, want byte-identical`, doc.Projects["/x"])
+	}
+	var entry struct {
+		LastCost               float64 `json:"lastCost"`
+		HasTrustDialogAccepted bool    `json:"hasTrustDialogAccepted"`
+	}
+	if err := json.Unmarshal(doc.Projects[s.Cwd], &entry); err != nil {
+		t.Fatalf("projects[cwd] does not parse: %v", err)
+	}
+	if !entry.HasTrustDialogAccepted {
+		t.Errorf("projects[cwd].hasTrustDialogAccepted = false, want true: %s", doc.Projects[s.Cwd])
+	}
+	if entry.LastCost != 1 {
+		t.Errorf("projects[cwd].lastCost = %v, want unchanged 1", entry.LastCost)
+	}
+	fi, err := os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("file mode = %v, want unchanged 0600", fi.Mode().Perm())
+	}
+	if _, err := os.Stat(cfg + ".lock"); !os.IsNotExist(err) {
+		t.Errorf("lock dir left behind: %v", err)
+	}
+}
+
+func jsonEscape(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b[1 : len(b)-1])
+}
+
+// D1: a second Launch must not rewrite the file once both keys are already
+// trusted.
+func TestClaudePreTrustIsIdempotent(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	before, err := os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeBytes, _ := os.ReadFile(cfg)
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Errorf("mtime changed on a no-op pre-trust: %s -> %s", before.ModTime(), after.ModTime())
+	}
+	afterBytes, _ := os.ReadFile(cfg)
+	if string(beforeBytes) != string(afterBytes) {
+		t.Errorf("bytes changed on a no-op pre-trust")
+	}
+}
+
+// D1: when Spec.Cwd is a symlink, both the literal path and its realpath end
+// up trusted.
+func TestClaudePreTrustAddsRealpathForSymlinkedCwd(t *testing.T) {
+	d := testDeps(t)
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "work")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	s := claudeSpec(t, d)
+	s.Cwd = link
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	evaled, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{link, evaled} {
+		var entry struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		}
+		if err := json.Unmarshal(doc.Projects[k], &entry); err != nil || !entry.HasTrustDialogAccepted {
+			t.Errorf("projects[%q] not trusted: %s (err=%v)", k, doc.Projects[k], err)
+		}
+	}
+}
+
+// D1: a stale lock (older than 10s) is removed and the write proceeds; a
+// fresh, continuously-held lock means the write is skipped (best-effort) but
+// Launch still succeeds.
+func TestClaudePreTrustWaitsForAStaleLock(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	lock := cfg + ".lock"
+	if err := os.Mkdir(lock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-20 * time.Second)
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Fatal("a stale lock must be removed")
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	json.Unmarshal(b, &doc)
+	if len(doc.Projects[s.Cwd]) == 0 {
+		t.Fatal("the write must proceed once the stale lock is cleared")
+	}
+}
+
+func TestClaudePreTrustSkipsTheWriteUnderAFreshHeldLock(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	lock := cfg + ".lock"
+	if err := os.Mkdir(lock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(lock)
+	l, err := newClaude(d).Launch(s)
+	if err != nil {
+		t.Fatalf("Launch must still succeed when pre-trust is skipped: %v", err)
+	}
+	if len(l.Argv) == 0 {
+		t.Fatal("Launch produced no argv")
+	}
+	if _, err := os.Stat(cfg); err == nil {
+		b, _ := os.ReadFile(cfg)
+		var doc struct {
+			Projects map[string]json.RawMessage `json:"projects"`
+		}
+		json.Unmarshal(b, &doc)
+		if len(doc.Projects[s.Cwd]) != 0 {
+			t.Fatal("the write must be skipped while the lock is held")
+		}
+	}
+}
+
+// D1, probe P-C5: claudeTrust/claudeTrustYes match the live-captured dialog.
+func TestClaudeTrustPatternMatchesProbeFixture(t *testing.T) {
+	fixture := pane(t, "claude", "pane-dialog-trust.txt")
+	if !claudeTrust.MatchString(fixture) {
+		t.Fatal("claudeTrust does not match the probe fixture")
+	}
+	if !claudeTrustYes.MatchString(fixture) {
+		t.Fatal("claudeTrustYes does not match the probe fixture")
 	}
 }
 
