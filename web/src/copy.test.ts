@@ -39,6 +39,11 @@ describe("copy (§17)", () => {
     expect(C).toMatchObject({ pausing: "Pausing…", resuming: "Resuming…" });
   });
 
+  it("has the Needs-you generic row copy", () => {
+    expect(C.needsYouMessage).toBe("Waiting for your input");
+    expect(C.openAgentTerminal).toBe("Open agent terminal");
+  });
+
   it("has the §17.3 and §17.4 static copy", () => {
     expect(C).toMatchObject({
       search: "Search name or key…",

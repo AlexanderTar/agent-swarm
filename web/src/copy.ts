@@ -103,6 +103,8 @@ export const C = {
   openOrchestratorTerminal: "Open orchestrator terminal",
   orchestratorPaused: "Orchestrator is paused. Resume it to continue.",
   orchestratorNotRunning: "Orchestrator isn't running.",
+  needsYouMessage: "Waiting for your input",
+  openAgentTerminal: "Open agent terminal",
   optionsOffered: "Options offered",
   writtenBySwarm: "Written by Swarm",
   approveSection: "Approve section",
