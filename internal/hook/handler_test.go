@@ -1767,3 +1767,79 @@ func TestClaudeAskUserQuestionAnswerBecomesObservedEvidence(t *testing.T) {
 		t.Fatalf("err = %v, want a decision mismatch against the observed \"Approve\"", err)
 	}
 }
+
+// TestPostToolUseAnsweredSwarmRefEmitsForwardingNextStep is the 2026-09-26
+// fix (native-railway-tracing finding): the spike bound 10 approvals via the
+// hook and never called native_answer, because nothing told it to. Once a
+// ref-bearing native question row is recorded as answered, PostToolUse must
+// say so and name the exact next call.
+func TestPostToolUseAnsweredSwarmRefEmitsForwardingNextStep(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+
+	pre, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+	})
+	if _, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, pre); err != nil {
+		t.Fatal(err)
+	}
+
+	post, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+		"tool_response": map[string]any{
+			"questions":   []map[string]any{{"question": question}},
+			"answers":     map[string]string{question: "Approve"},
+			"annotations": map[string]any{},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		HookSpecificOutput struct {
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("PostToolUse output = %s, not decodable: %v", out, err)
+	}
+	next := decoded.HookSpecificOutput.AdditionalContext
+	if !strings.Contains(next, `Recorded "Approve" for req_PLAN1`) ||
+		!strings.Contains(next, `native_answer`) ||
+		!strings.Contains(next, `ref:"req_PLAN1"`) ||
+		!strings.Contains(next, `decision:"approve"`) {
+		t.Fatalf("additionalContext = %q, want the forward-it-now next step", next)
+	}
+}
+
+// TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep confirms a plain
+// question's PostToolUse (no ⟦swarm:ref⟧) is untouched.
+func TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep(t *testing.T) {
+	ctx := context.Background()
+	h, _, ses := newTestHandler(t)
+
+	pre := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"Which database?"}]}}`)
+	if _, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses.ID, pre); err != nil {
+		t.Fatal(err)
+	}
+	post := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"Which database?"}]},"tool_response":{"answer":"PostgreSQL"}}`)
+	out, err := h.Handle(ctx, runtime.Agy, "PostToolUse", ses.ID, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "native_answer") {
+		t.Fatalf("a ref-less question must not get a native_answer next step, got %s", out)
+	}
+}

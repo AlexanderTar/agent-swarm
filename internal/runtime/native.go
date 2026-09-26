@@ -132,6 +132,37 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 	}
 }
 
+// NativeAnswerNextStep is the PostToolUse hook's instruction once a native
+// question row bound to a daemon-issued ref (binding_json.ref) is recorded
+// as answered: forward it. Added 2026-09-26 after native-railway-tracing
+// bound 10 approvals via the hook and never called native_answer -- nothing
+// told it there was a next step, and it had loaded a stale skill from before
+// native_answer existed. Returns "" for a request with no ref (a plain
+// question, or no match at all -- req is then the zero value).
+func NativeAnswerNextStep(req Request) string {
+	var binding struct {
+		Ref string `json:"ref"`
+	}
+	if len(req.Binding) > 0 {
+		json.Unmarshal(req.Binding, &binding)
+	}
+	if binding.Ref == "" {
+		return ""
+	}
+	trimmed := strings.TrimSpace(req.ResponseText)
+	if matched, _ := labelShape(trimmed, "Approve"); matched {
+		return fmt.Sprintf(`[swarm] Recorded "Approve" for %s. Forward it now: `+
+			`swarm_ask kind:"native_answer", ref:%q, decision:"approve"`, binding.Ref, binding.Ref)
+	}
+	if matched, _ := labelShape(trimmed, "Request changes"); matched {
+		return fmt.Sprintf(`[swarm] Recorded "Request changes" for %s. Forward it now: `+
+			`swarm_ask kind:"native_answer", ref:%q, decision:"request_changes"`, binding.Ref, binding.Ref)
+	}
+	return fmt.Sprintf(`[swarm] Recorded %q for %s. Forward it now: `+
+		`swarm_ask kind:"native_answer", ref:%q, decide approve or request_changes from the user's text %q`,
+		trimmed, binding.Ref, binding.Ref, trimmed)
+}
+
 // errNoNativeEvidence and errDecisionMismatch are native_answer's refusals
 // (spec section 2.3 step 5, section 4.1).
 const errNoNativeEvidence = "No answered native prompt for %s in your terminal. Show the native_prompt " +

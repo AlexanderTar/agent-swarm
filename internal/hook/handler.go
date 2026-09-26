@@ -615,14 +615,21 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{}, nil
 
 	case "PostToolUse":
+		var parts []string
 		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
 			prompt, _ := extractQuestion(in.ToolName, in.RawToolInput)
 			answer := extractToolResponseText(in.ToolResponse, prompt)
 			if answer == "" {
 				answer = "Resolved in terminal"
 			}
-			if err := h.RT.ResolveQuestionByPrompt(ctx, s.ID, prompt, answer); err != nil {
+			req, err := h.RT.ResolveQuestionByPrompt(ctx, s.ID, prompt, answer)
+			if err != nil {
 				h.logf("hook: resolve question for %s: %v", s.ID, err)
+			} else if next := runtime.NativeAnswerNextStep(req); next != "" {
+				// Never rate-limited by canNotice below: a missed forward
+				// leaves the user's approval stranded (native-railway-tracing
+				// finding), unlike the informational notices canNotice guards.
+				parts = append(parts, next)
 			}
 		}
 		if h.RT != nil && s.ID != "" {
@@ -631,9 +638,10 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 		}
 
-		var parts []string
+		gaveNotice := false
 		if s.NeedsCompaction {
 			parts = append(parts, runtime.CompactionNotice())
+			gaveNotice = true
 			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 0 WHERE id = ?`, s.ID); err != nil {
 				return adapter.HookDecision{}, err
 			}
@@ -641,16 +649,22 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		canNotice := s.LastNoticeAt == nil || h.now().Sub(*s.LastNoticeAt) >= noticeGap
 		if s.Pending > 0 && canNotice {
 			parts = append(parts, runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey))
+			gaveNotice = true
 		}
 		if len(parts) == 0 {
 			return adapter.HookDecision{}, nil
 		}
-		h.mu.Lock()
-		if h.noticeAt == nil {
-			h.noticeAt = make(map[string]time.Time)
+		// Only a rate-limited notice (compaction/pending) stamps noticeAt --
+		// the native-answer next step above is neither rate-limited nor a
+		// reason to suppress a later pending-inbox notice.
+		if gaveNotice {
+			h.mu.Lock()
+			if h.noticeAt == nil {
+				h.noticeAt = make(map[string]time.Time)
+			}
+			h.noticeAt[s.ID] = h.now()
+			h.mu.Unlock()
 		}
-		h.noticeAt[s.ID] = h.now()
-		h.mu.Unlock()
 		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
 
 	case "Stop":

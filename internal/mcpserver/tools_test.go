@@ -1112,7 +1112,7 @@ func TestAskNativeAnswerMCP(t *testing.T) {
 	if _, err := s.RT.AskQuestion(ctx, seed.Caller.SessionID, res.NativePrompt.Question, res.NativePrompt.Options); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RT.ResolveQuestionByPrompt(ctx, seed.Caller.SessionID, res.NativePrompt.Question, "Approve"); err != nil {
+	if _, err := s.RT.ResolveQuestionByPrompt(ctx, seed.Caller.SessionID, res.NativePrompt.Question, "Approve"); err != nil {
 		t.Fatal(err)
 	}
 

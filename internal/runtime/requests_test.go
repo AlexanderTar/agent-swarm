@@ -774,7 +774,7 @@ func TestRequestWireNativePending(t *testing.T) {
 	if !wire.NativePending {
 		t.Fatalf("native_pending = false while the bound question is open")
 	}
-	if err := s.ResolveQuestionByPrompt(ctx, ses, req.NativePrompt.Question, "Approve"); err != nil {
+	if _, err := s.ResolveQuestionByPrompt(ctx, ses, req.NativePrompt.Question, "Approve"); err != nil {
 		t.Fatal(err)
 	}
 	wire, err = s.RequestWireByID(ctx, req.ID)

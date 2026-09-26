@@ -1020,16 +1020,19 @@ func (s *Store) ResolvePrompt(ctx context.Context, id, via string) (Request, err
 
 // ResolveQuestionByPrompt closes the session's open native-question row whose
 // prompt equals the one this tool call asked, answered via terminal. No match
-// is not an error (the tool may have been blocked, or the row swept).
-func (s *Store) ResolveQuestionByPrompt(ctx context.Context, sessionID, prompt, answer string) error {
+// is not an error (the tool may have been blocked, or the row swept); the
+// returned Request is the zero value in that case. The resolved Request is
+// returned (not just an error) so the hook can read its binding_json ref and
+// tell the caller to forward the answer (2026-09-26 fix,
+// native-railway-tracing finding).
+func (s *Store) ResolveQuestionByPrompt(ctx context.Context, sessionID, prompt, answer string) (Request, error) {
 	ids, err := s.queryIDs(ctx, `SELECT id FROM requests
 		WHERE session_id = ? AND kind = 'question' AND state = 'open' AND prompt = ?
 		ORDER BY created_at DESC LIMIT 1`, sessionID, prompt)
 	if err != nil || len(ids) == 0 {
-		return err
+		return Request{}, err
 	}
-	_, err = s.ResolveQuestion(ctx, ids[0], answer, "terminal")
-	return err
+	return s.ResolveQuestion(ctx, ids[0], answer, "terminal")
 }
 
 // ResolveSessionPrompts resolves open prompt requests of one session once a
