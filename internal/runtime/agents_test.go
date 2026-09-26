@@ -2670,3 +2670,64 @@ func TestSpawnUIReviewerNameIsKebab(t *testing.T) {
 		t.Fatalf("name = %q, want a kebab-case name ending -ui-reviewer", a.Name)
 	}
 }
+
+// ---------- kind_reason (2026-09-26 worker-defaults spec) ----------
+
+// L1: no explicit choice -> the role default, and nothing to explain.
+func TestSpawnRoleDefaultHasNoKindReason(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	cfg, _ := s.Settings.Get(ctx)
+	cfg.Roles[RoleUIReviewer] = settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"}
+	if _, err := s.Settings.Put(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleUIReviewer, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := agentRow(t, s, a.Name)
+	if row.Kind != Codex || row.Model != "gpt-6-astra" || row.KindReason != "" {
+		t.Fatalf("row = %s/%s reason %q, want codex/gpt-6-astra and no reason", row.Kind, row.Model, row.KindReason)
+	}
+}
+
+// An explicit kind/model is kept and its user reason recorded.
+func TestSpawnExplicitOverrideRecordsReason(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Codex, Model: "gpt-6-astra",
+		OverrideReason: "user asked for codex", Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := agentRow(t, s, a.Name)
+	if row.Kind != Codex || row.KindReason != "User override: user asked for codex" {
+		t.Fatalf("row = %s reason %q", row.Kind, row.KindReason)
+	}
+}
+
+// The live 2026-09-26 case: a parent's setup role override decides the
+// child's kind; the child row names it.
+func TestSpawnParentRoleOverrideRecordsReason(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5",
+		Roles: map[Role]settings.RoleDefault{RoleUIReviewer: {Agent: Claude, Model: "claude-opus-5"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleUIReviewer, ParentAgentID: orch.ID,
+		Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := agentRow(t, s, a.Name)
+	want := "Role override set on " + orch.Name
+	if row.Kind != Claude || row.Model != "claude-opus-5" || row.KindReason != want {
+		t.Fatalf("row = %s/%s reason %q, want claude/claude-opus-5 reason %q", row.Kind, row.Model, row.KindReason, want)
+	}
+}
