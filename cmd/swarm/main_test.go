@@ -1008,3 +1008,98 @@ func TestUninstallCallsTheInstallPackage(t *testing.T) {
 		t.Error("install.Uninstall was not called")
 	}
 }
+
+// agentTreeServer serves a fixed /api/agents?state=all tree and records the
+// request's path and Authorization header.
+func agentTreeServer(t *testing.T, body string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.RequestURI()+" "+r.Header.Get("Authorization"))
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &seen
+}
+
+func homeWithToken(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "run"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "run", "daemon.token"), []byte("tok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// A running orchestrator (claude) with a finished claude child, a finished
+// claude agent whose cwd a live codex agent still uses, and a running codex.
+const claudeTrustTree = `[
+ {"name":"orch","kind":"claude","state":"active","session":{"state":"running","cwd":"/h/work/1"},
+  "children":[{"name":"live-codex","kind":"codex","state":"active","session":{"state":"running","cwd":"/h/work/9"},"children":[],"finished":[]}],
+  "finished":[{"name":"done-coder","kind":"claude","state":"finished","session":{"state":"completed","cwd":"/h/work/2"},"children":[],"finished":[]},
+              {"name":"shared","kind":"claude","state":"acknowledged","session":{"state":"completed","cwd":"/h/work/9"},"children":[],"finished":[]}]},
+ {"name":"spawning","kind":"claude","state":"active","session":{"state":"spawning","cwd":"/h/worktrees/x"},"children":[],"finished":[]},
+ {"name":"paused","kind":"claude","state":"active","session":{"state":"paused","cwd":"/h/work/5"},"children":[],"finished":[]}
+]`
+
+// D3/D4: daemonClaudeSessions reads the whole agent tree (children and
+// finished included) through the authenticated CLI client. Live = running
+// or spawning Claude sessions; Finished = finished/acknowledged Claude
+// agents' cwds minus any cwd a not-finished agent still uses.
+func TestDaemonClaudeSessionsReadsTheAgentTree(t *testing.T) {
+	srv, seen := agentTreeServer(t, claudeTrustTree)
+	got, err := daemonClaudeSessions(homeWithToken(t), srv.URL)(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*seen) != 1 || (*seen)[0] != "/api/agents?state=all Bearer tok" {
+		t.Fatalf("requests = %q", *seen)
+	}
+	wantLive := []install.LiveClaudeSession{{Agent: "orch", Cwd: "/h/work/1"}, {Agent: "spawning", Cwd: "/h/worktrees/x"}}
+	if !reflect.DeepEqual(got.Live, wantLive) {
+		t.Errorf("Live = %+v, want %+v", got.Live, wantLive)
+	}
+	if !reflect.DeepEqual(got.Finished, []string{"/h/work/2"}) {
+		t.Errorf("Finished = %q, want [/h/work/2]", got.Finished)
+	}
+}
+
+// D3/D4: a missing token (first install) and a daemon that isn't listening
+// are both errors, which install/doctor turn into their one-line skip note.
+func TestDaemonClaudeSessionsIsAnErrorWhenTheDaemonIsOffline(t *testing.T) {
+	if _, err := daemonClaudeSessions(t.TempDir(), "http://127.0.0.1:1")(context.Background()); err == nil {
+		t.Error("no daemon token must be an error")
+	}
+	srv, _ := agentTreeServer(t, "[]")
+	srv.Close()
+	if _, err := daemonClaudeSessions(homeWithToken(t), srv.URL)(context.Background()); err == nil {
+		t.Error("a daemon that isn't listening must be an error")
+	}
+}
+
+// D3: swarm install hands install.Agents a ClaudeSessions func pointed at
+// --url with the home's daemon token.
+func TestInstallWiresClaudeSessionsToTheDaemon(t *testing.T) {
+	savedAgents, savedLaunchd := installAgents, installLaunchd
+	t.Cleanup(func() { installAgents, installLaunchd = savedAgents, savedLaunchd })
+	installLaunchd = func(context.Context, install.Config, execx.Runner, bool, io.Writer) error { return nil }
+	srv, _ := agentTreeServer(t, claudeTrustTree)
+	var got install.ClaudeSessions
+	installAgents = func(ctx context.Context, o install.AgentsOpts) error {
+		if o.ClaudeSessions == nil {
+			t.Fatal("ClaudeSessions is nil")
+		}
+		var err error
+		got, err = o.ClaudeSessions(ctx)
+		return err
+	}
+	if code := run([]string{"install", "--yes", "--home", homeWithToken(t), "--url", srv.URL}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if len(got.Finished) != 1 || got.Finished[0] != "/h/work/2" {
+		t.Fatalf("Finished = %q", got.Finished)
+	}
+}

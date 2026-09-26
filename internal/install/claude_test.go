@@ -202,7 +202,7 @@ func TestInstallWarnsWhenClaudeJSONIsMissingOrNotWritable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(c.UserHome, 0o755)
-	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run, nil)
 	if len(lines) == 0 || !strings.Contains(lines[0], "missing or not writable") {
 		t.Fatalf("lines = %v, want a missing/not-writable warning", lines)
 	}
@@ -222,11 +222,11 @@ func TestInstallWarnsWhenClaudeJSONIsSimplyMissing(t *testing.T) {
 	run := (&execx.Fake{Responses: map[string]execx.Result{
 		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
 	}}).Runner()
-	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run, nil)
 	if len(lines) == 0 || !strings.Contains(lines[0], "missing or not writable") {
 		t.Fatalf("lines = %v, want a missing/not-writable warning", lines)
 	}
-	ch := install.CheckClaudeTrust(context.Background(), c, run)
+	ch := install.CheckClaudeTrust(context.Background(), c, run, nil)
 	if ch.Name != "Claude trust" || ch.OK {
 		t.Fatalf("check = %+v, want a FAIL named \"Claude trust\" for a missing file", ch)
 	}
@@ -245,7 +245,7 @@ func TestInstallWarnsOnAnUntestedClaudeVersion(t *testing.T) {
 	run := (&execx.Fake{Responses: map[string]execx.Result{
 		"claude --version": {Out: "2.1.200 (Claude Code)\n"},
 	}}).Runner()
-	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run, nil)
 	want := "Claude 2.1.200 is older than 2.1.283: the trust-dialog key was verified on 2.1.283+. Continuing, but sessions may still hit the trust dialog."
 	if len(lines) == 0 || lines[0] != want {
 		t.Fatalf("lines = %v, want [%q]", lines, want)
@@ -268,7 +268,7 @@ func TestInstallPrunesOnlyStaleSwarmOwnedEntries(t *testing.T) {
 	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	n, err := install.PruneStaleClaudeTrustEntries(c)
+	n, err := install.PruneStaleClaudeTrustEntries(c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ func TestPruneSkipsTheWriteWhileClaudeConfigLockIsHeld(t *testing.T) {
 
 	// Review round 3, item 3: busy is ErrClaudeConfigBusy now, not a
 	// silent nil, so the caller can say the prune was skipped.
-	n, err := install.PruneStaleClaudeTrustEntries(c)
+	n, err := install.PruneStaleClaudeTrustEntries(c, nil)
 	if !errors.Is(err, install.ErrClaudeConfigBusy) {
 		t.Fatalf("err = %v, want ErrClaudeConfigBusy", err)
 	}
@@ -341,7 +341,7 @@ func TestDoctorFailsWhenClaudeJSONNotWritable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(c.UserHome, 0o755)
-	ch := install.CheckClaudeTrust(context.Background(), c, run)
+	ch := install.CheckClaudeTrust(context.Background(), c, run, nil)
 	if ch.Name != "Claude trust" || ch.OK {
 		t.Fatalf("check = %+v, want a FAIL named \"Claude trust\"", ch)
 	}
@@ -354,11 +354,11 @@ func TestDoctorFailsOnAnUntestedClaudeVersion(t *testing.T) {
 	old := (&execx.Fake{Responses: map[string]execx.Result{
 		"claude --version": {Out: "2.1.200 (Claude Code)\n"},
 	}}).Runner()
-	if ch := install.CheckClaudeTrust(context.Background(), c, old); ch.OK {
+	if ch := install.CheckClaudeTrust(context.Background(), c, old, nil); ch.OK {
 		t.Fatalf("check = %+v, want FAIL on an old version", ch)
 	}
 	none := (&execx.Fake{Responses: map[string]execx.Result{}}).Runner()
-	if ch := install.CheckClaudeTrust(context.Background(), c, none); ch.OK {
+	if ch := install.CheckClaudeTrust(context.Background(), c, none, nil); ch.OK {
 		t.Fatalf("check = %+v, want FAIL when the version can't be read", ch)
 	}
 }
@@ -375,7 +375,7 @@ func TestDoctorWarnsOnStaleSwarmOwnedEntriesWithCount(t *testing.T) {
 	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ch := install.CheckClaudeTrust(context.Background(), c, run)
+	ch := install.CheckClaudeTrust(context.Background(), c, run, nil)
 	if !ch.OK || !strings.Contains(ch.Detail, "1 stale") {
 		t.Fatalf("check = %+v, want a WARN naming 1 stale entry", ch)
 	}
@@ -397,7 +397,7 @@ func TestDoctorPassesWithCleanState(t *testing.T) {
 	run := (&execx.Fake{Responses: map[string]execx.Result{
 		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
 	}}).Runner()
-	ch := install.CheckClaudeTrust(context.Background(), c, run)
+	ch := install.CheckClaudeTrust(context.Background(), c, run, nil)
 	if !ch.OK || !strings.Contains(ch.Detail, "2.1.283") {
 		t.Fatalf("check = %+v, want a PASS naming the version", ch)
 	}
@@ -406,13 +406,13 @@ func TestDoctorPassesWithCleanState(t *testing.T) {
 func TestCheckClaudeReportsTheSkillsAndTheLeftoverLink(t *testing.T) {
 	c := fakeHome(t)
 	run := (&execx.Fake{Responses: map[string]execx.Result{}}).Runner()
-	if ch := findCheck(t, install.CheckClaude(context.Background(), c, run), "Claude skills"); ch.OK {
+	if ch := findCheck(t, install.CheckClaude(context.Background(), c, run, nil), "Claude skills"); ch.OK {
 		t.Error("Claude skills must fail before install")
 	}
 	if _, err := install.WriteClaude(context.Background(), c, claudeMCPFake(c.Bin).Runner()); err != nil {
 		t.Fatal(err)
 	}
-	ch := findCheck(t, install.CheckClaude(context.Background(), c, run), "Claude skills")
+	ch := findCheck(t, install.CheckClaude(context.Background(), c, run, nil), "Claude skills")
 	if !ch.OK || !strings.Contains(ch.Detail, "skills") {
 		t.Errorf("Claude skills = %+v", ch)
 	}
@@ -428,7 +428,7 @@ func TestPruneNeverRewritesAnEmptyNullOrMalformedClaudeJSON(t *testing.T) {
 		if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		n, err := install.PruneStaleClaudeTrustEntries(c)
+		n, err := install.PruneStaleClaudeTrustEntries(c, nil)
 		if err == nil || n != 0 {
 			t.Errorf("seed %q: prune = (%d, %v), want (0, an error)", seed, n, err)
 		}
@@ -451,7 +451,7 @@ func TestPruneWritesThroughASymlinkedClaudeJSON(t *testing.T) {
 	if err := os.Symlink(target, install.ClaudeJSONPath(c)); err != nil {
 		t.Fatal(err)
 	}
-	n, err := install.PruneStaleClaudeTrustEntries(c)
+	n, err := install.PruneStaleClaudeTrustEntries(c, nil)
 	if err != nil || n != 1 {
 		t.Fatalf("prune = (%d, %v), want (1, nil)", n, err)
 	}
@@ -478,7 +478,7 @@ func TestInstallPrintsAPruneBusySkipAndAPruneError(t *testing.T) {
 	if err := os.Mkdir(install.ClaudeJSONPath(c)+".lock", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run, nil)
 	want := "Skipped pruning ~/.claude.json: another process holds its lock. Run swarm install again."
 	if len(lines) != 1 || lines[0] != want {
 		t.Errorf("busy: lines = %q, want [%q]", lines, want)
@@ -488,7 +488,7 @@ func TestInstallPrintsAPruneBusySkipAndAPruneError(t *testing.T) {
 	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte("{bad"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	lines = install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	lines = install.CheckAndPruneClaudeTrust(context.Background(), c, run, nil)
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "Couldn't prune ~/.claude.json: claude.json does not parse") {
 		t.Errorf("parse error: lines = %q, want one \"Couldn't prune\" line", lines)
 	}
@@ -515,13 +515,121 @@ func TestPruneTreatsOnlyENOENTAsStale(t *testing.T) {
 	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := install.PruneStaleClaudeTrustEntries(c); err != nil || n != 0 {
+	if n, err := install.PruneStaleClaudeTrustEntries(c, nil); err != nil || n != 0 {
 		t.Fatalf("prune = (%d, %v), want (0, nil) for an EACCES stat", n, err)
 	}
 	run := (&execx.Fake{Responses: map[string]execx.Result{
 		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
 	}}).Runner()
-	if ch := install.CheckClaudeTrust(context.Background(), c, run); strings.Contains(ch.Detail, "stale") {
+	if ch := install.CheckClaudeTrust(context.Background(), c, run, nil); strings.Contains(ch.Detail, "stale") {
 		t.Fatalf("doctor = %+v, want no stale count for an EACCES stat", ch)
+	}
+}
+
+func trustRun() execx.Runner {
+	return (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
+	}}).Runner()
+}
+
+func sessionsStub(s install.ClaudeSessions, err error) install.ClaudeSessionsFunc {
+	return func(context.Context) (install.ClaudeSessions, error) { return s, err }
+}
+
+func mkdirs(t *testing.T, ps ...string) {
+	t.Helper()
+	for _, p := range ps {
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// D3 (locked wording, implemented review round 3): swarm install also
+// prunes the trust entry of every finished session's work dir the daemon
+// reports, even though the dir still exists on disk -- Swarm-owned paths
+// only. A live session's entry, and the user's own project, survive.
+func TestInstallPrunesFinishedSessionsTrustEntries(t *testing.T) {
+	c := fakeHome(t)
+	finished := filepath.Join(c.Home, "work", "3")
+	live := filepath.Join(c.Home, "work", "4")
+	user := filepath.Join(c.UserHome, "my-project")
+	mkdirs(t, finished, live, user)
+	seed := fmt.Sprintf(`{"oauthAccount":{"id":"x"},"projects":{%q:{"hasTrustDialogAccepted":true},%q:{"hasTrustDialogAccepted":true},%q:{"hasTrustDialogAccepted":true}}}`,
+		finished, live, user)
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, trustRun(), sessionsStub(install.ClaudeSessions{
+		Live:     []install.LiveClaudeSession{{Agent: "coder-4", Cwd: live}},
+		Finished: []string{finished, user},
+	}, nil))
+	if want := "Removed 1 stale Swarm-owned entries from ~/.claude.json."; len(lines) != 1 || lines[0] != want {
+		t.Fatalf("lines = %q, want [%q]", lines, want)
+	}
+	b, _ := os.ReadFile(install.ClaudeJSONPath(c))
+	var doc struct {
+		OAuth    json.RawMessage            `json:"oauthAccount"`
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Projects[finished]; ok {
+		t.Error("a finished session's Swarm-owned entry must be pruned")
+	}
+	if _, ok := doc.Projects[live]; !ok {
+		t.Error("a live session's entry must survive")
+	}
+	if _, ok := doc.Projects[user]; !ok {
+		t.Error("a non-Swarm-owned entry must never be pruned, even if the daemon reports it finished")
+	}
+	if len(doc.OAuth) == 0 {
+		t.Error("oauthAccount must survive")
+	}
+}
+
+// D3/D4: with the daemon offline the session-based part is skipped with a
+// one-line note, never an error or a failed check; everything else still runs.
+func TestClaudeTrustNotesAnOfflineDaemon(t *testing.T) {
+	c := fakeHome(t)
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	offline := sessionsStub(install.ClaudeSessions{}, errors.New("connection refused"))
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, trustRun(), offline)
+	want := "Skipped pruning finished sessions' Claude trust entries: the daemon isn't running."
+	if len(lines) != 1 || lines[0] != want {
+		t.Fatalf("install lines = %q, want [%q]", lines, want)
+	}
+	ch := install.CheckClaudeTrust(context.Background(), c, trustRun(), offline)
+	if !ch.OK || !strings.HasSuffix(ch.Detail, " Live-session check skipped: the daemon isn't running.") {
+		t.Fatalf("doctor = %+v, want a PASS with the skip note", ch)
+	}
+}
+
+// D4 (locked wording, implemented review round 3): doctor WARNs, naming the
+// agent, when a live Claude session's workspace has no projects entry under
+// either its literal or realpath key. doctor still never writes.
+func TestDoctorWarnsWhenALiveClaudeSessionHasNoTrustEntry(t *testing.T) {
+	c := fakeHome(t)
+	trusted := filepath.Join(c.Home, "work", "1")
+	missing := filepath.Join(c.Home, "work", "2")
+	mkdirs(t, trusted, missing)
+	realTrusted, _ := filepath.EvalSymlinks(trusted) // D1 writes both keys; either counts
+	seed := fmt.Sprintf(`{"projects":{%q:{"hasTrustDialogAccepted":true}}}`, realTrusted)
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sessions := sessionsStub(install.ClaudeSessions{Live: []install.LiveClaudeSession{
+		{Agent: "coder-1", Cwd: trusted}, {Agent: "coder-2", Cwd: missing},
+	}}, nil)
+	ch := install.CheckClaudeTrust(context.Background(), c, trustRun(), sessions)
+	want := "coder-2 is running but its workspace isn't trusted in ~/.claude.json yet."
+	if !ch.OK || ch.Detail != want {
+		t.Fatalf("doctor = %+v, want WARN %q", ch, want)
+	}
+	if b, _ := os.ReadFile(install.ClaudeJSONPath(c)); string(b) != seed {
+		t.Fatal("doctor must never write")
 	}
 }

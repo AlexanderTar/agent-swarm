@@ -33,6 +33,7 @@ type Doctor struct {
 	HTTP            *http.Client
 	Cfg             Config                       // P5: the per-agent checks derive every path from this (S-5)
 	Installed       func(context.Context) []Kind // P5: which agents to check; InstalledKinds in production
+	ClaudeSessions  ClaudeSessionsFunc           // D4: the daemon's Claude sessions, for the live-session WARN
 }
 
 var tmuxVersion = regexp.MustCompile(`tmux (\d+)\.(\d+)`)
@@ -46,7 +47,7 @@ func (d Doctor) Checks(ctx context.Context) []Check {
 	for _, k := range d.installedKinds(ctx) {
 		switch k {
 		case KindClaude:
-			out = append(out, CheckClaude(ctx, d.Cfg, d.Run)...)
+			out = append(out, CheckClaude(ctx, d.Cfg, d.Run, d.ClaudeSessions)...)
 		case KindCodex:
 			out = append(out, CheckCodex(ctx, d.Cfg, d.Run)...)
 		case KindCursor:

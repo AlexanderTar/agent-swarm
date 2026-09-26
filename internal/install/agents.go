@@ -22,6 +22,7 @@ type AgentsOpts struct {
 	Confirm        func(prompt string) bool
 	PluginsOnly    bool
 	Out            io.Writer
+	ClaudeSessions ClaudeSessionsFunc // D3: the daemon's finished Claude sessions, for the trust prune
 }
 
 // agentBinaries maps a kind to the CLI whose presence means "installed".
@@ -103,7 +104,7 @@ func Agents(ctx context.Context, o AgentsOpts) error {
 				// D3 (dialog-needs-you spec): verify D1's per-session trust
 				// write is viable on this machine and prune stale
 				// Swarm-owned entries. Never fails the install.
-				for _, line := range CheckAndPruneClaudeTrust(ctx, o.Cfg, o.Run) {
+				for _, line := range CheckAndPruneClaudeTrust(ctx, o.Cfg, o.Run, o.ClaudeSessions) {
 					fmt.Fprintln(o.Out, line)
 				}
 			}

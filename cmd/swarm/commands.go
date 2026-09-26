@@ -79,6 +79,65 @@ func agentsOpts(cfg install.Config, yes, pluginsOnly bool, stdin io.Reader, out 
 	}
 }
 
+// daemonClaudeSessions asks the running daemon, over the authenticated CLI
+// client (<home>/run/daemon.token, Bearer), for the Claude sessions D3's
+// install prune and D4's doctor check need. Any failure -- no token yet,
+// daemon not listening -- is an error the caller turns into its one-line
+// "daemon isn't running" note.
+func daemonClaudeSessions(home, base string) install.ClaudeSessionsFunc {
+	return func(ctx context.Context) (install.ClaudeSessions, error) {
+		var out install.ClaudeSessions
+		c, err := newClient(home, base)
+		if err != nil {
+			return out, err
+		}
+		c.http.Timeout = 5 * time.Second // a hung daemon must not stall install or doctor
+		type node struct {
+			Name    string `json:"name"`
+			Kind    string `json:"kind"`
+			State   string `json:"state"`
+			Session *struct {
+				State string `json:"state"`
+				Cwd   string `json:"cwd"`
+			} `json:"session"`
+			Children []node `json:"children"`
+			Finished []node `json:"finished"`
+		}
+		var tree []node
+		if err := c.do("GET", "/api/agents?state=all", nil, &tree); err != nil {
+			return out, err
+		}
+		inUse := map[string]bool{} // cwds a not-finished agent of any kind still uses
+		var finished []string
+		var walk func([]node)
+		walk = func(ns []node) {
+			for _, n := range ns {
+				if n.Session != nil && n.Session.Cwd != "" {
+					done := n.State == "finished" || n.State == "acknowledged"
+					switch {
+					case !done:
+						inUse[n.Session.Cwd] = true
+						if n.Kind == "claude" && (n.Session.State == "running" || n.Session.State == "spawning") {
+							out.Live = append(out.Live, install.LiveClaudeSession{Agent: n.Name, Cwd: n.Session.Cwd})
+						}
+					case n.Kind == "claude":
+						finished = append(finished, n.Session.Cwd)
+					}
+				}
+				walk(n.Children)
+				walk(n.Finished)
+			}
+		}
+		walk(tree)
+		for _, cwd := range finished {
+			if !inUse[cwd] {
+				out.Finished = append(out.Finished, cwd)
+			}
+		}
+		return out, nil
+	}
+}
+
 // newDoctor sets every field: Doctor.Checks calls each one unguarded.
 func newDoctor(home, daemonURL string) install.Doctor {
 	cfg, _ := newConfig(home) // a failure leaves the paths empty, and the checks report it
@@ -92,6 +151,7 @@ func newDoctor(home, daemonURL string) install.Doctor {
 		HTTP:            &http.Client{Timeout: 3 * time.Second},
 		Cfg:             cfg,
 		Installed:       install.InstalledKinds(exec.LookPath),
+		ClaudeSessions:  daemonClaudeSessions(home, daemonURL),
 	}
 }
 
@@ -135,7 +195,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdInstall(args []string, stdout, stderr io.Writer) int {
-	fs, home, _ := flags("install", stderr, false)
+	fs, home, base := flags("install", stderr, true) // --url: D3's prune asks the daemon
 	dry := fs.Bool("dry-run", false, "print what would change")
 	plugins := fs.Bool("plugins", false, "only install or update the superpowers plugins")
 	yes := fs.Bool("yes", false, "answer the Agent Swarm 1.x removal prompt with yes")
@@ -147,6 +207,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	o := agentsOpts(cfg, *yes, *plugins, os.Stdin, stdout)
+	o.ClaudeSessions = daemonClaudeSessions(*home, *base)
 	if *plugins {
 		if err := installAgents(context.Background(), o); err != nil {
 			return fail(stderr, err)

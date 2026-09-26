@@ -121,29 +121,65 @@ func swarmOwnedUnder(home, path string) bool {
 	return false
 }
 
+// ClaudeSessions is what the daemon reports about Claude sessions' work
+// dirs, for D3's prune and D4's live-session check (dialog-needs-you spec).
+type ClaudeSessions struct {
+	// Live: running or spawning sessions of active Claude agents.
+	Live []LiveClaudeSession
+	// Finished: cwds of finished or acknowledged Claude agents' sessions,
+	// minus any cwd a not-yet-finished agent of any kind still uses.
+	Finished []string
+}
+
+type LiveClaudeSession struct{ Agent, Cwd string }
+
+// ClaudeSessionsFunc asks the running daemon for ClaudeSessions
+// (cmd/swarm's daemonClaudeSessions, over the authenticated CLI client). An
+// error means the daemon is offline: callers skip that part with a one-line
+// note. A nil func skips it silently.
+type ClaudeSessionsFunc func(context.Context) (ClaudeSessions, error)
+
+// withRealpaths returns paths plus each one's realpath where it differs:
+// D1 trusts both keys, so both must be matched.
+func withRealpaths(paths []string) map[string]bool {
+	out := map[string]bool{}
+	for _, p := range paths {
+		out[p] = true
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			out[real] = true
+		}
+	}
+	return out
+}
+
+// staleClaudeEntry is D3's predicate, shared with D4's count: a
+// Swarm-owned entry whose dir is gone (ENOENT only), or that belongs to a
+// finished session's work dir.
+func staleClaudeEntry(c Config, p string, finished map[string]bool) bool {
+	return SwarmOwnedClaudeWorkspace(c.Home, p) && (finished[p] || isGone(p))
+}
+
 // PruneStaleClaudeTrustEntries removes every projects[...] entry in
-// ~/.claude.json that is Swarm-owned (SwarmOwnedClaudeWorkspace) and whose
-// directory no longer exists on disk (D3, dialog-needs-you spec). The
-// user's own entries, and any Swarm-owned entry whose workspace still
-// exists, are never touched. A missing file is (0, nil): nothing to prune.
-// Every other refusal (empty, `null`, unparsable, lock busy) is returned as
-// an error for the caller to print; the file is never rewritten then.
+// ~/.claude.json that staleClaudeEntry matches (D3, dialog-needs-you spec):
+// Swarm-owned, and either gone from disk or one of finished (a finished
+// session's work dir, as the daemon reported it; realpath twins included).
+// The user's own entries are never touched. A missing file is (0, nil):
+// nothing to prune. Every other refusal (empty, `null`, unparsable, lock
+// busy) is returned as an error for the caller to print; the file is never
+// rewritten then.
 //
 // Runs through EditClaudeProjects: Claude's own lock, symlink-safe,
 // re-read-compare before the atomic write (review rounds 2 and 3).
-func PruneStaleClaudeTrustEntries(c Config) (int, error) {
+func PruneStaleClaudeTrustEntries(c Config, finished []string) (int, error) {
+	done := withRealpaths(finished)
 	removed := 0
 	err := EditClaudeProjects(c.UserHome, func(projects map[string]json.RawMessage) (bool, error) {
 		removed = 0
 		for p := range projects {
-			if !SwarmOwnedClaudeWorkspace(c.Home, p) {
-				continue
+			if staleClaudeEntry(c, p, done) {
+				delete(projects, p)
+				removed++
 			}
-			if !isGone(p) {
-				continue // exists, or can't tell (EACCES, ...): not stale
-			}
-			delete(projects, p)
-			removed++
 		}
 		return removed > 0, nil
 	})
@@ -162,7 +198,7 @@ func PruneStaleClaudeTrustEntries(c Config) (int, error) {
 // install (D1's per-session write already has its own fallback, the dialog
 // auto-answer and the Needs-you row); it returns the exact lines to print,
 // per the spec's "Install copy": nothing when there is nothing to report.
-func CheckAndPruneClaudeTrust(ctx context.Context, c Config, run execx.Runner) []string {
+func CheckAndPruneClaudeTrust(ctx context.Context, c Config, run execx.Runner, sessions ClaudeSessionsFunc) []string {
 	var lines []string
 	if !claudeJSONWritable(c) {
 		lines = append(lines, "~/.claude.json is missing or not writable: Claude sessions will hit the trust dialog. Fix its permissions, then run swarm install again.")
@@ -177,7 +213,15 @@ func CheckAndPruneClaudeTrust(ctx context.Context, c Config, run execx.Runner) [
 				v, ClaudeTrustMinVersion, ClaudeTrustMinVersion))
 		}
 	}
-	n, err := PruneStaleClaudeTrustEntries(c)
+	var finished []string
+	if sessions != nil {
+		if got, err := sessions(ctx); err != nil {
+			lines = append(lines, "Skipped pruning finished sessions' Claude trust entries: the daemon isn't running.")
+		} else {
+			finished = got.Finished
+		}
+	}
+	n, err := PruneStaleClaudeTrustEntries(c, finished)
 	switch {
 	case errors.Is(err, ErrClaudeConfigBusy):
 		lines = append(lines, "Skipped pruning ~/.claude.json: another process holds its lock. Run swarm install again.")
@@ -210,19 +254,12 @@ func claudeInstalledVersion(ctx context.Context, run execx.Runner) (string, bool
 }
 
 // CheckClaudeTrust is D4's "Claude trust" doctor check. It shares
-// claudeJSONWritable/claudeVersionAtLeast/SwarmOwnedClaudeWorkspace with
+// claudeJSONWritable/claudeVersionAtLeast/staleClaudeEntry with
 // CheckAndPruneClaudeTrust so the FAIL/WARN conditions and the prune
-// candidates are never computed two different ways.
-//
-// NOTE (scope, flagged for review rather than picked silently): D4 also
-// calls for a WARN when a live Claude session's workspace has no trust
-// entry at all. Doctor is a standalone CLI command with no DB handle today
-// (cmd/swarm/commands.go builds it from Config + execx.Runner only, no
-// Store) -- adding that WARN needs either a new daemon HTTP endpoint or a
-// direct read-only DB open here, and either is a real decision this task
-// does not make unilaterally. That one WARN is not implemented; everything
-// else in D4 is.
-func CheckClaudeTrust(ctx context.Context, c Config, run execx.Runner) Check {
+// candidates are never computed two different ways. sessions (the daemon's
+// view, D4's live-session WARN) may be nil; when it errors, the check still
+// runs and its detail ends with a skip note.
+func CheckClaudeTrust(ctx context.Context, c Config, run execx.Runner, sessions ClaudeSessionsFunc) Check {
 	if !claudeJSONWritable(c) {
 		return Check{"Claude trust", false,
 			"~/.claude.json is missing or not writable. Claude sessions will hit the trust dialog. Run swarm install."}
@@ -237,43 +274,64 @@ func CheckClaudeTrust(ctx context.Context, c Config, run execx.Runner) Check {
 			fmt.Sprintf("Claude %s is older than %s, where the trust-dialog key was verified. Update Claude, then run swarm doctor again.",
 				version, ClaudeTrustMinVersion)}
 	}
-	stale, owned, err := claudeTrustEntryCounts(c)
+	var got ClaudeSessions
+	note := ""
+	if sessions != nil {
+		var err error
+		if got, err = sessions(ctx); err != nil {
+			note = " Live-session check skipped: the daemon isn't running."
+		}
+	}
+	projects, err := readClaudeProjects(c)
 	if err != nil {
 		return Check{"Claude trust", false, err.Error()}
 	}
+	finished := withRealpaths(got.Finished)
+	stale, owned := 0, 0
+	for p := range projects {
+		if SwarmOwnedClaudeWorkspace(c.Home, p) {
+			owned++
+		}
+		if staleClaudeEntry(c, p, finished) {
+			stale++
+		}
+	}
+	var warns []string
 	if stale > 0 {
-		return Check{"Claude trust", true,
-			fmt.Sprintf("%d stale Swarm-owned entries in ~/.claude.json. Run swarm install to prune them.", stale)}
+		warns = append(warns, fmt.Sprintf("%d stale Swarm-owned entries in ~/.claude.json. Run swarm install to prune them.", stale))
+	}
+	for _, l := range got.Live {
+		trusted := false
+		for k := range withRealpaths([]string{l.Cwd}) {
+			if _, ok := projects[k]; ok {
+				trusted = true
+			}
+		}
+		if !trusted {
+			warns = append(warns, l.Agent+" is running but its workspace isn't trusted in ~/.claude.json yet.")
+		}
+	}
+	if len(warns) > 0 {
+		return Check{"Claude trust", true, strings.Join(warns, " ") + note}
 	}
 	return Check{"Claude trust", true,
-		fmt.Sprintf("~/.claude.json is writable, Claude %s, %d Swarm-owned entries.", version, owned)}
+		fmt.Sprintf("~/.claude.json is writable, Claude %s, %d Swarm-owned entries.", version, owned) + note}
 }
 
-// claudeTrustEntryCounts scans ~/.claude.json once for both D4 numbers:
-// how many Swarm-owned entries exist in total, and how many of those are
-// stale (their workspace no longer exists on disk).
-func claudeTrustEntryCounts(c Config) (stale, owned int, err error) {
+// readClaudeProjects reads ~/.claude.json's projects map for doctor. A
+// missing or unparsable file is an empty map: doctor never fails on a file
+// it can't parse (the writability check above already covers "missing").
+func readClaudeProjects(c Config) (map[string]json.RawMessage, error) {
 	raw, err := os.ReadFile(ClaudeJSONPath(c))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, 0, nil
+			return nil, nil
 		}
-		return 0, 0, err
+		return nil, err
 	}
 	var doc struct {
 		Projects map[string]json.RawMessage `json:"projects"`
 	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return 0, 0, nil // not doctor's place to fail on a file it can't parse
-	}
-	for p := range doc.Projects {
-		if !SwarmOwnedClaudeWorkspace(c.Home, p) {
-			continue
-		}
-		owned++
-		if isGone(p) {
-			stale++
-		}
-	}
-	return stale, owned, nil
+	_ = json.Unmarshal(raw, &doc)
+	return doc.Projects, nil
 }

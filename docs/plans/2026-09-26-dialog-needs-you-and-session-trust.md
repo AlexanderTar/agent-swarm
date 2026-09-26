@@ -857,9 +857,41 @@ recorded in the spec's probe table as P-C5.
    commits, `0451f52..e604c79`). NOT DONE this session.
 
 **Status (2026-09-26, implementer session):** Tasks 18, 14a, 9, 15, 11, 12,
-16, 17, 13 are all done and committed, each its own TDD commit. D4's
-live-session-has-no-entry WARN is explicitly deferred (see the spec's
-"Implementation note" under decision 10) pending a scope decision (new
-daemon endpoint vs. a DB handle for `swarm doctor`). Remaining before this
-branch can merge: the live verification steps above, and an Opus review
-pass.
+16, 17, 13 are all done and committed, each its own TDD commit. Remaining
+before this branch can merge: the live verification steps above, and an
+Opus review pass.
+
+### Task 19: review round 3 (2026-09-26)
+
+Each step: failing test, watched fail, minimal fix, pass, commit (explicit
+paths).
+
+1. **Empty/`null` claude.json + symlinks.** Tests:
+   `TestClaudeTrustWritersNeverRewriteAnEmptyNullOrMalformedClaudeJSON`,
+   `TestClaudeTrustWritesThroughASymlinkedClaudeJSON` (adapter),
+   `TestPruneNeverRewritesAnEmptyNullOrMalformedClaudeJSON`,
+   `TestPruneWritesThroughASymlinkedClaudeJSON` (install). Fix:
+   `install.EditClaudeProjects` + `install.WriteFileAtomic` in
+   `internal/install/claude_lock.go`, used by `trustClaudeWorkspace`,
+   `Claude.ForgetFolders` and `PruneStaleClaudeTrustEntries`;
+   `ErrClaudeConfigBusy`. DONE.
+2. **Reconcile stall.** Tests:
+   `TestReconcileForgetClaudeTrustIsOneBoundedPassUnderAStuckLock`,
+   `TestReconcileForgetClaudeTrustMarksNothingDoneOnAParseError`,
+   `TestClaudeForgetFolderNeverDeletesANonSwarmOwnedRealpathTwin`. Fix: one
+   `ForgetFolders` call per tick in `forgetFinishedClaudeTrust`. DONE.
+3. **Minor items.** Tests: `TestInstallPrintsAPruneBusySkipAndAPruneError`,
+   `TestPruneTreatsOnlyENOENTAsStale`,
+   `TestAgyLaunchSettingsCopyKeepsTheRealFileMode`, the ported
+   `TestAgyLaunchLeavesALegacyWholeDirSymlinkAlone` (log line) and
+   `TestCodexLaunchWritesPerLaunchTrustIdempotently` (`[hooks.state]`). DONE.
+4. **D3/D4 via the daemon.** Tests: `TestAgentNodeWireShape` (`cwd`),
+   `TestInstallPrunesFinishedSessionsTrustEntries`,
+   `TestClaudeTrustNotesAnOfflineDaemon`,
+   `TestDoctorWarnsWhenALiveClaudeSessionHasNoTrustEntry` (install);
+   `TestDaemonClaudeSessionsReadsTheAgentTree`,
+   `TestDaemonClaudeSessionsIsAnErrorWhenTheDaemonIsOffline`,
+   `TestInstallWiresClaudeSessionsToTheDaemon` (cmd). Fix:
+   `SessionInfo.cwd`; `install.ClaudeSessions`/`ClaudeSessionsFunc` on
+   `Doctor` and `AgentsOpts`; `cmd/swarm` `daemonClaudeSessions` over
+   `newClient` + `GET /api/agents?state=all`; `swarm install --url`. DONE.

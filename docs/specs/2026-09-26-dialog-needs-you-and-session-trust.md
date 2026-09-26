@@ -152,23 +152,11 @@ review). They amend decision 1 and resolve Q1; nothing here reopens them.
    and that the installed Claude version is one where the trust key was
    verified live (2.1.283 or later; an older or undetectable version gets a
    warning, not a failure -- install never blocks on this). It also prunes
-   stale Swarm-owned entries: any `projects[...]` key that is Swarm-owned
-   (D2's predicate) and no longer exists on disk. Never adds a
-   parent/global grant.
-   - **Implementation note (as built, 2026-09-26):** `swarm install` is a
-     standalone CLI command with no DB handle, same as D4's doctor check
-     below, so "no longer exists on disk" is the only staleness test
-     implemented -- a plain `<home>/work/<n>` directory is never deleted by
-     anything in this codebase today (confirmed: only `MkdirAll` sites for
-     that path), so in practice this prune only ever fires for a
-     `git worktree remove`d worktree. A work-dir's trust entry is instead
-     cleaned up by D2's reconcile-time hook the moment its owning agent
-     finishes, which needs no directory deletion to trigger. An earlier
-     draft of this decision additionally described pruning entries
-     "belonging to a terminal-session work dir" as an install-time DB-based
-     check; that was never implemented (same no-DB reason as D4's deferred
-     WARN) and is removed here rather than left to describe code that does
-     not exist.
+   stale Swarm-owned entries: any `projects[...]` key that is Swarm-owned (D2's
+   predicate) and either no longer exists on disk, or belongs to a Swarm
+   *terminal-session* work dir (a plain `<home>/work/<n>` directory with no
+   live agent using it -- worktrees are covered by "no longer exists" once
+   `git worktree remove` runs). Never adds a parent/global grant.
 10. **D4 (swarm doctor):** a new "Claude trust" check:
     - **FAIL** when `~/.claude.json` doesn't exist or isn't writable, or the
       installed Claude version is untested (older than 2.1.283, or the
@@ -181,29 +169,17 @@ review). They amend decision 1 and resolve Q1; nothing here reopens them.
       `projects[...]` entry at all (D1's write may have failed, or raced a
       concurrent Claude rewrite).
     - **PASS** otherwise, with the count of Swarm-owned entries.
-    - **Implementation note (flagged, not decided here):** `swarm doctor` is
-      a standalone CLI command with no DB handle (`cmd/swarm/commands.go`
-      builds `install.Doctor` from `Config` + `execx.Runner` only); the
-      live-session WARN needs either a new daemon HTTP endpoint or a direct
-      read-only DB open from the `install` package. Everything else in D4 is
-      implemented; this one WARN is deliberately left out pending that
-      choice, rather than picked unilaterally.
-    - **Still open (review round 2, finding 4 -- not resolved, not
-      re-deferred silently):** a round-2 reviewer pointed out that `Doctor`
-      already calls the daemon over HTTP for the "Daemon" check
-      (`d.daemon(ctx)` hits `GET /api/health`, unauthenticated), so a
-      daemon-side endpoint for the live-session WARN is technically
-      reachable from `install` the same way. What that reviewer's note
-      doesn't cover: every session-listing route today (`GET /api/agents`,
-      `/api/state`) is behind `authDaemon`, and `swarm doctor` runs as a
-      bare CLI process with no daemon auth token wired through `Config` --
-      so "add an endpoint" is actually "add an endpoint, decide how a CLI
-      process authenticates to it, and wire that through `install.Doctor`
-      and `cmd/swarm/commands.go`." That's the same category of call this
-      spec already declined to make unilaterally for D3's terminal-session
-      prune (below). Round 2 implemented findings 1, 2, 3 and 5 below; this
-      one and the terminal-session prune remain genuinely open and need a
-      person to pick a direction, not another silent deferral.
+    - **Implementation (review round 3, 2026-09-26):** `swarm install` and
+      `swarm doctor` read "no live agent using it" and the live-session list
+      from the running daemon, over the existing authenticated CLI client
+      (`cmd/swarm/client.go` `newClient`: `<home>/run/daemon.token`, Bearer),
+      via `GET /api/agents?state=all` (`SessionInfo` gained `cwd`). A
+      "terminal-session work dir" is the session cwd of a finished or
+      acknowledged Claude agent that no not-finished agent (any kind) still
+      uses (a finished agent's worktree counts too; D2 already drops those
+      at finish time, so this only catches what D2 missed). When the daemon is offline (no token yet, or not listening) that
+      part is skipped with a one-line note, never an error or a FAIL; the
+      on-disk half of the prune and the other checks still run.
 11. **D8 (codex hardening, from batch-1 review):**
     - `setupEnv` calls `os.Chtimes(codexHome, now, now)` right after
       `os.MkdirAll` succeeds (best-effort; an error is logged, not returned).
@@ -456,6 +432,7 @@ the notification and in `swarm_read`.
 - FAIL, version undetectable: `"Couldn't determine the installed Claude version. Update Claude, then run swarm doctor again."`
 - WARN, stale entries (count > 0): `"<n> stale Swarm-owned entries in ~/.claude.json. Run swarm install to prune them."`
 - WARN, live session missing entry: `"<agent name> is running but its workspace isn't trusted in ~/.claude.json yet."`
+- Daemon offline (appended to whichever detail above applies): `" Live-session check skipped: the daemon isn't running."`
 - PASS: `"~/.claude.json is writable, Claude <version>, <n> Swarm-owned entries."`
 
 **Install copy (D3, printed the same way as other `swarm install` steps):**
@@ -463,6 +440,9 @@ the notification and in `swarm_read`.
 - Untested version: `"Claude <version> is older than 2.1.283: the trust-dialog key was verified on 2.1.283+. Continuing, but sessions may still hit the trust dialog."`
 - Prune summary (count > 0): `"Removed <n> stale Swarm-owned entries from ~/.claude.json."`
 - Prune summary (count == 0): no line printed (install stays quiet when there is nothing to do, matching every other install step).
+- Prune skipped, lock busy: `"Skipped pruning ~/.claude.json: another process holds its lock. Run swarm install again."`
+- Prune refused (empty, `null` or unparsable file, ...): `"Couldn't prune ~/.claude.json: <error>"`
+- Daemon offline (finished-session half skipped): `"Skipped pruning finished sessions' Claude trust entries: the daemon isn't running."`
 
 **Log lines (exact format strings):**
 - `startup: %s: sent %v for dialog %q (send %d of 3)`
@@ -472,6 +452,8 @@ the notification and in `swarm_read`.
 - `reconcile: killed pane %s of finished agent %s`
 - `failSession: kill %s: %v`
 - `claude: pre-trust %s: %v`
+- `reconcile: forget claude trust for %d sessions: %v (retrying next tick)`
+- `agy: %s is a legacy whole-dir symlink; leaving it, so %s is not trusted per session`
 
 There are no new i18n keys and no new error or empty states.
 
@@ -564,13 +546,42 @@ There are no DB model changes. `requests.kind = 'prompt'` already exists, with
    used to call a missing file "writable" whenever its parent dir was; it
    now requires the file to actually exist, so D3's install warning and D4's
    doctor FAIL both fire for a plain-missing file, not just an unwritable one.
-4. Not resolved -- see the D4 implementation note above.
+4. Resolved in review round 3 (below): D4's live-session WARN reads the
+   daemon over the authenticated CLI client.
 5. `Claude.ForgetFolder` (D2) removed only the `hasTrustDialogAccepted`
    field, leaving `projects[<swarm work dir>]` in the user's `~/.claude.json`
    forever (nothing else ever deletes a Swarm-owned work dir off disk, so
    D3's prune never caught it). It now deletes the whole `projects[k]` entry
    for each Swarm-owned key -- callers only ever pass an already-confirmed
    Swarm-owned `cwd`.
+
+**Review round 3 fixes (2026-09-26):**
+1. Data loss: a 0-byte, whitespace-only or `null` `~/.claude.json` decoded
+   to a nil map and was rewritten as `{"projects":...}`, wiping
+   `oauthAccount`, `mcpServers` and the rest. Every writer (pre-trust,
+   `ForgetFolder`, the install prune) now goes through one
+   `install.EditClaudeProjects`, which refuses a missing, empty, `null`,
+   non-object or unparsable file and writes nothing.
+2. Symlinks: `EditClaudeProjects` resolves `~/.claude.json` with
+   `filepath.EvalSymlinks` and writes the target, so a dotfile-manager link
+   survives. The lock stays on the unresolved `<UserHome>/.claude.json.lock`:
+   Claude 2.1.283's `saveConfigWithLock` calls proper-lockfile with an
+   explicit `lockfilePath: \`${file}.lock\`` on the config path as given,
+   which bypasses proper-lockfile's realpath resolution of the lock name.
+   One `install.WriteFileAtomic` (temp file, `Sync`, rename) replaces the
+   adapter's copy and `WriteIfChanged` for this file.
+3. Reconcile stall: `WithClaudeConfigLock` returns `ErrClaudeConfigBusy`
+   instead of a silent nil. `forgetFinishedClaudeTrust` batches every pending
+   cwd into one `Claude.ForgetFolders` call (one lock, one parse per tick);
+   on busy or a parse error it logs, marks nothing done and retries next
+   tick. Every key, including the realpath twin, must pass
+   `install.SwarmOwnedClaudeWorkspace` (which also accepts paths under
+   realpath(home)).
+4. D3's terminal-session prune and D4's live-session WARN, per the locked
+   wording above.
+5. `CheckAndPruneClaudeTrust` prints busy skips and prune errors; only
+   ENOENT counts as stale; the agy `settings.json` copy keeps the real
+   file's mode; the legacy agy symlink branch logs.
 
 **Changed, batch 2b (D2-D4, D8):**
 - `internal/adapter/claude.go`: `Claude.ForgetFolder` (D2), removing both keys
