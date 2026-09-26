@@ -181,17 +181,28 @@ func requireNativeApprovalHook(a Agent, msgID string) error {
 // as observed evidence (spec section 2.3.5).
 var decisionLabel = map[string]string{"approve": "Approve", "request_changes": "Request changes"}
 
+// otherApprovalLabel returns the option label decisionLabel does not map to,
+// given the one it does: the two-choice prompt's other button.
+func otherApprovalLabel(label string) string {
+	if strings.EqualFold(label, "Approve") {
+		return "Request changes"
+	}
+	return "Approve"
+}
+
 // matchDecisionEvidence classifies the bound question row's response text
-// against the chosen decision's label (spec section 2.3.5): a blank answer
-// or the adapter's generic "Resolved in terminal" fallback is accepted on
-// the agent's word (agent_reported); text that starts with the label is
-// observed, with anything after the label becoming the free-text comment
-// when the caller didn't send one; anything else is a mismatch.
+// against the chosen decision's label (spec section 2.3.5, revised spec
+// section 1.8 D1): text that starts with the label is observed, with
+// anything after the label becoming the free-text comment when the caller
+// didn't send one. A blank answer, the adapter's generic "Resolved in
+// terminal" fallback, or any other typed free text (an "Other" answer the
+// orchestrator interpreted itself) is accepted on the agent's word
+// (agent_reported) -- the typed text becomes the comment when the caller
+// sent none. The one case still refused is a mismatch: text that starts
+// with the *other* decision's own option label, meaning the user visibly
+// picked the opposite choice and the orchestrator forwarded the wrong one.
 func matchDecisionEvidence(responseText, label, callerComment string) (evidence, comment string, err error) {
 	trimmed := strings.TrimSpace(responseText)
-	if trimmed == "" || trimmed == "Resolved in terminal" {
-		return EvidenceAgentReported, callerComment, nil
-	}
 	if len(trimmed) >= len(label) && strings.EqualFold(trimmed[:len(label)], label) {
 		comment = callerComment
 		if comment == "" {
@@ -199,7 +210,15 @@ func matchDecisionEvidence(responseText, label, callerComment string) (evidence,
 		}
 		return EvidenceObserved, comment, nil
 	}
-	return "", "", fmt.Errorf(errDecisionMismatch, trimmed, label)
+	other := otherApprovalLabel(label)
+	if len(trimmed) >= len(other) && strings.EqualFold(trimmed[:len(other)], other) {
+		return "", "", fmt.Errorf(errDecisionMismatch, trimmed, label)
+	}
+	comment = callerComment
+	if comment == "" && trimmed != "" && trimmed != "Resolved in terminal" {
+		comment = trimmed
+	}
+	return EvidenceAgentReported, comment, nil
 }
 
 // nativeAnswer is swarm_ask kind:"native_answer" (spec section 2.3 steps
@@ -242,16 +261,13 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if err != nil {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
 	}
-	// RequestChanges' own validation, reapplied here (Task 13c): nativeAnswer
+	// RequestChanges' own length cap, reapplied here (Task 13c): nativeAnswer
 	// builds the changes_requested result with s.resolve directly (so the
-	// payload can carry evidence), not through RequestChanges itself.
-	if in.Decision == "request_changes" {
-		if comment == "" {
-			return Request{}, errors.New("Add a comment describing what to change.")
-		}
-		if utf8.RuneCountInString(comment) > 2000 {
-			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Comment must be at most 2000 characters."}
-		}
+	// payload can carry evidence), not through RequestChanges itself. A
+	// comment is optional (spec 1.8 D1): the old "Request changes needs a
+	// comment" refusal is removed -- keep it simple, not too tight.
+	if in.Decision == "request_changes" && utf8.RuneCountInString(comment) > 2000 {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Comment must be at most 2000 characters."}
 	}
 	// bindEvidence runs inside the same tx as the state change (resolve's or
 	// ConfirmRepos's own), right after the UPDATE: the audit record's (a)

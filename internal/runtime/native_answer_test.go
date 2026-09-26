@@ -164,6 +164,77 @@ func TestNativeAnswerAgentReportedRequestChanges(t *testing.T) {
 	}
 }
 
+// TestMatchDecisionEvidence is Task 6.2 (spec 1.8 D1): typed free text with
+// no option-label prefix is accepted on the agent's word; text that starts
+// with the *other* decision's label is still a mismatch.
+func TestMatchDecisionEvidence(t *testing.T) {
+	tests := []struct {
+		name          string
+		responseText  string
+		label         string
+		callerComment string
+		wantEvidence  string
+		wantComment   string
+		wantErr       bool
+	}{
+		{"free text no prefix", "Confirm endurio-chat and drop the docs repo", "Approve",
+			"", EvidenceAgentReported, "Confirm endurio-chat and drop the docs repo", false},
+		{"contradicting label prefix is a mismatch", "Request changes: split the migration", "Approve",
+			"", "", "", true},
+		{"mentions the other label but doesn't start with it", "actually let's go with request changes", "Approve",
+			"", EvidenceAgentReported, "actually let's go with request changes", false},
+		{"own label prefix is observed", "Approve: looks good", "Approve",
+			"", EvidenceObserved, "looks good", false},
+		{"blank is agent_reported with caller comment", "", "Approve",
+			"my comment", EvidenceAgentReported, "my comment", false},
+		{"caller comment wins over typed free text", "some free text", "Approve",
+			"caller comment", EvidenceAgentReported, "caller comment", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			evidence, comment, err := matchDecisionEvidence(tc.responseText, tc.label, tc.callerComment)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("err = nil, want a mismatch error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence != tc.wantEvidence || comment != tc.wantComment {
+				t.Fatalf("evidence=%q comment=%q, want evidence=%q comment=%q",
+					evidence, comment, tc.wantEvidence, tc.wantComment)
+			}
+		})
+	}
+}
+
+// TestNativeAnswerTypedFreeTextRequestChangesNeedsNoComment is Task 6.2
+// (spec 1.8 D1): a request_changes decision forwarded with typed free text
+// and no explicit Comment succeeds -- the old "Add a comment describing
+// what to change." refusal is removed.
+func TestNativeAnswerTypedFreeTextRequestChangesNeedsNoComment(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	ctx := context.Background()
+	hookSimulate(t, s, ses, *req.NativePrompt, "Let's tighten scope first")
+
+	out, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "request_changes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "changes_requested" {
+		t.Fatalf("out = %+v", out)
+	}
+	if out.ResponseText != "Let's tighten scope first" {
+		t.Fatalf("response_text = %q, want %q", out.ResponseText, "Let's tighten scope first")
+	}
+	wire, _ := s.RequestWireByID(ctx, req.ID)
+	if wire.ApprovalEvidence == nil || *wire.ApprovalEvidence != EvidenceAgentReported {
+		t.Fatalf("approval_evidence = %v, want agent_reported", wire.ApprovalEvidence)
+	}
+}
+
 func TestBoardApprovalHasNullEvidence(t *testing.T) {
 	s, _, req := seedApprovalWithNativePrompt(t)
 	ctx := context.Background()
