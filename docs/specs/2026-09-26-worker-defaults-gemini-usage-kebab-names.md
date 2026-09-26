@@ -77,7 +77,7 @@ func fallbackReason(orig AgentKind) string // "<Display> is out of usage"
 `runtime.SetRoleOverride` keeps its signature; the `reason` check and log live in the MCP handler (`s.Log`), the only orchestrator-facing caller.
 
 `kind_reason` values:
-- explicit spawn override: `User override: <override_reason>`
+- explicit spawn override: `User override: <override_reason>`; `User override` (no colon) when a non-MCP runtime caller sets Kind/Model/Effort with an empty `OverrideReason` (only `swarm_spawn` enforces the reason)
 - parent role override applied: `Role override set on <parent name>`
 - usage fallback: `<Original kind display> is out of usage` appended with `; ` to any earlier reason.
 

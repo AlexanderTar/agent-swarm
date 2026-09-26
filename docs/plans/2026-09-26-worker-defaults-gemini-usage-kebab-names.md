@@ -18,7 +18,7 @@ Spec: `docs/specs/2026-09-26-worker-defaults-gemini-usage-kebab-names.md`. Workt
 - Add `internal/usagegate/usagegate_test.go` `TestAgyNotExhaustedByExtraModels`: `ParseAgyQuota` of that body → `Exhausted(snapshot)` false.
 - Run → FAIL.
 - Code (`internal/usage/agy.go`): `var agyExtraGroups = map[string]bool{"Claude and GPT models": true}`; skip those groups; headline = `gemini_5h` if emitted, else busiest 5h.
-- Swift (`apps/menubar/Tests/...`): `MenuLabel`/`UsageSection` test with a Gemini-only agy snapshot → segment text `6%`, rows `["Gemini weekly","Gemini 5h"]`.
+- Swift (`apps/menubar/Tests/...`): `MenuLabel`/`UsageSection` test with a Gemini-only agy snapshot → segment text `6%`, rows `["Gemini 5h","Gemini weekly"]`.
 - Run `go test ./internal/usage ./internal/usagegate` and `(cd apps/menubar && swift test)` → PASS. Commit `fix(usage): agy reports native Gemini quota only`.
 
 ## Task 3: kind_reason column and Spawn provenance
@@ -28,7 +28,7 @@ Spec: `docs/specs/2026-09-26-worker-defaults-gemini-usage-kebab-names.md`. Workt
   - `TestSpawnRoleDefaultHasNoKindReason`: no kind/model → role default, `KindReason == ""` (read back via `s.Agent`).
   - `TestSpawnExplicitOverrideRecordsReason`: `Kind: Fake, Model: "fake-1", OverrideReason: "user asked for fake"` → kept, `KindReason == "User override: user asked for fake"`.
   - `TestSpawnParentRoleOverrideRecordsReason`: parent with `role_overrides` → child uses it, `KindReason == "Role override set on <parent>"`.
-  - `internal/runtime/fallback_test.go` `TestSpawnFallbackRecordsReason` and `TestStartQueuedFallbackRecordsReason`: reason contains `is out of usage`.
+  - `internal/runtime/fallback_test.go`: extend `TestSpawnSubstitutesExhaustedFallback`, `TestRetrySubstitutesExhaustedFallbackAndPersistsIt` and `TestDrainQueueSubstitutesExhaustedFallback` to assert the reason ends with `Claude is out of usage`.
 - Run → FAIL (field missing).
 - Code: `Agent.KindReason`; `SpawnInput.OverrideReason`; `joinReason`/`fallbackReason`; compute in `Spawn` (explicit → user override; parent override applied → role override; substituted → append fallback); insert `kind_reason` (NULLIF ''); add `COALESCE(kind_reason,'')` to the 7 agent SELECTs + scans; `startQueued` and `Retry` update `kind_reason` when substituted; `s.logf("spawn: %s on %s/%s: %s", …)` when non-empty.
 - Run `go test ./internal/runtime ./internal/db` → PASS. Commit `feat(runtime): record why a worker's kind differs from settings`.
