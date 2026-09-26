@@ -78,9 +78,13 @@ func PreservationNativeAllowed(toolName string) error {
 	return nil
 }
 
-var pushRe = regexp.MustCompile(`(^|[;&|()\s])git\s+push\b`)
+// gitGlobalOpts matches git's options before the subcommand (-C dir,
+// -c key=val, --git-dir=..., --no-pager), so `git -C wt push` is still a push.
+const gitGlobalOpts = `(\s+(-C|-c)\s+\S+|\s+--[\w-]+(=\S+)?)*`
+
+var pushRe = regexp.MustCompile(`(^|[;&|()\s])git` + gitGlobalOpts + `\s+push\b`)
 var deployRe = regexp.MustCompile(`(?i)(^|[;&|()\s])(deploy\b|kubectl\s+(apply|create)|terraform\s+apply|fly\s+deploy|railway\s+(up|deploy))`)
-var gitStageRe = regexp.MustCompile(`(^|[;&|()\s])git\s+(add|stage|commit)\b`)
+var gitStageRe = regexp.MustCompile(`(^|[;&|()\s])git` + gitGlobalOpts + `\s+(add|stage|commit)\b`)
 
 // preservationSecretComponent reports whether one path component of a file
 // the predecessor is staging looks like secret material: dot-env files,
@@ -136,20 +140,40 @@ func preservationSecretPath(p string) bool {
 // and -m/--message values are skipped, so a commit message that merely
 // mentions secrets never blocks an ordinary save.
 func stagedSecretPath(command string) string {
-	loc := gitStageRe.FindStringIndex(command)
-	if loc == nil {
-		return ""
+	for _, loc := range gitStageRe.FindAllStringIndex(command, -1) {
+		if p := stagedSecretPathAt(command[loc[0]:]); p != "" {
+			return p
+		}
 	}
+	return ""
+}
+
+// stagedSecretPathAt parses one git stage/commit invocation starting at tail
+// (up to the next shell separator).
+func stagedSecretPathAt(tail string) string {
 	// The match starts at a separator or at "git" itself; parse from the
 	// verb's own "git" so ";git add .env" scans like "git add .env".
-	tail := command[loc[0]:]
 	gi := strings.Index(tail, "git")
 	fields := strings.Fields(tail[gi:])
-	if len(fields) < 2 {
+	for i, f := range fields {
+		if f == "&&" || f == "||" || f == ";" || f == "|" {
+			fields = fields[:i]
+			break
+		}
+	}
+	// Skip git's global options (-C dir, -c key=val, --opt[=val]).
+	k := 1
+	for k < len(fields) && strings.HasPrefix(fields[k], "-") {
+		if fields[k] == "-C" || fields[k] == "-c" {
+			k++
+		}
+		k++
+	}
+	if k >= len(fields) {
 		return ""
 	}
-	verb := fields[1]
-	rest := fields[2:]
+	verb := fields[k]
+	rest := fields[k+1:]
 	for j := 0; j < len(rest); j++ {
 		f := rest[j]
 		if f == "--" {
@@ -170,13 +194,18 @@ func stagedSecretPath(command string) string {
 			}
 			continue
 		}
+		shortFlagHas := func(c string) bool {
+			return len(f) > 1 && f[0] == '-' && f[1] != '-' && strings.Contains(f[1:], c)
+		}
+		// A sweeping add or commit stages whatever is dirty -- including
+		// secrets and other agents' work -- so preservation requires
+		// explicit paths. (-m values were skipped above, so `-m "fix-all"`
+		// never trips this.)
+		if (verb == "add" || verb == "stage") && (f == "--all" || f == "." || shortFlagHas("A")) {
+			return "-a"
+		}
 		if strings.HasPrefix(f, "--message=") || strings.HasPrefix(f, "-") {
-			// A sweeping commit stages whatever is dirty -- including
-			// secrets and other agents' work -- so preservation
-			// requires explicit paths. (-m values were skipped above,
-			// so `-m "fix-all"` never trips this.)
-			if verb == "commit" && (f == "-a" || f == "--all" ||
-				(len(f) > 2 && f[0] == '-' && f[1] != '-' && strings.Contains(f[1:], "a"))) {
+			if verb == "commit" && (f == "--all" || shortFlagHas("a")) {
 				return "-a"
 			}
 			continue
@@ -241,6 +270,9 @@ type ManifestWorktree struct {
 	RecordedHead string `json:"recorded_head"`
 	ObservedHead string `json:"observed_head"`
 	State        string `json:"state"`
+	// Dirty lists every path `git status --porcelain` reported at write
+	// time, untracked included, so the successor inspects them first.
+	Dirty []string `json:"dirty_paths"`
 }
 
 // ManifestArtifact is one registry artifact at its head revision, with the
@@ -392,6 +424,10 @@ func (s *Store) WriteHandoffManifest(ctx context.Context, opID, checkpointID str
 			}
 			if head, err := readDiskHEAD(w.Path); err == nil {
 				w.ObservedHead = head
+			}
+			w.Dirty = []string{}
+			if st, err := readDiskStatus(w.Path); err == nil {
+				w.Dirty, _ = porcelainPaths(st)
 			}
 			m.Worktrees = append(m.Worktrees, w)
 		}
@@ -582,6 +618,14 @@ func (s *Store) ValidatePreservationReady(ctx context.Context, opID string) erro
 			return fail("preservation: worktree %s moved under handoff (manifest %s, disk %s); save again before claiming ready.",
 				w.Path, shortSHA(w.ObservedHead), shortSHA(head))
 		}
+		st, err := readDiskStatus(w.Path)
+		if err != nil {
+			return fail("preservation: worktree %s status unreadable; record the blocker and surviving paths instead of claiming ready.", w.Path)
+		}
+		if _, tracked := porcelainPaths(st); len(tracked) > 0 {
+			return fail("preservation: worktree %s has uncommitted tracked changes (%s); commit task-owned paths or record the blocker.",
+				w.Path, strings.Join(tracked, ", "))
+		}
 	}
 	if len(m.Worktrees) > 0 {
 		ids := make([]any, len(m.Worktrees))
@@ -702,4 +746,34 @@ func (s *Store) checkpointByIDTx(ctx context.Context, tx *sql.Tx, id string) (Ch
 	c.DaemonWritten = daemonWritten != 0
 	c.CreatedAt = db.FromMillis(created)
 	return c, nil
+}
+
+// readDiskStatus reports `git status --porcelain` for a worktree, untracked
+// files included. A package seam like readDiskHEAD.
+var readDiskStatus = func(path string) (string, error) {
+	out, err := exec.Command("git", "-C", path, "status", "--porcelain", "--untracked-files=all").Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// porcelainPaths parses `git status --porcelain` into every dirty path and
+// the tracked subset (anything but untracked "??" and ignored "!!").
+func porcelainPaths(status string) (all, tracked []string) {
+	all = []string{}
+	for _, line := range strings.Split(status, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		code, p := line[:2], line[3:]
+		if i := strings.Index(p, " -> "); i >= 0 {
+			p = p[i+4:]
+		}
+		all = append(all, p)
+		if code != "??" && code != "!!" {
+			tracked = append(tracked, p)
+		}
+	}
+	return all, tracked
 }

@@ -155,9 +155,10 @@ func TestHandoffManifestPreservesScratchArtifacts(t *testing.T) {
 	// Handoff operation (predecessor pane alive, so it parks) and the
 	// handoff checkpoint, manifest last per the binding order. The disk
 	// HEAD agrees with the recorded one, so checkpoint binding validates.
-	oldHEAD := readDiskHEAD
+	oldHEAD, oldStatus := readDiskHEAD, readDiskStatus
 	readDiskHEAD = func(string) (string, error) { return "deadbee", nil }
-	defer func() { readDiskHEAD = oldHEAD }()
+	readDiskStatus = func(string) (string, error) { return "", nil } // clean tree
+	defer func() { readDiskHEAD, readDiskStatus = oldHEAD, oldStatus }()
 	panes(tm, Pane{Session: wSes.TmuxName})
 	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "h1", "")
 	if err != nil {
@@ -357,9 +358,10 @@ func TestHandoffManifestExcludesROTrees(t *testing.T) {
 			}
 		}
 	}
-	oldHEAD := readDiskHEAD
+	oldHEAD, oldStatus := readDiskHEAD, readDiskStatus
 	readDiskHEAD = func(string) (string, error) { return "deadbee", nil }
-	defer func() { readDiskHEAD = oldHEAD }()
+	readDiskStatus = func(string) (string, error) { return "", nil } // clean tree
+	defer func() { readDiskHEAD, readDiskStatus = oldHEAD, oldStatus }()
 	panes(tm, Pane{Session: wSes.TmuxName})
 	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "hmodes", "")
 	if err != nil {
@@ -421,9 +423,10 @@ func TestSharedRWTreeWithLiveWriterBlocksReady(t *testing.T) {
 		orch.ID, now); err != nil {
 		t.Fatal(err)
 	}
-	oldHEAD := readDiskHEAD
+	oldHEAD, oldStatus := readDiskHEAD, readDiskStatus
 	readDiskHEAD = func(string) (string, error) { return "deadbee", nil }
-	defer func() { readDiskHEAD = oldHEAD }()
+	readDiskStatus = func(string) (string, error) { return "", nil } // clean tree
+	defer func() { readDiskHEAD, readDiskStatus = oldHEAD, oldStatus }()
 	panes(tm, Pane{Session: wSes.TmuxName})
 	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "hshared", "")
 	if err != nil {
