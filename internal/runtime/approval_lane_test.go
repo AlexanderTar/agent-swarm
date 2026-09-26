@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -382,5 +384,54 @@ func TestResurfaceSkipsRequestsWithAPendingRelay(t *testing.T) {
 	if got := OpenRequestsReminder(2); got != "2 request(s) still wait on your user. swarm_sync delivers each as a "+
 		"request_open relay with its native prompt and next step; ask again as it says." {
 		t.Fatalf("reminder = %q", got)
+	}
+}
+
+// Spec E5.
+func TestStartOrchestratorBindsAndRelaysAgentlessAcceptRows(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	openAcceptRow(t, s, "req_accept", "accept_epic", "EPIC-1") // no orchestrator yet
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := s.RequestByID(ctx, "req_accept")
+	if req.AgentID != orch.ID || req.SessionID != mustSessionID(t, s, orch.ID) {
+		t.Fatalf("bound to (%q, %q)", req.AgentID, req.SessionID)
+	}
+	if _, n := relayFor(t, s, orch.ID, "req_accept"); n != 1 {
+		t.Fatalf("%d relays, want 1", n)
+	}
+	if !strings.HasSuffix(fa.LastSpec.Kickoff, " "+OpenRequestsReminder(1)) {
+		t.Fatalf("kickoff lacks the reminder:\n%s", fa.LastSpec.Kickoff)
+	}
+}
+
+// Spec E9.
+func TestResumeResurfacesOpenRequests(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	ctx := context.Background()
+	fa := s.Adapters[Fake].(*adapter.Fake)
+	q, err := s.AskQuestion(ctx, ses, "Which sync strategy?", []string{"Pull", "Push"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := s.AgentByID(ctx, req.AgentID)
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = NULL WHERE id = ?`, ses)
+	if _, err := s.Resume(ctx, a.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	pa, na := relayFor(t, s, a.ID, req.ID)
+	if na != 1 || !reflect.DeepEqual(decodeNP(t, pa), *req.NativePrompt) {
+		t.Fatalf("approval relay = %d × %v, want the original %+v", na, pa, *req.NativePrompt)
+	}
+	pq, nq := relayFor(t, s, a.ID, q.ID)
+	if nq != 1 || pq["next"] != reaskQuestionNext {
+		t.Fatalf("question relay = %d × %v", nq, pq)
+	}
+	if !strings.HasSuffix(fa.LastSpec.Kickoff, " "+OpenRequestsReminder(2)) {
+		t.Fatalf("resume kickoff lacks the reminder:\n%s", fa.LastSpec.Kickoff)
 	}
 }
