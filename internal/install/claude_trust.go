@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -59,30 +60,30 @@ func parseVersion(v string) ([3]int, bool) {
 // ClaudeJSONPath is the one file D1 writes into and D2/D3/D4 inspect.
 func ClaudeJSONPath(c Config) string { return filepath.Join(c.UserHome, ".claude.json") }
 
-// claudeJSONWritable reports whether ClaudeJSONPath(c) can be written to: an
-// existing file must itself be a writable regular file; a missing one only
-// needs its parent directory to be writable, since D1's atomic write creates
-// it (temp file + rename) rather than requiring it to pre-exist.
+// claudeJSONWritable reports whether ClaudeJSONPath(c) exists and can be
+// written to: it must be a writable regular file.
+//
+// Review round 2, finding 3: this used to treat a missing file as writable
+// whenever its parent dir was, on the theory that D1's write would create
+// it. D1's own pre-trust write (adapter.trustClaudeWorkspace) no longer
+// creates a missing ~/.claude.json -- that hides Claude's own
+// missing-config/backup-restore path -- so a missing file must FAIL this
+// check too, per D4's "doesn't exist or isn't writable" and D3's "missing"
+// install warning.
 func claudeJSONWritable(c Config) bool {
 	path := ClaudeJSONPath(c)
-	if fi, err := os.Stat(path); err == nil {
-		if fi.IsDir() {
-			return false
-		}
-		f, err := os.OpenFile(path, os.O_WRONLY, 0)
-		if err != nil {
-			return false
-		}
-		_ = f.Close()
-		return true
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".swarm-writable-check-*")
+	fi, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	name := f.Name()
+	if fi.IsDir() {
+		return false
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return false
+	}
 	_ = f.Close()
-	_ = os.Remove(name)
 	return true
 }
 
@@ -112,56 +113,76 @@ func swarmOwnedClaudeWorkspace(home, path string) bool {
 // exists, are never touched. A missing or unparsable file is left alone
 // (0, nil): there is nothing to prune, and a file this codebase cannot
 // safely parse is never rewritten.
+//
+// Review round 2, finding 2: `swarm install` typically runs while the
+// user's own interactive Claude session (or another launch) is writing this
+// same file. This now takes Claude's own mkdir lock (WithClaudeConfigLock,
+// shared with the adapter's per-session writes) and re-reads/compares
+// before writing, retrying the read-modify-write instead of blindly
+// overwriting a file that changed underneath it -- the same lost-update
+// protection the adapter's trustClaudeWorkspace/ForgetFolder already use.
 func PruneStaleClaudeTrustEntries(c Config) (int, error) {
 	path := ClaudeJSONPath(c)
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return 0, nil // not ours to fix; leave the user's file exactly as it is
-	}
-	var projects map[string]json.RawMessage
-	if len(doc["projects"]) > 0 {
-		if err := json.Unmarshal(doc["projects"], &projects); err != nil {
-			return 0, nil
-		}
-	}
 	removed := 0
-	for p := range projects {
-		if !swarmOwnedClaudeWorkspace(c.Home, p) {
-			continue
+	err := WithClaudeConfigLock(c.UserHome, func() error {
+		for attempt := 0; attempt < 3; attempt++ {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			var doc map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				return nil // not ours to fix; leave the user's file exactly as it is
+			}
+			var projects map[string]json.RawMessage
+			if len(doc["projects"]) > 0 {
+				if err := json.Unmarshal(doc["projects"], &projects); err != nil {
+					return nil
+				}
+			}
+			n := 0
+			for p := range projects {
+				if !swarmOwnedClaudeWorkspace(c.Home, p) {
+					continue
+				}
+				if _, err := os.Stat(p); err == nil {
+					continue // still exists; not stale
+				}
+				delete(projects, p)
+				n++
+			}
+			if n == 0 {
+				return nil
+			}
+			pb, err := json.Marshal(projects)
+			if err != nil {
+				return err
+			}
+			doc["projects"] = pb
+			out, err := json.Marshal(doc)
+			if err != nil {
+				return err
+			}
+			mode := os.FileMode(0o600)
+			if fi, statErr := os.Stat(path); statErr == nil {
+				mode = fi.Mode().Perm()
+			}
+			cur, _ := os.ReadFile(path)
+			if !bytes.Equal(cur, raw) {
+				continue // the file changed under us; re-read and recompute
+			}
+			if _, err := WriteIfChanged(path, out, mode); err != nil {
+				return err
+			}
+			removed = n
+			return nil
 		}
-		if _, err := os.Stat(p); err == nil {
-			continue // still exists; not stale
-		}
-		delete(projects, p)
-		removed++
-	}
-	if removed == 0 {
-		return 0, nil
-	}
-	pb, err := json.Marshal(projects)
-	if err != nil {
-		return 0, err
-	}
-	doc["projects"] = pb
-	out, err := json.Marshal(doc)
-	if err != nil {
-		return 0, err
-	}
-	mode := os.FileMode(0o600)
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
-	}
-	if _, err := WriteIfChanged(path, out, mode); err != nil {
-		return 0, err
-	}
-	return removed, nil
+		return fmt.Errorf("claude.json kept changing under us")
+	})
+	return removed, err
 }
 
 // CheckAndPruneClaudeTrust is D3's install-time step: verify ~/.claude.json is

@@ -207,10 +207,40 @@ func TestInstallWarnsWhenClaudeJSONIsMissingOrNotWritable(t *testing.T) {
 	}
 }
 
+// Review round 2, finding 3: a plain-missing ~/.claude.json (writable
+// parent, file just isn't there -- no chmod trickery) must warn on install
+// and FAIL on doctor too, not only an unwritable parent. Pre-trust no
+// longer creates the file (see the adapter's
+// TestClaudePreTrustSkipsAMissingClaudeJSON), so claudeJSONWritable can no
+// longer treat "doesn't exist yet, will be created on demand" as writable.
+func TestInstallWarnsWhenClaudeJSONIsSimplyMissing(t *testing.T) {
+	c := fakeHome(t)
+	if _, err := os.Stat(install.ClaudeJSONPath(c)); !os.IsNotExist(err) {
+		t.Fatalf("test setup: claude.json must not already exist: %v", err)
+	}
+	run := (&execx.Fake{Responses: map[string]execx.Result{
+		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
+	}}).Runner()
+	lines := install.CheckAndPruneClaudeTrust(context.Background(), c, run)
+	if len(lines) == 0 || !strings.Contains(lines[0], "missing or not writable") {
+		t.Fatalf("lines = %v, want a missing/not-writable warning", lines)
+	}
+	ch := install.CheckClaudeTrust(context.Background(), c, run)
+	if ch.Name != "Claude trust" || ch.OK {
+		t.Fatalf("check = %+v, want a FAIL named \"Claude trust\" for a missing file", ch)
+	}
+}
+
 // D3: an installed Claude older than the verified version gets a warning
 // line with the exact wording, and install still succeeds.
 func TestInstallWarnsOnAnUntestedClaudeVersion(t *testing.T) {
 	c := fakeHome(t)
+	// Review round 2, finding 3: claudeJSONWritable now FAILs a missing
+	// file, so seed one -- this test is about the version gate, not the
+	// missing-file path (covered by TestInstallWarnsWhenClaudeJSONIsSimplyMissing).
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	run := (&execx.Fake{Responses: map[string]execx.Result{
 		"claude --version": {Out: "2.1.200 (Claude Code)\n"},
 	}}).Runner()
@@ -259,6 +289,38 @@ func TestInstallPrunesOnlyStaleSwarmOwnedEntries(t *testing.T) {
 	}
 	if _, ok := doc.Projects[userEntry]; !ok {
 		t.Error("a non-Swarm-owned entry must never be touched, even if it points nowhere")
+	}
+}
+
+// Review round 2, finding 2: a live Claude session (or anything else)
+// holding the mkdir lock around ~/.claude.json means the prune must skip
+// its write rather than racing it -- the same best-effort skip the
+// adapter's own trustClaudeWorkspace/ForgetFolder use, now shared via
+// WithClaudeConfigLock. Previously PruneStaleClaudeTrustEntries took no
+// lock at all and would have clobbered a concurrent write.
+func TestPruneSkipsTheWriteWhileClaudeConfigLockIsHeld(t *testing.T) {
+	c := fakeHome(t)
+	staleOwned := filepath.Join(c.Home, "work", "3") // Swarm-owned, gone
+	seed := fmt.Sprintf(`{"projects":{%q:{"hasTrustDialogAccepted":true}}}`, staleOwned)
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock := install.ClaudeJSONPath(c) + ".lock"
+	if err := os.Mkdir(lock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(lock)
+
+	n, err := install.PruneStaleClaudeTrustEntries(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("pruned %d while the lock was held, want 0 (best-effort skip)", n)
+	}
+	b, _ := os.ReadFile(install.ClaudeJSONPath(c))
+	if string(b) != seed {
+		t.Fatalf("file was rewritten while the lock was held: %s", b)
 	}
 }
 
@@ -324,6 +386,11 @@ func TestDoctorWarnsOnStaleSwarmOwnedEntriesWithCount(t *testing.T) {
 // D4: PASSes with a clean, up-to-date, writable state.
 func TestDoctorPassesWithCleanState(t *testing.T) {
 	c := fakeHome(t)
+	// Review round 2, finding 3: claudeJSONWritable now FAILs a missing
+	// file; seed one so this test exercises the clean-state PASS path.
+	if err := os.WriteFile(install.ClaudeJSONPath(c), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	run := (&execx.Fake{Responses: map[string]execx.Result{
 		"claude --version": {Out: "2.1.283 (Claude Code)\n"},
 	}}).Runner()

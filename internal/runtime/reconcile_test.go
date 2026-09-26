@@ -3645,14 +3645,16 @@ func TestReconcileForgetsClaudeTrustForASwarmOwnedWorkspaceOfAFinishedAgent(t *t
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatalf("claude.json no longer parses: %v\n%s", err, b)
 	}
+	// Review round 2, finding 5: ForgetFolder now deletes the whole
+	// projects[cwd] entry, not just its hasTrustDialogAccepted field --
+	// otherwise every Claude spawn left a permanent entry in
+	// ~/.claude.json (D3's prune never fires for a work dir, since nothing
+	// else ever deletes one off disk).
+	if _, ok := doc.Projects[ownedSes.Cwd]; ok {
+		t.Errorf("Swarm-owned workspace's trust entry survives a finished agent: %s", doc.Projects[ownedSes.Cwd])
+	}
 	var entry struct {
 		HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
-	}
-	if err := json.Unmarshal(doc.Projects[ownedSes.Cwd], &entry); err != nil {
-		t.Fatal(err)
-	}
-	if entry.HasTrustDialogAccepted {
-		t.Errorf("Swarm-owned workspace's trust entry survives a finished agent: %s", doc.Projects[ownedSes.Cwd])
 	}
 	if err := json.Unmarshal(doc.Projects[outsideCwd], &entry); err != nil {
 		t.Fatal(err)

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
@@ -192,46 +191,14 @@ func (c *Claude) Resume(s Spec) (Launch, error) {
 	return Launch{Argv: append(argv, "--", s.Kickoff), Env: map[string]string{}}, nil
 }
 
-// claudeConfigLockStaleAfter/claudeConfigLockRetryEvery/claudeConfigLockTimeout
-// are D1's mkdir-lock protocol (dialog-needs-you spec §E, confirmed live as
-// P-C5, Task 14a): Claude itself takes this same "<file>.lock" directory
-// lock around its own writes to ~/.claude.json, held only for the instant of
-// the write.
-const (
-	claudeConfigLockStaleAfter = 10 * time.Second
-	claudeConfigLockRetryEvery = 100 * time.Millisecond
-	claudeConfigLockTimeout    = 2 * time.Second
-)
-
 func claudeConfigPath(userHome string) string { return filepath.Join(userHome, ".claude.json") }
 
-// withClaudeConfigLock runs fn while holding Claude's own mkdir lock around
-// ~/.claude.json. It is best-effort: a lock that stays held for the whole
-// 2s window is treated as busy, fn is skipped, and nil is returned -- the
-// caller logs and moves on rather than blocking or failing a launch (D1: a
-// pre-trust failure never blocks a spawn; the dialog auto-answer and the
-// Needs-you escalation are the fallback).
+// withClaudeConfigLock is install.WithClaudeConfigLock (review round 2,
+// finding 1 & 2: moved there so the adapter's per-session writes and
+// install's PruneStaleClaudeTrustEntries share one lock/retry
+// implementation instead of racing each other unlocked).
 func withClaudeConfigLock(userHome string, fn func() error) error {
-	lock := claudeConfigPath(userHome) + ".lock"
-	deadline := time.Now().Add(claudeConfigLockTimeout)
-	for {
-		err := os.Mkdir(lock, 0o755)
-		if err == nil {
-			defer os.Remove(lock)
-			return fn()
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return err
-		}
-		if fi, statErr := os.Stat(lock); statErr == nil && time.Since(fi.ModTime()) > claudeConfigLockStaleAfter {
-			_ = os.Remove(lock) // stale; best-effort, then retry immediately
-			continue
-		}
-		if time.Now().After(deadline) {
-			return nil // busy for the whole window; skip the write, don't fail the launch
-		}
-		time.Sleep(claudeConfigLockRetryEvery)
-	}
+	return install.WithClaudeConfigLock(userHome, fn)
 }
 
 // trustClaudeWorkspace marks cwd (and its realpath, if it differs) trusted
@@ -253,7 +220,18 @@ func trustClaudeWorkspace(userHome, cwd string) error {
 		path := claudeConfigPath(userHome)
 		for attempt := 0; attempt < 3; attempt++ {
 			raw, err := os.ReadFile(path)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					// Review round 2, finding 3: a missing ~/.claude.json is
+					// Claude's own missing-config/backup-restore path, not
+					// ours to paper over. Creating a fresh file holding only
+					// {"projects": ...} here would hide that and skip
+					// straight past batch-1's dialog-auto-answer/Needs-you
+					// fallback. Skip the write; the caller (Launch/Resume)
+					// just logs and moves on, same as any other pre-trust
+					// failure (D1).
+					return fmt.Errorf("claude.json does not exist; not creating it")
+				}
 				return err
 			}
 			mode := os.FileMode(0o600)
@@ -317,13 +295,23 @@ func trustClaudeWorkspace(userHome, cwd string) error {
 	})
 }
 
-// ForgetFolder removes the hasTrustDialogAccepted key from projects[cwd] (and
-// its realpath twin, if it differs) under the same lock/atomic-write
-// protocol as trustClaudeWorkspace (D2, dialog-needs-you spec): called once
-// a session's Swarm-owned workspace is reclaimed. Every other field of that
-// entry, every other project, and every other top-level key survives.
-// Idempotent: a path with no entry, or one already missing the key, is a
-// no-op with no rewrite.
+// ForgetFolder removes projects[cwd] entirely (and its realpath twin, if it
+// differs) under the same lock/atomic-write protocol as trustClaudeWorkspace
+// (D2, dialog-needs-you spec): called once a session's Swarm-owned
+// workspace is reclaimed. Callers (runtime.forgetFinishedClaudeTrust) only
+// ever pass a cwd already confirmed Swarm-owned, so deleting the whole
+// entry is safe -- there is no reason to keep a placeholder around for a
+// work dir or worktree nothing else will ever look at again. Every other
+// project, and every other top-level key, survives untouched.
+// Idempotent: a path with no entry is a no-op with no rewrite.
+//
+// Review round 2, finding 5: this used to delete only the
+// hasTrustDialogAccepted field and leave the rest of the entry (and the
+// `projects[cwd]` key itself) in place forever, since nothing else ever
+// deletes a Swarm-owned work dir off disk (D3's prune only fires for a
+// `git worktree remove`d worktree). Every Claude spawn was leaving a
+// permanent entry in the user's ~/.claude.json. D2 calls for removing "that
+// session's entry", so this now deletes the whole projects[k] entry.
 func (c *Claude) ForgetFolder(ctx context.Context, cwd string) error {
 	if c.d.UserHome == "" {
 		return nil
@@ -361,19 +349,7 @@ func (c *Claude) ForgetFolder(ctx context.Context, cwd string) error {
 				if len(projects[k]) == 0 {
 					continue
 				}
-				var entry map[string]json.RawMessage
-				if err := json.Unmarshal(projects[k], &entry); err != nil {
-					return fmt.Errorf("claude.json projects[%s] does not parse: %w", k, err)
-				}
-				if _, ok := entry["hasTrustDialogAccepted"]; !ok {
-					continue
-				}
-				delete(entry, "hasTrustDialogAccepted")
-				b, err := json.Marshal(entry)
-				if err != nil {
-					return err
-				}
-				projects[k] = b
+				delete(projects, k)
 				changed = true
 			}
 			if !changed {

@@ -188,6 +188,22 @@ review). They amend decision 1 and resolve Q1; nothing here reopens them.
       read-only DB open from the `install` package. Everything else in D4 is
       implemented; this one WARN is deliberately left out pending that
       choice, rather than picked unilaterally.
+    - **Still open (review round 2, finding 4 -- not resolved, not
+      re-deferred silently):** a round-2 reviewer pointed out that `Doctor`
+      already calls the daemon over HTTP for the "Daemon" check
+      (`d.daemon(ctx)` hits `GET /api/health`, unauthenticated), so a
+      daemon-side endpoint for the live-session WARN is technically
+      reachable from `install` the same way. What that reviewer's note
+      doesn't cover: every session-listing route today (`GET /api/agents`,
+      `/api/state`) is behind `authDaemon`, and `swarm doctor` runs as a
+      bare CLI process with no daemon auth token wired through `Config` --
+      so "add an endpoint" is actually "add an endpoint, decide how a CLI
+      process authenticates to it, and wire that through `install.Doctor`
+      and `cmd/swarm/commands.go`." That's the same category of call this
+      spec already declined to make unilaterally for D3's terminal-session
+      prune (below). Round 2 implemented findings 1, 2, 3 and 5 below; this
+      one and the terminal-session prune remain genuinely open and need a
+      person to pick a direction, not another silent deferral.
 11. **D8 (codex hardening, from batch-1 review):**
     - `setupEnv` calls `os.Chtimes(codexHome, now, now)` right after
       `os.MkdirAll` succeeds (best-effort; an error is logged, not returned).
@@ -529,6 +545,32 @@ There are no DB model changes. `requests.kind = 'prompt'` already exists, with
 - Fixtures (captured pane text): under each kind's existing
   `internal/adapter/testdata/<kind>/` directory (the convention already used
   by `pane-dialog-trust.txt` etc.), not a new shared `testdata/trust/`.
+
+**Review round 2 fixes (2026-09-26), batch 2:**
+1. `withClaudeConfigLock`'s stale-lock removal (`_ = os.Remove(lock); continue`)
+   skipped the deadline check on every loop, so a lock dir Remove kept
+   failing on (non-empty, or EACCES) spun the loop at full CPU forever
+   inside `Launch`/`Resume`/`Reconcile`. Moved into
+   `internal/install.WithClaudeConfigLock` (shared with the prune below) and
+   fixed to remove a stale lock at most once per call, always falling
+   through to the deadline/sleep after.
+2. `PruneStaleClaudeTrustEntries` took no lock and did a blind
+   read-modify-write, racing any concurrent Claude write to the same file
+   during `swarm install`. Now takes `WithClaudeConfigLock` and re-reads/
+   compares before writing, retrying like `trustClaudeWorkspace` already did.
+3. A missing `~/.claude.json` was silently created by `trustClaudeWorkspace`
+   holding only `{"projects": ...}`, hiding Claude's own missing-config path.
+   Pre-trust now skips the write on ENOENT instead. `claudeJSONWritable`
+   used to call a missing file "writable" whenever its parent dir was; it
+   now requires the file to actually exist, so D3's install warning and D4's
+   doctor FAIL both fire for a plain-missing file, not just an unwritable one.
+4. Not resolved -- see the D4 implementation note above.
+5. `Claude.ForgetFolder` (D2) removed only the `hasTrustDialogAccepted`
+   field, leaving `projects[<swarm work dir>]` in the user's `~/.claude.json`
+   forever (nothing else ever deletes a Swarm-owned work dir off disk, so
+   D3's prune never caught it). It now deletes the whole `projects[k]` entry
+   for each Swarm-owned key -- callers only ever pass an already-confirmed
+   Swarm-owned `cwd`.
 
 **Changed, batch 2b (D2-D4, D8):**
 - `internal/adapter/claude.go`: `Claude.ForgetFolder` (D2), removing both keys

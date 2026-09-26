@@ -544,10 +544,16 @@ func jsonEscape(s string) string {
 func TestClaudePreTrustIsIdempotent(t *testing.T) {
 	d := testDeps(t)
 	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	// Review round 2, finding 3: a missing ~/.claude.json is no longer
+	// auto-created by pre-trust, so seed one -- this test is about
+	// idempotence, not about the missing-file path (covered separately).
+	if err := os.WriteFile(cfg, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := newClaude(d).Launch(s); err != nil {
 		t.Fatal(err)
 	}
-	cfg := filepath.Join(d.UserHome, ".claude.json")
 	before, err := os.Stat(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -580,10 +586,15 @@ func TestClaudePreTrustAddsRealpathForSymlinkedCwd(t *testing.T) {
 	}
 	s := claudeSpec(t, d)
 	s.Cwd = link
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	// Review round 2, finding 3: seed the file -- pre-trust no longer
+	// creates a missing one (see TestClaudePreTrustSkipsAMissingClaudeJSON).
+	if err := os.WriteFile(cfg, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := newClaude(d).Launch(s); err != nil {
 		t.Fatal(err)
 	}
-	cfg := filepath.Join(d.UserHome, ".claude.json")
 	b, _ := os.ReadFile(cfg)
 	var doc struct {
 		Projects map[string]json.RawMessage `json:"projects"`
@@ -612,6 +623,11 @@ func TestClaudePreTrustWaitsForAStaleLock(t *testing.T) {
 	d := testDeps(t)
 	s := claudeSpec(t, d)
 	cfg := filepath.Join(d.UserHome, ".claude.json")
+	// Review round 2, finding 3: seed the file -- pre-trust no longer
+	// creates a missing one.
+	if err := os.WriteFile(cfg, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	lock := cfg + ".lock"
 	if err := os.Mkdir(lock, 0o755); err != nil {
 		t.Fatal(err)
@@ -664,12 +680,41 @@ func TestClaudePreTrustSkipsTheWriteUnderAFreshHeldLock(t *testing.T) {
 	}
 }
 
+// Review round 2, finding 3: a missing ~/.claude.json is Claude's own
+// missing-config/backup-restore path, not ours to paper over. Pre-trust
+// must skip the write (Launch still succeeds; the trust dialog / Needs-you
+// fallback takes over) rather than creating a fresh file holding only
+// {"projects": ...}.
+func TestClaudePreTrustSkipsAMissingClaudeJSON(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
+		t.Fatalf("test setup: cfg must not already exist: %v", err)
+	}
+	l, err := newClaude(d).Launch(s)
+	if err != nil {
+		t.Fatalf("Launch must still succeed when pre-trust is skipped: %v", err)
+	}
+	if len(l.Argv) == 0 {
+		t.Fatal("Launch produced no argv")
+	}
+	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
+		t.Fatalf("pre-trust must not create a missing claude.json, got stat err=%v", err)
+	}
+}
+
 // D2 (dialog-needs-you spec): once a session's Swarm-owned workspace is
 // reclaimed, ForgetFolder removes only that entry's hasTrustDialogAccepted
 // key (and its realpath twin), under the same lock/atomic-write protocol,
 // leaving everything else -- other fields Claude has since written to that
 // same project entry, every other project, every other top-level key --
 // untouched.
+// Review round 2, finding 5: ForgetFolder now deletes the whole
+// projects[cwd] entry (and its realpath twin), not just the
+// hasTrustDialogAccepted field -- otherwise every Claude spawn left a
+// permanent entry in ~/.claude.json since nothing else ever deletes a
+// Swarm-owned work dir off disk.
 func TestClaudeForgetFolderRemovesBothKeysUnderTheSameLock(t *testing.T) {
 	d := testDeps(t)
 	s := claudeSpec(t, d)
@@ -704,25 +749,12 @@ func TestClaudeForgetFolderRemovesBothKeysUnderTheSameLock(t *testing.T) {
 	if string(doc.Projects["/other"]) != `{"hasTrustDialogAccepted":true}` {
 		t.Errorf(`projects["/other"] = %s, want untouched`, doc.Projects["/other"])
 	}
-	var entry struct {
-		LastCost               float64 `json:"lastCost"`
-		HasTrustDialogAccepted bool    `json:"hasTrustDialogAccepted"`
-	}
-	if err := json.Unmarshal(doc.Projects[s.Cwd], &entry); err != nil {
-		t.Fatal(err)
-	}
-	if entry.HasTrustDialogAccepted {
-		t.Errorf("projects[cwd].hasTrustDialogAccepted still true: %s", doc.Projects[s.Cwd])
-	}
-	if entry.LastCost != 2 {
-		t.Errorf("projects[cwd].lastCost = %v, want unchanged 2", entry.LastCost)
+	if _, ok := doc.Projects[s.Cwd]; ok {
+		t.Errorf("projects[cwd] must be deleted entirely, got %s", doc.Projects[s.Cwd])
 	}
 	if real != s.Cwd {
-		if err := json.Unmarshal(doc.Projects[real], &entry); err != nil {
-			t.Fatal(err)
-		}
-		if entry.HasTrustDialogAccepted {
-			t.Errorf("projects[realpath].hasTrustDialogAccepted still true: %s", doc.Projects[real])
+		if _, ok := doc.Projects[real]; ok {
+			t.Errorf("projects[realpath] must be deleted entirely, got %s", doc.Projects[real])
 		}
 	}
 	if _, err := os.Stat(cfg + ".lock"); !os.IsNotExist(err) {
