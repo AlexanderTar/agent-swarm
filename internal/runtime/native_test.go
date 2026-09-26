@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRefTokenAndRefFromPrompt(t *testing.T) {
@@ -17,6 +18,22 @@ func TestRefTokenAndRefFromPrompt(t *testing.T) {
 	}
 	if got := refFromPrompt("plain text"); got != "" {
 		t.Fatalf("refFromPrompt(plain) = %q, want empty", got)
+	}
+}
+
+// TestTruncateWithTokenNeverCutsTheRefToken is the 2026-09-26 fix
+// (native-railway-tracing finding): a body over 1000 runes must be trimmed
+// from its own end, never the trailing ref token the hook needs to bind the
+// answer back to the request.
+func TestTruncateWithTokenNeverCutsTheRefToken(t *testing.T) {
+	body := strings.Repeat("a", 2000)
+	ref := "req_ABC123"
+	got := truncateWithToken(body, ref)
+	if n := utf8.RuneCountInString(got); n > 1000 {
+		t.Fatalf("length = %d runes, want <= 1000", n)
+	}
+	if !strings.HasSuffix(got, refToken(ref)) {
+		t.Fatalf("ref token missing or cut: tail = %q", got[len(got)-40:])
 	}
 }
 
