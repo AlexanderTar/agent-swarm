@@ -37,6 +37,46 @@ func TestTruncateWithTokenNeverCutsTheRefToken(t *testing.T) {
 	}
 }
 
+// TestNativeAnswerNextStep covers every shape ResolveQuestionByPrompt can
+// hand PostToolUse: an observed Approve/Request changes pick, genuine typed
+// free text, and agy's placeholder "Resolved in terminal" (spec 1.7) --
+// which is the daemon's own fallback, never something the user typed, so it
+// must not be quoted back as "the user's text".
+func TestNativeAnswerNextStep(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		responseText string
+		want         []string
+		notWant      []string
+	}{
+		{"approve", "Approve", []string{`Recorded "Approve" for req_X`, `decision:"approve"`}, nil},
+		{"request_changes", "Request changes", []string{`Recorded "Request changes" for req_X`, `decision:"request_changes"`}, nil},
+		{"typed free text", "Approve, but drop endurio-docs", []string{
+			`decide approve or request_changes from the user's text "Approve, but drop endurio-docs"`}, nil},
+		{"agy placeholder", "Resolved in terminal", []string{"the option the user picked"},
+			[]string{`the user's text "Resolved in terminal"`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := Request{Binding: []byte(`{"ref":"req_X"}`), ResponseText: tc.responseText}
+			got := NativeAnswerNextStep(req)
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Fatalf("got %q, want it to contain %q", got, w)
+				}
+			}
+			for _, nw := range tc.notWant {
+				if strings.Contains(got, nw) {
+					t.Fatalf("got %q, want it NOT to contain %q", got, nw)
+				}
+			}
+		})
+	}
+
+	if got := NativeAnswerNextStep(Request{}); got != "" {
+		t.Fatalf("no-ref request = %q, want empty", got)
+	}
+}
+
 // TestNativePromptForBuildsExactCopy is Task 13a: the daemon-issued native
 // prompt for each approval kind matches spec section 6, verbatim, and ends
 // with the ref token.

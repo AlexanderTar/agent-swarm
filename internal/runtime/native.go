@@ -158,6 +158,13 @@ func NativeAnswerNextStep(req Request) string {
 		return fmt.Sprintf(`[swarm] Recorded "Request changes" for %s. Forward it now: `+
 			`swarm_ask kind:"native_answer", ref:%q, decision:"request_changes"`, binding.Ref, binding.Ref)
 	}
+	// trimmed == "" or "Resolved in terminal" is the daemon's own placeholder
+	// for an adapter with no response text (agy, spec 1.7) -- never something
+	// the user typed, so it must not be quoted back as their text.
+	if trimmed == "" || trimmed == "Resolved in terminal" {
+		return fmt.Sprintf(`[swarm] Recorded an answer for %s. Forward it now: `+
+			`swarm_ask kind:"native_answer", ref:%q, decision: the option the user picked`, binding.Ref, binding.Ref)
+	}
 	return fmt.Sprintf(`[swarm] Recorded %q for %s. Forward it now: `+
 		`swarm_ask kind:"native_answer", ref:%q, decide approve or request_changes from the user's text %q`,
 		trimmed, binding.Ref, binding.Ref, trimmed)
