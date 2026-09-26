@@ -444,6 +444,11 @@ func (s *Store) pause(ctx context.Context, name, scope string) (Session, int, er
 	if err != nil {
 		return Session{}, 0, err
 	}
+	// Batch 3: the replacement coordinator owns session transitions while
+	// an operation is in flight; a direct Pause would race its driver.
+	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
+		return Session{}, 0, err
+	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
 		return Session{}, 0, err
@@ -863,6 +868,11 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 		return Agent{}, err
 	} else if hit {
 		return out, nil
+	}
+	// Batch 3: Resume must not launch a competing session while the
+	// replacement coordinator is driving one.
+	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
+		return Agent{}, err
 	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {

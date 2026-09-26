@@ -187,6 +187,14 @@ public final class AppModel {
     }
 
     private func apply(_ s: StateResponse) {
+        // A handoff successor keeps the agent's name but mints a new session
+        // generation: the hovered preview's last screen belongs to the
+        // predecessor, so drop it and recapture from loading.
+        if let hovered = preview.agent {
+            let before = AgentTree.flatten(state.agents).first { $0.name == hovered }?.session?.generation
+            let after = AgentTree.flatten(s.agents).first { $0.name == hovered }?.session?.generation
+            if before != after { preview.invalidate() }
+        }
         state = s
         connected = true
         let at = now()
@@ -334,7 +342,7 @@ public final class AppModel {
             guard action.endpoint == pending else { return action }
             var busy = action
             busy.disabled = true
-            busy.label = pending == .pause ? Copy.pausing : Copy.resuming
+            busy.label = pending == .pause ? Copy.pausing : pending == .handoff ? Copy.handingOff : Copy.resuming
             return busy
         }
     }
@@ -345,7 +353,7 @@ public final class AppModel {
             await openTerminal(agent.name)
             return
         }
-        let tracked = action.endpoint == .pause || action.endpoint == .resume
+        let tracked = action.endpoint == .pause || action.endpoint == .resume || action.endpoint == .handoff
         if tracked {
             guard inFlight[agent.name] == nil else { return }
             inFlight[agent.name] = action.endpoint

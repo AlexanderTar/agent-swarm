@@ -139,6 +139,7 @@ struct AgentRowView: View {
         case .retry: return "arrow.clockwise"
         case .cancel: return "xmark"
         case .ack: return "checkmark"
+        case .handoff: return "arrow.triangle.2.circlepath"
         }
     }
 }

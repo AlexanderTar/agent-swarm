@@ -66,6 +66,10 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var name: String
     public var kind: AgentKind
     public var model: String
+    /// Stored effort slug, as the Go state wire already serves it (`effort`,
+    /// null when the agent default applies). Optional on decode: daemons
+    /// that predate it simply omit the key.
+    public var effort: String?
     public var role: Role
     public var step: String?
     public var itemKey: String
@@ -74,25 +78,64 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var parentName: String?
     public var state: AgentState
     public var session: SessionInfo?
+    /// The in-flight replacement operation, when the coordinator owns one.
+    public var replacement: AgentReplacement?
     public var preflightError: String?
     public var children: [AgentNode]
     public var finished: [AgentNode]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, model, role, step, state, session, children, finished
+        case id, name, kind, model, effort, role, step, state, session, replacement, children, finished
         case itemKey = "item_key", itemTitle = "item_title", rootKey = "root_key"
         case parentName = "parent_name", preflightError = "preflight_error"
     }
 
     public init(id: String = "agt_1", name: String, kind: AgentKind = .claude, model: String,
-                role: Role = .coder, step: String? = nil, itemKey: String = "TASK-1", itemTitle: String = "Task",
+                effort: String? = nil, role: Role = .coder, step: String? = nil,
+                itemKey: String = "TASK-1", itemTitle: String = "Task",
                 rootKey: String = "EPIC-1", parentName: String? = nil, state: AgentState = .active,
-                session: SessionInfo? = SessionInfo(state: .running), preflightError: String? = nil,
+                session: SessionInfo? = SessionInfo(state: .running),
+                replacement: AgentReplacement? = nil, preflightError: String? = nil,
                 children: [AgentNode] = [], finished: [AgentNode] = []) {
-        self.id = id; self.name = name; self.kind = kind; self.model = model; self.role = role; self.step = step
+        self.id = id; self.name = name; self.kind = kind; self.model = model; self.effort = effort
+        self.role = role; self.step = step
         self.itemKey = itemKey; self.itemTitle = itemTitle; self.rootKey = rootKey
         self.parentName = parentName; self.state = state; self.session = session
+        self.replacement = replacement
         self.preflightError = preflightError; self.children = children; self.finished = finished
+    }
+}
+
+/// What the hover preview header resolves an agent name to: the raw kind,
+/// model id, stored effort slug and item key. The panel formats them via
+/// Copy.paneHeader (agent display label, CatalogRules.modelLabel, stored
+/// effort's human label in parenthesis).
+public struct AgentHeader: Sendable, Equatable {
+    public var kind: AgentKind
+    public var model: String
+    public var effort: String?
+    public var itemKey: String
+
+    public init(kind: AgentKind, model: String, effort: String? = nil, itemKey: String) {
+        self.kind = kind; self.model = model; self.effort = effort; self.itemKey = itemKey
+    }
+}
+
+/// One agent's in-flight replacement operation (`replacement` on AgentNode):
+/// the coordinator's durable walk the Handoff action starts.
+public struct AgentReplacement: Codable, Sendable, Equatable {
+    public var operationID: String
+    public var mode: String
+    public var phase: String
+    public var error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case mode, phase, error
+        case operationID = "operation_id"
+    }
+
+    public init(operationID: String, mode: String, phase: String, error: String? = nil) {
+        self.operationID = operationID; self.mode = mode; self.phase = phase; self.error = error
     }
 }
 
@@ -636,7 +679,7 @@ public struct CreateSpikeResponse: Codable, Sendable, Equatable {
 }
 
 public enum AgentEndpoint: String, Sendable, CaseIterable {
-    case pause, resume, cancel, ack, retry, terminal
+    case pause, resume, cancel, ack, retry, terminal, handoff
 }
 
 public enum PauseScope: String, Codable, Sendable {

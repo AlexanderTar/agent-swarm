@@ -302,7 +302,8 @@ func TestIsDaemonPrompt(t *testing.T) {
 		IdleToken, " " + IdleToken + "\n",
 		Kickoff("a", RoleOrchestrator, items.Epic, "EPIC-1", "T"), ResumeKickoff("a", RoleOrchestrator, items.Epic, "EPIC-1", "T"),
 		PendingNotice(2, "a", "EPIC-1"), PausePreservationNotice("a", "EPIC-1"), CompactionNotice(),
-		"[swarm] Quota reset window passed. Resuming.", // wake.go quota notice: no preamble
+		QuotaResetNotice(), // the wake.go quota notice now carries the short preamble
+		"[swarm] Quota reset window passed. Resuming.", // legacy prefixed form still classifies
 		"typed by a human, merged with " + IdleToken + " " + ShortPreamble,
 	} {
 		if !IsDaemonPrompt(p) {
@@ -346,7 +347,7 @@ func TestInboxRendersMultiLineWithRealNewlinesBetweenItems(t *testing.T) {
 	if len(lines) < 4 {
 		t.Fatalf("Inbox output should be multi-line (header, 2 items, trailer), got %d lines: %q", len(lines), got)
 	}
-	if !strings.HasPrefix(lines[0], "[swarm] Durable runtime events for s3-fix-a (TASK-42), 2 pending.") {
+	if !strings.HasPrefix(lines[0], "Durable runtime events for s3-fix-a (TASK-42), 2 pending.") {
 		t.Errorf("line 0 = %q, want the header", lines[0])
 	}
 	if !strings.HasPrefix(lines[1], "- msg_1:question [QUESTION] question from orchestrator: ") {

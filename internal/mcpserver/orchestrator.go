@@ -630,16 +630,17 @@ func spawnTool(s *Server) ToolDef {
 // ---------- swarm_control ----------
 
 // controlTool is §8.1, read directly from the real spec (fix round 1): the
-// action enum is exactly pause|resume|cancel|retry (no "ack" — that is a
-// separate, non-MCP UI action, POST /api/agents/{name}/ack, not part of this
-// tool) and the result is {"state"}, not a bare ok.
+// action enum is pause|resume|cancel|retry plus Batch 3's handoff (no "ack"
+// — that is a separate, non-MCP UI action, POST /api/agents/{name}/ack, not
+// part of this tool) and the result is {"state"}, not a bare ok. Handoff
+// instead returns the replacement operation (operation_id/mode/phase).
 func controlTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_control",
-		Description: "Pause, resume, cancel or retry an agent in your own subtree.",
+		Description: "Pause, resume, cancel, retry or hand off an agent in your own subtree.",
 		Roles:       orchestratorRole,
 		Schema: objSchemaRequired(`"target":{"type":"string"},
-			"action":{"type":"string","enum":["pause","resume","cancel","retry"]},
+			"action":{"type":"string","enum":["pause","resume","cancel","retry","handoff"]},
 			"scope":{"type":"string"},"note":{"type":"string"},"request_id":{"type":"string"}`,
 			[]string{"target", "action"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -697,8 +698,26 @@ func controlTool(s *Server) ToolDef {
 					return nil, err
 				}
 				state = string(agent.State)
+			case "handoff":
+				// Batch 3: handoff is user-or-controlling-orchestrator only.
+				// The tool itself is orchestrator-visible, so this branch
+				// checks the controlling part: same root plus self-or-ancestor
+				// (a same-root agent in another subtree is not controlled).
+				controls, err := s.RT.ControlsAgent(ctx, caller.ID, target.ID)
+				if err != nil {
+					return nil, err
+				}
+				if !controls {
+					return nil, fmt.Errorf("bad_request: %s is outside your subtree", in.Target)
+				}
+				op, err := s.RT.RequestReplacement(ctx, target.ID, runtime.ModeHandoff, in.RequestID, in.Note)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"operation_id": op.ID, "mode": string(op.Mode),
+					"phase": string(op.Phase)}, nil
 			default:
-				return nil, fmt.Errorf("action must be pause, resume, cancel or retry, got %q", in.Action)
+				return nil, fmt.Errorf("action must be pause, resume, cancel, retry or handoff, got %q", in.Action)
 			}
 			return map[string]any{"state": state}, nil
 		},

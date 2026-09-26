@@ -352,7 +352,8 @@ func TestPublishWakeReachesOnlyItsOwnSession(t *testing.T) {
 	defer stopMine()
 	theirs, stopTheirs := s.SubscribeWake("ses_2")
 	defer stopTheirs()
-	delivered, err := s.PublishWake(ctx, "ses_1", "[swarm] 1 new message(s)")
+	want := PendingNotice(1, "a", "TASK-1")
+	delivered, err := s.PublishWake(ctx, "ses_1", want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,8 +362,8 @@ func TestPublishWakeReachesOnlyItsOwnSession(t *testing.T) {
 	}
 	select {
 	case got := <-mine:
-		if !strings.HasPrefix(got, "[swarm]") {
-			t.Fatalf("notice = %q", got)
+		if got != want {
+			t.Fatalf("notice = %q, want %q (the wake channel must not rewrite the notice)", got, want)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the subscribed session got nothing")

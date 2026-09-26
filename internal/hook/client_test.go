@@ -57,7 +57,7 @@ func TestRunPostsToTheDaemonAndEchoesTheBody(t *testing.T) {
 		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
-		w.Write([]byte(`{"hookSpecificOutput":{"additionalContext":"[swarm] 1 new message(s)"}}`))
+		w.Write([]byte(`{"hookSpecificOutput":{"additionalContext":"1 new message(s) for a (TASK-1). Call swarm_sync."}}`))
 	}))
 	defer srv.Close()
 	var out bytes.Buffer

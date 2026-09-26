@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
@@ -361,11 +362,37 @@ func (s *Store) getOperation(ctx context.Context, opID string) (Operation, error
 }
 
 func (s *Store) setPhase(ctx context.Context, opID string, to OperationPhase, errMsg string) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE agent_operations SET phase = ?, error = ?, updated_at = ?
 			WHERE id = ?`, string(to), errMsg, db.Millis(s.now()), opID)
 		return err
-	})
+	}); err != nil {
+		return err
+	}
+	// Batch 3: every phase change publishes agent.changed, so SSE consumers
+	// refetch state and the replacement field drives handoff progress.
+	s.publishOperationProgress(ctx, opID)
+	return nil
+}
+
+// publishOperationProgress emits one agent.changed for the operation's
+// agent. Best-effort: a missing agent row or unwired events never fails the
+// phase transition itself.
+func (s *Store) publishOperationProgress(ctx context.Context, opID string) {
+	if s.Events == nil {
+		return
+	}
+	op, err := s.getOperation(ctx, opID)
+	if err != nil {
+		return
+	}
+	a, err := s.agentByID(ctx, op.AgentID)
+	if err != nil {
+		return
+	}
+	var rootKey string
+	_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.RootItemID).Scan(&rootKey)
+	_, _ = s.Events.Publish(ctx, events.AgentChanged, map[string]string{"name": a.Name, "root_key": rootKey})
 }
 
 // advanceOperation walks one operation forward until it parks (predecessor
@@ -403,6 +430,14 @@ func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, e
 				return Operation{}, err
 			}
 		case PhasePreserving:
+			wait, err := s.waitForPreservation(ctx, op, latest)
+			if err != nil {
+				return Operation{}, err
+			}
+			if wait {
+				parked = true
+				break
+			}
 			if err := s.stopPredecessor(ctx, op, a, latest); err != nil {
 				return Operation{}, err
 			}
@@ -430,6 +465,32 @@ func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, e
 		}
 	}
 	return s.getOperation(ctx, opID)
+}
+
+// waitForPreservation parks a handoff in preserving while its predecessor
+// can still save: the session is pausing (a pause-first flow keeps it live),
+// no manifest is recorded yet, and the predecessor pane is still alive to
+// write the handoff checkpoint that binds it. A pausing session whose pane
+// is already gone proceeds manifest-less (the successor ships the
+// broken-predecessor warning instead); every other mode and state keeps the
+// immediate stop.
+func (s *Store) waitForPreservation(ctx context.Context, op Operation, latest Session) (bool, error) {
+	if op.Mode != ModeHandoff || !latest.State.Pausing() {
+		return false, nil
+	}
+	var manifestPath string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(manifest_path, '') FROM agent_operations WHERE id = ?`,
+		op.ID).Scan(&manifestPath); err != nil {
+		return false, err
+	}
+	if manifestPath != "" {
+		return false, nil
+	}
+	alive, err := s.predecessorAlive(ctx, op.SessionID)
+	if err != nil || !alive {
+		return false, err
+	}
+	return true, nil
 }
 
 // stopPredecessor is the preserving->stopping side effect: interrupt keys,
@@ -472,11 +533,17 @@ func (s *Store) stopPredecessor(ctx context.Context, op Operation, a Agent, ses 
 			// the end state, so stopping lands straight on succeeded.
 			_, err = tx.ExecContext(ctx, `UPDATE agent_operations SET phase = 'succeeded', updated_at = ? WHERE id = ?`,
 				db.Millis(s.now()), op.ID)
-			return err
+			if err != nil {
+				return err
+			}
+			return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE agent_operations SET phase = ?, updated_at = ? WHERE id = ?`,
 			string(phase), db.Millis(s.now()), op.ID)
-		return err
+		if err != nil {
+			return err
+		}
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
 }
 
@@ -570,6 +637,9 @@ func (s *Store) admitOperation(ctx context.Context, op Operation, a Agent, lates
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE agent_operations SET phase = 'starting', updated_at = ? WHERE id = ?`,
 			db.Millis(s.now()), op.ID); err != nil {
+			return err
+		}
+		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
 			return err
 		}
 		parked = false

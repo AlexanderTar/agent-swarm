@@ -9,13 +9,12 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
 // Scenario 6: pause with handoff. The coder is paused (session scope); its
-// next PreToolUse (a non-swarm tool) is denied with the control notice; it
-// writes a handoff checkpoint and its process exits (simulated the same way
+// next PreToolUse on the save path (shell) is allowed under preservation
+// mode while push/deploy stays denied; it writes a handoff checkpoint and
+// its process exits (simulated the same way
 // scenario 26 ends an attempt: h.killPane, "exactly what a real agent
 // process exiting on its own would leave behind" — its own doc comment).
 // That single reconcile tick (≤5s) is what proves the two "within 6s"
@@ -42,13 +41,13 @@ func TestScenario06PauseWithHandoff(t *testing.T) {
 	h.pause(t, coder, "session")
 
 	out := h.hookPost(t, coder, "PreToolUse", map[string]any{"command": "echo hi"})
-	hso, _ := out["hookSpecificOutput"].(map[string]any)
-	if hso["permissionDecision"] != "deny" {
-		t.Fatalf("PreToolUse decision = %+v, want deny", out)
+	if hso, _ := out["hookSpecificOutput"].(map[string]any); hso["permissionDecision"] == "deny" {
+		t.Fatalf("save-path shell must be allowed while preserving, got deny: %+v", out)
 	}
-	reason, _ := hso["permissionDecisionReason"].(string)
-	if want := runtime.PausePreservationNotice(coder, task); reason != want {
-		t.Fatalf("PreToolUse denial reason = %q, want %q", reason, want)
+	pushed := h.hookPost(t, coder, "PreToolUse", map[string]any{"command": "git push origin main"})
+	pso, _ := pushed["hookSpecificOutput"].(map[string]any)
+	if pso["permissionDecision"] != "deny" {
+		t.Fatalf("PreToolUse decision = %+v, want deny", pushed)
 	}
 
 	h.mustTool(t, coder, "swarm_checkpoint", map[string]any{"kind": "handoff", "summary": "pausing, handing off"})

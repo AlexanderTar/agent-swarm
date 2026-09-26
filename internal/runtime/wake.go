@@ -530,7 +530,7 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 		}
 		// Attempt native wake or paste idle token if pane is idle
 		if ok {
-			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, TmuxName: tmuxName, Notice: "[swarm] Quota reset window passed. Resuming."})
+			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, TmuxName: tmuxName, Notice: QuotaResetNotice()})
 			if delivered {
 				s.markWoken(ctx, sessionID, true)
 				woken++

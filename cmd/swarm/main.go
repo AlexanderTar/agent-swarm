@@ -103,6 +103,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdCancel(args[1:], stdout, stderr)
 	case "retry":
 		return cmdRetry(args[1:], stdout, stderr)
+	case "handoff":
+		return cmdHandoff(args[1:], stdout, stderr)
 	case "ack":
 		return cmdAck(args[1:], stdout, stderr)
 	case "lineage":

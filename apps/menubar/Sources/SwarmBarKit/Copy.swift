@@ -29,6 +29,15 @@ public enum Copy {
     public static let acknowledge = "Acknowledge"
     public static let retry = "Retry"
     public static let cancel = "Cancel"
+    public static let handoff = "Handoff"
+    public static let handingOff = "Handing off…"
+    /// Disabled Handoff while the agent has no session to replace yet.
+    public static let waitForStartup = "Wait for startup"
+    public static let handoffSaving = "Saving handoff…"
+    public static let handoffStopping = "Stopping…"
+    public static let handoffQueued = "Handoff queued"
+    public static let handoffStarting = "Starting successor…"
+    public static func handoffBlocked(_ reason: String) -> String { "Handoff blocked: \(reason)" }
     public static func finished(_ n: Int) -> String { "Finished (\(n))" }
     public static func failed(_ n: Int) -> String { "Failed (\(n))" }
     public static func viewAllRequests(_ n: Int) -> String { "View all \(n) requests" }
@@ -275,7 +284,20 @@ public enum Copy {
     public static let paneTmuxUnreachable = "Can't reach tmux."
     public static let paneUnknownAgent = "That agent is gone."
     public static let paneSlow = "The pane didn't answer in time."
-    public static func paneHeader(_ name: String, _ kind: String, _ itemKey: String) -> String {
-        "\(name) · \(kind) · \(itemKey)"
+    /// Preview header order: name, item key, agent display label, human model
+    /// label with the stored effort's human label in parenthesis
+    /// (`login-coder · TASK-101 · Claude · Opus 4.6 (High)`). The parenthesis
+    /// is omitted when the effort is empty; callers resolve unknown models to
+    /// their ID (never a guessed version) before passing `model` in.
+    public static func paneHeader(_ name: String, _ itemKey: String, _ agent: String,
+                                  _ model: String, _ effort: String?) -> String {
+        guard let effort, !effort.isEmpty else { return "\(name) · \(itemKey) · \(agent) · \(model)" }
+        return "\(name) · \(itemKey) · \(agent) · \(model) (\(effort))"
+    }
+
+    /// A stored effort slug's human label for the preview header.
+    public static func humanEffort(_ slug: String) -> String {
+        guard let first = slug.first else { return slug }
+        return String(first).uppercased() + slug.dropFirst()
     }
 }
