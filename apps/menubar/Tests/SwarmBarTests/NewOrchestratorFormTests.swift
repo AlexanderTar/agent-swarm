@@ -125,6 +125,7 @@ final class NewOrchestratorFormTests: XCTestCase {
         await f.rescan()
         XCTAssertEqual(client.calls.suffix(3), ["repos ", "rescan", "repos "])
 
+        client.reposResponse.all.append(Repo(id: "repo_new", name: "notes", path: "/Users/alex/.config/notes"))
         await f.addFolder("/Users/alex/.config/notes")
         XCTAssertEqual(f.selection.last, "repo_new")
         XCTAssertTrue(f.repos.all.contains { $0.id == "repo_new" })
@@ -142,6 +143,27 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertEqual(f.selection, ["repo_app"])
         XCTAssertEqual(f.selectionNotice, "1 selected repository is no longer available.")
         XCTAssertEqual(client.calls.suffix(2), ["rescan", "repos "])
+    }
+
+    func testAddFolderOnlySelectsVerifiedRefreshedRow() async {
+        let f = await form()
+        f.name = "x"
+        await f.addFolder("/Users/alex/.config/notes")
+        XCTAssertFalse(f.rows.contains { $0.id == "repo_new" })
+        XCTAssertFalse(f.selection.contains("repo_new"))
+        XCTAssertFalse(f.body()?.repos.contains("repo_new") ?? true)
+        XCTAssertNotNil(f.repoError)
+    }
+
+    func testFailedRepoRefreshAndRescanShowErrorAndStopScanning() async {
+        let f = await form()
+        client.failNext = .unreachable
+        await f.search()
+        XCTAssertNotNil(f.repoError)
+        client.failNext = .unreachable
+        await f.rescan()
+        XCTAssertFalse(f.repos.scanning)
+        XCTAssertNotNil(f.repoError)
     }
 
     func testSubmitBuildsTheSpikeBody() async throws {

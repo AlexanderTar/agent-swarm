@@ -25,7 +25,7 @@ public struct NewOrchestratorView: View {
                     }
                     .scrollIndicators(.automatic)
                 } else {
-                    formContents(maxRows: form.failure == nil && geometry.size.height >= 700 ? 8 : 6)
+                    formContents(maxRows: geometry.size.height >= 700 ? 8 : 6)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             }
@@ -101,7 +101,7 @@ public struct NewOrchestratorView: View {
             RepoChooser(rows: form.rows, maxRows: maxRows, selection: Binding(
                 get: { Set(form.selection) },
                 set: { selected in form.selection = form.rows.map(\.id).filter(selected.contains) }
-            ))
+            ), emptyTitle: emptyRepoTitle)
             HStack {
                 Button(Copy.addFolder) { chooseFolder() }
                 Spacer()
@@ -112,6 +112,12 @@ public struct NewOrchestratorView: View {
             if let notice = form.selectionNotice { Text(notice).font(.caption).foregroundStyle(.secondary) }
             if !form.selectedLine.isEmpty { Text(form.selectedLine).font(.caption) }
         }
+    }
+
+    private var emptyRepoTitle: String {
+        if form.repoError != nil { return "Repositories unavailable." }
+        if form.repos.scanning { return "Scanning repositories…" }
+        return "No repositories found."
     }
 
     private var advisorAgentValue: String {
@@ -166,9 +172,10 @@ struct RepoChooser: View {
     let rows: [Repo]
     var maxRows = 8
     @Binding var selection: Set<String>
+    var emptyTitle = "No repositories found."
 
-    static func visibleHeight(for count: Int, maxRows: Int = 8) -> CGFloat {
-        CGFloat(min(maxRows, max(1, count))) * 32
+    static func visibleHeight(for _: Int, maxRows: Int = 8) -> CGFloat {
+        CGFloat(min(8, max(1, maxRows))) * 30
     }
 
     var body: some View {
@@ -193,6 +200,17 @@ struct RepoChooser: View {
         .scrollContentBackground(.hidden)
         .background(SubtleScrollerConfig())
         .frame(height: Self.visibleHeight(for: rows.count, maxRows: maxRows))
+        .overlay {
+            if rows.isEmpty {
+                VStack(spacing: 4) {
+                    Text(emptyTitle).font(.callout)
+                    Text("Add a folder or rescan.").font(.caption)
+                }
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(16)
+            }
+        }
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(.separator))
         .accessibilityLabel(Copy.repositoriesOptional)
     }
@@ -204,6 +222,7 @@ struct RequestEditor: View {
 
     var body: some View {
         TextEditor(text: $text)
+            .background(SubtleScrollerConfig(adjacentScrollView: true))
             .frame(minHeight: Self.minimumHeight, maxHeight: .infinity)
             .border(.separator)
     }

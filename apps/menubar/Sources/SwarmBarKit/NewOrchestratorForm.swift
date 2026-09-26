@@ -57,10 +57,15 @@ public final class NewOrchestratorForm {
 
     public func load() async {
         async let c = try? client.catalog()
-        async let r = try? client.repos(query: "")
+        async let r = client.repos(query: "")
         catalog = await c ?? []
         advisor = CatalogRules.normalizedAdvisor(advisor, settings: settings, catalog: catalog)
-        applyRepos(await r ?? ReposResponse())
+        do {
+            applyRepos(try await r)
+            repoError = nil
+        } catch {
+            repoError = Self.repoFailure(error)
+        }
         // The catalog wasn't loaded yet when Settings prefilled `choice`: re-check the stored effort
         // against it now, so a level the model no longer offers can't survive into the picker.
         choice.effort = CatalogRules.normalizeEffort(choice.agent, CatalogRules.resolve(CatalogRules.entry(catalog, choice.agent), choice.model),
@@ -68,7 +73,12 @@ public final class NewOrchestratorForm {
     }
 
     public func search() async {
-        if let r = try? await client.repos(query: "") { applyRepos(r) }
+        do {
+            applyRepos(try await client.repos(query: ""))
+            repoError = nil
+        } catch {
+            repoError = Self.repoFailure(error)
+        }
     }
 
     // MARK: derived
@@ -163,29 +173,41 @@ public final class NewOrchestratorForm {
     }
 
     public func toggle(_ repo: Repo) {
-        guard !repo.missing else { return }
+        guard rows.contains(where: { $0.id == repo.id }) else { return }
         selection = RepoPicker.toggle(selection, repo.id)
     }
 
     public func addFolder(_ path: String) async {
         do {
             let repo = try await client.addRepo(path: path)
+            applyRepos(try await client.repos(query: ""))
+            let path = (repo.path as NSString).standardizingPath
+            guard let verified = rows.first(where: { ($0.path as NSString).standardizingPath == path }) else {
+                repoError = "Folder was added, but isn't available in the repository list. Rescan and try again."
+                return
+            }
             repoError = nil
-            await search()
-            if !rows.contains(where: { $0.id == repo.id }) { repos.all.append(repo) }
-            if !selection.contains(repo.id) { selection.append(repo.id) }
+            if !selection.contains(verified.id) { selection.append(verified.id) }
             selectionNotice = nil
-        } catch let e as DaemonError {
-            repoError = e.message
         } catch {
-            repoError = DaemonError.unreachable.message
+            repoError = Self.repoFailure(error)
         }
     }
 
     public func rescan() async {
         repos.scanning = true
-        _ = try? await client.rescanRepos()
-        await search()
+        do {
+            _ = try await client.rescanRepos()
+            applyRepos(try await client.repos(query: ""))
+            repoError = nil
+        } catch {
+            repos.scanning = false
+            repoError = Self.repoFailure(error)
+        }
+    }
+
+    private static func repoFailure(_ error: Error) -> String {
+        (error as? DaemonError)?.message ?? DaemonError.unreachable.message
     }
 
     private func applyRepos(_ response: ReposResponse) {
@@ -205,8 +227,9 @@ public final class NewOrchestratorForm {
     public func body() -> CreateSpikeBody? {
         guard let agent = choice.agent else { return nil }
         let text = request.trimmingCharacters(in: .whitespacesAndNewlines)
+        let verifiedIDs = Set(rows.map(\.id))
         return CreateSpikeBody(requestId: requestID, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-                               intent: intent, repos: selection, agent: agent, model: choice.model,
+                               intent: intent, repos: selection.filter(verifiedIDs.contains), agent: agent, model: choice.model,
                                effort: choice.effort.isEmpty ? nil : choice.effort,
                                advisor: CatalogRules.advisorPayload(CatalogRules.normalizedAdvisor(advisor, settings: settings, catalog: catalog), settings: settings, catalog: catalog),
                                request: text.isEmpty ? nil : text)

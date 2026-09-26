@@ -149,25 +149,54 @@ public struct OptionPicker: View {
 /// Configures the enclosing NSScrollView to use a subtle overlay scrollbar:
 /// hidden by default, thin (.small), with a transparent background.
 struct SubtleScrollerConfig: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let v = NSView(frame: .zero)
-        DispatchQueue.main.async { [weak v] in
-            guard let scrollView = v?.enclosingScrollView else { return }
+    var adjacentScrollView = false
+
+    final class ConfigurationView: NSView {
+        var adjacentScrollView = false
+
+        override func layout() {
+            super.layout()
+            configure()
+        }
+
+        func configure() {
+            guard let scrollView = SubtleScrollerConfig.scrollView(for: self, adjacent: adjacentScrollView) else { return }
             scrollView.scrollerStyle = .overlay
             scrollView.autohidesScrollers = true
             scrollView.verticalScroller?.controlSize = .small
             scrollView.horizontalScroller?.controlSize = .small
         }
+    }
+
+    private static func scrollView(for view: NSView, adjacent: Bool) -> NSScrollView? {
+        if adjacent, let container = view.superview?.superview {
+            let target = view.convert(view.bounds, to: container)
+            let candidates = container.subviews
+                .filter { $0 !== view.superview }
+                .flatMap(\.subviews)
+                .compactMap { $0 as? NSScrollView }
+            if let match = candidates.max(by: { first, second in
+                let a = target.intersection(first.convert(first.bounds, to: container))
+                let b = target.intersection(second.convert(second.bounds, to: container))
+                return a.width * a.height < b.width * b.height
+            }) { return match }
+        }
+        return view.enclosingScrollView
+    }
+
+    func makeNSView(context: Context) -> ConfigurationView {
+        let v = ConfigurationView(frame: .zero)
+        v.adjacentScrollView = adjacentScrollView
+        DispatchQueue.main.async { [weak v] in
+            v?.configure()
+        }
         return v
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
+    func updateNSView(_ nsView: ConfigurationView, context: Context) {
+        nsView.adjacentScrollView = adjacentScrollView
         DispatchQueue.main.async { [weak nsView] in
-            guard let scrollView = nsView?.enclosingScrollView else { return }
-            scrollView.scrollerStyle = .overlay
-            scrollView.autohidesScrollers = true
-            scrollView.verticalScroller?.controlSize = .small
-            scrollView.horizontalScroller?.controlSize = .small
+            nsView?.configure()
         }
     }
 }

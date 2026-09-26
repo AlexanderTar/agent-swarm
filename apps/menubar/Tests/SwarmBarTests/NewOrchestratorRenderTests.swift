@@ -1,11 +1,42 @@
 import AppKit
 import SwiftUI
+import Vision
 import XCTest
 @testable import SwarmBarKit
 @testable import SwarmBarUI
 
 @MainActor
 final class NewOrchestratorRenderTests: XCTestCase {
+    func testRequestEditorUsesOverlayScroller() {
+        let host = NSHostingView(rootView: RequestEditor(text: .constant("A request")))
+        host.frame = NSRect(x: 0, y: 0, width: 500, height: 200)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        func scrolls(in view: NSView) -> [NSScrollView] {
+            let own = (view as? NSScrollView).map { [$0] } ?? []
+            return own + view.subviews.flatMap(scrolls)
+        }
+        guard let scroll = scrolls(in: host).first else { return XCTFail("Request editor scroll view missing") }
+        XCTAssertEqual(scroll.scrollerStyle, .overlay)
+        XCTAssertTrue(scroll.autohidesScrollers)
+        XCTAssertEqual(scroll.verticalScroller?.controlSize, .small)
+    }
+
+    func testEmptyChooserExplainsHowToAddRepositories() throws {
+        let host = NSHostingView(rootView: RepoChooser(rows: [], selection: .constant([])))
+        host.frame = NSRect(x: 0, y: 0, width: 500, height: 240)
+        host.layoutSubtreeIfNeeded()
+        let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 500, pixelsHigh: 240,
+                                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                     isPlanar: false, colorSpaceName: .deviceRGB,
+                                     bytesPerRow: 0, bitsPerPixel: 0)!
+        host.cacheDisplay(in: host.bounds, to: image)
+        let request = VNRecognizeTextRequest()
+        try VNImageRequestHandler(cgImage: try XCTUnwrap(image.cgImage), options: [:]).perform([request])
+        let visibleText = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+        XCTAssertTrue(visibleText.contains("No repositories found"), visibleText)
+        XCTAssertTrue(visibleText.contains("Add a folder or rescan"), visibleText)
+    }
     func testMenusFitAtMinimumWindowWidth() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let model = makeAppModel(client)
@@ -91,6 +122,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
 
     private func captureNative(_ host: NSHostingView<AnyView>, name: String) throws {
         host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         func scrolls(in view: NSView) -> [NSScrollView] {
             let own = (view as? NSScrollView).map { [$0] } ?? []
             return own + view.subviews.flatMap(scrolls)
@@ -100,9 +132,13 @@ final class NewOrchestratorRenderTests: XCTestCase {
         guard scrollViews.count >= (name == "large-text" ? 3 : 2) else { return }
         let list = scrollViews[name == "large-text" ? 1 : 0]
         let editor = scrollViews.last!
-        XCTAssertEqual(list.bounds.height, name == "twelve-repos" ? 256 : name == "normal" ? 128 : 32)
+        XCTAssertEqual(editor.scrollerStyle, .overlay)
+        XCTAssertTrue(editor.autohidesScrollers)
+        XCTAssertEqual(editor.verticalScroller?.controlSize, .small)
+        XCTAssertEqual(list.bounds.height, name == "large-text" ? 120 : 240,
+                       "empty, loading, error, and populated lists reserve the same bounded viewport")
         XCTAssertGreaterThanOrEqual(editor.bounds.height, 100)
-        if name == "normal" { XCTAssertGreaterThanOrEqual(editor.bounds.height, 250) }
+        if name == "normal" { XCTAssertGreaterThanOrEqual(editor.bounds.height, 150) }
         if name == "twelve-repos" { XCTAssertGreaterThanOrEqual(editor.bounds.height, 150) }
         XCTAssertLessThanOrEqual(editor.convert(editor.bounds, to: host).maxY, host.bounds.height - 45)
         XCTAssertGreaterThanOrEqual(host.fittingSize.width, 760)
@@ -135,9 +171,9 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertNotNil(form.failure)
         XCTAssertGreaterThanOrEqual(renderedSize(NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {})).width, 760)
         XCTAssertGreaterThanOrEqual(RequestEditor.minimumHeight, 100)
-        XCTAssertEqual(RepoChooser.visibleHeight(for: 12, maxRows: 6), 192)
-        XCTAssertEqual(RepoChooser.visibleHeight(for: 12), 256)
-        XCTAssertEqual(RepoChooser.visibleHeight(for: 0), 32)
-        XCTAssertEqual(RepoChooser.visibleHeight(for: 3), 96)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 12, maxRows: 6), 180)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 12), 240)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 0), 240)
+        XCTAssertEqual(RepoChooser.visibleHeight(for: 3), 240)
     }
 }
