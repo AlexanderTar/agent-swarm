@@ -271,8 +271,7 @@ public enum Copy {
     // §17.5 request lines in Needs you
     public static let approvePlan = "Approve plan"
     public static let approveReport = "Approve report"
-    public static let acceptEpic = "Accept epic"
-    public static let acceptFix = "Accept fix"
+    public static func acceptItem(_ key: String) -> String { "Accept \(key)" }
     public static let confirmRepositories = "Confirm repositories"
     public static func confirmRepositories(_ n: Int) -> String { "Confirm \(n) repositories" }
     public static let closeSpike = "Close spike?"

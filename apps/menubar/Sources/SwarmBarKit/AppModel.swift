@@ -48,18 +48,20 @@ public enum RequestLine {
         case .approveSection: return Copy.approveSection(r.sectionTitle ?? r.prompt)
         case .approvePlan: return Copy.approvePlan
         case .approveReport: return Copy.approveReport
-        case .acceptEpic: return Copy.acceptEpic
-        case .acceptFix: return Copy.acceptFix
+        case .acceptEpic, .acceptFix: return Copy.acceptItem(r.itemKey)
         case .confirmRepos: return r.proposedRepos.map(Copy.confirmRepositories) ?? Copy.confirmRepositories
         case .closeSpike: return Copy.closeSpike
         }
     }
 }
 
-/// Needs-you row lines, generic across every request kind (spec 1.6.3): never the prompt.
+/// Needs-you row lines, generic across every request kind (spec 1.6.3): never the prompt. An accept
+/// row's third line names what is being accepted (2026-09-26 epic-approval-lane) -- daemon copy, not
+/// the agent's text.
 public enum NeedsYouRow {
     public static func lines(_ r: SwarmRequest) -> [String] {
-        ["\(r.itemKey) · \(r.itemTitle)", r.agentName ?? r.terminalAgent ?? "—", Copy.needsYouMessage]
+        let third = (r.kind == .acceptEpic || r.kind == .acceptFix) ? Copy.acceptItem(r.itemKey) : Copy.needsYouMessage
+        return ["\(r.itemKey) · \(r.itemTitle)", r.agentName ?? r.terminalAgent ?? "—", third]
     }
 }
 
