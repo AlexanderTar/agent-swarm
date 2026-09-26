@@ -2002,6 +2002,51 @@ func TestReconcileLeavesSpawningSessionsDialogsToWatchStartup(t *testing.T) {
 // The scrape must honor PromptMatcher.Require like watchStartup honors Dialog.Require: a
 // frame where the dialog title matches but the guarded option line is absent (a variant
 // or mid-render frame) must not get a blind key press.
+// A one-tick redraw that drops the guarded option line while the dialog title
+// is still on screen must not be read as "the dialog cleared": that would
+// resolve an already escalated row "via terminal" and reopen a fresh one on
+// the very next tick with its retry budget reset to zero.
+func TestPromptPatternRequireMissKeepsAnEscalatedRowOpen(t *testing.T) {
+	s, tm, clk := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "RequireMiss", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "swarm-fake-agent"})
+	tm.env[a.Name] = map[string]string{"SWARM_SESSION": ses.ID}
+	s.Adapters[Fake].(*adapter.Fake).PromptMatchers = []adapter.PromptMatcher{{
+		Match:   regexp.MustCompile(`Do you trust this\?`),
+		Require: regexp.MustCompile(`Yes, trust it`),
+		Title:   "Trust prompt", Action: "Enter",
+	}}
+	tm.captures[a.Name] = []string{"Do you trust this?\n  Yes, trust it\n"}
+	for i := 0; i < 4; i++ { // t = 0,5,10,15s: escalates at 15s
+		if err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		clk.Advance(5 * time.Second)
+	}
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("rows = %d, want exactly 1 escalated row", n)
+	}
+
+	// The option line drops for one tick; the title stays. Must not resolve.
+	tm.captures[a.Name] = []string{"Do you trust this?\n  (rendering...)\n"}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	s.DB.QueryRow(`SELECT state FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&state)
+	if state != "open" {
+		t.Fatalf("row state = %q after a Require-miss frame, want still open", state)
+	}
+	s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ? AND prompt = 'Trust prompt'`, ses.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("rows = %d after a Require-miss frame, want still exactly 1 (no duplicate)", n)
+	}
+}
+
 func TestPromptPatternRequireGuardsAutoAnswer(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()

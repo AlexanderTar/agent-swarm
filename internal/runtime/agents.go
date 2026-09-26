@@ -1339,7 +1339,15 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 				continue
 			}
 			if d.Require != nil && !d.Require.MatchString(plain) {
-				continue // the option line is not drawn yet
+				// The dialog is still on screen, just mid-render (the option
+				// line hasn't drawn yet): keep any existing retry/escalation
+				// state instead of dropping it, or a one-tick redraw would
+				// reset the send budget and, worse, resolve an already
+				// escalated row "via terminal" while the pane is still stuck.
+				if dst := st[i]; dst != nil && dst.reqID != "" {
+					anyEscalated = true
+				}
+				continue
 			}
 			if d.Fail {
 				return s.failSession(ctx, a, ses, lastLines(capture, 40))

@@ -915,7 +915,13 @@ func (s *Store) resolveAlive(ctx context.Context, r liveRow, p Pane) error {
 					continue
 				}
 				if m.Require != nil && !m.Require.MatchString(plain) {
-					continue // guarded option not on screen: a blind key press could pick the wrong answer
+					// The dialog is still on screen, just mid-render (the
+					// option line hasn't drawn yet): claim the title so the
+					// resolve-on-clear loop below leaves its state and any
+					// open row alone instead of resolving it "via terminal"
+					// and recreating the send/escalation budget from zero.
+					matchedTitle = m.Title
+					continue
 				}
 				matchedTitle = m.Title
 				hasKeys := m.Action != ""
