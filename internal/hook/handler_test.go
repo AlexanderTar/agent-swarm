@@ -1911,6 +1911,40 @@ func TestPostToolUseNextStepIsNotRateLimitedAndDoesNotStampNoticeAt(t *testing.T
 	}
 }
 
+// TestAgyPostToolUseWithNoResponseTextGetsPickedOptionNextStep is the Opus
+// review's minor item 4: agy's PostToolUse carries no response text (spec
+// 1.7), so a ref-bearing question resolves via the ResolvedInTerminal
+// placeholder; the next step must tell the agent to forward whichever
+// option the user actually picked, not quote the placeholder as their text.
+func TestAgyPostToolUseWithNoResponseTextGetsPickedOptionNextStep(t *testing.T) {
+	ctx := context.Background()
+	h, _, ses := newTestHandler(t)
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+
+	pre := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"` + question + `"}]}}`)
+	if _, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses.ID, pre); err != nil {
+		t.Fatal(err)
+	}
+
+	post := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"` + question + `"}]}}`)
+	out, err := h.Handle(ctx, runtime.Agy, "PostToolUse", ses.ID, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		InjectSteps []struct {
+			EphemeralMessage string `json:"ephemeralMessage"`
+		} `json:"injectSteps"`
+	}
+	if err := json.Unmarshal(out, &decoded); err != nil || len(decoded.InjectSteps) == 0 {
+		t.Fatalf("PostToolUse output = %s, not decodable: %v", out, err)
+	}
+	msg := decoded.InjectSteps[0].EphemeralMessage
+	if !strings.Contains(msg, "the option the user picked") {
+		t.Fatalf("ephemeralMessage = %q, want it to say to forward the option the user picked", msg)
+	}
+}
+
 // TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep confirms a plain
 // question's PostToolUse (no ⟦swarm:ref⟧) is untouched.
 func TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep(t *testing.T) {
