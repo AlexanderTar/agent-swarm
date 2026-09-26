@@ -24,10 +24,11 @@ The gap this closes: an orchestrator (including a spike orchestrator, which is a
 
 Additional design decisions locked with the above:
 
-- **Permission**: only a **top-level** orchestrator (`Actor.ParentAgentID == ""`) or a spike (which is always top-level) may propose. A child orchestrator (`ParentAgentID != ""`) is refused: *"Only a top-level orchestrator can propose a top-level item. Relay it to your parent."* Workers are already excluded (`swarm_items` is `orchestratorRole`-only). Types `story` and `task` still always require a `parent` (unchanged `parentHint` refusal), regardless of actor.
+- **Permission**: only a **top-level** orchestrator (`runtime.Agent.ParentAgentID == ""`, already on hand at the `swarm_items` call site — no new field on `items.Actor`) or a spike (which is always top-level) may propose. The child-orchestrator guard lives in `internal/mcpserver` (where `ParentAgentID` is already available on the caller's resolved `Agent`), not inside `internal/items`: a child orchestrator (`ParentAgentID != ""`) is refused before `items.CreateTx` even runs: *"Only a top-level orchestrator can propose a top-level item. Relay it to your parent."* Workers are already excluded (`swarm_items` is `orchestratorRole`-only). Types `story` and `task` still always require a `parent` (unchanged `parentHint` refusal), regardless of actor. `internal/items` itself only needs to stop refusing *every* orchestrator create with no parent — the caller-side guard is what narrows that back down to top-level-only.
 - **Repos**: any `repos` passed on a propose call land in `suggested_repos` only, never `confirmed_repos` — the normal `confirm_repos` ask/approve gate still applies once/if the item starts and its orchestrator needs them confirmed.
 - **Idempotency**: reuses the existing `runtime.IdemTx` keyed on `(session_id, request_id)`, exactly like every other `swarm_items` op. No new idempotency mechanism.
 - **Notification**: reuses `item.created`/`.bug`/`.chore` (`internal/notifyrules`, raised via `internal/runtime/materialize.go`'s `notifyItemCreated`, exported and generalized here to also cover this path) plus a new `item.created.spike` kind (spikes could not be created as roots by this path before). Body/args are unchanged in shape: `{ORIGIN}` (the `{SPIKE-KEY}` arg slot, reused — it already just means "the key of whatever produced this root") `produced {ROOT-KEY}: {title}. Start an orchestrator when you're ready.`
+- **Kind trimming, root cause not bandage**: `internal/notify/notify.go`'s `raise` only strips a `.bug` suffix (`strings.TrimSuffix(in.Kind, ".bug")`) before writing the DB `kind` column and SSE payload, even though the doc comment on `notifyrules.Rules` says every `item.created.*` variant is meant to collapse to the one kind `item.created` the menubar's category map and rest of the system understand. `.chore` already leaks through untrimmed today (an existing, unrelated bug — the menubar's `Notifier.category(forKind:)` has no case for it and silently falls back to `swarm.info`, losing the "Start orchestrator" action). Adding `.spike` the same ad-hoc way would be a second copy of the same leak. This spec fixes the trim at its root instead: `if strings.HasPrefix(in.Kind, "item.created.") { kind = "item.created" }`, which also fixes the pre-existing `.chore` leak as a side effect. No menubar Swift change is needed — `Notifier.category(forKind:)`'s existing `case "item.created": return "swarm.item"` already covers every `item.created.*` variant once the persisted kind is uniformly trimmed; this spec's job there is only to run `swift test` and confirm it.
 
 ## 3. Types / JSON schema
 
@@ -57,20 +58,7 @@ Response: the created `Item` (unchanged shape), `status: "draft"`, `suggested_re
 
 ### Go types (internal/items)
 
-```go
-// Actor gains one field; existing constructors/callers are unaffected
-// (default "" preserves current behavior everywhere else).
-type Actor struct {
-    Kind          string
-    AgentID       string
-    Role          string
-    RootID        string
-    Via           string
-    ParentAgentID string // "" for a top-level orchestrator or any non-orchestrator actor
-}
-```
-
-No other type changes. `CreateInput`, `Item` already carry every field this path needs (`SuggestedRepos`, `OriginSpikeID`, `SpikeIntent`).
+No type changes. `items.Actor` is untouched — the child-orchestrator guard uses `runtime.Agent.ParentAgentID`, already resolved at the `swarm_items` call site, before `CreateTx` runs. `CreateInput`, `Item` already carry every field this path needs (`SuggestedRepos`, `OriginSpikeID`, `SpikeIntent`).
 
 ### Go types (internal/runtime)
 
@@ -97,16 +85,15 @@ No other user-facing copy changes. No new i18n keys (this codebase has none for 
 ## 5. File list
 
 **Changed:**
-- `internal/items/model.go` — add `Actor.ParentAgentID`.
-- `internal/items/store.go` — top-level-propose gate in `CreateTx` (permission, forced Draft, repos→suggested, origin).
-- `internal/mcpserver/orchestrator.go` — `swarm_items` schema gains `intent`; `create` handler sets `actor.ParentAgentID`, maps `intent`→`SpikeIntent`, raises the notification when `parent == ""`; tool `Description` updated.
-- `internal/runtime/materialize.go` — `notifyItemCreated` → exported `NotifyItemCreated`, generalized signature, `item.created.spike` case added; `Materialize`'s call site updated.
-- `internal/runtime/workflow.go` — `StartWorkflow` promotes a Draft task (and Draft parent story) to Ready before starting, mirroring `promoteDraft`.
+- `internal/items/store.go` — top-level-propose gate in `CreateTx` (drop the blanket orchestrator refusal; forced Draft, repos→suggested, origin; `story`/`task` parent requirement unchanged and now explicit first).
+- `internal/mcpserver/orchestrator.go` — `swarm_items` schema gains `intent`; `create` handler refuses a child orchestrator (`a.ParentAgentID != ""`) proposing with no `parent`, maps `intent`→`SpikeIntent`, raises the notification when `parent == ""`; `swarm_workflow`'s `case "start"` (in `internal/mcpserver/workflow.go`, see below) reuses the existing `promoteDraft` helper; tool `Description` updated.
+- `internal/mcpserver/workflow.go` — `case "start"` calls `promoteDraft` (from `orchestrator.go`) on the target item before `StartWorkflow`, mirroring the `swarm_spawn` precedent exactly (same helper, same package).
+- `internal/runtime/materialize.go` — `notifyItemCreated` → exported `NotifyItemCreated`, generalized signature (`originKey string` replaces `spike items.Item`), `item.created.spike` case added; `Materialize`'s call site updated.
+- `internal/notify/notify.go` — kind-trim fix: `strings.HasPrefix(in.Kind, "item.created.")` replaces the `.bug`-only `TrimSuffix`, so `.chore` and `.spike` both collapse to `item.created` like the doc comment always claimed.
 - `internal/notifyrules/notifyrules.go` — new `item.created.spike` rule row.
-- `apps/menubar/Sources/SwarmBarKit/Notifier.swift` — `category(forKind:)` maps `item.created.spike` to `swarm.item`.
 - `skills/swarm-orchestrator/SKILL.md` — document proposing a top-level item and that it stays Draft until the user starts it.
 
-**Reused unchanged:** `web/src/copy.ts` "Started from KEY" rendering; `items.CreateInput`/`Item`/`SpikeIntent`/`SuggestedRepos`/`OriginSpikeID` fields; `runtime.IdemTx`; `promoteDraft` (spawn path, untouched — `StartWorkflow` gets its own inline equivalent since it lives in `internal/runtime`, not `internal/mcpserver`).
+**Reused unchanged:** `web/src/copy.ts` "Started from KEY" rendering; `items.CreateInput`/`Item`/`SpikeIntent`/`SuggestedRepos`/`OriginSpikeID` fields; `runtime.IdemTx`; `promoteDraft` (now used from two call sites, `swarm_spawn` and `swarm_workflow start`); `apps/menubar/Sources/SwarmBarKit/Notifier.swift`'s existing `case "item.created": return "swarm.item"` (already covers every variant once the kind-trim fix lands — no Swift change, just `swift test` to confirm).
 
 **Deleted:** none.
 
@@ -118,13 +105,12 @@ No other user-facing copy changes. No new i18n keys (this codebase has none for 
 4. `(cd apps/menubar && swift test)`
 5. `(cd web && pnpm test)` only if web files touched (they are not, by this spec — skip unless a later revision touches `web/`)
 6. `make skills-sync` clean (no diff)
-7. Scenarios covered by new/updated Go tests (see companion plan): top-level orchestrator proposes an epic/bug/chore/spike successfully (Draft, suggested repos, origin set, notification raised); child orchestrator refused; `status:"ready"` refused; story/task still refused without parent for every actor kind; `swarm_workflow start` promotes a Draft task and its Draft parent story to Ready before starting.
+7. Scenarios covered by new/updated Go tests (see companion plan): top-level orchestrator proposes an epic/bug/chore/spike successfully (Draft, suggested repos, origin set, notification raised); child orchestrator refused via mcpserver's guard; `status:"ready"` refused; story/task still refused without parent for every actor kind; `swarm_workflow start` promotes a Draft task and its Draft parent story to Ready before starting; the proposed item cannot be moved to Ready by its own proposer (`orchestratorScope` — user-only, decision 1); the `.bug`/`.chore`/`.spike` kind-trim fix covered directly in `internal/notify`'s own tests.
 
 ## 7. Explicitly out of scope
 
 - Agents starting other orchestrators (starting a Draft item stays user-only).
 - Any "Needs you" / HITL request row for a proposal.
 - Rate limiting proposals.
-- `POST /api/items` / `POST /api/spikes` (`internal/httpapi`) — unaffected; those are the user/board-driven creation paths and already behave correctly.
-- Fixing `item.created.chore`'s pre-existing, unrelated kind-trimming inconsistency in `internal/notify/notify.go` (`strings.TrimSuffix(in.Kind, ".bug")` does not also strip `.chore`) — noted, not touched, to keep this diff scoped.
+- `POST /api/items` / `POST /api/spikes` (`internal/httpapi`) — unaffected; those are the user/board-driven creation paths and already behave correctly, and neither does anything beyond `Items.Create` that this path would need to replicate.
 - Any change to `web/` (no web-side kind/category table exists for `item.created*`).
