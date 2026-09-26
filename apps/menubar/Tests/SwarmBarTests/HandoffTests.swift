@@ -257,6 +257,8 @@ final class HandoffModelTests: XCTestCase {
         guard let handoff = m.actions(a).first(where: { $0.endpoint == .handoff }) else {
             return XCTFail("running fixture agent must offer Handoff")
         }
+        // The timed-out POST landed: state shows the operation in flight.
+        setReplacement(a.name, phase: "preserving")
         client.failNext = .timedOut
         await m.perform(handoff, on: a)
         await m.perform(handoff, on: a)
@@ -265,5 +267,45 @@ final class HandoffModelTests: XCTestCase {
         XCTAssertEqual(keys.count, 3)
         XCTAssertEqual(keys[0], keys[1], "the retry after a timeout must reuse the request key")
         XCTAssertNotEqual(keys[1], keys[2], "a new action after success gets a new request key")
+    }
+
+    /// Sets (or clears, with nil) the in-flight replacement the mock daemon
+    /// reports for one agent.
+    private func setReplacement(_ name: String, phase: String?) {
+        guard case var .success(s) = client.stateResult else { return }
+        func edit(_ nodes: [AgentNode]) -> [AgentNode] {
+            nodes.map { n in
+                var n = n
+                if n.name == name {
+                    n.replacement = phase.map { AgentReplacement(operationID: "op_1", mode: "handoff", phase: $0, error: "") }
+                }
+                n.children = edit(n.children)
+                return n
+            }
+        }
+        s = StateResponse(agents: edit(s.agents), requests: s.requests, notifications: s.notifications,
+                          usage: s.usage, activeCount: s.activeCount, settings: s.settings)
+        client.stateResult = .success(s)
+    }
+
+    // A key kept after a transport error must not outlive its operation: once
+    // state shows that agent's operation settled, the next deliberate Handoff
+    // mints a fresh key instead of replaying the old finished operation.
+    func testHandoffKeyDroppedOnceItsOperationSettles() async {
+        let m = make()
+        await m.refresh()
+        let a = runningCoder(m)
+        guard let handoff = m.actions(a).first(where: { $0.endpoint == .handoff }) else {
+            return XCTFail("running fixture agent must offer Handoff")
+        }
+        setReplacement(a.name, phase: "preserving")
+        client.failNext = .unreachable
+        await m.perform(handoff, on: a)
+        setReplacement(a.name, phase: nil) // the operation finished
+        await m.refresh()
+        await m.perform(handoff, on: a)
+        let keys = client.handoffRequestIDs
+        XCTAssertEqual(keys.count, 2)
+        XCTAssertNotEqual(keys[0], keys[1], "a settled operation's key must not be replayed")
     }
 }

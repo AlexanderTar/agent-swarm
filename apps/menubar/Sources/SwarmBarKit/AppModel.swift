@@ -196,6 +196,13 @@ public final class AppModel {
             if before != after { preview.invalidate() }
         }
         state = s
+        // A handoff key is kept only while its operation may still be in
+        // flight: once state shows no replacement for that agent, the next
+        // deliberate Handoff must not replay the settled operation.
+        if !handoffKeys.isEmpty {
+            let busy = Set(AgentTree.flatten(s.agents).filter { $0.replacement != nil }.map(\.name))
+            handoffKeys = handoffKeys.filter { busy.contains($0.key) }
+        }
         connected = true
         let at = now()
         lastSync = at
@@ -348,7 +355,8 @@ public final class AppModel {
     }
 
     /// Pending handoff request keys by agent name, kept only while the last
-    /// attempt's outcome is unknown (timeout, unreachable).
+    /// attempt's outcome is unknown (timeout, unreachable) and state still
+    /// shows that agent's operation in flight.
     private var handoffKeys: [String: String] = [:]
 
     public func perform(_ action: AgentAction, on agent: AgentNode) async {
