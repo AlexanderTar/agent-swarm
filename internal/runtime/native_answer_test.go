@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // seedApprovalWithNativePrompt is a small fixture for Task 13c: an
@@ -213,5 +214,108 @@ func TestNativeAnswerConfirmRepos(t *testing.T) {
 	}
 	if out.State != "approved" || len(out.Confirmed) != 1 || out.Confirmed[0] != repoID {
 		t.Fatalf("out = %+v", out)
+	}
+}
+
+// TestNativeAnswerChildApprovalObservedAndAgentReported is Task 13d: a
+// child's approval question resolves through native_answer into an
+// approval_result the child receives directly, with no separate request
+// row, for both an observed and an agent-reported hook answer.
+func TestNativeAnswerChildApprovalObservedAndAgentReported(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		answer   string
+		evidence string
+	}{
+		{"observed", "Approve", EvidenceObserved},
+		{"agent_reported", "", EvidenceAgentReported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := newStore(t)
+			orch, w, wSes := worker(t, s)
+			orchSes := mustSessionID(t, s, orch.ID)
+
+			q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			promptReq, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
+			if err != nil {
+				t.Fatal(err)
+			}
+			hookSimulate(t, s, orchSes, *promptReq.NativePrompt, tc.answer)
+
+			out, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: q, Decision: "approve"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.State != "approved" {
+				t.Fatalf("out.State = %v, want approved", out.State)
+			}
+			wire, err := s.RequestWireByID(ctx, out.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wire.ApprovalEvidence == nil || *wire.ApprovalEvidence != tc.evidence {
+				t.Fatalf("approval_evidence = %v, want %s", wire.ApprovalEvidence, tc.evidence)
+			}
+
+			// the child's inbox has approval_result with reply_to == q
+			var kind, replyTo, toAgent, payload string
+			if err := s.DB.QueryRowContext(ctx, `SELECT kind, reply_to, to_agent_id, payload_json
+				FROM messages WHERE kind = 'approval_result' ORDER BY seq DESC LIMIT 1`).
+				Scan(&kind, &replyTo, &toAgent, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if kind != "approval_result" || replyTo != q || toAgent != w.ID {
+				t.Fatalf("kind=%s reply_to=%s to=%s", kind, replyTo, toAgent)
+			}
+			if !strings.Contains(payload, `"decision":"approved"`) {
+				t.Fatalf("payload = %s", payload)
+			}
+
+			// a second native_answer for the same ref is refused: the bound
+			// row already moved on from "answered", so there is no fresh
+			// evidence for it any more.
+			if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: q, Decision: "approve"}); err == nil {
+				t.Fatal("replay must be refused")
+			}
+		})
+	}
+}
+
+// TestNativeAnswerChildApprovalSuppressesOwedAnswerRelay is Task 13d +
+// Task 12: an approval_result counts as the owed answer, so the 10-minute
+// question_unanswered scan never fires for it.
+func TestNativeAnswerChildApprovalSuppressesOwedAnswerRelay(t *testing.T) {
+	s, tm, at := clockStore(t)
+	_ = tm
+	ctx := context.Background()
+	orch, _, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+
+	q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE id = ?`, q)
+	promptReq, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookSimulate(t, s, orchSes, *promptReq.NativePrompt, "Approve")
+	if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: q, Decision: "approve"}); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(11 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE kind = 'relay' AND reply_to = ?`, q).Scan(&n)
+	if n != 0 {
+		t.Fatalf("relays = %d, want 0", n)
 	}
 }

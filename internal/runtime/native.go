@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -191,6 +192,10 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 		return err
 	}
 
+	if strings.HasPrefix(in.Ref, "msg_") {
+		return s.nativeAnswerForMsg(ctx, in.Ref, in.Decision, comment, evidence, rowID, bindEvidence)
+	}
+
 	req, err := s.RequestByID(ctx, in.Ref)
 	if err != nil {
 		return Request{}, err
@@ -220,6 +225,58 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	}
 	return s.Approve(ctx, in.Ref, ApproveInput{SectionSHA256: req.SectionSHA256,
 		ArtifactRevision: req.ArtifactRevision, Binding: req.Binding, Via: "terminal"}, bindEvidence)
+}
+
+// nativeAnswerForMsg is native_answer's message-ref branch (spec section 2.3
+// step 6, 2.4, Task 13d): the child's own approval question. There is no
+// separate approval request row for a message ref -- the bound native-
+// question row itself is the approval record, so it moves from "answered"
+// straight to "approved" or "changes_requested", and the daemon tells the
+// child directly with an approval_result reply.
+func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment, evidence, rowID string,
+	bindEvidence func(*sql.Tx, Request) error) (Request, error) {
+	newState := "approved"
+	if decision == "request_changes" {
+		newState = "changes_requested"
+	}
+	var out Request
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE requests SET state = ? WHERE id = ? AND state = 'answered'`,
+			newState, rowID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
+		}
+		if err := bindEvidence(tx, Request{}); err != nil {
+			return err
+		}
+		var fromAgentID, rootItemID, itemID string
+		if err := tx.QueryRowContext(ctx, `SELECT from_agent_id, root_item_id, item_id FROM messages
+			WHERE id = ?`, msgID).Scan(&fromAgentID, &rootItemID, &itemID); err != nil {
+			return err
+		}
+		payload, err := json.Marshal(map[string]any{"request_id": rowID, "decision": newState,
+			"comment": comment, "evidence": evidence})
+		if err != nil {
+			return err
+		}
+		if _, err := s.enqueue(ctx, tx, Message{Kind: "approval_result", Origin: "daemon", ToAgentID: fromAgentID,
+			RootItemID: rootItemID, ItemID: itemID, ReplyTo: msgID, Payload: payload}); err != nil {
+			return err
+		}
+		w, err := s.RequestWireTx(ctx, tx, rowID)
+		if err != nil {
+			return err
+		}
+		if _, err := s.Events.Append(ctx, tx, events.RequestResolved, w); err != nil {
+			return err
+		}
+		out, err = s.requestTx(ctx, tx, rowID)
+		return err
+	})
+	return out, err
 }
 
 // errForMsgNotApproval is swarm_ask kind:"native_prompt"'s refusal when
