@@ -479,6 +479,46 @@ func TestCancelCopyModeIfNeededDoesNothingWhenPaneIsNotInCopyMode(t *testing.T) 
 	}
 }
 
+// Keys is the shared primitive behind every send-keys call site (auto-answer
+// prompts, interrupts, startup dialogs, pasteViaTempFile's own Enter), so the
+// copy-mode guard lives here, not just in the paste path -- an interrupt or
+// prompt answer sent while a pane is in copy-mode is swallowed exactly the
+// same way the paste's Enter was.
+func TestKeysCancelsCopyModeBeforeSendingKeys(t *testing.T) {
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"tmux -L swarm display -p -t sess #{pane_in_mode}": {Out: "1\n"},
+		"tmux -L swarm send-keys -t sess -X cancel":        {Out: ""},
+		"tmux -L swarm send-keys -t sess Escape":           {Out: ""},
+	}}
+	s := &Spawner{Socket: "swarm", Tmux: "tmux", Run: f.Runner(), Log: func(string, ...any) {}}
+	if err := s.Keys(context.Background(), "sess", "Escape"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"tmux -L swarm display -p -t sess #{pane_in_mode}",
+		"tmux -L swarm send-keys -t sess -X cancel",
+		"tmux -L swarm send-keys -t sess Escape",
+	}
+	if got := f.Calls(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls = %v, want %v (cancel must precede the actual keys)", got, want)
+	}
+}
+
+func TestKeysDoesNotCancelCopyModeWhenPaneIsNotInCopyMode(t *testing.T) {
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"tmux -L swarm display -p -t sess #{pane_in_mode}": {Out: "0\n"},
+		"tmux -L swarm send-keys -t sess Escape":           {Out: ""},
+	}}
+	s := &Spawner{Socket: "swarm", Tmux: "tmux", Run: f.Runner(), Log: func(string, ...any) {}}
+	if err := s.Keys(context.Background(), "sess", "Escape"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"tmux -L swarm display -p -t sess #{pane_in_mode}", "tmux -L swarm send-keys -t sess Escape"}
+	if got := f.Calls(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls = %v, want %v (no cancel when not in copy-mode)", got, want)
+	}
+}
+
 // The regression test for the actual incident: a pane pushed into copy-mode
 // (exactly what a mouse-wheel scroll under `mouse on` does) must still have
 // its pasted line submitted -- not left sitting unsent because copy-mode ate
@@ -491,7 +531,7 @@ func TestPasteLineCancelsCopyModeSoTheLineIsSubmitted(t *testing.T) {
 		[]string{"sh", "-c", "read line; printf '%s' \"$line\" > " + out + "; while :; do sleep 1; done"}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the shell to start reading", func() bool {
+	waitFor(t, "the pane to exist", func() bool {
 		_, err := s.Capture(ctx, "copymode", 5)
 		return err == nil
 	})

@@ -31,22 +31,36 @@ in the daemon's logs pointed at the stuck pane.
 
 ## Locked decisions
 
-- The guard lives in one place: `pasteViaTempFile`, the only implementation
-  behind `PasteLine`. `Keys()` (the other `send-keys` call site) is used for
-  interrupts (`InterruptKeys`) and confirm actions elsewhere in
-  `internal/runtime`; those are out of scope — the incident and the fix are
-  about paste delivery, not about every keypress sent into a pane.
+- The guard lives in `Spawner.Keys`, the one function every `send-keys` call
+  in the codebase routes through: prompt auto-answers (`reconcile.go:830`),
+  pause interrupts (`pause.go:330`), startup dialogs (`agents.go:1280`),
+  interrupt-before-kill (`agents.go:1380`, `checkpoint.go:1519`), and
+  `pasteViaTempFile`'s own trailing `Enter`. All of these are swallowed by
+  copy-mode exactly the way the paste's Enter was — an auto-answered prompt's
+  Enter is dropped and Down only moves the copy-mode cursor; an interrupt's
+  Escape/C-c is consumed by copy-mode's own `cancel` binding for Escape
+  instead of reaching the program. Putting the guard in `Keys` covers all of
+  them from one place and shrinks the race window for the paste case from
+  "up to ~500ms + the paste itself" (query done before the paste started) to
+  the few milliseconds between the query and the `send-keys` call it guards.
 - The check is best-effort: a failure to query `#{pane_in_mode}` or to
-  cancel must not block the paste itself. A stuck pane is better than a
-  daemon that stops delivering pastes because a diagnostic query failed.
+  cancel must not block the keys that follow. A stuck pane is better than a
+  daemon that stops sending keys because a diagnostic query failed.
 - `WakeOnQuotaReset` gets exactly one added log line, naming the agent and
   session, when it skips a candidate because the pane isn't idle. No other
   behavior in that function changes.
-- No fix for the already-stuck-text case beyond what falls out of (1): the
-  next paste attempt after this fix ships will cancel copy-mode and send a
-  real Enter, unsticking the pane, but the old unsent text and the new
-  paste land as one concatenated line (see Verification/recovery below).
-  Cleaning that up is out of scope.
+- **Correction:** an earlier draft of this spec claimed the next paste
+  attempt after this fix ships would unstick an already-stuck pane. That is
+  wrong and is not what this fix does. `tryPaste` (`wake.go:268`) and
+  `WakeOnQuotaReset` (`wake.go:541`) both gate on `ad.Idle(capture)` *before*
+  ever calling `PasteLine` — and the stuck, unsent text in the pane's input
+  box is exactly what makes `Idle` return false. No wake path ever pastes
+  into an already-stuck pane, guard or no guard: it is filtered out before
+  the paste call it would guard. See Verification/recovery below for what
+  actually clears a stuck pane.
+- No cleanup of text already left over from a paste that occurred before
+  this fix shipped, and no new mechanism to clear a pane's input line —
+  out of scope; see the deploy note below instead.
 
 ## Design
 
@@ -56,7 +70,9 @@ in the daemon's logs pointed at the stuck pane.
 3. Otherwise `tmux send-keys -t <name> -X cancel`, logging (not failing) on
    error.
 
-Called once at the top of `pasteViaTempFile`, before the chunk loop.
+Called from `Keys(ctx, name, keys...)`, before the `send-keys` call it
+guards. `pasteViaTempFile` needs no separate call: its final step is already
+`s.Keys(ctx, name, "Enter")`.
 
 `WakeOnQuotaReset`: the row query now also selects `a.name` (same join
 pattern `wakeCandidates` already uses). When the idle-paste fallback finds
@@ -66,15 +82,17 @@ pattern `wakeCandidates` already uses). When the idle-paste fallback finds
 ## Files
 
 - `internal/spawn/tmux.go` — add `cancelCopyModeIfNeeded`; call it from
-  `pasteViaTempFile`.
+  `Keys`, the shared `send-keys` primitive.
 - `internal/spawn/tmux_test.go` — fake-runner unit tests for
-  `cancelCopyModeIfNeeded` (in-mode cancels, not-in-mode doesn't); a
-  real-tmux regression test that forces copy-mode and asserts `PasteLine`
+  `cancelCopyModeIfNeeded` directly (in-mode cancels, not-in-mode doesn't)
+  and for `Keys` (cancel precedes the actual keys, only when in copy-mode);
+  a real-tmux regression test that forces copy-mode and asserts `PasteLine`
   still submits.
 - `internal/runtime/wake.go` — `WakeOnQuotaReset` selects `a.name`, logs the
-  non-idle skip.
-- `internal/runtime/wake_test.go` — test asserting the skip log names the
-  agent and session.
+  non-idle skip (throttled to once per session per cutoff) and a `Capture`
+  failure.
+- `internal/runtime/wake_test.go` — tests asserting the skip log names the
+  agent and session, is throttled, and that a capture failure is logged too.
 
 ## Verification
 
@@ -84,19 +102,29 @@ pattern `wakeCandidates` already uses). When the idle-paste fallback finds
 - Fail→pass: `TestPasteLineCancelsCopyModeSoTheLineIsSubmitted` times out
   waiting for the pasted line without the fix (confirmed by temporarily
   reverting `tmux.go`'s change and re-running); passes with it.
-- Recovery finding: a pane stuck by this bug does **not** self-heal. Nothing
-  in the idle-wake path sends any key bound to `cancel` in copy-mode.
-  `Escape` (sent by unrelated quiescing/pause interrupt paths,
-  `internal/runtime/agents.go`, `checkpoint.go`, `pause.go`) is bound to
-  `cancel` and would exit copy-mode if it happened to fire, but Escape is
-  consumed by copy-mode's key table too, so it would not submit the
-  already-stuck text — only exit copy-mode, leaving the text still unsent
-  until an actual Enter reaches the pane. The fix in this spec is what
-  finally supplies that Enter, on the next paste attempt.
+  `TestKeysCancelsCopyModeBeforeSendingKeys` fails the same way before the
+  guard moves into `Keys`.
+- **Recovery finding (corrected):** a pane already stuck by this bug does
+  **not** self-heal, and this fix does not unstick it either. The stuck,
+  unsent text in the input box makes `ad.Idle(capture)` return false, and
+  both wake paths (`tryPaste`, `WakeOnQuotaReset`) check `Idle` *before*
+  calling `PasteLine` — so a stuck session is filtered out of every future
+  wake attempt before it ever reaches the (now-guarded) paste call. Nothing
+  in the normal wake/idle-check path sends any key at all to a session it
+  has already decided is non-idle, so the pane's copy-mode state and its
+  stuck text are never touched again automatically.
+  **Deploy note:** after this fix ships, check live panes for unsent input
+  text left over from before the fix (e.g. via `swarm attach` or a pane
+  capture) and press Enter by hand in any that are stuck. This is a one-time
+  cleanup for pre-existing damage, not an ongoing operational step — panes
+  affected after this fix ships get the guard automatically and never reach
+  this state.
 
 ## Explicitly out of scope
 
-- Guarding `Keys()`'s other call sites (interrupts, confirm actions).
-- Cleaning up or de-duplicating text left over from a paste that occurred
-  before this fix shipped.
+- Clearing or de-duplicating text already sitting in a pane's input line
+  (no new mechanism to reset/clear a pane's input; the deploy note above is
+  a manual, one-time check, not automation).
 - Any change to `TmuxConf()`'s `mouse on` setting.
+- Making `tryPaste`/`WakeOnQuotaReset` retry a non-idle pane differently, or
+  otherwise changing the `Idle` gate itself.

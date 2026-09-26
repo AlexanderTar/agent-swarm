@@ -26,6 +26,29 @@ Companion to `docs/specs/2026-09-26-tmux-copy-mode-paste.md`. Branch
 4. Run: `go test ./internal/spawn/... -run TestCancelCopyModeIfNeeded|TestPasteLineCancelsCopyModeSoTheLineIsSubmitted -v` — confirm pass.
 5. Commit: `internal/spawn/tmux.go`, `internal/spawn/tmux_test.go`.
 
+## Task 1b — move the guard into `Keys` (review follow-up)
+
+Opus review: `reconcile.go:830` (prompt auto-answer), `pause.go:330`
+(interrupt), `agents.go:1280,1380`, `checkpoint.go:1519` (startup dialogs,
+interrupt-before-kill) all call `s.Tmux.Keys` directly and hit the same
+copy-mode swallow. `pasteViaTempFile` already ends with
+`s.Keys(ctx, name, "Enter")`, so moving the guard into `Keys` keeps the paste
+covered while fixing every other call site from one place.
+
+1. Write failing tests: `TestKeysCancelsCopyModeBeforeSendingKeys` (fake
+   runner, `pane_in_mode=1` → cancel issued before the actual keys) and
+   `TestKeysDoesNotCancelCopyModeWhenPaneIsNotInCopyMode`. Run, confirm they
+   fail against the current `Keys` (no guard there yet).
+2. Move the `cancelCopyModeIfNeeded` call from the top of `pasteViaTempFile`
+   into `Keys`, before its `send-keys` call.
+3. Rename the misleading wait message in
+   `TestPasteLineCancelsCopyModeSoTheLineIsSubmitted` ("the shell to start
+   reading" → "the pane to exist"; the check only confirms `Capture`
+   succeeds).
+4. Run `go test ./internal/spawn/... -v` — confirm all pass, including the
+   pre-existing `cancelCopyModeIfNeeded`-direct and paste regression tests.
+5. Commit.
+
 ## Task 2 — log the quota-reset idle skip (runtime package)
 
 1. Write failing test in `internal/runtime/wake_test.go`:
@@ -40,15 +63,40 @@ Companion to `docs/specs/2026-09-26-tmux-copy-mode-paste.md`. Branch
 3. Run the test — confirm pass.
 4. Commit: `internal/runtime/wake.go`, `internal/runtime/wake_test.go`.
 
-## Task 3 — recovery check (no code)
+## Task 2b — capture-failure log and skip-log throttle (review follow-up)
 
-Investigate (already done while writing the spec): does a pane stuck by this
-bug recover without intervention? Verified live with `tmux list-keys -T
-copy-mode` that `Escape` is bound to `cancel` there but `Enter` has no
-binding at all. Nothing in the idle-wake path sends `Escape`, so the pane
-does not self-heal; the next paste attempt after this fix ships is what
-finally supplies a working Enter. Recorded in the spec's Verification
-section — no code change.
+1. `wake.go:541`: log when `s.Tmux.Capture` itself errors, alongside the
+   existing non-idle skip log — currently a capture failure is silent.
+2. Throttle the non-idle skip log to once per session per cutoff:
+   `checkQuotaResets` (`cmd/swarm/daemon.go`) calls `WakeOnQuotaReset` every
+   minute for up to an hour after a cutoff, so an unthrottled log would write
+   up to ~60 lines for one stuck session. Add an in-memory
+   `quotaSkipLogged map[string]int64` (sessionID → cutoff millis already
+   logged) next to the other `bookkeepingMu`-guarded maps in `model.go`;
+   only log if this session hasn't been logged for this exact cutoff yet.
+3. Tests in `wake_test.go`: capture-failure log line asserts the error is
+   included; throttle test calls `WakeOnQuotaReset` twice with the same
+   cutoff and non-idle capture, asserts exactly one skip log line.
+4. Commit.
+
+## Task 3 — recovery check (no code, corrected)
+
+Investigate: does a pane stuck by this bug recover without intervention?
+Verified live with `tmux list-keys -T copy-mode` that `Escape` is bound to
+`cancel` there but `Enter` has no binding at all.
+
+**Correction from the first pass:** the original claim — "the next paste
+attempt after this fix ships unsticks the pane" — is wrong. `tryPaste`
+(`wake.go:268`) and `WakeOnQuotaReset` (`wake.go:541`) both check
+`ad.Idle(capture)` *before* calling `PasteLine`, and the stuck pane's
+leftover unsent text is exactly what makes `Idle` false. So no wake path
+ever reaches the (now-guarded) paste call for an already-stuck session —
+guarding `Keys`/`PasteLine` doesn't matter for a pane that's already stuck,
+because nothing sends it any keys at all anymore. Recovery requires manual
+intervention: a deploy note (below) covers checking live panes once, after
+deploy, for stuck unsent text and pressing Enter by hand. No input-clearing
+mechanism is added — out of scope per the spec. Recorded in the spec's
+Verification section — no code change beyond the deploy note itself.
 
 ## Task 4 — docs
 
