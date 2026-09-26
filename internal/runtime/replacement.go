@@ -430,6 +430,14 @@ func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, e
 				return Operation{}, err
 			}
 		case PhasePreserving:
+			wait, err := s.waitForPreservation(ctx, op, latest)
+			if err != nil {
+				return Operation{}, err
+			}
+			if wait {
+				parked = true
+				break
+			}
 			if err := s.stopPredecessor(ctx, op, a, latest); err != nil {
 				return Operation{}, err
 			}
@@ -457,6 +465,32 @@ func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, e
 		}
 	}
 	return s.getOperation(ctx, opID)
+}
+
+// waitForPreservation parks a handoff in preserving while its predecessor
+// can still save: the session is pausing (a pause-first flow keeps it live),
+// no manifest is recorded yet, and the predecessor pane is still alive to
+// write the handoff checkpoint that binds it. A pausing session whose pane
+// is already gone proceeds manifest-less (the successor ships the
+// broken-predecessor warning instead); every other mode and state keeps the
+// immediate stop.
+func (s *Store) waitForPreservation(ctx context.Context, op Operation, latest Session) (bool, error) {
+	if op.Mode != ModeHandoff || !latest.State.Pausing() {
+		return false, nil
+	}
+	var manifestPath string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(manifest_path, '') FROM agent_operations WHERE id = ?`,
+		op.ID).Scan(&manifestPath); err != nil {
+		return false, err
+	}
+	if manifestPath != "" {
+		return false, nil
+	}
+	alive, err := s.predecessorAlive(ctx, op.SessionID)
+	if err != nil || !alive {
+		return false, err
+	}
+	return true, nil
 }
 
 // stopPredecessor is the preserving->stopping side effect: interrupt keys,

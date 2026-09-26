@@ -124,6 +124,61 @@ func TestControlsAgentFollowsTheParentChain(t *testing.T) {
 	}
 }
 
+// Batch 3 cycle 5: a handoff requested while the predecessor is pausing
+// parks in preserving instead of killing it, so the predecessor's handoff
+// checkpoint can still bind the manifest. The pane stays up, the session
+// stays pausing and live, and no successor starts yet.
+func TestHandoffParksInPreservingWhilePredecessorCanSave(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, PauseRequested); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: wSes.TmuxName})
+	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "park1", "")
+	if err != nil {
+		t.Fatalf("request err = %v", err)
+	}
+	if op.Phase != PhasePreserving {
+		t.Fatalf("phase = %q, want preserving (predecessor still able to save)", op.Phase)
+	}
+	pre, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pre.ID != wSes.ID || !pre.State.Pausing() || !pre.State.Live() {
+		t.Fatalf("predecessor = %s/%s, want %s still pausing and live", pre.ID, pre.State, wSes.ID)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("sessions = %d, want 1 (no successor before preservation binds)", n)
+	}
+}
+
+// The park ends without a manifest when there is nothing left to wait for:
+// a pausing session whose pane is already gone proceeds manifest-less (the
+// successor ships the broken-predecessor warning instead of hanging).
+func TestHandoffProceedsManifestLessWhenPaneGone(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, PauseRequested); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm)
+	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "park2", "")
+	if err != nil {
+		t.Fatalf("request err = %v", err)
+	}
+	if op.Phase == PhasePreserving {
+		t.Fatalf("phase = %q, want the walk to proceed without a live pane to wait for", op.Phase)
+	}
+}
+
 // The guards only fire while an operation is actually in flight: a finished
 // handoff leaves Pause/Resume/Retry exactly as they were.
 func TestGuardsClearAfterOperationSettles(t *testing.T) {
