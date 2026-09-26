@@ -2301,3 +2301,51 @@ func TestStartupResendsDialogKeysWhileTheDialogStaysVisible(t *testing.T) {
 		t.Fatalf("sent %d times, want 3 (t=0,5,10s)", sent)
 	}
 }
+
+func TestStartupDialogThatOutlivesRetriesOpensAPromptAndWaits(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.Dialogs = []adapter.Dialog{{Match: regexp.MustCompile(`Trust me\?`), Keys: []string{"Enter"}, Title: "Trust this project"}}
+	var caps []string
+	for i := 0; i < 200; i++ { // ~100s: well past the 30s stall timeout
+		caps = append(caps, "Trust me?\n")
+	}
+	tm.captures["stuck-dialog"] = append(caps, "─────\n❯ \n─────\n")
+	_, a, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Stuck dialog", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(context.Background(), a.ID)
+	if ses.State != Running {
+		t.Fatalf("state = %s, want running once the user cleared the dialog", ses.State)
+	}
+	var state, via string
+	if err := s.DB.QueryRow(`SELECT state, COALESCE(responded_via,'') FROM requests WHERE session_id = ? AND kind = 'prompt'`, ses.ID).Scan(&state, &via); err != nil {
+		t.Fatal(err)
+	}
+	if state != "answered" || via != "terminal" {
+		t.Fatalf("row = %s/%s, want answered/terminal", state, via)
+	}
+	if slices.Contains(s.Notify.(*fakeNotifier).kinds(), "agent.preflight_failed") {
+		t.Fatal("a human-blocked dialog must not fail the session")
+	}
+}
+
+func TestStartupDetectOnlyDialogOpensAPromptWithoutKeys(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.Dialogs = []adapter.Dialog{{Match: regexp.MustCompile(`Do you trust this workspace\?`), Title: "Trust this workspace"}}
+	var caps []string
+	for i := 0; i < 40; i++ {
+		caps = append(caps, "Do you trust this workspace?\n")
+	}
+	tm.captures["detect-only"] = append(caps, "─────\n❯ \n─────\n")
+	_, a, _, _ := s.StartSpike(context.Background(), SpikeInput{Name: "Detect only", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(context.Background(), a.ID)
+	if len(tm.keys) != 0 {
+		t.Fatalf("keys = %v, want none for a detect-only dialog", tm.keys)
+	}
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ? AND prompt = 'Trust this workspace'`, ses.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
+	}
+}

@@ -1288,9 +1288,17 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 		}
 		plain := stripANSI(capture)
 		now := s.Now()
+		anyEscalated := false
 		for i, d := range ad.StartupDialogs() {
 			if !d.Match.MatchString(plain) {
-				delete(st, i)
+				if dst := st[i]; dst != nil {
+					if dst.reqID != "" {
+						if err := s.ResolveDialogPrompt(ctx, ses.ID, d.Title); err != nil {
+							s.logf("startup: %s: resolve dialog %q: %v", a.Name, d.Title, err)
+						}
+					}
+					delete(st, i)
+				}
 				continue
 			}
 			if d.Require != nil && !d.Require.MatchString(plain) {
@@ -1313,6 +1321,24 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 				dst.lastSent = now
 				s.logf("startup: %s: sent %v for dialog %q (send %d of %d)", a.Name, d.Keys, d.Title, dst.sends, dialogMaxSends)
 			}
+			if dst.reqID == "" && now.Sub(dst.firstSeen) >= dialogEscalateAfter {
+				req, _, err := s.OpenDialogPrompt(ctx, ses.ID, d.Title)
+				if err != nil {
+					s.logf("startup: %s: open dialog prompt %q: %v", a.Name, d.Title, err)
+				} else {
+					dst.reqID = req.ID
+					s.logf("startup: %s: dialog %q still visible after %s, opened %s", a.Name, d.Title, dialogEscalateAfter, req.ID)
+				}
+			}
+			if dst.reqID != "" {
+				anyEscalated = true
+			}
+		}
+		if anyEscalated {
+			// A human-blocked pane never fails or times out on its own: it waits
+			// for the user to clear the dialog in the terminal.
+			ceiling = now.Add(startupCeiling)
+			stallDeadline = now.Add(startupStallTimeout)
 		}
 		// A session that clears its startup dialogs and launches straight into
 		// continuous, genuinely busy work (2026-09-20, live incident: "s1-review-2"
@@ -1326,6 +1352,13 @@ func (s *Store) watchStartup(ctx context.Context, a Agent, ses Session, ad adapt
 		// a false idle read, so reusing it here to rule in "done starting" is the
 		// same signal, not a new one.
 		if ad.Idle(capture) || (ad.Busy() != nil && ad.Busy().MatchString(stripANSI(capture))) {
+			for i, d := range ad.StartupDialogs() {
+				if dst := st[i]; dst != nil && dst.reqID != "" {
+					if err := s.ResolveDialogPrompt(ctx, ses.ID, d.Title); err != nil {
+						s.logf("startup: %s: resolve dialog %q: %v", a.Name, d.Title, err)
+					}
+				}
+			}
 			s.discoverProviderSession(ctx, a, ses, ad)
 			return s.SetSessionState(ctx, ses.ID, Running)
 		}
