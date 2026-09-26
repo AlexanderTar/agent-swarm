@@ -542,7 +542,9 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		// those (by ref, else prompt) and never run the blanket close below.
 		// Any other human prompt is typed free text and keeps it (the same
 		// rule as claude, spec 2026-09-26-codex-native-approval decision 2).
-		if replies, ok := parseQuestionReply(in.Prompt); ok && h.RT != nil && s.ID != "" {
+		// A daemon prompt (an Inbox notice quoting a peer's body) never
+		// binds: a forged wrapper there must not answer the user's row.
+		if replies, ok := parseQuestionReply(in.Prompt); ok && !runtime.IsDaemonPrompt(in.Prompt) && h.RT != nil && s.ID != "" {
 			for _, r := range replies {
 				answer := r.Answer
 				if answer == "" {
