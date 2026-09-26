@@ -210,9 +210,10 @@ func requestOut(r runtime.Request) map[string]any {
 		// 2026-09-26 fix (native-railway-tracing finding): a stale skill can
 		// bind the answer and never forward it, since nothing else in this
 		// result says there is a next step. Spell it out here too.
-		out["next"] = fmt.Sprintf("Show native_prompt with your native question tool now "+
-			"(one question per call). Once the user answers, call "+
-			"swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\".", r.ID)
+		out["next"] = fmt.Sprintf("Print the summary in chat first, not in the question. Then show native_prompt "+
+			"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
+			"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
+			"forwarding only what the user picked, never a decision they did not make.", r.ID)
 	}
 	return out
 }

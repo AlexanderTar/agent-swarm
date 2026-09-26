@@ -1045,6 +1045,12 @@ func TestAskResultWithNativePromptCarriesNextStep(t *testing.T) {
 	if !strings.Contains(res.Next, `native_answer`) || !strings.Contains(res.Next, res.RequestID) {
 		t.Fatalf("next = %q, want it to mention native_answer and the ref %q", res.Next, res.RequestID)
 	}
+	if !strings.Contains(res.Next, "summary in chat") {
+		t.Fatalf("next = %q, want it to say to print the summary in chat first", res.Next)
+	}
+	if !strings.Contains(res.Next, "only what the user picked") {
+		t.Fatalf("next = %q, want it to say to forward only what the user picked", res.Next)
+	}
 }
 
 // TestAskNativePromptForMsgMCP is Task 13b: swarm_ask kind:"native_prompt"
