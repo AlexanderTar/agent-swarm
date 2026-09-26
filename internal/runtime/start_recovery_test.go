@@ -131,3 +131,32 @@ func TestStartRefusesWhileReplacementInFlight(t *testing.T) {
 		t.Fatalf("sessions = %d, want no launch beside the in-flight operation", sessions)
 	}
 }
+
+// An explicit replacement request (POST /handoff, CLI, swarm_control) on a
+// user-cancelled agent re-enables auto_restart, so a walk that parks is
+// resumed by the reconciler instead of stranded behind the Cancel flag.
+func TestReplacementAfterCancelIsResumedByReconcile(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if _, err := s.Cancel(ctx, w.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// The cancelled pane is still on its way out: the walk parks in stopping.
+	panes(tm, Pane{Session: wSes.TmuxName})
+	tm.env[wSes.TmuxName] = map[string]string{"SWARM_SESSION": wSes.ID}
+	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "after-cancel", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Phase != PhaseStopping {
+		t.Fatalf("phase = %q, want parked in stopping", op.Phase)
+	}
+	panes(tm)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.getOperation(ctx, op.ID); got.Phase != PhaseSucceeded {
+		t.Fatalf("phase after reconcile = %q (%s), want succeeded", got.Phase, got.Error)
+	}
+}

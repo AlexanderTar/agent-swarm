@@ -601,14 +601,11 @@ func (s *Store) recoverableOrchestrator(ctx context.Context, it items.Item) (Age
 // row through the replacement coordinator (mode recover): same id, same
 // name (resolveName is never consulted, so no suffix), a durable operation,
 // the recovery kickoff and bundle, admission for a finished row, and the
-// in-flight guard. An explicit Start re-enables auto_restart first, so a
-// parked operation is resumed by the reconciler. queued reports an operation
+// in-flight guard. The request re-enables auto_restart, so a parked
+// operation is resumed by the reconciler. queued reports an operation
 // still waiting (for the old pane to die, or for an admission slot).
 func (s *Store) restartOrchestratorInPlace(ctx context.Context, a Agent) (Agent, bool, error) {
 	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
-		return Agent{}, false, err
-	}
-	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET auto_restart = 1 WHERE id = ?`, a.ID); err != nil {
 		return Agent{}, false, err
 	}
 	op, err := s.RequestReplacement(ctx, a.ID, ModeRecover, "", "")

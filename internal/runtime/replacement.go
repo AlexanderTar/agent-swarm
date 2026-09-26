@@ -139,8 +139,11 @@ func (s *Store) RequestReplacement(ctx context.Context, agentID string, mode Rep
 			}
 			return err
 		}
-		_ = a
-		return nil
+		// An explicit replacement request re-enables auto_restart: the
+		// Cancel flag only gates restarts the daemon drives on its own,
+		// and ResumeOperations must keep driving this walk if it parks.
+		_, err = tx.ExecContext(ctx, `UPDATE agents SET auto_restart = 1 WHERE id = ?`, a.ID)
+		return err
 	})
 	if err != nil {
 		if errors.Is(err, errDuplicateKey) {
