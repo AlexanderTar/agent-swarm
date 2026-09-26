@@ -189,3 +189,57 @@ func TestHandoffRelaysOnceToParent(t *testing.T) {
 		}
 	}
 }
+
+// Handoff of an agent that is already paused keeps the pause's save: the
+// paused session's handoff checkpoint binds the manifest (ready gate runs),
+// the session stays paused (no rewrite, no kill), and the successor gets no
+// incomplete-recovery warning.
+func TestHandoffOfPausedAgentBindsItsSave(t *testing.T) {
+	s, tm, fa := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, PauseRequested); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Handoff, Summary: "paused at unit 2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, Paused); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm)
+	tm.killed, tm.keys = nil, nil
+	op, err := s.RequestReplacement(ctx, w.ID, ModeHandoff, "paused1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.getOperation(ctx, op.ID)
+	if got.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %q (%s), want succeeded", got.Phase, got.Error)
+	}
+	var manifest string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(manifest_path, '') FROM agent_operations WHERE id = ?`, op.ID).Scan(&manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest == "" {
+		t.Fatal("paused save never bound: manifest_path empty")
+	}
+	var state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM sessions WHERE id = ?`, wSes.ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(Paused) {
+		t.Fatalf("predecessor state rewritten to %s, want paused", state)
+	}
+	for _, k := range tm.keys {
+		if strings.HasPrefix(k, wSes.TmuxName+"|") {
+			t.Fatalf("interrupt keys sent to the paused session's pane: %v", tm.keys)
+		}
+	}
+	if strings.Contains(fa.LastSpec.Kickoff, "no usable manifest") {
+		t.Fatalf("successor kickoff carries the incomplete-recovery warning:\n%s", fa.LastSpec.Kickoff)
+	}
+}

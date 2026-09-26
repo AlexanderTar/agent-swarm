@@ -580,6 +580,19 @@ func (s *Store) stopPredecessor(ctx context.Context, op Operation, a Agent, ses 
 	// state: there is no pane to interrupt and no stop to report, so only the
 	// phase moves on.
 	if slices.Contains(endedStates, ses.State) {
+		// A session that ended after saving (a completed Pause, or a pause
+		// that timed out after its handoff checkpoint) already holds its
+		// preservation: bind that checkpoint so the manifest and ready gate
+		// run exactly as for a live handoff. A failed gate leaves the
+		// operation blocked, which the driver reads back as terminal.
+		if op.Mode != ModePause {
+			if ckpt := s.sessionHandoffCheckpoint(ctx, ses.ID); ckpt != "" {
+				if err := s.bindHandoffCheckpoint(ctx, a.ID, ckpt); err != nil {
+					s.logf("replacement: bind saved handoff %s for %s: %v", ckpt, a.Name, err)
+					return nil
+				}
+			}
+		}
 		to := PhaseStopping
 		if op.Mode == ModePause {
 			to = PhaseSucceeded
@@ -714,8 +727,17 @@ func (s *Store) revokeAgentTokens(ctx context.Context, agentID string) error {
 
 // endedStates are the session states an operation finds already over: the
 // retryable ones plus a user-cancelled session (Cancel keeps the identity
-// recoverable). stopPredecessor leaves them untouched, keeping the audit trail.
-var endedStates = append(slices.Clone(retryableStates), Cancelled)
+// recoverable) and a paused one (its pane is gone; Handoff replaces it). stopPredecessor leaves them untouched, keeping the audit trail.
+var endedStates = append(slices.Clone(retryableStates), Cancelled, Paused)
+
+// sessionHandoffCheckpoint is the session's latest handoff checkpoint id, or
+// "" when it never saved one.
+func (s *Store) sessionHandoffCheckpoint(ctx context.Context, sessionID string) string {
+	var id string
+	_ = s.DB.QueryRowContext(ctx, `SELECT id FROM checkpoints WHERE session_id = ? AND kind = 'handoff'
+		ORDER BY created_at DESC, id DESC LIMIT 1`, sessionID).Scan(&id)
+	return id
+}
 
 // admitOperation is the queued->starting gate. The successor launches only
 // once the observed predecessor session has settled into a retryable state:
