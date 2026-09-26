@@ -25,13 +25,24 @@ do.
   `WakeOnQuotaReset`).
 - The resolver looks the model up via `s.Catalog.ModelsFor(ctx, kind)` +
   `catalog.Find` (the existing lookup pattern used throughout
-  `internal/runtime`) and, on a hit, returns `m.LaunchModel(effort)`. On a
-  miss (model not in catalog, catalog unavailable, or `s.Catalog == nil`) it
-  returns the input model unchanged -- a user-configured raw suffixed id
-  (`gemini-3.8-flash-high`) must keep working.
-- This is agent-kind-agnostic: it runs for every kind, not just agy. For
-  Claude/Codex/Fake, `EffortEncoding != "slug"`, so `LaunchModel` is a no-op
-  (`return m.ID`) -- the behavior for those kinds does not change.
+  `internal/runtime`) and, only when the hit is slug-encoded
+  (`m.EffortEncoding == "slug"`), returns `m.LaunchModel(effort)`. On a miss
+  (model not in catalog, catalog unavailable, or `s.Catalog == nil`) or a
+  flag-encoded hit, it returns the input model unchanged.
+- **Corrected finding (code review, 2026-09-26):** the spec originally
+  claimed "Claude/Codex/Fake are a no-op because `EffortEncoding != 'slug'`
+  makes `LaunchModel` return `m.ID`" -- true for a *miss*, but wrong for a
+  *hit* via `catalog.Find`'s alias matching. `ParseClaudePage` sets
+  `Aliases: ["opus"]` (etc.) with `EffortEncoding: "flag"` on the dated
+  catalog ID, so `catalog.Find(models, "opus")` succeeds and
+  `LaunchModel` returns that dated ID, not `"opus"` -- silently pinning a
+  default Claude agent to whatever snapshot the catalog last cached instead
+  of the rolling alias. A user-configured raw suffixed id
+  (`gemini-3.8-flash-high`) must also keep working, which a miss already
+  guarantees. The `m.EffortEncoding != "slug"` guard above is what actually
+  keeps Claude/Codex/Fake/bare-cursor-alias models unchanged; it must gate
+  on the *encoding of the matched entry*, not on whether a catalog entry was
+  found at all.
 - `WakeTarget` gains a `Model` field; `Agy.Wake` passes `--model <field>`
   when non-empty. Other adapters' `Wake` do not read it (Claude/Codex wake
   via a side-channel that never took `--model`; adding the field does not
@@ -62,8 +73,8 @@ type WakeTarget struct {
 func (s *Store) resolveLaunchModel(ctx context.Context, kind AgentKind, model, effort string) string
 ```
 Behavior: `s.Catalog.ModelsFor(ctx, kind)` -> `catalog.Find(models, model)` ->
-on hit, `m.LaunchModel(effort)`; on any miss/error/nil-Catalog, `model`
-unchanged.
+on a slug-encoded hit (`m.EffortEncoding == "slug"`), `m.LaunchModel(effort)`;
+on any miss/error/nil-Catalog/flag-encoded hit, `model` unchanged.
 
 ## File list
 

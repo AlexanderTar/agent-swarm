@@ -886,6 +886,44 @@ func TestResolveLaunchModelAppliesAgyEffortSuffix(t *testing.T) {
 	}
 }
 
+// TestResolveLaunchModelPassesThroughClaudeAlias is a code-review fix
+// (docs/specs/2026-09-26-agy-launch-model.md): catalog.Find matches on
+// Aliases too, so a flag-encoded Claude catalog entry with Aliases:
+// ["opus"] made resolveLaunchModel rewrite "opus" to the entry's dated
+// ID via LaunchModel -- LaunchModel's contract is "value for --model",
+// which for a flag-encoded model is m.ID, not the alias the caller
+// passed in. Only a slug-encoded hit should ever be rewritten.
+func TestResolveLaunchModelPassesThroughClaudeAlias(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','claude-1','[{"id":"claude-opus-5-20260101","label":"Opus (latest)","aliases":["opus"],"efforts":["low","medium","high"],"default_effort":"","effort_encoding":"flag","advisor_capable":true}]','claude-opus-5-20260101','test',1,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.resolveLaunchModel(ctx, Claude, "opus", "high"); got != "opus" {
+		t.Errorf("got %q, want the alias unchanged, not the catalog's dated ID", got)
+	}
+}
+
+// TestResolveLaunchModelPassesThroughBareSlugModel: a slug-encoded model
+// with no effort siblings (nil LaunchIDs, e.g. cursor's "auto") must pass
+// through unchanged rather than error or mangle the id.
+func TestResolveLaunchModelPassesThroughBareSlugModel(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('cursor','cursor-1','[{"id":"auto","label":"Auto","efforts":[],"default_effort":"","effort_encoding":"slug","advisor_capable":false}]','auto','test',1,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.resolveLaunchModel(ctx, Cursor, "auto", ""); got != "auto" {
+		t.Errorf("got %q, want unchanged bare slug id", got)
+	}
+}
+
 // TestStartSpikeResolvesAgyLaunchModel is the P0 model-passthrough fix
 // (docs/specs/2026-09-26-agy-launch-model.md): swarm assigns the catalog
 // base id, but agy only accepts the effort-suffixed launch id. Without the

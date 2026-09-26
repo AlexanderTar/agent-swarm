@@ -117,7 +117,9 @@ func TestWakeOnQuotaResetResolvesAgyLaunchModel(t *testing.T) {
 	ses, _ := s.LatestSession(ctx, a.ID)
 	panes(tm, Pane{Session: a.Name, Command: "agy"})
 	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"} // idle
-	s.DB.ExecContext(ctx, `UPDATE sessions SET waiting = 1 WHERE id = ?`, ses.ID)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET waiting = 1 WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	cutoff := at.Now().Add(-2 * time.Minute)
 	if _, err := s.WakeOnQuotaReset(ctx, Agy, cutoff); err != nil {

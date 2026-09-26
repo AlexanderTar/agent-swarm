@@ -1006,8 +1006,14 @@ func (s *Store) resolveLaunchModel(ctx context.Context, kind AgentKind, model, e
 	if err != nil {
 		return model
 	}
+	// catalog.Find matches on Aliases too (e.g. Claude's "opus"/"sonnet"/
+	// "fable"), and LaunchModel's contract for a flag-encoded hit is m.ID
+	// (the exact --model value for a bare/family id), not the alias the
+	// caller passed in -- rewriting it would pin a default Claude agent to
+	// the cached catalog's dated snapshot instead of the rolling alias.
+	// Only rewrite what actually needs it: a slug-encoded hit.
 	m, ok := catalog.Find(models, model)
-	if !ok {
+	if !ok || m.EffortEncoding != "slug" {
 		return model
 	}
 	return m.LaunchModel(effort)
