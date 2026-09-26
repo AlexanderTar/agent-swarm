@@ -3,6 +3,7 @@ package install_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -311,9 +312,11 @@ func TestPruneSkipsTheWriteWhileClaudeConfigLockIsHeld(t *testing.T) {
 	}
 	defer os.Remove(lock)
 
+	// Review round 3, item 3: busy is ErrClaudeConfigBusy now, not a
+	// silent nil, so the caller can say the prune was skipped.
 	n, err := install.PruneStaleClaudeTrustEntries(c)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, install.ErrClaudeConfigBusy) {
+		t.Fatalf("err = %v, want ErrClaudeConfigBusy", err)
 	}
 	if n != 0 {
 		t.Fatalf("pruned %d while the lock was held, want 0 (best-effort skip)", n)
@@ -412,5 +415,51 @@ func TestCheckClaudeReportsTheSkillsAndTheLeftoverLink(t *testing.T) {
 	ch := findCheck(t, install.CheckClaude(context.Background(), c, run), "Claude skills")
 	if !ch.OK || !strings.Contains(ch.Detail, "skills") {
 		t.Errorf("Claude skills = %+v", ch)
+	}
+}
+
+// Review round 3, item 1 (data loss): the install-time prune shares the
+// adapter's refusal -- a 0-byte, whitespace-only, `null` or malformed
+// ~/.claude.json is never rewritten, and the refusal is an error the caller
+// can print, not a silent (0, nil).
+func TestPruneNeverRewritesAnEmptyNullOrMalformedClaudeJSON(t *testing.T) {
+	for _, seed := range []string{"", " \n\t ", "null", "{bad"} {
+		c := fakeHome(t)
+		if err := os.WriteFile(install.ClaudeJSONPath(c), []byte(seed), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		n, err := install.PruneStaleClaudeTrustEntries(c)
+		if err == nil || n != 0 {
+			t.Errorf("seed %q: prune = (%d, %v), want (0, an error)", seed, n, err)
+		}
+		if b, _ := os.ReadFile(install.ClaudeJSONPath(c)); string(b) != seed {
+			t.Errorf("seed %q: prune rewrote the file to %q", seed, b)
+		}
+	}
+}
+
+// Review round 3, item 2: a symlinked ~/.claude.json stays a symlink after
+// the prune; the target is what gets rewritten.
+func TestPruneWritesThroughASymlinkedClaudeJSON(t *testing.T) {
+	c := fakeHome(t)
+	staleOwned := filepath.Join(c.Home, "work", "3")
+	target := filepath.Join(t.TempDir(), "claude.json")
+	seed := fmt.Sprintf(`{"oauthAccount":{"id":"x"},"projects":{%q:{"hasTrustDialogAccepted":true}}}`, staleOwned)
+	if err := os.WriteFile(target, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, install.ClaudeJSONPath(c)); err != nil {
+		t.Fatal(err)
+	}
+	n, err := install.PruneStaleClaudeTrustEntries(c)
+	if err != nil || n != 1 {
+		t.Fatalf("prune = (%d, %v), want (1, nil)", n, err)
+	}
+	if fi, _ := os.Lstat(install.ClaudeJSONPath(c)); fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("~/.claude.json was replaced by a regular file")
+	}
+	b, _ := os.ReadFile(target)
+	if strings.Contains(string(b), staleOwned) || !strings.Contains(string(b), "oauthAccount") {
+		t.Fatalf("target = %s, want the stale entry gone and oauthAccount kept", b)
 	}
 }

@@ -39,8 +39,8 @@ func TestWithClaudeConfigLockGivesUpWhenAStaleLockCannotBeRemoved(t *testing.T) 
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("WithClaudeConfigLock returned %v, want nil (best-effort skip)", err)
+		if !errors.Is(err, install.ErrClaudeConfigBusy) {
+			t.Fatalf("WithClaudeConfigLock returned %v, want ErrClaudeConfigBusy (review round 3, item 3)", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("WithClaudeConfigLock spun past its deadline instead of giving up")

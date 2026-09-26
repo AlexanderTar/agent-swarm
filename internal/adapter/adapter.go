@@ -15,6 +15,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
+	"github.com/AlexanderTar/agent-swarm/internal/install"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 )
 
@@ -193,33 +194,13 @@ func newUUIDv4() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// writeFileAtomic writes to a temp file in the same folder and renames over the
-// target, keeping the existing mode when the target exists. Tasks 7, 8 and 9
-// rewrite the agents' own config files with it; a half-written TOML or JSON would
-// make an agent unstartable. Lives here (R1) for the same reason as newUUIDv4.
+// writeFileAtomic is install.WriteFileAtomic (temp file in the same folder,
+// fsync, rename; keeps an existing target's mode). Tasks 7, 8 and 9 rewrite
+// the agents' own config files with it; a half-written TOML or JSON would
+// make an agent unstartable. Review round 3, item 2: one implementation,
+// shared with every ~/.claude.json writer.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return install.WriteFileAtomic(path, data, mode)
 }
 
 // registry is filled by each adapter's own file through register() in an init

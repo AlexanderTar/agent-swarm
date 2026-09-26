@@ -718,6 +718,10 @@ func TestClaudePreTrustSkipsAMissingClaudeJSON(t *testing.T) {
 func TestClaudeForgetFolderRemovesBothKeysUnderTheSameLock(t *testing.T) {
 	d := testDeps(t)
 	s := claudeSpec(t, d)
+	// Review round 3, item 3: ForgetFolder now applies the Swarm-owned
+	// predicate to every key itself, so the cwd must be under d.Home/work
+	// (d.Home is /tmp/..., so its realpath twin is /private/tmp/...).
+	s.Cwd = swarmOwnedCwd(t, d, "1")
 	real, err := filepath.EvalSymlinks(s.Cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -1062,5 +1066,153 @@ func TestClaudeIdleAcceptsTheReverseVideoCursorCell(t *testing.T) {
 	}
 	if a.Idle(pane(t, "claude", "pane-input-nonempty.txt")) {
 		t.Error("pane-input-nonempty.txt must stay non-idle")
+	}
+}
+
+// swarmOwnedCwd returns a real directory under d.Home/work, i.e. one
+// install.SwarmOwnedClaudeWorkspace accepts, so ForgetFolder's own
+// ownership filter lets it through.
+func swarmOwnedCwd(t *testing.T, d Deps, name string) string {
+	t.Helper()
+	p := filepath.Join(d.Home, "work", name)
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Review round 3, item 1 (data loss): a 0-byte, whitespace-only, `null` or
+// malformed ~/.claude.json must never be rewritten as a projects-only file
+// -- that wipes oauthAccount, mcpServers and every other top-level key
+// Claude keeps there. Both writers (pre-trust on Launch, ForgetFolder)
+// refuse and leave the bytes exactly as they were.
+func TestClaudeTrustWritersNeverRewriteAnEmptyNullOrMalformedClaudeJSON(t *testing.T) {
+	for _, seed := range []string{"", " \n\t ", "null", " null\n", "{bad", "[]"} {
+		d := testDeps(t)
+		s := claudeSpec(t, d)
+		s.Cwd = swarmOwnedCwd(t, d, "1")
+		cfg := filepath.Join(d.UserHome, ".claude.json")
+		if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := newClaude(d).Launch(s); err != nil {
+			t.Fatalf("seed %q: Launch must still succeed: %v", seed, err)
+		}
+		if b, _ := os.ReadFile(cfg); string(b) != seed {
+			t.Errorf("seed %q: pre-trust rewrote the file to %q", seed, b)
+		}
+		if err := newClaude(d).ForgetFolder(context.Background(), s.Cwd); err == nil {
+			t.Errorf("seed %q: ForgetFolder must report the refusal, not nil", seed)
+		}
+		if b, _ := os.ReadFile(cfg); string(b) != seed {
+			t.Errorf("seed %q: ForgetFolder rewrote the file to %q", seed, b)
+		}
+		if fi, _ := os.Stat(cfg); seed == "" && fi.Size() != 0 {
+			t.Errorf("a 0-byte file must stay 0 bytes, got %d", fi.Size())
+		}
+	}
+}
+
+// Review round 3, item 2: a symlinked ~/.claude.json (dotfile managers)
+// must stay a symlink -- the write goes to the link's target, never a
+// rename over the link itself. The lock is still Claude's own
+// <UserHome>/.claude.json.lock (the unresolved path): holding it blocks the
+// write even though the data lives elsewhere.
+func TestClaudeTrustWritesThroughASymlinkedClaudeJSON(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	s.Cwd = swarmOwnedCwd(t, d, "1")
+	target := filepath.Join(t.TempDir(), "dotfiles", "claude.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(`{"oauthAccount":{"id":"x"},"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	if err := os.Symlink(target, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Holding the unresolved-path lock blocks the write.
+	lock := cfg + ".lock"
+	if err := os.Mkdir(lock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(target); strings.Contains(string(b), "hasTrustDialogAccepted") {
+		t.Fatal("the write must wait on <UserHome>/.claude.json.lock, the path Claude locks")
+	}
+	os.Remove(lock)
+
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("~/.claude.json was replaced by a regular file; the symlink must survive")
+	}
+	b, _ := os.ReadFile(target)
+	if !strings.Contains(string(b), "hasTrustDialogAccepted") || !strings.Contains(string(b), "oauthAccount") {
+		t.Fatalf("target = %s, want the trust entry merged and oauthAccount kept", b)
+	}
+	if tfi, _ := os.Stat(target); tfi.Mode().Perm() != 0o600 {
+		t.Errorf("target mode = %v, want unchanged 0600", tfi.Mode().Perm())
+	}
+
+	if err := newClaude(d).ForgetFolder(context.Background(), s.Cwd); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Lstat(cfg); fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("ForgetFolder replaced the symlink with a regular file")
+	}
+	if b, _ := os.ReadFile(target); strings.Contains(string(b), "hasTrustDialogAccepted") {
+		t.Fatalf("ForgetFolder must remove the entry from the target: %s", b)
+	}
+}
+
+// Review round 3, item 3: ForgetFolder's realpath twin must pass the same
+// Swarm-owned predicate as the literal key. A work-dir symlink that
+// resolves into the user's own project must never delete that project's
+// entry.
+func TestClaudeForgetFolderNeverDeletesANonSwarmOwnedRealpathTwin(t *testing.T) {
+	d := testDeps(t)
+	userProject := filepath.Join(d.UserHome, "my-project")
+	if err := os.MkdirAll(userProject, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realUser, _ := filepath.EvalSymlinks(userProject)
+	link := filepath.Join(d.Home, "work", "7")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(userProject, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	seed := `{"projects":{"` + jsonEscape(link) + `":{"hasTrustDialogAccepted":true},"` +
+		jsonEscape(realUser) + `":{"hasTrustDialogAccepted":true}}}`
+	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := newClaude(d).ForgetFolder(context.Background(), link); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Projects[link]; ok {
+		t.Error("the Swarm-owned literal key must be removed")
+	}
+	if _, ok := doc.Projects[realUser]; !ok {
+		t.Error("a realpath twin outside <home>/work and <home>/worktrees must never be removed")
 	}
 }

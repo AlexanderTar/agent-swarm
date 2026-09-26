@@ -1,9 +1,9 @@
 package install
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,12 +87,27 @@ func claudeJSONWritable(c Config) bool {
 	return true
 }
 
-// swarmOwnedClaudeWorkspace is internal/runtime's swarmOwnedWorkspace,
+// SwarmOwnedClaudeWorkspace is internal/runtime's swarmOwnedWorkspace,
 // duplicated here rather than imported: internal/adapter already imports
 // internal/install, and internal/runtime imports internal/adapter, so
 // install importing runtime would cycle. Keep both in sync by hand; the
 // predicate is five lines and covered by its own test on each side.
-func swarmOwnedClaudeWorkspace(home, path string) bool {
+//
+// Unlike the runtime copy it also accepts a path under home's realpath:
+// D1 writes the realpath twin of every cwd, and on a symlinked home (macOS
+// /tmp -> /private/tmp, say) that twin is under realpath(home), not home.
+// Review round 3, item 3: ForgetFolder's twin key must pass this too.
+func SwarmOwnedClaudeWorkspace(home, path string) bool {
+	if swarmOwnedUnder(home, path) {
+		return true
+	}
+	if real, err := filepath.EvalSymlinks(home); err == nil && real != home {
+		return swarmOwnedUnder(real, path)
+	}
+	return false
+}
+
+func swarmOwnedUnder(home, path string) bool {
 	if home == "" || path == "" {
 		return false
 	}
@@ -107,82 +122,38 @@ func swarmOwnedClaudeWorkspace(home, path string) bool {
 }
 
 // PruneStaleClaudeTrustEntries removes every projects[...] entry in
-// ~/.claude.json that is Swarm-owned (swarmOwnedClaudeWorkspace) and whose
+// ~/.claude.json that is Swarm-owned (SwarmOwnedClaudeWorkspace) and whose
 // directory no longer exists on disk (D3, dialog-needs-you spec). The
 // user's own entries, and any Swarm-owned entry whose workspace still
-// exists, are never touched. A missing or unparsable file is left alone
-// (0, nil): there is nothing to prune, and a file this codebase cannot
-// safely parse is never rewritten.
+// exists, are never touched. A missing file is (0, nil): nothing to prune.
+// Every other refusal (empty, `null`, unparsable, lock busy) is returned as
+// an error for the caller to print; the file is never rewritten then.
 //
-// Review round 2, finding 2: `swarm install` typically runs while the
-// user's own interactive Claude session (or another launch) is writing this
-// same file. This now takes Claude's own mkdir lock (WithClaudeConfigLock,
-// shared with the adapter's per-session writes) and re-reads/compares
-// before writing, retrying the read-modify-write instead of blindly
-// overwriting a file that changed underneath it -- the same lost-update
-// protection the adapter's trustClaudeWorkspace/ForgetFolder already use.
+// Runs through EditClaudeProjects: Claude's own lock, symlink-safe,
+// re-read-compare before the atomic write (review rounds 2 and 3).
 func PruneStaleClaudeTrustEntries(c Config) (int, error) {
-	path := ClaudeJSONPath(c)
 	removed := 0
-	err := WithClaudeConfigLock(c.UserHome, func() error {
-		for attempt := 0; attempt < 3; attempt++ {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return nil
-				}
-				return err
+	err := EditClaudeProjects(c.UserHome, func(projects map[string]json.RawMessage) (bool, error) {
+		removed = 0
+		for p := range projects {
+			if !SwarmOwnedClaudeWorkspace(c.Home, p) {
+				continue
 			}
-			var doc map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &doc); err != nil {
-				return nil // not ours to fix; leave the user's file exactly as it is
+			if _, err := os.Stat(p); err == nil {
+				continue // still exists; not stale
 			}
-			var projects map[string]json.RawMessage
-			if len(doc["projects"]) > 0 {
-				if err := json.Unmarshal(doc["projects"], &projects); err != nil {
-					return nil
-				}
-			}
-			n := 0
-			for p := range projects {
-				if !swarmOwnedClaudeWorkspace(c.Home, p) {
-					continue
-				}
-				if _, err := os.Stat(p); err == nil {
-					continue // still exists; not stale
-				}
-				delete(projects, p)
-				n++
-			}
-			if n == 0 {
-				return nil
-			}
-			pb, err := json.Marshal(projects)
-			if err != nil {
-				return err
-			}
-			doc["projects"] = pb
-			out, err := json.Marshal(doc)
-			if err != nil {
-				return err
-			}
-			mode := os.FileMode(0o600)
-			if fi, statErr := os.Stat(path); statErr == nil {
-				mode = fi.Mode().Perm()
-			}
-			cur, _ := os.ReadFile(path)
-			if !bytes.Equal(cur, raw) {
-				continue // the file changed under us; re-read and recompute
-			}
-			if _, err := WriteIfChanged(path, out, mode); err != nil {
-				return err
-			}
-			removed = n
-			return nil
+			delete(projects, p)
+			removed++
 		}
-		return fmt.Errorf("claude.json kept changing under us")
+		return removed > 0, nil
 	})
-	return removed, err
+	if errors.Is(err, ErrClaudeConfigMissing) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
 }
 
 // CheckAndPruneClaudeTrust is D3's install-time step: verify ~/.claude.json is
@@ -225,7 +196,7 @@ func claudeInstalledVersion(ctx context.Context, run execx.Runner) (string, bool
 }
 
 // CheckClaudeTrust is D4's "Claude trust" doctor check. It shares
-// claudeJSONWritable/claudeVersionAtLeast/swarmOwnedClaudeWorkspace with
+// claudeJSONWritable/claudeVersionAtLeast/SwarmOwnedClaudeWorkspace with
 // CheckAndPruneClaudeTrust so the FAIL/WARN conditions and the prune
 // candidates are never computed two different ways.
 //
@@ -282,7 +253,7 @@ func claudeTrustEntryCounts(c Config) (stale, owned int, err error) {
 		return 0, 0, nil // not doctor's place to fail on a file it can't parse
 	}
 	for p := range doc.Projects {
-		if !swarmOwnedClaudeWorkspace(c.Home, p) {
+		if !SwarmOwnedClaudeWorkspace(c.Home, p) {
 			continue
 		}
 		owned++

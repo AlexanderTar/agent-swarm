@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -191,23 +190,14 @@ func (c *Claude) Resume(s Spec) (Launch, error) {
 	return Launch{Argv: append(argv, "--", s.Kickoff), Env: map[string]string{}}, nil
 }
 
-func claudeConfigPath(userHome string) string { return filepath.Join(userHome, ".claude.json") }
-
-// withClaudeConfigLock is install.WithClaudeConfigLock (review round 2,
-// finding 1 & 2: moved there so the adapter's per-session writes and
-// install's PruneStaleClaudeTrustEntries share one lock/retry
-// implementation instead of racing each other unlocked).
-func withClaudeConfigLock(userHome string, fn func() error) error {
-	return install.WithClaudeConfigLock(userHome, fn)
-}
-
 // trustClaudeWorkspace marks cwd (and its realpath, if it differs) trusted
-// in Claude's global config, merging into any existing project entry, under
-// Claude's own lock. It is idempotent and never rewrites the file when every
-// key already has hasTrustDialogAccepted: true (D1, dialog-needs-you spec
-// §E). Every other field of every project entry, and every other top-level
-// key, survives untouched: the doc is decoded as map[string]json.RawMessage,
-// so untouched entries keep their exact original bytes.
+// in Claude's global config, merging into any existing project entry (D1,
+// dialog-needs-you spec §E). It runs through install.EditClaudeProjects:
+// Claude's own lock, symlink-safe write to the target, re-read-compare, and
+// a refusal (no write) for a missing, empty, `null` or unparsable file. It
+// is idempotent and never rewrites the file when every key already has
+// hasTrustDialogAccepted: true. Every other field of every project entry,
+// and every other top-level key, keeps its exact bytes.
 func trustClaudeWorkspace(userHome, cwd string) error {
 	if userHome == "" {
 		return nil
@@ -216,162 +206,72 @@ func trustClaudeWorkspace(userHome, cwd string) error {
 	if real, err := filepath.EvalSymlinks(cwd); err == nil && real != cwd {
 		keys = append(keys, real)
 	}
-	return withClaudeConfigLock(userHome, func() error {
-		path := claudeConfigPath(userHome)
-		for attempt := 0; attempt < 3; attempt++ {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					// Review round 2, finding 3: a missing ~/.claude.json is
-					// Claude's own missing-config/backup-restore path, not
-					// ours to paper over. Creating a fresh file holding only
-					// {"projects": ...} here would hide that and skip
-					// straight past batch-1's dialog-auto-answer/Needs-you
-					// fallback. Skip the write; the caller (Launch/Resume)
-					// just logs and moves on, same as any other pre-trust
-					// failure (D1).
-					return fmt.Errorf("claude.json does not exist; not creating it")
-				}
-				return err
-			}
-			mode := os.FileMode(0o600)
-			if fi, statErr := os.Stat(path); statErr == nil {
-				mode = fi.Mode().Perm()
-			}
-			var doc map[string]json.RawMessage
-			if len(raw) > 0 {
-				if err := json.Unmarshal(raw, &doc); err != nil {
-					return fmt.Errorf("claude.json does not parse: %w", err)
-				}
-			}
-			if doc == nil {
-				doc = map[string]json.RawMessage{}
-			}
-			var projects map[string]json.RawMessage
-			if len(doc["projects"]) > 0 {
-				if err := json.Unmarshal(doc["projects"], &projects); err != nil {
-					return fmt.Errorf("claude.json projects does not parse: %w", err)
-				}
-			}
-			if projects == nil {
-				projects = map[string]json.RawMessage{}
-			}
-			if claudeAllTrusted(projects, keys) {
-				return nil // already trusted under every key; do not rewrite the file
-			}
-			for _, k := range keys {
-				var entry map[string]json.RawMessage
-				if len(projects[k]) > 0 {
-					if err := json.Unmarshal(projects[k], &entry); err != nil {
-						return fmt.Errorf("claude.json projects[%s] does not parse: %w", k, err)
-					}
-				}
-				if entry == nil {
-					entry = map[string]json.RawMessage{}
-				}
-				entry["hasTrustDialogAccepted"] = json.RawMessage("true")
-				b, err := json.Marshal(entry)
-				if err != nil {
-					return err
-				}
-				projects[k] = b
-			}
-			pb, err := json.Marshal(projects)
-			if err != nil {
-				return err
-			}
-			doc["projects"] = pb
-			out, err := json.Marshal(doc)
-			if err != nil {
-				return err
-			}
-			cur, _ := os.ReadFile(path)
-			if !bytes.Equal(cur, raw) {
-				continue // the file changed under us; re-read and merge again
-			}
-			return writeFileAtomic(path, out, mode)
+	return install.EditClaudeProjects(userHome, func(projects map[string]json.RawMessage) (bool, error) {
+		if claudeAllTrusted(projects, keys) {
+			return false, nil // already trusted under every key; do not rewrite the file
 		}
-		return fmt.Errorf("claude.json kept changing under us")
+		for _, k := range keys {
+			var entry map[string]json.RawMessage
+			if len(projects[k]) > 0 {
+				if err := json.Unmarshal(projects[k], &entry); err != nil {
+					return false, fmt.Errorf("claude.json projects[%s] does not parse: %w", k, err)
+				}
+			}
+			if entry == nil {
+				entry = map[string]json.RawMessage{}
+			}
+			entry["hasTrustDialogAccepted"] = json.RawMessage("true")
+			b, err := json.Marshal(entry)
+			if err != nil {
+				return false, err
+			}
+			projects[k] = b
+		}
+		return true, nil
 	})
 }
 
-// ForgetFolder removes projects[cwd] entirely (and its realpath twin, if it
-// differs) under the same lock/atomic-write protocol as trustClaudeWorkspace
-// (D2, dialog-needs-you spec): called once a session's Swarm-owned
-// workspace is reclaimed. Callers (runtime.forgetFinishedClaudeTrust) only
-// ever pass a cwd already confirmed Swarm-owned, so deleting the whole
-// entry is safe -- there is no reason to keep a placeholder around for a
-// work dir or worktree nothing else will ever look at again. Every other
-// project, and every other top-level key, survives untouched.
-// Idempotent: a path with no entry is a no-op with no rewrite.
-//
-// Review round 2, finding 5: this used to delete only the
-// hasTrustDialogAccepted field and leave the rest of the entry (and the
-// `projects[cwd]` key itself) in place forever, since nothing else ever
-// deletes a Swarm-owned work dir off disk (D3's prune only fires for a
-// `git worktree remove`d worktree). Every Claude spawn was leaving a
-// permanent entry in the user's ~/.claude.json. D2 calls for removing "that
-// session's entry", so this now deletes the whole projects[k] entry.
+// ForgetFolder is ForgetFolders for one cwd (D2).
 func (c *Claude) ForgetFolder(ctx context.Context, cwd string) error {
-	if c.d.UserHome == "" {
+	return c.ForgetFolders(ctx, []string{cwd})
+}
+
+// ForgetFolders removes projects[cwd] entirely, and its realpath twin, for
+// every cwd in ONE locked read-modify-write of ~/.claude.json (D2,
+// dialog-needs-you spec; review round 3, item 3: reconcile used to call
+// ForgetFolder per session, one 2s-timeout lock and one full parse each).
+// Every key, literal or realpath twin, must pass
+// install.SwarmOwnedClaudeWorkspace: a work-dir symlink resolving into the
+// user's own project never removes that project's entry. Every other
+// project and top-level key survives untouched. A missing file is a no-op;
+// a busy lock (install.ErrClaudeConfigBusy) or a file that does not parse
+// is an error, so the caller marks nothing done and retries.
+func (c *Claude) ForgetFolders(ctx context.Context, cwds []string) error {
+	if c.d.UserHome == "" || len(cwds) == 0 {
 		return nil
 	}
-	keys := []string{cwd}
-	if real, err := filepath.EvalSymlinks(cwd); err == nil && real != cwd {
-		keys = append(keys, real)
+	var keys []string
+	for _, cwd := range cwds {
+		keys = append(keys, cwd)
+		if real, err := filepath.EvalSymlinks(cwd); err == nil && real != cwd {
+			keys = append(keys, real)
+		}
 	}
-	return withClaudeConfigLock(c.d.UserHome, func() error {
-		path := claudeConfigPath(c.d.UserHome)
-		for attempt := 0; attempt < 3; attempt++ {
-			raw, err := os.ReadFile(path)
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-			mode := os.FileMode(0o600)
-			if fi, statErr := os.Stat(path); statErr == nil {
-				mode = fi.Mode().Perm()
-			}
-			var doc map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &doc); err != nil {
-				return fmt.Errorf("claude.json does not parse: %w", err)
-			}
-			var projects map[string]json.RawMessage
-			if len(doc["projects"]) > 0 {
-				if err := json.Unmarshal(doc["projects"], &projects); err != nil {
-					return fmt.Errorf("claude.json projects does not parse: %w", err)
-				}
-			}
-			changed := false
-			for _, k := range keys {
-				if len(projects[k]) == 0 {
-					continue
-				}
-				delete(projects, k)
-				changed = true
-			}
-			if !changed {
-				return nil
-			}
-			pb, err := json.Marshal(projects)
-			if err != nil {
-				return err
-			}
-			doc["projects"] = pb
-			out, err := json.Marshal(doc)
-			if err != nil {
-				return err
-			}
-			cur, _ := os.ReadFile(path)
-			if !bytes.Equal(cur, raw) {
+	err := install.EditClaudeProjects(c.d.UserHome, func(projects map[string]json.RawMessage) (bool, error) {
+		changed := false
+		for _, k := range keys {
+			if _, ok := projects[k]; !ok || !install.SwarmOwnedClaudeWorkspace(c.d.Home, k) {
 				continue
 			}
-			return writeFileAtomic(path, out, mode)
+			delete(projects, k)
+			changed = true
 		}
-		return fmt.Errorf("claude.json kept changing under us")
+		return changed, nil
 	})
+	if errors.Is(err, install.ErrClaudeConfigMissing) {
+		return nil
+	}
+	return err
 }
 
 func claudeAllTrusted(projects map[string]json.RawMessage, keys []string) bool {
