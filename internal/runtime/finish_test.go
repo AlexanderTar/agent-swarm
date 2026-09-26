@@ -6,6 +6,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 )
 
 // finishRoot moves key to Done the raw way and fires OnRootDone in the same
@@ -93,5 +95,41 @@ func TestRootDoneLiveAgentsEndCompletedAfterGrace(t *testing.T) {
 		if ses.State != Completed || got.State != AgentFinished {
 			t.Fatalf("%s: session %s, agent %s; want completed/finished", a.Name, ses.State, got.State)
 		}
+	}
+}
+
+// Spec R2.
+func TestRootDoneFinishesPausedAndPausingAgentsAtOnce(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	now := db.Millis(s.Now())
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', ended_at = ? WHERE id = ?`, now, orchSes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO agent_operations
+		(id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+		VALUES ('op_root_done', ?, 'handoff', 'ready', 'k1', ?, 1, ?, ?)`, orch.ID, orchSes, now, now); err != nil {
+		t.Fatal(err)
+	}
+	finishRoot(t, s, "EPIC-1")
+	for _, a := range []Agent{orch, w} {
+		ses, _ := s.LatestSession(ctx, a.ID)
+		got, _ := s.Agent(ctx, a.Name)
+		if ses.State != Completed || got.State != AgentFinished {
+			t.Fatalf("%s: session %s, agent %s; want completed/finished", a.Name, ses.State, got.State)
+		}
+		if n := daemonCompleted(t, s, a.ID); n != 0 {
+			t.Fatalf("%s got %d daemon checkpoints on the direct path, want 0", a.Name, n)
+		}
+	}
+	var phase string
+	s.DB.QueryRowContext(ctx, `SELECT phase FROM agent_operations WHERE id = 'op_root_done'`).Scan(&phase)
+	if phase != "cancelled" {
+		t.Fatalf("operation phase = %q, want cancelled", phase)
 	}
 }

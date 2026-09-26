@@ -66,12 +66,38 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 	}
 	now := db.Millis(s.now())
 	for _, r := range todo {
-		if r.state.Live() {
+		// ponytail: in-tx, so no lockAgentOperations; a driver already past
+		// its launch commit could still start a successor (its handoff is
+		// refused and a close records completed). Take the lock post-commit
+		// if that ever shows up.
+		if err := s.cancelAgentOperationsTx(ctx, tx, r.id); err != nil {
+			return err
+		}
+		if r.state.Live() && !r.state.Pausing() {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind,
 				attempt, summary, daemon_written, created_at) VALUES (?, ?, ?, ?, 'completed', ?, ?, 1, ?)`,
 				ids.New("ckp"), r.sesID, r.id, r.itemID, r.attempt, fmt.Sprintf(rootDoneSummary, rootKey), now); err != nil {
 				return err
 			}
+			continue
+		}
+		// resolveDeadInner would end a pausing session paused, not completed,
+		// so everything that is not spawning/running finishes here; a leftover
+		// pane goes on Reconcile's next finished-agent pass.
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'completed', ended_at = COALESCE(ended_at, ?)
+			WHERE id = ? AND state IN ('pause_requested', 'quiescing', 'stopping', 'paused', 'interrupted')`,
+			now, r.sesID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'finished', finished_at = ? WHERE id = ?`, now, r.id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE worktree_reservations SET released_at = ?
+			WHERE agent_id = ? AND released_at IS NULL`, now, r.id); err != nil {
+			return err
+		}
+		if err := s.publishAgentChanged(ctx, tx, r.name, rootID); err != nil {
+			return err
 		}
 	}
 	return nil
