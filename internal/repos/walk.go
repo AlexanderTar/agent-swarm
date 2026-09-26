@@ -9,6 +9,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 )
 
 var skipNames = map[string]bool{
@@ -97,7 +99,7 @@ func walk(ctx context.Context, home string, excludes []string) (WalkResult, erro
 			}
 			return nil
 		}
-		if IsRepo(path) {
+		if IsRepo(path) && PrimaryRepo(ctx, execx.Run, path) {
 			if real, err := filepath.EvalSymlinks(path); err == nil && !seen[real] {
 				seen[real] = true
 				res.Repos = append(res.Repos, real)

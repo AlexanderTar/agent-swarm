@@ -71,6 +71,7 @@ func mkRepo(t *testing.T, home, rel string) string {
 	if err := os.MkdirAll(filepath.Join(home, rel, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	gitCommand(t, "init", "-q", filepath.Join(home, rel))
 	return filepath.Join(home, rel)
 }
 
@@ -229,6 +230,20 @@ func TestMissingAndManualRepos(t *testing.T) {
 		if r.Missing {
 			t.Errorf("%s still missing after it came back", r.Name)
 		}
+	}
+}
+
+func TestAddManualRejectsLinkedWorktree(t *testing.T) {
+	main, linked, directoryLinked, _ := primaryFixture(t)
+	s := newService(t, filepath.Dir(main), &fakeGit{})
+	for _, path := range []string{linked, directoryLinked} {
+		if _, err := s.AddManual(bgc, path); !errors.Is(err, ErrNotRepo) {
+			t.Errorf("AddManual(%s) error = %v, want ErrNotRepo", path, err)
+		}
+	}
+	all, err := s.All(bgc)
+	if err != nil || len(all) != 0 {
+		t.Fatalf("manual add persisted linked worktree: %+v, %v", all, err)
 	}
 }
 

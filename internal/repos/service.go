@@ -273,10 +273,10 @@ func (s *Service) Loop(ctx context.Context, interval func(context.Context) time.
 	}
 }
 
-// AddManual registers any folder with a .git directory, hidden or excluded.
+// AddManual registers a primary checkout, even when hidden or excluded.
 func (s *Service) AddManual(ctx context.Context, path string) (Repo, error) {
 	abs, err := filepath.Abs(path)
-	if err != nil || !IsRepo(abs) {
+	if err != nil || !PrimaryRepo(ctx, execx.Run, abs) {
 		return Repo{}, ErrNotRepo
 	}
 	real, err := filepath.EvalSymlinks(abs)
