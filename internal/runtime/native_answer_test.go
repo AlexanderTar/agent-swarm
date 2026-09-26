@@ -164,6 +164,27 @@ func TestNativeAnswerAgentReportedRequestChanges(t *testing.T) {
 	}
 }
 
+// TestNativeAnswerApproveKeepsTypedFreeTextAsComment is Task 6.2 follow-up
+// (spec 1.8 D1): typed free text alongside an Approve decision lands in the
+// approved request's own response_text, the same way request_changes and
+// confirm_repos already carry it.
+func TestNativeAnswerApproveKeepsTypedFreeTextAsComment(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	ctx := context.Background()
+	hookSimulate(t, s, ses, *req.NativePrompt, "Looks good, ship it")
+
+	out, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "approve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "approved" {
+		t.Fatalf("out = %+v", out)
+	}
+	if out.ResponseText != "Looks good, ship it" {
+		t.Fatalf("response_text = %q, want %q", out.ResponseText, "Looks good, ship it")
+	}
+}
+
 // TestMatchDecisionEvidence is Task 6.2 (spec 1.8 D1): typed free text with
 // no option-label prefix is accepted on the agent's word; text that starts
 // with the *other* decision's label is still a mismatch.

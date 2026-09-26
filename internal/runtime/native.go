@@ -348,7 +348,10 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	}
 	in2 := ApproveInput{SectionSHA256: req.SectionSHA256, ArtifactRevision: req.ArtifactRevision,
 		Binding: req.Binding, Via: "terminal"}
-	return s.resolve(ctx, in.Ref, "approved", "", "terminal", "user_action", approveCheck(in2),
+	// comment carries any typed free text the user added alongside "Approve"
+	// (spec 1.8 D1) into the request's own response_text, the same way
+	// request_changes and confirm_repos already do.
+	return s.resolve(ctx, in.Ref, "approved", comment, "terminal", "user_action", approveCheck(in2),
 		func(req Request) (MessageKind, any) {
 			return "approval_result", map[string]any{"decision": "approved",
 				"section_id": req.SectionID, "section_sha256": req.SectionSHA256, "evidence": evidence}
