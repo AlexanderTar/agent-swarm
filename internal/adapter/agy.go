@@ -319,10 +319,16 @@ const agyWakeResultTimeout = 5 * time.Minute
 // would stall WakeDue's per-tick loop for every other pending agent.
 func (a *Agy) Wake(ctx context.Context, w WakeTarget) (bool, error) {
 	agyHome := filepath.Join(a.d.launchDir(w.SessionID), "agy-home")
-	proc, err := a.d.StartEnv(ctx, map[string]string{"HOME": agyHome}, "agy",
-		"--conversation", w.ProviderSessionID,
-		"--input-format", "stream-json", "--output-format", "stream-json",
-		"--dangerously-skip-permissions")
+	argv := []string{"--conversation", w.ProviderSessionID,
+		"--input-format", "stream-json", "--output-format", "stream-json"}
+	// P0 fix (docs/specs/2026-09-26-agy-launch-model.md): without --model,
+	// every woken turn silently ran on agy's global default model instead
+	// of the one Swarm assigned this agent.
+	if w.Model != "" {
+		argv = append(argv, "--model", w.Model)
+	}
+	argv = append(argv, "--dangerously-skip-permissions")
+	proc, err := a.d.StartEnv(ctx, map[string]string{"HOME": agyHome}, "agy", argv...)
 	if err != nil {
 		return false, err
 	}

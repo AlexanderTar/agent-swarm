@@ -92,6 +92,31 @@ func extractQuestion(toolName string, raw []byte) (string, []string) {
 	return prompt, options
 }
 
+// questionsHaveBatchedSwarmRef reports whether a native question tool's raw
+// input is a multi-question batch where at least one question carries a
+// daemon-issued ⟦swarm:ref⟧ token (native.go's refToken). extractQuestion
+// only ever reads Questions[0], so any ref past the first would bind to
+// nothing -- see the PreToolUse guard that calls this.
+func questionsHaveBatchedSwarmRef(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var payload struct {
+		Questions []struct {
+			Question string `json:"question"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || len(payload.Questions) < 2 {
+		return false
+	}
+	for _, q := range payload.Questions {
+		if runtime.HasRefToken(q.Question) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractToolResponseText reads the answer text out of a question tool's
 // PostToolUse tool_response. A real claude AskUserQuestion result has the
 // shape {questions, answers:{<question text>: <chosen label(s)>}, annotations}
@@ -229,6 +254,7 @@ type sessionRow struct {
 	LastNoticeAt                                *time.Time
 	Pending                                     int
 	HasHandoff                                  bool
+	Handoff                                     bool // a handoff operation is in flight (HANDOFF notice, not PAUSE)
 	Kind                                        runtime.AgentKind
 	ParentAgentID                               string
 }
@@ -265,7 +291,7 @@ func (h *Handler) logf(format string, args ...any) {
 func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, error) {
 	var s sessionRow
 	var needsCompaction int
-	var hasHandoff int
+	var hasHandoff, handoffOp int
 	err := h.DB.QueryRowContext(ctx, `
 		SELECT
 			s.id,
@@ -279,7 +305,9 @@ func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, erro
 			a.kind,
 			COALESCE(a.parent_agent_id, ''),
 			(SELECT COUNT(*) FROM messages WHERE to_agent_id = s.agent_id AND state = 'pending'),
-			EXISTS (SELECT 1 FROM checkpoints WHERE session_id = s.id AND kind = 'handoff')
+			EXISTS (SELECT 1 FROM checkpoints WHERE session_id = s.id AND kind = 'handoff'),
+			EXISTS (SELECT 1 FROM agent_operations o WHERE o.agent_id = s.agent_id AND o.mode = 'handoff'
+				AND o.phase IN ('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting'))
 		FROM sessions s
 		JOIN agents a ON s.agent_id = a.id
 		JOIN items i ON a.item_id = i.id
@@ -296,12 +324,14 @@ func (h *Handler) load(ctx context.Context, sessionID string) (*sessionRow, erro
 		&s.ParentAgentID,
 		&s.Pending,
 		&hasHandoff,
+		&handoffOp,
 	)
 	if err != nil {
 		return nil, err
 	}
 	s.NeedsCompaction = (needsCompaction != 0)
 	s.HasHandoff = (hasHandoff != 0)
+	s.Handoff = (handoffOp != 0)
 
 	h.mu.Lock()
 	if t, ok := h.noticeAt[s.ID]; ok {
@@ -464,11 +494,21 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
 
 	case "PreToolUse":
+		// Preservation mode (spec §3): a pausing predecessor may still use
+		// the save path -- read/edit/shell/wait/commit under its existing
+		// permissions -- while delegation, new workflow steps and
+		// push/deploy are denied. Swarm MCP tools keep their own daemon
+		// gate (PauseAllowed); completed checkpoints are refused by
+		// WriteCheckpoint's kind gate.
 		if s.State.Pausing() && !in.IsSwarmTool {
-			return adapter.HookDecision{
-				Block:  true,
-				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
-			}, nil
+			if err := runtime.PreservationNativeAllowed(in.ToolName); err != nil {
+				return adapter.HookDecision{Block: true, Reason: err.Error()}, nil
+			}
+			if in.Command != "" {
+				if err := runtime.PreservationCommandAllowed(in.Command); err != nil {
+					return adapter.HookDecision{Block: true, Reason: err.Error()}, nil
+				}
+			}
 		}
 
 		// A6: the native Workflow tool is disabled in Swarm sessions -- use
@@ -522,6 +562,14 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		// native question tool. Top-level agents fall through to the intercept below.
 		if isQuestionTool(in.ToolName) && s.ParentAgentID != "" {
 			return adapter.HookDecision{Block: true, Reason: nativeQuestionRelay}, nil
+		}
+
+		// A batched AskUserQuestion call binds only Questions[0] (the intercept
+		// below), so a swarm-issued ref anywhere past the first question would
+		// be recorded and answered but never bindable -- native_answer could
+		// never find it (2026-09-26 fix, native-railway-tracing finding).
+		if isQuestionTool(in.ToolName) && questionsHaveBatchedSwarmRef(in.RawToolInput) {
+			return adapter.HookDecision{Block: true, Reason: "[swarm] Ask one swarm approval per question call."}, nil
 		}
 
 		// For Swarm's own swarm_spawn tool: enforce max_concurrent_subagents
@@ -582,14 +630,21 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{}, nil
 
 	case "PostToolUse":
+		var parts []string
 		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
 			prompt, _ := extractQuestion(in.ToolName, in.RawToolInput)
 			answer := extractToolResponseText(in.ToolResponse, prompt)
 			if answer == "" {
-				answer = "Resolved in terminal"
+				answer = runtime.ResolvedInTerminal
 			}
-			if err := h.RT.ResolveQuestionByPrompt(ctx, s.ID, prompt, answer); err != nil {
+			req, err := h.RT.ResolveQuestionByPrompt(ctx, s.ID, prompt, answer)
+			if err != nil {
 				h.logf("hook: resolve question for %s: %v", s.ID, err)
+			} else if next := runtime.NativeAnswerNextStep(req); next != "" {
+				// Never rate-limited by canNotice below: a missed forward
+				// leaves the user's approval stranded (native-railway-tracing
+				// finding), unlike the informational notices canNotice guards.
+				parts = append(parts, next)
 			}
 		}
 		if h.RT != nil && s.ID != "" {
@@ -598,9 +653,10 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 		}
 
-		var parts []string
+		gaveNotice := false
 		if s.NeedsCompaction {
 			parts = append(parts, runtime.CompactionNotice())
+			gaveNotice = true
 			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET needs_compaction_notice = 0 WHERE id = ?`, s.ID); err != nil {
 				return adapter.HookDecision{}, err
 			}
@@ -608,24 +664,31 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		canNotice := s.LastNoticeAt == nil || h.now().Sub(*s.LastNoticeAt) >= noticeGap
 		if s.Pending > 0 && canNotice {
 			parts = append(parts, runtime.PendingNotice(s.Pending, s.AgentName, s.ItemKey))
+			gaveNotice = true
 		}
 		if len(parts) == 0 {
 			return adapter.HookDecision{}, nil
 		}
-		h.mu.Lock()
-		if h.noticeAt == nil {
-			h.noticeAt = make(map[string]time.Time)
+		// Only a rate-limited notice (compaction/pending) stamps noticeAt --
+		// the native-answer next step above is neither rate-limited nor a
+		// reason to suppress a later pending-inbox notice.
+		if gaveNotice {
+			h.mu.Lock()
+			if h.noticeAt == nil {
+				h.noticeAt = make(map[string]time.Time)
+			}
+			h.noticeAt[s.ID] = h.now()
+			h.mu.Unlock()
 		}
-		h.noticeAt[s.ID] = h.now()
-		h.mu.Unlock()
 		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
 
 	case "Stop":
 		if s.State.Pausing() && !s.HasHandoff {
-			return adapter.HookDecision{
-				Block:  true,
-				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
-			}, nil
+			reason := runtime.PausePreservationNotice(s.AgentName, s.ItemKey)
+			if s.Handoff {
+				reason = runtime.HandoffPreservationNotice(s.AgentName, s.ItemKey)
+			}
+			return adapter.HookDecision{Block: true, Reason: reason}, nil
 		}
 		if s.Pending > 0 && s.StopBlocks < maxStopBlocks {
 			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET stop_blocks = stop_blocks + 1 WHERE id = ?`, s.ID); err != nil {

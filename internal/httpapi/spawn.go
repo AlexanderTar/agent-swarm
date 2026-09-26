@@ -21,6 +21,8 @@ func (s *Server) spawnRoutes() []route {
 		{"POST", "/api/agents/{name}/cancel", authDaemon, s.cancelAgent},
 		{"POST", "/api/agents/{name}/ack", authDaemon, s.ackAgent},
 		{"POST", "/api/agents/{name}/retry", authDaemon, s.retryAgent},
+		{"POST", "/api/agents/{name}/handoff", authDaemon, s.handoffAgent},
+		{"GET", "/api/agents/{name}/replacement", authDaemon, s.replacementAgent},
 		{"POST", "/api/agents/{name}/terminal", authDaemon, s.terminal},
 		{"POST", "/api/agents/{name}/terminal-opened", authDaemon, s.terminalOpened},
 		{"POST", "/api/pause-all", authDaemon, s.pauseAll},

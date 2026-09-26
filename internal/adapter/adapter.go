@@ -82,8 +82,12 @@ type HookInput struct {
 }
 
 // WakeTarget is what Wake needs to deliver a native or pasted notice.
+// Model is the resolved launch id (via Store.resolveLaunchModel), for
+// adapters whose native wake needs --model repeated on every turn (agy;
+// see docs/specs/2026-09-26-agy-launch-model.md); it is empty and ignored
+// for adapters that don't need it.
 type WakeTarget struct {
-	SessionID, ProviderSessionID, TmuxName, Notice string
+	SessionID, ProviderSessionID, TmuxName, Notice, Model string
 }
 
 // Deps are the seams every adapter is built from; nothing here touches the

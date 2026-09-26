@@ -57,7 +57,7 @@ func hookSimulate(t *testing.T, s *Store, ses string, np NativePrompt, answer st
 	if answer == "" {
 		answer = "Resolved in terminal"
 	}
-	if err := s.ResolveQuestionByPrompt(ctx, ses, np.Question, answer); err != nil {
+	if _, err := s.ResolveQuestionByPrompt(ctx, ses, np.Question, answer); err != nil {
 		t.Fatal(err)
 	}
 }

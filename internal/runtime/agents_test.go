@@ -850,6 +850,190 @@ func seedFakeCatalog(t *testing.T, d *db.DB) {
 	}
 }
 
+// seedAgyCatalog gives kind "agy" one slug-encoded model, mirroring the real
+// agy catalog: base id "gemini-3.8-flash", effort suffixes -medium/-high,
+// default effort "high" (P0 model-passthrough fix, docs/specs/2026-09-26-agy-launch-model.md).
+func seedAgyCatalog(t *testing.T, d *db.DB) {
+	t.Helper()
+	_, err := d.ExecContext(context.Background(), `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('agy','agy-1','[{"id":"gemini-3.8-flash","label":"Gemini 3.8 Flash","efforts":["medium","high"],"default_effort":"high","effort_encoding":"slug","launch_ids":{"medium":"gemini-3.8-flash-medium","high":"gemini-3.8-flash-high"},"advisor_capable":false}]','gemini-3.8-flash','test',1,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestResolveLaunchModelAppliesAgyEffortSuffix is the fix for the P0 model
+// passthrough bug (docs/specs/2026-09-26-agy-launch-model.md): a base id
+// resolves to the suffixed launch id for the given (or default) effort; a
+// non-slug kind, or a model not in the catalog, passes through unchanged.
+func TestResolveLaunchModelAppliesAgyEffortSuffix(t *testing.T) {
+	s, _, _ := newStore(t)
+	seedAgyCatalog(t, s.DB)
+	ctx := context.Background()
+
+	if got := s.resolveLaunchModel(ctx, Agy, "gemini-3.8-flash", ""); got != "gemini-3.8-flash-high" {
+		t.Errorf("empty effort: got %q, want default-effort suffix", got)
+	}
+	if got := s.resolveLaunchModel(ctx, Agy, "gemini-3.8-flash", "medium"); got != "gemini-3.8-flash-medium" {
+		t.Errorf("medium effort: got %q, want -medium suffix", got)
+	}
+	if got := s.resolveLaunchModel(ctx, Agy, "gemini-3.8-flash-high", ""); got != "gemini-3.8-flash-high" {
+		t.Errorf("already-suffixed id: got %q, want unchanged passthrough", got)
+	}
+	if got := s.resolveLaunchModel(ctx, Fake, "fake-1", ""); got != "fake-1" {
+		t.Errorf("non-slug kind: got %q, want unchanged", got)
+	}
+}
+
+// TestResolveLaunchModelPassesThroughClaudeAlias is a code-review fix
+// (docs/specs/2026-09-26-agy-launch-model.md): catalog.Find matches on
+// Aliases too, so a flag-encoded Claude catalog entry with Aliases:
+// ["opus"] made resolveLaunchModel rewrite "opus" to the entry's dated
+// ID via LaunchModel -- LaunchModel's contract is "value for --model",
+// which for a flag-encoded model is m.ID, not the alias the caller
+// passed in. Only a slug-encoded hit should ever be rewritten.
+func TestResolveLaunchModelPassesThroughClaudeAlias(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','claude-1','[{"id":"claude-opus-5-20260101","label":"Opus (latest)","aliases":["opus"],"efforts":["low","medium","high"],"default_effort":"","effort_encoding":"flag","advisor_capable":true}]','claude-opus-5-20260101','test',1,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.resolveLaunchModel(ctx, Claude, "opus", "high"); got != "opus" {
+		t.Errorf("got %q, want the alias unchanged, not the catalog's dated ID", got)
+	}
+}
+
+// TestResolveLaunchModelPassesThroughBareSlugModel: a slug-encoded model
+// with no effort siblings (nil LaunchIDs, e.g. cursor's "auto") must pass
+// through unchanged rather than error or mangle the id.
+func TestResolveLaunchModelPassesThroughBareSlugModel(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('cursor','cursor-1','[{"id":"auto","label":"Auto","efforts":[],"default_effort":"","effort_encoding":"slug","advisor_capable":false}]','auto','test',1,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.resolveLaunchModel(ctx, Cursor, "auto", ""); got != "auto" {
+		t.Errorf("got %q, want unchanged bare slug id", got)
+	}
+}
+
+// TestStartSpikeResolvesAgyLaunchModel is the P0 model-passthrough fix
+// (docs/specs/2026-09-26-agy-launch-model.md): swarm assigns the catalog
+// base id, but agy only accepts the effort-suffixed launch id. Without the
+// fix, agy launches on the base id, silently falls back to its own global
+// default model, and ignores Swarm's per-agent choice entirely.
+func TestStartSpikeResolvesAgyLaunchModel(t *testing.T) {
+	s, tm, _ := newStore(t)
+	seedAgyCatalog(t, s.DB)
+	ctx := context.Background()
+	root := seedEpicWithTask(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude", "fake", "agy"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+
+	userHome := t.TempDir()
+	tokDir := filepath.Join(userHome, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(tokDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tokDir, "antigravity-oauth-token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("agy 1.2.11"), nil // satisfies both `agy --version` and `agy models`
+	}
+	ag, err := adapter.New(Agy, adapter.Deps{Home: s.Home, UserHome: userHome,
+		Bin: "/usr/local/bin/swarm", Run: run, Log: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Adapters[Agy] = ag
+
+	spawned, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Agy,
+		Model: "gemini-3.8-flash", ParentAgentID: root, Brief: BriefInput{Objective: "do it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spawned.PreflightError != "" {
+		t.Fatalf("preflight error: %s", spawned.PreflightError)
+	}
+	if len(tm.started) != 1 {
+		t.Fatalf("started = %v, want exactly one launch", tm.started)
+	}
+	found := tm.started[0]
+	if !strings.Contains(found, "--model gemini-3.8-flash-high") {
+		t.Errorf("launch argv = %q, want suffixed default-effort id", found)
+	}
+	if strings.Contains(found, "--model gemini-3.8-flash ") || strings.HasSuffix(found, "--model gemini-3.8-flash") {
+		t.Errorf("launch argv = %q, must not pass the bare base id agy rejects", found)
+	}
+}
+
+// TestSpawnResolvesCursorLaunchModel confirms the P0 model-passthrough fix
+// (docs/specs/2026-09-26-agy-launch-model.md) also covers cursor: cursor's
+// own catalog parser (ParseCursorModels) groups effort variants under
+// EffortEncoding "slug" + LaunchIDs exactly like agy, so cursor.go's raw
+// s.Model passthrough was silently wrong for any cursor model with effort
+// siblings, not just agy's. resolveLaunchModel being kind-agnostic fixes
+// both without a cursor-specific code change.
+func TestSpawnResolvesCursorLaunchModel(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	root := seedEpicWithTask(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude", "fake", "cursor"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('cursor','cursor-1','[{"id":"gpt-5.3-codex","label":"GPT 5.3 Codex","efforts":["medium","high"],"default_effort":"high","effort_encoding":"slug","launch_ids":{"medium":"gpt-5.3-codex-medium","high":"gpt-5.3-codex-high"},"advisor_capable":false}]','gpt-5.3-codex','test',1,1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	userHome := t.TempDir()
+	skillDir := filepath.Join(userHome, ".cursor", "plugins", "local", "superpowers", "skills", "brainstorming")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeExec := &execx.Fake{Responses: map[string]execx.Result{
+		"cursor-agent --version":   {Out: "cursor-agent 1.0.0"},
+		"cursor-agent status":      {Out: "Logged in as u"},
+		"cursor-agent create-chat": {Out: "chat-1"},
+	}}
+	s.Exec = fakeExec.Runner()
+	ag, err := adapter.New(Cursor, adapter.Deps{Home: s.Home, UserHome: userHome,
+		Bin: "/usr/local/bin/swarm", Run: fakeExec.Runner(), Log: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Adapters[Cursor] = ag
+
+	spawned, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Cursor,
+		Model: "gpt-5.3-codex", ParentAgentID: root, Brief: BriefInput{Objective: "do it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spawned.PreflightError != "" {
+		t.Fatalf("preflight error: %s", spawned.PreflightError)
+	}
+	if len(tm.started) != 1 {
+		t.Fatalf("started = %v, want exactly one launch", tm.started)
+	}
+	found := tm.started[0]
+	if !strings.Contains(found, "--model gpt-5.3-codex-high") {
+		t.Errorf("launch argv = %q, want the suffixed default-effort id", found)
+	}
+}
+
 // §11.5: a pane that never goes idle and shows no dialog fails after 30 s.
 func TestStartupTimesOutAfterThirtySeconds(t *testing.T) {
 	s, tm, _ := newStore(t)

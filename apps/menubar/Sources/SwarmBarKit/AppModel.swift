@@ -194,7 +194,22 @@ public final class AppModel {
     }
 
     private func apply(_ s: StateResponse) {
+        // A handoff successor keeps the agent's name but mints a new session
+        // generation: the hovered preview's last screen belongs to the
+        // predecessor, so drop it and recapture from loading.
+        if let hovered = preview.agent {
+            let before = AgentTree.flatten(state.agents).first { $0.name == hovered }?.session?.generation
+            let after = AgentTree.flatten(s.agents).first { $0.name == hovered }?.session?.generation
+            if before != after { preview.invalidate() }
+        }
         state = s
+        // A handoff key is kept only while its operation may still be in
+        // flight: once state shows no replacement for that agent, the next
+        // deliberate Handoff must not replay the settled operation.
+        if !handoffKeys.isEmpty {
+            let busy = Set(AgentTree.flatten(s.agents).filter { $0.replacement != nil }.map(\.name))
+            handoffKeys = handoffKeys.filter { busy.contains($0.key) }
+        }
         connected = true
         let at = now()
         lastSync = at
@@ -350,10 +365,15 @@ public final class AppModel {
             guard action.endpoint == pending else { return action }
             var busy = action
             busy.disabled = true
-            busy.label = pending == .pause ? Copy.pausing : Copy.resuming
+            busy.label = pending == .pause ? Copy.pausing : pending == .handoff ? Copy.handingOff : Copy.resuming
             return busy
         }
     }
+
+    /// Pending handoff request keys by agent name, kept only while the last
+    /// attempt's outcome is unknown (timeout, unreachable) and state still
+    /// shows that agent's operation in flight.
+    private var handoffKeys: [String: String] = [:]
 
     public func perform(_ action: AgentAction, on agent: AgentNode) async {
         guard !action.disabled else { return }
@@ -361,17 +381,27 @@ public final class AppModel {
             await openTerminal(agent.name)
             return
         }
-        let tracked = action.endpoint == .pause || action.endpoint == .resume
+        let tracked = action.endpoint == .pause || action.endpoint == .resume || action.endpoint == .handoff
         if tracked {
             guard inFlight[agent.name] == nil else { return }
             inFlight[agent.name] = action.endpoint
         }
         defer { if tracked { inFlight[agent.name] = nil } } // after the refresh below, also on error
+        // One request key per user handoff action: a retry after a timeout or
+        // an unreachable daemon (the POST may have landed) reuses it, so the
+        // daemon replays the same operation instead of answering 409.
+        var requestID: String?
+        if action.endpoint == .handoff {
+            requestID = handoffKeys[agent.name] ?? UUID().uuidString
+            handoffKeys[agent.name] = requestID
+        }
         do {
-            try await client.agent(agent.name, action.endpoint, scope: action.scope)
+            try await client.agent(agent.name, action.endpoint, scope: action.scope, requestID: requestID)
             actionError = nil
+            handoffKeys[agent.name] = nil
         } catch let e as DaemonError {
             actionError = e.message
+            if case .api = e { handoffKeys[agent.name] = nil }
         } catch {}
         await refresh()
     }

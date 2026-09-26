@@ -58,6 +58,7 @@ type agentNodeWire struct {
 	Advisor        *advisorInfoWire   `json:"advisor"`
 	State          runtime.AgentState `json:"state"`
 	Session        *sessionInfoWire   `json:"session"`
+	Replacement    *replacementWire   `json:"replacement,omitempty"`
 	PreflightError *string            `json:"preflight_error"`
 	CreatedAt      int64              `json:"created_at"`
 	FinishedAt     *int64             `json:"finished_at"`
@@ -491,6 +492,9 @@ func (s *Server) agentNodeOut(ctx context.Context, a runtime.Agent, live map[str
 		if step, ok, err := s.RT.StepForAgent(ctx, a.ID); err == nil && ok {
 			w.Step = &step
 		}
+		// Batch 3: the optional in-flight replacement; the existing effort
+		// field above is reused as-is, no new effort surface.
+		w.Replacement = s.replacementFor(ctx, a.ID)
 	}
 	return w, nil
 }

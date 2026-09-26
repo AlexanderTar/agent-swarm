@@ -144,12 +144,24 @@ func TestCodexCompactionNoticeArrivesOnTheNextPromptAndClears(t *testing.T) {
 	}
 }
 
-// C3: while pausing, every non-swarm tool is denied with the control notice.
-func TestPreToolUseDeniesNonSwarmToolsWhilePausing(t *testing.T) {
+// Preservation mode (spec §3, supersedes C3 deny-all): while pausing, the
+// save path (read/edit/shell/commit) stays allowed, while delegation and
+// push/deploy are denied with the preservation reason.
+func TestPreToolUsePreservationPolicyWhilePausing(t *testing.T) {
 	for _, state := range []runtime.SessionState{runtime.PauseRequested, runtime.Quiescing, runtime.Stopping} {
 		h, ses := seed(t, 0, state)
-		out, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
+		// a save-path native tool is allowed
+		allowed, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
 			[]byte(`{"session_id":"p1","tool_name":"Edit","tool_input":{}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(allowed) != 0 {
+			t.Fatalf("%s: Edit must be allowed while preserving, got %s", state, allowed)
+		}
+		// delegation is denied
+		out, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
+			[]byte(`{"session_id":"p1","tool_name":"Agent","tool_input":{}}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -158,8 +170,33 @@ func TestPreToolUseDeniesNonSwarmToolsWhilePausing(t *testing.T) {
 		if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
 			t.Fatalf("%s: output = %s", state, out)
 		}
-		if m["hookSpecificOutput"]["permissionDecisionReason"] != runtime.ControlNotice("login-form-coder", "TASK-101") {
-			t.Fatalf("%s: reason = %q", state, m["hookSpecificOutput"]["permissionDecisionReason"])
+		if !strings.Contains(m["hookSpecificOutput"]["permissionDecisionReason"], "delegates") {
+			t.Fatalf("%s: reason = %q, want the preservation denial", state, m["hookSpecificOutput"]["permissionDecisionReason"])
+		}
+		// push is denied even on the save path
+		pushed, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
+			[]byte(`{"session_id":"p1","tool_name":"Bash","tool_input":{"command":"git push origin main"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pm map[string]map[string]string
+		json.Unmarshal(pushed, &pm)
+		if pm["hookSpecificOutput"]["permissionDecision"] != "deny" {
+			t.Fatalf("%s: git push must be denied while preserving: %s", state, pushed)
+		}
+		// staging a secret is denied on the save path too
+		secrets, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
+			[]byte(`{"session_id":"p1","tool_name":"Bash","tool_input":{"command":"git add .env"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sm map[string]map[string]string
+		json.Unmarshal(secrets, &sm)
+		if sm["hookSpecificOutput"]["permissionDecision"] != "deny" {
+			t.Fatalf("%s: git add .env must be denied while preserving: %s", state, secrets)
+		}
+		if !strings.Contains(sm["hookSpecificOutput"]["permissionDecisionReason"], "never commit") {
+			t.Fatalf("%s: reason = %q, want the secrets denial", state, sm["hookSpecificOutput"]["permissionDecisionReason"])
 		}
 		// a swarm tool is still allowed
 		ok, _ := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
@@ -212,7 +249,7 @@ func TestStopBlocksForAPendingHandoffThenForMessagesUpToThreeTimes(t *testing.T)
 	}
 	var m map[string]string
 	json.Unmarshal(out, &m)
-	if m["decision"] != "block" || m["reason"] != runtime.ControlNotice("login-form-coder", "TASK-101") {
+	if m["decision"] != "block" || m["reason"] != runtime.PausePreservationNotice("login-form-coder", "TASK-101") {
 		t.Fatalf("pause stop = %s", out)
 	}
 
@@ -1390,6 +1427,119 @@ func TestParentedAgentQuestionToolIsBlockedAndOpensNoRequest(t *testing.T) {
 	}
 }
 
+// TestPreToolUseDeniesMultiQuestionBatchWithSwarmRef is the 2026-09-26 fix
+// (native-railway-tracing finding): the hook only ever binds Questions[0],
+// so a batched AskUserQuestion call that carries a swarm ref anywhere in it
+// must be refused up front rather than silently losing every ref past the
+// first.
+func TestPreToolUseDeniesMultiQuestionBatchWithSwarmRef(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+
+	in, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": "Approve section 1? ⟦swarm:req_S1⟧"},
+				{"question": "Approve section 2? ⟦swarm:req_S2⟧"},
+			},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "Ask one swarm approval per question call.") {
+		t.Fatalf("a batched swarm-ref question call must be denied with that reason, got %s", out)
+	}
+
+	var n int
+	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("requests = %d, want 0 (denied before AskQuestion ran)", n)
+	}
+}
+
+// TestPreToolUseAllowsSingleQuestionWithSwarmRef confirms the new batch
+// check does not catch the normal, single-question native_prompt flow.
+func TestPreToolUseAllowsSingleQuestionWithSwarmRef(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+
+	in, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": "Approve section 1? ⟦swarm:req_S1⟧"},
+			},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Ask one swarm approval per question call.") {
+		t.Fatalf("a single-question call must not be denied, got %s", out)
+	}
+}
+
+// TestPreToolUseAllowsMultiQuestionBatchWithoutSwarmRef confirms an
+// ordinary, non-swarm multi-question call (agy asking the user several
+// unrelated things at once) is untouched.
+func TestPreToolUseAllowsMultiQuestionBatchWithoutSwarmRef(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+
+	in, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": "Which database?"},
+				{"question": "Which region?"},
+			},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Ask one swarm approval per question call.") {
+		t.Fatalf("a plain multi-question call must not be denied, got %s", out)
+	}
+}
+
+// TestPreToolUseAllowsMultiQuestionBatchWithMalformedRefLikeText confirms the
+// batch check matches the real ⟦swarm:ref⟧ token shape (native.go's refRe),
+// not a bare "⟦swarm:" substring -- text that merely mentions the token
+// syntax without a well-formed, closed ref must not trip the guard.
+func TestPreToolUseAllowsMultiQuestionBatchWithMalformedRefLikeText(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+
+	in, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": "Does ⟦swarm: look right to you?"},
+				{"question": "Which region?"},
+			},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Ask one swarm approval per question call.") {
+		t.Fatalf("an unterminated, non-ref-shaped mention of the token syntax must not be denied, got %s", out)
+	}
+}
+
 func TestQuestionToolPostToolUseClosesOnlyTheMatchingRow(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
@@ -1679,5 +1829,195 @@ func TestClaudeAskUserQuestionAnswerBecomesObservedEvidence(t *testing.T) {
 	if _, err := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "native_answer", Ref: "req_PLAN1",
 		Decision: "request_changes", Comment: "x"}); err == nil || !strings.Contains(err.Error(), `"Approve"`) {
 		t.Fatalf("err = %v, want a decision mismatch against the observed \"Approve\"", err)
+	}
+}
+
+// TestPostToolUseAnsweredSwarmRefEmitsForwardingNextStep is the 2026-09-26
+// fix (native-railway-tracing finding): the spike bound 10 approvals via the
+// hook and never called native_answer, because nothing told it to. Once a
+// ref-bearing native question row is recorded as answered, PostToolUse must
+// say so and name the exact next call.
+func TestPostToolUseAnsweredSwarmRefEmitsForwardingNextStep(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+
+	pre, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+	})
+	if _, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, pre); err != nil {
+		t.Fatal(err)
+	}
+
+	post, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+		"tool_response": map[string]any{
+			"questions":   []map[string]any{{"question": question}},
+			"answers":     map[string]string{question: "Approve"},
+			"annotations": map[string]any{},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		HookSpecificOutput struct {
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("PostToolUse output = %s, not decodable: %v", out, err)
+	}
+	next := decoded.HookSpecificOutput.AdditionalContext
+	if !strings.Contains(next, `Recorded "Approve" for req_PLAN1`) ||
+		!strings.Contains(next, `native_answer`) ||
+		!strings.Contains(next, `ref:"req_PLAN1"`) ||
+		!strings.Contains(next, `decision:"approve"`) {
+		t.Fatalf("additionalContext = %q, want the forward-it-now next step", next)
+	}
+}
+
+// TestPostToolUseNextStepIsNotRateLimitedAndDoesNotStampNoticeAt is the
+// Opus-review fix's own regression test: the native-answer next step must
+// survive the pending-notice rate limit (a recent noticeAt must still
+// suppress the pending notice itself), and appending it must not stamp
+// noticeAt -- doing so would silently suppress a later, real pending-inbox
+// notice for the full noticeGap.
+func TestPostToolUseNextStepIsNotRateLimitedAndDoesNotStampNoticeAt(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 1, runtime.Running) // Pending > 0
+	sentinelNow := time.Date(2026, 9, 27, 8, 0, 0, 0, time.UTC)
+	h.Now = func() time.Time { return sentinelNow }
+	stamped := sentinelNow.Add(-10 * time.Second) // within noticeGap (60s): canNotice = false
+	h.noticeAt = map[string]time.Time{ses: stamped}
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+
+	pre, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+	})
+	if _, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, pre); err != nil {
+		t.Fatal(err)
+	}
+
+	post, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+		"tool_response": map[string]any{
+			"questions":   []map[string]any{{"question": question}},
+			"answers":     map[string]string{question: "Approve"},
+			"annotations": map[string]any{},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := contextOf(t, out)
+	if !strings.Contains(next, "native_answer") {
+		t.Fatalf("additionalContext = %q, want the native_answer next step", next)
+	}
+	if strings.Contains(next, "Call swarm_sync") {
+		t.Fatalf("additionalContext = %q, want the rate-limited pending notice (PendingNotice) suppressed", next)
+	}
+
+	h.mu.Lock()
+	got := h.noticeAt[ses]
+	h.mu.Unlock()
+	if !got.Equal(stamped) {
+		t.Fatalf("noticeAt[%s] = %v, want unchanged %v (next step must not stamp it)", ses, got, stamped)
+	}
+}
+
+// TestAgyPostToolUseWithNoResponseTextGetsPickedOptionNextStep is the Opus
+// review's minor item 4: agy's PostToolUse carries no response text (spec
+// 1.7), so a ref-bearing question resolves via the ResolvedInTerminal
+// placeholder; the next step must tell the agent to forward whichever
+// option the user actually picked, not quote the placeholder as their text.
+func TestAgyPostToolUseWithNoResponseTextGetsPickedOptionNextStep(t *testing.T) {
+	ctx := context.Background()
+	h, _, ses := newTestHandler(t)
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+
+	pre := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"` + question + `"}]}}`)
+	if _, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses.ID, pre); err != nil {
+		t.Fatal(err)
+	}
+
+	post := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"` + question + `"}]}}`)
+	out, err := h.Handle(ctx, runtime.Agy, "PostToolUse", ses.ID, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		InjectSteps []struct {
+			EphemeralMessage string `json:"ephemeralMessage"`
+		} `json:"injectSteps"`
+	}
+	if err := json.Unmarshal(out, &decoded); err != nil || len(decoded.InjectSteps) == 0 {
+		t.Fatalf("PostToolUse output = %s, not decodable: %v", out, err)
+	}
+	msg := decoded.InjectSteps[0].EphemeralMessage
+	if !strings.Contains(msg, "the option the user picked") {
+		t.Fatalf("ephemeralMessage = %q, want it to say to forward the option the user picked", msg)
+	}
+}
+
+// TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep confirms a plain
+// question's PostToolUse (no ⟦swarm:ref⟧) is untouched.
+func TestPostToolUseAnsweredQuestionWithoutRefEmitsNoNextStep(t *testing.T) {
+	ctx := context.Background()
+	h, _, ses := newTestHandler(t)
+
+	pre := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"Which database?"}]}}`)
+	if _, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses.ID, pre); err != nil {
+		t.Fatal(err)
+	}
+	post := []byte(`{"session_id":"` + ses.ID + `","tool_name":"ask_question","tool_input":{"questions":[{"question":"Which database?"}]},"tool_response":{"answer":"PostgreSQL"}}`)
+	out, err := h.Handle(ctx, runtime.Agy, "PostToolUse", ses.ID, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "native_answer") {
+		t.Fatalf("a ref-less question must not get a native_answer next step, got %s", out)
+	}
+}
+
+// A handoff rides the pause delivery path, so its Stop block must carry the
+// HANDOFF notice (a fresh session follows), not the PAUSE one.
+func TestStopBlocksWithHandoffNoticeDuringHandoff(t *testing.T) {
+	h, ses := seed(t, 0, runtime.PauseRequested)
+	if _, err := h.DB.ExecContext(context.Background(), `INSERT INTO agent_operations
+		(id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+		VALUES ('op_h', 'agt_1', 'handoff', 'preserving', 'k', ?, 1, 1, 1)`, ses); err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(context.Background(), runtime.Claude, "Stop", ses, []byte(`{"session_id":"p1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]string
+	json.Unmarshal(out, &m)
+	if m["decision"] != "block" || m["reason"] != runtime.HandoffPreservationNotice("login-form-coder", "TASK-101") {
+		t.Fatalf("handoff stop = %s", out)
 	}
 }

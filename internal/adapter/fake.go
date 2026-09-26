@@ -22,7 +22,8 @@ type Fake struct {
 	WakeOK         bool // e2e can turn on a "native wake" to test the skip-the-paste path
 	Dialogs        []Dialog
 	PromptMatchers []PromptMatcher
-	LastSpec       Spec // test observability: the Spec most recently passed to Launch/Resume
+	LastSpec       Spec       // test observability: the Spec most recently passed to Launch/Resume
+	LastWakeTarget WakeTarget // test observability: the WakeTarget most recently passed to Wake
 
 	// DiscoverSessionResult/DiscoverSessionOK let a test opt this kind into
 	// the muse-style no-hook discovery path (see Muse.DiscoverSession).
@@ -81,7 +82,10 @@ func (f *Fake) PromptPatterns() []PromptMatcher { return f.PromptMatchers }
 func (f *Fake) InterruptKeys() []string         { return []string{"Escape"} }
 func (f *Fake) Idle(capture string) bool        { return idle(f, capture) }
 
-func (f *Fake) Wake(context.Context, WakeTarget) (bool, error) { return f.WakeOK, nil }
+func (f *Fake) Wake(_ context.Context, w WakeTarget) (bool, error) {
+	f.LastWakeTarget = w
+	return f.WakeOK, nil
+}
 
 func (f *Fake) DiscoverSession(context.Context, int, string) (string, bool) {
 	return f.DiscoverSessionResult, f.DiscoverSessionOK

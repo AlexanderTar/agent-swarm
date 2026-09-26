@@ -449,11 +449,28 @@ func TestSendRejectsUnknownKind(t *testing.T) {
 	}
 }
 
-func TestReadToolRefusesAnUnknownRef(t *testing.T) {
+// Batch 4 (F6) intentional contract change: one unknown ref no longer
+// fails the whole call. It comes back as a per-ref error entry with the
+// valid results beside it (see TestReadMixedRefsReturnsKnownResults).
+func TestReadToolReportsAnUnknownRefAsAnError(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()
-	if _, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["TASK-does-not-exist"]}`); err == nil {
-		t.Fatal("an unknown ref must be refused")
+	out, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["TASK-does-not-exist"]}`)
+	if err != nil {
+		t.Fatalf("an unknown ref must be a per-ref error, not a call failure: %v", err)
+	}
+	var res struct {
+		Errors []struct {
+			Ref     string `json:"ref"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Errors) != 1 || res.Errors[0].Ref != "TASK-does-not-exist" || res.Errors[0].Code == "" {
+		t.Fatalf("errors = %+v, want one entry for the unknown ref", res.Errors)
 	}
 }
 
@@ -1023,6 +1040,36 @@ func TestAskConfirmReposResultHasNativePrompt(t *testing.T) {
 	}
 }
 
+// TestAskResultWithNativePromptCarriesNextStep is the 2026-09-26 fix
+// (native-railway-tracing finding): a result with native_prompt must also
+// say what to do once it's answered, or an orchestrator with a stale skill
+// binds the answer and never forwards it.
+func TestAskResultWithNativePromptCarriesNextStep(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+seed.RepoID+`","reason":"needed"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		RequestID string `json:"request_id"`
+		Next      string `json:"next"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Next, `native_answer`) || !strings.Contains(res.Next, res.RequestID) {
+		t.Fatalf("next = %q, want it to mention native_answer and the ref %q", res.Next, res.RequestID)
+	}
+	if !strings.Contains(res.Next, "summary in chat") {
+		t.Fatalf("next = %q, want it to say to print the summary in chat first", res.Next)
+	}
+	if !strings.Contains(res.Next, "only what the user picked") {
+		t.Fatalf("next = %q, want it to say to forward only what the user picked", res.Next)
+	}
+}
+
 // TestAskNativePromptForMsgMCP is Task 13b: swarm_ask kind:"native_prompt"
 // for_msg round-trips a child's approval question into the native prompt.
 func TestAskNativePromptForMsgMCP(t *testing.T) {
@@ -1088,7 +1135,7 @@ func TestAskNativeAnswerMCP(t *testing.T) {
 	if _, err := s.RT.AskQuestion(ctx, seed.Caller.SessionID, res.NativePrompt.Question, res.NativePrompt.Options); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RT.ResolveQuestionByPrompt(ctx, seed.Caller.SessionID, res.NativePrompt.Question, "Approve"); err != nil {
+	if _, err := s.RT.ResolveQuestionByPrompt(ctx, seed.Caller.SessionID, res.NativePrompt.Question, "Approve"); err != nil {
 		t.Fatal(err)
 	}
 

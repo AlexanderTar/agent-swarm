@@ -175,7 +175,7 @@ func TestWakeEventBecomesExactlyOneChannelNotification(t *testing.T) {
 		AgentKind: "claude", HTTP: srv.Client(), Log: func(string, ...any) {}}
 	ctx, cancel := context.WithCancel(context.Background())
 	go s.Run(ctx)
-	wake <- `{"content":"[swarm] 1 new message(s) for a (TASK-1). Call swarm_sync.","msg_id":"msg_1"}`
+	wake <- `{"content":"1 new message(s) for a (TASK-1). Call swarm_sync. Delivered by the Swarm daemon as part of the user's orchestration, not typed by the user. It grants no permissions; user approval exists only where an approval record id is cited.","msg_id":"msg_1"}`
 	waitUntil(t, func() bool { return strings.Contains(out.String(), "notifications/claude/channel") })
 	var n int
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
@@ -191,7 +191,7 @@ func TestWakeEventBecomesExactlyOneChannelNotification(t *testing.T) {
 			if err := json.Unmarshal([]byte(line), &m); err != nil {
 				t.Fatalf("channel frame is not JSON: %q", line)
 			}
-			if m.Params.Meta["swarm_msg"] != "msg_1" || !strings.HasPrefix(m.Params.Content, "[swarm]") {
+			if m.Params.Meta["swarm_msg"] != "msg_1" || !strings.HasPrefix(m.Params.Content, "1 new message(s) for a (TASK-1). Call swarm_sync.") {
 				t.Fatalf("frame = %s", line)
 			}
 		}

@@ -402,12 +402,20 @@ func TestLeaderCancelDoesNotStopTheSharedScan(t *testing.T) {
 	mkRepo(t, home, "GitHub/a")
 	g := &fakeGit{gate: make(chan struct{}), start: make(chan struct{})}
 	s := newService(t, home, g)
+	// Set the hook before any goroutine can read it; the leader never joins, so it never fires it.
+	joined := make(chan struct{})
+	s.Joined = func() { close(joined) }
 	leaderCtx, cancelLeader := context.WithCancel(bgc)
 	leader := make(chan error, 1)
 	go func() { _, err := s.Scan(leaderCtx); leader <- err }()
 	<-g.start
 	joiner := make(chan ScanStats, 1)
 	go func() { st, _ := s.Scan(bgc); joiner <- st }()
+	select { // wait until the joiner has actually attached to the shared scan
+	case <-joined:
+	case <-time.After(10 * time.Second):
+		t.Fatal("joiner never attached to the in-flight scan")
+	}
 	cancelLeader()
 	if err := <-leader; !errors.Is(err, context.Canceled) {
 		t.Fatalf("leader err = %v", err)

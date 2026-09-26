@@ -170,4 +170,14 @@ final class HTTPDaemonClientTests: XCTestCase {
             XCTAssertEqual(error as? DaemonError, expected, file: file, line: line)
         }
     }
+
+    func testHandoffSendsTheCallersRequestKey() async throws {
+        let session = StubURLProtocol.install { _ in (202, Data("{}".utf8)) }
+        let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)
+        try await client.agent("login-form-coder", .handoff, scope: nil, requestID: "key-1")
+        try await client.agent("login-form-coder", .handoff, scope: nil, requestID: "key-1")
+        let bodies = StubURLProtocol.seen.map(\.body)
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertTrue(bodies.allSatisfy { $0.contains("\"request_id\":\"key-1\"") }, "\(bodies)")
+    }
 }
