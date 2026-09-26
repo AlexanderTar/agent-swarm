@@ -2963,6 +2963,37 @@ func TestAnsweredQuestionNeverRelays(t *testing.T) {
 	}
 }
 
+// TestOldStyleAnswerWithOnlyCorrelationIDNeverRelays covers a pre-T10
+// answer, which stored the question it replied to in correlation_id only
+// (reply_to was added later): notifyUnansweredQuestions must still see it
+// as answered, not flood a stale question_unanswered relay on first deploy
+// (finding 2, docs/specs/2026-09-25-needs-you-and-child-approval-routing.md).
+func TestOldStyleAnswerWithOnlyCorrelationIDNeverRelays(t *testing.T) {
+	s, _, at := clockStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	q, _ := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "")
+	s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE id = ?`, q)
+	a, err := s.Send(ctx, orchSes, w.Name, "answer", "postgres", q, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the old convention: reply_to unset, correlation_id carries
+	// the question id.
+	if _, err := s.DB.ExecContext(ctx,
+		`UPDATE messages SET reply_to = NULL, correlation_id = ? WHERE id = ?`, q, a); err != nil {
+		t.Fatal(err)
+	}
+	at.Advance(11 * time.Minute)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := relaysWithReplyTo(t, s, q); n != 0 {
+		t.Fatalf("relays after old-style answer = %d, want 0", n)
+	}
+}
+
 func TestApprovalAnsweredViaNativeAnswerNeverRelays(t *testing.T) {
 	s, _, at := clockStore(t)
 	ctx := context.Background()

@@ -1283,8 +1283,8 @@ func (s *Store) notifyUnansweredQuestions(ctx context.Context) error {
 		COALESCE(q.item_id, ''), q.payload_json
 		FROM messages q
 		WHERE q.kind = 'question' AND q.origin = 'agent' AND q.state = 'acked' AND q.created_at < ?
-		AND NOT EXISTS (SELECT 1 FROM messages a WHERE a.reply_to = q.id
-		                AND a.kind IN ('answer', 'approval_result', 'relay'))`, cutoff)
+		AND NOT EXISTS (SELECT 1 FROM messages a WHERE a.kind IN ('answer', 'approval_result', 'relay')
+		                AND (a.reply_to = q.id OR (a.kind = 'answer' AND a.correlation_id = q.id)))`, cutoff)
 	if err != nil {
 		return err
 	}
@@ -1342,7 +1342,8 @@ func (s *Store) notifyUnansweredQuestions(ctx context.Context) error {
 			}
 			var answered int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
-				WHERE reply_to = ? AND kind IN ('answer', 'approval_result', 'relay')`, u.ID).Scan(&answered); err != nil {
+				WHERE kind IN ('answer', 'approval_result', 'relay')
+				  AND (reply_to = ? OR (kind = 'answer' AND correlation_id = ?))`, u.ID, u.ID).Scan(&answered); err != nil {
 				return err
 			}
 			if answered > 0 {
