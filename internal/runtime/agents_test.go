@@ -870,6 +870,29 @@ func TestStartupTimesOutAfterThirtySeconds(t *testing.T) {
 	if got := s.Notify.(*fakeNotifier).kinds(); !slices.Contains(got, "agent.preflight_failed") {
 		t.Fatalf("raised %v, want agent.preflight_failed", got)
 	}
+	if !slices.Contains(tm.killed, "stuck") {
+		t.Fatalf("killed = %v, want the failed pane killed", tm.killed)
+	}
+	raised := s.Notify.(*fakeNotifier).raised
+	var reason string
+	for _, n := range raised {
+		if n.Kind == "agent.preflight_failed" {
+			reason = n.Args["reason"]
+		}
+	}
+	if reason != "Loading… Couldn't start agent." {
+		t.Fatalf("reason = %q, want %q", reason, "Loading… Couldn't start agent.")
+	}
+}
+
+func TestFirstReadableLineSkipsAnsiRules(t *testing.T) {
+	pane := "\x1b[38;5;220m────────\n\x1b[39m \x1b[1mAccessing\x1b[0m workspace:\n"
+	if got := firstReadableLine(pane); got != "Accessing workspace:" {
+		t.Fatalf("got %q", got)
+	}
+	if got := firstReadableLine("────\n   \n"); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
 }
 
 // §11.5 (2026-09-19, live incident): continuous new output must not trip the

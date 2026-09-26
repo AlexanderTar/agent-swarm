@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
@@ -1170,17 +1172,41 @@ func lastLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
+// firstReadableLine returns the first line of pane (after stripping ANSI and
+// trimming whitespace) that contains at least one letter or digit, so a
+// notification's reason never becomes an ANSI-colored box-drawing rule
+// (2026-09-26 incident: the notification body was an unreadable "────" line).
+// It is capped at 120 runes plus "…". Returns "" if no such line exists.
+func firstReadableLine(pane string) string {
+	for _, l := range strings.Split(stripANSI(pane), "\n") {
+		t := strings.TrimSpace(l)
+		if t == "" {
+			continue
+		}
+		readable := false
+		for _, r := range t {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				readable = true
+				break
+			}
+		}
+		if !readable {
+			continue
+		}
+		if utf8.RuneCountInString(t) > 120 {
+			runes := []rune(t)
+			t = string(runes[:120]) + "…"
+		}
+		return t
+	}
+	return ""
+}
+
 func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText string) error {
 	if err := s.SetSessionState(ctx, ses.ID, Failed); err != nil {
 		return err
 	}
-	firstLine := ""
-	for _, l := range strings.Split(paneText, "\n") {
-		if t := strings.TrimSpace(l); t != "" {
-			firstLine = t
-			break
-		}
-	}
+	firstLine := firstReadableLine(paneText)
 	reason := "Couldn't start agent."
 	if firstLine != "" {
 		reason = firstLine + " " + reason
@@ -1188,7 +1214,7 @@ func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText 
 	// The orchestrator otherwise never learns a child failed to start: it just
 	// sees no ack and has no event to act on (unlike interrupted/crashed,
 	// which already relay).
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	txErr := s.tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET failure_text = ? WHERE id = ?`, paneText, ses.ID); err != nil {
 			return err
 		}
@@ -1214,6 +1240,17 @@ func (s *Store) failSession(ctx context.Context, a Agent, ses Session, paneText 
 			RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload})
 		return err
 	})
+	if txErr != nil {
+		return txErr
+	}
+	// A failed session's pane is otherwise left running forever (2026-09-26
+	// incident: three Claude panes sat stuck on an unanswered trust dialog for
+	// 2-5 days, because nothing ever killed them). The reaper (Task 7) also
+	// catches this pane within one tick if this kill is somehow missed.
+	if err := s.Tmux.Kill(ctx, ses.TmuxName); err != nil {
+		s.logf("failSession: kill %s: %v", ses.TmuxName, err)
+	}
+	return nil
 }
 
 // stripANSI strips terminal escape sequences before a StartupDialogs regex
