@@ -182,6 +182,17 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if err != nil {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
 	}
+	// RequestChanges' own validation, reapplied here (Task 13c): nativeAnswer
+	// builds the changes_requested result with s.resolve directly (so the
+	// payload can carry evidence), not through RequestChanges itself.
+	if in.Decision == "request_changes" {
+		if comment == "" {
+			return Request{}, errors.New("Add a comment describing what to change.")
+		}
+		if utf8.RuneCountInString(comment) > 2000 {
+			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Comment must be at most 2000 characters."}
+		}
+	}
 	// bindEvidence runs inside the same tx as the state change (resolve's or
 	// ConfirmRepos's own), right after the UPDATE: the audit record's (a)
 	// (spec 2.3.6) lands atomically with (b), the result message's payload.
@@ -202,7 +213,15 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	}
 	if req.Kind == KindConfirmRepos {
 		if in.Decision == "request_changes" {
-			return s.RequestChanges(ctx, in.Ref, comment, "terminal", bindEvidence)
+			// nativeAnswer is the one agent-reachable user_action origin
+			// (requests.go's resolve call-site note): it is guarded by the
+			// evidence check above, and an agent-reported decision is
+			// flagged, not refused (user decision, spec 1.6.2).
+			return s.resolve(ctx, in.Ref, "changes_requested", comment, "terminal", "user_action", nil,
+				func(req Request) (MessageKind, any) {
+					return "approval_result", map[string]any{"decision": "changes_requested",
+						"comment": comment, "section_id": req.SectionID, "evidence": evidence}
+				}, bindEvidence)
 		}
 		var opts struct {
 			Proposed []ReposProposal `json:"proposed"`
@@ -218,13 +237,22 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 			ReposVersion int `json:"repos_version"`
 		}
 		json.Unmarshal(req.Binding, &binding)
-		return s.ConfirmRepos(ctx, in.Ref, ids, comment, binding.ReposVersion, "terminal", bindEvidence)
+		return s.ConfirmRepos(ctx, in.Ref, ids, comment, binding.ReposVersion, "terminal", evidence, bindEvidence)
 	}
 	if in.Decision == "request_changes" {
-		return s.RequestChanges(ctx, in.Ref, comment, "terminal", bindEvidence)
+		return s.resolve(ctx, in.Ref, "changes_requested", comment, "terminal", "user_action", nil,
+			func(req Request) (MessageKind, any) {
+				return "approval_result", map[string]any{"decision": "changes_requested",
+					"comment": comment, "section_id": req.SectionID, "evidence": evidence}
+			}, bindEvidence)
 	}
-	return s.Approve(ctx, in.Ref, ApproveInput{SectionSHA256: req.SectionSHA256,
-		ArtifactRevision: req.ArtifactRevision, Binding: req.Binding, Via: "terminal"}, bindEvidence)
+	in2 := ApproveInput{SectionSHA256: req.SectionSHA256, ArtifactRevision: req.ArtifactRevision,
+		Binding: req.Binding, Via: "terminal"}
+	return s.resolve(ctx, in.Ref, "approved", "", "terminal", "user_action", approveCheck(in2),
+		func(req Request) (MessageKind, any) {
+			return "approval_result", map[string]any{"decision": "approved",
+				"section_id": req.SectionID, "section_sha256": req.SectionSHA256, "evidence": evidence}
+		}, bindEvidence)
 }
 
 // nativeAnswerForMsg is native_answer's message-ref branch (spec section 2.3

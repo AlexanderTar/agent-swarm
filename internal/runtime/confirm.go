@@ -265,7 +265,11 @@ func (s *Store) CommitItemRepos(ctx context.Context, itemKey string, repoIDs []s
 // ConfirmRepos records the user's repository choice (L25, I13). It is a UI or
 // CLI action, so it writes the only repos_confirmed message the system ever
 // produces.
-func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, comment string, version int, via string,
+// evidence is native_answer's audit flag ("observed" | "agent_reported"),
+// written into the repos_confirmed message payload (spec 2.3.6(b), Task
+// 13c); every non-native caller (board, CLI) passes "" and the key is
+// omitted, since evidence only ever exists for a native answer.
+func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, comment string, version int, via, evidence string,
 	after ...func(*sql.Tx, Request) error) (Request, error) {
 	if len(repoIDs) == 0 {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Choose at least one repository."}
@@ -307,7 +311,11 @@ func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, c
 		}
 		// "user_action" appears here, in an allow-listed method, not in the shared
 		// resolve helper (R5).
-		payload, err := json.Marshal(map[string]any{"repos": refs, "comment": comment})
+		p := map[string]any{"repos": refs, "comment": comment}
+		if evidence != "" {
+			p["evidence"] = evidence
+		}
+		payload, err := json.Marshal(p)
 		if err != nil {
 			return err
 		}

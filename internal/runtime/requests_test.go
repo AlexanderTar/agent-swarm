@@ -297,8 +297,13 @@ func TestOnlyTheUserPathsWriteUserActionMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// nativeAnswer is the one agent-reachable user_action origin (Task 13c,
+	// spec 1.6.2): it is allowed here only because it is guarded by the
+	// native-evidence check (the bound question row's own responded_via =
+	// 'terminal'), not because an MCP path may otherwise claim a user
+	// action for free.
 	allowed := map[string]bool{"Answer": true, "Approve": true, "RequestChanges": true,
-		"ConfirmRepos": true, "CloseSpike": true}
+		"ConfirmRepos": true, "CloseSpike": true, "nativeAnswer": true}
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Files {
 			ast.Inspect(file, func(n ast.Node) bool {
@@ -322,7 +327,9 @@ func TestOnlyTheUserPathsWriteUserActionMessages(t *testing.T) {
 	}
 }
 
-// And behaviourally: Ask never produces a result message.
+// And behaviourally: Ask never produces a result message for kind:"question"
+// (or any other kind but the one deliberate, evidence-guarded exception,
+// native_answer -- see TestNativeAnswer* in native_answer_test.go).
 func TestAskNeverProducesAnApprovalResult(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

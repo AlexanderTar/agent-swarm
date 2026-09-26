@@ -1429,7 +1429,7 @@ func TestMaterializeToolResultUsesSnakeCaseKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
@@ -1501,7 +1501,7 @@ func TestMaterializeRequestIDReplaysInsteadOfMaterializingTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",

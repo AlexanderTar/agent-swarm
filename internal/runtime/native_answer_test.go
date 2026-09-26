@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,14 @@ import (
 // orchestrator with a registered spec artifact and an open approve_section
 // request, its NativePrompt already computed via a real Ask call.
 func seedApprovalWithNativePrompt(t *testing.T) (s *Store, ses string, req Request) {
+	s, ses, req, _ = seedApprovalWithNativePromptAndPath(t)
+	return s, ses, req
+}
+
+// seedApprovalWithNativePromptAndPath also returns the artifact's file path,
+// which a caller that wants to revise the SAME artifact (RegisterArtifact
+// looks it up by item + path, artifacts.go:381) needs to reuse.
+func seedApprovalWithNativePromptAndPath(t *testing.T) (s *Store, ses string, req Request, path string) {
 	t.Helper()
 	s, _, _ = newStore(t)
 	ctx := context.Background()
@@ -19,8 +28,8 @@ func seedApprovalWithNativePrompt(t *testing.T) (s *Store, ses string, req Reque
 		t.Fatal(err)
 	}
 	ses = mustSessionID(t, s, a.ID)
-	p := writeFile(t, "# Spec\n\n## Data model\n\nrows\n")
-	res, err := s.RegisterArtifact(ctx, ses, "register", "SPIKE-1", "spec", p, "")
+	path = writeFile(t, "# Spec\n\n## Data model\n\nrows\n")
+	res, err := s.RegisterArtifact(ctx, ses, "register", "SPIKE-1", "spec", path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +39,7 @@ func seedApprovalWithNativePrompt(t *testing.T) (s *Store, ses string, req Reque
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, ses, req
+	return s, ses, req, path
 }
 
 // hookSimulate replays what the claude PreToolUse/PostToolUse hooks do for a
@@ -92,6 +101,12 @@ func TestNativeAnswerApprovesOnlyWithMatchingEvidence(t *testing.T) {
 	if wire.ApprovalEvidence == nil || *wire.ApprovalEvidence != EvidenceObserved {
 		t.Fatalf("approval_evidence = %v, want observed", wire.ApprovalEvidence)
 	}
+	if payload := latestMessagePayload(t, s, "approval_result"); !strings.Contains(payload, `"evidence":"observed"`) {
+		t.Fatalf("approval_result payload = %s, want evidence:observed", payload)
+	}
+	if payload := latestEventPayload(t, s, "request.resolved"); !strings.Contains(payload, `"approval_evidence":"observed"`) {
+		t.Fatalf("request.resolved payload = %s, want approval_evidence:observed", payload)
+	}
 
 	// 4. Replay is refused.
 	if _, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "request_changes", Comment: "x"}); err == nil ||
@@ -118,6 +133,12 @@ func TestNativeAnswerAgentReportedIsAcceptedAndFlagged(t *testing.T) {
 	}
 	if wire.ApprovalEvidence == nil || *wire.ApprovalEvidence != EvidenceAgentReported {
 		t.Fatalf("approval_evidence = %v, want agent_reported", wire.ApprovalEvidence)
+	}
+	if payload := latestMessagePayload(t, s, "approval_result"); !strings.Contains(payload, `"evidence":"agent_reported"`) {
+		t.Fatalf("approval_result payload = %s, want evidence:agent_reported", payload)
+	}
+	if payload := latestEventPayload(t, s, "request.resolved"); !strings.Contains(payload, `"approval_evidence":"agent_reported"`) {
+		t.Fatalf("request.resolved payload = %s, want approval_evidence:agent_reported", payload)
 	}
 }
 
@@ -191,6 +212,39 @@ func TestNativeAnswerRefusesAnotherAgentsEvidence(t *testing.T) {
 	}
 }
 
+// TestNativeAnswerStaleSectionConflicts is Task 13c's stale-artifact
+// scenario. nativeAnswer fills ApproveInput from the request's own current
+// row (spec 2.3 step 6), so it can never itself disagree with that row --
+// but RegisterArtifact's revise flips a request whose section changed
+// straight to state:"stale" (artifacts.go's RegisterArtifact), so resolve's
+// own "already resolved" guard fires first here, not approveCheck's "This
+// request changed" text. Either way nothing gets approved.
+func TestNativeAnswerStaleSectionConflicts(t *testing.T) {
+	s, ses, req, path := seedApprovalWithNativePromptAndPath(t)
+	ctx := context.Background()
+	hookSimulate(t, s, ses, *req.NativePrompt, "Approve")
+
+	os.WriteFile(path, []byte("# Spec\n\n## Data model\n\nrows and columns now\n"), 0o644)
+	if _, err := s.RegisterArtifact(ctx, ses, "revise", "SPIKE-1", "spec", path, ""); err != nil {
+		t.Fatal(err)
+	}
+	still, err := s.RequestByID(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if still.State != "stale" {
+		t.Fatalf("state after revise = %v, want stale", still.State)
+	}
+
+	if _, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "approve"}); err == nil {
+		t.Fatal("native_answer on a stale request must be refused")
+	}
+	still, _ = s.RequestByID(ctx, req.ID)
+	if still.State == "approved" {
+		t.Fatal("a stale request must never end up approved")
+	}
+}
+
 func TestNativeAnswerConfirmRepos(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -215,6 +269,41 @@ func TestNativeAnswerConfirmRepos(t *testing.T) {
 	if out.State != "approved" || len(out.Confirmed) != 1 || out.Confirmed[0] != repoID {
 		t.Fatalf("out = %+v", out)
 	}
+	if payload := latestMessagePayload(t, s, "repos_confirmed"); !strings.Contains(payload, `"evidence":"observed"`) {
+		t.Fatalf("repos_confirmed payload = %s, want evidence:observed", payload)
+	}
+}
+
+// latestMessagePayload returns the payload_json of the most recent message
+// of the given kind, for asserting native_answer's evidence key lands on
+// the wire (spec 2.3.6(b)).
+func latestMessagePayload(t *testing.T, s *Store, kind string) string {
+	t.Helper()
+	var payload string
+	if err := s.DB.QueryRowContext(context.Background(), `SELECT payload_json FROM messages
+		WHERE kind = ? ORDER BY seq DESC LIMIT 1`, kind).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+// latestEventPayload returns the payload of the most recent event of the
+// given type, for asserting the request.resolved wire carries
+// approval_evidence (spec 2.3.6(c)).
+func latestEventPayload(t *testing.T, s *Store, eventType string) string {
+	t.Helper()
+	ctx := context.Background()
+	evs, err := s.Events.After(ctx, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(evs) - 1; i >= 0; i-- {
+		if evs[i].Type == eventType {
+			return string(evs[i].Payload)
+		}
+	}
+	t.Fatalf("no %s event found", eventType)
+	return ""
 }
 
 // TestNativeAnswerChildApprovalObservedAndAgentReported is Task 13d: a

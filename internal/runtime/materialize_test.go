@@ -38,7 +38,7 @@ func approvedFeatureSpike(t *testing.T, s *Store) (ses Session, specID, planID, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	const specBody = "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"
@@ -97,7 +97,7 @@ func approvedDebugSpike(t *testing.T, s *Store) (ses Session, reportID string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	report, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "debug_report", writeFile(t, reportBody), "")
@@ -350,7 +350,7 @@ func TestMaterializeRefusesARootTypeMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
@@ -403,7 +403,7 @@ func TestMaterializePropagatesTddExempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
