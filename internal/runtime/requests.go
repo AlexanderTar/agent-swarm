@@ -714,6 +714,24 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 		if err := requireTopLevel(a); err != nil {
 			return err
 		}
+		// A question asked again after a restart or wake (epic-approval-lane
+		// decision 2) reuses the agent's open row with the same prompt instead
+		// of opening a second Needs-you row: the hook's PostToolUse closes only
+		// the newest match, so a duplicate would stay open forever. The row
+		// follows the caller's session so ResolveQuestionByPrompt finds it.
+		var existing string
+		err = tx.QueryRowContext(ctx, `SELECT id FROM requests WHERE agent_id = ? AND kind = 'question'
+			AND state = 'open' AND prompt = ? ORDER BY created_at LIMIT 1`, a.ID, in.Prompt).Scan(&existing)
+		if err == nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE requests SET session_id = ? WHERE id = ?`, sessionID, existing); err != nil {
+				return err
+			}
+			out, err = s.requestTx(ctx, tx, existing)
+			return err
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		id := ids.New("req")
 		// A prompt forwarded verbatim from a daemon-issued native_prompt
 		// carries a ⟦swarm:<ref>⟧ token (spec 2.3 step 3, Task 13b): bind

@@ -280,3 +280,42 @@ func TestCloseSpikeRelaysNativePrompt(t *testing.T) {
 		t.Fatalf("spike status = %s, want done", it.Status)
 	}
 }
+
+// Spec E12.
+func TestAskQuestionReusesOpenRowWithSamePrompt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Dedupe", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses := mustSessionID(t, s, a.ID)
+	first, err := s.AskQuestion(ctx, ses, "Which sync strategy?", []string{"Pull", "Push"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As if the row was asked by an earlier generation of this agent.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE requests SET session_id = NULL WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.AskQuestion(ctx, ses, "Which sync strategy?", []string{"Pull", "Push"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != first.ID || again.SessionID != ses {
+		t.Fatalf("re-ask = (%s, %q), want (%s, %s)", again.ID, again.SessionID, first.ID, ses)
+	}
+	var open int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE kind = 'question' AND state = 'open'`).Scan(&open)
+	if open != 1 {
+		t.Fatalf("%d open question rows, want 1", open)
+	}
+	// Once answered, the same prompt is a new question.
+	if _, err := s.ResolveQuestionByPrompt(ctx, ses, "Which sync strategy?", "Pull"); err != nil {
+		t.Fatal(err)
+	}
+	third, err := s.AskQuestion(ctx, ses, "Which sync strategy?", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.ID == first.ID {
+		t.Fatalf("an answered row was reused")
+	}
+}
