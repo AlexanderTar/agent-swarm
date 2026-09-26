@@ -50,8 +50,9 @@ func TestScenarioHandoffWorker(t *testing.T) {
 
 	spawnOut := h.mustTool(t, orch, "swarm_spawn", map[string]any{
 		"item": task, "role": "coder", "agent": "fake", "model": "fake-1",
-		"brief":     map[string]any{"objective": "Do unit 1 then unit 2."},
-		"worktrees": []map[string]any{{"worktree": wtID, "mode": "rw"}},
+		"override_reason": "e2e harness pins the fake adapter",
+		"brief":           map[string]any{"objective": "Do unit 1 then unit 2."},
+		"worktrees":       []map[string]any{{"worktree": wtID, "mode": "rw"}},
 	})
 	coder, _ := spawnOut["agent"].(string)
 	if coder == "" {

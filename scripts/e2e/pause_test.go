@@ -292,6 +292,7 @@ func TestScenario08bPauseAllFreezesAQueuedSpawn(t *testing.T) {
 
 	out := h.mustTool(t, orch, "swarm_spawn", map[string]any{
 		"item": task2Key, "role": "coder", "agent": "fake", "model": "fake-1",
+		"override_reason": "e2e harness pins the fake adapter",
 	})
 	if out["queued"] != true {
 		t.Fatalf("second spawn = %+v, want queued:true", out)

@@ -37,9 +37,9 @@ describe("NeedsYou inbox (§16.11)", () => {
 
     await user.click(screen.getByRole("radio", { name: "Approvals" }));
     const appRows = within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button", { name: /Waiting for your input/ });
-    // accept_epic/accept_fix moved to Reviews (2.2.5)
-    expect(appRows).toHaveLength(5);
-    expect(appRows[0]).toHaveTextContent("SPIKE-3 · Offline mode");
+    // accept_epic/accept_fix are approvals too (2026-09-26 epic-approval-lane)
+    expect(appRows).toHaveLength(7);
+    expect(appRows[0]).toHaveTextContent("EPIC-12 · Authentication");
   });
 
   it("filters questions and approvals and selects a row", async () => {
@@ -50,7 +50,7 @@ describe("NeedsYou inbox (§16.11)", () => {
     await user.click(screen.getByRole("button", { name: /TASK-104/ }));
     expect(screen.getByText("review:req_q2")).toBeInTheDocument();
     await user.click(screen.getByRole("radio", { name: "Approvals" }));
-    expect(within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button", { name: /Waiting for your input/ })).toHaveLength(5);
+    expect(within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button", { name: /Waiting for your input/ })).toHaveLength(7);
   });
 
   it("has a terminal button that opens the terminal; selecting a row alone never does", async () => {
@@ -67,10 +67,11 @@ describe("NeedsYou inbox (§16.11)", () => {
     const before = d.calls.length;
     await user.click(screen.getByRole("radio", { name: "Approvals" }));
     const approvalsList = screen.getByRole("list", { name: "Needs you" });
-    // Approvals with no terminal_agent (req_section) show no icon at all (2.2.2).
+    // Approvals with no terminal_agent (req_accept, oldest, before an
+    // orchestrator binds it) show no icon at all (2.2.2).
     expect(within(approvalsList).queryAllByRole("button", { name: "Open agent terminal" })).toHaveLength(0);
     await user.click(within(approvalsList).getAllByRole("button", { name: /Waiting for your input/ })[0]!);
-    expect(screen.getByText("review:req_section")).toBeInTheDocument();
+    expect(screen.getByText("review:req_accept")).toBeInTheDocument();
     expect(d.calls.slice(before).some((c) => c.path.endsWith("/terminal"))).toBe(false);
   });
 

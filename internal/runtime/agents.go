@@ -1297,6 +1297,17 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		}
 	}()
 
+	// Epic-approval-lane decision 2: every start path (fresh, retry, drain,
+	// resume, recovery, handoff successor) funnels through here, so this is
+	// where open requests come back to the agent. Fail open: a relay error
+	// never blocks a spawn.
+	reminder := ""
+	if n, err := s.resurfaceOpenRequests(ctx, a, ses.ID, true, time.Time{}); err != nil {
+		s.logf("start session %s: resurface open requests: %v", a.Name, err)
+	} else if n > 0 {
+		reminder = " " + OpenRequestsReminder(n)
+	}
+
 	var itemKey, itemTitle, itemTypeStr string
 	_ = s.DB.QueryRowContext(ctx, `SELECT key, title, type FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey, &itemTitle, &itemTypeStr)
 	itemType := items.Type(itemTypeStr)
@@ -1310,6 +1321,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 	default:
 		kickoff = Kickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	}
+	kickoff += reminder
 
 	// Settings read failure is unrelated to the spawn itself: fail open (same
 	// philosophy as resolveUsageFallback in fallback.go) rather than block a

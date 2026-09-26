@@ -26,6 +26,7 @@ describe("url state (§16.5)", () => {
 
   it("drops invalid values", () => {
     expect(parseHash("#/nope?type=story2&status=weird&level=x&group=y&filter=z")).toEqual(DEFAULT_URL);
+    expect(parseHash("#/inbox?filter=reviews").filter).toBe("all"); // merged into Approvals
   });
 
   it("encodes search text", () => {

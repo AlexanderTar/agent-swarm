@@ -57,7 +57,6 @@ export function NeedsYou(p: {
             { value: "all", label: C.all },
             { value: "questions", label: C.questions },
             { value: "approvals", label: C.approvals },
-            { value: "reviews", label: C.reviews },
           ]}
         />
         {requests.data && list.length === 0 && <p className="text-muted">{C.inboxEmpty}</p>}

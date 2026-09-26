@@ -1443,6 +1443,12 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					return err
 				}
 			}
+			// Locked decision 3 (epic-approval-lane): the spike orchestrator
+			// gets its native prompt through the same relay as a routed
+			// accept row, since CheckpointResult carries none.
+			if err := s.relayRequestTx(ctx, tx, reqID); err != nil {
+				return err
+			}
 		}
 
 		if in.Kind == BlockedCkp && len(in.Blockers) > 0 && a.ParentAgentID == "" {

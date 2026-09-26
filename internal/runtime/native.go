@@ -72,8 +72,9 @@ func truncateWithToken(body, ref string) string {
 
 // nativePromptFor builds the daemon-issued native prompt for an approval-kind
 // request (spec section 6): approve_section, approve_plan, approve_report,
-// confirm_repos, close_spike. sectionTitle and warnings are only used by the
-// kinds that need them; passing them for the others is harmless.
+// confirm_repos, close_spike, accept_epic, accept_fix. sectionTitle and
+// warnings are only used by the kinds that need them; passing them for the
+// others is harmless.
 func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, sectionTitle string, warnings []string) (NativePrompt, error) {
 	switch req.Kind {
 	case KindApproveSection:
@@ -139,9 +140,52 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		}
 		q := fmt.Sprintf("Close %s?", key)
 		return NativePrompt{Header: "Close spike", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+	case KindAcceptEpic, KindAcceptFix:
+		var key, title string
+		if err := tx.QueryRowContext(ctx, `SELECT key, title FROM items WHERE id = ?`, req.ItemID).Scan(&key, &title); err != nil {
+			return NativePrompt{}, err
+		}
+		if req.Kind == KindAcceptFix {
+			q := fmt.Sprintf("Accept the fix for %s %q as done?", key, title)
+			return NativePrompt{Header: "Accept fix", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+		}
+		q := fmt.Sprintf("Accept %s %q as done?", key, title)
+		return NativePrompt{Header: "Accept epic", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
 	default:
 		return NativePrompt{}, nil
 	}
+}
+
+// NativePromptNextStep is the show-and-forward instruction that rides with
+// every daemon-issued native prompt: swarm_ask's result (mcpserver
+// requestOut) and the request_open relay share it verbatim (2026-09-26
+// epic-approval-lane; text unchanged from the native-railway-tracing fix).
+func NativePromptNextStep(ref string) string {
+	return fmt.Sprintf("Print the summary in chat first, not in the question. Then show native_prompt "+
+		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
+		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
+		"forwarding only what the user picked, never a decision they did not make.", ref)
+}
+
+// storedNativePromptTx rebuilds a stored approval's native prompt exactly as
+// swarm_ask first returned it (same section title from the asked revision,
+// same plan warnings), so a re-shown question matches the original byte for
+// byte and the hook's question row binds to the same ref.
+func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Request) (NativePrompt, error) {
+	title, err := s.sectionTitle(ctx, tx, req.ArtifactID, req.ArtifactRevision, req.SectionID)
+	if err != nil {
+		return NativePrompt{}, err
+	}
+	var warnings []string
+	if req.Kind == KindApprovePlan {
+		var raw string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(warnings_json,'[]') FROM artifact_revisions
+			WHERE artifact_id = ? AND revision = ?`, req.ArtifactID, req.ArtifactRevision).Scan(&raw); err != nil {
+			return NativePrompt{}, err
+		}
+		json.Unmarshal([]byte(raw), &warnings)
+	}
+	return s.nativePromptFor(ctx, tx, req, title, warnings)
 }
 
 // NativeAnswerNextStep is the PostToolUse hook's instruction once a native
@@ -189,7 +233,19 @@ const errNoNativeEvidence = "No answered native prompt for %s in your terminal. 
 	"from swarm_ask verbatim with your native question tool, then forward the user's answer."
 const errDecisionMismatch = "The user's native answer was %q, not %q."
 const errNativeAnswerWrongTarget = "%s is not an approve_section, approve_plan, approve_report, " +
-	"confirm_repos, or close_spike request you asked for."
+	"confirm_repos, close_spike, accept_epic or accept_fix request routed to you."
+
+// errRequestStale is native_answer's refusal for a request the reconciler
+// staled after the question was asked (reconcileRoot's binding sweep).
+const errRequestStale = "%s is stale: %s changed after the question was asked. Don't forward it; " +
+	"Swarm sends a new request when the work is ready again."
+
+// nativeAnswerKind reports whether native_answer forwards a request of kind
+// k: the asking agent's own approvals plus accept rows once routeAcceptTx
+// has bound them to the root orchestrator (2026-09-26 epic-approval-lane).
+func nativeAnswerKind(k RequestKind) bool {
+	return approvalTerminalKinds[k] || k == KindAcceptEpic || k == KindAcceptFix
+}
 
 // errChildApprovalNoNativePath is native_prompt/native_answer's refusal for
 // a child's approval question (a msg_ ref) when the caller's kind has no
@@ -368,15 +424,26 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if err != nil {
 		return Request{}, err
 	}
-	// native_answer only forwards the terminal approval kinds spec 2.3 names
-	// (approve_section/plan/report, confirm_repos, close_spike), and only for
-	// the agent that asked -- not a plain HITL question, accept_epic,
-	// accept_fix, or another agent's request, all of which req.Kind and
-	// req.AgentID alone can't otherwise be trusted to exclude once an
-	// evidence row exists (a caller can forge its own locally, Task B4
-	// finding 3).
-	if !approvalTerminalKinds[req.Kind] || req.AgentID != callerID {
+	// native_answer only forwards approval kinds (nativeAnswerKind), and only
+	// for the agent the request is routed to -- never a plain HITL question
+	// or another agent's request, which req.Kind and req.AgentID alone can't
+	// otherwise be trusted to exclude once an evidence row exists (a caller
+	// can forge its own locally, Task B4 finding 3). An accept row is routed
+	// to the root orchestrator by routeAcceptTx, so the same owner check
+	// covers it.
+	if !nativeAnswerKind(req.Kind) || req.AgentID != callerID {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(errNativeAnswerWrongTarget, in.Ref)}
+	}
+	// reconcileRoot stales an open accept row in the same tx as any revision
+	// bump or new integration: say so instead of resolve's bare
+	// "Already resolved.". The binding itself is read from the stored row
+	// below (locked decision 5).
+	if req.State == "stale" {
+		var key string
+		if err := s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, req.ItemID).Scan(&key); err != nil {
+			return Request{}, err
+		}
+		return Request{}, &items.Error{Code: items.CodeConflict, Message: fmt.Sprintf(errRequestStale, in.Ref, key)}
 	}
 	// nativeAnswer is the one agent-reachable user_action origin
 	// (requests.go's resolve doc comment): it is guarded by the evidence
