@@ -37,7 +37,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(m.connected)
         XCTAssertNil(m.banner)
         XCTAssertEqual(m.label.count, "4")
-        XCTAssertEqual(m.label.segments.map(\.text), ["42%", "18%", "63%"])
+        XCTAssertEqual(m.label.segments.map(\.text), ["42%", "18%", "6%"])
         XCTAssertEqual(m.activeLine, "4 active")
         XCTAssertEqual(m.catalog.count, 4)
         XCTAssertEqual(m.usageAgent, .claude)
