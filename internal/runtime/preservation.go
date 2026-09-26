@@ -194,6 +194,9 @@ func stagedSecretPath(command string) string {
 // commit, snapshot, wait on owned commands) stays under existing
 // permissions.
 func PreservationCommandAllowed(command string) error {
+	if t := destructiveCwdTarget(command, ""); t != "" {
+		return destructiveCwdError(t)
+	}
 	if pushRe.MatchString(command) {
 		return &items.Error{Code: items.CodeConflict,
 			Message: "preservation: git push is denied while preserving; commit locally instead."}
@@ -272,9 +275,10 @@ type HandoffManifest struct {
 	Artifacts    []ManifestArtifact `json:"artifacts"`
 	Verification []Verify           `json:"verification"`
 	// Commands reserves the owned-command-handle list. No durable
-	// command-handle table exists in this codebase (worker-lifecycle
-	// retention is Batch 3-4 scope), so this is always empty rather than
-	// an invented history.
+	// command-handle table exists in this codebase, so this stays empty
+	// rather than carrying an invented history; declared handles must
+	// satisfy ValidateCommandHandles (lifecycle.go) before they are
+	// ever recorded here.
 	Commands         []string `json:"commands"`
 	Requests         []string `json:"request_ids"`
 	Messages         []string `json:"message_ids"`
