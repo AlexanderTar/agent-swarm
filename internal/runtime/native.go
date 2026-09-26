@@ -126,13 +126,25 @@ const errNativeAnswerWrongTarget = "%s is not an approve_section, approve_plan, 
 
 // errChildApprovalNoNativePath is native_prompt/native_answer's refusal for
 // a child's approval question (a msg_ ref) when the caller's kind has no
-// native question hook (questionHookKinds, spec section 1.7): cursor, muse
-// and codex never dispatch the hook that would bind an answered question
+// native question hook (questionHookKinds, spec section 1.7): a kind without
+// that hook never dispatches the hook that would bind an answered question
 // row to the ref, so native_answer could never find evidence for it and the
 // child would wait forever for an approval_result that never comes (finding
-// 1, docs/specs/2026-09-25-needs-you-and-child-approval-routing.md). These
-// kinds answer the child directly instead: a plain swarm_send closes the
-// question and the child treats that answer as its approval decision.
+// 1, docs/specs/2026-09-25-needs-you-and-child-approval-routing.md).
+//
+// 2026-09-26 decision: rather than gate the fallback to kinds without the
+// hook, the user accepted a uniform, weaker trust model for every child
+// approval regardless of parent kind: a plain swarm_send answer from the
+// child's own parent, reply_to the child's own approval:true question,
+// always counts as the approval decision -- on the parent's word, with no
+// hook evidence. Relaying through the parent this way is simpler than
+// per-kind rules, and native evidence (this native_prompt/native_answer
+// path) stays available as the stronger-audit option for kinds whose
+// question tool is hooked; it still refuses for kinds that lack the hook.
+// approval_result via observed native evidence still applies unconditionally
+// to requests the daemon itself owns (approve_section/plan/report,
+// confirm_repos, close_spike) -- only child (msg_ ref) approvals get this
+// fallback.
 const errChildApprovalNoNativePath = "Your agent kind has no native approval hook, so native_prompt/" +
 	"native_answer can never resolve this. Reply to the child directly: " +
 	`swarm_send(to: "<child>", kind: "answer", reply_to: %q, body: "<your decision>"); ` +

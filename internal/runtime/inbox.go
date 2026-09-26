@@ -489,6 +489,15 @@ func (s *Store) itemKey(ctx context.Context, tx *sql.Tx, id string) (string, err
 // messages (F7, F9): an answer must name the question (or blocked-relay) it
 // replies to, and that reply_to must resolve to something the target actually
 // owes an answer for.
+//
+// 2026-09-26 decision: this same check is what makes a plain answer a valid
+// stand-in for a child's approval_result, for any parent kind (not just
+// kinds without a native approval hook -- see errChildApprovalNoNativePath
+// in native.go). It already guarantees the two preconditions the accepted
+// exception needs: reply_to names a question sent by that exact target
+// (child) to the answering agent (its real parent), so the child's own skill
+// need only additionally require the question it named be its own
+// approval:true one (spec §2.3 step 7, §1.6).
 const errAnswerNeedsReplyTo = "An answer needs reply_to: the msg_id of the question (or blocked relay) you are answering."
 const errAnswerBadReplyTo = "reply_to %s is not a question or blocked relay from %s addressed to you."
 
