@@ -15,7 +15,7 @@ import (
 
 func codexSpec(t *testing.T, _ ...Deps) Spec {
 	t.Helper()
-	return Spec{AgentName: "login-form-coder", SessionID: "ses_01", Token: "tok",
+	return Spec{AgentName: "login-form-coder", AgentID: "ag_01", SessionID: "ses_01", Token: "tok",
 		DaemonURL: "http://127.0.0.1:17778", Model: "gpt-6-astra", Effort: "medium",
 		Cwd: t.TempDir(), Kickoff: "kick", Bin: "/usr/local/bin/swarm"}
 }
@@ -427,31 +427,35 @@ func TestCodexIsolatedHomeToleratesMissingHooksSkillsAndPlugins(t *testing.T) {
 // usable bytes. The old CODEX_HOME (<home>/run/launch/<session>/codex-home)
 // blows past that on a real machine, so every codex launch failed with
 // "path must be shorter than SUN_LEN". CodexHomeDir must stay short even
-// for a long swarm home and a long session id.
+// for a long swarm home and a long agent id.
 func TestCodexHomeDirSocketPathFitsSunLen(t *testing.T) {
 	home := "/Users/" + strings.Repeat("a", 32) + "/.swarm"
-	sessionID := strings.Repeat("s", 30)
-	codexHome := CodexHomeDir(home, sessionID)
+	agentID := strings.Repeat("a", 30)
+	codexHome := CodexHomeDir(home, agentID)
 	sock := codexHome + "/app-server-control/app-server-control.sock"
 	if len(sock) > 103 {
 		t.Fatalf("socket path is %d bytes (max 103): %s", len(sock), sock)
 	}
 }
 
-// CodexHomeDir must be a pure, deterministic function of (home, sessionID):
-// Resume must land on the same home Launch used, and the reconcile sweep
-// (internal/runtime/reconcile.go) must be able to recompute it for every
-// live session without touching disk.
-func TestCodexHomeDirIsDeterministicAndSessionScoped(t *testing.T) {
+// CodexHomeDir must be a pure, deterministic function of (home, agent id):
+// Resume must land on the same home Launch used (review round 1: it is keyed
+// on the AGENT id, not the session id, precisely so that a pause->resume,
+// which mints a new session id for the same agent, lands on the same home
+// its earlier codex thread store lives in -- see
+// TestCodexResumeLandsOnTheSameHomeAsTheOriginalLaunch), and the reconcile
+// sweep (internal/runtime/reconcile.go) must be able to recompute it for
+// every resumable agent without touching disk.
+func TestCodexHomeDirIsDeterministicAndAgentScoped(t *testing.T) {
 	home := t.TempDir()
-	a := CodexHomeDir(home, "ses_01")
-	b := CodexHomeDir(home, "ses_01")
-	c := CodexHomeDir(home, "ses_02")
+	a := CodexHomeDir(home, "ag_01")
+	b := CodexHomeDir(home, "ag_01")
+	c := CodexHomeDir(home, "ag_02")
 	if a != b {
 		t.Fatalf("CodexHomeDir must be deterministic: %q != %q", a, b)
 	}
 	if a == c {
-		t.Fatalf("CodexHomeDir must be session-scoped: both sessions got %q", a)
+		t.Fatalf("CodexHomeDir must be agent-scoped: both agents got %q", a)
 	}
 }
 
@@ -465,7 +469,7 @@ func TestCodexLaunchUsesTheShortHomeAndNoDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := CodexHomeDir(d.Home, spec.SessionID)
+	want := CodexHomeDir(d.Home, spec.AgentID)
 	if l.Env["CODEX_HOME"] != want {
 		t.Fatalf("CODEX_HOME = %q, want %q", l.Env["CODEX_HOME"], want)
 	}
@@ -474,12 +478,61 @@ func TestCodexLaunchUsesTheShortHomeAndNoDaemon(t *testing.T) {
 	}
 }
 
+// Review round 1 (blocking): startSession mints a fresh session id on every
+// resume (internal/runtime/pause.go, agents.go), so keying CODEX_HOME on the
+// session id put pause->resume in a brand-new, empty home -- `codex resume
+// <thread>` would fail with "no rollout found for thread id ..." exactly
+// like the pre-fix Wake bug. Only one session per agent is ever live/paused
+// at a time, so keying on the AGENT id (stable across generations) instead
+// makes Launch, Resume and a continuity successor for the same agent all
+// land on the same CODEX_HOME.
+func TestCodexResumeLandsOnTheSameHomeAsTheOriginalLaunch(t *testing.T) {
+	d := testDeps(t)
+	launchSpec := codexSpec(t, d)
+	l, err := newCodex(d).Launch(launchSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resumeSpec := launchSpec
+	resumeSpec.SessionID = "ses_02" // startSession mints a new id on resume
+	resumeSpec.ProviderSessionID = "01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9"
+	r, err := newCodex(d).Resume(resumeSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if l.Env["CODEX_HOME"] != r.Env["CODEX_HOME"] {
+		t.Fatalf("Launch CODEX_HOME = %q, Resume CODEX_HOME = %q; a resume with a new session id must reuse the same agent's home",
+			l.Env["CODEX_HOME"], r.Env["CODEX_HOME"])
+	}
+}
+
+// Review round 1, MINOR 1: setupEnv must refuse to launch rather than hand
+// codex a CODEX_HOME whose app-server-control socket would exceed SUN_LEN.
+// This can't happen with today's 8-hex-char hash and any realistic home
+// path, but it's a cheap, clear guard against a future regression (a longer
+// hash, a longer "cx" prefix, ...) instead of a cryptic runtime failure from
+// codex itself.
+func TestCodexSetupEnvRejectsAHomeThatWouldExceedSunLen(t *testing.T) {
+	d := testDeps(t)
+	// A real, writable path (so MkdirAll itself would happily succeed) that's
+	// deliberately long enough to push the socket path over 103 bytes -- the
+	// guard must fire before any filesystem call, not rely on MkdirAll
+	// failing on its own for an unrelated reason (e.g. permissions).
+	d.Home = filepath.Join(t.TempDir(), strings.Repeat("x", 80))
+	spec := codexSpec(t, d)
+	if _, err := newCodex(d).Launch(spec); err == nil {
+		t.Fatal("expected an error when the codex home socket path would exceed SUN_LEN")
+	}
+}
+
 // P0 (2026-09-26): Wake ran `codex queue` with no CODEX_HOME, so it always
 // targeted ~/.codex instead of the session's isolated short home -- queueing
 // a message against a thread that lives in a different CODEX_HOME fails
 // with "no rollout found for thread id ..." (confirmed live). Wake must set
-// CODEX_HOME to the same directory Launch/Resume used for this session.
-func TestCodexWakeUsesTheSessionsCodexHome(t *testing.T) {
+// CODEX_HOME to the same directory Launch/Resume used for this agent.
+func TestCodexWakeUsesTheAgentsCodexHome(t *testing.T) {
 	d := testDeps(t)
 	var gotEnv map[string]string
 	var gotArgv []string
@@ -490,13 +543,14 @@ func TestCodexWakeUsesTheSessionsCodexHome(t *testing.T) {
 	}
 	ok, err := newCodex(d).Wake(context.Background(), WakeTarget{
 		SessionID:         "ses_01",
+		AgentID:           "ag_01",
 		ProviderSessionID: "01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9",
 		Notice:            "wake up",
 	})
 	if err != nil || !ok {
 		t.Fatalf("Wake = %v, %v", ok, err)
 	}
-	want := CodexHomeDir(d.Home, "ses_01")
+	want := CodexHomeDir(d.Home, "ag_01")
 	if gotEnv["CODEX_HOME"] != want {
 		t.Fatalf("CODEX_HOME = %q, want %q", gotEnv["CODEX_HOME"], want)
 	}

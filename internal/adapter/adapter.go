@@ -20,17 +20,17 @@ import (
 
 // Spec is what a caller assembles to launch or resume one agent session.
 type Spec struct {
-	AgentName, SessionID, Token, DaemonURL string
-	Model, Effort, Cwd                     string
-	ProviderSessionID                      string
-	Kickoff                                string
-	SettingsDir                            string // per-launch JSON files: <home>/run/launch/<session id>
-	Bin                                    string // absolute path to the swarm binary
-	TokenFile                              string // <home>/run/tokens/<session id>, minted by startSession
-	PluginDirs                             []string
-	AdvisorModel                           string
-	Instructions                           string
-	Env                                    map[string]string
+	AgentName, AgentID, SessionID, Token, DaemonURL string
+	Model, Effort, Cwd                              string
+	ProviderSessionID                               string
+	Kickoff                                         string
+	SettingsDir                                     string // per-launch JSON files: <home>/run/launch/<session id>
+	Bin                                             string // absolute path to the swarm binary
+	TokenFile                                       string // <home>/run/tokens/<session id>, minted by startSession
+	PluginDirs                                      []string
+	AdvisorModel                                    string
+	Instructions                                    string
+	Env                                             map[string]string
 }
 
 // Launch is what the caller feeds to the spawner.
@@ -86,7 +86,7 @@ type HookInput struct {
 // see docs/specs/2026-09-26-agy-launch-model.md); it is empty and ignored
 // for adapters that don't need it.
 type WakeTarget struct {
-	SessionID, ProviderSessionID, TmuxName, Notice, Model string
+	SessionID, AgentID, ProviderSessionID, TmuxName, Notice, Model string
 }
 
 // Deps are the seams every adapter is built from; nothing here touches the

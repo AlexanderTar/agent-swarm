@@ -28,29 +28,49 @@ func init() { register(kinds.Codex, func(d Deps) Adapter { return newCodex(d) })
 // Literal env={…} also works but would put session values in argv, so env_vars wins.
 var mcpEnvVars = []string{"SWARM_URL", "SWARM_SESSION", "SWARM_TOKEN_FILE", "SWARM_AGENT_KIND"}
 
-// CodexHomeDirName is the short, deterministic, session-scoped directory
-// name CodexHomeDir nests under <home>/cx/. It is exported so
-// internal/runtime's reconcile sweep can recompute the keep-set for every
-// live session without touching disk or duplicating the hash logic.
-func CodexHomeDirName(sessionID string) string {
-	sum := sha256.Sum256([]byte(sessionID))
-	return hex.EncodeToString(sum[:4]) // 8 hex chars: short, collision-cheap enough per session
+// CodexHomeDirName is the short, deterministic, agent-scoped directory name
+// CodexHomeDir nests under <home>/cx/. It is exported so internal/runtime's
+// reconcile sweep can recompute the keep-set for every resumable agent
+// without touching disk or duplicating the hash logic.
+func CodexHomeDirName(agentID string) string {
+	sum := sha256.Sum256([]byte(agentID))
+	return hex.EncodeToString(sum[:4]) // 8 hex chars: short, collision-cheap enough per agent
 }
 
-// CodexHomeDir is codex's isolated CODEX_HOME for one session
-// (docs/specs/2026-09-26-codex-short-home.md). Since codex 0.157.0, codex
-// starts an app-server-control unix socket at
+// codexSocketPathMax is macOS's SUN_LEN cap (104 bytes including the NUL
+// terminator) minus 1 for that terminator: the longest usable unix socket
+// path.
+const codexSocketPathMax = 103
+
+// codexSocketSuffix is the path codex 0.157+ appends to CODEX_HOME for its
+// app-server-control unix socket.
+const codexSocketSuffix = "/app-server-control/app-server-control.sock"
+
+// CodexHomeDir is codex's isolated CODEX_HOME for one AGENT
+// (docs/specs/2026-09-26-codex-short-home.md). Keyed on the agent id, not
+// the session id: startSession mints a fresh session id on every resume
+// (internal/runtime/pause.go, agents.go), but only one session per agent is
+// ever live/paused at a time, so an agent-keyed home is what lets `codex
+// resume <thread>` find the rollout an earlier generation created (review
+// round 1, blocking -- a session-keyed home put every resume in a fresh,
+// empty CODEX_HOME). A continuity successor (internal/runtime/replacement.go
+// startSuccessor) reuses the same agent id too, safely: its predecessor's
+// tmux pane is killed during the operation's Stopping phase, strictly before
+// Starting launches the successor, so there is never a live process racing
+// to hold the same directory open (see the startSuccessor comment).
+//
+// Since codex 0.157.0, codex starts an app-server-control unix socket at
 // $CODEX_HOME/app-server-control/app-server-control.sock, and macOS caps a
 // unix socket path (SUN_LEN) at 103 usable bytes. The ordinary per-launch
 // dir (<home>/run/launch/<session id>/codex-home) is long enough on a real
 // machine to blow past that limit, failing every codex launch with "path
 // must be shorter than SUN_LEN" -- confirmed live. <home>/cx/<8 hex chars>
-// keeps the socket path short regardless of how long home or the session id
-// are, at the cost of it no longer being human-readable from the session id
+// keeps the socket path short regardless of how long home or the agent id
+// are, at the cost of it no longer being human-readable from the agent id
 // alone (fine: nothing reads this path by eye, only setupEnv, Wake and the
 // reconcile sweep, all of which recompute it the same way).
-func CodexHomeDir(home, sessionID string) string {
-	return filepath.Join(home, "cx", CodexHomeDirName(sessionID))
+func CodexHomeDir(home, agentID string) string {
+	return filepath.Join(home, "cx", CodexHomeDirName(agentID))
 }
 
 func (c *Codex) flags(s Spec) ([]string, error) {
@@ -87,7 +107,15 @@ func (c *Codex) flags(s Spec) ([]string, error) {
 }
 
 func (c *Codex) setupEnv(s Spec) (map[string]string, error) {
-	codexHome := CodexHomeDir(c.d.Home, s.SessionID)
+	codexHome := CodexHomeDir(c.d.Home, s.AgentID)
+	// MINOR 1 (review round 1): fail clearly here rather than let codex itself
+	// die with a cryptic SUN_LEN error. Can't happen with today's 8-hex-char
+	// hash and any realistic swarm home, but it's a one-line guard against a
+	// future regression (a longer hash, a longer "cx" prefix, ...).
+	if sock := codexHome + codexSocketSuffix; len(sock) > codexSocketPathMax {
+		return nil, fmt.Errorf("codex home %q is too long: its app-server-control socket path would be %d bytes (max %d)",
+			codexHome, len(sock), codexSocketPathMax)
+	}
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return nil, err
 	}
@@ -254,12 +282,13 @@ func (c *Codex) SuperpowersInstalled() bool {
 }
 
 func (c *Codex) Wake(ctx context.Context, w WakeTarget) (bool, error) {
-	// CODEX_HOME must match the one setupEnv gave this session (CodexHomeDir):
-	// codex resolves --thread against $CODEX_HOME's own thread store, and
-	// without it this fell back to the daemon's ambient ~/.codex, where the
-	// thread never existed ("no rollout found for thread id ...", confirmed
-	// live) -- every wake against an isolated-home session silently failed.
-	codexHome := CodexHomeDir(c.d.Home, w.SessionID)
+	// CODEX_HOME must match the one setupEnv gave this agent (CodexHomeDir,
+	// keyed on AgentID -- see its doc comment for why not SessionID): codex
+	// resolves --thread against $CODEX_HOME's own thread store, and without
+	// it this fell back to the daemon's ambient ~/.codex, where the thread
+	// never existed ("no rollout found for thread id ...", confirmed live)
+	// -- every wake against an isolated-home session silently failed.
+	codexHome := CodexHomeDir(c.d.Home, w.AgentID)
 	_, err := c.d.RunEnv(ctx, map[string]string{"CODEX_HOME": codexHome},
 		"codex", "queue", "--thread", w.ProviderSessionID, "--message", w.Notice)
 	if err != nil {
