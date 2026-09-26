@@ -322,11 +322,20 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	}
 	if req.Kind == KindConfirmRepos {
 		var opts struct {
-			Proposed []ReposProposal `json:"proposed"`
+			Proposed  []ReposProposal `json:"proposed"`
+			Expansion []ReposProposal `json:"expansion"`
 		}
 		json.Unmarshal(req.Options, &opts)
-		ids := make([]string, 0, len(opts.Proposed))
+		// Approve confirms proposed + expansion together, minus dropped (spec
+		// 1.8 D2): the native prompt already lists every repo in that set, so
+		// there is no separate approval step for the expansion repos.
+		ids := make([]string, 0, len(opts.Proposed)+len(opts.Expansion))
 		for _, p := range opts.Proposed {
+			if p.Source != "dropped" {
+				ids = append(ids, p.Repo)
+			}
+		}
+		for _, p := range opts.Expansion {
 			if p.Source != "dropped" {
 				ids = append(ids, p.Repo)
 			}

@@ -346,6 +346,98 @@ func TestNativeAnswerConfirmRepos(t *testing.T) {
 	}
 }
 
+// TestNativeAnswerConfirmReposApprovesProposedAndExpansionTogether is Task
+// 6.3 (spec 1.8 D2): Approve on confirm_repos confirms proposed (minus
+// dropped) plus expansion in one go.
+func TestNativeAnswerConfirmReposApprovesProposedAndExpansionTogether(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	kept := seedRepo(t, s, "endurio-chat")
+	dropped := seedRepo(t, s, "endurio-docs")
+	expansion := seedRepo(t, s, "endurio-web")
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Confirm expansion", Intent: "feature",
+		Kind: Fake, Model: "fake-1", Repos: []string{kept, dropped}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, a.ID)
+	req, err := s.Ask(ctx, ses, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
+		Repos: []ReposProposal{
+			{Repo: kept, Reason: "needed"},
+			{Repo: dropped, Reason: "stale", Source: "dropped"},
+		},
+		Expansion: []ReposProposal{{Repo: expansion, Reason: "client/server pair"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookSimulate(t, s, ses, *req.NativePrompt, "Approve")
+
+	out, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "approve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, id := range out.Confirmed {
+		got[id] = true
+	}
+	if out.State != "approved" || len(out.Confirmed) != 2 || !got[kept] || !got[expansion] || got[dropped] {
+		t.Fatalf("out.Confirmed = %v, want [%s %s] without %s", out.Confirmed, kept, expansion, dropped)
+	}
+}
+
+// TestNativeAnswerConfirmReposRequestChangesLeavesReposUntouched is Task 6.3
+// (spec 1.8 D2): request_changes on confirm_repos never touches
+// confirmed_repos/repos_version, and sends approval_result, not
+// repos_confirmed.
+func TestNativeAnswerConfirmReposRequestChangesLeavesReposUntouched(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repoID := seedRepo(t, s, "endurio-chat")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Confirm changes", Intent: "feature",
+		Kind: Fake, Model: "fake-1", Repos: []string{repoID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, a.ID)
+	req, err := s.Ask(ctx, ses, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
+		Repos: []ReposProposal{{Repo: repoID, Reason: "needed"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookSimulate(t, s, ses, *req.NativePrompt, "Request changes: use the other repo instead")
+
+	out, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "request_changes",
+		Comment: "use the other repo instead"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "changes_requested" {
+		t.Fatalf("out = %+v", out)
+	}
+	after, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Repos) != len(before.Repos) || after.ReposVersion != before.ReposVersion {
+		t.Fatalf("root changed: before repos=%v version=%d, after repos=%v version=%d",
+			before.Repos, before.ReposVersion, after.Repos, after.ReposVersion)
+	}
+	if payload := latestMessagePayload(t, s, "approval_result"); !strings.Contains(payload, `"decision":"changes_requested"`) {
+		t.Fatalf("approval_result payload = %s, want decision:changes_requested", payload)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'repos_confirmed'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("repos_confirmed messages = %d, want 0", n)
+	}
+}
+
 // latestMessagePayload returns the payload_json of the most recent message
 // of the given kind, for asserting native_answer's evidence key lands on
 // the wire (spec 2.3.6(b)).
