@@ -365,7 +365,7 @@ branch `feat/dialog-needs-you`.
      	}
      }
 
-     func TestReconcileLeavesSpawningSessionsDialogsToWatchStartup(t *testing.T) {
+     func TestReconcileLeavesSpawningSessionsDialogsToAnActiveWatchStartup(t *testing.T) { // renamed in e88e1bd; see also TestReconcileTakesOverASpawningSessionsDialogWhenNoWatchStartupIsActive
      	// Build a live row in state spawning, with the prompt visible.
      	// Assert: no keys sent, no row opened.
      }
@@ -417,7 +417,7 @@ branch `feat/dialog-needs-you`.
      func (s *Store) clearPromptState(sessionID, title string) { /* delete under lock */ }
      ```
    - **`resolveAlive`** (`reconcile.go:817-835`):
-     - If `r.State == Spawning`, skip the prompt block entirely.
+     - If `r.State == Spawning && s.hasActiveWatchStartup(r.SessionID)`, skip the prompt block (REVISED 2026-09-26, e88e1bd: a Spawning session with no live `watchStartup`, e.g. after a daemon restart, is handled here like any live session).
      - `plain := stripANSI(capture)`; match `m.Match` and `m.Require` on
        `plain`.
      - Drop the `m.Action == ""` skip; `hasKeys := m.Action != ""`.
@@ -434,7 +434,7 @@ branch `feat/dialog-needs-you`.
      - If `OpenDialogPrompt` errors: log it and `clearPromptState`, so the
        next tick retries. `reqID` must not stay `"pending"`.
      - Change the waiting early return to
-       `if waiting || s.hasEscalatedPrompt(r.SessionID) {`. Keep the
+       `if waiting || escalated {`, where `escalated, _ := s.hasEscalatedPrompt(ctx, r.SessionID, ad)` (REVISED 2026-09-26, e88e1bd: DB-backed check for an open `prompt` row titled with one of the adapter's dialog titles, so it survives a restart and covers `watchStartup` escalations). Keep the
        `sessions.waiting` update keyed on `waiting` only. An escalated
        session then skips `notifyNoAck` and the stale check.
    - **Extra test:**

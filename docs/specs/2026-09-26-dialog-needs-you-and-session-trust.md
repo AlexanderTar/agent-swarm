@@ -151,8 +151,14 @@ matching its `PromptMatcher` twin (copy table below).
 
 ### B. Live-session prompts (`resolveAlive`)
 
-- **Skip `r.State == Spawning`.** `watchStartup` owns those sessions, so this
-  prevents double key presses.
+- **Defer a `Spawning` session only while its `watchStartup` is running.**
+  REVISED 2026-09-26 (Batch 1 review, e88e1bd): an in-memory
+  `activeWatchStartup` set (`setWatchStartupActive` / `hasActiveWatchStartup`)
+  marks sessions a live `watchStartup` goroutine owns. Reconcile skips dialog
+  matching and resolving only for those, which prevents double key presses.
+  A `Spawning` session with no active `watchStartup` (for example after a
+  daemon restart, since nothing re-attaches the goroutine) is taken over by
+  reconcile: retry, escalate and resolve, like any live session.
 - **Match on `stripANSI(capture)`.** Change both `m.Match` and `m.Require` in
   `reconcile.go:824-827`.
 - **Replace the once-only flag.** `markPromptAnswered(sessionID, title) bool`
@@ -176,8 +182,12 @@ matching its `PromptMatcher` twin (copy table below).
   orchestrator would get a no_ack relay ("swarm_control cancel if genuinely
   stuck") while the user's row is open, and a cancel would kill the pane and
   withdraw the row.
-  - **Helper:** `func (s *Store) hasEscalatedPrompt(sessionID string) bool`,
-    under `bookkeepingMu`.
+  - **Helper:** `func (s *Store) hasEscalatedPrompt(ctx context.Context, sessionID string, ad adapter.Adapter) (bool, error)`.
+    REVISED 2026-09-26 (e88e1bd): it is DB-backed, not in-memory. It returns
+    true when the session has an open `prompt` request whose title is one of
+    the adapter's dialog titles (the union of `PromptPatterns` and
+    `StartupDialogs`). That way an escalation opened by `watchStartup`, or one
+    left over from before a daemon restart, still suppresses no-ack.
 
 ### C. Request rows
 
@@ -376,8 +386,9 @@ There are no DB model changes. `requests.kind = 'prompt'` already exists, with
   `Dialog`s.
 - `internal/runtime/agents.go`: `watchStartup` state machine, `failSession`
   kill, `firstReadableLine`.
-- `internal/runtime/reconcile.go`: `resolveAlive` (strip ANSI, skip spawning,
-  `promptTick`, escalate, resolve), reaper, `finishedAgentTmuxNames`.
+- `internal/runtime/reconcile.go`: `resolveAlive` (strip ANSI, defer a
+  spawning session only while `hasActiveWatchStartup`, `promptTick`, escalate,
+  resolve), the DB-backed `hasEscalatedPrompt`, reaper, `finishedAgentTmuxNames`.
 - `internal/runtime/model.go`: the `promptAnswered` field becomes
   `promptState map[string]*dialogState`.
 - `internal/runtime/requests.go`: `OpenDialogPrompt`, `ResolveDialogPrompt`.
@@ -442,7 +453,9 @@ There are no DB model changes. `requests.kind = 'prompt'` already exists, with
 - **Unknown dialog / stall:** the existing 30 s `failSession`. The pane is
   killed and the notification body is the first readable line.
 - **Live session:** the prompt appears mid-run. Retries, then a row, then it
-  resolves when the prompt clears. A `Spawning` row is skipped by reconcile.
+  resolves when the prompt clears. A `Spawning` session is left to reconcile's
+  twin only while its `watchStartup` is active; after a daemon restart,
+  reconcile takes it over.
 - **Reaper:** a live pane of an `acknowledged` agent with a failed session is
   killed, while one belonging to an `active` agent's crashed session is kept.
 - **Dedupe:** two escalations of the same (session, title) produce one row.
