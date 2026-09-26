@@ -36,14 +36,17 @@ do.
   when non-empty. Other adapters' `Wake` do not read it (Claude/Codex wake
   via a side-channel that never took `--model`; adding the field does not
   change their behavior since they ignore it).
-- Cursor: `internal/catalog/parse.go`'s `ParseCursorModels` builds ids like
-  `gpt-5.3-codex` / `gpt-5.3-codex-high` as separate catalog entries (their
-  own `ID`), not via `LaunchIDs`/`EffortEncoding: "slug"` on one entry (see
-  `ParseCursorModels`, `DefaultLevel` handling). So `CatalogModel.LaunchModel`
-  is a no-op for cursor's entries today (`EffortEncoding` empty/"flag") and
-  `cursor.go`'s raw `s.Model` passthrough is already correct. Routing cursor
-  through the same resolver is still correct (it's a no-op for cursor) and
-  future-proofs it if a cursor catalog entry ever adopts slug encoding.
+- Cursor: **correction after reading `ParseCursorModels`/`slugDialect.group`
+  in `internal/catalog/parse.go`** -- cursor's own catalog parser groups
+  effort variants (e.g. `gpt-5.3-codex` + `gpt-5.3-codex-high`) under
+  `EffortEncoding: "slug"` and `LaunchIDs`, exactly the same shape as agy.
+  So `cursor.go`'s raw `s.Model` passthrough was silently wrong for any
+  cursor model with effort siblings too, not just agy's -- confirmed live by
+  reverting the `resolveLaunchModel` call in `startSession` and watching
+  `TestSpawnResolvesCursorLaunchModel` fail with the bare base id in argv.
+  Because the resolver in this fix is kind-agnostic, the same `startSession`
+  change fixes cursor for free; no cursor-specific code change was needed,
+  only the regression test.
 
 ## Model / API types
 
@@ -88,7 +91,6 @@ unchanged.
 
 ## Explicitly out of scope
 
-- Changing `ParseCursorModels`/cursor's catalog shape to use
-  `LaunchIDs`/slug encoding -- cursor's current per-effort-entry catalog
-  already produces the right launch id without this resolver.
 - Any change to `agy models`/effort validation UX in Preflight.
+- Any cursor-specific code change -- the finding above shows the shared
+  `startSession` fix already covers cursor's identical slug-encoding bug.

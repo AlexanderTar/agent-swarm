@@ -938,6 +938,64 @@ func TestStartSpikeResolvesAgyLaunchModel(t *testing.T) {
 	}
 }
 
+// TestSpawnResolvesCursorLaunchModel confirms the P0 model-passthrough fix
+// (docs/specs/2026-09-26-agy-launch-model.md) also covers cursor: cursor's
+// own catalog parser (ParseCursorModels) groups effort variants under
+// EffortEncoding "slug" + LaunchIDs exactly like agy, so cursor.go's raw
+// s.Model passthrough was silently wrong for any cursor model with effort
+// siblings, not just agy's. resolveLaunchModel being kind-agnostic fixes
+// both without a cursor-specific code change.
+func TestSpawnResolvesCursorLaunchModel(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	root := seedEpicWithTask(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude", "fake", "cursor"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('cursor','cursor-1','[{"id":"gpt-5.3-codex","label":"GPT 5.3 Codex","efforts":["medium","high"],"default_effort":"high","effort_encoding":"slug","launch_ids":{"medium":"gpt-5.3-codex-medium","high":"gpt-5.3-codex-high"},"advisor_capable":false}]','gpt-5.3-codex','test',1,1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	userHome := t.TempDir()
+	skillDir := filepath.Join(userHome, ".cursor", "plugins", "local", "superpowers", "skills", "brainstorming")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeExec := &execx.Fake{Responses: map[string]execx.Result{
+		"cursor-agent --version": {Out: "cursor-agent 1.0.0"},
+		"cursor-agent status":    {Out: "Logged in as u"},
+		"cursor-agent create-chat": {Out: "chat-1"},
+	}}
+	s.Exec = fakeExec.Runner()
+	ag, err := adapter.New(Cursor, adapter.Deps{Home: s.Home, UserHome: userHome,
+		Bin: "/usr/local/bin/swarm", Run: fakeExec.Runner(), Log: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Adapters[Cursor] = ag
+
+	spawned, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Cursor,
+		Model: "gpt-5.3-codex", ParentAgentID: root, Brief: BriefInput{Objective: "do it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spawned.PreflightError != "" {
+		t.Fatalf("preflight error: %s", spawned.PreflightError)
+	}
+	if len(tm.started) != 1 {
+		t.Fatalf("started = %v, want exactly one launch", tm.started)
+	}
+	found := tm.started[0]
+	if !strings.Contains(found, "--model gpt-5.3-codex-high") {
+		t.Errorf("launch argv = %q, want the suffixed default-effort id", found)
+	}
+}
+
 // §11.5: a pane that never goes idle and shows no dialog fails after 30 s.
 func TestStartupTimesOutAfterThirtySeconds(t *testing.T) {
 	s, tm, _ := newStore(t)
