@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -420,6 +421,114 @@ func TestNativeAnswerRefusesASecondRowForTheSameRef(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("approval_result messages = %d, want 1", n)
+	}
+}
+
+// TestNativeAnswerRefusesANonApprovalRequestKind is Task B4 finding 3:
+// native_answer's request branch never checked req.Kind, so a ref that
+// happens to name any other request the caller owns -- a plain
+// kind:"question" HITL row, accept_epic, accept_fix -- was accepted the same
+// as approve_section/plan/report, confirm_repos, close_spike (spec 2.3 only
+// names those). Reproduced here as the orchestrator mistakenly using its own
+// plain question's request id as the ⟦swarm:...⟧ ref.
+func TestNativeAnswerRefusesANonApprovalRequestKind(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Wrong kind", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, a.ID)
+
+	// A plain HITL question -- not one of approvalTerminalKinds.
+	target, err := s.AskQuestion(ctx, ses, "Is now a good time?", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	np := NativePrompt{Header: "x", Question: fmt.Sprintf("Approve? %s", refToken(target.ID)), Options: approveOptions}
+	hookSimulate(t, s, ses, np, "Approve")
+
+	if _, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: target.ID, Decision: "approve"}); err == nil {
+		t.Fatal("native_answer over a non-approval request kind must be refused")
+	}
+	still, err := s.RequestByID(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if still.State == "approved" {
+		t.Fatal("a plain question must never end up approved via native_answer")
+	}
+}
+
+// TestNativeAnswerRefusesARequestOwnedByAnotherAgent is Task B4 finding 3:
+// native_answer's request branch never checked req.AgentID, so a caller that
+// forged its own local evidence row bound to another agent's approve_section
+// ref could move that other agent's request to approved.
+func TestNativeAnswerRefusesARequestOwnedByAnotherAgent(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	ctx := context.Background()
+	_ = ses
+
+	_, other, _, err := s.StartSpike(ctx, SpikeInput{Name: "Someone else", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSes := mustSessionID(t, s, other.ID)
+
+	// The other agent forges its own evidence row bound to the first
+	// orchestrator's request id.
+	np := NativePrompt{Header: "x", Question: fmt.Sprintf("Approve? %s", refToken(req.ID)), Options: approveOptions}
+	hookSimulate(t, s, otherSes, np, "Approve")
+
+	if _, err := s.Ask(ctx, otherSes, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "approve"}); err == nil {
+		t.Fatal("native_answer over another agent's request must be refused")
+	}
+	still, err := s.RequestByID(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if still.State != "open" {
+		t.Fatalf("state = %v, want open", still.State)
+	}
+}
+
+// TestNativeAnswerRefusesAMessageRefNotAddressedToTheCaller is Task B4
+// finding 3: native_answer's message-ref branch read `SELECT ... FROM
+// messages WHERE id = ?` with no check that the ref names an approval
+// question addressed to the caller, so any agent that forged its own
+// evidence row bound to another agent's approval-question message id could
+// resolve someone else's child approval.
+func TestNativeAnswerRefusesAMessageRefNotAddressedToTheCaller(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+
+	q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, intruder, _, err := s.StartSpike(ctx, SpikeInput{Name: "Intruder", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intruderSes := mustSessionID(t, s, intruder.ID)
+
+	np := NativePrompt{Header: "x", Question: fmt.Sprintf("Approve? %s", refToken(q)), Options: approveOptions}
+	hookSimulate(t, s, intruderSes, np, "Approve")
+
+	if _, err := s.Ask(ctx, intruderSes, AskInput{Kind: "native_answer", Ref: q, Decision: "approve"}); err == nil ||
+		!strings.Contains(err.Error(), "not a question addressed to you") {
+		t.Fatalf("err = %v, want errForMsgNotApproval", err)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE kind = 'approval_result' AND reply_to = ?`, q).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("approval_result messages = %d, want 0", n)
 	}
 }
 

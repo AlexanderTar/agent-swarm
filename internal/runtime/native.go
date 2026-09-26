@@ -121,6 +121,8 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 const errNoNativeEvidence = "No answered native prompt for %s in your terminal. Show the native_prompt " +
 	"from swarm_ask verbatim with your native question tool, then forward the user's answer."
 const errDecisionMismatch = "The user's native answer was %q, not %q."
+const errNativeAnswerWrongTarget = "%s is not an approve_section, approve_plan, approve_report, " +
+	"confirm_repos, or close_spike request you asked for."
 
 // decisionLabel maps native_answer's decision enum to the native prompt
 // label the bound row's response text must (case-fold) start with to count
@@ -161,12 +163,13 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if in.Ref == "" {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "ref is required."}
 	}
-	var rowID, responseText string
+	var rowID, responseText, callerID string
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
 		}
+		callerID = a.ID
 		return tx.QueryRowContext(ctx, `SELECT id, COALESCE(response_text,'') FROM requests
 			WHERE kind = 'question' AND agent_id = ? AND state = 'answered' AND responded_via = 'terminal'
 			  AND json_extract(binding_json, '$.ref') = ?
@@ -204,12 +207,30 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	}
 
 	if strings.HasPrefix(in.Ref, "msg_") {
+		// The message ref must name an approval question addressed to the
+		// caller (spec 2.3, Task 13b): reuse askNativePromptForMsg's own
+		// query rather than trusting the evidence row's binding, which any
+		// agent can forge locally by pointing its own AskQuestion at someone
+		// else's message id.
+		if err := s.verifyApprovalMsgAddressedTo(ctx, in.Ref, callerID); err != nil {
+			return Request{}, err
+		}
 		return s.nativeAnswerForMsg(ctx, in.Ref, in.Decision, comment, evidence, rowID, bindEvidence)
 	}
 
 	req, err := s.RequestByID(ctx, in.Ref)
 	if err != nil {
 		return Request{}, err
+	}
+	// native_answer only forwards the terminal approval kinds spec 2.3 names
+	// (approve_section/plan/report, confirm_repos, close_spike), and only for
+	// the agent that asked -- not a plain HITL question, accept_epic,
+	// accept_fix, or another agent's request, all of which req.Kind and
+	// req.AgentID alone can't otherwise be trusted to exclude once an
+	// evidence row exists (a caller can forge its own locally, Task B4
+	// finding 3).
+	if !approvalTerminalKinds[req.Kind] || req.AgentID != callerID {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(errNativeAnswerWrongTarget, in.Ref)}
 	}
 	// nativeAnswer is the one agent-reachable user_action origin
 	// (requests.go's resolve doc comment): it is guarded by the evidence
@@ -337,6 +358,21 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment
 // answer-reply_to query: a native prompt only ever exists for an explicit
 // approval question.
 const errForMsgNotApproval = "reply_to %s is not a question addressed to you with approval:true."
+
+// verifyApprovalMsgAddressedTo is native_answer's message-ref ownership check
+// (Task B4 finding 3): the same condition askNativePromptForMsg uses to build
+// the prompt in the first place, so a ref can only ever be answered by the
+// agent it was shown to.
+func (s *Store) verifyApprovalMsgAddressedTo(ctx context.Context, msgID, callerID string) error {
+	var x int
+	err := s.DB.QueryRowContext(ctx, `SELECT 1 FROM messages
+		WHERE id = ? AND to_agent_id = ? AND kind = 'question'
+		  AND json_extract(payload_json, '$.approval') = 1`, msgID, callerID).Scan(&x)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(errForMsgNotApproval, msgID)}
+	}
+	return err
+}
 
 // askNativePromptForMsg is swarm_ask kind:"native_prompt" with for_msg set
 // (spec section 2.3 step 1, 2.4): it builds the child-approval native
