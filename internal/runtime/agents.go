@@ -944,9 +944,9 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 
 	// A role default's Effort only ever reached in.Effort above when this
 	// call resolved Kind/Model FROM that default (in.Kind/in.Model both
-	// started empty). A caller that names its own explicit kind/model --
-	// exactly what the swarm-orchestrator skill tells orchestrators they may
-	// do -- skipped applyRoleDefault entirely, so a role override's Effort
+	// started empty). A caller that names its own explicit kind/model -- a
+	// user-requested override (swarm_spawn's override_reason) -- skipped
+	// applyRoleDefault entirely, so a role override's Effort
 	// silently never applied even when the caller's kind/model happened to
 	// match it and Effort was left blank (2026-09-24: the actual gap behind
 	// "we need to be able to override effort" -- the override always stored
