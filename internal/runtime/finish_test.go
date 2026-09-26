@@ -172,6 +172,70 @@ func TestRootDoneLeavesTheLiveSpikeOrchestratorAlone(t *testing.T) {
 	}
 }
 
+// spikeReviewer spawns a live reviewer on the spike under orch.
+func spikeReviewer(t *testing.T, s *Store, key, orchID string) Agent {
+	t.Helper()
+	rev, _, err := s.Spawn(context.Background(), SpawnInput{ItemKey: key, Role: RoleReviewer, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orchID, Brief: BriefInput{Objective: "review the finding"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rev
+}
+
+// Spec R5: the skip is for the spike's orchestrator only; a reviewer still
+// live on the spike when close_spike is approved ends completed.
+func TestCloseSpikeFinishesALiveReviewerOnTheSpike(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Items.RootDone = s.OnRootDone
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Nothing", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, a.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "starting"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: CompletedCkp,
+		Summary: "nothing to build", Resolution: "no_change"}); err != nil {
+		t.Fatal(err)
+	}
+	// Spawned after the completed checkpoint, which closes same-item
+	// siblings, so it is still live when the approval lands.
+	rev := spikeReviewer(t, s, key, a.ID)
+	var reqID string
+	s.DB.QueryRowContext(ctx, `SELECT id FROM requests WHERE kind = 'close_spike'`).Scan(&reqID)
+	if _, err := s.Approve(ctx, reqID, ApproveInput{Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := daemonCompleted(t, s, rev.ID); n != 1 {
+		t.Fatalf("%d daemon checkpoints for the live reviewer on the spike, want 1", n)
+	}
+	if n := daemonCompleted(t, s, a.ID); n != 0 {
+		t.Fatalf("%d daemon checkpoints for the spike orchestrator, want 0", n)
+	}
+}
+
+// Spec R6: materialize skips only the orchestrator; a live reviewer on the
+// spike ends completed.
+func TestMaterializeFinishesALiveReviewerOnTheSpike(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Items.RootDone = s.OnRootDone
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	rev := spikeReviewer(t, s, "SPIKE-1", ses.AgentID)
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := daemonCompleted(t, s, rev.ID); n != 1 {
+		t.Fatalf("%d daemon checkpoints for the live reviewer on the spike, want 1", n)
+	}
+	if n := daemonCompleted(t, s, ses.AgentID); n != 0 {
+		t.Fatalf("%d daemon checkpoints for the materializing orchestrator, want 0", n)
+	}
+}
+
 // Spec R6: swarm_materialize moves the spike to Done inside its own call;
 // the calling orchestrator must not be finished under it.
 func TestMaterializeDoesNotFinishTheSpikeOrchestrator(t *testing.T) {

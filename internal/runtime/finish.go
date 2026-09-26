@@ -36,11 +36,11 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 		return err
 	}
 	type agentRow struct {
-		id, name, itemID, sesID string
-		state                   SessionState
-		attempt                 int
+		id, name, itemID, sesID, role string
+		state                         SessionState
+		attempt                       int
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT a.id, a.name, a.item_id, COALESCE(ses.id, ''),
+	rows, err := tx.QueryContext(ctx, `SELECT a.id, a.name, a.item_id, a.role, COALESCE(ses.id, ''),
 		COALESCE(ses.state, ''), COALESCE(ses.attempt, 0)
 		FROM agents a LEFT JOIN sessions ses ON ses.id = (SELECT id FROM sessions
 			WHERE agent_id = a.id ORDER BY generation DESC, attempt DESC LIMIT 1)
@@ -52,7 +52,7 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 	for rows.Next() {
 		var r agentRow
 		var st string
-		if err := rows.Scan(&r.id, &r.name, &r.itemID, &r.sesID, &st, &r.attempt); err != nil {
+		if err := rows.Scan(&r.id, &r.name, &r.itemID, &r.role, &r.sesID, &st, &r.attempt); err != nil {
 			rows.Close()
 			return err
 		}
@@ -67,8 +67,9 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 	for _, r := range todo {
 		// The spike's own live orchestrator is inside swarm_materialize, or it
 		// already wrote completed with a resolution (close_spike); it ends
-		// through that checkpoint, not a daemon one (spec decision 1c).
-		if rootType == string(items.Spike) && r.itemID == rootID && r.state.Live() {
+		// through that checkpoint, not a daemon one (spec decision 1c). Other
+		// roles on the spike item (reviewer, researcher) finish as usual.
+		if rootType == string(items.Spike) && r.role == string(RoleOrchestrator) && r.itemID == rootID && r.state.Live() {
 			continue
 		}
 		// ponytail: in-tx, so no lockAgentOperations; a driver already past
