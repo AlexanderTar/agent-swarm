@@ -1022,3 +1022,45 @@ func TestAskConfirmReposResultHasNativePrompt(t *testing.T) {
 		t.Fatalf("options = %v", res.NativePrompt.Options)
 	}
 }
+
+// TestAskNativePromptForMsgMCP is Task 13b: swarm_ask kind:"native_prompt"
+// for_msg round-trips a child's approval question into the native prompt.
+func TestAskNativePromptForMsgMCP(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	root, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childID, childSes, _ := seedAgentAndSession(t, s, runtime.RoleCoder, "", root.ID)
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE agents SET parent_agent_id = ? WHERE id = ?`,
+		seed.Caller.AgentID, childID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, Caller{SessionID: childSes, AgentID: childID}, "swarm_send",
+		`{"to":"parent","kind":"question","body":"may I drop table x?","approval":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sendRes struct {
+		MsgID string `json:"msg_id"`
+	}
+	json.Unmarshal(mustJSON(out), &sendRes)
+
+	out2, err := s.call(ctx, seed.Caller, "swarm_ask", `{"kind":"native_prompt","for_msg":"`+sendRes.MsgID+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		NativePrompt struct {
+			Header   string   `json:"header"`
+			Question string   `json:"question"`
+			Options  []string `json:"options"`
+		} `json:"native_prompt"`
+	}
+	json.Unmarshal(mustJSON(out2), &res)
+	if !strings.Contains(res.NativePrompt.Question, "may I drop table x?") ||
+		!strings.Contains(res.NativePrompt.Question, sendRes.MsgID) {
+		t.Fatalf("native_prompt = %+v", res)
+	}
+}

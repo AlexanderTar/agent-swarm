@@ -40,7 +40,7 @@ func canonicalJSON(raw json.RawMessage) string {
 
 // AskInput is swarm_ask's input (§8.1).
 type AskInput struct {
-	Kind       string // "question" | "approval" | "confirm_repos"
+	Kind       string // "question" | "approval" | "confirm_repos" | "native_prompt" | "native_answer"
 	Prompt     string
 	Options    []string
 	ArtifactID string
@@ -51,6 +51,14 @@ type AskInput struct {
 	// RequestID is I11's idempotency key, scoped to the calling MCP session
 	// (empty means "no idempotency, just run once").
 	RequestID string
+	// ForMsg is kind:"native_prompt"'s target: an approval question message
+	// addressed to the caller (spec 2.3 step 1, Task 13b).
+	ForMsg string
+	// Ref, Decision and Comment are kind:"native_answer"'s fields (Task 13c):
+	// Ref names the request or message the caller is forwarding a decision
+	// for, Decision is "approve" | "request_changes", Comment is optional
+	// free text.
+	Ref, Decision, Comment string
 }
 
 // ReposProposal is one repository the orchestrator proposes (or drops) on a
@@ -433,9 +441,11 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 		return s.askApproval(ctx, sessionID, in)
 	case "confirm_repos":
 		return s.askConfirmRepos(ctx, sessionID, in)
+	case "native_prompt":
+		return s.askNativePromptForMsg(ctx, sessionID, in)
 	default:
 		return Request{}, &items.Error{Code: items.CodeBadRequest,
-			Message: "kind must be question, approval or confirm_repos."}
+			Message: "kind must be question, approval, confirm_repos or native_prompt."}
 	}
 }
 
@@ -521,10 +531,22 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 			return err
 		}
 		id := ids.New("req")
+		// A prompt forwarded verbatim from a daemon-issued native_prompt
+		// carries a ⟦swarm:<ref>⟧ token (spec 2.3 step 3, Task 13b): bind
+		// the row to it so native_answer can later find its evidence. A
+		// plain question's prompt has no token, so binding_json stays NULL.
+		var binding any
+		if ref := refFromPrompt(in.Prompt); ref != "" {
+			b, err := json.Marshal(map[string]string{"ref": ref})
+			if err != nil {
+				return err
+			}
+			binding = string(b)
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
-			prompt, options_json, state, created_at)
-			VALUES (?, 'question', 1, ?, ?, ?, ?, ?, 'open', ?)`,
-			id, a.ID, sessionID, a.ItemID, in.Prompt, jsonArray(in.Options), db.Millis(s.Now())); err != nil {
+			prompt, options_json, state, binding_json, created_at)
+			VALUES (?, 'question', 1, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+			id, a.ID, sessionID, a.ItemID, in.Prompt, jsonArray(in.Options), binding, db.Millis(s.Now())); err != nil {
 			return err
 		}
 		key, err := s.itemKey(ctx, tx, a.ItemID)

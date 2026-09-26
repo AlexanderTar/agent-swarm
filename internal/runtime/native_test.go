@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 )
@@ -205,5 +206,85 @@ func TestAskConfirmReposReturnsNativePrompt(t *testing.T) {
 	want := "Confirm 1 repositories for " + key + ": endurio-chat?" + refToken(req.ID)
 	if req.NativePrompt.Question != want {
 		t.Fatalf("question = %q, want %q", req.NativePrompt.Question, want)
+	}
+}
+
+// TestAskQuestionBindsARefFromTheirPrompt is Task 13b: a native question row
+// binds to the ref token its prompt carries, and an unbound prompt stores no
+// binding_json at all.
+func TestAskQuestionBindsARefFromTheirPrompt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Bind", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+
+	bound, err := s.AskQuestion(ctx, ses.ID, "Approve the plan (rev 1)?"+refToken("req_PLAN1"),
+		[]string{"Approve", "Request changes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bindingJSON sql.NullString
+	if err := s.DB.QueryRowContext(ctx, `SELECT binding_json FROM requests WHERE id = ?`, bound.ID).
+		Scan(&bindingJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !bindingJSON.Valid || bindingJSON.String != `{"ref":"req_PLAN1"}` {
+		t.Fatalf("bound binding_json = %v", bindingJSON)
+	}
+
+	plain, err := s.AskQuestion(ctx, ses.ID, "Which db?", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plainBinding sql.NullString
+	if err := s.DB.QueryRowContext(ctx, `SELECT binding_json FROM requests WHERE id = ?`, plain.ID).
+		Scan(&plainBinding); err != nil {
+		t.Fatal(err)
+	}
+	if plainBinding.Valid {
+		t.Fatalf("unbound prompt got binding_json = %v", plainBinding)
+	}
+}
+
+// TestAskNativePromptForMsg is Task 13b: swarm_ask kind:"native_prompt"
+// for_msg builds the child-approval prompt for an approval question
+// addressed to the caller, and refuses one that is not.
+func TestAskNativePromptForMsg(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+
+	q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.NativePrompt == nil {
+		t.Fatalf("NativePrompt is nil on %+v", req)
+	}
+	if req.NativePrompt.Header != w.Name+" asks" {
+		t.Fatalf("header = %q", req.NativePrompt.Header)
+	}
+	want := "may I drop table x?" + refToken(q)
+	if req.NativePrompt.Question != want {
+		t.Fatalf("question = %q, want %q", req.NativePrompt.Question, want)
+	}
+
+	// A plain (non-approval) question is refused.
+	plainQ, err := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: plainQ}); err == nil {
+		t.Fatal("native_prompt for a non-approval question must be refused")
+	}
+
+	// A ref naming nothing addressed to the caller is refused too.
+	if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: "msg_bogus"}); err == nil {
+		t.Fatal("native_prompt for an unknown msg_id must be refused")
 	}
 }

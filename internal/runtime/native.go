@@ -4,10 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
 // NativePrompt is the exact header/question/options an orchestrator shows
@@ -110,6 +113,46 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 	default:
 		return NativePrompt{}, nil
 	}
+}
+
+// errForMsgNotApproval is swarm_ask kind:"native_prompt"'s refusal when
+// for_msg does not name an approval question addressed to the caller (Task
+// 13b). It deliberately does not accept a blocked relay, unlike Task 10's
+// answer-reply_to query: a native prompt only ever exists for an explicit
+// approval question.
+const errForMsgNotApproval = "reply_to %s is not a question addressed to you with approval:true."
+
+// askNativePromptForMsg is swarm_ask kind:"native_prompt" with for_msg set
+// (spec section 2.3 step 1, 2.4): it builds the child-approval native
+// prompt for an approval question the child sent this orchestrator, without
+// creating any new request row -- the bound question row native_answer
+// later needs is the one the hook creates once the prompt is shown.
+func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in AskInput) (Request, error) {
+	if in.ForMsg == "" {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "for_msg is required."}
+	}
+	var out Request
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		var fromName, body string
+		err = tx.QueryRowContext(ctx, `SELECT ag.name, json_extract(m.payload_json, '$.body')
+			FROM messages m JOIN agents ag ON ag.id = m.from_agent_id
+			WHERE m.id = ? AND m.to_agent_id = ? AND m.kind = 'question'
+			  AND json_extract(m.payload_json, '$.approval') = 1`, in.ForMsg, a.ID).Scan(&fromName, &body)
+		if errors.Is(err, sql.ErrNoRows) {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(errForMsgNotApproval, in.ForMsg)}
+		}
+		if err != nil {
+			return err
+		}
+		np := nativePromptForMsg(fromName, body, in.ForMsg)
+		out = Request{ID: in.ForMsg, State: "open", NativePrompt: &np}
+		return nil
+	})
+	return out, err
 }
 
 // nativePromptForMsg is the child-approval native prompt (spec section 2.4,

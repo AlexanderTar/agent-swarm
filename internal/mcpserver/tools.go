@@ -149,7 +149,7 @@ func askTool(s *Server) ToolDef {
 		Name: "swarm_ask",
 		Description: "Request an approval, propose repos to confirm, forward a native answer, or withdraw an earlier ask. " +
 			"Returns at once with the request id; the answer arrives later as a message.",
-		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, or withdraw. question is refused for claude and agy (they have a native question tool Swarm hooks instead); cursor, muse and codex keep it, since their native question tool is either not hookable or not yet confirmed."},"prompt":{"type":"string"},"options":{"type":"array"},
+		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, native_prompt, native_answer, or withdraw. question is refused for claude and agy (they have a native question tool Swarm hooks instead); cursor, muse and codex keep it, since their native question tool is either not hookable or not yet confirmed. native_prompt for_msg gets a child's approval question's native prompt; native_answer ref forwards the user's observed decision."},"prompt":{"type":"string"},"options":{"type":"array"},
 			"artifact":{"type":"string","description":"Artifact id for approval kinds"},"section":{"type":"string","description":"Section id for per-section approval"},"withdraw":{"type":"string"},
 			"repos":{"type":"array","items":{"type":"object","properties":{
 				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
@@ -159,6 +159,7 @@ func askTool(s *Server) ToolDef {
 				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
 				"reason":{"type":"string"}},
 				"required":["repo","reason"]}},
+			"for_msg":{"type":"string","description":"kind native_prompt: the msg_id of a child's approval question addressed to you"},
 			"request_id":{"type":"string"}`,
 			[]string{"kind"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -171,6 +172,7 @@ func askTool(s *Server) ToolDef {
 				Withdraw  string                  `json:"withdraw"`
 				Repos     []runtime.ReposProposal `json:"repos"`
 				Expansion []runtime.ReposProposal `json:"expansion"`
+				ForMsg    string                  `json:"for_msg"`
 				RequestID string                  `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
@@ -179,7 +181,7 @@ func askTool(s *Server) ToolDef {
 			req, err := s.RT.Ask(ctx, c.SessionID, runtime.AskInput{
 				Kind: in.Kind, Prompt: in.Prompt, Options: in.Options, ArtifactID: in.Artifact,
 				SectionID: in.Section, Withdraw: in.Withdraw, Repos: in.Repos, Expansion: in.Expansion,
-				RequestID: in.RequestID,
+				ForMsg: in.ForMsg, RequestID: in.RequestID,
 			})
 			if err != nil {
 				return nil, err

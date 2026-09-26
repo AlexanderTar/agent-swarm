@@ -899,6 +899,33 @@ func TestQuestionToolInterceptionCreatesHITLRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("claude AskUserQuestion with a native prompt ref binds the row", func(t *testing.T) {
+		h, ses := seed(t, 0, runtime.Running)
+		input, _ := json.Marshal(map[string]any{
+			"session_id": "p1",
+			"tool_name":  "AskUserQuestion",
+			"tool_input": map[string]any{
+				"question": "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧",
+				"options":  []string{"Approve", "Request changes"},
+			},
+		})
+		out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("question tool must not be blocked, got %s", out)
+		}
+		var bindingJSON sql.NullString
+		if err := h.DB.QueryRowContext(ctx, `SELECT binding_json FROM requests WHERE session_id = ?`, ses).
+			Scan(&bindingJSON); err != nil {
+			t.Fatal(err)
+		}
+		if !bindingJSON.Valid || bindingJSON.String != `{"ref":"req_PLAN1"}` {
+			t.Fatalf("binding_json = %v, want {\"ref\":\"req_PLAN1\"}", bindingJSON)
+		}
+	})
+
 	t.Run("cursor AskQuestion", func(t *testing.T) {
 		h, ses := seed(t, 0, runtime.Running)
 		_, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'cursor' WHERE id = 'agt_1'`)
