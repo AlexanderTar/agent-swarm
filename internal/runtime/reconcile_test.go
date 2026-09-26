@@ -17,7 +17,9 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
@@ -3555,6 +3557,108 @@ func TestReclaimOldCodexLaunchHomesRemovesOnlyTerminalSessionsCodexHome(t *testi
 	}
 	if _, err := os.Stat(liveCodexHome); err != nil {
 		t.Errorf("a non-terminal session's old codex-home was removed: %v", err)
+	}
+}
+
+// D2 (dialog-needs-you spec): swarmOwnedWorkspace must match only paths
+// under <home>/work or <home>/worktrees, never a path outside home or one
+// that merely shares that prefix textually.
+func TestSwarmOwnedWorkspaceMatchesOnlyWorkAndWorktreeRoots(t *testing.T) {
+	home := "/Users/alex/.swarm"
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{filepath.Join(home, "work", "3"), true},
+		{filepath.Join(home, "worktrees", "foo"), true},
+		{filepath.Join(home, "work-extra", "3"), false}, // prefix collision, not a real subdir
+		{"/Users/alex/some-project", false},
+		{home, false},
+	}
+	for _, c := range cases {
+		if got := swarmOwnedWorkspace(home, c.path); got != c.want {
+			t.Errorf("swarmOwnedWorkspace(%q, %q) = %v, want %v", home, c.path, got, c.want)
+		}
+	}
+	if swarmOwnedWorkspace("", filepath.Join(home, "work", "3")) {
+		t.Error("an empty home must never be treated as owning anything")
+	}
+}
+
+// D2: once an agent is finished or acknowledged, the Claude trust entry
+// (D1) for each of its sessions' Swarm-owned workspaces is removed. A
+// session whose workspace is NOT Swarm-owned (an entry the user could have
+// by hand) is never touched, even once its agent is finished.
+func TestReconcileForgetsClaudeTrustForASwarmOwnedWorkspaceOfAFinishedAgent(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	userHome := t.TempDir()
+	claudeAd, err := adapter.New(kinds.Claude, adapter.Deps{
+		Home: s.Home, UserHome: userHome, Bin: "/usr/local/bin/swarm",
+		Run: execx.Run, Log: func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Adapters[Claude] = claudeAd
+
+	_, owned, _, err := s.StartSpike(ctx, SpikeInput{Name: "Owned", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownedSes, _ := s.LatestSession(ctx, owned.ID)
+
+	_, unowned, _, err := s.StartSpike(ctx, SpikeInput{Name: "Unowned", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unownedSes, _ := s.LatestSession(ctx, unowned.ID)
+	outsideCwd := filepath.Join(t.TempDir(), "not-swarm-owned")
+	if err := os.MkdirAll(outsideCwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET cwd = ? WHERE id = ?`, outsideCwd, unownedSes.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := filepath.Join(userHome, ".claude.json")
+	seed := fmt.Sprintf(`{"projects":{%q:{"hasTrustDialogAccepted":true},%q:{"hasTrustDialogAccepted":true}}}`,
+		ownedSes.Cwd, outsideCwd)
+	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{owned.ID, unowned.ID} {
+		if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude', state = 'finished' WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	panes(tm, Pane{Session: owned.Name, Command: "claude"}, Pane{Session: unowned.Name, Command: "claude"})
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("claude.json no longer parses: %v\n%s", err, b)
+	}
+	var entry struct {
+		HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+	}
+	if err := json.Unmarshal(doc.Projects[ownedSes.Cwd], &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.HasTrustDialogAccepted {
+		t.Errorf("Swarm-owned workspace's trust entry survives a finished agent: %s", doc.Projects[ownedSes.Cwd])
+	}
+	if err := json.Unmarshal(doc.Projects[outsideCwd], &entry); err != nil {
+		t.Fatal(err)
+	}
+	if !entry.HasTrustDialogAccepted {
+		t.Error("a non-Swarm-owned workspace's trust entry must never be touched")
 	}
 }
 

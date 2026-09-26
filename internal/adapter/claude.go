@@ -317,6 +317,87 @@ func trustClaudeWorkspace(userHome, cwd string) error {
 	})
 }
 
+// ForgetFolder removes the hasTrustDialogAccepted key from projects[cwd] (and
+// its realpath twin, if it differs) under the same lock/atomic-write
+// protocol as trustClaudeWorkspace (D2, dialog-needs-you spec): called once
+// a session's Swarm-owned workspace is reclaimed. Every other field of that
+// entry, every other project, and every other top-level key survives.
+// Idempotent: a path with no entry, or one already missing the key, is a
+// no-op with no rewrite.
+func (c *Claude) ForgetFolder(ctx context.Context, cwd string) error {
+	if c.d.UserHome == "" {
+		return nil
+	}
+	keys := []string{cwd}
+	if real, err := filepath.EvalSymlinks(cwd); err == nil && real != cwd {
+		keys = append(keys, real)
+	}
+	return withClaudeConfigLock(c.d.UserHome, func() error {
+		path := claudeConfigPath(c.d.UserHome)
+		for attempt := 0; attempt < 3; attempt++ {
+			raw, err := os.ReadFile(path)
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			mode := os.FileMode(0o600)
+			if fi, statErr := os.Stat(path); statErr == nil {
+				mode = fi.Mode().Perm()
+			}
+			var doc map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				return fmt.Errorf("claude.json does not parse: %w", err)
+			}
+			var projects map[string]json.RawMessage
+			if len(doc["projects"]) > 0 {
+				if err := json.Unmarshal(doc["projects"], &projects); err != nil {
+					return fmt.Errorf("claude.json projects does not parse: %w", err)
+				}
+			}
+			changed := false
+			for _, k := range keys {
+				if len(projects[k]) == 0 {
+					continue
+				}
+				var entry map[string]json.RawMessage
+				if err := json.Unmarshal(projects[k], &entry); err != nil {
+					return fmt.Errorf("claude.json projects[%s] does not parse: %w", k, err)
+				}
+				if _, ok := entry["hasTrustDialogAccepted"]; !ok {
+					continue
+				}
+				delete(entry, "hasTrustDialogAccepted")
+				b, err := json.Marshal(entry)
+				if err != nil {
+					return err
+				}
+				projects[k] = b
+				changed = true
+			}
+			if !changed {
+				return nil
+			}
+			pb, err := json.Marshal(projects)
+			if err != nil {
+				return err
+			}
+			doc["projects"] = pb
+			out, err := json.Marshal(doc)
+			if err != nil {
+				return err
+			}
+			cur, _ := os.ReadFile(path)
+			if !bytes.Equal(cur, raw) {
+				continue
+			}
+			return writeFileAtomic(path, out, mode)
+		}
+		return fmt.Errorf("claude.json kept changing under us")
+	})
+}
+
 func claudeAllTrusted(projects map[string]json.RawMessage, keys []string) bool {
 	for _, k := range keys {
 		var entry struct {

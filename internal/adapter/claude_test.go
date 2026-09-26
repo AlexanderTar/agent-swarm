@@ -664,6 +664,80 @@ func TestClaudePreTrustSkipsTheWriteUnderAFreshHeldLock(t *testing.T) {
 	}
 }
 
+// D2 (dialog-needs-you spec): once a session's Swarm-owned workspace is
+// reclaimed, ForgetFolder removes only that entry's hasTrustDialogAccepted
+// key (and its realpath twin), under the same lock/atomic-write protocol,
+// leaving everything else -- other fields Claude has since written to that
+// same project entry, every other project, every other top-level key --
+// untouched.
+func TestClaudeForgetFolderRemovesBothKeysUnderTheSameLock(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	real, err := filepath.EvalSymlinks(s.Cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	seed := []byte(`{"projects":{"/other":{"hasTrustDialogAccepted":true},"` +
+		jsonEscape(s.Cwd) + `":{"hasTrustDialogAccepted":true,"lastCost":2},"` +
+		jsonEscape(real) + `":{"hasTrustDialogAccepted":true}}}`)
+	if s.Cwd == real {
+		// No symlink on this platform for t.TempDir(); collapse to one key
+		// so the seed JSON stays valid (no duplicate object key).
+		seed = []byte(`{"projects":{"/other":{"hasTrustDialogAccepted":true},"` +
+			jsonEscape(s.Cwd) + `":{"hasTrustDialogAccepted":true,"lastCost":2}}}`)
+	}
+	if err := os.WriteFile(cfg, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := newClaude(d)
+	if err := a.ForgetFolder(context.Background(), s.Cwd); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("claude.json no longer parses: %v\n%s", err, b)
+	}
+	if string(doc.Projects["/other"]) != `{"hasTrustDialogAccepted":true}` {
+		t.Errorf(`projects["/other"] = %s, want untouched`, doc.Projects["/other"])
+	}
+	var entry struct {
+		LastCost               float64 `json:"lastCost"`
+		HasTrustDialogAccepted bool    `json:"hasTrustDialogAccepted"`
+	}
+	if err := json.Unmarshal(doc.Projects[s.Cwd], &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.HasTrustDialogAccepted {
+		t.Errorf("projects[cwd].hasTrustDialogAccepted still true: %s", doc.Projects[s.Cwd])
+	}
+	if entry.LastCost != 2 {
+		t.Errorf("projects[cwd].lastCost = %v, want unchanged 2", entry.LastCost)
+	}
+	if real != s.Cwd {
+		if err := json.Unmarshal(doc.Projects[real], &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry.HasTrustDialogAccepted {
+			t.Errorf("projects[realpath].hasTrustDialogAccepted still true: %s", doc.Projects[real])
+		}
+	}
+	if _, err := os.Stat(cfg + ".lock"); !os.IsNotExist(err) {
+		t.Errorf("lock dir left behind: %v", err)
+	}
+	before, _ := os.ReadFile(cfg)
+	if err := a.ForgetFolder(context.Background(), s.Cwd); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(cfg)
+	if string(before) != string(after) {
+		t.Errorf("a second ForgetFolder must be a no-op:\n%s\n---\n%s", before, after)
+	}
+}
+
 // D1, probe P-C5: claudeTrust/claudeTrustYes match the live-captured dialog.
 func TestClaudeTrustPatternMatchesProbeFixture(t *testing.T) {
 	fixture := pane(t, "claude", "pane-dialog-trust.txt")

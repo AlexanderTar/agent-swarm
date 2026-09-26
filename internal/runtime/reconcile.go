@@ -190,6 +190,9 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := s.forgetFinishedClaudeTrust(ctx); err != nil {
+		s.logf("reconcile: forget finished claude trust: %v", err)
+	}
 	for _, p := range panes {
 		if known[p.Session] {
 			continue
@@ -1329,6 +1332,72 @@ func (s *Store) terminalTmuxNames(ctx context.Context) (map[string]bool, error) 
 		out[n] = true
 	}
 	return out, nil
+}
+
+// swarmOwnedWorkspace reports whether path is a Swarm-owned workspace: under
+// <home>/work or <home>/worktrees (D2/D3, dialog-needs-you spec). It is the
+// only predicate D2's cleanup and D3's install-time prune use to decide
+// which ~/.claude.json entries they may ever touch -- the user's own
+// projects, anywhere else, are never matched. filepath.Clean on both sides
+// guards against a trailing slash; the prefix check requires a path
+// separator right after the root so "<home>/work-extra" (a real but
+// unrelated sibling directory) does not collide with "<home>/work".
+func swarmOwnedWorkspace(home, path string) bool {
+	if home == "" || path == "" {
+		return false
+	}
+	path = filepath.Clean(path)
+	for _, root := range []string{"work", "worktrees"} {
+		prefix := filepath.Clean(filepath.Join(home, root)) + string(filepath.Separator)
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// forgetFinishedClaudeTrust removes the Claude trust entry (D1) for every
+// Swarm-owned workspace belonging to a session of a finished or
+// acknowledged agent (D2, dialog-needs-you spec). ForgetFolder is
+// idempotent (a no-op once the key is already gone), so this can run every
+// tick without re-checking what it already did. Scoped to Claude sessions
+// only: every other kind's trust state (agy, cursor's flags, ...) has no
+// per-session file this touches.
+func (s *Store) forgetFinishedClaudeTrust(ctx context.Context) error {
+	ad, ok := s.Adapters[Claude]
+	if !ok {
+		return nil
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT s2.cwd FROM sessions s2
+		JOIN agents a ON a.id = s2.agent_id
+		WHERE a.kind = 'claude' AND a.state IN ('finished', 'acknowledged') AND s2.cwd != ''`)
+	if err != nil {
+		return err
+	}
+	var cwds []string
+	for rows.Next() {
+		var cwd string
+		if err := rows.Scan(&cwd); err != nil {
+			rows.Close()
+			return err
+		}
+		cwds = append(cwds, cwd)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, cwd := range cwds {
+		if !swarmOwnedWorkspace(s.Home, cwd) {
+			continue
+		}
+		if err := ad.ForgetFolder(ctx, cwd); err != nil {
+			s.logf("reconcile: forget claude trust for %s: %v", cwd, err)
+		}
+	}
+	return nil
 }
 
 // finishedAgentTmuxNames returns the tmux names of every session whose owning
