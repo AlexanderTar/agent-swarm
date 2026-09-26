@@ -324,6 +324,9 @@ func (s *Service) query(ctx context.Context, where string, args ...any) ([]Repo,
 			&r.Source, &r.Missing, &r.LastUsedAt, &groups); err != nil {
 			return nil, err
 		}
+		if _, err := os.Stat(r.Path); err == nil && !PrimaryRepo(ctx, execx.Run, r.Path) {
+			continue
+		}
 		r.Groups = []string{}
 		if groups != "" {
 			r.Groups = strings.Split(groups, "\x1f")

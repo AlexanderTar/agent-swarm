@@ -247,6 +247,29 @@ func TestAddManualRejectsLinkedWorktree(t *testing.T) {
 	}
 }
 
+func TestAllOmitsStoredWorktree(t *testing.T) {
+	main, linked, directoryLinked, clone := primaryFixture(t)
+	s := newService(t, filepath.Dir(main), &fakeGit{})
+	for _, entry := range []struct{ id, path string }{
+		{"main", main}, {"linked", linked}, {"directory-linked", directoryLinked}, {"clone", clone},
+	} {
+		if _, err := s.DB.ExecContext(bgc, `INSERT INTO repos (id,path,name,source,created_at,updated_at) VALUES (?,?,?,'scan',1,1)`, entry.id, entry.path, entry.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := s.All(bgc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, r := range all {
+		ids = append(ids, r.ID)
+	}
+	if !slices.Equal(ids, []string{"clone", "main"}) {
+		t.Fatalf("All IDs = %v, want [clone main]", ids)
+	}
+}
+
 func TestSecondScanJoinsTheRunningOne(t *testing.T) {
 	home := realTemp(t)
 	mkRepo(t, home, "GitHub/a")
