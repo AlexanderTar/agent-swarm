@@ -211,18 +211,22 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if err != nil {
 		return Request{}, err
 	}
+	// nativeAnswer is the one agent-reachable user_action origin
+	// (requests.go's resolve doc comment): it is guarded by the evidence
+	// check above, and an agent-reported decision is flagged, not refused
+	// (user decision, spec 1.6.2). request_changes is the same call for
+	// every request-ref kind, confirm_repos included -- RequestChanges
+	// itself has no kind restriction (requests.go), and nativeAnswer needs
+	// s.resolve directly, not RequestChanges, only so the payload can carry
+	// "evidence".
+	if in.Decision == "request_changes" {
+		return s.resolve(ctx, in.Ref, "changes_requested", comment, "terminal", "user_action", nil,
+			func(req Request) (MessageKind, any) {
+				return "approval_result", map[string]any{"decision": "changes_requested",
+					"comment": comment, "section_id": req.SectionID, "evidence": evidence}
+			}, bindEvidence)
+	}
 	if req.Kind == KindConfirmRepos {
-		if in.Decision == "request_changes" {
-			// nativeAnswer is the one agent-reachable user_action origin
-			// (requests.go's resolve call-site note): it is guarded by the
-			// evidence check above, and an agent-reported decision is
-			// flagged, not refused (user decision, spec 1.6.2).
-			return s.resolve(ctx, in.Ref, "changes_requested", comment, "terminal", "user_action", nil,
-				func(req Request) (MessageKind, any) {
-					return "approval_result", map[string]any{"decision": "changes_requested",
-						"comment": comment, "section_id": req.SectionID, "evidence": evidence}
-				}, bindEvidence)
-		}
 		var opts struct {
 			Proposed []ReposProposal `json:"proposed"`
 		}
@@ -238,13 +242,6 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 		}
 		json.Unmarshal(req.Binding, &binding)
 		return s.ConfirmRepos(ctx, in.Ref, ids, comment, binding.ReposVersion, "terminal", evidence, bindEvidence)
-	}
-	if in.Decision == "request_changes" {
-		return s.resolve(ctx, in.Ref, "changes_requested", comment, "terminal", "user_action", nil,
-			func(req Request) (MessageKind, any) {
-				return "approval_result", map[string]any{"decision": "changes_requested",
-					"comment": comment, "section_id": req.SectionID, "evidence": evidence}
-			}, bindEvidence)
 	}
 	in2 := ApproveInput{SectionSHA256: req.SectionSHA256, ArtifactRevision: req.ArtifactRevision,
 		Binding: req.Binding, Via: "terminal"}

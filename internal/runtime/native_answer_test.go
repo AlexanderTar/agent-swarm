@@ -363,6 +363,9 @@ func TestNativeAnswerChildApprovalObservedAndAgentReported(t *testing.T) {
 			if !strings.Contains(payload, `"decision":"approved"`) {
 				t.Fatalf("payload = %s", payload)
 			}
+			if want := `"evidence":"` + tc.evidence + `"`; !strings.Contains(payload, want) {
+				t.Fatalf("payload = %s, want %s", payload, want)
+			}
 
 			// a second native_answer for the same ref is refused: the bound
 			// row already moved on from "answered", so there is no fresh

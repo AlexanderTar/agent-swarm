@@ -811,13 +811,20 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 	return out, err
 }
 
-// resolve is the shared body of the five user-action methods. origin is a
-// parameter, not a literal in here: L7's guard test fails any function outside
-// {Answer, Approve, RequestChanges, ConfirmRepos, CloseSpike} that contains the
-// string "user_action", and resolve is not one of them. That is the point — a
-// future handler that reuses resolve cannot smuggle a user action in by
-// reaching a shared helper that hard-codes the origin. Each of the five passes
-// "user_action" at its own call site, where the guard can see it.
+// resolve is the shared body of the five user-action methods, plus
+// nativeAnswer's request-ref path (Task 13c). origin is a parameter, not a
+// literal in here: L7's guard test fails any function outside {Answer,
+// Approve, RequestChanges, ConfirmRepos, CloseSpike, nativeAnswer} that
+// contains the string "user_action", and resolve is not one of them. That is
+// the point — a future handler that reuses resolve cannot smuggle a user
+// action in by reaching a shared helper that hard-codes the origin. Each of
+// the first five passes "user_action" at its own call site, where the guard
+// can see it. nativeAnswer is the sixth, and the one agent-reachable
+// user_action origin: it is guarded by native_answer's evidence check (a
+// bound question row genuinely answered via terminal), and an
+// agent-reported decision is accepted on the agent's word and flagged, not
+// refused (user decision, spec 1.6.2) — never a bare MCP call claiming a
+// user action for free.
 // after runs inside resolve's tx, right after the state UPDATE and before
 // RequestWireTx builds the resolved wire (Task 13c): nativeAnswer uses it to
 // write the bound question row's evidence in the same transaction as the
