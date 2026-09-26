@@ -28,7 +28,7 @@ func TestNoticesMatchGoldens(t *testing.T) {
 		name, got string
 	}{
 		{"pending", PendingNotice(3, "login-form-coder", "TASK-101")},
-		{"control", ControlNotice("login-form-coder", "TASK-101")},
+		{"control", PausePreservationNotice("login-form-coder", "TASK-101")},
 		{"compaction", CompactionNotice()},
 		{"kickoff-worker", Kickoff("login-form-coder", RoleCoder, items.Task, "TASK-101", "Build the login form")},
 		{"kickoff-orchestrator", Kickoff("auth-epic-orchestrator", RoleOrchestrator, items.Epic, "EPIC-12", "Ship auth")},
@@ -46,7 +46,7 @@ func TestNoticesMatchGoldens(t *testing.T) {
 func TestNoticesNeverAskForAReplyPhrase(t *testing.T) {
 	banned := regexp.MustCompile(`(?i)reply with|respond with|say exactly|answer with the (exact|word)|the exact phrase`)
 	all := []string{
-		PendingNotice(1, "a", "TASK-1"), ControlNotice("a", "TASK-1"), CompactionNotice(),
+		PendingNotice(1, "a", "TASK-1"), PausePreservationNotice("a", "TASK-1"), CompactionNotice(),
 		Kickoff("a", RoleCoder, items.Task, "TASK-1", "t"), ResumeKickoff("a", RoleCoder, items.Task, "TASK-1", "t"), IdleToken,
 	}
 	for _, s := range all {
@@ -59,7 +59,7 @@ func TestNoticesNeverAskForAReplyPhrase(t *testing.T) {
 // Every injected string names its sender, so a model can tell it from a user turn.
 func TestEveryNoticeCarriesThePreamble(t *testing.T) {
 	for _, s := range []string{
-		PendingNotice(1, "a", "TASK-1"), ControlNotice("a", "TASK-1"), CompactionNotice(),
+		PendingNotice(1, "a", "TASK-1"), PausePreservationNotice("a", "TASK-1"), CompactionNotice(),
 		Kickoff("a", RoleCoder, items.Task, "TASK-1", "t"), ResumeKickoff("a", RoleCoder, items.Task, "TASK-1", "t"),
 	} {
 		if !strings.Contains(s, ShortPreamble) {
@@ -301,8 +301,9 @@ func TestIsDaemonPrompt(t *testing.T) {
 	for _, p := range []string{
 		IdleToken, " " + IdleToken + "\n",
 		Kickoff("a", RoleOrchestrator, items.Epic, "EPIC-1", "T"), ResumeKickoff("a", RoleOrchestrator, items.Epic, "EPIC-1", "T"),
-		PendingNotice(2, "a", "EPIC-1"), ControlNotice("a", "EPIC-1"), CompactionNotice(),
-		"[swarm] Quota reset window passed. Resuming.", // wake.go quota notice: no preamble
+		PendingNotice(2, "a", "EPIC-1"), PausePreservationNotice("a", "EPIC-1"), CompactionNotice(),
+		QuotaResetNotice(), // the wake.go quota notice now carries the short preamble
+		"[swarm] Quota reset window passed. Resuming.", // legacy prefixed form still classifies
 		"typed by a human, merged with " + IdleToken + " " + ShortPreamble,
 	} {
 		if !IsDaemonPrompt(p) {
@@ -346,7 +347,7 @@ func TestInboxRendersMultiLineWithRealNewlinesBetweenItems(t *testing.T) {
 	if len(lines) < 4 {
 		t.Fatalf("Inbox output should be multi-line (header, 2 items, trailer), got %d lines: %q", len(lines), got)
 	}
-	if !strings.HasPrefix(lines[0], "[swarm] Durable runtime events for s3-fix-a (TASK-42), 2 pending.") {
+	if !strings.HasPrefix(lines[0], "Durable runtime events for s3-fix-a (TASK-42), 2 pending.") {
 		t.Errorf("line 0 = %q, want the header", lines[0])
 	}
 	if !strings.HasPrefix(lines[1], "- msg_1:question [QUESTION] question from orchestrator: ") {
@@ -407,5 +408,16 @@ func TestInboxHeaderStillSatisfiesIsDaemonPrompt(t *testing.T) {
 	got := Inbox(nil, 0, "s3-fix-a", "TASK-42")
 	if !IsDaemonPrompt(got) {
 		t.Errorf("new Inbox header must still satisfy IsDaemonPrompt: %q", got)
+	}
+}
+
+// The daemon assembles the handoff manifest from the handoff checkpoint, so
+// the checklist must not tell the agent to write the manifest itself.
+func TestPreservationChecklistLeavesTheManifestToTheDaemon(t *testing.T) {
+	if strings.Contains(PreservationChecklist, "Write the handoff manifest") {
+		t.Fatalf("checklist tells the agent to write the manifest: %s", PreservationChecklist)
+	}
+	if !strings.Contains(PreservationChecklist, "the daemon assembles the handoff manifest") {
+		t.Fatalf("checklist must say the daemon assembles the manifest: %s", PreservationChecklist)
 	}
 }

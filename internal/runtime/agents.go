@@ -331,7 +331,7 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		return "", Agent{}, false, err
 	}
 
-	ses, err := s.startSession(ctx, a, 1, 1, false, "")
+	ses, err := s.startSession(ctx, a, 1, 1, false, "", "")
 	if err != nil {
 		return "", Agent{}, false, err
 	}
@@ -352,6 +352,20 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	it, err := s.Items.Get(ctx, in.ItemKey)
 	if err != nil {
 		return Agent{}, false, err
+	}
+
+	// Continuity: a stop, crash or session-cancel with an unfinished
+	// assignment stays recoverable. When the exact same assignment already
+	// has a logical orchestrator that is recoverable, restart it in place
+	// (same canonical id, same name) instead of minting a suffixed second
+	// agent. An active one still conflicts below; a terminal one (item
+	// done/cancelled, user-cancelled, valid completed checkpoint) falls
+	// through to the normal path. The match is the exact assignment
+	// (item_id), never the root alone.
+	if rec, ok, err := s.recoverableOrchestrator(ctx, it); err != nil {
+		return Agent{}, false, err
+	} else if ok {
+		return s.restartOrchestratorInPlace(ctx, rec)
 	}
 
 	var existing int
@@ -522,7 +536,7 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return a, true, nil
 	}
 
-	ses, err := s.startSession(ctx, a, 1, 1, false, "")
+	ses, err := s.startSession(ctx, a, 1, 1, false, "", "")
 	if err != nil {
 		return Agent{}, false, err
 	}
@@ -533,6 +547,80 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	})
 
 	return a, false, nil
+}
+
+// recoverableOrchestrator finds the existing logical orchestrator for the
+// exact assignment (item_id + orchestrator role) and reports whether it is
+// recoverable: present but not live, with an unfinished assignment. An
+// active orchestrator (queued, or active with a live latest session) is not
+// recoverable -- the caller conflicts. Neither is a terminal one: an
+// acknowledged agent is history, a done/cancelled item is terminal, and a
+// valid completed checkpoint already finished the agent. A user-cancelled
+// agent (auto_restart = 0) stays recoverable: Cancel keeps its identity, and
+// auto_restart only gates restarts the daemon drives on its own, never an
+// explicit Start.
+func (s *Store) recoverableOrchestrator(ctx context.Context, it items.Item) (Agent, bool, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx, `SELECT id FROM agents WHERE item_id = ? AND role = 'orchestrator'
+		ORDER BY created_at DESC, rowid DESC LIMIT 1`, it.ID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Agent{}, false, nil
+	}
+	if err != nil {
+		return Agent{}, false, err
+	}
+	a, err := s.agentByID(ctx, id)
+	if err != nil {
+		return Agent{}, false, err
+	}
+	if a.State == AgentQueued {
+		return Agent{}, false, nil
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		return Agent{}, false, err
+	}
+	if a.State == AgentActive && ses.State.Live() {
+		return Agent{}, false, nil
+	}
+	if a.State == AgentAcknowledged {
+		return Agent{}, false, nil
+	}
+	if it.Status == items.Done || it.Status == items.Cancelled {
+		return Agent{}, false, nil
+	}
+	if kind, has, err := s.terminalCheckpointKind(ctx, a.ID, a.ItemID, ses.Attempt); err != nil {
+		return Agent{}, false, err
+	} else if has && kind == CompletedCkp {
+		return Agent{}, false, nil
+	}
+	return a, true, nil
+}
+
+// restartOrchestratorInPlace restarts a recoverable orchestrator on its own
+// row through the replacement coordinator (mode recover): same id, same
+// name (resolveName is never consulted, so no suffix), a durable operation,
+// the recovery kickoff and bundle, admission for a finished row, and the
+// in-flight guard. The request re-enables auto_restart, so a parked
+// operation is resumed by the reconciler. queued reports an operation
+// still waiting (for the old pane to die, or for an admission slot).
+func (s *Store) restartOrchestratorInPlace(ctx context.Context, a Agent) (Agent, bool, error) {
+	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
+		return Agent{}, false, err
+	}
+	op, err := s.RequestReplacement(ctx, a.ID, ModeRecover, "", "")
+	if err != nil {
+		return Agent{}, false, err
+	}
+	if op.Phase == PhaseBlocked {
+		return Agent{}, false, &items.Error{Code: items.CodeConflict,
+			Message: fmt.Sprintf("Recovery %s is blocked: %s", op.ID, op.Error)}
+	}
+	out, err := s.agentByID(ctx, a.ID)
+	if err != nil {
+		return Agent{}, false, err
+	}
+	return out, op.Phase != PhaseSucceeded, nil
 }
 
 // roleDefaultKindModel fills an empty Kind/Model from the role's configured
@@ -966,7 +1054,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		return result.Agent, false, nil
 	}
 
-	ses, err := s.startSession(ctx, result.Agent, 1, 1, false, "")
+	ses, err := s.startSession(ctx, result.Agent, 1, 1, false, "", "")
 	if err != nil {
 		return Agent{}, false, err
 	}
@@ -1019,7 +1107,11 @@ func (s *Store) resolveLaunchModel(ctx context.Context, kind AgentKind, model, e
 	return m.LaunchModel(effort)
 }
 
-func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID string) (result Session, retErr error) {
+// succMode is "" for a brand-new assignment, or one of "handoff", "recovery"
+// or "resume" when this session continues the same agent's prior work: the
+// kickoff is then the section-4 SuccessorKickoff template (with its normative
+// additions) instead of the fresh-assignment Kickoff.
+func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID, succMode string) (result Session, retErr error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM sessions WHERE agent_id = ?`, a.ID)
 	if err == nil {
 		for rows.Next() {
@@ -1103,9 +1195,12 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 	itemType := items.Type(itemTypeStr)
 
 	var kickoff string
-	if resume {
+	switch {
+	case resume:
 		kickoff = ResumeKickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
-	} else {
+	case succMode != "":
+		kickoff = s.successorKickoff(ctx, a, itemType, itemKey, itemTitle, succMode)
+	default:
 		kickoff = Kickoff(a.Name, a.Role, itemType, itemKey, itemTitle)
 	}
 
@@ -1405,6 +1500,20 @@ func (s *Store) Cancel(ctx context.Context, name, sessionID, requestID string) (
 	} else if hit {
 		return out, nil
 	}
+	// Continuity: user Cancel stops execution, disables auto-restart and
+	// retains identity -- and wins over any pending replacement launch, so
+	// in-flight operations are cancelled before anything is killed. The
+	// operation driver lock makes that atomic against a driver mid-launch:
+	// either the launch finished (and is killed below) or it never starts.
+	defer lockAgentOperations(a.ID)()
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET auto_restart = 0 WHERE id = ?`, a.ID); err != nil {
+			return err
+		}
+		return s.cancelAgentOperationsTx(ctx, tx, a.ID)
+	}); err != nil {
+		return Agent{}, err
+	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err == nil && ses.State.Live() {
 		ad := s.Adapters[a.Kind]
@@ -1559,9 +1668,20 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	} else if hit {
 		return out, nil
 	}
+	// Batch 3: Retry consults the replacement coordinator before the state
+	// guard, so a refused retry names the operation it would race.
+	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
+		return Agent{}, err
+	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
 		return Agent{}, err
+	}
+	if ses.State == Stopping {
+		// A stop is still in flight: persist the retry as a durable queued
+		// recover intent instead of failing or doubling the launch. The
+		// next operation resume executes it once the session settles.
+		return s.queueRetryIntent(ctx, a, ses, note, sessionID, requestID)
 	}
 	if !slices.Contains(retryableStates, ses.State) {
 		return Agent{}, &items.Error{Code: items.CodeConflict, Message: notRetryable}
@@ -1621,7 +1741,7 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 
 	nextAttempt := ses.Attempt + 1
 	nextGeneration := ses.Generation + 1
-	newSes, err := s.startSession(ctx, a, nextAttempt, nextGeneration, false, "")
+	newSes, err := s.startSession(ctx, a, nextAttempt, nextGeneration, false, "", "")
 	if err != nil {
 		return Agent{}, err
 	}

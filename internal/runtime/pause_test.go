@@ -1964,6 +1964,30 @@ func TestResumeQueuesSelfMessageForKickoff(t *testing.T) {
 	}
 }
 
+// TestResumeFreshLaunchUsesSuccessorKickoff pins the section-4 wiring for
+// the pause path: with no provider session id, Resume falls back to a fresh
+// Launch carrying the SuccessorKickoff template in resume mode plus the
+// durable-state-wins addition -- not the fresh-assignment Kickoff.
+func TestResumeFreshLaunchUsesSuccessorKickoff(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused', provider_session_id = NULL WHERE id = ?`, wSes.ID)
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := fa.LastSpec.Kickoff
+	for _, want := range []string{
+		"continuing in a fresh session after pause, resuming",
+		"durable state wins",
+		"Call swarm_sync first",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("resume kickoff missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // TestResumeFreshLaunchQueuesNoSelfMessage covers the other half: with no
 // provider session id, Resume falls back to a fresh Launch (see
 // TestResumeFallsBackToAFreshLaunch), which already carries a full Kickoff

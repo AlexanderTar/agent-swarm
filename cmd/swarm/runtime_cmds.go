@@ -373,6 +373,32 @@ func cmdRetry(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// cmdHandoff is Batch 3's `swarm handoff NAME [--note TEXT]`: it posts the
+// handoff intent and prints the accepted operation with its phase. The 202
+// means accepted, never completed, and the output says exactly that.
+func cmdHandoff(args []string, stdout, stderr io.Writer) int {
+	c, rest, code, done := connect("handoff", args, stderr, nil)
+	if done {
+		return code
+	}
+	rest, note, _ := pullValue(rest, "--note")
+	if len(rest) != 1 {
+		fmt.Fprint(stderr, "Usage: swarm handoff NAME [--note TEXT]\n")
+		return 2
+	}
+	var res struct {
+		OperationID string `json:"operation_id"`
+		Agent       string `json:"agent"`
+		Phase       string `json:"phase"`
+	}
+	if err := c.do("POST", "/api/agents/"+rest[0]+"/handoff",
+		map[string]string{"request_id": ids.New("req"), "note": note}, &res); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "Handoff accepted for %s (operation %s, phase %s).\n", rest[0], res.OperationID, res.Phase)
+	return 0
+}
+
 func cmdAck(args []string, stdout, stderr io.Writer) int {
 	c, rest, code, done := connect("ack", args, stderr, nil)
 	if done {

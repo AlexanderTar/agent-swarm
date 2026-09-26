@@ -91,6 +91,21 @@ public final class PanePreviewModel {
         }
     }
 
+    /// The hovered agent's session generation changed (a handoff successor
+    /// replaced it under the same name): drop the predecessor's last screen
+    /// and recapture from loading. A no-op with no hover active.
+    public func invalidate() {
+        guard let name = agent else { return }
+        pollTask?.cancel()
+        status = .loading
+        generation += 1
+        let gen = generation
+        pollTask = Task { [weak self] in
+            guard let self else { return }
+            await self.pollLoop(for: name, generation: gen)
+        }
+    }
+
     /// Hover left this row. A no-op when `name` is no longer the hovered agent,
     /// so SwiftUI's out-of-order onHover(false) for the row you just left
     /// cannot cancel the row you just entered.

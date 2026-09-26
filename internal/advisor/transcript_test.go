@@ -42,7 +42,7 @@ func TestAgyTranscriptDropsSwarmEphemeralMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, turn := range turns {
-		if strings.Contains(turn.Text, "[swarm]") {
+		if strings.Contains(turn.Text, "[swarm]") || runtime.IsDaemonPrompt(turn.Text) {
 			t.Fatalf("a Swarm notice leaked into the advisor context: %q", turn.Text)
 		}
 	}

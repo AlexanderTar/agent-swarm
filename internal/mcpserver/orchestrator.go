@@ -72,6 +72,28 @@ func promoteDraft(ctx context.Context, s *Server, it items.Item, actor items.Act
 	return err
 }
 
+// parseItemRevision decodes swarm_items update's revision (F11: optimistic
+// concurrency stays explicit). An absent revision decodes to zero, which
+// UpdateTx refuses as a stale conflict exactly as before. A "latest"
+// shortcut — or any other non-integer — is refused explicitly with the
+// integer contract instead of decoding into zero or guessing current; the
+// caller reads the real revision from swarm_read (now carried on every
+// checkpoint relay too).
+func parseItemRevision(raw json.RawMessage) (int, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, nil
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil && str == "latest" {
+		return 0, &items.Error{Code: items.CodeBadRequest, Message: `revision must be the item's current integer revision; "latest" is not accepted. Read the revision from swarm_read first.`}
+	}
+	return 0, &items.Error{Code: items.CodeBadRequest, Message: "revision must be the item's current integer revision."}
+}
+
 // itemsTool is §8.1, read directly from the real spec (fix round 1): op is
 // exactly create|update|link|unlink — reading and listing items is
 // swarm_read's job (its refs/filter cover exactly that), not swarm_items'.
@@ -107,10 +129,14 @@ func itemsTool(s *Server) ToolDef {
 				Solo       string         `json:"solo"`
 				Verify     []string       `json:"verify"`
 				Repos      []string       `json:"repos"`
-				Revision   int            `json:"revision"`
-				Status     string         `json:"status"`
-				BlockedBy  string         `json:"blocked_by"`
-				RequestID  string         `json:"request_id"`
+				// Revision stays raw JSON so a "latest" shortcut (or any
+				// non-integer) is refused explicitly by parseItemRevision
+				// (F11) instead of decoding into zero and failing later
+				// as a confusing stale conflict.
+				Revision  json.RawMessage `json:"revision"`
+				Status    string          `json:"status"`
+				BlockedBy string          `json:"blocked_by"`
+				RequestID string          `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -144,7 +170,11 @@ func itemsTool(s *Server) ToolDef {
 				}
 				return out, nil
 			case "update":
-				p := items.Patch{Revision: in.Revision}
+				revision, err := parseItemRevision(in.Revision)
+				if err != nil {
+					return nil, err
+				}
+				p := items.Patch{Revision: revision}
 				if in.Title != "" {
 					p.Title = &in.Title
 				}
@@ -515,7 +545,11 @@ func spawnTool(s *Server) ToolDef {
 		Roles:       orchestratorRole,
 		Schema: objSchemaRequired(`"item":{"type":"string"},"role":{"type":"string"},"agent":{"type":"string"},
 			"model":{"type":"string"},"effort":{"type":"string"},"name":{"type":"string"},
-			"brief":{"type":"object"},
+			"brief":{"type":"object","properties":{
+				"objective":{"type":"string"},"acceptance":{"type":"array","items":{"type":"string"}},
+				"scope_in":{"type":"array","items":{"type":"string"}},"scope_out":{"type":"array","items":{"type":"string"}},
+				"context":{"type":"array","items":{"type":"string"}},"verify":{"type":"array","items":{"type":"string"}},
+				"stop_when":{"type":"array","items":{"type":"string"}}}},
 			"worktrees":{"type":"array","items":{"type":"object","properties":{
 				"worktree":{"type":"string"},"mode":{"type":"string","enum":["rw","ro"]}}}},
 			"request_id":{"type":"string"}`, []string{"item", "role", "brief"}),
@@ -626,16 +660,17 @@ func spawnTool(s *Server) ToolDef {
 // ---------- swarm_control ----------
 
 // controlTool is §8.1, read directly from the real spec (fix round 1): the
-// action enum is exactly pause|resume|cancel|retry (no "ack" — that is a
-// separate, non-MCP UI action, POST /api/agents/{name}/ack, not part of this
-// tool) and the result is {"state"}, not a bare ok.
+// action enum is pause|resume|cancel|retry plus Batch 3's handoff (no "ack"
+// — that is a separate, non-MCP UI action, POST /api/agents/{name}/ack, not
+// part of this tool) and the result is {"state"}, not a bare ok. Handoff
+// instead returns the replacement operation (operation_id/mode/phase).
 func controlTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_control",
-		Description: "Pause, resume, cancel or retry an agent in your own subtree.",
+		Description: "Pause, resume, cancel, retry or hand off an agent in your own subtree.",
 		Roles:       orchestratorRole,
 		Schema: objSchemaRequired(`"target":{"type":"string"},
-			"action":{"type":"string","enum":["pause","resume","cancel","retry"]},
+			"action":{"type":"string","enum":["pause","resume","cancel","retry","handoff"]},
 			"scope":{"type":"string"},"note":{"type":"string"},"request_id":{"type":"string"}`,
 			[]string{"target", "action"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -693,8 +728,26 @@ func controlTool(s *Server) ToolDef {
 					return nil, err
 				}
 				state = string(agent.State)
+			case "handoff":
+				// Batch 3: handoff is user-or-controlling-orchestrator only.
+				// The tool itself is orchestrator-visible, so this branch
+				// checks the controlling part: same root plus self-or-ancestor
+				// (a same-root agent in another subtree is not controlled).
+				controls, err := s.RT.ControlsAgent(ctx, caller.ID, target.ID)
+				if err != nil {
+					return nil, err
+				}
+				if !controls {
+					return nil, fmt.Errorf("bad_request: %s is outside your subtree", in.Target)
+				}
+				op, err := s.RT.RequestReplacement(ctx, target.ID, runtime.ModeHandoff, in.RequestID, in.Note)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"operation_id": op.ID, "mode": string(op.Mode),
+					"phase": string(op.Phase)}, nil
 			default:
-				return nil, fmt.Errorf("action must be pause, resume, cancel or retry, got %q", in.Action)
+				return nil, fmt.Errorf("action must be pause, resume, cancel, retry or handoff, got %q", in.Action)
 			}
 			return map[string]any{"state": state}, nil
 		},

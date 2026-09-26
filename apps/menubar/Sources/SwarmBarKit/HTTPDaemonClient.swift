@@ -50,6 +50,10 @@ public final class HTTPDaemonClient: DaemonClient {
 
     private struct Empty: Codable {}
     private struct Scope: Encodable { let scope: PauseScope }
+    private struct HandoffBody: Encodable {
+        let requestID: String
+        enum CodingKeys: String, CodingKey { case requestID = "request_id" }
+    }
     private struct PauseAll: Decodable { let requested: Int }
     private struct UsageRefresh: Encodable { let agent: AgentKind? }
     private struct AddRepo: Encodable { let path: String }
@@ -104,8 +108,13 @@ public final class HTTPDaemonClient: DaemonClient {
         try await call("GET", "/api/notifications?limit=\(limit)")
     }
 
-    public func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?) async throws {
-        let body: (any Encodable)? = scope.map { Scope(scope: $0) }
+    public func agent(_ name: String, _ endpoint: AgentEndpoint, scope: PauseScope?, requestID: String?) async throws {
+        // Handoff accepts a replacement intent keyed by the caller's request
+        // id (one per user action): the daemon replays a repeated one onto the
+        // same operation instead of starting a second or answering 409.
+        let body: (any Encodable)? = endpoint == .handoff
+            ? HandoffBody(requestID: requestID ?? UUID().uuidString)
+            : scope.map { Scope(scope: $0) }
         _ = try await call("POST", "/api/agents/\(Self.segment(name))/\(endpoint.rawValue)", body: body, as: Empty.self)
     }
 

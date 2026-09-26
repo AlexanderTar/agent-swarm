@@ -47,6 +47,7 @@ type wakeRow struct {
 	Model, Effort                                                string
 	Pending                                                      int
 	HasControl                                                   bool
+	Handoff                                                      bool // a handoff operation is in flight: the control notice is HANDOFF, not PAUSE
 	OldestMessageAt, NewestPendingAt                             time.Time
 	LastSeenAt, LastWakeAt                                       *time.Time
 	LastPasteAttemptAt                                           *time.Time
@@ -66,7 +67,9 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		(SELECT MIN(m.created_at) FROM messages m
 			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate'),
 		(SELECT MAX(m.created_at) FROM messages m
-			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate')
+			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate'),
+		EXISTS (SELECT 1 FROM agent_operations o WHERE o.agent_id = a.id AND o.mode = 'handoff'
+			AND o.phase IN ('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting'))
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
 		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {
@@ -82,7 +85,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		var hasControlCount int
 		var oldest, newest sql.NullInt64
 		if err := rows.Scan(&r.SessionID, &r.AgentID, &r.AgentName, &r.ItemKey, &r.TmuxName,
-			&r.ProviderID, &kind, &r.Model, &r.Effort, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest, &newest); err != nil {
+			&r.ProviderID, &kind, &r.Model, &r.Effort, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest, &newest, &r.Handoff); err != nil {
 			return nil, err
 		}
 		if !oldest.Valid {
@@ -180,7 +183,10 @@ func (s *Store) WakeDue(ctx context.Context) error {
 			notice = PendingNotice(r.Pending, r.AgentName, r.ItemKey) // fallback, never block a wake on a render error
 		}
 		if r.HasControl {
-			notice = ControlNotice(r.AgentName, r.ItemKey)
+			notice = PausePreservationNotice(r.AgentName, r.ItemKey)
+			if r.Handoff {
+				notice = HandoffPreservationNotice(r.AgentName, r.ItemKey)
+			}
 		}
 		ad, ok := s.Adapters[r.Kind]
 		if !ok {
@@ -254,8 +260,8 @@ func (s *Store) alreadyNotifiedUndeliverable(ctx context.Context, agentID string
 }
 
 // tryPaste checks the three §11.3 conditions and pastes the caller-supplied notice
-// (the same rich Inbox notice native wake gets, or ControlNotice for a control batch
-// — never the bare IdleToken). The daemon never logs a full process listing: other
+// (the same rich Inbox notice native wake gets, or PausePreservationNotice for a
+// control batch — never the bare IdleToken). The daemon never logs a full process listing: other
 // tools' bearer tokens show up there (P0-4).
 func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pasteNotice string) error {
 	fail := func(reason string) error {
@@ -551,7 +557,7 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 		// Attempt native wake or paste idle token if pane is idle
 		if ok {
 			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, TmuxName: tmuxName,
-				Notice: "[swarm] Quota reset window passed. Resuming.",
+				Notice: QuotaResetNotice(),
 				Model:  s.resolveLaunchModel(ctx, kind, model, effort)})
 			if delivered {
 				s.markWoken(ctx, sessionID, true)

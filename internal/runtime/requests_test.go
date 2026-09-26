@@ -774,7 +774,7 @@ func TestRequestWireNativePending(t *testing.T) {
 	if !wire.NativePending {
 		t.Fatalf("native_pending = false while the bound question is open")
 	}
-	if err := s.ResolveQuestionByPrompt(ctx, ses, req.NativePrompt.Question, "Approve"); err != nil {
+	if _, err := s.ResolveQuestionByPrompt(ctx, ses, req.NativePrompt.Question, "Approve"); err != nil {
 		t.Fatal(err)
 	}
 	wire, err = s.RequestWireByID(ctx, req.ID)
@@ -783,5 +783,164 @@ func TestRequestWireNativePending(t *testing.T) {
 	}
 	if wire.NativePending {
 		t.Fatalf("native_pending = true after the bound question closed")
+	}
+}
+
+// TestRequestsSurviveReplacement pins the continuity half of HITL: open
+// requests are keyed by canonical agent, so they ride out a full
+// replacement (predecessor stopped, successor started) still open, repointed
+// at the live session, and answerable. The orphan sweep must not withdraw
+// them while an operation owns the agent -- only after it clears.
+func TestRequestsSurviveReplacement(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Ask me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, ses.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question",
+		Prompt: "Should the form keep the email after a failed login?", Options: []string{"Yes", "No"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second agent with an in-flight operation and a dead session: the
+	// orphan sweep must leave its open request alone while owned.
+	_, w, wSes := worker(t, s)
+	now := db.Millis(s.Now())
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+		prompt, options_json, state, created_at) VALUES ('req_owned', 'question', 1, ?, ?, ?, 'held?', '[]', 'open', ?)`,
+		w.ID, wSes.ID, w.ItemID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO agent_operations
+		(id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+		VALUES ('op_owned', ?, 'recover', 'stopping', 'k', ?, ?, ?, ?)`,
+		w.ID, wSes.ID, wSes.Generation, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, wSes.ID, Failed); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.withdrawOrphanedRequests(ctx); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.RequestByID(ctx, "req_owned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.State != "open" {
+		t.Fatalf("owned request state = %q, want open (sweep must skip agents under operation)", held.State)
+	}
+
+	// Full round trip on the asker: predecessor stops, successor starts.
+	panes(tm, Pane{Session: ses.TmuxName})
+	op, err := s.RequestReplacement(ctx, a.ID, ModeRecover, "rq", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Phase != PhaseStopping {
+		t.Fatalf("phase = %q, want stopping", op.Phase)
+	}
+	mid, err := s.RequestByID(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mid.State != "open" {
+		t.Fatalf("request state mid-replacement = %q, want open", mid.State)
+	}
+	panes(tm)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	succ, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succ.ID == ses.ID {
+		t.Fatal("no successor session started")
+	}
+	after, err := s.RequestByID(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "open" {
+		t.Fatalf("request state after replacement = %q, want open", after.State)
+	}
+	if after.SessionID != succ.ID {
+		t.Fatalf("request session = %s, want live successor %s", after.SessionID, succ.ID)
+	}
+	resolved, err := s.ResolveQuestion(ctx, req.ID, "Yes", "cli")
+	if err != nil {
+		t.Fatalf("answer after replacement err = %v", err)
+	}
+	if resolved.State != "answered" {
+		t.Fatalf("request state = %q, want answered", resolved.State)
+	}
+}
+
+// TestRetiredSessionResolversFollowRepoint locks the session-scoped
+// resolvers' continuity fallback: after open rows move to a successor
+// generation, resolving by the retired predecessor session still closes
+// them. A live session with no match still resolves nothing.
+func TestRetiredSessionResolversFollowRepoint(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Prompts", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AskPrompt(ctx, ses.ID, "terraform apply", nil); err != nil {
+		t.Fatal(err)
+	}
+	q, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "ship it?", Options: []string{"yes"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A live session with no match resolves nothing and errors nothing.
+	if _, err := s.ResolveQuestionByPrompt(ctx, ses.ID, "no such prompt", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.RequestByID(ctx, q.ID); err != nil || got.State != "open" {
+		t.Fatalf("live no-match resolved something: %+v, %v", got, err)
+	}
+	// New generation takes over; the old session retires.
+	succ, err := s.startSessionForTest(ctx, a, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionState(ctx, ses.ID, Interrupted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE requests SET session_id = ? WHERE agent_id = ? AND state = 'open'`,
+		succ.ID, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResolveQuestionByPrompt(ctx, ses.ID, "ship it?", "yes"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.RequestByID(ctx, q.ID); err != nil || got.State != "answered" {
+		t.Fatalf("retired-session resolve missed the repointed row: %+v, %v", got, err)
+	}
+	if err := s.ResolveSessionPrompts(ctx, ses.ID, "terraform apply"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests
+		WHERE agent_id = ? AND kind = 'prompt' AND state = 'open'`, a.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("open prompts after retired-session resolve = %d, want 0", n)
 	}
 }
