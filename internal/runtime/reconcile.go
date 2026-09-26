@@ -184,8 +184,26 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	finished, err := s.finishedAgentTmuxNames(ctx)
+	if err != nil {
+		return err
+	}
 	for _, p := range panes {
 		if known[p.Session] {
+			continue
+		}
+		if finished[p.Session] {
+			// The agent is done, live or dead, acted on or not: nothing is
+			// ever coming back to this pane. Left running, it's exactly how
+			// a stuck trust dialog sat unnoticed for days (2026-09-26
+			// incident): the reaper deliberately spares live panes of
+			// failed/crashed/cancelled *sessions* (P0-crash-1, above), but
+			// once the *agent* itself is finished or acknowledged, there is
+			// no human left who is going to inspect it.
+			if err := s.Tmux.Kill(ctx, p.Session); err != nil {
+				return err
+			}
+			s.logf("reconcile: killed pane %s of finished agent", p.Session)
 			continue
 		}
 		if terminalTmux[p.Session] {
@@ -1065,6 +1083,23 @@ func (s *Store) owesNothing(ctx context.Context, r liveRow) (bool, error) {
 func (s *Store) terminalTmuxNames(ctx context.Context) (map[string]bool, error) {
 	names, err := s.queryIDs(ctx, `SELECT DISTINCT tmux_name FROM sessions
 		WHERE state IN ('failed', 'crashed', 'cancelled')`)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out, nil
+}
+
+// finishedAgentTmuxNames returns the tmux names of every session whose owning
+// agent is finished or acknowledged: nobody is coming back to that pane, live
+// or dead. Checked before terminalTmuxNames (session-state based), since a
+// finished agent's most recent session may itself still read as terminal.
+func (s *Store) finishedAgentTmuxNames(ctx context.Context) (map[string]bool, error) {
+	names, err := s.queryIDs(ctx, `SELECT DISTINCT s.tmux_name FROM sessions s
+		JOIN agents a ON a.id = s.agent_id WHERE a.state IN ('finished', 'acknowledged')`)
 	if err != nil {
 		return nil, err
 	}

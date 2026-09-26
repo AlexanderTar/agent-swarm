@@ -801,6 +801,44 @@ func TestReconcileKillsADeadPaneLeftByAFailedSession(t *testing.T) {
 	}
 }
 
+// P0-crash-1 follow-up (2026-09-26 incident): a live pane of an agent the
+// user has already acknowledged is never coming back to life; leaving it
+// running is how a stuck trust dialog sat unnoticed for days.
+func TestReconcileKillsLivePaneOfAnAcknowledgedAgent(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Old pane", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.DB.Exec(`UPDATE sessions SET state = 'failed' WHERE id = ?`, ses.ID)
+	s.DB.Exec(`UPDATE agents SET state = 'acknowledged' WHERE id = ?`, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "claude"})
+	before := len(tm.killed) // Spawn's own pre-spawn cleanup kill already ran once
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(tm.killed[before:], a.Name) {
+		t.Fatalf("killed by reconcile = %v, want %s among them", tm.killed[before:], a.Name)
+	}
+}
+
+// P0-crash-1's original rule still holds for an agent still active: the pane
+// is left for a human to inspect even if this session crashed.
+func TestReconcileKeepsLivePaneOfAnActiveAgentsCrashedSession(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Crashed pane", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	s.DB.Exec(`UPDATE sessions SET state = 'crashed' WHERE id = ?`, ses.ID)
+	panes(tm, Pane{Session: a.Name, Command: "claude"})
+	before := len(tm.killed) // Spawn's own pre-spawn cleanup kill already ran once
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != before {
+		t.Fatalf("a live pane of a still-active agent must be left for inspection: %v", tm.killed)
+	}
+}
+
 // §12.2: the sweep runs once the root is done and every agent has finished.
 func TestSweepRunsOnlyWhenTheWholeTreeIsFinished(t *testing.T) {
 	s, tm, _ := clockStore(t)
