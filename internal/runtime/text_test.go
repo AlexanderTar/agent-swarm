@@ -28,7 +28,7 @@ func TestNoticesMatchGoldens(t *testing.T) {
 		name, got string
 	}{
 		{"pending", PendingNotice(3, "login-form-coder", "TASK-101")},
-		{"control", ControlNotice("login-form-coder", "TASK-101")},
+		{"control", PausePreservationNotice("login-form-coder", "TASK-101")},
 		{"compaction", CompactionNotice()},
 		{"kickoff-worker", Kickoff("login-form-coder", RoleCoder, items.Task, "TASK-101", "Build the login form")},
 		{"kickoff-orchestrator", Kickoff("auth-epic-orchestrator", RoleOrchestrator, items.Epic, "EPIC-12", "Ship auth")},
@@ -46,7 +46,7 @@ func TestNoticesMatchGoldens(t *testing.T) {
 func TestNoticesNeverAskForAReplyPhrase(t *testing.T) {
 	banned := regexp.MustCompile(`(?i)reply with|respond with|say exactly|answer with the (exact|word)|the exact phrase`)
 	all := []string{
-		PendingNotice(1, "a", "TASK-1"), ControlNotice("a", "TASK-1"), CompactionNotice(),
+		PendingNotice(1, "a", "TASK-1"), PausePreservationNotice("a", "TASK-1"), CompactionNotice(),
 		Kickoff("a", RoleCoder, items.Task, "TASK-1", "t"), ResumeKickoff("a", RoleCoder, items.Task, "TASK-1", "t"), IdleToken,
 	}
 	for _, s := range all {
@@ -59,7 +59,7 @@ func TestNoticesNeverAskForAReplyPhrase(t *testing.T) {
 // Every injected string names its sender, so a model can tell it from a user turn.
 func TestEveryNoticeCarriesThePreamble(t *testing.T) {
 	for _, s := range []string{
-		PendingNotice(1, "a", "TASK-1"), ControlNotice("a", "TASK-1"), CompactionNotice(),
+		PendingNotice(1, "a", "TASK-1"), PausePreservationNotice("a", "TASK-1"), CompactionNotice(),
 		Kickoff("a", RoleCoder, items.Task, "TASK-1", "t"), ResumeKickoff("a", RoleCoder, items.Task, "TASK-1", "t"),
 	} {
 		if !strings.Contains(s, ShortPreamble) {
@@ -301,7 +301,7 @@ func TestIsDaemonPrompt(t *testing.T) {
 	for _, p := range []string{
 		IdleToken, " " + IdleToken + "\n",
 		Kickoff("a", RoleOrchestrator, items.Epic, "EPIC-1", "T"), ResumeKickoff("a", RoleOrchestrator, items.Epic, "EPIC-1", "T"),
-		PendingNotice(2, "a", "EPIC-1"), ControlNotice("a", "EPIC-1"), CompactionNotice(),
+		PendingNotice(2, "a", "EPIC-1"), PausePreservationNotice("a", "EPIC-1"), CompactionNotice(),
 		"[swarm] Quota reset window passed. Resuming.", // wake.go quota notice: no preamble
 		"typed by a human, merged with " + IdleToken + " " + ShortPreamble,
 	} {

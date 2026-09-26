@@ -47,7 +47,7 @@ func TestScenario06PauseWithHandoff(t *testing.T) {
 		t.Fatalf("PreToolUse decision = %+v, want deny", out)
 	}
 	reason, _ := hso["permissionDecisionReason"].(string)
-	if want := runtime.ControlNotice(coder, task); reason != want {
+	if want := runtime.PausePreservationNotice(coder, task); reason != want {
 		t.Fatalf("PreToolUse denial reason = %q, want %q", reason, want)
 	}
 

@@ -143,12 +143,24 @@ func TestCodexCompactionNoticeArrivesOnTheNextPromptAndClears(t *testing.T) {
 	}
 }
 
-// C3: while pausing, every non-swarm tool is denied with the control notice.
+// Preservation mode (spec §3, supersedes C3 deny-all): while pausing, the
+// save path (read/edit/shell/commit) stays allowed, while delegation and
+// push/deploy are denied with the preservation reason.
 func TestPreToolUseDeniesNonSwarmToolsWhilePausing(t *testing.T) {
 	for _, state := range []runtime.SessionState{runtime.PauseRequested, runtime.Quiescing, runtime.Stopping} {
 		h, ses := seed(t, 0, state)
-		out, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
+		// a save-path native tool is allowed
+		allowed, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
 			[]byte(`{"session_id":"p1","tool_name":"Edit","tool_input":{}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(allowed) != 0 {
+			t.Fatalf("%s: Edit must be allowed while preserving, got %s", state, allowed)
+		}
+		// delegation is denied
+		out, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
+			[]byte(`{"session_id":"p1","tool_name":"Agent","tool_input":{}}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -157,8 +169,33 @@ func TestPreToolUseDeniesNonSwarmToolsWhilePausing(t *testing.T) {
 		if m["hookSpecificOutput"]["permissionDecision"] != "deny" {
 			t.Fatalf("%s: output = %s", state, out)
 		}
-		if m["hookSpecificOutput"]["permissionDecisionReason"] != runtime.ControlNotice("login-form-coder", "TASK-101") {
-			t.Fatalf("%s: reason = %q", state, m["hookSpecificOutput"]["permissionDecisionReason"])
+		if !strings.Contains(m["hookSpecificOutput"]["permissionDecisionReason"], "delegates") {
+			t.Fatalf("%s: reason = %q, want the preservation denial", state, m["hookSpecificOutput"]["permissionDecisionReason"])
+		}
+		// push is denied even on the save path
+		pushed, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
+			[]byte(`{"session_id":"p1","tool_name":"Bash","tool_input":{"command":"git push origin main"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pm map[string]map[string]string
+		json.Unmarshal(pushed, &pm)
+		if pm["hookSpecificOutput"]["permissionDecision"] != "deny" {
+			t.Fatalf("%s: git push must be denied while preserving: %s", state, pushed)
+		}
+		// staging a secret is denied on the save path too
+		secrets, err := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
+			[]byte(`{"session_id":"p1","tool_name":"Bash","tool_input":{"command":"git add .env"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sm map[string]map[string]string
+		json.Unmarshal(secrets, &sm)
+		if sm["hookSpecificOutput"]["permissionDecision"] != "deny" {
+			t.Fatalf("%s: git add .env must be denied while preserving: %s", state, secrets)
+		}
+		if !strings.Contains(sm["hookSpecificOutput"]["permissionDecisionReason"], "never commit") {
+			t.Fatalf("%s: reason = %q, want the secrets denial", state, sm["hookSpecificOutput"]["permissionDecisionReason"])
 		}
 		// a swarm tool is still allowed
 		ok, _ := h.Handle(context.Background(), runtime.Claude, "PreToolUse", ses,
@@ -211,7 +248,7 @@ func TestStopBlocksForAPendingHandoffThenForMessagesUpToThreeTimes(t *testing.T)
 	}
 	var m map[string]string
 	json.Unmarshal(out, &m)
-	if m["decision"] != "block" || m["reason"] != runtime.ControlNotice("login-form-coder", "TASK-101") {
+	if m["decision"] != "block" || m["reason"] != runtime.PausePreservationNotice("login-form-coder", "TASK-101") {
 		t.Fatalf("pause stop = %s", out)
 	}
 

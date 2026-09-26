@@ -427,11 +427,21 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
 
 	case "PreToolUse":
+		// Preservation mode (spec §3): a pausing predecessor may still use
+		// the save path -- read/edit/shell/wait/commit under its existing
+		// permissions -- while delegation, new workflow steps and
+		// push/deploy are denied. Swarm MCP tools keep their own daemon
+		// gate (PauseAllowed); completed checkpoints are refused by
+		// WriteCheckpoint's kind gate.
 		if s.State.Pausing() && !in.IsSwarmTool {
-			return adapter.HookDecision{
-				Block:  true,
-				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
-			}, nil
+			if err := runtime.PreservationNativeAllowed(in.ToolName); err != nil {
+				return adapter.HookDecision{Block: true, Reason: err.Error()}, nil
+			}
+			if in.Command != "" {
+				if err := runtime.PreservationCommandAllowed(in.Command); err != nil {
+					return adapter.HookDecision{Block: true, Reason: err.Error()}, nil
+				}
+			}
 		}
 
 		// A6: the native Workflow tool is disabled in Swarm sessions -- use
@@ -587,7 +597,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		if s.State.Pausing() && !s.HasHandoff {
 			return adapter.HookDecision{
 				Block:  true,
-				Reason: runtime.ControlNotice(s.AgentName, s.ItemKey),
+				Reason: runtime.PausePreservationNotice(s.AgentName, s.ItemKey),
 			}, nil
 		}
 		if s.Pending > 0 && s.StopBlocks < maxStopBlocks {
