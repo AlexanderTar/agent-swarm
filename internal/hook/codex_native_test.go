@@ -115,3 +115,17 @@ func TestCodexBatchedTitleQuestionsWithSwarmRefAreDenied(t *testing.T) {
 		t.Fatalf("requests = %d, want 0", n)
 	}
 }
+
+// S3: the tool_response is the JSON string "{\"accepted\":true}", an
+// acknowledgement, never the user's answer.
+func TestCodexAckOnlyPostToolUseLeavesTheRowOpen(t *testing.T) {
+	h, ses := codexSeed(t)
+	codexHook(t, h, ses, "PreToolUse", nativeFixture(t, "PreToolUse.json"))
+	out := codexHook(t, h, ses, "PostToolUse", nativeFixture(t, "PostToolUse-ack.json"))
+	if strings.Contains(string(out), "[swarm] Recorded") {
+		t.Fatalf("an ack must not produce a forwarding step, got %s", out)
+	}
+	if r := questionRow(t, h, probeQuestion); r.State != "open" || r.Response.Valid {
+		t.Fatalf("the ack must not answer the row: %+v", r)
+	}
+}

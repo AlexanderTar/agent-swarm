@@ -649,7 +649,9 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 
 	case "PostToolUse":
 		var parts []string
-		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
+		// codex's async question tool answers {"accepted":true} before the
+		// user has picked anything; its answer is bound on UserPromptSubmit.
+		if isQuestionTool(in.ToolName) && in.ToolName != asyncQuestionTool && h.RT != nil && s.ID != "" {
 			prompt, _ := extractQuestion(in.ToolName, in.RawToolInput)
 			answer := extractToolResponseText(in.ToolResponse, prompt)
 			if answer == "" {
