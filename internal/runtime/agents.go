@@ -1316,6 +1316,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 
 	spec := adapter.Spec{
 		AgentName:         a.Name,
+		AgentID:           a.ID,
 		SessionID:         ses.ID,
 		Token:             token,
 		TokenFile:         tokPath,

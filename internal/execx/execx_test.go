@@ -40,6 +40,37 @@ func TestStartKeepsStdinOpenBetweenWrites(t *testing.T) {
 	}
 }
 
+// RunEnv exists alongside Run for callers that need an isolated env var on a
+// blocking, output-returning call (e.g. Codex.Wake, which must target a
+// session's isolated CODEX_HOME instead of the daemon's ambient ~/.codex).
+func TestRunEnvMergesExtraVariablesOverTheAmbientEnvironment(t *testing.T) {
+	out, err := RunEnv(context.Background(), map[string]string{"SWARM_PROBE": "isolated-value"}, "sh", "-c", "echo $SWARM_PROBE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "isolated-value" {
+		t.Fatalf("got %q, want %q", got, "isolated-value")
+	}
+}
+
+func TestRunEnvKeepsTheAmbientEnvironmentOtherwiseIntact(t *testing.T) {
+	t.Setenv("SWARM_PROBE_AMBIENT", "from-parent")
+	out, err := RunEnv(context.Background(), map[string]string{"SWARM_PROBE_OVERRIDE": "x"}, "sh", "-c", "echo $SWARM_PROBE_AMBIENT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "from-parent" {
+		t.Fatalf("got %q, want %q (RunEnv must not drop the ambient environment)", got, "from-parent")
+	}
+}
+
+func TestRunEnvReportsStderrOnFailure(t *testing.T) {
+	_, err := RunEnv(context.Background(), nil, "sh", "-c", "echo boom >&2; exit 3")
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v, want stderr in message", err)
+	}
+}
+
 // StartEnv exists alongside Start for callers that need an isolated HOME
 // (e.g. agy.Wake targeting a session's isolated agy-home) without changing
 // Start's signature for every other caller (catalog/usage app-server probes,

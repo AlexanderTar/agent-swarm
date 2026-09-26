@@ -3345,3 +3345,215 @@ func TestApprovalAnsweredViaNativeAnswerNeverRelays(t *testing.T) {
 		t.Fatalf("relays after approval_result = %d, want 0", n)
 	}
 }
+
+// P0 (2026-09-26, SUN_LEN): codex's isolated CODEX_HOME moved to a short,
+// deterministic dir under <home>/cx/ (internal/adapter.CodexHomeDir), keyed
+// on AGENT id (review round 1: session-keyed would put every resume in a
+// fresh, empty home, since startSession mints a new session id on resume).
+// Nothing cleaned up the old per-launch codex-home dirs either (there is no
+// general launch-dir GC in this codebase today), but these are cheap to name
+// deterministically, so a small dedicated sweep is in scope here without
+// taking on general launch-dir GC. reclaimCodexHomes must remove any
+// <home>/cx entry that isn't one of the resumable agent ids given, and leave
+// resumable ones and unrelated files alone.
+func TestReclaimCodexHomesRemovesOnlyDeadAgentDirs(t *testing.T) {
+	home := t.TempDir()
+	cx := filepath.Join(home, "cx")
+	liveDir := filepath.Join(cx, adapter.CodexHomeDirName("ag_live"))
+	deadDir := filepath.Join(cx, adapter.CodexHomeDirName("ag_dead"))
+	if err := os.MkdirAll(liveDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(deadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logf := func(string, ...any) {}
+	reclaimCodexHomes(home, []string{"ag_live"}, s0Now(t), logf)
+	if _, err := os.Stat(liveDir); err != nil {
+		t.Errorf("live agent's codex home was removed: %v", err)
+	}
+	if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
+		t.Errorf("dead agent's codex home still exists: %v", err)
+	}
+}
+
+// No <home>/cx directory at all (codex never launched, or a bare test home)
+// must not be an error, and must not log anything.
+func TestReclaimCodexHomesToleratesNoCxDir(t *testing.T) {
+	logged := false
+	reclaimCodexHomes(t.TempDir(), nil, s0Now(t), func(string, ...any) { logged = true })
+	if logged {
+		t.Error("no <home>/cx dir is not an error and must not log")
+	}
+}
+
+// MINOR 2 (review round 1): home == "" must be a no-op, never resolve to
+// filepath.Join("", "cx") == "cx" -- a relative path that would read/remove
+// a "cx" directory in whatever the process's cwd happens to be.
+func TestReclaimCodexHomesWithEmptyHomeIsANoOp(t *testing.T) {
+	cwdCx := "cx"
+	if _, err := os.Stat(cwdCx); err == nil {
+		t.Fatalf("a %q directory already exists in the test's cwd; this test can't tell empty-home-is-a-no-op from an accident", cwdCx)
+	}
+	reclaimCodexHomes("", []string{"ag_1"}, s0Now(t), func(string, ...any) {})
+	if _, err := os.Stat(cwdCx); err == nil {
+		t.Fatal(`reclaimCodexHomes("", ...) touched "cx" in the process cwd`)
+	}
+}
+
+// MINOR 3 (review round 1): one directory that can't be removed (e.g. a
+// read-only parent) must not stop the rest of the sweep -- log and keep
+// going.
+func TestReclaimCodexHomesLogsARemoveFailureAndKeepsSweeping(t *testing.T) {
+	home := t.TempDir()
+	cx := filepath.Join(home, "cx")
+	stuckDir := filepath.Join(cx, adapter.CodexHomeDirName("ag_stuck"))
+	deadDir := filepath.Join(cx, adapter.CodexHomeDirName("ag_dead"))
+	if err := os.MkdirAll(stuckDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stuckDir, "file"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(deadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Removing "file" needs write permission on its parent (stuckDir), not on
+	// "file" itself; stripping stuckDir's own write bit makes RemoveAll(stuckDir)
+	// fail on that unlink, without touching cx (so deadDir stays removable).
+	if err := os.Chmod(stuckDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(stuckDir, 0o700) })
+
+	var loggedFailures int
+	reclaimCodexHomes(home, nil, s0Now(t), func(format string, args ...any) { loggedFailures++ })
+
+	if loggedFailures == 0 {
+		t.Fatal("expected the stuck removal to be logged")
+	}
+	os.Chmod(stuckDir, 0o700) // restore before TempDir's own cleanup
+	if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
+		t.Errorf("a later, removable entry was skipped after an earlier one failed: %v", err)
+	}
+}
+
+// IMPORTANT 2 (review round 1): reclaimCodexHomes must not remove a home
+// that was created concurrently with the sweep's own DB snapshot -- a
+// session inserted (and its home mkdir'd) between the keep-set query and the
+// directory scan looked, to the old code, exactly like a dead agent with no
+// matching row. Fix: skip any entry whose mtime is after the sweep's own
+// snapshot time, since such an entry could not have been accounted for by a
+// keep-set queried at or before that instant.
+func TestReclaimCodexHomesSkipsADirNewerThanTheSnapshot(t *testing.T) {
+	home := t.TempDir()
+	cx := filepath.Join(home, "cx")
+	racingDir := filepath.Join(cx, adapter.CodexHomeDirName("ag_racing"))
+	if err := os.MkdirAll(racingDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The dir's real mtime is "now". Tell the sweep its snapshot was taken
+	// an hour ago -- as if the DB query that produced `keep` (which does not
+	// include "ag_racing") ran before this directory existed.
+	snapshotAt := time.Now().Add(-time.Hour)
+	reclaimCodexHomes(home, nil, snapshotAt, func(string, ...any) {})
+	if _, err := os.Stat(racingDir); err != nil {
+		t.Errorf("a dir newer than the sweep's own snapshot was removed (race): %v", err)
+	}
+}
+
+// s0Now is "now" for tests that don't care about the snapshot-time race
+// guard -- a live, comfortably-in-the-future bound so a directory created
+// moments ago in the test never trips it.
+func s0Now(t *testing.T) time.Time {
+	t.Helper()
+	return time.Now().Add(time.Hour)
+}
+
+// Regression: Reconcile's codex-home sweep must key off resumable sessions
+// (everything except completed/failed/crashed/cancelled) by AGENT id, not
+// the narrower `live` set (LiveStates excludes paused/interrupted) or the
+// session id. A paused session's thread store lives inside its (agent-keyed)
+// CODEX_HOME, and `codex resume` re-reads it on resume; sweeping by `live`
+// alone deleted a paused session's home the very next tick, so the following
+// resume hit the same "no rollout found for thread id ..." this fix's Wake
+// half was written to eliminate.
+func TestReconcileKeepsAPausedSessionsCodexHomeButRemovesADeadOnesSession(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = ?`, wSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	pausedDir := adapter.CodexHomeDir(s.Home, w.ID)
+	deadDir := adapter.CodexHomeDir(s.Home, "ag_long_gone")
+	if err := os.MkdirAll(pausedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(deadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(pausedDir); err != nil {
+		t.Errorf("a paused (resumable) agent's codex home was removed: %v", err)
+	}
+	if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
+		t.Errorf("a codex home with no matching agent's session still exists: %v", err)
+	}
+}
+
+// MINOR 4 (review round 1): a one-time cleanup of the pre-fix per-launch
+// codex-home dirs (<home>/run/launch/<session id>/codex-home), scoped to
+// sessions in a terminal state only (never a live/paused one, which could
+// still legitimately be running against its old, long CODEX_HOME), removing
+// only the codex-home subdir -- never the whole per-launch dir, which other
+// files (e.g. claude's own per-launch settings) may still live in.
+func TestReclaimOldCodexLaunchHomesRemovesOnlyTerminalSessionsCodexHome(t *testing.T) {
+	ctx := context.Background()
+
+	// Terminal session: its old codex-home must go, but a sibling file in
+	// the same per-launch dir must survive.
+	sDone, _, _ := newStore(t)
+	_, _, doneSes := worker(t, sDone)
+	if _, err := sDone.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE id = ?`, doneSes.ID); err != nil {
+		t.Fatal(err)
+	}
+	doneLaunchDir := filepath.Join(sDone.Home, "run", "launch", doneSes.ID)
+	doneCodexHome := filepath.Join(doneLaunchDir, "codex-home")
+	doneOtherFile := filepath.Join(doneLaunchDir, "codex-instructions.md")
+	if err := os.MkdirAll(doneCodexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(doneOtherFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sDone.reclaimOldCodexLaunchHomes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(doneCodexHome); !os.IsNotExist(err) {
+		t.Errorf("a terminal session's old codex-home still exists: %v", err)
+	}
+	if _, err := os.Stat(doneOtherFile); err != nil {
+		t.Errorf("a sibling file in the same per-launch dir was removed: %v", err)
+	}
+
+	// Non-terminal (running) session: its old codex-home must be left alone.
+	sLive, _, _ := newStore(t)
+	_, _, liveSes := worker(t, sLive)
+	liveLaunchDir := filepath.Join(sLive.Home, "run", "launch", liveSes.ID)
+	liveCodexHome := filepath.Join(liveLaunchDir, "codex-home")
+	if err := os.MkdirAll(liveCodexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := sLive.reclaimOldCodexLaunchHomes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(liveCodexHome); err != nil {
+		t.Errorf("a non-terminal session's old codex-home was removed: %v", err)
+	}
+}

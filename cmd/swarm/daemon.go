@@ -264,7 +264,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 	wt := &worktree.Service{DB: d, Run: execx.Run, Now: now, Log: cfg.Log, Home: cfg.Home}
 	nt := &notify.Service{DB: d, Events: ev, Now: now, Log: cfg.Log}
 	adDeps := adapter.Deps{Home: cfg.Home, UserHome: userHome, Bin: selfPath(), Run: execx.Run,
-		Start: execx.Start, StartEnv: execx.StartEnv, Now: now, Log: cfg.Log}
+		RunEnv: execx.RunEnv, Start: execx.Start, StartEnv: execx.StartEnv, Now: now, Log: cfg.Log}
 	rt := &runtime.Store{DB: d, Events: ev, Items: it, Repos: rp, Settings: st, Catalog: cat,
 		Home: cfg.Home, Now: now, Log: cfg.Log, Tmux: spawner, Worktree: wt, Notify: nt,
 		Bin: selfPath(), DaemonURL: fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
