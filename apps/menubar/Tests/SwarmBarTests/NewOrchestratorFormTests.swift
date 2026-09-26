@@ -120,10 +120,9 @@ final class NewOrchestratorFormTests: XCTestCase {
         f.toggle(f.repos.recent[0])
         f.selectAll(f.sections[1])
         XCTAssertEqual(f.selectedLine, "Selected: endurio-chat, endurio-app, endurio-landing")
-        f.query = "endurio"
         await f.search()
         await f.rescan()
-        XCTAssertEqual(client.calls.suffix(3), ["repos endurio", "rescan", "repos endurio"])
+        XCTAssertEqual(client.calls.suffix(3), ["repos ", "rescan", "repos "])
 
         await f.addFolder("/Users/alex/.config/notes")
         XCTAssertEqual(f.selection.last, "repo_new")
@@ -132,6 +131,16 @@ final class NewOrchestratorFormTests: XCTestCase {
         client.failNext = .api(status: 422, code: "bad_request", message: "No git repository found in this folder.")
         await f.addFolder("/tmp")
         XCTAssertEqual(f.repoError, "No git repository found in this folder.")
+    }
+
+    func testRescanKeepsPresentSelectionAndReportsOneRemoval() async {
+        let f = await form()
+        f.selection = ["repo_chat", "repo_app"]
+        client.reposResponse.all.removeAll { $0.id == "repo_chat" }
+        await f.rescan()
+        XCTAssertEqual(f.selection, ["repo_app"])
+        XCTAssertEqual(f.selectionNotice, "1 selected repository is no longer available.")
+        XCTAssertEqual(client.calls.suffix(2), ["rescan", "repos "])
     }
 
     func testSubmitBuildsTheSpikeBody() async throws {

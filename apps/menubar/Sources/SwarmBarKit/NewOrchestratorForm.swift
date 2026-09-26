@@ -10,6 +10,7 @@ public final class NewOrchestratorForm {
     public var query = ""
     public var repos = ReposResponse()
     public var selection: [String] = []
+    public private(set) var selectionNotice: String?
     public private(set) var choice: AgentChoice
     public private(set) var advisor: AdvisorChoice
     public var request = ""
@@ -59,7 +60,7 @@ public final class NewOrchestratorForm {
         async let c = try? client.catalog()
         async let r = try? client.repos(query: "")
         catalog = await c ?? []
-        repos = await r ?? ReposResponse()
+        applyRepos(await r ?? ReposResponse())
         // The catalog wasn't loaded yet when Settings prefilled `choice`: re-check the stored effort
         // against it now, so a level the model no longer offers can't survive into the picker.
         choice.effort = CatalogRules.normalizeEffort(choice.agent, CatalogRules.resolve(CatalogRules.entry(catalog, choice.agent), choice.model),
@@ -67,7 +68,7 @@ public final class NewOrchestratorForm {
     }
 
     public func search() async {
-        if let r = try? await client.repos(query: query) { repos = r }
+        if let r = try? await client.repos(query: "") { applyRepos(r) }
     }
 
     // MARK: derived
@@ -105,8 +106,9 @@ public final class NewOrchestratorForm {
     }
     public var advisorOptions: [PickerOption] { CatalogRules.advisorOptions(catalog, enabled: settings.enabledAgents) }
 
+    public var rows: [Repo] { RepoPicker.rows(repos) }
     public var sections: [RepoPicker.Section] { RepoPicker.sections(repos) }
-    public var selectedLine: String { RepoPicker.selectedLine(selection, known: RepoPicker.known(repos)) }
+    public var selectedLine: String { RepoPicker.selectedLine(selection, known: rows) }
     public var scanLine: String { RepoPicker.scanLine(repos, format: format) }
 
     public var canStart: Bool { connected && !submitting && kebab != nil && nameError == nil && errors.isValid }
@@ -153,9 +155,10 @@ public final class NewOrchestratorForm {
         do {
             let repo = try await client.addRepo(path: path)
             repoError = nil
-            if !selection.contains(repo.id) { selection.append(repo.id) }
             await search()
-            if !RepoPicker.known(repos).contains(where: { $0.id == repo.id }) { repos.all.append(repo) }
+            if !rows.contains(where: { $0.id == repo.id }) { repos.all.append(repo) }
+            if !selection.contains(repo.id) { selection.append(repo.id) }
+            selectionNotice = nil
         } catch let e as DaemonError {
             repoError = e.message
         } catch {
@@ -167,6 +170,18 @@ public final class NewOrchestratorForm {
         repos.scanning = true
         _ = try? await client.rescanRepos()
         await search()
+    }
+
+    private func applyRepos(_ response: ReposResponse) {
+        repos = response
+        reconcileSelection()
+    }
+
+    private func reconcileSelection() {
+        let ids = Set(rows.map(\.id))
+        let removed = selection.count - selection.filter(ids.contains).count
+        selection.removeAll { !ids.contains($0) }
+        selectionNotice = removed == 0 ? nil : "\(removed) selected \(removed == 1 ? "repository is" : "repositories are") no longer available."
     }
 
     // MARK: submit
