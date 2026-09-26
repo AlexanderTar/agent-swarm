@@ -416,8 +416,9 @@ type Store struct {
 	// not cwd: a finished agent can be retried (reclaimGrace's doc comment)
 	// and mints a new session with the same cwd, which D1 re-trusts, so a
 	// cwd-keyed map would leak that second entry forever. Emptied by a
-	// daemon restart, like the rest of this block; the one full pass that
-	// follows is the cost of D2 ever running at all, not a regression.
+	// daemon restart, like the rest of this block; the one batched pass that
+	// follows (one lock, one parse, review round 3) is the cost of D2 ever
+	// running at all, not a regression.
 	forgottenClaudeTrust map[string]bool
 	// codexLaunchHomesReclaim guards reclaimOldCodexLaunchHomes (D8, batch-2
 	// review): it is a one-time cleanup of pre-fix per-launch codex-home

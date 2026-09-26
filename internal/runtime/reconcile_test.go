@@ -3778,3 +3778,103 @@ func TestReclaimOldCodexLaunchHomesRunsOnlyOnceADaemonRun(t *testing.T) {
 		t.Fatalf("a second terminal session's old codex-home was removed on a later tick; the sweep must run only once per daemon run: %v", err)
 	}
 }
+
+// finishedClaudeAgents seeds n finished Claude agents with Swarm-owned
+// cwds and a ~/.claude.json trusting each of them, for the D2 pass tests.
+func finishedClaudeAgents(t *testing.T, s *Store, tm *fakeTmux, userHome string, n int) (cfg, seed string) {
+	t.Helper()
+	ctx := context.Background()
+	claudeAd, err := adapter.New(kinds.Claude, adapter.Deps{
+		Home: s.Home, UserHome: userHome, Bin: "/usr/local/bin/swarm",
+		Run: execx.Run, Log: func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Adapters[Claude] = claudeAd
+	projects := map[string]any{}
+	var ps []Pane
+	for i := 0; i < n; i++ {
+		_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: fmt.Sprintf("Batch%d", i), Intent: "feature", Kind: Fake, Model: "fake-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ses, _ := s.LatestSession(ctx, a.ID)
+		projects[ses.Cwd] = map[string]bool{"hasTrustDialogAccepted": true}
+		if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude', state = 'finished' WHERE id = ?`, a.ID); err != nil {
+			t.Fatal(err)
+		}
+		ps = append(ps, Pane{Session: a.Name, Command: "claude"})
+	}
+	panes(tm, ps...)
+	b, _ := json.Marshal(map[string]any{"oauthAccount": map[string]string{"id": "x"}, "projects": projects})
+	cfg = filepath.Join(userHome, ".claude.json")
+	if err := os.WriteFile(cfg, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg, string(b)
+}
+
+// Review round 3, item 3: after a restart every finished Claude session is
+// pending. With the lock stuck, the pass must cost ONE lock timeout (not one
+// per session), write nothing and mark nothing done, so the next tick
+// retries. Once the lock frees, one pass forgets them all.
+func TestReconcileForgetClaudeTrustIsOneBoundedPassUnderAStuckLock(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	userHome := t.TempDir()
+	cfg, seed := finishedClaudeAgents(t, s, tm, userHome, 5)
+	if err := os.Mkdir(cfg+".lock", 0o755); err != nil { // fresh, so never stale
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 4*time.Second {
+		t.Fatalf("pass took %v under a stuck lock; want one ~2s lock timeout, not one per session", took)
+	}
+	if len(s.forgottenClaudeTrust) != 0 {
+		t.Fatalf("marked %d sessions done while the lock was busy, want 0", len(s.forgottenClaudeTrust))
+	}
+	if b, _ := os.ReadFile(cfg); string(b) != seed {
+		t.Fatalf("file changed under a busy lock: %s", b)
+	}
+	os.Remove(cfg + ".lock")
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.forgottenClaudeTrust) != 5 {
+		t.Fatalf("marked %d done after the lock freed, want 5", len(s.forgottenClaudeTrust))
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		OAuth    json.RawMessage            `json:"oauthAccount"`
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Projects) != 0 || len(doc.OAuth) == 0 {
+		t.Fatalf("after the retry: %s, want every entry gone and oauthAccount kept", b)
+	}
+}
+
+// Review round 3, item 3: a ~/.claude.json that doesn't parse stops the
+// pass with nothing marked done (and nothing written).
+func TestReconcileForgetClaudeTrustMarksNothingDoneOnAParseError(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	userHome := t.TempDir()
+	cfg, _ := finishedClaudeAgents(t, s, tm, userHome, 3)
+	if err := os.WriteFile(cfg, []byte("{bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.forgottenClaudeTrust) != 0 {
+		t.Fatalf("marked %d done on a parse error, want 0", len(s.forgottenClaudeTrust))
+	}
+	if b, _ := os.ReadFile(cfg); string(b) != "{bad" {
+		t.Fatalf("file rewritten: %s", b)
+	}
+}

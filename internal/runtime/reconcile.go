@@ -1358,11 +1358,13 @@ func swarmOwnedWorkspace(home, path string) bool {
 
 // forgetFinishedClaudeTrust removes the Claude trust entry (D1) for every
 // Swarm-owned workspace belonging to a session of a finished or
-// acknowledged agent (D2, dialog-needs-you spec). ForgetFolder is
-// idempotent (a no-op once the key is already gone), so this can run every
-// tick without re-checking what it already did. Scoped to Claude sessions
-// only: every other kind's trust state (agy, cursor's flags, ...) has no
-// per-session file this touches.
+// acknowledged agent (D2, dialog-needs-you spec). Every pending cwd goes
+// into ONE ForgetFolders call -- one lock, one parse, one write per tick
+// (review round 3, item 3: per-session calls cost up to 2s of lock timeout
+// each, ~350 x 2s after a restart). On any error (lock busy, a file that
+// doesn't parse) the pass stops, nothing is marked done and the next tick
+// retries. Scoped to Claude sessions only: every other kind's trust state
+// (agy, cursor's flags, ...) has no per-session file this touches.
 func (s *Store) forgetFinishedClaudeTrust(ctx context.Context) error {
 	ad, ok := s.Adapters[Claude]
 	if !ok {
@@ -1390,24 +1392,42 @@ func (s *Store) forgetFinishedClaudeTrust(ctx context.Context) error {
 	if err := rows.Close(); err != nil {
 		return err
 	}
+	var ids, cwds []string
+	s.bookkeepingMu.Lock()
 	for _, r := range todo {
-		s.bookkeepingMu.Lock()
-		done := s.forgottenClaudeTrust[r.id]
-		s.bookkeepingMu.Unlock()
-		if done || !swarmOwnedWorkspace(s.Home, r.cwd) {
-			continue
+		if !s.forgottenClaudeTrust[r.id] && swarmOwnedWorkspace(s.Home, r.cwd) {
+			ids = append(ids, r.id)
+			cwds = append(cwds, r.cwd)
 		}
-		if err := ad.ForgetFolder(ctx, r.cwd); err != nil {
-			s.logf("reconcile: forget claude trust for %s: %v", r.cwd, err)
-			continue
-		}
-		s.bookkeepingMu.Lock()
-		if s.forgottenClaudeTrust == nil {
-			s.forgottenClaudeTrust = map[string]bool{}
-		}
-		s.forgottenClaudeTrust[r.id] = true
-		s.bookkeepingMu.Unlock()
 	}
+	s.bookkeepingMu.Unlock()
+	if len(ids) == 0 {
+		return nil
+	}
+	var ferr error
+	if batch, ok := ad.(interface {
+		ForgetFolders(context.Context, []string) error
+	}); ok {
+		ferr = batch.ForgetFolders(ctx, cwds)
+	} else {
+		for _, c := range cwds {
+			if ferr = ad.ForgetFolder(ctx, c); ferr != nil {
+				break
+			}
+		}
+	}
+	if ferr != nil {
+		s.logf("reconcile: forget claude trust for %d sessions: %v (retrying next tick)", len(ids), ferr)
+		return nil
+	}
+	s.bookkeepingMu.Lock()
+	if s.forgottenClaudeTrust == nil {
+		s.forgottenClaudeTrust = map[string]bool{}
+	}
+	for _, id := range ids {
+		s.forgottenClaudeTrust[id] = true
+	}
+	s.bookkeepingMu.Unlock()
 	return nil
 }
 
