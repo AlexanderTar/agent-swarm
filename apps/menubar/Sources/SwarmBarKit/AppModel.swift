@@ -291,9 +291,13 @@ public final class AppModel {
 
     // MARK: Needs you
 
-    public var openRequests: [SwarmRequest] {
-        state.requests.filter { $0.state == "open" && $0.isHITL }.sorted { $0.createdAt < $1.createdAt }
+    /// Every request waiting on the user, minus an approval whose native prompt is already open in
+    /// a terminal (spec 2.2.1): the bound question row already represents it.
+    static func needsYou(_ rs: [SwarmRequest]) -> [SwarmRequest] {
+        rs.filter { $0.state == "open" && !$0.nativePending }.sorted { $0.createdAt < $1.createdAt }
     }
+
+    public var openRequests: [SwarmRequest] { Self.needsYou(state.requests) }
 
     public var visibleRequests: [SwarmRequest] { Array(openRequests.prefix(3)) }
 
@@ -307,9 +311,10 @@ public final class AppModel {
 
     public enum RequestTarget: Equatable { case terminal(String), unavailable(String) }
 
-    /// What tapping a Needs-you row does. nil for a request with no terminal agent (approvals).
+    /// What tapping a Needs-you row does. nil for a request with no terminal agent (the board is the
+    /// fallback), regardless of kind (21-D5 amended).
     public func requestTarget(_ r: SwarmRequest) -> RequestTarget? {
-        guard r.isHITL, let name = r.terminalAgent else { return nil }
+        guard let name = r.terminalAgent else { return nil }
         guard let a = AgentTree.flatten(state.agents).first(where: { $0.name == name }) else {
             return .unavailable(Copy.orchestratorNotRunning)
         }
@@ -321,7 +326,11 @@ public final class AppModel {
     }
 
     public func openRequest(_ r: SwarmRequest) async {
-        if case let .terminal(name)? = requestTarget(r) { await openTerminal(name) }
+        switch requestTarget(r) {
+        case let .terminal(name)?: await openTerminal(name)
+        case nil: review(r)
+        case .unavailable?: break
+        }
     }
 
     // MARK: agents

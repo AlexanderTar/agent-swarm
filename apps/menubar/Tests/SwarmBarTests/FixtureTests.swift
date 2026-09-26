@@ -18,6 +18,7 @@ final class FixtureTests: XCTestCase {
         XCTAssertEqual(s.requests[0].sectionTitle, "Session handling")
         XCTAssertEqual(s.requests.map(\.proposedRepos), [nil, nil, nil, 2])
         XCTAssertEqual(s.requests.map(\.terminalAgent), [nil, "login-form-coder", nil, nil], "terminal_agent is null for approvals")
+        XCTAssertEqual(s.requests.map(\.nativePending), [false, false, false, false], "native_pending defaults false when absent")
         XCTAssertEqual(s.usage[0].error, "HTTP 429")
         XCTAssertNil(s.usage[1].error)
         XCTAssertEqual(s.notifications.unread, 4)
@@ -30,6 +31,15 @@ final class FixtureTests: XCTestCase {
         XCTAssertEqual(s.settings[.orchestrator]?.effort, "")
         let empty: StateResponse = try Fixture.decode("state-empty.json")
         XCTAssertTrue(empty.agents.isEmpty && empty.requests.isEmpty && empty.usage.isEmpty)
+    }
+
+    func testNativePendingDecodesAndDefaultsFalse() throws {
+        let json = #"{"id":"r","kind":"approve_plan","item_key":"K","item_title":"T","prompt":"p","state":"open","created_at":0}"#
+        let absent = try SwarmJSON.decode(SwarmRequest.self, from: Data(json.utf8))
+        XCTAssertFalse(absent.nativePending)
+        let pending = try SwarmJSON.decode(SwarmRequest.self,
+            from: Data(json.dropLast().appending(#","native_pending":true}"#).utf8))
+        XCTAssertTrue(pending.nativePending)
     }
 
     func testCatalogReposAndSmallShapesDecode() throws {
