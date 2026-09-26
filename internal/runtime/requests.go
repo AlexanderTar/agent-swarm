@@ -40,7 +40,7 @@ func canonicalJSON(raw json.RawMessage) string {
 
 // AskInput is swarm_ask's input (§8.1).
 type AskInput struct {
-	Kind       string // "question" | "approval" | "confirm_repos"
+	Kind       string // "question" | "approval" | "confirm_repos" | "native_prompt" | "native_answer"
 	Prompt     string
 	Options    []string
 	ArtifactID string
@@ -51,6 +51,14 @@ type AskInput struct {
 	// RequestID is I11's idempotency key, scoped to the calling MCP session
 	// (empty means "no idempotency, just run once").
 	RequestID string
+	// ForMsg is kind:"native_prompt"'s target: an approval question message
+	// addressed to the caller (spec 2.3 step 1, Task 13b).
+	ForMsg string
+	// Ref, Decision and Comment are kind:"native_answer"'s fields (Task 13c):
+	// Ref names the request or message the caller is forwarding a decision
+	// for, Decision is "approve" | "request_changes", Comment is optional
+	// free text.
+	Ref, Decision, Comment string
 }
 
 // ReposProposal is one repository the orchestrator proposes (or drops) on a
@@ -94,7 +102,25 @@ type RequestWire struct {
 	RespondedVia     *string         `json:"responded_via"`
 	RespondedAt      *int64          `json:"responded_at"`
 	CreatedAt        int64           `json:"created_at"`
+	// ApprovalEvidence is null for a board/CLI/menubar approval (a user
+	// action by definition), and "observed" | "agent_reported" once
+	// native_answer records one (spec section 2.3.6, Task 13c).
+	ApprovalEvidence *string `json:"approval_evidence"`
+	// NativePending is true while an approval request's bound native-question
+	// row is still open: Needs you hides the approval row in that window,
+	// because the open question row already represents it (spec 2.2.1, Task 13e).
+	NativePending bool `json:"native_pending"`
 }
+
+// EvidenceObserved/EvidenceAgentReported are native_answer's two evidence
+// kinds (spec section 2.3.5): the bound question row's response text either
+// started with the chosen label ("observed"), or the adapter never surfaces
+// answer text and the forwarded decision is accepted on the agent's word
+// ("agent_reported").
+const (
+	EvidenceObserved      = "observed"
+	EvidenceAgentReported = "agent_reported"
+)
 
 // txQuerier is the read surface both *sql.DB and *sql.Tx share.
 type txQuerier interface {
@@ -231,8 +257,28 @@ func (s *Store) sectionTitle(ctx context.Context, tx *sql.Tx, artifactID string,
 // agent for a permission dialog (the dialog lives in its pane), the root
 // orchestrator of its tree for a question or blocker. nil for non-HITL kinds
 // and for a row with no agent.
+// approvalTerminalKinds is every approval kind that has an asking agent, so
+// its terminal is that tree's root orchestrator, same as a question or
+// blocker (spec 2.1's 21-D5 amendment, Task 13e). accept_epic/accept_fix are
+// deliberately absent: they have no asking agent at all (opened by the
+// daemon's reconciler), so they get their own item-rooted lookup below.
+var approvalTerminalKinds = map[RequestKind]bool{
+	KindApproveSection: true, KindApprovePlan: true, KindApproveReport: true,
+	KindConfirmRepos: true, KindCloseSpike: true,
+}
+
 func (s *Store) terminalAgent(ctx context.Context, tx *sql.Tx, r Request) *string {
-	if !r.IsHITL || r.AgentID == "" {
+	if r.Kind == KindAcceptEpic || r.Kind == KindAcceptFix {
+		var name string
+		err := tx.QueryRowContext(ctx, `SELECT a.name FROM agents a JOIN items i ON i.id = ?
+			WHERE a.root_item_id = i.root_id AND a.role = 'orchestrator' AND a.parent_agent_id IS NULL
+			  AND a.state IN ('queued','active') LIMIT 1`, r.ItemID).Scan(&name)
+		if err != nil {
+			return nil
+		}
+		return &name
+	}
+	if (!r.IsHITL && !approvalTerminalKinds[r.Kind]) || r.AgentID == "" {
 		return nil
 	}
 	q := `WITH RECURSIVE up(name, parent) AS (
@@ -248,6 +294,46 @@ func (s *Store) terminalAgent(ctx context.Context, tx *sql.Tx, r Request) *strin
 		return nil
 	}
 	return &name
+}
+
+// approvalEvidenceTx is the wire's approval_evidence (spec section 3, Task
+// 13c/13e): null for a board/CLI/menubar approval. For a request-kind
+// approval it is read off the bound native-question row whose binding_json
+// ref names this request id. For a message-ref approval (a bound question
+// row itself, Task 13d), it is that row's own binding_json.evidence.
+func (s *Store) approvalEvidenceTx(ctx context.Context, tx *sql.Tx, r Request) *string {
+	if r.Kind == KindQuestion {
+		var b struct {
+			Evidence *string `json:"evidence"`
+		}
+		if len(r.Binding) > 0 {
+			json.Unmarshal(r.Binding, &b)
+		}
+		return b.Evidence
+	}
+	var ev sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT json_extract(q.binding_json, '$.evidence') FROM requests q
+		WHERE q.kind = 'question' AND json_extract(q.binding_json, '$.ref') = ?
+		  AND json_extract(q.binding_json, '$.evidence') IS NOT NULL LIMIT 1`, r.ID).Scan(&ev)
+	if err != nil || !ev.Valid {
+		return nil
+	}
+	return &ev.String
+}
+
+// nativePendingTx is the wire's native_pending (spec section 3, Task 13e):
+// true while some open native-question row is bound to this request as its
+// ref -- the daemon issued this approval's native prompt and it is still
+// waiting on the user's answer in the terminal.
+func (s *Store) nativePendingTx(ctx context.Context, tx *sql.Tx, r Request) bool {
+	var pending bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM requests q
+		WHERE q.kind = 'question' AND q.state = 'open' AND json_extract(q.binding_json, '$.ref') = ?)`,
+		r.ID).Scan(&pending)
+	if err != nil {
+		return false
+	}
+	return pending
 }
 
 // RequestWireTx builds the full §3.3 Request for the SSE feed and for
@@ -278,6 +364,8 @@ func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (Reque
 		}
 	}
 	w.TerminalAgent = s.terminalAgent(ctx, tx, r)
+	w.ApprovalEvidence = s.approvalEvidenceTx(ctx, tx, r)
+	w.NativePending = s.nativePendingTx(ctx, tx, r)
 	if r.ArtifactID != "" {
 		id := r.ArtifactID
 		w.ArtifactID = &id
@@ -388,6 +476,30 @@ func (s *Store) finishOpen(ctx context.Context, tx *sql.Tx, reqID, agentName, it
 	return s.requestTx(ctx, tx, reqID)
 }
 
+// errQuestionUseNativeTool is swarm_ask's refusal for kind:"question" when
+// the caller's kind has a hooked native question tool (spec section 1.7):
+// the hook opens the Needs-you row itself, so swarm_ask would only ever
+// duplicate it. muse and codex are deliberately absent from the copy below,
+// unlike the spec's section 4.1 code block: Task 4's live probe
+// (2026-09-25/26, docs/plans/2026-09-25-needs-you-and-child-approval-
+// routing.md) found muse's request_user_input never dispatches a hook at
+// all, and Task 4b's live check for codex's request_user_input never
+// completed (every codex model call returned a backend 401), so both join
+// cursor's exception instead (spec section 1.7's final verdict, which
+// supersedes 4.1's pre-probe draft) until a live retry produces codex's
+// T4b fixtures.
+const errQuestionUseNativeTool = "Ask the user with your own native question tool " +
+	"(claude AskUserQuestion, agy ask_question). " +
+	"Swarm shows it in Needs you and closes it when the user answers."
+
+// questionHookKinds are the kinds whose native question tool Swarm
+// intercepts via a hook (spec section 1.7). cursor, muse and codex are
+// absent on purpose: cursor and muse never dispatch a hook for their
+// native question tool at all, and codex's hook is unconfirmed (Task 4b's
+// live check never ran), so all three keep swarm_ask kind:"question" as
+// their only path to Needs you.
+var questionHookKinds = map[AgentKind]bool{Claude: true, Agy: true}
+
 // Ask is swarm_ask (§8.1).
 func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request, error) {
 	if in.Withdraw != "" {
@@ -398,14 +510,35 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 	}
 	switch in.Kind {
 	case "question":
+		refused := false
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+			if err != nil {
+				return err
+			}
+			if err := requireTopLevel(a); err != nil {
+				return err
+			}
+			refused = questionHookKinds[a.Kind]
+			return nil
+		}); err != nil {
+			return Request{}, err
+		}
+		if refused {
+			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: errQuestionUseNativeTool}
+		}
 		return s.askQuestion(ctx, sessionID, in)
 	case "approval":
 		return s.askApproval(ctx, sessionID, in)
 	case "confirm_repos":
 		return s.askConfirmRepos(ctx, sessionID, in)
+	case "native_prompt":
+		return s.askNativePromptForMsg(ctx, sessionID, in)
+	case "native_answer":
+		return s.nativeAnswer(ctx, sessionID, in)
 	default:
 		return Request{}, &items.Error{Code: items.CodeBadRequest,
-			Message: "kind must be question, approval or confirm_repos."}
+			Message: "kind must be question, approval, confirm_repos, native_prompt or native_answer."}
 	}
 }
 
@@ -491,10 +624,22 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 			return err
 		}
 		id := ids.New("req")
+		// A prompt forwarded verbatim from a daemon-issued native_prompt
+		// carries a ⟦swarm:<ref>⟧ token (spec 2.3 step 3, Task 13b): bind
+		// the row to it so native_answer can later find its evidence. A
+		// plain question's prompt has no token, so binding_json stays NULL.
+		var binding any
+		if ref := refFromPrompt(in.Prompt); ref != "" {
+			b, err := json.Marshal(map[string]string{"ref": ref})
+			if err != nil {
+				return err
+			}
+			binding = string(b)
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
-			prompt, options_json, state, created_at)
-			VALUES (?, 'question', 1, ?, ?, ?, ?, ?, 'open', ?)`,
-			id, a.ID, sessionID, a.ItemID, in.Prompt, jsonArray(in.Options), db.Millis(s.Now())); err != nil {
+			prompt, options_json, state, binding_json, created_at)
+			VALUES (?, 'question', 1, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+			id, a.ID, sessionID, a.ItemID, in.Prompt, jsonArray(in.Options), binding, db.Millis(s.Now())); err != nil {
 			return err
 		}
 		key, err := s.itemKey(ctx, tx, a.ItemID)
@@ -655,20 +800,49 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			extra = map[string]string{"section": sectionTitle}
 		}
 		out, err = s.finishOpen(ctx, tx, id, a.Name, key, extra)
-		return err
+		if err != nil {
+			return err
+		}
+		var warnings []string
+		if reqKind == "approve_plan" {
+			var warningsJSON string
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(warnings_json,'[]') FROM artifact_revisions
+				WHERE artifact_id = ? AND revision = ?`, in.ArtifactID, headRev).Scan(&warningsJSON); err != nil {
+				return err
+			}
+			json.Unmarshal([]byte(warningsJSON), &warnings)
+		}
+		np, err := s.nativePromptFor(ctx, tx, out, sectionTitle, warnings)
+		if err != nil {
+			return err
+		}
+		out.NativePrompt = &np
+		return nil
 	})
 	return out, err
 }
 
-// resolve is the shared body of the five user-action methods. origin is a
-// parameter, not a literal in here: L7's guard test fails any function outside
-// {Answer, Approve, RequestChanges, ConfirmRepos, CloseSpike} that contains the
-// string "user_action", and resolve is not one of them. That is the point — a
-// future handler that reuses resolve cannot smuggle a user action in by
-// reaching a shared helper that hard-codes the origin. Each of the five passes
-// "user_action" at its own call site, where the guard can see it.
+// resolve is the shared body of the five user-action methods, plus
+// nativeAnswer's request-ref path (Task 13c). origin is a parameter, not a
+// literal in here: L7's guard test fails any function outside {Answer,
+// Approve, RequestChanges, ConfirmRepos, CloseSpike, nativeAnswer} that
+// contains the string "user_action", and resolve is not one of them. That is
+// the point — a future handler that reuses resolve cannot smuggle a user
+// action in by reaching a shared helper that hard-codes the origin. Each of
+// the first five passes "user_action" at its own call site, where the guard
+// can see it. nativeAnswer is the sixth, and the one agent-reachable
+// user_action origin: it is guarded by native_answer's evidence check (a
+// bound question row genuinely answered via terminal), and an
+// agent-reported decision is accepted on the agent's word and flagged, not
+// refused (user decision, spec 1.6.2) — never a bare MCP call claiming a
+// user action for free.
+// after runs inside resolve's tx, right after the state UPDATE and before
+// RequestWireTx builds the resolved wire (Task 13c): nativeAnswer uses it to
+// write the bound question row's evidence in the same transaction as the
+// approval it forwards, so the request.resolved event already carries it.
 func (s *Store) resolve(ctx context.Context, id, state, responseText, via, origin string,
-	check func(Request) error, build func(Request) (MessageKind, any)) (Request, error) {
+	check func(Request) error, build func(Request) (MessageKind, any),
+	after ...func(*sql.Tx, Request) error) (Request, error) {
 	var out Request
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		req, err := s.requestTx(ctx, tx, id)
@@ -693,6 +867,11 @@ func (s *Store) resolve(ctx context.Context, id, state, responseText, via, origi
 			responded_via = ?, responded_at = ? WHERE id = ?`,
 			state, nullIf(responseText), nullIf(via), db.Millis(now), id); err != nil {
 			return err
+		}
+		for _, fn := range after {
+			if err := fn(tx, req); err != nil {
+				return err
+			}
 		}
 		// accept_epic/accept_fix requests are opened by the daemon's reconciler
 		// with no asking agent (items/transition.go's reconcileRoot never sets
@@ -746,10 +925,12 @@ func (s *Store) Answer(ctx context.Context, id, text, via string) (Request, erro
 		})
 }
 
-// Approve binds to the artifact's section hash and revision (L7): a stale
-// caller conflicts instead of silently approving a since-changed section.
-func (s *Store) Approve(ctx context.Context, id string, in ApproveInput) (Request, error) {
-	check := func(req Request) error {
+// approveCheck is Approve's staleness guard, extracted (Task 13c) so
+// nativeAnswer can reuse the exact same check without going through Approve
+// itself when it wants an after hook: a stale caller conflicts instead of
+// silently approving a since-changed section.
+func approveCheck(in ApproveInput) func(Request) error {
+	return func(req Request) error {
 		if req.SectionSHA256 != "" && in.SectionSHA256 != req.SectionSHA256 {
 			return &items.Error{Code: items.CodeConflict, Message: "This request changed. Review the latest version."}
 		}
@@ -782,15 +963,20 @@ func (s *Store) Approve(ctx context.Context, id string, in ApproveInput) (Reques
 		}
 		return nil
 	}
-	return s.resolve(ctx, id, "approved", "", in.Via, "user_action", check,
+}
+
+// Approve binds to the artifact's section hash and revision (L7): a stale
+// caller conflicts instead of silently approving a since-changed section.
+func (s *Store) Approve(ctx context.Context, id string, in ApproveInput, after ...func(*sql.Tx, Request) error) (Request, error) {
+	return s.resolve(ctx, id, "approved", "", in.Via, "user_action", approveCheck(in),
 		func(req Request) (MessageKind, any) {
 			return "approval_result", map[string]any{"decision": "approved",
 				"section_id": req.SectionID, "section_sha256": req.SectionSHA256}
-		})
+		}, after...)
 }
 
 // RequestChanges needs a comment describing what to change.
-func (s *Store) RequestChanges(ctx context.Context, id, comment, via string) (Request, error) {
+func (s *Store) RequestChanges(ctx context.Context, id, comment, via string, after ...func(*sql.Tx, Request) error) (Request, error) {
 	if comment == "" {
 		return Request{}, errors.New("Add a comment describing what to change.")
 	}
@@ -801,7 +987,7 @@ func (s *Store) RequestChanges(ctx context.Context, id, comment, via string) (Re
 		func(req Request) (MessageKind, any) {
 			return "approval_result", map[string]any{"decision": "changes_requested",
 				"comment": comment, "section_id": req.SectionID}
-		})
+		}, after...)
 }
 
 // ResolvePrompt marks an open prompt request answered. It only records the

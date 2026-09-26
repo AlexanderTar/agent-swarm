@@ -334,6 +334,24 @@ func (s *Store) recordPasteAttempt(ctx context.Context, sessionID string, n int,
 	return nil
 }
 
+// shouldLogQuotaSkip reports whether WakeOnQuotaReset should log a "pane not
+// idle" skip for sessionID at this cutoff -- true (and records it) only the
+// first time this exact (session, cutoff) pair is seen, so a session stuck
+// for the full hour checkQuotaResets keeps retrying logs once, not ~60 times.
+func (s *Store) shouldLogQuotaSkip(sessionID string, cutoff time.Time) bool {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.quotaSkipLogged == nil {
+		s.quotaSkipLogged = map[string]int64{}
+	}
+	c := db.Millis(cutoff)
+	if s.quotaSkipLogged[sessionID] == c {
+		return false
+	}
+	s.quotaSkipLogged[sessionID] = c
+	return true
+}
+
 // recordWakeFailure counts one consecutive wake failure (native error or any
 // paste skip/failure) toward the unified exponential backoff. snapshot is the
 // tick-start count from wakeCandidates: setting snapshot+1 (not incrementing
@@ -516,7 +534,7 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 	if err := s.flushSuppressed(ctx, kind); err != nil {
 		return 0, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.tmux_name, ses.state, ses.waiting
+	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, a.name, ses.tmux_name, ses.state, ses.waiting
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
 		WHERE a.kind = ? AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
 		AND (ses.last_wake_at IS NULL OR ses.last_wake_at < ?)`,
@@ -529,9 +547,9 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 	ad, ok := s.Adapters[kind]
 	woken := 0
 	for rows.Next() {
-		var sessionID, tmuxName, state string
+		var sessionID, agentName, tmuxName, state string
 		var waiting bool
-		if err := rows.Scan(&sessionID, &tmuxName, &state, &waiting); err != nil {
+		if err := rows.Scan(&sessionID, &agentName, &tmuxName, &state, &waiting); err != nil {
 			return woken, err
 		}
 		// Attempt native wake or paste idle token if pane is idle
@@ -545,10 +563,17 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 		}
 		// Fallback to idle paste if pane is alive
 		capture, err := s.Tmux.Capture(ctx, tmuxName, 15)
-		if err == nil && ok && ad.Idle(capture) {
+		switch {
+		case err != nil:
+			s.logf("wake: quota-reset capture for %s (session %s): %v", agentName, sessionID, err)
+		case ok && ad.Idle(capture):
 			if err := s.Tmux.PasteLine(ctx, tmuxName, IdleToken); err == nil {
 				s.markWoken(ctx, sessionID, false)
 				woken++
+			}
+		case ok:
+			if s.shouldLogQuotaSkip(sessionID, cutoff) {
+				s.logf("wake: quota-reset skip for %s (session %s): pane not idle", agentName, sessionID)
 			}
 		}
 	}

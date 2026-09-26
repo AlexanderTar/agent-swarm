@@ -134,10 +134,10 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(m.isOpen(.needsYou), "the same requests don't reopen it")
 
         var s: StateResponse = try Fixture.decode("state.json")
-        s.requests.append(SwarmRequest(id: "req_new", kind: .question, prompt: "More?", createdAt: .minutes(-1)))
+        s.requests.append(SwarmRequest(id: "req_new", kind: .approveSection, prompt: "More?", createdAt: .minutes(-1)))
         client.stateResult = .success(s)
         await m.handle(.requestOpened(s.requests.last!))
-        XCTAssertTrue(m.isOpen(.needsYou))
+        XCTAssertTrue(m.isOpen(.needsYou), "a new approval opens Needs you too, because it's in Needs you now")
         m.setSection(.needsYou, open: false)
         let relaunched = make()
         await relaunched.refresh()
@@ -146,27 +146,29 @@ final class AppModelTests: XCTestCase {
 
     func testNeedsYouRowsAndViewAll() async throws {
         let m = make()
-        await m.refresh()
-        // Only HITL requests appear in openRequests
-        XCTAssertEqual(m.openRequests.map(\.id), ["req_question"])
-        XCTAssertEqual(m.visibleRequests.map(\.id), ["req_question"])
-        XCTAssertNil(m.viewAllRequests)
-        XCTAssertEqual(m.visibleRequests.map(RequestLine.text), ["Which validation library?"])
-        XCTAssertEqual(m.requestTarget(m.visibleRequests[0]), .terminal("login-form-coder"))
 
-        // Test with 4 HITL requests to verify prefix(3) and viewAllRequests
-        var four: StateResponse = try Fixture.decode("state.json")
-        four.requests = [
-            SwarmRequest(id: "req_1", kind: .question, isHITL: true, prompt: "Question 1", createdAt: Timestamp(ms: 1)),
-            SwarmRequest(id: "req_2", kind: .prompt, isHITL: true, prompt: "Trust directory", createdAt: Timestamp(ms: 2)),
-            SwarmRequest(id: "req_3", kind: .blocker, isHITL: true, prompt: "Need token", createdAt: Timestamp(ms: 3)),
-            SwarmRequest(id: "req_4", kind: .question, isHITL: true, prompt: "Question 2", createdAt: Timestamp(ms: 4)),
-            SwarmRequest(id: "req_5", kind: .approveSection, isHITL: false, prompt: "Approve section", createdAt: Timestamp(ms: 5)),
+        // A native-pending approval is the one exclusion from Needs you (spec 2.2.1); every other
+        // open kind, HITL or not, appears.
+        var six: StateResponse = try Fixture.decode("state.json")
+        six.requests = [
+            SwarmRequest(id: "req_question", kind: .question, isHITL: true, agentName: "login-form-coder",
+                         prompt: "Which validation library?", createdAt: Timestamp(ms: 1), terminalAgent: "login-form-coder"),
+            SwarmRequest(id: "req_prompt", kind: .prompt, isHITL: true, prompt: "Trust directory", createdAt: Timestamp(ms: 2)),
+            SwarmRequest(id: "req_blocker", kind: .blocker, isHITL: true, prompt: "Need token", createdAt: Timestamp(ms: 3)),
+            SwarmRequest(id: "req_section", kind: .approveSection, isHITL: false, prompt: "Approve section", createdAt: Timestamp(ms: 4)),
+            SwarmRequest(id: "req_epic", kind: .acceptEpic, isHITL: false, prompt: "Accept epic", createdAt: Timestamp(ms: 5)),
+            SwarmRequest(id: "req_plan", kind: .approvePlan, isHITL: false, prompt: "Approve plan", createdAt: Timestamp(ms: 6),
+                         nativePending: true),
         ]
-        client.stateResult = .success(four)
+        client.stateResult = .success(six)
         await m.refresh()
-        XCTAssertEqual(m.visibleRequests.map(\.id), ["req_1", "req_2", "req_3"])
-        XCTAssertEqual(m.viewAllRequests, "View all 4 requests")
+        XCTAssertEqual(m.openRequests.map(\.id), ["req_question", "req_prompt", "req_blocker", "req_section", "req_epic"],
+                       "every open request except the native-pending approval")
+        XCTAssertEqual(m.label.badge, .yellow, "an open request wins over the active-agent green")
+        XCTAssertEqual(m.visibleRequests.map(\.id), ["req_question", "req_prompt", "req_blocker"])
+        XCTAssertEqual(m.viewAllRequests, "View all 5 requests")
+        XCTAssertEqual(m.visibleRequests.map(RequestLine.text), ["Which validation library?", "Trust directory", "Need token"])
+        XCTAssertEqual(m.requestTarget(m.visibleRequests[0]), .terminal("login-form-coder"))
 
         let lines = [RequestKind.approveReport, .acceptEpic, .acceptFix, .confirmRepos, .closeSpike, .prompt, .blocker]
             .map { RequestLine.text(SwarmRequest(id: "r", kind: $0, prompt: "Sample prompt")) }
@@ -198,7 +200,15 @@ final class AppModelTests: XCTestCase {
         await m.openRequest(r)
         XCTAssertEqual(script.sources.count, 1, "the terminal opened")
         XCTAssertEqual(client.calls.filter { $0.hasPrefix("answer") || $0.hasPrefix("resolve") }, [], "no answer or resolve call exists")
-        XCTAssertNil(m.requestTarget(SwarmRequest(id: "req_a", kind: .approvePlan, terminalAgent: nil)))
+
+        // An approval with a terminal_agent targets that terminal too: the isHITL guard is dropped.
+        let approval = SwarmRequest(id: "req_a", kind: .approvePlan, isHITL: false, terminalAgent: "login-form-coder")
+        XCTAssertEqual(m.requestTarget(approval), .terminal("login-form-coder"))
+
+        // With no terminal_agent, the target is nil and openRequest falls back to the board (review).
+        XCTAssertNil(m.requestTarget(SwarmRequest(id: "req_b", kind: .approvePlan, terminalAgent: nil)))
+        await m.openRequest(SwarmRequest(id: "req_b", kind: .approvePlan, terminalAgent: nil))
+        XCTAssertEqual(opened, ["http://127.0.0.1:7777/#/inbox?req=req_b"])
     }
 
     func testPromptRowTargetsTheAskingAgentsTerminal() async {
@@ -231,7 +241,8 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(target("search-spike-orchestrator"), .unavailable("Orchestrator isn't running."), "no session")
         XCTAssertEqual(target("no-such-agent"), .unavailable("Orchestrator isn't running."))
         XCTAssertNil(target(nil), "no terminal agent, no target")
-        XCTAssertNil(target("login-form-coder", hitl: false), "approval rows keep the Review button, not a terminal target")
+        XCTAssertEqual(target("login-form-coder", hitl: false), .terminal("login-form-coder"),
+                       "an approval with a terminal agent targets it too (isHITL guard dropped)")
         await m.openRequest(SwarmRequest(id: "r", kind: .question, isHITL: true, terminalAgent: "crash-debug-orchestrator"))
         XCTAssertEqual(script.sources.count, 0, "an unavailable target opens nothing")
 
@@ -592,6 +603,25 @@ final class AppModelTests: XCTestCase {
         let loaded = try XCTUnwrap(cache.load())
         XCTAssertEqual(loaded.0, s)
         XCTAssertEqual(loaded.1, fixtureNow)
+    }
+
+    func testNeedsYouRowIsGenericAndNeverShowsThePrompt() {
+        XCTAssertEqual(Copy.needsYouMessage, "Waiting for your input")
+        XCTAssertEqual(Copy.openAgentTerminal, "Open agent terminal")
+        XCTAssertEqual(Copy.openOnBoard, "Open in Swarm board")
+
+        let withAgent = SwarmRequest(id: "r", kind: .question, agentName: "go-migration-agent-debug",
+                                      itemKey: "SPIKE-16", itemTitle: "go-migration-agent-debug", prompt: "SECRET")
+        XCTAssertEqual(NeedsYouRow.lines(withAgent),
+                       ["SPIKE-16 · go-migration-agent-debug", "go-migration-agent-debug", "Waiting for your input"])
+
+        let noAgent = SwarmRequest(id: "r", kind: .acceptEpic, prompt: "SECRET")
+        XCTAssertEqual(NeedsYouRow.lines(noAgent)[1], "—")
+
+        for kind in RequestKind.allCases {
+            let r = SwarmRequest(id: "r", kind: kind, prompt: "SECRET")
+            XCTAssertFalse(NeedsYouRow.lines(r).contains(r.prompt), "\(kind) leaked the prompt")
+        }
     }
 }
 

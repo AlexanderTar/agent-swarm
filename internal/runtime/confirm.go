@@ -28,7 +28,7 @@ func (s *Store) repoNameTx(ctx context.Context, tx *sql.Tx, id string) (string, 
 	var name string
 	err := tx.QueryRowContext(ctx, `SELECT name FROM repos WHERE id = ?`, id).Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("Unknown repository %s.", id)}
+		return "", &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("Unknown repository %q. Pass a repository id from swarm_read {repos:{q:%q}}.", id, id)}
 	}
 	return name, err
 }
@@ -47,7 +47,7 @@ func (s *Store) repoRefs(ctx context.Context, tx *sql.Tx, repoIDs []string) ([]r
 		r := repoRef{ID: id}
 		err := tx.QueryRowContext(ctx, `SELECT name, path FROM repos WHERE id = ?`, id).Scan(&r.Name, &r.Path)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("Unknown repository %s.", id)}
+			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("Unknown repository %q. Pass a repository id from swarm_read {repos:{q:%q}}.", id, id)}
 		}
 		if err != nil {
 			return nil, err
@@ -154,7 +154,11 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 				return err
 			}
 		}
-		options, err := json.Marshal(map[string]any{"proposed": in.Repos, "expansion": in.Expansion})
+		expansion := in.Expansion
+		if expansion == nil {
+			expansion = []ReposProposal{}
+		}
+		options, err := json.Marshal(map[string]any{"proposed": in.Repos, "expansion": expansion})
 		if err != nil {
 			return err
 		}
@@ -171,7 +175,15 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 		}
 		out, err = s.finishOpen(ctx, tx, id, a.Name, rootKey, map[string]string{
 			"N": strconv.Itoa(len(in.Repos)), "expansion": expansionClause(len(in.Expansion))})
-		return err
+		if err != nil {
+			return err
+		}
+		np, err := s.nativePromptFor(ctx, tx, out, "", nil)
+		if err != nil {
+			return err
+		}
+		out.NativePrompt = &np
+		return nil
 	})
 	return out, err
 }
@@ -257,7 +269,12 @@ func (s *Store) CommitItemRepos(ctx context.Context, itemKey string, repoIDs []s
 // ConfirmRepos records the user's repository choice (L25, I13). It is a UI or
 // CLI action, so it writes the only repos_confirmed message the system ever
 // produces.
-func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, comment string, version int, via string) (Request, error) {
+// evidence is native_answer's audit flag ("observed" | "agent_reported"),
+// written into the repos_confirmed message payload (spec 2.3.6(b), Task
+// 13c); every non-native caller (board, CLI) passes "" and the key is
+// omitted, since evidence only ever exists for a native answer.
+func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, comment string, version int, via, evidence string,
+	after ...func(*sql.Tx, Request) error) (Request, error) {
 	if len(repoIDs) == 0 {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Choose at least one repository."}
 	}
@@ -291,9 +308,18 @@ func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, c
 			WHERE id = ?`, jsonArray(repoIDs), nullIf(comment), nullIf(via), now, id); err != nil {
 			return err
 		}
+		for _, fn := range after {
+			if err := fn(tx, req); err != nil {
+				return err
+			}
+		}
 		// "user_action" appears here, in an allow-listed method, not in the shared
 		// resolve helper (R5).
-		payload, err := json.Marshal(map[string]any{"repos": refs, "comment": comment})
+		p := map[string]any{"repos": refs, "comment": comment}
+		if evidence != "" {
+			p["evidence"] = evidence
+		}
+		payload, err := json.Marshal(p)
 		if err != nil {
 			return err
 		}

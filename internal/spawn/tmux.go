@@ -192,7 +192,14 @@ func (s *Spawner) PasteLine(ctx context.Context, name, line string) error {
 	return s.pasteViaTempFile(ctx, name, strings.Join(strings.Fields(line), " "))
 }
 
+// Keys is the one place every send-keys call goes through -- prompt
+// auto-answers (reconcile.go), interrupts (pause.go, agents.go,
+// checkpoint.go), startup dialogs (agents.go), and pasteViaTempFile's own
+// trailing Enter. cancelCopyModeIfNeeded guards all of them here, not just
+// the paste path: an Escape/Enter/dialog answer sent while the pane is in
+// copy-mode is swallowed exactly the way the paste's Enter was.
 func (s *Spawner) Keys(ctx context.Context, name string, keys ...string) error {
+	s.cancelCopyModeIfNeeded(ctx, name)
 	_, err := s.run(ctx, append([]string{"send-keys", "-t", name}, keys...)...)
 	return err
 }
@@ -299,9 +306,30 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// cancelCopyModeIfNeeded exits copy-mode before sending keys, so a keypress
+// that matters -- a paste's Enter, an interrupt's Escape/C-c, a prompt
+// auto-answer -- isn't swallowed. mouse on (TmuxConf) lets a mouse-wheel
+// scroll put a pane into copy-mode, and copy-mode's key table (mode-keys
+// emacs) has no Enter binding -- Enter there is simply dropped, not passed
+// through to the program underneath. That silently left a relay notice for
+// go-migration-agent-debug sitting complete but unsent in its input box
+// (2026-09-25 22:27Z), which then made every idle check fail and every
+// quota-reset wake log "pane not idle" until the pane was touched by hand.
+// Best-effort: a failure here must not block the keys that follow.
+func (s *Spawner) cancelCopyModeIfNeeded(ctx context.Context, name string) {
+	out, err := s.run(ctx, "display", "-p", "-t", name, "#{pane_in_mode}")
+	if err != nil || strings.TrimSpace(string(out)) != "1" {
+		return
+	}
+	if _, err := s.run(ctx, "send-keys", "-t", name, "-X", "cancel"); err != nil {
+		s.Log("tmux: cancel copy-mode for %s: %v", name, err)
+	}
+}
+
 // pasteViaTempFile is how the line reaches tmux: execx.Runner has no stdin, and
 // send-keys -l would interpret some characters. The buffer is reused across
-// chunks, so at most one temp file exists per paste.
+// chunks, so at most one temp file exists per paste. The trailing Keys(Enter)
+// call already runs the copy-mode guard, so there is no separate guard here.
 func (s *Spawner) pasteViaTempFile(ctx context.Context, name, line string) error {
 	f, err := os.CreateTemp("", "swarm-paste-*")
 	if err != nil {

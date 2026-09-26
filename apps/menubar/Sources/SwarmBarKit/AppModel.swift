@@ -56,6 +56,13 @@ public enum RequestLine {
     }
 }
 
+/// Needs-you row lines, generic across every request kind (spec 1.6.3): never the prompt.
+public enum NeedsYouRow {
+    public static func lines(_ r: SwarmRequest) -> [String] {
+        ["\(r.itemKey) · \(r.itemTitle)", r.agentName ?? r.terminalAgent ?? "—", Copy.needsYouMessage]
+    }
+}
+
 /// Everything the popover and the menu bar label show, and every action they take.
 @MainActor
 @Observable
@@ -240,8 +247,8 @@ public final class AppModel {
     public var compact: Bool { compactSwitch.effective(setting: state.settings.menubarCompact) }
 
     public var label: MenuLabel {
-        MenuLabel.make(activeCount: state.activeCount, connected: connected, enabled: state.settings.enabledAgents,
-                       usage: state.usage, compact: compact, format: format)
+        MenuLabel.make(activeCount: state.activeCount, connected: connected, needsYou: openRequests.count,
+                       enabled: state.settings.enabledAgents, usage: state.usage, compact: compact, format: format)
     }
 
     /// "6 active", or "? active" while the daemon is down.
@@ -299,9 +306,13 @@ public final class AppModel {
 
     // MARK: Needs you
 
-    public var openRequests: [SwarmRequest] {
-        state.requests.filter { $0.state == "open" && $0.isHITL }.sorted { $0.createdAt < $1.createdAt }
+    /// Every request waiting on the user, minus an approval whose native prompt is already open in
+    /// a terminal (spec 2.2.1): the bound question row already represents it.
+    static func needsYou(_ rs: [SwarmRequest]) -> [SwarmRequest] {
+        rs.filter { $0.state == "open" && !$0.nativePending }.sorted { $0.createdAt < $1.createdAt }
     }
+
+    public var openRequests: [SwarmRequest] { Self.needsYou(state.requests) }
 
     public var visibleRequests: [SwarmRequest] { Array(openRequests.prefix(3)) }
 
@@ -315,9 +326,10 @@ public final class AppModel {
 
     public enum RequestTarget: Equatable { case terminal(String), unavailable(String) }
 
-    /// What tapping a Needs-you row does. nil for a request with no terminal agent (approvals).
+    /// What tapping a Needs-you row does. nil for a request with no terminal agent (the board is the
+    /// fallback), regardless of kind (21-D5 amended).
     public func requestTarget(_ r: SwarmRequest) -> RequestTarget? {
-        guard r.isHITL, let name = r.terminalAgent else { return nil }
+        guard let name = r.terminalAgent else { return nil }
         guard let a = AgentTree.flatten(state.agents).first(where: { $0.name == name }) else {
             return .unavailable(Copy.orchestratorNotRunning)
         }
@@ -329,7 +341,11 @@ public final class AppModel {
     }
 
     public func openRequest(_ r: SwarmRequest) async {
-        if case let .terminal(name)? = requestTarget(r) { await openTerminal(name) }
+        switch requestTarget(r) {
+        case let .terminal(name)?: await openTerminal(name)
+        case nil: review(r)
+        case .unavailable?: break
+        }
     }
 
     // MARK: agents

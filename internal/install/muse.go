@@ -10,9 +10,29 @@ import (
 
 // WriteMuse merges the swarm MCP server into muse's settings.json and installs
 // the swarm skills into the probed user-skills dir ($CONFIG_DIR/skills). There
-// is no hooks step: muse's hook surface is still unprobed (adapter muse.go),
-// and settings.json is the only file the CLI reads MCP config from — writing a
-// parallel mcp_config.json like agy's would be an unread file, not a wiring.
+// is deliberately no hooks step, and settings.json is the only file the CLI
+// reads MCP config from — writing a parallel mcp_config.json like agy's would
+// be an unread file, not a wiring.
+//
+// REVERTED (code review, 2026-09-26): an earlier version of this function also
+// wrote a .muse-plugin/plugin.json (PreToolUse/PostToolUse/UserPromptSubmit,
+// each running `swarm hook muse <event>`) and ran `muse plugins install` +
+// `muse plugins approve` against the real, shared, user-wide muse plugin
+// store. Two live probes found that path dead on arrival and unsafe to ship:
+// (1) muse runs a hook subprocess with only a fixed env allowlist (HOME, PATH,
+// USER, LANG, TERM, SHELL, PWD, LOGNAME, SHLVL, plus muse's own PLUGIN_*/
+// MUSE_PLUGIN_* vars) -- confirmed live with `muse plugins hook test ...
+// --fixture` after an explicit `SWARM_SESSION=x` in the invoking env never
+// reached the hook script. SWARM_SESSION/SWARM_TOKEN_FILE never arrive, so
+// `swarm hook muse <event>` no-ops on every call (client.go's "no
+// SWARM_SESSION" fast path) -- the plugin is unreachable end to end. (2) the
+// install target is muse's shared, user-wide store, so once reachable it
+// would also fire on every tool call in the user's own muse sessions outside
+// Swarm, not just Swarm-launched ones. swarm_ask kind:"question" stays the
+// load-bearing fallback for muse (Task 9) until a wrapper carries the
+// session's identity through some channel other than env (e.g. a per-cwd
+// file, since cwd is in every hook's stdin payload) and the install step is
+// scoped so it only ever touches Swarm-launched sessions.
 //
 // No "env" key is written here (P0-1): muse takes only literal env values,
 // never ${VAR} passthrough (confirmed 2026-09-23, see adapter/muse.go's

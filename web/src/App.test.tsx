@@ -3,6 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { createMockDaemon } from "./mock/daemon";
 import { renderWithDaemon } from "./test/render";
+import type { Request } from "./types";
+
+// Minimal Request factory, independent of the board fixtures (spec 4.4 / Task 17a).
+const req = (p: Partial<Request> & Pick<Request, "id" | "kind">): Request => ({
+  is_hitl: p.kind === "question" || p.kind === "prompt" || p.kind === "blocker",
+  agent_name: null, terminal_agent: null, item_key: "TASK-1", item_title: "Task", root_key: "TASK-1",
+  artifact_id: null, artifact_revision: null, section_id: null, section_title: null, section_sha256: null,
+  prompt: "", options: [], state: "open", confirmed: null, binding: null, response_text: null,
+  responded_via: null, responded_at: null, created_at: 0, native_pending: false, approval_evidence: null, ...p,
+});
 
 describe("App shell (§16.5)", () => {
   it("shows the header and the Needs you count", async () => {
@@ -10,6 +20,23 @@ describe("App shell (§16.5)", () => {
     expect(screen.getByRole("heading", { name: "Agent Swarm" })).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "Needs you 9" }));
     expect(window.location.hash).toBe("#/inbox");
+  });
+
+  it("counts Needs you by the shared rule, excluding a native-pending approval", async () => {
+    const d = createMockDaemon();
+    d.db.requests = [
+      req({ id: "q", kind: "question", created_at: 1, prompt: "SECRET" }),
+      req({ id: "a", kind: "approve_section", is_hitl: false, created_at: 2 }),
+      req({ id: "p", kind: "approve_plan", is_hitl: false, native_pending: true, created_at: 3 }),
+      req({ id: "e", kind: "accept_epic", is_hitl: false, created_at: 4 }),
+    ];
+    const { user } = renderWithDaemon(<App />, { daemon: d, events: false });
+    expect(await screen.findByRole("button", { name: "Needs you 3" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Needs you 3" }));
+    const list = await screen.findByRole("list", { name: "Needs you" });
+    // the native-pending approval is excluded
+    expect(within(list).getAllByRole("button")).toHaveLength(3);
+    expect(within(list).queryByText("SECRET")).not.toBeInTheDocument();
   });
 
   it("round-trips filters through the URL and shows matches only while filtering", async () => {

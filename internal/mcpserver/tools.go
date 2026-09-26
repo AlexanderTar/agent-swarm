@@ -157,9 +157,10 @@ func checkpointTool(s *Server) ToolDef {
 
 func askTool(s *Server) ToolDef {
 	return ToolDef{
-		Name:        "swarm_ask",
-		Description: "Ask a question, request an approval, propose repos to confirm, or withdraw an earlier ask, and block for the answer.",
-		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, or withdraw"},"prompt":{"type":"string"},"options":{"type":"array"},
+		Name: "swarm_ask",
+		Description: "Request an approval, propose repos to confirm, forward a native answer, or withdraw an earlier ask. " +
+			"Returns at once with the request id; the answer arrives later as a message.",
+		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, native_prompt, native_answer, or withdraw. question is refused for claude and agy (they have a native question tool Swarm hooks instead); cursor, muse and codex keep it, since their native question tool is either not hookable or not yet confirmed. native_prompt for_msg gets a child's approval question's native prompt; native_answer ref forwards the user's observed decision."},"prompt":{"type":"string"},"options":{"type":"array"},
 			"artifact":{"type":"string","description":"Artifact id for approval kinds"},"section":{"type":"string","description":"Section id for per-section approval"},"withdraw":{"type":"string"},
 			"repos":{"type":"array","items":{"type":"object","properties":{
 				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
@@ -169,6 +170,10 @@ func askTool(s *Server) ToolDef {
 				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
 				"reason":{"type":"string"}},
 				"required":["repo","reason"]}},
+			"for_msg":{"type":"string","description":"kind native_prompt: the msg_id of a child's approval question addressed to you"},
+			"ref":{"type":"string","description":"kind native_answer: the request_id or msg_id a native_prompt was issued for"},
+			"decision":{"type":"string","enum":["approve","request_changes"],"description":"kind native_answer: the user's observed decision"},
+			"comment":{"type":"string","description":"kind native_answer: free text for request_changes, or when the adapter reports no answer text"},
 			"request_id":{"type":"string"}`,
 			[]string{"kind"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -181,6 +186,10 @@ func askTool(s *Server) ToolDef {
 				Withdraw  string                  `json:"withdraw"`
 				Repos     []runtime.ReposProposal `json:"repos"`
 				Expansion []runtime.ReposProposal `json:"expansion"`
+				ForMsg    string                  `json:"for_msg"`
+				Ref       string                  `json:"ref"`
+				Decision  string                  `json:"decision"`
+				Comment   string                  `json:"comment"`
 				RequestID string                  `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
@@ -189,7 +198,7 @@ func askTool(s *Server) ToolDef {
 			req, err := s.RT.Ask(ctx, c.SessionID, runtime.AskInput{
 				Kind: in.Kind, Prompt: in.Prompt, Options: in.Options, ArtifactID: in.Artifact,
 				SectionID: in.Section, Withdraw: in.Withdraw, Repos: in.Repos, Expansion: in.Expansion,
-				RequestID: in.RequestID,
+				ForMsg: in.ForMsg, Ref: in.Ref, Decision: in.Decision, Comment: in.Comment, RequestID: in.RequestID,
 			})
 			if err != nil {
 				return nil, err
@@ -202,9 +211,15 @@ func askTool(s *Server) ToolDef {
 // requestOut is §8.1's swarm_ask result, exactly {"request_id","state"} - no
 // echoed-back kind/prompt/artifact_id/section_id (fix round 2, item 1: the
 // caller already sent those, so echoing them isn't a spec omission worth
-// second-guessing).
+// second-guessing). Task 13a adds "native_prompt" for the approval and
+// confirm_repos kinds, whose Request carries one; every other kind's
+// NativePrompt is nil and the key is omitted.
 func requestOut(r runtime.Request) map[string]any {
-	return map[string]any{"request_id": r.ID, "state": r.State}
+	out := map[string]any{"request_id": r.ID, "state": r.State}
+	if r.NativePrompt != nil {
+		out["native_prompt"] = r.NativePrompt
+	}
+	return out
 }
 
 // ---------- swarm_blocker ----------
@@ -245,15 +260,20 @@ func sendTool(s *Server) ToolDef {
 		Name:        "swarm_send",
 		Description: "Send a short message to another agent in the same top-level item, or to your parent.",
 		Schema: objSchemaRequired(`"to":{"type":"string","description":"Recipient agent name, or 'parent' for your orchestrator"},"kind":{"type":"string","enum":["question","answer","finding"],"description":"Message kind; omitted or relay stores as finding"},
-			"body":{"type":"string"},"reply_to":{"type":"string"},"request_id":{"type":"string"}`,
+			"body":{"type":"string"},"reply_to":{"type":"string","description":"Required for kind answer: the msg_id of the question it answers"},
+			"options":{"type":"array","items":{"type":"string"},"description":"Choices for kind question; at most 10, each at most 200 chars"},
+			"approval":{"type":"boolean","description":"kind question to parent only: request explicit Approve/Request changes"},
+			"request_id":{"type":"string"}`,
 			[]string{"to", "body"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				To        string `json:"to"`
-				Kind      string `json:"kind"`
-				Body      string `json:"body"`
-				ReplyTo   string `json:"reply_to"`
-				RequestID string `json:"request_id"`
+				To        string   `json:"to"`
+				Kind      string   `json:"kind"`
+				Body      string   `json:"body"`
+				ReplyTo   string   `json:"reply_to"`
+				Options   []string `json:"options"`
+				Approval  bool     `json:"approval"`
+				RequestID string   `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -267,11 +287,17 @@ func sendTool(s *Server) ToolDef {
 			default:
 				return nil, fmt.Errorf("kind must be question, answer or finding, got %q", in.Kind)
 			}
-			// runtime.Store.Send's last-but-one parameter is named correlationID and
-			// is the only thread-tracking hook it exposes (internal/runtime is
-			// outside this batch's file ownership); §8.1's reply_to input maps onto
-			// it.
-			id, err := s.RT.Send(ctx, c.SessionID, in.To, runtime.MessageKind(kind), in.Body, in.ReplyTo, in.RequestID)
+			if in.Approval {
+				if kind != "question" || in.To != "parent" {
+					return nil, fmt.Errorf("approval is only for kind question to parent")
+				}
+				id, err := s.RT.SendApproval(ctx, c.SessionID, in.Body, in.RequestID)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"msg_id": id}, nil
+			}
+			id, err := s.RT.Send(ctx, c.SessionID, in.To, runtime.MessageKind(kind), in.Body, in.ReplyTo, in.RequestID, in.Options...)
 			if err != nil {
 				return nil, err
 			}
@@ -585,7 +611,7 @@ func readTool(s *Server) ToolDef {
 						}
 					}
 				default:
-					found, err = s.RT.Repos.Recent(ctx, limit)
+					found, err = s.RT.Repos.Search(ctx, "", limit)
 				}
 				if err != nil {
 					return nil, err

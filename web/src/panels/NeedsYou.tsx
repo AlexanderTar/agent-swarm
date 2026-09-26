@@ -4,7 +4,7 @@ import { Segmented } from "../components/Segmented";
 import { C } from "../copy";
 import { useMutation } from "../data/hooks";
 import { useAgents, useRequests } from "../data/queries";
-import { filterRequests, inboxRow, pickRequest, requestTarget } from "../logic/inbox";
+import { filterRequests, needsYouRow, pickRequest, requestTarget } from "../logic/inbox";
 import type { InboxFilter, Request } from "../types";
 
 export function NeedsYou(p: {
@@ -63,22 +63,37 @@ export function NeedsYou(p: {
         {requests.data && list.length === 0 && <p className="text-muted">{C.inboxEmpty}</p>}
         <ul aria-label={C.needsYou} className="space-y-1">
           {list.map((r) => {
-            const row = inboxRow(r);
+            const [line1, line2, line3] = needsYouRow(r);
+            const target = requestTarget(r, agents.data ?? []);
+            const isCurrent = r.id === current?.id;
             return (
-              <li key={r.id}>
-                <button
-                  type="button"
-                  aria-current={r.id === current?.id}
-                  onClick={() => {
-                    p.onSelectRequest(r.id);
-                    const t = requestTarget(r, agents.data ?? []);
-                    if (t?.kind === "terminal") void terminal.run(t.agent).catch(() => undefined);
-                  }}
-                  className={`w-full rounded px-2 py-1 text-left hover:bg-raised ${r.id === current?.id ? "bg-raised" : ""}`}
-                >
-                  <span className="block truncate">● {row.title}</span>
-                  <span className="block text-muted">{row.sub}</span>
-                </button>
+              <li
+                key={r.id}
+                className={`rounded bg-warn/15 px-2 py-1 ${isCurrent ? "ring-1 ring-warn" : ""}`}
+              >
+                <div className="flex items-start gap-2">
+                  <button
+                    type="button"
+                    aria-current={isCurrent}
+                    onClick={() => p.onSelectRequest(r.id)}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <span className="block truncate text-muted">{line1}</span>
+                    <span className="block truncate">{line2}</span>
+                    <span className="block truncate">{line3}</span>
+                  </button>
+                  {target && (
+                    <button
+                      type="button"
+                      aria-label={C.openAgentTerminal}
+                      disabled={target.kind === "unavailable"}
+                      onClick={() => { if (target.kind === "terminal") void terminal.run(target.agent).catch(() => undefined); }}
+                      className="shrink-0 disabled:opacity-40"
+                    >
+                      ▶
+                    </button>
+                  )}
+                </div>
               </li>
             );
           })}

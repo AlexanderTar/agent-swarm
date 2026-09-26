@@ -366,18 +366,81 @@ func (m *Muse) InterruptKeys() []string { return []string{"C-c"} }
 // HookOutput/ParseHook are lenient no-ops until Task 5 probes muse's hook
 // surface (plugin hook fixture). They must not fail closed: an unknown hook
 // shape is dropped, never a daemon error.
+//
+// Task 4 live probe (2026-09-25/26, isolated scratch project, no Swarm
+// involvement): a plugin is a workspace-local `.muse-plugin/plugin.json`
+// (native-plugin-contract.md), validated with `muse plugins validate .` and
+// installed with `muse plugins install .` -- installing writes into the
+// REAL, shared `XDG_DATA_HOME` plugin store (`~/.local/share/muse/plugins/...`),
+// confirming this file's existing XDG_DATA_HOME-pinning comment above: a
+// per-launch plugin cannot be sandboxed into an isolated data dir. First
+// launch after install/change shows a "Review plugin hooks" trust dialog
+// (matches testdata/muse/pane-*), which must be accepted the same way codex's
+// and agy's hook-trust dialogs are. `PreToolUse`/`PostToolUse` stdin is
+// `{hook_event_name, tool_name, tool_input, tool_use_id, session_id, turn_id,
+// cwd, transcript_path, model, permission_mode, model_provider}`, plus
+// `tool_response` (a string) on PostToolUse; `UserPromptSubmit` stdin is
+// `{hook_event_name, prompt, session_id, turn_id, cwd, transcript_path,
+// model, permission_mode, model_provider}` (testdata/muse-hook-userpromptsubmit.json).
+//
+// Items 3 and 4 (deny, tool name as the hook sees it): **muse's own
+// `request_user_input` tool never dispatches `PreToolUse`/`PostToolUse` at
+// all.** Two independent live turns asked the model to call
+// `request_user_input`; in both, the dialog rendered, was answered, and the
+// TUI printed "Structured user input answered" (not the `●
+// ToolName(...)` chrome muse uses for a real tool call) -- while, in the
+// same turn, the plugin's `matcher: null` (all tool names) PreToolUse/
+// PostToolUse hooks DID fire correctly for `submit_reminder_decision` and
+// `read_skill`, the model's other tool calls (testdata/muse-hook-pretooluse.json,
+// muse-hook-posttooluse.json capture that *sibling* firing, not
+// `request_user_input` -- the honest fixture, since no `request_user_input`
+// hook payload exists to capture). So: **cannot deny** (no hook ever runs to
+// deny it), and the tool name question is moot -- there is no hook event to
+// carry it. This triggers the plan's Task 4 stop-and-report clause: Task 9
+// must not refuse `swarm_ask kind:"question"` for muse without a fallback
+// (spec section 10, new OQ).
+//
+// Task 6: muse's own plugin docs (native-plugin-contract.md,
+// capability-examples.json) specify only the manifest schema, not a hook
+// stdout/decision contract, and no deny was ever exercised live (there is
+// no hook to deny request_user_input from). There is no probed shape to
+// emit, so this stays a fail-open no-op for every event and decision.
 func (m *Muse) HookOutput(string, HookDecision) ([]byte, error) { return nil, nil }
 
 func (m *Muse) ParseHook(event string, stdin []byte) (HookInput, error) {
 	var raw struct {
-		SessionID string `json:"session_id"`
+		SessionID    string          `json:"session_id"`
+		ToolName     string          `json:"tool_name"`
+		Cwd          string          `json:"cwd"`
+		ToolInput    json.RawMessage `json:"tool_input"`
+		ToolResponse json.RawMessage `json:"tool_response"`
+		Prompt       string          `json:"prompt"`
 	}
 	if len(stdin) > 0 {
 		if err := json.Unmarshal(stdin, &raw); err != nil {
 			return HookInput{}, err
 		}
 	}
-	return HookInput{ProviderSessionID: raw.SessionID, Event: event}, nil
+	// Mirrors Claude.ParseHook: a shell tool's tool_input.command, when
+	// present, feeds isClaudeCommand/blocksWorktreeMutation/AttrCheck.
+	var cmd string
+	if len(raw.ToolInput) > 0 {
+		var inputWithCmd struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(raw.ToolInput, &inputWithCmd)
+		cmd = inputWithCmd.Command
+	}
+	return HookInput{
+		ProviderSessionID: raw.SessionID,
+		Event:             event,
+		ToolName:          raw.ToolName,
+		Command:           cmd,
+		Cwd:               raw.Cwd,
+		RawToolInput:      raw.ToolInput,
+		ToolResponse:      raw.ToolResponse,
+		Prompt:            raw.Prompt,
+	}, nil
 }
 
 var museVersionRe = regexp.MustCompile(`\d+(\.\d+)+`)

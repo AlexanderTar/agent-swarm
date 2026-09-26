@@ -133,13 +133,15 @@ final class MenuLabelTests: XCTestCase {
     }
 
     func testActiveBadgeFollowsLiveAgents() {
-        func badge(active: Int, connected: Bool) -> MenuLabel.Badge {
-            MenuLabel.make(activeCount: active, connected: connected, enabled: [.claude], usage: usage,
+        func badge(active: Int, connected: Bool, needsYou: Int = 0) -> MenuLabel.Badge {
+            MenuLabel.make(activeCount: active, connected: connected, needsYou: needsYou, enabled: [.claude], usage: [],
                            compact: false, format: format).badge
         }
         XCTAssertEqual(badge(active: 1, connected: true), .green)
         XCTAssertEqual(badge(active: 0, connected: true), .none, "nothing running")
-        XCTAssertEqual(badge(active: 3, connected: false), .red, "offline, regardless of the stale count")
-        XCTAssertEqual(badge(active: 0, connected: false), .red, "offline with no stale count either")
+        XCTAssertEqual(badge(active: 3, connected: false), .none, "offline shows no dot (user decision 2026-09-25)")
+        XCTAssertEqual(badge(active: 0, connected: false), .none)
+        XCTAssertEqual(badge(active: 1, connected: true, needsYou: 1), .yellow, "needs you wins over live")
+        XCTAssertEqual(badge(active: 0, connected: false, needsYou: 2), .yellow, "cached needs-you still shows")
     }
 }

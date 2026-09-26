@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -935,6 +936,67 @@ func TestQuestionToolInterceptionCreatesHITLRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("claude AskUserQuestion with a native prompt ref binds the row", func(t *testing.T) {
+		h, ses := seed(t, 0, runtime.Running)
+		input, _ := json.Marshal(map[string]any{
+			"session_id": "p1",
+			"tool_name":  "AskUserQuestion",
+			"tool_input": map[string]any{
+				"question": "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧",
+				"options":  []string{"Approve", "Request changes"},
+			},
+		})
+		out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("question tool must not be blocked, got %s", out)
+		}
+		var bindingJSON sql.NullString
+		if err := h.DB.QueryRowContext(ctx, `SELECT binding_json FROM requests WHERE session_id = ?`, ses).
+			Scan(&bindingJSON); err != nil {
+			t.Fatal(err)
+		}
+		if !bindingJSON.Valid || bindingJSON.String != `{"ref":"req_PLAN1"}` {
+			t.Fatalf("binding_json = %v, want {\"ref\":\"req_PLAN1\"}", bindingJSON)
+		}
+	})
+
+	t.Run("cursor AskQuestion", func(t *testing.T) {
+		h, ses := seed(t, 0, runtime.Running)
+		_, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'cursor' WHERE id = 'agt_1'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input, _ := json.Marshal(map[string]any{
+			"session_id": "p1",
+			"tool_name":  "AskQuestion",
+			"tool_input": map[string]any{
+				"question": "Deploy to staging?",
+				"options":  []string{"yes", "no"},
+			},
+		})
+		out, err := h.Handle(ctx, runtime.Cursor, "PreToolUse", ses, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("question tool must not be blocked, got %s", out)
+		}
+
+		var count, isHITL int
+		var prompt, kind string
+		err = h.DB.QueryRowContext(ctx, `SELECT COUNT(*), is_hitl, prompt, kind FROM requests WHERE session_id = ?`, ses).
+			Scan(&count, &isHITL, &prompt, &kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 || isHITL != 1 || prompt != "Deploy to staging?" || kind != "question" {
+			t.Fatalf("expected 1 hitl question request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
+		}
+	})
+
 	t.Run("agy ask_question", func(t *testing.T) {
 		h, ses := seed(t, 0, runtime.Running)
 		_, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'agy' WHERE id = 'agt_1'`)
@@ -975,6 +1037,82 @@ func TestQuestionToolInterceptionCreatesHITLRequest(t *testing.T) {
 			t.Fatalf("expected 1 hitl question request, got count=%d isHITL=%d prompt=%q kind=%q", count, isHITL, prompt, kind)
 		}
 	})
+}
+
+// TestAgyLiveHookFixturesOpenAndCloseAQuestionRow replays the byte-for-byte
+// PreToolUse/PostToolUse payloads captured from a live, non-Swarm agy session
+// asking `ask_question` (docs/plans/2026-09-25-needs-you-and-child-approval-routing.md
+// Task 4b). It is the regression guard behind spec section 1.7's agy row: a
+// top-level agy agent's ask_question opens a HITL row, and the matching
+// PostToolUse (which carries no result field, confirmed live) closes it.
+func TestAgyLiveHookFixturesOpenAndCloseAQuestionRow(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'agy' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	pre, err := os.ReadFile("../adapter/testdata/agy-hook-pretooluse-ask_question.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses, pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("question tool must not be blocked, got %s", out)
+	}
+
+	var reqID, state, prompt, kind string
+	err = h.DB.QueryRowContext(ctx, `SELECT id, state, prompt, kind FROM requests WHERE session_id = ?`, ses).
+		Scan(&reqID, &state, &prompt, &kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != "open" || kind != "question" || prompt != "Choose red or blue." {
+		t.Fatalf("got state=%q kind=%q prompt=%q, want open/question/%q", state, kind, prompt, "Choose red or blue.")
+	}
+
+	post, err := os.ReadFile("../adapter/testdata/agy-hook-posttooluse-ask_question.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Handle(ctx, runtime.Agy, "PostToolUse", ses, post); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE id = ?`, reqID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "answered" {
+		t.Fatalf("state = %q, want answered", state)
+	}
+}
+
+func TestParentedAgyLiveHookFixtureIsBlocked(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'agy', parent_agent_id = 'agt_1' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	pre, err := os.ReadFile("../adapter/testdata/agy-hook-pretooluse-ask_question.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses, pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "swarm_send") {
+		t.Fatalf("a parented agent's question tool must be blocked with the relay text, got %s", out)
+	}
+	var n int
+	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("requests = %d, want 0", n)
+	}
 }
 
 func TestPermissionRequestCreatesHITLRequest(t *testing.T) {
@@ -1176,6 +1314,86 @@ func TestReadButUnackedMessagesNeitherNudgeNorBlockStop(t *testing.T) {
 	}
 }
 
+// TestMuseSiblingToolHookFixturesOpenNoRowAndDoNotBlock replays the Task 4
+// live-probe PreToolUse/PostToolUse fixtures. They capture a sibling tool
+// call (submit_reminder_decision), not request_user_input -- muse never
+// dispatches a hook for its own request_user_input (spec section 1.7), so
+// there is no request_user_input payload to replay and no row to open or
+// block from this path. This locks in the true behavior instead of
+// fabricating a request_user_input payload that was never observed live.
+func TestMuseSiblingToolHookFixturesOpenNoRowAndDoNotBlock(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'muse' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	pre, err := os.ReadFile("../adapter/testdata/muse-hook-pretooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(ctx, runtime.Muse, "PreToolUse", ses, pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a sibling tool call must not be blocked, got %s", out)
+	}
+
+	post, err := os.ReadFile("../adapter/testdata/muse-hook-posttooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Handle(ctx, runtime.Muse, "PostToolUse", ses, post); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE session_id = ?`, ses).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("requests = %d, want 0 (no hook ever fires for muse's own request_user_input)", n)
+	}
+}
+
+// TestMuseUserPromptSubmitClosesOpenQuestionRows replays the Task 4
+// live-probe UserPromptSubmit fixture: a top-level muse agent has no way to
+// have Swarm open its native question's row (see the sibling-tool test
+// above), so it uses swarm_ask kind:"question" directly (spec section 1.7,
+// muse joins cursor's exception). This is the fallback that still works for
+// muse: UserPromptSubmit closes whatever question/blocker rows are open when
+// the human types a reply in the terminal, same as every other kind
+// (handler.go's UserPromptSubmit case, ResolveAnsweredInTerminal).
+func TestMuseUserPromptSubmitClosesOpenQuestionRows(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'muse' WHERE id = 'agt_1'`); err != nil {
+		t.Fatal(err)
+	}
+	req, err := h.RT.AskQuestion(ctx, ses, "Red or blue?", []string{"Red", "Blue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := os.ReadFile("../adapter/testdata/muse-hook-userpromptsubmit.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Handle(ctx, runtime.Muse, "UserPromptSubmit", ses, prompt); err != nil {
+		t.Fatal(err)
+	}
+
+	var state, via string
+	if err := h.DB.QueryRowContext(ctx, `SELECT state, responded_via FROM requests WHERE id = ?`, req.ID).
+		Scan(&state, &via); err != nil {
+		t.Fatal(err)
+	}
+	if state != "answered" || via != "terminal" {
+		t.Fatalf("state = %q via %q, want answered/terminal", state, via)
+	}
+}
+
 func TestParentedAgentQuestionToolIsBlockedAndOpensNoRequest(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -1219,7 +1437,7 @@ func TestQuestionToolPostToolUseClosesOnlyTheMatchingRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.RT.Now = func() time.Time { return now().Add(time.Minute) }
-	a, err := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "A?"})
+	a, err := h.RT.AskQuestion(ctx, ses, "A?", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1245,7 +1463,7 @@ func TestQuestionToolPostToolUseClosesOnlyTheMatchingRow(t *testing.T) {
 func TestQuestionToolPostToolUseWithoutToolInputClosesNothing(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	if _, err := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "A?"}); err != nil {
+	if _, err := h.RT.AskQuestion(ctx, ses, "A?", nil); err != nil {
 		t.Fatal(err)
 	}
 	post, _ := json.Marshal(map[string]any{"session_id": "p1", "tool_name": "AskUserQuestion", "tool_response": map[string]any{"answer": "yes"}})
@@ -1296,7 +1514,7 @@ func TestPostToolUseResolvesOnlyTheMatchingPermissionPrompt(t *testing.T) {
 func TestHumanPromptClosesOpenRowsButDaemonPromptsDoNot(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	q, _ := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "which?"})
+	q, _ := h.RT.AskQuestion(ctx, ses, "which?", nil)
 	submit := func(prompt string) {
 		t.Helper()
 		in, _ := json.Marshal(map[string]any{"session_id": "p1", "prompt": prompt})
@@ -1326,7 +1544,7 @@ func TestHumanPromptClosesOpenRowsButDaemonPromptsDoNot(t *testing.T) {
 func TestAgyPromptlessSubmitNeverClosesRows(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	q, _ := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "which?"})
+	q, _ := h.RT.AskQuestion(ctx, ses, "which?", nil)
 	in, _ := json.Marshal(map[string]any{"conversationId": "c1"})
 	if _, err := h.Handle(ctx, runtime.Agy, "PreInvocation", ses, in); err != nil {
 		t.Fatal(err)
@@ -1343,7 +1561,7 @@ func TestAgyPromptlessSubmitNeverClosesRows(t *testing.T) {
 func TestHumanPromptInANewSessionClosesTheRowOfTheOldOne(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	q, _ := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "question", Prompt: "which?"})
+	q, _ := h.RT.AskQuestion(ctx, ses, "which?", nil)
 	if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET state = 'paused' WHERE id = 'ses_1';
 		INSERT INTO sessions (id,agent_id,attempt,generation,token_hash,tmux_name,cwd,state,cwd_kind,started_at)
 		VALUES ('ses_2','agt_1',1,2,'hash2','login-form-coder-2','/tmp/w','running','neutral',2)`); err != nil {
@@ -1414,6 +1632,90 @@ func TestPostToolUseStaysTerseUnderRepeatedCalls(t *testing.T) {
 	want := runtime.PendingNotice(2, "login-form-coder", "TASK-101")
 	if contextOf(t, out) != want {
 		t.Fatalf("PostToolUse context = %q, want terse %q", contextOf(t, out), want)
+	}
+}
+
+// TestExtractToolResponseTextReadsAnswers is Task B4 finding 1: a real claude
+// AskUserQuestion PostToolUse tool_response has the shape
+// {questions, answers:{<question text>: <chosen label(s)>}, annotations}
+// (confirmed from toolUseResult in a local ~/.claude transcript,
+// 83e3eeed-213a-4f4f-98e8-03dc059ee72a.jsonl). extractToolResponseText must
+// read the prompt's own key out of "answers", not just answer/response/
+// text/output/result, or every claude decision looks agent_reported.
+func TestExtractToolResponseTextReadsAnswers(t *testing.T) {
+	raw := []byte(`{"questions":[{"question":"Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧","header":"Plan","options":[{"label":"Approve"},{"label":"Request changes"}]}],"answers":{"Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧":"Request changes: tighten scope"},"annotations":{}}`)
+	got := extractToolResponseText(raw, "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧")
+	if got != "Request changes: tighten scope" {
+		t.Fatalf("got %q, want the answers[prompt] value", got)
+	}
+	// A prompt that doesn't match any key falls back to the first value
+	// rather than losing the answer entirely.
+	if got := extractToolResponseText(raw, "some other prompt"); got != "Request changes: tighten scope" {
+		t.Fatalf("fallback got %q", got)
+	}
+	// The old generic keys still work for other adapters/tools.
+	if got := extractToolResponseText([]byte(`{"answer":"yes"}`), "x"); got != "yes" {
+		t.Fatalf("generic key got %q", got)
+	}
+}
+
+// TestClaudeAskUserQuestionAnswerBecomesObservedEvidence is Task B4 finding 1's
+// end-to-end regression: PreToolUse binds the row to the daemon's ref token,
+// then a PostToolUse tool_response shaped like a real claude AskUserQuestion
+// result (questions/answers/annotations) must resolve the row with the
+// user's actual chosen label as response_text, not the generic
+// "Resolved in terminal" fallback -- so native_answer's evidence
+// classification (matchDecisionEvidence) can tell an observed decision from
+// an agent's word, and a decision that disagrees with what the user picked
+// is refused.
+func TestClaudeAskUserQuestionAnswerBecomesObservedEvidence(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	question := "Approve the plan (rev 1)? ⟦swarm:req_PLAN1⟧"
+
+	pre, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+	})
+	if _, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, pre); err != nil {
+		t.Fatal(err)
+	}
+
+	post, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{{"question": question,
+				"options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}}},
+		},
+		"tool_response": map[string]any{
+			"questions":   []map[string]any{{"question": question}},
+			"answers":     map[string]string{question: "Approve"},
+			"annotations": map[string]any{},
+		},
+	})
+	if _, err := h.Handle(ctx, runtime.Claude, "PostToolUse", ses, post); err != nil {
+		t.Fatal(err)
+	}
+
+	var responseText string
+	if err := h.DB.QueryRowContext(ctx, `SELECT COALESCE(response_text,'') FROM requests
+		WHERE session_id = ?`, ses).Scan(&responseText); err != nil {
+		t.Fatal(err)
+	}
+	if responseText != "Approve" {
+		t.Fatalf("response_text = %q, want the observed %q, not the agent_reported fallback", responseText, "Approve")
+	}
+
+	// A decision that disagrees with what the user actually picked ("Approve")
+	// is refused as a mismatch, not silently accepted as agent_reported.
+	if _, err := h.RT.Ask(ctx, ses, runtime.AskInput{Kind: "native_answer", Ref: "req_PLAN1",
+		Decision: "request_changes", Comment: "x"}); err == nil || !strings.Contains(err.Error(), `"Approve"`) {
+		t.Fatalf("err = %v, want a decision mismatch against the observed \"Approve\"", err)
 	}
 }
 

@@ -139,7 +139,7 @@ public struct AgentReplacement: Codable, Sendable, Equatable {
     }
 }
 
-public enum RequestKind: String, Codable, Sendable {
+public enum RequestKind: String, Codable, Sendable, CaseIterable {
     case question, prompt, blocker
     case confirmRepos = "confirm_repos", approveSection = "approve_section"
     case approvePlan = "approve_plan", approveReport = "approve_report"
@@ -162,12 +162,16 @@ public struct SwarmRequest: Codable, Sendable, Equatable, Identifiable {
     public var options: [String]?
     /// The agent whose terminal answers this row; nil for approval kinds. Chosen by the daemon.
     public var terminalAgent: String?
+    /// True while an approval's native prompt is open in the asking agent's terminal: the bound
+    /// question row already represents it in Needs you, so this request is excluded (spec 2.2.1).
+    public var nativePending: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, kind, prompt, state, options
         case isHITL = "is_hitl"
         case agentName = "agent_name", terminalAgent = "terminal_agent", itemKey = "item_key", itemTitle = "item_title"
         case sectionTitle = "section_title", createdAt = "created_at"
+        case nativePending = "native_pending"
     }
 
     private struct RepoOptions: Codable { var proposed: [Proposal]; struct Proposal: Codable { var repo: String } }
@@ -175,11 +179,12 @@ public struct SwarmRequest: Codable, Sendable, Equatable, Identifiable {
     public init(id: String, kind: RequestKind, isHITL: Bool = false, agentName: String? = nil, itemKey: String = "TASK-1",
                 itemTitle: String = "Task", sectionTitle: String? = nil, prompt: String = "",
                 state: String = "open", createdAt: Timestamp = Timestamp(ms: 0), proposedRepos: Int? = nil,
-                options: [String]? = nil, terminalAgent: String? = nil) {
+                options: [String]? = nil, terminalAgent: String? = nil, nativePending: Bool = false) {
         self.terminalAgent = terminalAgent
         self.id = id; self.kind = kind; self.isHITL = isHITL; self.agentName = agentName; self.itemKey = itemKey
         self.itemTitle = itemTitle; self.sectionTitle = sectionTitle; self.prompt = prompt
         self.state = state; self.createdAt = createdAt; self.proposedRepos = proposedRepos; self.options = options
+        self.nativePending = nativePending
     }
 
     public init(from decoder: Decoder) throws {
@@ -198,6 +203,7 @@ public struct SwarmRequest: Codable, Sendable, Equatable, Identifiable {
         proposedRepos = kind == .confirmRepos
             ? (try? c.decode(RepoOptions.self, forKey: .options))?.proposed.count : nil
         options = try? c.decodeIfPresent([String].self, forKey: .options)
+        nativePending = try c.decodeIfPresent(Bool.self, forKey: .nativePending) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -213,6 +219,7 @@ public struct SwarmRequest: Codable, Sendable, Equatable, Identifiable {
         try c.encode(prompt, forKey: .prompt)
         try c.encode(state, forKey: .state)
         try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(nativePending, forKey: .nativePending)
         if let opts = options {
             try c.encode(opts, forKey: .options)
         } else if let n = proposedRepos {

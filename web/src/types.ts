@@ -194,7 +194,7 @@ export type RequestKind =
   | "accept_epic" | "accept_fix" | "close_spike";
 export type RequestState = "open" | "approved" | "changes_requested" | "answered" | "withdrawn" | "stale";
 export interface RepoProposal { repo: string; reason: string; source: "user" | "agent" }
-export interface ConfirmReposOptions { proposed: RepoProposal[]; expansion: { repo: string; reason: string }[] }
+export interface ConfirmReposOptions { proposed: RepoProposal[]; expansion: { repo: string; reason: string }[] | null }
 export interface AcceptBinding { item_revision: number; integrated_checkpoint: string; git: GitRef[] }
 export type RequestBinding = AcceptBinding | { repos_version: number } | { resolution: string };
 
@@ -221,6 +221,9 @@ export interface Request {
   responded_via: "menubar" | "board" | "cli" | null;
   responded_at: number | null;
   created_at: number;
+  // True while an approval's native prompt is open in the asking agent's terminal (spec 2.2.1).
+  native_pending: boolean;
+  approval_evidence: "observed" | "agent_reported" | null;
 }
 
 export interface ArtifactSection { id: string; title: string; sha256: string }

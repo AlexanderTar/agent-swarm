@@ -6,6 +6,7 @@ import { ToastProvider } from "./components/Toast";
 import { C } from "./copy";
 import { DataProvider, useConnection } from "./data/hooks";
 import { useAgents, useItems, useRequests } from "./data/queries";
+import { needsYou } from "./logic/inbox";
 import { filterItems, isFilterActive, outsideView } from "./logic/tree";
 import { Details } from "./panels/Details";
 import { NeedsYou } from "./panels/NeedsYou";
@@ -102,7 +103,7 @@ export function App() {
         url={url}
         setUrl={setUrl}
         matches={matches}
-        needsYou={requests.data?.length ?? 0}
+        needsYou={needsYou(requests.data ?? []).length}
         onNewSpike={() => setSheet({ kind: "spike" })}
         onNewItem={(t) => newItem(t, url.item || undefined)}
       />

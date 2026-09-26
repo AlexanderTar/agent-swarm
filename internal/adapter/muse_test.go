@@ -738,3 +738,97 @@ func TestMuseInstalled(t *testing.T) {
 		t.Error("missing binary must not report installed")
 	}
 }
+
+// TestMuseParseHookReadsProbedFixtures replays the Task 4 live-probe fixtures
+// (internal/adapter/testdata/muse-hook-*.json). The PreToolUse/PostToolUse
+// fixtures capture a sibling tool call (submit_reminder_decision), not
+// request_user_input: the probe found muse never dispatches a hook event for
+// request_user_input at all (see the HookOutput doc comment), so there is no
+// request_user_input payload to replay. ParseHook is still exercised
+// generically, since the daemon's hook handler needs these fields for every
+// muse tool call, not just request_user_input.
+func TestMuseParseHookReadsProbedFixtures(t *testing.T) {
+	m := newMuse(Deps{})
+
+	pre, err := os.ReadFile("testdata/muse-hook-pretooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := m.ParseHook("PreToolUse", pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ToolName != "submit_reminder_decision" || len(in.RawToolInput) == 0 || in.ProviderSessionID == "" {
+		t.Fatalf("PreToolUse = %+v", in)
+	}
+
+	post, err := os.ReadFile("testdata/muse-hook-posttooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err = m.ParseHook("PostToolUse", post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ToolName != "submit_reminder_decision" || len(in.ToolResponse) == 0 {
+		t.Fatalf("PostToolUse = %+v", in)
+	}
+
+	prompt, err := os.ReadFile("testdata/muse-hook-userpromptsubmit.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err = m.ParseHook("UserPromptSubmit", prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Prompt == "" || in.ProviderSessionID == "" {
+		t.Fatalf("UserPromptSubmit = %+v", in)
+	}
+}
+
+// TestMuseParseHookExtractsCommandFromToolInput mirrors Claude.ParseHook: a
+// tool_input.command string (a shell tool's argument) plumbs into
+// HookInput.Command, which isClaudeCommand/blocksWorktreeMutation/AttrCheck
+// key on. The probed fixtures' own tool (submit_reminder_decision) carries
+// no "command" field, so this locks in the "absent means empty" half too.
+func TestMuseParseHookExtractsCommandFromToolInput(t *testing.T) {
+	m := newMuse(Deps{})
+
+	withCmd, err := m.ParseHook("PreToolUse", []byte(`{"session_id":"s","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withCmd.Command != "rm -rf /" {
+		t.Fatalf("Command = %q, want %q", withCmd.Command, "rm -rf /")
+	}
+
+	pre, err := os.ReadFile("testdata/muse-hook-pretooluse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noCmd, err := m.ParseHook("PreToolUse", pre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noCmd.Command != "" {
+		t.Fatalf("Command = %q, want empty (submit_reminder_decision has no command field)", noCmd.Command)
+	}
+}
+
+// TestMuseHookOutputStaysNil locks in the Task 4 probe's item-3 finding:
+// muse's own plugin docs (native-plugin-contract.md, capability-examples.json)
+// specify a manifest schema, not a hook stdout/decision contract, and the
+// live probe found no hook ever fires for the one tool Swarm would want to
+// deny (request_user_input). There is no probed deny shape to emit, so
+// HookOutput stays a fail-open no-op for every decision, matching the
+// existing doc comment's contract ("must not fail closed").
+func TestMuseHookOutputStaysNil(t *testing.T) {
+	m := newMuse(Deps{})
+	for _, d := range []HookDecision{{}, {Block: true, Reason: "x"}, {Context: "c"}} {
+		out, err := m.HookOutput("PreToolUse", d)
+		if err != nil || out != nil {
+			t.Fatalf("HookOutput(%+v) = %q, %v; want nil, nil", d, out, err)
+		}
+	}
+}

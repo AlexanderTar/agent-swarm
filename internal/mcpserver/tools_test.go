@@ -930,3 +930,195 @@ func TestSharedToolSchemasDeclareRequired(t *testing.T) {
 		}
 	}
 }
+
+// Task 11: swarm_send question options round-trip into the parent's
+// swarm_sync message payload.
+func TestSendQuestionOptionsRoundTripThroughSync(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	workerSes, err := s.RT.LatestSession(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCaller := Caller{SessionID: workerSes.ID, AgentID: worker.ID, AgentName: worker.Name, Role: runtime.RoleCoder}
+	if _, err := s.call(ctx, workerCaller, "swarm_send",
+		`{"to":"parent","kind":"question","body":"b","options":["a","b"]}`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_sync", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mustJSON(out)), `"options":["a","b"]`) {
+		t.Fatalf("sync out = %s, want options to round-trip", mustJSON(out))
+	}
+}
+
+// Task 11: swarm_send question approval:true stores the fixed options and the
+// approval flag.
+func TestSendQuestionApprovalStoresFixedOptions(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	workerSes, err := s.RT.LatestSession(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCaller := Caller{SessionID: workerSes.ID, AgentID: worker.ID, AgentName: worker.Name, Role: runtime.RoleCoder}
+	if _, err := s.call(ctx, workerCaller, "swarm_send",
+		`{"to":"parent","kind":"question","body":"may I drop table x?","approval":true}`); err != nil {
+		t.Fatal(err)
+	}
+	var payload string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE to_agent_id = ? AND kind = 'question'`,
+		seed.Caller.AgentID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"options":["Approve","Request changes"]`) || !strings.Contains(payload, `"approval":true`) {
+		t.Fatalf("payload = %s", payload)
+	}
+}
+
+// Task 11: approval:true is refused on any kind other than question and any
+// target other than parent.
+func TestSendApprovalRefusedOnWrongKindOrTarget(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	worker := spawnWorker(t, s, seed)
+	workerSes, err := s.RT.LatestSession(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCaller := Caller{SessionID: workerSes.ID, AgentID: worker.ID, AgentName: worker.Name, Role: runtime.RoleCoder}
+	if _, err := s.call(ctx, workerCaller, "swarm_send",
+		`{"to":"parent","kind":"finding","body":"b","approval":true}`); err == nil {
+		t.Fatal("approval on kind finding must be refused")
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_send",
+		`{"to":"`+worker.Name+`","kind":"question","body":"b","approval":true}`); err == nil {
+		t.Fatal("approval to a non-parent target must be refused")
+	}
+}
+
+func TestAskToolDescriptionSaysItReturnsAtOnce(t *testing.T) {
+	d := askTool(nil)
+	if strings.Contains(d.Description, "block for the answer") ||
+		!strings.Contains(d.Description, "Returns at once with the request id") {
+		t.Fatalf("description = %q", d.Description)
+	}
+}
+
+// TestAskConfirmReposResultHasNativePrompt is Task 13a: swarm_ask's approval
+// and confirm_repos results carry the daemon-issued native_prompt next to
+// request_id, so the orchestrator can show it verbatim.
+func TestAskConfirmReposResultHasNativePrompt(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+seed.RepoID+`","reason":"needed"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		RequestID    string `json:"request_id"`
+		NativePrompt struct {
+			Header   string   `json:"header"`
+			Question string   `json:"question"`
+			Options  []string `json:"options"`
+		} `json:"native_prompt"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.NativePrompt.Header != "Repositories" || res.NativePrompt.Question == "" ||
+		!strings.Contains(res.NativePrompt.Question, res.RequestID) {
+		t.Fatalf("result = %+v, %s", res, mustJSON(out))
+	}
+	if len(res.NativePrompt.Options) != 2 {
+		t.Fatalf("options = %v", res.NativePrompt.Options)
+	}
+}
+
+// TestAskNativePromptForMsgMCP is Task 13b: swarm_ask kind:"native_prompt"
+// for_msg round-trips a child's approval question into the native prompt.
+func TestAskNativePromptForMsgMCP(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	root, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childID, childSes, _ := seedAgentAndSession(t, s, runtime.RoleCoder, "", root.ID)
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE agents SET parent_agent_id = ? WHERE id = ?`,
+		seed.Caller.AgentID, childID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, Caller{SessionID: childSes, AgentID: childID}, "swarm_send",
+		`{"to":"parent","kind":"question","body":"may I drop table x?","approval":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sendRes struct {
+		MsgID string `json:"msg_id"`
+	}
+	json.Unmarshal(mustJSON(out), &sendRes)
+
+	out2, err := s.call(ctx, seed.Caller, "swarm_ask", `{"kind":"native_prompt","for_msg":"`+sendRes.MsgID+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		NativePrompt struct {
+			Header   string   `json:"header"`
+			Question string   `json:"question"`
+			Options  []string `json:"options"`
+		} `json:"native_prompt"`
+	}
+	json.Unmarshal(mustJSON(out2), &res)
+	if !strings.Contains(res.NativePrompt.Question, "may I drop table x?") ||
+		!strings.Contains(res.NativePrompt.Question, sendRes.MsgID) {
+		t.Fatalf("native_prompt = %+v", res)
+	}
+}
+
+// TestAskNativeAnswerMCP is Task 13c: swarm_ask kind:"native_answer"
+// forwards an observed decision through the MCP surface.
+func TestAskNativeAnswerMCP(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	repoID := seed.RepoID
+	out, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+repoID+`","reason":"needed"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		RequestID    string `json:"request_id"`
+		NativePrompt struct {
+			Question string   `json:"question"`
+			Options  []string `json:"options"`
+		} `json:"native_prompt"`
+	}
+	json.Unmarshal(mustJSON(out), &res)
+
+	if _, err := s.RT.AskQuestion(ctx, seed.Caller.SessionID, res.NativePrompt.Question, res.NativePrompt.Options); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RT.ResolveQuestionByPrompt(ctx, seed.Caller.SessionID, res.NativePrompt.Question, "Approve"); err != nil {
+		t.Fatal(err)
+	}
+
+	out2, err := s.call(ctx, seed.Caller, "swarm_ask",
+		`{"kind":"native_answer","ref":"`+res.RequestID+`","decision":"approve"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res2 struct {
+		State string `json:"state"`
+	}
+	json.Unmarshal(mustJSON(out2), &res2)
+	if res2.State != "approved" {
+		t.Fatalf("state = %q, want approved", res2.State)
+	}
+}

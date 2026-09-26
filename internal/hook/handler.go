@@ -92,7 +92,16 @@ func extractQuestion(toolName string, raw []byte) (string, []string) {
 	return prompt, options
 }
 
-func extractToolResponseText(raw []byte) string {
+// extractToolResponseText reads the answer text out of a question tool's
+// PostToolUse tool_response. A real claude AskUserQuestion result has the
+// shape {questions, answers:{<question text>: <chosen label(s)>}, annotations}
+// (confirmed from toolUseResult in a local ~/.claude transcript, never
+// answer/response/text/output/result), so prompt -- the same question text
+// extractQuestion computed for this call -- is used to pick answers' own
+// entry; a prompt that matches no key (e.g. a multi-question tool call, or a
+// truncated prompt) falls back to answers' first value rather than losing
+// the answer to the generic-key branch below.
+func extractToolResponseText(raw []byte, prompt string) string {
 	if len(raw) == 0 {
 		return ""
 	}
@@ -102,6 +111,18 @@ func extractToolResponseText(raw []byte) string {
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err == nil {
+		if answers, ok := obj["answers"].(map[string]any); ok {
+			if v, ok := answers[prompt]; ok {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+			for _, v := range answers {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
 		for _, key := range []string{"answer", "response", "text", "output", "result"} {
 			if v, ok := obj[key]; ok {
 				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
@@ -162,20 +183,36 @@ func normalize(kind runtime.AgentKind, event string) string {
 	return event
 }
 
-// isQuestionTool is the one list of native "ask the human" tools.
-// Per-adapter status (spec section 5): names and hook block shapes are read from
-// code and vendor docs only; nothing here was run against a live agent.
+// isQuestionTool is the one list of native "ask the human" tools that a
+// hook can intercept. Per-adapter status, live-probed 2026-09-25/26
+// (spec section 1.7, docs/plans/2026-09-25-needs-you-and-child-approval-routing.md
+// Tasks 4 and 4b):
 //
-//	claude AskUserQuestion: PreToolUse deny documented (code + docs VERIFIED, live UNVERIFIED).
-//	codex request_user_input, experimental_request_user_input: UNVERIFIED that PreToolUse
-//	  reaches these tools (docs say some tool paths opt out) and that the block is honored.
-//	cursor ask_question: tool name from the user's brief, UNVERIFIED (docs name no question tool).
-//	agy ask_question: name from an existing test, block shape UNVERIFIED.
+//	claude AskUserQuestion: PreToolUse deny live-tested (handler_test.go:868 and around it).
+//	agy ask_question: confirmed live. PreToolUse fires before the dialog renders (a deny
+//	  suppresses it entirely); PostToolUse carries no result field, so agy stays
+//	  agent_reported (spec 2.3.5). Fixtures: testdata/agy-hook-{pre,post}tooluse-ask_question.json.
+//	codex request_user_input: UNCONFIRMED live (Task 4b hit a persistent backend 401
+//	  unrelated to Swarm before the tool call was ever reached, spec 1.7). Source-code
+//	  confidence alone (registry.rs/request_user_input.rs) is not enough to refuse
+//	  swarm_ask on: codex joins cursor's exception (swarm_ask kind:"question" stays
+//	  available) until a live retry produces the T4b fixtures.
+//	muse request_user_input: confirmed live to dispatch NO hook at all, ever -- not
+//	  "fires but can't deny" but no event to intercept in the first place, while the same
+//	  plugin's hooks fired correctly for muse's other tool calls in the same turn
+//	  (testdata/muse-hook-{pre,post}tooluse.json capture that sibling firing, not
+//	  request_user_input). muse is therefore NOT in this list: it joins cursor's
+//	  exception (swarm_ask kind:"question" stays available) rather than being refused.
+//	cursor AskQuestion: confirmed (Cursor staff, forum bug 161836) never to fire
+//	  PreToolUse/PostToolUse at all. Also not in this list, same exception as muse.
 //
-// Where a block is ignored, a parented agent's question opens no row and nothing else happens.
+// Where a block is honored, a parented agent's question is relayed instead
+// (nativeQuestionRelay). Where the hook is absent or unconfirmed (cursor,
+// muse, codex), a parented agent still has no other way to reach the user;
+// swarm_ask stays available and Task 9 does not refuse it for these kinds.
 func isQuestionTool(name string) bool {
 	switch name {
-	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input":
+	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input", "AskQuestion":
 		return true
 	}
 	return false
@@ -562,7 +599,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 	case "PostToolUse":
 		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
 			prompt, _ := extractQuestion(in.ToolName, in.RawToolInput)
-			answer := extractToolResponseText(in.ToolResponse)
+			answer := extractToolResponseText(in.ToolResponse, prompt)
 			if answer == "" {
 				answer = "Resolved in terminal"
 			}

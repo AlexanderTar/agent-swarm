@@ -31,7 +31,7 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	if len(opts.Proposed) != 1 || len(opts.Expansion) != 1 || opts.Proposed[0].Source != "user" {
 		t.Fatalf("options = %s", req.Options)
 	}
-	out, err := s.ConfirmRepos(ctx, req.ID, []string{repoA, repoB}, "both, please", 0, "menubar")
+	out, err := s.ConfirmRepos(ctx, req.ID, []string{repoA, repoB}, "both, please", 0, "menubar", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +50,30 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	}
 	if !strings.Contains(payload, `"path"`) || !strings.Contains(payload, `"name"`) {
 		t.Fatalf("the payload lists id, name and path: %s", payload)
+	}
+}
+
+// The orchestrator may omit expansion entirely; the stored options must
+// never carry a JSON null there, since the web board maps over it directly.
+func TestConfirmReposStoresEmptyExpansionAsAnEmptyArrayNotNull(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repoA := seedRepo(t, s, "chat")
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "NoExpansion", Intent: "feature",
+		Kind: Fake, Model: "fake-1", Repos: []string{repoA}})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos",
+		Prompt:    "just chat",
+		Repos:     []ReposProposal{{Repo: repoA, Reason: "the login form lives here"}},
+		Expansion: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(req.Options), `"expansion":null`) {
+		t.Fatalf("options must not carry a null expansion: %s", req.Options)
+	}
+	if !strings.Contains(string(req.Options), `"expansion":[]`) {
+		t.Fatalf("options must carry an empty expansion array: %s", req.Options)
 	}
 }
 
@@ -97,6 +121,19 @@ func TestValidateItemReposRefusesAStaleVersionOrAnUnknownRepo(t *testing.T) {
 	}
 }
 
+func TestAskConfirmReposErrorNamesTheFix(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Ask me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+	_, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "p",
+		Repos: []ReposProposal{{Repo: "endurio-chat", Reason: "r"}}})
+	want := `Unknown repository "endurio-chat". Pass a repository id from swarm_read {repos:{q:"endurio-chat"}}.`
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
 // Required fix 1: CommitItemRepos is the write half, called only once the
 // spawn that will use these repos has actually succeeded.
 func TestCommitItemReposWritesTheConfirmedSetAndReconciles(t *testing.T) {
@@ -123,17 +160,17 @@ func TestConfirmReposRefusesAnUnknownOrAlreadyResolvedRequest(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	repoA := seedRepo(t, s, "chat")
-	if _, err := s.ConfirmRepos(ctx, "req_nope", []string{repoA}, "", 0, "board"); err == nil {
+	if _, err := s.ConfirmRepos(ctx, "req_nope", []string{repoA}, "", 0, "board", ""); err == nil {
 		t.Fatal("an unknown request must be refused")
 	}
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Twice", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
 	req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}})
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 0, "board"); err != nil {
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 1, "board"); err == nil ||
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 1, "board", ""); err == nil ||
 		err.Error() != "Already resolved." {
 		t.Fatalf("err = %v", err)
 	}
@@ -147,15 +184,15 @@ func TestConfirmReposRefusesAnEmptySetAndAStaleVersion(t *testing.T) {
 	ses, _ := s.LatestSession(ctx, a.ID)
 	req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which repos?",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "here"}}})
-	if _, err := s.ConfirmRepos(ctx, req.ID, nil, "", 0, "board"); err == nil ||
+	if _, err := s.ConfirmRepos(ctx, req.ID, nil, "", 0, "board", ""); err == nil ||
 		err.Error() != "Choose at least one repository." {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 7, "board"); err == nil ||
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 7, "board", ""); err == nil ||
 		!strings.Contains(err.Error(), "This request changed. Review the latest version.") {
 		t.Fatalf("a stale repos_version must conflict: %v", err)
 	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{"repo_nope"}, "", 0, "board"); err == nil {
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{"repo_nope"}, "", 0, "board", ""); err == nil {
 		t.Fatal("an unknown repo id must be refused")
 	}
 }
@@ -169,7 +206,7 @@ func TestConfirmReposRefusesRemovingARepoInUse(t *testing.T) {
 	ses, _ := s.LatestSession(ctx, a.ID)
 	first, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "both",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}, {Repo: repoB, Reason: "b"}}})
-	if _, err := s.ConfirmRepos(ctx, first.ID, []string{repoA, repoB}, "", 0, "board"); err != nil {
+	if _, err := s.ConfirmRepos(ctx, first.ID, []string{repoA, repoB}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	sp, err := s.Items.Get(ctx, "SPIKE-1")
@@ -179,7 +216,7 @@ func TestConfirmReposRefusesRemovingARepoInUse(t *testing.T) {
 	seedWorktreeReservation(t, s, repoA, a.ID, sp.ID)
 	second, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "just one now",
 		Repos: []ReposProposal{{Repo: repoB, Reason: "b"}}})
-	_, err = s.ConfirmRepos(ctx, second.ID, []string{repoB}, "", 1, "board")
+	_, err = s.ConfirmRepos(ctx, second.ID, []string{repoB}, "", 1, "board", "")
 	if err == nil || err.Error() != "chat has active worktrees. Finish or release them first." {
 		t.Fatalf("err = %v", err)
 	}
@@ -194,7 +231,7 @@ func TestAskingAgainDoesNotChangeTheConfirmedSetYet(t *testing.T) {
 	ses, _ := s.LatestSession(ctx, a.ID)
 	first, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}})
-	s.ConfirmRepos(ctx, first.ID, []string{repoA}, "", 0, "board")
+	s.ConfirmRepos(ctx, first.ID, []string{repoA}, "", 0, "board", "")
 	s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "and the other",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}, {Repo: repoB, Reason: "b"}}})
 	it, _ := s.Items.Get(ctx, "SPIKE-1")
@@ -314,7 +351,7 @@ func TestConfirmedReposReturnsTheConfirmedSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 0, "board"); err != nil {
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	list, err := s.ConfirmedRepos(ctx, a.RootItemID)

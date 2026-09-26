@@ -55,6 +55,37 @@ func TestAskQuestionOpensARequestAndNotifies(t *testing.T) {
 	}
 }
 
+// TestSwarmAskQuestionIsRefusedForHookedKindsOnly is Task 9 (spec section
+// 1.7): claude and agy have a live-confirmed hook for their native question
+// tool, so swarm_ask kind:"question" is refused for them. codex, cursor and
+// muse do not -- codex's request_user_input hook is unconfirmed (Task 4b's
+// live check never ran: every codex model call hit a backend 401), cursor's
+// AskQuestion never fires a hook at all (confirmed, forum bug 161836), and
+// muse's request_user_input the same (confirmed live, Task 4) -- so all
+// three keep swarm_ask as their only path to Needs you until a live retry
+// produces codex's T4b fixtures.
+func TestSwarmAskQuestionIsRefusedForHookedKindsOnly(t *testing.T) {
+	for _, tc := range []struct {
+		kind    AgentKind
+		refused bool
+	}{{Claude, true}, {Codex, false}, {Agy, true}, {Muse, false}, {Cursor, false}} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Ask me", Intent: "feature", Kind: Fake, Model: "fake-1"})
+			if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = ? WHERE id = ?`, string(tc.kind), a.ID); err != nil {
+				t.Fatal(err)
+			}
+			ses, _ := s.LatestSession(ctx, a.ID)
+			_, err := s.Ask(ctx, ses.ID, AskInput{Kind: "question", Prompt: "Anything?"})
+			refused := err != nil && strings.Contains(err.Error(), errQuestionUseNativeTool)
+			if refused != tc.refused {
+				t.Fatalf("err = %v, refused = %v, want %v", err, refused, tc.refused)
+			}
+		})
+	}
+}
+
 func TestHITLRequestWire(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -266,8 +297,13 @@ func TestOnlyTheUserPathsWriteUserActionMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// nativeAnswer is the one agent-reachable user_action origin (Task 13c,
+	// spec 1.6.2): it is allowed here only because it is guarded by the
+	// native-evidence check (the bound question row's own responded_via =
+	// 'terminal'), not because an MCP path may otherwise claim a user
+	// action for free.
 	allowed := map[string]bool{"Answer": true, "Approve": true, "RequestChanges": true,
-		"ConfirmRepos": true, "CloseSpike": true}
+		"ConfirmRepos": true, "CloseSpike": true, "nativeAnswer": true}
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Files {
 			ast.Inspect(file, func(n ast.Node) bool {
@@ -291,7 +327,9 @@ func TestOnlyTheUserPathsWriteUserActionMessages(t *testing.T) {
 	}
 }
 
-// And behaviourally: Ask never produces a result message.
+// And behaviourally: Ask never produces a result message for kind:"question"
+// (or any other kind but the one deliberate, evidence-guarded exception,
+// native_answer -- see TestNativeAnswer* in native_answer_test.go).
 func TestAskNeverProducesAnApprovalResult(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -688,16 +726,64 @@ func TestRequestWireTerminalAgent(t *testing.T) {
 		}
 		want(t, s, req.ID, &w.Name)
 	})
-	t.Run("approval kinds have none", func(t *testing.T) {
+	// Task 13e (spec 2.1's 21-D5 amendment) revises the 09-21 decision this
+	// subtest used to assert: an approval kind with an asking agent now
+	// targets that tree's root orchestrator, same as a question or blocker,
+	// instead of having no terminal at all.
+	t.Run("approval kinds with an asking agent target the root orchestrator", func(t *testing.T) {
 		s, _, _ := newStore(t)
-		_, w, wSes := worker(t, s)
+		orch, w, wSes := worker(t, s)
 		if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
 			prompt, options_json, state, created_at) VALUES ('req_close','close_spike',0,?,?,?,'x','[]','open',1)`,
 			w.ID, wSes.ID, w.ItemID); err != nil {
 			t.Fatal(err)
 		}
-		want(t, s, "req_close", nil)
+		want(t, s, "req_close", &orch.Name)
 	})
+	t.Run("accept_epic targets the root item's live orchestrator, or none", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		orch, _, _ := worker(t, s)
+		var rootItemID string
+		s.DB.QueryRowContext(ctx, `SELECT root_item_id FROM agents WHERE id = ?`, orch.ID).Scan(&rootItemID)
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, item_id,
+			prompt, options_json, state, created_at) VALUES ('req_accept','accept_epic',0,?,'x','[]','open',1)`,
+			rootItemID); err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, "req_accept", &orch.Name)
+
+		if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, orch.ID); err != nil {
+			t.Fatal(err)
+		}
+		want(t, s, "req_accept", nil)
+	})
+}
+
+// TestRequestWireNativePending is Task 13e: an approval hides its
+// native-pending state once the bound question row closes.
+func TestRequestWireNativePending(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	ctx := context.Background()
+	if _, err := s.AskQuestion(ctx, ses, req.NativePrompt.Question, req.NativePrompt.Options); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := s.RequestWireByID(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wire.NativePending {
+		t.Fatalf("native_pending = false while the bound question is open")
+	}
+	if err := s.ResolveQuestionByPrompt(ctx, ses, req.NativePrompt.Question, "Approve"); err != nil {
+		t.Fatal(err)
+	}
+	wire, err = s.RequestWireByID(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.NativePending {
+		t.Fatalf("native_pending = true after the bound question closed")
+	}
 }
 
 // TestRequestsSurviveReplacement pins the continuity half of HITL: open

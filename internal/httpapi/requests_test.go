@@ -25,10 +25,15 @@ func TestAnswerApproveAndRequestChanges(t *testing.T) {
 	for _, k := range []string{"id", "kind", "agent_name", "item_key", "item_title", "root_key",
 		"artifact_id", "artifact_revision", "section_id", "section_title", "section_sha256",
 		"prompt", "options", "state", "confirmed", "binding", "response_text", "responded_via",
-		"responded_at", "created_at"} {
+		"responded_at", "created_at", "approval_evidence", "native_pending"} {
 		if _, ok := req[k]; !ok {
 			t.Errorf("Request is missing %q: %s", k, rec.Body)
 		}
+	}
+	// Task 13e: an answer resolved via menubar (not native_answer) carries
+	// no approval evidence -- it is a user action by definition (spec 2.3.6).
+	if req["approval_evidence"] != nil {
+		t.Errorf("approval_evidence = %v, want null for a menubar answer", req["approval_evidence"])
 	}
 	ok := s.post(t, "/api/requests/"+seed.ApprovalID+"/approve",
 		`{"section_sha256":"`+seed.SectionHash+`","via":"board"}`)

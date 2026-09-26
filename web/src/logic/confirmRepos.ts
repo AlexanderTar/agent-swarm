@@ -13,7 +13,7 @@ function row(id: string, reason: string | null, youSelected: boolean, known: Rep
 export function confirmModel(r: Request, known: Repo[]): ConfirmModel {
   const o = r.options as ConfirmReposOptions;
   const proposed = o.proposed.map((p) => row(p.repo, p.reason || null, p.source === "user", known));
-  const additions = o.expansion.map((e) => row(e.repo, e.reason || null, false, known));
+  const additions = (o.expansion ?? []).map((e) => row(e.repo, e.reason || null, false, known));
   const version = (r.binding as { repos_version?: number } | null)?.repos_version ?? 0;
   return { proposed, additions, initial: proposed.map((p) => p.id), version };
 }

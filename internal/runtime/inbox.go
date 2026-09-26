@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
@@ -484,12 +485,31 @@ func (s *Store) itemKey(ctx context.Context, tx *sql.Tx, id string) (string, err
 	return key, err
 }
 
+// errAnswerNeedsReplyTo/errAnswerBadReplyTo are Send's kind:"answer" validation
+// messages (F7, F9): an answer must name the question (or blocked-relay) it
+// replies to, and that reply_to must resolve to something the target actually
+// owes an answer for.
+//
+// 2026-09-26 decision: this same check is what makes a plain answer a valid
+// stand-in for a child's approval_result, for any parent kind (not just
+// kinds without a native approval hook -- see errChildApprovalNoNativePath
+// in native.go). It already guarantees the two preconditions the accepted
+// exception needs: reply_to names a question sent by that exact target
+// (child) to the answering agent (its real parent), so the child's own skill
+// need only additionally require the question it named be its own
+// approval:true one (spec §2.3 step 7, §1.6).
+const errAnswerNeedsReplyTo = "An answer needs reply_to: the msg_id of the question (or blocked relay) you are answering."
+const errAnswerBadReplyTo = "reply_to %s is not a question or blocked relay from %s addressed to you."
+
 // Send is swarm_send (§8.1). "parent" resolves through agents.parent_agent_id; a
 // cross-root target or an unknown name is refused. origin is always 'agent'.
 // requestID is I11's idempotency key (empty means "no idempotency, just run
 // once"): a repeated (session, requestID) pair replays the first message's id
-// instead of enqueueing a second message.
-func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind, body, correlationID, requestID string) (string, error) {
+// instead of enqueueing a second message. replyTo is stored in messages.reply_to
+// for kind:"answer" (validated against the question/blocked-relay it answers) and
+// in messages.correlation_id for every other kind (unvalidated, e.g. a finding's
+// free-form thread hook).
+func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind, body, replyTo, requestID string, options ...string) (string, error) {
 	if len(body) > 4000 {
 		return "", &items.Error{Code: items.CodeBadRequest, Message: "A message body is limited to 4000 characters."}
 	}
@@ -541,13 +561,99 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 					Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
 			}
 		}
-		payload, err := json.Marshal(map[string]string{"body": body})
+		var correlationID string
+		switch kind {
+		case "answer":
+			if replyTo == "" {
+				return &items.Error{Code: items.CodeBadRequest, Message: errAnswerNeedsReplyTo}
+			}
+			var ok int
+			err := tx.QueryRowContext(ctx, `SELECT 1 FROM messages m
+				WHERE m.id = ? AND m.to_agent_id = ?
+				  AND ((m.kind = 'question' AND m.from_agent_id = ?)
+				    OR (m.kind = 'relay' AND json_extract(m.payload_json, '$.event') = 'blocked'
+				        AND json_extract(m.payload_json, '$.agent') = ?))`,
+				replyTo, a.ID, target.ID, target.Name).Scan(&ok)
+			if errors.Is(err, sql.ErrNoRows) {
+				return &items.Error{Code: items.CodeBadRequest,
+					Message: fmt.Sprintf(errAnswerBadReplyTo, replyTo, target.Name)}
+			}
+			if err != nil {
+				return err
+			}
+		default:
+			correlationID = replyTo
+			replyTo = ""
+		}
+		p := map[string]any{"body": body}
+		if len(options) > 0 {
+			if kind != "question" {
+				return &items.Error{Code: items.CodeBadRequest, Message: "options are only for kind question."}
+			}
+			if len(options) > 10 {
+				return &items.Error{Code: items.CodeBadRequest, Message: "A question takes at most 10 options."}
+			}
+			for _, o := range options {
+				if utf8.RuneCountInString(o) > 200 {
+					return &items.Error{Code: items.CodeBadRequest, Message: "Each option is limited to 200 characters."}
+				}
+			}
+			p["options"] = options
+		}
+		payload, err := json.Marshal(p)
 		if err != nil {
 			return err
 		}
 		m, err := s.enqueue(ctx, tx, Message{Kind: kind, Origin: "agent",
 			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
-			RootItemID: a.RootItemID, CorrelationID: correlationID, Payload: payload})
+			RootItemID: a.RootItemID, ItemID: a.ItemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
+		id = m.ID
+		return err
+	})
+	return id, err
+}
+
+// SendApproval is Send for the fixed-choice approval shape (F5): kind is
+// always "question", to is always "parent", and the payload carries
+// options:["Approve","Request changes"] plus approval:true so the receiving
+// UI renders it as an approval instead of a free-form question.
+func (s *Store) SendApproval(ctx context.Context, sessionID, body, requestID string) (string, error) {
+	if len(body) > 4000 {
+		return "", &items.Error{Code: items.CodeBadRequest, Message: "A message body is limited to 4000 characters."}
+	}
+	var id string
+	_, err := IdemTx(ctx, s, sessionID, requestID, "swarm_send", &id, func(tx *sql.Tx) error {
+		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		if a.ParentAgentID == "" {
+			return &items.Error{Code: items.CodeBadRequest, Message: "This agent has no parent."}
+		}
+		target, err := s.agentByIDTx(ctx, tx, a.ParentAgentID)
+		if err != nil {
+			return err
+		}
+		if target.RootItemID != a.RootItemID {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: "A message can only go to an agent inside the same top-level item."}
+		}
+		can, err := s.agentCanReceive(ctx, tx, target.ID)
+		if err != nil {
+			return err
+		}
+		if !can {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: fmt.Sprintf("%s has no live session; the message was not sent.", target.Name)}
+		}
+		payload, err := json.Marshal(map[string]any{"body": body,
+			"options": []string{"Approve", "Request changes"}, "approval": true})
+		if err != nil {
+			return err
+		}
+		m, err := s.enqueue(ctx, tx, Message{Kind: "question", Origin: "agent",
+			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
+			RootItemID: a.RootItemID, ItemID: a.ItemID, Payload: payload})
 		id = m.ID
 		return err
 	})
@@ -664,6 +770,9 @@ func summarizeFor(kind MessageKind, payload json.RawMessage) string {
 			if summary, ok := cp["summary"].(string); ok && summary != "" {
 				line += ": " + quote(summary)
 			}
+		}
+		if q, ok := str("question"); ok && q != "" {
+			line += ": " + quote(q)
 		}
 		return line
 	case "digest":

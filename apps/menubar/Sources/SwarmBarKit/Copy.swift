@@ -21,6 +21,10 @@ public enum Copy {
     public static let review = "Review"
     public static let openTerminal = "Open terminal"
     public static let openOrchestratorTerminal = "Open orchestrator terminal"
+    /// Needs-you row line 3, every kind (spec 1.6.3): generic, never the prompt.
+    public static let needsYouMessage = "Waiting for your input"
+    public static let openAgentTerminal = "Open agent terminal"
+    public static let openOnBoard = "Open in Swarm board"
     public static let orchestratorPaused = "Orchestrator is paused. Resume it to continue."
     public static let orchestratorNotRunning = "Orchestrator isn't running."
     public static let pause = "Pause"
@@ -58,6 +62,7 @@ public enum Copy {
     public static let live = "Live"
     public static let offline = "Offline"
     public static let agentsWorking = "Agents are working"
+    public static let needsYouBadge = "Swarm needs you"
     public static func removeFolder(_ path: String) -> String { "Remove \(path)" }
     /// DisplayState.label returns nil for .running (it's the unlabelled default state); this is
     /// only the accessibility-string fallback for that case, not a DisplayState value.

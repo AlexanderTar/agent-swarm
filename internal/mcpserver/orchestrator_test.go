@@ -717,6 +717,22 @@ func TestReadToolRefsFilterReposAndSinceSeq(t *testing.T) {
 		t.Fatalf("repos search = %+v", res2b)
 	}
 
+	// repos: {} (empty q) lists registered repos even when none was ever used
+	// (last_used_at is NULL everywhere; MarkUsed has no production caller).
+	out, err = s.call(ctx, seed.Caller, "swarm_read", `{"repos":{}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res2c struct {
+		Repos []struct {
+			ID string `json:"id"`
+		} `json:"repos"`
+	}
+	json.Unmarshal(mustJSON(out), &res2c)
+	if len(res2c.Repos) == 0 || res2c.Repos[0].ID != seed.RepoID {
+		t.Fatalf("empty repos query = %+v, want the seeded repo", res2c)
+	}
+
 	// since_seq well past anything ever issued comes back reset:true.
 	out, err = s.call(ctx, seed.Caller, "swarm_read", `{"since_seq":999999999}`)
 	if err != nil {
@@ -1413,7 +1429,7 @@ func TestMaterializeToolResultUsesSnakeCaseKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
@@ -1485,7 +1501,7 @@ func TestMaterializeRequestIDReplaysInsteadOfMaterializingTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board"); err != nil {
+	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",

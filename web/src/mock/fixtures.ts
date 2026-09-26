@@ -82,7 +82,7 @@ function request(p: Partial<Request> & Pick<Request, "id" | "kind" | "item_key" 
     is_hitl,
     agent_name: null, terminal_agent: null, artifact_id: null, artifact_revision: null, section_id: null, section_title: null, section_sha256: null,
     prompt: "", options: [], state: "open", confirmed: null, binding: null, response_text: null, responded_via: null,
-    responded_at: null, created_at: NOW, ...p,
+    responded_at: null, created_at: NOW, native_pending: false, approval_evidence: null, ...p,
   };
 }
 

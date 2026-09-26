@@ -271,6 +271,10 @@ type Request struct {
 	ResponseText, RespondedVia       string
 	RespondedAt                      *time.Time
 	CreatedAt                        time.Time
+	// NativePrompt is set only in-process, by askApproval/askConfirmRepos and
+	// the Ask "native_prompt" case (Task 13a/13b): it is never persisted, and
+	// requestTx never fills it.
+	NativePrompt *NativePrompt
 }
 
 type Advice struct {
@@ -397,6 +401,12 @@ type Store struct {
 	// role and tree haven't changed skips the tmux rename-window call instead
 	// of renaming every live window every few seconds.
 	lastTitle map[string]string
+	// quotaSkipLogged is sessionID -> the cutoff (db.Millis) WakeOnQuotaReset
+	// last logged a "pane not idle" skip for. checkQuotaResets calls
+	// WakeOnQuotaReset every minute for up to an hour after a cutoff, so
+	// without this a single stuck session would write up to ~60 identical
+	// log lines; this throttles it to one per session per cutoff.
+	quotaSkipLogged map[string]int64
 }
 
 // TmuxBin and TmuxSocket are the two readers httpapi's Ghostty fallback uses

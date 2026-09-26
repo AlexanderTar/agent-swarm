@@ -138,7 +138,7 @@ func (s *Server) confirmRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, id := r.Context(), r.PathValue("id")
-	req, err := s.RT.ConfirmRepos(ctx, id, body.Repos, body.Comment, body.ReposVersion, viaFromBody(body.Via))
+	req, err := s.RT.ConfirmRepos(ctx, id, body.Repos, body.Comment, body.ReposVersion, viaFromBody(body.Via), "")
 	if err != nil {
 		s.writeErr(w, err)
 		return

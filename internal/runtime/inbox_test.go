@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -798,6 +800,9 @@ func TestSummarizeForEveryKind(t *testing.T) {
 			`{"event":"progress","agent":"s3-fix-b","item":"TASK-9","checkpoint":{"summary":"starting on the auth regression"}}`,
 			`"starting on the auth regression"`},
 		{"relay failed", "relay", `{"event":"failed","agent":"s3-fix-c","item":"TASK-9"}`, "failed"},
+		{"relay question_unanswered", "relay",
+			`{"event":"question_unanswered","agent":"w","item":"TASK-1","question":"which db?"}`,
+			`question_unanswered from w (TASK-1): "which db?"`},
 		{"digest", "digest", `{"lines":["TASK-1 · a · did x","TASK-2 · b · did y"]}`, "TASK-1"},
 		{"assignment_update note", "assignment_update", `{"note":"Retrying with the fallback model"}`,
 			`"Retrying with the fallback model"`},
@@ -1019,4 +1024,142 @@ func TestHoldIfExhaustedNilUsageNeverHolds(t *testing.T) {
 	if held {
 		t.Fatal("holdIfExhausted = true with nil Usage, want false (fail open)")
 	}
+}
+
+func TestAnswerNeedsAValidReplyTo(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	q, err := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(ctx, orchSes, w.Name, "answer", "postgres", "", ""); err == nil ||
+		!strings.Contains(err.Error(), errAnswerNeedsReplyTo) {
+		t.Fatalf("missing reply_to err = %v", err)
+	}
+	if _, err := s.Send(ctx, orchSes, w.Name, "answer", "postgres", "msg_bogus", ""); err == nil {
+		t.Fatal("bogus reply_to accepted")
+	}
+	a, err := s.Send(ctx, orchSes, w.Name, "answer", "postgres", q, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replyTo, corr sql.NullString
+	s.DB.QueryRowContext(ctx, `SELECT reply_to, correlation_id FROM messages WHERE id = ?`, a).Scan(&replyTo, &corr)
+	if replyTo.String != q || corr.Valid {
+		t.Fatalf("reply_to=%v correlation_id=%v", replyTo, corr)
+	}
+}
+
+func TestAnswerMayReplyToABlockedRelay(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		payload, _ := json.Marshal(map[string]any{"event": "blocked", "agent": w.Name})
+		_, err := s.enqueue(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: orch.ID,
+			RootItemID: orch.RootItemID, Payload: payload})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var relayID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT id FROM messages WHERE kind = 'relay' AND to_agent_id = ?`, orch.ID).Scan(&relayID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(ctx, orchSes, w.Name, "answer", "go ahead", relayID, ""); err != nil {
+		t.Fatalf("answer to blocked relay = %v, want accepted", err)
+	}
+	_ = wSes
+}
+
+func TestSendQuestionStoresOptions(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	id, err := s.Send(ctx, wSes.ID, "parent", "question", "which db?", "", "", "postgres", "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload string
+	s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE id = ?`, id).Scan(&payload)
+	var got struct {
+		Body    string   `json:"body"`
+		Options []string `json:"options"`
+	}
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "which db?" || !slices.Equal(got.Options, []string{"postgres", "sqlite"}) {
+		t.Fatalf("payload = %s", payload)
+	}
+}
+
+func TestSendOptionsOnlyForQuestion(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "b", "", "", "a"); err == nil {
+		t.Fatal("options on a finding must be refused")
+	}
+}
+
+func TestSendMoreThanTenOptionsRefused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	opts := make([]string, 11)
+	for i := range opts {
+		opts[i] = fmt.Sprintf("o%d", i)
+	}
+	if _, err := s.Send(ctx, wSes.ID, "parent", "question", "b", "", "", opts...); err == nil {
+		t.Fatal("more than 10 options must be refused")
+	}
+}
+
+func TestSendOptionOver200CharsRefused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	long := strings.Repeat("x", 201)
+	if _, err := s.Send(ctx, wSes.ID, "parent", "question", "b", "", "", long); err == nil {
+		t.Fatal("an option over 200 chars must be refused")
+	}
+}
+
+func TestSendApprovalStoresFixedOptionsAndFlag(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, wSes := worker(t, s)
+	id, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload string
+	s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE id = ?`, id).Scan(&payload)
+	var got struct {
+		Body     string   `json:"body"`
+		Options  []string `json:"options"`
+		Approval bool     `json:"approval"`
+	}
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "may I drop table x?" || !slices.Equal(got.Options, []string{"Approve", "Request changes"}) || !got.Approval {
+		t.Fatalf("payload = %s", payload)
+	}
+}
+
+func TestFindingAcceptsAnUnvalidatedReplyTo(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if _, err := s.Send(ctx, wSes.ID, "parent", "finding", "done", "msg_does_not_exist", ""); err != nil {
+		t.Fatalf("finding with arbitrary reply_to = %v, want accepted", err)
+	}
+	_ = w
 }

@@ -44,6 +44,10 @@ type fakeTmux struct {
 	// Tmux.Start after the agent row is already committed).
 	startErr error
 	onKill   func()
+	// captureErr, when set, is returned by every Capture call instead of
+	// succeeding -- used to test callers' handling of a tmux capture failure
+	// (e.g. WakeOnQuotaReset logging it rather than silently skipping).
+	captureErr error
 }
 
 func newFakeTmux() *fakeTmux {
@@ -60,6 +64,9 @@ func (f *fakeTmux) Start(ctx context.Context, name, cwd string, env map[string]s
 }
 func (f *fakeTmux) Panes(context.Context) ([]Pane, error) { return f.panes, nil }
 func (f *fakeTmux) Capture(ctx context.Context, name string, lines int) (string, error) {
+	if f.captureErr != nil {
+		return "", f.captureErr
+	}
 	seq := f.captures[name]
 	if len(seq) == 0 {
 		return "─────\n❯ \n─────\n", nil // idle by default

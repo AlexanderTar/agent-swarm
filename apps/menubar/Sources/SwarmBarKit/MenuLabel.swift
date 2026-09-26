@@ -10,9 +10,10 @@ public struct MenuLabel: Equatable, Sendable {
         public var tooltip: String
     }
 
-    /// Colour of the corner dot on the menu bar glyph: green while connected with a live agent,
-    /// red while the daemon is offline, none while connected but idle.
-    public enum Badge: Equatable, Sendable { case none, green, red }
+    /// Colour of the corner dot on the menu bar glyph: yellow while something needs the user
+    /// (wins over everything else, including while offline), green while connected with a live
+    /// agent, none otherwise. The offline state no longer gets its own dot (user decision 2026-09-25).
+    public enum Badge: Equatable, Sendable { case none, green, yellow }
 
     /// Active sessions, or "" while the daemon is down (no bare "?" next to the icon).
     public var count: String
@@ -27,8 +28,8 @@ public struct MenuLabel: Equatable, Sendable {
     /// reservation for the cursor column stays a no-op without editing it.
     public static let widestMonthlyValue = widestValue
 
-    public static func make(activeCount: Int, connected: Bool, enabled: [AgentKind], usage: [UsageSnapshot],
-                            compact: Bool, format: Format) -> MenuLabel {
+    public static func make(activeCount: Int, connected: Bool, needsYou: Int = 0, enabled: [AgentKind],
+                            usage: [UsageSnapshot], compact: Bool, format: Format) -> MenuLabel {
         let agents = AgentKind.selectable.filter(enabled.contains)
         let segments = agents.map { kind -> Segment in
             let snap = usage.first { $0.agent == kind }
@@ -50,7 +51,7 @@ public struct MenuLabel: Equatable, Sendable {
             return Segment(agent: kind, text: text, dimmed: snap.stale, tooltip: tooltip)
         }
         return MenuLabel(count: connected ? "\(activeCount)" : "", segments: segments, compact: compact,
-                         badge: !connected ? .red : activeCount > 0 ? .green : .none)
+                         badge: needsYou > 0 ? .yellow : (connected && activeCount > 0) ? .green : .none)
     }
 }
 

@@ -91,7 +91,7 @@ describe("App flows", () => {
     const { user } = renderWithDaemon(<App />, { hash: "#/inbox" });
     await user.click(await screen.findByRole("radio", { name: "Questions" }));
     expect(window.location.hash).toBe("#/inbox?filter=questions");
-    await user.click(screen.getByRole("button", { name: /Which validation library\?/ }));
+    await user.click(screen.getByRole("button", { name: /TASK-104/ }));
     expect(window.location.hash).toBe("#/inbox?req=req_q2&filter=questions");
     expect(screen.queryByRole("textbox", { name: "Answer" })).not.toBeInTheDocument();
   });
