@@ -8,13 +8,12 @@ export const needsYou = (reqs: Request[]): Request[] =>
   reqs.filter((r) => r.state === "open" && !r.native_pending).sort((a, b) => a.created_at - b.created_at);
 
 const QUESTIONS = new Set(["question", "prompt", "blocker"]);
-const REVIEWS = new Set(["accept_epic", "accept_fix"]);
 
 export function filterRequests(reqs: Request[], f: InboxFilter): Request[] {
   const set = needsYou(reqs);
   if (f === "questions") return set.filter((r) => QUESTIONS.has(r.kind));
-  if (f === "reviews") return set.filter((r) => REVIEWS.has(r.kind));
-  if (f === "approvals") return set.filter((r) => !QUESTIONS.has(r.kind) && !REVIEWS.has(r.kind));
+  // Every approval is one lane, accept_epic/accept_fix included (2026-09-26 epic-approval-lane).
+  if (f === "approvals") return set.filter((r) => !QUESTIONS.has(r.kind));
   return set;
 }
 

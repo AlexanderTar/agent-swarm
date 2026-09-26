@@ -23,9 +23,8 @@ describe("inbox rules (§16.11)", () => {
     ]);
     expect(filterRequests(reqs, "questions").map((r) => r.id)).toEqual(["req_question", "req_q2"]);
     expect(filterRequests(reqs, "approvals").map((r) => r.id)).toEqual([
-      "req_section", "req_plan", "req_report", "req_close", "req_repos",
+      "req_accept", "req_section", "req_plan", "req_report", "req_close", "req_repos", "req_fix",
     ]);
-    expect(filterRequests(reqs, "reviews").map((r) => r.id)).toEqual(["req_accept", "req_fix"]);
   });
 
   it("needsYou = open and not native_pending, oldest first, every kind", () => {
@@ -39,8 +38,7 @@ describe("inbox rules (§16.11)", () => {
     expect(needsYou(rs).map((r) => r.id)).toEqual(["q", "a", "e"]);
     expect(filterRequests(rs, "all").map((r) => r.id)).toEqual(["q", "a", "e"]);
     expect(filterRequests(rs, "questions").map((r) => r.id)).toEqual(["q"]);
-    expect(filterRequests(rs, "approvals").map((r) => r.id)).toEqual(["a"]);
-    expect(filterRequests(rs, "reviews").map((r) => r.id)).toEqual(["e"]);
+    expect(filterRequests(rs, "approvals").map((r) => r.id)).toEqual(["a", "e"]);
   });
 
   it("needsYouRow is generic and never shows the prompt", () => {
@@ -55,8 +53,8 @@ describe("inbox rules (§16.11)", () => {
   it("picks a request", () => {
     expect(pickRequest(filterRequests(reqs, "all"), "req_q2")?.id).toBe("req_q2");
     expect(pickRequest(filterRequests(reqs, "all"), "")?.id).toBe("req_accept");
-    expect(pickRequest(filterRequests(reqs, "reviews"), "req_fix")?.id).toBe("req_fix");
-    expect(pickRequest(filterRequests(reqs, "reviews"), "")?.id).toBe("req_accept");
+    expect(pickRequest(filterRequests(reqs, "approvals"), "req_fix")?.id).toBe("req_fix");
+    expect(pickRequest(filterRequests(reqs, "approvals"), "")?.id).toBe("req_accept");
     expect(pickRequest([], "x")).toBeUndefined();
   });
 });

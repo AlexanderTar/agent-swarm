@@ -373,5 +373,5 @@ export type ConnState = "connecting" | "open" | "closed";
 export type View = "hierarchy" | "kanban" | "dependencies" | "inbox";
 export type CardLevel = "tasks" | "stories" | "top";
 export type Grouping = "root" | "flat";
-export type InboxFilter = "all" | "questions" | "approvals" | "reviews";
+export type InboxFilter = "all" | "questions" | "approvals";
 export interface Filter { q: string; type: ItemType | ""; status: ItemStatus | "" }
