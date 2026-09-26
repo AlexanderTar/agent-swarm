@@ -61,11 +61,11 @@ func TestSpawnDefaultsAndValidation(t *testing.T) {
 	}
 	// a disabled agent and a bad model are refused
 	if _, err := s.call(ctx, seed.Caller, "swarm_spawn",
-		`{"item":"`+seed.TaskKey+`","role":"coder","agent":"codex","brief":{"objective":"x"},"worktrees":[]}`); err == nil {
+		`{"item":"`+seed.TaskKey+`","role":"coder","agent":"codex","override_reason":"user asked for codex","brief":{"objective":"x"},"worktrees":[]}`); err == nil {
 		t.Fatal("a disabled agent must be refused")
 	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_spawn",
-		`{"item":"`+seed.TaskKey+`","role":"coder","model":"gone-9","brief":{"objective":"x"},"worktrees":[]}`); err == nil {
+		`{"item":"`+seed.TaskKey+`","role":"coder","model":"gone-9","override_reason":"user asked for gone-9","brief":{"objective":"x"},"worktrees":[]}`); err == nil {
 		t.Fatal("a model outside the catalog must be refused")
 	}
 	// §17.3: an over-long brief
@@ -1790,7 +1790,7 @@ func TestSwarmRoleOverridesSetThenSpawnUsesIt(t *testing.T) {
 	ctx := context.Background()
 
 	out, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`)
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1817,7 +1817,7 @@ func TestSwarmRoleOverridesClearRemovesTheEntry(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
 	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`); err != nil {
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err != nil {
 		t.Fatal(err)
 	}
 	out, err := s.call(ctx, seed.Caller, "swarm_role_overrides", `{"op":"clear","role":"coder"}`)
@@ -1838,7 +1838,7 @@ func TestSwarmRoleOverridesClearRemovesTheEntry(t *testing.T) {
 func TestSwarmRoleOverridesRejectsAdvisorRole(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	if _, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"advisor","agent":"fake","model":"fake-1"}`); err == nil {
+		`{"op":"set","role":"advisor","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err == nil {
 		t.Fatal("expected an error for the advisor role")
 	}
 }
@@ -1848,7 +1848,7 @@ func TestSwarmRoleOverridesRejectsDisabledAgent(t *testing.T) {
 	// claude is a real AgentKind but not enabled (newOrchestratorServer's
 	// enabled_agents is ["fake"] only).
 	if _, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"claude","model":"claude-sonnet-5"}`); err == nil {
+		`{"op":"set","role":"coder","agent":"claude","model":"claude-sonnet-5","reason":"user asked for claude"}`); err == nil {
 		t.Fatal("expected an error for a disabled agent")
 	}
 }
@@ -1859,7 +1859,7 @@ func TestSwarmRoleOverridesIsScopedToTheCallersOwnRow(t *testing.T) {
 	other := seedOtherOrchestrator(t, s)
 
 	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`); err != nil {
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1876,7 +1876,7 @@ func TestSwarmReadShowsRoleOverrides(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
 	if _, err := s.call(ctx, seed.Caller, "swarm_role_overrides",
-		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`); err != nil {
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1","reason":"user asked for fake"}`); err != nil {
 		t.Fatal(err)
 	}
 	out, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["`+seed.Caller.AgentName+`"]}`)
@@ -2226,5 +2226,60 @@ func TestSwarmArtifactReturnsWarnings(t *testing.T) {
 	}
 	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "single unit") {
 		t.Fatalf("warnings=%v", result.Warnings)
+	}
+}
+
+// ---------- user-requested overrides only (2026-09-26 worker-defaults spec) ----------
+
+const wantOverrideReasonCopy = "Pass override_reason with agent, model or effort, saying what the user asked for. Leave agent, model and effort empty to use the user's role default."
+
+// An orchestrator can't pick a worker's kind/model/effort on its own: an
+// explicit choice without the user's reason is refused.
+func TestSwarmSpawnRefusesAnOverrideWithoutAReason(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	for _, field := range []string{`"agent":"fake"`, `"model":"fake-1"`, `"effort":"high"`} {
+		_, err := s.call(ctx, seed.Caller, "swarm_spawn",
+			`{"item":"`+seed.TaskKey+`","role":"coder",`+field+`,"brief":{"objective":"x"},"worktrees":[]}`)
+		if err == nil || err.Error() != wantOverrideReasonCopy {
+			t.Fatalf("%s: err = %v, want %q", field, err, wantOverrideReasonCopy)
+		}
+	}
+}
+
+// With the user's reason the override is kept and recorded on the row.
+func TestSwarmSpawnKeepsAndRecordsAReasonedOverride(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_spawn",
+		`{"item":"`+seed.TaskKey+`","role":"coder","agent":"fake","model":"fake-1","override_reason":"user asked for fake",
+		"brief":{"objective":"x"},"worktrees":[]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Agent string `json:"agent"`
+	}
+	json.Unmarshal(mustJSON(out), &res)
+	a, err := s.RT.Agent(ctx, res.Agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != runtime.Fake || a.Model != "fake-1" || a.KindReason != "User override: user asked for fake" {
+		t.Fatalf("agent = %s/%s reason %q", a.Kind, a.Model, a.KindReason)
+	}
+}
+
+func TestSwarmRoleOverridesSetRequiresAReason(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	_, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides",
+		`{"op":"set","role":"coder","agent":"fake","model":"fake-1"}`)
+	want := `Pass reason with op "set", saying what the user asked for. Role defaults come from the user's settings unless the user asks otherwise.`
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	// clear needs no reason
+	if _, err := s.call(context.Background(), seed.Caller, "swarm_role_overrides", `{"op":"clear","role":"coder"}`); err != nil {
+		t.Fatal(err)
 	}
 }
