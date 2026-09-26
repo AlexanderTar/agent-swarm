@@ -207,6 +207,8 @@ func TestOrchestratorCanProposeRoot(t *testing.T) {
 	s := newStore(t)
 	root := mk(t, s, items.Epic, "", "Root")
 	orch := items.Orchestrator("agt_1", root.ID)
+	exec(t, s.DB, `INSERT INTO repos (id, name, path, default_branch, source, created_at, updated_at)
+		VALUES ('repo_a', 'repo_a', '/tmp/repo_a', 'main', 'manual', 1, 1)`)
 	for _, in := range []items.CreateInput{
 		{Type: items.Epic, Title: "New epic", Repos: []string{"repo_a"}},
 		{Type: items.Bug, Title: "New bug"},
@@ -231,6 +233,20 @@ func TestOrchestratorCanProposeRoot(t *testing.T) {
 		if it.RootID != it.ID {
 			t.Errorf("%s: not its own root", in.Type)
 		}
+	}
+}
+
+// TestProposeRootRefusesUnknownRepoID: a propose call's repos are suggestions,
+// but the ids still have to be real repo ids -- not a repo name, a typo, or
+// anything else a confirm_repos gate downstream can never satisfy.
+func TestProposeRootRefusesUnknownRepoID(t *testing.T) {
+	s := newStore(t)
+	root := mk(t, s, items.Epic, "", "Root")
+	orch := items.Orchestrator("agt_1", root.ID)
+	_, err := s.Create(ctx, items.CreateInput{Type: items.Epic, Title: "New epic", Repos: []string{"agent-swarm"}}, orch)
+	want := `Unknown repository "agent-swarm". Pass a repository id from swarm_read {repos:{q:"agent-swarm"}}.`
+	if err == nil || err.Error() != want || code(err) != items.CodeBadRequest {
+		t.Fatalf("err = %v, want %s", err, want)
 	}
 }
 
