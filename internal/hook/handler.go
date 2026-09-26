@@ -92,6 +92,31 @@ func extractQuestion(toolName string, raw []byte) (string, []string) {
 	return prompt, options
 }
 
+// questionsHaveBatchedSwarmRef reports whether a native question tool's raw
+// input is a multi-question batch where at least one question carries a
+// daemon-issued ⟦swarm:ref⟧ token (native.go's refToken). extractQuestion
+// only ever reads Questions[0], so any ref past the first would bind to
+// nothing -- see the PreToolUse guard that calls this.
+func questionsHaveBatchedSwarmRef(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var payload struct {
+		Questions []struct {
+			Question string `json:"question"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || len(payload.Questions) < 2 {
+		return false
+	}
+	for _, q := range payload.Questions {
+		if strings.Contains(q.Question, "⟦swarm:") {
+			return true
+		}
+	}
+	return false
+}
+
 // extractToolResponseText reads the answer text out of a question tool's
 // PostToolUse tool_response. A real claude AskUserQuestion result has the
 // shape {questions, answers:{<question text>: <chosen label(s)>}, annotations}
@@ -522,6 +547,14 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		// native question tool. Top-level agents fall through to the intercept below.
 		if isQuestionTool(in.ToolName) && s.ParentAgentID != "" {
 			return adapter.HookDecision{Block: true, Reason: nativeQuestionRelay}, nil
+		}
+
+		// A batched AskUserQuestion call binds only Questions[0] (the intercept
+		// below), so a swarm-issued ref anywhere past the first question would
+		// be recorded and answered but never bindable -- native_answer could
+		// never find it (2026-09-26 fix, native-railway-tracing finding).
+		if isQuestionTool(in.ToolName) && questionsHaveBatchedSwarmRef(in.RawToolInput) {
+			return adapter.HookDecision{Block: true, Reason: "[swarm] Ask one swarm approval per question call."}, nil
 		}
 
 		// For Swarm's own swarm_spawn tool: enforce max_concurrent_subagents

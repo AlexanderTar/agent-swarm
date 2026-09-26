@@ -1390,6 +1390,92 @@ func TestParentedAgentQuestionToolIsBlockedAndOpensNoRequest(t *testing.T) {
 	}
 }
 
+// TestPreToolUseDeniesMultiQuestionBatchWithSwarmRef is the 2026-09-26 fix
+// (native-railway-tracing finding): the hook only ever binds Questions[0],
+// so a batched AskUserQuestion call that carries a swarm ref anywhere in it
+// must be refused up front rather than silently losing every ref past the
+// first.
+func TestPreToolUseDeniesMultiQuestionBatchWithSwarmRef(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+
+	in, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": "Approve section 1? ⟦swarm:req_S1⟧"},
+				{"question": "Approve section 2? ⟦swarm:req_S2⟧"},
+			},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "Ask one swarm approval per question call.") {
+		t.Fatalf("a batched swarm-ref question call must be denied with that reason, got %s", out)
+	}
+
+	var n int
+	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("requests = %d, want 0 (denied before AskQuestion ran)", n)
+	}
+}
+
+// TestPreToolUseAllowsSingleQuestionWithSwarmRef confirms the new batch
+// check does not catch the normal, single-question native_prompt flow.
+func TestPreToolUseAllowsSingleQuestionWithSwarmRef(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+
+	in, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": "Approve section 1? ⟦swarm:req_S1⟧"},
+			},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Ask one swarm approval per question call.") {
+		t.Fatalf("a single-question call must not be denied, got %s", out)
+	}
+}
+
+// TestPreToolUseAllowsMultiQuestionBatchWithoutSwarmRef confirms an
+// ordinary, non-swarm multi-question call (agy asking the user several
+// unrelated things at once) is untouched.
+func TestPreToolUseAllowsMultiQuestionBatchWithoutSwarmRef(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+
+	in, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": "Which database?"},
+				{"question": "Which region?"},
+			},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Ask one swarm approval per question call.") {
+		t.Fatalf("a plain multi-question call must not be denied, got %s", out)
+	}
+}
+
 func TestQuestionToolPostToolUseClosesOnlyTheMatchingRow(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
