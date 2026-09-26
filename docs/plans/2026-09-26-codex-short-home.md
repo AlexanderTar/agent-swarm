@@ -88,3 +88,91 @@ verify pass -> commit.
 - `go test ./... -count=1`
 - `go vet ./...`
 - `test -z "$(gofmt -l .)"`
+
+## Round 1 review fixes (2026-09-26)
+
+Steps 1-8 above landed keyed on the swarm **session** id, which review round
+1 found blocking: `startSession` mints a new session id on every resume, so
+`CodexHomeDir` landed a resumed session in a fresh, empty home. See the
+spec's "Review round 1" sections for the full reasoning. Fixes, TDD order:
+
+### R1.1 Re-key on agent id
+
+- Test (`internal/adapter/codex_test.go`): rename/rewrite
+  `TestCodexHomeDirIsDeterministicAndAgentScoped` (was
+  `...AndSessionScoped`) to use agent ids; `TestCodexLaunchUsesTheShortHomeAndNoDaemon`
+  asserts against `CodexHomeDir(d.Home, spec.AgentID)`;
+  `TestCodexWakeUsesTheAgentsCodexHome` (was `...TheSessionsCodexHome`) sets
+  `WakeTarget.AgentID`; new `TestCodexResumeLandsOnTheSameHomeAsTheOriginalLaunch`
+  (Launch with one spec, Resume with the same `AgentID` but a different
+  `SessionID` and a `ProviderSessionID` -- same `CODEX_HOME` both times).
+- Impl: `adapter.Spec` and `adapter.WakeTarget` gain `AgentID`;
+  `CodexHomeDirName`/`CodexHomeDir` doc comments and params renamed to
+  `agentID`; `setupEnv` uses `s.AgentID`; `Wake` uses `w.AgentID`;
+  `internal/runtime/agents.go` `startSession`'s `adapter.Spec{}` gets
+  `AgentID: a.ID`; `internal/runtime/wake.go`'s two `WakeTarget{}` sites gain
+  `AgentID` (the `WakeOnQuotaReset` query needed `a.id` added to its
+  `SELECT`).
+- `go test ./internal/adapter/... ./internal/runtime/...`
+
+### R1.2 `setupEnv` SUN_LEN runtime guard (MINOR 1)
+
+- Test: `TestCodexSetupEnvRejectsAHomeThatWouldExceedSunLen` -- a real,
+  writable `t.TempDir()`-based home padded long enough to push the socket
+  path over 103 bytes (not an unwritable path, so the assertion is actually
+  exercising the guard and not an incidental `MkdirAll` permissions error).
+- Impl: `setupEnv` computes `sock := codexHome + codexSocketSuffix` and
+  returns an error before `MkdirAll` if `len(sock) > codexSocketPathMax`.
+- Side effect: `testDeps` (`internal/adapter/adapter_test.go`) had to stop
+  using `t.TempDir()` directly for `Deps.Home` -- Go nests it under the full
+  test name, which for several existing test names alone exceeds the
+  budget. New `shortTempDir(t)` helper uses `os.MkdirTemp("/tmp", "sw")`
+  instead (not `os.TempDir()`/`""`, whose macOS value,
+  `/var/folders/<hash>/T/`, is itself already ~50 chars).
+
+### R1.3 `reclaimCodexHomes`: agent-keyed keep-set, snapshot race guard, MINORs 2/3
+
+- Test (`internal/runtime/reconcile_test.go`):
+  - `TestReclaimCodexHomesRemovesOnlyDeadAgentDirs` (was
+    `...DeadSessionDirs`): agent-id-keyed.
+  - `TestReclaimCodexHomesWithEmptyHomeIsANoOp` (MINOR 2): asserts no `cx`
+    dir appears in the test's cwd.
+  - `TestReclaimCodexHomesLogsARemoveFailureAndKeepsSweeping` (MINOR 3): one
+    entry's parent dir chmod'd read-only so its own `RemoveAll` fails;
+    assert the failure is logged AND a second, removable entry still goes.
+  - `TestReclaimCodexHomesSkipsADirNewerThanTheSnapshot` (IMPORTANT 2): a
+    dir's real mtime is "now"; the sweep is told its snapshot was taken an
+    hour ago; assert the dir survives.
+  - `TestReconcileKeepsAPausedSessionsCodexHomeButRemovesADeadOnesSession`:
+    updated to key off the WORKER AGENT's id (`w.ID`), not its session id.
+- Impl: `reclaimCodexHomes(home string, keepAgentIDs []string, snapshotAt time.Time, logf func(string, ...any))`
+  -- no return value (logs internally, never fails the reconcile tick);
+  returns immediately on `home == ""`; keep-set built from
+  `CodexHomeDirName(agentID)`; per-entry `info.ModTime().After(snapshotAt)`
+  skip; per-entry `RemoveAll` failure goes through `logf`, loop continues.
+  `Reconcile`'s call site: `snapshotAt := time.Now()` (real wall-clock, NOT
+  `s.now()` -- it's compared against real filesystem mtimes, which don't
+  respect an injected/logical clock); keep-set query changes to `SELECT
+  DISTINCT agent_id FROM sessions WHERE state NOT IN (...)`.
+- `go test ./internal/runtime/... -run "TestReclaimCodexHomes|TestReconcileKeeps"`
+
+### R1.4 One-time `reclaimOldCodexLaunchHomes` (MINOR 4)
+
+- Test: `TestReclaimOldCodexLaunchHomesRemovesOnlyTerminalSessionsCodexHome`
+  -- two separate `newStore(t)` fixtures (one `worker()` per store; the
+  existing `worker()` helper seeds a fixed `EPIC-1`/`TASK-1` item key, so
+  calling it twice against the same store conflicts), one with its session
+  forced to `completed` (its `codex-home` must go, a sibling file in the
+  same per-launch dir must survive), one left non-terminal (its `codex-home`
+  must survive).
+- Impl: `(s *Store) reclaimOldCodexLaunchHomes(ctx) error` -- lists
+  `<home>/run/launch/*`, queries terminal session ids, removes only
+  `<entry>/codex-home` for terminal ids where it exists. Called from
+  `Reconcile` alongside `reclaimCodexHomes`.
+
+### R1.5 Full verification
+
+- `go test ./... -count=1`
+- `go vet ./...`
+- `test -z "$(gofmt -l .)"`
+- `go test -race ./internal/runtime/... -timeout 40m`
