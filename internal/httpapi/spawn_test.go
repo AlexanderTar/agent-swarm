@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -79,6 +80,35 @@ func TestCreateSpikeWithAPreflightFailure(t *testing.T) {
 	}
 	if body.Agent["preflight_error"] == nil || body.Agent["session"] != nil {
 		t.Errorf("agent = %v", body.Agent)
+	}
+}
+
+// StartSpike's "no default kind" error is a plain error, not an *items.Error,
+// so createSpike must wrap it (like startOrchestrator wraps its own preflight
+// failure) into a 422 preflight_failed the user can actually read -- not let
+// writeErr's default case turn it into a bare 500 "Something went wrong."
+func TestCreateSpikeWithNoDefaultKindIs422WithGuidance(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	if _, err := s.DB.ExecContext(bg, `UPDATE settings SET value_json = '[]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(bg, `INSERT INTO settings (key, value_json, updated_at)
+		VALUES ('roles', '{"orchestrator":{"agent":"","model":"","effort":""}}', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	rec := s.post(t, "/api/spikes", `{"request_id":"r","name":"Nope","intent":"feature"}`)
+	if rec.Code != 422 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Error struct{ Code, Message string }
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Code != "preflight_failed" {
+		t.Fatalf("code = %q", body.Error.Code)
+	}
+	if !strings.Contains(body.Error.Message, "--agent") {
+		t.Fatalf("message must guide the user to pass --agent: %q", body.Error.Message)
 	}
 }
 

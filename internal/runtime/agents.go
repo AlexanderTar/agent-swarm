@@ -180,12 +180,85 @@ func (s *Store) Preflight(ctx context.Context, in PreflightInput) error {
 	return nil
 }
 
+// resolveRoleDefault fills in kind/model/effort for role from Settings, the
+// same way StartOrchestrator always has: an explicit kind wins; else a kind
+// implied by an explicit model; else the role's Settings default (if its
+// agent is enabled); else the first enabled agent; then a model is picked
+// from the resolved kind's catalog if still empty. ok is false only when
+// none of that produced a kind at all (no role default, nothing enabled) --
+// StartOrchestrator falls back to Fake in that case; StartSpike (which never
+// had this resolution before, always sending kind "") treats it as a hard
+// error instead of silently building an agent with a blank/wrong kind.
+func (s *Store) resolveRoleDefault(ctx context.Context, role Role, kind AgentKind, model, effort string) (rKind AgentKind, rModel, rEffort string, ok bool) {
+	cfg, _ := s.Settings.Get(ctx)
+	if kind == "" && model != "" {
+		if k, found := s.resolveAgentForModel(ctx, model); found {
+			kind = k
+		}
+	}
+	if kind == "" {
+		if rd, has := cfg.Roles[role]; has && rd.Agent != "" && (len(cfg.EnabledAgents) == 0 || slices.Contains(cfg.EnabledAgents, rd.Agent)) {
+			kind = rd.Agent
+			if model == "" {
+				if s.Catalog != nil {
+					models, _, _ := s.Catalog.ModelsFor(ctx, kind)
+					if _, found := catalog.Find(models, rd.Model); found {
+						model = rd.Model
+						if effort == "" {
+							effort = rd.Effort
+						}
+					}
+				} else {
+					model = rd.Model
+					if effort == "" {
+						effort = rd.Effort
+					}
+				}
+			}
+		} else if len(cfg.EnabledAgents) > 0 {
+			kind = cfg.EnabledAgents[0]
+		}
+	}
+	if kind == "" {
+		return "", model, effort, false
+	}
+	return kind, s.fillDefaultModel(ctx, kind, model), effort, true
+}
+
+// fillDefaultModel returns model unchanged if it's already set, otherwise the
+// resolved kind's first catalog model. Shared by resolveRoleDefault's own
+// ok=true path and by StartOrchestrator's further fallback to Fake when
+// resolveRoleDefault can't resolve a kind at all -- that fallback picked a
+// model the same way before the resolveRoleDefault extraction, and must
+// keep doing so.
+func (s *Store) fillDefaultModel(ctx context.Context, kind AgentKind, model string) string {
+	if model != "" {
+		return model
+	}
+	models, _, _ := s.Catalog.ModelsFor(ctx, kind)
+	if len(models) > 0 {
+		return models[0].ID
+	}
+	return model
+}
+
 func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, bool, error) {
 	name, err := s.resolveName(ctx, in.Name, in.Name)
 	if err != nil {
 		return "", Agent{}, false, err
 	}
 
+	if kind, model, effort, ok := s.resolveRoleDefault(ctx, RoleOrchestrator, in.Kind, in.Model, in.Effort); ok {
+		in.Kind, in.Model, in.Effort = kind, model, effort
+	} else {
+		return "", Agent{}, false, errors.New("No agent kind given and no default is set for spikes; pass --agent.")
+	}
+
+	// ponytail: item creation and the agent-row INSERT below are separate
+	// transactions, so an INSERT failure (or any error between here and
+	// there) leaves this item as an orphaned draft with no agent, and a
+	// retry creates a second item instead of reusing it. Upgrade path: wrap
+	// both in one transaction.
 	it, err := s.Items.Create(ctx, items.CreateInput{
 		Type:           items.Spike,
 		Title:          in.Name,
@@ -247,7 +320,7 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 			RoleOverrides:  in.Roles,
 			CreatedAt:      s.now(),
 		}
-		_ = s.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `INSERT INTO agents
 				(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, preflight_error, created_at,
 				 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
@@ -259,7 +332,9 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 				return err
 			}
 			return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
-		})
+		}); err != nil {
+			return "", Agent{}, false, err
+		}
 		if s.Notify != nil {
 			_ = s.Notify.Raise(ctx, nil, NotifyInput{
 				Kind:      "agent.preflight_failed",
@@ -376,42 +451,11 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		return Agent{}, false, &items.Error{Code: items.CodeConflict, Message: "This item already has an orchestrator."}
 	}
 
-	cfg, _ := s.Settings.Get(ctx)
-	if in.Kind == "" && in.Model != "" {
-		if k, ok := s.resolveAgentForModel(ctx, in.Model); ok {
-			in.Kind = k
-		}
-	}
-	if in.Kind == "" {
-		if rd, ok := cfg.Roles[RoleOrchestrator]; ok && rd.Agent != "" && (len(cfg.EnabledAgents) == 0 || slices.Contains(cfg.EnabledAgents, rd.Agent)) {
-			in.Kind = rd.Agent
-			if in.Model == "" {
-				if s.Catalog != nil {
-					models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
-					if _, found := catalog.Find(models, rd.Model); found {
-						in.Model = rd.Model
-						if in.Effort == "" {
-							in.Effort = rd.Effort
-						}
-					}
-				} else {
-					in.Model = rd.Model
-					if in.Effort == "" {
-						in.Effort = rd.Effort
-					}
-				}
-			}
-		} else if len(cfg.EnabledAgents) > 0 {
-			in.Kind = cfg.EnabledAgents[0]
-		} else {
-			in.Kind = Fake
-		}
-	}
-	if in.Model == "" {
-		models, _, _ := s.Catalog.ModelsFor(ctx, in.Kind)
-		if len(models) > 0 {
-			in.Model = models[0].ID
-		}
+	if kind, model, effort, ok := s.resolveRoleDefault(ctx, RoleOrchestrator, in.Kind, in.Model, in.Effort); ok {
+		in.Kind, in.Model, in.Effort = kind, model, effort
+	} else {
+		in.Kind = Fake
+		in.Model = s.fillDefaultModel(ctx, in.Kind, in.Model)
 	}
 
 	origKind := in.Kind

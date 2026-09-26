@@ -40,7 +40,12 @@ func (s *Server) createSpike(w http.ResponseWriter, r *http.Request) {
 			Kind: runtime.AgentKind(body.Agent), Model: body.Model, Effort: body.Effort,
 			Advisor: advisorChoiceFromBody(body.Advisor), Roles: rolesFromBody(body.Roles), Request: body.Request, Repos: body.Repos})
 		if err != nil {
-			return nil, err
+			// A plain error here (e.g. "no agent kind given") isn't an
+			// *items.Error, so wrapPreflightErr maps it to 422 preflight_failed
+			// the same way startOrchestrator wraps its own preflight failure --
+			// otherwise writeErr's default case would flatten it into a bare
+			// 500 "Something went wrong.", losing the "pass --agent" guidance.
+			return nil, wrapPreflightErr(err)
 		}
 		it, err := s.Items.Get(ctx, key)
 		if err != nil {
