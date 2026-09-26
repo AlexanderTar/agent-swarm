@@ -507,28 +507,37 @@ func (s *Store) pause(ctx context.Context, name, scope string) (Session, int, er
 // pauseOne sends one session's pause control message and moves it to
 // pause_requested.
 func (s *Store) pauseOne(ctx context.Context, a Agent, ses Session, deadline time.Time, scope string) (Session, error) {
-	payload, err := json.Marshal(map[string]string{"action": "pause",
-		"deadline_at": deadline.UTC().Format(time.RFC3339), "scope": scope})
-	if err != nil {
-		return Session{}, err
-	}
-	err = s.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'pause_requested',
-			pause_scope = ?, pause_deadline_at = ? WHERE id = ?`,
-			scope, db.Millis(deadline), ses.ID); err != nil {
-			return err
-		}
-		if _, err := s.enqueue(ctx, tx, Message{Kind: "control", Origin: "daemon",
-			ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: payload}); err != nil {
-			return err
-		}
-		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.requestPreservationTx(ctx, tx, a, ses, deadline, scope, "pause")
 	})
 	if err != nil {
 		return Session{}, err
 	}
 	ses.State, ses.PauseScope, ses.PauseDeadlineAt = PauseRequested, scope, &deadline
 	return ses, nil
+}
+
+// requestPreservationTx is the pause delivery path shared by Pause and
+// Handoff: the session moves to pause_requested with a deadline and a
+// control message (action "pause" or "handoff") is enqueued, so wake, the
+// Stop hook and TickPause's interrupt/kill timers all drive the predecessor
+// through the same preservation window.
+func (s *Store) requestPreservationTx(ctx context.Context, tx *sql.Tx, a Agent, ses Session, deadline time.Time, scope, action string) error {
+	payload, err := json.Marshal(map[string]string{"action": action,
+		"deadline_at": deadline.UTC().Format(time.RFC3339), "scope": scope})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'pause_requested',
+		pause_scope = ?, pause_deadline_at = ? WHERE id = ?`,
+		scope, db.Millis(deadline), ses.ID); err != nil {
+		return err
+	}
+	if _, err := s.enqueue(ctx, tx, Message{Kind: "control", Origin: "daemon",
+		ToAgentID: a.ID, RootItemID: a.RootItemID, Payload: payload}); err != nil {
+		return err
+	}
+	return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 }
 
 // pauseSubtree pauses every idle descendant deepest-first, then marks the

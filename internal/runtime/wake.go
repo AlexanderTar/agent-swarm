@@ -46,6 +46,7 @@ type wakeRow struct {
 	Kind                                                         AgentKind
 	Pending                                                      int
 	HasControl                                                   bool
+	Handoff                                                      bool // a handoff operation is in flight: the control notice is HANDOFF, not PAUSE
 	OldestMessageAt, NewestPendingAt                             time.Time
 	LastSeenAt, LastWakeAt                                       *time.Time
 	LastPasteAttemptAt                                           *time.Time
@@ -65,7 +66,9 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		(SELECT MIN(m.created_at) FROM messages m
 			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate'),
 		(SELECT MAX(m.created_at) FROM messages m
-			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate')
+			WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.wake_class = 'immediate'),
+		EXISTS (SELECT 1 FROM agent_operations o WHERE o.agent_id = a.id AND o.mode = 'handoff'
+			AND o.phase IN ('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting'))
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id JOIN items i ON i.id = a.item_id
 		WHERE ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {
@@ -81,7 +84,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		var hasControlCount int
 		var oldest, newest sql.NullInt64
 		if err := rows.Scan(&r.SessionID, &r.AgentID, &r.AgentName, &r.ItemKey, &r.TmuxName,
-			&r.ProviderID, &kind, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest, &newest); err != nil {
+			&r.ProviderID, &kind, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest, &newest, &r.Handoff); err != nil {
 			return nil, err
 		}
 		if !oldest.Valid {
@@ -180,6 +183,9 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		}
 		if r.HasControl {
 			notice = PausePreservationNotice(r.AgentName, r.ItemKey)
+			if r.Handoff {
+				notice = HandoffPreservationNotice(r.AgentName, r.ItemKey)
+			}
 		}
 		ad, ok := s.Adapters[r.Kind]
 		if !ok {

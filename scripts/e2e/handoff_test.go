@@ -317,6 +317,12 @@ func TestScenarioHandoffOrchestratorRelay(t *testing.T) {
 	if err := json.Unmarshal(raw, &accepted); err != nil {
 		t.Fatalf("handoff response %s: %v", raw, err)
 	}
+	// No pause first: the handoff itself asks the orchestrator to preserve.
+	// It saves, then the walk stops it and parks in queued for a slot.
+	if !h.waitForSessionState(t, orch, "pause_requested", 5*time.Second) {
+		t.Fatalf("orch session = %s, want pause_requested", h.sessionState(t, orch))
+	}
+	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "handoff", "summary": "orchestrator saved"})
 	queued := false
 	for i := 0; i < 40; i++ {
 		s, body, err := h.do(http.MethodGet, "/api/agents/"+orch+"/replacement", nil)
@@ -380,5 +386,110 @@ func TestScenarioHandoffOrchestratorRelay(t *testing.T) {
 	}
 	if s != http.StatusNotFound {
 		t.Fatalf("replacement status = %d, want 404 (operation done)", s)
+	}
+}
+
+// handoffNoPrePause drives the main user path (menubar/CLI POST /handoff on a
+// running agent, no pause first): the walk must move the session to
+// pause_requested and park in preserving with the pane alive, and replace the
+// session only after the agent's own handoff checkpoint.
+func handoffNoPrePause(t *testing.T, h *harness, name, requestID string) (opID string) {
+	t.Helper()
+	status, raw, err := h.do(http.MethodPost, "/api/agents/"+name+"/handoff", map[string]any{"request_id": requestID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusAccepted {
+		t.Fatalf("POST handoff status = %d %s, want 202", status, raw)
+	}
+	var accepted struct {
+		OperationID string `json:"operation_id"`
+		Phase       string `json:"phase"`
+	}
+	if err := json.Unmarshal(raw, &accepted); err != nil {
+		t.Fatalf("handoff response %s: %v", raw, err)
+	}
+	if accepted.Phase != "preserving" {
+		t.Fatalf("handoff phase = %q, want preserving (the predecessor must get to save)", accepted.Phase)
+	}
+	if got := h.sessionState(t, name); got != "pause_requested" {
+		t.Fatalf("%s session = %s, want pause_requested (not killed)", name, got)
+	}
+	var sessions int
+	if err := h.db(t).QueryRow(`SELECT COUNT(*) FROM sessions s JOIN agents a ON a.id = s.agent_id
+		WHERE a.name = ?`, name).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	// Past a reconcile tick the walk still waits for the save.
+	time.Sleep(6 * time.Second)
+	if got := h.sessionState(t, name); got != "pause_requested" && got != "quiescing" {
+		t.Fatalf("%s session = %s before its handoff checkpoint, want still preserving", name, got)
+	}
+	h.mustTool(t, name, "swarm_checkpoint", map[string]any{"kind": "handoff", "summary": "saved for handoff"})
+	deadline := time.Now().Add(40 * time.Second)
+	for {
+		s, _, err := h.do(http.MethodGet, "/api/agents/"+name+"/replacement", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s == http.StatusNotFound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("replacement never finished within 40s")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	var phase, manifest string
+	if err := h.db(t).QueryRow(`SELECT phase, COALESCE(manifest_path, '') FROM agent_operations WHERE id = ?`,
+		accepted.OperationID).Scan(&phase, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "succeeded" || manifest == "" {
+		t.Fatalf("operation phase = %s manifest = %q, want succeeded with a bound manifest", phase, manifest)
+	}
+	var after int
+	if err := h.db(t).QueryRow(`SELECT COUNT(*) FROM sessions s JOIN agents a ON a.id = s.agent_id
+		WHERE a.name = ?`, name).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != sessions+1 {
+		t.Fatalf("%s sessions = %d, want exactly one successor over %d", name, after, sessions)
+	}
+	return accepted.OperationID
+}
+
+func TestScenarioHandoffWorkerNoPrePause(t *testing.T) {
+	h := newHarness(t)
+	epic := h.materializedEpic(t)
+	orch := h.startOrchestrator(t, epic)
+	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	coder := h.spawn(t, orch, h.firstTask(t, epic), "coder")
+	h.mustTool(t, coder, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	if !h.waitForSessionState(t, coder, "running", 5*time.Second) {
+		t.Fatalf("coder session = %s, never reached running", h.sessionState(t, coder))
+	}
+	handoffNoPrePause(t, h, coder, "req-nopause-worker")
+	if !h.waitForSessionState(t, coder, "running", 30*time.Second) {
+		t.Fatalf("coder successor = %s, want running", h.sessionState(t, coder))
+	}
+}
+
+func TestScenarioHandoffOrchestratorNoPrePause(t *testing.T) {
+	h := newHarness(t)
+	epic := h.materializedEpic(t)
+	orch := h.startOrchestrator(t, epic)
+	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	coder := h.spawn(t, orch, h.firstTask(t, epic), "coder")
+	if !h.waitForSessionState(t, coder, "running", 5*time.Second) {
+		t.Fatalf("coder session = %s, never reached running", h.sessionState(t, coder))
+	}
+	handoffNoPrePause(t, h, orch, "req-nopause-orch")
+	if !h.waitForSessionState(t, orch, "running", 30*time.Second) {
+		t.Fatalf("orch successor = %s, want running", h.sessionState(t, orch))
+	}
+	// Orchestrator handoff replaces only its own session: the child kept running.
+	if got := h.sessionState(t, coder); got != "running" {
+		t.Fatalf("child session = %s, want still running through the orchestrator handoff", got)
 	}
 }

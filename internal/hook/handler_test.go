@@ -1416,3 +1416,23 @@ func TestPostToolUseStaysTerseUnderRepeatedCalls(t *testing.T) {
 		t.Fatalf("PostToolUse context = %q, want terse %q", contextOf(t, out), want)
 	}
 }
+
+// A handoff rides the pause delivery path, so its Stop block must carry the
+// HANDOFF notice (a fresh session follows), not the PAUSE one.
+func TestStopBlocksWithHandoffNoticeDuringHandoff(t *testing.T) {
+	h, ses := seed(t, 0, runtime.PauseRequested)
+	if _, err := h.DB.ExecContext(context.Background(), `INSERT INTO agent_operations
+		(id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+		VALUES ('op_h', 'agt_1', 'handoff', 'preserving', 'k', ?, 1, 1, 1)`, ses); err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(context.Background(), runtime.Claude, "Stop", ses, []byte(`{"session_id":"p1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]string
+	json.Unmarshal(out, &m)
+	if m["decision"] != "block" || m["reason"] != runtime.HandoffPreservationNotice("login-form-coder", "TASK-101") {
+		t.Fatalf("handoff stop = %s", out)
+	}
+}

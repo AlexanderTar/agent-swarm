@@ -470,7 +470,7 @@ func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, e
 		var parked bool
 		switch op.Phase {
 		case PhaseRequested:
-			if err := s.setPhase(ctx, opID, PhaseRequested, PhasePreserving, ""); err != nil && !errors.Is(err, errPhaseRaced) {
+			if err := s.beginPreservation(ctx, op, a, latest); err != nil && !errors.Is(err, errPhaseRaced) {
 				return Operation{}, err
 			}
 		case PhasePreserving:
@@ -511,6 +511,31 @@ func (s *Store) advanceOperation(ctx context.Context, opID string) (Operation, e
 	return s.getOperation(ctx, opID)
 }
 
+// beginPreservation is requested->preserving. A handoff of a live session
+// that is not already pausing first asks it to preserve its work through the
+// pause delivery path (pause_requested, a deadline, and a HANDOFF control
+// notice), in the same transaction as the phase swap, so the predecessor is
+// never stopped before it had a chance to save. Scope is always "session":
+// an orchestrator handoff replaces only its own session and its children keep
+// running.
+func (s *Store) beginPreservation(ctx context.Context, op Operation, a Agent, latest Session) error {
+	prePause := op.Mode == ModeHandoff && latest.State.Live() && !latest.State.Pausing()
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		if err := casPhaseTx(ctx, tx, op.ID, PhaseRequested, PhasePreserving, "", s.now()); err != nil {
+			return err
+		}
+		if !prePause {
+			return nil
+		}
+		deadline := s.Now().Add(time.Duration(s.pauseDeadlineSec(ctx)) * time.Second)
+		return s.requestPreservationTx(ctx, tx, a, latest, deadline, "session", "handoff")
+	}); err != nil {
+		return err
+	}
+	s.publishOperationProgress(ctx, op.ID)
+	return nil
+}
+
 // waitForPreservation parks a handoff in preserving while its predecessor
 // can still save: the session is pausing (a pause-first flow keeps it live),
 // no manifest is recorded yet, and the predecessor pane is still alive to
@@ -528,6 +553,11 @@ func (s *Store) waitForPreservation(ctx context.Context, op Operation, latest Se
 		return false, err
 	}
 	if manifestPath != "" {
+		return false, nil
+	}
+	// The preservation window is bounded: past the pause deadline the walk
+	// stops the predecessor itself even if TickPause's kill never landed.
+	if latest.PauseDeadlineAt != nil && s.Now().After(*latest.PauseDeadlineAt) {
 		return false, nil
 	}
 	alive, err := s.predecessorAlive(ctx, op.SessionID)

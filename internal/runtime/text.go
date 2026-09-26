@@ -182,6 +182,12 @@ func PausePreservationNotice(name, itemKey string) string {
 	return PauseHandoffNotice("PAUSE", name, itemKey) + " " + PreservationChecklist
 }
 
+// HandoffPreservationNotice is PausePreservationNotice for a handoff: the
+// HANDOFF template (a fresh session follows) plus the same checklist.
+func HandoffPreservationNotice(name, itemKey string) string {
+	return PauseHandoffNotice("HANDOFF", name, itemKey) + " " + PreservationChecklist
+}
+
 func CompactionNotice() string {
 	return "Your context was compacted. Call swarm_sync, then swarm_read with your root filter, before continuing. " + ShortPreamble
 }
