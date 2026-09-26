@@ -967,8 +967,8 @@ func TestSpawnResolvesCursorLaunchModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeExec := &execx.Fake{Responses: map[string]execx.Result{
-		"cursor-agent --version": {Out: "cursor-agent 1.0.0"},
-		"cursor-agent status":    {Out: "Logged in as u"},
+		"cursor-agent --version":   {Out: "cursor-agent 1.0.0"},
+		"cursor-agent status":      {Out: "Logged in as u"},
 		"cursor-agent create-chat": {Out: "chat-1"},
 	}}
 	s.Exec = fakeExec.Runner()
