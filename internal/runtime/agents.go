@@ -987,6 +987,32 @@ type spawnResult struct {
 	Queued bool
 }
 
+// resolveLaunchModel converts a catalog base model id into the exact id an
+// agent's CLI expects on --model, via CatalogModel.LaunchModel (P0 fix,
+// docs/specs/2026-09-26-agy-launch-model.md): agy only accepts
+// effort-suffixed ids (e.g. "gemini-3.8-flash-high"), never the base slug.
+// It is a no-op for kinds whose catalog entries aren't slug-encoded
+// (Claude, Codex, Fake, and cursor's per-effort entries today), and it
+// passes model through unchanged whenever it isn't found in the catalog --
+// a user-configured raw suffixed id must keep working. Every place that
+// turns an Agent into a live launch (startSession, covering spawn, resume,
+// retry and usage-fallback) and the wake call sites in wake.go must resolve
+// through this one function.
+func (s *Store) resolveLaunchModel(ctx context.Context, kind AgentKind, model, effort string) string {
+	if s.Catalog == nil || model == "" {
+		return model
+	}
+	models, _, err := s.Catalog.ModelsFor(ctx, kind)
+	if err != nil {
+		return model
+	}
+	m, ok := catalog.Find(models, model)
+	if !ok {
+		return model
+	}
+	return m.LaunchModel(effort)
+}
+
 func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation int, resume bool, providerID string) (result Session, retErr error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM sessions WHERE agent_id = ?`, a.ID)
 	if err == nil {
@@ -1088,7 +1114,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		Token:             token,
 		TokenFile:         tokPath,
 		DaemonURL:         s.DaemonURL,
-		Model:             a.Model,
+		Model:             s.resolveLaunchModel(ctx, a.Kind, a.Model, a.Effort),
 		Effort:            a.Effort,
 		Cwd:               cwd,
 		ProviderSessionID: providerID,
