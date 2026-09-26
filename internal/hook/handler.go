@@ -23,6 +23,16 @@ func isClaudeCommand(cmd string) bool {
 	return claudeCmdRe.MatchString(cmd)
 }
 
+// capPrompt is the 1000-rune cap every hook-recorded question prompt gets,
+// shared by extractQuestion and the codex question-reply binder so both
+// compute the same prompt text.
+func capPrompt(p string) string {
+	if utf8.RuneCountInString(p) > 1000 {
+		return string([]rune(p)[:997]) + "..."
+	}
+	return p
+}
+
 func extractQuestion(toolName string, raw []byte) (string, []string) {
 	if len(raw) == 0 {
 		return fmt.Sprintf("%s called", toolName), nil
@@ -36,6 +46,7 @@ func extractQuestion(toolName string, raw []byte) (string, []string) {
 		Choices   []any  `json:"choices"`
 		Questions []struct {
 			Question string `json:"question"`
+			Title    string `json:"title"` // codex 0.157 request_user_input_async
 			Options  []any  `json:"options"`
 		} `json:"questions"`
 	}
@@ -49,6 +60,9 @@ func extractQuestion(toolName string, raw []byte) (string, []string) {
 
 	if len(payload.Questions) > 0 {
 		prompt = payload.Questions[0].Question
+		if prompt == "" {
+			prompt = payload.Questions[0].Title
+		}
 		rawOptions = payload.Questions[0].Options
 	} else {
 		if payload.Question != "" {
@@ -69,9 +83,7 @@ func extractQuestion(toolName string, raw []byte) (string, []string) {
 		prompt = fmt.Sprintf("%s called", toolName)
 	}
 
-	if n := utf8.RuneCountInString(prompt); n > 1000 {
-		prompt = string([]rune(prompt)[:997]) + "..."
-	}
+	prompt = capPrompt(prompt)
 
 	var options []string
 	for _, opt := range rawOptions {
@@ -104,13 +116,14 @@ func questionsHaveBatchedSwarmRef(raw []byte) bool {
 	var payload struct {
 		Questions []struct {
 			Question string `json:"question"`
+			Title    string `json:"title"`
 		} `json:"questions"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil || len(payload.Questions) < 2 {
 		return false
 	}
 	for _, q := range payload.Questions {
-		if runtime.HasRefToken(q.Question) {
+		if runtime.HasRefToken(q.Question) || runtime.HasRefToken(q.Title) {
 			return true
 		}
 	}
@@ -217,11 +230,11 @@ func normalize(kind runtime.AgentKind, event string) string {
 //	agy ask_question: confirmed live. PreToolUse fires before the dialog renders (a deny
 //	  suppresses it entirely); PostToolUse carries no result field, so agy stays
 //	  agent_reported (spec 2.3.5). Fixtures: testdata/agy-hook-{pre,post}tooluse-ask_question.json.
-//	codex request_user_input: UNCONFIRMED live (Task 4b hit a persistent backend 401
-//	  unrelated to Swarm before the tool call was ever reached, spec 1.7). Source-code
-//	  confidence alone (registry.rs/request_user_input.rs) is not enough to refuse
-//	  swarm_ask on: codex joins cursor's exception (swarm_ask kind:"question" stays
-//	  available) until a live retry produces the T4b fixtures.
+//	codex request_user_input_async: confirmed live 2026-09-26 (codex 0.157; fixtures
+//	  testdata/codex/native-question). Async: PostToolUse carries only {"accepted":true};
+//	  the answer arrives on the next UserPromptSubmit as a <send_user_message_question_reply>
+//	  message (parseQuestionReply). request_user_input / experimental_request_user_input
+//	  are kept for older builds.
 //	muse request_user_input: confirmed live to dispatch NO hook at all, ever -- not
 //	  "fires but can't deny" but no event to intercept in the first place, while the same
 //	  plugin's hooks fired correctly for muse's other tool calls in the same turn
@@ -233,15 +246,20 @@ func normalize(kind runtime.AgentKind, event string) string {
 //
 // Where a block is honored, a parented agent's question is relayed instead
 // (nativeQuestionRelay). Where the hook is absent or unconfirmed (cursor,
-// muse, codex), a parented agent still has no other way to reach the user;
+// muse), a parented agent still has no other way to reach the user;
 // swarm_ask stays available and Task 9 does not refuse it for these kinds.
 func isQuestionTool(name string) bool {
 	switch name {
-	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input", "AskQuestion":
+	case "ask_question", "AskUserQuestion", "request_user_input", "experimental_request_user_input", asyncQuestionTool, "AskQuestion":
 		return true
 	}
 	return false
 }
+
+// asyncQuestionTool is codex 0.157's native question tool. It returns
+// {"accepted":true} at once; the user's answer arrives later as a
+// <send_user_message_question_reply> UserPromptSubmit (parseQuestionReply).
+const asyncQuestionTool = "request_user_input_async"
 
 // nativeQuestionRelay is the PreToolUse block reason for a parented agent.
 const nativeQuestionRelay = "[swarm] You report to an orchestrator, not the user. Send this question to it with swarm_send (to: \"parent\", kind: \"question\") instead of a question tool."

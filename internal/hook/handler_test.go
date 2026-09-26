@@ -1399,7 +1399,7 @@ func TestParentedAgentQuestionToolIsBlockedAndOpensNoRequest(t *testing.T) {
 	for _, c := range []struct {
 		kind runtime.AgentKind
 		tool string
-	}{{runtime.Claude, "AskUserQuestion"}, {runtime.Codex, "request_user_input"}, {runtime.Cursor, "ask_question"}, {runtime.Agy, "ask_question"}} {
+	}{{runtime.Claude, "AskUserQuestion"}, {runtime.Codex, "request_user_input"}, {runtime.Codex, "request_user_input_async"}, {runtime.Cursor, "ask_question"}, {runtime.Agy, "ask_question"}} {
 		t.Run(string(c.kind)+" "+c.tool, func(t *testing.T) {
 			h, ses := seed(t, 0, runtime.Running)
 			// The seeded agent "has a parent" via its own id: the FK is satisfied and the
