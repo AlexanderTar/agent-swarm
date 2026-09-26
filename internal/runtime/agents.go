@@ -95,7 +95,9 @@ func defaultName(role Role, title string) (string, error) {
 	if role == RoleOrchestrator {
 		return slug + "-orchestrator", nil
 	}
-	return slug + "-" + string(role), nil
+	// Kebab the whole name, not just the title: a role like ui_reviewer
+	// must not leak its underscore into the agent name.
+	return ids.Kebab(slug + "-" + string(role))
 }
 
 // resolveName suffixes a daemon-generated name on a collision (§4) but refuses a

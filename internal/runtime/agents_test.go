@@ -2642,3 +2642,31 @@ func TestStartupDetectOnlyDialogOpensAPromptWithoutKeys(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", n)
 	}
 }
+
+// A role with an underscore (ui_reviewer) must not leak it into the
+// generated name: every generated name is kebab-case (2026-09-26 spec).
+func TestDefaultNameKebabsRole(t *testing.T) {
+	got, err := defaultName(RoleUIReviewer, "Announce support and")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "announce-support-and-ui-reviewer" {
+		t.Fatalf("defaultName = %q, want announce-support-and-ui-reviewer", got)
+	}
+}
+
+func TestSpawnUIReviewerNameIsKebab(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Adapters[Claude] = fa
+	_, _ = s.DB.ExecContext(context.Background(), `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','1','[{"id":"opus","label":"Opus","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}]','opus','test',1,1)`)
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(context.Background(), SpawnInput{ItemKey: "TASK-1", Role: RoleUIReviewer, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(a.Name, "_") || !strings.HasSuffix(a.Name, "-ui-reviewer") {
+		t.Fatalf("name = %q, want a kebab-case name ending -ui-reviewer", a.Name)
+	}
+}
