@@ -21,7 +21,7 @@ final class MenuLabelTests: XCTestCase {
         let all = MenuLabel.make(activeCount: 6, connected: true, enabled: [.cursor, .agy, .codex, .claude],
                                  usage: usage, compact: false, format: format)
         XCTAssertEqual(all.count, "6")
-        XCTAssertEqual(texts(all), ["claude 42% dim", "codex 18%", "agy 63%", "cursor 27%"])
+        XCTAssertEqual(texts(all), ["claude 42% dim", "codex 18%", "agy 6%", "cursor 27%"])
         XCTAssertEqual(MenuLabel.widestValue, "100%")
         XCTAssertEqual(MenuLabel.widestMonthlyValue, "100%", "no more bare \"M\" suffix on monthly meters")
     }
@@ -43,7 +43,7 @@ final class MenuLabelTests: XCTestCase {
         XCTAssertEqual(l.segments.map(\.tooltip), [
             "Last updated 12 min ago.",
             "5h 18%",
-            "Claude & GPT 5h 63% · Gemini 5h 0%",
+            "Gemini 5h 6%",
             "Monthly Auto usage · resets 1 Oct",
         ])
         // A snapshot that never fetched is stale with fetched_at 0, which is not an age.
@@ -118,6 +118,17 @@ final class MenuLabelTests: XCTestCase {
         bare.meters = [Meter(id: "x", label: "X", usedPct: 140)]
         XCTAssertEqual(UsageSection.rows(bare, format: format).map(\.trailing), [""])
         XCTAssertEqual(UsageSection.rows(bare, format: format)[0].fraction, 1)
+    }
+
+    /// agy's wire carries its native Gemini quota only (2026-09-26): the label
+    /// and the usage panel show Gemini, never the Claude & GPT models agy also offers.
+    func testAgyShowsNativeGeminiUsageOnly() {
+        let agy = usage[2]
+        XCTAssertEqual(agy.agent, .agy)
+        XCTAssertEqual(UsageSection.rows(agy, format: format).map(\.label), ["Gemini 5h", "Gemini weekly"])
+        let l = MenuLabel.make(activeCount: 0, connected: true, enabled: [.agy], usage: usage, compact: false, format: format)
+        XCTAssertEqual(texts(l), ["agy 6%"])
+        XCTAssertFalse(l.segments[0].tooltip.contains("Claude"), l.segments[0].tooltip)
     }
 
     func testUsageLevelThresholds() {

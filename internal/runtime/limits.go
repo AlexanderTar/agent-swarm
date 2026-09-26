@@ -269,6 +269,7 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 		})
 	}
 	if substituted {
+		a.KindReason = joinReason(a.KindReason, fallbackReason(origKind))
 		// The kind swap above can flip whether "native" advisor mode still
 		// applies (it's Claude-only): re-resolve with the agent's existing
 		// advisor kind/model/effort as an explicit choice, so mode gets
@@ -313,9 +314,10 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 			// preflightErr's own text, which names whichever kind Preflight
 			// actually ran against.
 			if _, err := tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ?, effort = ?,
-				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, '')
+				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, ''),
+				kind_reason = NULLIF(?, '')
 				WHERE id = ?`,
-				string(a.Kind), a.Model, a.Effort, a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.ID); err != nil {
+				string(a.Kind), a.Model, a.Effort, a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.KindReason, a.ID); err != nil {
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO sessions
@@ -345,9 +347,10 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 		}
 
 		_, err = tx.ExecContext(ctx, `UPDATE agents SET state = 'active', kind = ?, model = ?, effort = ?,
-			advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, '')
+			advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, ''),
+			kind_reason = NULLIF(?, '')
 			WHERE id = ?`,
-			string(a.Kind), a.Model, a.Effort, a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.ID)
+			string(a.Kind), a.Model, a.Effort, a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.KindReason, a.ID)
 		return err
 	})
 	if err != nil {

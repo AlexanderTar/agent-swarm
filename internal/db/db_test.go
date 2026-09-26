@@ -114,6 +114,11 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN auto_restart`); err != nil {
 		t.Fatal(err)
 	}
+	// 0016_agent_kind_reason.sql adds agents.kind_reason with plain ALTER
+	// TABLE, and 0008's agents rebuild expects the v1 column set.
+	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN kind_reason`); err != nil {
+		t.Fatal(err)
+	}
 	for _, col := range []string{"verdict", "findings_json"} {
 		if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN ` + col); err != nil {
 			t.Fatal(err)
@@ -157,6 +162,9 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	assertHasFailureText()
 	assertHasRoleOverrides()
 	assertHasWorkflowColumns()
+	if _, err := d.Exec(`SELECT kind_reason FROM agents LIMIT 1`); err != nil {
+		t.Fatalf("agents.kind_reason missing after catching up: %v", err)
+	}
 	var v int
 	d.QueryRow("PRAGMA user_version").Scan(&v)
 	if v != db.SchemaVersion {

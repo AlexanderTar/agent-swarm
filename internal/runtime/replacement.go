@@ -865,6 +865,14 @@ func (s *Store) brokenPredecessorEvidence(ctx context.Context, agentID string) (
 // token and provider session change. Open requests follow the agent onto
 // the new session, a lineage row links the generations, and the operation
 // lands on succeeded.
+//
+// This is also why internal/adapter.CodexHomeDir is keyed on the agent id,
+// not the session id (docs/specs/2026-09-26-codex-short-home.md, review
+// round 1): a codex successor started here safely reuses its predecessor's
+// CODEX_HOME, because the predecessor's tmux pane is always killed during
+// this operation's Stopping phase (see the PhaseStopping case above),
+// strictly before this Starting phase runs -- there is never a live process
+// racing to hold that directory open.
 func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, latest Session) error {
 	// A queued retry's note (or a handoff note) reaches the successor as an
 	// inbox message before it starts, the same delivery an immediate Retry

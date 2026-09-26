@@ -199,7 +199,7 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		// — recording every per-tick false would hold paste-only sessions
 		// behind permanent backoff.
 		if !r.NativeTried {
-			delivered, err := ad.Wake(ctx, adapter.WakeTarget{SessionID: r.SessionID,
+			delivered, err := ad.Wake(ctx, adapter.WakeTarget{SessionID: r.SessionID, AgentID: r.AgentID,
 				ProviderSessionID: r.ProviderID, TmuxName: r.TmuxName, Notice: notice,
 				Model: s.resolveLaunchModel(ctx, r.Kind, r.Model, r.Effort)})
 			if err != nil {
@@ -536,7 +536,7 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 	if err := s.flushSuppressed(ctx, kind); err != nil {
 		return 0, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, a.name, ses.tmux_name, ses.state, ses.waiting, a.model, COALESCE(a.effort, '')
+	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, a.id, a.name, ses.tmux_name, ses.state, ses.waiting, a.model, COALESCE(a.effort, '')
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
 		WHERE a.kind = ? AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
 		AND (ses.last_wake_at IS NULL OR ses.last_wake_at < ?)`,
@@ -549,14 +549,14 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 	ad, ok := s.Adapters[kind]
 	woken := 0
 	for rows.Next() {
-		var sessionID, agentName, tmuxName, state, model, effort string
+		var sessionID, agentID, agentName, tmuxName, state, model, effort string
 		var waiting bool
-		if err := rows.Scan(&sessionID, &agentName, &tmuxName, &state, &waiting, &model, &effort); err != nil {
+		if err := rows.Scan(&sessionID, &agentID, &agentName, &tmuxName, &state, &waiting, &model, &effort); err != nil {
 			return woken, err
 		}
 		// Attempt native wake or paste idle token if pane is idle
 		if ok {
-			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, TmuxName: tmuxName,
+			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, AgentID: agentID, TmuxName: tmuxName,
 				Notice: QuotaResetNotice(),
 				Model:  s.resolveLaunchModel(ctx, kind, model, effort)})
 			if delivered {

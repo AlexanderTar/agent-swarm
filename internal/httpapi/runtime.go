@@ -60,6 +60,7 @@ type agentNodeWire struct {
 	Session        *sessionInfoWire   `json:"session"`
 	Replacement    *replacementWire   `json:"replacement,omitempty"`
 	PreflightError *string            `json:"preflight_error"`
+	KindReason     *string            `json:"kind_reason"` // why kind/model isn't the role default; null = settings
 	CreatedAt      int64              `json:"created_at"`
 	FinishedAt     *int64             `json:"finished_at"`
 	Children       []agentNodeWire    `json:"children"`
@@ -474,7 +475,8 @@ func (s *Server) agentNodeOut(ctx context.Context, a runtime.Agent, live map[str
 	}
 	w := agentNodeWire{ID: a.ID, Name: a.Name, Kind: a.Kind, Model: a.Model, Effort: optStr(a.Effort), Role: a.Role,
 		ItemKey: itemKey, ItemTitle: it.Title, RootKey: rootKey, Advisor: s.advisorInfoOut(a), State: a.State,
-		PreflightError: optStr(a.PreflightError), CreatedAt: db.Millis(a.CreatedAt), FinishedAt: optMs(a.FinishedAt),
+		PreflightError: optStr(a.PreflightError), KindReason: optStr(a.KindReason),
+		CreatedAt: db.Millis(a.CreatedAt), FinishedAt: optMs(a.FinishedAt),
 		Children: []agentNodeWire{}, Finished: []agentNodeWire{}}
 	if a.ParentAgentID != "" {
 		if name, err := s.agentNameByID(ctx, a.ParentAgentID); err == nil {

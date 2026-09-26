@@ -2642,3 +2642,183 @@ func TestStartupDetectOnlyDialogOpensAPromptWithoutKeys(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", n)
 	}
 }
+
+// A role with an underscore (ui_reviewer) must not leak it into the
+// generated name: every generated name is kebab-case (2026-09-26 spec).
+func TestDefaultNameKebabsRole(t *testing.T) {
+	got, err := defaultName(RoleUIReviewer, "Announce support and")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "announce-support-and-ui-reviewer" {
+		t.Fatalf("defaultName = %q, want announce-support-and-ui-reviewer", got)
+	}
+}
+
+func TestSpawnUIReviewerNameIsKebab(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Adapters[Claude] = fa
+	_, _ = s.DB.ExecContext(context.Background(), `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','1','[{"id":"opus","label":"Opus","efforts":[],"default_effort":"","effort_encoding":"flag","advisor_capable":false}]','opus','test',1,1)`)
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(context.Background(), SpawnInput{ItemKey: "TASK-1", Role: RoleUIReviewer, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(a.Name, "_") || !strings.HasSuffix(a.Name, "-ui-reviewer") {
+		t.Fatalf("name = %q, want a kebab-case name ending -ui-reviewer", a.Name)
+	}
+}
+
+// ---------- kind_reason (2026-09-26 worker-defaults spec) ----------
+
+// L1: no explicit choice -> the role default, and nothing to explain.
+func TestSpawnRoleDefaultHasNoKindReason(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	cfg, _ := s.Settings.Get(ctx)
+	cfg.Roles[RoleUIReviewer] = settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"}
+	if _, err := s.Settings.Put(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleUIReviewer, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := agentRow(t, s, a.Name)
+	if row.Kind != Codex || row.Model != "gpt-6-astra" || row.KindReason != "" {
+		t.Fatalf("row = %s/%s reason %q, want codex/gpt-6-astra and no reason", row.Kind, row.Model, row.KindReason)
+	}
+}
+
+// An explicit kind/model is kept and its user reason recorded.
+func TestSpawnExplicitOverrideRecordsReason(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, Kind: Codex, Model: "gpt-6-astra",
+		OverrideReason: "user asked for codex", Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := agentRow(t, s, a.Name)
+	if row.Kind != Codex || row.KindReason != "User override: user asked for codex" {
+		t.Fatalf("row = %s reason %q", row.Kind, row.KindReason)
+	}
+}
+
+// The live 2026-09-26 case: a parent's setup role override decides the
+// child's kind; the child row names it.
+func TestSpawnParentRoleOverrideRecordsReason(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5",
+		Roles: map[Role]settings.RoleDefault{RoleUIReviewer: {Agent: Claude, Model: "claude-opus-5"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleUIReviewer, ParentAgentID: orch.ID,
+		Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := agentRow(t, s, a.Name)
+	want := "Role override set on " + orch.Name
+	if row.Kind != Claude || row.Model != "claude-opus-5" || row.KindReason != want {
+		t.Fatalf("row = %s/%s reason %q, want claude/claude-opus-5 reason %q", row.Kind, row.Model, row.KindReason, want)
+	}
+}
+
+// setRolesRaw writes the roles setting straight to the DB, bypassing
+// Settings.Put's validation, to reach states Put would refuse or reassign
+// (a disabled agent, a model the catalog dropped).
+func setRolesRaw(t *testing.T, s *Store, roles string) {
+	t.Helper()
+	if _, err := s.DB.ExecContext(context.Background(), `INSERT INTO settings (key, value_json, updated_at)
+		VALUES ('roles', ?, 1) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`, roles); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Review IMPORTANT 1, path A: the role default names a disabled agent, so
+// Spawn falls back to the first enabled agent -- that must be visible.
+func TestSpawnDisabledRoleDefaultRecordsReason(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	setRolesRaw(t, s, `{"ui_reviewer":{"agent":"agy","model":"gemini-3.8-flash"}}`)
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(context.Background(), SpawnInput{ItemKey: "TASK-1", Role: RoleUIReviewer, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Role default for ui_reviewer unavailable; using Claude"
+	if row := agentRow(t, s, a.Name); row.Kind != Claude || row.KindReason != want {
+		t.Fatalf("row = %s reason %q, want claude reason %q", row.Kind, row.KindReason, want)
+	}
+}
+
+// Review IMPORTANT 1, path B: the role default's model left the catalog, so
+// Spawn falls back to the kind's first model -- that must be visible.
+func TestSpawnMissingRoleDefaultModelRecordsReason(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	setRolesRaw(t, s, `{"ui_reviewer":{"agent":"codex","model":"gpt-gone"}}`)
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(context.Background(), SpawnInput{ItemKey: "TASK-1", Role: RoleUIReviewer, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Role default model gpt-gone for ui_reviewer unavailable; using gpt-6-astra"
+	if row := agentRow(t, s, a.Name); row.Kind != Codex || row.Model != "gpt-6-astra" || row.KindReason != want {
+		t.Fatalf("row = %s/%s reason %q, want codex/gpt-6-astra reason %q", row.Kind, row.Model, row.KindReason, want)
+	}
+}
+
+// Review MINOR 4: a model-only user override whose kind/model match the
+// parent's role override takes its effort from that override -- both
+// sources show.
+func TestSpawnModelOverrideWithMatchingParentOverrideJoinsReasons(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5",
+		Roles: map[Role]settings.RoleDefault{RoleReviewer: {Agent: Codex, Model: "gpt-6-astra", Effort: "high"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, ParentAgentID: orch.ID,
+		Model: "gpt-6-astra", OverrideReason: "user asked for astra", Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := agentRow(t, s, a.Name)
+	want := "User override: user asked for astra; Role override set on " + orch.Name
+	if row.Kind != Codex || row.Effort != "high" || row.KindReason != want {
+		t.Fatalf("row = %s effort %q reason %q, want codex/high reason %q", row.Kind, row.Effort, row.KindReason, want)
+	}
+}
+
+// Review MINOR 1: the reason given to swarm_role_overrides set is stored
+// with the override and reaches the child's kind_reason.
+func TestSpawnParentRoleOverrideCarriesItsReason(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetRoleOverride(ctx, orch.Name, RoleReviewer,
+		&settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra", Reason: "user wants codex reviews"}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleReviewer, ParentAgentID: orch.ID, Brief: BriefInput{Objective: "review"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Role override set on " + orch.Name + ": user wants codex reviews"
+	if row := agentRow(t, s, a.Name); row.Kind != Codex || row.KindReason != want {
+		t.Fatalf("row = %s reason %q, want %q", row.Kind, row.KindReason, want)
+	}
+}

@@ -349,6 +349,10 @@ func TestSpawnSubstitutesExhaustedFallback(t *testing.T) {
 	if a.Kind != Codex || a.Model != "gpt-6-astra" {
 		t.Fatalf("agent = %+v, want substituted", a)
 	}
+	// L2: a usage fallback is allowed but visible on the agent row.
+	if got := agentRow(t, s, a.Name).KindReason; got != "User override; Claude is out of usage" {
+		t.Fatalf("kind_reason = %q, want %q", got, "User override; Claude is out of usage")
+	}
 	if len(tm.started) != 1 {
 		t.Fatalf("started = %v", tm.started)
 	}
@@ -437,8 +441,15 @@ func TestRetrySubstitutesExhaustedFallbackAndPersistsIt(t *testing.T) {
 	if out.Kind != Codex || out.Model != "gpt-6-astra" {
 		t.Fatalf("agent = %+v, want substituted", out)
 	}
+	// Review MINOR 2: the returned agent carries the reason the row got.
+	if out.KindReason != "Claude is out of usage" {
+		t.Fatalf("returned kind_reason = %q, want %q", out.KindReason, "Claude is out of usage")
+	}
 	if row := agentRow(t, s, a.Name); row.Kind != Codex || row.Model != "gpt-6-astra" {
 		t.Fatalf("persisted row = %+v, want substituted kind/model", row)
+	}
+	if got := agentRow(t, s, a.Name).KindReason; got != "Claude is out of usage" {
+		t.Fatalf("kind_reason = %q, want %q", got, "Claude is out of usage")
 	}
 	n := notified(t, s, "agent.fallback_used")
 	if n.Args["agent"] != "Codex" || n.Args["from"] != "Claude" {
@@ -628,6 +639,9 @@ func TestDrainQueueSubstitutesExhaustedFallback(t *testing.T) {
 	}
 	if drained.Kind != Codex || drained.Model != "gpt-6-astra" {
 		t.Fatalf("drained = %+v, want substituted to codex/gpt-6-astra", drained)
+	}
+	if drained.KindReason != "User override; Claude is out of usage" {
+		t.Fatalf("kind_reason = %q, want %q", drained.KindReason, "User override; Claude is out of usage")
 	}
 	if len(tm.started) != 2 { // TASK-1's session plus the drained TASK-2 one
 		t.Fatalf("started = %v", tm.started)

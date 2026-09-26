@@ -34,7 +34,7 @@ func TestAgentNodeWireShape(t *testing.T) {
 	n := nodes[0]
 	for _, k := range []string{"id", "name", "kind", "model", "effort", "role", "item_key",
 		"item_title", "root_key", "parent_name", "advisor", "state", "session",
-		"preflight_error", "created_at", "finished_at", "children", "finished"} {
+		"preflight_error", "kind_reason", "created_at", "finished_at", "children", "finished"} {
 		if _, ok := n[k]; !ok {
 			t.Errorf("AgentNode is missing %q: %s", k, rec.Body)
 		}
@@ -56,6 +56,35 @@ func TestAgentNodeWireShape(t *testing.T) {
 		t.Errorf("started_at must be integer ms (W2), got %T", ses["started_at"])
 	}
 	_ = seed
+}
+
+// kind_reason is null for an agent on its settings default and carries the
+// stored reason otherwise (2026-09-26 worker-defaults spec).
+func TestAgentNodeCarriesKindReason(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+	reasonOf := func() any {
+		rec := s.get(t, "/api/agents?state=all")
+		var nodes []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &nodes); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range nodes {
+			if n["name"] == seed.AgentName {
+				return n["kind_reason"]
+			}
+		}
+		t.Fatalf("agent %s not listed: %s", seed.AgentName, rec.Body)
+		return nil
+	}
+	if got := reasonOf(); got != nil {
+		t.Fatalf("kind_reason = %v, want null", got)
+	}
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE agents SET kind_reason = 'Codex is out of usage' WHERE name = ?`, seed.AgentName); err != nil {
+		t.Fatal(err)
+	}
+	if got := reasonOf(); got != "Codex is out of usage" {
+		t.Fatalf("kind_reason = %v, want the stored reason", got)
+	}
 }
 
 // contracts §3.2: preflight_error is non-null exactly when there is no session.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -251,7 +252,133 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.ResumeOperations(ctx); err != nil {
 		return err
 	}
+	// resumableAgentIDs, not `live`: paused/interrupted sessions are not in
+	// liveSessionRows (LiveStates excludes them) but ARE resumable -- a
+	// paused codex session's thread store lives inside its (agent-keyed)
+	// CODEX_HOME, and `codex resume` re-reads it, so deleting it the tick
+	// after pause would turn a resumable session into "no rollout found for
+	// thread id ..." on resume, a regression the old (never-cleaned) home
+	// never had. Grouped by agent_id (review round 1, blocking): codex's
+	// home is keyed on the agent, not the session, so the keep-set must be
+	// too -- a session-id keep-set would leave every OTHER generation of a
+	// resumable agent (i.e. every generation but its newest) looking dead.
+	// Real wall-clock time.Now(), not s.now(): this is compared against real
+	// filesystem mtimes (os.ReadDir/os.FileInfo), which are always real time
+	// regardless of any injected/logical clock s.Now overrides for the rest
+	// of Reconcile's business-time logic.
+	snapshotAt := time.Now()
+	resumableAgentIDs, err := s.queryIDs(ctx, `SELECT DISTINCT agent_id FROM sessions
+		WHERE state NOT IN ('completed', 'failed', 'crashed', 'cancelled')`)
+	if err != nil {
+		s.logf("reconcile: list resumable agents for codex home reclaim: %v", err)
+	} else {
+		reclaimCodexHomes(s.Home, resumableAgentIDs, snapshotAt, s.logf)
+	}
+	if err := s.reclaimOldCodexLaunchHomes(ctx); err != nil {
+		s.logf("reconcile: reclaim old codex launch homes: %v", err)
+	}
 	return s.sweepFinishedRoots(ctx)
+}
+
+// reclaimCodexHomes removes internal/adapter.CodexHomeDir's short CODEX_HOME
+// directories (<home>/cx/<hash>) for agents that are no longer resumable
+// (every one of their sessions is completed/failed/crashed/cancelled -- see
+// Reconcile's call site for why this is NOT just the live set). codex runs
+// with --no-daemon (internal/adapter/codex.go flags()), so there is no
+// daemon process to stop here -- only the directory. There is no general
+// launch-dir GC in this codebase (run/launch/<session>/ is never cleaned up
+// today, for any adapter, except the one-time codex-home migration in
+// reclaimOldCodexLaunchHomes below); this sweep is scoped to codex's own
+// short-home dirs, which are cheap to name deterministically from a
+// resumable agent id and don't require plumbing a new teardown hook through
+// every Tmux.Kill call site.
+//
+// snapshotAt guards IMPORTANT 2 (review round 1): keepAgentIDs is a DB
+// snapshot, and a session can be inserted (with its home mkdir'd, per
+// startSession/setupEnv's insert-before-mkdir order) between that snapshot
+// and this function's own os.ReadDir. Such a directory would look, wrongly,
+// like a dead agent with no matching row. Any directory entry whose mtime is
+// after snapshotAt is skipped rather than removed: it could not have been
+// accounted for by a keep-set queried at or before that instant, so its
+// absence from keep is not evidence it's dead -- the next tick, once its row
+// has definitely landed, will resolve it correctly either way. Errors
+// removing one entry are logged, not returned, so one stuck directory (e.g.
+// permissions) never stops the rest of the sweep (review round 1, MINOR 3).
+func reclaimCodexHomes(home string, keepAgentIDs []string, snapshotAt time.Time, logf func(string, ...any)) {
+	if home == "" { // never resolve to the relative "cx" (review round 1, MINOR 2)
+		return
+	}
+	root := filepath.Join(home, "cx")
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		logf("reconcile: list codex homes: %v", err)
+		return
+	}
+	keep := make(map[string]bool, len(keepAgentIDs))
+	for _, id := range keepAgentIDs {
+		keep[adapter.CodexHomeDirName(id)] = true
+	}
+	for _, e := range entries {
+		if keep[e.Name()] {
+			continue
+		}
+		if info, ierr := e.Info(); ierr == nil && info.ModTime().After(snapshotAt) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
+			logf("reconcile: remove codex home %s: %v", e.Name(), err)
+		}
+	}
+}
+
+// reclaimOldCodexLaunchHomes is a one-time cleanup (review round 1, MINOR 4)
+// of the pre-fix (2026-09-26) per-launch codex-home directories
+// (<home>/run/launch/<session id>/codex-home), for sessions in a terminal
+// state only -- a live/paused session could in principle still be running
+// against its old, long CODEX_HOME, and deleting a running agent's home out
+// from under it is not a risk worth taking just to reclaim disk. Removes
+// only the codex-home subdir, never the whole per-launch dir (other files,
+// e.g. codex's own instructions file or claude's per-launch settings, still
+// live alongside it), and only ever under s.Home. Self-limiting: once a
+// session's codex-home is gone there is nothing left to remove on a later
+// tick, so this needs no separate "already ran once" bookkeeping.
+func (s *Store) reclaimOldCodexLaunchHomes(ctx context.Context) error {
+	if s.Home == "" {
+		return nil
+	}
+	launchRoot := filepath.Join(s.Home, "run", "launch")
+	entries, err := os.ReadDir(launchRoot)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	terminalIDs, err := s.queryIDs(ctx, `SELECT id FROM sessions
+		WHERE state IN ('completed', 'failed', 'crashed', 'cancelled')`)
+	if err != nil {
+		return err
+	}
+	terminal := make(map[string]bool, len(terminalIDs))
+	for _, id := range terminalIDs {
+		terminal[id] = true
+	}
+	for _, e := range entries {
+		if !terminal[e.Name()] {
+			continue
+		}
+		old := filepath.Join(launchRoot, e.Name(), "codex-home")
+		if _, err := os.Stat(old); err != nil {
+			continue // never existed for this session (not codex, or already gone)
+		}
+		if err := os.RemoveAll(old); err != nil {
+			s.logf("reconcile: remove old codex-home %s: %v", old, err)
+		}
+	}
+	return nil
 }
 
 // withdrawOrphanedRequests closes every open HITL request whose owning agent

@@ -14,8 +14,30 @@ import (
 
 func testDeps(t *testing.T) Deps {
 	t.Helper()
-	return Deps{Home: t.TempDir(), UserHome: t.TempDir(), Bin: "/usr/local/bin/swarm",
+	return Deps{Home: shortTempDir(t), UserHome: t.TempDir(), Bin: "/usr/local/bin/swarm",
 		Run: (&execx.Fake{}).Runner(), Now: nowStub, Log: func(string, ...any) {}}
+}
+
+// shortTempDir is t.TempDir(), but without the full (often 60-100+ char)
+// test name t.TempDir() nests under. Codex's setupEnv (codex.go) now refuses
+// to build a CODEX_HOME whose app-server-control socket would exceed
+// macOS's SUN_LEN, and Deps.Home feeds directly into that path -- a long
+// test name is exactly the kind of "unrealistically long path" the guard is
+// meant to catch in production, but it isn't a realistic swarm home (a real
+// one looks like /Users/alex/.swarm), so it must not make every unrelated
+// test fail this guard too.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	// "/tmp", not "" (os.TempDir()): on macOS the per-process $TMPDIR is
+	// itself a long, randomized path (/var/folders/<hash>/T/), which alone
+	// can burn most of the SUN_LEN budget before CODEX_HOME's own "/cx/<hash>"
+	// suffix is even added.
+	dir, err := os.MkdirTemp("/tmp", "sw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }
 
 func nowStub() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }

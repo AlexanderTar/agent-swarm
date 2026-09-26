@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,15 +37,59 @@ func TestAgyBuckets(t *testing.T) {
 	if m := byLabel["Gemini weekly"]; m.UsedPct != 50 {
 		t.Errorf("Gemini weekly = %+v", m)
 	}
-	if m := byLabel["Claude & GPT 5h"]; m.UsedPct != 100 {
-		t.Errorf("a missing remainingFraction counts as fully used: %+v", m)
+	// Claude & GPT inside agy are extra models, not agy's native Gemini
+	// quota: they are not reported at all (2026-09-26 spec L4).
+	for label := range byLabel {
+		if strings.HasPrefix(label, "Claude & GPT") {
+			t.Errorf("extra-model meter %q reported", label)
+		}
 	}
-	if _, ok := byLabel["Claude & GPT weekly"]; ok {
-		t.Error("a disabled bucket is skipped")
+	if len(meters) != 2 {
+		t.Errorf("meters = %+v, want only the two Gemini meters", meters)
 	}
-	// the headline is the busier of the two 5h buckets
-	if headline != "cgpt_5h" {
+	// the headline is the native Gemini 5h bucket
+	if headline != "gemini_5h" {
 		t.Errorf("headline = %q", headline)
+	}
+}
+
+// A missing remainingFraction counts as fully used and a disabled bucket is
+// skipped -- moved here from TestAgyBuckets, whose Claude & GPT group used
+// to carry both cases, now that that group is no longer reported.
+func TestAgyBucketsMissingFractionAndDisabled(t *testing.T) {
+	body := `{"groups":[{"displayName":"Gemini Models","buckets":[
+	  {"window":"5h","disabled":false},
+	  {"window":"weekly","remainingFraction":0.9,"disabled":true}]}]}`
+	meters, _, err := ParseAgyQuota([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meters) != 1 || meters[0].Label != "Gemini 5h" || meters[0].UsedPct != 100 {
+		t.Fatalf("meters = %+v, want one fully used Gemini 5h (disabled weekly skipped)", meters)
+	}
+}
+
+// The live 2026-09-26 shape: Gemini 5h at 6 %, Claude & GPT 5h at 100 %.
+// The headline must stay on Gemini, or the menubar shows 100 % for agy and
+// the usage gate calls agy exhausted while its Gemini quota is nearly unused.
+func TestAgyHeadlineIsGeminiEvenWhenExtraModelsAreBusier(t *testing.T) {
+	meters, headline, err := ParseAgyQuota([]byte(`{"groups":[
+	  {"displayName":"Gemini Models","buckets":[
+	    {"window":"weekly","remainingFraction":0.65},
+	    {"window":"5h","remainingFraction":0.94}]},
+	  {"displayName":"Claude and GPT models","buckets":[
+	    {"window":"weekly","remainingFraction":0.07},
+	    {"window":"5h","remainingFraction":0}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headline != "gemini_5h" {
+		t.Fatalf("headline = %q, want gemini_5h", headline)
+	}
+	for _, m := range meters {
+		if strings.HasPrefix(m.ID, "cgpt") {
+			t.Fatalf("meters = %+v, want no Claude & GPT meters", meters)
+		}
 	}
 }
 
