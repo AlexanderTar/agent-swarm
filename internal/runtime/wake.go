@@ -44,6 +44,7 @@ func backoffForFailures(n int) time.Duration {
 type wakeRow struct {
 	SessionID, AgentID, AgentName, ItemKey, TmuxName, ProviderID string
 	Kind                                                         AgentKind
+	Model, Effort                                                string
 	Pending                                                      int
 	HasControl                                                   bool
 	Handoff                                                      bool // a handoff operation is in flight: the control notice is HANDOFF, not PAUSE
@@ -60,7 +61,7 @@ type wakeRow struct {
 // immediate message, joined against the current panes for PaneCommand.
 func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.agent_id, a.name, i.key, ses.tmux_name,
-		COALESCE(ses.provider_session_id, ''), a.kind, ses.last_seen_at, ses.last_wake_at, ses.started_at,
+		COALESCE(ses.provider_session_id, ''), a.kind, a.model, COALESCE(a.effort, ''), ses.last_seen_at, ses.last_wake_at, ses.started_at,
 		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state = 'pending'),
 		(SELECT COUNT(*) FROM messages m WHERE m.to_agent_id = a.id AND m.state = 'pending' AND m.kind = 'control'),
 		(SELECT MIN(m.created_at) FROM messages m
@@ -84,7 +85,7 @@ func (s *Store) wakeCandidates(ctx context.Context) ([]wakeRow, error) {
 		var hasControlCount int
 		var oldest, newest sql.NullInt64
 		if err := rows.Scan(&r.SessionID, &r.AgentID, &r.AgentName, &r.ItemKey, &r.TmuxName,
-			&r.ProviderID, &kind, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest, &newest, &r.Handoff); err != nil {
+			&r.ProviderID, &kind, &r.Model, &r.Effort, &lastSeen, &lastWake, &startedAt, &r.Pending, &hasControlCount, &oldest, &newest, &r.Handoff); err != nil {
 			return nil, err
 		}
 		if !oldest.Valid {
@@ -199,7 +200,8 @@ func (s *Store) WakeDue(ctx context.Context) error {
 		// behind permanent backoff.
 		if !r.NativeTried {
 			delivered, err := ad.Wake(ctx, adapter.WakeTarget{SessionID: r.SessionID,
-				ProviderSessionID: r.ProviderID, TmuxName: r.TmuxName, Notice: notice})
+				ProviderSessionID: r.ProviderID, TmuxName: r.TmuxName, Notice: notice,
+				Model: s.resolveLaunchModel(ctx, r.Kind, r.Model, r.Effort)})
 			if err != nil {
 				s.recordWakeFailure(ctx, r.SessionID, r.PasteAttempts, s.Now())
 				s.logf("wake: native wake for %s: %v (fail=%d backoff=%s)", r.AgentName, err, r.PasteAttempts+1, backoffForFailures(r.PasteAttempts+1))
@@ -534,7 +536,7 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 	if err := s.flushSuppressed(ctx, kind); err != nil {
 		return 0, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, a.name, ses.tmux_name, ses.state, ses.waiting
+	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, a.name, ses.tmux_name, ses.state, ses.waiting, a.model, COALESCE(a.effort, '')
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
 		WHERE a.kind = ? AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
 		AND (ses.last_wake_at IS NULL OR ses.last_wake_at < ?)`,
@@ -547,14 +549,16 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 	ad, ok := s.Adapters[kind]
 	woken := 0
 	for rows.Next() {
-		var sessionID, agentName, tmuxName, state string
+		var sessionID, agentName, tmuxName, state, model, effort string
 		var waiting bool
-		if err := rows.Scan(&sessionID, &agentName, &tmuxName, &state, &waiting); err != nil {
+		if err := rows.Scan(&sessionID, &agentName, &tmuxName, &state, &waiting, &model, &effort); err != nil {
 			return woken, err
 		}
 		// Attempt native wake or paste idle token if pane is idle
 		if ok {
-			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, TmuxName: tmuxName, Notice: QuotaResetNotice()})
+			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, TmuxName: tmuxName,
+				Notice: QuotaResetNotice(),
+				Model:  s.resolveLaunchModel(ctx, kind, model, effort)})
 			if delivered {
 				s.markWoken(ctx, sessionID, true)
 				woken++

@@ -209,6 +209,10 @@ func (c *Cursor) SuperpowersInstalled() bool {
 	return false
 }
 
+// Wake is a no-op: cursor has no native wake today, only the tmux paste
+// fallback. If one is ever added, it must read sess.Model (resolved via
+// Store.resolveLaunchModel, same as agy's Wake) -- cursor's own catalog
+// entries are slug-encoded too (docs/specs/2026-09-26-agy-launch-model.md).
 func (c *Cursor) Wake(ctx context.Context, sess WakeTarget) (bool, error) {
 	return false, nil
 }

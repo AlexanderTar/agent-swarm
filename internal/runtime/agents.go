@@ -1075,6 +1075,38 @@ type spawnResult struct {
 	Queued bool
 }
 
+// resolveLaunchModel converts a catalog base model id into the exact id an
+// agent's CLI expects on --model, via CatalogModel.LaunchModel (P0 fix,
+// docs/specs/2026-09-26-agy-launch-model.md): agy only accepts
+// effort-suffixed ids (e.g. "gemini-3.8-flash-high"), never the base slug.
+// It is a no-op for kinds whose catalog entries aren't slug-encoded
+// (Claude, Codex, Fake, and cursor's per-effort entries today), and it
+// passes model through unchanged whenever it isn't found in the catalog --
+// a user-configured raw suffixed id must keep working. Every place that
+// turns an Agent into a live launch (startSession, covering spawn, resume,
+// retry and usage-fallback) and the wake call sites in wake.go must resolve
+// through this one function.
+func (s *Store) resolveLaunchModel(ctx context.Context, kind AgentKind, model, effort string) string {
+	if s.Catalog == nil || model == "" {
+		return model
+	}
+	models, _, err := s.Catalog.ModelsFor(ctx, kind)
+	if err != nil {
+		return model
+	}
+	// catalog.Find matches on Aliases too (e.g. Claude's "opus"/"sonnet"/
+	// "fable"), and LaunchModel's contract for a flag-encoded hit is m.ID
+	// (the exact --model value for a bare/family id), not the alias the
+	// caller passed in -- rewriting it would pin a default Claude agent to
+	// the cached catalog's dated snapshot instead of the rolling alias.
+	// Only rewrite what actually needs it: a slug-encoded hit.
+	m, ok := catalog.Find(models, model)
+	if !ok || m.EffortEncoding != "slug" {
+		return model
+	}
+	return m.LaunchModel(effort)
+}
+
 // succMode is "" for a brand-new assignment, or one of "handoff", "recovery"
 // or "resume" when this session continues the same agent's prior work: the
 // kickoff is then the section-4 SuccessorKickoff template (with its normative
@@ -1183,7 +1215,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		Token:             token,
 		TokenFile:         tokPath,
 		DaemonURL:         s.DaemonURL,
-		Model:             a.Model,
+		Model:             s.resolveLaunchModel(ctx, a.Kind, a.Model, a.Effort),
 		Effort:            a.Effort,
 		Cwd:               cwd,
 		ProviderSessionID: providerID,
