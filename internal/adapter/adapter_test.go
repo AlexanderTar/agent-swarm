@@ -82,12 +82,13 @@ func TestIdleCombinesPromptAndBusy(t *testing.T) {
 	}
 }
 
-func TestTrustAndForgetAreNoOpsByDefault(t *testing.T) {
+// D1-D7 (dialog-needs-you spec) moved trust into each adapter's own
+// Launch/Resume; TrustFolder is gone from the interface (Task 13). Forget
+// stays: D2 needs it for the finished-agent cleanup, and every kind but
+// Claude still gets the base no-op.
+func TestForgetIsANoOpByDefault(t *testing.T) {
 	a := NewFake(testDeps(t))
 	ctx := context.Background()
-	if err := a.TrustFolder(ctx, "/tmp/x"); err != nil {
-		t.Fatal(err)
-	}
 	if err := a.ForgetFolder(ctx, "/tmp/x"); err != nil {
 		t.Fatal(err)
 	}

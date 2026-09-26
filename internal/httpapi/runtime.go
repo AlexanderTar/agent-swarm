@@ -32,6 +32,7 @@ type sessionInfoWire struct {
 	FailureText *string `json:"failure_text"` // nil unless State == "failed" and this attempt recorded one
 	StartedAt   int64   `json:"started_at"`
 	EndedAt     *int64  `json:"ended_at"`
+	Cwd         string  `json:"cwd"` // the session's work dir; swarm install/doctor's Claude trust checks (D3/D4) read it
 }
 
 type advisorInfoWire struct {
@@ -421,7 +422,7 @@ const staleAfter = 30 * time.Minute
 func (s *Server) sessionInfoOut(ctx context.Context, ses runtime.Session, live map[string]bool) sessionInfoWire {
 	w := sessionInfoWire{ID: ses.ID, State: string(ses.State), Attempt: ses.Attempt, Generation: ses.Generation,
 		Waiting: ses.Waiting, TmuxAlive: live[ses.TmuxName], StartedAt: db.Millis(ses.StartedAt), EndedAt: optMs(ses.EndedAt),
-		FailureText: ses.FailureText}
+		FailureText: ses.FailureText, Cwd: ses.Cwd}
 	if !ses.Waiting {
 		last := ses.StartedAt
 		if ses.LastSeenAt != nil {

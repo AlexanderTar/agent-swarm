@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -108,19 +109,22 @@ func TestCodexIdleUsesTheDimAttribute(t *testing.T) {
 // the hook-trust screen fails the spawn.
 func TestCodexStartupDialogs(t *testing.T) {
 	ds := newCodex(testDeps(t)).StartupDialogs()
-	if len(ds) != 3 {
-		t.Fatalf("want 3 dialogs, got %d", len(ds))
+	if len(ds) != 4 {
+		t.Fatalf("want 4 dialogs, got %d", len(ds))
 	}
 	byScreen := map[string]Dialog{}
 	for _, d := range ds {
-		for _, f := range []string{"pane-dialog-trust.txt", "pane-dialog-model-retirement.txt", "pane-dialog-hook-trust.txt"} {
+		for _, f := range []string{"pane-dialog-trust.txt", "pane-dialog-trust-folder.txt", "pane-dialog-model-retirement.txt", "pane-dialog-hook-trust.txt"} {
 			if d.Match.MatchString(pane(t, "codex", f)) {
 				byScreen[f] = d
 			}
 		}
 	}
-	if len(byScreen) != 3 {
+	if len(byScreen) != 4 {
 		t.Fatalf("each screen needs exactly one matching pattern, matched %d", len(byScreen))
+	}
+	if strings.Join(byScreen["pane-dialog-trust-folder.txt"].Keys, ",") != "Enter" {
+		t.Errorf("trust-folder keys = %v", byScreen["pane-dialog-trust-folder.txt"].Keys)
 	}
 	if strings.Join(byScreen["pane-dialog-trust.txt"].Keys, ",") != "Enter" {
 		t.Errorf("trust keys = %v", byScreen["pane-dialog-trust.txt"].Keys)
@@ -172,21 +176,28 @@ func TestCodexParseHook(t *testing.T) {
 	}
 }
 
-// §11.5: one structured TOML entry per folder, skipped when it already exists,
-// and every other key in config.toml survives.
-func TestCodexTrustFolderIsAStructuredIdempotentEdit(t *testing.T) {
+// D5 (dialog-needs-you spec): codex trust is a per-launch, per-agent write
+// into CodexHomeDir(home, agentID)/config.toml -- spawned codex never reads
+// ~/.codex/config.toml, so a global write there (the old TrustFolder) was
+// dead. The edit is structured, skipped when the entry already exists, and
+// every other key in config.toml survives, so it must also survive a Resume
+// against the same agent-keyed home.
+func TestCodexLaunchWritesPerLaunchTrustIdempotently(t *testing.T) {
 	d := testDeps(t)
-	cfg := filepath.Join(d.UserHome, ".codex", "config.toml")
-	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+	spec := codexSpec(t, d)
+	codexHome := CodexHomeDir(d.Home, spec.AgentID)
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	original := "model = \"gpt-6-astra\"\n\n[hooks.state]\nkeep = true\n"
+	cfg := filepath.Join(codexHome, "config.toml")
+	// [hooks.state] restored (review round 3, item 5): a nested table the
+	// structured edit must keep, alongside [tui].
+	original := "model = \"gpt-6-astra\"\n\n[tui]\nscreen_reader_detection_done = true\n\n[hooks.state]\nkeep = true\n"
 	if err := os.WriteFile(cfg, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	a := newCodex(d)
-	dir := t.TempDir()
-	if err := a.TrustFolder(context.Background(), dir); err != nil {
+	if _, err := a.Launch(spec); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(cfg)
@@ -197,23 +208,70 @@ func TestCodexTrustFolderIsAStructuredIdempotentEdit(t *testing.T) {
 	if m["model"] != "gpt-6-astra" {
 		t.Errorf("other keys must survive: %s", b)
 	}
-	if _, ok := m["hooks"]; !ok {
+	if _, ok := m["tui"]; !ok {
+		t.Errorf("[tui] must survive: %s", b)
+	}
+	if hooks, _ := m["hooks"].(map[string]any); hooks["state"] == nil {
 		t.Errorf("[hooks.state] must survive: %s", b)
 	}
-	real, _ := filepath.EvalSymlinks(dir)
+	real, _ := filepath.EvalSymlinks(spec.Cwd)
 	projects, _ := m["projects"].(map[string]any)
 	entry, _ := projects[real].(map[string]any)
 	if entry["trust_level"] != "trusted" {
 		t.Fatalf("missing trust entry for %s: %s", real, b)
 	}
-	// second call changes nothing
+	// A Resume against the same agent-keyed home must not rewrite the file.
 	before, _ := os.ReadFile(cfg)
-	if err := a.TrustFolder(context.Background(), dir); err != nil {
+	resumeSpec := spec
+	resumeSpec.SessionID = "ses_resume"
+	resumeSpec.ProviderSessionID = "01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9"
+	if _, err := newCodex(d).Resume(resumeSpec); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(cfg)
 	if string(before) != string(after) {
-		t.Errorf("TrustFolder must be idempotent:\n%s\n---\n%s", before, after)
+		t.Errorf("trust write must be idempotent across Launch/Resume:\n%s\n---\n%s", before, after)
+	}
+}
+
+// D5: codex 0.157 renamed its trust dialog to "Trust this folder?" (distinct
+// from the older "Do you trust the contents of this directory?", still
+// current on some installs); codexTrust never matched the new wording, so
+// its auto-answer silently stopped firing.
+func TestCodexNewTrustDialogIsAnsweredWithEnter(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "codex", "pane-dialog-trust-folder.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newCodex(testDeps(t))
+	var d *Dialog
+	for i := range a.StartupDialogs() {
+		dg := a.StartupDialogs()[i]
+		if dg.Title == "Trust this folder" {
+			d = &dg
+		}
+	}
+	if d == nil {
+		t.Fatal("no StartupDialogs entry titled \"Trust this folder\"")
+	}
+	if !d.Match.Match(fixture) {
+		t.Fatalf("StartupDialogs %q does not match the 0.157 fixture", d.Match)
+	}
+	if len(d.Keys) != 1 || d.Keys[0] != "Enter" {
+		t.Fatalf("Keys = %v, want [Enter]", d.Keys)
+	}
+	var pm *PromptMatcher
+	for i := range a.PromptPatterns() {
+		p := a.PromptPatterns()[i]
+		if p.Title == "Trust this folder" {
+			pm = &p
+		}
+	}
+	if pm == nil {
+		t.Fatal("no PromptPatterns entry titled \"Trust this folder\"")
+	}
+	if !pm.Match.Match(fixture) || pm.Action != "Enter" {
+		t.Fatalf("PromptPatterns entry = %+v, want a match with Action=Enter", pm)
 	}
 }
 
@@ -505,6 +563,35 @@ func TestCodexResumeLandsOnTheSameHomeAsTheOriginalLaunch(t *testing.T) {
 	if l.Env["CODEX_HOME"] != r.Env["CODEX_HOME"] {
 		t.Fatalf("Launch CODEX_HOME = %q, Resume CODEX_HOME = %q; a resume with a new session id must reuse the same agent's home",
 			l.Env["CODEX_HOME"], r.Env["CODEX_HOME"])
+	}
+}
+
+// D8 (batch-2 review, dialog-needs-you spec): resuming an old, long-lived
+// agent must refresh CODEX_HOME's mtime, so reclaimCodexHomes's snapshotAt
+// guard sees it as recently touched even though its directory is old.
+func TestSetupEnvRefreshesCodexHomeMtimeOnResume(t *testing.T) {
+	d := testDeps(t)
+	spec := codexSpec(t, d)
+	if _, err := newCodex(d).Launch(spec); err != nil {
+		t.Fatal(err)
+	}
+	codexHome := CodexHomeDir(d.Home, spec.AgentID)
+	old := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(codexHome, old, old); err != nil {
+		t.Fatal(err)
+	}
+	resumeSpec := spec
+	resumeSpec.SessionID = "ses_02"
+	resumeSpec.ProviderSessionID = "01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9"
+	if _, err := newCodex(d).Resume(resumeSpec); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(codexHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(fi.ModTime()) > 10*time.Second {
+		t.Fatalf("codex home mtime = %s, want refreshed to ~now", fi.ModTime())
 	}
 }
 

@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -166,6 +167,9 @@ func adoptPreExistingSkills(root string) error {
 }
 
 func (c *Claude) Launch(s Spec) (Launch, error) {
+	if err := trustClaudeWorkspace(c.d.UserHome, s.Cwd); err != nil {
+		c.d.Log("claude: pre-trust %s: %v", s.Cwd, err)
+	}
 	f, err := c.flags(s)
 	if err != nil {
 		return Launch{}, err
@@ -175,12 +179,114 @@ func (c *Claude) Launch(s Spec) (Launch, error) {
 }
 
 func (c *Claude) Resume(s Spec) (Launch, error) {
+	if err := trustClaudeWorkspace(c.d.UserHome, s.Cwd); err != nil {
+		c.d.Log("claude: pre-trust %s: %v", s.Cwd, err)
+	}
 	f, err := c.flags(s)
 	if err != nil {
 		return Launch{}, err
 	}
 	argv := append([]string{"claude", "--resume", s.ProviderSessionID}, f...)
 	return Launch{Argv: append(argv, "--", s.Kickoff), Env: map[string]string{}}, nil
+}
+
+// trustClaudeWorkspace marks cwd (and its realpath, if it differs) trusted
+// in Claude's global config, merging into any existing project entry (D1,
+// dialog-needs-you spec §E). It runs through install.EditClaudeProjects:
+// Claude's own lock, symlink-safe write to the target, re-read-compare, and
+// a refusal (no write) for a missing, empty, `null` or unparsable file. It
+// is idempotent and never rewrites the file when every key already has
+// hasTrustDialogAccepted: true. Every other field of every project entry,
+// and every other top-level key, keeps its exact bytes.
+func trustClaudeWorkspace(userHome, cwd string) error {
+	if userHome == "" {
+		return nil
+	}
+	keys := []string{cwd}
+	if real, err := filepath.EvalSymlinks(cwd); err == nil && real != cwd {
+		keys = append(keys, real)
+	}
+	return install.EditClaudeProjects(userHome, func(projects map[string]json.RawMessage) (bool, error) {
+		if claudeAllTrusted(projects, keys) {
+			return false, nil // already trusted under every key; do not rewrite the file
+		}
+		for _, k := range keys {
+			var entry map[string]json.RawMessage
+			if len(projects[k]) > 0 {
+				if err := json.Unmarshal(projects[k], &entry); err != nil {
+					return false, fmt.Errorf("claude.json projects[%s] does not parse: %w", k, err)
+				}
+			}
+			if entry == nil {
+				entry = map[string]json.RawMessage{}
+			}
+			entry["hasTrustDialogAccepted"] = json.RawMessage("true")
+			b, err := json.Marshal(entry)
+			if err != nil {
+				return false, err
+			}
+			projects[k] = b
+		}
+		return true, nil
+	})
+}
+
+// ForgetFolder is ForgetFolders for one cwd (D2).
+func (c *Claude) ForgetFolder(ctx context.Context, cwd string) error {
+	return c.ForgetFolders(ctx, []string{cwd})
+}
+
+// ForgetFolders removes projects[cwd] entirely, and its realpath twin, for
+// every cwd in ONE locked read-modify-write of ~/.claude.json (D2,
+// dialog-needs-you spec; review round 3, item 3: reconcile used to call
+// ForgetFolder per session, one 2s-timeout lock and one full parse each).
+// Every key, literal or realpath twin, must pass
+// install.SwarmOwnedClaudeWorkspace: a work-dir symlink resolving into the
+// user's own project never removes that project's entry. Every other
+// project and top-level key survives untouched. A missing file is a no-op;
+// a busy lock (install.ErrClaudeConfigBusy) or a file that does not parse
+// is an error, so the caller marks nothing done and retries.
+func (c *Claude) ForgetFolders(ctx context.Context, cwds []string) error {
+	if c.d.UserHome == "" || len(cwds) == 0 {
+		return nil
+	}
+	var keys []string
+	for _, cwd := range cwds {
+		keys = append(keys, cwd)
+		if real, err := filepath.EvalSymlinks(cwd); err == nil && real != cwd {
+			keys = append(keys, real)
+		}
+	}
+	err := install.EditClaudeProjects(c.d.UserHome, func(projects map[string]json.RawMessage) (bool, error) {
+		changed := false
+		for _, k := range keys {
+			if _, ok := projects[k]; !ok || !install.SwarmOwnedClaudeWorkspace(c.d.Home, k) {
+				continue
+			}
+			delete(projects, k)
+			changed = true
+		}
+		return changed, nil
+	})
+	if errors.Is(err, install.ErrClaudeConfigMissing) {
+		return nil
+	}
+	return err
+}
+
+func claudeAllTrusted(projects map[string]json.RawMessage, keys []string) bool {
+	for _, k := range keys {
+		var entry struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		}
+		if len(projects[k]) == 0 {
+			return false
+		}
+		if err := json.Unmarshal(projects[k], &entry); err != nil || !entry.HasTrustDialogAccepted {
+			return false
+		}
+	}
+	return true
 }
 
 var (

@@ -190,6 +190,9 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := s.forgetFinishedClaudeTrust(ctx); err != nil {
+		s.logf("reconcile: forget finished claude trust: %v", err)
+	}
 	for _, p := range panes {
 		if known[p.Session] {
 			continue
@@ -279,9 +282,14 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	} else {
 		reclaimCodexHomes(s.Home, resumableAgentIDs, snapshotAt, s.logf)
 	}
-	if err := s.reclaimOldCodexLaunchHomes(ctx); err != nil {
-		s.logf("reconcile: reclaim old codex launch homes: %v", err)
-	}
+	// D8 (batch-2 review): run at most once per daemon run. See the
+	// codexLaunchHomesReclaim field doc for why this isn't just a
+	// per-tick call left to self-limit.
+	s.codexLaunchHomesReclaim.Do(func() {
+		if err := s.reclaimOldCodexLaunchHomes(ctx); err != nil {
+			s.logf("reconcile: reclaim old codex launch homes: %v", err)
+		}
+	})
 	return s.sweepFinishedRoots(ctx)
 }
 
@@ -1329,6 +1337,103 @@ func (s *Store) terminalTmuxNames(ctx context.Context) (map[string]bool, error) 
 		out[n] = true
 	}
 	return out, nil
+}
+
+// swarmOwnedWorkspace reports whether path is a Swarm-owned workspace: under
+// <home>/work or <home>/worktrees (D2/D3, dialog-needs-you spec). It is the
+// only predicate D2's cleanup and D3's install-time prune use to decide
+// which ~/.claude.json entries they may ever touch -- the user's own
+// projects, anywhere else, are never matched. filepath.Clean on both sides
+// guards against a trailing slash; the prefix check requires a path
+// separator right after the root so "<home>/work-extra" (a real but
+// unrelated sibling directory) does not collide with "<home>/work".
+func swarmOwnedWorkspace(home, path string) bool {
+	if home == "" || path == "" {
+		return false
+	}
+	path = filepath.Clean(path)
+	for _, root := range []string{"work", "worktrees"} {
+		prefix := filepath.Clean(filepath.Join(home, root)) + string(filepath.Separator)
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// forgetFinishedClaudeTrust removes the Claude trust entry (D1) for every
+// Swarm-owned workspace belonging to a session of a finished or
+// acknowledged agent (D2, dialog-needs-you spec). Every pending cwd goes
+// into ONE ForgetFolders call -- one lock, one parse, one write per tick
+// (review round 3, item 3: per-session calls cost up to 2s of lock timeout
+// each, ~350 x 2s after a restart). On any error (lock busy, a file that
+// doesn't parse) the pass stops, nothing is marked done and the next tick
+// retries. Scoped to Claude sessions only: every other kind's trust state
+// (agy, cursor's flags, ...) has no per-session file this touches.
+func (s *Store) forgetFinishedClaudeTrust(ctx context.Context) error {
+	ad, ok := s.Adapters[Claude]
+	if !ok {
+		return nil
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT s2.id, s2.cwd FROM sessions s2
+		JOIN agents a ON a.id = s2.agent_id
+		WHERE a.kind = 'claude' AND a.state IN ('finished', 'acknowledged') AND s2.cwd != ''`)
+	if err != nil {
+		return err
+	}
+	type row struct{ id, cwd string }
+	var todo []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.cwd); err != nil {
+			rows.Close()
+			return err
+		}
+		todo = append(todo, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	var ids, cwds []string
+	s.bookkeepingMu.Lock()
+	for _, r := range todo {
+		if !s.forgottenClaudeTrust[r.id] && swarmOwnedWorkspace(s.Home, r.cwd) {
+			ids = append(ids, r.id)
+			cwds = append(cwds, r.cwd)
+		}
+	}
+	s.bookkeepingMu.Unlock()
+	if len(ids) == 0 {
+		return nil
+	}
+	var ferr error
+	if batch, ok := ad.(interface {
+		ForgetFolders(context.Context, []string) error
+	}); ok {
+		ferr = batch.ForgetFolders(ctx, cwds)
+	} else {
+		for _, c := range cwds {
+			if ferr = ad.ForgetFolder(ctx, c); ferr != nil {
+				break
+			}
+		}
+	}
+	if ferr != nil {
+		s.logf("reconcile: forget claude trust for %d sessions: %v (retrying next tick)", len(ids), ferr)
+		return nil
+	}
+	s.bookkeepingMu.Lock()
+	if s.forgottenClaudeTrust == nil {
+		s.forgottenClaudeTrust = map[string]bool{}
+	}
+	for _, id := range ids {
+		s.forgottenClaudeTrust[id] = true
+	}
+	s.bookkeepingMu.Unlock()
+	return nil
 }
 
 // finishedAgentTmuxNames returns the tmux names of every session whose owning

@@ -35,6 +35,91 @@ func symlinkIfExists(src, dst string) error {
 	return os.Symlink(src, dst)
 }
 
+// linkAgyCLIDir builds dst as a per-entry mirror of real (D6, dialog-needs-you
+// spec): every entry of real except "settings.json" is symlinked as-is, so
+// login, onboarding state and everything else agy keeps in this directory
+// works exactly as the old whole-dir symlink did; settings.json is instead a
+// per-launch copy of the real file's JSON with cwd added to
+// trustedWorkspaces, so trust is scoped to this one session without ever
+// writing to the real, shared settings.json.
+//
+// If dst is already a symlink (a legacy whole-dir layout from before this
+// fix, on a Resume that reuses an already-spawned agy-home), it is left
+// exactly as it is: replacing it would risk pulling real content out from
+// under a session that's already running against it. That branch logs,
+// since this session then has no per-session trust entry.
+func linkAgyCLIDir(real, dst, cwd string, logf func(string, ...any)) error {
+	if fi, err := os.Lstat(dst); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			logf("agy: %s is a legacy whole-dir symlink; leaving it, so %s is not trusted per session", dst, cwd)
+			return nil
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	} else if err := os.MkdirAll(dst, 0o700); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(real)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == "settings.json" {
+			continue
+		}
+		link := filepath.Join(dst, e.Name())
+		if _, err := os.Lstat(link); err == nil {
+			continue // already linked (a resume against the same agy-home)
+		}
+		if err := os.Symlink(filepath.Join(real, e.Name()), link); err != nil {
+			return err
+		}
+	}
+	return writeAgyTrustedSettings(filepath.Join(real, "settings.json"), filepath.Join(dst, "settings.json"), cwd)
+}
+
+// writeAgyTrustedSettings writes dst as realSettings' JSON with cwd added to
+// trustedWorkspaces (D6). A missing or unparseable real file is not an
+// error: dst becomes a minimal settings file trusting just cwd.
+//
+// The copy keeps the real file's mode (review round 3, item 5); 0o644 only
+// when there is no real file.
+func writeAgyTrustedSettings(realSettings, dst, cwd string) error {
+	var doc map[string]json.RawMessage
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(realSettings); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	if raw, err := os.ReadFile(realSettings); err == nil {
+		if uerr := json.Unmarshal(raw, &doc); uerr != nil {
+			doc = nil // doesn't parse; fall through to the minimal file
+		}
+	}
+	if doc == nil {
+		doc = map[string]json.RawMessage{}
+	}
+	var ws []string
+	if len(doc["trustedWorkspaces"]) > 0 {
+		_ = json.Unmarshal(doc["trustedWorkspaces"], &ws)
+	}
+	if !slices.Contains(ws, cwd) {
+		ws = append(ws, cwd)
+	}
+	wsBytes, err := json.Marshal(ws)
+	if err != nil {
+		return err
+	}
+	doc["trustedWorkspaces"] = wsBytes
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(dst, out, mode); err != nil {
+		return err
+	}
+	return os.Chmod(dst, mode) // writeFileAtomic keeps a stale copy's old mode on Resume
+}
+
 // setupEnv isolates agy's HOME so the swarm MCP config and custom instructions
 // never leak into the user's real ~/.gemini, while auth still works via
 // symlinks (mirrors codex.go's setupEnv).
@@ -46,19 +131,18 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 	if err := os.MkdirAll(filepath.Join(agyHome, ".gemini", "config"), 0o700); err != nil {
 		return nil, err
 	}
-	// Symlink the whole directory rather than an allowlist of named files:
-	// first-run state (e.g. antigravity_state.pbtxt's onboarding-completed
-	// flag) lives here too, and a per-file allowlist that misses one makes
-	// agy think every swarm-spawned session is a fresh install and show the
-	// interactive setup wizard, which never starts (P0, 2026-09-22).
+	// Per-entry symlinks, not a whole-dir symlink: first-run state (e.g.
+	// antigravity_state.pbtxt's onboarding-completed flag) lives here too,
+	// and a per-file allowlist that misses one makes agy think every
+	// swarm-spawned session is a fresh install and show the interactive
+	// setup wizard, which never starts (P0, 2026-09-22) -- linkAgyCLIDir
+	// symlinks every entry it finds, so nothing is missed by name. The one
+	// exception is settings.json (D6, dialog-needs-you spec): it is a
+	// per-launch copy with this session's workspace trusted, so login stays
+	// intact (everything else symlinked) but trust is scoped per session.
 	realAntigravityCLI := filepath.Join(a.d.UserHome, ".gemini", "antigravity-cli")
 	symAntigravityCLI := filepath.Join(agyHome, ".gemini", "antigravity-cli")
-	if _, err := os.Stat(realAntigravityCLI); err == nil {
-		_ = os.Remove(symAntigravityCLI)
-		if err := os.Symlink(realAntigravityCLI, symAntigravityCLI); err != nil {
-			return nil, err
-		}
-	} else if err := os.MkdirAll(symAntigravityCLI, 0o700); err != nil {
+	if err := linkAgyCLIDir(realAntigravityCLI, symAntigravityCLI, s.Cwd, a.d.Log); err != nil {
 		return nil, err
 	}
 	// A7 (2026-09-25, package PA): agy actually reads skills from

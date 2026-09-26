@@ -407,6 +407,26 @@ type Store struct {
 	// takes over matching, retrying and escalating that session's dialogs
 	// itself instead of leaving it silently stuck.
 	activeWatchStartup map[string]bool
+	// forgottenClaudeTrust is D2's per-tick rate limit (batch-2 review):
+	// forgetFinishedClaudeTrust used to call Claude.ForgetFolder -- a lock
+	// acquisition plus a full read/parse of ~/.claude.json -- for every
+	// finished Claude session's cwd, every 5s tick, forever. That's lock
+	// contention with a live Claude session's own writes at any real scale
+	// (~350 spawns in the incident this spec fixes). Keyed by SESSION id,
+	// not cwd: a finished agent can be retried (reclaimGrace's doc comment)
+	// and mints a new session with the same cwd, which D1 re-trusts, so a
+	// cwd-keyed map would leak that second entry forever. Emptied by a
+	// daemon restart, like the rest of this block; the one batched pass that
+	// follows (one lock, one parse, review round 3) is the cost of D2 ever
+	// running at all, not a regression.
+	forgottenClaudeTrust map[string]bool
+	// codexLaunchHomesReclaim guards reclaimOldCodexLaunchHomes (D8, batch-2
+	// review): it is a one-time cleanup of pre-fix per-launch codex-home
+	// dirs, but ungated it paid a DB query and an os.ReadDir on every 5s
+	// Reconcile tick forever, long after there was ever anything left to
+	// remove. sync.Once, not a bool: Reconcile has no other lock around this
+	// call, and Once.Do is itself concurrency-safe.
+	codexLaunchHomesReclaim sync.Once
 	// lastTitle is the Ghostty tab title (sessionTitle's output) each live
 	// session had as of the last tick that set it, so a tick whose status,
 	// role and tree haven't changed skips the tmux rename-window call instead

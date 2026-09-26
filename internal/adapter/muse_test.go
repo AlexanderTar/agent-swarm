@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -337,6 +338,61 @@ func TestMuseIdleAndBusy(t *testing.T) {
 	}
 	if a.Idle("$ \n") {
 		t.Error("a shell prompt is not idle")
+	}
+}
+
+// D7 (dialog-needs-you spec): --trust-workspace is on argv for both Launch
+// and Resume, every time (TestMuseLaunchArgv/TestMuseResumeArgv already pin
+// the exact argv; this is a dedicated regression name so a future change
+// that drops the flag has an obviously-named test failure to point at).
+func TestMuseArgvAlwaysTrustsTheWorkspace(t *testing.T) {
+	d := testDeps(t)
+	a := newMuse(d)
+	l, err := a.Launch(museSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(l.Argv, "--trust-workspace") {
+		t.Fatalf("Launch argv missing --trust-workspace: %v", l.Argv)
+	}
+	s := museSpec(t)
+	s.ProviderSessionID = "uuid-123"
+	r, err := a.Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(r.Argv, "--trust-workspace") {
+		t.Fatalf("Resume argv missing --trust-workspace: %v", r.Argv)
+	}
+}
+
+// D7: a detect-only trust dialog (--yolo --trust-workspace already avoids
+// it, P-M1) so a regression in the flag still surfaces as a Needs-you row.
+func TestMuseTrustDialogIsDetectOnly(t *testing.T) {
+	fixture := pane(t, "muse", "pane-dialog-trust.txt")
+	a := newMuse(testDeps(t))
+	ds := a.StartupDialogs()
+	if len(ds) != 1 || !ds[0].Match.MatchString(fixture) || len(ds[0].Keys) != 0 {
+		t.Fatalf("StartupDialogs = %+v, want one detect-only entry matching the fixture", ds)
+	}
+	if ds[0].Title != "Trust this workspace" {
+		t.Fatalf("Title = %q", ds[0].Title)
+	}
+	var pm *PromptMatcher
+	for i := range a.PromptPatterns() {
+		p := a.PromptPatterns()[i]
+		if p.Title == "Trust this workspace" {
+			pm = &p
+		}
+	}
+	if pm == nil {
+		t.Fatal("no PromptPatterns entry titled \"Trust this workspace\"")
+	}
+	if pm.Action != "" {
+		t.Fatalf("Action = %q, want empty (detect-only)", pm.Action)
+	}
+	if !pm.Match.MatchString(fixture) {
+		t.Fatalf("PromptPatterns entry does not match the fixture: %+v", pm)
 	}
 }
 

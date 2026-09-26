@@ -16,10 +16,12 @@ branch `feat/dialog-needs-you`.
 `go test ./internal/runtime/ -run '<TestName>' -count=1`
 
 **Batches:**
-- **Batch 1:** Tasks 1-8, runtime. One build → review loop.
-- **Batch 2:** Tasks 9-14, trust. Its own loop. Task 9 (claude) needs open
-  question Q1 answered first. If it is not answered by the time batch 2
-  starts, do Tasks 10-14 and park Task 9.
+- **Batch 1:** Tasks 1-8, runtime. Done and merged to `main` (@ 8a610d7).
+- **Batch 2:** Tasks 9-18, trust. Q1/Q2 are resolved (decisions D1-D8 in the
+  spec); Task 9 is unblocked. Order: 18 (D8, smallest), 10 (D5, codex), 14a
+  (live probe, before writing any Claude code), 9 (D1, claude), 15 (D2,
+  cleanup), 11 (D6, agy), 12 (D7, cursor/muse), 16 (D3, install), 17 (D4,
+  doctor), 13 (drop `TrustFolder`), 14 (batch full check + review).
 
 **Fake-harness facts the tests rely on** (`internal/runtime/agents_test.go`):
 - `newStore(t)` runs `watchStartup` inline (`Go: f()`).
@@ -538,12 +540,72 @@ branch `feat/dialog-needs-you`.
 
 ## Batch 2: per-session trust
 
-Probe fixtures live in `internal/adapter/testdata/trust/`, one `.txt` per
-captured dialog. Copy the plain-text captures from the spec's probe table:
-`claude-trust.txt`, `codex-trust-folder.txt`, `agy-trust.txt`,
-`cursor-trust.txt`, `muse-trust.txt`. They are used by the pattern tests.
+Probe fixtures live next to each kind's existing captures, in
+`internal/adapter/testdata/<kind>/`, following the existing
+`pane-dialog-*.txt` naming (not a new shared `testdata/trust/`): e.g.
+`internal/adapter/testdata/claude/pane-dialog-trust.txt` (already exists),
+`internal/adapter/testdata/codex/pane-dialog-trust-folder.txt` (new, 0.157
+wording), `internal/adapter/testdata/agy/pane-dialog-trust.txt` (already
+exists), `internal/adapter/testdata/cursor/pane-dialog-trust.txt` (new),
+`internal/adapter/testdata/muse/pane-dialog-trust.txt` (new).
 
-### Task 9: claude pre-trusts `Spec.Cwd` in `~/.claude.json` (blocked on Q1)
+### Task 18: D8, codex mtime refresh and one-time reclaim (do first, smallest)
+
+- **Produces:** `os.Chtimes(codexHome, now, now)` in `codex.go`'s `setupEnv`;
+  a `sync.Once` field on `Store` guarding `reclaimOldCodexLaunchHomes`.
+
+1. **Test A** (`codex_test.go`): `TestSetupEnvRefreshesCodexHomeMtimeOnResume`.
+   Create `codexHome` with an old mtime (`os.Chtimes(dir, old, old)` a day
+   ago), call `setupEnv` (or `Resume`) again, assert the dir's mtime is now
+   within the last second.
+2. **Test B** (`reconcile_test.go`): `TestReclaimOldCodexLaunchHomesRunsOnlyOnceADaemonRun`.
+   Build one terminal session with a `codex-home` (as the existing
+   `TestReclaimOldCodexLaunchHomesRemovesOnlyTerminalSessionsCodexHome`), call
+   `s.Reconcile(ctx)` once (it is removed). Create a *second* terminal
+   session's `codex-home` directory by hand afterward, call `s.Reconcile(ctx)`
+   again, and assert the second one is **not** removed -- proving the sweep
+   ran only once for this `Store`, not on every tick.
+3. **Run.** Both fail (Test A: mtime untouched; Test B: the second dir is
+   removed too, since today's call is unconditional).
+4. **Implement:**
+   - `codex.go`: right after `os.MkdirAll(codexHome, 0o700)` returns nil, add
+     `now := time.Now(); _ = os.Chtimes(codexHome, now, now)` (best-effort,
+     never fails setup; add `"time"` to imports).
+   - `model.go`: add `codexLaunchHomesReclaim sync.Once` next to the other
+     bookkeeping fields (`"sync"` is already imported for `bookkeepingMu`).
+   - `reconcile.go`: replace the direct call with
+     `s.codexLaunchHomesReclaim.Do(func() { if err := s.reclaimOldCodexLaunchHomes(ctx); err != nil { s.logf(...) } })`.
+5. **Run** `go test ./internal/adapter/ -run Codex -count=1` and
+   `go test ./internal/runtime/ -run Reclaim -count=1`.
+6. **Commit:** `fix(codex): refresh CODEX_HOME mtime on resume, run the old-home reclaim once per daemon run`.
+
+### Task 14a: live probe of Claude's lock and trust key (run before Task 9)
+
+Not TDD (there is no unit under test yet); a manual probe, its findings
+recorded in the spec's probe table as P-C5.
+
+1. In the session scratchpad: `mkdir -p $SCRATCH/home $SCRATCH/work`.
+2. `HOME=$SCRATCH/home tmux -L dialogprobe new -d -s probe -c $SCRATCH/work claude`
+   (never `-L swarm`).
+3. Poll every 200 ms for ~10 s: `ls -la $SCRATCH/home/.claude.json.lock`.
+   Record whether it appears, and for how long.
+4. `which claude` and inspect what it resolves to (likely a node bundle, not
+   a single ELF/Mach-O); if it's a script, `grep -o '\.lock' <target> | head`
+   or `strings <target> | grep -i 'claude\.json\.lock'` to confirm the lock
+   file's exact name.
+5. In the tmux pane, accept the dialog ("Yes, I trust this folder").
+   `jq '.projects' $SCRATCH/home/.claude.json` and confirm the key is exactly
+   `hasTrustDialogAccepted` on the installed version (`claude --version`).
+6. `tmux -L dialogprobe kill-server`. Record P-C5 (version, lock name,
+   confirmed key) in the spec's probe table before writing any code.
+7. No commit (spec is updated in the same commit as Task 9's code, citing
+   P-C5).
+
+### Task 9: claude pre-trusts `Spec.Cwd` in `~/.claude.json` (D1, unblocked)
+
+- **Before this task:** Task 14a (above) must have run once against a scratch
+  `HOME` on an isolated tmux socket, confirming the lock directory name and
+  the `hasTrustDialogAccepted` key on the installed Claude version.
 
 - **Produces:** `func (c *Claude) trustClaudeWorkspace(cwd string) error`,
   called at the top of `Launch` and `Resume` (errors logged via
@@ -588,18 +650,23 @@ captured dialog. Copy the plain-text captures from the spec's probe table:
      `TestCodexLaunchWritesPerLaunchTrustIdempotently`. It keeps the same
      assertions (structured merge keeps other keys, and a second launch
      doesn't rewrite), against
-     `<Home>/run/launch/<ses>/codex-home/config.toml`. Pre-seed that file
+     `adapter.CodexHomeDir(d.Home, s.AgentID) + "/config.toml"` (agent-keyed,
+     not `<Home>/run/launch/<ses>/...`: `main@8a610d7` moved `CODEX_HOME` off
+     the per-session launch dir). Pre-seed that file
      with `[tui]\nscreen_reader_detection_done = true` to prove the merge.
    - `TestCodexNewTrustDialogIsAnsweredWithEnter`: `StartupDialogs()` contains
-     a dialog matching `testdata/trust/codex-trust-folder.txt`, with
+     a dialog matching `testdata/codex/pane-dialog-trust-folder.txt`, with
      `Keys == ["Enter"]` and `Title == "Trust this folder"`. `PromptPatterns()`
      has the same entry with `Action: "Enter"`.
 2. **Run.** It fails.
 3. **Implement:**
-   - Call `writeCodexTrust(codexHome, s.Cwd)` at the end of `setupEnv`,
-     using `toml.Unmarshal`/`Marshal` as the old `TrustFolder` did.
+   - Call `writeCodexTrust(codexHome, s.Cwd)` at the end of `setupEnv` (after
+     the Task 18 `Chtimes` call), using `toml.Unmarshal`/`Marshal` as the old
+     `TrustFolder` did, against `codexHome/config.toml` (the same
+     `codexHome` local var `setupEnv` already computed).
    - Key it by `s.Cwd`, plus `filepath.EvalSymlinks(s.Cwd)` if that differs.
-   - Delete `Codex.TrustFolder`.
+   - Delete `Codex.TrustFolder` (superseded; kept only until Task 13 removes
+     the interface method everyone routes through).
    - Add the new dialog and matcher.
 4. **Run** `go test ./internal/adapter/ -run Codex -count=1`.
 5. **Commit:** `fix(codex): trust the workspace in the per-launch CODEX_HOME and match 0.157's dialog`.
@@ -652,6 +719,115 @@ captured dialog. Copy the plain-text captures from the spec's probe table:
 4. **Run** `go test ./internal/adapter/ -count=1`.
 5. **Commit:** `feat(adapter): surface cursor and muse trust dialogs if their flags ever stop working`.
 
+### Task 15: D2, remove a Claude trust entry when its session is reclaimed
+
+- **Consumes:** Task 9's `trustClaudeWorkspace` write, and D1's exact keys
+  (literal `Spec.Cwd` + realpath).
+- **Produces:** `Claude.ForgetFolder(ctx, path) error` (real implementation;
+  today's `base.ForgetFolder` no-op stays the default for every other kind);
+  a `swarmOwnedWorkspace(home, path) bool` predicate in `internal/runtime`;
+  a call to `ad.ForgetFolder` wherever a Claude agent's per-session dir is
+  reclaimed.
+
+1. **Tests:**
+   - `claude_test.go`: `TestClaudeForgetFolderRemovesBothKeysUnderTheSameLock`.
+     Seed `projects[cwd]` and `projects[realpath(cwd)]` (both
+     `hasTrustDialogAccepted: true`, plus other fields), call `ForgetFolder`,
+     assert both keys are gone, every other `projects[...]` entry and every
+     top-level key is untouched, and the file mode/lock protocol match Task 9
+     (reuse its lock helper). A second call is a no-op (no error, no rewrite,
+     confirmed via mtime).
+   - `reconcile_test.go`: `TestSwarmOwnedWorkspaceMatchesOnlyWorkAndWorktreeRoots`.
+     Table test: `<home>/work/3` and `<home>/worktrees/foo` are owned;
+     `<home>/work-extra` (prefix collision, not a real subdirectory) and any
+     path outside `home` are not.
+   - `reconcile_test.go`: `TestReclaimRemovesTheClaudeTrustEntryOfADeletedSwarmOwnedWorkspace`.
+     Spin up a claude worker whose `Spec.Cwd` is under `<home>/work/...`
+     (however the fake harness assigns work dirs; `grep -n "workDir\|neutralWorkDir"
+     internal/runtime/*.go` for the helper), call `trustClaudeWorkspace`
+     against a scratch `UserHome/.claude.json` to seed the entry, mark the
+     agent `finished`/reclaim it the way the existing reaper/cleanup path
+     does, run one `Reconcile`, and assert the entry is gone. A second,
+     non-Swarm-owned entry in the same file (a path outside `home`) survives.
+2. **Run.** Both fail: `ForgetFolder` is the `base` no-op, and nothing calls
+   it.
+3. **Implement:**
+   - `claude.go`: `ForgetFolder` mirrors `trustClaudeWorkspace`'s lock/read/
+     merge/re-read/atomic-write protocol, but deletes
+     `projects[cwd].hasTrustDialogAccepted` and the realpath twin (deleting
+     the key, not necessarily the whole `projects[cwd]` entry, unless that
+     was the only field -- keep whatever else Claude has since written there,
+     e.g. `lastCost`).
+   - `reconcile.go`: `swarmOwnedWorkspace(home, path string) bool` -- `home`
+     non-empty, and `path` (after `filepath.Clean`) has `filepath.Clean(filepath.Join(home,"work"))`
+     or `filepath.Clean(filepath.Join(home,"worktrees"))` as a `string`+`os.PathSeparator`
+     prefix.
+   - Call `ad.ForgetFolder(ctx, path)` for both the literal and realpath keys
+     at the same point the reaper/finished-agent path already cleans up other
+     per-session state for that agent (find it: `grep -n "reclaim\|RemoveAll"
+     internal/runtime/reconcile.go`); gate it on `ad.Kind() == kinds.Claude`
+     (or just call it for every kind -- `base.ForgetFolder` is a no-op, so
+     this is safe either way; prefer calling it unconditionally to keep the
+     call site kind-agnostic, matching how `TrustFolder` used to be called).
+     Only call it when `swarmOwnedWorkspace(s.Home, cwd)` is true.
+4. **Run** `go test ./internal/adapter/ -run ForgetFolder -count=1` and
+   `go test ./internal/runtime/ -run 'SwarmOwned|Reclaim.*Claude' -count=1`.
+5. **Commit:** `feat(claude,runtime): remove a session's trust entry once its Swarm-owned workspace is reclaimed`.
+
+### Task 16: D3, `swarm install` verifies and prunes Claude trust
+
+- **Consumes:** Task 15's `swarmOwnedWorkspace`.
+- **Produces:** an install-time check + prune step, using the exact copy
+  strings from the spec's "Install copy" section.
+
+1. **Tests** (`internal/install/claude_test.go`):
+   - `TestInstallWarnsWhenClaudeJSONIsMissingOrNotWritable` (skip gracefully
+     when running as root, where every file looks writable -- `os.Geteuid() == 0`
+     guard, matching any existing pattern in this test file for that).
+   - `TestInstallWarnsOnAnUntestedClaudeVersion`: fake `run` returns
+     `"2.1.200 (Claude Code)"`; assert the exact copy string.
+   - `TestInstallPrunesOnlyStaleSwarmOwnedEntries`: seed `projects` with a
+     Swarm-owned entry whose dir does not exist, a Swarm-owned entry whose
+     dir does exist, and a non-Swarm-owned entry pointing nowhere; assert
+     only the first is removed, and the summary line's count is 1.
+2. **Run.** Fails: no such function.
+3. **Implement** in `internal/install/claude.go` (or a new
+   `claude_trust.go`, per the file list): a version-compare helper (parse
+   `major.minor.patch`, no existing semver util in this repo -- write the
+   ~10-line comparator inline, string-compare is not enough since "9" < "10"
+   as strings), the writability check (`os.OpenFile(path, os.O_WRONLY, 0)`
+   probe or `unix.Access`-equivalent -- match whatever this repo already uses
+   elsewhere for a writability check, `grep -rn "O_WRONLY\|syscall.Access"
+   internal/`), and the prune (reuse `swarmOwnedWorkspace` + `os.Stat`).
+   Wire it into `WriteClaude` (or the install driver that calls it —
+   `grep -n "WriteClaude(" cmd/swarm/*.go internal/install/*.go`).
+4. **Run** `go test ./internal/install/ -run 'ClaudeTrust|ClaudeJSON' -count=1`.
+5. **Commit:** `feat(install): verify and prune Claude's per-session trust entries`.
+
+### Task 17: D4, `swarm doctor` "Claude trust" check
+
+- **Consumes:** Task 16's version comparator and prune-candidate query (doctor
+  counts and warns; it never deletes).
+- **Produces:** `Doctor.claudeTrust(ctx) Check`, wired into `Doctor.Checks`
+  next to the other P1 checks (`d.tmux`, ... `d.data`, `d.python3`).
+
+1. **Tests** (`internal/install/doctor_test.go`):
+   - `TestDoctorFailsWhenClaudeJSONNotWritable`.
+   - `TestDoctorFailsOnAnUntestedClaudeVersion`.
+   - `TestDoctorWarnsOnStaleSwarmOwnedEntriesWithCount`.
+   - `TestDoctorWarnsWhenALiveClaudeSessionHasNoTrustEntry`: needs a DB
+     handle -- check whether `Doctor` already has one (`grep -n "DB \|db\." internal/install/doctor.go`);
+     if not, this needs a new `Doctor.DB *sql.DB`/`Store` field, which is a
+     scope question for review, not a silent addition. Flag it explicitly in
+     the review request rather than picking silently.
+   - `TestDoctorPassesWithCleanState`, exact PASS copy with the count.
+2. **Run.** Fails: no such check.
+3. **Implement** in `doctor.go`, reusing Task 16's helpers (don't
+   re-implement the version comparator or the prune-candidate scan; export
+   what's needed from `internal/install/claude.go`).
+4. **Run** `go test ./internal/install/ -run 'Doctor.*ClaudeTrust\|Doctor.*Claude' -count=1`.
+5. **Commit:** `feat(install): swarm doctor checks Claude's per-session trust state`.
+
 ### Task 13: drop `TrustFolder` from the interface
 
 1. **Test:** in `adapter_test.go:66`, remove the `TrustFolder` call. The
@@ -669,10 +845,53 @@ captured dialog. Copy the plain-text captures from the spec's probe table:
 
 ### Task 14: batch 2 full check, live verification, and review
 
-1. Run `go build ./... && go vet ./... && go test ./... -count=1`.
+1. Run `go build ./... && go vet ./... && go test ./... -count=1`. DONE
+   2026-09-26: full repo suite green, `gofmt -l .` clean, `make skills-sync`
+   produces no diff.
 2. **Live** (after merge, `make install-daemon`): the spec's "Live" steps.
-   - Spawn a claude, codex and agy worker; none shows a trust dialog.
-   - Check the three trust artefacts.
-   - Re-run `ls -la` on an agy-home after an agy session finishes, to confirm
-     the entries are still symlinks (Q2).
-3. Request review (Opus reviewer). Scope: `git diff <batch-1-tip>...HEAD`.
+   NOT DONE this session (no daemon restart was authorized) -- Task 14a's
+   scratch-HOME probe (done) verified the Claude lock/key mechanism live,
+   but spawning real claude/codex/agy workers against the installed daemon,
+   and the agy-home Q2 re-check, are still open.
+3. Request review (Opus reviewer). Scope: `git diff origin/main...HEAD` (9
+   commits, `0451f52..e604c79`). NOT DONE this session.
+
+**Status (2026-09-26, implementer session):** Tasks 18, 14a, 9, 15, 11, 12,
+16, 17, 13 are all done and committed, each its own TDD commit. Remaining
+before this branch can merge: the live verification steps above, and an
+Opus review pass.
+
+### Task 19: review round 3 (2026-09-26)
+
+Each step: failing test, watched fail, minimal fix, pass, commit (explicit
+paths).
+
+1. **Empty/`null` claude.json + symlinks.** Tests:
+   `TestClaudeTrustWritersNeverRewriteAnEmptyNullOrMalformedClaudeJSON`,
+   `TestClaudeTrustWritesThroughASymlinkedClaudeJSON` (adapter),
+   `TestPruneNeverRewritesAnEmptyNullOrMalformedClaudeJSON`,
+   `TestPruneWritesThroughASymlinkedClaudeJSON` (install). Fix:
+   `install.EditClaudeProjects` + `install.WriteFileAtomic` in
+   `internal/install/claude_lock.go`, used by `trustClaudeWorkspace`,
+   `Claude.ForgetFolders` and `PruneStaleClaudeTrustEntries`;
+   `ErrClaudeConfigBusy`. DONE.
+2. **Reconcile stall.** Tests:
+   `TestReconcileForgetClaudeTrustIsOneBoundedPassUnderAStuckLock`,
+   `TestReconcileForgetClaudeTrustMarksNothingDoneOnAParseError`,
+   `TestClaudeForgetFolderNeverDeletesANonSwarmOwnedRealpathTwin`. Fix: one
+   `ForgetFolders` call per tick in `forgetFinishedClaudeTrust`. DONE.
+3. **Minor items.** Tests: `TestInstallPrintsAPruneBusySkipAndAPruneError`,
+   `TestPruneTreatsOnlyENOENTAsStale`,
+   `TestAgyLaunchSettingsCopyKeepsTheRealFileMode`, the ported
+   `TestAgyLaunchLeavesALegacyWholeDirSymlinkAlone` (log line) and
+   `TestCodexLaunchWritesPerLaunchTrustIdempotently` (`[hooks.state]`). DONE.
+4. **D3/D4 via the daemon.** Tests: `TestAgentNodeWireShape` (`cwd`),
+   `TestInstallPrunesFinishedSessionsTrustEntries`,
+   `TestClaudeTrustNotesAnOfflineDaemon`,
+   `TestDoctorWarnsWhenALiveClaudeSessionHasNoTrustEntry` (install);
+   `TestDaemonClaudeSessionsReadsTheAgentTree`,
+   `TestDaemonClaudeSessionsIsAnErrorWhenTheDaemonIsOffline`,
+   `TestInstallWiresClaudeSessionsToTheDaemon` (cmd). Fix:
+   `SessionInfo.cwd`; `install.ClaudeSessions`/`ClaudeSessionsFunc` on
+   `Doctor` and `AgentsOpts`; `cmd/swarm` `daemonClaudeSessions` over
+   `newClient` + `GET /api/agents?state=all`; `swarm install --url`. DONE.

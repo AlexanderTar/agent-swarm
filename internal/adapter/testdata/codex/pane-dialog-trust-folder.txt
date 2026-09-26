@@ -1,0 +1,9 @@
+> You are in /Users/alex/.swarm/work/3
+
+  Trust this folder?
+
+  Codex works best when it can read, edit and run code in this folder
+  without asking for approval each time.
+
+› 1. Trust and continue
+  2. No, ask me first

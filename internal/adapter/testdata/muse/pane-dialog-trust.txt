@@ -1,0 +1,6 @@
+  Do you trust this workspace?
+
+  Muse will be able to read, edit and run code in this folder.
+
+  > 1 Trust and continue
+    2 No, exit

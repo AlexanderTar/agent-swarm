@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
@@ -476,6 +477,314 @@ func TestClaudeResumeUsesTheProviderID(t *testing.T) {
 	}
 }
 
+// D1 (dialog-needs-you spec): Launch pre-trusts Spec.Cwd (and its realpath)
+// in the REAL ~/.claude.json, the same per-path write Claude itself makes on
+// "Yes, I trust this folder" -- merged into any existing entry, every other
+// key of every project and every top-level key untouched.
+func TestClaudeLaunchPreTrustsCwdAndKeepsOtherEntries(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	seed := []byte(`{"numStartups":3,"projects":{"/x":{"allowedTools":["a"]},"` + jsonEscape(s.Cwd) + `":{"lastCost":1}}}`)
+	if err := os.WriteFile(cfg, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		NumStartups int                        `json:"numStartups"`
+		Projects    map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("claude.json no longer parses: %v\n%s", err, b)
+	}
+	if doc.NumStartups != 3 {
+		t.Errorf("numStartups = %d, want unchanged 3", doc.NumStartups)
+	}
+	if string(doc.Projects["/x"]) != `{"allowedTools":["a"]}` {
+		t.Errorf(`projects["/x"] = %s, want byte-identical`, doc.Projects["/x"])
+	}
+	var entry struct {
+		LastCost               float64 `json:"lastCost"`
+		HasTrustDialogAccepted bool    `json:"hasTrustDialogAccepted"`
+	}
+	if err := json.Unmarshal(doc.Projects[s.Cwd], &entry); err != nil {
+		t.Fatalf("projects[cwd] does not parse: %v", err)
+	}
+	if !entry.HasTrustDialogAccepted {
+		t.Errorf("projects[cwd].hasTrustDialogAccepted = false, want true: %s", doc.Projects[s.Cwd])
+	}
+	if entry.LastCost != 1 {
+		t.Errorf("projects[cwd].lastCost = %v, want unchanged 1", entry.LastCost)
+	}
+	fi, err := os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("file mode = %v, want unchanged 0600", fi.Mode().Perm())
+	}
+	if _, err := os.Stat(cfg + ".lock"); !os.IsNotExist(err) {
+		t.Errorf("lock dir left behind: %v", err)
+	}
+}
+
+func jsonEscape(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b[1 : len(b)-1])
+}
+
+// D1: a second Launch must not rewrite the file once both keys are already
+// trusted.
+func TestClaudePreTrustIsIdempotent(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	// Review round 2, finding 3: a missing ~/.claude.json is no longer
+	// auto-created by pre-trust, so seed one -- this test is about
+	// idempotence, not about the missing-file path (covered separately).
+	if err := os.WriteFile(cfg, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeBytes, _ := os.ReadFile(cfg)
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Errorf("mtime changed on a no-op pre-trust: %s -> %s", before.ModTime(), after.ModTime())
+	}
+	afterBytes, _ := os.ReadFile(cfg)
+	if string(beforeBytes) != string(afterBytes) {
+		t.Errorf("bytes changed on a no-op pre-trust")
+	}
+}
+
+// D1: when Spec.Cwd is a symlink, both the literal path and its realpath end
+// up trusted.
+func TestClaudePreTrustAddsRealpathForSymlinkedCwd(t *testing.T) {
+	d := testDeps(t)
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "work")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	s := claudeSpec(t, d)
+	s.Cwd = link
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	// Review round 2, finding 3: seed the file -- pre-trust no longer
+	// creates a missing one (see TestClaudePreTrustSkipsAMissingClaudeJSON).
+	if err := os.WriteFile(cfg, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	evaled, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{link, evaled} {
+		var entry struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		}
+		if err := json.Unmarshal(doc.Projects[k], &entry); err != nil || !entry.HasTrustDialogAccepted {
+			t.Errorf("projects[%q] not trusted: %s (err=%v)", k, doc.Projects[k], err)
+		}
+	}
+}
+
+// D1: a stale lock (older than 10s) is removed and the write proceeds; a
+// fresh, continuously-held lock means the write is skipped (best-effort) but
+// Launch still succeeds.
+func TestClaudePreTrustWaitsForAStaleLock(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	// Review round 2, finding 3: seed the file -- pre-trust no longer
+	// creates a missing one.
+	if err := os.WriteFile(cfg, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock := cfg + ".lock"
+	if err := os.Mkdir(lock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-20 * time.Second)
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Fatal("a stale lock must be removed")
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	json.Unmarshal(b, &doc)
+	if len(doc.Projects[s.Cwd]) == 0 {
+		t.Fatal("the write must proceed once the stale lock is cleared")
+	}
+}
+
+func TestClaudePreTrustSkipsTheWriteUnderAFreshHeldLock(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	lock := cfg + ".lock"
+	if err := os.Mkdir(lock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(lock)
+	l, err := newClaude(d).Launch(s)
+	if err != nil {
+		t.Fatalf("Launch must still succeed when pre-trust is skipped: %v", err)
+	}
+	if len(l.Argv) == 0 {
+		t.Fatal("Launch produced no argv")
+	}
+	if _, err := os.Stat(cfg); err == nil {
+		b, _ := os.ReadFile(cfg)
+		var doc struct {
+			Projects map[string]json.RawMessage `json:"projects"`
+		}
+		json.Unmarshal(b, &doc)
+		if len(doc.Projects[s.Cwd]) != 0 {
+			t.Fatal("the write must be skipped while the lock is held")
+		}
+	}
+}
+
+// Review round 2, finding 3: a missing ~/.claude.json is Claude's own
+// missing-config/backup-restore path, not ours to paper over. Pre-trust
+// must skip the write (Launch still succeeds; the trust dialog / Needs-you
+// fallback takes over) rather than creating a fresh file holding only
+// {"projects": ...}.
+func TestClaudePreTrustSkipsAMissingClaudeJSON(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
+		t.Fatalf("test setup: cfg must not already exist: %v", err)
+	}
+	l, err := newClaude(d).Launch(s)
+	if err != nil {
+		t.Fatalf("Launch must still succeed when pre-trust is skipped: %v", err)
+	}
+	if len(l.Argv) == 0 {
+		t.Fatal("Launch produced no argv")
+	}
+	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
+		t.Fatalf("pre-trust must not create a missing claude.json, got stat err=%v", err)
+	}
+}
+
+// D2 (dialog-needs-you spec): once a session's Swarm-owned workspace is
+// reclaimed, ForgetFolder removes only that entry's hasTrustDialogAccepted
+// key (and its realpath twin), under the same lock/atomic-write protocol,
+// leaving everything else -- other fields Claude has since written to that
+// same project entry, every other project, every other top-level key --
+// untouched.
+// Review round 2, finding 5: ForgetFolder now deletes the whole
+// projects[cwd] entry (and its realpath twin), not just the
+// hasTrustDialogAccepted field -- otherwise every Claude spawn left a
+// permanent entry in ~/.claude.json since nothing else ever deletes a
+// Swarm-owned work dir off disk.
+func TestClaudeForgetFolderRemovesBothKeysUnderTheSameLock(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	// Review round 3, item 3: ForgetFolder now applies the Swarm-owned
+	// predicate to every key itself, so the cwd must be under d.Home/work
+	// (d.Home is /tmp/..., so its realpath twin is /private/tmp/...).
+	s.Cwd = swarmOwnedCwd(t, d, "1")
+	real, err := filepath.EvalSymlinks(s.Cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	seed := []byte(`{"projects":{"/other":{"hasTrustDialogAccepted":true},"` +
+		jsonEscape(s.Cwd) + `":{"hasTrustDialogAccepted":true,"lastCost":2},"` +
+		jsonEscape(real) + `":{"hasTrustDialogAccepted":true}}}`)
+	if s.Cwd == real {
+		// No symlink on this platform for t.TempDir(); collapse to one key
+		// so the seed JSON stays valid (no duplicate object key).
+		seed = []byte(`{"projects":{"/other":{"hasTrustDialogAccepted":true},"` +
+			jsonEscape(s.Cwd) + `":{"hasTrustDialogAccepted":true,"lastCost":2}}}`)
+	}
+	if err := os.WriteFile(cfg, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := newClaude(d)
+	if err := a.ForgetFolder(context.Background(), s.Cwd); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("claude.json no longer parses: %v\n%s", err, b)
+	}
+	if string(doc.Projects["/other"]) != `{"hasTrustDialogAccepted":true}` {
+		t.Errorf(`projects["/other"] = %s, want untouched`, doc.Projects["/other"])
+	}
+	if _, ok := doc.Projects[s.Cwd]; ok {
+		t.Errorf("projects[cwd] must be deleted entirely, got %s", doc.Projects[s.Cwd])
+	}
+	if real != s.Cwd {
+		if _, ok := doc.Projects[real]; ok {
+			t.Errorf("projects[realpath] must be deleted entirely, got %s", doc.Projects[real])
+		}
+	}
+	if _, err := os.Stat(cfg + ".lock"); !os.IsNotExist(err) {
+		t.Errorf("lock dir left behind: %v", err)
+	}
+	before, _ := os.ReadFile(cfg)
+	if err := a.ForgetFolder(context.Background(), s.Cwd); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(cfg)
+	if string(before) != string(after) {
+		t.Errorf("a second ForgetFolder must be a no-op:\n%s\n---\n%s", before, after)
+	}
+}
+
+// D1, probe P-C5: claudeTrust/claudeTrustYes match the live-captured dialog.
+func TestClaudeTrustPatternMatchesProbeFixture(t *testing.T) {
+	fixture := pane(t, "claude", "pane-dialog-trust.txt")
+	if !claudeTrust.MatchString(fixture) {
+		t.Fatal("claudeTrust does not match the probe fixture")
+	}
+	if !claudeTrustYes.MatchString(fixture) {
+		t.Fatal("claudeTrustYes does not match the probe fixture")
+	}
+}
+
 // P0-4: the native binary's pane command is its version; a shell is rejected (I2).
 func TestClaudeProcessNames(t *testing.T) {
 	a := newClaude(testDeps(t))
@@ -757,5 +1066,153 @@ func TestClaudeIdleAcceptsTheReverseVideoCursorCell(t *testing.T) {
 	}
 	if a.Idle(pane(t, "claude", "pane-input-nonempty.txt")) {
 		t.Error("pane-input-nonempty.txt must stay non-idle")
+	}
+}
+
+// swarmOwnedCwd returns a real directory under d.Home/work, i.e. one
+// install.SwarmOwnedClaudeWorkspace accepts, so ForgetFolder's own
+// ownership filter lets it through.
+func swarmOwnedCwd(t *testing.T, d Deps, name string) string {
+	t.Helper()
+	p := filepath.Join(d.Home, "work", name)
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Review round 3, item 1 (data loss): a 0-byte, whitespace-only, `null` or
+// malformed ~/.claude.json must never be rewritten as a projects-only file
+// -- that wipes oauthAccount, mcpServers and every other top-level key
+// Claude keeps there. Both writers (pre-trust on Launch, ForgetFolder)
+// refuse and leave the bytes exactly as they were.
+func TestClaudeTrustWritersNeverRewriteAnEmptyNullOrMalformedClaudeJSON(t *testing.T) {
+	for _, seed := range []string{"", " \n\t ", "null", " null\n", "{bad", "[]"} {
+		d := testDeps(t)
+		s := claudeSpec(t, d)
+		s.Cwd = swarmOwnedCwd(t, d, "1")
+		cfg := filepath.Join(d.UserHome, ".claude.json")
+		if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := newClaude(d).Launch(s); err != nil {
+			t.Fatalf("seed %q: Launch must still succeed: %v", seed, err)
+		}
+		if b, _ := os.ReadFile(cfg); string(b) != seed {
+			t.Errorf("seed %q: pre-trust rewrote the file to %q", seed, b)
+		}
+		if err := newClaude(d).ForgetFolder(context.Background(), s.Cwd); err == nil {
+			t.Errorf("seed %q: ForgetFolder must report the refusal, not nil", seed)
+		}
+		if b, _ := os.ReadFile(cfg); string(b) != seed {
+			t.Errorf("seed %q: ForgetFolder rewrote the file to %q", seed, b)
+		}
+		if fi, _ := os.Stat(cfg); seed == "" && fi.Size() != 0 {
+			t.Errorf("a 0-byte file must stay 0 bytes, got %d", fi.Size())
+		}
+	}
+}
+
+// Review round 3, item 2: a symlinked ~/.claude.json (dotfile managers)
+// must stay a symlink -- the write goes to the link's target, never a
+// rename over the link itself. The lock is still Claude's own
+// <UserHome>/.claude.json.lock (the unresolved path): holding it blocks the
+// write even though the data lives elsewhere.
+func TestClaudeTrustWritesThroughASymlinkedClaudeJSON(t *testing.T) {
+	d := testDeps(t)
+	s := claudeSpec(t, d)
+	s.Cwd = swarmOwnedCwd(t, d, "1")
+	target := filepath.Join(t.TempDir(), "dotfiles", "claude.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(`{"oauthAccount":{"id":"x"},"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	if err := os.Symlink(target, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Holding the unresolved-path lock blocks the write.
+	lock := cfg + ".lock"
+	if err := os.Mkdir(lock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(target); strings.Contains(string(b), "hasTrustDialogAccepted") {
+		t.Fatal("the write must wait on <UserHome>/.claude.json.lock, the path Claude locks")
+	}
+	os.Remove(lock)
+
+	if _, err := newClaude(d).Launch(s); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("~/.claude.json was replaced by a regular file; the symlink must survive")
+	}
+	b, _ := os.ReadFile(target)
+	if !strings.Contains(string(b), "hasTrustDialogAccepted") || !strings.Contains(string(b), "oauthAccount") {
+		t.Fatalf("target = %s, want the trust entry merged and oauthAccount kept", b)
+	}
+	if tfi, _ := os.Stat(target); tfi.Mode().Perm() != 0o600 {
+		t.Errorf("target mode = %v, want unchanged 0600", tfi.Mode().Perm())
+	}
+
+	if err := newClaude(d).ForgetFolder(context.Background(), s.Cwd); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Lstat(cfg); fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("ForgetFolder replaced the symlink with a regular file")
+	}
+	if b, _ := os.ReadFile(target); strings.Contains(string(b), "hasTrustDialogAccepted") {
+		t.Fatalf("ForgetFolder must remove the entry from the target: %s", b)
+	}
+}
+
+// Review round 3, item 3: ForgetFolder's realpath twin must pass the same
+// Swarm-owned predicate as the literal key. A work-dir symlink that
+// resolves into the user's own project must never delete that project's
+// entry.
+func TestClaudeForgetFolderNeverDeletesANonSwarmOwnedRealpathTwin(t *testing.T) {
+	d := testDeps(t)
+	userProject := filepath.Join(d.UserHome, "my-project")
+	if err := os.MkdirAll(userProject, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realUser, _ := filepath.EvalSymlinks(userProject)
+	link := filepath.Join(d.Home, "work", "7")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(userProject, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(d.UserHome, ".claude.json")
+	seed := `{"projects":{"` + jsonEscape(link) + `":{"hasTrustDialogAccepted":true},"` +
+		jsonEscape(realUser) + `":{"hasTrustDialogAccepted":true}}}`
+	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := newClaude(d).ForgetFolder(context.Background(), link); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Projects[link]; ok {
+		t.Error("the Swarm-owned literal key must be removed")
+	}
+	if _, ok := doc.Projects[realUser]; !ok {
+		t.Error("a realpath twin outside <home>/work and <home>/worktrees must never be removed")
 	}
 }

@@ -77,12 +77,42 @@ branch `feat/dialog-needs-you` from `origin/main` 3aa22c7.
 
 ## Locked decisions
 
+User decisions D1-D8 below were locked 2026-09-26, after Q1 and Q2 (batch 1
+review). They amend decision 1 and resolve Q1; nothing here reopens them.
+
 1. **Trust is injected per session, for every agent kind.**
    - There is no parent-dir or global trust grant: no `~/.swarm/work` entry, no
      home-dir entry.
    - Each launch starts with its own workspace (`Spec.Cwd`, the neutral work
      dir or a git worktree) already trusted.
-   - See open question Q1 for the one place this touches a shared file.
+   - **D1 (claude, resolves Q1):** per-session write into the REAL
+     `~/.claude.json`: `projects[<exact abs workspace path>]` (plus its
+     `filepath.EvalSymlinks` realpath if different) `.hasTrustDialogAccepted =
+     true`, written just before launch, under Claude's own `<file>.lock`
+     mkdir lock (verified live, Task 14a), atomic write (temp file in the
+     same dir + rename, preserving the existing file's mode), touching no
+     other key. No global or parent (`~/.swarm/work`) grant. The isolated
+     `CLAUDE_CONFIG_DIR` approach (P-C2) stays rejected: login copy/rotation
+     risk, transcripts move, and it adds nothing once `--setting-sources
+     project,local` is already in play.
+   - **D5 (codex):** per-launch trust entry in `$CODEX_HOME/config.toml`,
+     where `CODEX_HOME` is `internal/adapter.CodexHomeDir(home, agentID)`
+     (agent-keyed since `main@8a610d7`, not session-keyed) -- the `-c`
+     override does not work (P-X2). The entry must survive `Resume` (same
+     `CODEX_HOME`, so a merge-not-replace write, like `writeCodexTrust`
+     already does). codex 0.157's new "Trust this folder?" dialog (distinct
+     from the older "Do you trust the contents of this directory?", still
+     current in some installs) is added to `StartupDialogs`/`PromptPatterns`;
+     the existing `codexTrust` pattern's auto-answer never matches it.
+   - **D6 (agy):** per-launch `settings.json` copy with the session's
+     workspace added to `trustedWorkspaces`; every other entry of the real
+     `antigravity-cli/` dir stays symlinked (so login/auth is kept).
+   - **D7 (cursor, muse):** `cursor.go`'s `--trust --workspace <cwd>` and
+     `muse.go`'s `--yolo --trust-workspace` already avoid the dialog and are
+     unchanged. A regression test asserts both flags on every `Launch` and
+     `Resume`. Detect-only dialog patterns are added so an unexpected dialog
+     (a flag silently stops working, or a future version adds a new one)
+     still surfaces as a Needs-you row, batch 1's escalation machinery.
 2. **`failSession` kills the pane.** `failure_text` keeps the last 40 lines
    (unchanged).
 3. **`CLAUDE_CODE_SANDBOXED` is not used.** No other undocumented trust-skip
@@ -101,6 +131,70 @@ branch `feat/dialog-needs-you` from `origin/main` 3aa22c7.
    the dialog leaves the pane. There are no answer buttons.
 7. **Only live sessions are eligible** (`spawning` or `running`). Panes of
    finished or acknowledged agents are killed, not surfaced.
+8. **D2 (cleanup):** the per-session Claude trust entry (D1) is removed once
+   that session's agent is deleted or reclaimed. (As built: this codebase
+   has no hard-delete path for `agents`/`sessions` rows at all -- confirmed,
+   `grep -n "DELETE FROM agents\|DELETE FROM sessions"` matches nothing --
+   so "deleted" never applies today; "reclaimed" means `state IN
+   ('finished', 'acknowledged')`, checked by `forgetFinishedClaudeTrust`
+   every reconcile tick, rate-limited per session id so an already-handled
+   session is never re-checked.) Only entries whose path is
+   Swarm-owned are ever touched -- under `<swarm home>/work` or `<swarm
+   home>/worktrees` (`filepath.Clean` + prefix match against both roots,
+   checked against both the literal and realpath keys D1 may have written.
+   The user's own projects (any other path in `~/.claude.json`) are never
+   read, matched, or removed. Reuses the existing, currently-uncalled
+   `Adapter.ForgetFolder(ctx, path)`; `Claude.ForgetFolder` is implemented for
+   the first time to delete both keys via the same lock/atomic-write
+   protocol as D1's write. Idempotent: a path with no entry is a no-op, and
+   the reclaim sweep may call it more than once for the same agent.
+9. **D3 (swarm install):** verifies `~/.claude.json` exists and is writable,
+   and that the installed Claude version is one where the trust key was
+   verified live (2.1.283 or later; an older or undetectable version gets a
+   warning, not a failure -- install never blocks on this). It also prunes
+   stale Swarm-owned entries: any `projects[...]` key that is Swarm-owned (D2's
+   predicate) and either no longer exists on disk, or belongs to a Swarm
+   *terminal-session* work dir (a plain `<home>/work/<n>` directory with no
+   live agent using it -- worktrees are covered by "no longer exists" once
+   `git worktree remove` runs). Never adds a parent/global grant.
+10. **D4 (swarm doctor):** a new "Claude trust" check:
+    - **FAIL** when `~/.claude.json` doesn't exist or isn't writable, or the
+      installed Claude version is untested (older than 2.1.283, or the
+      version can't be determined).
+    - **WARN**, with a count, when stale Swarm-owned entries exist (D3's same
+      predicate; doctor never deletes, only reports -- `swarm install`
+      prunes).
+    - **WARN** when a live Claude session's workspace (a `running` or
+      `spawning` session whose agent kind is Claude) has no matching
+      `projects[...]` entry at all (D1's write may have failed, or raced a
+      concurrent Claude rewrite).
+    - **PASS** otherwise, with the count of Swarm-owned entries.
+    - **Implementation (review round 3, 2026-09-26):** `swarm install` and
+      `swarm doctor` read "no live agent using it" and the live-session list
+      from the running daemon, over the existing authenticated CLI client
+      (`cmd/swarm/client.go` `newClient`: `<home>/run/daemon.token`, Bearer),
+      via `GET /api/agents?state=all` (`SessionInfo` gained `cwd`). A
+      "terminal-session work dir" is the session cwd of a finished or
+      acknowledged Claude agent that no not-finished agent (any kind) still
+      uses (a finished agent's worktree counts too; D2 already drops those
+      at finish time, so this only catches what D2 missed). When the daemon is offline (no token yet, or not listening) that
+      part is skipped with a one-line note, never an error or a FAIL; the
+      on-disk half of the prune and the other checks still run.
+11. **D8 (codex hardening, from batch-1 review):**
+    - `setupEnv` calls `os.Chtimes(codexHome, now, now)` right after
+      `os.MkdirAll` succeeds (best-effort; an error is logged, not returned).
+      This closes the sweep race window `reclaimCodexHomes`'s `snapshotAt`
+      guard already narrows: without it, a `CODEX_HOME` created a long time
+      ago (first spawn) and only *resumed* now keeps its original mtime
+      forever, so a slow DB snapshot race is still theoretically possible on
+      a very old, frequently-resumed agent. Refreshing the mtime on every
+      `setupEnv` call (including Resume) makes "this dir was touched after
+      `snapshotAt`" true for any agent actually in use right now.
+    - `reclaimOldCodexLaunchHomes` becomes a true one-time job per daemon
+      run: a `sync.Once` field on `Store`, not a per-`Reconcile`-tick call.
+      It already self-limits in effect (nothing is left to remove after the
+      first successful pass), but it still pays a DB query and an
+      `os.ReadDir` every 5 s tick forever; `sync.Once` removes that cost.
 
 ## Trust mechanism per kind (probe evidence)
 
@@ -115,8 +209,8 @@ branch `feat/dialog-needs-you` from `origin/main` 3aa22c7.
 
 | Kind | Version | Mechanism (chosen) | Evidence | Can the dialog still appear? |
 |---|---|---|---|---|
-| claude | 2.1.283 | Before launch, write `projects[<cwd>]` and `projects[<realpath cwd>]` = `{hasTrustDialogAccepted: true}` (merged into any existing entry) into the user's `~/.claude.json`. This is the same write Claude makes when the user picks "Yes, I trust this folder". It happens under `~/.claude.json.lock`. **Blocked on Q1.** | **P-C1:** `--dangerously-skip-permissions` alone still shows the dialog. **P-C2:** a per-launch `CLAUDE_CONFIG_DIR` suppresses trust but brings up the first-run theme picker and, once `.claude.json` is copied in, the "Bypass Permissions mode" accept dialog. It also moves settings, skills, transcripts (read by `advisor/transcript.go:341`) and the keychain credential slot, so it is rejected. **P-C3:** an exact-path entry in the config Claude reads suppresses the dialog for both `work-a` and worktree `wt-a`. This ran against a scratch-`HOME` *copy* of `~/.claude.json`, never the real file, so the mechanism is proven but the real-file write is not; Task 14 verifies it live. **P-C4 (negative):** same config, a path not listed, and the dialog appears. There is no CLI flag (`claude --help`: only `-p` skips trust) and no settings key: Claude reads trust only from `projects[...]` in the global config (`DTe`/`oS`/`iS` in the binary). | Yes, if Claude changes its trust key or path normalisation, or if the entry is lost to a concurrent rewrite. The retry and the Needs-you row cover this. |
-| codex | 0.157.0 | Per-launch `$CODEX_HOME/config.toml` (the launch dir `codex-home`) with `[projects."<cwd>"] trust_level = "trusted"`, plus the realpath if it differs. | **P-X1:** a fresh `CODEX_HOME` with `--dangerously-bypass-approvals-and-sandbox` shows "Folder access … Trust this folder?" for both `cx-work` and `wt-a`. **P-X2:** `-c 'projects."<path>".trust_level="trusted"'` does **not** suppress it, for either the worktree path or the repo root. **P-X3:** the per-launch `config.toml` entry suppresses it for `cx-work`, and for `wt-a` keyed by either the worktree path or the repo root. | Yes, on a version change. The dialog pattern "Trust this folder\?" (added here) with auto-answer `Enter` (option 1 is preselected), plus the retry and the row, cover it. |
+| claude | 2.1.283 | Before launch, write `projects[<cwd>]` and `projects[<realpath cwd>]` = `{hasTrustDialogAccepted: true}` (merged into any existing entry) into the user's `~/.claude.json`. This is the same write Claude makes when the user picks "Yes, I trust this folder". It happens under `~/.claude.json.lock`. **D1: confirmed live, P-C5.** | **P-C1:** `--dangerously-skip-permissions` alone still shows the dialog. **P-C2:** a per-launch `CLAUDE_CONFIG_DIR` suppresses trust but brings up the first-run theme picker and, once `.claude.json` is copied in, the "Bypass Permissions mode" accept dialog. It also moves settings, skills, transcripts (read by `advisor/transcript.go:341`) and the keychain credential slot, so it is rejected. **P-C3:** an exact-path entry in the config Claude reads suppresses the dialog for both `work-a` and worktree `wt-a`. This ran against a scratch-`HOME` *copy* of `~/.claude.json`, never the real file, so the mechanism is proven but the real-file write is not. **P-C4 (negative):** same config, a path not listed, and the dialog appears. There is no CLI flag (`claude --help`: only `-p` skips trust) and no settings key: Claude reads trust only from `projects[...]` in the global config (`DTe`/`oS`/`iS` in the binary). **P-C5 (Task 14a, live, 2026-09-26):** a scratch `HOME` (`tmux -L dialogprobe`, never `-L swarm`) seeded with a *copy* (never the real file) of the real `~/.claude.json` reaches the actual "Is this a project you created or one you trust?" dialog for a fresh scratch workspace. Accepting it: (1) creates `<HOME>/.claude.json.lock` as a **directory** (`mkdir` lock, confirming the spec's assumption -- no separate file-based lock library), held only for the instant of the write, then removed; (2) writes `projects["<abs scratch work path>"] = {..., "hasTrustDialogAccepted": true, ...}` alongside Claude's other own per-project fields (`allowedTools`, `mcpServers`, etc.) -- confirming the exact key name on 2.1.283, the version actually installed here. | Yes, if Claude changes its trust key or path normalisation, or if the entry is lost to a concurrent rewrite. The retry and the Needs-you row cover this. |
+| codex | 0.157.0 | Per-launch `$CODEX_HOME/config.toml`, where `$CODEX_HOME` is `internal/adapter.CodexHomeDir(home, agentID)` (agent-keyed, `<home>/cx/<hash(agentID)>`, `main@8a610d7`) with `[projects."<cwd>"] trust_level = "trusted"`, plus the realpath if it differs. A merge, not a replace, so it survives `Resume` against the same `CODEX_HOME`. | **P-X1:** a fresh `CODEX_HOME` with `--dangerously-bypass-approvals-and-sandbox` shows "Folder access … Trust this folder?" for both `cx-work` and `wt-a`. **P-X2:** `-c 'projects."<path>".trust_level="trusted"'` does **not** suppress it, for either the worktree path or the repo root. **P-X3:** the per-launch `config.toml` entry suppresses it for `cx-work`, and for `wt-a` keyed by either the worktree path or the repo root. | Yes, on a version change. The dialog pattern "Trust this folder\?" (added here) with auto-answer `Enter` (option 1 is preselected), plus the retry and the row, cover it. |
 | agy | 1.2.11 | Per-launch `agy-home/.gemini/antigravity-cli/` becomes a real directory. Every entry of the real `~/.gemini/antigravity-cli/` is symlinked except `settings.json`, which is a per-launch copy with `trustedWorkspaces` ∪ {`<cwd>`}. Today the whole directory is a single symlink (`agy.go:54-63`). | **P-A1:** baseline outside home shows "Do you trust the contents of this project?". **P-A2:** the per-launch layout suppresses it for `agy-work` and `wt-a`, and the account still shows (auth intact). **P-A3 (negative):** an unlisted `work-b` shows the dialog. `agy --help` has no trust flag. | Yes, on a version change. The existing `agyTrust` pattern, plus the retry and the row, cover it. |
 | cursor | 2026.09.26 | Already done: `--trust --workspace <cwd>` (`cursor.go:39-40`). No change. | **P-U1:** `--yolo --trust --approve-mcps` shows no dialog in fresh `cur-work` or in `wt-a`. **P-U2 (negative):** a fresh dir without flags shows "▶ [a] Trust this workspace / [q] Quit". | Only if the flag is removed. Add a detect-only pattern so a regression reaches Needs you. |
 | muse | 1.4.0 | Already done: `--yolo --trust-workspace` on Launch and Resume (`muse.go:32,329`). No change. | **P-M1:** the flags show no dialog in fresh `mu-fresh` or in `wt-a`. **P-M2 (negative):** without flags, "Do you trust this workspace? … > 1 Trust and continue". | Only if the flag changes. Add a detect-only pattern. |
@@ -332,6 +426,24 @@ the notification and in `swarm_read`.
 - Needs-you row line 3 stays `Waiting for your input` (existing
   `needsYouMessage`, web and menubar).
 
+**Doctor copy (D4, `Check{Name: "Claude trust", ...}`):**
+- FAIL, not writable/missing: `"~/.claude.json is missing or not writable. Claude sessions will hit the trust dialog. Run swarm install."`
+- FAIL, untested version: `"Claude <version> is older than 2.1.283, where the trust-dialog key was verified. Update Claude, then run swarm doctor again."`
+- FAIL, version undetectable: `"Couldn't determine the installed Claude version. Update Claude, then run swarm doctor again."`
+- WARN, stale entries (count > 0): `"<n> stale Swarm-owned entries in ~/.claude.json. Run swarm install to prune them."`
+- WARN, live session missing entry: `"<agent name> is running but its workspace isn't trusted in ~/.claude.json yet."`
+- Daemon offline (appended to whichever detail above applies): `" Live-session check skipped: the daemon isn't running."`
+- PASS: `"~/.claude.json is writable, Claude <version>, <n> Swarm-owned entries."`
+
+**Install copy (D3, printed the same way as other `swarm install` steps):**
+- Not writable/missing: `"~/.claude.json is missing or not writable: Claude sessions will hit the trust dialog. Fix its permissions, then run swarm install again."`
+- Untested version: `"Claude <version> is older than 2.1.283: the trust-dialog key was verified on 2.1.283+. Continuing, but sessions may still hit the trust dialog."`
+- Prune summary (count > 0): `"Removed <n> stale Swarm-owned entries from ~/.claude.json."`
+- Prune summary (count == 0): no line printed (install stays quiet when there is nothing to do, matching every other install step).
+- Prune skipped, lock busy: `"Skipped pruning ~/.claude.json: another process holds its lock. Run swarm install again."`
+- Prune refused (empty, `null` or unparsable file, ...): `"Couldn't prune ~/.claude.json: <error>"`
+- Daemon offline (finished-session half skipped): `"Skipped pruning finished sessions' Claude trust entries: the daemon isn't running."`
+
 **Log lines (exact format strings):**
 - `startup: %s: sent %v for dialog %q (send %d of 3)`
 - `startup: %s: dialog %q still visible after 15s, opened %s`
@@ -340,6 +452,8 @@ the notification and in `swarm_read`.
 - `reconcile: killed pane %s of finished agent %s`
 - `failSession: kill %s: %v`
 - `claude: pre-trust %s: %v`
+- `reconcile: forget claude trust for %d sessions: %v (retrying next tick)`
+- `agy: %s is a legacy whole-dir symlink; leaving it, so %s is not trusted per session`
 
 There are no new i18n keys and no new error or empty states.
 
@@ -410,7 +524,81 @@ There are no DB model changes. `requests.kind = 'prompt'` already exists, with
   muse, replacing `return nil // TODO(probe)`).
 - Tests: `internal/adapter/claude_test.go`, `codex_test.go`, `agy_test.go`,
   `cursor_test.go`, `muse_test.go`, `adapter_test.go`.
-- Fixtures (captured pane text): `internal/adapter/testdata/trust/*.txt`.
+- Fixtures (captured pane text): under each kind's existing
+  `internal/adapter/testdata/<kind>/` directory (the convention already used
+  by `pane-dialog-trust.txt` etc.), not a new shared `testdata/trust/`.
+
+**Review round 2 fixes (2026-09-26), batch 2:**
+1. `withClaudeConfigLock`'s stale-lock removal (`_ = os.Remove(lock); continue`)
+   skipped the deadline check on every loop, so a lock dir Remove kept
+   failing on (non-empty, or EACCES) spun the loop at full CPU forever
+   inside `Launch`/`Resume`/`Reconcile`. Moved into
+   `internal/install.WithClaudeConfigLock` (shared with the prune below) and
+   fixed to remove a stale lock at most once per call, always falling
+   through to the deadline/sleep after.
+2. `PruneStaleClaudeTrustEntries` took no lock and did a blind
+   read-modify-write, racing any concurrent Claude write to the same file
+   during `swarm install`. Now takes `WithClaudeConfigLock` and re-reads/
+   compares before writing, retrying like `trustClaudeWorkspace` already did.
+3. A missing `~/.claude.json` was silently created by `trustClaudeWorkspace`
+   holding only `{"projects": ...}`, hiding Claude's own missing-config path.
+   Pre-trust now skips the write on ENOENT instead. `claudeJSONWritable`
+   used to call a missing file "writable" whenever its parent dir was; it
+   now requires the file to actually exist, so D3's install warning and D4's
+   doctor FAIL both fire for a plain-missing file, not just an unwritable one.
+4. Resolved in review round 3 (below): D4's live-session WARN reads the
+   daemon over the authenticated CLI client.
+5. `Claude.ForgetFolder` (D2) removed only the `hasTrustDialogAccepted`
+   field, leaving `projects[<swarm work dir>]` in the user's `~/.claude.json`
+   forever (nothing else ever deletes a Swarm-owned work dir off disk, so
+   D3's prune never caught it). It now deletes the whole `projects[k]` entry
+   for each Swarm-owned key -- callers only ever pass an already-confirmed
+   Swarm-owned `cwd`.
+
+**Review round 3 fixes (2026-09-26):**
+1. Data loss: a 0-byte, whitespace-only or `null` `~/.claude.json` decoded
+   to a nil map and was rewritten as `{"projects":...}`, wiping
+   `oauthAccount`, `mcpServers` and the rest. Every writer (pre-trust,
+   `ForgetFolder`, the install prune) now goes through one
+   `install.EditClaudeProjects`, which refuses a missing, empty, `null`,
+   non-object or unparsable file and writes nothing.
+2. Symlinks: `EditClaudeProjects` resolves `~/.claude.json` with
+   `filepath.EvalSymlinks` and writes the target, so a dotfile-manager link
+   survives. The lock stays on the unresolved `<UserHome>/.claude.json.lock`:
+   Claude 2.1.283's `saveConfigWithLock` calls proper-lockfile with an
+   explicit `lockfilePath: \`${file}.lock\`` on the config path as given,
+   which bypasses proper-lockfile's realpath resolution of the lock name.
+   One `install.WriteFileAtomic` (temp file, `Sync`, rename) replaces the
+   adapter's copy and `WriteIfChanged` for this file.
+3. Reconcile stall: `WithClaudeConfigLock` returns `ErrClaudeConfigBusy`
+   instead of a silent nil. `forgetFinishedClaudeTrust` batches every pending
+   cwd into one `Claude.ForgetFolders` call (one lock, one parse per tick);
+   on busy or a parse error it logs, marks nothing done and retries next
+   tick. Every key, including the realpath twin, must pass
+   `install.SwarmOwnedClaudeWorkspace` (which also accepts paths under
+   realpath(home)).
+4. D3's terminal-session prune and D4's live-session WARN, per the locked
+   wording above.
+5. `CheckAndPruneClaudeTrust` prints busy skips and prune errors; only
+   ENOENT counts as stale; the agy `settings.json` copy keeps the real
+   file's mode; the legacy agy symlink branch logs.
+
+**Changed, batch 2b (D2-D4, D8):**
+- `internal/adapter/claude.go`: `Claude.ForgetFolder` (D2), removing both keys
+  under the same lock/atomic-write protocol as `trustClaudeWorkspace`.
+- `internal/runtime/reconcile.go`: a Swarm-owned-path predicate
+  (`swarmOwnedWorkspace`, shared by D2's cleanup and D3's prune) and the D2
+  cleanup hook, wherever an agent's rows/dirs are deleted or reclaimed;
+  `os.Chtimes` in `codex.go`'s `setupEnv` (D8) and the `sync.Once` guard
+  around `reclaimOldCodexLaunchHomes` (D8), plus the `Store` field it needs in
+  `model.go`.
+- `internal/install/claude.go` or a new `internal/install/claude_trust.go`:
+  the D3 install-time check/prune (writability, version gate, stale-entry
+  prune).
+- `internal/install/doctor.go`: the D4 "Claude trust" check, wired into
+  `Doctor.Checks`.
+- Tests: `internal/runtime/reconcile_test.go` (D2, D8), `internal/adapter/codex_test.go`
+  (D8's Chtimes/sync.Once), `internal/install/claude_test.go`, `internal/install/doctor_test.go`.
 
 **Reused unchanged:**
 - `ResolvePrompt`, `finishOpen`, `ResolveSessionPrompts`, `withdrawOrphanedRequests`;
@@ -486,22 +674,27 @@ There are no DB model changes. `requests.kind = 'prompt'` already exists, with
 - The codex `SUN_LEN` failure: `~/.swarm/run/launch/<ses>/codex-home/app-server-control/app-server-control.sock`
   is 122 bytes, over macOS's 104, so codex 0.157 exits with "app server did
   not become ready" (probe P-X0). This is a separate spec.
-- `ForgetFolder` cleanup of trust entries (Claude and agy entries persist, as
-  they do today after a manual accept).
-- Pruning the 308 existing per-dir entries in `~/.claude.json`.
+- Removing agy's trust entries (agy persists them today too, and D2/D3 are
+  Claude-only: agy has no separate global config file this touches).
+- Pruning the user's own (non-Swarm-owned) entries in `~/.claude.json`. D2/D3
+  only ever touch Swarm-owned paths (under `<swarm home>/work` or
+  `<swarm home>/worktrees`); the 308 pre-existing per-dir entries a real user
+  has accumulated by hand are never read or matched.
 - Changes to web or menubar code.
 
 ## Open questions
 
-- **Q1 (blocking for batch 2, claude only):** the only Claude mechanism that
-  verifiably suppresses the dialog without moving auth or state is an
-  exact-path entry in the user's `~/.claude.json`. That is the same per-path
-  write Claude makes on "Yes", done per session under Claude's lock. Decision 1
-  says "no global `~/.claude.json` write".
-  - **Recommended default:** allow this per-session exact-path write; it is not
-    a global or parent grant.
-  - **If declined:** Claude keeps only the auto-answer, the retry and the
-    Needs-you row.
-- **Q2 (non-blocking):** should the agy per-entry symlink layout be re-probed
-  after an agy self-update, in case new top-level files land per-session?
-  - **Default:** yes, as a one-line check in the live verification.
+Q1 and Q2 were resolved 2026-09-26 by decisions D1-D8 above; kept here for
+history.
+
+- **Q1 (resolved by D1):** the only Claude mechanism that verifiably
+  suppresses the dialog without moving auth or state is an exact-path entry
+  in the user's `~/.claude.json`. That is the same per-path write Claude
+  makes on "Yes", done per session under Claude's lock. **Decided:** allow
+  this per-session exact-path write; it is not a global or parent grant. Q1
+  also covers cleanup, since a per-session write needs a per-session
+  teardown: that half is D2/D3/D4.
+- **Q2 (resolved by D6, non-blocking):** re-probe the agy per-entry symlink
+  layout after an agy self-update, in case new top-level files land
+  per-session. **Decided:** yes, as a one-line check in the live
+  verification (Task 14's live steps).

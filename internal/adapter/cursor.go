@@ -110,13 +110,22 @@ func (c *Cursor) Idle(capture string) bool       { return idle(c, capture) }
 var (
 	cursorAllowDeny = regexp.MustCompile(`(?i)allow\s*/\s*deny`)
 	cursorContinue  = regexp.MustCompile(`(?i)do you want to continue\?`)
+	// cursorTrust/cursorTrustQuit are D7 (dialog-needs-you spec): --trust
+	// already avoids this dialog (P-U1); these are detect-only, so a
+	// regression in the flag -- or a future version's new wording -- still
+	// surfaces as a Needs-you row instead of stalling the pane silently.
+	cursorTrust     = regexp.MustCompile(`Trust this workspace`)
+	cursorTrustQuit = regexp.MustCompile(`\[q\] Quit`)
 )
 
-func (c *Cursor) StartupDialogs() []Dialog { return nil } // --yolo --trust --approve-mcps
+func (c *Cursor) StartupDialogs() []Dialog { // --yolo --trust --approve-mcps
+	return []Dialog{{Match: cursorTrust, Require: cursorTrustQuit, Title: "Trust this workspace"}}
+}
 func (c *Cursor) PromptPatterns() []PromptMatcher {
 	return []PromptMatcher{
 		{Match: cursorAllowDeny, Title: "Permission prompt (Allow/Deny)", Action: "Enter"},
 		{Match: cursorContinue, Title: "Continue confirmation", Action: "y"},
+		{Match: cursorTrust, Require: cursorTrustQuit, Title: "Trust this workspace"},
 	}
 }
 func (c *Cursor) InterruptKeys() []string { return []string{"C-c"} }

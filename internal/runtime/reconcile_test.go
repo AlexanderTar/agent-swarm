@@ -17,7 +17,9 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
+	"github.com/AlexanderTar/agent-swarm/internal/kinds"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
@@ -3555,5 +3557,324 @@ func TestReclaimOldCodexLaunchHomesRemovesOnlyTerminalSessionsCodexHome(t *testi
 	}
 	if _, err := os.Stat(liveCodexHome); err != nil {
 		t.Errorf("a non-terminal session's old codex-home was removed: %v", err)
+	}
+}
+
+// D2 (dialog-needs-you spec): swarmOwnedWorkspace must match only paths
+// under <home>/work or <home>/worktrees, never a path outside home or one
+// that merely shares that prefix textually.
+func TestSwarmOwnedWorkspaceMatchesOnlyWorkAndWorktreeRoots(t *testing.T) {
+	home := "/Users/alex/.swarm"
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{filepath.Join(home, "work", "3"), true},
+		{filepath.Join(home, "worktrees", "foo"), true},
+		{filepath.Join(home, "work-extra", "3"), false}, // prefix collision, not a real subdir
+		{"/Users/alex/some-project", false},
+		{home, false},
+	}
+	for _, c := range cases {
+		if got := swarmOwnedWorkspace(home, c.path); got != c.want {
+			t.Errorf("swarmOwnedWorkspace(%q, %q) = %v, want %v", home, c.path, got, c.want)
+		}
+	}
+	if swarmOwnedWorkspace("", filepath.Join(home, "work", "3")) {
+		t.Error("an empty home must never be treated as owning anything")
+	}
+}
+
+// D2: once an agent is finished or acknowledged, the Claude trust entry
+// (D1) for each of its sessions' Swarm-owned workspaces is removed. A
+// session whose workspace is NOT Swarm-owned (an entry the user could have
+// by hand) is never touched, even once its agent is finished.
+func TestReconcileForgetsClaudeTrustForASwarmOwnedWorkspaceOfAFinishedAgent(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	userHome := t.TempDir()
+	claudeAd, err := adapter.New(kinds.Claude, adapter.Deps{
+		Home: s.Home, UserHome: userHome, Bin: "/usr/local/bin/swarm",
+		Run: execx.Run, Log: func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Adapters[Claude] = claudeAd
+
+	_, owned, _, err := s.StartSpike(ctx, SpikeInput{Name: "Owned", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownedSes, _ := s.LatestSession(ctx, owned.ID)
+
+	_, unowned, _, err := s.StartSpike(ctx, SpikeInput{Name: "Unowned", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unownedSes, _ := s.LatestSession(ctx, unowned.ID)
+	outsideCwd := filepath.Join(t.TempDir(), "not-swarm-owned")
+	if err := os.MkdirAll(outsideCwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET cwd = ? WHERE id = ?`, outsideCwd, unownedSes.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := filepath.Join(userHome, ".claude.json")
+	seed := fmt.Sprintf(`{"projects":{%q:{"hasTrustDialogAccepted":true},%q:{"hasTrustDialogAccepted":true}}}`,
+		ownedSes.Cwd, outsideCwd)
+	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{owned.ID, unowned.ID} {
+		if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude', state = 'finished' WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	panes(tm, Pane{Session: owned.Name, Command: "claude"}, Pane{Session: unowned.Name, Command: "claude"})
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("claude.json no longer parses: %v\n%s", err, b)
+	}
+	// Review round 2, finding 5: ForgetFolder now deletes the whole
+	// projects[cwd] entry, not just its hasTrustDialogAccepted field --
+	// otherwise every Claude spawn left a permanent entry in
+	// ~/.claude.json (D3's prune never fires for a work dir, since nothing
+	// else ever deletes one off disk).
+	if _, ok := doc.Projects[ownedSes.Cwd]; ok {
+		t.Errorf("Swarm-owned workspace's trust entry survives a finished agent: %s", doc.Projects[ownedSes.Cwd])
+	}
+	var entry struct {
+		HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+	}
+	if err := json.Unmarshal(doc.Projects[outsideCwd], &entry); err != nil {
+		t.Fatal(err)
+	}
+	if !entry.HasTrustDialogAccepted {
+		t.Error("a non-Swarm-owned workspace's trust entry must never be touched")
+	}
+}
+
+// D2 (batch-2 review): forgetFinishedClaudeTrust must not call
+// Claude.ForgetFolder again for a session it has already handled -- calling
+// it every 5s tick forever for every finished Claude agent would mean a
+// lock acquisition and a full read/parse of ~/.claude.json per session per
+// tick, contending with Claude's own writes at any real scale. Proven here
+// by re-seeding the entry by hand between two ticks: a second, unthrottled
+// pass would remove it again.
+func TestReconcileForgetsClaudeTrustOnlyOncePerSession(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	ctx := context.Background()
+	userHome := t.TempDir()
+	claudeAd, err := adapter.New(kinds.Claude, adapter.Deps{
+		Home: s.Home, UserHome: userHome, Bin: "/usr/local/bin/swarm",
+		Run: execx.Run, Log: func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Adapters[Claude] = claudeAd
+
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "OnceOnly", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	cfg := filepath.Join(userHome, ".claude.json")
+	seed := fmt.Sprintf(`{"projects":{%q:{"hasTrustDialogAccepted":true}}}`, ses.Cwd)
+	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude', state = 'finished' WHERE id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: a.Name, Command: "claude"})
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Re-seed the entry, as if the user (or a stray write) re-trusted it by
+	// hand between ticks.
+	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var entry struct {
+		HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+	}
+	if err := json.Unmarshal(doc.Projects[ses.Cwd], &entry); err != nil {
+		t.Fatal(err)
+	}
+	if !entry.HasTrustDialogAccepted {
+		t.Fatal("a second tick must not re-forget an already-handled session's trust entry")
+	}
+}
+
+// D8 (batch-2 review): reclaimOldCodexLaunchHomes must run at most once per
+// daemon run, not on every 5s Reconcile tick -- it already self-limits in
+// effect (nothing is left to remove after the first pass), but before this
+// fix it still paid a DB query and an os.ReadDir every tick forever.
+func TestReclaimOldCodexLaunchHomesRunsOnlyOnceADaemonRun(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	_, a1, _, err := s.StartSpike(ctx, SpikeInput{Name: "Reclaim1", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses1, err := s.LatestSession(ctx, a1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE id = ?`, ses1.ID); err != nil {
+		t.Fatal(err)
+	}
+	codexHome1 := filepath.Join(s.Home, "run", "launch", ses1.ID, "codex-home")
+	if err := os.MkdirAll(codexHome1, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(codexHome1); !os.IsNotExist(err) {
+		t.Fatalf("first terminal session's old codex-home still exists: %v", err)
+	}
+
+	_, a2, _, err := s.StartSpike(ctx, SpikeInput{Name: "Reclaim2", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses2, err := s.LatestSession(ctx, a2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE id = ?`, ses2.ID); err != nil {
+		t.Fatal(err)
+	}
+	codexHome2 := filepath.Join(s.Home, "run", "launch", ses2.ID, "codex-home")
+	if err := os.MkdirAll(codexHome2, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(codexHome2); err != nil {
+		t.Fatalf("a second terminal session's old codex-home was removed on a later tick; the sweep must run only once per daemon run: %v", err)
+	}
+}
+
+// finishedClaudeAgents seeds n finished Claude agents with Swarm-owned
+// cwds and a ~/.claude.json trusting each of them, for the D2 pass tests.
+func finishedClaudeAgents(t *testing.T, s *Store, tm *fakeTmux, userHome string, n int) (cfg, seed string) {
+	t.Helper()
+	ctx := context.Background()
+	claudeAd, err := adapter.New(kinds.Claude, adapter.Deps{
+		Home: s.Home, UserHome: userHome, Bin: "/usr/local/bin/swarm",
+		Run: execx.Run, Log: func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Adapters[Claude] = claudeAd
+	projects := map[string]any{}
+	var ps []Pane
+	for i := 0; i < n; i++ {
+		_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: fmt.Sprintf("Batch%d", i), Intent: "feature", Kind: Fake, Model: "fake-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ses, _ := s.LatestSession(ctx, a.ID)
+		projects[ses.Cwd] = map[string]bool{"hasTrustDialogAccepted": true}
+		if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude', state = 'finished' WHERE id = ?`, a.ID); err != nil {
+			t.Fatal(err)
+		}
+		ps = append(ps, Pane{Session: a.Name, Command: "claude"})
+	}
+	panes(tm, ps...)
+	b, _ := json.Marshal(map[string]any{"oauthAccount": map[string]string{"id": "x"}, "projects": projects})
+	cfg = filepath.Join(userHome, ".claude.json")
+	if err := os.WriteFile(cfg, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg, string(b)
+}
+
+// Review round 3, item 3: after a restart every finished Claude session is
+// pending. With the lock stuck, the pass must cost ONE lock timeout (not one
+// per session), write nothing and mark nothing done, so the next tick
+// retries. Once the lock frees, one pass forgets them all.
+func TestReconcileForgetClaudeTrustIsOneBoundedPassUnderAStuckLock(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	userHome := t.TempDir()
+	cfg, seed := finishedClaudeAgents(t, s, tm, userHome, 5)
+	if err := os.Mkdir(cfg+".lock", 0o755); err != nil { // fresh, so never stale
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 4*time.Second {
+		t.Fatalf("pass took %v under a stuck lock; want one ~2s lock timeout, not one per session", took)
+	}
+	if len(s.forgottenClaudeTrust) != 0 {
+		t.Fatalf("marked %d sessions done while the lock was busy, want 0", len(s.forgottenClaudeTrust))
+	}
+	if b, _ := os.ReadFile(cfg); string(b) != seed {
+		t.Fatalf("file changed under a busy lock: %s", b)
+	}
+	os.Remove(cfg + ".lock")
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.forgottenClaudeTrust) != 5 {
+		t.Fatalf("marked %d done after the lock freed, want 5", len(s.forgottenClaudeTrust))
+	}
+	b, _ := os.ReadFile(cfg)
+	var doc struct {
+		OAuth    json.RawMessage            `json:"oauthAccount"`
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Projects) != 0 || len(doc.OAuth) == 0 {
+		t.Fatalf("after the retry: %s, want every entry gone and oauthAccount kept", b)
+	}
+}
+
+// Review round 3, item 3: a ~/.claude.json that doesn't parse stops the
+// pass with nothing marked done (and nothing written).
+func TestReconcileForgetClaudeTrustMarksNothingDoneOnAParseError(t *testing.T) {
+	s, tm, _ := clockStore(t)
+	userHome := t.TempDir()
+	cfg, _ := finishedClaudeAgents(t, s, tm, userHome, 3)
+	if err := os.WriteFile(cfg, []byte("{bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.forgottenClaudeTrust) != 0 {
+		t.Fatalf("marked %d done on a parse error, want 0", len(s.forgottenClaudeTrust))
+	}
+	if b, _ := os.ReadFile(cfg); string(b) != "{bad" {
+		t.Fatalf("file rewritten: %s", b)
 	}
 }

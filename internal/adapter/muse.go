@@ -353,13 +353,18 @@ func (m *Muse) IdlePrompt() *regexp.Regexp     { return museIdle }
 func (m *Muse) Busy() *regexp.Regexp           { return museBusy }
 func (m *Muse) Idle(capture string) bool       { return idle(m, capture) }
 
-// StartupDialogs is empty: --yolo disables approval prompts. A fresh,
-// isolated HOME (spec A8) was confirmed live not to trigger any blocking
-// first-run/foreign-context dialog -- see PM.1's live TUI probe,
-// docs/plans/2026-09-25-muse-isolation-probe.md.
-func (m *Muse) StartupDialogs() []Dialog { return nil }
+// museTrust is D7 (dialog-needs-you spec): --yolo --trust-workspace already
+// avoids this dialog (P-M1), confirmed live not to trigger any blocking
+// first-run/foreign-context dialog (PM.1, docs/plans/2026-09-25-muse-isolation-probe.md).
+// This entry is detect-only, so a regression in the flag still surfaces as
+// a Needs-you row instead of stalling the pane silently.
+var museTrust = regexp.MustCompile(`Do you trust this workspace\?`)
+
+func (m *Muse) StartupDialogs() []Dialog {
+	return []Dialog{{Match: museTrust, Title: "Trust this workspace"}}
+}
 func (m *Muse) PromptPatterns() []PromptMatcher {
-	return nil // TODO(probe): record muse's permission/continue prompts live
+	return []PromptMatcher{{Match: museTrust, Title: "Trust this workspace"}}
 }
 func (m *Muse) InterruptKeys() []string { return []string{"C-c"} }
 

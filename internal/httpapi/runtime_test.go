@@ -47,7 +47,7 @@ func TestAgentNodeWireShape(t *testing.T) {
 		t.Fatalf("session = %v", n["session"])
 	}
 	for _, k := range []string{"id", "state", "attempt", "generation", "waiting", "stale",
-		"tmux_alive", "started_at", "ended_at"} {
+		"tmux_alive", "started_at", "ended_at", "cwd"} { // cwd: D3/D4 read it via the CLI
 		if _, ok := ses[k]; !ok {
 			t.Errorf("SessionInfo is missing %q", k)
 		}
