@@ -35,6 +35,7 @@ Commands:
   cancel NAME
   retry NAME [--note TEXT]         new attempt for a failed, crashed or interrupted agent
   ack NAME                         move a failed, crashed or interrupted agent to history
+  lineage NAME [--repair]          show an agent's canonical identity and generation history
   requests                         list open requests
   answer REQ TEXT
   approve REQ
@@ -104,6 +105,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdRetry(args[1:], stdout, stderr)
 	case "ack":
 		return cmdAck(args[1:], stdout, stderr)
+	case "lineage":
+		return cmdLineage(args[1:], stdout, stderr)
 	case "requests":
 		return cmdRequests(args[1:], stdout, stderr)
 	case "answer":

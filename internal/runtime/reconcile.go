@@ -223,6 +223,12 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.recoverWorkflows(ctx); err != nil {
 		return err
 	}
+	// Continuity: advance replacement operations from their durable phase.
+	// A restart between the intent commit and the successor launch resumes
+	// here instead of wedging the agent behind the partial unique index.
+	if err := s.ResumeOperations(ctx); err != nil {
+		return err
+	}
 	return s.sweepFinishedRoots(ctx)
 }
 
@@ -232,9 +238,16 @@ func (s *Store) Reconcile(ctx context.Context) error {
 // keep their rows: the answer is delivered as a message on resume. Runs before
 // sweepFinishedRoots, which reads open requests in a tree.
 func (s *Store) withdrawOrphanedRequests(ctx context.Context) error {
+	// Requests owned by an in-flight replacement operation are skipped: the
+	// predecessor session may already read dead (failed/crashed between the
+	// intent commit and the stopping step) while the request is about to be
+	// repointed at the successor. Withdrawing it here would lose the ask
+	// mid-handoff; the operation driver owns these rows until it lands.
 	ids, err := s.queryIDs(ctx, `SELECT r.id FROM requests r
 		JOIN agents a ON a.id = r.agent_id
 		WHERE r.state = 'open' AND r.is_hitl = 1
+		  AND NOT EXISTS (SELECT 1 FROM agent_operations o WHERE o.agent_id = r.agent_id AND o.phase IN
+		    ('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting'))
 		  AND (a.state = 'finished'
 		    OR (SELECT se.state FROM sessions se WHERE se.agent_id = r.agent_id
 		        ORDER BY se.generation DESC, se.attempt DESC LIMIT 1)
@@ -607,6 +620,15 @@ func (s *Store) resolveDeadInner(ctx context.Context, r liveRow, p Pane, paneKno
 		if now.Sub(basis) < spawnGracePeriod {
 			return nil // give the next tick(s) a chance to see the pane again
 		}
+	}
+	// Continuity: a session owned by an in-flight replacement operation is
+	// the operation driver's to transition (stopping -> interrupted/paused
+	// -> successor). Resolving it here as crashed would corrupt the walk
+	// with a second, racing transition and a bogus crash relay.
+	if owned, err := s.operationOwnsSession(ctx, r.AgentID); err != nil {
+		return err
+	} else if owned {
+		return nil
 	}
 	if r.State == Stopping {
 		return s.tx(ctx, func(tx *sql.Tx) error {
@@ -1258,6 +1280,14 @@ func (s *Store) undeliveredAgentMessages(ctx context.Context, cutoff time.Time) 
 			return nil, err
 		}
 		if !can {
+			// Held for recovery, not undelivered: Send accepted it because
+			// an operation owns the target, so no_recipient must not fire
+			// while that operation is in flight.
+			if owned, err := s.operationOwnsSession(ctx, r.ToAgentID); err != nil {
+				return nil, err
+			} else if owned {
+				continue
+			}
 			filtered = append(filtered, r)
 		}
 	}
