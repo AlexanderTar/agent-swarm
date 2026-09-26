@@ -420,3 +420,90 @@ func TestCodexIsolatedHomeToleratesMissingHooksSkillsAndPlugins(t *testing.T) {
 		t.Fatalf("Launch must not fail when hooks/skills/plugins are absent: %v", err)
 	}
 }
+
+// Since codex 0.157.0 the CLI starts an app-server-control unix socket at
+// $CODEX_HOME/app-server-control/app-server-control.sock. macOS caps a unix
+// socket path (SUN_LEN) at 104 bytes including the NUL terminator, i.e. 103
+// usable bytes. The old CODEX_HOME (<home>/run/launch/<session>/codex-home)
+// blows past that on a real machine, so every codex launch failed with
+// "path must be shorter than SUN_LEN". CodexHomeDir must stay short even
+// for a long swarm home and a long session id.
+func TestCodexHomeDirSocketPathFitsSunLen(t *testing.T) {
+	home := "/Users/" + strings.Repeat("a", 32) + "/.swarm"
+	sessionID := strings.Repeat("s", 30)
+	codexHome := CodexHomeDir(home, sessionID)
+	sock := codexHome + "/app-server-control/app-server-control.sock"
+	if len(sock) > 103 {
+		t.Fatalf("socket path is %d bytes (max 103): %s", len(sock), sock)
+	}
+}
+
+// CodexHomeDir must be a pure, deterministic function of (home, sessionID):
+// Resume must land on the same home Launch used, and the reconcile sweep
+// (internal/runtime/reconcile.go) must be able to recompute it for every
+// live session without touching disk.
+func TestCodexHomeDirIsDeterministicAndSessionScoped(t *testing.T) {
+	home := t.TempDir()
+	a := CodexHomeDir(home, "ses_01")
+	b := CodexHomeDir(home, "ses_01")
+	c := CodexHomeDir(home, "ses_02")
+	if a != b {
+		t.Fatalf("CodexHomeDir must be deterministic: %q != %q", a, b)
+	}
+	if a == c {
+		t.Fatalf("CodexHomeDir must be session-scoped: both sessions got %q", a)
+	}
+}
+
+// P0 (2026-09-26, SUN_LEN): setupEnv now isolates CODEX_HOME under
+// <home>/cx/<hash> instead of the per-launch dir, and Launch passes
+// --no-daemon (see the flags() comment for why). Both must survive.
+func TestCodexLaunchUsesTheShortHomeAndNoDaemon(t *testing.T) {
+	d := testDeps(t)
+	spec := codexSpec(t, d)
+	l, err := newCodex(d).Launch(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := CodexHomeDir(d.Home, spec.SessionID)
+	if l.Env["CODEX_HOME"] != want {
+		t.Fatalf("CODEX_HOME = %q, want %q", l.Env["CODEX_HOME"], want)
+	}
+	if !strings.Contains(strings.Join(l.Argv, " "), "--no-daemon") {
+		t.Fatalf("argv must include --no-daemon: %v", l.Argv)
+	}
+}
+
+// P0 (2026-09-26): Wake ran `codex queue` with no CODEX_HOME, so it always
+// targeted ~/.codex instead of the session's isolated short home -- queueing
+// a message against a thread that lives in a different CODEX_HOME fails
+// with "no rollout found for thread id ..." (confirmed live). Wake must set
+// CODEX_HOME to the same directory Launch/Resume used for this session.
+func TestCodexWakeUsesTheSessionsCodexHome(t *testing.T) {
+	d := testDeps(t)
+	var gotEnv map[string]string
+	var gotArgv []string
+	d.RunEnv = func(ctx context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
+		gotEnv = env
+		gotArgv = append([]string{name}, args...)
+		return []byte("Queued message ...\n"), nil
+	}
+	ok, err := newCodex(d).Wake(context.Background(), WakeTarget{
+		SessionID:         "ses_01",
+		ProviderSessionID: "01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9",
+		Notice:            "wake up",
+	})
+	if err != nil || !ok {
+		t.Fatalf("Wake = %v, %v", ok, err)
+	}
+	want := CodexHomeDir(d.Home, "ses_01")
+	if gotEnv["CODEX_HOME"] != want {
+		t.Fatalf("CODEX_HOME = %q, want %q", gotEnv["CODEX_HOME"], want)
+	}
+	joined := strings.Join(gotArgv, " ")
+	for _, want := range []string{"codex", "queue", "--thread 01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9", "--message wake up"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv is missing %q: %v", want, gotArgv)
+		}
+	}
+}

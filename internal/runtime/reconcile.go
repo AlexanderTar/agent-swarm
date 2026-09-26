@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 )
 
@@ -232,7 +234,47 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.ResumeOperations(ctx); err != nil {
 		return err
 	}
+	liveIDs := make([]string, len(live))
+	for i, r := range live {
+		liveIDs[i] = r.SessionID
+	}
+	if err := reclaimCodexHomes(s.Home, liveIDs); err != nil {
+		s.logf("reconcile: reclaim codex homes: %v", err)
+	}
 	return s.sweepFinishedRoots(ctx)
+}
+
+// reclaimCodexHomes removes internal/adapter.CodexHomeDir's short CODEX_HOME
+// directories (<home>/cx/<hash>) for sessions that are no longer live. codex
+// runs with --no-daemon (internal/adapter/codex.go flags()), so there is no
+// daemon process to stop here -- only the directory. There is no general
+// launch-dir GC in this codebase (run/launch/<session>/ is never cleaned up
+// today, for any adapter); this sweep is scoped to codex's own short-home
+// dirs, which are cheap to name deterministically from a live session id and
+// don't require plumbing a new teardown hook through every Tmux.Kill call
+// site.
+func reclaimCodexHomes(home string, liveSessionIDs []string) error {
+	keep := make(map[string]bool, len(liveSessionIDs))
+	for _, id := range liveSessionIDs {
+		keep[adapter.CodexHomeDirName(id)] = true
+	}
+	root := filepath.Join(home, "cx")
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if keep[e.Name()] {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // withdrawOrphanedRequests closes every open HITL request whose owning agent

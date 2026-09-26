@@ -94,6 +94,7 @@ type WakeTarget struct {
 type Deps struct {
 	Home, UserHome, Bin string
 	Run                 execx.Runner
+	RunEnv              execx.RunnerEnv
 	Start               execx.Starter
 	StartEnv            execx.StarterEnv
 	Now                 func() time.Time

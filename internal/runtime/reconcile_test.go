@@ -3016,3 +3016,41 @@ func TestApprovalAnsweredViaNativeAnswerNeverRelays(t *testing.T) {
 		t.Fatalf("relays after approval_result = %d, want 0", n)
 	}
 }
+
+// P0 (2026-09-26, SUN_LEN): codex's isolated CODEX_HOME moved to a short,
+// deterministic dir under <home>/cx/ (internal/adapter.CodexHomeDir).
+// Nothing cleaned up the old per-launch codex-home dirs either (there is no
+// launch-dir GC in this codebase today), but these are cheap to name
+// deterministically, so a small dedicated sweep is in scope here without
+// taking on general launch-dir GC. reclaimCodexHomes must remove any
+// <home>/cx entry that isn't one of the live session ids given, and leave
+// live ones and unrelated files alone.
+func TestReclaimCodexHomesRemovesOnlyDeadSessionDirs(t *testing.T) {
+	home := t.TempDir()
+	cx := filepath.Join(home, "cx")
+	liveDir := filepath.Join(cx, adapter.CodexHomeDirName("ses_live"))
+	deadDir := filepath.Join(cx, adapter.CodexHomeDirName("ses_dead"))
+	if err := os.MkdirAll(liveDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(deadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := reclaimCodexHomes(home, []string{"ses_live"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(liveDir); err != nil {
+		t.Errorf("live session's codex home was removed: %v", err)
+	}
+	if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
+		t.Errorf("dead session's codex home still exists: %v", err)
+	}
+}
+
+// No <home>/cx directory at all (codex never launched, or a bare test home)
+// must not be an error.
+func TestReclaimCodexHomesToleratesNoCxDir(t *testing.T) {
+	if err := reclaimCodexHomes(t.TempDir(), nil); err != nil {
+		t.Fatalf("reclaimCodexHomes on a home with no cx dir: %v", err)
+	}
+}

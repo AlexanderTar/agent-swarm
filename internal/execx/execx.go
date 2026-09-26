@@ -34,6 +34,32 @@ func Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
+// RunnerEnv is Runner with an extra environment map merged over the ambient
+// environment (mirrors StarterEnv for Start). Codex.Wake uses this to target
+// a session's isolated CODEX_HOME instead of the daemon's ambient $HOME/.codex.
+type RunnerEnv func(ctx context.Context, env map[string]string, name string, args ...string) ([]byte, error)
+
+// RunEnv is the real RunnerEnv.
+func RunEnv(ctx context.Context, env map[string]string, name string, args ...string) ([]byte, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return out, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
+}
+
 // Proc is a running process with an open stdin (codex app-server needs it
 // open between writes).
 type Proc struct {

@@ -2,6 +2,8 @@ package adapter
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,12 +28,47 @@ func init() { register(kinds.Codex, func(d Deps) Adapter { return newCodex(d) })
 // Literal env={…} also works but would put session values in argv, so env_vars wins.
 var mcpEnvVars = []string{"SWARM_URL", "SWARM_SESSION", "SWARM_TOKEN_FILE", "SWARM_AGENT_KIND"}
 
+// CodexHomeDirName is the short, deterministic, session-scoped directory
+// name CodexHomeDir nests under <home>/cx/. It is exported so
+// internal/runtime's reconcile sweep can recompute the keep-set for every
+// live session without touching disk or duplicating the hash logic.
+func CodexHomeDirName(sessionID string) string {
+	sum := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(sum[:4]) // 8 hex chars: short, collision-cheap enough per session
+}
+
+// CodexHomeDir is codex's isolated CODEX_HOME for one session
+// (docs/specs/2026-09-26-codex-short-home.md). Since codex 0.157.0, codex
+// starts an app-server-control unix socket at
+// $CODEX_HOME/app-server-control/app-server-control.sock, and macOS caps a
+// unix socket path (SUN_LEN) at 103 usable bytes. The ordinary per-launch
+// dir (<home>/run/launch/<session id>/codex-home) is long enough on a real
+// machine to blow past that limit, failing every codex launch with "path
+// must be shorter than SUN_LEN" -- confirmed live. <home>/cx/<8 hex chars>
+// keeps the socket path short regardless of how long home or the session id
+// are, at the cost of it no longer being human-readable from the session id
+// alone (fine: nothing reads this path by eye, only setupEnv, Wake and the
+// reconcile sweep, all of which recompute it the same way).
+func CodexHomeDir(home, sessionID string) string {
+	return filepath.Join(home, "cx", CodexHomeDirName(sessionID))
+}
+
 func (c *Codex) flags(s Spec) ([]string, error) {
 	quoted := make([]string, len(mcpEnvVars))
 	for i, v := range mcpEnvVars {
 		quoted[i] = `"` + v + `"`
 	}
 	a := []string{"--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
+		// --no-daemon: codex defaults to starting a shared app-server daemon
+		// per CODEX_HOME. Probed live (2026-09-26): `codex queue` (Wake)
+		// works identically with or without the daemon, so keeping it buys
+		// nothing here and costs two things per session -- an orphan
+		// `app-server --managed-daemon` process left behind by every launch
+		// that fails before it can be stopped, and a ~314 MB daemon package
+		// installed into the session's own (now per-session, no longer
+		// shared) CODEX_HOME. --no-daemon also means teardown has no daemon
+		// process to kill; see reclaimCodexHomes in internal/runtime.
+		"--no-daemon",
 		"--no-alt-screen", "-m", s.Model}
 	if s.Effort != "" {
 		a = append(a, "-c", `model_reasoning_effort="`+s.Effort+`"`)
@@ -50,7 +87,7 @@ func (c *Codex) flags(s Spec) ([]string, error) {
 }
 
 func (c *Codex) setupEnv(s Spec) (map[string]string, error) {
-	codexHome := filepath.Join(c.d.launchDir(s.SessionID), "codex-home")
+	codexHome := CodexHomeDir(c.d.Home, s.SessionID)
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return nil, err
 	}
@@ -217,7 +254,14 @@ func (c *Codex) SuperpowersInstalled() bool {
 }
 
 func (c *Codex) Wake(ctx context.Context, w WakeTarget) (bool, error) {
-	_, err := c.d.Run(ctx, "codex", "queue", "--thread", w.ProviderSessionID, "--message", w.Notice)
+	// CODEX_HOME must match the one setupEnv gave this session (CodexHomeDir):
+	// codex resolves --thread against $CODEX_HOME's own thread store, and
+	// without it this fell back to the daemon's ambient ~/.codex, where the
+	// thread never existed ("no rollout found for thread id ...", confirmed
+	// live) -- every wake against an isolated-home session silently failed.
+	codexHome := CodexHomeDir(c.d.Home, w.SessionID)
+	_, err := c.d.RunEnv(ctx, map[string]string{"CODEX_HOME": codexHome},
+		"codex", "queue", "--thread", w.ProviderSessionID, "--message", w.Notice)
 	if err != nil {
 		return false, err
 	}
