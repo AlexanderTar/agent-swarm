@@ -7,6 +7,71 @@ import XCTest
 
 @MainActor
 final class NewOrchestratorRenderTests: XCTestCase {
+    func testAgentAndAdvisorSelectorsShareAlignedSixColumnRows() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        await form.load()
+        form.setAdvisorAgent("codex")
+
+        for width: CGFloat in [760, 820] {
+            let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 790)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width), pixelsHigh: 790,
+                                                        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                                        isPlanar: false, colorSpaceName: .deviceRGB,
+                                                        bytesPerRow: 0, bitsPerPixel: 0))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let request = VNRecognizeTextRequest()
+            try VNImageRequestHandler(cgImage: try XCTUnwrap(bitmap.cgImage), options: [:]).perform([request])
+            let visibleText = (request.results ?? []).compactMap { result -> (String, CGRect)? in
+                guard let text = result.topCandidates(1).first?.string else { return nil }
+                return (text.trimmingCharacters(in: CharacterSet(charactersIn: " •|")), CGRect(x: result.boundingBox.minX * width,
+                                     y: (1 - result.boundingBox.maxY) * 790,
+                                     width: result.boundingBox.width * width,
+                                     height: result.boundingBox.height * 790))
+            }
+            func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
+            let popups = views(host).compactMap { $0 as? NSPopUpButton }
+            func popup(_ title: String) throws -> CGRect {
+                let control = try XCTUnwrap(popups.first { $0.accessibilityLabel() == title }, "Missing \(title) at \(width) pt")
+                return control.convert(control.bounds, to: host)
+            }
+            func label(_ title: String, nearestY: CGFloat) throws -> CGRect {
+                let candidates = visibleText.filter { $0.0 == title }
+                return try XCTUnwrap(candidates.min { abs($0.1.midY - nearestY) < abs($1.1.midY - nearestY) }?.1,
+                                     "Missing visible \(title) label at \(width) pt: \(visibleText.map(\.0))")
+            }
+            let agent = try popup(Copy.agent)
+            let model = try popup(Copy.model)
+            let effort = try popup(Copy.agentEffort)
+            let advisor = try popup(Copy.advisor)
+            let advisorModel = try popup("Advisor model")
+            let advisorEffort = try popup(Copy.advisorEffort)
+            for row in [(agent, model, effort), (advisor, advisorModel, advisorEffort)] {
+                XCTAssertEqual(row.0.midY, row.1.midY, accuracy: 2)
+                XCTAssertEqual(row.0.midY, row.2.midY, accuracy: 2)
+            }
+            for pair in [(agent, advisor), (model, advisorModel), (effort, advisorEffort)] {
+                XCTAssertEqual(pair.0.minX, pair.1.minX, accuracy: 2)
+            }
+            for (title, control) in [(Copy.agent, agent), (Copy.model, model), (Copy.effort, effort),
+                                     (Copy.advisor, advisor), (Copy.model, advisorModel), (Copy.effort, advisorEffort)] {
+                let text = try label(title, nearestY: control.midY)
+                XCTAssertEqual(text.midY, control.midY, accuracy: 12, "\(title) label must share its picker row")
+            }
+            let modelLabel = try label(Copy.model, nearestY: model.midY)
+            let advisorModelLabel = try label(Copy.model, nearestY: advisorModel.midY)
+            let effortLabel = try label(Copy.effort, nearestY: effort.midY)
+            let advisorEffortLabel = try label(Copy.effort, nearestY: advisorEffort.midY)
+            XCTAssertEqual(modelLabel.minX, advisorModelLabel.minX, accuracy: 3)
+            XCTAssertEqual(effortLabel.minX, advisorEffortLabel.minX, accuracy: 3)
+            XCTAssertLessThanOrEqual(advisorEffort.maxX, width - 22)
+        }
+    }
+
     func testNativeEffortRowsAppearForSimulatedPairAndFitNormalWindow() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let model = makeAppModel(client)
@@ -15,10 +80,10 @@ final class NewOrchestratorRenderTests: XCTestCase {
         await form.load()
         func controls(width: CGFloat = 820, capture name: String? = nil) -> (labels: Set<String>, editorBottom: CGFloat, editorHeight: CGFloat, effortWidth: CGFloat, scrollCount: Int) {
             let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
-            host.frame = NSRect(x: 0, y: 0, width: width, height: 860)
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 790)
             host.layoutSubtreeIfNeeded()
             if let name, let dir = ProcessInfo.processInfo.environment["SWARM_NEW_ORCH_SCREENSHOT_DIR"],
-               let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width), pixelsHigh: 860,
+               let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width), pixelsHigh: 790,
                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                             isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
                 host.cacheDisplay(in: host.bounds, to: image)
@@ -42,7 +107,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         let narrow = controls(width: 760, capture: "760")
         XCTAssertTrue(simulated.0.contains("Agent Effort"))
         XCTAssertTrue(simulated.0.contains("Advisor Effort"))
-        XCTAssertLessThanOrEqual(simulated.1, 815, "request editor must stay clear of the footer")
+        XCTAssertLessThanOrEqual(simulated.1, 745, "request editor must stay clear of the footer")
         XCTAssertGreaterThanOrEqual(simulated.editorHeight, 250, "five or more request lines must fit")
         XCTAssertEqual(simulated.scrollCount, 2, "normal window needs only repository and request scrolling")
         XCTAssertLessThanOrEqual(simulated.effortWidth, 320, "effort menu should balance with model menu")
@@ -96,7 +161,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
                                            message: String(repeating: "Repository needs attention. ", count: 28)))
         _ = await form.submit()
         let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
-        host.frame = NSRect(x: 0, y: 0, width: 820, height: 700)
+        host.frame = NSRect(x: 0, y: 0, width: 760, height: 700)
         host.layoutSubtreeIfNeeded()
         func scrolls(in view: NSView) -> [NSScrollView] {
             let own = (view as? NSScrollView).map { [$0] } ?? []
@@ -108,6 +173,14 @@ final class NewOrchestratorRenderTests: XCTestCase {
         let outer = views[0].convert(views[0].bounds, to: host)
         XCTAssertLessThan(outer.maxY, host.bounds.height - 30)
         XCTAssertGreaterThan(views[2].convert(views[2].bounds, to: host).maxY, outer.maxY)
+        func popups(_ view: NSView) -> [NSPopUpButton] {
+            let own = (view as? NSPopUpButton).map { [$0] } ?? []
+            return own + view.subviews.flatMap(popups)
+        }
+        for popup in popups(host) {
+            XCTAssertLessThanOrEqual(popup.convert(popup.bounds, to: host).maxX, 738,
+                                     "error text must not push \(popup.accessibilityLabel() ?? "popup") beyond the side inset")
+        }
     }
 
     func testOrdinaryTextOverflowUsesOuterScrollAndKeepsFooterOutsideIt() async throws {
@@ -183,7 +256,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         let form = model.makeNewOrchestratorForm()
         await form.load()
         let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
-        host.frame = NSRect(x: 0, y: 0, width: 760, height: 860)
+        host.frame = NSRect(x: 0, y: 0, width: 760, height: 790)
         host.layoutSubtreeIfNeeded()
         func popups(in view: NSView) -> [NSPopUpButton] {
             let own = (view as? NSPopUpButton).map { [$0] } ?? []
@@ -197,8 +270,8 @@ final class NewOrchestratorRenderTests: XCTestCase {
         guard frames.count == 4 else { return }
         for row in [Array(frames[0...1]), Array(frames[2...3])] {
             let columns = row.sorted { $0.minX < $1.minX }
-            XCTAssertGreaterThanOrEqual(columns[0].width, 150)
-            XCTAssertGreaterThanOrEqual(columns[1].width, 300)
+            XCTAssertGreaterThanOrEqual(columns[0].width, 130)
+            XCTAssertGreaterThanOrEqual(columns[1].width, 200)
             XCTAssertLessThanOrEqual(columns[1].maxX, 738)
         }
         if let agent = controls.first(where: { $0.accessibilityLabel() == Copy.agent }),
@@ -231,7 +304,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         await form.load()
         let view = NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {})
         let host = NSHostingView(rootView: AnyView(view))
-        host.frame = NSRect(x: 0, y: 0, width: 820, height: 860)
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 790)
         let window: NSWindow?
         if ProcessInfo.processInfo.environment["SWARM_NEW_ORCH_SCREENSHOT_DIR"] != nil {
             let native = NSWindow(contentRect: host.frame,
@@ -285,7 +358,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(host.fittingSize.width, 760)
         XCTAssertEqual(host.bounds.width, 820)
         if let dir = ProcessInfo.processInfo.environment["SWARM_NEW_ORCH_SCREENSHOT_DIR"] {
-            let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 820, pixelsHigh: 860,
+            let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 820, pixelsHigh: 790,
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                          isPlanar: false, colorSpaceName: .deviceRGB,
                                          bytesPerRow: 0, bitsPerPixel: 0)!

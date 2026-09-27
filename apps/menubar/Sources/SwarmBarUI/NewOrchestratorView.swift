@@ -53,7 +53,7 @@ public struct NewOrchestratorView: View {
             .padding(.vertical, 10)
         }
         .frame(minWidth: 760, idealWidth: 820, maxWidth: .infinity,
-               minHeight: 700, idealHeight: 860)
+               minHeight: 700, idealHeight: 790)
         .glassButtons()
         .task { await form.load() }
     }
@@ -141,42 +141,52 @@ public struct NewOrchestratorView: View {
 
     private var agentFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(Copy.agent).frame(width: 72, alignment: .leading)
-                WideOptionPicker(Copy.agent, options: form.agentOptions, value: form.choice.agent?.rawValue ?? "",
-                             icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAgent($0) }
-                    .frame(width: 150)
-                Text(Copy.model).frame(width: 52, alignment: .leading)
-                WideOptionPicker(Copy.model, options: form.modelOptions, value: form.choice.model) { form.setModel($0) }
-                    .frame(minWidth: 300, maxWidth: .infinity)
-            }
-            if let error = form.errors.agent, !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
-            if let error = form.errors.model { Text(error).font(.caption).foregroundStyle(.red) }
-            if let efforts = form.effortOptions {
-                HStack(spacing: 8) {
-                    Text(Copy.agentEffort).frame(width: 150, alignment: .leading)
-                    WideOptionPicker(Copy.agentEffort, options: efforts, value: form.choice.effort) { form.setEffort($0) }
-                        .frame(width: 300)
-                    Spacer(minLength: 0)
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
+                GridRow {
+                    Text(Copy.agent).frame(width: 70, alignment: .leading)
+                    WideOptionPicker(Copy.agent, options: form.agentOptions, value: form.choice.agent?.rawValue ?? "",
+                                     icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAgent($0) }
+                        .frame(width: 130)
+                    Text(Copy.model).frame(width: 50, alignment: .leading)
+                    WideOptionPicker(Copy.model, options: form.modelOptions, value: form.choice.model) { form.setModel($0) }
+                        .frame(minWidth: 200, maxWidth: .infinity)
+                    if let efforts = form.effortOptions {
+                        Text(Copy.effort).frame(width: 45, alignment: .leading)
+                        WideOptionPicker(Copy.agentEffort, options: efforts, value: form.choice.effort) { form.setEffort($0) }
+                            .frame(width: 170)
+                    } else {
+                        Text("").frame(width: 45)
+                        Color.clear.frame(width: 170, height: 1)
+                    }
                 }
-            }
-            if let note = form.effortNote { Text(note).font(.caption).foregroundStyle(.secondary) }
-            HStack(spacing: 8) {
-                Text(Copy.advisor).frame(width: 72, alignment: .leading)
-                WideOptionPicker(Copy.advisor, options: form.advisorAgentOptions, value: advisorAgentValue,
-                             icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAdvisorAgent($0) }
-                    .frame(width: 150)
-                Text(Copy.model).frame(width: 52, alignment: .leading)
-                WideOptionPicker("Advisor model", options: form.advisorModelOptions, value: advisorModelValue) { form.setAdvisorModel($0) }
-                    .frame(minWidth: 300, maxWidth: .infinity).disabled(form.advisor == .none)
-            }
-            if let error = form.errors.advisor { Text(error).font(.caption).foregroundStyle(.red) }
-            if let efforts = form.advisorEffortOptions {
-                HStack(spacing: 8) {
-                    Text(Copy.advisorEffort).frame(width: 150, alignment: .leading)
-                    WideOptionPicker(Copy.advisorEffort, options: efforts, value: form.advisorEffort) { form.setAdvisorEffort($0) }
-                        .frame(width: 300)
-                    Spacer(minLength: 0)
+                if let error = form.errors.agent, !error.isEmpty {
+                    GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
+                }
+                if let error = form.errors.model {
+                    GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
+                }
+                if let note = form.effortNote {
+                    GridRow { Text(note).font(.caption).foregroundStyle(.secondary).gridCellColumns(6) }
+                }
+                GridRow {
+                    Text(Copy.advisor).frame(width: 70, alignment: .leading)
+                    WideOptionPicker(Copy.advisor, options: form.advisorAgentOptions, value: advisorAgentValue,
+                                     icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAdvisorAgent($0) }
+                        .frame(width: 130)
+                    Text(Copy.model).frame(width: 50, alignment: .leading)
+                    WideOptionPicker("Advisor model", options: form.advisorModelOptions, value: advisorModelValue) { form.setAdvisorModel($0) }
+                        .frame(minWidth: 200, maxWidth: .infinity).disabled(form.advisor == .none)
+                    if let efforts = form.advisorEffortOptions {
+                        Text(Copy.effort).frame(width: 45, alignment: .leading)
+                        WideOptionPicker(Copy.advisorEffort, options: efforts, value: form.advisorEffort) { form.setAdvisorEffort($0) }
+                            .frame(width: 170)
+                    } else {
+                        Text("").frame(width: 45)
+                        Color.clear.frame(width: 170, height: 1)
+                    }
+                }
+                if let error = form.errors.advisor {
+                    GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
                 }
             }
             Text(Copy.defaultsFromSettings).font(.caption).foregroundStyle(.secondary)
