@@ -11,6 +11,20 @@ export function parentFolder(path: string): string {
 
 export const repoSubtitle = (r: Repo) => [parentFolder(r.path), r.remote_owner ?? ""].filter(Boolean).join(" · ");
 
+export const shortPath = (path: string) => path.replace(/^\/Users\/[^/]+/, "~");
+
+export function chooserRows(r: ReposResponse): Repo[] {
+  const byPath = new Map<string, Repo>();
+  for (const repo of r.all) if (!repo.missing && !byPath.has(repo.path)) byPath.set(repo.path, repo);
+  return [...byPath.values()].sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+}
+
+export function reconcileSelection(sel: string[], rows: Repo[]): { selection: string[]; removed: number } {
+  const ids = new Set(rows.map((r) => r.id));
+  const selection = sel.filter((id) => ids.has(id));
+  return { selection, removed: sel.length - selection.length };
+}
+
 export function repoSections(r: ReposResponse): RepoSection[] {
   const merged = new Map<string, { local: boolean; repos: Map<string, Repo> }>();
   for (const g of r.groups) {
