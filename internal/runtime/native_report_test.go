@@ -216,3 +216,50 @@ func TestUnhookedChildReportRejectsMismatchAndOtherOwner(t *testing.T) {
 		})
 	}
 }
+
+func TestUnhookedNativeReportRejectsContradictoryComment(t *testing.T) {
+	for _, kind := range []AgentKind{Cursor, Muse} {
+		t.Run(string(kind), func(t *testing.T) {
+			s, ses, req := seedApprovalWithNativePrompt(t)
+			reportKind(t, s, ses, kind)
+			_, err := s.Ask(context.Background(), ses, AskInput{Kind: "native_answer", Ref: req.ID,
+				Decision: "request_changes", AnswerText: "Request changes: keep API", Comment: "drop API"})
+			if err == nil || !strings.Contains(err.Error(), "comment") {
+				t.Fatalf("contradictory comment err = %v", err)
+			}
+			still, err := s.RequestByID(context.Background(), req.ID)
+			if err != nil || still.State != "open" {
+				t.Fatalf("request = %+v, err = %v", still, err)
+			}
+		})
+	}
+}
+
+func TestUnhookedChildReportRefusesPriorPlainAnswer(t *testing.T) {
+	for _, kind := range []AgentKind{Cursor, Muse} {
+		t.Run(string(kind), func(t *testing.T) {
+			s, _, _ := newStore(t)
+			orch, child, childSes := worker(t, s)
+			orchSes := mustSessionID(t, s, orch.ID)
+			reportKind(t, s, orchSes, kind)
+			msg, err := s.SendApproval(context.Background(), childSes.ID, "may I change it?", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Send(context.Background(), orchSes, child.Name, "answer", "Request changes", msg, ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Ask(context.Background(), orchSes, AskInput{Kind: "native_answer", Ref: msg,
+				Decision: "approve", AnswerText: "Approve"}); err == nil || !strings.Contains(err.Error(), "Already resolved") {
+				t.Fatalf("native report after plain answer err = %v", err)
+			}
+			var n int
+			if err := s.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM messages WHERE kind = 'approval_result' AND reply_to = ?`, msg).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Fatalf("approval_result messages = %d", n)
+			}
+		})
+	}
+}

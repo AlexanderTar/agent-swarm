@@ -425,11 +425,18 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if err != nil {
 		return Request{}, err
 	}
-	evidence, comment, err := matchDecisionEvidence(responseText, label, in.Comment)
+	callerComment := in.Comment
+	if reported {
+		callerComment = "" // the reported tool answer is the only source of user text
+	}
+	evidence, comment, err := matchDecisionEvidence(responseText, label, callerComment)
 	if err != nil {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
 	}
 	if reported {
+		if in.Comment != "" && in.Comment != comment {
+			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "comment does not match answer_text."}
+		}
 		evidence = EvidenceAgentReported
 	}
 	// RequestChanges' own length cap, reapplied here (Task 13c): nativeAnswer
@@ -570,7 +577,7 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, sessionID, callerID, msg
 		// rowID at all.
 		var x int
 		err := tx.QueryRowContext(ctx, `SELECT 1 FROM messages
-			WHERE kind = 'approval_result' AND reply_to = ? LIMIT 1`, msgID).Scan(&x)
+			WHERE kind IN ('approval_result', 'answer') AND reply_to = ? LIMIT 1`, msgID).Scan(&x)
 		if err == nil {
 			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
 		}
