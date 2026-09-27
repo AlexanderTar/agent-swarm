@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -91,16 +92,14 @@ func TestSpawnRefusesOpenDependencies(t *testing.T) {
 }
 
 // §17.3: a worktree in an unconfirmed repo.
-func TestWorktreeCreateNeedsAConfirmedRepo(t *testing.T) {
+func TestWorktreeCreateUsesCatalogRepoOutsideStartingHint(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
 	unconfirmed := seedRepoIn(t, s, "other-repo")
 	_, err := s.call(ctx, seed.Caller, "swarm_worktree",
 		`{"op":"create","repo":"`+unconfirmed+`","branch":"task/x"}`)
-	want := "repo_not_confirmed: other-repo is not confirmed for " + seed.RootKey +
-		`. Add it with swarm_repos after reviewing the scope.`
-	if err == nil || err.Error() != want {
-		t.Fatalf("err = %v\nwant %q", err, want)
+	if err != nil {
+		t.Fatalf("catalog repo outside starting hint: %v", err)
 	}
 	// The orchestrator expands scope without a second user approval.
 	root, err := s.RT.Items.Get(ctx, seed.RootKey)
@@ -121,16 +120,66 @@ func TestWorktreeCreateNeedsAConfirmedRepo(t *testing.T) {
 	if _, err := s.call(ctx, seed.Caller, "swarm_repos", fmt.Sprintf(`{"repos":[%q],"repos_version":%d}`, seed.RepoID, root.ReposVersion)); err == nil {
 		t.Fatal("stale repository version was accepted")
 	}
-	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
-		`{"op":"create","repo":"`+unconfirmed+`","branch":"task/x"}`); err != nil {
-		t.Fatal(err)
-	}
 	latest, err := s.RT.Items.Get(ctx, seed.RootKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_repos", fmt.Sprintf(`{"repos":[%q],"repos_version":%d}`, seed.RepoID, latest.ReposVersion)); err == nil || !strings.Contains(err.Error(), "active worktrees") {
 		t.Fatalf("dropping busy repo: %v", err)
+	}
+}
+
+func TestRegisterLocalRepoAndCreateWorktreeWithoutChangingHint(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	path := gitRepoWithCommit(t)
+	out, err := s.call(ctx, seed.Caller, "swarm_repo_register", fmt.Sprintf(`{"path":%q}`, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repo struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &repo); err != nil {
+		t.Fatal(err)
+	}
+	if repo.ID == "" {
+		t.Fatal("registration returned no catalog id")
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/local"}`, path)); err != nil {
+		t.Fatal(err)
+	}
+	root, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(root.Repos, repo.ID) {
+		t.Fatalf("registration changed starting hint: %v", root.Repos)
+	}
+	bad := t.TempDir()
+	if _, err := s.call(ctx, seed.Caller, "swarm_repo_register", fmt.Sprintf(`{"path":%q}`, bad)); err == nil || !strings.Contains(err.Error(), "No git repository") {
+		t.Fatalf("non-repository registration = %v", err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/bad"}`, bad)); err == nil || !strings.Contains(err.Error(), "No git repository") {
+		t.Fatalf("non-repository worktree = %v", err)
+	}
+}
+
+func TestWorktreeReviewUsesCatalogRepoOutsideStartingHint(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	id := seedRepoIn(t, s, "review-repo")
+	_, path, err := repoNameAndPath(ctx, s, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"review","repo":%q,"branch":"review/outside","sha":%q}`, id, strings.TrimSpace(string(sha))))
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

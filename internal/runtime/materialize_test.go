@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -217,18 +218,61 @@ func TestMaterializeRefusesAMissingPlanFile(t *testing.T) {
 	}
 }
 
-func TestMaterializeRefusesAnUnconfirmedRepoInATask(t *testing.T) {
+func TestMaterializeUsesCatalogRepoOutsideStartingHint(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	ses, specID, planID, _ := approvedFeatureSpike(t, s)
 	// planBody's tasks name repo "chat"; confirm a different one
 	other := seedRepo(t, s, "app")
+	var repo string
+	if err := s.DB.QueryRowContext(ctx, `SELECT id FROM repos WHERE name = 'chat'`).Scan(&repo); err != nil {
+		t.Fatal(err)
+	}
 	s.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = ? WHERE key = 'SPIKE-1'`,
 		`["`+other+`"]`)
+	result, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.Items.Get(ctx, result.Created[len(result.Created)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(task.Repos, repo) {
+		t.Fatalf("task repository ids = %v, want %s", task.Repos, repo)
+	}
+}
+
+func TestMaterializeRejectsAmbiguousCatalogRepoName(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	seedRepo(t, s, "chat")
 	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
-	if err == nil || !strings.HasPrefix(err.Error(), "tree_invalid: TASK ") ||
-		!strings.HasSuffix(err.Error(), " uses an unconfirmed repo") {
-		t.Fatalf("err = %v", err)
+	if err == nil || !strings.Contains(err.Error(), `repository name "chat" is ambiguous`) {
+		t.Fatalf("ambiguous repository = %v", err)
+	}
+}
+
+func TestMaterializeRejectsUnregisteredCatalogRepoName(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	tree, err := ParseTree(planBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spike, err := s.Items.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Spike", SpikeIntent: "feature"}, items.Daemon())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	_, err = s.createTree(ctx, tx, spike, tree, items.Epic)
+	if err == nil || !strings.Contains(err.Error(), `repository "chat" is not registered`) || !strings.Contains(err.Error(), "swarm_repo_register") {
+		t.Fatalf("unregistered repository = %v", err)
 	}
 }
 
@@ -451,6 +495,7 @@ func TestFeatureSpikeNeedsBothArtifacts(t *testing.T) {
 func TestMaterializeCopiesWorkflowUnitsVerify(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
+	seedRepo(t, s, "chat")
 	tree, err := ParseTree(planBody)
 	if err != nil {
 		t.Fatal(err)
@@ -485,6 +530,7 @@ func TestMaterializeCopiesWorkflowUnitsVerify(t *testing.T) {
 func TestMaterializeDerivesRoleHint(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
+	seedRepo(t, s, "chat")
 	tree, err := ParseTree(planBody)
 	if err != nil {
 		t.Fatal(err)

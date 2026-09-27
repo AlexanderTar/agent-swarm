@@ -383,7 +383,7 @@ func TestAskConfirmReposReturnsNativePrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
+	req, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
 		Repos: []ReposProposal{{Repo: repoID, Reason: "needed"}}})
 	if err != nil {
 		t.Fatal(err)

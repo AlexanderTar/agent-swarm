@@ -104,48 +104,31 @@ func (s *Store) approvedTree(ctx context.Context, tx *sql.Tx, artifactID string)
 	return tree, nil
 }
 
-// checkTreeRepos is I10's subset rule. The tree names repos; the item holds ids
-// (D49), so the confirmed ids are resolved to names once and the comparison is
-// name-to-name.
-func (s *Store) checkTreeRepos(ctx context.Context, tx *sql.Tx, spike items.Item, tree Tree) error {
-	confirmed := map[string]bool{}
-	for _, id := range spike.Repos {
-		name, err := s.repoNameTx(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		confirmed[name] = true
-	}
-	for _, node := range tree.Tasks() {
-		for _, name := range node.Repos {
-			if !confirmed[name] {
-				return fmt.Errorf("tree_invalid: TASK %s uses an unconfirmed repo", node.Ref)
-			}
-		}
-	}
-	return nil
-}
-
 // createTree walks root → children → grandchildren, mapping each ref to its new
 // key, then adds every dep edge with AddDepTx (never AddDep, which would open a
 // second transaction inside this one and deadlock against itself — R6).
 func (s *Store) createTree(ctx context.Context, tx *sql.Tx, spike items.Item, tree Tree, rootType items.Type) (MaterializeResult, error) {
-	nameToID := map[string]string{}
-	for _, id := range spike.Repos {
-		name, err := s.repoNameTx(ctx, tx, id)
-		if err != nil {
-			return MaterializeResult{}, err
-		}
-		nameToID[name] = id
-	}
-	resolveRepos := func(names []string) []string {
+	resolveRepos := func(names []string) ([]string, error) {
 		var out []string
 		for _, n := range names {
-			if id, ok := nameToID[n]; ok {
-				out = append(out, id)
+			var id string
+			err := tx.QueryRowContext(ctx, `SELECT id FROM repos WHERE name = ?`, n).Scan(&id)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("tree_invalid: repository %q is not registered; register its local Git path with swarm_repo_register", n)
 			}
+			if err != nil {
+				return nil, err
+			}
+			var count int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM repos WHERE name = ?`, n).Scan(&count); err != nil {
+				return nil, err
+			}
+			if count != 1 {
+				return nil, fmt.Errorf("tree_invalid: repository name %q is ambiguous; use unique catalog names", n)
+			}
+			out = append(out, id)
 		}
-		return out
+		return out, nil
 	}
 	rootWorkflow, err := resolvedTreeWorkflow(tree.Root)
 	if err != nil {
@@ -181,11 +164,15 @@ func (s *Store) createTree(ctx context.Context, tx *sql.Tx, spike items.Item, tr
 			if resolved != nil && n.Type == "task" {
 				role = workflow.RunRole(*resolved)
 			}
+			repoIDs, err := resolveRepos(n.Repos)
+			if err != nil {
+				return err
+			}
 			it, err := s.Items.CreateTx(ctx, tx, items.CreateInput{
 				Workflow: resolved, Steps: n.Steps, Units: units, Solo: n.Solo, Verify: n.Verify,
 				Type: items.Type(n.Type), ParentKey: parentKey, Title: n.Title, Brief: n.Brief,
 				Acceptance: n.Acceptance, Status: items.Ready, RoleHint: role,
-				TddExempt: tddExempt, Repos: resolveRepos(n.Repos),
+				TddExempt: tddExempt, Repos: repoIDs,
 			}, items.Daemon())
 			if err != nil {
 				return err
@@ -336,9 +323,6 @@ func (s *Store) Materialize(ctx context.Context, sessionID, spikeKey, specID, pl
 			return err
 		}
 		if err := checkTreeShape(tree, rootType); err != nil {
-			return err
-		}
-		if err := s.checkTreeRepos(ctx, tx, spike, tree); err != nil {
 			return err
 		}
 		out, err = s.createTree(ctx, tx, spike, tree, rootType)

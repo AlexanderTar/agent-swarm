@@ -276,6 +276,10 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		TmuxPath: spawner.Tmux, TmuxSocketName: spawner.Socket}
 	adDeps.PublishWake = rt.PublishWake // the claude channel bridge
 	rt.Adapters = adapter.All(adDeps)
+	if err := rt.MigrateOpenRepoConfirmations(ctx); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("migrate repository confirmations: %w", err)
+	}
 	adv := &advisor.Service{DB: d, Events: ev, Home: cfg.Home, UserHome: userHome,
 		Adapters: rt.Adapters, Run: execx.RunFor(240 * time.Second), Now: now, Log: cfg.Log,
 		MaxConcurrent: 2, Timeout: 240 * time.Second, Deliver: rt.DeliverAdvice}

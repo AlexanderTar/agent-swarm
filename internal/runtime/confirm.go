@@ -188,6 +188,87 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 	return out, err
 }
 
+// MigrateOpenRepoConfirmations closes the obsolete approval lane on startup.
+// Each request keeps its own proposed and expansion list; the root's starting
+// repository hint is deliberately untouched. Only open rows are selected, so
+// repeated starts cannot duplicate a resolution or relay.
+func (s *Store) MigrateOpenRepoConfirmations(ctx context.Context) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM requests WHERE kind = 'confirm_repos' AND state = 'open' ORDER BY created_at, id`)
+		if err != nil {
+			return err
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			req, err := s.requestTx(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			var options struct{ Proposed, Expansion []ReposProposal }
+			if err := json.Unmarshal(req.Options, &options); err != nil {
+				return fmt.Errorf("migrate repository request %s: %w", id, err)
+			}
+			seen := map[string]bool{}
+			var repoIDs []string
+			for _, p := range append(options.Proposed, options.Expansion...) {
+				if p.Source == "dropped" || seen[p.Repo] {
+					continue
+				}
+				seen[p.Repo] = true
+				repoIDs = append(repoIDs, p.Repo)
+			}
+			refs, err := s.repoRefs(ctx, tx, repoIDs)
+			if err != nil {
+				return fmt.Errorf("migrate repository request %s: %w", id, err)
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'approved', confirmed_json = ?, response_text = 'Approved by daemon migration', responded_at = ? WHERE id = ? AND state = 'open'`, jsonArray(repoIDs), db.Millis(s.Now()), id); err != nil {
+				return err
+			}
+			rootID, err := s.rootItemID(ctx, tx, req.ItemID)
+			if err != nil {
+				return err
+			}
+			payload, err := json.Marshal(map[string]any{"repos": refs, "provenance": "daemon_migration"})
+			if err != nil {
+				return err
+			}
+			if req.AgentID != "" {
+				if _, err := s.enqueue(ctx, tx, Message{Kind: "repos_confirmed", Origin: "daemon", ToAgentID: req.AgentID, RootItemID: rootID, ItemID: req.ItemID, RequestID: id, Payload: payload}); err != nil {
+					return err
+				}
+			}
+			wire, err := s.RequestWireTx(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			if _, err := s.Events.Append(ctx, tx, events.RequestResolved, wire); err != nil {
+				return err
+			}
+			key, err := s.itemKey(ctx, tx, req.ItemID)
+			if err != nil {
+				return err
+			}
+			if err := s.Items.ReconcileTx(ctx, tx, key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // validateRepoConfirmTx is the read half of a repo confirmation (I13): the
 // repos_version check, that every id exists, and that no dropped repo still
 // has a live worktree reservation. Shared by the request-bound ConfirmRepos

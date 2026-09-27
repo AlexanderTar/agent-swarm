@@ -11,9 +11,8 @@ import (
 	"testing"
 )
 
-// Scenario 24: repository selection and scope updates without a second approval.
-// Selected repos work immediately. The orchestrator updates scope with
-// swarm_repos; stale versions and live worktree drops are refused.
+// Scenario 24: repository hints do not restrict worktrees. Optional scope
+// bookkeeping remains versioned and protects active worktrees.
 func TestScenario24RepositoryScopeWithoutConfirmation(t *testing.T) {
 	h := newHarness(t)
 	repoAID, _ := e2eRepo(t, h, "repo-a")
@@ -33,6 +32,8 @@ func TestScenario24RepositoryScopeWithoutConfirmation(t *testing.T) {
 	spikeKey, _ := item["key"].(string)
 	orch, _ := agent["name"].(string)
 	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
+	// A catalog repository outside the starting hint works before swarm_repos.
+	h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoBID, "branch": "spike/outside-hint"})
 
 	// The start selection authorizes repo A immediately.
 	wt := h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/x"})
@@ -57,10 +58,7 @@ func TestScenario24RepositoryScopeWithoutConfirmation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "request changed") {
 		t.Fatalf("stale scope update = %v", err)
 	}
-	_, err = h.toolOut(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/y"})
-	if err == nil || !strings.Contains(err.Error(), "repo_not_confirmed") {
-		t.Fatalf("removed repo worktree = %v", err)
-	}
+	h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/y"})
 	h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoBID, "branch": "spike/x"})
 	h.doT(t, http.MethodGet, "/api/items/"+spikeKey, nil, &detail)
 	version = int(detail.Item["repos_version"].(float64))

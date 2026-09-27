@@ -734,7 +734,7 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 	case "approval":
 		return s.askApproval(ctx, sessionID, in)
 	case "confirm_repos":
-		return s.askConfirmRepos(ctx, sessionID, in)
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Repository confirmation asks are no longer used; register a local Git path with swarm_repo_register when needed."}
 	case "native_prompt":
 		return s.askNativePromptForMsg(ctx, sessionID, in)
 	case "native_answer":

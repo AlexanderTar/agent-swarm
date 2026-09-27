@@ -303,9 +303,9 @@ func TestRepoHintsMustBeConfirmedForTheRoot(t *testing.T) {
 		t.Fatalf("epic = %+v, %v", e, err)
 	}
 	st := mk(t, s, items.Story, e.Key, "S")
-	_, err = s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "T", Repos: []string{"repo_b"}}, items.Daemon())
-	if err == nil || err.Error() != "repo_b isn't confirmed for EPIC-1." {
-		t.Fatalf("err = %v", err)
+	newTask, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "T", Repos: []string{"repo_b"}}, items.Daemon())
+	if err != nil || !slices.Equal(newTask.Repos, []string{"repo_b"}) {
+		t.Fatalf("new task = %+v, err = %v", newTask, err)
 	}
 	task, err := s.Create(ctx, items.CreateInput{Type: items.Task, ParentKey: st.Key, Title: "T", Repos: []string{"repo_a"}}, items.Daemon())
 	if err != nil || !slices.Equal(task.Repos, []string{"repo_a"}) {

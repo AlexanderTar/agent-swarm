@@ -358,7 +358,7 @@ func TestNativeAnswerConfirmRepos(t *testing.T) {
 		t.Fatal(err)
 	}
 	ses := mustSessionID(t, s, a.ID)
-	req, err := s.Ask(ctx, ses, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
+	req, err := s.askConfirmRepos(ctx, ses, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
 		Repos: []ReposProposal{{Repo: repoID, Reason: "needed"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -392,7 +392,7 @@ func TestNativeAnswerConfirmReposApprovesProposedAndExpansionTogether(t *testing
 		t.Fatal(err)
 	}
 	ses := mustSessionID(t, s, a.ID)
-	req, err := s.Ask(ctx, ses, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
+	req, err := s.askConfirmRepos(ctx, ses, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
 		Repos: []ReposProposal{
 			{Repo: kept, Reason: "needed"},
 			{Repo: dropped, Reason: "stale", Source: "dropped"},
@@ -430,7 +430,7 @@ func TestNativeAnswerConfirmReposRequestChangesLeavesReposUntouched(t *testing.T
 		t.Fatal(err)
 	}
 	ses := mustSessionID(t, s, a.ID)
-	req, err := s.Ask(ctx, ses, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
+	req, err := s.askConfirmRepos(ctx, ses, AskInput{Kind: "confirm_repos", Prompt: "Confirm repos",
 		Repos: []ReposProposal{{Repo: repoID, Reason: "needed"}}})
 	if err != nil {
 		t.Fatal(err)

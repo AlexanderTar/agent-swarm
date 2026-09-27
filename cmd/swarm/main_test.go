@@ -24,10 +24,60 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
+	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/migrate"
 	_ "modernc.org/sqlite"
 )
+
+func TestOpenDaemonMigratesHistoricalRepositoryConfirmationOnce(t *testing.T) {
+	ctx := context.Background()
+	home, userHome := t.TempDir(), t.TempDir()
+	cfg := daemonConfig{UserHome: userHome, Home: home, ScanRoot: t.TempDir(), Embedder: offlineEmb{}, Log: t.Logf}
+	dm, err := openDaemon(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := dm.rt.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Historical"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	_, err = dm.db.ExecContext(ctx, `INSERT INTO repos (id,path,name,source,created_at,updated_at) VALUES ('repo_old',?,'old','manual',?,?)`, t.TempDir(), now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = dm.db.ExecContext(ctx, `INSERT INTO agents (id,name,kind,model,role,item_id,root_item_id,brief,state,created_at) VALUES ('agent_old','old-agent','fake','fake-1','orchestrator',?,?,'old','active',?)`, root.ID, root.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = dm.db.ExecContext(ctx, `INSERT INTO requests (id,kind,agent_id,item_id,prompt,options_json,state,created_at) VALUES ('req_old','confirm_repos','agent_old',?,'old','{"proposed":[{"repo":"repo_old","reason":"old"}],"expansion":[]}','open',?)`, root.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm.db.Close()
+	for i := 0; i < 2; i++ {
+		dm, err = openDaemon(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var state, response string
+		if err := dm.db.QueryRowContext(ctx, `SELECT state,response_text FROM requests WHERE id='req_old'`).Scan(&state, &response); err != nil {
+			t.Fatal(err)
+		}
+		if state != "approved" || !strings.Contains(response, "daemon migration") {
+			t.Fatalf("startup %d: %s %s", i, state, response)
+		}
+		var n int
+		if err := dm.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE request_id='req_old' AND origin='daemon' AND kind='repos_confirmed'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Fatalf("startup %d: migration relays = %d", i, n)
+		}
+		dm.db.Close()
+	}
+}
 
 // TestMain is the C1 last-resort safety net: it points $HOME at a throwaway
 // temp dir for the whole cmd/swarm test binary, so a test that opens a daemon
