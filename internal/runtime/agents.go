@@ -288,13 +288,17 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	// there) leaves this item as an orphaned draft with no agent, and a
 	// retry creates a second item instead of reusing it. Upgrade path: wrap
 	// both in one transaction.
-	it, err := s.Items.Create(ctx, items.CreateInput{
+	ci := items.CreateInput{
 		Type:           items.Spike,
 		Title:          in.Name,
 		SpikeIntent:    in.Intent,
 		Brief:          in.Request,
 		SuggestedRepos: in.Repos,
-	}, items.User("board"))
+	}
+	if in.Intent == "chore" { // chore spec decision 2: a chore is not a spike
+		ci.Type, ci.SpikeIntent, ci.Status = items.Chore, "", items.Ready
+	}
+	it, err := s.Items.Create(ctx, ci, items.User("board"))
 	if err != nil {
 		return "", Agent{}, false, err
 	}
@@ -454,9 +458,25 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	return it.Key, a, false, nil
 }
 
+// promoteDraftRoot moves a Draft epic/bug/chore root to Ready as the user
+// starting its orchestrator (chore spec decisions 1 and 7). It runs before
+// anything else, so the recover-in-place path is covered too, and a start
+// that is then refused still leaves the root Ready (a Ready root never
+// auto-spawns). Anything else is a no-op.
+func (s *Store) promoteDraftRoot(ctx context.Context, it items.Item) (items.Item, error) {
+	if it.ID != it.RootID || it.Status != items.Draft ||
+		(it.Type != items.Epic && it.Type != items.Bug && it.Type != items.Chore) {
+		return it, nil
+	}
+	return s.Items.Transition(ctx, it.Key, items.Ready, items.User("board"))
+}
+
 func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Agent, bool, error) {
 	it, err := s.Items.Get(ctx, in.ItemKey)
 	if err != nil {
+		return Agent{}, false, err
+	}
+	if it, err = s.promoteDraftRoot(ctx, it); err != nil {
 		return Agent{}, false, err
 	}
 

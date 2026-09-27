@@ -341,32 +341,71 @@ func TestStartSpikeCreatesTheItemTheAgentAndTheSession(t *testing.T) {
 	}
 }
 
-func TestStartSpikeWithChoreIntentAndLongBrief(t *testing.T) {
-	s, _, _ := newStore(t)
+// Chore spec decision 2 / E7: intent chore creates a Ready chore, not a spike.
+func TestStartSpikeWithChoreIntentCreatesAReadyChore(t *testing.T) {
+	s, _, fa := newStore(t)
 	ctx := context.Background()
+	repo := seedRepo(t, s, "chat")
 	longBrief := strings.Repeat("Detailed maintenance instructions. ", 60) // ~2160 chars (> 600)
-	key, a, _, err := s.StartSpike(ctx, SpikeInput{
-		Name:    "First pass cleanup",
-		Intent:  "chore",
-		Kind:    Fake,
-		Model:   "fake-1",
-		Request: longBrief,
-	})
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "First pass cleanup", Intent: "chore",
+		Kind: Fake, Model: "fake-1", Request: longBrief, Repos: []string{repo}})
 	if err != nil {
-		t.Fatalf("expected chore spike with long brief to succeed, got: %v", err)
+		t.Fatalf("expected a chore with a long brief to succeed, got: %v", err)
 	}
 	it, err := s.Items.Get(ctx, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.SpikeIntent != "chore" {
-		t.Fatalf("expected spike_intent 'chore', got: %q", it.SpikeIntent)
+	if !strings.HasPrefix(key, "CHORE-") || it.Type != items.Chore || it.Status != items.Ready || it.SpikeIntent != "" {
+		t.Fatalf("item = %s %s %s intent %q", key, it.Type, it.Status, it.SpikeIntent)
 	}
 	if it.Brief != longBrief {
 		t.Fatalf("expected brief to match longBrief exactly, got len %d vs %d", len(it.Brief), len(longBrief))
 	}
-	if a.Name != "first-pass-cleanup" {
-		t.Fatalf("name = %q", a.Name)
+	if !slices.Equal(it.SuggestedRepos, []string{repo}) || len(it.Repos) != 0 {
+		t.Fatalf("repos = %v, suggested = %v", it.Repos, it.SuggestedRepos)
+	}
+	if a.Name != "first-pass-cleanup" || a.Role != RoleOrchestrator || a.ItemID != it.ID {
+		t.Fatalf("agent = %+v", a)
+	}
+	if !strings.Contains(fa.LastSpec.Kickoff, "swarm-orchestrator") || strings.Contains(fa.LastSpec.Kickoff, "swarm-spike") {
+		t.Fatalf("kickoff must name swarm-orchestrator, not swarm-spike:\n%s", fa.LastSpec.Kickoff)
+	}
+}
+
+// Chore spec decision 1 / E3.
+func TestStartOrchestratorPromotesDraftRoot(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s) // seedEpicWithTask leaves the root Ready; force it Draft (as a fresh proposal is)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'draft' WHERE id = ?`, ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if it, _ := s.Items.Get(ctx, "EPIC-1"); it.Status != items.Ready {
+		t.Fatalf("EPIC-1 = %s, want ready", it.Status)
+	}
+}
+
+// Chore spec decision 7 / E4: promotion comes first, so a refused start still promotes.
+func TestStartOrchestratorPromotesEvenWhenRefused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	if _, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'draft' WHERE key = 'EPIC-1'`); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err == nil || err.Error() != "This item already has an orchestrator." {
+		t.Fatalf("err = %v", err)
+	}
+	if it, _ := s.Items.Get(ctx, "EPIC-1"); it.Status != items.Ready {
+		t.Fatalf("EPIC-1 = %s, want ready", it.Status)
 	}
 }
 
