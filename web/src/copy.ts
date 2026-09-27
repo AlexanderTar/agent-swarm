@@ -38,7 +38,7 @@ export const AGENT_LOGIN_CMD: Record<AgentKind, string> = {
   claude: "claude", codex: "codex login", agy: "agy", cursor: "cursor-agent login", muse: "muse login", fake: "true",
 };
 
-export const SESSION_LABEL: Record<SessionState | "queued" | "waiting" | "stale" | "preflight_failed", string> = {
+export const SESSION_LABEL: Record<SessionState | "queued" | "waiting" | "stale" | "preflight_failed" | "capacity_paused" | "resume_queued", string> = {
   spawning: "Starting",
   running: "Running",
   pause_requested: "Pause requested",
@@ -54,6 +54,8 @@ export const SESSION_LABEL: Record<SessionState | "queued" | "waiting" | "stale"
   waiting: "Waiting",
   stale: "No activity for 30 min",
   preflight_failed: "Failed",
+  capacity_paused: "Paused: over the agent limit",
+  resume_queued: "Queued: waiting for a free slot",
 };
 
 export const C = {

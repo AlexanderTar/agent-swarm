@@ -168,6 +168,19 @@ export interface SessionInfo {
 
 export interface AdvisorInfo { kind: AgentKind; model: string; effort: string | null; mode: "native" | "simulated" }
 
+// The in-flight replacement operation (GET /api/state node.replacement).
+// reason: "capacity" = paused to fit the agent limit; "resume" = a manual
+// resume waiting for a free slot (spec 2026-09-27-single-agent-limit-live).
+export interface AgentReplacement {
+  operation_id: string;
+  agent: string;
+  mode: string;
+  phase: string;
+  request_key?: string;
+  reason?: "capacity" | "resume";
+  error?: string;
+}
+
 export interface AgentNode {
   id: string;
   name: string;
@@ -184,6 +197,7 @@ export interface AgentNode {
   session: SessionInfo | null;     // latest generation; null when never spawned
   preflight_error: string | null;  // set when spawn preflight failed (never spawned)
   kind_reason: string | null;     // why kind/model isn't the user's role default; null = settings
+  replacement?: AgentReplacement; // omitted when no operation is in flight
   created_at: number;
   finished_at: number | null;
   children: AgentNode[];           // live and unacknowledged children
@@ -275,9 +289,9 @@ export interface Settings {
   notifications: Record<string, { center: boolean; sound: boolean }>;
   // Single global admission ceiling shared by every role, orchestrator
   // included (docs/specs/2026-09-24-unify-agent-limits.md; replaces the old,
-  // separately-counted max_orchestrators/max_agents pair).
+  // separately-counted max_orchestrators/max_agents pair; the only remaining
+  // limit as of docs/specs/2026-09-27-single-agent-limit-live.md).
   max_concurrent_agents: number;
-  max_agents_per_root: number;
   scan_excludes: string[];
   scan_interval_sec: number;
   menubar_compact: boolean;

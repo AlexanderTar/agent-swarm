@@ -183,7 +183,6 @@ const settings = (): Settings => ({
   fallback_default: { agent: "claude", model: "sonnet" },
   notifications: { info: { center: true, sound: true }, attention: { center: true, sound: true }, action: { center: true, sound: true } },
   max_concurrent_agents: 4,
-  max_agents_per_root: 4,
   scan_excludes: ["~/Library", "~/.Trash", "~/Downloads"],
   scan_interval_sec: 21600,
   menubar_compact: false,

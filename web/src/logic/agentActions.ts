@@ -1,7 +1,7 @@
 import { C, SESSION_LABEL, T } from "../copy";
 import type { AgentEndpoint, AgentNode, SessionState } from "../types";
 
-export type DisplayState = SessionState | "queued" | "waiting" | "stale" | "preflight_failed";
+export type DisplayState = SessionState | "queued" | "waiting" | "stale" | "preflight_failed" | "capacity_paused" | "resume_queued";
 export type Tone = "green" | "green-hollow" | "grey" | "grey-pulse" | "amber" | "hollow" | "red";
 export interface AgentAction {
   endpoint: AgentEndpoint;
@@ -15,6 +15,8 @@ export function displayState(a: AgentNode): DisplayState {
   // contracts §3.2: no session + a preflight error is "failed at preflight", whatever agent.state says
   const s = a.session;
   if (!s) return a.preflight_error !== null ? "preflight_failed" : "queued";
+  const r = a.replacement;
+  if (r?.reason && r.phase !== "starting") return r.reason === "capacity" ? "capacity_paused" : "resume_queued";
   if (a.state === "queued") return "queued";
   if (s.state === "running") return s.waiting ? "waiting" : s.stale ? "stale" : "running";
   return s.state;
@@ -38,6 +40,8 @@ const TONE: Record<DisplayState, Tone> = {
   preflight_failed: "red",
   completed: "grey",
   cancelled: "grey",
+  capacity_paused: "hollow",
+  resume_queued: "grey",
 };
 export const stateTone = (s: DisplayState): Tone => TONE[s];
 
@@ -88,6 +92,9 @@ export function agentActions(a: AgentNode): AgentAction[] {
     case "completed":
     case "cancelled":
       return [];
+    case "capacity_paused":
+    case "resume_queued":
+      return [cancel];
   }
 }
 

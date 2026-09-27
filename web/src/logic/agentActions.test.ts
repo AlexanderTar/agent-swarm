@@ -80,3 +80,29 @@ describe("agentActions (§10.7, one case per row)", () => {
     expect(flattenAgents([orch]).map((a) => a.name)).toEqual(["auth-epic-orchestrator", "c1", "c2", "c3"]);
   });
 });
+
+describe("agent limit states (spec 2026-09-27-single-agent-limit-live)", () => {
+  const op = (reason: "capacity" | "resume", phase = "queued") =>
+    ({ operation_id: "op_1", agent: "a", mode: "handoff", phase, reason });
+
+  it("capacity pause: label, tone, Cancel only", () => {
+    const a = makeAgent({ session: session("interrupted"), replacement: op("capacity") });
+    expect(displayState(a)).toBe("capacity_paused");
+    expect(stateLabel(displayState(a))).toBe("Paused: over the agent limit");
+    expect(stateTone(displayState(a))).toBe("hollow");
+    expect(labels(a)).toEqual(["cancel:Cancel"]);
+  });
+
+  it("queued resume: label, tone, Cancel only", () => {
+    const a = makeAgent({ session: session("paused"), replacement: op("resume") });
+    expect(displayState(a)).toBe("resume_queued");
+    expect(stateLabel(displayState(a))).toBe("Queued: waiting for a free slot");
+    expect(stateTone(displayState(a))).toBe("grey");
+    expect(labels(a)).toEqual(["cancel:Cancel"]);
+  });
+
+  it("starting and reasonless replacements fall back to the session state", () => {
+    expect(displayState(makeAgent({ session: session("spawning"), replacement: op("capacity", "starting") }))).toBe("spawning");
+    expect(displayState(makeAgent({ session: session("running"), replacement: { operation_id: "op_2", agent: "a", mode: "handoff", phase: "stopping" } }))).toBe("running");
+  });
+});
