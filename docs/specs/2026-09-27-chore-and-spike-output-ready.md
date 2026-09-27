@@ -367,13 +367,13 @@ The `swarm-spike` skill needs no change (verified: it has no chore text). Run `m
 3. `go test ./...`
 4. `make skills-sync && git diff --exit-code internal/install/skills` (the sync is clean after the commit)
 5. `cd web && pnpm test && pnpm typecheck` (or `make test-web`)
-6. `make build` (web build plus the signed binary; local only, never installed to the live daemon)
+6. `make web-build && go build ./...` (`make build` is optional, because it codesigns with `SWARM_SIGN_IDENTITY`; never install to the live daemon)
 
 ### End-to-end scenarios (each is a test in the plan)
 
 | # | Scenario | Expected |
 |---|---|---|
-| E1 | Feature spike materializes | EPIC root `ready`, children `ready`. The orchestrator's `accepted` moves it to `in_progress`. Children done plus `integrated` open `accept_epic` (`in_review`). Approve moves it to `done`. |
+| E1 | Feature spike materializes, then the user starts the root's orchestrator | EPIC root `ready`, children `ready`. The orchestrator's `accepted` moves it to `in_progress`. Children done plus `integrated` open `accept_epic` (`in_review`). Approve moves it to `done`. |
 | E2 | Debug spike materializes | BUG root `ready`. `accepted`, then `integrated`, open `accept_fix`. Approve moves it to `done`. |
 | E3 | User starts an orchestrator on a Draft proposal (EPIC created Draft by an orchestrator) | Root `ready` before the agent spawns. The new orchestrator's `accepted` moves it to `in_progress`. |
 | E4 | User starts on a Draft root whose start is then refused (existing active orchestrator) | Conflict `This item already has an orchestrator.`; root is `ready` (and `in_progress` if it has an earlier `accepted`, decision 6). |

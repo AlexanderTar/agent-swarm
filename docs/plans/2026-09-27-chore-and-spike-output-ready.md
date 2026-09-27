@@ -32,7 +32,7 @@
 ## Build batches
 
 - **Batch 1, Go, CLI and skills:** Tasks 1–8. Gate: `go vet ./... && go test ./...` green, and `make skills-sync` leaves no diff.
-- **Batch 2, Web:** Tasks 9–11. Gate: `cd web && pnpm test && pnpm typecheck` green, then `make build`.
+- **Batch 2, Web:** Tasks 9–11. Gate: `cd web && pnpm test && pnpm typecheck` green, then `make web-build && go build ./...`.
 
 ## File map
 
@@ -377,7 +377,7 @@ with
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
-Run: `go test ./internal/items/... ./internal/mcpserver/...`
+Run: `grep -rn 'items.Orchestrator("' --include='*_test.go' internal` first. Any test whose second argument is not a real item id and that creates a root now fails with `sql: no rows`; point it at a real root. Then run `go test ./internal/items/... ./internal/mcpserver/...`
 Expected: PASS. The table in `orchestrator_test.go:2267` proposes a chore **type** from an epic root and still passes.
 
 - [ ] **Step 5: Commit**
@@ -403,6 +403,22 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```go
 	if root.Status != items.Ready {
 		t.Fatalf("the root starts as ready, got %s", root.Status)
+	}
+```
+
+At the end of the same test, add the reported bug's own path (E1). The user starts the root's orchestrator, and its `accepted` must move the root on. The conflict check is keyed on the new epic's own `root_item_id`, so the still-active SPIKE-1 orchestrator doesn't collide:
+
+```go
+	// The reported bug: the new root's orchestrator could never leave Draft.
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: res.Root, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, mustSessionID(t, s, orch.ID), CheckpointInput{Kind: Accepted, Summary: "on it"}); err != nil {
+		t.Fatal(err)
+	}
+	if root, _ = s.Items.Get(ctx, res.Root); root.Status != items.InProgress {
+		t.Fatalf("after accepted: %s", root.Status)
 	}
 ```
 
@@ -1081,8 +1097,8 @@ Expected: FAIL (no Chore menu item, no "New chore" dialog).
 
 - [ ] **Step 4: Run the Batch 2 gate**
 
-Run: `pnpm test && pnpm typecheck && cd .. && make build`
-Expected: PASS. `make build` builds the web bundle and a signed `bin/swarm` in this worktree only. Do not run `make install-daemon`.
+Run: `pnpm test && pnpm typecheck && cd .. && make web-build && go build ./...`
+Expected: PASS. `make build` is optional, because it codesigns with `SWARM_SIGN_IDENTITY` and can fail or prompt without one. Never run `make install-daemon`.
 
 - [ ] **Step 5: Commit**
 
@@ -1093,7 +1109,7 @@ git commit -m "feat(web): New item → Chore opens a New chore sheet that create
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-If `make build` changes checked-in build output (for example an embedded web bundle), stage those paths explicitly in a separate `chore(web): rebuild bundle` commit.
+If `make web-build` changes checked-in build output (for example an embedded web bundle), stage those paths explicitly in a separate `chore(web): rebuild bundle` commit.
 
 ---
 
@@ -1104,7 +1120,7 @@ If `make build` changes checked-in build output (for example an embedded web bun
 3. `cd web && pnpm test && pnpm typecheck`
 4. `git log --oneline origin/main..HEAD` shows 11 or 12 commits, each with the trailer.
 5. Map spec §8 E1–E17 to tests:
-   - E1: `TestMaterializeBuildsTheEpicTree` plus the existing `TestEpicAcceptanceFlow`
+   - E1: `TestMaterializeBuildsTheEpicTree` (start and accepted reach InProgress) plus `TestEpicAcceptanceFlow`
    - E2: `TestMaterializeDebugRootIsReady`
    - E3: `TestStartOrchestratorPromotesDraftRoot`
    - E4: `TestStartOrchestratorPromotesEvenWhenRefused`
