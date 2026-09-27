@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -162,6 +164,43 @@ func TestRegisterLocalRepoAndCreateWorktreeWithoutChangingHint(t *testing.T) {
 	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/bad"}`, bad)); err == nil || !strings.Contains(err.Error(), "No git repository") {
 		t.Fatalf("non-repository worktree = %v", err)
+	}
+}
+
+func TestWorktreeCreateRegistersRelativeLocalGitPath(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	path := gitRepoWithCommit(t)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.IsAbs(relative) {
+		t.Fatalf("test path is absolute: %s", relative)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/relative"}`, relative))
+	if err != nil {
+		t.Fatalf("relative Git path %q: %v", relative, err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &wt); err != nil {
+		t.Fatal(err)
+	}
+	if wt.WorktreeID == "" {
+		t.Fatal("relative path created no worktree")
+	}
+	var repoID string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT repo_id FROM worktrees WHERE id = ?`, wt.WorktreeID).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	if repoID == "" {
+		t.Fatal("worktree has no registered catalog repository")
 	}
 }
 

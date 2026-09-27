@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -486,7 +488,11 @@ func worktreeTool(s *Server) ToolDef {
 			// safety.
 			switch in.Op {
 			case "create", "review":
-				if strings.HasPrefix(in.Repo, "/") {
+				// Catalog ids are opaque; paths can be absolute, contain a
+				// separator, or be a bare existing directory relative to the
+				// daemon's working directory.
+				_, pathErr := os.Stat(in.Repo)
+				if filepath.IsAbs(in.Repo) || strings.ContainsRune(in.Repo, os.PathSeparator) || pathErr == nil {
 					r, err := s.RT.Repos.AddManual(ctx, in.Repo)
 					if err != nil {
 						return nil, fmt.Errorf("repository path: %w", err)
