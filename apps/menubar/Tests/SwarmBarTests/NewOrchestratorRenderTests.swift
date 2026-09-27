@@ -7,6 +7,34 @@ import XCTest
 
 @MainActor
 final class NewOrchestratorRenderTests: XCTestCase {
+    func testFourRowsFitBeforeOuterScrollAtOrdinaryTextSize() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        for index in 0..<12 {
+            client.reposResponse.all.append(Repo(id: "extra-\(index)", name: "project-\(index)",
+                                                  path: "/Users/alex/GitHub/project-\(index)"))
+        }
+        await form.load()
+        form.name = "x"
+        client.spikeResult = .failure(.unreachable)
+        _ = await form.submit()
+        let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 700)
+        host.layoutSubtreeIfNeeded()
+        func scrolls(in view: NSView) -> [NSScrollView] {
+            let own = (view as? NSScrollView).map { [$0] } ?? []
+            return own + view.subviews.flatMap(scrolls)
+        }
+        let views = scrolls(in: host)
+        XCTAssertEqual(views.count, 2, "four list rows should fit without outer scrolling")
+        guard views.count == 2 else { return }
+        XCTAssertEqual(views[0].bounds.height, 120)
+        XCTAssertGreaterThanOrEqual(views[1].bounds.height, 108)
+        XCTAssertLessThanOrEqual(views[1].convert(views[1].bounds, to: host).maxY, host.bounds.height - 45)
+    }
+
     func testLongSubmissionErrorAloneUsesOuterScroll() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let model = makeAppModel(client)

@@ -28,6 +28,8 @@ public struct NewOrchestratorView: View {
                     ViewThatFits(in: .vertical) {
                         formContents(maxRows: geometry.size.height >= 700 ? 8 : 6)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        formContents(maxRows: 4)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                         ScrollView {
                             formContents(maxRows: 4)
                                 .background(SubtleScrollerConfig())
