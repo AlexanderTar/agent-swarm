@@ -90,7 +90,7 @@ resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
 - [ ] **Step 4: shadcn init + components**
 
 ```bash
-pnpm dlx shadcn@latest init --base-color zinc --no-src-dir=false
+pnpm dlx shadcn@latest init --base-color neutral --css-variables -y
 pnpm dlx shadcn@latest add button badge input textarea label select dropdown-menu sheet tabs toggle-group collapsible checkbox alert alert-dialog scroll-area tooltip separator
 pnpm add sonner tw-animate-css @fontsource-variable/onest @fontsource/fragment-mono
 pnpm remove @fontsource-variable/inter @fontsource-variable/jetbrains-mono
@@ -98,7 +98,7 @@ pnpm remove @fontsource-variable/inter @fontsource-variable/jetbrains-mono
 
 If `init` prompts, answer: style `new-york`, TypeScript yes, CSS file `src/index.css`, components alias `@/components`, utils alias `@/lib/utils`, icon library `lucide`. Verify `components.json` has `"rsc": false`, `"tailwind": { "css": "src/index.css", "cssVariables": true }`. Do **not** `add sonner` via the CLI (its wrapper imports `next-themes`); A3 writes our own Toaster. Confirm `src/lib/utils.ts` exports `cn` (`clsx` + `tailwind-merge`).
 
-- [ ] **Step 5: Tokens** — replace `web/src/index.css` wholesale with the spec's "`web/src/index.css` (target)" block (the CLI overwrote it; ours wins), but with the font imports `@import "@fontsource-variable/onest";` and `@import "@fontsource/fragment-mono";` and `--font-sans: "Onest Variable", …` / `--font-mono: "Fragment Mono", …`. Delete any `.dark { … }` block and `@custom-variant dark` the CLI added.
+- [ ] **Step 5: Tokens** — replace `web/src/index.css` wholesale with the spec's "`web/src/index.css` (target)" block (the CLI overwrote it; ours wins), but with the font imports `@import "@fontsource-variable/onest";` and `@import "@fontsource/fragment-mono";` and `--font-sans: "Onest Variable", …` / `--font-mono: "Fragment Mono", …`. Delete any `.dark { … }` block and `@custom-variant dark` the CLI added. Add `"**/src/components/ui/**"` to `biome.json` `files.ignore` (vendored code; biome is not installed or run in any verify chain today, so this only keeps a future `biome check` from flagging generated files).
 
 - [ ] **Step 6: `ui/sheet.tsx` overlay switch** — in the generated `SheetContent`, add prop `overlay = true` and render `{overlay && <SheetOverlay />}` instead of the unconditional `<SheetOverlay />`. Keep the rest of the generated file.
 
@@ -117,7 +117,7 @@ Expected second command output: empty. (`bg-accent` today only means "primary bu
 - [ ] **Step 9: Commit**
 
 ```bash
-git add package.json pnpm-lock.yaml components.json tsconfig.json vite.config.ts src/index.css src/lib/utils.ts src/lib/utils.test.ts src/components/ui
+git add package.json pnpm-lock.yaml components.json biome.json tsconfig.json vite.config.ts src/index.css src/lib/utils.ts src/lib/utils.test.ts src/components/ui
 git add $(git diff --name-only -- 'src/**/*.tsx')
 git commit -m "feat(web): shadcn foundation, Graphite+Iris tokens, Onest + Fragment Mono"
 ```
@@ -313,7 +313,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 }
 ```
 
-- [ ] **Step 4: GREEN** — `pnpm vitest run src/components/Toast.test.tsx` PASS, then `pnpm test`. Existing tests that asserted `getByRole("status")` for a toast: port them to `findByText(<message>)` in this unit (grep: `grep -rn 'role("status")\|"status"' src --include='*.test.tsx'`).
+- [ ] **Step 4: GREEN** — `pnpm vitest run src/components/Toast.test.tsx` PASS, then `pnpm test`. If the 4 s / 6 s dismissals never fire, check `document.visibilityState` in jsdom first — Sonner pauses timers while the document is hidden — before touching durations. Existing tests that asserted `getByRole("status")` for a toast: port them to `findByText(<message>)` in this unit (grep: `grep -rn 'role("status")\|"status"' src --include='*.test.tsx'`).
 
 - [ ] **Step 5: Commit** — `git add src/components/Toast.tsx src/components/Toast.test.tsx <ported test files> && git commit -m "feat(web): Sonner toasts behind useToast"`
 
@@ -598,7 +598,7 @@ If the mock daemon test fails because the mock validates intent, widen that chec
 expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
 ```
 
-Add:
+Add a headerless case (`header={false}`: `getByRole("dialog", { name: "Details" })` resolves, and no visible `heading` with that text exists) and:
 
 ```tsx
 it("non-modal sheet has no overlay and ignores outside clicks", async () => {
@@ -621,7 +621,7 @@ import type { ReactNode } from "react";
 import { Sheet as UiSheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 
 export function Sheet(p: {
-  title: string; subtitle?: string; width?: number; modal?: boolean;
+  title: string; subtitle?: string; width?: number; modal?: boolean; header?: boolean;
   onClose(): void; children: ReactNode; footer?: ReactNode;
 }) {
   const modal = p.modal ?? true;
@@ -639,10 +639,15 @@ export function Sheet(p: {
         onPointerDownOutside={keepOpen}
         {...(p.subtitle ? {} : { "aria-describedby": undefined })}
       >
-        <SheetHeader className="border-b border-border px-5 py-4">
-          <SheetTitle className="text-[15px] font-semibold">{p.title}</SheetTitle>
-          {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
-        </SheetHeader>
+        {p.header === false ? (
+          // Details draws its own header row; Radix still needs a title for the dialog's accessible name.
+          <SheetTitle className="sr-only">{p.title}</SheetTitle>
+        ) : (
+          <SheetHeader className="border-b border-border px-5 py-4">
+            <SheetTitle className="text-[15px] font-semibold">{p.title}</SheetTitle>
+            {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
+          </SheetHeader>
+        )}
         <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">{p.children}</div>
         {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 border-t border-border px-5 py-3">{p.footer}</SheetFooter>}
       </SheetContent>
@@ -988,12 +993,16 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
   const rows = useMemo(() => (data ? chooserRows(data) : []), [data]);
   const labelId = useId();
 
-  // Menubar parity: a selected repo that stops being a row is dropped once, with one notice.
+  // Menubar parity: reconcile after an explicit rescan only (not on every load), so a just-added
+  // folder is never dropped by a refetch that has not caught up yet.
+  const [reconcilePending, setReconcilePending] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: selection edits must not re-trigger reconciliation
   useEffect(() => {
-    if (!data || data.scanning) return;
+    if (!reconcilePending || !data || data.scanning) return;
+    setReconcilePending(false);
     const r = reconcileSelection(p.selected, rows);
     if (r.removed > 0) { p.onChange(r.selection); setNotice(T.reposNoLonger(r.removed)); }
-  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps — selection changes must not re-trigger
+  }, [rows]);
 
   const toggle = (id: string) => { setNotice(""); p.onChange(toggleRepo(p.selected, id)); };
   …
@@ -1037,7 +1046,7 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
 }
 ```
 
-with `doRescan = async () => { try { const r = await rescan.run(); toast.success(T.toastRescanned(r.found, r.missing)); } catch (e) { toast.error(errorText(e)); } }`, `submitFolder` adding `toast.success(T.toastRepoAdded(repo.name))` on success, and `State` a centered `text-muted-foreground` line (+ `Button variant="link" size="sm"` Retry). The inline `/* form … */` above is the existing add-folder `<form>` with `Input`/`Button` swapped in — keep its submit/error logic byte-for-byte. Then delete `repoSections`, `RepoSection`, `selectAll`, `repoSubtitle`, `knownRepos`, `parentFolder` from `logic/repos.ts` if grep shows no other caller, and `C.searchRepos`/`C.recent` if unused (update `copy.test.ts` if it lists them).
+with `doRescan = async () => { try { const r = await rescan.run(); setReconcilePending(true); toast.success(T.toastRescanned(r.found, r.missing)); } catch (e) { toast.error(errorText(e)); } }`, `submitFolder` adding `toast.success(T.toastRepoAdded(repo.name))` on success, and `State` a centered `text-muted-foreground` line (+ `Button variant="link" size="sm"` Retry). The inline `/* form … */` above is the existing add-folder `<form>` with `Input`/`Button` swapped in — keep its submit/error logic byte-for-byte. Then delete `repoSections`, `RepoSection`, `selectAll`, `repoSubtitle`, `knownRepos`, `parentFolder` from `logic/repos.ts` if grep shows no other caller, and `C.searchRepos`/`C.recent` if unused (update `copy.test.ts` if it lists them).
 - [ ] **Step 4: GREEN** — `pnpm vitest run src/components/RepoPicker.test.tsx src/logic/repos.test.ts` PASS.
 - [ ] **Step 5: Commit** — body lists the deleted helpers and the removed "searches"/sections test cases with the spec reference. `git commit -m "feat(web): flat repository chooser matching the menubar"`.
 
@@ -1115,14 +1124,14 @@ const newItem = (type: ItemType, parentKey?: string) =>
 
 ```tsx
 {showDetails && (
-  <Sheet title={url.item} modal={false} width={narrow ? undefined : 560} onClose={() => setUrl({ item: "" })}>
+  <Sheet title={url.item} header={false} modal={false} width={narrow ? undefined : 560} onClose={() => setUrl({ item: "" })}>
     {outside && <OutsideViewBanner … />}
     <Details key={url.item} … />
   </Sheet>
 )}
 ```
 
-Keep `data-testid="details"` on the Sheet body wrapper (`<div data-testid="details">`) so existing tests that locate it keep working. `Details.tsx`: its own close button is removed (the Sheet provides it); header row = key (`.key`), type badge, `MoveToMenu` right-aligned; title editable at 15 px; priority → `Select` (`aria-label={C.priority}`); tablist → `Tabs`/`TabsList`/`TabsTrigger`; loading → three `h-3 animate-pulse rounded bg-muted` lines; error → `Alert variant="destructive"` + Retry link. In `save`, when `body.status` succeeded: `toast.success(T.toastMoved(item.key, STATUS_LABEL[body.status]))`. Terminal action success → `toast.success(agentActionToast("terminal", name))`.
+Keep `data-testid="details"` on the Sheet body wrapper (`<div data-testid="details">`) so existing tests that locate it keep working. `Details.tsx`: its own close button is removed (the Sheet's absolutely positioned close button sits top-right; leave `pr-10` on the header row so Move to never sits under it); header row = key (`.key`), type badge, `MoveToMenu` right-aligned; title editable at 15 px; priority → `Select` (`aria-label={C.priority}`); tablist → `Tabs`/`TabsList`/`TabsTrigger`; loading → three `h-3 animate-pulse rounded bg-muted` lines; error → `Alert variant="destructive"` + Retry link. In `save`, when `body.status` succeeded: `toast.success(T.toastMoved(item.key, STATUS_LABEL[body.status]))`. Terminal action success → `toast.success(agentActionToast("terminal", name))`.
 - [ ] **Step 4: GREEN** — `pnpm vitest run src/App.test.tsx src/panels/Details.test.tsx` PASS.
 - [ ] **Step 5: Commit** — `git commit -m "feat(web): item details open in a non-modal sheet"`.
 
@@ -1225,6 +1234,8 @@ describe("design tokens", () => {
 - Details closing on board click, or form sheets not closing top-first on Escape → reject.
 
 ## Swarm tree (for `swarm_items` registration)
+
+Skeleton: at registration, expand each unit with `steps` [RED test named in its unit above, GREEN, commit] and each package with `brief` (its "Done when" from the package map) and `acceptance` (its unit titles as outcomes), so registration raises no "TDD script without a test step" warnings.
 
 ```json
 [
