@@ -103,8 +103,9 @@ func (t Tree) Tasks() []TreeNode {
 }
 
 // SplitSections splits on "## " headings at the start of a line, ignoring
-// headings inside fenced code blocks. A file with none is one section,
-// "document".
+// headings inside fenced code blocks. Substantive content before the first
+// heading is a "document" section; a top-level title and whitespace alone
+// do not create an extra section. A file with no headings is one section.
 func SplitSections(md string) []ArtifactSection {
 	type mark struct {
 		title string
@@ -130,7 +131,18 @@ func SplitSections(md string) []ArtifactSection {
 			SHA256: sha256Hex(md), Start: 0, End: len(md)}}
 	}
 	seen := map[string]int{}
-	out := make([]ArtifactSection, 0, len(marks))
+	out := make([]ArtifactSection, 0, len(marks)+1)
+	preamble := md[:marks[0].at]
+	for _, line := range strings.Split(preamble, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "# ") {
+			continue
+		}
+		out = append(out, ArtifactSection{ID: "document", Title: "document",
+			SHA256: sha256Hex(preamble), Start: 0, End: marks[0].at})
+		seen["document"] = 1
+		break
+	}
 	for i, m := range marks {
 		end := len(md)
 		if i+1 < len(marks) {

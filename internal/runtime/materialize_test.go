@@ -73,6 +73,48 @@ func TestSpecSectionRequestAndMaterializationGateAgree(t *testing.T) {
 	}
 }
 
+func TestHeadinglessPreambleBlocksPlanReviewUntilApproved(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Preamble decision", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
+		writeFile(t, "Decision: ship X\n\n## Context\n\nWhy it matters.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, planBody), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Sections) != 2 || spec.Sections[0].ID != "document" {
+		t.Fatalf("registered sections = %+v", spec.Sections)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: plan.ArtifactID,
+		Prompt: "Ship the plan."}); err == nil || !strings.Contains(err.Error(), "approval_missing: section") {
+		t.Fatalf("plan review accepted an unapproved preamble: %v", err)
+	}
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+		SectionID: spec.Sections[0].ID, Prompt: "Ship X."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, req.ID, ApproveInput{SectionSHA256: spec.Sections[0].SHA256,
+		ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: plan.ArtifactID,
+		Prompt: "Ship the plan."}); err != nil {
+		t.Fatalf("plan review stayed blocked after preamble approval: %v", err)
+	}
+}
+
 func TestRevisedSectionNeedsNewApprovalBeforePlanReviewAndMaterialization(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

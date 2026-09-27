@@ -13,18 +13,46 @@ import (
 func TestSplitSections(t *testing.T) {
 	md := "# Title\n\nintro\n\n## Data model\n\nrows\n\n```go\n## not a heading\n```\n\n## Data model\n\nagain\n"
 	got := SplitSections(md)
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("got %d sections: %+v", len(got), got)
 	}
-	if got[0].ID != "data-model" || got[1].ID != "data-model-2" {
-		t.Fatalf("ids = %q, %q", got[0].ID, got[1].ID)
+	if got[0].ID != "document" || got[1].ID != "data-model" || got[2].ID != "data-model-2" {
+		t.Fatalf("ids = %q, %q, %q", got[0].ID, got[1].ID, got[2].ID)
 	}
-	if got[0].Title != "Data model" || got[0].SHA256 == got[1].SHA256 {
+	if got[1].Title != "Data model" || got[1].SHA256 == got[2].SHA256 {
 		t.Fatalf("sections = %+v", got)
 	}
 	one := SplitSections("just a note with no headings\n")
 	if len(one) != 1 || one[0].ID != "document" {
 		t.Fatalf("headingless file = %+v", one)
+	}
+}
+
+func TestSplitSectionsKeepsSubstantivePreamble(t *testing.T) {
+	preamble := "# Spec\n\nDecision: ship X\n\n"
+	md := preamble + "## Context\n\nBackground only.\n"
+	sections := SplitSections(md)
+	if len(sections) != 2 {
+		t.Fatalf("sections = %+v, want preamble and Context", sections)
+	}
+	if sections[0].ID != "document" || sections[0].Title != "document" ||
+		sections[0].Start != 0 || sections[0].End != len(preamble) ||
+		sections[0].SHA256 != sha256Hex(preamble) {
+		t.Fatalf("preamble section = %+v", sections[0])
+	}
+	if sections[1].Title != "Context" || sections[1].Start != len(preamble) {
+		t.Fatalf("Context section = %+v", sections[1])
+	}
+	titleOnly := SplitSections("# Spec\n\n## Context\n\nBackground only.\n")
+	if len(titleOnly) != 1 || titleOnly[0].Title != "Context" {
+		t.Fatalf("title-only preamble = %+v, want only Context", titleOnly)
+	}
+}
+
+func TestSplitSectionsGivesPreambleAndDocumentHeadingDistinctIDs(t *testing.T) {
+	sections := SplitSections("Ship X.\n\n## Document\n\nDetails.\n")
+	if len(sections) != 2 || sections[0].ID != "document" || sections[1].ID != "document-2" {
+		t.Fatalf("section IDs = %+v", sections)
 	}
 }
 
