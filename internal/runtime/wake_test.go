@@ -117,7 +117,7 @@ func TestWakeOnQuotaResetResolvesAgyLaunchModel(t *testing.T) {
 	ses, _ := s.LatestSession(ctx, a.ID)
 	panes(tm, Pane{Session: a.Name, Command: "agy"})
 	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"} // idle
-	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET waiting = 1 WHERE id = ?`, ses.ID); err != nil {
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET waiting = 1, provider_session_id = 'conv-agy-1' WHERE id = ?`, ses.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -127,6 +127,55 @@ func TestWakeOnQuotaResetResolvesAgyLaunchModel(t *testing.T) {
 	}
 	if fa.LastWakeTarget.Model != "gemini-3.8-flash-medium" {
 		t.Fatalf("WakeTarget.Model = %q, want the suffixed medium-effort launch id", fa.LastWakeTarget.Model)
+	}
+	// Root cause A: WakeOnQuotaReset's row query never selected
+	// ses.provider_session_id and the WakeTarget never carried it, so
+	// Agy.Wake ran `agy --conversation ""` against no real conversation at
+	// all (StartEnv still succeeds against an empty id, silently delivering
+	// nothing) and Codex.Wake (below) failed outright on `--thread ""`.
+	if fa.LastWakeTarget.ProviderSessionID != "conv-agy-1" {
+		t.Fatalf("WakeTarget.ProviderSessionID = %q, want the seeded provider session id", fa.LastWakeTarget.ProviderSessionID)
+	}
+}
+
+// TestWakeOnQuotaResetResolvesCodexProviderSessionID is TestWakeOnQuotaResetResolvesAgyLaunchModel's
+// codex twin (root cause A): codex's Wake needs --thread <provider session
+// id> to reach the right CODEX_HOME's thread store at all (an empty thread
+// fails live with "No active session found matching ''"), so the quota-reset
+// path must forward it exactly like WakeDue's wakeCandidates already does.
+func TestWakeOnQuotaResetResolvesCodexProviderSessionID(t *testing.T) {
+	s, tm, fa := newStore(t)
+	fa.WakeOK = true
+	s.Adapters[Codex] = fa
+	seedCatalog(t, s, "codex", "codex-1",
+		`[{"id":"gpt-6-astra","label":"GPT-6-Astra","efforts":["low","medium","high"],"default_effort":"medium","effort_encoding":"flag","advisor_capable":false}]`,
+		"gpt-6-astra")
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude", "fake", "codex"]' WHERE key = 'enabled_agents'`); err != nil {
+		t.Fatal(err)
+	}
+	at := tm.clk
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "CodexQuotaReset", Intent: "feature",
+		Kind: Codex, Model: "gpt-6-astra"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.PreflightError != "" {
+		t.Fatalf("preflight error: %s", a.PreflightError)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	panes(tm, Pane{Session: a.Name, Command: "codex"})
+	tm.captures[a.Name] = []string{"─────\n❯ \n─────\n"} // idle
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET waiting = 1, provider_session_id = 'thread-codex-1' WHERE id = ?`, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	cutoff := at.Now().Add(-2 * time.Minute)
+	if _, err := s.WakeOnQuotaReset(ctx, Codex, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastWakeTarget.ProviderSessionID != "thread-codex-1" {
+		t.Fatalf("WakeTarget.ProviderSessionID = %q, want the seeded provider session id", fa.LastWakeTarget.ProviderSessionID)
 	}
 }
 

@@ -536,7 +536,7 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 	if err := s.flushSuppressed(ctx, kind); err != nil {
 		return 0, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, a.id, a.name, ses.tmux_name, ses.state, ses.waiting, a.model, COALESCE(a.effort, '')
+	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, a.id, a.name, ses.tmux_name, ses.state, ses.waiting, a.model, COALESCE(a.effort, ''), COALESCE(ses.provider_session_id, '')
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
 		WHERE a.kind = ? AND ses.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
 		AND (ses.last_wake_at IS NULL OR ses.last_wake_at < ?)`,
@@ -549,9 +549,9 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 	ad, ok := s.Adapters[kind]
 	woken := 0
 	for rows.Next() {
-		var sessionID, agentID, agentName, tmuxName, state, model, effort string
+		var sessionID, agentID, agentName, tmuxName, state, model, effort, providerID string
 		var waiting bool
-		if err := rows.Scan(&sessionID, &agentID, &agentName, &tmuxName, &state, &waiting, &model, &effort); err != nil {
+		if err := rows.Scan(&sessionID, &agentID, &agentName, &tmuxName, &state, &waiting, &model, &effort, &providerID); err != nil {
 			return woken, err
 		}
 		// Epic-approval-lane decision 2: a quota-reset wake re-surfaces what
@@ -567,9 +567,13 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 		}
 		// Attempt native wake or paste idle token if pane is idle
 		if ok {
-			delivered, _ := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, AgentID: agentID, TmuxName: tmuxName,
-				Notice: notice,
-				Model:  s.resolveLaunchModel(ctx, kind, model, effort)})
+			delivered, err := ad.Wake(ctx, adapter.WakeTarget{SessionID: sessionID, AgentID: agentID, TmuxName: tmuxName,
+				ProviderSessionID: providerID,
+				Notice:            notice,
+				Model:             s.resolveLaunchModel(ctx, kind, model, effort)})
+			if err != nil {
+				s.logf("wake: quota-reset native wake for %s: %v", agentName, err)
+			}
 			if delivered {
 				s.markWoken(ctx, sessionID, true)
 				woken++
