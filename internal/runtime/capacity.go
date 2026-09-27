@@ -32,12 +32,18 @@ func OperationReason(requestKey string) string {
 // replacement.go and the agent_operations_one_active index).
 const inFlightPhasesSQL = `('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting')`
 
-// pendingCapacitySQL counts slot-holders already being paused for capacity
-// (still saving their handoff): they count toward the reduction, so a
-// second tick never pauses an extra agent (spec decision 5).
+// pendingCapacitySQL counts slot-holders already leaving their slot: being
+// paused for capacity (still saving their handoff), pausing for any other
+// reason, or mid handoff/recover before the stop. They count toward the
+// reduction, so a tick never pauses an extra agent (spec decision 5) only
+// to restart it once the leaver lets go; any successor comes back through
+// Admit.
 const pendingCapacitySQL = `SELECT COUNT(*) FROM agents WHERE state = 'active' AND ` + NotAZombieSlot + `
-	AND EXISTS (SELECT 1 FROM agent_operations o WHERE o.agent_id = agents.id
-		AND o.request_key LIKE 'capacity:%' AND o.phase IN ` + inFlightPhasesSQL + `)`
+	AND (EXISTS (SELECT 1 FROM agent_operations o WHERE o.agent_id = agents.id
+			AND ((o.request_key LIKE 'capacity:%' AND o.phase IN ` + inFlightPhasesSQL + `)
+				OR o.phase IN ('requested', 'preserving', 'stopping')))
+		OR (SELECT state FROM sessions WHERE agent_id = agents.id
+			ORDER BY generation DESC, attempt DESC LIMIT 1) IN ('pause_requested', 'quiescing', 'stopping'))`
 
 // capacityCandidatesSQL lists slot-holders EnforceCapacity may pause, in
 // pause order (spec decision 4): latest session running; no operation in

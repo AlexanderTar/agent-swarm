@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 )
 
 func TestOperationReason(t *testing.T) {
@@ -432,5 +434,101 @@ func TestResumeWithRoomStartsAtOnce(t *testing.T) {
 	ses, err := s.LatestSession(ctx, w.ID)
 	if err != nil || ses.Generation != wSes.Generation+1 {
 		t.Fatalf("latest generation = %d (err %v), want %d", ses.Generation, err, wSes.Generation+1)
+	}
+}
+
+// A queued resume is not a handoff: the paused session's own handoff
+// checkpoint is not re-gated, so a dirty tracked tree (which the direct
+// Resume never checks either) does not block it.
+func TestQueuedResumeSkipsTheHandoffGate(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	now := db.Millis(s.Now())
+	it, err := s.Items.Get(ctx, "TASK-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.DB, `INSERT INTO repos (id, name, path, default_branch, source, created_at, updated_at)
+		VALUES ('repo_r', 'repo1', '/tmp/repo1', 'main', 'manual', ?, ?)`, now, now)
+	mustExec(t, s.DB, `INSERT INTO worktrees (id, repo_id, path, branch, base_ref, base_sha, state, owner_agent_id, root_item_id, created_at)
+		VALUES ('wt_r', 'repo_r', '/tmp/resume-wt', 'b', 'main', 'deadbee', 'active', ?, ?, ?)`, w.ID, it.RootID, now)
+	oldHEAD, oldStatus := readDiskHEAD, readDiskStatus
+	readDiskHEAD = func(string) (string, error) { return "deadbee", nil }
+	readDiskStatus = func(string) (string, error) { return " M main.go\n", nil }
+	t.Cleanup(func() { readDiskHEAD, readDiskStatus = oldHEAD, oldStatus })
+	mustExec(t, s.DB, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind, attempt, summary, daemon_written, created_at)
+		VALUES ('ckp_pause', ?, ?, ?, 'handoff', 1, 'paused', 1, ?)`, wSes.ID, w.ID, w.ItemID, now)
+	if err := s.SetSessionState(ctx, wSes.ID, Paused); err != nil {
+		t.Fatal(err)
+	}
+	setLimits(t, s, 1) // the orchestrator holds the only slot
+
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	var phase string
+	if err := s.DB.QueryRow(`SELECT phase FROM agent_operations WHERE request_key = ?`,
+		"resume:"+wSes.ID).Scan(&phase); err != nil || phase != "queued" {
+		t.Fatalf("resume op = %s (err %v), want queued", phase, err)
+	}
+	setLimits(t, s, 2)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, w.ID)
+	if err != nil || ses.Generation != wSes.Generation+1 {
+		t.Fatalf("latest generation = %d (err %v), want %d", ses.Generation, err, wSes.Generation+1)
+	}
+	if !strings.Contains(fa.LastSpec.Kickoff, ResumeAddition) {
+		t.Fatalf("successor kickoff is not resume mode:\n%s", fa.LastSpec.Kickoff)
+	}
+}
+
+// A holder already leaving its slot for another reason (a user Pause in
+// flight, a user handoff still preserving) counts toward the reduction:
+// pausing another agent for it would only flap that agent back once the
+// leaver lets go.
+func TestEnforceCapacityCountsHoldersAlreadyLeaving(t *testing.T) {
+	for name, leave := range map[string]func(t *testing.T, s *Store, a Agent, aSes Session){
+		"pause requested": func(t *testing.T, s *Store, a Agent, aSes Session) {
+			mustExec(t, s.DB, `UPDATE sessions SET state = 'pause_requested' WHERE id = ?`, aSes.ID)
+		},
+		"quiescing": func(t *testing.T, s *Store, a Agent, aSes Session) {
+			mustExec(t, s.DB, `UPDATE sessions SET state = 'quiescing' WHERE id = ?`, aSes.ID)
+		},
+		"stopping": func(t *testing.T, s *Store, a Agent, aSes Session) {
+			mustExec(t, s.DB, `UPDATE sessions SET state = 'stopping' WHERE id = ?`, aSes.ID)
+		},
+		"user handoff preserving": func(t *testing.T, s *Store, a Agent, aSes Session) {
+			mustExec(t, s.DB, `INSERT INTO agent_operations (id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+				VALUES ('op_h', ?, 'handoff', 'preserving', 'h1', ?, ?, 1, 1)`, a.ID, aSes.ID, aSes.Generation)
+		},
+		"user recover requested": func(t *testing.T, s *Store, a Agent, aSes Session) {
+			mustExec(t, s.DB, `INSERT INTO agent_operations (id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+				VALUES ('op_r', ?, 'recover', 'requested', 'r1', ?, ?, 1, 1)`, a.ID, aSes.ID, aSes.Generation)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, tm, _ := newStore(t)
+			ctx := context.Background()
+			setLimits(t, s, 8)
+			seedEpicWithThreeTasks(t, s)
+			a := spawnRunning(t, s, tm, "TASK-1", "")
+			spawnRunning(t, s, tm, "TASK-2", "")
+			spawnRunning(t, s, tm, "TASK-3", "")
+			aSes, err := s.LatestSession(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leave(t, s, a, aSes)
+			setLimits(t, s, 2)
+			if err := s.EnforceCapacity(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if ops := capacityOps(t, s); len(ops) != 0 {
+				t.Fatalf("capacity ops = %v, want none (a is already leaving)", ops)
+			}
+		})
 	}
 }

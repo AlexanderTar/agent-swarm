@@ -299,21 +299,6 @@ func TestScenarioHandoffOrchestratorRelay(t *testing.T) {
 	if !h.waitForSessionState(t, coder, "running", 5*time.Second) {
 		t.Fatalf("coder session = %s, never reached running", h.sessionState(t, coder))
 	}
-	// An open request is one of EnforceCapacity's skip rules (spec
-	// 2026-09-27-single-agent-limit-live decision 4): with cap 1 dropped
-	// below the two agents already holding a slot, the coder -- a worker,
-	// picked before an orchestrator -- would otherwise be the newest
-	// eligible agent EnforceCapacity pauses on its own, racing the
-	// orchestrator's own manual handoff below and pausing the wrong agent.
-	// swarm_blocker/swarm_ask kind:"question" both refuse a non-top-level
-	// caller, so this uses the same bypass-validate raw-SQL pattern
-	// setMaxConcurrentAgents/setPauseDeadlineSec already do. Withdrawn below
-	// once the orchestrator's own replacement has parked (its predecessor
-	// session already stopped by then, so the coder alone no longer exceeds
-	// the cap) -- a completed checkpoint refuses while one of its own
-	// requests is still open.
-	guard := h.openBlockerRequest(t, coder)
-	h.setMaxConcurrentAgents(t, 1)
 
 	// No admission slot for the successor (cap 1, two live agents): the
 	// orchestrator replacement parks in queued, provably mid-replacement
@@ -326,6 +311,10 @@ func TestScenarioHandoffOrchestratorRelay(t *testing.T) {
 	if status != http.StatusAccepted {
 		t.Fatalf("POST handoff status = %d %s, want 202", status, raw)
 	}
+	// Drop the cap only now: the orchestrator's own handoff is in flight,
+	// so EnforceCapacity counts it as already leaving and leaves the coder
+	// running.
+	h.setMaxConcurrentAgents(t, 1)
 	var accepted struct {
 		OperationID string `json:"operation_id"`
 	}
@@ -362,7 +351,6 @@ func TestScenarioHandoffOrchestratorRelay(t *testing.T) {
 	if !queued {
 		t.Fatal("orchestrator replacement never parked in queued")
 	}
-	h.withdrawRequest(t, guard)
 
 	// The live child finishes mid-replacement with legacy evidence.
 	h.mustTool(t, coder, "swarm_checkpoint", map[string]any{
