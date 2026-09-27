@@ -100,6 +100,7 @@ type Agent struct {
 	AdvisorKind                       string
 	AdvisorModel                      string
 	AdvisorEffort                     string
+	AdvisorRequestedEffort            string // chosen effort; kept when native mode has no separate advisor process
 	AdvisorMode                       string
 	Brief                             string
 	State                             AgentState

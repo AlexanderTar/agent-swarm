@@ -18,9 +18,10 @@ public enum RepoPicker {
         return dir.isEmpty ? "/" : dir
     }
 
-    /// "~/GitHub · EndurioApp".
+    /// The shortened full path distinguishes repositories with the same name.
     public static func subtitle(_ r: Repo, home: String = NSHomeDirectory()) -> String {
-        [parentFolder(r.path, home: home), r.remoteOwner ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+        let path = (r.path as NSString).standardizingPath
+        return path == home ? "~" : path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
     }
 
     /// The secondary line under a row, if any.
@@ -28,6 +29,19 @@ public enum RepoPicker {
         if r.missing { return Copy.repoMissing }
         if r.dirty { return Copy.repoDirty }
         return nil
+    }
+
+    /// One present row per canonical path, sourced only from `all`.
+    public static func rows(_ response: ReposResponse) -> [Repo] {
+        var seen = Set<String>()
+        return response.all.filter { repo in
+            !repo.missing && seen.insert((repo.path as NSString).standardizingPath).inserted
+        }.sorted {
+            let byName = $0.name.localizedStandardCompare($1.name)
+            return byName == .orderedSame
+                ? $0.path.localizedStandardCompare($1.path) == .orderedAscending
+                : byName == .orderedAscending
+        }
     }
 
     /// Recent, then groups (folder-based first, then remote owners, each alphabetical;

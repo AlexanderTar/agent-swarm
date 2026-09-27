@@ -35,8 +35,8 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertEqual(f.agentOptions.map(\.label), ["Claude", "Codex", "Antigravity"])
         XCTAssertEqual(f.modelOptions.first?.label, "Fable 5.1 (latest)")
         XCTAssertEqual(f.effortOptions?.first?.label, "Default (high)")
-        XCTAssertEqual(f.advisorOptions.first?.label, "Claude · Fable 5.1 (latest)")
-        XCTAssertEqual(f.advisorOptions.last?.label, "No advisor")
+        XCTAssertEqual(f.advisorAgentOptions.first?.label, "Claude")
+        XCTAssertEqual(f.advisorAgentOptions.last?.label, "No advisor")
         XCTAssertEqual(f.intent, .chore)
         XCTAssertEqual(f.intentCaption, Copy.choreCaption)
         f.intent = .feature
@@ -58,6 +58,59 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertEqual(f.choice.effort, "", "normalised once the catalog arrives")
         f.name = "x"
         XCTAssertNil(f.body()?.effort, "a level the model doesn't offer must never reach the spike body")
+    }
+
+    func testExplicitPrimaryEffortReachesBodyAndInvalidSelectionDoesNot() async {
+        let f = await form()
+        f.name = "x"
+        f.setEffort("xhigh")
+        XCTAssertEqual(f.body()?.effort, "xhigh")
+        f.setEffort("ultra")
+        XCTAssertNil(f.body()?.effort, "Opus does not offer ultra")
+    }
+
+    func testNativeClaudePairOmitsStoredAndSelectedAdvisorEffort() async {
+        var settings = state.settings
+        settings[.advisor] = RoleDefault(agent: .claude, model: "fable", effort: "xhigh")
+        let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true)
+        await f.load()
+        XCTAssertNil(f.advisorEffortOptions)
+        f.setAdvisorEffort("max")
+        XCTAssertEqual(f.body()?.advisor, .pair(agent: .claude, model: "fable", effort: nil))
+    }
+
+    func testClaudePrimaryCodexAdvisorUsesSelectedEffort() async {
+        let f = await form()
+        f.setAdvisorAgent("codex")
+        XCTAssertNotNil(f.advisorEffortOptions)
+        f.setAdvisorEffort("xhigh")
+        XCTAssertEqual(f.body()?.advisor, .pair(agent: .codex, model: "gpt-6-astra", effort: "xhigh"))
+        f.setAdvisorModel("gpt-5.3-codex")
+        XCTAssertEqual(f.advisorEffort, "", "new model does not offer xhigh")
+        XCTAssertEqual(f.body()?.advisor, .pair(agent: .codex, model: "gpt-5.3-codex", effort: nil))
+    }
+
+    func testCodexPrimaryClaudeAdvisorUsesNormalizedSettingsEffort() async {
+        var settings = state.settings
+        settings[.advisor] = RoleDefault(agent: .claude, model: "fable", effort: "xhigh")
+        let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true)
+        await f.load()
+        f.setAgent("codex")
+        XCTAssertNotNil(f.advisorEffortOptions)
+        XCTAssertEqual(f.advisorEffort, "xhigh")
+        XCTAssertEqual(f.body()?.advisor, .pair(agent: .claude, model: "fable", effort: "xhigh"))
+        f.setAdvisorModel("claude-sonnet-4-6")
+        XCTAssertEqual(f.advisorEffort, "", "selected level is normalized for the new model")
+    }
+
+    func testNoAdvisorAndEffortlessModelHideAdvisorEffort() async {
+        let f = await form()
+        f.setAdvisorAgent("none")
+        XCTAssertNil(f.advisorEffortOptions)
+        XCTAssertEqual(f.body()?.advisor, AdvisorPayload.none)
+        f.setModel("claude-haiku-4-5-20251001")
+        XCTAssertNil(f.effortOptions)
+        XCTAssertNil(f.body()?.effort)
     }
 
     func testNameValidationMessages() async {
@@ -99,9 +152,9 @@ final class NewOrchestratorFormTests: XCTestCase {
         f.setAgent("bogus")
         XCTAssertEqual(f.choice.agent, .claude)
 
-        f.setAdvisor("claude:gone")
-        XCTAssertEqual(f.errors.advisor, "gone is no longer offered by Claude.")
-        f.setAdvisor("none")
+        f.setAdvisorModel("gone")
+        XCTAssertEqual(f.advisor, .pair(.claude, "fable"), "unavailable models cannot enter a payload")
+        f.setAdvisorAgent("none")
         XCTAssertTrue(f.errors.isValid)
 
         var noSuperpowers = client.catalogEntries
@@ -113,18 +166,19 @@ final class NewOrchestratorFormTests: XCTestCase {
 
     func testReposPicker() async {
         let f = await form()
-        XCTAssertEqual(f.sections.map(\.title), ["Recent", "endurio", "AlexanderTar", "EndurioApp", "All"])
+        XCTAssertEqual(f.rows.map(\.id), ["repo_swarm", "repo_app", "repo_chat", "repo_landing"])
         XCTAssertEqual(f.scanLine, "Scanned 2h ago")
         f.toggle(f.repos.all[4])
         XCTAssertEqual(f.selection, [], "missing repos can't be selected")
         f.toggle(f.repos.recent[0])
-        f.selectAll(f.sections[1])
+        f.toggle(f.repos.all[1])
+        f.toggle(f.repos.all[3])
         XCTAssertEqual(f.selectedLine, "Selected: endurio-chat, endurio-app, endurio-landing")
-        f.query = "endurio"
         await f.search()
         await f.rescan()
-        XCTAssertEqual(client.calls.suffix(3), ["repos endurio", "rescan", "repos endurio"])
+        XCTAssertEqual(client.calls.suffix(3), ["repos ", "rescan", "repos "])
 
+        client.reposResponse.all.append(Repo(id: "repo_new", name: "notes", path: "/Users/alex/.config/notes"))
         await f.addFolder("/Users/alex/.config/notes")
         XCTAssertEqual(f.selection.last, "repo_new")
         XCTAssertTrue(f.repos.all.contains { $0.id == "repo_new" })
@@ -132,6 +186,37 @@ final class NewOrchestratorFormTests: XCTestCase {
         client.failNext = .api(status: 422, code: "bad_request", message: "No git repository found in this folder.")
         await f.addFolder("/tmp")
         XCTAssertEqual(f.repoError, "No git repository found in this folder.")
+    }
+
+    func testRescanKeepsPresentSelectionAndReportsOneRemoval() async {
+        let f = await form()
+        f.selection = ["repo_chat", "repo_app"]
+        client.reposResponse.all.removeAll { $0.id == "repo_chat" }
+        await f.rescan()
+        XCTAssertEqual(f.selection, ["repo_app"])
+        XCTAssertEqual(f.selectionNotice, "1 selected repository is no longer available.")
+        XCTAssertEqual(client.calls.suffix(2), ["rescan", "repos "])
+    }
+
+    func testAddFolderOnlySelectsVerifiedRefreshedRow() async {
+        let f = await form()
+        f.name = "x"
+        await f.addFolder("/Users/alex/.config/notes")
+        XCTAssertFalse(f.rows.contains { $0.id == "repo_new" })
+        XCTAssertFalse(f.selection.contains("repo_new"))
+        XCTAssertFalse(f.body()?.repos.contains("repo_new") ?? true)
+        XCTAssertNotNil(f.repoError)
+    }
+
+    func testFailedRepoRefreshAndRescanShowErrorAndStopScanning() async {
+        let f = await form()
+        client.failNext = .unreachable
+        await f.search()
+        XCTAssertNotNil(f.repoError)
+        client.failNext = .unreachable
+        await f.rescan()
+        XCTAssertFalse(f.repos.scanning)
+        XCTAssertNotNil(f.repoError)
     }
 
     func testSubmitBuildsTheSpikeBody() async throws {
@@ -221,5 +306,37 @@ final class NewOrchestratorFormTests: XCTestCase {
         let result = await down.submit()
         XCTAssertNil(result)
         XCTAssertFalse(client.calls.contains { $0.hasPrefix("spike") })
+    }
+
+    func testAdvisorAgentAndModelStayValid() async {
+        let f = await form()
+        XCTAssertEqual(f.advisorAgentOptions.map(\.label), ["Claude", "Codex", "Antigravity", "No advisor"])
+        XCTAssertFalse(f.advisorModelOptions.isEmpty)
+        f.setAdvisorAgent("codex")
+        XCTAssertEqual(f.advisor, .pair(.codex, f.advisorModelOptions[0].value))
+        let alternate = try? XCTUnwrap(f.advisorModelOptions.last?.value)
+        if let alternate { f.setAdvisorModel(alternate) }
+        if case let .pair(agent, model, _) = f.body()?.advisor {
+            XCTAssertEqual(agent, .codex)
+            XCTAssertEqual(model, alternate)
+        } else { XCTFail("advisor pair missing") }
+        f.setAdvisorAgent("none")
+        XCTAssertEqual(f.advisor, .none)
+        XCTAssertTrue(f.advisorModelOptions.isEmpty)
+        XCTAssertEqual(f.body()?.advisor, AdvisorPayload.none)
+    }
+
+    func testRemovedAdvisorModelAndEmptyCatalogCannotReachBody() async {
+        var settings = state.settings
+        settings[.advisor] = RoleDefault(agent: .claude, model: "gone", effort: "high")
+        let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true)
+        await f.load()
+        XCTAssertNotEqual(f.advisor, .pair(.claude, "gone"))
+        f.name = "x"
+        XCTAssertNil(f.errors.advisor)
+        client.catalogEntries = []
+        await f.load()
+        XCTAssertEqual(f.advisor, .none)
+        XCTAssertEqual(f.body()?.advisor, AdvisorPayload.none)
     }
 }

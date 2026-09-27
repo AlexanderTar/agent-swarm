@@ -15,8 +15,8 @@ final class RepoPickerTests: XCTestCase {
         XCTAssertEqual(RepoPicker.parentFolder("/Users/alex/notes", home: home), "~")
         XCTAssertEqual(RepoPicker.parentFolder("/opt/src/x", home: home), "/opt/src")
         XCTAssertEqual(RepoPicker.parentFolder("x", home: home), "/")
-        XCTAssertEqual(RepoPicker.subtitle(repos.recent[0], home: home), "~/GitHub · EndurioApp")
-        XCTAssertEqual(RepoPicker.subtitle(repos.all[4], home: home), "~/Code")
+        XCTAssertEqual(RepoPicker.subtitle(repos.recent[0], home: home), "~/GitHub/endurio-chat")
+        XCTAssertEqual(RepoPicker.subtitle(repos.all[4], home: home), "~/Code/old-api")
         XCTAssertEqual(RepoPicker.note(repos.all[4]), "Repository is unavailable. Choose another location.")
         XCTAssertEqual(RepoPicker.note(repos.all[1]), "Has uncommitted changes. The orchestrator works in its own worktree.")
         XCTAssertNil(RepoPicker.note(repos.all[0]))
@@ -58,5 +58,15 @@ final class RepoPickerTests: XCTestCase {
         XCTAssertEqual(RepoPicker.scanLine(repos, format: format), "Never scanned")
         repos.scanning = true
         XCTAssertEqual(RepoPicker.scanLine(repos, format: format), "Scanning your home folder…")
+    }
+
+    func testRowsUseAllOnlyAndCanonicalPaths() {
+        let clone = Repo(id: "clone", name: "endurio-chat", path: "/Users/alex/Other/endurio-chat")
+        let duplicate = Repo(id: "duplicate", name: "agent-swarm", path: "/Users/alex/GitHub/agent-swarm/")
+        repos.all += [clone, duplicate, repos.all[0]]
+        repos.recent = [Repo(id: "recent-only", name: "hidden", path: "/tmp/hidden")]
+        XCTAssertEqual(RepoPicker.rows(repos).map(\.id),
+                       ["repo_swarm", "repo_app", "repo_chat", "clone", "repo_landing"])
+        XCTAssertEqual(RepoPicker.subtitle(clone, home: home), "~/Other/endurio-chat")
     }
 }

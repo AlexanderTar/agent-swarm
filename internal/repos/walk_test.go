@@ -22,7 +22,7 @@ func fixtureHome(t *testing.T) string {
 		}
 		return full
 	}
-	repo := func(p string) string { dir(filepath.Join(p, ".git")); return filepath.Join(home, p) }
+	repo := func(p string) string { path := dir(p); gitCommand(t, "init", "-q", path); return path }
 	file := func(p, body string) {
 		if err := os.WriteFile(filepath.Join(home, p), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -106,6 +106,25 @@ func TestWalkFindsTheRightRepos(t *testing.T) {
 				t.Errorf("symlink target in skipped dir was retained: %s", target)
 			}
 		}
+	}
+}
+
+func TestWalkOnlyPrimaryRepositories(t *testing.T) {
+	main, linked, directoryLinked, clone := primaryFixture(t)
+	main, _ = filepath.EvalSymlinks(main)
+	clone, _ = filepath.EvalSymlinks(clone)
+	got := Walk(filepath.Dir(main), nil).Repos
+	want := []string{clone, main}
+	if !slices.Equal(got, want) {
+		t.Fatalf("repos = %v, want %v; linked paths %s and %s must be absent", got, want, linked, directoryLinked)
+	}
+}
+
+func TestWalkIncludesSeparateGitDirCheckout(t *testing.T) {
+	home, checkout := separateGitDirFixture(t)
+	checkout, _ = filepath.EvalSymlinks(checkout)
+	if got := Walk(home, nil).Repos; !slices.Equal(got, []string{checkout}) {
+		t.Fatalf("Walk repos = %v, want separate Git directory checkout %s", got, checkout)
 	}
 }
 
