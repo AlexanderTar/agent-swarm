@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 )
@@ -48,10 +49,11 @@ func WriteIfChanged(path string, body []byte, mode os.FileMode) (bool, error) {
 // overwritten: it is the user's configuration, and replacing it would lose data.
 func EditJSON(path string, create bool, edit func(m map[string]any) error) (bool, error) {
 	old, err := os.ReadFile(path)
+	missing := false
 	switch {
 	case err == nil:
 	case os.IsNotExist(err) && create:
-		old = []byte("{}")
+		old, missing = []byte("{}"), true
 	case os.IsNotExist(err):
 		return false, nil
 	default:
@@ -63,8 +65,14 @@ func EditJSON(path string, create bool, edit func(m map[string]any) error) (bool
 			return false, fmt.Errorf("%s: %w", path, err)
 		}
 	}
+	before := map[string]any{}
+	_ = json.Unmarshal(old, &before)
 	if err := edit(m); err != nil {
 		return false, err
+	}
+	// Another tool (Cursor) may own the file's formatting; only rewrite on a real change.
+	if reflect.DeepEqual(before, m) && !missing {
+		return false, nil
 	}
 	next, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

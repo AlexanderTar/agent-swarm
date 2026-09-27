@@ -131,6 +131,28 @@ func TestEditJSONKeepsEveryOtherKeyAndSkipsNoOps(t *testing.T) {
 	}
 }
 
+// Cursor rewrites cli-config.json in its own key order; a file already in the wanted
+// state must not be rewritten just because Go would serialize it differently.
+func TestEditJSONLeavesAForeignFormattedFileAloneWhenNothingChanges(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "cli-config.json")
+	seed := `{"zeta":1,"attribution":{"attributePRsToAgent":false,"attributeCommitsToAgent":false},"alpha":{"updatedAt":1790542760884}}`
+	if err := os.WriteFile(p, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wrote, err := install.EditJSON(p, true, func(m map[string]any) error {
+		attr := m["attribution"].(map[string]any)
+		attr["attributeCommitsToAgent"] = false
+		attr["attributePRsToAgent"] = false
+		return nil
+	})
+	if err != nil || wrote {
+		t.Fatalf("EditJSON = %v, %v; a semantic no-op must not rewrite", wrote, err)
+	}
+	if body, _ := os.ReadFile(p); string(body) != seed {
+		t.Errorf("file changed:\n%s", body)
+	}
+}
+
 func TestEditJSONOnAMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "absent.json")
