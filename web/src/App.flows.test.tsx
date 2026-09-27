@@ -36,6 +36,18 @@ describe("App flows", () => {
     expect(screen.queryByRole("dialog", { name: "New spike" })).not.toBeInTheDocument();
   });
 
+  it("creates a chore from New item and selects it (chore spec E16)", async () => {
+    const { user } = renderWithDaemon(<App />, { daemon: roomy() });
+    await user.click(await screen.findByRole("button", { name: "New item" }));
+    await user.click(screen.getByRole("menuitem", { name: "Chore" }));
+    const sheet = await screen.findByRole("dialog", { name: "New chore" });
+    expect(within(sheet).queryByText("Spikes start with an intent. Use New spike.")).not.toBeInTheDocument();
+    await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Bump deps");
+    await user.click(await within(sheet).findByRole("button", { name: "Start orchestrator" }));
+    await waitFor(() => expect(window.location.hash).toMatch(/item=CHORE-\d+/));
+    expect(screen.queryByRole("dialog", { name: "New chore" })).not.toBeInTheDocument();
+  });
+
   it("creates a story under the selected epic", async () => {
     const { user } = renderWithDaemon(<App />, { hash: "#/hierarchy?item=EPIC-12" });
     await screen.findByTestId("details-panel");

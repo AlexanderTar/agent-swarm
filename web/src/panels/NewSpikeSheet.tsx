@@ -19,6 +19,7 @@ function Form(p: {
   catalog: AgentCatalogEntry[];
   agents: AgentNode[];
   caption?: string;
+  chore?: boolean;
   onClose(): void;
   onCreated(key: string): void;
 }) {
@@ -39,7 +40,7 @@ function Form(p: {
     if (create.pending) return;
     setFailure({});
     try {
-      const r = await create.run(spikePayload({ name, intent, repos, request, fields }, p.settings, p.catalog, requestId));
+      const r = await create.run(spikePayload({ name, intent: p.chore ? "chore" : intent, repos, request, fields }, p.settings, p.catalog, requestId));
       p.onCreated(r.item.key);
     } catch (e) {
       setFailure(mapSubmitError(e));
@@ -49,7 +50,7 @@ function Form(p: {
 
   return (
     <Sheet
-      title={C.newSpike}
+      title={p.chore ? C.newChore : C.newSpike}
       onClose={p.onClose}
       footer={
         <>
@@ -79,17 +80,21 @@ function Form(p: {
         <span className="block text-muted">{T.agentName(kebab(name))}</span>
         {nameErr && <span className="block text-bad">{nameErr}</span>}
       </label>
-      <div className="space-y-1">
-        <span className="mr-2">{C.intent}</span>
-        <Segmented<"feature" | "debug">
-          label={C.intent}
-          value={intent}
-          onChange={setIntent}
-          options={[{ value: "feature" as const, label: C.featureSpike }, { value: "debug" as const, label: C.debugSpike }]}
-        />
-        <p className="text-muted">{intent === "feature" ? C.featureCaption : C.debugCaption}</p>
-      </div>
-      <RepoPicker label={C.repositoriesOptional} caption={C.reposCaption} selected={repos} onChange={setRepos} />
+      {p.chore ? (
+        <p className="text-muted">{C.choreCaption}</p>
+      ) : (
+        <div className="space-y-1">
+          <span className="mr-2">{C.intent}</span>
+          <Segmented<"feature" | "debug">
+            label={C.intent}
+            value={intent}
+            onChange={setIntent}
+            options={[{ value: "feature" as const, label: C.featureSpike }, { value: "debug" as const, label: C.debugSpike }]}
+          />
+          <p className="text-muted">{intent === "feature" ? C.featureCaption : C.debugCaption}</p>
+        </div>
+      )}
+      <RepoPicker label={C.repositoriesOptional} caption={p.chore ? C.choreReposCaption : C.reposCaption} selected={repos} onChange={setRepos} />
       <AgentFields value={fields} onChange={setFields} settings={p.settings} catalog={p.catalog} />
       <label className="block">
         <span>{C.requestOptional}</span>
@@ -99,7 +104,7 @@ function Form(p: {
   );
 }
 
-export function NewSpikeSheet(p: { caption?: string; onClose(): void; onCreated(key: string): void }) {
+export function NewSpikeSheet(p: { caption?: string; chore?: boolean; onClose(): void; onCreated(key: string): void }) {
   const settings = useSettings();
   const catalog = useCatalog();
   const agents = useAgents();
@@ -107,7 +112,7 @@ export function NewSpikeSheet(p: { caption?: string; onClose(): void; onCreated(
   const err = settings.error ?? catalog.error ?? agents.error;
   if (err) {
     return (
-      <Sheet title={C.newSpike} onClose={p.onClose}>
+      <Sheet title={p.chore ? C.newChore : C.newSpike} onClose={p.onClose}>
         <p className="text-bad">
           {errorText(err)}{" "}
           <button

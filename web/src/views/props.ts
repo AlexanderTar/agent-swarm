@@ -40,6 +40,6 @@ export interface DetailsProps {
 
 export type SheetState =
   | null
-  | { kind: "spike"; caption?: string }
+  | { kind: "spike"; caption?: string; chore?: boolean }
   | { kind: "item"; type: "epic" | "bug" | "story" | "task"; parentKey?: string }
   | { kind: "spawn"; itemKey: string };

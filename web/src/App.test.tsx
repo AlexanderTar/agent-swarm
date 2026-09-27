@@ -128,7 +128,7 @@ describe("App shell (§16.5)", () => {
     const { user } = renderWithDaemon(<App />);
     await user.click(screen.getByRole("button", { name: "New item" }));
     expect(within(screen.getByRole("menu", { name: "New item" })).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
-      "Epic", "Bug", "Story", "Task", "Spike",
+      "Epic", "Bug", "Story", "Task", "Spike", "Chore",
     ]);
   });
 

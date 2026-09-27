@@ -51,7 +51,9 @@ export function App() {
   };
   const clearFilters = () => setUrl({ q: "", type: "", status: "" });
   const newItem = (type: ItemType, parentKey?: string) =>
-    setSheet(type === "spike" || type === "chore" ? { kind: "spike", caption: C.spikeViaNewItem } : { kind: "item", type, parentKey });
+    setSheet(type === "chore" ? { kind: "spike", chore: true }
+      : type === "spike" ? { kind: "spike", caption: C.spikeViaNewItem }
+      : { kind: "item", type, parentKey });
   const review = (req: string) => setUrl({ view: "inbox", req });
   const startOrchestrator = (item: Item) => setSheet({ kind: "spawn", itemKey: item.key });
 
@@ -130,7 +132,7 @@ export function App() {
           </div>
         )}
       </main>
-      {sheet?.kind === "spike" && <NewSpikeSheet caption={sheet.caption} onClose={closeSheet} onCreated={created} />}
+      {sheet?.kind === "spike" && <NewSpikeSheet caption={sheet.caption} chore={sheet.chore} onClose={closeSheet} onCreated={created} />}
       {sheet?.kind === "item" && (
         <NewItemSheet key={`${sheet.type}:${sheet.parentKey ?? ""}`} type={sheet.type} parentKey={sheet.parentKey} onClose={closeSheet} onCreated={created} />
       )}

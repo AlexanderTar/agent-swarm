@@ -7,7 +7,7 @@ import type { CardLevel, Grouping, ItemStatus, ItemType, View } from "../types";
 import { Segmented } from "./Segmented";
 
 const TYPES: ItemType[] = ["epic", "story", "task", "bug", "spike", "chore"];
-const NEW_TYPES: ItemType[] = ["epic", "bug", "story", "task", "spike"];
+const NEW_TYPES: ItemType[] = ["epic", "bug", "story", "task", "spike", "chore"];
 const VIEWS: { value: View; label: string }[] = [
   { value: "hierarchy", label: C.hierarchy },
   { value: "kanban", label: C.kanban },
