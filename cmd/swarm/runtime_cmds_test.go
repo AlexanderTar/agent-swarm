@@ -153,9 +153,38 @@ func TestNewRequiresNameAndIntent(t *testing.T) {
 	if code := run([]string{"new", "--home", home, "--url", srv.URL, "--name", "x"}, &out, &out); code == 0 {
 		t.Fatal("--intent is required")
 	}
+	var errOut bytes.Buffer
 	if code := run([]string{"new", "--home", home, "--url", srv.URL,
-		"--intent", "sideways", "--name", "x"}, &out, &out); code == 0 {
+		"--intent", "sideways", "--name", "x"}, &out, &errOut); code == 0 {
 		t.Fatal("an unknown intent must be refused before the request")
+	}
+	if !strings.Contains(errOut.String(), "--intent must be feature, debug or chore") {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
+// Chore spec E15.
+func TestNewChore(t *testing.T) {
+	srv, got, home := stubDaemon(t, map[string]string{
+		"POST /api/spikes": `{"item":{"key":"CHORE-3","title":"Bump deps"},
+			"agent":{"name":"bump-deps","state":"active","session":{"state":"spawning"}},"queued":false}`,
+	})
+	defer srv.Close()
+	var out, errOut bytes.Buffer
+	if code := run([]string{"new", "--home", home, "--url", srv.URL, "--name", "Bump deps", "--intent", "chore"}, &out, &errOut); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, errOut.String())
+	}
+	var body string
+	for _, c := range *got {
+		if c.path == "/api/spikes" {
+			body = c.body
+		}
+	}
+	if !strings.Contains(body, `"intent":"chore"`) {
+		t.Fatalf("body = %s", body)
+	}
+	if out.String() != "CHORE-3 created. Agent bump-deps is active.\n" {
+		t.Fatalf("stdout = %q", out.String())
 	}
 }
 

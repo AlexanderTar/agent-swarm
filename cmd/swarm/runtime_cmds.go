@@ -105,7 +105,7 @@ func cmdNew(args []string, stdout, stderr io.Writer) int {
 	var repoFlag multiFlag
 	c, _, code, done := connect("new", args, stderr, func(fs *flag.FlagSet) {
 		name = fs.String("name", "", "spike name")
-		intent = fs.String("intent", "", "feature or debug")
+		intent = fs.String("intent", "", "feature, debug or chore")
 		agent = fs.String("agent", "", "agent kind")
 		model = fs.String("model", "", "model")
 		effort = fs.String("effort", "", "reasoning effort")
@@ -115,8 +115,8 @@ func cmdNew(args []string, stdout, stderr io.Writer) int {
 	if done {
 		return code
 	}
-	if *name == "" || (*intent != "feature" && *intent != "debug") {
-		fmt.Fprintln(stderr, "swarm: --name is required and --intent must be feature or debug")
+	if *name == "" || (*intent != "feature" && *intent != "debug" && *intent != "chore") {
+		fmt.Fprintln(stderr, "swarm: --name is required and --intent must be feature, debug or chore")
 		return 2
 	}
 	userHome, _ := os.UserHomeDir()

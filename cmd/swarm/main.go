@@ -26,7 +26,7 @@ Commands:
   kb search QUERY | kb status
   mcp                              the stdio MCP server every agent launches
   hook <agent> <event>             the hook client every agent's config calls
-  new --name N --intent feature|debug [--repo PATH...] [--agent A --model M --effort E] [--request TEXT]
+  new --name N --intent feature|debug|chore [--repo PATH...] [--agent A --model M --effort E] [--request TEXT]
   start KEY [--agent A --model M --effort E] [--repo PATH...]
   agents [--all]                   list agents as a tree
   attach NAME                      attach to an agent's tmux session here
