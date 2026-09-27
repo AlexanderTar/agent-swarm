@@ -516,8 +516,12 @@ func TestWakeOnQuotaReset(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("woken count = %d, want 1", n)
 	}
-	if len(tm.pasted) == 0 || !strings.HasSuffix(tm.pasted[0], "|"+IdleToken) {
-		t.Fatalf("pasted = %v, want idle token", tm.pasted)
+	// Root cause D: the paste fallback used to paste the bare IdleToken
+	// ("go check your inbox"), throwing away the QuotaResetNotice already
+	// built above it -- the one native wake would have sent. It must carry
+	// the same rich notice, same as WakeDue's own tryPaste already does.
+	if len(tm.pasted) == 0 || !strings.Contains(tm.pasted[0], QuotaResetNotice()) {
+		t.Fatalf("pasted = %v, want the quota-reset notice, not the bare idle token", tm.pasted)
 	}
 
 	// Debounce: calling again with same cutoff must NOT wake again
