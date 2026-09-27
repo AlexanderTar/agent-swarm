@@ -53,7 +53,8 @@ Each package has one coder assignment and one review boundary. Its coder execute
 
 ### Package A · Unit 1: Identify primary checkouts
 
-**Files:** `internal/repos/git.go`, `internal/repos/git_test.go`  
+**Files:** `internal/repos/git.go`, `internal/repos/git_test.go`
+
 **Interface:** Produce `PrimaryRepo(ctx context.Context, run execx.Runner, path string) bool`. It accepts a root only when Git's resolved directory and common directory identify that root's own `.git`. Keep `IsRepo` as a cheap prefilter.
 
 - [ ] **RED test:** Add `TestPrimaryRepoIdentity` using real temporary Git repos: main checkout, linked worktree, worktree with `.git` directory and `commondir`, independent clone sharing the remote, invalid `.git` directory, and main checkout named `worktree-project`. Assert literal true/false for each path.
@@ -64,7 +65,8 @@ Each package has one coder assignment and one review boundary. Its coder execute
 
 ### Package A · Unit 2: Use identity in discovery and manual add
 
-**Files:** `internal/repos/walk.go`, `walk_test.go`, `service.go`, `service_test.go`  
+**Files:** `internal/repos/walk.go`, `walk_test.go`, `service.go`, `service_test.go`
+
 **Interface:** Consume `PrimaryRepo`. Preserve `Walk(home, excludes)` for callers; thread the runner through its private scanner or another testable seam. `AddManual` rejects linked worktrees with `ErrNotRepo`.
 
 - [ ] **RED test:** Add `TestWalkOnlyPrimaryRepositories` with a main repo, linked worktree, and independent clone. Assert exactly two primary paths. Add `TestAddManualRejectsLinkedWorktree`, asserting `ErrNotRepo` and no new row.
@@ -75,7 +77,8 @@ Each package has one coder assignment and one review boundary. Its coder execute
 
 ### Package A · Unit 3: Filter old rows from the API
 
-**Files:** `internal/repos/service.go`, `service_test.go`, `internal/httpapi/config_test.go`  
+**Files:** `internal/repos/service.go`, `service_test.go`, `internal/httpapi/config_test.go`
+
 **Interface:** Keep the wire format. Filter existing linked-worktree rows from service methods used to build All, Recent, and Groups; leave database rows untouched. Missing paths may remain in the API for other consumers, but the dialog omits them.
 
 - [ ] **RED test:** Add `TestReposRouteOmitsStoredWorktree` by seeding a worktree row before GET `/api/repos`. Assert its ID is absent from `all`, `recent`, and every `groups[].repos`, while main and independent-clone IDs remain. Add `TestAllOmitsStoredWorktree` for pre-rescan service behavior.
@@ -88,7 +91,8 @@ Each package has one coder assignment and one review boundary. Its coder execute
 
 ### Package B · Unit 4: Flatten repository state
 
-**Files:** `apps/menubar/Sources/SwarmBarKit/RepoPicker.swift`, `NewOrchestratorForm.swift`, `apps/menubar/Tests/SwarmBarTests/RepoPickerTests.swift`, `NewOrchestratorFormTests.swift`  
+**Files:** `apps/menubar/Sources/SwarmBarKit/RepoPicker.swift`, `NewOrchestratorForm.swift`, `apps/menubar/Tests/SwarmBarTests/RepoPickerTests.swift`, `NewOrchestratorFormTests.swift`
+
 **Interface:** Produce `RepoPicker.rows(_ response: ReposResponse) -> [Repo]` from `response.all` only. Reconcile selected IDs on load, rescan, and Add folder.
 
 - [ ] **RED test:** In `RepoPickerTests`, assert one row per canonical path from repeated IDs and groups, distinct rows for same-name paths, name/path order, and omission of `missing`. In `NewOrchestratorFormTests`, select two IDs, rescan with one removed, and assert the surviving ID and one removal notice.
@@ -99,7 +103,8 @@ Each package has one coder assignment and one review boundary. Its coder execute
 
 ### Package B · Unit 5: Native multi-select list
 
-**Files:** `apps/menubar/Sources/SwarmBarUI/NewOrchestratorView.swift`, `Components.swift`, `apps/menubar/Tests/SwarmBarTests/NewOrchestratorRenderTests.swift`  
+**Files:** `apps/menubar/Sources/SwarmBarUI/NewOrchestratorView.swift`, `Components.swift`, `apps/menubar/Tests/SwarmBarTests/NewOrchestratorRenderTests.swift`
+
 **Interface:** Bind SwiftUI `List(selection:)` to selected IDs. Use `NSTableView` only if a native run shows SwiftUI cannot deliver modifier selection within the height cap.
 
 - [ ] **RED test:** Add render assertions for no checkbox rows, eight visible row heights at 12+ repos, bounded empty state, and path text. Each assertion names an observable break.
@@ -110,7 +115,8 @@ Each package has one coder assignment and one review boundary. Its coder execute
 
 ### Package B · Unit 6: Separate advisor Agent and Model
 
-**Files:** `apps/menubar/Sources/SwarmBarKit/CatalogRules.swift`, `NewOrchestratorForm.swift`, `apps/menubar/Sources/SwarmBarUI/NewOrchestratorView.swift`, `apps/menubar/Tests/SwarmBarTests/NewOrchestratorFormTests.swift`  
+**Files:** `apps/menubar/Sources/SwarmBarKit/CatalogRules.swift`, `NewOrchestratorForm.swift`, `apps/menubar/Sources/SwarmBarUI/NewOrchestratorView.swift`, `apps/menubar/Tests/SwarmBarTests/NewOrchestratorFormTests.swift`
+
 **Interface:** Expose advisor agent and model options separately. Keep `AdvisorChoice.none` and `.pair(AgentKind, String)` and Settings-derived effort in `body()`.
 
 - [ ] **RED test:** Test switching advisor agent, selecting a model, No advisor, a removed saved model, empty catalog, and payload effort. Assert a valid `.pair` or `.none` and no invalid pair in the body.
@@ -121,7 +127,8 @@ Each package has one coder assignment and one review boundary. Its coder execute
 
 ### Package B · Unit 7: Fit the entire form
 
-**Files:** `apps/menubar/Sources/SwarmBarUI/NewOrchestratorView.swift`, `apps/menubar/Sources/SwarmBar/App.swift`, `apps/menubar/Tests/SwarmBarTests/NewOrchestratorRenderTests.swift`  
+**Files:** `apps/menubar/Sources/SwarmBarUI/NewOrchestratorView.swift`, `apps/menubar/Sources/SwarmBar/App.swift`, `apps/menubar/Tests/SwarmBarTests/NewOrchestratorRenderTests.swift`
+
 **Interface:** Enforce minimum 760 pt width, default near 820 × 790 pt, 20–24 pt side padding, pinned footer, five-line Request, and adaptive list height before last-resort outer scrolling.
 
 - [ ] **RED test:** Add render assertions for minimum width, five-line editor height, both menu rows fitting without wrap, and footer reachable with failure banner or larger text. Measure rendered geometry, not `.frame` source text.
