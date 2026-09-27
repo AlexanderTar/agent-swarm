@@ -370,6 +370,11 @@ describe("re-dress copy (spec: All user-facing copy)", () => {
     expect(T.reposNoLonger(2)).toBe("2 selected repositories are no longer available.");
   });
 
+  it("names Antigravity in full; the login command stays agy", () => {
+    expect(AGENT_LABEL.agy).toBe("Antigravity");
+    expect(AGENT_LOGIN_CMD.agy).toBe("agy");
+  });
+
   it("has toast strings", () => {
     expect(T.toastItemCreated("TASK-9")).toBe("Created TASK-9");
     expect(T.toastStarted("auth-orch", "EPIC-3")).toBe("Started auth-orch on EPIC-3");
@@ -386,7 +391,7 @@ describe("re-dress copy (spec: All user-facing copy)", () => {
 ```
 
 - [ ] **Step 2: RED** — `pnpm vitest run src/copy.test.ts` → FAIL (`undefined` / not a function).
-- [ ] **Step 3: Implement** — add every `C` and `T` key from the spec's copy block verbatim to `copy.ts` (`C.noAdvisor` already exists; reuse). Do **not** remove `C.newSpike`, `C.spikeViaNewItem`, `C.searchRepos`, `C.recent` yet — their consumers migrate in D/F, which remove them.
+- [ ] **Step 3: Implement** — set `AGENT_LABEL.agy` to `"Antigravity"`; port the existing expectations that pinned `"agy"` as a label (`copy.test.ts` `AGENT_LABEL` toMatchObject, `T.superpowersMissing("agy")` if its caller passes the label, `logic/catalog.test.ts` `agentOptions(["claude","agy"])` label) to `"Antigravity"` — grep `'"agy"' src --include='*.test.*'` and change only label assertions, not `kind: "agy"` values. Add every `C` and `T` key from the spec's copy block verbatim to `copy.ts` (`C.noAdvisor` already exists; reuse). Do **not** remove `C.newSpike`, `C.spikeViaNewItem`, `C.searchRepos`, `C.recent` yet — their consumers migrate in D/F, which remove them.
 - [ ] **Step 4: GREEN** — `pnpm vitest run src/copy.test.ts` PASS.
 - [ ] **Step 5: Commit** — `git add src/copy.ts src/copy.test.ts && git commit -m "feat(web): copy for re-dress, toasts and menubar parity"`
 

@@ -304,6 +304,8 @@ reposNoLonger: (n: number) =>
   `${n} selected ${n === 1 ? "repository is" : "repositories are"} no longer available.`,
 ```
 
+Changed copy: `AGENT_LABEL.agy` "agy" → "Antigravity" (every agent menu, icon aria-label, and label-derived message such as `T.superpowersMissing`). `AGENT_LOGIN_CMD.agy` stays `agy` — it is the CLI command, not a display name.
+
 Removed copy: `C.spikeViaNewItem` (redirect caption replaced by intent preset), `C.searchRepos`, `C.recent` (only if no other caller; grep first). `C.newSpike` is removed after Header and sheet switch to `C.newOrchestrator`. `copy.test.ts` is updated for each removal and addition.
 
 ## Screens
