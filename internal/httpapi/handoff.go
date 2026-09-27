@@ -20,12 +20,16 @@ type replacementWire struct {
 	Mode        string `json:"mode"`
 	Phase       string `json:"phase"`
 	RequestKey  string `json:"request_key,omitempty"`
-	Error       string `json:"error,omitempty"`
+	// Reason is "capacity" or "resume" for an operation the agent limit
+	// started (runtime.OperationReason); omitted otherwise.
+	Reason string `json:"reason,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 func replacementOut(name string, op runtime.Operation) replacementWire {
 	return replacementWire{OperationID: op.ID, Agent: name, Mode: string(op.Mode),
-		Phase: string(op.Phase), RequestKey: op.RequestKey, Error: op.Error}
+		Phase: string(op.Phase), RequestKey: op.RequestKey,
+		Reason: runtime.OperationReason(op.RequestKey), Error: op.Error}
 }
 
 type handoffBody struct {

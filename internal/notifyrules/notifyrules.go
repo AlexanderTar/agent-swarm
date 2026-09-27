@@ -29,6 +29,7 @@ var Rules = map[string]Rule{
 	"agent.queued":            {"info", "Agent queued", "{name} starts when an agent slot becomes available.", "swarm.info"},
 	"agent.paused":            {"attention", "Agent paused", "{name} is paused on {KEY}.", "swarm.agent"},
 	"agent.interrupted":       {"attention", "Agent stopped", "{name} stopped before {KEY} finished.", "swarm.agent"},
+	"agent.capacity_paused":   {"info", "Agent paused", "{name} paused to fit the agent limit. It resumes when a slot frees.", "swarm.info"},
 	"agent.retried":           {"info", "Agent retrying", "{name} started attempt {N} on {KEY}.", "swarm.info"},
 	"agent.failed":            {"attention", "Agent failed", "{name} couldn't finish {KEY}. Review the error.", "swarm.agent"},
 	"agent.crashed":           {"attention", "Agent crashed", "{name} exited unexpectedly on {KEY}.", "swarm.agent"},

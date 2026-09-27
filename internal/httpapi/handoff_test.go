@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -135,5 +136,31 @@ func TestStateNodeCarriesReplacementWhileInFlight(t *testing.T) {
 	rep, ok := found["replacement"].(map[string]any)
 	if !ok || rep["operation_id"] != "op_state1" {
 		t.Fatalf("task-worker replacement = %v, want op_state1", found["replacement"])
+	}
+}
+
+// Spec 2026-09-27-single-agent-limit-live: a capacity-keyed operation
+// carries reason "capacity" on the state node; any other key omits it.
+func TestStateNodeReplacementCarriesCapacityReason(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	if _, err := s.DB.ExecContext(bg, `INSERT INTO agent_operations
+		(id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
+		SELECT 'op_cap', id, 'handoff', 'queued', 'capacity:ses_x', '', 1, 1, 1 FROM agents WHERE name = 'task-worker'`); err != nil {
+		t.Fatal(err)
+	}
+	rec := s.get(t, "/api/agents/task-worker/replacement")
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != 200 || body.Reason != "capacity" {
+		t.Fatalf("replacement = %d %s, want reason capacity", rec.Code, rec.Body)
+	}
+	if _, err := s.DB.ExecContext(bg, `UPDATE agent_operations SET request_key = 'h1' WHERE id = 'op_cap'`); err != nil {
+		t.Fatal(err)
+	}
+	rec = s.get(t, "/api/agents/task-worker/replacement")
+	if strings.Contains(rec.Body.String(), `"reason"`) {
+		t.Fatalf("plain handoff must omit reason: %s", rec.Body)
 	}
 }
