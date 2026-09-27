@@ -26,7 +26,7 @@ Today (verified on `origin/main` 4d5ef65):
   hook uses to block (`internal/hook/handler.go:659-697`) and the workflow
   engine uses to hold runs in `waiting` (`internal/runtime/workflow.go:851`).
 - Stale rows `max_orchestrators` / `max_agents` may still sit in the
-  `settings` table. `Settings.Get` skips unknown keys (`settings.go:131`), so
+  `settings` table. `Settings.Get` skips unknown keys (`settings.go:136`), so
   they are inert.
 - Only the menubar writes settings (`HTTPDaemonClient.swift:138` → `PUT
   /api/settings`, `internal/httpapi/config.go:71` → `Settings.Put`,
@@ -476,7 +476,6 @@ Deleted tests. Each covers behaviour that is intentionally removed:
 
 | Test | Why |
 |---|---|
-| `internal/runtime/limits_test.go` `TestAdmitEnforcesThePerRootLimit` | The per-root limit is removed. |
 | `internal/runtime/limits_test.go` `TestSubagentSlotsMatchesHookCount` | `SubagentSlots` and the subagent budget are removed. |
 | `internal/runtime/limits_test.go` `TestNoAckChildren` | `NoAckChildren` existed only for the budget-block reason, which is removed. |
 | `internal/hook/handler_test.go` `TestPreToolUseSurfacesNoAckChildrenInBudgetBlockReason` | The budget block is removed. |
@@ -484,6 +483,9 @@ Deleted tests. Each covers behaviour that is intentionally removed:
 
 Ported (not deleted):
 
+- `TestAdmitEnforcesThePerRootLimit` → `TestAdmitHasNoPerRootLimit`: the
+  second worker in one root starts even with a stale `max_agents_per_root = 1`
+  row present.
 - `TestPreToolUseBlocksSubagentsWhenBudgetExceeded` →
   `TestPreToolUseNeverBudgetBlocksSwarmSpawn`.
 - `TestLoweringALimitQueuesTheNextSpawnAndLeavesRunningAgentsAlone` →
@@ -506,7 +508,7 @@ Command order (batch gates):
 4. `go test -race ./...`
 5. `cd web && pnpm test && pnpm exec tsc --noEmit`
 6. `cd apps/menubar && swift build && swift test`
-7. `grep -rn "max_agents_per_root\|max_concurrent_subagents\|MaxAgentsPerRoot\|MaxConcurrentSubagents\|maxAgentsPerRoot\|maxConcurrentSubagents\|SubagentSlots\|NoAckChildren\|Subagent budget" --include='*.go' --include='*.swift' --include='*.ts' --include='*.tsx' --include='*.json' --include='*.sse' --include='*.md' . | grep -v "^./docs/\|node_modules\|settings.go:.*retiredKeys"` returns only the `retiredKeys` literal.
+7. `grep -rn "max_agents_per_root\|max_concurrent_subagents\|MaxAgentsPerRoot\|MaxConcurrentSubagents\|maxAgentsPerRoot\|maxConcurrentSubagents\|SubagentSlots\|NoAckChildren\|Subagent budget" --include='*.go' --include='*.swift' --include='*.ts' --include='*.tsx' --include='*.json' --include='*.sse' --include='*.md' . | grep -v "^./docs/\|node_modules"` returns only the `retiredKeys` literal (`settings.go`) and the tests that seed stale rows on purpose (`TestPutDeletesRetiredLimitKeys`, `TestAdmitHasNoPerRootLimit`, `TestSettingsRoutes`).
 
 End-to-end scenarios (each is a Go test in `capacity_test.go` unless noted):
 
