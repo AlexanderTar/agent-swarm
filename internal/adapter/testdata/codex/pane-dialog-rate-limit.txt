@@ -1,0 +1,10 @@
+›
+
+  You've hit your usage limit for gpt-6-astra.
+
+  Switch to gpt-6-luna for lower credit usage?
+
+› 1. Switch to gpt-6-luna
+  2. Keep current model
+
+  Use ↑/↓ to move, press enter to confirm

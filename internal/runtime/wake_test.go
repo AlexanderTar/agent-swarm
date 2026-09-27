@@ -141,7 +141,7 @@ func TestWakeOnQuotaResetResolvesAgyLaunchModel(t *testing.T) {
 // TestWakeOnQuotaResetResolvesCodexProviderSessionID is TestWakeOnQuotaResetResolvesAgyLaunchModel's
 // codex twin (root cause A): codex's Wake needs --thread <provider session
 // id> to reach the right CODEX_HOME's thread store at all (an empty thread
-// fails live with "No active session found matching ''"), so the quota-reset
+// fails live with "No active session found matching ”"), so the quota-reset
 // path must forward it exactly like WakeDue's wakeCandidates already does.
 func TestWakeOnQuotaResetResolvesCodexProviderSessionID(t *testing.T) {
 	s, tm, fa := newStore(t)

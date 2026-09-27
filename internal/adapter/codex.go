@@ -196,12 +196,36 @@ var (
 	// codexTrust wording is still current on some installs, so both stay.
 	codexTrustFolder    = regexp.MustCompile(`Trust this folder\?`)
 	codexTrustFolderYes = regexp.MustCompile(`Trust and continue`)
+	// codexRateLimit is the credit-usage model-switch picker a rate limit
+	// shows live, defaulting to option 1 (switch) -- confirmed live, see
+	// docs/specs/2026-09-27-quota-reset-wake-fix.md root cause C. Pasting a
+	// wake message + Enter into it silently switches the model and drops
+	// the text; the auto-answer below keeps the current model instead.
+	codexRateLimit        = regexp.MustCompile(`Switch to \S+ for lower credit usage\?`)
+	codexKeepCurrentModel = regexp.MustCompile(`Keep current model`)
 )
+
+// lastNonBlankLines keeps the tail of capture: raw lines are dropped off the
+// end while their ANSI-stripped content is blank, then at most n raw lines
+// remain. A capture spans a pane's whole scrollback, so a regex anchored
+// with (?m) (^...$ per line, not the whole string) can match a stale render
+// far above the current bottom line -- this anchors codexIdle to what the
+// pane actually shows now (root cause C).
+func lastNonBlankLines(capture string, n int) string {
+	lines := strings.Split(capture, "\n")
+	for len(lines) > 0 && strings.TrimSpace(StripANSI(lines[len(lines)-1])) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
 
 func (c *Codex) ProcessNames() []*regexp.Regexp { return codexProcess }
 func (c *Codex) IdlePrompt() *regexp.Regexp     { return codexIdle }
 func (c *Codex) Busy() *regexp.Regexp           { return nil } // the composer is not redrawn while working
-func (c *Codex) Idle(capture string) bool       { return idle(c, capture) }
+func (c *Codex) Idle(capture string) bool       { return idle(c, lastNonBlankLines(capture, 3)) }
 
 func (c *Codex) StartupDialogs() []Dialog {
 	return []Dialog{
@@ -217,6 +241,7 @@ func (c *Codex) PromptPatterns() []PromptMatcher {
 		{Match: codexTrust, Title: "Trust this directory", Action: "Enter"},
 		{Match: codexTrustFolder, Require: codexTrustFolderYes, Title: "Trust this folder", Action: "Enter"},
 		{Match: codexHookTrust, Title: "Hook sandbox approval", Action: "Enter"},
+		{Match: codexRateLimit, Require: codexKeepCurrentModel, Title: "Keep current model on rate limit", Action: "Down+Enter"},
 	}
 }
 
