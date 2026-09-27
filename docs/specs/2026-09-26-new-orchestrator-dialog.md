@@ -13,7 +13,7 @@ Make the macOS New orchestrator window readable at a glance. All form controls a
 
 ## Layout sketch
 
-Target window content: **820 pt wide**, **at least 790 pt high as needed for the effort controls**, **760 pt minimum width**. Use 20–24 pt side insets. The content expands with the window. Exact height can grow for validation text or a larger system text size; on a normal 14-inch Mac screen, the default form has no outer scrollbar.
+Target window content: **820 pt wide**, **about 790 pt high**, **760 pt minimum width**. Use 20–24 pt side insets. The content expands with the window. Exact height can grow for validation text or a larger system text size; on a normal 14-inch Mac screen, the default form has no outer scrollbar.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
@@ -41,10 +41,8 @@ Target window content: **820 pt wide**, **at least 790 pt high as needed for the
 │ └─────────────────────────────────────────────────────────────────────────────────────┘ │
 │ [Add folder…]                                           Scanned 5m ago  [Rescan]       │
 │                                                                                         │
-│ Agent      [ Claude             ▾ ]  Model  [ Claude Sonnet 5 (latest)       ▾ ]        │
-│ Effort     [ Default (high)     ▾ ]                                                     │
-│ Advisor    [ Codex              ▾ ]  Model  [ GPT-6 Astra                 ▾ ]        │
-│ Advisor effort [ Default (medium) ▾ ]  (shown for simulated advisor pairings)            │
+│ Agent   [ Claude       ▾ ] Model [ Sonnet 5 (latest)      ▾ ] Effort [ Default (high)  ▾ ] │
+│ Advisor [ Codex        ▾ ] Model [ GPT-6 Astra            ▾ ] Effort [ Default (medium)▾ ] │
 │                                                                                         │
 │ Request (optional)                                                                      │
 │ ┌─────────────────────────────────────────────────────────────────────────────────────┐ │
@@ -71,7 +69,7 @@ The chooser shows `min(8, count)` rows at a stable row height of about 30–32 p
 
 ## Agent and advisor rows
 
-Use two aligned rows with columns: role label (about 72 pt), Agent menu (at least 150 pt), Model label (about 52 pt), Model menu (remaining width, at least 300 pt). The row width must fit inside the 760 pt minimum window width with side insets. Keep picker labels explicit for VoiceOver even if the visual text is provided by the grid.
+Use one six-column grid for two aligned rows: role label, Agent menu, Model label, Model menu, Effort label, Effort menu. Match the Defaults tab in Settings. Each row must stay on one line inside the 760 pt minimum window width with side insets; at that width, budget roughly 70, 130, 50, 200, 45, and 170 pt for the six columns plus five 8 pt gaps. Let the Model menu take extra width in wider windows. Keep empty Effort cells in the grid when the chosen model has no effort control or the advisor uses native Claude advice, so the other columns remain aligned. Keep picker labels explicit for VoiceOver.
 
 Advisor Agent offers the enabled agents plus “No advisor.” Changing its agent picks the Settings advisor model when compatible, otherwise the first advisor-capable model from that agent's catalog. Advisor Model lists only models that can advise (preserve Claude's current advisor-only filter). When “No advisor” is selected, disable the Model menu and show an em dash. Persist `AdvisorChoice.none` or `.pair(agent, model)`.
 
@@ -79,7 +77,7 @@ Show a primary Effort menu whenever the chosen model supports effort. Its initia
 
 ## Window sizing and states
 
-Set the window's default size high enough to show the applicable Effort rows and at least five Request lines, enforce a 760 pt minimum width, and let the view fill available horizontal space. The footer stays pinned. The normal form must fit without outer scrolling at default system text size; the repository list is capped at eight rows. If display height or accessibility text size prevents that, reduce visible repository rows before allowing a last-resort outer scroll. Do not clip validation, connection, or submission errors. Empty, scanning, and failed repository states retain a bounded chooser area so the rest of the form does not jump.
+Set the window's default size near 820 × 790 pt if the inline controls leave at least five Request lines, enforce a 760 pt minimum width, and let the view fill available horizontal space. The footer stays pinned. The normal form must fit without outer scrolling at default system text size; the repository list is capped at eight rows. If display height or accessibility text size prevents that, reduce visible repository rows before allowing a last-resort outer scroll. Do not clip validation, connection, or submission errors. Empty, scanning, and failed repository states retain a bounded chooser area so the rest of the form does not jump.
 
 Use the existing `SubtleScrollerConfig` (`Components.swift`): overlay, auto-hiding, small scroller. Apply it to the repository list and any last-resort outer scroll. Inactive scrollbars must not reserve a wide gutter. Keep native system colors, controls, focus ring, and selection appearance.
 
