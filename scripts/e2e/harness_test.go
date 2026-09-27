@@ -126,52 +126,6 @@ func (h *harness) setMaxConcurrentAgents(t *testing.T, n int) {
 	}
 }
 
-// openBlockerRequest opens a raw 'open' requests row for agentName (raw SQL,
-// same bypass-validate reasoning as setMaxConcurrentAgents): swarm_blocker
-// and swarm_ask kind:"question" both refuse a non-top-level caller
-// (requireTopLevel), so a plain worker has no real API path to the "open
-// request" skip rule EnforceCapacity honors (spec
-// 2026-09-27-single-agent-limit-live decision 4). The caller must
-// withdrawRequest it before that agent can write a 'completed' checkpoint
-// (checkpoint.go's openBlockingQuestionsTx guard).
-func (h *harness) openBlockerRequest(t *testing.T, agentName string) string {
-	t.Helper()
-	d, err := sql.Open("sqlite", "file:"+filepath.Join(h.home, "swarm.db")+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	var agentID, sessionID, itemID string
-	if err := d.QueryRow(`SELECT id, item_id FROM agents WHERE name = ?`, agentName).Scan(&agentID, &itemID); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.QueryRow(`SELECT id FROM sessions WHERE agent_id = ? ORDER BY generation DESC, attempt DESC LIMIT 1`,
-		agentID).Scan(&sessionID); err != nil {
-		t.Fatal(err)
-	}
-	id := fmt.Sprintf("req_e2e_%d", time.Now().UnixNano())
-	if _, err := d.Exec(`INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id, prompt, state, created_at)
-		VALUES (?, 'blocker', 1, ?, ?, ?, 'e2e capacity-pause guard', 'open', ?)`,
-		id, agentID, sessionID, itemID, time.Now().UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
-	return id
-}
-
-// withdrawRequest marks a requests row 'withdrawn' (raw SQL, pairs with
-// openBlockerRequest).
-func (h *harness) withdrawRequest(t *testing.T, requestID string) {
-	t.Helper()
-	d, err := sql.Open("sqlite", "file:"+filepath.Join(h.home, "swarm.db")+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	if _, err := d.Exec(`UPDATE requests SET state = 'withdrawn' WHERE id = ?`, requestID); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // do is the raw HTTP call; status and body are the caller's to interpret
 // (some tests want a 409 or 422, not a fatal).
 func (h *harness) do(method, path string, body any) (status int, raw []byte, err error) {

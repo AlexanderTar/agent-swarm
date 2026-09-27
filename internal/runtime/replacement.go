@@ -596,8 +596,10 @@ func (s *Store) stopPredecessor(ctx context.Context, op Operation, a Agent, ses 
 		// that timed out after its handoff checkpoint) already holds its
 		// preservation: bind that checkpoint so the manifest and ready gate
 		// run exactly as for a live handoff. A failed gate leaves the
-		// operation blocked, which the driver reads back as terminal.
-		if op.Mode != ModePause {
+		// operation blocked, which the driver reads back as terminal. A
+		// queued resume skips it: it resumes the paused session like a
+		// direct Resume, which never gates on that checkpoint either.
+		if op.Mode != ModePause && OperationReason(op.RequestKey) != "resume" {
 			if ckpt := s.sessionHandoffCheckpoint(ctx, ses.ID); ckpt != "" {
 				if err := s.bindHandoffCheckpoint(ctx, a.ID, ckpt); err != nil {
 					s.logf("replacement: bind saved handoff %s for %s: %v", ckpt, a.Name, err)
