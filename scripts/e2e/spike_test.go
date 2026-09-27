@@ -148,9 +148,20 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 		summary := "Deliver " + sec["title"].(string) + " as specified."
 		if sec["title"] == "Out of scope" {
 			summary = "| Area | Included | Excluded |\n|---|---|---|\n" +
-				"| Sign-up | New accounts use the new flow | No migration of existing accounts |\n" +
-				"| Sessions | New sessions use the new cookie | Existing sessions keep their current cookie |\n" +
-				"| Verification | Test new sign-up and login | No backfill or legacy data conversion |"
+				"| Sign-up | New accounts use the new flow | Existing accounts are not migrated |\n" +
+				"| Sessions | New sessions use the new cookie | Existing sessions keep their cookie |\n" +
+				"| Profiles | New users get the current profile schema | Historical profiles are not rewritten |\n" +
+				"| Passwords | New passwords follow current rules | Stored legacy hashes are not converted |\n" +
+				"| Verification | Test new sign-up and login | No backfill or legacy data conversion |\n" +
+				"| Recovery | New accounts can reset credentials | Old recovery tokens are unchanged |\n" +
+				"| Data | Store records created by the new flow | Do not import archived account records |\n" +
+				"| Rollout | Route new sign-ups to the new endpoint | Do not redirect established accounts |\n" +
+				"| Support | Explain the new path | No upgrade is promised for old users |\n" +
+				"| Analytics | Count new-flow events | Do not recalculate historical event totals |\n" +
+				"| Cleanup | Remove temporary new-flow test data | Do not delete or mutate legacy records |"
+			if got := len([]rune(summary)); got != 1000 {
+				t.Fatalf("out-of-scope summary has %d Unicode characters, want 1000", got)
+			}
 		}
 		h.mustTool(t, orch, "swarm_ask", map[string]any{
 			"kind": "approval", "prompt": summary,
