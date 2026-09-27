@@ -30,7 +30,7 @@
 9. **Repository chooser = menubar parity.** Source is `ReposResponse.all` only. Missing repos are omitted. Deduplicate by `path`, sort by `name` (`localeCompare`) then `path`. No search, no Recent, no groups, no per-group "All". Rows show name + shortened full path, plus a small warning dot (aria-label `C.repoDirty`) for dirty repos. Rows toggle on click / Space / Enter (web has no Command-click convention); a selected row shows a check icon and `bg-accent`. Up to 8 rows visible (30 px each), then the list scrolls inside a `ScrollArea`. Keep Add folder and Rescan. If a rescan drops a selected ID, remove it and show the menubar's selection notice.
 10. **Intent adds Chore.** `Chore | Feature spike | Debug spike`, default `feature` (unchanged). "New item → Chore" and "New item → Spike" both open New orchestrator with intent preset (`chore` / `feature`) instead of today's caption-only redirect.
 11. **"New spike" is renamed "New orchestrator"** in the header and sheet title, matching the menubar.
-12. **Advisor is two menus.** `Advisor [agent ▾]` with "No advisor", then `Model [▾]` listing only advisor-capable models. "No advisor" disables Model and shows `—`. Changing the advisor agent picks the Settings advisor model when that agent matches, else the agent's first advisor-capable model. The payload is unchanged (`advisorPayload` still derives advisor effort from Settings).
+12. **Advisor is two menus.** `Advisor [agent ▾]` with "No advisor", then `Model [▾]`. Claude lists only advisor-capable models; other agents list their visible models, matching Go Settings validation. "No advisor" disables Model and shows `—`. Changing the advisor agent picks the Settings advisor model when that agent matches, else the first eligible model for that agent. The payload is unchanged (`advisorPayload` still derives advisor effort from Settings).
 13. **Agent Effort row stays conditional** (shown only when `effortOptions` returns options), placed under the Agent row, aligned to the Model column. **No Advisor Effort row** — codex is still changing its semantics on its branch; follow-up after merge.
 14. **Worker roles** (`AgentFields` `<details>`) becomes a shadcn `Collapsible`, closed by default; each role uses the same grid as the agent rows.
 15. **Tests are ported, never deleted,** except the three intentionally obsolete behaviours listed under File list → Deleted.
@@ -219,10 +219,10 @@ export function reconcileSelection(sel: string[], rows: Repo[]): { selection: st
 
 // web/src/logic/catalog.ts — new (advisor split)
 export function advisorAgentOptions(enabled: AgentKind[]): Option[];                     // agents + {value:"none", label:C.noAdvisor}
-export function advisorModelOptions(catalog: AgentCatalogEntry[], agent: AgentKind): Option[]; // modelOptions(entry, true)
+export function advisorModelOptions(catalog: AgentCatalogEntry[], agent: AgentKind): Option[]; // modelOptions(entry, agent === "claude")
 export function changeAdvisorAgent(value: AgentKind | "none", settings: Settings, catalog: AgentCatalogEntry[]): AdvisorChoice;
-// "none" → "none"; else Settings advisor model if settings.roles.advisor.agent === value and it is advisor-capable,
-// else first advisor-capable model of that agent, else "none".
+// "none" → "none"; else Settings advisor model if settings.roles.advisor.agent === value and it is eligible,
+// else first eligible model of that agent, else "none".
 
 // web/src/logic/toasts.ts — new, pure copy builders (unit-tested)
 export type AgentVerb = "pause" | "resume" | "cancel" | "ack" | "retry" | "terminal";
@@ -465,7 +465,7 @@ Command order (from `web/` in the worktree):
 End-to-end scenarios (mock daemon):
 1. **Create item happy path:** New item → Task → parent → title → Create → sheet closes, Details sheet opens on the new key, toast "Created TASK-n".
 2. **Create item error:** mock returns 409 → inline alert, sheet stays open, no success toast.
-3. **New orchestrator, chore:** choose Chore → caption changes → select 2 repos → Queue → toast "Queued …" when slots are busy, else "Started … on SPIKE-n". Payload `intent: "chore"`.
+3. **New orchestrator, chore:** choose Chore → caption changes → select 2 repos → Queue → toast "Queued …" when slots are busy, else "Started … on CHORE-n". Payload `intent: "chore"`.
 4. **New item → Chore/Spike:** opens New orchestrator with intent preset.
 5. **No advisor:** Advisor → No advisor → Model disabled showing "—"; payload has no advisor.
 6. **Advisor agent switch:** Codex → Claude picks the Settings advisor model when it's Claude, else Claude's first advisor-capable model.

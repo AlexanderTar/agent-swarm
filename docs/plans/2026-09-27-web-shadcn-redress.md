@@ -555,7 +555,7 @@ it("sends the chore intent unchanged", () => {
 });
 ```
 
-Append to `web/src/mock/daemon.test.ts` a case posting `intent: "chore"` to `POST /api/spikes` and asserting the created item's `spike_intent === "chore"` (copy the file's existing create-spike case and change the intent).
+`web/src/mock/daemon.test.ts` already covers the Ready CHORE contract: posting `intent: "chore"` to `POST /api/spikes` creates a `CHORE-` item with `type: "chore"`, `status: "ready"`, and `spike_intent: null`. Keep that test. The backend confirms this in `internal/runtime/agents_test.go` (`TestStartSpikeWithChoreIntentCreatesAReadyChore`).
 
 - [ ] **Step 2: RED** — `pnpm vitest run src/logic/catalog.test.ts src/logic/spawnForm.test.ts src/mock/daemon.test.ts` → FAIL (missing exports; `"chore"` type error surfaces in `pnpm typecheck`).
 - [ ] **Step 3: Implement** — `types.ts`: add `export type SpikeIntent = "chore" | "feature" | "debug";` and set `CreateSpikeBody.intent: SpikeIntent`. `spawnForm.ts`: `SpikeFormState.intent: SpikeIntent`. `catalog.ts`:
