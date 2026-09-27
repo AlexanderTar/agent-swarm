@@ -60,6 +60,59 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertNil(f.body()?.effort, "a level the model doesn't offer must never reach the spike body")
     }
 
+    func testExplicitPrimaryEffortReachesBodyAndInvalidSelectionDoesNot() async {
+        let f = await form()
+        f.name = "x"
+        f.setEffort("xhigh")
+        XCTAssertEqual(f.body()?.effort, "xhigh")
+        f.setEffort("ultra")
+        XCTAssertNil(f.body()?.effort, "Opus does not offer ultra")
+    }
+
+    func testNativeClaudePairOmitsStoredAndSelectedAdvisorEffort() async {
+        var settings = state.settings
+        settings[.advisor] = RoleDefault(agent: .claude, model: "fable", effort: "xhigh")
+        let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true)
+        await f.load()
+        XCTAssertNil(f.advisorEffortOptions)
+        f.setAdvisorEffort("max")
+        XCTAssertEqual(f.body()?.advisor, .pair(agent: .claude, model: "fable", effort: nil))
+    }
+
+    func testClaudePrimaryCodexAdvisorUsesSelectedEffort() async {
+        let f = await form()
+        f.setAdvisorAgent("codex")
+        XCTAssertNotNil(f.advisorEffortOptions)
+        f.setAdvisorEffort("xhigh")
+        XCTAssertEqual(f.body()?.advisor, .pair(agent: .codex, model: "gpt-6-astra", effort: "xhigh"))
+        f.setAdvisorModel("gpt-5.3-codex")
+        XCTAssertEqual(f.advisorEffort, "", "new model does not offer xhigh")
+        XCTAssertEqual(f.body()?.advisor, .pair(agent: .codex, model: "gpt-5.3-codex", effort: nil))
+    }
+
+    func testCodexPrimaryClaudeAdvisorUsesNormalizedSettingsEffort() async {
+        var settings = state.settings
+        settings[.advisor] = RoleDefault(agent: .claude, model: "fable", effort: "xhigh")
+        let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true)
+        await f.load()
+        f.setAgent("codex")
+        XCTAssertNotNil(f.advisorEffortOptions)
+        XCTAssertEqual(f.advisorEffort, "xhigh")
+        XCTAssertEqual(f.body()?.advisor, .pair(agent: .claude, model: "fable", effort: "xhigh"))
+        f.setAdvisorModel("claude-sonnet-4-6")
+        XCTAssertEqual(f.advisorEffort, "", "selected level is normalized for the new model")
+    }
+
+    func testNoAdvisorAndEffortlessModelHideAdvisorEffort() async {
+        let f = await form()
+        f.setAdvisorAgent("none")
+        XCTAssertNil(f.advisorEffortOptions)
+        XCTAssertEqual(f.body()?.advisor, AdvisorPayload.none)
+        f.setModel("claude-haiku-4-5-20251001")
+        XCTAssertNil(f.effortOptions)
+        XCTAssertNil(f.body()?.effort)
+    }
+
     func testNameValidationMessages() async {
         let f = await form()
         f.name = "🔥🔥"

@@ -7,6 +7,52 @@ import XCTest
 
 @MainActor
 final class NewOrchestratorRenderTests: XCTestCase {
+    func testNativeEffortRowsAppearForSimulatedPairAndFitNormalWindow() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        await form.load()
+        func controls(width: CGFloat = 820, capture name: String? = nil) -> (labels: Set<String>, editorBottom: CGFloat, editorHeight: CGFloat, effortWidth: CGFloat, scrollCount: Int) {
+            let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 860)
+            host.layoutSubtreeIfNeeded()
+            if let name, let dir = ProcessInfo.processInfo.environment["SWARM_NEW_ORCH_SCREENSHOT_DIR"],
+               let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width), pixelsHigh: 860,
+                                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
+                host.cacheDisplay(in: host.bounds, to: image)
+                try? image.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: dir).appendingPathComponent("effort-\(name).png"))
+            }
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            let views = descendants(host)
+            let popups = views.compactMap { $0 as? NSPopUpButton }
+            let labels = Set(popups.compactMap { $0.accessibilityLabel() })
+            let scrolls = views.compactMap { $0 as? NSScrollView }
+            let editor = scrolls.last
+            let effortWidth = popups.first { $0.accessibilityLabel() == Copy.advisorEffort }?.bounds.width ?? 0
+            return (labels, editor.map { $0.convert($0.bounds, to: host).maxY } ?? 0,
+                    editor?.bounds.height ?? 0, effortWidth, scrolls.count)
+        }
+        XCTAssertTrue(controls().0.contains("Agent Effort"))
+        XCTAssertFalse(controls().0.contains("Advisor Effort"), "native Claude pairing has no independent effort")
+        form.setAdvisorAgent("codex")
+        let simulated = controls(capture: "820")
+        let narrow = controls(width: 760, capture: "760")
+        XCTAssertTrue(simulated.0.contains("Agent Effort"))
+        XCTAssertTrue(simulated.0.contains("Advisor Effort"))
+        XCTAssertLessThanOrEqual(simulated.1, 815, "request editor must stay clear of the footer")
+        XCTAssertGreaterThanOrEqual(simulated.editorHeight, 250, "five or more request lines must fit")
+        XCTAssertEqual(simulated.scrollCount, 2, "normal window needs only repository and request scrolling")
+        XCTAssertLessThanOrEqual(simulated.effortWidth, 320, "effort menu should balance with model menu")
+        XCTAssertTrue(narrow.labels.contains(Copy.advisorEffort))
+        XCTAssertEqual(narrow.scrollCount, 2)
+        XCTAssertGreaterThanOrEqual(narrow.editorHeight, 250)
+        form.setAdvisorAgent("none")
+        XCTAssertFalse(controls().0.contains("Advisor Effort"))
+    }
+
     func testFourRowsFitBeforeOuterScrollAtOrdinaryTextSize() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let model = makeAppModel(client)
@@ -137,14 +183,16 @@ final class NewOrchestratorRenderTests: XCTestCase {
         let form = model.makeNewOrchestratorForm()
         await form.load()
         let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
-        host.frame = NSRect(x: 0, y: 0, width: 760, height: 790)
+        host.frame = NSRect(x: 0, y: 0, width: 760, height: 860)
         host.layoutSubtreeIfNeeded()
         func popups(in view: NSView) -> [NSPopUpButton] {
             let own = (view as? NSPopUpButton).map { [$0] } ?? []
             return own + view.subviews.flatMap(popups)
         }
         let controls = popups(in: host)
-        let frames = controls.map { $0.convert($0.bounds, to: host) }.sorted { $0.minY < $1.minY }
+        let paired = controls.filter { [Copy.agent, Copy.model, Copy.advisor, "Advisor model"].contains($0.accessibilityLabel() ?? "") }
+        let frames = paired.map { $0.convert($0.bounds, to: host) }.sorted { $0.minY < $1.minY }
+        XCTAssertEqual(controls.count, 5)
         XCTAssertEqual(frames.count, 4)
         guard frames.count == 4 else { return }
         for row in [Array(frames[0...1]), Array(frames[2...3])] {
@@ -183,7 +231,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         await form.load()
         let view = NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {})
         let host = NSHostingView(rootView: AnyView(view))
-        host.frame = NSRect(x: 0, y: 0, width: 820, height: 790)
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 860)
         let window: NSWindow?
         if ProcessInfo.processInfo.environment["SWARM_NEW_ORCH_SCREENSHOT_DIR"] != nil {
             let native = NSWindow(contentRect: host.frame,
@@ -237,7 +285,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(host.fittingSize.width, 760)
         XCTAssertEqual(host.bounds.width, 820)
         if let dir = ProcessInfo.processInfo.environment["SWARM_NEW_ORCH_SCREENSHOT_DIR"] {
-            let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 820, pixelsHigh: 790,
+            let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 820, pixelsHigh: 860,
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                          isPlanar: false, colorSpaceName: .deviceRGB,
                                          bytesPerRow: 0, bitsPerPixel: 0)!

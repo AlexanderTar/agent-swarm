@@ -164,7 +164,7 @@ struct SwarmBarApp: App {
             NewOrchestratorHost(model: delegate.model)
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 820, height: 790)
+        .defaultSize(width: 820, height: 860)
 
         Settings {
             SettingsHost(model: delegate.model)

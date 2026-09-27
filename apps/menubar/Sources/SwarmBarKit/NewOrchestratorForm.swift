@@ -12,6 +12,7 @@ public final class NewOrchestratorForm {
     public private(set) var selectionNotice: String?
     public private(set) var choice: AgentChoice
     public private(set) var advisor: AdvisorChoice
+    public private(set) var advisorEffort: String
     public var request = ""
     public private(set) var catalog: [AgentCatalogEntry] = []
     public private(set) var agentChangeErrors = FieldErrors()
@@ -40,6 +41,7 @@ public final class NewOrchestratorForm {
         takenNames = Set(AgentTree.flatten(agents).map(\.name))
         queued = Self.wouldQueue(agents, max: settings.maxConcurrentAgents)
         (choice, advisor) = CatalogRules.prefill(settings)
+        advisorEffort = settings[.advisor]?.effort ?? ""
     }
 
     /// Queue when live or waiting agents of ANY role already fill the shared
@@ -60,6 +62,7 @@ public final class NewOrchestratorForm {
         async let r = client.repos(query: "")
         catalog = await c ?? []
         advisor = CatalogRules.normalizedAdvisor(advisor, settings: settings, catalog: catalog)
+        normalizeAdvisorEffort()
         do {
             applyRepos(try await r)
             repoError = nil
@@ -119,6 +122,13 @@ public final class NewOrchestratorForm {
         guard case let .pair(agent, _) = advisor else { return [] }
         return CatalogRules.advisorModelOptions(agent, catalog: catalog)
     }
+    /// Native Claude advisor pairing uses Claude's own advisor session and has no separate effort.
+    public var advisorEffortOptions: [PickerOption]? {
+        guard case let .pair(agent, model) = advisor,
+              !(choice.agent == .claude && agent == .claude &&
+                CatalogRules.resolve(CatalogRules.entry(catalog, agent), model)?.advisorCapable == true) else { return nil }
+        return CatalogRules.effortOptions(agent, CatalogRules.resolve(CatalogRules.entry(catalog, agent), model))
+    }
 
     public var rows: [Repo] { RepoPicker.rows(repos) }
     public var selectedLine: String { RepoPicker.selectedLine(selection, known: rows) }
@@ -139,6 +149,7 @@ public final class NewOrchestratorForm {
         guard let kind = AgentKind(rawValue: value) else { return }
         (choice, agentChangeErrors) = CatalogRules.changeAgent(choice, to: kind, catalog: catalog)
         effortNote = nil
+        normalizeAdvisorEffort()
     }
 
     public func setModel(_ value: String) {
@@ -149,27 +160,45 @@ public final class NewOrchestratorForm {
     }
 
     public func setEffort(_ value: String) {
-        choice.effort = value
+        choice.effort = CatalogRules.normalizeEffort(choice.agent,
+            CatalogRules.resolve(CatalogRules.entry(catalog, choice.agent), choice.model), value)
         effortNote = nil
+    }
+
+    public func setAdvisorEffort(_ value: String) {
+        guard case let .pair(agent, model) = advisor else { return }
+        advisorEffort = CatalogRules.normalizeEffort(agent,
+            CatalogRules.resolve(CatalogRules.entry(catalog, agent), model), value)
     }
 
     public func setAdvisorAgent(_ value: String) {
         guard let agent = AgentKind(rawValue: value), settings.enabledAgents.contains(agent) else {
             advisor = .none
+            advisorEffort = ""
             return
         }
         let options = CatalogRules.advisorModelOptions(agent, catalog: catalog)
-        guard let first = options.first else { advisor = .none; return }
+        guard let first = options.first else { advisor = .none; advisorEffort = ""; return }
+        let previousAgent: AgentKind? = if case let .pair(kind, _) = advisor { kind } else { nil }
         let current: String? = if case let .pair(kind, model) = advisor, kind == agent { model } else { nil }
         let saved = settings[.advisor]?.agent == agent ? settings[.advisor]?.model : nil
         let model = [current, saved].compactMap { $0 }.first(where: { candidate in options.contains { $0.value == candidate } }) ?? first.value
         advisor = .pair(agent, model)
+        if previousAgent != agent { advisorEffort = settings[.advisor]?.agent == agent ? settings[.advisor]?.effort ?? "" : "" }
+        normalizeAdvisorEffort()
     }
 
     public func setAdvisorModel(_ value: String) {
         guard case let .pair(agent, _) = advisor,
               advisorModelOptions.contains(where: { $0.value == value }) else { return }
         advisor = .pair(agent, value)
+        normalizeAdvisorEffort()
+    }
+
+    private func normalizeAdvisorEffort() {
+        guard case let .pair(agent, model) = advisor else { advisorEffort = ""; return }
+        advisorEffort = CatalogRules.normalizeEffort(agent,
+            CatalogRules.resolve(CatalogRules.entry(catalog, agent), model), advisorEffort)
     }
 
     public func toggle(_ repo: Repo) {
@@ -228,11 +257,20 @@ public final class NewOrchestratorForm {
         guard let agent = choice.agent else { return nil }
         let text = request.trimmingCharacters(in: .whitespacesAndNewlines)
         let verifiedIDs = Set(rows.map(\.id))
+        let primaryEffort = CatalogRules.normalizeEffort(agent,
+            CatalogRules.resolve(CatalogRules.entry(catalog, agent), choice.model), choice.effort)
         return CreateSpikeBody(requestId: requestID, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                                intent: intent, repos: selection.filter(verifiedIDs.contains), agent: agent, model: choice.model,
-                               effort: choice.effort.isEmpty ? nil : choice.effort,
-                               advisor: CatalogRules.advisorPayload(CatalogRules.normalizedAdvisor(advisor, settings: settings, catalog: catalog), settings: settings, catalog: catalog),
+                               effort: primaryEffort.isEmpty ? nil : primaryEffort,
+                               advisor: advisorBody(),
                                request: text.isEmpty ? nil : text)
+    }
+
+    private func advisorBody() -> AdvisorPayload {
+        guard case let .pair(agent, model) = CatalogRules.normalizedAdvisor(advisor, settings: settings, catalog: catalog) else { return .none }
+        let normalized = CatalogRules.normalizeEffort(agent,
+            CatalogRules.resolve(CatalogRules.entry(catalog, agent), model), advisorEffort)
+        return .pair(agent: agent, model: model, effort: advisorEffortOptions == nil || normalized.isEmpty ? nil : normalized)
     }
 
     /// Returns the created agent; on failure the form keeps every entry and shows the banner.

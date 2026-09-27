@@ -53,7 +53,7 @@ public struct NewOrchestratorView: View {
             .padding(.vertical, 10)
         }
         .frame(minWidth: 760, idealWidth: 820, maxWidth: .infinity,
-               minHeight: 700, idealHeight: 790)
+               minHeight: 700, idealHeight: 860)
         .glassButtons()
         .task { await form.load() }
     }
@@ -152,6 +152,15 @@ public struct NewOrchestratorView: View {
             }
             if let error = form.errors.agent, !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
             if let error = form.errors.model { Text(error).font(.caption).foregroundStyle(.red) }
+            if let efforts = form.effortOptions {
+                HStack(spacing: 8) {
+                    Text(Copy.agentEffort).frame(width: 150, alignment: .leading)
+                    WideOptionPicker(Copy.agentEffort, options: efforts, value: form.choice.effort) { form.setEffort($0) }
+                        .frame(width: 300)
+                    Spacer(minLength: 0)
+                }
+            }
+            if let note = form.effortNote { Text(note).font(.caption).foregroundStyle(.secondary) }
             HStack(spacing: 8) {
                 Text(Copy.advisor).frame(width: 72, alignment: .leading)
                 WideOptionPicker(Copy.advisor, options: form.advisorAgentOptions, value: advisorAgentValue,
@@ -162,6 +171,14 @@ public struct NewOrchestratorView: View {
                     .frame(minWidth: 300, maxWidth: .infinity).disabled(form.advisor == .none)
             }
             if let error = form.errors.advisor { Text(error).font(.caption).foregroundStyle(.red) }
+            if let efforts = form.advisorEffortOptions {
+                HStack(spacing: 8) {
+                    Text(Copy.advisorEffort).frame(width: 150, alignment: .leading)
+                    WideOptionPicker(Copy.advisorEffort, options: efforts, value: form.advisorEffort) { form.setAdvisorEffort($0) }
+                        .frame(width: 300)
+                    Spacer(minLength: 0)
+                }
+            }
             Text(Copy.defaultsFromSettings).font(.caption).foregroundStyle(.secondary)
         }
     }
