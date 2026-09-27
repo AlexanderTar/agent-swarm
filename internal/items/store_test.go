@@ -1,7 +1,6 @@
 package items_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -710,18 +709,35 @@ func TestChoreItemLifecycleAndChildren(t *testing.T) {
 	}
 }
 
+// Chore spec decision 5: a chore is never a spike, whoever asks.
 func TestCreateSpikeWithChoreIntent(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	it, err := s.Create(ctx, items.CreateInput{
-		Type:        items.Spike,
-		Title:       "Maintenance chore",
-		SpikeIntent: "chore",
-	}, items.User("test"))
-	if err != nil {
-		t.Fatalf("expected chore spike creation to succeed, got: %v", err)
+	root := mk(t, s, items.Epic, "", "Root")
+	for _, by := range []items.Actor{items.User("test"), items.Daemon(), items.Orchestrator("agt_1", root.ID)} {
+		_, err := s.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Maintenance chore", SpikeIntent: "chore"}, by)
+		if code(err) != items.CodeBadRequest || err.Error() != "A chore isn't a spike. Create type chore." {
+			t.Fatalf("%s: err = %v", by.Kind, err)
+		}
 	}
-	if it.SpikeIntent != "chore" {
-		t.Fatalf("expected spike_intent 'chore', got: %q", it.SpikeIntent)
+}
+
+// Chore spec decision 3 / E11: a chore works only on its own scope.
+func TestChoreRootCannotProposeTopLevel(t *testing.T) {
+	s := newStore(t)
+	ch := mk(t, s, items.Chore, "", "Bump deps")
+	orch := items.Orchestrator("agt_1", ch.ID)
+	for _, in := range []items.CreateInput{
+		{Type: items.Epic, Title: "E"}, {Type: items.Bug, Title: "B"},
+		{Type: items.Chore, Title: "C"}, {Type: items.Spike, Title: "S", SpikeIntent: "feature"},
+	} {
+		_, err := s.Create(ctx, in, orch)
+		if code(err) != items.CodeBadRequest ||
+			err.Error() != "A chore works only on its own scope. It can't propose top-level items." {
+			t.Fatalf("%s: err = %v", in.Type, err)
+		}
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("items = %d (%v), want only the chore", n, err)
 	}
 }
