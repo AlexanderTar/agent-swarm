@@ -1,60 +1,51 @@
-# Approval simplification
+# Approval simplification — revised design
 
-## Intent and user journey
+## Outcome
 
-Swarm should ask only for decisions the user has not already made. Selecting repositories when starting a spike or orchestrator authorizes work in those repositories. During a feature spike, the user reviews short, useful summaries of the spec's consequential sections through native approval prompts. Once the spec is approved and the plan exists, Swarm shows the absolute paths to both artifacts and asks for one native plan approval. The existing final acceptance decision remains.
+Swarm asks for user decisions about what will be built, not about which repository an agent may inspect. The starting repository picker is a hint. Spec review presents short summaries of consequential sections through each agent's native question tool. Once those sections are approved, the agent shows full paths to the spec and plan and asks for one plan approval. Final acceptance remains a separate decision.
 
 ```text
-Start with repositories → research and worktrees → section summaries + approvals
-→ spec approved → plan written → spec and plan paths + plan approval
-→ implementation → final acceptance
+Starting repositories (hint) → research in any repository → spec section summaries
+→ section approvals → full spec + plan paths → plan approval → implementation
 ```
 
-## Repository scope
+## Repository authority
 
-Remove `confirm_repos` as a separate user decision. The repository ids chosen at spike creation become the root's usable repositories. An orchestrator started from an existing root already receives the repositories selected in its start sheet. Additional repositories require an explicit scope update through `swarm_repos` or the orchestrator start picker, with registered ids and the existing active-worktree protections; no second approval dialog is raised. `swarm_worktree` still rejects an unknown or out-of-scope repository. Plan materialization still checks that every task repository is within the root's selected set. Migrate existing spikes with `suggested_repos` and no confirmed set on first repository read or materialization, atomically and once, so in-flight work does not get stranded. Do not overwrite a nonempty confirmed set. Withdraw existing open `confirm_repos` requests with normal request-resolved events when the selected set is adopted. Preserve `repos_version` concurrency checks for actual set changes. Historical requests remain readable and resolvable; the new workflow opens none.
+The agent may choose any repository during research, worktree creation, or plan materialization. No root repository list, `repos_version`, or confirmation request may gate that choice. `swarm_worktree` accepts any catalog repository, even if absent from the starting hint. It also accepts a local repository path and registers that path when needed. The path must exist and be a real Git repository so Swarm can create a worktree; this is data validation, not scope approval. Provide a catalog registration route independent of creating a worktree so a plan can name a newly discovered repository. Materialization resolves every task repository to a catalog id and stores those ids on the resulting items; it never compares them with the starting hint. An unresolvable name or invalid path gets a direct error explaining how to register it. `swarm_repos` may remain for optional display/bookkeeping, but using it is never required to work or materialize.
+
+On startup, automatically resolve **all open `confirm_repos` requests** as approved in a one-time, idempotent migration. Record each request's proposed and expansion repositories, excluding entries explicitly marked dropped, in its resolution. Keep the starting selection as a hint; the migration must not narrow or gate it. Emit normal request resolution and agent relay events, but label the action as a daemon migration, never as a user click. Refuse new `confirm_repos` asks so no new confirmation dialog appears. Other open approvals remain untouched.
 
 ## Spec section review
 
-The agent writes each spec section before requesting approval. Normalize a heading by removing an optional leading decimal section number (`2.` or `2.3.`), trimming surrounding whitespace, and case folding. Only these normalized headings are informational and exempt: `context`, `background`, `bibliography`, `references`, `file list`, `files`, `explicitly out of scope`, `out of scope`, and `work breakdown`. Every other heading, including an unknown heading and a headingless `document` section, requires approval. This defaults toward review when a new title appears. The registered artifact remains the source of truth; each approval is bound to its current section hash. A revised approved section requires a new approval. Materialization applies the same classifier to the current revision, so the gate matches the visible asks.
+The agent writes and registers the spec before requesting approvals. Normalize each heading by removing an optional leading decimal section number (`2.` or `2.3.`), trimming whitespace, and case folding. Only `context`, `background`, `bibliography`, `references`, `file list`, `files`, and `work breakdown` are informational and require no approval. **`out of scope` and `explicitly out of scope` require approval**, as do unknown and headingless sections. The same classifier drives request creation and the materialization gate.
 
-Each approval request carries a section summary of 1–700 Unicode characters, counting all visual syntax. It must say what will be delivered in plain language; use a compact table for structured comparisons or an ASCII sketch for flows when it makes the decision easier to see. The daemon rejects empty, whitespace-only, or overlong summaries and preserves the submitted text exactly. The agent displays that exact summary in chat immediately before the native approval prompt. The prompt names the section and revision and carries the existing `⟦swarm:<ref>⟧` token. A typed change request is stored as the comment. The user can open the full spec from its path, but the summary stands alone.
+Each requested section has a plain-language summary of 1–1000 Unicode characters, including Markdown table or ASCII sketch syntax. It explains what will be delivered or excluded. Use a compact visual when it clarifies a comparison or flow. Reject empty, whitespace-only, and overlong summaries. Preserve the summary exactly in the approval response and replay relay. The agent prints it before the native prompt. Approval binds to the current section hash; changing that section requires approval again.
 
-## Plan review and paths
+## Plan review
 
-The plan can be drafted and registered during review, but its approval request is opened only after all required spec sections are approved. Approval creation rejects an unapproved current spec. The agent prints a concise plan summary, including delivery packages and verification, and the exact absolute paths to the registered spec and plan before the native prompt. The daemon includes a lossless `review_paths` object in the approval response and replay relay, and replays the exact stored section or plan summary in `summary` so the agent can print both paths in full; path length never truncates the native question or its ref token. Relative paths are normalized at registration and again when presenting legacy artifacts; revising a legacy relative-path artifact preserves its id, revision history, and stale-approval behavior. The prompt carries the plan revision and lint warnings within its existing 1,000-rune limit. The plan approval remains revision-bound. A change to the plan invalidates the earlier approval. A changed decision section invalidates its section approval and blocks materialization, even when the plan approval is unchanged; unchanged approved hashes remain valid.
+The plan may be drafted while spec review is underway. A plan approval request opens only after all required sections of the current spec are approved. The agent prints a short plan summary with delivery packages and verification, followed by the **full absolute path** to both registered artifacts, immediately before the native question. `review_paths.spec` and `review_paths.plan` carry those paths losslessly in both the initial response and replay relay. The native question remains short and retains its ref token. The plan approval binds to its current revision. Materialization checks the current spec section hashes and plan revision.
 
-| Stage | User sees | Decision |
+| Stage | What the user sees | Decision |
 |---|---|---|
-| Repository start | Repository picker | Start |
-| Spec section | Up to 700 characters, optional table/sketch | Approve / Request changes |
-| Plan | Spec path, plan path, short plan summary | Approve / Request changes |
+| Start | Suggested repositories | Start work |
+| Spec section | Up to 1000 characters; table/sketch when helpful | Approve / Request changes |
+| Plan | Summary plus full spec and plan paths | Approve / Request changes |
 | Completion | Integrated result | Accept / Request changes |
 
-## Native agent behavior
+## Native question delivery
 
-Claude uses `AskUserQuestion`, agy uses `ask_question`, and Codex uses `request_user_input_async` with the existing hook-backed answer forwarding. Cursor and Muse expose native question tools, but current recorded probes show no observable answer hook. Recheck the actual agent versions and live hook events, recording versions, fixture names, and whether submission, answer, cancellation, and replay are observable. If hooks can observe both the question and answer, enable the same ref-bound native approval path. If they cannot, retain board/CLI approval as an explicit supported fallback and report the evidence; never infer approval from an unobserved answer. For every agent kind, test approve, request changes, typed comments, cancellation, and stale or replayed refs through the supported route. Distinguish fixture-level verification from live verification in the report.
+Claude (`AskUserQuestion`), agy (`ask_question`), and Codex (`request_user_input_async`) use their existing hook-backed answer path. Cursor (`AskQuestion`) and Muse (`request_user_input`) use their native question tools as well. Recorded probes for currently installed versions did not surface those two tools' answers to Swarm hooks. After the native tool returns, the agent forwards the selected decision and exact returned answer text through `swarm_ask kind:"native_answer"`, tied to the daemon-issued request or child-message ref. The daemon accepts that explicit MCP report as `agent_reported` evidence. This is an agent attestation, not independently observed user input; the audit trail must say so. No returned answer means no MCP submission and no approval. A cancellation leaves the request open for replay or board/CLI action.
 
-Installed versions checked during this change: Claude Code 2.1.283, Codex 0.157.0, Cursor 3.21.13, agy 1.2.11, and Muse Code 1.4.0. The automated evidence uses recorded fixtures and simulated approvals; version checks alone do not constitute a fresh interactive native approval test.
+For both request and child-message refs, validate caller ownership, current request state, decision/answer consistency, and current artifact revision. Reject a mismatched option, stale ref, second resolution, or empty reported answer. Preserve typed comments. Hook-observed routes retain `observed` evidence when answer text is visible. Board/CLI remains available if a native tool fails. Test the native tool contract for all five agents, covering approval, changes, typed comments, cancellation, and stale/replayed refs. Record whether each result comes from a live interactive run, a recorded fixture, or a simulated tool return; do not label one as another.
 
-| Agent | Supported route | Recorded evidence |
-|---|---|---|
-| Claude | Native hook | `TestClaudeAskUserQuestionAnswerBecomesObservedEvidence` |
-| agy | Native hook with agent-reported option | `TestAgyLiveHookFixturesOpenAndCloseAQuestionRow` |
-| Codex | Native async hook and next-turn reply | `TestCodexQuestionReplyBindsByRefAndEmitsTheNextStep` |
-| Cursor | Board/CLI fallback | `TestCursorParseHookToolNames`; recorded `AskQuestion` hook absence |
-| Muse | Board/CLI fallback | `TestMuseSiblingToolHookFixturesOpenNoRowAndDoNotBlock`; recorded `request_user_input` hook absence |
+## Evidence and compatibility
 
-The shared request-ledger tests cover request changes, typed comments, cancellation, stale refs, and replay. Cursor's [hook documentation](https://prod.cursor.com/docs/hooks) describes general tool hooks, while the recorded Cursor `AskQuestion` probe shows that this tool currently bypasses them. Swarm must rely on the observable route until a new live probe proves otherwise.
-
-## Implementation boundaries and safety
-
-Use the existing request ledger and approval hashes; no new approval state or new authentication flow. Keep the `confirm_repos` API capable of resolving historical open requests, but stop producing new requests from the normal workflow. Do not silently broaden a root beyond the user-selected repositories. Unknown repositories and stale versions still fail. Native prompts always require an observed user decision; daemon text, chat output, and agent claims never count as approval. Update MCP tool descriptions, response `next` copy, relays, repository refusal copy, canonical skills, and installed copies together.
+Installed versions recorded during the earlier review: Claude Code 2.1.283, Codex 0.157.0, Cursor 3.21.13, agy 1.2.11, and Muse Code 1.4.0. Earlier Cursor and Muse probes showed no answer hook in their recorded fixtures; this must be rechecked during implementation. Existing relative artifact paths continue to display as absolute paths, and revising one preserves its artifact history. Existing request refs, approval hashes, stale-revision rules, and board/CLI endpoints remain compatible.
 
 ## Acceptance
 
-1. A spike with selected repositories can create worktrees and register artifacts without a repository confirmation request; an out-of-scope repository is rejected.
-2. Only consequential spec sections require approvals. Every requested summary is nonempty and at most 700 characters; visual syntax survives intact.
-3. The plan prompt includes both absolute artifact paths, and materialization requires the current approved spec sections and plan revision.
-4. Claude, agy, Codex, Cursor, and Muse each have a tested native or proven fallback approval route. No adapter treats an unobserved answer as approval.
-5. Existing in-flight spikes and request rows remain usable; the full Go, install, and end-to-end approval suites pass.
+1. Worktrees and materialized tasks may use repositories outside the starting hint. A newly found local Git repository can be registered without approval; a non-repository path fails with a clear data error.
+2. Every open historical `confirm_repos` request is automatically marked approved on startup with migration provenance; new confirmation asks are refused.
+3. Only the seven informational headings are skipped. Both out-of-scope headings require approval. Section summaries preserve visual text and accept exactly 1000 Unicode characters, rejecting 1001.
+4. Full spec and plan paths are displayed immediately before plan approval, and approval cannot open before the current required spec sections are approved.
+5. All five agent kinds have tested native-question approval flows. Cursor and Muse MCP-reported answers are explicitly marked `agent_reported`; cancellation, stale refs, and duplicate submissions cannot approve anything.

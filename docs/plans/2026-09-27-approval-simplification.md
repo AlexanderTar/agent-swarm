@@ -1,95 +1,61 @@
-# Approval Simplification Implementation Plan
+# Approval simplification — revised implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+**Status:** Design only. Do not implement this revision until the user approves this plan.
 
-**Goal:** Remove redundant repository approval, make spec section review concise, and show both artifact paths at the final plan approval.
+**Spec:** `/Users/alexandertar/GitHub/agent-swarm-approval-simplification/docs/specs/2026-09-27-approval-simplification.md`
 
-**Architecture:** Reuse the repository set chosen at start and the existing request ledger. Classify spec sections by stable heading rules, validate approval summaries at request creation, and add registered artifact paths to the daemon's plan prompt. Keep native answer evidence rules unchanged.
+**Worktree:** `/Users/alexandertar/GitHub/agent-swarm-approval-simplification` on `feat/approval-simplification`.
 
-**Tech Stack:** Go, SQLite, Markdown skills, hook adapters.
+**Goal:** Remove repository scope gates, review consequential spec sections with summaries up to 1000 characters, and support native-question approvals for all five agent kinds.
 
-**Spec:** `docs/specs/2026-09-27-approval-simplification.md`.
+**Method:** Use superpowers TDD for each behavior change: add a failing behavior test, run it to RED, implement the smallest change, then run the focused suite to GREEN. Update canonical skills and sync installed copies. Preserve request ownership, revision binding, and audit provenance.
 
-## Global Constraints
+## Task 1 — Repository choice is a hint
 
-- Work in `/Users/alexandertar/GitHub/agent-swarm-approval-simplification` on `feat/approval-simplification`.
-- TDD for each behavior change: observe a meaningful RED, implement the smallest fix, observe GREEN.
-- Preserve user-selected repo boundaries and `repos_version` checks; no unobserved native answer grants approval.
-- Approval summary length is 1–700 Unicode characters, including Markdown table or ASCII sketch syntax.
-- After `skills/*` changes, run `make skills-sync` and verify canonical and installed copies match.
-- Stage only task-owned files; do not touch unrelated untracked files in the primary checkout.
+**Files:** `internal/mcpserver/orchestrator.go`, `internal/runtime/materialize.go`, `internal/runtime/confirm.go`, `cmd/swarm/daemon.go`, relevant tests in those packages, and `scripts/e2e/reposconfirm_test.go`.
 
-## Review Focus
+1. Add failing tests: an orchestrator creates/reviews a worktree in a catalog repository absent from the starting hint; a valid local Git path can be registered and used; a non-repository path receives a clear error. Cover a plan whose task uses a registered repository absent from the hint, and verify the created task stores that repository id. Neither path may require `swarm_repos`.
+2. Add failing migration tests with one and multiple historical open `confirm_repos` requests, proposed and expansion entries, dropped entries, a preexisting root hint, repeated startup, and unrelated open approvals. Assert every historical confirmation becomes approved once, keeps its effective repository list, emits resolution/relay events with daemon-migration provenance, and never impersonates a user action. Assert new `confirm_repos` asks are refused.
+3. Remove the worktree subset check and materialization subset check. Resolve task repositories against the catalog directly. Add a repository registration entry point independent of worktree creation; allow `swarm_worktree` to accept a catalog id or local Git path. Retain validation that a path is a real repository and that a task repository name resolves unambiguously. Keep `swarm_repos` optional.
+4. Run focused runtime, MCP, daemon, and end-to-end repository tests to GREEN. Reconcile any old tests whose only expected behavior was the removed scope gate.
 
-1. An existing spike has suggested repositories but no confirmed set: first repository read or direct materialization adopts exactly those repositories and withdraws obsolete requests once.
-2. A registered spec has only informational sections: its required approval set is empty and plan approval can proceed; an unknown heading requires approval.
-3. A changed decision section loses approval while unchanged sections retain it.
-4. A 700-character Unicode summary passes, 701 fails, and a Markdown table remains unchanged.
-5. Cursor and Muse answers are never counted as approved without an observable hook result.
+## Task 2 — Review the right spec sections
 
-## File map
+**Files:** `internal/runtime/artifacts.go`, `internal/runtime/requests.go`, `internal/runtime/materialize.go`, corresponding tests, and MCP tool descriptions.
 
-| Files | Responsibility |
-|---|---|
-| `internal/runtime/agents.go`, `internal/runtime/confirm.go`, `internal/mcpserver/orchestrator.go` | Adopt selected repositories, expose `swarm_repos`, and preserve scope checks |
-| `internal/runtime/artifacts.go`, `internal/runtime/materialize.go`, `internal/runtime/requests.go` | Classify required sections and validate summaries |
-| `internal/runtime/native.go`, `internal/mcpserver/tools.go` | Return lossless artifact paths as approval review data and keep prompts bounded |
-| `internal/hook/*`, `internal/adapter/*` | Verify native tool event and answer routes by agent kind |
-| `skills/swarm-spike/SKILL.md`, `skills/swarm-orchestrator/SKILL.md`, `skills/swarm/SKILL.md`, `internal/install/skills/*` | Match agent instructions to runtime |
+1. Add failing tests proving `Context`, `Background`, `Bibliography`, `References`, `File list`, `Files`, and `Work breakdown` are skipped after heading normalization; `Out of scope`, `Explicitly out of scope`, unknown headings, and headingless content require approval. Check that request creation and materialization agree.
+2. Add failing tests for whitespace-only summaries, exactly 1000 and 1001 Unicode characters, exact preservation of a Markdown table or ASCII sketch, and a revised section hash that requires renewed approval.
+3. Change the shared classifier and summary validator, then run focused tests to GREEN. Keep the plan approval prerequisite tied to the current required spec sections.
 
-## Task 1: Adopt repository selection without a second approval
+## Task 3 — Native MCP reporting for Cursor and Muse
 
-**Files:** `internal/runtime/agents.go`, `internal/runtime/confirm.go`, `internal/mcpserver/orchestrator.go`; tests in corresponding `_test.go` files.
+**Files:** `internal/runtime/native.go`, `internal/runtime/requests.go`, `internal/mcpserver/tools.go`, request audit/relay code, runtime and MCP tests, and native-tool adapter fixtures.
 
-**Interfaces:** Keep registered repo ids and `repos_version`; expose a narrow store method for adopting legacy suggested repos. Worktree create/review consumes the resulting root set. Scope expansion uses `swarm_repos` with `repos_version`; the daemon validates registered ids and active worktrees atomically.
+1. Define a request field such as `answer_text` for `swarm_ask kind:"native_answer"`. Use it only for Cursor and Muse when the native question tool returns but no answer hook is available. Require nonempty exact returned text, a daemon-issued ref, and an explicit `decision`. Document the accepted tool-return shapes for both agents; do not infer a decision from chat text alone.
+2. Add failing tests for both agent kinds: approve, request changes, typed comment, cancellation without submission, empty answer, mismatched answer/decision, another agent's ref, stale artifact revision, and duplicate/replayed ref. Cover both request refs and child approval-message refs. Assert successful rows and relays carry `agent_reported`, while hook-observed routes retain their current evidence semantics.
+3. Implement the narrowly scoped MCP-report route. Reuse request ownership and approval checks; bypass only the requirement for a hook-created answered-question row for Cursor and Muse when `answer_text` is provided. Store the reported text and provenance in the audit trail. A missing, cancelled, or contradictory answer never resolves approval. Keep board/CLI as a fallback.
+4. Test the native question contract for Claude, agy, Codex, Cursor, and Muse. Record installed version, tool name, fixture/live source, answer shape, cancellation behavior, and replay behavior. Use a fresh interactive probe when available; report any kind that could only be verified by recorded fixture or simulated return.
 
-- [ ] Write tests for newly started spike, legacy spike with concurrent first access or direct materialization, preserving a nonempty confirmed set, withdrawal/events for open confirmation requests, out-of-scope repo, and active reservation on scope change.
-- [ ] Run focused tests and record the expected RED failures.
-- [ ] Set selected repos at spike creation; adopt legacy selected repos atomically and close obsolete requests; retain unknown/out-of-scope refusal.
-- [ ] Run focused tests to GREEN, then the affected package tests.
-- [ ] Commit the repository-scope change.
+## Task 4 — Skills and user-facing copy
 
-## Task 2: Request only consequential spec approvals with short summaries
+**Files:** `skills/swarm/SKILL.md`, `skills/swarm-orchestrator/SKILL.md`, `skills/swarm-spike/SKILL.md`, `internal/install/skills/*`, MCP descriptions, and request `next`/replay copy.
 
-**Files:** `internal/runtime/artifacts.go`, `internal/runtime/requests.go`, `internal/runtime/materialize.go`, `internal/mcpserver/tools.go`; focused tests in their existing test files.
+1. State that starting repositories are hints and that agents may register/use any real Git repository without scope approval. Remove instructions to seek `confirm_repos` or update scope before work.
+2. Tell agents to request approval only for the seven exempt-heading complement, including both out-of-scope headings; print the exact 1–1000-character summary before each native question. Before plan approval, print the full absolute spec and plan paths from `review_paths`.
+3. Give Cursor and Muse explicit native-tool → MCP `native_answer` instructions, including exact returned answer text, no submission on cancellation, and `agent_reported` audit provenance. Preserve the hook-backed instructions for Claude, agy, and Codex.
+4. Run `make skills-sync` and compare canonical/installed copies.
 
-**Interfaces:** `RequiredSpecSection(title string) bool` is shared by approval creation and materialization. It exempts only the exact normalized informational headings in the spec. `AskInput.Prompt` is the exact summary for `approval` on a spec and is limited to 700 Unicode characters.
+## Task 5 — End-to-end verification and review
 
-- [ ] Write tests for numbered/mixed-case heading normalization, unknown/headingless headings, informational section skip, whitespace-only summaries, 700/701 Unicode boundaries, table preservation, and revised hashes.
-- [ ] Run focused tests and record RED failures.
-- [ ] Add the classifier and summary validation; reject approval requests for informational sections; use the classifier at materialization.
-- [ ] Run focused tests to GREEN, then affected package tests.
-- [ ] Commit the spec approval change.
+1. Exercise start with one repository hint → discover/register another Git repository → create its worktree → approve an out-of-scope spec section with a 1000-character visual summary → approve the plan after seeing both full paths → materialize a task in the newly discovered repository.
+2. Exercise startup with historical confirmations and verify automatic resolution, no new confirmation dialog, and no change to unrelated approvals. Exercise Cursor/Muse reported native decisions and stale/cancelled cases through the MCP surface.
+3. Run `go test ./...`, the native route fixture suite, `make e2e`, `make skills-sync`, and `git diff --check`. Review the final diff against every acceptance item in the spec.
+4. Request an Astra review of the updated implementation and apply findings. Record which native results were live, fixture-based, or simulated. Commit the verified implementation on the worktree branch; do not merge or deploy without separate authorization.
 
-## Task 3: Show spec and plan paths at plan approval
+## Decisions already fixed by the user
 
-**Files:** `internal/runtime/native.go`, `internal/runtime/artifacts.go`, `internal/runtime/native_test.go`.
-
-**Interfaces:** `Request.ReviewPaths` (or equivalent wire field) carries the absolute registered spec and plan paths losslessly on initial ask and replay. `nativePromptFor` keeps a short plan question with the revision, warnings, and ref token. Plan approval creation requires the current spec's required sections to be approved; drafting and registering a plan earlier are allowed.
-
-- [ ] Write tests for relative input paths and legacy relative-path revision identity, plan approval refusal before current spec approval, and a long-path/many-warning relay that preserves both paths fully and keeps the prompt ref token.
-- [ ] Run the test and record RED.
-- [ ] Normalize artifact paths at registration; expose both paths and the exact submitted summary as review data on initial ask and replay; enforce spec approval before plan approval creation.
-- [ ] Run focused tests to GREEN, then affected package tests.
-- [ ] Commit the path change.
-
-## Task 4: Align skills and exercise every supported agent route
-
-**Files:** canonical `skills/swarm*` files, installed copies, `internal/hook/*`, `internal/adapter/*`, and test fixtures as needed.
-
-**Interfaces:** Existing ref token and `native_answer` contract remains. Claude, agy, and Codex use observed native answers; Cursor and Muse use board/CLI until an observable hook is proven. Update tool descriptions, `next` copy, request-open relays, and repository refusal copy.
-
-- [ ] Record agent versions and named live probe fixtures where possible. Write/extend tests for all five kinds: question submission, approve, request changes, typed comment, cancellation, and replay/stale ref; distinguish live-probe evidence from fixture evidence.
-- [ ] Run those tests and record RED for any new behavior assertion.
-- [ ] Update skills and any deterministic hook routing supported by actual event evidence; run `make skills-sync`.
-- [ ] Run focused tests to GREEN and compare synced skill copies.
-- [ ] Commit the skill and agent-route change.
-
-## Task 5: End-to-end verification and review
-
-**Files:** `scripts/e2e/*` only if the existing scenarios do not cover the new path.
-
-- [ ] Exercise start → selected repo worktree → section summaries/approvals → plan approval with paths → materialize, plus stale revision refusal.
-- [ ] Run `go test ./...`, `make skills-sync` (check no drift), and relevant `scripts/e2e` tests.
-- [ ] Inspect `git diff --check`, branch status, and the full requirement list in the spec.
-- [ ] Resolve review findings and rerun the affected verification before reporting completion.
+- Repository selection at start is only a hint. No worktree or materialization scope gate remains.
+- Both out-of-scope headings require section approval; the other seven named headings do not.
+- Section summaries may contain up to 1000 Unicode characters.
+- Historical open repository confirmations are automatically approved; new ones are refused.
+- Cursor and Muse ask through native tools and forward returned answers through MCP, marked as agent-reported evidence.
