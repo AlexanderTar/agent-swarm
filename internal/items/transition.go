@@ -79,6 +79,21 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, key string, to Sta
 			return Item{}, err
 		}
 	}
+	// Chore spec decision 6: nothing ever moves back into Draft, so an
+	// accepted checkpoint on a Draft root belongs to this lifecycle. It
+	// counts on promotion, instead of parking the root at Ready forever
+	// (acceptedSince only sees checkpoints newer than updated_at).
+	if from == Draft && to == Ready && isAcceptRoot(it.Type) && it.ID == it.RootID {
+		accepted, err := exists(ctx, tx, `SELECT 1 FROM checkpoints WHERE item_id = ? AND kind = 'accepted'`, it.ID)
+		if err != nil {
+			return Item{}, err
+		}
+		if accepted {
+			if err := s.setStatus(ctx, tx, &it, InProgress); err != nil {
+				return Item{}, err
+			}
+		}
+	}
 	if err := s.ReconcileTx(ctx, tx, it.Key); err != nil {
 		return Item{}, err
 	}

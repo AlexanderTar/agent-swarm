@@ -883,3 +883,29 @@ func TestChoreWithNoTasksReachesDone(t *testing.T) {
 		t.Fatalf("a childless epic must not ask for acceptance: %v", states)
 	}
 }
+
+// Spec decision 6 / E5: BUG-2-style stuck roots recover with one move to Ready.
+func TestDraftRootPromotionHonorsEarlierAccepted(t *testing.T) {
+	s := newStore(t)
+	b := mk(t, s, items.Bug, "", "Crash") // Draft, as materialize used to leave it
+	task := mk(t, s, items.Task, b.Key, "Fix")
+	seedCheckpoint(t, s.DB, b, "accepted", 1, later(s), "")
+	s.Reconcile(ctx, b.Key)
+	wantStatus(t, s, b.Key, items.Draft) // the live stuck state
+	setStatus(t, s, task, items.Done)
+	seedCheckpoint(t, s.DB, b, "integrated", 1, later(s), gitJSON)
+
+	if err := move(t, s, b.Key, items.Ready, user); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, s, b.Key, items.InReview)
+	if states, _ := acceptRequests(t, s, b); count(states, "accept_fix:open") != 1 {
+		t.Fatalf("requests = %v", states)
+	}
+
+	fresh := mk(t, s, items.Epic, "", "Fresh proposal") // no accepted yet
+	if err := move(t, s, fresh.Key, items.Ready, user); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, s, fresh.Key, items.Ready)
+}
