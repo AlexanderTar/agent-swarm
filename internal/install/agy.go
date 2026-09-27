@@ -143,6 +143,23 @@ func RemoveLegacyAgy(ctx context.Context, c Config, run execx.Runner) ([]string,
 
 // dropSwarmMCPServer removes the "swarm" entry from an mcpServers object, keeping
 // every other server. Shared with the cursor removal.
+// dropLegacyMCPServer removes the "swarm" server only when it isn't this
+// install's own binary (a v1 leftover or a stale path), so a re-install
+// leaves v2's current entry alone.
+func dropLegacyMCPServer(bin string) func(map[string]any) error {
+	return func(m map[string]any) error {
+		servers, _ := m["mcpServers"].(map[string]any)
+		if servers == nil {
+			return nil
+		}
+		if sw, _ := servers["swarm"].(map[string]any); sw != nil && sw["command"] == bin {
+			return nil
+		}
+		delete(servers, "swarm")
+		return nil
+	}
+}
+
 func dropSwarmMCPServer(m map[string]any) error {
 	servers, _ := m["mcpServers"].(map[string]any)
 	if servers == nil {

@@ -127,7 +127,7 @@ func RemoveLegacyCursor(c Config) ([]string, error) {
 	var changed []string
 
 	mcpPath := c.Cursor("mcp.json")
-	wrote, err := EditJSON(mcpPath, false, dropSwarmMCPServer)
+	wrote, err := EditJSON(mcpPath, false, dropLegacyMCPServer(c.Bin))
 	if err != nil {
 		return changed, err
 	}
@@ -150,7 +150,7 @@ func RemoveLegacyCursor(c Config) ([]string, error) {
 			for _, entry := range list {
 				obj, _ := entry.(map[string]any)
 				cmd, _ := obj["command"].(string)
-				if !isSwarmHookCommand(cmd) {
+				if !isLegacyHookCommand(c.Bin)(cmd) {
 					kept = append(kept, entry)
 				}
 			}
