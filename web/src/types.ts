@@ -345,7 +345,7 @@ export interface StartOrchestratorBody {
 export interface CreateSpikeBody {
   request_id: string;
   name: string;
-  intent: "feature" | "debug";
+  intent: "feature" | "debug" | "chore";
   repos?: string[];
   agent: AgentKind;
   model: string;

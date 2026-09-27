@@ -199,6 +199,9 @@ describe("mock daemon", () => {
     d.db.settings.max_concurrent_agents = 8;
     const s = call(d, "POST", "/api/spikes", { request_id: "s3", name: "Offline sync", intent: "debug", agent: "claude", model: "opus" });
     expect(s.body).toMatchObject({ item: { type: "spike", status: "draft", spike_intent: "debug" }, agent: { name: "offline-sync", state: "active" }, queued: false });
+    const c = call(d, "POST", "/api/spikes", { request_id: "s5", name: "Bump deps", intent: "chore", agent: "claude", model: "opus" });
+    expect(c.body).toMatchObject({ item: { type: "chore", status: "ready", spike_intent: null }, agent: { name: "bump-deps" } });
+    expect((c.body as { item: { key: string } }).item.key).toMatch(/^CHORE-\d+$/);
     d.db.settings.max_concurrent_agents = 1;
     const q = call(d, "POST", "/api/spikes", { request_id: "s4", name: "Another spike", intent: "feature", agent: "claude", model: "opus" });
     expect(q.body).toMatchObject({ agent: { state: "queued", session: null }, queued: true });

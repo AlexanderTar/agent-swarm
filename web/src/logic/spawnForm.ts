@@ -34,7 +34,7 @@ export function mapSubmitError(e: unknown): SubmitFailure {
 }
 
 export interface SpawnFormState { name: string; repos: string[]; fields: AgentFieldsValue }
-export interface SpikeFormState extends SpawnFormState { intent: "feature" | "debug"; request: string }
+export interface SpikeFormState extends SpawnFormState { intent: "feature" | "debug" | "chore"; request: string }
 
 // Deviation from the brief: advisorPayload (logic/catalog.ts) takes a `catalog` argument in this
 // codebase -- normalizing the advisor's stored effort against the model the user actually has
