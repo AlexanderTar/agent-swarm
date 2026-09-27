@@ -147,8 +147,10 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 		}
 		summary := "Deliver " + sec["title"].(string) + " as specified."
 		if sec["title"] == "Out of scope" {
-			visual := "| Included | Excluded |\n|---|---|\n| New accounts | Old account migration |"
-			summary = visual + strings.Repeat("é", 1000-len([]rune(visual)))
+			summary = "| Area | Included | Excluded |\n|---|---|---|\n" +
+				"| Sign-up | New accounts use the new flow | No migration of existing accounts |\n" +
+				"| Sessions | New sessions use the new cookie | Existing sessions keep their current cookie |\n" +
+				"| Verification | Test new sign-up and login | No backfill or legacy data conversion |"
 		}
 		h.mustTool(t, orch, "swarm_ask", map[string]any{
 			"kind": "approval", "prompt": summary,
@@ -188,6 +190,14 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 	paths, _ := planAsk["review_paths"].(map[string]any)
 	if paths["spec"] != specPath || paths["plan"] != planPath {
 		t.Fatalf("plan review paths = %v", paths)
+	}
+	if next, _ := planAsk["next"].(string); !strings.Contains(next, "review_paths.spec and review_paths.plan immediately before asking") {
+		t.Fatalf("plan next step does not require full paths before native prompt: %q", next)
+	}
+	native, _ := planAsk["native_prompt"].(map[string]any)
+	question, _ := native["question"].(string)
+	if !strings.Contains(question, planAsk["request_id"].(string)) {
+		t.Fatalf("plan native prompt has no request ref: %v", native)
 	}
 	planReq := h.requestByKind(t, spikeKey, "approve_plan")
 	h.doT(t, http.MethodPost, "/api/requests/"+planReq["id"].(string)+"/approve", map[string]any{

@@ -74,6 +74,15 @@ func TestMigrateOpenRepositoryConfirmationsPreservesHintAndProvenance(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# Spec\n\n## Decision\n\nKeep it.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+		SectionID: spec.Sections[0].ID, Prompt: "Keep this decision."})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := s.MigrateOpenRepoConfirmations(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +118,13 @@ func TestMigrateOpenRepositoryConfirmationsPreservesHintAndProvenance(t *testing
 	unrelated, _ := s.RequestByID(ctx, question.ID)
 	if unrelated.State != "open" {
 		t.Fatalf("unrelated request = %s", unrelated.State)
+	}
+	unrelatedApproval, err := s.RequestByID(ctx, approval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unrelatedApproval.State != "open" {
+		t.Fatalf("unrelated approval = %s", unrelatedApproval.State)
 	}
 	root, _ := s.Items.Get(ctx, key)
 	if !slices.Equal(root.Repos, []string{aID}) {

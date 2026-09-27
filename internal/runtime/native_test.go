@@ -284,6 +284,9 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	if req.NativePrompt == nil || !strings.HasSuffix(req.NativePrompt.Question, refToken(req.ID)) {
 		t.Fatalf("native prompt = %+v", req.NativePrompt)
 	}
+	if !strings.Contains(NativePromptNextStep(req.ID), "review_paths.spec and review_paths.plan immediately before asking") {
+		t.Fatalf("initial next step lacks path display instruction: %q", NativePromptNextStep(req.ID))
+	}
 	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.relayRequestTx(ctx, tx, req.ID) }); err != nil {
 		t.Fatal(err)
 	}
@@ -294,6 +297,13 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	paths, ok := payload["review_paths"].(map[string]any)
 	if !ok || paths["spec"] != longSpec || paths["plan"] != longPlan {
 		t.Fatalf("relay review_paths = %v", payload["review_paths"])
+	}
+	if payload["summary"] != req.Prompt || payload["next"] != NativePromptNextStep(req.ID) {
+		t.Fatalf("replay summary or next step changed: summary=%v next=%v", payload["summary"], payload["next"])
+	}
+	native, ok := payload["native_prompt"].(map[string]any)
+	if !ok || native["question"] != req.NativePrompt.Question {
+		t.Fatalf("replay native prompt changed: %v", payload["native_prompt"])
 	}
 }
 
