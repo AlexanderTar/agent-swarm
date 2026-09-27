@@ -278,3 +278,79 @@ func TestEnforceCapacitySkipsARefusedReplacement(t *testing.T) {
 		t.Fatalf("capacity ops = %v, want the next candidate paused", ops)
 	}
 }
+
+// Spec scenario 6: raising the limit resumes a capacity-paused agent before
+// a queued spawn takes the slot, in one Reconcile tick.
+func TestReconcileResumesCapacityPausedBeforeQueuedSpawns(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 8)
+	seedEpicWithThreeTasks(t, s)
+	a := spawnRunning(t, s, tm, "TASK-1", "")
+	b := spawnRunning(t, s, tm, "TASK-2", "")
+	setLimits(t, s, 1)
+	if err := s.EnforceCapacity(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ops := capacityOps(t, s); ops[b.ID] != "queued" {
+		t.Fatalf("setup: capacity ops = %v", ops)
+	}
+	tm.clk.Advance(time.Second)
+	c, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-3", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "new"}})
+	if err != nil || !queued {
+		t.Fatalf("setup: spawn C queued=%v err=%v", queued, err)
+	}
+	aSes, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: aSes.TmuxName, Command: "swarm-fake-agent"})
+	tm.env[aSes.TmuxName] = map[string]string{"SWARM_SESSION": aSes.ID}
+
+	setLimits(t, s, 2)
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ops := capacityOps(t, s); ops[b.ID] != "succeeded" {
+		t.Fatalf("capacity ops = %v, want b succeeded (resumed first)", ops)
+	}
+	got, err := s.Agent(ctx, c.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != AgentQueued {
+		t.Fatalf("queued spawn C = %s, want still queued", got.State)
+	}
+}
+
+// Spec scenario 7: among capacity-paused agents, the earliest pause resumes
+// first, by created_at, not by updated_at (which every phase swap bumps).
+func TestResumeOperationsResumesTheEarliestPauseFirst(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	setLimits(t, s, 8)
+	seedEpicWithThreeTasks(t, s)
+	spawnRunning(t, s, tm, "TASK-1", "")
+	b := spawnRunning(t, s, tm, "TASK-2", "")
+	c := spawnRunning(t, s, tm, "TASK-3", "")
+	setLimits(t, s, 2)
+	if err := s.EnforceCapacity(ctx); err != nil { // pauses c
+		t.Fatal(err)
+	}
+	tm.clk.Advance(time.Minute)
+	setLimits(t, s, 1)
+	if err := s.EnforceCapacity(ctx); err != nil { // pauses b, later
+		t.Fatal(err)
+	}
+	// c's row was touched last: updated_at order would pick b.
+	mustExec(t, s.DB, `UPDATE agent_operations SET updated_at = updated_at + 3600000 WHERE agent_id = ?`, c.ID)
+	setLimits(t, s, 2)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ops := capacityOps(t, s)
+	if ops[c.ID] != "succeeded" || ops[b.ID] != "queued" {
+		t.Fatalf("capacity ops = %v, want c (earliest pause) resumed, b still queued", ops)
+	}
+}

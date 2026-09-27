@@ -236,6 +236,19 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.TickPause(ctx); err != nil {
 		return err
 	}
+	// The one agent limit, applied live (spec 2026-09-27-single-agent-limit-
+	// live): pause agents over max_concurrent_agents, then resume paused and
+	// replacement operations, and only then admit queued spawns, so an agent
+	// the limit paused gets a freed slot before a brand-new one.
+	if err := s.EnforceCapacity(ctx); err != nil {
+		return err
+	}
+	// Continuity: advance replacement operations from their durable phase.
+	// A restart between the intent commit and the successor launch resumes
+	// here instead of wedging the agent behind the partial unique index.
+	if err := s.ResumeOperations(ctx); err != nil {
+		return err
+	}
 	if err := s.DrainQueue(ctx); err != nil {
 		return err
 	}
@@ -252,12 +265,6 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	// checkpoint's commit and the advance() call that should have followed
 	// it immediately after.
 	if err := s.recoverWorkflows(ctx); err != nil {
-		return err
-	}
-	// Continuity: advance replacement operations from their durable phase.
-	// A restart between the intent commit and the successor launch resumes
-	// here instead of wedging the agent behind the partial unique index.
-	if err := s.ResumeOperations(ctx); err != nil {
 		return err
 	}
 	// resumableAgentIDs, not `live`: paused/interrupted sessions are not in

@@ -324,10 +324,12 @@ func (s *Store) autoRestart(ctx context.Context, agentID string) bool {
 // ResumeOperations advances every in-flight operation from its durable
 // phase. The daemon calls it on every reconcile tick (and therefore after
 // every restart), so an operation stranded mid-walk by a crash resumes
-// instead of wedging the agent behind the partial unique index.
+// instead of wedging the agent behind the partial unique index. Oldest
+// intent first, so an agent the limit paused earlier resumes earlier (spec
+// 2026-09-27-single-agent-limit-live decision 6).
 func (s *Store) ResumeOperations(ctx context.Context) error {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM agent_operations WHERE phase IN
-		('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting') ORDER BY updated_at`)
+		('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting') ORDER BY created_at, id`)
 	if err != nil {
 		return err
 	}
