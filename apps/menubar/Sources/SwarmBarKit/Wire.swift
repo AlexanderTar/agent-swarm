@@ -127,15 +127,19 @@ public struct AgentReplacement: Codable, Sendable, Equatable {
     public var operationID: String
     public var mode: String
     public var phase: String
+    /// "capacity" (paused to fit the agent limit) or "resume" (a manual resume
+    /// waiting for a slot); nil for any other replacement. Optional, so a
+    /// daemon that predates it decodes unchanged.
+    public var reason: String?
     public var error: String?
 
     enum CodingKeys: String, CodingKey {
-        case mode, phase, error
+        case mode, phase, reason, error
         case operationID = "operation_id"
     }
 
-    public init(operationID: String, mode: String, phase: String, error: String? = nil) {
-        self.operationID = operationID; self.mode = mode; self.phase = phase; self.error = error
+    public init(operationID: String, mode: String, phase: String, reason: String? = nil, error: String? = nil) {
+        self.operationID = operationID; self.mode = mode; self.phase = phase; self.reason = reason; self.error = error
     }
 }
 
@@ -348,12 +352,11 @@ public struct Settings: Codable, Sendable, Equatable {
     /// compiling unchanged.
     public var fallbackDefault: RoleDefault = RoleDefault(agent: .claude, model: "sonnet")
     public var notifications: [String: NotifyPref]
-    public var maxConcurrentSubagents: Int = 3
     /// The single global admission ceiling shared by every role, orchestrator
     /// included (docs/specs/2026-09-24-unify-agent-limits.md; replaces the old,
-    /// separately-counted maxOrchestrators/maxAgents pair).
+    /// separately-counted maxOrchestrators/maxAgents pair; the only remaining
+    /// limit as of docs/specs/2026-09-27-single-agent-limit-live.md).
     public var maxConcurrentAgents: Int
-    public var maxAgentsPerRoot: Int
     public var scanExcludes: [String]
     public var scanIntervalSec: Int
     public var menubarCompact: Bool
@@ -368,8 +371,7 @@ public struct Settings: Codable, Sendable, Equatable {
         case roles, notifications, instructions
         case fallbackDefault = "fallback_default"
         case enabledAgents = "enabled_agents"
-        case maxConcurrentAgents = "max_concurrent_agents", maxAgentsPerRoot = "max_agents_per_root"
-        case maxConcurrentSubagents = "max_concurrent_subagents"
+        case maxConcurrentAgents = "max_concurrent_agents"
         case scanExcludes = "scan_excludes", scanIntervalSec = "scan_interval_sec"
         case menubarCompact = "menubar_compact", usagePollSec = "usage_poll_sec"
         case pauseDeadlineSec = "pause_deadline_sec"
@@ -391,8 +393,7 @@ public struct Settings: Codable, Sendable, Equatable {
         ],
         fallbackDefault: RoleDefault(agent: .claude, model: "sonnet"),
         notifications: ["info": NotifyPref(), "attention": NotifyPref(), "action": NotifyPref()],
-        maxConcurrentSubagents: 3,
-        maxConcurrentAgents: 4, maxAgentsPerRoot: 4,
+        maxConcurrentAgents: 4,
         scanExcludes: ["~/Library", "~/.Trash", "~/Downloads"], scanIntervalSec: 21600,
         menubarCompact: false, usagePollSec: 300, pauseDeadlineSec: 120)
 
@@ -413,8 +414,8 @@ public struct Settings: Codable, Sendable, Equatable {
 
     public init(enabledAgents: [AgentKind] = [.claude], roles: [String: RoleDefault] = [:],
                 fallbackDefault: RoleDefault = RoleDefault(agent: .claude, model: "sonnet"),
-                notifications: [String: NotifyPref] = [:], maxConcurrentSubagents: Int = 3,
-                maxConcurrentAgents: Int = 4, maxAgentsPerRoot: Int = 4,
+                notifications: [String: NotifyPref] = [:],
+                maxConcurrentAgents: Int = 4,
                 scanExcludes: [String] = [], scanIntervalSec: Int = 21600,
                 menubarCompact: Bool = false, usagePollSec: Int = 300, pauseDeadlineSec: Int = 120,
                 instructions: String = "") {
@@ -422,9 +423,7 @@ public struct Settings: Codable, Sendable, Equatable {
         self.roles = roles
         self.fallbackDefault = fallbackDefault
         self.notifications = notifications
-        self.maxConcurrentSubagents = maxConcurrentSubagents
         self.maxConcurrentAgents = maxConcurrentAgents
-        self.maxAgentsPerRoot = maxAgentsPerRoot
         self.scanExcludes = scanExcludes
         self.scanIntervalSec = scanIntervalSec
         self.menubarCompact = menubarCompact
@@ -439,13 +438,11 @@ public struct Settings: Codable, Sendable, Equatable {
         roles = try c.decode([String: RoleDefault].self, forKey: .roles)
         fallbackDefault = try c.decodeIfPresent(RoleDefault.self, forKey: .fallbackDefault) ?? RoleDefault(agent: .claude, model: "sonnet")
         notifications = try c.decode([String: NotifyPref].self, forKey: .notifications)
-        maxConcurrentSubagents = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentSubagents) ?? 3
         // decodeIfPresent, not decode: a daemon that predates this rename (or a
         // stale fixture) sends no max_concurrent_agents key at all -- falling
         // back to the shipped default rather than throwing keeps the app usable
-        // against it, the same tolerance maxConcurrentSubagents/instructions use.
+        // against it, the same tolerance instructions uses.
         maxConcurrentAgents = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentAgents) ?? 4
-        maxAgentsPerRoot = try c.decode(Int.self, forKey: .maxAgentsPerRoot)
         scanExcludes = try c.decode([String].self, forKey: .scanExcludes)
         scanIntervalSec = try c.decode(Int.self, forKey: .scanIntervalSec)
         menubarCompact = try c.decode(Bool.self, forKey: .menubarCompact)
@@ -463,9 +460,7 @@ public struct Settings: Codable, Sendable, Equatable {
         try c.encode(roles, forKey: .roles)
         try c.encode(fallbackDefault, forKey: .fallbackDefault)
         try c.encode(notifications, forKey: .notifications)
-        try c.encode(maxConcurrentSubagents, forKey: .maxConcurrentSubagents)
         try c.encode(maxConcurrentAgents, forKey: .maxConcurrentAgents)
-        try c.encode(maxAgentsPerRoot, forKey: .maxAgentsPerRoot)
         try c.encode(scanExcludes, forKey: .scanExcludes)
         try c.encode(scanIntervalSec, forKey: .scanIntervalSec)
         try c.encode(menubarCompact, forKey: .menubarCompact)

@@ -242,9 +242,7 @@ final class SettingsModelTests: XCTestCase {
 
     func testLimitsTab() async {
         let m = await model()
-        XCTAssertEqual([m.value(.agents), m.value(.subagents), m.value(.pauseDeadline)], [4, 3, 120])
-        // fixture: 2 live subagents login-form-coder, login-review under auth-epic-orchestrator
-        XCTAssertEqual(m.overLimit(.subagents, 1), 1)
+        XCTAssertEqual([m.value(.agents), m.value(.pauseDeadline)], [4, 120])
         // 3 live agents of any role across the whole tree: auth-epic-orchestrator,
         // login-form-coder and login-review (running/waiting). Excluded: the
         // finished session-coder, the queued billing-spike-orchestrator, the
@@ -253,23 +251,22 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(m.overLimit(.agents, 2), 1)
         XCTAssertEqual(m.overLimit(.pauseDeadline, 30), 0)
 
-        await m.setLimit(.subagents, 1)
-        XCTAssertEqual(m.limitNotice, "1 agents are running above the new limit. They keep running; new agents wait for a free slot.")
+        await m.setLimit(.agents, 1)
+        XCTAssertEqual(m.limitNotice, "2 agents will pause and resume when a slot frees.")
         XCTAssertEqual(saves, 0)
         await m.applyLimit()
-        XCTAssertEqual(m.settings.maxConcurrentSubagents, 1)
+        XCTAssertEqual(m.settings.maxConcurrentAgents, 1)
         XCTAssertNil(m.limitNotice)
         await m.applyLimit()
         XCTAssertEqual(saves, 1)
 
-        await m.setLimit(.subagents, 99)
-        XCTAssertEqual(m.settings.maxConcurrentSubagents, 16)
+        await m.setLimit(.agents, 99)
+        XCTAssertEqual(m.settings.maxConcurrentAgents, 32)
         await m.setLimit(.pauseDeadline, 5)
         XCTAssertEqual(m.settings.pauseDeadlineSec, 30)
-        await m.setLimit(.subagents, 16)
+        await m.setLimit(.agents, 32)
         XCTAssertEqual(saves, 3)
-        XCTAssertEqual([SettingsModel.Limit.agents, .subagents, .pauseDeadline].map(\.range),
-                       [1...32, 1...16, 30...600])
+        XCTAssertEqual(SettingsModel.Limit.allCases.map(\.range), [1...32, 30...600])
     }
 
     func testDiscoveryAndCompact() async {
@@ -299,7 +296,7 @@ final class SettingsModelTests: XCTestCase {
     func testInstructionsDecodesAndSaves() async throws {
         let withInstructions = try SwarmJSON.decode(Settings.self, from: Data("""
         {"enabled_agents":["claude"],"roles":{},"notifications":{},
-         "max_concurrent_agents":4,"max_agents_per_root":4,"scan_excludes":[],"scan_interval_sec":21600,
+         "max_concurrent_agents":4,"scan_excludes":[],"scan_interval_sec":21600,
          "menubar_compact":false,"usage_poll_sec":300,"pause_deadline_sec":120,
          "instructions":"# Team rules\\nStandard library first."}
         """.utf8))

@@ -135,6 +135,33 @@ final class HandoffTests: XCTestCase {
         XCTAssertEqual(before.map(\.depth), after.map(\.depth))
         XCTAssertEqual(before.map(\.expanded), after.map(\.expanded))
     }
+
+    // MARK: - agent limit (spec 2026-09-27-single-agent-limit-live)
+
+    func testReplacementDecodesOptionalReason() throws {
+        let with = try SwarmJSON.decode(AgentReplacement.self,
+            from: #"{"operation_id":"op_1","mode":"handoff","phase":"queued","reason":"capacity"}"#.data(using: .utf8)!)
+        XCTAssertEqual(with.reason, "capacity")
+        let without = try SwarmJSON.decode(AgentReplacement.self,
+            from: #"{"operation_id":"op_1","mode":"handoff","phase":"queued"}"#.data(using: .utf8)!)
+        XCTAssertNil(without.reason)
+    }
+
+    func testLimitReasonsLabelTheRowAndOfferOnlyCancel() {
+        var a = agent(.interrupted)
+        a.replacement = AgentReplacement(operationID: "op_1", mode: "handoff", phase: "queued", reason: "capacity")
+        XCTAssertEqual(AgentTree.handoffStatus(a), "Paused: over the agent limit")
+        XCTAssertTrue(AgentTree.subtitle(a).hasSuffix(" · Paused: over the agent limit"), AgentTree.subtitle(a))
+        XCTAssertEqual(endpoints(a), ["cancel:Cancel:menu"])
+        a.replacement?.phase = "preserving"
+        XCTAssertEqual(AgentTree.handoffStatus(a), "Paused: over the agent limit")
+        a.replacement?.reason = "resume"
+        a.replacement?.phase = "queued"
+        XCTAssertEqual(AgentTree.handoffStatus(a), "Queued: waiting for a free slot")
+        XCTAssertEqual(endpoints(a), ["cancel:Cancel:menu"])
+        a.replacement?.phase = "starting"
+        XCTAssertEqual(AgentTree.handoffStatus(a), "Starting successor…")
+    }
 }
 
 @MainActor

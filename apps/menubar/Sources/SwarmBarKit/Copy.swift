@@ -42,6 +42,8 @@ public enum Copy {
     public static let handoffQueued = "Handoff queued"
     public static let handoffStarting = "Starting successor…"
     public static func handoffBlocked(_ reason: String) -> String { "Handoff blocked: \(reason)" }
+    public static let capacityPaused = "Paused: over the agent limit"
+    public static let resumeQueued = "Queued: waiting for a free slot"
     public static func finished(_ n: Int) -> String { "Finished (\(n))" }
     public static func failed(_ n: Int) -> String { "Failed (\(n))" }
     public static func viewAllRequests(_ n: Int) -> String { "View all \(n) requests" }
@@ -123,7 +125,6 @@ public enum Copy {
     public static let notificationsFooter = "Turning off notifications does not hide requests in Needs you."
     public static let maxAgents = "Max concurrent agents"
     public static let agentsLimitCaption = "Maximum agents running at once, every role including orchestrators."
-    public static let maxAgentsPerItem = "Maximum concurrent agents per item"
     public static let pauseDeadline = "Pause deadline"
     public static let seconds = "seconds"
     public static let repositoryDiscovery = "Repository discovery"
@@ -255,7 +256,7 @@ public enum Copy {
     public static let settingsSaveFailed = "Couldn't save settings."
     public static let settingsDaemonDown = "Can't save while the daemon is unavailable."
     public static func lowerLimit(_ n: Int) -> String {
-        "\(n) agents are running above the new limit. They keep running; new agents wait for a free slot."
+        "\(n) agents will pause and resume when a slot frees."
     }
     public static func disableAgent(_ agent: String, _ first: String) -> String {
         "Defaults that use \(agent) will switch to \(first). Running agents are not affected."

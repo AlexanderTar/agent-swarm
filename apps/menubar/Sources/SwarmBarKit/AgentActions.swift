@@ -125,6 +125,13 @@ public enum AgentTree {
     /// publishes agent.changed, which refetches the node carrying it.
     public static func handoffStatus(_ a: AgentNode) -> String? {
         guard let op = a.replacement else { return nil }
+        if op.phase != "starting" {
+            switch op.reason {
+            case "capacity": return Copy.capacityPaused
+            case "resume": return Copy.resumeQueued
+            default: break
+            }
+        }
         switch op.phase {
         case "requested", "preserving": return Copy.handoffSaving
         case "stopping": return Copy.handoffStopping
@@ -145,6 +152,9 @@ public enum AgentTree {
         let terminal = AgentAction(endpoint: .terminal, label: Copy.openTerminal, disabled: !tmuxAlive, placement: .button)
         let cancel = AgentAction(endpoint: .cancel, label: Copy.cancel, disabled: off,
                                  confirm: orch && live > 0 ? Copy.cancelOrchestrator(a.name, live) : nil, placement: .menu)
+        // The agent limit owns this row until a slot frees (spec 2026-09-27):
+        // Resume/Handoff would 409 against the in-flight operation.
+        if a.replacement?.reason != nil { return [cancel] }
         let ack = AgentAction(endpoint: .ack, label: Copy.acknowledge, disabled: off, placement: .menu)
         let retry = AgentAction(endpoint: .retry, label: Copy.retry, disabled: off, placement: .button)
         let resume = AgentAction(endpoint: .resume, label: Copy.resume, disabled: off, placement: .button)

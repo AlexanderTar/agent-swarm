@@ -43,12 +43,11 @@ public final class SettingsModel {
     }
 
     public enum Limit: CaseIterable, Sendable {
-        case agents, subagents, pauseDeadline
+        case agents, pauseDeadline
 
         public var range: ClosedRange<Int> {
             switch self {
             case .agents: return 1...32
-            case .subagents: return 1...16
             case .pauseDeadline: return 30...600
             }
         }
@@ -304,7 +303,6 @@ public final class SettingsModel {
     public func value(_ limit: Limit) -> Int {
         switch limit {
         case .agents: return settings.maxConcurrentAgents
-        case .subagents: return settings.maxConcurrentSubagents
         case .pauseDeadline: return settings.pauseDeadlineSec
         }
     }
@@ -312,7 +310,6 @@ public final class SettingsModel {
     private func store(_ limit: Limit, _ v: Int) {
         switch limit {
         case .agents: settings.maxConcurrentAgents = v
-        case .subagents: settings.maxConcurrentSubagents = v
         case .pauseDeadline: settings.pauseDeadlineSec = v
         }
     }
@@ -326,12 +323,6 @@ public final class SettingsModel {
                 [.spawning, .running, .waiting, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
             }
             return running.count - value
-        case .subagents:
-            let subagents = AgentTree.flatten(agents).filter {
-                $0.parentName != nil && !AgentTree.isFinished($0) &&
-                [.spawning, .running, .waiting, .stale, .pauseRequested, .quiescing, .stopping].contains(DisplayState($0))
-            }
-            return subagents.count - value
         case .pauseDeadline:
             return 0
         }
@@ -349,7 +340,7 @@ public final class SettingsModel {
         await save()
     }
 
-    /// "3 agents are running above the new limit. They keep running; new agents wait for a free slot."
+    /// "2 agents will pause and resume when a slot frees."
     public var limitNotice: String? {
         pendingLimit.map { Copy.lowerLimit(overLimit($0.limit, $0.value)) }
     }
