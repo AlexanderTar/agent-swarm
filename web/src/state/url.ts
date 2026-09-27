@@ -19,7 +19,7 @@ export const DEFAULT_URL: BoardUrl = {
 };
 
 const VIEWS: readonly View[] = ["hierarchy", "kanban", "dependencies", "inbox"];
-const TYPES: readonly ItemType[] = ["epic", "story", "task", "bug", "spike"];
+const TYPES: readonly ItemType[] = ["epic", "story", "task", "bug", "spike", "chore"];
 const LEVELS: readonly CardLevel[] = ["tasks", "stories", "top"];
 const GROUPS: readonly Grouping[] = ["root", "flat"];
 const FILTERS: readonly InboxFilter[] = ["all", "questions", "approvals"];

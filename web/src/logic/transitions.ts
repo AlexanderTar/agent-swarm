@@ -27,6 +27,8 @@ export function checkMove(item: Movable, to: ItemStatus): MoveCheck {
         return { ok: false, reason: C.epicDone, special: "accept" };
       case "bug":
         return { ok: false, reason: C.bugDone, special: "accept" };
+      case "chore":
+        return { ok: false, reason: C.choreDone, special: "accept" };
       case "spike":
         return { ok: false, reason: C.spikeDone, special: "spike" };
       case "story":

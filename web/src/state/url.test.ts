@@ -16,6 +16,7 @@ describe("url state (§16.5)", () => {
     ["#/kanban?level=top&item=EPIC-12", { view: "kanban", level: "top", item: "EPIC-12" }],
     ["#/dependencies?item=TASK-102", { view: "dependencies", item: "TASK-102" }],
     ["#/inbox?req=req_1&filter=approvals", { view: "inbox", req: "req_1", filter: "approvals" }],
+    ["#/hierarchy?type=chore", { type: "chore" }],
   ];
 
   it.each(cases)("round-trips %s", (hash, patch) => {

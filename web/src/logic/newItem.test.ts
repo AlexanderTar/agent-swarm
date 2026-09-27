@@ -7,7 +7,7 @@ const base = { type: "task" as const, parentKey: "STORY-40", title: "Add tests",
 
 describe("new item rules (§16.5, I15)", () => {
   it("lists eligible parents", () => {
-    expect(PARENT_TYPES).toEqual({ epic: [], bug: [], story: ["epic"], task: ["story", "bug", "spike"] });
+    expect(PARENT_TYPES).toEqual({ epic: [], bug: [], story: ["epic"], task: ["story", "bug", "spike", "chore"] });
     expect(parentOptions(items, "story").map((i) => i.key)).toEqual(["EPIC-12", "EPIC-20", "EPIC-30"]);
     expect(parentOptions(items, "task").map((i) => i.type)).not.toContain("epic");
     expect(parentOptions(items, "task").map((i) => i.key)).toContain("SPIKE-3");

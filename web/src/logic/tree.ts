@@ -5,7 +5,7 @@ export type Matchable = Pick<Item, "key" | "title" | "type" | "status">;
 export const LEVEL_TYPES: Record<CardLevel, ItemType[]> = {
   tasks: ["task"],
   stories: ["story"],
-  top: ["epic", "bug", "spike"],
+  top: ["epic", "bug", "spike", "chore"],
 };
 
 // F20: the allowed parent type per item type for a user-created item (top-level types have no
@@ -13,7 +13,7 @@ export const LEVEL_TYPES: Record<CardLevel, ItemType[]> = {
 // export it once so nobody re-derives it.
 export const PARENT_TYPES: Partial<Record<ItemType, ItemType[]>> = {
   story: ["epic"],
-  task: ["story", "bug", "spike"],
+  task: ["story", "bug", "spike", "chore"],
 };
 
 export const isFilterActive = (f: Filter) => f.q.trim() !== "" || f.type !== "" || f.status !== "";

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Filter } from "../types";
 import {
-  ancestors, buildIndex, compareKeys, compareTopLevel, filterItems, hierarchyRows, isFilterActive, makeItem, matches, outsideView,
+  LEVEL_TYPES, PARENT_TYPES, ancestors, buildIndex, compareKeys, compareTopLevel, filterItems, hierarchyRows, isFilterActive, makeItem, matches, outsideView,
 } from "./tree";
 
 const none: Filter = { q: "", type: "", status: "" };
@@ -98,5 +98,10 @@ describe("tree logic (§16.5, §16.6)", () => {
     expect(outsideView("TASK-99", items, { ...none, status: "blocked" }, "dependencies", "tasks")).toBe(false);
     expect(outsideView("NOPE-1", items, none, "hierarchy", "tasks")).toBe(false);
     expect(outsideView("", items, none, "hierarchy", "tasks")).toBe(false);
+  });
+
+  it("puts chores at the top level and lets them hold tasks", () => {
+    expect(LEVEL_TYPES.top).toEqual(["epic", "bug", "spike", "chore"]);
+    expect(PARENT_TYPES.task).toEqual(["story", "bug", "spike", "chore"]);
   });
 });

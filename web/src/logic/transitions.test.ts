@@ -25,6 +25,7 @@ describe("checkMove (user actor, §10.1 + §17.3)", () => {
   it("routes epic and bug Done to acceptance", () => {
     expect(checkMove(it_("epic", "in_review"), "done")).toEqual({ ok: false, reason: "Accept this epic to mark it Done.", special: "accept" });
     expect(checkMove(it_("bug", "in_progress"), "done")).toEqual({ ok: false, reason: "Accept this fix to mark it Done.", special: "accept" });
+    expect(checkMove(it_("chore", "in_review"), "done")).toEqual({ ok: false, reason: "Accept this chore to mark it Done.", special: "accept" });
   });
 
   it("explains spike Done", () => {
