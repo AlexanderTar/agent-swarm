@@ -886,17 +886,41 @@ func (s *Store) Resume(ctx context.Context, name, sessionID, requestID string) (
 	} else if hit {
 		return out, nil
 	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		return Agent{}, err
+	}
+	// A repeat of a resume already waiting for a slot returns the agent,
+	// not a 409 (spec 2026-09-27-single-agent-limit-live decision 7).
+	if op, ok, err := s.PendingOperation(ctx, a.ID); err != nil {
+		return Agent{}, err
+	} else if ok && op.RequestKey == resumeKeyPrefix+ses.ID {
+		return a, nil
+	}
 	// Batch 3: Resume must not launch a competing session while the
 	// replacement coordinator is driving one.
 	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
 		return Agent{}, err
 	}
-	ses, err := s.LatestSession(ctx, a.ID)
-	if err != nil {
-		return Agent{}, err
-	}
 	if ses.State != Paused && ses.State != Interrupted {
 		return Agent{}, &items.Error{Code: items.CodeConflict, Message: stillStopping}
+	}
+	// The one agent limit: with the pool full, wait for a slot as a
+	// resume-keyed handoff (it parks in queued; ResumeOperations starts it in
+	// resume mode once Admit has room) instead of exceeding the limit.
+	if room, err := s.admitsNow(ctx, a); err != nil {
+		return Agent{}, err
+	} else if !room {
+		if _, err := s.RequestReplacement(ctx, a.ID, ModeHandoff, resumeKeyPrefix+ses.ID, ""); err != nil {
+			return Agent{}, err
+		}
+		if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_control", &out, func(*sql.Tx) error {
+			out = a
+			return nil
+		}); err != nil {
+			return Agent{}, err
+		}
+		return a, nil
 	}
 	resume := ses.ProviderSessionID != ""
 	// A provider resume reattaches (ResumeKickoff); a fresh launch after a

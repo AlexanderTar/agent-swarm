@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -352,5 +353,84 @@ func TestResumeOperationsResumesTheEarliestPauseFirst(t *testing.T) {
 	ops := capacityOps(t, s)
 	if ops[c.ID] != "succeeded" || ops[b.ID] != "queued" {
 		t.Fatalf("capacity ops = %v, want c (earliest pause) resumed, b still queued", ops)
+	}
+}
+
+// Spec scenario 8: Resume with the pool full records a resume-keyed handoff
+// instead of launching; a repeat is a no-op; a freed slot starts the
+// successor in resume mode with no agent.retried.
+func TestResumeWhenFullQueuesForAFreeSlot(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Paused); err != nil {
+		t.Fatal(err)
+	}
+	setLimits(t, s, 1) // the orchestrator holds the only slot
+	sessions := func() int {
+		var n int
+		if err := s.DB.QueryRow(`SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	for i := 0; i < 2; i++ {
+		got, err := s.Resume(ctx, w.Name, "", "")
+		if err != nil {
+			t.Fatalf("resume #%d: %v", i+1, err)
+		}
+		if got.ID != w.ID {
+			t.Fatalf("resume returned %s", got.Name)
+		}
+	}
+	var phase string
+	var n int
+	if err := s.DB.QueryRow(`SELECT phase, (SELECT COUNT(*) FROM agent_operations WHERE agent_id = ?)
+		FROM agent_operations WHERE request_key = ?`, w.ID, "resume:"+wSes.ID).Scan(&phase, &n); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "queued" || n != 1 {
+		t.Fatalf("resume op = %s (ops %d), want one queued", phase, n)
+	}
+	if got := sessions(); got != 1 {
+		t.Fatalf("sessions = %d, want 1 (no launch while full)", got)
+	}
+
+	setLimits(t, s, 2)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := sessions(); got != 2 {
+		t.Fatalf("sessions = %d, want 2 after a slot freed", got)
+	}
+	if !strings.Contains(fa.LastSpec.Kickoff, ResumeAddition) {
+		t.Fatalf("successor kickoff is not resume mode:\n%s", fa.LastSpec.Kickoff)
+	}
+	if n := countKind(s, "agent.retried"); n != 0 {
+		t.Fatalf("agent.retried raised %d times for a queued resume, want 0", n)
+	}
+}
+
+// Spec scenario 9: Resume with room behaves as before: an immediate new
+// generation and no operation row.
+func TestResumeWithRoomStartsAtOnce(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Paused); err != nil {
+		t.Fatal(err)
+	}
+	setLimits(t, s, 8)
+	if _, err := s.Resume(ctx, w.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	var ops int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM agent_operations WHERE agent_id = ?`, w.ID).Scan(&ops); err != nil || ops != 0 {
+		t.Fatalf("operations = %d (err %v), want 0", ops, err)
+	}
+	ses, err := s.LatestSession(ctx, w.ID)
+	if err != nil || ses.Generation != wSes.Generation+1 {
+		t.Fatalf("latest generation = %d (err %v), want %d", ses.Generation, err, wSes.Generation+1)
 	}
 }

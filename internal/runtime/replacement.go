@@ -899,9 +899,13 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 	// The successor continues the same assignment: its kickoff is the
 	// section-4 template for the operation mode (pause never reaches here;
 	// it lands succeeded at stop with no successor).
+	reason := OperationReason(op.RequestKey)
 	succMode := "handoff"
-	if op.Mode == ModeRecover {
+	switch {
+	case op.Mode == ModeRecover:
 		succMode = "recovery"
+	case reason == "resume":
+		succMode = "resume" // a manual Resume that waited for a slot
 	}
 	succ, err := s.startSession(ctx, a, latest.Attempt, latest.Generation+1, false, "", succMode)
 	if err != nil {
@@ -935,9 +939,13 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 		if err != nil {
 			return err
 		}
-		if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.retried", AgentName: a.Name,
-			ItemKey: key, Args: map[string]string{"name": a.Name, "N": fmt.Sprint(succ.Attempt), "KEY": key}}); err != nil {
-			return err
+		// A capacity pause or a queued resume coming back is expected, not a
+		// retry: no agent.retried (spec decision 9).
+		if reason == "" {
+			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.retried", AgentName: a.Name,
+				ItemKey: key, Args: map[string]string{"name": a.Name, "N": fmt.Sprint(succ.Attempt), "KEY": key}}); err != nil {
+				return err
+			}
 		}
 		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})

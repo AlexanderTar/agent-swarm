@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 )
 
@@ -111,4 +112,17 @@ func (s *Store) EnforceCapacity(ctx context.Context) error {
 		need--
 	}
 	return nil
+}
+
+// admitsNow reports whether Admit would let a start now; used by Resume.
+// Best effort: two concurrent resumes can both pass, and EnforceCapacity
+// pauses the excess on the next tick.
+func (s *Store) admitsNow(ctx context.Context, a Agent) (bool, error) {
+	var ok bool
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		ok, err = s.Admit(ctx, tx, a.Role, a.RootItemID)
+		return err
+	})
+	return ok, err
 }
