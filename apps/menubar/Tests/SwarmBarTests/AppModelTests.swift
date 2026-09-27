@@ -380,6 +380,128 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.inFlight[paused.name], .resume, "still busy until the agent leaves paused")
     }
 
+    /// Rewrites one agent (by name) in the mock daemon's state.
+    private func editAgent(_ name: String, _ edit: (inout AgentNode) -> Void) {
+        guard case var .success(s) = client.stateResult else { return }
+        func walk(_ nodes: [AgentNode]) -> [AgentNode] {
+            nodes.map { n in
+                var n = n
+                if n.name == name { edit(&n) }
+                n.children = walk(n.children)
+                return n
+            }
+        }
+        s.agents = walk(s.agents)
+        client.stateResult = .success(s)
+    }
+
+    func testResumeInFlightClearsOnceTheAgentLeavesPaused() async {
+        let m = make()
+        await m.refresh()
+        let paused = m.state.agents[1]
+        await m.perform(m.actions(paused)[0], on: paused)
+        XCTAssertEqual(m.inFlight[paused.name], .resume)
+        editAgent(paused.name) { $0.session?.state = .spawning }
+        await m.refresh()
+        XCTAssertTrue(m.inFlight.isEmpty)
+    }
+
+    // A subtree pause leaves the orchestrator running until every child has
+    // paused; the daemon's pause_pending shows it as "Pause requested" meanwhile.
+    func testPendingSubtreePauseShowsAsPauseRequested() async throws {
+        let json = #"{"id":"ses_1","state":"running","attempt":1,"generation":1,"waiting":false,"stale":false,"tmux_alive":true,"started_at":0,"ended_at":null,"pause_pending":true}"#
+        let pending = try JSONDecoder().decode(SessionInfo.self, from: Data(json.utf8))
+        XCTAssertEqual(DisplayState(AgentNode(name: "o", model: "m", session: pending)), .pauseRequested)
+        let old = try JSONDecoder().decode(SessionInfo.self, from: Data(json.replacingOccurrences(of: #","pause_pending":true"#, with: "").utf8))
+        XCTAssertEqual(DisplayState(AgentNode(name: "o", model: "m", session: old)), .running, "older daemons omit the key")
+
+        let m = make()
+        await m.refresh()
+        let orch = m.state.agents[0]
+        await m.perform(m.actions(orch)[1], on: orch)
+        XCTAssertEqual(m.inFlight[orch.name], .pause)
+        editAgent(orch.name) { $0.session?.pausePending = true }
+        await m.refresh()
+        XCTAssertTrue(m.inFlight.isEmpty)
+        let pause = m.actions(m.state.agents[0])[1]
+        XCTAssertEqual(pause.label, Copy.pausing)
+        XCTAssertTrue(pause.disabled, "the daemon's own pending state keeps Pause group off")
+    }
+
+    // Handoff on an agent that isn't live parks the operation without moving
+    // the session state: only `replacement` changes.
+    func testHandoffInFlightClearsOnceTheReplacementMoves() async {
+        let m = make()
+        await m.refresh()
+        let paused = m.state.agents[1]
+        guard let handoff = m.actions(paused).first(where: { $0.endpoint == .handoff }) else {
+            return XCTFail("paused fixture agent must offer Handoff")
+        }
+        await m.perform(handoff, on: paused)
+        XCTAssertEqual(m.inFlight[paused.name], .handoff)
+        editAgent(paused.name) { $0.replacement = AgentReplacement(operationID: "op_1", mode: "handoff", phase: "queued") }
+        await m.refresh()
+        XCTAssertTrue(m.inFlight.isEmpty)
+    }
+
+    func testInFlightIgnoresRunningWaitingStaleFlips() async {
+        let m = make()
+        await m.refresh()
+        let orch = m.state.agents[0]
+        await m.perform(m.actions(orch)[1], on: orch)
+        editAgent(orch.name) { $0.session?.waiting = true }
+        await m.refresh()
+        XCTAssertEqual(m.inFlight[orch.name], .pause, "running -> waiting is not the pause landing")
+        editAgent(orch.name) { $0.session?.waiting = false; $0.session?.stale = true }
+        await m.refresh()
+        XCTAssertEqual(m.inFlight[orch.name], .pause, "waiting -> stale is not the pause landing")
+    }
+
+    func testInFlightSnapshotsTheCurrentStateNotTheRenderedRow() async {
+        let m = make()
+        await m.refresh()
+        let rendered = m.state.agents[0] // a row drawn while it was still running
+        let pause = m.actions(rendered)[1]
+        editAgent(rendered.name) { $0.session?.state = .pauseRequested }
+        await m.refresh()
+        await m.perform(pause, on: rendered)
+        XCTAssertEqual(m.inFlight[rendered.name], .pause, "measured from pause_requested, not the stale running row")
+    }
+
+    // The timeout must fire on its own: no event may ever arrive.
+    func testInFlightTimeoutFiresWithoutAnEvent() async {
+        let m = make(sleep: { d in
+            guard d == .seconds(AppModel.inFlightTimeout) else { return try await Task.sleep(for: .seconds(3600)) }
+            try Task.checkCancellation()
+        })
+        await m.refresh()
+        let orch = m.state.agents[0]
+        await m.perform(m.actions(orch)[1], on: orch)
+        let refreshes = client.calls.filter { $0 == "state" }.count
+        for _ in 0..<200 where !m.inFlight.isEmpty { await Task.yield() }
+        XCTAssertTrue(m.inFlight.isEmpty)
+        for _ in 0..<200 where client.calls.filter({ $0 == "state" }).count == refreshes { await Task.yield() }
+        XCTAssertGreaterThan(client.calls.filter { $0 == "state" }.count, refreshes, "the timeout refreshes state")
+    }
+
+    func testInFlightTimeoutIsCancelledOnceTheStateMoves() async {
+        let cancelled = OpenCount()
+        let m = make(sleep: { d in
+            do { try await Task.sleep(for: .seconds(3600)) } catch {
+                if d == .seconds(AppModel.inFlightTimeout) { _ = cancelled.next() }
+                throw error
+            }
+        })
+        await m.refresh()
+        let orch = m.state.agents[0]
+        await m.perform(m.actions(orch)[1], on: orch)
+        editAgent(orch.name) { $0.session?.state = .pauseRequested }
+        await m.refresh()
+        XCTAssertTrue(m.inFlight.isEmpty)
+        for _ in 0..<200 where cancelled.value == 0 { await Task.yield() }
+        XCTAssertEqual(cancelled.value, 1)
+    }
+
     func testSecondPauseWhileInFlightIsANoOp() async {
         let m = make()
         await m.refresh()
@@ -666,4 +788,5 @@ final class OpenCount: @unchecked Sendable {
     private let lock = NSLock()
     private var n = 0
     func next() -> Int { lock.withLock { n += 1; return n } }
+    var value: Int { lock.withLock { n } }
 }
