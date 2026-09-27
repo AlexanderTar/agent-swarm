@@ -167,6 +167,62 @@ func TestRegisterLocalRepoAndCreateWorktreeWithoutChangingHint(t *testing.T) {
 	}
 }
 
+func TestLinkedGitWorktreePathRegistersAndCreatesFromMainRepository(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	main := gitRepoWithCommit(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	cmd := exec.Command("git", "-C", main, "worktree", "add", "-b", "linked", linked)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create linked Git worktree: %v: %s", err, out)
+	}
+	mainOut, err := s.call(ctx, seed.Caller, "swarm_repo_register", fmt.Sprintf(`{"path":%q}`, main))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mainRepo struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(mustJSON(mainOut), &mainRepo); err != nil {
+		t.Fatal(err)
+	}
+	linkedOut, err := s.call(ctx, seed.Caller, "swarm_repo_register", fmt.Sprintf(`{"path":%q}`, linked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var linkedRepo struct {
+		ID   string `json:"id"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(mustJSON(linkedOut), &linkedRepo); err != nil {
+		t.Fatal(err)
+	}
+	canonicalMain, err := filepath.EvalSymlinks(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkedRepo.ID != mainRepo.ID || linkedRepo.Path != canonicalMain {
+		t.Fatalf("linked registration = %+v; main ID = %q", linkedRepo, mainRepo.ID)
+	}
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/from-linked"}`, linked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wt); err != nil {
+		t.Fatal(err)
+	}
+	var repoID string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT repo_id FROM worktrees WHERE id = ?`, wt.WorktreeID).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	if repoID != mainRepo.ID {
+		t.Fatalf("created worktree repo ID = %q, want %q", repoID, mainRepo.ID)
+	}
+}
+
 func TestWorktreeCreateRegistersRelativeLocalGitPath(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()

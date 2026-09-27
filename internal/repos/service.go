@@ -273,15 +273,30 @@ func (s *Service) Loop(ctx context.Context, interval func(context.Context) time.
 	}
 }
 
-// AddManual registers any folder with a .git directory, hidden or excluded.
+// AddManual registers a repository or linked worktree, hidden or excluded.
+// Linked worktrees use their main repository's catalog identity.
 func (s *Service) AddManual(ctx context.Context, path string) (Repo, error) {
 	abs, err := filepath.Abs(path)
-	if err != nil || !IsRepo(abs) {
+	if err != nil {
 		return Repo{}, ErrNotRepo
 	}
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return Repo{}, ErrNotRepo
+	}
+	main, ok := MainRepoOf(real)
+	if !ok || !IsRepo(main) {
+		return Repo{}, ErrNotRepo
+	}
+	if main != real {
+		top, err := git(ctx, s.Run, real, "rev-parse", "--show-toplevel")
+		if err != nil || top != real {
+			return Repo{}, ErrNotRepo
+		}
+		real, err = filepath.EvalSymlinks(main)
+		if err != nil {
+			return Repo{}, ErrNotRepo
+		}
 	}
 	info := ReadGitInfo(ctx, s.Run, real)
 	now := db.Millis(s.Now())
