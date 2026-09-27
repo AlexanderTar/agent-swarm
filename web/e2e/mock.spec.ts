@@ -4,6 +4,63 @@ test.beforeEach(async ({ request }) => {
   await request.get("/__mock/reset");
 });
 
+test("foundation controls keep dark palette, contrast and density under a light OS", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/");
+  await page.addScriptTag({
+    type: "module",
+    content: `
+      const [React, ReactDOM, button, badge, input, select, tabs] = await Promise.all([
+        import('/node_modules/.vite/deps/react.js'),
+        import('/node_modules/.vite/deps/react-dom_client.js'),
+        import('/src/components/ui/button.tsx'),
+        import('/src/components/ui/badge.tsx'),
+        import('/src/components/ui/input.tsx'),
+        import('/src/components/ui/select.tsx'),
+        import('/src/components/ui/tabs.tsx'),
+      ]);
+      const e = React.createElement ?? React.default.createElement;
+      const createRoot = ReactDOM.createRoot ?? ReactDOM.default.createRoot;
+      const host = document.createElement('div');
+      host.id = 'foundation-fixture';
+      document.body.append(host);
+      createRoot(host).render(e(React.Fragment ?? React.default.Fragment, null,
+        e(button.Button, { 'data-testid': 'button-default' }, 'Default'),
+        e(button.Button, { 'data-testid': 'button-sm', size: 'sm' }, 'Small'),
+        e(button.Button, { 'data-testid': 'button-icon', size: 'icon' }, '+'),
+        e(button.Button, { 'data-testid': 'button-destructive', variant: 'destructive' }, 'Delete'),
+        e(button.Button, { 'data-testid': 'button-outline', variant: 'outline' }, 'Outline'),
+        e(button.Button, { 'data-testid': 'button-link', variant: 'link' }, 'Link'),
+        e(badge.Badge, { 'data-testid': 'badge-destructive', variant: 'destructive' }, 'Error'),
+        e(input.Input, { 'data-testid': 'input' }),
+        e(select.Select, null, e(select.SelectTrigger, { 'data-testid': 'select' }, e(select.SelectValue, { placeholder: 'Choose' }))),
+        e(tabs.Tabs, { defaultValue: 'one' }, e(tabs.TabsList, null, e(tabs.TabsTrigger, { value: 'one', 'data-testid': 'tab' }, 'One')))
+      ));
+    `,
+  });
+  const fixture = page.locator("#foundation-fixture");
+  await expect(fixture.getByTestId("button-default")).toHaveCSS("height", "32px");
+  await expect(fixture.getByTestId("button-sm")).toHaveCSS("height", "28px");
+  await expect(fixture.getByTestId("button-icon")).toHaveCSS("width", "32px");
+  await expect(fixture.getByTestId("input")).toHaveCSS("height", "32px");
+  await expect(fixture.getByTestId("select")).toHaveCSS("height", "32px");
+  await expect(fixture.getByTestId("button-destructive")).toHaveCSS("color", "rgb(11, 11, 14)");
+  await expect(fixture.getByTestId("badge-destructive")).toHaveCSS("color", "rgb(11, 11, 14)");
+  await expect(fixture.getByTestId("button-link")).toHaveCSS("color", "rgb(162, 152, 255)");
+  await expect(fixture.getByTestId("button-outline")).toHaveCSS("background-color", /^oklab\(.* \/ 0\.3\)$/);
+  await expect(fixture.getByTestId("input")).toHaveCSS("background-color", /^oklab\(.* \/ 0\.3\)$/);
+  await expect(fixture.getByTestId("button-default")).not.toHaveCSS("transition-property", "all");
+  await expect(fixture.getByTestId("tab")).not.toHaveCSS("transition-property", "all");
+  const lightColors = await fixture.locator("[data-testid]").evaluateAll((nodes) =>
+    nodes.map((node) => [getComputedStyle(node).color, getComputedStyle(node).backgroundColor]),
+  );
+  await page.emulateMedia({ colorScheme: "dark" });
+  const darkColors = await fixture.locator("[data-testid]").evaluateAll((nodes) =>
+    nodes.map((node) => [getComputedStyle(node).color, getComputedStyle(node).backgroundColor]),
+  );
+  expect(darkColors).toEqual(lightColors);
+});
+
 test("hierarchy, filters and view switching keep the selection", async ({ page }) => {
   await page.goto("/#/hierarchy?item=TASK-102");
   await expect(page.getByRole("treeitem", { name: /^EPIC-12 / })).toBeVisible();
