@@ -141,9 +141,13 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		q := fmt.Sprintf("Close %s?", key)
 		return NativePrompt{Header: "Close spike", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
 	case KindAcceptEpic, KindAcceptFix:
-		var key, title string
-		if err := tx.QueryRowContext(ctx, `SELECT key, title FROM items WHERE id = ?`, req.ItemID).Scan(&key, &title); err != nil {
+		var key, title, typ string
+		if err := tx.QueryRowContext(ctx, `SELECT key, title, type FROM items WHERE id = ?`, req.ItemID).Scan(&key, &title, &typ); err != nil {
 			return NativePrompt{}, err
+		}
+		if req.Kind == KindAcceptFix && typ == string(items.Chore) {
+			q := fmt.Sprintf("Accept %s %q as done?", key, title)
+			return NativePrompt{Header: "Accept chore", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
 		}
 		if req.Kind == KindAcceptFix {
 			q := fmt.Sprintf("Accept the fix for %s %q as done?", key, title)

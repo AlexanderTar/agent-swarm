@@ -24,6 +24,10 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	chore, err := s.Items.Create(ctx, items.CreateInput{Type: items.Chore, Title: "Bump deps"}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		got, err := s.nativePromptFor(ctx, tx, Request{ID: "req_e1", Kind: KindAcceptEpic, ItemID: ep.ID}, "", nil)
 		if err != nil {
@@ -41,6 +45,15 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 			Question: fmt.Sprintf(`Accept the fix for %s "Login loop" as done? ⟦swarm:req_f1⟧`, bug.Key), Options: approveOptions}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("accept_fix prompt = %+v, want %+v", got, want)
+		}
+		got, err = s.nativePromptFor(ctx, tx, Request{ID: "req_c1", Kind: KindAcceptFix, ItemID: chore.ID}, "", nil)
+		if err != nil {
+			return err
+		}
+		want = NativePrompt{Header: "Accept chore",
+			Question: fmt.Sprintf(`Accept %s "Bump deps" as done? ⟦swarm:req_c1⟧`, chore.Key), Options: approveOptions}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("chore accept_fix prompt = %+v, want %+v", got, want)
 		}
 		return nil
 	})
@@ -520,5 +533,59 @@ func TestQuotaResetWakeResurfacesOnlyWhatIsNotVisible(t *testing.T) {
 		if _, n := relayFor(t, s, a.ID, id); n != 0 {
 			t.Fatalf("%s is visible or a prompt but got %d relays", id, n)
 		}
+	}
+}
+
+// Chore spec E9 end to end: a zero-task chore goes accepted -> integrated ->
+// accept_fix routed natively to its orchestrator -> approve -> Done.
+func TestChoreEndToEndAcceptFix(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, orch, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bump deps", Intent: "chore", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "bumping deps"}); err != nil {
+		t.Fatal(err)
+	}
+	if it, _ := s.Items.Get(ctx, key); it.Status != items.InProgress {
+		t.Fatalf("after accepted: %s", it.Status)
+	}
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "merged",
+		Git:          []GitRef{{Repo: "proj", Branch: "main", SHA: "deadbee"}},
+		Verification: []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	it, _ := s.Items.Get(ctx, key)
+	if it.Status != items.InReview {
+		t.Fatalf("after integrated: %s", it.Status)
+	}
+	var reqID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT id FROM requests WHERE item_id = ? AND kind = 'accept_fix'
+		AND state = 'open'`, it.ID).Scan(&reqID); err != nil {
+		t.Fatalf("no open accept_fix: %v", err)
+	}
+	// items.Store.RequestOpened is wired to OnRequestOpened only in the real
+	// daemon (cmd/swarm/daemon.go); this fixture fires it explicitly, same as
+	// every other accept_epic/accept_fix routing test in this package.
+	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.OnRequestOpened(ctx, tx, reqID) }); err != nil {
+		t.Fatal(err)
+	}
+	p, n := relayFor(t, s, orch.ID, reqID)
+	if n != 1 {
+		t.Fatalf("%d relays, want 1", n)
+	}
+	np := decodeNP(t, p)
+	if np.Header != "Accept chore" {
+		t.Fatalf("native prompt = %+v", np)
+	}
+	hookSimulate(t, s, ses, np, "Approve")
+	out, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: reqID, Decision: "approve"})
+	if err != nil || out.State != "approved" {
+		t.Fatalf("native_answer = %+v, %v", out, err)
+	}
+	if it, _ := s.Items.Get(ctx, key); it.Status != items.Done {
+		t.Fatalf("after approval: %s", it.Status)
 	}
 }
