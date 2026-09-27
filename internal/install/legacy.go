@@ -134,7 +134,7 @@ func Leftovers(c Config) []Leftover {
 		add(link, "Agent Swarm 1.x symlink")
 	}
 	if body, err := os.ReadFile(c.Codex("config.toml")); err == nil {
-		if _, removed := RemoveLegacyCodexMCP(string(body)); removed {
+		if hasLegacyCodexMCP(string(body), c.Bin) {
 			add(c.Codex("config.toml"), "Agent Swarm 1.x [mcp_servers.swarm] table")
 		}
 	}

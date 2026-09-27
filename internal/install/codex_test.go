@@ -463,3 +463,36 @@ func TestCheckCodexWarnsOnGitAttributionInTheNewestRollout(t *testing.T) {
 		t.Fatal("no Codex attribution check")
 	}
 }
+
+// swarm install writes v2's own [mcp_servers.swarm] (command = c.Bin). That
+// table is not a 1.x leftover: doctor must pass on it, and the legacy remover
+// must leave the file untouched instead of deleting and rewriting it each run.
+func TestCurrentSwarmMCPTableIsNotLegacy(t *testing.T) {
+	c := fakeHome(t)
+	if _, err := install.WriteCodex(c); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(c.Codex("config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := (&execx.Fake{Responses: map[string]execx.Result{}}).Runner()
+	for _, ch := range install.CheckCodex(context.Background(), c, run) {
+		if ch.Name == "Codex MCP" && !ch.OK {
+			t.Errorf("Codex MCP = %+v on v2's own table", ch)
+		}
+	}
+	changed, err := install.RemoveLegacyCodex(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range changed {
+		if p == c.Codex("config.toml") {
+			t.Error("RemoveLegacyCodex rewrote config.toml holding only v2's own table")
+		}
+	}
+	after, _ := os.ReadFile(c.Codex("config.toml"))
+	if string(after) != string(before) {
+		t.Errorf("config.toml changed:\n%s", after)
+	}
+}

@@ -206,6 +206,29 @@ func appendCodexSwarmMCP(text, bin string) string {
 	return strings.TrimRight(text, "\n") + "\n\n" + block
 }
 
+// hasLegacyCodexMCP reports whether config.toml's text still carries the 1.x
+// integration: the `# swarm:start` span, or a [mcp_servers.swarm] table whose
+// command is not this install's binary. v2 writes its own table (command = bin,
+// appendCodexSwarmMCP), and that one is current, not a leftover.
+func hasLegacyCodexMCP(text, bin string) bool {
+	if _, span := removeCodexSentinelSpan(text); span {
+		return true
+	}
+	if _, tables := removeCodexSwarmTables(text); !tables {
+		return false
+	}
+	var cfg struct {
+		MCPServers map[string]struct {
+			Command string `toml:"command"`
+		} `toml:"mcp_servers"`
+	}
+	if toml.Unmarshal([]byte(text), &cfg) != nil {
+		return true // unparsable: let the remover's own validation decide
+	}
+	sw, ok := cfg.MCPServers["swarm"]
+	return !ok || sw.Command != bin
+}
+
 var codexSwarmTable = regexp.MustCompile(`^\[mcp_servers\.swarm(\.[A-Za-z_][A-Za-z0-9_]*)?\]`)
 
 // RemoveLegacyCodexMCP removes the v1 integration from a config.toml's text: the
@@ -280,7 +303,7 @@ func RemoveLegacyCodex(c Config) ([]string, error) {
 		before := map[string]any{}
 		parsedBefore := toml.Unmarshal(old, &before) == nil
 		next, removed := RemoveLegacyCodexMCP(string(old))
-		if removed {
+		if removed && hasLegacyCodexMCP(string(old), c.Bin) {
 			// Validate rather than round-trip (rule 4): the result must still parse,
 			// and every top-level key the user had must still be there.
 			after := map[string]any{}
@@ -394,7 +417,7 @@ func codexMCPCheck(c Config) Check {
 	if err != nil {
 		return Check{"Codex MCP", true, "No Agent Swarm 1.x MCP table."}
 	}
-	if _, removed := RemoveLegacyCodexMCP(string(body)); removed {
+	if hasLegacyCodexMCP(string(body), c.Bin) {
 		return Check{"Codex MCP", false,
 			"Agent Swarm 1.x [mcp_servers.swarm] is still in " + c.Codex("config.toml") + ". Run swarm install."}
 	}
