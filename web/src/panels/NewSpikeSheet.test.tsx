@@ -97,7 +97,7 @@ describe("NewSpikeSheet (§16.3, I15)", () => {
     const onCreated = vi.fn();
     const { user } = renderWithDaemon(<NewSpikeSheet chore onClose={vi.fn()} onCreated={onCreated} />, { daemon: d, events: false });
     const sheet = await screen.findByRole("dialog", { name: "New chore" });
-    expect(within(sheet).getByText("Creates a chore orchestrator that works on the scope you describe.")).toBeInTheDocument();
+    expect(within(sheet).getByText("Creates a top-level chore orchestrator for maintenance, refactoring, or general work.")).toBeInTheDocument();
     expect(within(sheet).getByText("The orchestrator asks you to confirm repositories before it starts work.")).toBeInTheDocument();
     expect(within(sheet).queryByRole("radio", { name: "Feature spike" })).not.toBeInTheDocument();
     expect(within(sheet).queryByRole("radio", { name: "Debug spike" })).not.toBeInTheDocument();
