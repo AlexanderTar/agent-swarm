@@ -46,10 +46,13 @@ public struct SessionInfo: Codable, Sendable, Equatable {
     public var tmuxAlive: Bool
     public var startedAt: Timestamp
     public var endedAt: Timestamp?
+    /// Root of a subtree pause still waiting on its children: the session keeps
+    /// running until they've all paused. Optional: older daemons omit the key.
+    public var pausePending: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, state, attempt, generation, waiting, stale
-        case tmuxAlive = "tmux_alive", startedAt = "started_at", endedAt = "ended_at"
+        case tmuxAlive = "tmux_alive", startedAt = "started_at", endedAt = "ended_at", pausePending = "pause_pending"
     }
 
     public init(id: String = "ses_1", state: SessionState, attempt: Int = 1, generation: Int = 1,

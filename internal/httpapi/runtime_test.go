@@ -573,3 +573,39 @@ func TestAgentsPayloadIncludesStep(t *testing.T) {
 		t.Errorf("task-worker step = %v, want review r2", workerNode2["step"])
 	}
 }
+
+// A subtree pause leaves its root orchestrator running (pause_root = 1) until
+// every descendant has paused; pause_pending tells the menubar the pause is
+// still in flight, so "Pause group" doesn't come back on mid-pause.
+func TestSessionWireCarriesPausePending(t *testing.T) {
+	s, seed := newRuntimeServer(t)
+	pending := func() any {
+		rec := s.get(t, "/api/agents?state=all")
+		var nodes []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &nodes); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range nodes {
+			if n["name"] == seed.AgentName {
+				return n["session"].(map[string]any)["pause_pending"]
+			}
+		}
+		t.Fatalf("agent %s not listed: %s", seed.AgentName, rec.Body)
+		return nil
+	}
+	if got := pending(); got != false {
+		t.Fatalf("pause_pending = %v, want false", got)
+	}
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE sessions SET pause_scope = 'subtree', pause_root = 1 WHERE id = ?`, seed.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := pending(); got != true {
+		t.Fatalf("pause_pending = %v, want true while the root still runs", got)
+	}
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE sessions SET state = 'pause_requested' WHERE id = ?`, seed.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := pending(); got != false {
+		t.Fatalf("pause_pending = %v, want false once the root itself is pausing (state says so)", got)
+	}
+}

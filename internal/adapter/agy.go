@@ -402,6 +402,9 @@ const agyWakeResultTimeout = 5 * time.Minute
 // write succeeds and hands the process off to drainWakeTurn: blocking here
 // would stall WakeDue's per-tick loop for every other pending agent.
 func (a *Agy) Wake(ctx context.Context, w WakeTarget) (bool, error) {
+	if w.ProviderSessionID == "" {
+		return false, fmt.Errorf("agy wake: agent %s has no provider session id", w.AgentID)
+	}
 	agyHome := filepath.Join(a.d.launchDir(w.SessionID), "agy-home")
 	argv := []string{"--conversation", w.ProviderSessionID,
 		"--input-format", "stream-json", "--output-format", "stream-json"}

@@ -619,6 +619,71 @@ func TestCodexSetupEnvRejectsAHomeThatWouldExceedSunLen(t *testing.T) {
 // a message against a thread that lives in a different CODEX_HOME fails
 // with "no rollout found for thread id ..." (confirmed live). Wake must set
 // CODEX_HOME to the same directory Launch/Resume used for this agent.
+// Root cause C: codex's rate-limit picker ("Switch to <model> for lower
+// credit usage?") defaults to option 1 (switch); a pasted wake message +
+// Enter into that screen silently switched the model and dropped the wake
+// text. PromptPatterns must answer it Down+Enter ("Keep current model"),
+// the same shape as the existing model-retirement pattern, and must not be
+// confused with that unrelated dialog or the idle screens.
+func TestCodexPromptPatternsAnswersRateLimitPickerWithKeepCurrentModel(t *testing.T) {
+	a := newCodex(testDeps(t))
+	screen := pane(t, "codex", "pane-dialog-rate-limit.txt")
+	var pm *PromptMatcher
+	for i := range a.PromptPatterns() {
+		p := a.PromptPatterns()[i]
+		if p.Match != nil && p.Match.MatchString(screen) {
+			pm = &p
+		}
+	}
+	if pm == nil {
+		t.Fatal("no PromptPatterns entry matches the rate-limit picker")
+	}
+	if pm.Require == nil || !pm.Require.MatchString(screen) {
+		t.Error("the rate-limit matcher must require the 'Keep current model' line")
+	}
+	if pm.Action != "Down+Enter" {
+		t.Errorf("rate-limit action = %q, want Down+Enter (Enter alone would switch the model)", pm.Action)
+	}
+	if codexRetire.MatchString(screen) {
+		t.Error("the model-retirement pattern must not also match the rate-limit picker")
+	}
+	for _, f := range []string{"pane-dialog-model-retirement.txt", "pane-idle.txt", "pane-idle-ansi.txt"} {
+		if pm.Match.MatchString(pane(t, "codex", f)) {
+			t.Errorf("the rate-limit matcher must not match %s", f)
+		}
+	}
+}
+
+// Root cause C (part 2): codexIdle's (?m)^...$ used to match an empty
+// composer prompt anywhere in the capture, not only at the bottom -- a
+// stale idle render higher up in scrollback (e.g. from before the picker
+// appeared) reported the pane as idle even while the rate-limit dialog was
+// actually on screen. reconcile.resolveAlive only runs PromptPatterns when
+// !idle, so this also silently prevented the pattern above from ever
+// firing there.
+func TestCodexIdleIgnoresStaleScrollbackAboveTheRateLimitDialog(t *testing.T) {
+	a := newCodex(testDeps(t))
+	if a.Idle(pane(t, "codex", "pane-dialog-rate-limit.txt")) {
+		t.Error("a stale empty prompt earlier in scrollback must not make an active dialog read as idle")
+	}
+}
+
+// Root cause E: WakeOnQuotaReset used to hand Codex.Wake an empty
+// ProviderSessionID (fixed separately); `codex queue --thread ""` fails
+// live, but Wake should refuse to even try rather than rely on codex's own
+// error text.
+func TestCodexWakeRejectsEmptyProviderSessionID(t *testing.T) {
+	d := testDeps(t)
+	d.RunEnv = func(context.Context, map[string]string, string, ...string) ([]byte, error) {
+		t.Fatal("RunEnv must not be called with an empty ProviderSessionID")
+		return nil, nil
+	}
+	ok, err := newCodex(d).Wake(context.Background(), WakeTarget{SessionID: "ses_01", AgentID: "ag_01"})
+	if ok || err == nil {
+		t.Fatalf("Wake = %v, %v; want false, non-nil error", ok, err)
+	}
+}
+
 func TestCodexWakeUsesTheAgentsCodexHome(t *testing.T) {
 	d := testDeps(t)
 	var gotEnv map[string]string

@@ -443,39 +443,86 @@ func prune(ctx context.Context, ev *events.Store, d *db.DB, now time.Time, log l
 }
 
 // quotaResetLoop periodically checks agent quota reset timestamps and pings
-// idle/live sessions 1 minute after their quota resets.
+// idle/live sessions 1 minute after their quota resets. seen is owned by
+// this one long-lived goroutine (no locking needed) and remembers every
+// ResetsAt dueResets has ever observed, across ticks -- see its doc comment
+// for why the latest snapshot alone isn't enough.
 func quotaResetLoop(ctx context.Context, up *usagesvc.Poller, rt *runtime.Store, log logf) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
+	seen := map[string]map[int64]bool{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			checkQuotaResets(ctx, up, rt, time.Now(), log)
+			checkQuotaResets(ctx, up, rt, seen, time.Now(), log)
 		}
 	}
 }
 
-func checkQuotaResets(ctx context.Context, up *usagesvc.Poller, rt *runtime.Store, now time.Time, log logf) {
+// quotaResetFire is one (kind, cutoff) pair whose reset detection window is
+// open now.
+type quotaResetFire struct {
+	Kind   runtime.AgentKind
+	Cutoff time.Time
+}
+
+// dueResets records every used meter's ResetsAt into seen (keyed by "kind|meter
+// id"), then returns every remembered cutoff currently inside the
+// (now-1h, now-1m] detection window, pruning anything older than that.
+//
+// Root cause B: a live snapshot's ResetsAt can roll to the NEXT window
+// before checkQuotaResets ever ticks with the old one in view -- Codex's 5h
+// window restarts on first use after reset (the user's own codex use shares
+// it), so reading only the latest value silently drops the reset the
+// instant anyone uses codex again. Remembering every value ever seen means
+// the old cutoff is still around to fire on however far the live value has
+// since moved on. Firing more than once for the same remembered cutoff is
+// harmless: WakeOnQuotaReset's own `last_wake_at < cutoff` row filter makes
+// a repeat call a no-op for every session it already woke.
+func dueResets(seen map[string]map[int64]bool, snaps []usagesvc.Snapshot, now time.Time) []quotaResetFire {
+	for _, snap := range snaps {
+		for _, m := range snap.Meters {
+			// UsedPct <= 0: an unused window has nothing to reset, and agy
+			// reports one with ResetsAt sliding to fetch-time+5h on every
+			// poll -- remembering those would fire a fake reset per poll.
+			if m.ResetsAt == nil || m.UsedPct <= 0 {
+				continue
+			}
+			key := string(snap.Agent) + "|" + m.ID
+			if seen[key] == nil {
+				seen[key] = map[int64]bool{}
+			}
+			seen[key][m.ResetsAt.UnixMilli()] = true
+		}
+	}
+	var fires []quotaResetFire
+	for key, times := range seen {
+		kind, _, _ := strings.Cut(key, "|")
+		for ms := range times {
+			cutoff := time.UnixMilli(ms)
+			switch {
+			case now.Sub(cutoff) >= time.Hour:
+				delete(times, ms) // outside the detection window forever
+			case now.After(cutoff.Add(time.Minute)):
+				fires = append(fires, quotaResetFire{Kind: runtime.AgentKind(kind), Cutoff: cutoff})
+			}
+		}
+	}
+	return fires
+}
+
+func checkQuotaResets(ctx context.Context, up *usagesvc.Poller, rt *runtime.Store, seen map[string]map[int64]bool, now time.Time, log logf) {
 	snaps, err := up.Snapshots(ctx)
 	if err != nil {
 		return
 	}
-	for _, snap := range snaps {
-		for _, m := range snap.Meters {
-			if m.ResetsAt == nil {
-				continue
-			}
-			cutoff := *m.ResetsAt
-			// Check if a minute has passed since reset cutoff, within a 1-hour window
-			if now.After(cutoff.Add(time.Minute)) && now.Sub(cutoff) < time.Hour {
-				if n, err := rt.WakeOnQuotaReset(ctx, snap.Agent, cutoff); err != nil {
-					log("quota reset wake %s: %v", snap.Agent, err)
-				} else if n > 0 {
-					log("quota reset wake %s: woke %d session(s)", snap.Agent, n)
-				}
-			}
+	for _, fire := range dueResets(seen, snaps, now) {
+		if n, err := rt.WakeOnQuotaReset(ctx, fire.Kind, fire.Cutoff); err != nil {
+			log("quota reset wake %s: %v", fire.Kind, err)
+		} else if n > 0 {
+			log("quota reset wake %s: woke %d session(s)", fire.Kind, n)
 		}
 	}
 }

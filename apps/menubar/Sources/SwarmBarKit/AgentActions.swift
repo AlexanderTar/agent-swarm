@@ -14,7 +14,7 @@ public enum DisplayState: String, Sendable, CaseIterable {
         }
         if a.state == .queued { self = .queued; return }
         switch s.state {
-        case .running: self = s.waiting ? .waiting : s.stale ? .stale : .running
+        case .running: self = s.pausePending == true ? .pauseRequested : s.waiting ? .waiting : s.stale ? .stale : .running
         case .spawning: self = .spawning
         case .pauseRequested: self = .pauseRequested
         case .quiescing: self = .quiescing

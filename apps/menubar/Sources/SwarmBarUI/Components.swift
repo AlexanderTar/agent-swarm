@@ -104,6 +104,7 @@ public struct IconButton: View {
         }
         .buttonStyle(.borderless)
         .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1) // .borderless barely dims a disabled symbol in the popover
         .help(help)
         .accessibilityLabel(help)
     }

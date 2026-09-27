@@ -375,6 +375,24 @@ func TestAgyWakeReturnsFalseWhenStartFails(t *testing.T) {
 	}
 }
 
+// Root cause E: WakeOnQuotaReset used to hand Agy.Wake an empty
+// ProviderSessionID (fixed separately), and StartEnv has no way to notice
+// the conversation id is bogus -- it starts successfully against
+// "--conversation ”" and Wake reported delivered=true having sent the
+// wake text nowhere. Wake must refuse an empty id itself, so no future
+// caller can repeat that silent-false-positive.
+func TestAgyWakeRejectsEmptyProviderSessionID(t *testing.T) {
+	d := testDeps(t)
+	d.StartEnv = func(context.Context, map[string]string, string, ...string) (*execx.Proc, error) {
+		t.Fatal("StartEnv must not be called with an empty ProviderSessionID")
+		return nil, nil
+	}
+	ok, err := newAgy(d).Wake(context.Background(), WakeTarget{SessionID: "ses_1", AgentID: "ag_1"})
+	if ok || err == nil {
+		t.Fatalf("Wake = %v, %v; want false, non-nil error", ok, err)
+	}
+}
+
 func agySpec(t *testing.T) Spec {
 	t.Helper()
 	return Spec{
