@@ -86,6 +86,12 @@ public final class AppModel {
     /// Pause/resume requests sent but not yet reflected in `state`, by agent name. `actions(_:)`
     /// shows those buttons disabled; the daemon's own "Pausing…" state only arrives with the refresh.
     public private(set) var inFlight: [String: AgentEndpoint] = [:]
+    /// What each in-flight request was waiting to see change: the agent's state when
+    /// the button was pressed, and when. A successful request stays in flight until
+    /// the daemon's state for that agent moves (or `inFlightTimeout` passes), so the
+    /// button can't flip back on between the POST landing and the state catching up.
+    private var inFlightSince: [String: (state: DisplayState, at: Date)] = [:]
+    public static let inFlightTimeout: TimeInterval = 60
     public private(set) var openSections: Set<Section>
     public private(set) var collapsedAgents: Set<String> = []
     public private(set) var openFinished: Set<String> = []
@@ -205,6 +211,14 @@ public final class AppModel {
             if before != after { preview.invalidate() }
         }
         state = s
+        if !inFlightSince.isEmpty {
+            let agents = Dictionary(AgentTree.flatten(s.agents).map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+            let at = now()
+            for (name, since) in inFlightSince {
+                let moved = agents[name].map { DisplayState($0) != since.state } ?? true
+                if moved || at.timeIntervalSince(since.at) > Self.inFlightTimeout { clearInFlight(name) }
+            }
+        }
         // A handoff key is kept only while its operation may still be in
         // flight: once state shows no replacement for that agent, the next
         // deliberate Handoff must not replay the settled operation.
@@ -387,8 +401,11 @@ public final class AppModel {
         if tracked {
             guard inFlight[agent.name] == nil else { return }
             inFlight[agent.name] = action.endpoint
+            inFlightSince[agent.name] = (DisplayState(agent), now())
         }
-        defer { if tracked { inFlight[agent.name] = nil } } // after the refresh below, also on error
+        var succeeded = false
+        // On error the button comes back at once; on success it waits for the state to move (apply).
+        defer { if tracked && !succeeded { clearInFlight(agent.name) } }
         // One request key per user handoff action: a retry after a timeout or
         // an unreachable daemon (the POST may have landed) reuses it, so the
         // daemon replays the same operation instead of answering 409.
@@ -399,6 +416,7 @@ public final class AppModel {
         }
         do {
             try await client.agent(agent.name, action.endpoint, scope: action.scope, requestID: requestID)
+            succeeded = true
             actionError = nil
             handoffKeys[agent.name] = nil
         } catch let e as DaemonError {
@@ -406,6 +424,11 @@ public final class AppModel {
             if case .api = e { handoffKeys[agent.name] = nil }
         } catch {}
         await refresh()
+    }
+
+    private func clearInFlight(_ name: String) {
+        inFlight[name] = nil
+        inFlightSince[name] = nil
     }
 
     public func openTerminal(_ name: String) async {

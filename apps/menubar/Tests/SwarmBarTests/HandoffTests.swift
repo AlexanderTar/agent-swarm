@@ -148,6 +148,8 @@ final class HandoffModelTests: XCTestCase {
         cacheURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("state.json")
     }
 
+    private var now = fixtureNow
+
     private func make() -> AppModel {
         let terminals = Terminals(runner: FakeRunner(), script: FakeScript(), ghosttyPIDs: { [] },
                                   fileExists: { $0 == "/opt/homebrew/bin/tmux" })
@@ -157,7 +159,7 @@ final class HandoffModelTests: XCTestCase {
                         terminals: terminals, poster: FakePoster(), defaults: defaults,
                         cache: StateCache(url: cacheURL),
                         connect: { _ in throw URLError(.cannotConnectToHost) },
-                        now: { fixtureNow }, timeZone: TimeZone(identifier: "UTC")!,
+                        now: { [unowned self] in self.now }, timeZone: TimeZone(identifier: "UTC")!,
                         openURL: { _ in })
     }
 
@@ -262,6 +264,9 @@ final class HandoffModelTests: XCTestCase {
         client.failNext = .timedOut
         await m.perform(handoff, on: a)
         await m.perform(handoff, on: a)
+        // The fixture's state never moves, so that success stays in flight until it times out.
+        now = now.addingTimeInterval(AppModel.inFlightTimeout + 1)
+        await m.refresh()
         await m.perform(handoff, on: a)
         let keys = client.handoffRequestIDs
         XCTAssertEqual(keys.count, 3)

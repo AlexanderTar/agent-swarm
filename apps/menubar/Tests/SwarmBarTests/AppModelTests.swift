@@ -285,6 +285,9 @@ final class AppModelTests: XCTestCase {
         await m.perform(m.actions(orch)[0], on: orch)
         XCTAssertEqual(script.sources.count, 1, "terminal opens through Ghostty, not the daemon")
         await m.perform(AgentAction(endpoint: .pause, label: "Pausing…", disabled: true, placement: .button), on: orch)
+        // The fixture's state never moves, so the earlier resume stays in flight until it times out.
+        clock = clock.addingTimeInterval(AppModel.inFlightTimeout + 1)
+        await m.refresh()
         client.failNext = .api(status: 409, code: "conflict", message: "Still stopping. Try again in a few seconds.")
         await m.perform(m.actions(paused)[0], on: paused)
         XCTAssertEqual(m.actionError, "Still stopping. Try again in a few seconds.")
@@ -325,8 +328,35 @@ final class AppModelTests: XCTestCase {
 
         client.releaseAgent()
         await task.value
+        // The daemon took the request but its state hasn't moved yet: the
+        // button stays disabled until the agent's state actually changes.
+        XCTAssertEqual(m.inFlight[orch.name], .pause)
+        XCTAssertTrue(m.actions(orch)[1].disabled)
+        XCTAssertEqual(m.actions(orch)[1].label, Copy.pausing)
+    }
+
+    func testInFlightClearsOnceTheAgentStateChanges() async {
+        let m = make()
+        await m.refresh()
+        let orch = m.state.agents[0]
+        await m.perform(m.actions(orch)[1], on: orch)
+        XCTAssertEqual(m.inFlight[orch.name], .pause, "state unchanged: still busy")
+        var moved = try! client.stateResult.get()
+        moved.agents[0].session?.state = .pauseRequested
+        client.stateResult = .success(moved)
+        await m.refresh()
         XCTAssertTrue(m.inFlight.isEmpty)
-        XCTAssertEqual(m.actions(orch).map(\.label), before.map(\.label))
+    }
+
+    func testInFlightGivesUpAfterATimeout() async {
+        let m = make()
+        await m.refresh()
+        let orch = m.state.agents[0]
+        await m.perform(m.actions(orch)[1], on: orch)
+        XCTAssertEqual(m.inFlight[orch.name], .pause)
+        clock = clock.addingTimeInterval(AppModel.inFlightTimeout + 1)
+        await m.refresh()
+        XCTAssertTrue(m.inFlight.isEmpty, "a request whose effect never shows up must not lock the button forever")
     }
 
     func testResumeInFlightDisablesTheButton() async {
@@ -347,7 +377,7 @@ final class AppModelTests: XCTestCase {
 
         client.releaseAgent()
         await task.value
-        XCTAssertTrue(m.inFlight.isEmpty)
+        XCTAssertEqual(m.inFlight[paused.name], .resume, "still busy until the agent leaves paused")
     }
 
     func testSecondPauseWhileInFlightIsANoOp() async {
