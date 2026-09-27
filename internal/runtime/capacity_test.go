@@ -171,6 +171,9 @@ func TestEnforceCapacitySkipRules(t *testing.T) {
 			mustExec(t, s.DB, `INSERT INTO messages (id, seq, kind, origin, from_agent_id, to_agent_id, root_item_id, payload_json, state, created_at)
 				VALUES ('msg_q', 9001, 'question', 'agent', ?, ?, ?, '{}', 'acked', 1)`, p.ID, p.ID, p.RootItemID)
 		},
+		// A queued op on a still-running session is not a holder leaving its
+		// slot (TestEnforceCapacityCountsHoldersAlreadyLeaving covers those):
+		// it only protects P, so U is still paused.
 		"operation in flight": func(t *testing.T, s *Store, p Agent, pSes Session) {
 			mustExec(t, s.DB, `INSERT INTO agent_operations (id, agent_id, mode, phase, request_key, session_id, generation, created_at, updated_at)
 				VALUES ('op_x', ?, 'recover', 'queued', 'k1', ?, ?, 1, 1)`, p.ID, pSes.ID, pSes.Generation)
