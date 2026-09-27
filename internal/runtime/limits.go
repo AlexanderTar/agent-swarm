@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/ids"
 )
 
@@ -61,11 +60,9 @@ import (
 // correct and strictly narrower than attempt-scoping was.
 //
 // Exported so every count of "agents currently occupying a concurrency slot"
-// applies the same exclusion -- Admit's two counts here, and the
-// max_concurrent_subagents count in internal/hook/handler.go. Both call
-// sites compose it into a query whose outer table is `agents` -- required,
-// since the SQL fragment references `agents.id`/`agents.item_id` unqualified
-// by any other alias.
+// applies the same exclusion: Admit and EnforceCapacity (capacity.go). Both
+// compose it into a query whose outer table is `agents` -- required, since
+// the SQL fragment references `agents.id`/`agents.item_id` unqualified.
 const NotAZombieSlot = `NOT EXISTS (
 		SELECT 1 FROM sessions s WHERE s.agent_id = agents.id
 			AND s.generation = (SELECT MAX(generation) FROM sessions WHERE agent_id = agents.id)
@@ -73,47 +70,6 @@ const NotAZombieSlot = `NOT EXISTS (
 				OR EXISTS (SELECT 1 FROM checkpoints c WHERE c.agent_id = agents.id
 					AND c.item_id = agents.item_id AND c.session_id = s.id
 					AND c.kind IN ('completed', 'failed'))))`
-
-// NoAckChildren returns the names of parentAgentID's slot-holding children
-// (the same 'active' + NotAZombieSlot set the swarm_spawn budget check in
-// internal/hook/handler.go counts) whose latest session is still genuinely
-// running (state in the same "actively running" set reconcile.go/pause.go/
-// wake.go already enumerate -- excludes a session that's merely completed
-// pending reconcile, or paused awaiting a human resume, neither of which is
-// "stuck") but has never written a single checkpoint though ackTimeout has
-// passed since its session started. This is the same "never heard from"
-// signal notifyNoAck (reconcile.go) already relays to the parent's inbox
-// asynchronously; that relay alone left a live incident invisible until a
-// human dug through the DB by hand (2026-09-23: two agents sat alive-and-
-// idle, zero checkpoints, for 72-116 minutes, pinning their parent's budget
-// the whole time, because nothing -- not the no_ack notification, not
-// agent.stale -- ever touches agents.state or sessions.state). Surfacing
-// the same query synchronously in the budget-block reason itself, rather
-// than auto-cancelling, is the deliberate choice: a live, never-
-// checkpointed session might still be a slow legitimate start (cold model,
-// big clone, flaky network) and the daemon has no stronger signal than
-// ackTimeout to tell the two apart, so this only reports -- swarm-
-// orchestrator's SKILL.md tells the reader what to do about it (swarm_read,
-// then swarm_control cancel if genuinely stuck).
-//
-// The checkpoint check is correlated by c.session_id = sessions.id, not
-// attempt: same reason NotAZombieSlot above switched off attempt-scoping --
-// pause.go's Resume starts a new generation (and a new session row) on the
-// SAME attempt, so an attempt-scoped match would treat a resumed child's
-// brand new, zero-checkpoint generation as "acked" using its OLD
-// generation's handoff checkpoint, hiding the exact stuck-child case this
-// function exists to catch.
-func (s *Store) NoAckChildren(ctx context.Context, parentAgentID string) ([]string, error) {
-	cutoff := db.Millis(s.now().Add(-ackTimeout))
-	return s.queryIDs(ctx, `SELECT agents.name FROM agents
-		JOIN sessions ON sessions.agent_id = agents.id
-			AND sessions.generation = (SELECT MAX(generation) FROM sessions WHERE agent_id = agents.id)
-		WHERE agents.parent_agent_id = ? AND agents.state = 'active' AND `+NotAZombieSlot+`
-			AND sessions.state IN ('spawning', 'running', 'pause_requested', 'quiescing', 'stopping')
-			AND sessions.started_at <= ?
-			AND NOT EXISTS (SELECT 1 FROM checkpoints c WHERE c.agent_id = agents.id AND c.session_id = sessions.id)
-		ORDER BY agents.name`, parentAgentID, cutoff)
-}
 
 // Admit reports whether a new agent of this role may start now (A2, I20).
 // Every role, orchestrator included, counts against one shared
@@ -392,27 +348,3 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 	return true, nil
 }
 
-// SubagentSlots reports parentAgentID's max_concurrent_subagents budget (P9
-// spec B4): used is the same "queued or live-active" count
-// internal/hook/handler.go computed inline before this move (a queued child
-// holds its slot; an active child NotAZombieSlot excludes -- crashed,
-// interrupted, failed, paused, or already self-terminal -- does not, so a
-// dead child can't pin the budget at capacity forever). max is
-// settings.MaxConcurrentSubagents, defaulting to 3 if misconfigured to <= 0
-// (Settings.Get already applies its own default, so this only guards a
-// corrupt override). The engine's advance (Spawn action) and the hook's
-// swarm_spawn budget check share this one query so they can never disagree.
-func (s *Store) SubagentSlots(ctx context.Context, parentAgentID string) (used, max int, err error) {
-	cfg, err := s.Settings.Get(ctx)
-	if err != nil {
-		return 0, 0, err
-	}
-	max = cfg.MaxConcurrentSubagents
-	if max <= 0 {
-		max = 3
-	}
-	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents
-		WHERE parent_agent_id = ? AND (state = 'queued' OR (state = 'active' AND `+NotAZombieSlot+`))`,
-		parentAgentID).Scan(&used)
-	return used, max, err
-}

@@ -1,7 +1,7 @@
 // P9: the daemon-side workflow engine (spec B4). workflow.go owns a
 // workflow task's whole lifecycle once an orchestrator starts it: start,
 // advance (mapping DB rows -> internal/workflow.Next's pure Action and
-// applying it), idempotent spawning, budget/FIFO waiting, relays,
+// applying it), idempotent spawning, FIFO waiting, relays,
 // escalation, resume and cancel. internal/workflow (the leaf DSL package)
 // makes every scheduling decision; this file only ever executes the single
 // Action it returns.
@@ -503,8 +503,8 @@ func (s *Store) workflowStateByID(ctx context.Context, workflowID string) (Workf
 
 // advance is Store.advance (spec B4): under a per-workflow mutex, read
 // runs, call workflow.Next and apply the single Action it returns, then try
-// to fill any run still waiting on budget (leftover from an earlier
-// budget-full advance, or one this call's own Spawn action just inserted).
+// to fill any run still waiting (a spawn that errored and was put back, or
+// one this call's own Spawn action just inserted).
 // It is a no-op once the workflow is no longer 'running' (already resolved,
 // or gone).
 func (s *Store) advance(ctx context.Context, workflowID string) error {
@@ -535,9 +535,9 @@ func (s *Store) advance(ctx context.Context, workflowID string) error {
 	action := workflow.Next(*it.Workflow, toWorkflowRuns(runs), wf.Round, wf.ExtraRounds)
 	if action.Kind != workflow.ActionWait {
 		// Every applied action -- including a Spawn that only inserted a
-		// 'waiting' row, still budget-blocked -- touches updated_at, so
-		// recoverWorkflows' 30s stall scan (below) never mistakes real,
-		// recent progress for a stuck workflow.
+		// 'waiting' row -- touches updated_at, so recoverWorkflows' 30s
+		// stall scan (below) never mistakes real, recent progress for a
+		// stuck workflow.
 		if _, err := s.DB.ExecContext(ctx, `UPDATE workflows SET updated_at = ? WHERE id = ?`,
 			db.Millis(s.now()), wf.ID); err != nil {
 			return err
@@ -659,8 +659,7 @@ func (s *Store) insertWaitingRun(ctx context.Context, workflowID, stepID string,
 // applySpawn applies a Spawn action (spec B4): inserts the new run row(s) as
 // 'waiting' (idempotent), and for a review step also creates+shares the one
 // review worktree the parallel reviewers share. Actually starting an agent
-// is fillWaitingRuns' job (budget-gated), called once by advance after every
-// action.
+// is fillWaitingRuns' job, called once by advance after every action.
 func (s *Store) applySpawn(ctx context.Context, wf wfRow, it items.Item, action workflow.Action) error {
 	step, ok := stepFor(it.Workflow, action.StepID)
 	if !ok {
@@ -825,15 +824,15 @@ func (s *Store) oldestWaitingRun(ctx context.Context, workflowID string) (wfRunR
 	return *best, true, nil
 }
 
-// fillWaitingRuns spawns workflowID's waiting runs, oldest first, while
-// SubagentSlots has room (spec B4 Budget: FIFO). spawnRunAgent claims its
-// row (state waiting -> active) right after Spawn returns an agent, before
-// any further side effect, so a concurrent fill can't double-spawn the same
-// row and a later Share failure can't strand a live agent with no row
-// pointing at it (fix round 2, finding 2). A Spawn error itself -- no
-// agent id to claim with at all -- marks the row 'failed' instead of
-// leaving it 'waiting' for the stall scan to retry (and orphan another
-// agent) every 30s forever; see spawnRunAgent's own comment.
+// fillWaitingRuns spawns every one of workflowID's waiting runs, oldest
+// first. There is no per-owner budget: a spawned agent the global
+// max_concurrent_agents pool can't fit yet waits in the global queue
+// (spec 2026-09-27-single-agent-limit-live). spawnRunAgent claims its row
+// (state waiting -> active) right after Spawn returns an agent, before any
+// further side effect, so a concurrent fill can't double-spawn the same row
+// and a later Share failure can't strand a live agent with no row pointing
+// at it. A Spawn error itself marks the row 'failed' instead of leaving it
+// 'waiting' for the stall scan to retry forever; see spawnRunAgent.
 func (s *Store) fillWaitingRuns(ctx context.Context, workflowID string) error {
 	wf, ok, err := s.workflowRowByID(ctx, workflowID)
 	if err != nil || !ok {
@@ -848,31 +847,12 @@ func (s *Store) fillWaitingRuns(ctx context.Context, workflowID string) error {
 		if err != nil || !ok {
 			return err
 		}
-		used, max, err := s.SubagentSlots(ctx, wf.OwnerAgentID)
-		if err != nil {
-			return err
-		}
-		if used >= max {
-			return nil
-		}
-		older, err := s.olderWaitingRunElsewhere(ctx, wf.OwnerAgentID, workflowID, run.CreatedAt)
-		if err != nil {
-			return err
-		}
-		if older {
-			// Fix round 2, finding 7: an older waiting run in a sibling
-			// workflow the same owner runs goes first -- yield this slot to
-			// it rather than spawning here out of turn.
-			return nil
-		}
 		spawned, err := s.spawnRunAgent(ctx, wf, it, run)
 		if err != nil {
 			return err
 		}
 		if !spawned {
-			// The row was claimed by a concurrent call between the read and
-			// here -- stop this pass; a fresh advance already owns it.
-			return nil
+			return nil // a concurrent call claimed the row; its advance owns it
 		}
 	}
 }
@@ -1510,13 +1490,11 @@ func (s *Store) OnStoryReadyForReview(ctx context.Context, tx *sql.Tx, story ite
 
 // advanceWaitingForOwner triggers advance for every 'running' workflow
 // owned by ownerAgentID that has at least one 'waiting' run (spec B4
-// Budget/Triggers: any child of the owner finishing frees a subagent slot
-// that may let a sibling workflow's waiting run start now), oldest waiting
-// run first (fix round 2, finding 7): the owner's whole budget is one shared
-// pool across every workflow it owns (SubagentSlots counts every child of
-// ownerAgentID, not per-workflow), so a slot freeing here must go to
-// whichever sibling workflow has been waiting longest, not whichever one
-// this DISTINCT happened to list first.
+// Triggers: any child of the owner finishing re-triggers advance, which
+// retries a 'waiting' row a failed spawn left behind; oldest first), fix
+// round 2, finding 7: a slot freeing here must go to whichever sibling
+// workflow has been waiting longest, not whichever one this DISTINCT
+// happened to list first.
 func (s *Store) advanceWaitingForOwner(ctx context.Context, ownerAgentID string) error {
 	ids, err := s.queryIDs(ctx, `SELECT w.id FROM workflows w
 		JOIN workflow_runs r ON r.workflow_id = w.id
@@ -1533,38 +1511,15 @@ func (s *Store) advanceWaitingForOwner(ctx context.Context, ownerAgentID string)
 	return nil
 }
 
-// olderWaitingRunElsewhere reports whether ownerAgentID has a 'waiting' run,
-// created strictly before excludeCreatedAt, in some running workflow other
-// than workflowID (fix round 2, finding 7). advanceWaitingForOwner's own
-// FIFO ordering (above) only ever governs a slot-release trigger; this is
-// the belt-and-suspenders half for every OTHER trigger (a checkpoint, the
-// stall scan) that can call fillWaitingRuns on a newer sibling workflow
-// directly, out of turn -- best-effort fairness (a TOCTOU race between two
-// concurrent triggers on two different, unlocked workflows can still let
-// both spawn or both yield), not a hard budget guarantee; SubagentSlots
-// itself still caps total usage correctly either way.
-func (s *Store) olderWaitingRunElsewhere(ctx context.Context, ownerAgentID, workflowID string, excludeCreatedAt time.Time) (bool, error) {
-	var exists int
-	err := s.DB.QueryRowContext(ctx, `SELECT 1 FROM workflows w
-		JOIN workflow_runs r ON r.workflow_id = w.id
-		WHERE w.owner_agent_id = ? AND w.id != ? AND w.state = 'running' AND r.state = 'waiting'
-			AND r.created_at < ? LIMIT 1`,
-		ownerAgentID, workflowID, db.Millis(excludeCreatedAt)).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
 // stallThreshold is spec B4's crash-recovery window (see recoverWorkflows).
 const stallThreshold = 30 * time.Second
 
 // recoverWorkflows is the reconcile loop's stall-recovery scan (spec B4):
 // every 'running' workflow that has at least one run recorded, none of
-// which is 'waiting' or 'active' (nothing left for it to be doing, or
-// waiting on budget for), and whose own updated_at is older than
-// stallThreshold gets a fresh advance -- the daemon-restart gap between a
-// checkpoint's commit and the advance() call that should have followed it.
+// which is 'waiting' or 'active' (nothing left for it to be doing), and
+// whose own updated_at is older than stallThreshold gets a fresh advance --
+// the daemon-restart gap between a checkpoint's commit and the advance()
+// call that should have followed it.
 func (s *Store) recoverWorkflows(ctx context.Context) error {
 	// Only 'active' excludes -- not 'waiting' too (fix round 1, finding 6):
 	// a workflow with an active run is genuinely in flight (its own

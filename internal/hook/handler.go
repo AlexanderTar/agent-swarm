@@ -656,45 +656,6 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			return adapter.HookDecision{Block: true, Reason: "[swarm] Ask one swarm approval per question call."}, nil
 		}
 
-		// For Swarm's own swarm_spawn tool: enforce max_concurrent_subagents
-		isSpawn := (in.IsSwarmTool && strings.Contains(in.ToolName, "swarm_spawn")) || strings.Contains(in.ToolName, "swarm_spawn")
-
-		if isSpawn && s.AgentID != "" && h.RT != nil && h.RT.Settings != nil {
-			// A queued child holds its slot (matches Admit's own comment in
-			// limits.go), but an 'active' child whose latest session died to
-			// interrupted/crashed/failed does not (runtime.NotAZombieSlot,
-			// 2026-09-22 zombie-slot fix) -- otherwise a forgotten dead child
-			// pins the parent's subagent budget at capacity forever.
-			// SubagentSlots (P9) owns this exact query, shared with the
-			// engine's own budget check, so the two can never disagree.
-			active, maxSubagents, err := h.RT.SubagentSlots(ctx, s.AgentID)
-			if err != nil {
-				return adapter.HookDecision{}, err
-			}
-
-			if active >= maxSubagents {
-				reason := fmt.Sprintf("[swarm] Subagent budget exceeded (max %d active). Run sequentially or wait for active subagents to finish.", maxSubagents)
-				// Surface (never auto-cancel, see runtime.NoAckChildren) any
-				// slot-holding child that has run past the ack timeout with
-				// zero checkpoints -- the daemon's only other signal for this
-				// is agent.no_ack, which only ever mails the parent's inbox
-				// asynchronously and was easy to miss in the live incident
-				// this addresses.
-				noAck, err := h.RT.NoAckChildren(ctx, s.AgentID)
-				if err != nil {
-					// informational only -- never let this suppress the budget block
-					h.logf("hook: no-ack children lookup failed for %s: %v", s.AgentID, err)
-				} else if len(noAck) > 0 {
-					reason += fmt.Sprintf(" %d slot(s) among those show no checkpoint since its session started (past the ack timeout): %s. swarm_read them; swarm_control cancel if genuinely stuck.",
-						len(noAck), strings.Join(noAck, ", "))
-				}
-				return adapter.HookDecision{
-					Block:  true,
-					Reason: reason,
-				}, nil
-			}
-		}
-
 		// Intercept native question tools to record HITL request in Swarm without blocking
 		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
 			prompt, options := extractQuestion(in.ToolName, in.RawToolInput)

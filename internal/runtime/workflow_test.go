@@ -770,20 +770,6 @@ func TestAdvanceIsIdempotent(t *testing.T) {
 	}
 }
 
-// setMaxSubagents sets max_concurrent_subagents directly (mirrors
-// limits_test.go's setLimits for the shared max_concurrent_agents pool).
-func setMaxSubagents(t *testing.T, s *Store, n int) {
-	t.Helper()
-	now := s.now().UnixMilli()
-	if _, err := s.DB.ExecContext(context.Background(), `INSERT INTO settings (key, value_json, updated_at)
-		VALUES ('max_concurrent_subagents', ?, ?)
-		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
-		fmt.Sprintf("%d", n), now); err != nil {
-		t.Fatal(err)
-	}
-	s.Events.Notify()
-}
-
 // TestCheckpointTriggersAdvance is unit 9.4's dedicated pin for spec B4's
 // first trigger: WriteCheckpoint itself, with no direct s.advance() call
 // anywhere in this test, must move a finished build step straight into a
@@ -920,7 +906,7 @@ func TestSlotReleaseSpawnsWaitingRun(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
 		t.Fatal(err)
 	}
-	setMaxSubagents(t, s, 1)
+	setLimits(t, s, 2, 8) // the orchestrator plus one worker
 
 	ep := seedEpicWithTwoTasks(t, s)
 	zero := 0
@@ -957,8 +943,17 @@ func TestSlotReleaseSpawnsWaitingRun(t *testing.T) {
 		FROM workflow_runs WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&state, &agentID); err != nil {
 		t.Fatal(err)
 	}
-	if state != "waiting" || agentID != "" {
-		t.Fatalf("TASK-2 build run = state %s agent %q, want waiting/empty (TASK-1 already holds the one slot)", state, agentID)
+	// No subagent budget: the run spawns at once and its agent waits in the
+	// global queue, because the orchestrator and TASK-1's coder hold both slots.
+	if state != "active" || agentID == "" {
+		t.Fatalf("TASK-2 build run = state %s agent %q, want active with an agent", state, agentID)
+	}
+	var agentState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM agents WHERE id = ?`, agentID).Scan(&agentState); err != nil {
+		t.Fatal(err)
+	}
+	if agentState != "queued" {
+		t.Fatalf("TASK-2 builder = %s, want queued behind the global limit", agentState)
 	}
 
 	coder1AgentID := agentIDForStep(t, s, st1.ID, "build")
@@ -984,12 +979,11 @@ func TestSlotReleaseSpawnsWaitingRun(t *testing.T) {
 		t.Fatalf("TASK-1 workflow state = %s, want escalated", wf1State)
 	}
 
-	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, '')
-		FROM workflow_runs WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&state, &agentID); err != nil {
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM agents WHERE id = ?`, agentID).Scan(&agentState); err != nil {
 		t.Fatal(err)
 	}
-	if state != "active" || agentID == "" {
-		t.Fatalf("TASK-2 build run after the slot freed = state %s agent %q, want active/non-empty", state, agentID)
+	if agentState != "active" {
+		t.Fatalf("TASK-2 builder after the slot freed = %s, want active (drained)", agentState)
 	}
 }
 
@@ -2042,23 +2036,15 @@ func TestApplySpawnReplayAttachesReviewWorktree(t *testing.T) {
 	}
 }
 
-// TestFIFOAcrossWorkflows is Opus review finding 7: an owner's whole
-// subagent budget is one shared pool across every workflow it owns
-// (SubagentSlots counts every child of the owner, not per-workflow) -- a
-// freed slot used to go to whichever sibling workflow's own advance
-// happened to run first, not whichever one had been waiting longest.
-// TASK-2's build run is seeded 'waiting' strictly before TASK-3's; a direct
-// advance on TASK-3 alone (simulating some OTHER trigger reaching it first,
-// out of turn -- not the slot-release trigger, whose own FIFO ordering is
-// covered by TestSlotReleaseSpawnsWaitingRun's two-workflow case) must yield
-// the freed slot to TASK-2 instead of spawning immediately.
+// TestFIFOAcrossWorkflows is Opus review finding 7: the oldest queued
+// workflow agent takes a freed slot first.
 func TestFIFOAcrossWorkflows(t *testing.T) {
-	s, tm, _ := newStore(t)
+	s, _, _ := newStore(t)
 	ctx := context.Background()
 	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
 		t.Fatal(err)
 	}
-	setMaxSubagents(t, s, 1)
+	setLimits(t, s, 2, 8)
 
 	ep := seedEpicWithThreeTasks(t, s)
 	for _, key := range []string{"TASK-1", "TASK-2", "TASK-3"} {
@@ -2091,47 +2077,28 @@ func TestFIFOAcrossWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertWaiting := func(workflowID, label string) {
+	assertAgentState := func(workflowID, label, want string) {
 		t.Helper()
-		var state string
-		if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
-			WHERE workflow_id = ? AND step_id = 'build'`, workflowID).Scan(&state); err != nil {
+		var st string
+		if err := s.DB.QueryRowContext(ctx, `SELECT a.state FROM workflow_runs r JOIN agents a ON a.id = r.agent_id
+			WHERE r.workflow_id = ? AND r.step_id = 'build'`, workflowID).Scan(&st); err != nil {
 			t.Fatal(err)
 		}
-		if state != "waiting" {
-			t.Fatalf("%s build run = %s, want waiting (slot held by the occupier)", label, state)
+		if st != want {
+			t.Fatalf("%s builder = %s, want %s", label, st, want)
 		}
 	}
-	assertWaiting(st2.ID, "TASK-2")
-	assertWaiting(st3.ID, "TASK-3")
+	assertAgentState(st2.ID, "TASK-2", "queued")
+	assertAgentState(st3.ID, "TASK-3", "queued")
 
-	// Free the slot directly (not through any trigger that itself decides
-	// ordering) so a bare advance on TASK-3 alone is the only thing that
-	// could jump the queue.
 	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, occupier.ID); err != nil {
 		t.Fatal(err)
 	}
-	startedBefore := len(tm.started)
-
-	if err := s.advance(ctx, st3.ID); err != nil {
+	if err := s.DrainQueue(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertWaiting(st3.ID, "TASK-3 (after its own advance)")
-	if len(tm.started) != startedBefore {
-		t.Fatalf("TASK-3 spawned out of turn: started = %v", tm.started)
-	}
-
-	if err := s.advance(ctx, st2.ID); err != nil {
-		t.Fatal(err)
-	}
-	var st2State, st2Agent string
-	if err := s.DB.QueryRowContext(ctx, `SELECT state, COALESCE(agent_id, '') FROM workflow_runs
-		WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&st2State, &st2Agent); err != nil {
-		t.Fatal(err)
-	}
-	if st2State != "active" || st2Agent == "" {
-		t.Fatalf("TASK-2 build run = state %s agent %q, want active/non-empty (oldest waiting run gets the slot)", st2State, st2Agent)
-	}
+	assertAgentState(st2.ID, "TASK-2 (oldest)", "active")
+	assertAgentState(st3.ID, "TASK-3", "queued")
 }
 
 // TestResumeCancelRefuseForeignOrchestrator is Opus review finding 8: in
@@ -2185,7 +2152,7 @@ func TestCancelledWorkflowIgnoresLaterSlotRelease(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
 		t.Fatal(err)
 	}
-	setMaxSubagents(t, s, 1)
+	setLimits(t, s, 2, 8)
 	ep := seedEpicWithTwoTasks(t, s)
 	setItemWorkflow(t, s, "TASK-1", buildReviewSpec(t))
 	setItemWorkflow(t, s, "TASK-2", buildReviewSpec(t))
@@ -2205,14 +2172,15 @@ func TestCancelledWorkflowIgnoresLaterSlotRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// TASK-1 holds the one slot; TASK-2's build run is 'waiting' on it.
-	var t2State string
-	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
-		WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&t2State); err != nil {
+	// TASK-1 and the orchestrator hold both slots; TASK-2's build run has
+	// spawned (no subagent budget) but its agent waits in the global queue.
+	var t2AgentState string
+	if err := s.DB.QueryRowContext(ctx, `SELECT a.state FROM workflow_runs r JOIN agents a ON a.id = r.agent_id
+		WHERE r.workflow_id = ? AND r.step_id = 'build'`, st2.ID).Scan(&t2AgentState); err != nil {
 		t.Fatal(err)
 	}
-	if t2State != "waiting" {
-		t.Fatalf("TASK-2 build run = %s, want waiting", t2State)
+	if t2AgentState != "queued" {
+		t.Fatalf("TASK-2 builder = %s, want queued", t2AgentState)
 	}
 
 	if _, err := s.CancelWorkflow(ctx, orch, "TASK-1", "", ""); err != nil {
@@ -2227,6 +2195,9 @@ func TestCancelledWorkflowIgnoresLaterSlotRelease(t *testing.T) {
 	if err := s.advanceWaitingForOwner(ctx, orch.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	var t1RunState, t1WfState string
 	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
@@ -2239,13 +2210,13 @@ func TestCancelledWorkflowIgnoresLaterSlotRelease(t *testing.T) {
 	if t1WfState != "cancelled" || t1RunState != "cancelled" {
 		t.Fatalf("TASK-1 workflow/run state = %s/%s, want cancelled/cancelled", t1WfState, t1RunState)
 	}
-	// TASK-2, the legitimate sibling, is free to spawn now.
-	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM workflow_runs
-		WHERE workflow_id = ? AND step_id = 'build'`, st2.ID).Scan(&t2State); err != nil {
+	// TASK-2, the legitimate sibling, is free to run now.
+	if err := s.DB.QueryRowContext(ctx, `SELECT a.state FROM workflow_runs r JOIN agents a ON a.id = r.agent_id
+		WHERE r.workflow_id = ? AND r.step_id = 'build'`, st2.ID).Scan(&t2AgentState); err != nil {
 		t.Fatal(err)
 	}
-	if t2State != "active" {
-		t.Fatalf("TASK-2 build run = %s, want active (freed slot went to the legitimate sibling)", t2State)
+	if t2AgentState != "active" {
+		t.Fatalf("TASK-2 builder = %s, want active (freed slot went to the legitimate sibling)", t2AgentState)
 	}
 	if len(tm.started) != startedBefore+1 {
 		t.Fatalf("started %d agents on the slot-release trigger, want exactly 1 (TASK-2's, never TASK-1's): %v",
@@ -2504,7 +2475,6 @@ func TestReplayAdvanceAttachesReviewWorktree(t *testing.T) {
 	ctx := context.Background()
 	orch, taskKey := seedWorkflowTask(t, s, gatedBuildReviewSpec(t, 3))
 	wtID, _, _, head := seedOwnedRepoWorktree(t, s, orch)
-	setMaxSubagents(t, s, 1) // keep reviewer waiting behind the builder slot
 	st, err := s.StartWorkflow(ctx, orch, StartWorkflowInput{ItemKey: taskKey,
 		Worktrees: []WorkflowWorktree{{WorktreeID: wtID, Mode: "rw"}}})
 	if err != nil {
