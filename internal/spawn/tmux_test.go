@@ -393,6 +393,7 @@ func TestTmuxConfSetsTitlesFocusEventsAndRemainOnExit(t *testing.T) {
 		"set -g remain-on-exit on",
 		"set -g history-limit 20000",
 		"set -g mouse on",
+		"set -s copy-command pbcopy",
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("tmux.conf is missing %q:\n%s", want, conf)

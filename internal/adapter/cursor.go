@@ -36,7 +36,7 @@ func CursorMCPEnv() map[string]string {
 }
 
 func (c *Cursor) argv(s Spec, chat string) []string {
-	a := []string{"cursor-agent", "--resume", chat, "--yolo", "--trust", "--approve-mcps",
+	a := []string{"cursor-agent", "--resume", chat, "--yolo", "--trust", "--approve-mcps", "--sandbox", "disabled",
 		"--model", s.Model, "--workspace", s.Cwd}
 	for _, p := range s.PluginDirs {
 		a = append(a, "--plugin-dir", p)

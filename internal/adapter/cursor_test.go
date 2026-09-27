@@ -31,7 +31,7 @@ func TestCursorLaunchHasACreateChatPreRunAndPluginDirs(t *testing.T) {
 	}
 	joined := strings.Join(l.Argv, " ")
 	for _, want := range []string{"cursor-agent", "--resume", "--yolo", "--trust",
-		"--approve-mcps", "--model auto", "--workspace /tmp/w"} {
+		"--approve-mcps", "--sandbox disabled", "--model auto", "--workspace /tmp/w"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv is missing %q: %s", want, joined)
 		}
