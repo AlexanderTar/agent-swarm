@@ -186,8 +186,9 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 	}
 	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "completed", "summary": "materialized the epic"})
 
-	if got := h.itemStatus(t, rootKey); got != "draft" {
-		t.Errorf("epic status = %s, want draft", got)
+	// Chore spec decision 1: a materialized root starts Ready, not Draft.
+	if got := h.itemStatus(t, rootKey); got != "ready" {
+		t.Errorf("epic status = %s, want ready", got)
 	}
 	if got := h.itemStatus(t, spikeKey); got != "done" {
 		t.Errorf("spike status = %s, want done", got)
