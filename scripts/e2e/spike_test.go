@@ -12,10 +12,16 @@ import (
 	"time"
 )
 
-// e2eRepo is a real, local-only git repo (no remote needed: worktree.Create
-// tolerates a failed `git fetch origin` and just logs it) registered with the
-// daemon, for scenarios that need real git operations (worktrees, commits).
+// e2eRepo creates a local-only Git repository and registers it through HTTP.
+// Worktree.Create tolerates the missing origin remote.
 func e2eRepo(t *testing.T, h *harness, name string) (id, path string) {
+	path = e2eLocalRepo(t, name)
+	var repo map[string]any
+	h.doT(t, http.MethodPost, "/api/repos", map[string]any{"path": path}, &repo)
+	return repo["id"].(string), path
+}
+
+func e2eLocalRepo(t *testing.T, name string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -38,9 +44,7 @@ func e2eRepo(t *testing.T, h *harness, name string) (id, path string) {
 	run("add", "README.md")
 	run("commit", "-q", "-m", "init", "--no-gpg-sign")
 
-	var repo map[string]any
-	h.doT(t, http.MethodPost, "/api/repos", map[string]any{"path": dir}, &repo)
-	return repo["id"].(string), dir
+	return dir
 }
 
 // requestByKind is requestByID's counterpart keyed by kind, for a scenario
@@ -65,10 +69,10 @@ func (h *harness) waitForRequestFull(t *testing.T, itemKey, kind string, timeout
 	return h.requestByKind(t, itemKey, kind)
 }
 
-// Scenario 1: happy feature spike. POST /api/spikes with one selected repo;
-// the orchestrator adds a second registered repo with swarm_repos; it creates a
-// worktree in the first, asks a question, registers a 3-section spec and a
-// plan; the user approves the 2 decision sections and the plan; materialize creates
+// Scenario 1: happy feature spike. POST /api/spikes with one repository hint;
+// the orchestrator registers a newly discovered Git repository through MCP,
+// creates its worktree, asks a question, and registers a four-section spec and
+// plan. The user approves the three decision sections and the plan; materialize creates
 // an epic (draft) with 2 stories, 3 tasks and 1 dependency; the spike ends
 // Done.
 //
@@ -86,8 +90,8 @@ func (h *harness) waitForRequestFull(t *testing.T, itemKey, kind string, timeout
 func TestScenario01HappyFeatureSpike(t *testing.T) {
 	h := newHarness(t)
 	since := time.Now()
-	repoAID, repoADir := e2eRepo(t, h, "proj-a")
-	repoBID, _ := e2eRepo(t, h, "proj-b")
+	repoAID, _ := e2eRepo(t, h, "proj-a")
+	repoBDir := e2eLocalRepo(t, "proj-b")
 
 	var spikeResp map[string]any
 	h.doT(t, http.MethodPost, "/api/spikes", map[string]any{
@@ -101,11 +105,17 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 
 	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting the spike"})
 
-	h.mustTool(t, orch, "swarm_repos", map[string]any{
-		"repos": []string{repoAID, repoBID}, "repos_version": item["repos_version"],
-	})
+	registered := h.mustTool(t, orch, "swarm_repo_register", map[string]any{"path": repoBDir})
+	repoBID, _ := registered["id"].(string)
+	canonicalRepoBDir, err := filepath.EvalSymlinks(repoBDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repoBID == "" || registered["path"] != canonicalRepoBDir {
+		t.Fatalf("repository registration = %v", registered)
+	}
 
-	wtOut := h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/login"})
+	wtOut := h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoBID, "branch": "spike/login"})
 	// §12.1 centralization: the worktree lives under the daemon's shared
 	// ~/.swarm/worktrees folder, never as a sibling of the fixture repo.
 	wantDir := filepath.Join(h.home, "worktrees") + string(filepath.Separator)
@@ -119,15 +129,15 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 		map[string]any{"text": "No, replace it.", "via": "board"}, nil)
 
 	specPath := filepath.Join(t.TempDir(), "spec.md")
-	specBody := "# Spec\n\n## Context\n\nwhy\n\n## Data model\n\nrows\n\n## API\n\nroutes\n"
+	specBody := "# Spec\n\n## Context\n\nwhy\n\n## Out of scope\n\nDo not migrate old accounts.\n\n## Data model\n\nrows\n\n## API\n\nroutes\n"
 	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	spec := h.mustTool(t, orch, "swarm_artifact", map[string]any{"op": "register", "item": spikeKey, "kind": "spec", "path": specPath})
 	specID, _ := spec["artifact_id"].(string)
 	sections, _ := spec["sections"].([]any)
-	if len(sections) != 3 {
-		t.Fatalf("spec sections = %d, want 3", len(sections))
+	if len(sections) != 4 {
+		t.Fatalf("spec sections = %d, want 4", len(sections))
 	}
 	var reviewCount int
 	for _, s := range sections {
@@ -135,10 +145,21 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 		if sec["title"] == "Context" {
 			continue
 		}
+		summary := "Deliver " + sec["title"].(string) + " as specified."
+		if sec["title"] == "Out of scope" {
+			visual := "| Included | Excluded |\n|---|---|\n| New accounts | Old account migration |"
+			summary = visual + strings.Repeat("é", 1000-len([]rune(visual)))
+		}
 		h.mustTool(t, orch, "swarm_ask", map[string]any{
-			"kind": "approval", "prompt": "Deliver " + sec["title"].(string) + " as specified.",
+			"kind": "approval", "prompt": summary,
 			"artifact": specID, "section": sec["id"],
 		})
+		if sec["title"] == "Out of scope" {
+			req := h.requestByKind(t, spikeKey, "approve_section")
+			if req["prompt"] != summary {
+				t.Fatalf("section summary changed: %v", req["prompt"])
+			}
+		}
 		reviewCount++
 	}
 	for i := 0; i < reviewCount; i++ {
@@ -151,10 +172,10 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 	planBody := "# Plan\n\n## Work breakdown\n\n```swarm-tree\n" +
 		`{"root":{"type":"epic","title":"Ship the login form","brief":"","acceptance":["It works."]},
  "children":[{"ref":"s1","type":"story","title":"Server","brief":"","acceptance":[],
-   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoADir) + `"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"},
-               {"ref":"t2","type":"task","title":"Login route","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoADir) + `"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]},
+   "children":[{"ref":"t1","type":"task","title":"Session cookie","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoBDir) + `"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"},
+               {"ref":"t2","type":"task","title":"Login route","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoBDir) + `"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]},
   {"ref":"s2","type":"story","title":"Client","brief":"","acceptance":[],
-   "children":[{"ref":"t3","type":"task","title":"Login screen","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoADir) + `"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]}],
+   "children":[{"ref":"t3","type":"task","title":"Login screen","brief":"","acceptance":[],"role_hint":"coder","repos":["` + filepath.Base(repoBDir) + `"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Implement"],"verify":["go test ./..."],"solo":"focused"}]}],
  "deps":[{"item":"t2","blocked_by":"t1"}]}` +
 		"\n```\n\n## Verification\n\ngo test ./...\n"
 	planPath := filepath.Join(t.TempDir(), "plan.md")
@@ -210,6 +231,9 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 	}
 	if task2 == nil {
 		t.Fatal("task \"Login route\" not found")
+	}
+	if repos, _ := task2["repos"].([]any); len(repos) != 1 || repos[0] != repoBID {
+		t.Errorf("Login route repositories = %v, want discovered repository %s", task2["repos"], repoBID)
 	}
 	if blocked, _ := task2["blocked_by"].([]any); len(blocked) != 1 {
 		t.Errorf("Login route's blocked_by = %v, want one dependency", task2["blocked_by"])
