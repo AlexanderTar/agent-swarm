@@ -771,6 +771,9 @@ func (s *Store) resolveAdvisor(ctx context.Context, sessionKind AgentKind, choic
 	if s.Advisor != nil {
 		mode = s.Advisor.Mode(sessionKind, kind, model, capable)
 	}
+	if mode == "native" {
+		effort = ""
+	}
 	return kind, model, effort, mode
 }
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
@@ -32,6 +33,7 @@ type Service struct {
 	Home     string
 	UserHome string
 	Adapters map[runtime.AgentKind]adapter.Adapter
+	Catalog  *catalog.Service
 	Run      execx.Runner
 	Now      func() time.Time
 	Log      func(format string, args ...any)
@@ -276,7 +278,15 @@ func (s *Service) run(sess advisorSession, adv runtime.Advice, deliver func(runt
 
 	dir := filepath.Dir(adv.ContextPath)
 	prompt := fillPrompt(sess.AgentName, sess.Role, sess.ItemKey, adv.ContextPath)
-	argv, err := AdvisorCommand(runtime.AgentKind(adv.AdvisorKind), adv.AdvisorModel, adv.AdvisorEffort, dir, prompt)
+	model := adv.AdvisorModel
+	if s.Catalog != nil {
+		if models, _, err := s.Catalog.ModelsFor(ctx, runtime.AgentKind(adv.AdvisorKind)); err == nil {
+			if m, ok := catalog.Find(models, model); ok && m.EffortEncoding == "slug" {
+				model = m.LaunchModel(adv.AdvisorEffort)
+			}
+		}
+	}
+	argv, err := AdvisorCommand(runtime.AgentKind(adv.AdvisorKind), model, adv.AdvisorEffort, dir, prompt)
 	if err != nil {
 		deliver(s.finishError(ctx, adv, "failed", err.Error(), 0))
 		return

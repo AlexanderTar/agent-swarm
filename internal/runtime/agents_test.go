@@ -1957,6 +1957,116 @@ func advisorCols(t *testing.T, s *Store, agentID string) (kind, model, effort, m
 	return kind, model, effort, mode
 }
 
+// Native advice runs inside the Claude session, so advisor effort has no
+// separate process to configure. Simulated advice keeps its explicit effort.
+func TestResolveAdvisorEffortByMode(t *testing.T) {
+	cases := []struct {
+		name, mode       string
+		session, advisor AgentKind
+		choice           *AdvisorChoice
+		wantEffort       string
+	}{
+		{"native explicit", "native", Claude, Claude, &AdvisorChoice{Kind: Claude, Model: "fable", Effort: "high"}, ""},
+		{"Claude with Codex simulated", "simulated", Claude, Codex, &AdvisorChoice{Kind: Codex, Model: "gpt-6-sol", Effort: "high"}, "high"},
+		{"Codex with Claude simulated", "simulated", Codex, Claude, &AdvisorChoice{Kind: Claude, Model: "fable", Effort: "high"}, "high"},
+		{"no advisor", "simulated", Claude, "", &AdvisorChoice{None: true}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := newStore(t)
+			s.Advisor = fakeAdvisor{mode: tc.mode}
+			kind, _, effort, mode := s.resolveAdvisor(context.Background(), tc.session, tc.choice)
+			if kind != tc.advisor || effort != tc.wantEffort {
+				t.Fatalf("advisor kind/effort = %q/%q, want %q/%q (mode %q)", kind, effort, tc.advisor, tc.wantEffort, mode)
+			}
+			if tc.choice.None && mode != "" {
+				t.Fatalf("no-advisor mode = %q, want empty", mode)
+			}
+		})
+	}
+}
+
+func TestStartOrchestratorOmitsNativeAdvisorEffortFromAgentRow(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "native"}
+	s.Adapters[Claude] = fa
+	ctx := context.Background()
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+		(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+		VALUES ('claude','1','[{"id":"opus","label":"Opus","efforts":[],"advisor_capable":true},{"id":"fable","label":"Fable","efforts":["high"],"advisor_capable":true}]','opus','test',1,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedEpicWithTask(t, s)
+	a, queued, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "opus",
+		Advisor: &AdvisorChoice{Kind: Claude, Model: "fable", Effort: "high"}})
+	if err != nil || queued {
+		t.Fatalf("err = %v, queued = %v", err, queued)
+	}
+	kind, model, effort, mode := advisorCols(t, s, a.ID)
+	if kind != "claude" || model != "fable" || effort != "" || mode != "native" {
+		t.Fatalf("advisor columns = %q/%q/%q/%q, want claude/fable/empty/native", kind, model, effort, mode)
+	}
+}
+
+func TestResolveAdvisorOmitsNativeSettingsEffort(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "native"}
+	ctx := context.Background()
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES
+		('roles', '{"advisor":{"agent":"claude","model":"fable","effort":"high"}}', 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, effort, mode := s.resolveAdvisor(ctx, Claude, nil)
+	if effort != "" || mode != "native" {
+		t.Fatalf("Settings advisor effort/mode = %q/%q, want empty/native", effort, mode)
+	}
+}
+
+func TestSpawnPersistsSimulatedAdvisorEffort(t *testing.T) {
+	cases := []struct {
+		name         string
+		primary      AgentKind
+		primaryModel string
+		advisor      AgentKind
+		advisorModel string
+	}{
+		{"Claude asks Codex", Claude, "sonnet", Codex, "gpt-6-sol"},
+		{"Codex asks Claude", Codex, "gpt-6-sol", Claude, "fable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, fa := newStore(t)
+			s.Advisor = fakeAdvisor{mode: "simulated"}
+			s.Adapters[tc.primary] = fa
+			ctx := context.Background()
+			_, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["claude","codex","fake"]' WHERE key = 'enabled_agents'`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+				(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+				VALUES ('claude','1','[{"id":"sonnet","label":"Sonnet","efforts":[],"advisor_capable":true},{"id":"fable","label":"Fable","efforts":["high"],"advisor_capable":true}]','sonnet','test',1,1),
+				('codex','1','[{"id":"gpt-6-sol","label":"Sol","efforts":["high"],"advisor_capable":false}]','gpt-6-sol','test',1,1)`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedEpicWithTask(t, s)
+			a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: tc.primary, Model: tc.primaryModel,
+				Advisor: &AdvisorChoice{Kind: tc.advisor, Model: tc.advisorModel, Effort: "high"},
+				Brief:   BriefInput{Objective: "task"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			kind, model, effort, mode := advisorCols(t, s, a.ID)
+			if kind != string(tc.advisor) || model != tc.advisorModel || effort != "high" || mode != "simulated" {
+				t.Fatalf("advisor columns = %q/%q/%q/%q, want %s/%s/high/simulated", kind, model, effort, mode, tc.advisor, tc.advisorModel)
+			}
+		})
+	}
+}
+
 // TestSpawnUsesSettingsAdvisorDefaultWhenNoneChosen is Task 12b case 1: a
 // Spawn with no Advisor on the input picks up the Settings role default
 // (roleDefaults[RoleAdvisor] = {Claude, "fable", ""}) and, with a wired
