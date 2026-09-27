@@ -1975,7 +1975,7 @@ func TestResolveAdvisorEffortByMode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, _ := newStore(t)
 			s.Advisor = fakeAdvisor{mode: tc.mode}
-			kind, _, effort, mode := s.resolveAdvisor(context.Background(), tc.session, tc.choice)
+			kind, _, effort, mode, _ := s.resolveAdvisor(context.Background(), tc.session, tc.choice)
 			if kind != tc.advisor || effort != tc.wantEffort {
 				t.Fatalf("advisor kind/effort = %q/%q, want %q/%q (mode %q)", kind, effort, tc.advisor, tc.wantEffort, mode)
 			}
@@ -2018,9 +2018,36 @@ func TestResolveAdvisorOmitsNativeSettingsEffort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, effort, mode := s.resolveAdvisor(ctx, Claude, nil)
+	_, _, effort, mode, _ := s.resolveAdvisor(ctx, Claude, nil)
 	if effort != "" || mode != "native" {
 		t.Fatalf("Settings advisor effort/mode = %q/%q, want empty/native", effort, mode)
+	}
+}
+
+func TestResolveAdvisorRetainsMatchingSettingsEffortForExplicitNativeChoice(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "native"}
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES
+		('roles', '{"advisor":{"agent":"claude","model":"fable","effort":"high"}}', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	_, _, effective, mode, requested := s.resolveAdvisor(ctx, Claude,
+		&AdvisorChoice{Kind: Claude, Model: "fable"})
+	if effective != "" || mode != "native" || requested != "high" {
+		t.Fatalf("effective/mode/requested = %q/%q/%q, want empty/native/high", effective, mode, requested)
+	}
+	_, _, effective, mode, requested = s.resolveAdvisor(ctx, Claude,
+		&AdvisorChoice{Kind: Claude, Model: "other-model"})
+	if effective != "" || mode != "native" || requested != "" {
+		t.Fatalf("different model effective/mode/requested = %q/%q/%q, want empty/native/empty", effective, mode, requested)
+	}
+
+	s.Advisor = fakeAdvisor{mode: "simulated"}
+	_, _, effective, mode, requested = s.resolveAdvisor(ctx, Codex,
+		&AdvisorChoice{Kind: Claude, Model: "fable"})
+	if effective != "" || mode != "simulated" || requested != "" {
+		t.Fatalf("simulated effective/mode/requested = %q/%q/%q, want empty/simulated/empty", effective, mode, requested)
 	}
 }
 

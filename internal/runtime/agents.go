@@ -306,7 +306,7 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, in.Kind, in.Model, in.Effort)
 	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
 
-	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
+	advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisorAfterFallback(ctx, origKind, in.Kind, in.Advisor)
 
 	var preflightErr error
 	if ferr != nil {
@@ -352,11 +352,11 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `INSERT INTO agents
 				(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, preflight_error, created_at,
-				 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
+				 advisor_kind, advisor_model, advisor_effort, advisor_mode, advisor_requested_effort, role_overrides)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
 				a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 				a.ItemID, a.RootItemID, a.Brief, string(a.State), a.PreflightError, nowMs,
-				string(advKind), advModel, advEffort, advMode, rolesJSON)
+				string(advKind), advModel, advEffort, advMode, advRequestedEffort, rolesJSON)
 			if err != nil {
 				return err
 			}
@@ -390,33 +390,34 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	agentID := ids.New("agt")
 	nowMs := s.now().UnixMilli()
 	a := Agent{
-		ID:            agentID,
-		Name:          name,
-		Kind:          in.Kind,
-		Model:         in.Model,
-		Effort:        in.Effort,
-		Role:          RoleOrchestrator,
-		ItemID:        it.ID,
-		RootItemID:    it.ID,
-		Brief:         briefText,
-		State:         AgentActive,
-		RoleOverrides: in.Roles,
-		AdvisorKind:   string(advKind),
-		AdvisorModel:  advModel,
-		AdvisorEffort: advEffort,
-		AdvisorMode:   advMode,
-		CreatedAt:     s.now(),
+		ID:                     agentID,
+		Name:                   name,
+		Kind:                   in.Kind,
+		Model:                  in.Model,
+		Effort:                 in.Effort,
+		Role:                   RoleOrchestrator,
+		ItemID:                 it.ID,
+		RootItemID:             it.ID,
+		Brief:                  briefText,
+		State:                  AgentActive,
+		RoleOverrides:          in.Roles,
+		AdvisorKind:            string(advKind),
+		AdvisorModel:           advModel,
+		AdvisorEffort:          advEffort,
+		AdvisorMode:            advMode,
+		AdvisorRequestedEffort: advRequestedEffort,
+		CreatedAt:              s.now(),
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at,
-			 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode, advisor_requested_effort, role_overrides)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 			a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs,
-			string(advKind), advModel, advEffort, advMode, rolesJSON)
+			string(advKind), advModel, advEffort, advMode, advRequestedEffort, rolesJSON)
 		if err != nil {
 			return err
 		}
@@ -494,7 +495,7 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	}
 	in.Kind, in.Model, in.Effort = fbKind, fbModel, fbEffort
 
-	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
+	advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisorAfterFallback(ctx, origKind, in.Kind, in.Advisor)
 
 	if err := s.Preflight(ctx, PreflightInput{
 		Kind:      in.Kind,
@@ -538,21 +539,22 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	agentID := ids.New("agt")
 	nowMs := s.now().UnixMilli()
 	a := Agent{
-		ID:            agentID,
-		Name:          name,
-		Kind:          in.Kind,
-		Model:         in.Model,
-		Effort:        in.Effort,
-		Role:          RoleOrchestrator,
-		ItemID:        it.ID,
-		RootItemID:    it.RootID,
-		Brief:         briefText,
-		RoleOverrides: in.Roles,
-		AdvisorKind:   string(advKind),
-		AdvisorModel:  advModel,
-		AdvisorEffort: advEffort,
-		AdvisorMode:   advMode,
-		CreatedAt:     s.now(),
+		ID:                     agentID,
+		Name:                   name,
+		Kind:                   in.Kind,
+		Model:                  in.Model,
+		Effort:                 in.Effort,
+		Role:                   RoleOrchestrator,
+		ItemID:                 it.ID,
+		RootItemID:             it.RootID,
+		Brief:                  briefText,
+		RoleOverrides:          in.Roles,
+		AdvisorKind:            string(advKind),
+		AdvisorModel:           advModel,
+		AdvisorEffort:          advEffort,
+		AdvisorMode:            advMode,
+		AdvisorRequestedEffort: advRequestedEffort,
+		CreatedAt:              s.now(),
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
@@ -570,11 +572,11 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at,
-			 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode, advisor_requested_effort, role_overrides)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 			a.ItemID, a.RootItemID, a.Brief, string(a.State), nowMs,
-			string(advKind), advModel, advEffort, advMode, rolesJSON)
+			string(advKind), advModel, advEffort, advMode, advRequestedEffort, rolesJSON)
 		if err != nil {
 			return err
 		}
@@ -742,26 +744,27 @@ func (s *Store) roleDefaultKindModel(ctx context.Context, role Role, kind AgentK
 // field: nil means "use Settings" (the common case today, since no caller
 // sets this yet), choice.None means the caller explicitly asked for no
 // advisor. Returns four empty strings when there is no advisor.
-func (s *Store) resolveAdvisor(ctx context.Context, sessionKind AgentKind, choice *AdvisorChoice) (kind AgentKind, model, effort, mode string) {
+func (s *Store) resolveAdvisor(ctx context.Context, sessionKind AgentKind, choice *AdvisorChoice) (kind AgentKind, model, effort, mode, requestedEffort string) {
 	if choice != nil && choice.None {
-		return "", "", "", ""
+		return "", "", "", "", ""
 	}
 	if choice != nil {
 		kind, model, effort = choice.Kind, choice.Model, choice.Effort
 	} else {
 		cfg, err := s.Settings.Get(ctx)
 		if err != nil {
-			return "", "", "", ""
+			return "", "", "", "", ""
 		}
 		rd := cfg.Roles[RoleAdvisor]
 		if rd.Model == "" || rd.Model == settings.NoAdvisor {
-			return "", "", "", ""
+			return "", "", "", "", ""
 		}
 		kind, model, effort = rd.Agent, rd.Model, rd.Effort
 	}
 	if model == "" {
-		return "", "", "", ""
+		return "", "", "", "", ""
 	}
+	requestedEffort = effort
 	capable := false
 	if models, _, err := s.Catalog.ModelsFor(ctx, kind); err == nil {
 		if m, ok := catalog.Find(models, model); ok {
@@ -772,9 +775,29 @@ func (s *Store) resolveAdvisor(ctx context.Context, sessionKind AgentKind, choic
 		mode = s.Advisor.Mode(sessionKind, kind, model, capable)
 	}
 	if mode == "native" {
+		if choice != nil && requestedEffort == "" {
+			if cfg, err := s.Settings.Get(ctx); err == nil {
+				rd := cfg.Roles[RoleAdvisor]
+				if rd.Agent == kind && rd.Model == model {
+					requestedEffort = rd.Effort
+				}
+			}
+		}
 		effort = ""
 	}
-	return kind, model, effort, mode
+	return kind, model, effort, mode, requestedEffort
+}
+
+func (s *Store) resolveAdvisorAfterFallback(ctx context.Context, originalKind, sessionKind AgentKind, choice *AdvisorChoice) (kind AgentKind, model, effort, mode, requestedEffort string) {
+	kind, model, effort, mode, requestedEffort = s.resolveAdvisor(ctx, sessionKind, choice)
+	if originalKind == sessionKind || choice == nil || choice.Effort != "" || mode != "simulated" {
+		return
+	}
+	_, _, _, originalMode, originalRequested := s.resolveAdvisor(ctx, originalKind, choice)
+	if originalMode == "native" && originalRequested != "" {
+		effort, requestedEffort = originalRequested, originalRequested
+	}
+	return
 }
 
 // resolveAgentForModel resolves which AgentKind supports modelID, checking
@@ -1004,7 +1027,7 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		kindReason = joinReason(kindReason, fallbackReason(origKind))
 	}
 
-	advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, in.Kind, in.Advisor)
+	advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisorAfterFallback(ctx, origKind, in.Kind, in.Advisor)
 
 	if err := s.Preflight(ctx, PreflightInput{
 		Kind:      in.Kind,
@@ -1039,22 +1062,23 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 	agentID := ids.New("agt")
 	nowMs := s.now().UnixMilli()
 	a := Agent{
-		ID:            agentID,
-		Name:          name,
-		Kind:          in.Kind,
-		Model:         in.Model,
-		Effort:        in.Effort,
-		Role:          in.Role,
-		ItemID:        it.ID,
-		RootItemID:    it.RootID,
-		ParentAgentID: parentID,
-		Brief:         briefText,
-		AdvisorKind:   string(advKind),
-		AdvisorModel:  advModel,
-		AdvisorEffort: advEffort,
-		AdvisorMode:   advMode,
-		KindReason:    kindReason,
-		CreatedAt:     s.now(),
+		ID:                     agentID,
+		Name:                   name,
+		Kind:                   in.Kind,
+		Model:                  in.Model,
+		Effort:                 in.Effort,
+		Role:                   in.Role,
+		ItemID:                 it.ID,
+		RootItemID:             it.RootID,
+		ParentAgentID:          parentID,
+		Brief:                  briefText,
+		AdvisorKind:            string(advKind),
+		AdvisorModel:           advModel,
+		AdvisorEffort:          advEffort,
+		AdvisorMode:            advMode,
+		AdvisorRequestedEffort: advRequestedEffort,
+		KindReason:             kindReason,
+		CreatedAt:              s.now(),
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
@@ -1078,11 +1102,11 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, parent_agent_id, brief, state, created_at,
-			 advisor_kind, advisor_model, advisor_effort, advisor_mode, role_overrides, kind_reason)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, NULLIF(?, ''))`,
+			 advisor_kind, advisor_model, advisor_effort, advisor_mode, advisor_requested_effort, role_overrides, kind_reason)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, NULLIF(?, ''))`,
 			a.ID, a.Name, string(a.Kind), a.Model, a.Effort, string(a.Role),
 			a.ItemID, a.RootItemID, parentParam, a.Brief, string(a.State), nowMs,
-			string(advKind), advModel, advEffort, advMode, nil, a.KindReason)
+			string(advKind), advModel, advEffort, advMode, advRequestedEffort, nil, a.KindReason)
 		if err != nil {
 			return err
 		}
@@ -1939,14 +1963,14 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		// applies (it's Claude-only): re-resolve with the agent's existing
 		// advisor kind/model/effort as an explicit choice, so mode gets
 		// recomputed for fbKind instead of surviving stale from spawn time.
-		advKind, advModel, advEffort, advMode := s.resolveAdvisor(ctx, fbKind,
-			&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorEffort})
+		advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisor(ctx, fbKind,
+			&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorRequestedEffort})
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ?,
-				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, ''),
+				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, ''), advisor_requested_effort = NULLIF(?, ''),
 				kind_reason = ?
 				WHERE id = ?`,
-				string(fbKind), fbModel, fbEffort, string(advKind), advModel, advEffort, advMode,
+				string(fbKind), fbModel, fbEffort, string(advKind), advModel, advEffort, advMode, advRequestedEffort,
 				joinReason(a.KindReason, fallbackReason(origKind)), a.ID)
 			return err
 		}); err != nil {
@@ -1954,7 +1978,7 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		}
 		a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
 		a.KindReason = joinReason(a.KindReason, fallbackReason(origKind))
-		a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode = string(advKind), advModel, advEffort, advMode
+		a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.AdvisorRequestedEffort = string(advKind), advModel, advEffort, advMode, advRequestedEffort
 	}
 
 	if note != "" {
@@ -2171,7 +2195,7 @@ func scanAgent(row *sql.Row) (Agent, error) {
 	err := row.Scan(
 		&a.ID, &a.Name, &kind, &a.Model, &a.Effort, &role,
 		&a.ItemID, &a.RootItemID, &a.ParentAgentID,
-		&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode,
+		&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode, &a.AdvisorRequestedEffort,
 		&a.Brief, &state, &a.PreflightError, &created, &finished,
 		&roleOverrides, &a.KindReason,
 	)
@@ -2196,7 +2220,7 @@ func (s *Store) Agent(ctx context.Context, name string) (Agent, error) {
 	row := s.DB.QueryRowContext(ctx, `SELECT
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
-		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
+		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), COALESCE(advisor_requested_effort, ''), brief, state,
 		COALESCE(preflight_error, ''), created_at, finished_at,
 		COALESCE(role_overrides, ''), COALESCE(kind_reason, '')
 		FROM agents WHERE name = ?`, name)
@@ -2207,7 +2231,7 @@ func (s *Store) agentByID(ctx context.Context, id string) (Agent, error) {
 	row := s.DB.QueryRowContext(ctx, `SELECT
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
-		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
+		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), COALESCE(advisor_requested_effort, ''), brief, state,
 		COALESCE(preflight_error, ''), created_at, finished_at,
 		COALESCE(role_overrides, ''), COALESCE(kind_reason, '')
 		FROM agents WHERE id = ?`, id)
@@ -2226,7 +2250,7 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 	rows, err := s.DB.QueryContext(ctx, `SELECT
 		id, name, kind, model, COALESCE(effort, ''), role, item_id, root_item_id,
 		COALESCE(parent_agent_id, ''), COALESCE(advisor_kind, ''), COALESCE(advisor_model, ''),
-		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), brief, state,
+		COALESCE(advisor_effort, ''), COALESCE(advisor_mode, ''), COALESCE(advisor_requested_effort, ''), brief, state,
 		COALESCE(preflight_error, ''), created_at, finished_at,
 		COALESCE(role_overrides, ''), COALESCE(kind_reason, '')
 		FROM agents WHERE root_item_id = ? ORDER BY created_at`, it.RootID)
@@ -2244,7 +2268,7 @@ func (s *Store) AgentTree(ctx context.Context, rootItemKey string) ([]Agent, err
 		if err := rows.Scan(
 			&a.ID, &a.Name, &kind, &a.Model, &a.Effort, &role,
 			&a.ItemID, &a.RootItemID, &a.ParentAgentID,
-			&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode,
+			&a.AdvisorKind, &a.AdvisorModel, &a.AdvisorEffort, &a.AdvisorMode, &a.AdvisorRequestedEffort,
 			&a.Brief, &state, &a.PreflightError, &created, &finished,
 			&roleOverrides, &a.KindReason,
 		); err != nil {
