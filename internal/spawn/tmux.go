@@ -30,7 +30,8 @@ type Spawner struct {
 // title (L17); focus-events keeps Claude Code from printing a hint (P0-6);
 // remain-on-exit keeps a dead pane readable for the reconciler (§10.6);
 // mouse on enables wheel scroll to enter copy-mode and scroll conversation history
-// rather than sending Up/Down arrow keys that cycle prompt history in Codex/agy/Cursor.
+// rather than sending Up/Down arrow keys that cycle prompt history in Codex/agy/Cursor;
+// copy-command pbcopy makes a mouse-drag selection land in the macOS clipboard.
 // set-titles-string is '#W' (the window name), not a literal: the reconciler
 // renames each session's window every tick to the fun title (status/role/tree
 // emoji + name, see runtime.sessionTitle), and automatic-rename off stops tmux
@@ -45,6 +46,7 @@ func TmuxConf() []byte {
 		"set -g remain-on-exit on",
 		"set -g history-limit 20000",
 		"set -g mouse on",
+		"set -s copy-command pbcopy",
 		"",
 	}, "\n"))
 }
