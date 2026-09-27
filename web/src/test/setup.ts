@@ -1,8 +1,10 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
+import { toast } from "sonner";
 import { afterEach, vi } from "vitest";
 
 afterEach(() => {
+  toast.dismiss();
   cleanup();
   localStorage.clear();
   sessionStorage.clear();
@@ -10,6 +12,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+Object.assign(Element.prototype, {
+  hasPointerCapture: () => false,
+  setPointerCapture: () => {},
+  releasePointerCapture: () => {},
+  scrollIntoView: () => {},
 });
 
 // React Flow in jsdom: https://reactflow.dev/learn/advanced-use/testing
