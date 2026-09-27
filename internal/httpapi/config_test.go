@@ -3,14 +3,17 @@ package httpapi
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/kb"
 	"github.com/AlexanderTar/agent-swarm/internal/repos"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
@@ -74,7 +77,9 @@ func TestExcludesChangeTriggersRescan(t *testing.T) {
 	status, b := e.api("GET", "/api/settings", nil)
 	cur := decode[settings.Settings](t, b)
 	cur.ScanExcludes = append(cur.ScanExcludes, "~/GitHub/tools")
-	os.MkdirAll(filepath.Join(e.home, "Later/extra/.git"), 0o755)
+	extra := filepath.Join(e.home, "Later/extra")
+	os.MkdirAll(extra, 0o755)
+	localGit(t, "init", "-q", extra)
 	if status, b = e.api("PUT", "/api/settings", cur); status != 200 {
 		t.Fatalf("PUT = %d %s", status, b)
 	}
@@ -150,12 +155,15 @@ func TestReposRoutes(t *testing.T) {
 	}
 
 	hidden := filepath.Join(e.home, ".private/secret")
-	os.MkdirAll(filepath.Join(hidden, ".git"), 0o755)
+	os.MkdirAll(hidden, 0o755)
+	localGit(t, "init", "-q", hidden)
 	status, b = e.api("POST", "/api/repos", map[string]string{"path": hidden})
 	if r := decode[repos.Repo](t, b); status != 201 || r.Source != "manual" || r.Name != "secret" {
 		t.Fatalf("add = %d %s", status, b)
 	}
-	os.MkdirAll(filepath.Join(e.home, "Later/tilde/.git"), 0o755)
+	tilde := filepath.Join(e.home, "Later/tilde")
+	os.MkdirAll(tilde, 0o755)
+	localGit(t, "init", "-q", tilde)
 	status, b = e.api("POST", "/api/repos", map[string]string{"path": "~/Later/tilde"})
 	if r := decode[repos.Repo](t, b); status != 201 || r.Path != filepath.Join(e.home, "Later/tilde") {
 		t.Fatalf("add ~ = %d %s", status, b)
@@ -165,6 +173,97 @@ func TestReposRoutes(t *testing.T) {
 	for _, p := range []string{filepath.Join(e.home, "GitHub"), "", "~/GitHub"} {
 		status, b = e.api("POST", "/api/repos", map[string]string{"path": p})
 		wantErr(t, status, b, 422, "bad_request", "No git repository found in this folder.")
+	}
+}
+
+func localGit(t *testing.T, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+func TestReposRouteOmitsStoredWorktree(t *testing.T) {
+	e := newEnv(t)
+	main := filepath.Join(e.home, "GitHub/app")
+	linked := filepath.Join(e.home, "GitHub/app-linked")
+	clone := filepath.Join(e.home, "GitHub/app-clone")
+	localGit(t, "-C", main, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "--allow-empty", "-m", "initial")
+	localGit(t, "-C", main, "worktree", "add", "-q", "-b", "linked", linked)
+	localGit(t, "clone", "-q", main, clone)
+	if _, err := e.repos.Scan(bg); err != nil {
+		t.Fatal(err)
+	}
+	const linkedID = "repo_stored_linked"
+	if _, err := e.repos.DB.ExecContext(bg, `INSERT INTO repos (id,path,name,source,last_used_at,created_at,updated_at) VALUES (?,?,?,'scan',9,1,1)`, linkedID, linked, "app-linked"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.repos.DB.ExecContext(bg, `INSERT INTO repo_groups (repo_id,name,source) VALUES (?,?,'workspace_dir')`, linkedID, "proj"); err != nil {
+		t.Fatal(err)
+	}
+	_, b := e.api("GET", "/api/repos", nil)
+	body := decode[reposBody](t, b)
+	var all, recent, groups []string
+	for _, r := range body.All {
+		all = append(all, r.ID)
+	}
+	for _, r := range body.Recent {
+		recent = append(recent, r.ID)
+	}
+	for _, g := range body.Groups {
+		for _, r := range g.Repos {
+			groups = append(groups, r.ID)
+		}
+	}
+	for section, ids := range map[string][]string{"all": all, "recent": recent, "groups": groups} {
+		if slices.Contains(ids, linkedID) {
+			t.Errorf("%s contains stored worktree %s: %v", section, linkedID, ids)
+		}
+	}
+	paths := map[string]bool{}
+	for _, r := range body.All {
+		paths[r.Path] = true
+	}
+	if !paths[main] || !paths[clone] {
+		t.Errorf("main or independent clone missing from all: %v", paths)
+	}
+}
+
+func TestReposRouteClassifiesEachCheckoutOnce(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.repos.Scan(bg); err != nil {
+		t.Fatal(err)
+	}
+	var operations atomic.Int64
+	e.repos.IdentityRun = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		operations.Add(1)
+		return execx.Run(ctx, name, args...)
+	}
+	status, b := e.api("GET", "/api/repos", nil)
+	if body := decode[reposBody](t, b); status != 200 || len(body.All) != 3 {
+		t.Fatalf("GET = %d %s", status, b)
+	}
+	if got := operations.Load(); got != 3 {
+		t.Fatalf("Git identity operations = %d, want one per checkout", got)
+	}
+}
+
+func TestReposRouteKeepsStoredSeparateGitDirCheckout(t *testing.T) {
+	e := newEnv(t)
+	checkout := filepath.Join(e.home, "GitHub/separate")
+	gitDir := filepath.Join(e.home, "metadata", "separate.git")
+	if err := os.MkdirAll(filepath.Dir(gitDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localGit(t, "init", "-q", "--separate-git-dir", gitDir, checkout)
+	const id = "repo_separate_git_dir"
+	if _, err := e.repos.DB.ExecContext(bg, `INSERT INTO repos (id,path,name,source,created_at,updated_at) VALUES (?,?,?,'scan',1,1)`, id, checkout, "separate"); err != nil {
+		t.Fatal(err)
+	}
+	_, b := e.api("GET", "/api/repos", nil)
+	all := decode[reposBody](t, b).All
+	if !slices.ContainsFunc(all, func(r repos.Repo) bool { return r.ID == id }) {
+		t.Fatalf("stored separate Git directory checkout %s absent from all: %+v", id, all)
 	}
 }
 

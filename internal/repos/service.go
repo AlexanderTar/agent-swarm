@@ -49,6 +49,7 @@ type Service struct {
 	DB           *db.DB
 	Events       *events.Store
 	Run          execx.Runner
+	IdentityRun  execx.Runner // optional Git identity runner; nil uses execx.Run
 	Home         string
 	Excludes     func(context.Context) []string
 	Now          func() time.Time
@@ -69,6 +70,14 @@ type scanCall struct {
 	done  chan struct{}
 	stats ScanStats
 	err   error
+}
+
+type identityCacheKey struct{}
+type identityCache map[string]bool
+
+// WithIdentityCache reuses checkout classification within one request.
+func WithIdentityCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, identityCacheKey{}, identityCache{})
 }
 
 // Scan walks the home folder. Scans are shared and run under s.Ctx, so a caller's
@@ -273,10 +282,10 @@ func (s *Service) Loop(ctx context.Context, interval func(context.Context) time.
 	}
 }
 
-// AddManual registers any folder with a .git directory, hidden or excluded.
+// AddManual registers a primary checkout, even when hidden or excluded.
 func (s *Service) AddManual(ctx context.Context, path string) (Repo, error) {
 	abs, err := filepath.Abs(path)
-	if err != nil || !IsRepo(abs) {
+	if err != nil || !PrimaryRepo(ctx, execx.Run, abs) {
 		return Repo{}, ErrNotRepo
 	}
 	real, err := filepath.EvalSymlinks(abs)
@@ -315,13 +324,13 @@ func (s *Service) query(ctx context.Context, where string, args ...any) ([]Repo,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []Repo{}
 	for rows.Next() {
 		var r Repo
 		var groups string
 		if err := rows.Scan(&r.ID, &r.Name, &r.Path, &r.RemoteURL, &r.RemoteOwner, &r.DefaultBranch,
 			&r.Source, &r.Missing, &r.LastUsedAt, &groups); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		r.Groups = []string{}
@@ -331,7 +340,39 @@ func (s *Service) query(ctx context.Context, where string, args ...any) ([]Repo,
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	kept := out[:0]
+	for _, r := range out {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if _, err := os.Stat(r.Path); err == nil {
+			cache, _ := ctx.Value(identityCacheKey{}).(identityCache)
+			primary, known := cache[r.Path]
+			if !known {
+				run := s.IdentityRun
+				if run == nil {
+					run = execx.Run
+				}
+				primary = PrimaryRepo(ctx, run, r.Path)
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if cache != nil {
+					cache[r.Path] = primary
+				}
+			}
+			if !primary {
+				continue
+			}
+		}
+		kept = append(kept, r)
+	}
+	return kept, nil
 }
 
 func (s *Service) All(ctx context.Context) ([]Repo, error) { return s.query(ctx, "") }

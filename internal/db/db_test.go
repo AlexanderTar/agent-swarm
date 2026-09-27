@@ -119,6 +119,9 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN kind_reason`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := raw.Exec(`ALTER TABLE agents DROP COLUMN advisor_requested_effort`); err != nil {
+		t.Fatal(err)
+	}
 	for _, col := range []string{"verdict", "findings_json"} {
 		if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN ` + col); err != nil {
 			t.Fatal(err)

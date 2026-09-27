@@ -96,7 +96,11 @@ func newEnv(t *testing.T, opts ...func(*Deps)) *env {
 	ev := events.New(d, now)
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	for _, r := range []string{"GitHub/app", "GitHub/web", "GitHub/tools"} {
-		os.MkdirAll(filepath.Join(home, r, ".git"), 0o755)
+		path := filepath.Join(home, r)
+		os.MkdirAll(path, 0o755)
+		if out, err := exec.Command("git", "init", "-q", path).CombinedOutput(); err != nil {
+			t.Fatalf("git init %s: %v: %s", path, err, out)
+		}
 	}
 	os.MkdirAll(filepath.Join(home, "Workspaces/proj"), 0o755)
 	os.Symlink(filepath.Join(home, "GitHub/app"), filepath.Join(home, "Workspaces/proj/app"))

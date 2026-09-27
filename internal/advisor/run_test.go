@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
 
@@ -57,6 +58,59 @@ func TestAdvisorCommand(t *testing.T) {
 	agy, _ := AdvisorCommand(runtime.Agy, "gemini-3.8-flash-high", "high", dir, Prompt)
 	if strings.Contains(strings.Join(agy, " "), "--effort") {
 		t.Fatalf("agy argv = %v", agy)
+	}
+}
+
+func TestAskResolvesSlugAdvisorEffortInCommand(t *testing.T) {
+	cases := []struct {
+		name, kind, model, effort, wantModel string
+	}{
+		{"agy", "agy", "gemini-3.8-flash", "medium", "gemini-3.8-flash-medium"},
+		{"cursor", "cursor", "gpt-5.3-codex", "high", "gpt-5.3-codex-high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, seed := newAdvisorService(t)
+			s.Catalog = &catalog.Service{DB: s.DB}
+			ctx := context.Background()
+			_, err := s.DB.ExecContext(ctx, `INSERT INTO model_catalog
+				(agent_kind, agent_version, models_json, default_model, source, fetched_at, attempted_at)
+				VALUES (?, 'test', ?, ?, 'test', 1, 1)`, tc.kind,
+				`[{"id":"`+tc.model+`","label":"Test","efforts":["medium","high"],"default_effort":"high","effort_encoding":"slug","launch_ids":{"medium":"`+tc.model+`-medium","high":"`+tc.model+`-high"}}]`, tc.model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.DB.ExecContext(ctx, `UPDATE agents SET advisor_kind = ?, advisor_model = ?, advisor_effort = ? WHERE id = ?`,
+				tc.kind, tc.model, tc.effort, seed.AgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			s.Run = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				got = append([]string{name}, args...)
+				return []byte(`{"response":"Use this approach.","result":"Use this approach."}`), nil
+			}
+			adv, err := s.Ask(ctx, seed.SessionID, "Which approach?", nil, 45*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if adv.State != "answered" {
+				t.Fatalf("advice state = %q, want answered: %s", adv.State, adv.Error)
+			}
+			var model string
+			for i := range got {
+				if got[i] == "--model" && i+1 < len(got) {
+					model = got[i+1]
+					break
+				}
+			}
+			if model != tc.wantModel {
+				t.Fatalf("advisor command model = %q, want %q; argv = %v", model, tc.wantModel, got)
+			}
+			if adv.AdvisorModel != tc.model || adv.AdvisorEffort != tc.effort {
+				t.Fatalf("persisted advisor model/effort = %q/%q, want %q/%q", adv.AdvisorModel, adv.AdvisorEffort, tc.model, tc.effort)
+			}
+		})
 	}
 }
 
