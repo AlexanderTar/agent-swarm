@@ -46,11 +46,6 @@ function Host(p: {
 
 const card = (key: string) => screen.getByTestId(`card-${key}`);
 const cell = (lane: string, status: string) => screen.getByTestId(`cell-${lane}-${status}`);
-// DndContext renders its own hidden `role="status"` live region (aria-live="assertive") for
-// screen-reader drag announcements, alongside the ToastProvider's own `role="status"` container
-// (aria-live="polite") — so a bare `getByRole("status")` matches both once a view wraps in
-// DndContext. Disambiguate by the aria-live value rather than weakening the query to `getAllByRole`.
-const toastRegion = () => screen.getAllByRole("status").find((el) => el.getAttribute("aria-live") === "polite") as HTMLElement;
 
 describe("Kanban view (§16.7)", () => {
   it("shows active workflow crew and a badge after round one", async () => {
@@ -174,7 +169,7 @@ describe("Kanban view (§16.7)", () => {
     const { user } = renderWithDaemon(<Host />, { daemon: d, events: false });
     await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
     await user.click(screen.getByRole("menuitem", { name: /Blocked/ }));
-    await waitFor(() => expect(toastRegion()).toHaveTextContent(reason));
+    expect(await screen.findByText(reason)).toBeInTheDocument();
     expect(card("TASK-103")).not.toHaveTextContent("Updating…");
     expect(screen.getByRole("button", { name: "Move to… TASK-103" })).toBeEnabled();
   });
@@ -186,7 +181,7 @@ describe("Kanban view (§16.7)", () => {
     const { user } = renderWithDaemon(<Host />, { daemon: d, events: false });
     await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
     await user.click(screen.getByRole("menuitem", { name: /Blocked/ }));
-    await waitFor(() => expect(toastRegion()).toHaveTextContent(reason));
+    expect(await screen.findByText(reason)).toBeInTheDocument();
     expect(within(cell("EPIC-12", "ready")).getByTestId("card-TASK-103")).toBeInTheDocument();
   });
 
@@ -241,7 +236,7 @@ describe("Kanban view (§16.7)", () => {
     expect(within(cell("flat", "in_progress")).getByTestId("card-EPIC-12")).toBeInTheDocument();
     await user.click(within(card("SPIKE-3")).getByRole("button", { name: "Move to… SPIKE-3" }));
     await user.click(screen.getByRole("menuitem", { name: /^Done/ }));
-    expect(toastRegion()).toHaveTextContent("This spike reaches Done after materialization.");
+    expect(await screen.findByText("This spike reaches Done after materialization.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View spike" }));
     expect(onSelect).toHaveBeenCalledWith("SPIKE-3");
   });

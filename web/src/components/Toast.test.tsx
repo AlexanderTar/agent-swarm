@@ -6,23 +6,42 @@ import { ToastProvider, useToast } from "./Toast";
 function Trigger({ onAction }: { onAction: () => void }) {
   const toast = useToast();
   return (
-    <button type="button" onClick={() => toast({ message: "This spike reaches Done after materialization.", action: { label: "View spike", onClick: onAction } })}>
-      go
-    </button>
+    <>
+      <button type="button" onClick={() => toast({ message: "This spike reaches Done after materialization.", action: { label: "View spike", onClick: onAction } })}>legacy action</button>
+      <button type="button" onClick={() => toast({ message: "Failed to move item" })}>legacy</button>
+      <button type="button" onClick={() => toast.success("Created TASK-9")}>ok</button>
+    </>
   );
 }
 
-describe("Toast", () => {
-  it("shows a message with an action and dismisses it after 6 s", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+describe("Toast (Sonner)", () => {
+  it("legacy call shows an error toast with its action", async () => {
     const onAction = vi.fn();
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const user = userEvent.setup();
     render(<ToastProvider><Trigger onAction={onAction} /></ToastProvider>);
-    await user.click(screen.getByRole("button", { name: "go" }));
-    expect(screen.getByRole("status")).toHaveTextContent("This spike reaches Done after materialization.");
+    await user.click(screen.getByRole("button", { name: "legacy action" }));
+    expect(await screen.findByText("This spike reaches Done after materialization.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View spike" }));
     expect(onAction).toHaveBeenCalled();
-    act(() => vi.advanceTimersByTime(6_100));
-    expect(screen.queryByText("This spike reaches Done after materialization.")).not.toBeInTheDocument();
+  });
+
+  it("legacy error dismisses after 6 s", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<ToastProvider><Trigger onAction={vi.fn()} /></ToastProvider>);
+    await user.click(screen.getByRole("button", { name: "legacy", exact: true }));
+    expect(await screen.findByText("Failed to move item")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(6_600));
+    expect(screen.queryByText("Failed to move item")).not.toBeInTheDocument();
+  });
+
+  it("success toast disappears after 4 s", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<ToastProvider><Trigger onAction={vi.fn()} /></ToastProvider>);
+    await user.click(screen.getByRole("button", { name: "ok" }));
+    expect(await screen.findByText("Created TASK-9")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(4_600));
+    expect(screen.queryByText("Created TASK-9")).not.toBeInTheDocument();
   });
 });
