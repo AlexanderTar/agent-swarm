@@ -151,7 +151,7 @@ func (s *Store) createTree(ctx context.Context, tx *sql.Tx, spike items.Item, tr
 	root, err := s.Items.CreateTx(ctx, tx, items.CreateInput{
 		Workflow: rootWorkflow,
 		Type:     rootType, Title: tree.Root.Title, Brief: tree.Root.Brief,
-		Acceptance: tree.Root.Acceptance, Status: items.Draft,
+		Acceptance: tree.Root.Acceptance, Status: items.Ready,
 		Repos: spike.Repos, OriginSpikeID: spike.ID,
 	}, items.Daemon())
 	if err != nil {
@@ -283,7 +283,7 @@ func (s *Store) NotifyItemCreated(ctx context.Context, tx *sql.Tx, originKey, ro
 		Args: map[string]string{"SPIKE-KEY": originKey, "ROOT-KEY": rootKey, "title": rootTitle}})
 }
 
-// Materialize turns an approved spike into an epic (feature) or a bug (debug),
+// Materialize turns an approved spike into a Ready epic (feature) or bug (debug),
 // all inside one transaction (§8.2): every check must pass before anything is
 // created, and any failure rolls the whole tree back.
 // requestID is I11's idempotency key, scoped to the calling MCP session

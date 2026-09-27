@@ -147,8 +147,8 @@ func TestMaterializeBuildsTheEpicTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root.Status != items.Draft {
-		t.Fatalf("the root starts as draft, got %s", root.Status)
+	if root.Status != items.Ready {
+		t.Fatalf("the root starts as ready, got %s", root.Status)
 	}
 	children, _ := s.Items.Children(ctx, res.Root)
 	if len(children) != 1 || children[0].Type != items.Story || children[0].Status != items.Ready {
@@ -187,6 +187,18 @@ func TestMaterializeBuildsTheEpicTree(t *testing.T) {
 	n := notified(t, s, "item.created")
 	if n.Args["SPIKE-KEY"] != "SPIKE-1" || n.Args["ROOT-KEY"] != res.Root {
 		t.Fatalf("notification args = %v", n.Args)
+	}
+
+	// The reported bug: the new root's orchestrator could never leave Draft.
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: res.Root, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteCheckpoint(ctx, mustSessionID(t, s, orch.ID), CheckpointInput{Kind: Accepted, Summary: "on it"}); err != nil {
+		t.Fatal(err)
+	}
+	if root, _ = s.Items.Get(ctx, res.Root); root.Status != items.InProgress {
+		t.Fatalf("after accepted: %s", root.Status)
 	}
 }
 
@@ -520,5 +532,81 @@ func TestMaterializeDerivesRoleHint(t *testing.T) {
 	}
 	if task.RoleHint != "debugger" {
 		t.Fatalf("role_hint = %q", task.RoleHint)
+	}
+}
+
+// Spec E2.
+func TestMaterializeDebugRootIsReady(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, reportID := approvedDebugSpike(t, s)
+	res, err := s.Materialize(ctx, ses.ID, "SPIKE-1", "", "", reportID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := s.Items.Get(ctx, res.Root)
+	if root.Type != items.Bug || root.Status != items.Ready {
+		t.Fatalf("root = %s %s, want a ready bug", root.Type, root.Status)
+	}
+}
+
+// choreTreeBody is a plan whose swarm-tree has a chore root (legacy chore spikes).
+const choreTreeBody = "# Plan\n\n## Work breakdown\n\n" +
+	"```swarm-tree\n" +
+	`{"root":{"type":"chore","title":"Bump deps","brief":"","acceptance":["Deps are current."]},
+ "children":[{"ref":"t1","type":"task","title":"Bump go deps","brief":"","acceptance":[],"role_hint":"coder","tdd_exempt":null,"repos":["chat"],"workflow":{"template":"tdd-reviewed"},"steps":["Write test","Bump"],"verify":["go test ./..."],"solo":"focused"}],
+ "deps":[]}` + "\n```\n\n## Verification\n\ngo test ./...\n"
+
+// Spec decision 5 / E14: a live spike with intent chore (SPIKE-20) still
+// materializes. The row is set directly because CreateTx now refuses it.
+func TestMaterializeLegacyChoreSpike(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "chat")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bump deps", Intent: "feature",
+		Kind: Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET spike_intent = 'chore' WHERE key = ?`, key); err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
+		Repos: []ReposProposal{{Repo: repo, Reason: "the deps live here"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, choreTreeBody), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: plan.ArtifactID, Prompt: "Approve the plan."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, r.ID, ApproveInput{ArtifactRevision: plan.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Materialize(ctx, ses.ID, key, "", plan.ArtifactID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := s.Items.Get(ctx, res.Root)
+	if root.Type != items.Chore || root.Status != items.Ready || !strings.HasPrefix(root.Key, "CHORE-") {
+		t.Fatalf("root = %+v", root)
+	}
+	children, _ := s.Items.Children(ctx, root.Key)
+	if len(children) != 1 || children[0].Type != items.Task || children[0].Status != items.Ready {
+		t.Fatalf("children = %+v", children)
+	}
+	if sp, _ := s.Items.Get(ctx, key); sp.Status != items.Done {
+		t.Fatalf("spike = %s, want done", sp.Status)
 	}
 }
