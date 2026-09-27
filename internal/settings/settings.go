@@ -18,6 +18,12 @@ import (
 
 const NoAdvisor = "none"
 
+// retiredKeys are settings rows no field reads any more (2026-09-24
+// unify-agent-limits and 2026-09-27 single-agent-limit-live). Put deletes
+// them in its own transaction; no migration, so a rolled-back daemon still
+// opens the DB (db.ErrTooNew).
+var retiredKeys = []string{"max_orchestrators", "max_agents", "max_agents_per_root", "max_concurrent_subagents"}
+
 type RoleDefault struct {
 	Agent  kinds.AgentKind `json:"agent"`
 	Model  string          `json:"model"`
@@ -49,15 +55,13 @@ type Settings struct {
 	// max_agents row's old non-orchestrator-only value would otherwise be
 	// silently reinterpreted under the new, broader semantics the moment
 	// this ships. See docs/specs/2026-09-24-unify-agent-limits.md.
-	MaxConcurrentAgents    int      `json:"max_concurrent_agents"`
-	MaxAgentsPerRoot       int      `json:"max_agents_per_root"`
-	MaxConcurrentSubagents int      `json:"max_concurrent_subagents"`
-	ScanExcludes           []string `json:"scan_excludes"`
-	ScanIntervalSec        int      `json:"scan_interval_sec"`
-	MenubarCompact         bool     `json:"menubar_compact"`
-	UsagePollSec           int      `json:"usage_poll_sec"`
-	PauseDeadlineSec       int      `json:"pause_deadline_sec"`
-	Instructions           string   `json:"instructions"`
+	MaxConcurrentAgents int      `json:"max_concurrent_agents"`
+	ScanExcludes        []string `json:"scan_excludes"`
+	ScanIntervalSec     int      `json:"scan_interval_sec"`
+	MenubarCompact      bool     `json:"menubar_compact"`
+	UsagePollSec        int      `json:"usage_poll_sec"`
+	PauseDeadlineSec    int      `json:"pause_deadline_sec"`
+	Instructions        string   `json:"instructions"`
 }
 
 // roleDefaults is §2.1 A3; "default" effort is "".
@@ -83,18 +87,16 @@ func Defaults(installed []kinds.AgentKind) Settings {
 	}
 	on := NotifyPref{Center: true, Sound: true}
 	return Settings{
-		EnabledAgents:          enabled,
-		Roles:                  maps.Clone(roleDefaults),
-		FallbackDefault:        RoleDefault{Agent: kinds.Claude, Model: "sonnet"},
-		Notifications:          map[string]NotifyPref{"info": on, "attention": on, "action": on},
-		MaxConcurrentAgents:    4,
-		MaxAgentsPerRoot:       4,
-		MaxConcurrentSubagents: 3,
-		ScanExcludes:           []string{"~/Library", "~/.Trash", "~/Downloads", "~/Music", "~/Pictures", "~/Movies"},
-		ScanIntervalSec:        21600,
-		UsagePollSec:           300,
-		PauseDeadlineSec:       120,
-		Instructions:           "",
+		EnabledAgents:       enabled,
+		Roles:               maps.Clone(roleDefaults),
+		FallbackDefault:     RoleDefault{Agent: kinds.Claude, Model: "sonnet"},
+		Notifications:       map[string]NotifyPref{"info": on, "attention": on, "action": on},
+		MaxConcurrentAgents: 4,
+		ScanExcludes:        []string{"~/Library", "~/.Trash", "~/Downloads", "~/Music", "~/Pictures", "~/Movies"},
+		ScanIntervalSec:     21600,
+		UsagePollSec:        300,
+		PauseDeadlineSec:    120,
+		Instructions:        "",
 	}
 }
 
@@ -193,6 +195,11 @@ func (s *Store) Put(ctx context.Context, next Settings) (Settings, error) {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)
 				ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
 				k, string(v), now); err != nil {
+				return err
+			}
+		}
+		for _, k := range retiredKeys {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, k); err != nil {
 				return err
 			}
 		}
@@ -337,10 +344,6 @@ func (s *Store) validate(ctx context.Context, prev, next Settings) error {
 	switch {
 	case next.MaxConcurrentAgents < 1 || next.MaxConcurrentAgents > 32:
 		return invalid("Maximum concurrent agents must be between 1 and 32.")
-	case next.MaxAgentsPerRoot < 1 || next.MaxAgentsPerRoot > 16:
-		return invalid("Maximum concurrent agents per item must be between 1 and 16.")
-	case next.MaxConcurrentSubagents < 1 || next.MaxConcurrentSubagents > 16:
-		return invalid("Maximum concurrent subagents per parent must be between 1 and 16.")
 	case next.PauseDeadlineSec < 30 || next.PauseDeadlineSec > 600:
 		return invalid("Pause deadline must be between 30 and 600 seconds.")
 	case next.ScanIntervalSec < 3600:

@@ -874,7 +874,7 @@ func TestSweepRunsOnlyWhenTheWholeTreeIsFinished(t *testing.T) {
 func TestReconcileDrainsTheQueue(t *testing.T) {
 	s, tm, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 4)
+	setLimits(t, s, 1)
 	seedEpicWithTwoTasks(t, s)
 	first, _, _ := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -1446,7 +1446,7 @@ func TestUndeliveredMessageRelaysToSenderOnceAfterGracePeriod(t *testing.T) {
 func TestUndeliveredMessageFallsBackToTheSendersParentWhenTheSenderIsAlsoDead(t *testing.T) {
 	s, tm, at := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 5, 5)
+	setLimits(t, s, 5)
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -1504,7 +1504,7 @@ func TestUndeliveredMessageFallsBackToTheSendersParentWhenTheSenderIsAlsoDead(t 
 func TestUndeliveredMessageWithNoLiveSenderAndNoParentNeverFires(t *testing.T) {
 	s, _, at := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 5, 5)
+	setLimits(t, s, 5)
 	seedEpicWithTwoTasks(t, s)
 	sender, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
 		Brief: BriefInput{Objective: "one"}})
@@ -1665,7 +1665,7 @@ func TestUndeliveredMessagesCutoffBoundaryIsInclusive(t *testing.T) {
 func TestUndeliveredMessageEscalatesPastADeadParentToTheNearestLiveAncestor(t *testing.T) {
 	s, tm, at := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 5, 5)
+	setLimits(t, s, 5)
 	seedEpicWithTwoTasks(t, s)
 	root, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -1823,7 +1823,7 @@ func TestDepUnblockedWakesAllParents(t *testing.T) {
 	// of starting it. Raw SQL, not Settings.Put: Put's validate() rejects the
 	// "fake" kind this fixture's Installed hook enables as the default
 	// enabled_agents, which Get() would otherwise round-trip right back in.
-	for _, kv := range [][2]string{{"max_concurrent_agents", "10"}, {"max_agents_per_root", "10"}} {
+	for _, kv := range [][2]string{{"max_concurrent_agents", "10"}} {
 		if _, err := s.DB.ExecContext(ctx, `INSERT OR REPLACE INTO settings (key, value_json, updated_at)
 			VALUES (?, ?, 1)`, kv[0], kv[1]); err != nil {
 			t.Fatal(err)

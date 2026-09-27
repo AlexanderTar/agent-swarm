@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -53,10 +54,19 @@ func TestSettingsRoutes(t *testing.T) {
 	bad(func(c *settings.Settings) {
 		c.Roles[runtime.RoleMechanical] = settings.RoleDefault{Agent: runtime.Claude, Model: "haiku", Effort: "low"}
 	}, "low isn't available for Haiku (latest).")
-	bad(func(c *settings.Settings) { c.MaxAgentsPerRoot = 0 }, "Maximum concurrent agents per item must be between 1 and 16.")
 	bad(func(c *settings.Settings) { c.EnabledAgents = nil }, "At least one agent must stay enabled.")
 	status, body := e.api("PUT", "/api/settings", "nope")
 	wantErr(t, status, body, 400, "bad_request", "Invalid JSON body.")
+
+	// A pre-2026-09-27 client still sends the removed keys: accepted, dropped.
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["max_agents_per_root"], raw["max_concurrent_subagents"] = 0, 0
+	if status, body := e.api("PUT", "/api/settings", raw); status != 200 {
+		t.Fatalf("PUT with removed keys = %d %s", status, body)
+	}
 }
 
 func TestExcludesChangeTriggersRescan(t *testing.T) {

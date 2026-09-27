@@ -78,15 +78,14 @@ func (h *harness) enableFake(t *testing.T) {
 	now := time.Now().UnixMilli()
 
 	// The whole suite shares one daemon and never tears an agent down between
-	// tests, so the production defaults (4 concurrent agents, 4 per root) run
-	// out well before scenario 30 — raise them generously here, every time
-	// (idempotent, cheap), not just on the first call: if scenario 11's own
-	// t.Cleanup that restores max_concurrent_agents were ever skipped (a
-	// panic, say), every later test still gets it raised back up here rather
-	// than staying stuck at 1.
+	// tests, so the production default (4 concurrent agents) runs out well
+	// before scenario 30 — raise it generously here, every time (idempotent,
+	// cheap), not just on the first call: if scenario 11's own t.Cleanup that
+	// restores max_concurrent_agents were ever skipped (a panic, say), every
+	// later test still gets it raised back up here rather than staying stuck
+	// at 1.
 	for _, kv := range [][2]string{
 		{"max_concurrent_agents", "200"},
-		{"max_agents_per_root", "50"},
 		{"enabled_agents", `["fake"]`},
 		{"roles", `{"orchestrator":{"agent":"fake","model":"fake-1"},"coder":{"agent":"fake","model":"fake-1"},"reviewer":{"agent":"fake","model":"fake-1"},"ui_reviewer":{"agent":"fake","model":"fake-1"},"designer":{"agent":"fake","model":"fake-1"},"researcher":{"agent":"fake","model":"fake-1"},"debugger":{"agent":"fake","model":"fake-1"},"mechanical":{"agent":"fake","model":"fake-1"}}`},
 	} {

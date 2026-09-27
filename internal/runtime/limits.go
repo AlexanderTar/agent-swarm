@@ -71,38 +71,24 @@ const NotAZombieSlot = `NOT EXISTS (
 					AND c.item_id = agents.item_id AND c.session_id = s.id
 					AND c.kind IN ('completed', 'failed'))))`
 
-// Admit reports whether a new agent of this role may start now (A2, I20).
-// Every role, orchestrator included, counts against one shared
-// max_concurrent_agents pool (2026-09-24 unify-agent-limits: replaces the old
-// max_orchestrators/max_agents split). Non-orchestrator roles additionally
-// check max_agents_per_root for per-epic fairness; orchestrators never did and
-// still don't. A queued agent holds its slot, so the FIFO order the drain
-// uses stays stable.
+// slotHoldersSQL counts every agent occupying a slot in the one
+// max_concurrent_agents pool (spec 2026-09-27-single-agent-limit-live).
+const slotHoldersSQL = `SELECT COUNT(*) FROM agents WHERE state = 'active' AND ` + NotAZombieSlot
+
+// Admit reports whether a new agent may start now (A2, I20): one global
+// max_concurrent_agents pool, every role including orchestrators. role and
+// rootItemID are unused since the per-root limit went (kept so every call
+// site stays put).
 func (s *Store) Admit(ctx context.Context, tx *sql.Tx, role Role, rootItemID string) (bool, error) {
 	cfg, err := s.Settings.Get(ctx)
 	if err != nil {
 		return false, err
 	}
-	count := func(query string, args ...any) (int, error) {
-		var n int
-		return n, tx.QueryRowContext(ctx, query, args...).Scan(&n)
-	}
-	global, err := count(`SELECT COUNT(*) FROM agents WHERE state = 'active' AND ` + NotAZombieSlot)
-	if err != nil {
+	var holders int
+	if err := tx.QueryRowContext(ctx, slotHoldersSQL).Scan(&holders); err != nil {
 		return false, err
 	}
-	if global >= cfg.MaxConcurrentAgents {
-		return false, nil
-	}
-	if role == RoleOrchestrator {
-		return true, nil
-	}
-	perRoot, err := count(`SELECT COUNT(*) FROM agents WHERE role <> 'orchestrator'
-		AND root_item_id = ? AND state = 'active' AND `+NotAZombieSlot, rootItemID)
-	if err != nil {
-		return false, err
-	}
-	return perRoot < cfg.MaxAgentsPerRoot, nil
+	return holders < cfg.MaxConcurrentAgents, nil
 }
 
 // DrainQueue starts queued agents in FIFO order while slots are free. It runs
@@ -347,4 +333,3 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 
 	return true, nil
 }
-

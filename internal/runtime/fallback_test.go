@@ -612,7 +612,7 @@ func TestDrainQueueSubstitutesExhaustedFallback(t *testing.T) {
 	s, tm := newStoreWithFallback(t)
 	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
 	ctx := context.Background()
-	setLimits(t, s, 1, 4)
+	setLimits(t, s, 1)
 	seedEpicWithTwoTasks(t, s)
 	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
 		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "one"}})
@@ -661,7 +661,7 @@ func TestDrainQueueReResolvesAdvisorModeOnKindSwap(t *testing.T) {
 	s.Advisor = kindSensitiveAdvisor{}
 	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
 	ctx := context.Background()
-	setLimits(t, s, 1, 4)
+	setLimits(t, s, 1)
 	seedEpicWithTwoTasks(t, s)
 	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
 		Model: "claude-sonnet-5", Advisor: &AdvisorChoice{Kind: Claude, Model: "claude-fable-5-1"},
@@ -701,7 +701,7 @@ func TestDrainQueueBothExhaustedRelaysToParent(t *testing.T) {
 	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
 	ctx := context.Background()
 	// agents=2: the orchestrator and the first child share the pool now.
-	setLimits(t, s, 2, 4)
+	setLimits(t, s, 2)
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Claude, Model: "claude-sonnet-5"})
 	if err != nil {
@@ -755,7 +755,7 @@ func TestDrainQueueSubstitutedFallbackFailsItsOwnPreflightPersistsConsistently(t
 	s, _ := newStoreWithFallback(t)
 	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
 	ctx := context.Background()
-	setLimits(t, s, 1, 4)
+	setLimits(t, s, 1)
 	seedEpicWithTwoTasks(t, s)
 	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
 		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "one"}})

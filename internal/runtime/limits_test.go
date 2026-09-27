@@ -12,25 +12,15 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
-// setLimits sets the two remaining admission knobs (2026-09-24
-// unify-agent-limits: max_orchestrators and max_agents merged into one
-// shared max_concurrent_agents pool -- see Admit's own doc comment).
-// agents is that shared global ceiling; perRoot is the untouched
-// max_agents_per_root fairness check.
-func setLimits(t *testing.T, s *Store, agents, perRoot int) {
+// setLimits sets max_concurrent_agents, the one admission limit (spec
+// 2026-09-27-single-agent-limit-live).
+func setLimits(t *testing.T, s *Store, agents int) {
 	t.Helper()
-	ctx := context.Background()
 	now := s.now().UnixMilli()
-	for _, kv := range [][2]string{
-		{"max_concurrent_agents", fmt.Sprintf("%d", agents)},
-		{"max_agents_per_root", fmt.Sprintf("%d", perRoot)},
-	} {
-		_, err := s.DB.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at)
-			VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
-			kv[0], kv[1], now)
-		if err != nil {
-			t.Fatal(err)
-		}
+	if _, err := s.DB.ExecContext(context.Background(), `INSERT INTO settings (key, value_json, updated_at)
+		VALUES ('max_concurrent_agents', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+		fmt.Sprintf("%d", agents), now); err != nil {
+		t.Fatal(err)
 	}
 	s.Events.Notify()
 }
@@ -43,7 +33,7 @@ func setLimits(t *testing.T, s *Store, agents, perRoot int) {
 func TestAdmitOrchestratorsShareTheGlobalLimit(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 1)
+	setLimits(t, s, 1)
 	seedEpicWithTask(t, s)
 	if _, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"}); err != nil {
 		t.Fatal(err)
@@ -63,7 +53,7 @@ func TestAdmitOrchestratorsShareTheGlobalLimit(t *testing.T) {
 func TestAdmitQueuesTheSecondWorkerAndStartsItWhenASlotFrees(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 4)
+	setLimits(t, s, 1)
 	seedEpicWithTwoTasks(t, s)
 	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -102,7 +92,7 @@ func TestAdmitQueuesTheSecondWorkerAndStartsItWhenASlotFrees(t *testing.T) {
 func TestDrainQueueIsFIFO(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 4)
+	setLimits(t, s, 1)
 	seedEpicWithThreeTasks(t, s)
 	running, _, _ := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -122,11 +112,16 @@ func TestDrainQueueIsFIFO(t *testing.T) {
 	}
 }
 
-// A2: the per-root limit is separate from the global one.
-func TestAdmitEnforcesThePerRootLimit(t *testing.T) {
+// Spec 2026-09-27-single-agent-limit-live: there is one limit. A stale
+// max_agents_per_root row (even 1) no longer queues a second worker in a root.
+func TestAdmitHasNoPerRootLimit(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 8, 1)
+	setLimits(t, s, 8)
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO settings (key, value_json, updated_at)
+		VALUES ('max_agents_per_root', '1', 1)`); err != nil {
+		t.Fatal(err)
+	}
 	seedEpicWithTwoTasks(t, s)
 	if _, queued, _ := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}}); queued {
@@ -137,20 +132,18 @@ func TestAdmitEnforcesThePerRootLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !queued {
-		t.Fatal("the second worker in the same root exceeds max_agents_per_root = 1")
+	if queued {
+		t.Fatal("the second worker in the same root must start: only max_concurrent_agents (8) applies")
 	}
 }
 
-// §17.3: lowering a limit never kills a running agent, and the agent already over
-// the new limit still holds its slot, so the *next* spawn queues instead of
-// starting. Asserting only "the running one is still active" is unfireable —
-// nothing in the code path reacts to a settings change at all — so the test also
-// drives the next spawn, which is the behaviour a wrong Admit would break.
-func TestLoweringALimitQueuesTheNextSpawnAndLeavesRunningAgentsAlone(t *testing.T) {
+// Admit alone never stops a running agent; it only queues the next spawn.
+// Pausing agents over a lowered limit is EnforceCapacity's job
+// (capacity_test.go).
+func TestLoweringALimitQueuesTheNextSpawn(t *testing.T) {
 	s, tm, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 8, 4)
+	setLimits(t, s, 8)
 	seedEpicWithTwoTasks(t, s)
 	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -158,13 +151,13 @@ func TestLoweringALimitQueuesTheNextSpawnAndLeavesRunningAgentsAlone(t *testing.
 		t.Fatal(err)
 	}
 	startedBefore := len(tm.started)
-	setLimits(t, s, 1, 1)
+	setLimits(t, s, 1)
 	out, err := s.Agent(ctx, a.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out.State != AgentActive {
-		t.Fatalf("state = %s; a lowered limit must not stop a running agent", out.State)
+		t.Fatalf("state = %s; Admit must not stop a running agent", out.State)
 	}
 	b, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "two"}})
@@ -186,7 +179,7 @@ func TestLoweringALimitQueuesTheNextSpawnAndLeavesRunningAgentsAlone(t *testing.
 func TestDrainQueueGivesUpOnAnAgentItCannotStart(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 8, 4)
+	setLimits(t, s, 8)
 	seedEpicWithTwoTasks(t, s)
 	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -220,7 +213,7 @@ func TestDrainQueuePreflightFailureRelaysToParent(t *testing.T) {
 	ctx := context.Background()
 	// agents=2: the orchestrator and the first child share the pool now, so
 	// both need room before the second child can be the one that queues.
-	setLimits(t, s, 2, 4)
+	setLimits(t, s, 2)
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -271,7 +264,7 @@ func TestDrainQueuePreflightFailureRelaysToParent(t *testing.T) {
 // only ever write the session row, never agents.state -- same as a manual
 // interrupt; all three sit in retryableStates waiting on a human resume/ack/
 // cancel, not auto-cleaned). Before this fix such an agent silently occupied a
-// max_agents/max_agents_per_root slot forever. The zombie itself must stay
+// max_concurrent_agents slot forever. The zombie itself must stay
 // exactly as it was -- still active, still resumable/ackable/cancellable by
 // hand -- this only stops it from blocking the queue. paused joined the table
 // 2026-09-24: a paused agent has no live process either, and Resume always
@@ -283,7 +276,7 @@ func TestAdmitIgnoresZombiesWhenCountingSlots(t *testing.T) {
 		t.Run(string(zombieState), func(t *testing.T) {
 			s, _, _ := newStore(t)
 			ctx := context.Background()
-			setLimits(t, s, 1, 4)
+			setLimits(t, s, 1)
 			seedEpicWithTwoTasks(t, s)
 			first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 				Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -336,7 +329,7 @@ func TestAdmitIgnoresASelfTerminalCheckpointWhenCountingSlots(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			s, _, _ := newStore(t)
 			ctx := context.Background()
-			setLimits(t, s, 1, 4)
+			setLimits(t, s, 1)
 			seedEpicWithTwoTasks(t, s)
 			first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 				Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -400,7 +393,7 @@ func TestAdmitIgnoresASelfTerminalCheckpointWhenCountingSlots(t *testing.T) {
 func TestAdmitCountsOrchestratorsOwnSlotDespiteChildItemCheckpoint(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 8)
+	setLimits(t, s, 1)
 	seedEpicWithTask(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -458,7 +451,7 @@ func TestAdmitCountsOrchestratorsOwnSlotDespiteChildItemCheckpoint(t *testing.T)
 func TestAdmitCountsAResumedAgentAfterItsOwnFailedCheckpoint(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 4)
+	setLimits(t, s, 1)
 	seedEpicWithTwoTasks(t, s)
 	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
 		Model: "fake-1", Brief: BriefInput{Objective: "one"}})
@@ -511,7 +504,7 @@ func TestAdmitCountsAResumedAgentAfterItsOwnFailedCheckpoint(t *testing.T) {
 func TestAdmitIgnoresZombiesForOrchestratorLimit(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 1, 8)
+	setLimits(t, s, 1)
 	seedEpicWithTask(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -548,7 +541,7 @@ func mustExec(t *testing.T, d *db.DB, query string, args ...any) {
 func TestAdmitConcurrentSpawnsNeverExceedLimit(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 2, 5)
+	setLimits(t, s, 2)
 
 	ep, err := s.Items.Create(ctx, items.CreateInput{Type: items.Epic, Title: "Concurrency Epic"}, items.User("board"))
 	if err != nil {

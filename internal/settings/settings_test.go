@@ -83,7 +83,7 @@ func TestDefaults(t *testing.T) {
 			t.Errorf("notifications[%s] = %+v", lvl, d.Notifications[lvl])
 		}
 	}
-	if d.MaxConcurrentAgents != 4 || d.MaxAgentsPerRoot != 4 || d.ScanIntervalSec != 21600 ||
+	if d.MaxConcurrentAgents != 4 || d.ScanIntervalSec != 21600 ||
 		d.UsagePollSec != 300 || d.PauseDeadlineSec != 120 || d.MenubarCompact ||
 		!slices.Equal(d.ScanExcludes, []string{"~/Library", "~/.Trash", "~/Downloads", "~/Music", "~/Pictures", "~/Movies"}) {
 		t.Errorf("defaults = %+v", d)
@@ -129,8 +129,34 @@ func TestGetPutRoundTrip(t *testing.T) {
 	// a partial table still yields defaults for the rest
 	s.DB.Exec(`DELETE FROM settings WHERE key <> 'max_concurrent_agents'`)
 	partial, _ := s.Get(ctx)
-	if partial.MaxConcurrentAgents != 12 || partial.MaxAgentsPerRoot != 4 || partial.Roles[kinds.RoleCoder].Agent != kinds.Claude {
+	if partial.MaxConcurrentAgents != 12 || partial.Roles[kinds.RoleCoder].Agent != kinds.Claude {
 		t.Fatalf("partial = %+v", partial)
+	}
+}
+
+// Spec 2026-09-27-single-agent-limit-live decision 2: no migration; Put
+// deletes the rows no field reads any more.
+func TestPutDeletesRetiredLimitKeys(t *testing.T) {
+	s := newStore(t, kinds.Claude)
+	for _, k := range []string{"max_orchestrators", "max_agents", "max_agents_per_root", "max_concurrent_subagents"} {
+		if _, err := s.DB.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES (?, '1', 1)`, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cur, err := s.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ctx, cur); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM settings WHERE key IN
+		('max_orchestrators', 'max_agents', 'max_agents_per_root', 'max_concurrent_subagents')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("retired rows left = %d, want 0", n)
 	}
 }
 
@@ -164,7 +190,6 @@ func TestPutValidation(t *testing.T) {
 		{func(c *Settings) { c.FallbackDefault = RoleDefault{kinds.Claude, "sonnet", "ultra", ""} }, "ultra isn't available for Claude Sonnet 5."},
 		{func(c *Settings) { c.MaxConcurrentAgents = 33 }, "Maximum concurrent agents must be between 1 and 32."},
 		{func(c *Settings) { c.MaxConcurrentAgents = 0 }, "Maximum concurrent agents must be between 1 and 32."},
-		{func(c *Settings) { c.MaxAgentsPerRoot = 17 }, "Maximum concurrent agents per item must be between 1 and 16."},
 		{func(c *Settings) { c.PauseDeadlineSec = 29 }, "Pause deadline must be between 30 and 600 seconds."},
 		{func(c *Settings) { c.PauseDeadlineSec = 601 }, "Pause deadline must be between 30 and 600 seconds."},
 		{func(c *Settings) { c.ScanIntervalSec = 3599 }, "Repository scans must be at least 3600 seconds apart."},
@@ -180,7 +205,7 @@ func TestPutValidation(t *testing.T) {
 	ok := clone(func(c *Settings) {
 		c.Roles[kinds.RoleCoder] = RoleDefault{kinds.Claude, "claude-sonnet-5", "xhigh", ""}
 		c.Roles[kinds.RoleAdvisor] = RoleDefault{kinds.Claude, "opus", "", ""}
-		c.MaxConcurrentAgents, c.MaxAgentsPerRoot, c.PauseDeadlineSec = 32, 16, 600
+		c.MaxConcurrentAgents, c.PauseDeadlineSec = 32, 600
 	})
 	if _, err := s.Put(ctx, ok); err != nil {
 		t.Fatalf("boundary values: %v", err)

@@ -906,7 +906,7 @@ func TestSlotReleaseSpawnsWaitingRun(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
 		t.Fatal(err)
 	}
-	setLimits(t, s, 2, 8) // the orchestrator plus one worker
+	setLimits(t, s, 2) // the orchestrator plus one worker
 
 	ep := seedEpicWithTwoTasks(t, s)
 	zero := 0
@@ -2044,7 +2044,7 @@ func TestFIFOAcrossWorkflows(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
 		t.Fatal(err)
 	}
-	setLimits(t, s, 2, 8)
+	setLimits(t, s, 2)
 
 	ep := seedEpicWithThreeTasks(t, s)
 	for _, key := range []string{"TASK-1", "TASK-2", "TASK-3"} {
@@ -2152,7 +2152,7 @@ func TestCancelledWorkflowIgnoresLaterSlotRelease(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE settings SET value_json = '["fake"]' WHERE key = 'enabled_agents'`); err != nil {
 		t.Fatal(err)
 	}
-	setLimits(t, s, 2, 8)
+	setLimits(t, s, 2)
 	ep := seedEpicWithTwoTasks(t, s)
 	setItemWorkflow(t, s, "TASK-1", buildReviewSpec(t))
 	setItemWorkflow(t, s, "TASK-2", buildReviewSpec(t))

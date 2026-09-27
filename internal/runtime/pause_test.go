@@ -466,7 +466,7 @@ func TestMidTreeDescendantNeverGetsItsOwnDaemonCheckpoint(t *testing.T) {
 func TestPauseAllFreezesAQueuedSpawnTheSameWayASubtreePauseDoes(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 2, 4) // orchestrator + one child fill the shared pool
+	setLimits(t, s, 2) // orchestrator + one child fill the shared pool
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -537,7 +537,7 @@ func TestPauseAllFreezesAQueuedSpawnTheSameWayASubtreePauseDoes(t *testing.T) {
 func TestPauseAllFreezesAQueuedSpawnWithNoLiveSiblingLeft(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 2, 4) // orchestrator + one child fill the shared pool
+	setLimits(t, s, 2) // orchestrator + one child fill the shared pool
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -873,7 +873,7 @@ func TestPauseAllUpgradesAnAlreadySessionPausedTargetToSubtree(t *testing.T) {
 func TestPauseAllUpgradeFreezesAQueuedSiblingSpawn(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 2, 4) // orchestrator + one child fill the shared pool
+	setLimits(t, s, 2) // orchestrator + one child fill the shared pool
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -982,7 +982,7 @@ func TestPauseAllLeavesAnAlreadyPausingChildlessTargetAtSessionScope(t *testing.
 func TestDrainQueueSkipsARootUnderALiveSubtreePause(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 2, 4) // orchestrator + one child fill the shared pool
+	setLimits(t, s, 2) // orchestrator + one child fill the shared pool
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -1837,7 +1837,7 @@ func TestUnactionableSubtreeRowsAreInertButStillFreezeTheQueue(t *testing.T) {
 func TestRepeatedPauseAllCascadesOntoAChildSpawnedUnderAPendingRoot(t *testing.T) {
 	s, _, _ := clockStore(t)
 	ctx := context.Background()
-	setLimits(t, s, 4, 4)
+	setLimits(t, s, 4)
 	seedEpicWithTwoTasks(t, s)
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
 	if err != nil {
