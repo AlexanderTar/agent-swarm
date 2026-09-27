@@ -591,5 +591,14 @@ both resume within one tick.
 - **Rate limit.** There is no per-agent cooldown beyond the per-session key.
 - **Other limits.** Workflow round and retry budgets (`MaxRounds`,
   `Retries`) are not concurrency limits and stay.
+- **Workflow stall-scan no-ops.** `recoverWorkflows` (`workflow.go:1569`)
+  skips a workflow only when its active run's agent has a live session. A run
+  whose agent is `queued` (common now that there is no budget) or
+  capacity-paused (`interrupted`) is advanced every 30 s of staleness.
+  `workflow.Next` returns Wait, so each pass is a no-op query. This is the
+  same shape as the pre-existing queued case.
+- **e2e.** The `e2e` build-tag suite needs no change. Scenario 11 sets the
+  limit to `before+2`, never below the holders, and the harness raises it to
+  200. It stays a manual gate (`make e2e`).
 - **History docs.** Older specs and plans that mention the removed settings
   are not rewritten.
