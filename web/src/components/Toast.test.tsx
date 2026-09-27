@@ -29,7 +29,7 @@ describe("Toast (Sonner)", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ToastProvider><Trigger onAction={vi.fn()} /></ToastProvider>);
-    await user.click(screen.getByRole("button", { name: "legacy", exact: true }));
+    await user.click(screen.getByRole("button", { name: /^legacy$/ }));
     expect(await screen.findByText("Failed to move item")).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(6_600));
     expect(screen.queryByText("Failed to move item")).not.toBeInTheDocument();
