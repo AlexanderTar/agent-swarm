@@ -501,16 +501,9 @@ func latestEventPayload(t *testing.T, s *Store, eventType string) string {
 	return ""
 }
 
-// TestNativePromptForMsgRefusedForUnhookedOrchestratorKinds is finding 1
-// (docs/specs/2026-09-25-needs-you-and-child-approval-routing.md §6): cursor
-// and muse have no native question hook (spec 1.7; codex gained one
-// 2026-09-26, see TestNativePromptForMsgAllowedForCodex), so a child's
-// approval question sent to one of them can never grow a bound, hook-
-// answered question row -- native_answer would always refuse with
-// errNoNativeEvidence and the child would wait forever. native_prompt must
-// refuse up front for these kinds and point at the swarm_send fallback
-// instead of building a prompt nothing can ever answer.
-func TestNativePromptForMsgRefusedForUnhookedOrchestratorKinds(t *testing.T) {
+// Cursor and Muse receive a child approval prompt and can forward its native
+// tool return with answer_text. A bare native_answer still cannot approve.
+func TestNativePromptForMsgAllowsUnhookedOrchestratorKinds(t *testing.T) {
 	ctx := context.Background()
 	for _, kind := range []AgentKind{Cursor, Muse} {
 		t.Run(string(kind), func(t *testing.T) {
@@ -524,16 +517,14 @@ func TestNativePromptForMsgRefusedForUnhookedOrchestratorKinds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
-			if err == nil || !strings.Contains(err.Error(), "swarm_send") ||
-				!strings.Contains(err.Error(), "kind: \"answer\"") {
-				t.Fatalf("err = %v, want a refusal pointing at swarm_send kind:\"answer\"", err)
+			prompt, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
+			if err != nil || prompt.NativePrompt == nil || !strings.Contains(prompt.NativePrompt.Question, q) {
+				t.Fatalf("prompt = %+v, err = %v", prompt, err)
 			}
-			// native_answer must refuse the same way even if the caller skips
-			// native_prompt and calls it directly.
+			// No returned answer means no approval.
 			if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: q, Decision: "approve"}); err == nil ||
-				!strings.Contains(err.Error(), "swarm_send") {
-				t.Fatalf("native_answer err = %v, want a refusal pointing at swarm_send", err)
+				!strings.Contains(err.Error(), "answer_text") {
+				t.Fatalf("native_answer err = %v, want answer_text refusal", err)
 			}
 		})
 	}

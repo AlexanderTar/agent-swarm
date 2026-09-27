@@ -888,6 +888,26 @@ func TestAskToolSchemaRequiresKind(t *testing.T) {
 	}
 }
 
+func TestAskNativeAnswerTextSchema(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name != "swarm_ask" {
+			continue
+		}
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(d.Schema, &schema); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := schema.Properties["answer_text"]; !ok {
+			t.Fatal("swarm_ask must expose answer_text")
+		}
+		return
+	}
+	t.Fatal("swarm_ask missing")
+}
+
 // Every shared tool must declare what it actually needs: clients that
 // validate arguments before sending can only see the schema, so an omitted
 // `required` turns every missing field into a runtime round-trip. sync/read

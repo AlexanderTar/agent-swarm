@@ -11,7 +11,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -165,7 +167,7 @@ func NativePromptNextStep(ref string) string {
 	return fmt.Sprintf("Print the request summary in chat first (use summary exactly when supplied), not in the question. For a plan also print both full review_paths. Then show native_prompt "+
 		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
 		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
-		"forwarding only what the user picked, never a decision they did not make.", ref)
+		"forwarding only what the user picked, never a decision they did not make. Cursor and Muse must include answer_text exactly as returned by the native tool; a cancelled question remains open.", ref)
 }
 
 // storedNativePromptTx rebuilds a stored approval's native prompt exactly as
@@ -389,12 +391,24 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "ref is required."}
 	}
 	var rowID, responseText, callerID string
+	var reported bool
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
 		}
 		callerID = a.ID
+		reported = a.Kind == Cursor || a.Kind == Muse
+		if reported {
+			if strings.TrimSpace(in.AnswerText) == "" || in.AnswerText == ResolvedInTerminal {
+				return &items.Error{Code: items.CodeBadRequest, Message: "answer_text must contain the exact nonempty native tool answer; a cancelled question cannot be submitted."}
+			}
+			responseText = in.AnswerText
+			return nil
+		}
+		if in.AnswerText != "" {
+			return &items.Error{Code: items.CodeBadRequest, Message: "answer_text is only for Cursor and Muse."}
+		}
 		if strings.HasPrefix(in.Ref, "msg_") {
 			if err := requireNativeApprovalHook(a, in.Ref); err != nil {
 				return err
@@ -415,6 +429,9 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if err != nil {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
 	}
+	if reported {
+		evidence = EvidenceAgentReported
+	}
 	// RequestChanges' own length cap, reapplied here (Task 13c): nativeAnswer
 	// builds the changes_requested result with s.resolve directly (so the
 	// payload can carry evidence), not through RequestChanges itself. A
@@ -427,6 +444,12 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	// ConfirmRepos's own), right after the UPDATE: the audit record's (a)
 	// (spec 2.3.6) lands atomically with (b), the result message's payload.
 	bindEvidence := func(tx *sql.Tx, _ Request) error {
+		if reported {
+			_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'),
+				'$.evidence', ?, '$.answer_text', ?, '$.answer_source', 'native_tool_report') WHERE id = ?`,
+				evidence, in.AnswerText, in.Ref)
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `UPDATE requests SET
 			binding_json = json_set(COALESCE(binding_json, '{}'), '$.evidence', ?) WHERE id = ?`,
 			evidence, rowID)
@@ -442,7 +465,7 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 		if err := s.verifyApprovalMsgAddressedTo(ctx, in.Ref, callerID); err != nil {
 			return Request{}, err
 		}
-		return s.nativeAnswerForMsg(ctx, in.Ref, in.Decision, comment, evidence, rowID, bindEvidence)
+		return s.nativeAnswerForMsg(ctx, sessionID, callerID, in.Ref, in.Decision, comment, evidence, rowID, in.AnswerText, bindEvidence)
 	}
 
 	req, err := s.RequestByID(ctx, in.Ref)
@@ -529,7 +552,7 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 // question row itself is the approval record, so it moves from "answered"
 // straight to "approved" or "changes_requested", and the daemon tells the
 // child directly with an approval_result reply.
-func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment, evidence, rowID string,
+func (s *Store) nativeAnswerForMsg(ctx context.Context, sessionID, callerID, msgID, decision, comment, evidence, rowID, answerText string,
 	bindEvidence func(*sql.Tx, Request) error) (Request, error) {
 	newState := "approved"
 	if decision == "request_changes" {
@@ -563,6 +586,28 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		if answerText != "" {
+			var itemID, body, fromName string
+			if err := tx.QueryRowContext(ctx, `SELECT m.item_id, json_extract(m.payload_json, '$.body'), a.name
+				FROM messages m JOIN agents a ON a.id = m.from_agent_id WHERE m.id = ?`, msgID).
+				Scan(&itemID, &body, &fromName); err != nil {
+				return err
+			}
+			rowID = ids.New("req")
+			binding, err := json.Marshal(map[string]string{"ref": msgID, "evidence": evidence,
+				"answer_text": answerText, "answer_source": "native_tool_report"})
+			if err != nil {
+				return err
+			}
+			prompt := nativePromptForMsg(fromName, body, msgID)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+				prompt, options_json, state, binding_json, response_text, responded_via, responded_at, created_at)
+				VALUES (?, 'question', 1, ?, ?, ?, ?, ?, 'answered', ?, ?, 'terminal', ?, ?)`, rowID, callerID,
+				sessionID, itemID, prompt.Question, jsonArray(prompt.Options), string(binding), answerText,
+				db.Millis(s.Now()), db.Millis(s.Now())); err != nil {
+				return err
+			}
+		}
 
 		res, err := tx.ExecContext(ctx, `UPDATE requests SET state = ? WHERE id = ? AND state = 'answered'`,
 			newState, rowID)
@@ -572,8 +617,10 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment
 		if n, _ := res.RowsAffected(); n == 0 {
 			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
 		}
-		if err := bindEvidence(tx, Request{}); err != nil {
-			return err
+		if answerText == "" {
+			if err := bindEvidence(tx, Request{}); err != nil {
+				return err
+			}
 		}
 		var fromAgentID, rootItemID, itemID string
 		if err := tx.QueryRowContext(ctx, `SELECT from_agent_id, root_item_id, item_id FROM messages
@@ -637,9 +684,6 @@ func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in 
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
-			return err
-		}
-		if err := requireNativeApprovalHook(a, in.ForMsg); err != nil {
 			return err
 		}
 		var fromName, body string

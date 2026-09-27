@@ -61,6 +61,7 @@ type AskInput struct {
 	// for, Decision is "approve" | "request_changes", Comment is optional
 	// free text.
 	Ref, Decision, Comment string
+	AnswerText             string // exact native tool return, Cursor and Muse only
 }
 
 // ReposProposal is one repository the orchestrator proposes (or drops) on a
@@ -313,6 +314,15 @@ func (s *Store) approvalEvidenceTx(ctx context.Context, tx *sql.Tx, r Request) *
 			json.Unmarshal(r.Binding, &b)
 		}
 		return b.Evidence
+	}
+	var direct struct {
+		Evidence *string `json:"evidence"`
+	}
+	if len(r.Binding) > 0 {
+		json.Unmarshal(r.Binding, &direct)
+	}
+	if direct.Evidence != nil {
+		return direct.Evidence
 	}
 	var ev sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT json_extract(q.binding_json, '$.evidence') FROM requests q
