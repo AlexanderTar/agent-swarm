@@ -305,6 +305,9 @@ func (c *Codex) SuperpowersInstalled() bool {
 }
 
 func (c *Codex) Wake(ctx context.Context, w WakeTarget) (bool, error) {
+	if w.ProviderSessionID == "" {
+		return false, fmt.Errorf("codex wake: agent %s has no provider session id", w.AgentID)
+	}
 	// CODEX_HOME must match the one setupEnv gave this agent (CodexHomeDir,
 	// keyed on AgentID -- see its doc comment for why not SessionID): codex
 	// resolves --thread against $CODEX_HOME's own thread store, and without

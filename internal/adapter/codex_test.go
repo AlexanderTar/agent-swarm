@@ -619,6 +619,22 @@ func TestCodexSetupEnvRejectsAHomeThatWouldExceedSunLen(t *testing.T) {
 // a message against a thread that lives in a different CODEX_HOME fails
 // with "no rollout found for thread id ..." (confirmed live). Wake must set
 // CODEX_HOME to the same directory Launch/Resume used for this agent.
+// Root cause E: WakeOnQuotaReset used to hand Codex.Wake an empty
+// ProviderSessionID (fixed separately); `codex queue --thread ""` fails
+// live, but Wake should refuse to even try rather than rely on codex's own
+// error text.
+func TestCodexWakeRejectsEmptyProviderSessionID(t *testing.T) {
+	d := testDeps(t)
+	d.RunEnv = func(context.Context, map[string]string, string, ...string) ([]byte, error) {
+		t.Fatal("RunEnv must not be called with an empty ProviderSessionID")
+		return nil, nil
+	}
+	ok, err := newCodex(d).Wake(context.Background(), WakeTarget{SessionID: "ses_01", AgentID: "ag_01"})
+	if ok || err == nil {
+		t.Fatalf("Wake = %v, %v; want false, non-nil error", ok, err)
+	}
+}
+
 func TestCodexWakeUsesTheAgentsCodexHome(t *testing.T) {
 	d := testDeps(t)
 	var gotEnv map[string]string
