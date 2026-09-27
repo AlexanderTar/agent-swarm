@@ -17,9 +17,9 @@ function Rows({ title, rows, checked, onToggle }: { title: string; rows: Confirm
         <label key={r.id} className="flex gap-2">
           <input type="checkbox" checked={checked.includes(r.id)} disabled={r.repo?.missing} onChange={() => onToggle(r.id)} />
           <span>
-            <span className="font-medium">{r.name}</span> <span className="text-muted">{r.subtitle}</span>
+            <span className="font-medium">{r.name}</span> <span className="text-muted-foreground">{r.subtitle}</span>
             {r.youSelected && <span className="ml-2 rounded bg-raised px-1 text-[11px]">{C.youSelected}</span>}
-            {r.reason && <span className="block text-muted">{T.reason(r.reason)}</span>}
+            {r.reason && <span className="block text-muted-foreground">{T.reason(r.reason)}</span>}
           </span>
         </label>
       ))}
@@ -64,7 +64,7 @@ export function ConfirmRepos({ request, connected }: { request: Request; connect
         <input aria-label={C.commentOptional} value={comment} onChange={(e) => setComment(e.target.value)} className="mt-1 w-full rounded border border-line bg-canvas px-2 py-1" />
       </label>
       {error && <p className="text-bad">{error}</p>}
-      <button type="button" disabled={!connected || confirm.pending} onClick={() => void submit()} className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">
+      <button type="button" disabled={!connected || confirm.pending} onClick={() => void submit()} className="rounded bg-primary px-3 py-1 text-white disabled:opacity-50">
         {C.confirmRepositories}
       </button>
     </div>

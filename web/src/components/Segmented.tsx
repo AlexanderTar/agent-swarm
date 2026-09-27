@@ -15,7 +15,7 @@ export function Segmented<T extends string>(p: {
           aria-checked={o.value === p.value}
           disabled={p.disabled}
           onClick={() => p.onChange(o.value)}
-          className={`rounded px-2 py-0.5 ${o.value === p.value ? "bg-raised font-medium" : "text-muted"}`}
+          className={`rounded px-2 py-0.5 ${o.value === p.value ? "bg-raised font-medium" : "text-muted-foreground"}`}
         >
           {o.label}
         </button>

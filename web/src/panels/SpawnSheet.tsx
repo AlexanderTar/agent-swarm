@@ -44,9 +44,9 @@ function Form(p: { item: Item; settings: Settings; catalog: AgentCatalogEntry[];
       onClose={p.onClose}
       footer={
         <>
-          {busy && <span className="mr-auto self-center text-muted">{C.queuedCaption}</span>}
+          {busy && <span className="mr-auto self-center text-muted-foreground">{C.queuedCaption}</span>}
           <button type="button" onClick={p.onClose} className="rounded border border-line px-3 py-1">{C.cancel}</button>
-          <button type="button" disabled={!valid || !connected || start.pending} onClick={() => void submit()} className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">
+          <button type="button" disabled={!valid || !connected || start.pending} onClick={() => void submit()} className="rounded bg-primary px-3 py-1 text-white disabled:opacity-50">
             {failure.banner ? C.tryAgain : submitLabel(busy)}
           </button>
         </>
@@ -89,7 +89,7 @@ export function SpawnSheet(p: { itemKey: string; onClose(): void }) {
           {errorText(err)}{" "}
           <button
             type="button"
-            className="text-accent underline"
+            className="text-link underline"
             onClick={() => {
               detail.reload();
               settings.reload();

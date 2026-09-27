@@ -18,7 +18,7 @@ export const ItemsErrorBanner = ({ message, onRetry }: { message: string; onRetr
 export const OutsideViewBanner = (p: { onShowInHierarchy(): void; onClearFilters(): void }) => (
   <div className="flex flex-wrap items-center gap-2 border-b border-line bg-raised px-3 py-2">
     <span>{C.outsideView}</span>
-    <button type="button" onClick={p.onShowInHierarchy} className="text-accent">{C.showInHierarchy}</button>
-    <button type="button" onClick={p.onClearFilters} className="text-accent">{C.clearFilters}</button>
+    <button type="button" onClick={p.onShowInHierarchy} className="text-link">{C.showInHierarchy}</button>
+    <button type="button" onClick={p.onClearFilters} className="text-link">{C.clearFilters}</button>
   </div>
 );

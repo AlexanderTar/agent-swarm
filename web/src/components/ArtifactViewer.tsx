@@ -25,14 +25,14 @@ export function ArtifactViewer(p: { artifactId: string; revision?: number; secti
       {art.error ? (
         <p className="text-bad">
           {errorText(art.error)}{" "}
-          <button type="button" className="text-accent underline" onClick={() => art.reload()}>
+          <button type="button" className="text-link underline" onClick={() => art.reload()}>
             {C.retry}
           </button>
         </p>
       ) : art.data ? (
         <Markdown>{art.data.markdown}</Markdown>
       ) : (
-        <p className="text-muted">…</p>
+        <p className="text-muted-foreground">…</p>
       )}
     </dialog>
   );

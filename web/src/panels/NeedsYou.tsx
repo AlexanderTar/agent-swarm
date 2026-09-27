@@ -29,7 +29,7 @@ export function NeedsYou(p: {
     return (
       <p className="p-4 text-bad">
         {errorText(requests.error)}{" "}
-        <button type="button" className="text-accent underline" onClick={() => requests.reload()}>
+        <button type="button" className="text-link underline" onClick={() => requests.reload()}>
           {C.retry}
         </button>
       </p>
@@ -59,7 +59,7 @@ export function NeedsYou(p: {
             { value: "approvals", label: C.approvals },
           ]}
         />
-        {requests.data && list.length === 0 && <p className="text-muted">{C.inboxEmpty}</p>}
+        {requests.data && list.length === 0 && <p className="text-muted-foreground">{C.inboxEmpty}</p>}
         <ul aria-label={C.needsYou} className="space-y-1">
           {list.map((r) => {
             const [line1, line2, line3] = needsYouRow(r);
@@ -77,7 +77,7 @@ export function NeedsYou(p: {
                     onClick={() => p.onSelectRequest(r.id)}
                     className="min-w-0 flex-1 text-left"
                   >
-                    <span className="block truncate text-muted">{line1}</span>
+                    <span className="block truncate text-muted-foreground">{line1}</span>
                     <span className="block truncate">{line2}</span>
                     <span className="block truncate">{line3}</span>
                   </button>
@@ -103,13 +103,13 @@ export function NeedsYou(p: {
           <div className="space-y-2">
             <p>{C.resolved}</p>
             {known && (
-              <button type="button" onClick={() => p.onViewItem(known.item_key)} className="text-accent">{C.viewItem}</button>
+              <button type="button" onClick={() => p.onViewItem(known.item_key)} className="text-link">{C.viewItem}</button>
             )}
           </div>
         ) : current ? (
           <div key={current.id}>{p.renderReview(current)}</div>
         ) : requests.data ? (
-          <p className="text-muted">{C.inboxEmpty}</p>
+          <p className="text-muted-foreground">{C.inboxEmpty}</p>
         ) : null}
       </div>
     </div>

@@ -26,7 +26,7 @@ function ItemNode({ data }: NodeProps<Node<ItemNodeData>>) {
       <Handle type="target" position={Position.Left} />
       <div className="flex items-center gap-1">
         <Key>{n.key}</Key>
-        {n.external && <span className="text-[11px] text-muted">{n.root_key}</span>}
+        {n.external && <span className="text-[11px] text-muted-foreground">{n.root_key}</span>}
         {data.needsYou && <span role="img" aria-label={C.needsYou} className="ml-auto size-2 rounded-full bg-warn" />}
       </div>
       <p className="line-clamp-2 text-[12px]">{n.title}</p>
@@ -37,7 +37,7 @@ function ItemNode({ data }: NodeProps<Node<ItemNodeData>>) {
 }
 
 const StoryNode = ({ data }: NodeProps<Node<StoryNodeData>>) => (
-  <div className="h-full rounded-lg border border-line bg-raised/40 px-2 py-1 text-[12px] text-muted">{data.label}</div>
+  <div className="h-full rounded-lg border border-line bg-raised/40 px-2 py-1 text-[12px] text-muted-foreground">{data.label}</div>
 );
 
 const nodeTypes = { item: ItemNode, story: StoryNode };
@@ -92,7 +92,7 @@ function Graph(p: DependenciesProps) {
     return (
       <div className="p-8 text-center">
         <p className="text-bad">{errorText(graph.error)}</p>
-        <button type="button" onClick={graph.reload} className="mt-2 text-accent">{C.retry}</button>
+        <button type="button" onClick={graph.reload} className="mt-2 text-link">{C.retry}</button>
       </div>
     );
   }
@@ -107,7 +107,7 @@ function Graph(p: DependenciesProps) {
           onChange={(s) => { setScope(s); setHops(1); }}
           options={[{ value: "root", label: C.root }, { value: "neighbourhood", label: C.neighbourhood }]}
         />
-        <button type="button" disabled={scope !== "neighbourhood"} onClick={() => setHops((h) => h + 1)} className="text-accent disabled:text-muted">{C.expandHop}</button>
+        <button type="button" disabled={scope !== "neighbourhood"} onClick={() => setHops((h) => h + 1)} className="text-link disabled:text-muted-foreground">{C.expandHop}</button>
         <button type="button" onClick={() => void rf.fitView()}>{C.fit}</button>
         <button type="button" aria-label="−" onClick={() => void rf.zoomOut()}>−</button>
         <button type="button" aria-label="+" onClick={() => void rf.zoomIn()}>+</button>
@@ -122,10 +122,10 @@ function Graph(p: DependenciesProps) {
           className="rounded border border-line bg-canvas px-2 py-0.5"
         />
         {picked && (
-          <button type="button" onClick={() => p.onSelect(picked.root_key)} className="text-accent">{C.openRoot}</button>
+          <button type="button" onClick={() => p.onSelect(picked.root_key)} className="text-link">{C.openRoot}</button>
         )}
       </div>
-      <p className="px-3 py-1 text-muted">{C.depLegend}</p>
+      <p className="px-3 py-1 text-muted-foreground">{C.depLegend}</p>
       {g && !touching ? (
         <p className="p-8 text-center">{C.noDeps}</p>
       ) : (

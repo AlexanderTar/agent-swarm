@@ -28,7 +28,7 @@ const TYPE_ICON: Record<ItemType, ComponentType<{ className?: string; "aria-labe
 
 export function TypeIcon({ type, className = "" }: { type: ItemType; className?: string }) {
   const Icon = TYPE_ICON[type];
-  return <Icon role="img" aria-label={TYPE_LABEL[type]} className={`size-3.5 shrink-0 text-muted ${className}`} />;
+  return <Icon role="img" aria-label={TYPE_LABEL[type]} className={`size-3.5 shrink-0 text-muted-foreground ${className}`} />;
 }
 
 export const Key = ({ children }: { children: string }) => <span className="key">{children}</span>;

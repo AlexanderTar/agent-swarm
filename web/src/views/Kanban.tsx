@@ -61,7 +61,7 @@ function Card(p: {
       <div className="flex items-center gap-1.5">
         <TypeIcon type={card.type} />
         <Key>{card.key}</Key>
-        {card.type === "task" && (card.workflow_state?.round ?? 0) > 1 && <span className="rounded bg-accent/10 px-1 text-[11px] text-accent">R{card.workflow_state?.round}</span>}
+        {card.type === "task" && (card.workflow_state?.round ?? 0) > 1 && <span className="rounded bg-primary/10 px-1 text-[11px] text-link">R{card.workflow_state?.round}</span>}
         {needs && <span className="ml-auto rounded bg-warn/15 px-1 text-[11px] text-warn">{needs}</span>}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: stops card selection */}
         <span className={needs ? "" : "ml-auto"} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
@@ -69,22 +69,22 @@ function Card(p: {
         </span>
       </div>
       <p className="line-clamp-3" title={card.title}>{card.title}</p>
-      {p.parent && <p className="truncate text-muted">{p.parent}</p>}
+      {p.parent && <p className="truncate text-muted-foreground">{p.parent}</p>}
       {p.agent && (
         <p className="flex items-center gap-1">
           <AgentIcon kind={p.agent.agent.kind} />
           <span className="truncate">{p.agent.agent.name}</span>
-          {p.agent.extra > 0 && <span className="text-muted">+{p.agent.extra}</span>}
-          <span className="ml-auto text-muted">{stateLabel(displayState(p.agent.agent))}</span>
+          {p.agent.extra > 0 && <span className="text-muted-foreground">+{p.agent.extra}</span>}
+          <span className="ml-auto text-muted-foreground">{stateLabel(displayState(p.agent.agent))}</span>
         </p>
       )}
       {p.crew && <div aria-label="Crew" className="flex items-center gap-0.5 text-xs" title="Active workflow crew">
         {p.crew.roles.map((role, i) => <span key={i} role="img" aria-label={role}>{ROLE_EMOJI[role]}</span>)}
-        {p.crew.extra > 0 && <span className="text-muted">+{p.crew.extra}</span>}
+        {p.crew.extra > 0 && <span className="text-muted-foreground">+{p.crew.extra}</span>}
       </div>}
       {blocked && <p className="text-bad">{blocked}</p>}
-      {progress && <p className="text-muted">{progress}</p>}
-      {p.pending && <p className="text-accent">{C.updating}</p>}
+      {progress && <p className="text-muted-foreground">{progress}</p>}
+      {p.pending && <p className="text-link">{C.updating}</p>}
     </div>
   );
 }
@@ -100,9 +100,9 @@ function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string 
       className={`w-[280px] shrink-0 space-y-2 p-3 ${drop.isOver ? "bg-raised" : ""}`}
     >
       {p.lock !== null && (
-        <p className="flex items-center gap-1 text-[12px] text-muted"><Lock aria-hidden className="size-3" />{p.lock}</p>
+        <p className="flex items-center gap-1 text-[12px] text-muted-foreground"><Lock aria-hidden className="size-3" />{p.lock}</p>
       )}
-      {p.empty && p.lock === null && <p className="text-muted">{C.emptyColumn}</p>}
+      {p.empty && p.lock === null && <p className="text-muted-foreground">{C.emptyColumn}</p>}
       {p.children}
     </div>
   );
@@ -202,7 +202,7 @@ export function Kanban(p: KanbanProps) {
     return (
       <div className="p-8 text-center">
         <p>{empty.text}</p>
-        {a && <button type="button" onClick={a[1]} className="mt-2 text-accent">{a[0]}</button>}
+        {a && <button type="button" onClick={a[1]} className="mt-2 text-link">{a[0]}</button>}
       </div>
     );
   }
@@ -223,7 +223,7 @@ export function Kanban(p: KanbanProps) {
 
   return (
     <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
-      {p.level === "stories" && <p className="px-3 pt-2 text-muted">{C.storiesCaption}</p>}
+      {p.level === "stories" && <p className="px-3 pt-2 text-muted-foreground">{C.storiesCaption}</p>}
       <div
         ref={scroller}
         onScroll={(e) => writeJson(storage("localStorage"), SCROLL_KEY, { left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop })}
@@ -257,7 +257,7 @@ export function Kanban(p: KanbanProps) {
                 <button type="button" onClick={() => toggleLane(l)} className="sticky left-0 flex items-center gap-2 px-3 py-2 font-semibold">
                   {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
                   {l.root ? <><Key>{l.root.key}</Key><span>{l.root.title}</span></> : <span>{C.unassignedLane}</span>}
-                  <span className="font-normal text-muted">{collapsed && l.completedText ? l.completedText : l.header}</span>
+                  <span className="font-normal text-muted-foreground">{collapsed && l.completedText ? l.completedText : l.header}</span>
                 </button>
               )}
               {!collapsed && (

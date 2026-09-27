@@ -15,7 +15,7 @@ export function QuestionView({ request, connected }: { request: Request; connect
       <p className="whitespace-pre-wrap text-base">{request.prompt}</p>
       {options.length > 0 && (
         <div>
-          <p className="text-muted">{C.optionsOffered}</p>
+          <p className="text-muted-foreground">{C.optionsOffered}</p>
           <ul className="list-disc pl-5">
             {options.map((o) => (
               <li key={o}>{o}</li>
@@ -31,7 +31,7 @@ export function QuestionView({ request, connected }: { request: Request; connect
       >
         {C.openOrchestratorTerminal}
       </button>
-      {target?.kind === "unavailable" && <p className="text-muted">{target.hint}</p>}
+      {target?.kind === "unavailable" && <p className="text-muted-foreground">{target.hint}</p>}
     </div>
   );
 }

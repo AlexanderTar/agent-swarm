@@ -46,7 +46,7 @@ export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): 
       footer={
         <>
           <button type="button" onClick={p.onClose} className="rounded border border-line px-3 py-1">{C.cancel}</button>
-          <button type="button" disabled={!canCreate(current) || !connected || create.pending} onClick={() => void submit()} className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">
+          <button type="button" disabled={!canCreate(current) || !connected || create.pending} onClick={() => void submit()} className="rounded bg-primary px-3 py-1 text-white disabled:opacity-50">
             {C.createItem}
           </button>
         </>
@@ -58,7 +58,7 @@ export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): 
       {items.error ? (
         <p className="text-bad">
           {errorText(items.error)}{" "}
-          <button type="button" className="text-accent underline" onClick={() => items.reload()}>
+          <button type="button" className="text-link underline" onClick={() => items.reload()}>
             {C.retry}
           </button>
         </p>
@@ -106,7 +106,7 @@ export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): 
             )}
           </div>
         ))}
-        <button type="button" aria-label={`Add ${C.acceptance}`} onClick={() => set({ acceptance: [...form.acceptance, ""] })} className="text-accent">+</button>
+        <button type="button" aria-label={`Add ${C.acceptance}`} onClick={() => set({ acceptance: [...form.acceptance, ""] })} className="text-link">+</button>
       </fieldset>
     </Sheet>
   );

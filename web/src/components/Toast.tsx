@@ -20,7 +20,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div key={t.id} className="pointer-events-auto flex max-w-md items-center gap-3 rounded-md border border-line bg-panel px-3 py-2 shadow-lg">
             <span>{t.message}</span>
             {t.action && (
-              <button type="button" className="font-medium text-accent" onClick={t.action.onClick}>
+              <button type="button" className="font-medium text-link" onClick={t.action.onClick}>
                 {t.action.label}
               </button>
             )}

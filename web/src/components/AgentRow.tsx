@@ -44,7 +44,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
           <span className="truncate" title={agent.name}>{`${agent.name} · ${ROLE_LABEL[agent.role]}`}</span>
         </div>
         {agent.kind_reason && (
-          <p className="truncate text-xs text-muted" title={agent.kind_reason}>{agent.kind_reason}</p>
+          <p className="truncate text-xs text-muted-foreground" title={agent.kind_reason}>{agent.kind_reason}</p>
         )}
         <StateDot state={displayState(agent)} withLabel />
       </div>
@@ -72,7 +72,7 @@ function Finished({ agents, depth }: { agents: AgentNode[]; depth: number }) {
   if (agents.length === 0) return null;
   return (
     <details style={{ paddingLeft: depth * 16 }}>
-      <summary className="cursor-pointer text-muted">{T.finished(agents.length)}</summary>
+      <summary className="cursor-pointer text-muted-foreground">{T.finished(agents.length)}</summary>
       {agents.map((a) => <AgentRow key={a.id} agent={a} />)}
     </details>
   );

@@ -23,7 +23,7 @@ function Snapshot({ r }: { r: Request }) {
     return (
       <p className="text-bad">
         {errorText(art.error)}{" "}
-        <button type="button" className="text-accent underline" onClick={() => art.reload()}>
+        <button type="button" className="text-link underline" onClick={() => art.reload()}>
           {C.retry}
         </button>
       </p>
@@ -37,9 +37,9 @@ function Snapshot({ r }: { r: Request }) {
           <ul className="list-disc pl-5">{art.data.warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul>
         </section>
       )}
-      {art.data ? <Markdown>{art.data.markdown}</Markdown> : <p className="text-muted">…</p>}
+      {art.data ? <Markdown>{art.data.markdown}</Markdown> : <p className="text-muted-foreground">…</p>}
       {r.kind === "approve_section" && !full && (
-        <button type="button" onClick={() => setFull(true)} className="text-accent">{C.viewFullSpec}</button>
+        <button type="button" onClick={() => setFull(true)} className="text-link">{C.viewFullSpec}</button>
       )}
     </div>
   );
@@ -63,7 +63,7 @@ function AcceptBody({ r }: { r: Request }) {
         {errorText(detail.error ?? cps.error)}{" "}
         <button
           type="button"
-          className="text-accent underline"
+          className="text-link underline"
           onClick={() => {
             detail.reload();
             cps.reload();
@@ -86,12 +86,12 @@ function AcceptBody({ r }: { r: Request }) {
         {children.map((c, i) => (
           <li key={c.key}>
             {`${c.key} ${c.title} — ${STATUS_LABEL[c.status]}`}
-            {finals.data?.[i] && <span className="text-muted">{` · ${finals.data[i]?.summary}`}</span>}
+            {finals.data?.[i] && <span className="text-muted-foreground">{` · ${finals.data[i]?.summary}`}</span>}
           </li>
         ))}
       </ul>
       {plan && (
-        <button type="button" onClick={() => setViewing({ id: plan.id, revision: plan.head_revision })} className="text-accent">
+        <button type="button" onClick={() => setViewing({ id: plan.id, revision: plan.head_revision })} className="text-link">
           {`${ARTIFACT_LABEL.plan} · rev ${plan.head_revision} · ${C.view}`}
         </button>
       )}
@@ -135,8 +135,8 @@ export function Review({ request: r, connected }: { request: Request; connected:
     <article className="space-y-4">
       <header className="space-y-0.5 border-b border-line pb-3">
         <h2 className="text-base font-semibold">{head.title}</h2>
-        {head.by && <p className="text-muted">{head.by}</p>}
-        {head.revision && <p className="text-muted">{head.revision}</p>}
+        {head.by && <p className="text-muted-foreground">{head.by}</p>}
+        {head.revision && <p className="text-muted-foreground">{head.revision}</p>}
       </header>
       {stale && <p role="alert" className="rounded bg-warn/10 p-2 text-warn">{C.staleApproval}</p>}
 
@@ -152,7 +152,7 @@ export function Review({ request: r, connected }: { request: Request; connected:
             type="button"
             disabled={!connected || decide.pending}
             onClick={() => void run(r.kind === "close_spike" ? "close" : "approve")}
-            className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
+            className="rounded bg-primary px-3 py-1 text-white disabled:opacity-50"
           >
             {SCOPE_LABEL[r.kind]}
           </button>

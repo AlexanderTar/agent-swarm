@@ -35,7 +35,7 @@ function Field(p: { label: string; value: string; options: Option[]; onChange(v:
         ))}
       </select>
       {p.error ? <p className="col-start-2 text-bad">{p.error}</p> : null}
-      {p.note ? <p className="col-start-2 text-muted">{p.note}</p> : null}
+      {p.note ? <p className="col-start-2 text-muted-foreground">{p.note}</p> : null}
     </div>
   );
 }
@@ -108,7 +108,7 @@ export function AgentFields(p: {
           }}
         />
       )}
-      {!efforts && note && <p className="text-muted">{note}</p>}
+      {!efforts && note && <p className="text-muted-foreground">{note}</p>}
       <Field
         label={C.advisor}
         value={encodeAdvisor(advisor)}
@@ -116,7 +116,7 @@ export function AgentFields(p: {
         error={errors.advisor}
         onChange={(v) => p.onChange({ ...p.value, advisor: decodeAdvisor(v) })}
       />
-      <p className="text-muted">{C.defaultsFromSettings}</p>
+      <p className="text-muted-foreground">{C.defaultsFromSettings}</p>
       {stale && <p className="text-warn">{stale}</p>}
 
       <details
@@ -135,7 +135,7 @@ export function AgentFields(p: {
         </summary>
         {openRoles && (
           <div className="mt-2 space-y-4">
-            <p className="text-xs text-muted">{C.customizeWorkerRoles}</p>
+            <p className="text-xs text-muted-foreground">{C.customizeWorkerRoles}</p>
             {WORKER_ROLES.map((role) => {
               const current = p.value.roles?.[role] ?? p.settings.roles[role];
               const roleAgent: AgentKind = current?.agent ?? p.settings.enabled_agents[0] ?? "claude";

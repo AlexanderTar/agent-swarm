@@ -4,6 +4,8 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": { "@/*": ["./src/*"] },
     "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,

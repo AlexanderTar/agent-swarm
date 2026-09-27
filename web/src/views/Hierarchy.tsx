@@ -36,7 +36,7 @@ export function Hierarchy(p: HierarchyProps) {
     return (
       <div className="p-8 text-center">
         <p>{C.noItems}</p>
-        <button type="button" onClick={p.onNewItem} className="mt-2 text-accent">{C.newItem}</button>
+        <button type="button" onClick={p.onNewItem} className="mt-2 text-link">{C.newItem}</button>
       </div>
     );
   }
@@ -44,7 +44,7 @@ export function Hierarchy(p: HierarchyProps) {
     return (
       <div className="p-8 text-center">
         <p>{C.filteredNone}</p>
-        <button type="button" onClick={p.onClearFilters} className="mt-2 text-accent">{C.clearFilters}</button>
+        <button type="button" onClick={p.onClearFilters} className="mt-2 text-link">{C.clearFilters}</button>
       </div>
     );
   }
@@ -67,7 +67,7 @@ export function Hierarchy(p: HierarchyProps) {
 
   return (
     <div className="p-2">
-      <div className="grid grid-cols-[1fr_140px_64px] px-2 py-1 text-[11px] uppercase tracking-wide text-muted">
+      <div className="grid grid-cols-[1fr_140px_64px] px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
         <span>WORK ITEM</span>
         <span>STATUS</span>
         <span className="text-right">AGENTS</span>

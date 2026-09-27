@@ -35,12 +35,12 @@ export function WorkflowSection(p: { workflow: Workflow | null | undefined; stat
                   <li key={run.id ?? `${run.round}-${run.role}-${i}`} className="text-sm">
                     <div className="flex flex-wrap items-center gap-2">
                       <span>{ROLE_EMOJI[run.role as Role] ?? "👤"} {ROLE_LABEL[run.role as Role] ?? run.role}</span>
-                      {run.agent && <button type="button" className="text-accent underline" onClick={() => p.onOpenTerminal(run.agent)}>{run.agent}</button>}
+                      {run.agent && <button type="button" className="text-link underline" onClick={() => p.onOpenTerminal(run.agent)}>{run.agent}</button>}
                       <span className="rounded bg-raised px-1.5 py-0.5">{run.state.charAt(0).toUpperCase()}{run.state.slice(1)}</span>
                       {verdict && <span className={`rounded px-1.5 py-0.5 ${verdict.className}`}>{verdict.label}</span>}
                     </div>
                     {run.findings.length > 0 && <details className="pl-6">
-                      <summary className="cursor-pointer text-accent">{run.findings.length} findings</summary>
+                      <summary className="cursor-pointer text-link">{run.findings.length} findings</summary>
                       <ul className="list-disc pl-5">{run.findings.map((f, j) => <li key={j}>{findingText(f)}</li>)}</ul>
                     </details>}
                   </li>

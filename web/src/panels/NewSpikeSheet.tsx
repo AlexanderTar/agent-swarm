@@ -54,9 +54,9 @@ function Form(p: {
       onClose={p.onClose}
       footer={
         <>
-          {busy && <span className="mr-auto self-center text-muted">{C.queuedCaption}</span>}
+          {busy && <span className="mr-auto self-center text-muted-foreground">{C.queuedCaption}</span>}
           <button type="button" onClick={p.onClose} className="rounded border border-line px-3 py-1">{C.cancel}</button>
-          <button type="button" disabled={!valid || !connected || create.pending} onClick={() => void submit()} className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">
+          <button type="button" disabled={!valid || !connected || create.pending} onClick={() => void submit()} className="rounded bg-primary px-3 py-1 text-white disabled:opacity-50">
             {failure.banner ? C.tryAgain : submitLabel(busy)}
           </button>
         </>
@@ -77,11 +77,11 @@ function Form(p: {
           onChange={(e) => { setName(e.target.value); setFailure((f) => ({ ...f, name: undefined })); }}
           className="mt-1 w-full rounded border border-line bg-canvas px-2 py-1"
         />
-        <span className="block text-muted">{T.agentName(kebab(name))}</span>
+        <span className="block text-muted-foreground">{T.agentName(kebab(name))}</span>
         {nameErr && <span className="block text-bad">{nameErr}</span>}
       </label>
       {p.chore ? (
-        <p className="text-muted">{C.choreCaption}</p>
+        <p className="text-muted-foreground">{C.choreCaption}</p>
       ) : (
         <div className="space-y-1">
           <span className="mr-2">{C.intent}</span>
@@ -91,7 +91,7 @@ function Form(p: {
             onChange={setIntent}
             options={[{ value: "feature" as const, label: C.featureSpike }, { value: "debug" as const, label: C.debugSpike }]}
           />
-          <p className="text-muted">{intent === "feature" ? C.featureCaption : C.debugCaption}</p>
+          <p className="text-muted-foreground">{intent === "feature" ? C.featureCaption : C.debugCaption}</p>
         </div>
       )}
       <RepoPicker label={C.repositoriesOptional} caption={p.chore ? C.choreReposCaption : C.reposCaption} selected={repos} onChange={setRepos} />
@@ -117,7 +117,7 @@ export function NewSpikeSheet(p: { caption?: string; chore?: boolean; onClose():
           {errorText(err)}{" "}
           <button
             type="button"
-            className="text-accent underline"
+            className="text-link underline"
             onClick={() => {
               settings.reload();
               catalog.reload();

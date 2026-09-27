@@ -55,7 +55,7 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
         onClick={() => { setDraft(p.value); setEditing(true); }}
         className={`block w-full whitespace-pre-wrap text-left ${p.className ?? ""}`}
       >
-        {p.value || <span className="text-muted">—</span>}
+        {p.value || <span className="text-muted-foreground">—</span>}
       </button>
     );
   }
@@ -95,13 +95,13 @@ export function Details(p: DetailsProps) {
     return (
       <p className="p-4 text-bad">
         {errorText(detail.error)}{" "}
-        <button type="button" className="text-accent underline" onClick={() => detail.reload()}>
+        <button type="button" className="text-link underline" onClick={() => detail.reload()}>
           {C.retry}
         </button>
       </p>
     );
   }
-  if (!d) return <p className="p-4 text-muted">…</p>;
+  if (!d) return <p className="p-4 text-muted-foreground">…</p>;
   const item = d.item;
 
   const save = async (body: Omit<PatchItemBody, "revision">): Promise<boolean> => {
@@ -144,7 +144,7 @@ export function Details(p: DetailsProps) {
     <div data-testid="details-panel" className="space-y-4 p-4">
       {stale && <p className="rounded bg-warn/10 px-2 py-1 text-warn">{C.staleRevision}</p>}
       <div className="flex items-start justify-between gap-2">
-        <span className="key text-muted">{crumbs}</span>
+        <span className="key text-muted-foreground">{crumbs}</span>
         <button type="button" aria-label="Close" onClick={p.onClose}><X className="size-4" /></button>
       </div>
       <Editable
@@ -178,7 +178,7 @@ export function Details(p: DetailsProps) {
             {[...d.requests].sort((a, b) => a.created_at - b.created_at).map((r) => (
               <li key={r.id} className="flex items-center justify-between gap-2">
                 <span className="truncate">{requestTitle(r)}</span>
-                <button type="button" onClick={() => p.onReview(r.id)} className="text-accent">{C.review}</button>
+                <button type="button" onClick={() => p.onReview(r.id)} className="text-link">{C.review}</button>
               </li>
             ))}
           </ul>
@@ -196,7 +196,7 @@ export function Details(p: DetailsProps) {
 
       <div role="tablist" className="flex gap-3 border-t border-line pt-3">
         {(["overview", "checkpoints"] as const).map((t) => (
-          <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={tab === t ? "font-semibold" : "text-muted"}>
+          <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={tab === t ? "font-semibold" : "text-muted-foreground"}>
             {t === "overview" ? C.overview : C.checkpoints}
           </button>
         ))}
@@ -205,12 +205,12 @@ export function Details(p: DetailsProps) {
       {tab === "overview" ? (
         <div className="space-y-3">
           <div>
-            <h4 className="text-muted">{C.brief}</h4>
+            <h4 className="text-muted-foreground">{C.brief}</h4>
             <Editable label={C.brief} value={item.brief} multiline disabled={!p.connected || patch.pending} onSave={(brief) => save({ brief })} />
           </div>
           {item.acceptance.length > 0 && (
             <div>
-              <h4 className="text-muted">{C.acceptance}</h4>
+              <h4 className="text-muted-foreground">{C.acceptance}</h4>
               <ul className="list-disc pl-5">{item.acceptance.map((a) => <li key={a}>{a}</li>)}</ul>
             </div>
           )}
@@ -218,7 +218,7 @@ export function Details(p: DetailsProps) {
             <p>
               {`${C.blockedBy}: `}
               {d.deps.blocked_by.map((b: Item, i) => (
-                <span key={b.key}>{i > 0 && ", "}<button type="button" onClick={() => p.onSelect(b.key)} className="text-accent">{`${b.key} (${STATUS_LABEL[b.status]})`}</button></span>
+                <span key={b.key}>{i > 0 && ", "}<button type="button" onClick={() => p.onSelect(b.key)} className="text-link">{`${b.key} (${STATUS_LABEL[b.status]})`}</button></span>
               ))}
             </p>
           )}
@@ -226,23 +226,23 @@ export function Details(p: DetailsProps) {
             <p>
               {`${C.blocks}: `}
               {d.deps.blocks.map((b: Item, i) => (
-                <span key={b.key}>{i > 0 && ", "}<button type="button" onClick={() => p.onSelect(b.key)} className="text-accent">{b.key}</button></span>
+                <span key={b.key}>{i > 0 && ", "}<button type="button" onClick={() => p.onSelect(b.key)} className="text-link">{b.key}</button></span>
               ))}
             </p>
           )}
           <AddDependency itemKey={item.key} disabled={!p.connected} />
           {d.artifacts.length > 0 && (
             <div>
-              <h4 className="text-muted">{C.artifacts}</h4>
+              <h4 className="text-muted-foreground">{C.artifacts}</h4>
               {d.artifacts.map((a) => (
-                <button key={a.id} type="button" onClick={() => setViewing({ id: a.id, revision: a.head_revision })} className="block text-accent">
+                <button key={a.id} type="button" onClick={() => setViewing({ id: a.id, revision: a.head_revision })} className="block text-link">
                   {`${ARTIFACT_LABEL[a.kind]} · rev ${a.head_revision} · ${C.view}`}
                 </button>
               ))}
             </div>
           )}
           {item.origin_spike_key && (
-            <button type="button" onClick={() => p.onSelect(item.origin_spike_key ?? "")} className="text-accent">
+            <button type="button" onClick={() => p.onSelect(item.origin_spike_key ?? "")} className="text-link">
               {T.startedFrom(item.origin_spike_key)}
             </button>
           )}
@@ -262,7 +262,7 @@ export function Details(p: DetailsProps) {
               {C.viewOrchestrator}
             </button>
           ) : (
-            <button type="button" disabled={!p.connected} onClick={() => p.onStartOrchestrator(item)} className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">
+            <button type="button" disabled={!p.connected} onClick={() => p.onStartOrchestrator(item)} className="rounded bg-primary px-3 py-1 text-white disabled:opacity-50">
               {C.startOrchestrator}
             </button>
           )}

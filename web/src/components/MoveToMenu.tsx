@@ -68,13 +68,13 @@ export function MoveToMenu(p: {
                 close();
                 p.onMove(o.status, o.check);
               }}
-              className="flex w-full flex-col items-start rounded px-2 py-1 text-left hover:bg-raised disabled:cursor-not-allowed disabled:text-muted"
+              className="flex w-full flex-col items-start rounded px-2 py-1 text-left hover:bg-raised disabled:cursor-not-allowed disabled:text-muted-foreground"
             >
               <span className="flex items-center gap-1">
                 {!enabled(o.check) && <Lock aria-hidden className="size-3" />}
                 {o.label}
               </span>
-              {!o.check.ok && <span className="text-[12px] text-muted">{o.check.reason}</span>}
+              {!o.check.ok && <span className="text-[12px] text-muted-foreground">{o.check.reason}</span>}
             </button>
           ))}
         </div>

@@ -10,7 +10,7 @@ function Lines({ title, lines }: { title: string; lines: string[] }) {
   if (lines.length === 0) return null;
   return (
     <div>
-      <p className="text-muted">{title}</p>
+      <p className="text-muted-foreground">{title}</p>
       <ul className="list-disc pl-5">{lines.map((l) => <li key={l}>{l}</li>)}</ul>
     </div>
   );
@@ -20,7 +20,7 @@ function CheckpointRow({ c }: { c: Checkpoint }) {
   return (
     <details className="rounded border border-line p-2">
       <summary className="cursor-pointer">
-        <span className="text-muted">{formatTime(c.created_at)}</span>{" "}
+        <span className="text-muted-foreground">{formatTime(c.created_at)}</span>{" "}
         <span>{c.agent_name ?? ""}</span>{" "}
         <span className="rounded bg-raised px-1 text-[12px]">{kindLabel(c.kind)}</span>{" "}
         {c.daemon_written && <span className="text-[12px] text-warn">{C.writtenBySwarm}</span>}{" "}
@@ -53,7 +53,7 @@ export function CheckpointList({ itemKey, agentNames }: { itemKey: string; agent
         {errorText(err)}{" "}
         <button
           type="button"
-          className="text-accent underline"
+          className="text-link underline"
           onClick={() => {
             cps.reload();
             advice.reload();
@@ -64,13 +64,13 @@ export function CheckpointList({ itemKey, agentNames }: { itemKey: string; agent
       </p>
     );
   }
-  if (!cps.data || !advice.data) return <p className="text-muted">…</p>;
+  if (!cps.data || !advice.data) return <p className="text-muted-foreground">…</p>;
   const entries = mergeTimeline(cps.data, advice.data);
-  if (entries.length === 0) return <p className="text-muted">{C.noCheckpoints}</p>;
+  if (entries.length === 0) return <p className="text-muted-foreground">{C.noCheckpoints}</p>;
   const totals = adviceTotals(advice.data);
   return (
     <div className="space-y-2">
-      {totals && <p className="text-muted">{totals}</p>}
+      {totals && <p className="text-muted-foreground">{totals}</p>}
       {entries.map((e) =>
         e.kind === "checkpoint" ? (
           <CheckpointRow key={e.checkpoint.id} c={e.checkpoint} />

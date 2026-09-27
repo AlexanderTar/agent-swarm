@@ -37,7 +37,7 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
   };
   return (
     <div>
-      <button ref={trigger} type="button" disabled={disabled} onClick={() => setOpen((o) => !o)} className="text-accent disabled:text-muted">
+      <button ref={trigger} type="button" disabled={disabled} onClick={() => setOpen((o) => !o)} className="text-link disabled:text-muted-foreground">
         {`+ ${C.addDependency}`}
       </button>
       {open && (

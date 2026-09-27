@@ -55,7 +55,7 @@ export function Header(p: {
             aria-haspopup="menu"
             aria-expanded={menu}
             onClick={() => setMenu((m) => !m)}
-            className="rounded bg-accent px-2 py-1 text-white"
+            className="rounded bg-primary px-2 py-1 text-white"
           >
             {C.newItem}
           </button>
@@ -111,8 +111,8 @@ export function Header(p: {
         </label>
         {p.matches !== null && (
           <>
-            <button type="button" onClick={() => setUrl({ q: "", type: "", status: "" })} className="text-accent">{C.clearFilters}</button>
-            <span className="ml-auto text-muted">{T.matches(p.matches)}</span>
+            <button type="button" onClick={() => setUrl({ q: "", type: "", status: "" })} className="text-link">{C.clearFilters}</button>
+            <span className="ml-auto text-muted-foreground">{T.matches(p.matches)}</span>
           </>
         )}
       </div>

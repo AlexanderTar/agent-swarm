@@ -27,7 +27,7 @@ export function Sheet(p: { title: string; subtitle?: string; width?: number; onC
       <header className="flex items-start justify-between gap-2 border-b border-line p-4">
         <div>
           <h2 className="font-semibold">{p.title}</h2>
-          {p.subtitle && <p className="text-muted">{p.subtitle}</p>}
+          {p.subtitle && <p className="text-muted-foreground">{p.subtitle}</p>}
         </div>
         <button ref={closeButton} type="button" aria-label="Close" onClick={onClose} className="rounded p-1 hover:bg-raised">
           <X className="size-4" />
