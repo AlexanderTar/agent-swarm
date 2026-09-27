@@ -811,3 +811,75 @@ func TestOrchestratorStoryCancelCascadesToItsTasks(t *testing.T) {
 	wantStatus(t, s, task.Key, items.Cancelled)
 	wantStatus(t, s, e.Key, items.Ready)
 }
+
+// Spec E8/E10/decision 4: a chore with a task finishes through accept_fix.
+func TestChoreAcceptanceFlow(t *testing.T) {
+	s := newStore(t)
+	ch := mk(t, s, items.Chore, "", "Bump deps")
+	task := mk(t, s, items.Task, ch.Key, "Bump go deps")
+	setStatus(t, s, ch, items.Ready)
+	seedCheckpoint(t, s.DB, ch, "accepted", 1, later(s), "")
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.InProgress)
+
+	setStatus(t, s, task, items.Done)
+	ckp := seedCheckpoint(t, s.DB, ch, "integrated", 1, later(s), gitJSON)
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.InReview)
+	states, b := acceptRequests(t, s, ch)
+	if len(states) != 1 || count(states, "accept_fix:open") != 1 || b.IntegratedCheckpoint != ckp {
+		t.Fatalf("requests = %v, binding = %+v", states, b)
+	}
+	var prompt string
+	if err := s.DB.QueryRow(`SELECT prompt FROM requests WHERE item_id = ?`, ch.ID).Scan(&prompt); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != "Review the chore and accept it." {
+		t.Fatalf("prompt = %q", prompt)
+	}
+	wantDenied(t, move(t, s, ch.Key, items.Done, user), "Accept this chore to mark it Done.")
+	wantDenied(t, move(t, s, ch.Key, items.Done, items.Daemon()), "Accept this chore to mark it Done.")
+
+	exec(t, s.DB, `UPDATE requests SET state = 'approved' WHERE item_id = ?`, ch.ID)
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.Done)
+}
+
+// Spec E9/E10: a chore needs no child; a declined acceptance goes back to work
+// and a fresh integration asks again. An epic with no children still waits.
+func TestChoreWithNoTasksReachesDone(t *testing.T) {
+	s := newStore(t)
+	ch := mk(t, s, items.Chore, "", "Rotate cert")
+	setStatus(t, s, ch, items.Ready)
+	seedCheckpoint(t, s.DB, ch, "accepted", 1, later(s), "")
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.InProgress)
+	seedCheckpoint(t, s.DB, ch, "integrated", 1, later(s), gitJSON)
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.InReview)
+
+	exec(t, s.DB, `UPDATE requests SET state = 'changes_requested' WHERE item_id = ?`, ch.ID)
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.InProgress)
+	seedCheckpoint(t, s.DB, ch, "integrated", 1, later(s), gitJSON)
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.InReview)
+	states, _ := acceptRequests(t, s, ch)
+	if count(states, "accept_fix:open") != 1 {
+		t.Fatalf("requests = %v", states)
+	}
+	exec(t, s.DB, `UPDATE requests SET state = 'approved' WHERE item_id = ? AND state = 'open'`, ch.ID)
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.Done)
+
+	e := mk(t, s, items.Epic, "", "Empty epic")
+	setStatus(t, s, e, items.Ready)
+	seedCheckpoint(t, s.DB, e, "accepted", 1, later(s), "")
+	s.Reconcile(ctx, e.Key)
+	seedCheckpoint(t, s.DB, e, "integrated", 1, later(s), gitJSON)
+	s.Reconcile(ctx, e.Key)
+	wantStatus(t, s, e.Key, items.InProgress)
+	if states, _ := acceptRequests(t, s, e); len(states) != 0 {
+		t.Fatalf("a childless epic must not ask for acceptance: %v", states)
+	}
+}

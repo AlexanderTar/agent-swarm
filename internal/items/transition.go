@@ -22,6 +22,18 @@ func exists(ctx context.Context, q querier, query string, args ...any) (bool, er
 	return ok, err
 }
 
+// isAcceptRoot reports whether t is a root type that finishes through
+// accept_epic/accept_fix: epic, bug, chore (2026-09-27 chore spec).
+func isAcceptRoot(t Type) bool { return t == Epic || t == Bug || t == Chore }
+
+// acceptKind is the acceptance request kind for a root type.
+func acceptKind(t Type) string {
+	if t == Epic {
+		return "accept_epic"
+	}
+	return "accept_fix" // bug and chore (chore spec decision 4)
+}
+
 // Transition applies one status change under the §10.1 rules.
 func (s *Store) Transition(ctx context.Context, key string, to Status, by Actor) (Item, error) {
 	var out Item
@@ -220,7 +232,7 @@ func (s *Store) check(ctx context.Context, tx *sql.Tx, it Item, to Status, by Ac
 		return generic // derived; only reconciliation moves stories
 	case Spike:
 		return s.checkSpike(ctx, tx, it, to, daemon, generic)
-	case Epic, Bug:
+	case Epic, Bug, Chore:
 		return s.checkRoot(ctx, tx, it, to, daemon, orch, generic)
 	}
 	return s.checkTask(ctx, tx, it, to, daemon, orch, generic)
@@ -333,8 +345,11 @@ func (s *Store) checkRoot(ctx context.Context, tx *sql.Tx, it Item, to Status, d
 				return err
 			}
 		}
-		if it.Type == Epic {
+		switch it.Type {
+		case Epic:
 			return deny("Accept this epic to mark it Done.")
+		case Chore:
+			return deny("Accept this chore to mark it Done.")
 		}
 		return deny("Accept this fix to mark it Done.")
 	case it.Status == Ready && to == InProgress && daemon:
@@ -468,7 +483,7 @@ func (s *Store) rootState(ctx context.Context, q querier, it Item) (rootState, e
 	if err != nil {
 		return st, err
 	}
-	st.finished = n > 0 && fin == n
+	st.finished = fin == n && (n > 0 || it.Type == Chore) // a chore may have no tasks
 	err = q.QueryRowContext(ctx, `SELECT id, git_json, created_at FROM checkpoints
 		WHERE item_id = ? AND kind = 'integrated' ORDER BY created_at DESC, rowid DESC LIMIT 1`, it.ID).
 		Scan(&st.ckpID, &st.ckpGit, &st.ckpAt)
@@ -531,7 +546,7 @@ func (s *Store) ReconcileTx(ctx context.Context, tx *sql.Tx, key string) error {
 		switch it.Type {
 		case Story:
 			err = s.deriveStory(ctx, tx, it)
-		case Epic, Bug:
+		case Epic, Bug, Chore:
 			err = s.reconcileRoot(ctx, tx, it)
 		case Spike:
 			err = s.reconcileSpike(ctx, tx, it)
@@ -612,10 +627,7 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 	if err != nil {
 		return err
 	}
-	kind := "accept_epic"
-	if it.Type == Bug {
-		kind = "accept_fix"
-	}
+	kind := acceptKind(it.Type)
 
 	// 1. open requests whose binding no longer matches go stale
 	rows, err := tx.QueryContext(ctx, `SELECT id, binding_json FROM requests
@@ -677,8 +689,11 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 		return err
 	}
 	prompt := "Review completed work and accept the epic."
-	if it.Type == Bug {
+	switch it.Type {
+	case Bug:
 		prompt = "Review the fix and accept it."
+	case Chore:
+		prompt = "Review the chore and accept it."
 	}
 	binding, _ := json.Marshal(acceptBinding{ItemRevision: it.Revision, IntegratedCheckpoint: st.ckpID, Git: json.RawMessage(st.ckpGit)})
 	id := ids.New("req")
