@@ -116,7 +116,7 @@ export function App() {
         {showDetails && (
           <div data-testid="details" className={narrow ? "flex-1 overflow-auto" : "w-[410px] shrink-0 overflow-auto border-l border-line bg-panel"}>
             {narrow && (
-              <button type="button" onClick={() => setUrl({ item: "" })} className="m-3 text-accent">{C.back}</button>
+              <button type="button" onClick={() => setUrl({ item: "" })} className="m-3 text-link">{C.back}</button>
             )}
             {outside && <OutsideViewBanner onShowInHierarchy={() => setUrl({ view: "hierarchy" })} onClearFilters={clearFilters} />}
             <Details
