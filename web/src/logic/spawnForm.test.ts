@@ -53,4 +53,9 @@ describe("spawn form rules (§16.3, §16.10)", () => {
     expect(spikePayload({ name: "x", intent: "feature", repos: ["a"], request: "Look into it", fields }, db.settings, db.catalog, "r3")).toMatchObject({ request: "Look into it", repos: ["a"] });
     expect(newRequestId()).toMatch(/^[0-9a-f-]{36}$/);
   });
+
+  it("sends the chore intent unchanged", () => {
+    const body = spikePayload({ name: "Tidy deps", intent: "chore", repos: [], request: "", fields }, db.settings, db.catalog, "req-1");
+    expect(body.intent).toBe("chore");
+  });
 });
