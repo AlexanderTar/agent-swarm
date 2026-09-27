@@ -10,6 +10,15 @@ import (
 	"unicode/utf8"
 )
 
+func TestNativePromptNextStepDescribesVisibleReviewAndAgentReportedAnswers(t *testing.T) {
+	got := NativePromptNextStep("req_A")
+	for _, want := range []string{"summary exactly", "review_paths.spec", "review_paths.plan", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("next step missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestRefTokenAndRefFromPrompt(t *testing.T) {
 	q := "Approve the plan (rev 1)?" + refToken("req_ABC123")
 	if !strings.HasSuffix(q, " ⟦swarm:req_ABC123⟧") {

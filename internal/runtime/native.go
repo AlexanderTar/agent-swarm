@@ -161,13 +161,12 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 
 // NativePromptNextStep is the show-and-forward instruction that rides with
 // every daemon-issued native prompt: swarm_ask's result (mcpserver
-// requestOut) and the request_open relay share it verbatim (2026-09-26
-// epic-approval-lane; text unchanged from the native-railway-tracing fix).
+// requestOut) and the request_open relay share it verbatim.
 func NativePromptNextStep(ref string) string {
-	return fmt.Sprintf("Print the request summary in chat first (use summary exactly when supplied), not in the question. For a plan also print both full review_paths. Then show native_prompt "+
+	return fmt.Sprintf("Print the request summary in chat first (use summary exactly when supplied), not in the question. For a plan print full absolute review_paths.spec and review_paths.plan immediately before asking. Then show native_prompt "+
 		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
 		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
-		"forwarding only what the user picked, never a decision they did not make. Cursor and Muse must include answer_text exactly as returned by the native tool; a cancelled question remains open.", ref)
+		"forwarding only what the user picked. Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion and Muse request_user_input must include answer_text exactly as returned by the native tool; this has agent_reported provenance. On cancellation or no returned answer, submit nothing and leave the request open.", ref)
 }
 
 // storedNativePromptTx rebuilds a stored approval's native prompt exactly as

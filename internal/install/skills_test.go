@@ -103,6 +103,28 @@ func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
 	}
 }
 
+func TestApprovalSkillsDescribeCurrentContract(t *testing.T) {
+	orch := string(install.SkillBody("swarm-orchestrator"))
+	spike := string(install.SkillBody("swarm-spike"))
+	for name, body := range map[string]string{"swarm-orchestrator": orch, "swarm-spike": spike} {
+		for _, want := range []string{"starting repositories are hints", "1–1000", "Out of scope", "Explicitly out of scope", "review_paths.spec", "review_paths.plan"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s missing %q", name, want)
+			}
+		}
+		for _, stale := range []string{"1–700", "update scope with `swarm_repos`", "out-of-scope or unknown repository"} {
+			if strings.Contains(body, stale) {
+				t.Errorf("%s retains stale instruction %q", name, stale)
+			}
+		}
+	}
+	for _, want := range []string{"Cursor `AskQuestion`", "Muse `request_user_input`", "answer_text", "agent_reported", "cancellation"} {
+		if !strings.Contains(orch, want) {
+			t.Errorf("swarm-orchestrator missing %q", want)
+		}
+	}
+}
+
 // A1: the registry is derived from the embedded tree, not a hand-kept list. Every
 // SKILL.md's frontmatter name must match its directory, every description must be
 // non-empty, and the canonical trio must be present.
