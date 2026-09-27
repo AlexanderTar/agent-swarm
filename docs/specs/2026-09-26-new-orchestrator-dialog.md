@@ -13,7 +13,7 @@ Make the macOS New orchestrator window readable at a glance. All form controls a
 
 ## Layout sketch
 
-Target window content: **820 pt wide**, **about 790 pt high**, **760 pt minimum width**. Use 20–24 pt side insets. The content expands with the window. Exact height can grow for validation text or a larger system text size; on a normal 14-inch Mac screen, the default form has no outer scrollbar.
+Target window content: **820 pt wide**, **at least 790 pt high as needed for the effort controls**, **760 pt minimum width**. Use 20–24 pt side insets. The content expands with the window. Exact height can grow for validation text or a larger system text size; on a normal 14-inch Mac screen, the default form has no outer scrollbar.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
@@ -42,8 +42,9 @@ Target window content: **820 pt wide**, **about 790 pt high**, **760 pt minimum 
 │ [Add folder…]                                           Scanned 5m ago  [Rescan]       │
 │                                                                                         │
 │ Agent      [ Claude             ▾ ]  Model  [ Claude Sonnet 5 (latest)       ▾ ]        │
-│ Advisor    [ Claude             ▾ ]  Model  [ Claude Opus 5.5 (latest)     ▾ ]        │
-│ Defaults from Settings                                                                  │
+│ Effort     [ Default (high)     ▾ ]                                                     │
+│ Advisor    [ Codex              ▾ ]  Model  [ GPT-6 Astra                 ▾ ]        │
+│ Advisor effort [ Default (medium) ▾ ]  (shown for simulated advisor pairings)            │
 │                                                                                         │
 │ Request (optional)                                                                      │
 │ ┌─────────────────────────────────────────────────────────────────────────────────────┐ │
@@ -72,11 +73,13 @@ The chooser shows `min(8, count)` rows at a stable row height of about 30–32 p
 
 Use two aligned rows with columns: role label (about 72 pt), Agent menu (at least 150 pt), Model label (about 52 pt), Model menu (remaining width, at least 300 pt). The row width must fit inside the 760 pt minimum window width with side insets. Keep picker labels explicit for VoiceOver even if the visual text is provided by the grid.
 
-Advisor Agent offers the enabled agents plus “No advisor.” Changing its agent picks the Settings advisor model when compatible, otherwise the first advisor-capable model from that agent's catalog. Advisor Model lists only models that can advise (preserve Claude's current advisor-only filter). When “No advisor” is selected, disable the Model menu and show an em dash. Persist `AdvisorChoice.none` or `.pair(agent, model)` and retain the existing payload's Settings-derived advisor effort; remove only the **visible** Effort controls, not backend effort semantics. The primary agent's saved/default effort still flows into the spike body.
+Advisor Agent offers the enabled agents plus “No advisor.” Changing its agent picks the Settings advisor model when compatible, otherwise the first advisor-capable model from that agent's catalog. Advisor Model lists only models that can advise (preserve Claude's current advisor-only filter). When “No advisor” is selected, disable the Model menu and show an em dash. Persist `AdvisorChoice.none` or `.pair(agent, model)`.
+
+Show a primary Effort menu whenever the chosen model supports effort. Its initial value comes from Settings, and a changed agent or model normalizes an unsupported level to that model's default. Show an Advisor Effort menu when an advisor is selected and advice runs as a separate simulated sub-agent: every pairing except an advisor-capable Claude model advising a Claude primary agent. Normalize its initial Settings value and every agent/model change against the chosen advisor model. Hide it when the advisor model offers no effort levels or “No advisor” is selected. The spike body carries the selected efforts. Native Claude-to-Claude advice uses the built-in mechanism, so the spike body omits advisor effort even if Settings holds a value; the backend also discards it for native mode from any caller. Simulated advice retains the selected advisor effort for the separately launched advisor. For a slug-encoded advisor model, the backend resolves the selected effort to its catalog launch ID before starting that separate process; flag-encoded advisors receive their usual effort flag.
 
 ## Window sizing and states
 
-Set the window's default size near 820 × 790 pt, enforce a 760 pt minimum width, and let the view fill available horizontal space. The footer stays pinned. The normal form must fit without outer scrolling at default system text size; the repository list is capped at eight rows. If display height or accessibility text size prevents that, reduce visible repository rows before allowing a last-resort outer scroll. Do not clip validation, connection, or submission errors. Empty, scanning, and failed repository states retain a bounded chooser area so the rest of the form does not jump.
+Set the window's default size high enough to show the applicable Effort rows and at least five Request lines, enforce a 760 pt minimum width, and let the view fill available horizontal space. The footer stays pinned. The normal form must fit without outer scrolling at default system text size; the repository list is capped at eight rows. If display height or accessibility text size prevents that, reduce visible repository rows before allowing a last-resort outer scroll. Do not clip validation, connection, or submission errors. Empty, scanning, and failed repository states retain a bounded chooser area so the rest of the form does not jump.
 
 Use the existing `SubtleScrollerConfig` (`Components.swift`): overlay, auto-hiding, small scroller. Apply it to the repository list and any last-resort outer scroll. Inactive scrollbars must not reserve a wide gutter. Keep native system colors, controls, focus ring, and selection appearance.
 
@@ -84,4 +87,4 @@ Use the existing `SubtleScrollerConfig` (`Components.swift`): overlay, auto-hidi
 
 Apple's [Lists and tables guidance](https://developer.apple.com/design/human-interface-guidelines/lists-and-tables) treats row selection as a standard list interaction. Apple's [SwiftUI List documentation](https://developer.apple.com/documentation/SwiftUI/List) says keyboard-and-pointer platforms can select multiple rows without edit mode; [AppKit NSTableView](https://developer.apple.com/documentation/appkit/nstableview/allowsmultipleselection) explicitly supports multiple row selection. Apple's [focus and selection guidance](https://developer.apple.com/design/human-interface-guidelines/focus-and-selection/) supports the native selected-row highlight. Use SwiftUI `List(selection:)` if it meets the row-height and scrollbar constraints; otherwise wrap `NSTableView` with `allowsMultipleSelection` and `allowsEmptySelection`.
 
-Accept when: (1) a normal window displays the name, intent, up to eight repos, both agent rows, five-line request, and footer together; (2) widening the window widens the form; (3) every present main repo appears once and linked worktrees and missing paths do not; (4) Command/Shift/keyboard selection works without checkboxes; (5) changing advisor agent updates its model menu and “No advisor” produces the existing no-advisor payload; (6) selected repo IDs survive refresh when still present; (7) focus, VoiceOver, empty, and error states remain usable.
+Accept when: (1) a normal window displays the name, intent, up to eight repos, both agent rows, applicable Effort menus, five-line request, and footer together; (2) widening the window widens the form; (3) every present main repo appears once and linked worktrees and missing paths do not; (4) Command/Shift/keyboard selection works without checkboxes; (5) changing advisor agent updates its model and effort menus and “No advisor” produces the existing no-advisor payload; (6) the native Claude-to-Claude advisor body and persisted runtime row have no advisor effort, while simulated pairings carry a selected valid effort to the separate advisor; (7) selected repo IDs survive refresh when still present; (8) focus, VoiceOver, empty, and error states remain usable.

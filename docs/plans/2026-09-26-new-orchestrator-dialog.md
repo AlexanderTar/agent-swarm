@@ -17,7 +17,7 @@
 - Repository rows use native multiple selection, not checkboxes. Only the repository list normally scrolls.
 - Request is at least five text lines high. Agent and Advisor each use `Agent [menu] Model [menu]` on one line.
 - Do not classify a repository from its folder name or remote alone. A separate clone with its own Git metadata remains eligible.
-- Keep the existing `/api/repos` response and `POST /api/spikes` payload shapes; hidden effort values retain their current behavior.
+- Keep the existing `/api/repos` response and `POST /api/spikes` payload shapes; the 2026-09-27 follow-up below revises visible effort behavior.
 - For every unit: read `test-driven-development/writing-good-tests.md`, name the break its test catches, write the smallest failing test, run it and record the expected RED, implement only enough to pass, run GREEN, refactor only while green, then commit that unit. Never write production code first.
 
 ## File map
@@ -117,11 +117,11 @@ Each package has one coder assignment and one review boundary. Its coder execute
 
 **Files:** `apps/menubar/Sources/SwarmBarKit/CatalogRules.swift`, `NewOrchestratorForm.swift`, `apps/menubar/Sources/SwarmBarUI/NewOrchestratorView.swift`, `apps/menubar/Tests/SwarmBarTests/NewOrchestratorFormTests.swift`
 
-**Interface:** Expose advisor agent and model options separately. Keep `AdvisorChoice.none` and `.pair(AgentKind, String)` and Settings-derived effort in `body()`.
+**Interface:** Expose advisor agent and model options separately. Keep `AdvisorChoice.none` and `.pair(AgentKind, String)`. The follow-up below revises advisor effort selection.
 
 - [ ] **RED test:** Test switching advisor agent, selecting a model, No advisor, a removed saved model, empty catalog, and payload effort. Assert a valid `.pair` or `.none` and no invalid pair in the body.
 - [ ] **Verify RED:** Run `cd apps/menubar && swift test --filter NewOrchestratorFormTests`; record failing advisor assertion.
-- [ ] **GREEN:** Add advisor-agent/model options and setters. Render aligned `Agent [menu] Model [menu]` rows; disable advisor Model for No advisor. Remove visible Effort and its note, preserving stored effort behavior.
+- [ ] **GREEN:** Add advisor-agent/model options and setters. Render aligned `Agent [menu] Model [menu]` rows; disable advisor Model for No advisor. The original implementation removed visible Effort; the 2026-09-27 follow-up restores it conditionally.
 - [ ] **Verify GREEN:** Run focused tests and `cd apps/menubar && swift test`.
 - [ ] **Commit:** Stage the four files and commit `feat(menubar): split advisor agent and model`.
 
@@ -142,3 +142,12 @@ Each package has one coder assignment and one review boundary. Its coder execute
 ## Completion check
 
 All seven units have recorded RED and GREEN runs and one commit each. Both package workflows pass, the full Swift and relevant Go suites pass, and native screenshots and interaction checks satisfy every acceptance condition in the spec.
+
+## Follow-up: effort controls and advisor mode (2026-09-27)
+
+The user requested primary Effort again and Advisor Effort whenever advice runs as a separate sub-agent. The existing `POST /api/spikes` wire shape already has both effort fields. Native mode is an advisor-capable Claude model advising a Claude primary agent; it uses Claude's built-in mechanism and omits advisor effort. All other selected advisor pairings use simulated mode and retain a valid selected advisor effort.
+
+1. **RED Swift form tests:** Cover primary effort selection, native Claude/Claude omission despite a saved effort, Claude/Codex and Codex/Claude simulated advisor effort, No advisor, and normalization when the advisor model changes. Verify the failures before editing production Swift code.
+2. **GREEN Swift form and view:** Restore the primary Effort menu; derive Advisor Effort options from the advisor model; show the advisor menu only in simulated mode when that model supports effort. Keep selected effort valid on agent/model changes. Fit the added rows without hiding Request or the footer, and add native render assertions for both layouts.
+3. **RED then GREEN backend:** Test `resolveAdvisor` with native and simulated modes, including an explicit or Settings-provided effort. Clear effort for resolved native mode; retain it for simulated mode so `advisor_effort` reaches the separate advisor launch. For slug-encoded advisors, resolve the selected effort through the catalog before building the read-only command. Keep the existing advisor mode rule and wire shape.
+4. **Verify and review:** Run focused RED/GREEN tests, then the Swift release build and full Swift suite, relevant Go suites, and code/visual reviews. Record screenshots and checkpoint evidence in `.superpowers/sdd/2026-09-26-new-orchestrator-dialog/progress.md`.
