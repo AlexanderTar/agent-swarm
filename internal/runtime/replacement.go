@@ -630,6 +630,8 @@ func (s *Store) stopPredecessor(ctx context.Context, op Operation, a Agent, ses 
 		state, kind := string(Interrupted), "agent.interrupted"
 		if op.Mode == ModePause {
 			state, kind = string(Paused), "agent.paused"
+		} else if OperationReason(op.RequestKey) == "capacity" {
+			kind = "agent.capacity_paused"
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = ?, ended_at = ? WHERE id = ?`,
 			state, db.Millis(s.now()), ses.ID); err != nil {
