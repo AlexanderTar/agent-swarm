@@ -32,7 +32,7 @@ export const ROLE_EMOJI: Record<Role, string> = {
   designer: "✏️", researcher: "📚", debugger: "🐛", mechanical: "🔧",
 };
 
-export const AGENT_LABEL: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor", muse: "Muse", fake: "Fake" };
+export const AGENT_LABEL: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", cursor: "Cursor", muse: "Muse", fake: "Fake" };
 // README §19 troubleshooting: how each agent signs in.
 export const AGENT_LOGIN_CMD: Record<AgentKind, string> = {
   claude: "claude", codex: "codex login", agy: "agy", cursor: "cursor-agent login", muse: "muse login", fake: "true",
@@ -62,6 +62,7 @@ export const C = {
   appTitle: "Agent Swarm",
   needsYou: "Needs you",
   newSpike: "New spike",
+  newOrchestrator: "New orchestrator",
   newChore: "New chore",
   newItem: "New item",
   search: "Search name or key…",
@@ -154,21 +155,30 @@ export const C = {
   parent: "Parent",
   intent: "Intent",
   featureSpike: "Feature spike",
+  choreIntent: "Chore",
   debugSpike: "Debug spike",
   featureCaption: "Creates a spike to explore this request and turn it into an epic.",
   debugCaption: "Creates a spike to find the root cause and turn it into a bug with a fix plan.",
-  choreCaption: "Creates a chore orchestrator that works on the scope you describe.",
+  choreCaption: "Creates a top-level chore orchestrator for maintenance, refactoring, or general work.",
   repositories: "Repositories",
   repositoriesOptional: "Repositories (optional)",
   reposCaption: "The spike suggests repositories and asks you to confirm them.",
   choreReposCaption: "The orchestrator asks you to confirm repositories before it starts work.",
   searchRepos: "Search repos…",
+  reposEmpty: "No repositories found.",
+  reposScanning: "Scanning repositories…",
+  reposUnavailable: "Repositories unavailable.",
+  selectRepoHint: "Click to select one or more repositories.",
   recent: "Recent",
   addFolder: "Add folder…",
   rescan: "Rescan",
   agent: "Agent",
   model: "Model",
   effort: "Effort",
+  agentEffort: "Agent Effort",
+  advisorModel: "Advisor model",
+  close: "Close",
+  openDetails: "Item details",
   requestOptional: "Request (optional)",
   confirmRepositories: "Confirm repositories",
   proposed: "Proposed",
@@ -230,6 +240,27 @@ export const C = {
 const joinParts = (parts: string[]) => parts.filter((p) => p !== "").join(" · ");
 
 export const T = {
+  toastItemCreated: (key: string) => `Created ${key}`,
+  toastStarted: (name: string, key: string) => `Started ${name} on ${key}`,
+  toastQueued: (name: string) => `Queued ${name}. It starts when an agent slot becomes available.`,
+  toastMoved: (key: string, status: string) => `Moved ${key} to ${status}`,
+  toastDepAdded: (key: string, blockedBy: string) => `${key} is now blocked by ${blockedBy}`,
+  toastPaused: (name: string) => `Pausing ${name}`,
+  toastPausedGroup: (name: string) => `Pausing ${name} and its agents`,
+  toastResumed: (name: string) => `Resumed ${name}`,
+  toastCancelled: (name: string) => `Cancelled ${name}`,
+  toastAcked: (name: string) => `Acknowledged ${name}`,
+  toastRetrying: (name: string) => `Retrying ${name}`,
+  toastTerminal: (name: string) => `Opening terminal for ${name}`,
+  toastApproved: (key: string) => `Approved ${key}`,
+  toastSpikeClosed: (key: string) => `Closed ${key}`,
+  toastChangesSent: (who: string) => `Sent change request to ${who}`,
+  toastReposConfirmed: (n: number) => `Confirmed ${n} ${n === 1 ? "repository" : "repositories"}`,
+  toastRepoAdded: (name: string) => `Added ${name}`,
+  toastRescanned: (found: number, missing: number) =>
+    missing ? `Found ${found} repositories · ${missing} missing` : `Found ${found} repositories`,
+  reposNoLonger: (n: number) =>
+    `${n} selected ${n === 1 ? "repository is" : "repositories are"} no longer available.`,
   matches: (n: number) => `${n} matches`,
   startedFrom: (key: string) => `Started from ${key}`,
   agentName: (kebab: string) => `Agent name: ${kebab}`,

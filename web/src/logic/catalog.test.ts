@@ -77,7 +77,7 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     ]);
     expect(modelOptions(catalog[0], true).map((o) => o.value)).toEqual(["alpha", "delta", "model-1", "model-2"]);
     expect(modelOptions(undefined)).toEqual([]);
-    expect(agentOptions(["claude", "agy"])).toEqual([{ value: "claude", label: "Claude" }, { value: "agy", label: "agy" }]);
+    expect(agentOptions(["claude", "agy"])).toEqual([{ value: "claude", label: "Claude" }, { value: "agy", label: "Antigravity" }]);
   });
 
   it("offers a model whose id is its own alias exactly once", () => {
