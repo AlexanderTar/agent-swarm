@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -60,6 +61,7 @@ type AskInput struct {
 	// for, Decision is "approve" | "request_changes", Comment is optional
 	// free text.
 	Ref, Decision, Comment string
+	AnswerText             string // exact native tool return, Cursor and Muse only
 }
 
 // ReposProposal is one repository the orchestrator proposes (or drops) on a
@@ -313,6 +315,15 @@ func (s *Store) approvalEvidenceTx(ctx context.Context, tx *sql.Tx, r Request) *
 		}
 		return b.Evidence
 	}
+	var direct struct {
+		Evidence *string `json:"evidence"`
+	}
+	if len(r.Binding) > 0 {
+		json.Unmarshal(r.Binding, &direct)
+	}
+	if direct.Evidence != nil {
+		return direct.Evidence
+	}
 	var ev sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT json_extract(q.binding_json, '$.evidence') FROM requests q
 		WHERE q.kind = 'question' AND json_extract(q.binding_json, '$.ref') = ?
@@ -493,6 +504,16 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 			return err
 		}
 		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID)
+		if req.Kind == KindApproveSection || req.Kind == KindApprovePlan || req.Kind == KindApproveReport {
+			payload["summary"] = req.Prompt
+		}
+		if req.Kind == KindApprovePlan {
+			paths, _, err := s.planReviewPathsTx(ctx, tx, req.ItemID, req.ArtifactID)
+			if err != nil {
+				return err
+			}
+			payload["review_paths"] = paths
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -723,7 +744,7 @@ func (s *Store) Ask(ctx context.Context, sessionID string, in AskInput) (Request
 	case "approval":
 		return s.askApproval(ctx, sessionID, in)
 	case "confirm_repos":
-		return s.askConfirmRepos(ctx, sessionID, in)
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Repository confirmation asks are no longer used; register a local Git path with swarm_repo_register when needed."}
 	case "native_prompt":
 		return s.askNativePromptForMsg(ctx, sessionID, in)
 	case "native_answer":
@@ -988,7 +1009,11 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 	if in.ArtifactID == "" {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "artifact_id is required."}
 	}
-	if n := utf8.RuneCountInString(in.Prompt); n < 1 || n > 1000 {
+	n := utf8.RuneCountInString(in.Prompt)
+	if in.SectionID != "" && (strings.TrimSpace(in.Prompt) == "" || n > 1000) {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Spec section summary must be 1–1000 characters."}
+	}
+	if n < 1 || n > 1000 {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
 	}
 	var out Request
@@ -1021,6 +1046,19 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		default:
 			return &items.Error{Code: items.CodeBadRequest, Message: "This artifact kind cannot be approved."}
 		}
+		var reviewPaths *ReviewPaths
+		if reqKind == "approve_plan" {
+			paths, specID, err := s.planReviewPathsTx(ctx, tx, itemID, in.ArtifactID)
+			if err != nil {
+				return err
+			}
+			if specID != "" {
+				if err := s.checkEverySectionApproved(ctx, tx, specID); err != nil {
+					return err
+				}
+			}
+			reviewPaths = &paths
+		}
 		var sectionID sql.NullString
 		var sectionSHA, sectionTitle string
 		if in.SectionID != "" {
@@ -1040,6 +1078,9 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			}
 			if !found {
 				return &items.Error{Code: items.CodeBadRequest, Message: "Unknown section."}
+			}
+			if reqKind == "approve_section" && !RequiredSpecSection(sectionTitle) {
+				return &items.Error{Code: items.CodeBadRequest, Message: "This spec section is informational and needs no approval."}
 			}
 			sectionID = sql.NullString{String: in.SectionID, Valid: true}
 		}
@@ -1080,6 +1121,7 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			return err
 		}
 		out.NativePrompt = &np
+		out.ReviewPaths = reviewPaths
 		return nil
 	})
 	return out, err

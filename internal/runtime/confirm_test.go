@@ -3,11 +3,178 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
+
+func TestStartSpikeUsesSelectedRepositoriesWithoutConfirmation(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "selected")
+	key, _, _, err := s.StartSpike(ctx, SpikeInput{Name: "Selected repo", Intent: "feature", Kind: Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ConfirmedRepos(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != repo {
+		t.Fatalf("selected repos = %+v, want %s", got, repo)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE item_id = ? AND kind = 'confirm_repos'`, root.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("confirmation requests = %d, want 0", n)
+	}
+}
+
+func TestNewRepositoryConfirmationAsksAreRefused(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "selected")
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Research", Intent: "feature", Kind: Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "confirm", Repos: []ReposProposal{{Repo: repo, Reason: "selected"}}})
+	if err == nil || !strings.Contains(err.Error(), "no longer") {
+		t.Fatalf("ask = %v", err)
+	}
+}
+
+func TestMigrateOpenRepositoryConfirmationsPreservesHintAndProvenance(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	aID, bID, cID := seedRepo(t, s, "one"), seedRepo(t, s, "two"), seedRepo(t, s, "three")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Research", Intent: "feature", Kind: Fake, Model: "fake-1", Repos: []string{aID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	first, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one", Repos: []ReposProposal{{Repo: aID, Reason: "keep"}, {Repo: bID, Reason: "drop", Source: "dropped"}}, Expansion: []ReposProposal{{Repo: cID, Reason: "add"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "two", Repos: []ReposProposal{{Repo: aID, Reason: "keep"}, {Repo: cID, Reason: "add"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	question, err := s.askQuestion(ctx, ses.ID, AskInput{Kind: "question", Prompt: "Unrelated?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# Spec\n\n## Decision\n\nKeep it.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+		SectionID: spec.Sections[0].ID, Prompt: "Keep this decision."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MigrateOpenRepoConfirmations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MigrateOpenRepoConfirmations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id   string
+		want []string
+	}{{first.ID, []string{aID, cID}}, {second.ID, []string{aID, cID}}} {
+		r, err := s.RequestByID(ctx, tc.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.State != "approved" || !slices.Equal(r.Confirmed, tc.want) || !strings.Contains(r.ResponseText, "daemon migration") || r.RespondedVia != "" {
+			t.Fatalf("migrated request = %+v", r)
+		}
+		var origin, payload string
+		if err := s.DB.QueryRowContext(ctx, `SELECT origin, payload_json FROM messages WHERE request_id = ? AND kind = 'repos_confirmed'`, tc.id).Scan(&origin, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if origin != "daemon" || !strings.Contains(payload, "daemon_migration") {
+			t.Fatalf("relay = %s %s", origin, payload)
+		}
+		var events int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE type = 'request.resolved' AND payload_json LIKE ?`, `%`+tc.id+`%`).Scan(&events); err != nil {
+			t.Fatal(err)
+		}
+		if events != 1 {
+			t.Fatalf("resolution events for %s = %d", tc.id, events)
+		}
+	}
+	unrelated, _ := s.RequestByID(ctx, question.ID)
+	if unrelated.State != "open" {
+		t.Fatalf("unrelated request = %s", unrelated.State)
+	}
+	unrelatedApproval, err := s.RequestByID(ctx, approval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unrelatedApproval.State != "open" {
+		t.Fatalf("unrelated approval = %s", unrelatedApproval.State)
+	}
+	root, _ := s.Items.Get(ctx, key)
+	if !slices.Equal(root.Repos, []string{aID}) {
+		t.Fatalf("root hint changed: %v", root.Repos)
+	}
+}
+
+func TestStartSpikeRejectsUnknownSelectedRepository(t *testing.T) {
+	s, _, _ := newStore(t)
+	_, _, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Unknown selection", Intent: "feature", Kind: Fake, Model: "fake-1", Repos: []string{"repo_missing"}})
+	if err == nil || !strings.Contains(err.Error(), "Unknown repository") {
+		t.Fatalf("unknown selected repo: %v", err)
+	}
+}
+
+func TestLegacySelectedRepositoriesAdoptOnceAndCloseOpenConfirmation(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "legacy-selected")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Legacy repo", Intent: "feature", Kind: Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := s.Items.Get(ctx, key)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = '[]', repos_version = 0 WHERE id = ?`, root.ID); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "confirm", Repos: []ReposProposal{{Repo: repo, Reason: "selected"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		got, err := s.ConfirmedRepos(ctx, root.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].ID != repo {
+			t.Fatalf("read %d: %+v", i, got)
+		}
+	}
+	after, _ := s.Items.Get(ctx, key)
+	if after.ReposVersion != 1 {
+		t.Fatalf("repos_version = %d, want 1", after.ReposVersion)
+	}
+	closed, _ := s.RequestByID(ctx, req.ID)
+	if closed.State != "withdrawn" {
+		t.Fatalf("old request state = %s", closed.State)
+	}
+}
 
 func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	s, _, _ := newStore(t)
@@ -16,7 +183,7 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Confirm", Intent: "feature",
 		Kind: Fake, Model: "fake-1", Repos: []string{repoA}})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos",
+	req, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos",
 		Prompt:    "The change needs the client and the shared schema.",
 		Repos:     []ReposProposal{{Repo: repoA, Reason: "the login form lives here", Source: "user"}},
 		Expansion: []ReposProposal{{Repo: repoB, Reason: "the session schema is shared"}}})
@@ -31,7 +198,7 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	if len(opts.Proposed) != 1 || len(opts.Expansion) != 1 || opts.Proposed[0].Source != "user" {
 		t.Fatalf("options = %s", req.Options)
 	}
-	out, err := s.ConfirmRepos(ctx, req.ID, []string{repoA, repoB}, "both, please", 0, "menubar", "")
+	out, err := s.ConfirmRepos(ctx, req.ID, []string{repoA, repoB}, "both, please", 1, "menubar", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +206,7 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 		t.Fatalf("request = %+v", out)
 	}
 	it, _ := s.Items.Get(ctx, "SPIKE-1")
-	if len(it.Repos) != 2 || it.ReposVersion != 1 {
+	if len(it.Repos) != 2 || it.ReposVersion != 2 {
 		t.Fatalf("item repos = %v, version = %d", it.Repos, it.ReposVersion)
 	}
 	var kind, origin, payload string
@@ -62,7 +229,7 @@ func TestConfirmReposStoresEmptyExpansionAsAnEmptyArrayNotNull(t *testing.T) {
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "NoExpansion", Intent: "feature",
 		Kind: Fake, Model: "fake-1", Repos: []string{repoA}})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos",
+	req, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos",
 		Prompt:    "just chat",
 		Repos:     []ReposProposal{{Repo: repoA, Reason: "the login form lives here"}},
 		Expansion: nil})
@@ -126,7 +293,7 @@ func TestAskConfirmReposErrorNamesTheFix(t *testing.T) {
 	ctx := context.Background()
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Ask me", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	_, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "p",
+	_, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "p",
 		Repos: []ReposProposal{{Repo: "endurio-chat", Reason: "r"}}})
 	want := `Unknown repository "endurio-chat". Pass a repository id from swarm_read {repos:{q:"endurio-chat"}}.`
 	if err == nil || err.Error() != want {
@@ -165,7 +332,7 @@ func TestConfirmReposRefusesAnUnknownOrAlreadyResolvedRequest(t *testing.T) {
 	}
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Twice", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
+	req, _ := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}})
 	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repoA}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
@@ -182,7 +349,7 @@ func TestConfirmReposRefusesAnEmptySetAndAStaleVersion(t *testing.T) {
 	repoA := seedRepo(t, s, "chat")
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Stale", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which repos?",
+	req, _ := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which repos?",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "here"}}})
 	if _, err := s.ConfirmRepos(ctx, req.ID, nil, "", 0, "board", ""); err == nil ||
 		err.Error() != "Choose at least one repository." {
@@ -204,7 +371,7 @@ func TestConfirmReposRefusesRemovingARepoInUse(t *testing.T) {
 	repoA, repoB := seedRepo(t, s, "chat"), seedRepo(t, s, "app")
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "InUse", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	first, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "both",
+	first, _ := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "both",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}, {Repo: repoB, Reason: "b"}}})
 	if _, err := s.ConfirmRepos(ctx, first.ID, []string{repoA, repoB}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
@@ -214,7 +381,7 @@ func TestConfirmReposRefusesRemovingARepoInUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedWorktreeReservation(t, s, repoA, a.ID, sp.ID)
-	second, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "just one now",
+	second, _ := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "just one now",
 		Repos: []ReposProposal{{Repo: repoB, Reason: "b"}}})
 	_, err = s.ConfirmRepos(ctx, second.ID, []string{repoB}, "", 1, "board", "")
 	if err == nil || err.Error() != "chat has active worktrees. Finish or release them first." {
@@ -229,10 +396,10 @@ func TestAskingAgainDoesNotChangeTheConfirmedSetYet(t *testing.T) {
 	repoA, repoB := seedRepo(t, s, "chat"), seedRepo(t, s, "app")
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Later", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	first, _ := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
+	first, _ := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}})
 	s.ConfirmRepos(ctx, first.ID, []string{repoA}, "", 0, "board", "")
-	s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "and the other",
+	s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "and the other",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}, {Repo: repoB, Reason: "b"}}})
 	it, _ := s.Items.Get(ctx, "SPIKE-1")
 	if len(it.Repos) != 1 || it.Repos[0] != repoA {
@@ -246,7 +413,7 @@ func TestOnlyAnOrchestratorMayAskToConfirmRepos(t *testing.T) {
 	ctx := context.Background()
 	repoA := seedRepo(t, s, "chat")
 	_, _, wSes := worker(t, s)
-	if _, err := s.Ask(ctx, wSes.ID, AskInput{Kind: "confirm_repos", Prompt: "which?",
+	if _, err := s.askConfirmRepos(ctx, wSes.ID, AskInput{Kind: "confirm_repos", Prompt: "which?",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}}); err == nil {
 		t.Fatal("a coder cannot ask to confirm repos")
 	}
@@ -258,15 +425,15 @@ func TestConfirmReposNeedsAReasonPerProposal(t *testing.T) {
 	repoA, repoB := seedRepo(t, s, "chat"), seedRepo(t, s, "app")
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Reason", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which?",
+	if _, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which?",
 		Repos: []ReposProposal{{Repo: repoA}}}); err == nil {
 		t.Fatal("every proposed repo needs a one-line reason")
 	}
-	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which?",
+	if _, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which?",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}, Expansion: []ReposProposal{{Repo: repoB}}}); err == nil {
 		t.Fatal("every suggested repo needs a one-line reason")
 	}
-	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which?"}); err == nil {
+	if _, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "which?"}); err == nil {
 		t.Fatal("at least one proposal is required")
 	}
 }
@@ -278,7 +445,7 @@ func TestConfirmReposNotificationBody(t *testing.T) {
 	repoA, repoB := seedRepo(t, s, "chat"), seedRepo(t, s, "app")
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Notify", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "p",
+	s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "p",
 		Repos:     []ReposProposal{{Repo: repoA, Reason: "a"}},
 		Expansion: []ReposProposal{{Repo: repoB, Reason: "b"}}})
 	// §17.5's body is "{KEY}: {name} proposes {N} repositories{expansion}." and the
@@ -346,7 +513,7 @@ func TestConfirmedReposReturnsTheConfirmedSet(t *testing.T) {
 	repoA := seedRepo(t, s, "chat")
 	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Get", Intent: "feature", Kind: Fake, Model: "fake-1"})
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
+	req, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "one",
 		Repos: []ReposProposal{{Repo: repoA, Reason: "a"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -385,7 +552,7 @@ func TestAskConfirmReposRefusesASilentDrop(t *testing.T) {
 	if len(it.SuggestedRepos) != 2 {
 		t.Fatalf("StartSpike must record what the user picked: %v", it.SuggestedRepos)
 	}
-	_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos",
+	_, err = s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos",
 		Prompt: "Only chat is needed for this change.",
 		Repos:  []ReposProposal{{Repo: repoA, Reason: "the API lives here"}}})
 	if err == nil {
@@ -395,7 +562,7 @@ func TestAskConfirmReposRefusesASilentDrop(t *testing.T) {
 		t.Fatalf("Ask = %q, want %q", err, want)
 	}
 	// With source "dropped" plus its own reason it is accepted.
-	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos",
+	if _, err := s.askConfirmRepos(ctx, ses.ID, AskInput{Kind: "confirm_repos",
 		Prompt: "Only chat is needed for this change.",
 		Repos: []ReposProposal{
 			{Repo: repoA, Reason: "the API lives here"},

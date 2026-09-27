@@ -188,6 +188,87 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 	return out, err
 }
 
+// MigrateOpenRepoConfirmations closes the obsolete approval lane on startup.
+// Each request keeps its own proposed and expansion list; the root's starting
+// repository hint is deliberately untouched. Only open rows are selected, so
+// repeated starts cannot duplicate a resolution or relay.
+func (s *Store) MigrateOpenRepoConfirmations(ctx context.Context) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM requests WHERE kind = 'confirm_repos' AND state = 'open' ORDER BY created_at, id`)
+		if err != nil {
+			return err
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			req, err := s.requestTx(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			var options struct{ Proposed, Expansion []ReposProposal }
+			if err := json.Unmarshal(req.Options, &options); err != nil {
+				return fmt.Errorf("migrate repository request %s: %w", id, err)
+			}
+			seen := map[string]bool{}
+			var repoIDs []string
+			for _, p := range append(options.Proposed, options.Expansion...) {
+				if p.Source == "dropped" || seen[p.Repo] {
+					continue
+				}
+				seen[p.Repo] = true
+				repoIDs = append(repoIDs, p.Repo)
+			}
+			refs, err := s.repoRefs(ctx, tx, repoIDs)
+			if err != nil {
+				return fmt.Errorf("migrate repository request %s: %w", id, err)
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = 'approved', confirmed_json = ?, response_text = 'Approved by daemon migration', responded_at = ? WHERE id = ? AND state = 'open'`, jsonArray(repoIDs), db.Millis(s.Now()), id); err != nil {
+				return err
+			}
+			rootID, err := s.rootItemID(ctx, tx, req.ItemID)
+			if err != nil {
+				return err
+			}
+			payload, err := json.Marshal(map[string]any{"repos": refs, "provenance": "daemon_migration"})
+			if err != nil {
+				return err
+			}
+			if req.AgentID != "" {
+				if _, err := s.enqueue(ctx, tx, Message{Kind: "repos_confirmed", Origin: "daemon", ToAgentID: req.AgentID, RootItemID: rootID, ItemID: req.ItemID, RequestID: id, Payload: payload}); err != nil {
+					return err
+				}
+			}
+			wire, err := s.RequestWireTx(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			if _, err := s.Events.Append(ctx, tx, events.RequestResolved, wire); err != nil {
+				return err
+			}
+			key, err := s.itemKey(ctx, tx, req.ItemID)
+			if err != nil {
+				return err
+			}
+			if err := s.Items.ReconcileTx(ctx, tx, key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // validateRepoConfirmTx is the read half of a repo confirmation (I13): the
 // repos_version check, that every id exists, and that no dropped repo still
 // has a live worktree reservation. Shared by the request-bound ConfirmRepos
@@ -257,6 +338,28 @@ func (s *Store) CommitItemRepos(ctx context.Context, itemKey string, repoIDs []s
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		root, err := s.Items.GetTx(ctx, tx, itemKey)
 		if err != nil {
+			return err
+		}
+		if err := s.commitRepoConfirmTx(ctx, tx, root, repoIDs); err != nil {
+			return err
+		}
+		return s.Items.ReconcileTx(ctx, tx, itemKey)
+	})
+}
+
+// SetItemRepos lets an orchestrator change its root's repository scope
+// without opening a second user approval. Validation and the versioned write
+// share one transaction, so stale updates cannot overwrite a newer choice.
+func (s *Store) SetItemRepos(ctx context.Context, itemKey string, repoIDs []string, version int) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		root, err := s.Items.GetTx(ctx, tx, itemKey)
+		if err != nil {
+			return err
+		}
+		if root.ParentID != "" {
+			return &items.Error{Code: items.CodeBadRequest, Message: "Repository scope belongs to the root item."}
+		}
+		if _, err := s.validateRepoConfirmTx(ctx, tx, root, repoIDs, version); err != nil {
 			return err
 		}
 		if err := s.commitRepoConfirmTx(ctx, tx, root, repoIDs); err != nil {
@@ -345,14 +448,31 @@ func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, c
 
 // ConfirmedRepos returns the top-level item's currently confirmed repositories.
 func (s *Store) ConfirmedRepos(ctx context.Context, rootItemID string) ([]repos.Repo, error) {
-	var raw string
-	if err := s.DB.QueryRowContext(ctx, `SELECT confirmed_repos_json FROM items WHERE id = ?`,
-		rootItemID).Scan(&raw); err != nil {
+	var raw, suggestedRaw, kind string
+	if err := s.DB.QueryRowContext(ctx, `SELECT type, confirmed_repos_json, suggested_repos_json FROM items WHERE id = ?`,
+		rootItemID).Scan(&kind, &raw, &suggestedRaw); err != nil {
 		return nil, err
 	}
 	var repoIDs []string
 	if err := json.Unmarshal([]byte(raw), &repoIDs); err != nil {
 		return nil, err
+	}
+	if kind == string(items.Spike) && len(repoIDs) == 0 {
+		var suggested []string
+		if err := json.Unmarshal([]byte(suggestedRaw), &suggested); err != nil {
+			return nil, err
+		}
+		if len(suggested) > 0 {
+			if err := s.adoptLegacySelectedRepos(ctx, rootItemID); err != nil {
+				return nil, err
+			}
+			if err := s.DB.QueryRowContext(ctx, `SELECT confirmed_repos_json FROM items WHERE id = ?`, rootItemID).Scan(&raw); err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal([]byte(raw), &repoIDs); err != nil {
+				return nil, err
+			}
+		}
 	}
 	out := make([]repos.Repo, 0, len(repoIDs))
 	for _, id := range repoIDs {
@@ -369,6 +489,58 @@ func (s *Store) ConfirmedRepos(ctx context.Context, rootItemID string) ([]repos.
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// adoptLegacySelectedRepos carries forward repositories chosen when an older
+// spike was started, before that choice populated confirmed_repos_json.
+func (s *Store) adoptLegacySelectedRepos(ctx context.Context, rootItemID string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		return s.adoptLegacySelectedReposTx(ctx, tx, rootItemID)
+	})
+}
+
+func (s *Store) adoptLegacySelectedReposTx(ctx context.Context, tx *sql.Tx, rootItemID string) error {
+	var key string
+	if err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, rootItemID).Scan(&key); err != nil {
+		return err
+	}
+	root, err := s.Items.GetTx(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if root.Type != items.Spike || len(root.Repos) != 0 || len(root.SuggestedRepos) == 0 {
+		return nil
+	}
+	if _, err := s.repoRefs(ctx, tx, root.SuggestedRepos); err != nil {
+		return err
+	}
+	if err := s.commitRepoConfirmTx(ctx, tx, root, root.SuggestedRepos); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM requests WHERE item_id = ? AND kind = 'confirm_repos' AND state = 'open'`, root.ID)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, id := range ids {
+		if err := s.closeRequestTx(ctx, tx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CloseSpike approves a close_spike request (I4); P1's reconcileSpike then

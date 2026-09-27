@@ -362,7 +362,7 @@ func TestStartSpikeWithChoreIntentCreatesAReadyChore(t *testing.T) {
 	if it.Brief != longBrief {
 		t.Fatalf("expected brief to match longBrief exactly, got len %d vs %d", len(it.Brief), len(longBrief))
 	}
-	if !slices.Equal(it.SuggestedRepos, []string{repo}) || len(it.Repos) != 0 {
+	if !slices.Equal(it.SuggestedRepos, []string{repo}) || !slices.Equal(it.Repos, []string{repo}) {
 		t.Fatalf("repos = %v, suggested = %v", it.Repos, it.SuggestedRepos)
 	}
 	if a.Name != "first-pass-cleanup" || a.Role != RoleOrchestrator || a.ItemID != it.ID {

@@ -13,11 +13,9 @@ import (
 // Scenario 12: preflight failures.
 //
 //   - Uninstalled agent: gives preflight_failed with "... isn't installed on
-//     this Mac." An agent kind with no registered adapter (kinds.AgentKind
-//     has no "opencode") hits the same code path as a real CLI missing from
-//     PATH (internal/runtime/agents.go Preflight: `a, ok := s.Adapters[in.Kind]`),
-//     deterministically, regardless of what happens to be installed on the
-//     machine running the suite.
+//     this Mac." The e2e runner's isolated PATH excludes the real Claude CLI;
+//     use a valid agent kind so the database's agent-kind constraint accepts
+//     the row and Preflight can report the missing executable.
 //   - Missing superpowers: NOT independently exercised here. It's gated by
 //     adapter.Fake.NoSuperpowers, a struct field fixed when the daemon
 //     constructs its one long-lived Fake instance (cmd/swarm/daemon.go); the
@@ -36,7 +34,7 @@ func TestScenario12PreflightFailures(t *testing.T) {
 	var spikeResp map[string]any
 	h.doT(t, http.MethodPost, "/api/spikes", map[string]any{
 		"request_id": "req-" + unique(), "name": "Uninstalled agent " + unique(), "intent": "debug",
-		"agent": "opencode", "model": "x",
+		"agent": "claude", "model": "claude-test",
 	}, &spikeResp)
 	agent, _ := spikeResp["agent"].(map[string]any)
 	preErr, _ := agent["preflight_error"].(string)

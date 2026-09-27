@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -234,20 +235,6 @@ func TestMissingAndManualRepos(t *testing.T) {
 	}
 }
 
-func TestAddManualRejectsLinkedWorktree(t *testing.T) {
-	main, linked, directoryLinked, _ := primaryFixture(t)
-	s := newService(t, filepath.Dir(main), &fakeGit{})
-	for _, path := range []string{linked, directoryLinked} {
-		if _, err := s.AddManual(bgc, path); !errors.Is(err, ErrNotRepo) {
-			t.Errorf("AddManual(%s) error = %v, want ErrNotRepo", path, err)
-		}
-	}
-	all, err := s.All(bgc)
-	if err != nil || len(all) != 0 {
-		t.Fatalf("manual add persisted linked worktree: %+v, %v", all, err)
-	}
-}
-
 func TestAllOmitsStoredWorktree(t *testing.T) {
 	main, linked, directoryLinked, clone := primaryFixture(t)
 	s := newService(t, filepath.Dir(main), &fakeGit{})
@@ -321,6 +308,37 @@ func TestRepoIdentityUsesOneGitOperationPerCheckout(t *testing.T) {
 	}
 	if operations != 2 {
 		t.Fatalf("Git identity operations = %d, want one per checkout", operations)
+	}
+}
+
+func TestAddManualLinkedWorktreeUsesMainRepositoryIdentity(t *testing.T) {
+	home := realTemp(t)
+	main := filepath.Join(home, "main")
+	linked := filepath.Join(home, "linked")
+	if err := os.Mkdir(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-b", "main", main}, {"-C", main, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial"}, {"-C", main, "worktree", "add", "-b", "linked", linked}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	s := newService(t, home, &fakeGit{})
+	s.Run = execx.Run
+	first, err := s.AddManual(bgc, main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.AddManual(bgc, linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != first.ID || got.Path != main {
+		t.Fatalf("linked registration = %+v; main = %+v", got, first)
+	}
+	all, err := s.All(bgc)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("catalog after linked registration = %+v, %v", all, err)
 	}
 }
 

@@ -468,14 +468,15 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 			return Item{}, err
 		}
 		rootID, parentID = parent.RootID, sql.NullString{String: parent.ID, Valid: true}
-		if len(in.Repos) > 0 {
-			root, err := s.getByID(ctx, tx, rootID)
-			if err != nil {
-				return Item{}, err
-			}
+		if len(in.Repos) > 0 && by.Kind != ActorDaemon {
 			for _, r := range in.Repos {
-				if !slices.Contains(root.Repos, r) {
-					return Item{}, errf(CodeBadRequest, "%s isn't confirmed for %s.", r, root.Key)
+				var exists int
+				err := tx.QueryRowContext(ctx, `SELECT 1 FROM repos WHERE id = ?`, r).Scan(&exists)
+				if errors.Is(err, sql.ErrNoRows) {
+					return Item{}, errf(CodeBadRequest, "Unknown repository %q. Register its local Git path with swarm_repo_register.", r)
+				}
+				if err != nil {
+					return Item{}, err
 				}
 			}
 		}

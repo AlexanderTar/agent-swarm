@@ -158,9 +158,9 @@ func checkpointTool(s *Server) ToolDef {
 func askTool(s *Server) ToolDef {
 	return ToolDef{
 		Name: "swarm_ask",
-		Description: "Request an approval, propose repos to confirm, forward a native answer, or withdraw an earlier ask. " +
+		Description: "Request an artifact approval, forward a native answer, or withdraw an earlier ask. New confirm_repos requests are refused; use swarm_repo_register for a newly found local repository. " +
 			"Returns at once with the request id; the answer arrives later as a message.",
-		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, native_prompt, native_answer, or withdraw. question is refused for claude, agy and codex (they have a native question tool Swarm hooks instead); cursor and muse keep it, since their native question tool is not hookable. native_prompt for_msg gets a child's approval question's native prompt; native_answer ref forwards the user's observed decision."},"prompt":{"type":"string"},"options":{"type":"array"},
+		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, legacy confirm_repos, native_prompt, native_answer, or withdraw. For spec approval, prompt is the exact 1–1000-character section summary, including any table or sketch syntax; print it unchanged before each native question and replay. Ask for every section except Context, Background, Bibliography, References, File list, Files, and Work breakdown; Out of scope, Explicitly out of scope, unknown headings, and headingless content require review. For plan approval, print the exact summary and both full absolute review_paths.spec and review_paths.plan immediately before the native question. question is refused for claude, agy and codex (they have a native question tool Swarm hooks instead); cursor and muse keep it, since their native question tool is not hookable. native_prompt for_msg gets a child's approval question's native prompt; native_answer ref forwards an explicit decision. Cursor AskQuestion and Muse request_user_input must also pass the exact native tool return as answer_text; cancellation submits nothing and the report has agent_reported provenance."},"prompt":{"type":"string"},"options":{"type":"array"},
 			"artifact":{"type":"string","description":"Artifact id for approval kinds"},"section":{"type":"string","description":"Section id for per-section approval"},"withdraw":{"type":"string"},
 			"repos":{"type":"array","items":{"type":"object","properties":{
 				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
@@ -174,23 +174,25 @@ func askTool(s *Server) ToolDef {
 			"ref":{"type":"string","description":"kind native_answer: the request_id or msg_id a native_prompt was issued for"},
 			"decision":{"type":"string","enum":["approve","request_changes"],"description":"kind native_answer: the user's observed decision"},
 			"comment":{"type":"string","description":"kind native_answer: free text for request_changes, or when the adapter reports no answer text"},
+			"answer_text":{"type":"string","description":"kind native_answer: exact nonempty native question tool return for Cursor and Muse only; cancellation is not submitted"},
 			"request_id":{"type":"string"}`,
 			[]string{"kind"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Kind      string                  `json:"kind"`
-				Prompt    string                  `json:"prompt"`
-				Options   []string                `json:"options"`
-				Artifact  string                  `json:"artifact"`
-				Section   string                  `json:"section"`
-				Withdraw  string                  `json:"withdraw"`
-				Repos     []runtime.ReposProposal `json:"repos"`
-				Expansion []runtime.ReposProposal `json:"expansion"`
-				ForMsg    string                  `json:"for_msg"`
-				Ref       string                  `json:"ref"`
-				Decision  string                  `json:"decision"`
-				Comment   string                  `json:"comment"`
-				RequestID string                  `json:"request_id"`
+				Kind       string                  `json:"kind"`
+				Prompt     string                  `json:"prompt"`
+				Options    []string                `json:"options"`
+				Artifact   string                  `json:"artifact"`
+				Section    string                  `json:"section"`
+				Withdraw   string                  `json:"withdraw"`
+				Repos      []runtime.ReposProposal `json:"repos"`
+				Expansion  []runtime.ReposProposal `json:"expansion"`
+				ForMsg     string                  `json:"for_msg"`
+				Ref        string                  `json:"ref"`
+				Decision   string                  `json:"decision"`
+				Comment    string                  `json:"comment"`
+				AnswerText string                  `json:"answer_text"`
+				RequestID  string                  `json:"request_id"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -198,7 +200,7 @@ func askTool(s *Server) ToolDef {
 			req, err := s.RT.Ask(ctx, c.SessionID, runtime.AskInput{
 				Kind: in.Kind, Prompt: in.Prompt, Options: in.Options, ArtifactID: in.Artifact,
 				SectionID: in.Section, Withdraw: in.Withdraw, Repos: in.Repos, Expansion: in.Expansion,
-				ForMsg: in.ForMsg, Ref: in.Ref, Decision: in.Decision, Comment: in.Comment, RequestID: in.RequestID,
+				ForMsg: in.ForMsg, Ref: in.Ref, Decision: in.Decision, Comment: in.Comment, AnswerText: in.AnswerText, RequestID: in.RequestID,
 			})
 			if err != nil {
 				return nil, err
@@ -222,6 +224,9 @@ func requestOut(r runtime.Request) map[string]any {
 		// bind the answer and never forward it, since nothing else in this
 		// result says there is a next step. Spell it out here too.
 		out["next"] = runtime.NativePromptNextStep(r.ID)
+	}
+	if r.ReviewPaths != nil {
+		out["review_paths"] = r.ReviewPaths
 	}
 	return out
 }

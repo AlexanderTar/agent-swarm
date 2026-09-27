@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -20,6 +22,19 @@ import (
 )
 
 const maxArtifactBytes = 1 << 20 // 1 MB
+
+var leadingSectionNumber = regexp.MustCompile(`^\d+(?:\.\d+)*\.?\s+`)
+
+// RequiredSpecSection exempts only headings that explain the decision rather
+// than make one. Unknown and headingless sections stay in the approval gate.
+func RequiredSpecSection(title string) bool {
+	title = strings.ToLower(strings.TrimSpace(leadingSectionNumber.ReplaceAllString(strings.TrimSpace(title), "")))
+	switch title {
+	case "context", "background", "bibliography", "references", "file list", "files", "work breakdown":
+		return false
+	}
+	return true
+}
 
 func sha256Hex(s string) string {
 	h := sha256.Sum256([]byte(s))
@@ -88,8 +103,9 @@ func (t Tree) Tasks() []TreeNode {
 }
 
 // SplitSections splits on "## " headings at the start of a line, ignoring
-// headings inside fenced code blocks. A file with none is one section,
-// "document".
+// headings inside fenced code blocks. Substantive content before the first
+// heading is a "document" section; a top-level title and whitespace alone
+// do not create an extra section. A file with no headings is one section.
 func SplitSections(md string) []ArtifactSection {
 	type mark struct {
 		title string
@@ -115,7 +131,18 @@ func SplitSections(md string) []ArtifactSection {
 			SHA256: sha256Hex(md), Start: 0, End: len(md)}}
 	}
 	seen := map[string]int{}
-	out := make([]ArtifactSection, 0, len(marks))
+	out := make([]ArtifactSection, 0, len(marks)+1)
+	preamble := md[:marks[0].at]
+	for _, line := range strings.Split(preamble, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "# ") {
+			continue
+		}
+		out = append(out, ArtifactSection{ID: "document", Title: "document",
+			SHA256: sha256Hex(preamble), Start: 0, End: marks[0].at})
+		seen["document"] = 1
+		break
+	}
 	for i, m := range marks {
 		end := len(md)
 		if i+1 < len(marks) {
@@ -337,6 +364,11 @@ func (s *Store) staleApprovals(ctx context.Context, tx *sql.Tx, artifactID strin
 // C2, I10). Only the item's own top-level orchestrator may call it. requestID
 // is I11's idempotency key (empty means "no idempotency, just run once").
 func (s *Store) RegisterArtifact(ctx context.Context, sessionID, op, itemKey, kind, path, requestID string) (ArtifactResult, error) {
+	var err error
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return ArtifactResult{}, fmt.Errorf("artifact path: %w", err)
+	}
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return ArtifactResult{}, fmt.Errorf("artifact: %w", err)
@@ -382,6 +414,50 @@ func (s *Store) RegisterArtifact(ctx context.Context, sessionID, op, itemKey, ki
 		err = tx.QueryRowContext(ctx, `SELECT a.id, a.head_revision, r.sections_json FROM artifacts a
 			JOIN artifact_revisions r ON r.artifact_id = a.id AND r.revision = a.head_revision
 			WHERE a.item_id = ? AND a.path = ?`, it.ID, path).Scan(&artifactID, &revision, &prevSectionsJSON)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Older revisions stored the caller's relative path verbatim. Match
+			// those before inserting so revision and stale-approval history stay
+			// attached to the original artifact.
+			rows, qerr := tx.QueryContext(ctx, `SELECT id, path, head_revision FROM artifacts WHERE item_id = ? AND kind = ?`, it.ID, kind)
+			if qerr != nil {
+				return qerr
+			}
+			for rows.Next() {
+				var id, oldPath string
+				var rev int
+				if qerr = rows.Scan(&id, &oldPath, &rev); qerr != nil {
+					break
+				}
+				if filepath.IsAbs(oldPath) {
+					continue
+				}
+				oldAbs, absErr := filepath.Abs(oldPath)
+				if absErr != nil {
+					qerr = absErr
+					break
+				}
+				if oldAbs == path {
+					artifactID, revision = id, rev
+					break
+				}
+			}
+			if qerr == nil {
+				qerr = rows.Err()
+			}
+			rows.Close()
+			if qerr != nil {
+				return qerr
+			}
+			if artifactID != "" {
+				if qerr := tx.QueryRowContext(ctx, `SELECT sections_json FROM artifact_revisions WHERE artifact_id = ? AND revision = ?`, artifactID, revision).Scan(&prevSectionsJSON); qerr != nil {
+					return qerr
+				}
+				if _, qerr := tx.ExecContext(ctx, `UPDATE artifacts SET path = ? WHERE id = ?`, path, artifactID); qerr != nil {
+					return qerr
+				}
+				err = nil
+			}
+		}
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			artifactID, revision = ids.New("art"), 1

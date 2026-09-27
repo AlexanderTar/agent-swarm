@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -10,18 +13,190 @@ import (
 func TestSplitSections(t *testing.T) {
 	md := "# Title\n\nintro\n\n## Data model\n\nrows\n\n```go\n## not a heading\n```\n\n## Data model\n\nagain\n"
 	got := SplitSections(md)
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("got %d sections: %+v", len(got), got)
 	}
-	if got[0].ID != "data-model" || got[1].ID != "data-model-2" {
-		t.Fatalf("ids = %q, %q", got[0].ID, got[1].ID)
+	if got[0].ID != "document" || got[1].ID != "data-model" || got[2].ID != "data-model-2" {
+		t.Fatalf("ids = %q, %q, %q", got[0].ID, got[1].ID, got[2].ID)
 	}
-	if got[0].Title != "Data model" || got[0].SHA256 == got[1].SHA256 {
+	if got[1].Title != "Data model" || got[1].SHA256 == got[2].SHA256 {
 		t.Fatalf("sections = %+v", got)
 	}
 	one := SplitSections("just a note with no headings\n")
 	if len(one) != 1 || one[0].ID != "document" {
 		t.Fatalf("headingless file = %+v", one)
+	}
+}
+
+func TestSplitSectionsKeepsSubstantivePreamble(t *testing.T) {
+	preamble := "# Spec\n\nDecision: ship X\n\n"
+	md := preamble + "## Context\n\nBackground only.\n"
+	sections := SplitSections(md)
+	if len(sections) != 2 {
+		t.Fatalf("sections = %+v, want preamble and Context", sections)
+	}
+	if sections[0].ID != "document" || sections[0].Title != "document" ||
+		sections[0].Start != 0 || sections[0].End != len(preamble) ||
+		sections[0].SHA256 != sha256Hex(preamble) {
+		t.Fatalf("preamble section = %+v", sections[0])
+	}
+	if sections[1].Title != "Context" || sections[1].Start != len(preamble) {
+		t.Fatalf("Context section = %+v", sections[1])
+	}
+	titleOnly := SplitSections("# Spec\n\n## Context\n\nBackground only.\n")
+	if len(titleOnly) != 1 || titleOnly[0].Title != "Context" {
+		t.Fatalf("title-only preamble = %+v, want only Context", titleOnly)
+	}
+}
+
+func TestSplitSectionsGivesPreambleAndDocumentHeadingDistinctIDs(t *testing.T) {
+	sections := SplitSections("Ship X.\n\n## Document\n\nDetails.\n")
+	if len(sections) != 2 || sections[0].ID != "document" || sections[1].ID != "document-2" {
+		t.Fatalf("section IDs = %+v", sections)
+	}
+}
+
+func TestRequiredSpecSectionDefaultsToReview(t *testing.T) {
+	for _, title := range []string{"Locked decisions", "2.3. Delivery", "SECURITY", "document", "Verification",
+		"Out of scope", "2. Explicitly out of scope"} {
+		if !RequiredSpecSection(title) {
+			t.Errorf("%q must require approval", title)
+		}
+	}
+	for _, title := range []string{"Context", "2. Background", "3. FILE LIST", "References",
+		"  2.3. bIbLiOgRaPhY  ", "Files", "Work breakdown"} {
+		if RequiredSpecSection(title) {
+			t.Errorf("%q must be informational", title)
+		}
+	}
+}
+
+func TestRegisterArtifactStoresAbsolutePath(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Absolute path", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	abs := writeFile(t, "## Design\n\nDo it.\n")
+	cwd, _ := os.Getwd()
+	rel, err := filepath.Rel(cwd, abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", rel, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	art, _, err := s.ArtifactMarkdown(ctx, res.ArtifactID, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(art.Path) {
+		t.Fatalf("stored path = %q, want absolute", art.Path)
+	}
+}
+
+func TestReviseLegacyRelativeArtifactKeepsItsIdentity(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Legacy path", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	abs := writeFile(t, "## Design\n\nFirst.\n")
+	first, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", abs, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, _ := os.Getwd()
+	rel, err := filepath.Rel(cwd, abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE artifacts SET path = ? WHERE id = ?`, rel, first.ArtifactID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(abs, []byte("## Design\n\nSecond.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.RegisterArtifact(ctx, ses.ID, "revise", key, "spec", rel, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ArtifactID != first.ArtifactID || second.Revision != 2 {
+		t.Fatalf("revision = %+v, want same id and revision 2", second)
+	}
+	art, _, err := s.ArtifactMarkdown(ctx, first.ArtifactID, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if art.Path != abs {
+		t.Fatalf("migrated path = %q, want %q", art.Path, abs)
+	}
+}
+
+func TestSpecApprovalSummaryLengthAndPreservation(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Summary", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	art, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "## Design\n\nBuild it.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"   \n", strings.Repeat("é", 1001)} {
+		if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: bad}); err == nil {
+			t.Errorf("accepted invalid summary of %d runes", len([]rune(bad)))
+		}
+	}
+	table := "| Part | Delivery |\n|---|---|\n| API | Search |"
+	summary := table + strings.Repeat("é", 1000-len([]rune(table)))
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: summary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Prompt != summary {
+		t.Fatalf("summary altered: %q", req.Prompt)
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.relayRequestTx(ctx, tx, req.ID) }); err != nil {
+		t.Fatal(err)
+	}
+	var raw string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE request_id = ?
+		AND kind = 'relay' ORDER BY rowid DESC LIMIT 1`, req.ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var relay struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(raw), &relay); err != nil {
+		t.Fatal(err)
+	}
+	if relay.Summary != summary {
+		t.Fatalf("relay summary altered: %q", relay.Summary)
+	}
+}
+
+func TestInformationalSpecSectionCannotOpenApproval(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Info section", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	art, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "## Context\n\nWhy this exists.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: "Why this exists."}); err == nil {
+		t.Fatal("informational section opened an approval")
 	}
 }
 

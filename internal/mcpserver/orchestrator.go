@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -22,12 +24,64 @@ import (
 var orchestratorRole = []runtime.Role{runtime.RoleOrchestrator}
 
 func orchestratorTools(s *Server) []ToolDef {
-	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s), catalogTool(s), workflowTool(s)}
+	return []ToolDef{itemsTool(s), artifactTool(s), reposTool(s), registerRepoTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s), catalogTool(s), workflowTool(s)}
 }
 
-// §17.3 copy owned by this file.
-func repoNotConfirmed(name, rootKey string) error {
-	return fmt.Errorf(`repo_not_confirmed: %s is not confirmed for %s. Ask with swarm_ask kind "confirm_repos".`, name, rootKey)
+func registerRepoTool(s *Server) ToolDef {
+	return ToolDef{
+		Name: "swarm_repo_register", Description: "Register a local Git repository path in the catalog so worktrees and plans can use it.",
+		Roles: orchestratorRole, Schema: objSchemaRequired(`"path":{"type":"string"}`, []string{"path"}),
+		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
+			var in struct {
+				Path string `json:"path"`
+			}
+			if err := decode(args, &in); err != nil {
+				return nil, err
+			}
+			if _, err := callerAgent(ctx, s, c); err != nil {
+				return nil, err
+			}
+			r, err := s.RT.Repos.AddManual(ctx, in.Path)
+			if err != nil {
+				return nil, fmt.Errorf("repository registration: %w", err)
+			}
+			return map[string]any{"id": r.ID, "name": r.Name, "path": r.Path}, nil
+		},
+	}
+}
+
+func reposTool(s *Server) ToolDef {
+	return ToolDef{
+		Name:        "swarm_repos",
+		Description: "Optionally update the repository hints on your root item. Pass the current repos_version from swarm_read; active worktrees prevent dropping a hint.",
+		Roles:       orchestratorRole,
+		Schema:      objSchemaRequired(`"repos":{"type":"array","items":{"type":"string"}},"repos_version":{"type":"integer"}`, []string{"repos", "repos_version"}),
+		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
+			var in struct {
+				Repos        []string `json:"repos"`
+				ReposVersion int      `json:"repos_version"`
+			}
+			if err := decode(args, &in); err != nil {
+				return nil, err
+			}
+			a, err := callerAgent(ctx, s, c)
+			if err != nil {
+				return nil, err
+			}
+			key, err := rootKeyFor(ctx, s, a.RootItemID)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.RT.SetItemRepos(ctx, key, in.Repos, in.ReposVersion); err != nil {
+				return nil, err
+			}
+			root, err := s.RT.Items.Get(ctx, key)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"repos": root.Repos, "repos_version": root.ReposVersion}, nil
+		},
+	}
 }
 
 func dependenciesOpen(keys []string) error {
@@ -380,19 +434,6 @@ func repoNameAndPath(ctx context.Context, s *Server, repoID string) (name, path 
 	return name, path, err
 }
 
-func isConfirmed(ctx context.Context, s *Server, rootID, repoID string) (bool, error) {
-	confirmed, err := s.RT.ConfirmedRepos(ctx, rootID)
-	if err != nil {
-		return false, err
-	}
-	for _, r := range confirmed {
-		if r.ID == repoID {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 // worktreeOut is §8.1's one documented result shape for the whole tool -
 // {worktree_id,path,branch,base_sha,state} - used by every op that has a
 // worktree.Worktree to hand back (fix round 2, item 5).
@@ -404,7 +445,7 @@ func worktreeOut(wt worktree.Worktree) map[string]any {
 func worktreeTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_worktree",
-		Description: "Create, share, review, release or remove a git worktree for a repo confirmed on your top-level item.",
+		Description: "Create or review a Git worktree using a catalog repository id or local Git repository path; also share, release or remove it.",
 		Roles:       orchestratorRole,
 		Schema: objSchemaRequired(`"op":{"type":"string","enum":["create","share","review","release","remove"]},
 			"repo":{"type":"string"},"branch":{"type":"string"},"base":{"type":"string"},
@@ -430,10 +471,6 @@ func worktreeTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			rootKey, err := rootKeyFor(ctx, s, a.RootItemID)
-			if err != nil {
-				return nil, err
-			}
 			// create/review/share/remove each have a real external side
 			// effect (a git subprocess, or -- for share -- a DB write gated
 			// by a mutex that cannot safely nest inside a shared SQL
@@ -451,16 +488,23 @@ func worktreeTool(s *Server) ToolDef {
 			// safety.
 			switch in.Op {
 			case "create", "review":
-				name, path, err := repoNameAndPath(ctx, s, in.Repo)
-				if err != nil {
-					return nil, err
+				// Catalog ids are opaque; paths can be absolute, contain a
+				// separator, or be a bare existing directory relative to the
+				// daemon's working directory.
+				_, pathErr := os.Stat(in.Repo)
+				if filepath.IsAbs(in.Repo) || strings.ContainsRune(in.Repo, os.PathSeparator) || pathErr == nil {
+					r, err := s.RT.Repos.AddManual(ctx, in.Repo)
+					if err != nil {
+						return nil, fmt.Errorf("repository path: %w", err)
+					}
+					in.Repo = r.ID
 				}
-				ok, err := isConfirmed(ctx, s, a.RootItemID, in.Repo)
+				_, path, err := repoNameAndPath(ctx, s, in.Repo)
 				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return nil, fmt.Errorf("unknown repository %q; register a local Git path with swarm_repo_register", in.Repo)
+					}
 					return nil, err
-				}
-				if !ok {
-					return nil, repoNotConfirmed(name, rootKey)
 				}
 				var wt worktree.Worktree
 				if hit, err := runtime.PeekIdempotent(ctx, s.RT, c.SessionID, in.RequestID, &wt); err != nil {

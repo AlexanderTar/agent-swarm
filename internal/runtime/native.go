@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
@@ -162,13 +165,12 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 
 // NativePromptNextStep is the show-and-forward instruction that rides with
 // every daemon-issued native prompt: swarm_ask's result (mcpserver
-// requestOut) and the request_open relay share it verbatim (2026-09-26
-// epic-approval-lane; text unchanged from the native-railway-tracing fix).
+// requestOut) and the request_open relay share it verbatim.
 func NativePromptNextStep(ref string) string {
-	return fmt.Sprintf("Print the summary in chat first, not in the question. Then show native_prompt "+
+	return fmt.Sprintf("Print the request summary in chat first (use summary exactly when supplied), not in the question. For a plan print full absolute review_paths.spec and review_paths.plan immediately before asking. Then show native_prompt "+
 		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
 		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
-		"forwarding only what the user picked, never a decision they did not make.", ref)
+		"forwarding only what the user picked. Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion and Muse request_user_input must include answer_text exactly as returned by the native tool; this has agent_reported provenance. On cancellation or no returned answer, submit nothing and leave the request open.", ref)
 }
 
 // storedNativePromptTx rebuilds a stored approval's native prompt exactly as
@@ -190,6 +192,39 @@ func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Reques
 		json.Unmarshal([]byte(raw), &warnings)
 	}
 	return s.nativePromptFor(ctx, tx, req, title, warnings)
+}
+
+func (s *Store) planReviewPathsTx(ctx context.Context, tx *sql.Tx, itemID, planID string) (ReviewPaths, string, error) {
+	var paths ReviewPaths
+	var specID string
+	if err := tx.QueryRowContext(ctx, `SELECT id, path FROM artifacts WHERE item_id = ? AND kind = 'spec' ORDER BY created_at DESC, id DESC LIMIT 1`, itemID).Scan(&specID, &paths.Spec); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			var intent string
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(spike_intent, '') FROM items WHERE id = ?`, itemID).Scan(&intent); err != nil {
+				return paths, "", err
+			}
+			if intent != "chore" { // legacy chore spikes have a plan but no spec
+				return paths, "", fmt.Errorf("approval_missing: register and approve the spec before asking to approve the plan")
+			}
+		} else {
+			return paths, "", err
+		}
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT path FROM artifacts WHERE id = ?`, planID).Scan(&paths.Plan); err != nil {
+		return paths, "", err
+	}
+	var err error
+	if specID != "" {
+		paths.Spec, err = filepath.Abs(paths.Spec)
+		if err != nil {
+			return paths, "", err
+		}
+	}
+	paths.Plan, err = filepath.Abs(paths.Plan)
+	if err != nil {
+		return paths, "", err
+	}
+	return paths, specID, nil
 }
 
 // NativeAnswerNextStep is the PostToolUse hook's instruction once a native
@@ -368,12 +403,24 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "ref is required."}
 	}
 	var rowID, responseText, callerID string
+	var reported bool
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
 		}
 		callerID = a.ID
+		reported = a.Kind == Cursor || a.Kind == Muse
+		if reported {
+			if strings.TrimSpace(in.AnswerText) == "" || in.AnswerText == ResolvedInTerminal {
+				return &items.Error{Code: items.CodeBadRequest, Message: "answer_text must contain the exact nonempty native tool answer; a cancelled question cannot be submitted."}
+			}
+			responseText = in.AnswerText
+			return nil
+		}
+		if in.AnswerText != "" {
+			return &items.Error{Code: items.CodeBadRequest, Message: "answer_text is only for Cursor and Muse."}
+		}
 		if strings.HasPrefix(in.Ref, "msg_") {
 			if err := requireNativeApprovalHook(a, in.Ref); err != nil {
 				return err
@@ -390,9 +437,19 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if err != nil {
 		return Request{}, err
 	}
-	evidence, comment, err := matchDecisionEvidence(responseText, label, in.Comment)
+	callerComment := in.Comment
+	if reported {
+		callerComment = "" // the reported tool answer is the only source of user text
+	}
+	evidence, comment, err := matchDecisionEvidence(responseText, label, callerComment)
 	if err != nil {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
+	}
+	if reported {
+		if in.Comment != "" && in.Comment != comment {
+			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "comment does not match answer_text."}
+		}
+		evidence = EvidenceAgentReported
 	}
 	// RequestChanges' own length cap, reapplied here (Task 13c): nativeAnswer
 	// builds the changes_requested result with s.resolve directly (so the
@@ -406,6 +463,12 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	// ConfirmRepos's own), right after the UPDATE: the audit record's (a)
 	// (spec 2.3.6) lands atomically with (b), the result message's payload.
 	bindEvidence := func(tx *sql.Tx, _ Request) error {
+		if reported {
+			_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'),
+				'$.evidence', ?, '$.answer_text', ?, '$.answer_source', 'native_tool_report') WHERE id = ?`,
+				evidence, in.AnswerText, in.Ref)
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `UPDATE requests SET
 			binding_json = json_set(COALESCE(binding_json, '{}'), '$.evidence', ?) WHERE id = ?`,
 			evidence, rowID)
@@ -421,7 +484,7 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 		if err := s.verifyApprovalMsgAddressedTo(ctx, in.Ref, callerID); err != nil {
 			return Request{}, err
 		}
-		return s.nativeAnswerForMsg(ctx, in.Ref, in.Decision, comment, evidence, rowID, bindEvidence)
+		return s.nativeAnswerForMsg(ctx, sessionID, callerID, in.Ref, in.Decision, comment, evidence, rowID, in.AnswerText, bindEvidence)
 	}
 
 	req, err := s.RequestByID(ctx, in.Ref)
@@ -508,7 +571,7 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 // question row itself is the approval record, so it moves from "answered"
 // straight to "approved" or "changes_requested", and the daemon tells the
 // child directly with an approval_result reply.
-func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment, evidence, rowID string,
+func (s *Store) nativeAnswerForMsg(ctx context.Context, sessionID, callerID, msgID, decision, comment, evidence, rowID, answerText string,
 	bindEvidence func(*sql.Tx, Request) error) (Request, error) {
 	newState := "approved"
 	if decision == "request_changes" {
@@ -526,7 +589,7 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment
 		// rowID at all.
 		var x int
 		err := tx.QueryRowContext(ctx, `SELECT 1 FROM messages
-			WHERE kind = 'approval_result' AND reply_to = ? LIMIT 1`, msgID).Scan(&x)
+			WHERE kind IN ('approval_result', 'answer') AND reply_to = ? LIMIT 1`, msgID).Scan(&x)
 		if err == nil {
 			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
 		}
@@ -542,6 +605,28 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		if answerText != "" {
+			var itemID, body, fromName string
+			if err := tx.QueryRowContext(ctx, `SELECT m.item_id, json_extract(m.payload_json, '$.body'), a.name
+				FROM messages m JOIN agents a ON a.id = m.from_agent_id WHERE m.id = ?`, msgID).
+				Scan(&itemID, &body, &fromName); err != nil {
+				return err
+			}
+			rowID = ids.New("req")
+			binding, err := json.Marshal(map[string]string{"ref": msgID, "evidence": evidence,
+				"answer_text": answerText, "answer_source": "native_tool_report"})
+			if err != nil {
+				return err
+			}
+			prompt := nativePromptForMsg(fromName, body, msgID)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, is_hitl, agent_id, session_id, item_id,
+				prompt, options_json, state, binding_json, response_text, responded_via, responded_at, created_at)
+				VALUES (?, 'question', 1, ?, ?, ?, ?, ?, 'answered', ?, ?, 'terminal', ?, ?)`, rowID, callerID,
+				sessionID, itemID, prompt.Question, jsonArray(prompt.Options), string(binding), answerText,
+				db.Millis(s.Now()), db.Millis(s.Now())); err != nil {
+				return err
+			}
+		}
 
 		res, err := tx.ExecContext(ctx, `UPDATE requests SET state = ? WHERE id = ? AND state = 'answered'`,
 			newState, rowID)
@@ -551,8 +636,10 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, msgID, decision, comment
 		if n, _ := res.RowsAffected(); n == 0 {
 			return &items.Error{Code: items.CodeConflict, Message: "Already resolved."}
 		}
-		if err := bindEvidence(tx, Request{}); err != nil {
-			return err
+		if answerText == "" {
+			if err := bindEvidence(tx, Request{}); err != nil {
+				return err
+			}
 		}
 		var fromAgentID, rootItemID, itemID string
 		if err := tx.QueryRowContext(ctx, `SELECT from_agent_id, root_item_id, item_id FROM messages
@@ -616,9 +703,6 @@ func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in 
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
-			return err
-		}
-		if err := requireNativeApprovalHook(a, in.ForMsg); err != nil {
 			return err
 		}
 		var fromName, body string

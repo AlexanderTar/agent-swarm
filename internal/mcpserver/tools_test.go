@@ -888,6 +888,26 @@ func TestAskToolSchemaRequiresKind(t *testing.T) {
 	}
 }
 
+func TestAskNativeAnswerTextSchema(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	for _, d := range s.ToolsFor(seed.Caller) {
+		if d.Name != "swarm_ask" {
+			continue
+		}
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(d.Schema, &schema); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := schema.Properties["answer_text"]; !ok {
+			t.Fatal("swarm_ask must expose answer_text")
+		}
+		return
+	}
+	t.Fatal("swarm_ask missing")
+}
+
 // Every shared tool must declare what it actually needs: clients that
 // validate arguments before sending can only see the schema, so an omitted
 // `required` turns every missing field into a runtime round-trip. sync/read
@@ -1012,61 +1032,11 @@ func TestAskToolDescriptionSaysItReturnsAtOnce(t *testing.T) {
 // TestAskConfirmReposResultHasNativePrompt is Task 13a: swarm_ask's approval
 // and confirm_repos results carry the daemon-issued native_prompt next to
 // request_id, so the orchestrator can show it verbatim.
-func TestAskConfirmReposResultHasNativePrompt(t *testing.T) {
+func TestAskConfirmReposMCPIsRefused(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
-	ctx := context.Background()
-	out, err := s.call(ctx, seed.Caller, "swarm_ask",
-		`{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+seed.RepoID+`","reason":"needed"}]}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var res struct {
-		RequestID    string `json:"request_id"`
-		NativePrompt struct {
-			Header   string   `json:"header"`
-			Question string   `json:"question"`
-			Options  []string `json:"options"`
-		} `json:"native_prompt"`
-	}
-	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
-		t.Fatal(err)
-	}
-	if res.NativePrompt.Header != "Repositories" || res.NativePrompt.Question == "" ||
-		!strings.Contains(res.NativePrompt.Question, res.RequestID) {
-		t.Fatalf("result = %+v, %s", res, mustJSON(out))
-	}
-	if len(res.NativePrompt.Options) != 2 {
-		t.Fatalf("options = %v", res.NativePrompt.Options)
-	}
-}
-
-// TestAskResultWithNativePromptCarriesNextStep is the 2026-09-26 fix
-// (native-railway-tracing finding): a result with native_prompt must also
-// say what to do once it's answered, or an orchestrator with a stale skill
-// binds the answer and never forwards it.
-func TestAskResultWithNativePromptCarriesNextStep(t *testing.T) {
-	s, seed := newOrchestratorServer(t)
-	ctx := context.Background()
-	out, err := s.call(ctx, seed.Caller, "swarm_ask",
-		`{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+seed.RepoID+`","reason":"needed"}]}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var res struct {
-		RequestID string `json:"request_id"`
-		Next      string `json:"next"`
-	}
-	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(res.Next, `native_answer`) || !strings.Contains(res.Next, res.RequestID) {
-		t.Fatalf("next = %q, want it to mention native_answer and the ref %q", res.Next, res.RequestID)
-	}
-	if !strings.Contains(res.Next, "summary in chat") {
-		t.Fatalf("next = %q, want it to say to print the summary in chat first", res.Next)
-	}
-	if !strings.Contains(res.Next, "only what the user picked") {
-		t.Fatalf("next = %q, want it to say to forward only what the user picked", res.Next)
+	_, err := s.call(context.Background(), seed.Caller, "swarm_ask", `{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+seed.RepoID+`","reason":"needed"}]}`)
+	if err == nil || !strings.Contains(err.Error(), "no longer used") {
+		t.Fatalf("new confirmation ask = %v", err)
 	}
 }
 
@@ -1109,46 +1079,5 @@ func TestAskNativePromptForMsgMCP(t *testing.T) {
 	if !strings.Contains(res.NativePrompt.Question, "may I drop table x?") ||
 		!strings.Contains(res.NativePrompt.Question, sendRes.MsgID) {
 		t.Fatalf("native_prompt = %+v", res)
-	}
-}
-
-// TestAskNativeAnswerMCP is Task 13c: swarm_ask kind:"native_answer"
-// forwards an observed decision through the MCP surface.
-func TestAskNativeAnswerMCP(t *testing.T) {
-	s, seed := newOrchestratorServer(t)
-	ctx := context.Background()
-	repoID := seed.RepoID
-	out, err := s.call(ctx, seed.Caller, "swarm_ask",
-		`{"kind":"confirm_repos","prompt":"Confirm repos","repos":[{"repo":"`+repoID+`","reason":"needed"}]}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var res struct {
-		RequestID    string `json:"request_id"`
-		NativePrompt struct {
-			Question string   `json:"question"`
-			Options  []string `json:"options"`
-		} `json:"native_prompt"`
-	}
-	json.Unmarshal(mustJSON(out), &res)
-
-	if _, err := s.RT.AskQuestion(ctx, seed.Caller.SessionID, res.NativePrompt.Question, res.NativePrompt.Options); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RT.ResolveQuestionByPrompt(ctx, seed.Caller.SessionID, res.NativePrompt.Question, "Approve"); err != nil {
-		t.Fatal(err)
-	}
-
-	out2, err := s.call(ctx, seed.Caller, "swarm_ask",
-		`{"kind":"native_answer","ref":"`+res.RequestID+`","decision":"approve"}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var res2 struct {
-		State string `json:"state"`
-	}
-	json.Unmarshal(mustJSON(out2), &res2)
-	if res2.State != "approved" {
-		t.Fatalf("state = %q, want approved", res2.State)
 	}
 }

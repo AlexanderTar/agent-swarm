@@ -2,13 +2,160 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
+
+func TestSpecSectionRequestAndMaterializationGateAgree(t *testing.T) {
+	for _, tc := range []struct {
+		title    string
+		required bool
+	}{
+		{"Context", false}, {"2. BACKGROUND", false}, {"2.3. Bibliography", false},
+		{"References", false}, {"File list", false}, {"FILES", false},
+		{"3. Work breakdown", false}, {"Out of scope", true},
+		{"2. Explicitly out of scope", true}, {"Unlisted decision", true},
+		{"", true},
+	} {
+		name := tc.title
+		if name == "" {
+			name = "headingless"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Review", Intent: "feature", Kind: Fake, Model: "fake-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ses, err := s.LatestSession(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := "A decision.\n"
+			if tc.title != "" {
+				body = "## " + tc.title + "\n\nA decision.\n"
+			}
+			spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, body), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			section := spec.Sections[0]
+			req, askErr := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+				SectionID: section.ID, Prompt: "Review this decision."})
+			if (askErr == nil) != tc.required {
+				t.Fatalf("section ask error = %v, required = %v", askErr, tc.required)
+			}
+			gate := func() error {
+				return s.tx(ctx, func(tx *sql.Tx) error {
+					return s.checkEverySectionApproved(ctx, tx, spec.ArtifactID)
+				})
+			}
+			if err := gate(); (err != nil) != tc.required {
+				t.Fatalf("materialization gate error = %v, required = %v", err, tc.required)
+			}
+			if tc.required {
+				if _, err := s.Approve(ctx, req.ID, ApproveInput{SectionSHA256: section.SHA256,
+					ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+					t.Fatal(err)
+				}
+				if err := gate(); err != nil {
+					t.Fatalf("approved section blocked materialization: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestHeadinglessPreambleBlocksPlanReviewUntilApproved(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Preamble decision", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
+		writeFile(t, "Decision: ship X\n\n## Context\n\nWhy it matters.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, planBody), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Sections) != 2 || spec.Sections[0].ID != "document" {
+		t.Fatalf("registered sections = %+v", spec.Sections)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: plan.ArtifactID,
+		Prompt: "Ship the plan."}); err == nil || !strings.Contains(err.Error(), "approval_missing: section") {
+		t.Fatalf("plan review accepted an unapproved preamble: %v", err)
+	}
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+		SectionID: spec.Sections[0].ID, Prompt: "Ship X."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, req.ID, ApproveInput{SectionSHA256: spec.Sections[0].SHA256,
+		ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: plan.ArtifactID,
+		Prompt: "Ship the plan."}); err != nil {
+		t.Fatalf("plan review stayed blocked after preamble approval: %v", err)
+	}
+}
+
+func TestRevisedSectionNeedsNewApprovalBeforePlanReviewAndMaterialization(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	art, _, err := s.ArtifactMarkdown(ctx, specID, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(art.Path, []byte("# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ntokens\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	revised, err := s.RegisterArtifact(ctx, ses.ID, "revise", "SPIKE-1", "spec", art.Path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID,
+		Prompt: "Ship the plan."}); err == nil || !strings.Contains(err.Error(), "approval_missing") {
+		t.Fatalf("plan review opened without revised section approval: %v", err)
+	}
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", ""); err == nil ||
+		!strings.Contains(err.Error(), "approval_missing: section") {
+		t.Fatalf("materialization accepted the old section hash: %v", err)
+	}
+	section := revised.Sections[1]
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: specID,
+		SectionID: section.ID, Prompt: "Ship token auth."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, req.ID, ApproveInput{SectionSHA256: section.SHA256,
+		ArtifactRevision: revised.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID,
+		Prompt: "Ship the plan."}); err != nil {
+		t.Fatalf("plan review stayed blocked after renewed approval: %v", err)
+	}
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", ""); err != nil {
+		t.Fatalf("materialization stayed blocked after renewed approval: %v", err)
+	}
+}
 
 // approvedFeatureSpike sets up a spike with one confirmed repo "chat", an approved
 // spec (2 sections) and an approved plan carrying planBody's tree, and returns the
@@ -31,16 +178,7 @@ func approvedFeatureSpike(t *testing.T, s *Store) (ses Session, specID, planID, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Confirm the repo the plan's tasks name, through the real path, so
-	// confirmed_repos_json holds an id and the tree holds the name (D49).
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []ReposProposal{{Repo: repo, Reason: "the API lives here"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
+	// The repo selected at spike creation is already available to the plan.
 	const specBody = "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"
 	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, specBody), "")
 	if err != nil {
@@ -56,6 +194,9 @@ func approvedFeatureSpike(t *testing.T, s *Store) (ses Session, specID, planID, 
 	// returns ArtifactResult{ArtifactID, Revision, Sections, StaleRequests}, and
 	// Approve takes an ApproveInput — not a positional comment/via/sha/revision list.
 	for _, sec := range spec.Sections {
+		if !RequiredSpecSection(sec.Title) {
+			continue
+		}
 		r, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
 			SectionID: sec.ID, Prompt: "Approve " + sec.Title + "."})
 		if err != nil {
@@ -90,14 +231,6 @@ func approvedDebugSpike(t *testing.T, s *Store) (ses Session, reportID string) {
 	}
 	ses, err = s.LatestSession(ctx, a.ID)
 	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []ReposProposal{{Repo: repo, Reason: "the crash is here"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	report, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "debug_report", writeFile(t, reportBody), "")
@@ -208,7 +341,7 @@ func TestMaterializeRefusesAMissingApproval(t *testing.T) {
 	ses, specID, planID, _ := approvedFeatureSpike(t, s)
 	// stale one section's approval by editing it
 	s.DB.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE kind = 'approve_section'
-		AND id = (SELECT id FROM requests WHERE kind = 'approve_section' LIMIT 1)`)
+		AND section_id = 'decisions'`)
 	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
 	if err == nil || !strings.HasPrefix(err.Error(), "approval_missing: section ") {
 		t.Fatalf("err = %v", err)
@@ -243,18 +376,81 @@ func TestMaterializeRefusesAMissingPlanFile(t *testing.T) {
 	}
 }
 
-func TestMaterializeRefusesAnUnconfirmedRepoInATask(t *testing.T) {
+func TestMaterializeUsesCatalogRepoOutsideStartingHint(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	ses, specID, planID, _ := approvedFeatureSpike(t, s)
 	// planBody's tasks name repo "chat"; confirm a different one
 	other := seedRepo(t, s, "app")
+	var repo string
+	if err := s.DB.QueryRowContext(ctx, `SELECT id FROM repos WHERE name = 'chat'`).Scan(&repo); err != nil {
+		t.Fatal(err)
+	}
 	s.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = ? WHERE key = 'SPIKE-1'`,
 		`["`+other+`"]`)
+	result, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.Items.Get(ctx, result.Created[len(result.Created)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(task.Repos, repo) {
+		t.Fatalf("task repository ids = %v, want %s", task.Repos, repo)
+	}
+}
+
+func TestMaterializeRejectsAmbiguousCatalogRepoName(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	seedRepo(t, s, "chat")
 	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
-	if err == nil || !strings.HasPrefix(err.Error(), "tree_invalid: TASK ") ||
-		!strings.HasSuffix(err.Error(), " uses an unconfirmed repo") {
-		t.Fatalf("err = %v", err)
+	if err == nil || !strings.Contains(err.Error(), `repository name "chat" is ambiguous`) {
+		t.Fatalf("ambiguous repository = %v", err)
+	}
+}
+
+func TestMaterializeRejectsUnregisteredCatalogRepoName(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	tree, err := ParseTree(planBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spike, err := s.Items.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Spike", SpikeIntent: "feature"}, items.Daemon())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	_, err = s.createTree(ctx, tx, spike, tree, items.Epic)
+	if err == nil || !strings.Contains(err.Error(), `repository "chat" is not registered`) || !strings.Contains(err.Error(), "swarm_repo_register") {
+		t.Fatalf("unregistered repository = %v", err)
+	}
+}
+
+func TestMaterializeAdoptsLegacySelectedReposWithoutWorktreeAccess(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = '[]', repos_version = 0 WHERE key = 'SPIKE-1'`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := s.Items.Get(ctx, out.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Repos) != 1 {
+		t.Fatalf("materialized repos = %v, want selected repo", root.Repos)
 	}
 }
 
@@ -357,14 +553,6 @@ func TestMaterializeRefusesARootTypeMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []ReposProposal{{Repo: repo, Reason: "x"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
 	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
 	if err != nil {
 		t.Fatal(err)
@@ -410,14 +598,6 @@ func TestMaterializePropagatesTddExempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []ReposProposal{{Repo: repo, Reason: "x"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
 	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
 	if err != nil {
 		t.Fatal(err)
@@ -473,6 +653,7 @@ func TestFeatureSpikeNeedsBothArtifacts(t *testing.T) {
 func TestMaterializeCopiesWorkflowUnitsVerify(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
+	seedRepo(t, s, "chat")
 	tree, err := ParseTree(planBody)
 	if err != nil {
 		t.Fatal(err)
@@ -507,6 +688,7 @@ func TestMaterializeCopiesWorkflowUnitsVerify(t *testing.T) {
 func TestMaterializeDerivesRoleHint(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
+	seedRepo(t, s, "chat")
 	tree, err := ParseTree(planBody)
 	if err != nil {
 		t.Fatal(err)
@@ -573,14 +755,6 @@ func TestMaterializeLegacyChoreSpike(t *testing.T) {
 	}
 	ses, err := s.LatestSession(ctx, a.ID)
 	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []ReposProposal{{Repo: repo, Reason: "the deps live here"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, choreTreeBody), "")

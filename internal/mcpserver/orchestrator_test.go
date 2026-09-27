@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -91,21 +94,186 @@ func TestSpawnRefusesOpenDependencies(t *testing.T) {
 }
 
 // §17.3: a worktree in an unconfirmed repo.
-func TestWorktreeCreateNeedsAConfirmedRepo(t *testing.T) {
+func TestWorktreeCreateUsesCatalogRepoOutsideStartingHint(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
 	unconfirmed := seedRepoIn(t, s, "other-repo")
 	_, err := s.call(ctx, seed.Caller, "swarm_worktree",
 		`{"op":"create","repo":"`+unconfirmed+`","branch":"task/x"}`)
-	want := "repo_not_confirmed: other-repo is not confirmed for " + seed.RootKey +
-		`. Ask with swarm_ask kind "confirm_repos".`
-	if err == nil || err.Error() != want {
-		t.Fatalf("err = %v\nwant %q", err, want)
+	if err != nil {
+		t.Fatalf("catalog repo outside starting hint: %v", err)
 	}
-	// after confirming, it works
-	confirmRepo(t, s, seed.RootKey, unconfirmed)
-	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
-		`{"op":"create","repo":"`+unconfirmed+`","branch":"task/x"}`); err != nil {
+	// The orchestrator expands scope without a second user approval.
+	root, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.call(ctx, seed.Caller, "swarm_repos", fmt.Sprintf(`{"repos":[%q,%q],"repos_version":%d}`, seed.RepoID, unconfirmed, root.ReposVersion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var approvals int
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE item_id = ? AND kind = 'confirm_repos'`, root.ID).Scan(&approvals); err != nil {
+		t.Fatal(err)
+	}
+	if approvals != 0 {
+		t.Fatalf("repository change opened %d confirmation requests", approvals)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_repos", fmt.Sprintf(`{"repos":[%q],"repos_version":%d}`, seed.RepoID, root.ReposVersion)); err == nil {
+		t.Fatal("stale repository version was accepted")
+	}
+	latest, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_repos", fmt.Sprintf(`{"repos":[%q],"repos_version":%d}`, seed.RepoID, latest.ReposVersion)); err == nil || !strings.Contains(err.Error(), "active worktrees") {
+		t.Fatalf("dropping busy repo: %v", err)
+	}
+}
+
+func TestRegisterLocalRepoAndCreateWorktreeWithoutChangingHint(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	path := gitRepoWithCommit(t)
+	out, err := s.call(ctx, seed.Caller, "swarm_repo_register", fmt.Sprintf(`{"path":%q}`, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repo struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &repo); err != nil {
+		t.Fatal(err)
+	}
+	if repo.ID == "" {
+		t.Fatal("registration returned no catalog id")
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/local"}`, path)); err != nil {
+		t.Fatal(err)
+	}
+	root, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(root.Repos, repo.ID) {
+		t.Fatalf("registration changed starting hint: %v", root.Repos)
+	}
+	bad := t.TempDir()
+	if _, err := s.call(ctx, seed.Caller, "swarm_repo_register", fmt.Sprintf(`{"path":%q}`, bad)); err == nil || !strings.Contains(err.Error(), "No git repository") {
+		t.Fatalf("non-repository registration = %v", err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/bad"}`, bad)); err == nil || !strings.Contains(err.Error(), "No git repository") {
+		t.Fatalf("non-repository worktree = %v", err)
+	}
+}
+
+func TestLinkedGitWorktreePathRegistersAndCreatesFromMainRepository(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	main := gitRepoWithCommit(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	cmd := exec.Command("git", "-C", main, "worktree", "add", "-b", "linked", linked)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create linked Git worktree: %v: %s", err, out)
+	}
+	mainOut, err := s.call(ctx, seed.Caller, "swarm_repo_register", fmt.Sprintf(`{"path":%q}`, main))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mainRepo struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(mustJSON(mainOut), &mainRepo); err != nil {
+		t.Fatal(err)
+	}
+	linkedOut, err := s.call(ctx, seed.Caller, "swarm_repo_register", fmt.Sprintf(`{"path":%q}`, linked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var linkedRepo struct {
+		ID   string `json:"id"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(mustJSON(linkedOut), &linkedRepo); err != nil {
+		t.Fatal(err)
+	}
+	canonicalMain, err := filepath.EvalSymlinks(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkedRepo.ID != mainRepo.ID || linkedRepo.Path != canonicalMain {
+		t.Fatalf("linked registration = %+v; main ID = %q", linkedRepo, mainRepo.ID)
+	}
+	wtOut, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/from-linked"}`, linked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(wtOut), &wt); err != nil {
+		t.Fatal(err)
+	}
+	var repoID string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT repo_id FROM worktrees WHERE id = ?`, wt.WorktreeID).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	if repoID != mainRepo.ID {
+		t.Fatalf("created worktree repo ID = %q, want %q", repoID, mainRepo.ID)
+	}
+}
+
+func TestWorktreeCreateRegistersRelativeLocalGitPath(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	path := gitRepoWithCommit(t)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.IsAbs(relative) {
+		t.Fatalf("test path is absolute: %s", relative)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"create","repo":%q,"branch":"task/relative"}`, relative))
+	if err != nil {
+		t.Fatalf("relative Git path %q: %v", relative, err)
+	}
+	var wt struct {
+		WorktreeID string `json:"worktree_id"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &wt); err != nil {
+		t.Fatal(err)
+	}
+	if wt.WorktreeID == "" {
+		t.Fatal("relative path created no worktree")
+	}
+	var repoID string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT repo_id FROM worktrees WHERE id = ?`, wt.WorktreeID).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	if repoID == "" {
+		t.Fatal("worktree has no registered catalog repository")
+	}
+}
+
+func TestWorktreeReviewUsesCatalogRepoOutsideStartingHint(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	id := seedRepoIn(t, s, "review-repo")
+	_, path, err := repoNameAndPath(ctx, s, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.call(ctx, seed.Caller, "swarm_worktree", fmt.Sprintf(`{"op":"review","repo":%q,"branch":"review/outside","sha":%q}`, id, strings.TrimSpace(string(sha))))
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1424,14 +1592,6 @@ func TestMaterializeToolResultUsesSnakeCaseKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []runtime.ReposProposal{{Repo: repo, Reason: "it's the only one"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
 	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
 		writeSpec(t, "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"), "")
 	if err != nil {
@@ -1442,6 +1602,9 @@ func TestMaterializeToolResultUsesSnakeCaseKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sec := range spec.Sections {
+		if !runtime.RequiredSpecSection(sec.Title) {
+			continue
+		}
 		r, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
 			SectionID: sec.ID, Prompt: "Approve " + sec.Title + "."})
 		if err != nil {
@@ -1496,14 +1659,6 @@ func TestMaterializeRequestIDReplaysInsteadOfMaterializingTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []runtime.ReposProposal{{Repo: repo, Reason: "it's the only one"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
 	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
 		writeSpec(t, "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"), "")
 	if err != nil {
@@ -1514,6 +1669,9 @@ func TestMaterializeRequestIDReplaysInsteadOfMaterializingTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sec := range spec.Sections {
+		if !runtime.RequiredSpecSection(sec.Title) {
+			continue
+		}
 		r, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
 			SectionID: sec.ID, Prompt: "Approve " + sec.Title + "."})
 		if err != nil {
