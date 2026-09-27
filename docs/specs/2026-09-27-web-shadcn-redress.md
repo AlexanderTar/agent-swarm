@@ -34,7 +34,8 @@
 13. **Agent Effort row stays conditional** (shown only when `effortOptions` returns options), placed under the Agent row, aligned to the Model column. **No Advisor Effort row** — codex is still changing its semantics on its branch; follow-up after merge.
 14. **Worker roles** (`AgentFields` `<details>`) becomes a shadcn `Collapsible`, closed by default; each role uses the same grid as the agent rows.
 15. **Tests are ported, never deleted,** except the three intentionally obsolete behaviours listed under File list → Deleted.
-16. `ui/*.tsx` files are generated vendor code: no direct unit tests (coverage already counts only `src/**/*.ts`), but biome lints them. Behaviour is covered through the feature tests that render them.
+16. **Fonts: Onest (UI) + Fragment Mono (keys, paths).** Chosen by the user on 2026-09-27 from a Google Fonts comparison; self-hosted through Fontsource.
+17. `ui/*.tsx` files are generated vendor code: no direct unit tests (coverage already counts only `src/**/*.ts`), but biome lints them. Behaviour is covered through the feature tests that render them.
 
 **Assumptions.** The repo response shape (`ReposResponse { recent, groups, all, scanning, scanned_at }`) is unchanged by codex's branch (its plan says "keep the wire format"). The backend already accepts `intent: "chore"` on `POST /api/spikes` (`internal/runtime/materialize.go:312`).
 
@@ -69,8 +70,8 @@ None. No schema, migration, or Go change.
 
 ### Type and density
 
-- Inter Variable 13 px body (`body { font-size: 13px }` stays), 12 px captions (`text-xs`), 15 px sheet titles (`text-[15px] font-semibold`), 14 px app title.
-- JetBrains Mono 12 px for item keys (`.key` stays) and repository paths.
+- Onest Variable 13 px body (self-hosted via `@fontsource-variable/onest`; the board is embedded in the Go binary and must work offline, so no Google Fonts CDN link) (`body { font-size: 13px }` stays), 12 px captions (`text-xs`), 15 px sheet titles (`text-[15px] font-semibold`), 14 px app title.
+- Fragment Mono 12 px (`@fontsource/fragment-mono`, weight 400 only — never set mono text bold) for item keys (`.key` stays) and repository paths.
 - Controls `h-8` (buttons, inputs, select triggers); `size="sm"` buttons `h-7`; icon buttons `size-8`. List rows 30 px. Sheet padding `px-5 py-4`; field gap `space-y-4`; label-to-control `gap-1.5`.
 - Focus: `ring-2 ring-ring ring-offset-2 ring-offset-background` via shadcn defaults.
 
@@ -79,8 +80,8 @@ None. No schema, migration, or Go change.
 ```css
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "@fontsource-variable/inter";
-@import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource-variable/onest";
+@import "@fontsource/fragment-mono";
 
 :root {
   color-scheme: dark;
@@ -110,8 +111,8 @@ None. No schema, migration, or Go change.
 }
 
 @theme inline {
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --font-sans: "Onest Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fragment Mono", ui-monospace, monospace;
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
@@ -428,6 +429,7 @@ Layouts unchanged; only primitives change (Buttons, Badges, Selects, Collapsible
 **Added**
 - `web/components.json`, `web/src/lib/utils.ts` (`cn`), `web/src/components/ui/*.tsx` (18 components listed above).
 - `web/src/logic/toasts.ts`, `web/src/logic/toasts.test.ts`.
+- Fonts: add `@fontsource-variable/onest`, `@fontsource/fragment-mono`; remove `@fontsource-variable/inter`, `@fontsource-variable/jetbrains-mono`.
 - Dependencies: `radix-ui` (or the per-package `@radix-ui/*` the CLI chooses), `class-variance-authority`, `clsx`, `tailwind-merge`, `tw-animate-css`, `sonner`.
 
 **Changed**
