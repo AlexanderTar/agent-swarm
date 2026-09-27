@@ -35,6 +35,9 @@ func (s *Store) checkEverySectionApproved(ctx context.Context, tx *sql.Tx, artif
 	var secs []ArtifactSection
 	json.Unmarshal([]byte(sectionsJSON), &secs)
 	for _, sec := range secs {
+		if !RequiredSpecSection(sec.Title) {
+			continue
+		}
 		var n int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE artifact_id = ? AND section_id = ?
 			AND kind = 'approve_section' AND state = 'approved' AND section_sha256 = ?`,
@@ -293,6 +296,9 @@ func (s *Store) Materialize(ctx context.Context, sessionID, spikeKey, specID, pl
 	_, err := IdemTx(ctx, s, sessionID, requestID, "swarm_materialize", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
+			return err
+		}
+		if err := s.adoptLegacySelectedReposTx(ctx, tx, a.ItemID); err != nil {
 			return err
 		}
 		spike, err := s.Items.GetTx(ctx, tx, spikeKey)

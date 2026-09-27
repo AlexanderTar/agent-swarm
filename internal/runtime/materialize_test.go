@@ -31,16 +31,7 @@ func approvedFeatureSpike(t *testing.T, s *Store) (ses Session, specID, planID, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Confirm the repo the plan's tasks name, through the real path, so
-	// confirmed_repos_json holds an id and the tree holds the name (D49).
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []ReposProposal{{Repo: repo, Reason: "the API lives here"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
+	// The repo selected at spike creation is already available to the plan.
 	const specBody = "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"
 	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, specBody), "")
 	if err != nil {
@@ -56,6 +47,9 @@ func approvedFeatureSpike(t *testing.T, s *Store) (ses Session, specID, planID, 
 	// returns ArtifactResult{ArtifactID, Revision, Sections, StaleRequests}, and
 	// Approve takes an ApproveInput — not a positional comment/via/sha/revision list.
 	for _, sec := range spec.Sections {
+		if !RequiredSpecSection(sec.Title) {
+			continue
+		}
 		r, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
 			SectionID: sec.ID, Prompt: "Approve " + sec.Title + "."})
 		if err != nil {
@@ -90,14 +84,6 @@ func approvedDebugSpike(t *testing.T, s *Store) (ses Session, reportID string) {
 	}
 	ses, err = s.LatestSession(ctx, a.ID)
 	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []ReposProposal{{Repo: repo, Reason: "the crash is here"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
 		t.Fatal(err)
 	}
 	report, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "debug_report", writeFile(t, reportBody), "")
@@ -196,7 +182,7 @@ func TestMaterializeRefusesAMissingApproval(t *testing.T) {
 	ses, specID, planID, _ := approvedFeatureSpike(t, s)
 	// stale one section's approval by editing it
 	s.DB.ExecContext(ctx, `UPDATE requests SET state = 'stale' WHERE kind = 'approve_section'
-		AND id = (SELECT id FROM requests WHERE kind = 'approve_section' LIMIT 1)`)
+		AND section_id = 'decisions'`)
 	_, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
 	if err == nil || !strings.HasPrefix(err.Error(), "approval_missing: section ") {
 		t.Fatalf("err = %v", err)
@@ -243,6 +229,26 @@ func TestMaterializeRefusesAnUnconfirmedRepoInATask(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), "tree_invalid: TASK ") ||
 		!strings.HasSuffix(err.Error(), " uses an unconfirmed repo") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestMaterializeAdoptsLegacySelectedReposWithoutWorktreeAccess(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = '[]', repos_version = 0 WHERE key = 'SPIKE-1'`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := s.Items.Get(ctx, out.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Repos) != 1 {
+		t.Fatalf("materialized repos = %v, want selected repo", root.Repos)
 	}
 }
 
@@ -345,14 +351,6 @@ func TestMaterializeRefusesARootTypeMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []ReposProposal{{Repo: repo, Reason: "x"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
 	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
 	if err != nil {
 		t.Fatal(err)
@@ -398,14 +396,6 @@ func TestMaterializePropagatesTddExempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	ses, _ := s.LatestSession(ctx, a.ID)
-	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []ReposProposal{{Repo: repo, Reason: "x"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
 	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "# s\n\n## One\n\na\n"), "")
 	if err != nil {
 		t.Fatal(err)

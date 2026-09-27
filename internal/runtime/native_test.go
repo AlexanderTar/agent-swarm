@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -248,6 +250,124 @@ func TestAskApprovalReturnsNativePrompt(t *testing.T) {
 	}
 	if req.NativePrompt.Header != "Spike approval" {
 		t.Fatalf("header = %q", req.NativePrompt.Header)
+	}
+}
+
+func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	longSpec := "/" + strings.Repeat("spec-path/", 150) + "spec.md"
+	longPlan := "/" + strings.Repeat("plan-path/", 150) + "plan.md"
+	if _, err := s.DB.ExecContext(ctx, `UPDATE artifacts SET path = ? WHERE id = ?`, longSpec, specID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE artifacts SET path = ? WHERE id = ?`, longPlan, planID); err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: "Build the API and verify it."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.ReviewPaths == nil || req.ReviewPaths.Spec != longSpec || req.ReviewPaths.Plan != longPlan {
+		t.Fatalf("review paths = %+v", req.ReviewPaths)
+	}
+	if req.NativePrompt == nil || !strings.HasSuffix(req.NativePrompt.Question, refToken(req.ID)) {
+		t.Fatalf("native prompt = %+v", req.NativePrompt)
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.relayRequestTx(ctx, tx, req.ID) }); err != nil {
+		t.Fatal(err)
+	}
+	payload, n := relayFor(t, s, req.AgentID, req.ID)
+	if n != 1 {
+		t.Fatalf("relays = %d", n)
+	}
+	paths, ok := payload["review_paths"].(map[string]any)
+	if !ok || paths["spec"] != longSpec || paths["plan"] != longPlan {
+		t.Fatalf("relay review_paths = %v", payload["review_paths"])
+	}
+}
+
+func TestLegacyPlanApprovalReviewPathsAreAbsolute(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, planPath := approvedFeatureSpike(t, s)
+	var specPath string
+	if err := s.DB.QueryRowContext(ctx, `SELECT path FROM artifacts WHERE id = ?`, specID).Scan(&specPath); err != nil {
+		t.Fatal(err)
+	}
+	cwd, _ := os.Getwd()
+	specRel, _ := filepath.Rel(cwd, specPath)
+	planRel, _ := filepath.Rel(cwd, planPath)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE artifacts SET path = ? WHERE id = ?`, specRel, specID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE artifacts SET path = ? WHERE id = ?`, planRel, planID); err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: "Build it."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.ReviewPaths == nil || req.ReviewPaths.Spec != specPath || req.ReviewPaths.Plan != planPath {
+		t.Fatalf("legacy review paths = %+v", req.ReviewPaths)
+	}
+}
+
+func TestPlanApprovalRequiresCurrentSpecApproval(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Gate", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "## Architecture\n\nUse SQLite.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, planBody), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: plan.ArtifactID, Prompt: "Ship it"}); err == nil || !strings.Contains(err.Error(), "approval_missing") {
+		t.Fatalf("plan approval before spec approval: %v", err)
+	}
+	r, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID, Prompt: "Use SQLite."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, r.ID, ApproveInput{SectionSHA256: spec.Sections[0].SHA256, ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: plan.ArtifactID, Prompt: "Ship it"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSpecApprovalReplayRetainsExactSummary(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Replay summary", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "## Design\n\nThe API uses SQLite.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := "| Part | Choice |\n|---|---|\n| Data | SQLite |"
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID, Prompt: summary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.relayRequestTx(ctx, tx, req.ID) }); err != nil {
+		t.Fatal(err)
+	}
+	payload, n := relayFor(t, s, req.AgentID, req.ID)
+	if n != 1 || payload["summary"] != summary {
+		t.Fatalf("replayed summary = %v, relays = %d", payload["summary"], n)
 	}
 }
 

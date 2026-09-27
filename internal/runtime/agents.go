@@ -282,6 +282,14 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	} else {
 		return "", Agent{}, false, errors.New("No agent kind given and no default is set for spikes; pass --agent.")
 	}
+	if len(in.Repos) > 0 {
+		if err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
+			_, err := s.repoRefs(ctx, tx, in.Repos)
+			return err
+		}); err != nil {
+			return "", Agent{}, false, err
+		}
+	}
 
 	// ponytail: item creation and the agent-row INSERT below are separate
 	// transactions, so an INSERT failure (or any error between here and
@@ -293,6 +301,7 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		Title:          in.Name,
 		SpikeIntent:    in.Intent,
 		Brief:          in.Request,
+		Repos:          in.Repos,
 		SuggestedRepos: in.Repos,
 	}, items.User("board"))
 	if err != nil {

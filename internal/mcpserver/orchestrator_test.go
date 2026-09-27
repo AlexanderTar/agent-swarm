@@ -98,15 +98,39 @@ func TestWorktreeCreateNeedsAConfirmedRepo(t *testing.T) {
 	_, err := s.call(ctx, seed.Caller, "swarm_worktree",
 		`{"op":"create","repo":"`+unconfirmed+`","branch":"task/x"}`)
 	want := "repo_not_confirmed: other-repo is not confirmed for " + seed.RootKey +
-		`. Ask with swarm_ask kind "confirm_repos".`
+		`. Add it with swarm_repos after reviewing the scope.`
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v\nwant %q", err, want)
 	}
-	// after confirming, it works
-	confirmRepo(t, s, seed.RootKey, unconfirmed)
+	// The orchestrator expands scope without a second user approval.
+	root, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.call(ctx, seed.Caller, "swarm_repos", fmt.Sprintf(`{"repos":[%q,%q],"repos_version":%d}`, seed.RepoID, unconfirmed, root.ReposVersion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var approvals int
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE item_id = ? AND kind = 'confirm_repos'`, root.ID).Scan(&approvals); err != nil {
+		t.Fatal(err)
+	}
+	if approvals != 0 {
+		t.Fatalf("repository change opened %d confirmation requests", approvals)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_repos", fmt.Sprintf(`{"repos":[%q],"repos_version":%d}`, seed.RepoID, root.ReposVersion)); err == nil {
+		t.Fatal("stale repository version was accepted")
+	}
 	if _, err := s.call(ctx, seed.Caller, "swarm_worktree",
 		`{"op":"create","repo":"`+unconfirmed+`","branch":"task/x"}`); err != nil {
 		t.Fatal(err)
+	}
+	latest, err := s.RT.Items.Get(ctx, seed.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_repos", fmt.Sprintf(`{"repos":[%q],"repos_version":%d}`, seed.RepoID, latest.ReposVersion)); err == nil || !strings.Contains(err.Error(), "active worktrees") {
+		t.Fatalf("dropping busy repo: %v", err)
 	}
 }
 
@@ -1424,14 +1448,6 @@ func TestMaterializeToolResultUsesSnakeCaseKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []runtime.ReposProposal{{Repo: repo, Reason: "it's the only one"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
 	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
 		writeSpec(t, "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"), "")
 	if err != nil {
@@ -1442,6 +1458,9 @@ func TestMaterializeToolResultUsesSnakeCaseKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sec := range spec.Sections {
+		if !runtime.RequiredSpecSection(sec.Title) {
+			continue
+		}
 		r, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
 			SectionID: sec.ID, Prompt: "Approve " + sec.Title + "."})
 		if err != nil {
@@ -1496,14 +1515,6 @@ func TestMaterializeRequestIDReplaysInsteadOfMaterializingTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "confirm_repos", Prompt: "chat only",
-		Repos: []runtime.ReposProposal{{Repo: repo, Reason: "it's the only one"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RT.ConfirmRepos(ctx, req.ID, []string{repo}, "", 0, "board", ""); err != nil {
-		t.Fatal(err)
-	}
 	spec, err := s.RT.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
 		writeSpec(t, "# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ncookies\n"), "")
 	if err != nil {
@@ -1514,6 +1525,9 @@ func TestMaterializeRequestIDReplaysInsteadOfMaterializingTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sec := range spec.Sections {
+		if !runtime.RequiredSpecSection(sec.Title) {
+			continue
+		}
 		r, err := s.RT.Ask(ctx, ses.ID, runtime.AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
 			SectionID: sec.ID, Prompt: "Approve " + sec.Title + "."})
 		if err != nil {

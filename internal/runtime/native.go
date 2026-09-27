@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -161,7 +162,7 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 // requestOut) and the request_open relay share it verbatim (2026-09-26
 // epic-approval-lane; text unchanged from the native-railway-tracing fix).
 func NativePromptNextStep(ref string) string {
-	return fmt.Sprintf("Print the summary in chat first, not in the question. Then show native_prompt "+
+	return fmt.Sprintf("Print the request summary in chat first (use summary exactly when supplied), not in the question. For a plan also print both full review_paths. Then show native_prompt "+
 		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
 		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
 		"forwarding only what the user picked, never a decision they did not make.", ref)
@@ -186,6 +187,30 @@ func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Reques
 		json.Unmarshal([]byte(raw), &warnings)
 	}
 	return s.nativePromptFor(ctx, tx, req, title, warnings)
+}
+
+func (s *Store) planReviewPathsTx(ctx context.Context, tx *sql.Tx, itemID, planID string) (ReviewPaths, string, error) {
+	var paths ReviewPaths
+	var specID string
+	if err := tx.QueryRowContext(ctx, `SELECT id, path FROM artifacts WHERE item_id = ? AND kind = 'spec' ORDER BY created_at DESC, id DESC LIMIT 1`, itemID).Scan(&specID, &paths.Spec); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return paths, "", fmt.Errorf("approval_missing: register and approve the spec before asking to approve the plan")
+		}
+		return paths, "", err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT path FROM artifacts WHERE id = ?`, planID).Scan(&paths.Plan); err != nil {
+		return paths, "", err
+	}
+	var err error
+	paths.Spec, err = filepath.Abs(paths.Spec)
+	if err != nil {
+		return paths, "", err
+	}
+	paths.Plan, err = filepath.Abs(paths.Plan)
+	if err != nil {
+		return paths, "", err
+	}
+	return paths, specID, nil
 }
 
 // NativeAnswerNextStep is the PostToolUse hook's instruction once a native

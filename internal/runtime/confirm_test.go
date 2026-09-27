@@ -9,6 +9,78 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
+func TestStartSpikeUsesSelectedRepositoriesWithoutConfirmation(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "selected")
+	key, _, _, err := s.StartSpike(ctx, SpikeInput{Name: "Selected repo", Intent: "feature", Kind: Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ConfirmedRepos(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != repo {
+		t.Fatalf("selected repos = %+v, want %s", got, repo)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE item_id = ? AND kind = 'confirm_repos'`, root.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("confirmation requests = %d, want 0", n)
+	}
+}
+
+func TestStartSpikeRejectsUnknownSelectedRepository(t *testing.T) {
+	s, _, _ := newStore(t)
+	_, _, _, err := s.StartSpike(context.Background(), SpikeInput{Name: "Unknown selection", Intent: "feature", Kind: Fake, Model: "fake-1", Repos: []string{"repo_missing"}})
+	if err == nil || !strings.Contains(err.Error(), "Unknown repository") {
+		t.Fatalf("unknown selected repo: %v", err)
+	}
+}
+
+func TestLegacySelectedRepositoriesAdoptOnceAndCloseOpenConfirmation(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	repo := seedRepo(t, s, "legacy-selected")
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Legacy repo", Intent: "feature", Kind: Fake, Model: "fake-1", Repos: []string{repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := s.Items.Get(ctx, key)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET confirmed_repos_json = '[]', repos_version = 0 WHERE id = ?`, root.ID); err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "confirm_repos", Prompt: "confirm", Repos: []ReposProposal{{Repo: repo, Reason: "selected"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		got, err := s.ConfirmedRepos(ctx, root.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].ID != repo {
+			t.Fatalf("read %d: %+v", i, got)
+		}
+	}
+	after, _ := s.Items.Get(ctx, key)
+	if after.ReposVersion != 1 {
+		t.Fatalf("repos_version = %d, want 1", after.ReposVersion)
+	}
+	closed, _ := s.RequestByID(ctx, req.ID)
+	if closed.State != "withdrawn" {
+		t.Fatalf("old request state = %s", closed.State)
+	}
+}
+
 func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -31,7 +103,7 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 	if len(opts.Proposed) != 1 || len(opts.Expansion) != 1 || opts.Proposed[0].Source != "user" {
 		t.Fatalf("options = %s", req.Options)
 	}
-	out, err := s.ConfirmRepos(ctx, req.ID, []string{repoA, repoB}, "both, please", 0, "menubar", "")
+	out, err := s.ConfirmRepos(ctx, req.ID, []string{repoA, repoB}, "both, please", 1, "menubar", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +111,7 @@ func TestConfirmReposStoresTheSetAndBumpsTheVersion(t *testing.T) {
 		t.Fatalf("request = %+v", out)
 	}
 	it, _ := s.Items.Get(ctx, "SPIKE-1")
-	if len(it.Repos) != 2 || it.ReposVersion != 1 {
+	if len(it.Repos) != 2 || it.ReposVersion != 2 {
 		t.Fatalf("item repos = %v, version = %d", it.Repos, it.ReposVersion)
 	}
 	var kind, origin, payload string

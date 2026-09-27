@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -493,6 +494,16 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 			return err
 		}
 		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID)
+		if req.Kind == KindApproveSection || req.Kind == KindApprovePlan || req.Kind == KindApproveReport {
+			payload["summary"] = req.Prompt
+		}
+		if req.Kind == KindApprovePlan {
+			paths, _, err := s.planReviewPathsTx(ctx, tx, req.ItemID, req.ArtifactID)
+			if err != nil {
+				return err
+			}
+			payload["review_paths"] = paths
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -991,6 +1002,9 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 	if n := utf8.RuneCountInString(in.Prompt); n < 1 || n > 1000 {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
 	}
+	if in.SectionID != "" && (strings.TrimSpace(in.Prompt) == "" || utf8.RuneCountInString(in.Prompt) > 700) {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Spec section summary must be 1–700 characters."}
+	}
 	var out Request
 	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
@@ -1021,6 +1035,17 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		default:
 			return &items.Error{Code: items.CodeBadRequest, Message: "This artifact kind cannot be approved."}
 		}
+		var reviewPaths *ReviewPaths
+		if reqKind == "approve_plan" {
+			paths, specID, err := s.planReviewPathsTx(ctx, tx, itemID, in.ArtifactID)
+			if err != nil {
+				return err
+			}
+			if err := s.checkEverySectionApproved(ctx, tx, specID); err != nil {
+				return err
+			}
+			reviewPaths = &paths
+		}
 		var sectionID sql.NullString
 		var sectionSHA, sectionTitle string
 		if in.SectionID != "" {
@@ -1040,6 +1065,9 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			}
 			if !found {
 				return &items.Error{Code: items.CodeBadRequest, Message: "Unknown section."}
+			}
+			if reqKind == "approve_section" && !RequiredSpecSection(sectionTitle) {
+				return &items.Error{Code: items.CodeBadRequest, Message: "This spec section is informational and needs no approval."}
 			}
 			sectionID = sql.NullString{String: in.SectionID, Valid: true}
 		}
@@ -1080,6 +1108,7 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			return err
 		}
 		out.NativePrompt = &np
+		out.ReviewPaths = reviewPaths
 		return nil
 	})
 	return out, err

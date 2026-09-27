@@ -65,11 +65,10 @@ func (h *harness) waitForRequestFull(t *testing.T, itemKey, kind string, timeout
 	return h.requestByKind(t, itemKey, kind)
 }
 
-// Scenario 1: happy feature spike. POST /api/spikes with one suggested repo;
-// the orchestrator accepts, proposes that repo plus one suggested addition
-// via confirm_repos; the user confirms both; the orchestrator creates a
+// Scenario 1: happy feature spike. POST /api/spikes with one selected repo;
+// the orchestrator adds a second registered repo with swarm_repos; it creates a
 // worktree in the first, asks a question, registers a 3-section spec and a
-// plan; the user approves all 3 sections and the plan; materialize creates
+// plan; the user approves the 2 decision sections and the plan; materialize creates
 // an epic (draft) with 2 stories, 3 tasks and 1 dependency; the spike ends
 // Done.
 //
@@ -102,23 +101,9 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 
 	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting the spike"})
 
-	h.mustTool(t, orch, "swarm_ask", map[string]any{
-		"kind": "confirm_repos", "prompt": "The change needs the client and the shared schema.",
-		"repos":     []map[string]any{{"repo": repoAID, "reason": "the login form lives here"}},
-		"expansion": []map[string]any{{"repo": repoBID, "reason": "the session schema is shared"}},
+	h.mustTool(t, orch, "swarm_repos", map[string]any{
+		"repos": []string{repoAID, repoBID}, "repos_version": item["repos_version"],
 	})
-	confirmReq := h.waitForRequestFull(t, spikeKey, "confirm_repos", 5*time.Second)
-	var binding struct {
-		ReposVersion int `json:"repos_version"`
-	}
-	if b, ok := confirmReq["binding"].(map[string]any); ok {
-		if v, ok := b["repos_version"].(float64); ok {
-			binding.ReposVersion = int(v)
-		}
-	}
-	h.doT(t, http.MethodPost, "/api/requests/"+confirmReq["id"].(string)+"/confirm-repos", map[string]any{
-		"repos": []string{repoAID, repoBID}, "repos_version": binding.ReposVersion, "via": "board",
-	}, nil)
 
 	wtOut := h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/login"})
 	// §12.1 centralization: the worktree lives under the daemon's shared
@@ -144,14 +129,19 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 	if len(sections) != 3 {
 		t.Fatalf("spec sections = %d, want 3", len(sections))
 	}
+	var reviewCount int
 	for _, s := range sections {
 		sec, _ := s.(map[string]any)
+		if sec["title"] == "Context" {
+			continue
+		}
 		h.mustTool(t, orch, "swarm_ask", map[string]any{
-			"kind": "approval", "prompt": "Review \"" + sec["title"].(string) + "\"",
+			"kind": "approval", "prompt": "Deliver " + sec["title"].(string) + " as specified.",
 			"artifact": specID, "section": sec["id"],
 		})
+		reviewCount++
 	}
-	for i := 0; i < 3; i++ {
+	for i := 0; i < reviewCount; i++ {
 		req := h.requestByKind(t, spikeKey, "approve_section")
 		h.doT(t, http.MethodPost, "/api/requests/"+req["id"].(string)+"/approve", map[string]any{
 			"section_sha256": req["section_sha256"], "artifact_revision": req["artifact_revision"], "via": "board",
@@ -173,7 +163,11 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 	}
 	plan := h.mustTool(t, orch, "swarm_artifact", map[string]any{"op": "register", "item": spikeKey, "kind": "plan", "path": planPath})
 	planID, _ := plan["artifact_id"].(string)
-	h.mustTool(t, orch, "swarm_ask", map[string]any{"kind": "approval", "prompt": "Review the plan", "artifact": planID})
+	planAsk := h.mustTool(t, orch, "swarm_ask", map[string]any{"kind": "approval", "prompt": "Build server and client, then run go test ./...", "artifact": planID})
+	paths, _ := planAsk["review_paths"].(map[string]any)
+	if paths["spec"] != specPath || paths["plan"] != planPath {
+		t.Fatalf("plan review paths = %v", paths)
+	}
 	planReq := h.requestByKind(t, spikeKey, "approve_plan")
 	h.doT(t, http.MethodPost, "/api/requests/"+planReq["id"].(string)+"/approve", map[string]any{
 		"artifact_revision": planReq["artifact_revision"], "via": "board",
@@ -229,7 +223,7 @@ func TestScenario01HappyFeatureSpike(t *testing.T) {
 	var n int
 	h.db(t).QueryRow(`SELECT COUNT(*) FROM notifications WHERE kind = 'request.approve_section' AND created_at >= ?`,
 		since.UnixMilli()).Scan(&n)
-	if n < 3 {
-		t.Errorf("request.approve_section notifications since the scenario started = %d, want at least 3", n)
+	if n < 2 {
+		t.Errorf("request.approve_section notifications since the scenario started = %d, want at least 2", n)
 	}
 }

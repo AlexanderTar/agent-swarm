@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,130 @@ func TestSplitSections(t *testing.T) {
 	one := SplitSections("just a note with no headings\n")
 	if len(one) != 1 || one[0].ID != "document" {
 		t.Fatalf("headingless file = %+v", one)
+	}
+}
+
+func TestRequiredSpecSectionDefaultsToReview(t *testing.T) {
+	for _, title := range []string{"Locked decisions", "2.3. Delivery", "SECURITY", "document", "Verification"} {
+		if !RequiredSpecSection(title) {
+			t.Errorf("%q must require approval", title)
+		}
+	}
+	for _, title := range []string{"Context", "2. Background", "3. FILE LIST", "References", "Explicitly out of scope", "Work breakdown"} {
+		if RequiredSpecSection(title) {
+			t.Errorf("%q must be informational", title)
+		}
+	}
+}
+
+func TestRegisterArtifactStoresAbsolutePath(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Absolute path", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	abs := writeFile(t, "## Design\n\nDo it.\n")
+	cwd, _ := os.Getwd()
+	rel, err := filepath.Rel(cwd, abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", rel, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	art, _, err := s.ArtifactMarkdown(ctx, res.ArtifactID, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(art.Path) {
+		t.Fatalf("stored path = %q, want absolute", art.Path)
+	}
+}
+
+func TestReviseLegacyRelativeArtifactKeepsItsIdentity(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Legacy path", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	abs := writeFile(t, "## Design\n\nFirst.\n")
+	first, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", abs, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, _ := os.Getwd()
+	rel, err := filepath.Rel(cwd, abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE artifacts SET path = ? WHERE id = ?`, rel, first.ArtifactID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(abs, []byte("## Design\n\nSecond.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.RegisterArtifact(ctx, ses.ID, "revise", key, "spec", rel, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ArtifactID != first.ArtifactID || second.Revision != 2 {
+		t.Fatalf("revision = %+v, want same id and revision 2", second)
+	}
+	art, _, err := s.ArtifactMarkdown(ctx, first.ArtifactID, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if art.Path != abs {
+		t.Fatalf("migrated path = %q, want %q", art.Path, abs)
+	}
+}
+
+func TestSpecApprovalSummaryLengthAndPreservation(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Summary", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	art, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "## Design\n\nBuild it.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"   \n", strings.Repeat("é", 701)} {
+		if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: bad}); err == nil {
+			t.Errorf("accepted invalid summary of %d runes", len([]rune(bad)))
+		}
+	}
+	summary := "| Part | Delivery |\n|---|---|\n| API | Search |" + strings.Repeat("é", 700-len([]rune("| Part | Delivery |\n|---|---|\n| API | Search |")))
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: summary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Prompt != summary {
+		t.Fatalf("summary altered: %q", req.Prompt)
+	}
+}
+
+func TestInformationalSpecSectionCannotOpenApproval(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Info section", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	art, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, "## Context\n\nWhy this exists.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: "Why this exists."}); err == nil {
+		t.Fatal("informational section opened an approval")
 	}
 }
 

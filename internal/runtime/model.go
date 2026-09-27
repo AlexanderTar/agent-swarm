@@ -276,6 +276,13 @@ type Request struct {
 	// the Ask "native_prompt" case (Task 13a/13b): it is never persisted, and
 	// requestTx never fills it.
 	NativePrompt *NativePrompt
+	ReviewPaths  *ReviewPaths
+}
+
+// ReviewPaths are displayed in full before a plan's native approval prompt.
+type ReviewPaths struct {
+	Spec string `json:"spec"`
+	Plan string `json:"plan"`
 }
 
 type Advice struct {

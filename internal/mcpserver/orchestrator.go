@@ -22,12 +22,46 @@ import (
 var orchestratorRole = []runtime.Role{runtime.RoleOrchestrator}
 
 func orchestratorTools(s *Server) []ToolDef {
-	return []ToolDef{itemsTool(s), artifactTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s), catalogTool(s), workflowTool(s)}
+	return []ToolDef{itemsTool(s), artifactTool(s), reposTool(s), worktreeTool(s), spawnTool(s), controlTool(s), roleOverridesTool(s), catalogTool(s), workflowTool(s)}
+}
+
+func reposTool(s *Server) ToolDef {
+	return ToolDef{
+		Name:        "swarm_repos",
+		Description: "Set the registered repositories in your root item's scope without a second user approval. Pass the current repos_version from swarm_read; active worktrees prevent dropping a repository.",
+		Roles:       orchestratorRole,
+		Schema:      objSchemaRequired(`"repos":{"type":"array","items":{"type":"string"}},"repos_version":{"type":"integer"}`, []string{"repos", "repos_version"}),
+		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
+			var in struct {
+				Repos        []string `json:"repos"`
+				ReposVersion int      `json:"repos_version"`
+			}
+			if err := decode(args, &in); err != nil {
+				return nil, err
+			}
+			a, err := callerAgent(ctx, s, c)
+			if err != nil {
+				return nil, err
+			}
+			key, err := rootKeyFor(ctx, s, a.RootItemID)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.RT.SetItemRepos(ctx, key, in.Repos, in.ReposVersion); err != nil {
+				return nil, err
+			}
+			root, err := s.RT.Items.Get(ctx, key)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"repos": root.Repos, "repos_version": root.ReposVersion}, nil
+		},
+	}
 }
 
 // §17.3 copy owned by this file.
 func repoNotConfirmed(name, rootKey string) error {
-	return fmt.Errorf(`repo_not_confirmed: %s is not confirmed for %s. Ask with swarm_ask kind "confirm_repos".`, name, rootKey)
+	return fmt.Errorf(`repo_not_confirmed: %s is not confirmed for %s. Add it with swarm_repos after reviewing the scope.`, name, rootKey)
 }
 
 func dependenciesOpen(keys []string) error {

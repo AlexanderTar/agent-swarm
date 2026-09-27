@@ -158,9 +158,9 @@ func checkpointTool(s *Server) ToolDef {
 func askTool(s *Server) ToolDef {
 	return ToolDef{
 		Name: "swarm_ask",
-		Description: "Request an approval, propose repos to confirm, forward a native answer, or withdraw an earlier ask. " +
+		Description: "Request an artifact approval, forward a native answer, or withdraw an earlier ask. confirm_repos exists only for historical requests; use swarm_repos to change scope. " +
 			"Returns at once with the request id; the answer arrives later as a message.",
-		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, confirm_repos, native_prompt, native_answer, or withdraw. question is refused for claude, agy and codex (they have a native question tool Swarm hooks instead); cursor and muse keep it, since their native question tool is not hookable. native_prompt for_msg gets a child's approval question's native prompt; native_answer ref forwards the user's observed decision."},"prompt":{"type":"string"},"options":{"type":"array"},
+		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, legacy confirm_repos, native_prompt, native_answer, or withdraw. For spec approval, prompt is the exact 1–700-character section summary. Ask only for decision sections; unknown headings require review. For plan approval, print both review_paths in full before the native question. question is refused for claude, agy and codex (they have a native question tool Swarm hooks instead); cursor and muse keep it, since their native question tool is not hookable. native_prompt for_msg gets a child's approval question's native prompt; native_answer ref forwards the user's observed decision."},"prompt":{"type":"string"},"options":{"type":"array"},
 			"artifact":{"type":"string","description":"Artifact id for approval kinds"},"section":{"type":"string","description":"Section id for per-section approval"},"withdraw":{"type":"string"},
 			"repos":{"type":"array","items":{"type":"object","properties":{
 				"repo":{"type":"string","description":"repository id, e.g. from a swarm_read repos search -- not its name or path"},
@@ -222,6 +222,9 @@ func requestOut(r runtime.Request) map[string]any {
 		// bind the answer and never forward it, since nothing else in this
 		// result says there is a next step. Spell it out here too.
 		out["next"] = runtime.NativePromptNextStep(r.ID)
+	}
+	if r.ReviewPaths != nil {
+		out["review_paths"] = r.ReviewPaths
 	}
 	return out
 }

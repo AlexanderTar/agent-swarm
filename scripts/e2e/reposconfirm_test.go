@@ -9,18 +9,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
-// Scenario 24: repo confirmation.
-//   - A worktree before confirming is refused (repo_not_confirmed).
-//   - A confirmed set that differs from the proposal wins: the user confirms
-//     repoB only, dropping the proposed repoA; a worktree in the removed
-//     repo (repoA) is then refused too.
-//   - A later confirm_repos adds a repo back.
-//   - The materialized epic keeps the confirmed set (createTree passes the
-//     spike's own confirmed items.Item.Repos straight to the new root).
-func TestScenario24RepoConfirmation(t *testing.T) {
+// Scenario 24: repository selection and scope updates without a second approval.
+// Selected repos work immediately. The orchestrator updates scope with
+// swarm_repos; stale versions and live worktree drops are refused.
+func TestScenario24RepositoryScopeWithoutConfirmation(t *testing.T) {
 	h := newHarness(t)
 	repoAID, _ := e2eRepo(t, h, "repo-a")
 	repoBID, _ := e2eRepo(t, h, "repo-b")
@@ -31,7 +25,7 @@ func TestScenario24RepoConfirmation(t *testing.T) {
 	// repo confirmation itself doesn't care which intent it's exercised on.
 	var spikeResp map[string]any
 	h.doT(t, http.MethodPost, "/api/spikes", map[string]any{
-		"request_id": "req-" + unique(), "name": "Repo confirmation " + unique(), "intent": "debug",
+		"request_id": "req-" + unique(), "name": "Repository scope " + unique(), "intent": "debug",
 		"agent": "fake", "model": "fake-1", "repos": []string{repoAID},
 	}, &spikeResp)
 	item, _ := spikeResp["item"].(map[string]any)
@@ -40,49 +34,41 @@ func TestScenario24RepoConfirmation(t *testing.T) {
 	orch, _ := agent["name"].(string)
 	h.mustTool(t, orch, "swarm_checkpoint", map[string]any{"kind": "accepted", "summary": "starting"})
 
-	// a worktree before confirming is refused
-	_, err := h.toolOut(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/x"})
-	if err == nil || !strings.Contains(err.Error(), "repo_not_confirmed") {
-		t.Fatalf("worktree before confirm = %v, want repo_not_confirmed", err)
-	}
-
-	h.mustTool(t, orch, "swarm_ask", map[string]any{
-		"kind": "confirm_repos", "prompt": "Needs repo A.",
-		"repos": []map[string]any{{"repo": repoAID, "reason": "here"}},
-	})
-	confirmReq := h.waitForRequestFull(t, spikeKey, "confirm_repos", 5*time.Second)
-
-	// the confirmed set differs from the proposal: repoB only, dropping repoA
-	h.doT(t, http.MethodPost, "/api/requests/"+confirmReq["id"].(string)+"/confirm-repos", map[string]any{
-		"repos": []string{repoBID}, "repos_version": 0, "via": "board",
-	}, nil)
-
-	// a worktree in the removed repo (repoA) is refused
-	_, err = h.toolOut(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/x"})
-	if err == nil || !strings.Contains(err.Error(), "repo_not_confirmed") {
-		t.Fatalf("worktree in the removed repo = %v, want repo_not_confirmed", err)
-	}
-	// repoB, the one actually confirmed, works
-	h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoBID, "branch": "spike/x"})
-
-	// a later confirm_repos adds repoA back
+	// The start selection authorizes repo A immediately.
+	wt := h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/x"})
 	var detail struct {
 		Item map[string]any `json:"item"`
 	}
 	h.doT(t, http.MethodGet, "/api/items/"+spikeKey, nil, &detail)
-	version, _ := detail.Item["repos_version"].(float64)
-	h.mustTool(t, orch, "swarm_ask", map[string]any{
-		"kind": "confirm_repos", "prompt": "Needs A back too.",
-		"repos": []map[string]any{{"repo": repoAID, "reason": "after all"}, {"repo": repoBID, "reason": "still"}},
-	})
-	req2 := h.waitForRequestFull(t, spikeKey, "confirm_repos", 5*time.Second)
-	h.doT(t, http.MethodPost, "/api/requests/"+req2["id"].(string)+"/confirm-repos", map[string]any{
-		"repos": []string{repoAID, repoBID}, "repos_version": int(version), "via": "board",
-	}, nil)
+	version := int(detail.Item["repos_version"].(float64))
+	if version != 1 {
+		t.Fatalf("start repos_version = %d, want 1", version)
+	}
+	// A live worktree protects repo A from removal.
+	_, err := h.toolOut(t, orch, "swarm_repos", map[string]any{"repos": []string{repoBID}, "repos_version": version})
+	if err == nil || !strings.Contains(err.Error(), "active worktrees") {
+		t.Fatalf("drop busy repo = %v", err)
+	}
+	h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "remove", "worktree": wt["worktree_id"]})
+	h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "release", "worktree": wt["worktree_id"], "agent": orch})
+	// Scope changes are versioned and do not create a confirmation request.
+	h.mustTool(t, orch, "swarm_repos", map[string]any{"repos": []string{repoBID}, "repos_version": version})
+	_, err = h.toolOut(t, orch, "swarm_repos", map[string]any{"repos": []string{repoAID}, "repos_version": version})
+	if err == nil || !strings.Contains(err.Error(), "request changed") {
+		t.Fatalf("stale scope update = %v", err)
+	}
+	_, err = h.toolOut(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoAID, "branch": "spike/y"})
+	if err == nil || !strings.Contains(err.Error(), "repo_not_confirmed") {
+		t.Fatalf("removed repo worktree = %v", err)
+	}
+	h.mustTool(t, orch, "swarm_worktree", map[string]any{"op": "create", "repo": repoBID, "branch": "spike/x"})
+	h.doT(t, http.MethodGet, "/api/items/"+spikeKey, nil, &detail)
+	version = int(detail.Item["repos_version"].(float64))
+	h.mustTool(t, orch, "swarm_repos", map[string]any{"repos": []string{repoAID, repoBID}, "repos_version": version})
 	h.doT(t, http.MethodGet, "/api/items/"+spikeKey, nil, &detail)
 	confirmed, _ := detail.Item["repos"].([]any)
 	if len(confirmed) != 2 {
-		t.Fatalf("confirmed repos = %v, want both", confirmed)
+		t.Fatalf("scoped repos = %v, want both", confirmed)
 	}
 
 	// materialize and check the epic keeps the confirmed set

@@ -266,6 +266,28 @@ func (s *Store) CommitItemRepos(ctx context.Context, itemKey string, repoIDs []s
 	})
 }
 
+// SetItemRepos lets an orchestrator change its root's repository scope
+// without opening a second user approval. Validation and the versioned write
+// share one transaction, so stale updates cannot overwrite a newer choice.
+func (s *Store) SetItemRepos(ctx context.Context, itemKey string, repoIDs []string, version int) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		root, err := s.Items.GetTx(ctx, tx, itemKey)
+		if err != nil {
+			return err
+		}
+		if root.ParentID != "" {
+			return &items.Error{Code: items.CodeBadRequest, Message: "Repository scope belongs to the root item."}
+		}
+		if _, err := s.validateRepoConfirmTx(ctx, tx, root, repoIDs, version); err != nil {
+			return err
+		}
+		if err := s.commitRepoConfirmTx(ctx, tx, root, repoIDs); err != nil {
+			return err
+		}
+		return s.Items.ReconcileTx(ctx, tx, itemKey)
+	})
+}
+
 // ConfirmRepos records the user's repository choice (L25, I13). It is a UI or
 // CLI action, so it writes the only repos_confirmed message the system ever
 // produces.
@@ -345,14 +367,31 @@ func (s *Store) ConfirmRepos(ctx context.Context, id string, repoIDs []string, c
 
 // ConfirmedRepos returns the top-level item's currently confirmed repositories.
 func (s *Store) ConfirmedRepos(ctx context.Context, rootItemID string) ([]repos.Repo, error) {
-	var raw string
-	if err := s.DB.QueryRowContext(ctx, `SELECT confirmed_repos_json FROM items WHERE id = ?`,
-		rootItemID).Scan(&raw); err != nil {
+	var raw, suggestedRaw, kind string
+	if err := s.DB.QueryRowContext(ctx, `SELECT type, confirmed_repos_json, suggested_repos_json FROM items WHERE id = ?`,
+		rootItemID).Scan(&kind, &raw, &suggestedRaw); err != nil {
 		return nil, err
 	}
 	var repoIDs []string
 	if err := json.Unmarshal([]byte(raw), &repoIDs); err != nil {
 		return nil, err
+	}
+	if kind == string(items.Spike) && len(repoIDs) == 0 {
+		var suggested []string
+		if err := json.Unmarshal([]byte(suggestedRaw), &suggested); err != nil {
+			return nil, err
+		}
+		if len(suggested) > 0 {
+			if err := s.adoptLegacySelectedRepos(ctx, rootItemID); err != nil {
+				return nil, err
+			}
+			if err := s.DB.QueryRowContext(ctx, `SELECT confirmed_repos_json FROM items WHERE id = ?`, rootItemID).Scan(&raw); err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal([]byte(raw), &repoIDs); err != nil {
+				return nil, err
+			}
+		}
 	}
 	out := make([]repos.Repo, 0, len(repoIDs))
 	for _, id := range repoIDs {
@@ -369,6 +408,58 @@ func (s *Store) ConfirmedRepos(ctx context.Context, rootItemID string) ([]repos.
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// adoptLegacySelectedRepos carries forward repositories chosen when an older
+// spike was started, before that choice populated confirmed_repos_json.
+func (s *Store) adoptLegacySelectedRepos(ctx context.Context, rootItemID string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		return s.adoptLegacySelectedReposTx(ctx, tx, rootItemID)
+	})
+}
+
+func (s *Store) adoptLegacySelectedReposTx(ctx context.Context, tx *sql.Tx, rootItemID string) error {
+	var key string
+	if err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, rootItemID).Scan(&key); err != nil {
+		return err
+	}
+	root, err := s.Items.GetTx(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if root.Type != items.Spike || len(root.Repos) != 0 || len(root.SuggestedRepos) == 0 {
+		return nil
+	}
+	if _, err := s.repoRefs(ctx, tx, root.SuggestedRepos); err != nil {
+		return err
+	}
+	if err := s.commitRepoConfirmTx(ctx, tx, root, root.SuggestedRepos); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM requests WHERE item_id = ? AND kind = 'confirm_repos' AND state = 'open'`, root.ID)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, id := range ids {
+		if err := s.closeRequestTx(ctx, tx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CloseSpike approves a close_spike request (I4); P1's reconcileSpike then
