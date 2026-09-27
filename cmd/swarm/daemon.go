@@ -468,7 +468,7 @@ type quotaResetFire struct {
 	Cutoff time.Time
 }
 
-// dueResets records every meter's ResetsAt into seen (keyed by "kind|meter
+// dueResets records every used meter's ResetsAt into seen (keyed by "kind|meter
 // id"), then returns every remembered cutoff currently inside the
 // (now-1h, now-1m] detection window, pruning anything older than that.
 //
@@ -484,7 +484,10 @@ type quotaResetFire struct {
 func dueResets(seen map[string]map[int64]bool, snaps []usagesvc.Snapshot, now time.Time) []quotaResetFire {
 	for _, snap := range snaps {
 		for _, m := range snap.Meters {
-			if m.ResetsAt == nil {
+			// UsedPct <= 0: an unused window has nothing to reset, and agy
+			// reports one with ResetsAt sliding to fetch-time+5h on every
+			// poll -- remembering those would fire a fake reset per poll.
+			if m.ResetsAt == nil || m.UsedPct <= 0 {
 				continue
 			}
 			key := string(snap.Agent) + "|" + m.ID

@@ -9,7 +9,7 @@ import (
 )
 
 func meterAt(id string, at time.Time) usagesvc.Meter {
-	return usagesvc.Meter{ID: id, ResetsAt: &at}
+	return usagesvc.Meter{ID: id, UsedPct: 50, ResetsAt: &at}
 }
 
 // Root cause B: checkQuotaResets used to read only the latest snapshot's
@@ -53,5 +53,24 @@ func TestDueResetsFiresOnAnOldCutoffAfterTheWindowRolledOver(t *testing.T) {
 	}
 	if len(seen["codex|codex_5h"]) != 1 {
 		t.Fatalf("seen[codex|codex_5h] = %v, want only the still-live next-window cutoff left", seen["codex|codex_5h"])
+	}
+}
+
+// agy reports an unused 5h window with ResetsAt pinned at exactly
+// fetch-time+5h, sliding forward on every poll (see internal/usage/agy.go).
+// None of those are real resets: remembering them would make every one come
+// due 5h later as a separate "reset", re-waking live agy sessions every poll.
+// A window with no usage has nothing to reset, so it must never be recorded.
+func TestDueResetsIgnoresASlidingResetOnAnUnusedWindow(t *testing.T) {
+	seen := map[string]map[int64]bool{}
+	start := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	for poll := start; poll.Before(start.Add(7 * time.Hour)); poll = poll.Add(5 * time.Minute) {
+		m := meterAt("gemini_5h", poll.Add(5*time.Hour))
+		m.UsedPct = 0
+		if fires := dueResets(seen, []usagesvc.Snapshot{
+			{Agent: runtime.Agy, Meters: []usagesvc.Meter{m}},
+		}, poll); len(fires) != 0 {
+			t.Fatalf("poll at %s fired %+v, want none for an unused sliding window", poll, fires)
+		}
 	}
 }
