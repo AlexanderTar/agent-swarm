@@ -60,7 +60,6 @@ public struct NewOrchestratorView: View {
 
     private func formContents(maxRows: Int) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(Copy.newOrchestrator).font(.title3.bold())
             if let failure = form.failure {
                 Label(failure, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
             }

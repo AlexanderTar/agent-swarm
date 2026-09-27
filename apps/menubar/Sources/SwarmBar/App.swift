@@ -165,6 +165,7 @@ struct SwarmBarApp: App {
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 820, height: 790)
+        .defaultPosition(.center)
 
         Settings {
             SettingsHost(model: delegate.model)
@@ -192,6 +193,12 @@ struct PopoverHost: View {
                     openNewOrchestrator: {
                         NSApp.activate(ignoringOtherApps: true)
                         openWindow(id: "new-orchestrator")
+                        // macOS restores the last frame on reopen; always center it on the active screen.
+                        DispatchQueue.main.async {
+                            guard let w = NSApp.windows.first(where: { $0.identifier?.rawValue.contains("new-orchestrator") == true }),
+                                  let screen = NSScreen.main?.visibleFrame else { return }
+                            w.setFrameOrigin(NSPoint(x: screen.midX - w.frame.width / 2, y: screen.midY - w.frame.height / 2))
+                        }
                     },
                     openSettings: {
                         StatusItemWatcher.dismissPopover()
