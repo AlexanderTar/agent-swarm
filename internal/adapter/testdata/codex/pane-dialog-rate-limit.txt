@@ -1,10 +1,10 @@
 ›
 
-  You've hit your usage limit for gpt-6-astra.
+  You've hit your usage limit for GPT-6 Astra.
 
-  Switch to gpt-6-luna for lower credit usage?
+  Switch to GPT-6 Astra Mini for lower credit usage?
 
-› 1. Switch to gpt-6-luna
+› 1. Switch to GPT-6 Astra Mini
   2. Keep current model
 
   Use ↑/↓ to move, press enter to confirm

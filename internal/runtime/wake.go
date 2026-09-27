@@ -571,7 +571,11 @@ func (s *Store) WakeOnQuotaReset(ctx context.Context, kind AgentKind, cutoff tim
 				ProviderSessionID: providerID,
 				Notice:            notice,
 				Model:             s.resolveLaunchModel(ctx, kind, model, effort)})
-			if err != nil {
+			// Throttled the same way as the "pane not idle" skip below: a
+			// session whose native wake keeps erroring is re-selected every
+			// tick for up to an hour, and one log line per (session,
+			// cutoff) is enough to see the failure without 60 repeats/hour.
+			if err != nil && s.shouldLogQuotaSkip(sessionID, cutoff) {
 				s.logf("wake: quota-reset native wake for %s: %v", agentName, err)
 			}
 			if delivered {

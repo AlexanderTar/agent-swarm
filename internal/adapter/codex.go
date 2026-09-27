@@ -201,7 +201,11 @@ var (
 	// docs/specs/2026-09-27-quota-reset-wake-fix.md root cause C. Pasting a
 	// wake message + Enter into it silently switches the model and drops
 	// the text; the auto-answer below keeps the current model instead.
-	codexRateLimit        = regexp.MustCompile(`Switch to \S+ for lower credit usage\?`)
+	// The picker's model name is codex's display name, which can itself
+	// contain spaces (the existing retirement fixture shows "GPT-5.6 Sol"),
+	// so this can't be \S+ -- ".+?" bounded by the literal text on both
+	// sides can't false-positive on anything else in a codex pane.
+	codexRateLimit        = regexp.MustCompile(`Switch to .+? for lower credit usage\?`)
 	codexKeepCurrentModel = regexp.MustCompile(`Keep current model`)
 )
 
@@ -225,7 +229,7 @@ func lastNonBlankLines(capture string, n int) string {
 func (c *Codex) ProcessNames() []*regexp.Regexp { return codexProcess }
 func (c *Codex) IdlePrompt() *regexp.Regexp     { return codexIdle }
 func (c *Codex) Busy() *regexp.Regexp           { return nil } // the composer is not redrawn while working
-func (c *Codex) Idle(capture string) bool       { return idle(c, lastNonBlankLines(capture, 3)) }
+func (c *Codex) Idle(capture string) bool       { return idle(c, lastNonBlankLines(capture, 6)) }
 
 func (c *Codex) StartupDialogs() []Dialog {
 	return []Dialog{
