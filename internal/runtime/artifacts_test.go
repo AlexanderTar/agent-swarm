@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,12 +29,14 @@ func TestSplitSections(t *testing.T) {
 }
 
 func TestRequiredSpecSectionDefaultsToReview(t *testing.T) {
-	for _, title := range []string{"Locked decisions", "2.3. Delivery", "SECURITY", "document", "Verification"} {
+	for _, title := range []string{"Locked decisions", "2.3. Delivery", "SECURITY", "document", "Verification",
+		"Out of scope", "2. Explicitly out of scope"} {
 		if !RequiredSpecSection(title) {
 			t.Errorf("%q must require approval", title)
 		}
 	}
-	for _, title := range []string{"Context", "2. Background", "3. FILE LIST", "References", "Explicitly out of scope", "Work breakdown"} {
+	for _, title := range []string{"Context", "2. Background", "3. FILE LIST", "References",
+		"  2.3. bIbLiOgRaPhY  ", "Files", "Work breakdown"} {
 		if RequiredSpecSection(title) {
 			t.Errorf("%q must be informational", title)
 		}
@@ -118,18 +122,36 @@ func TestSpecApprovalSummaryLengthAndPreservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{"   \n", strings.Repeat("é", 701)} {
+	for _, bad := range []string{"   \n", strings.Repeat("é", 1001)} {
 		if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: bad}); err == nil {
 			t.Errorf("accepted invalid summary of %d runes", len([]rune(bad)))
 		}
 	}
-	summary := "| Part | Delivery |\n|---|---|\n| API | Search |" + strings.Repeat("é", 700-len([]rune("| Part | Delivery |\n|---|---|\n| API | Search |")))
+	table := "| Part | Delivery |\n|---|---|\n| API | Search |"
+	summary := table + strings.Repeat("é", 1000-len([]rune(table)))
 	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: summary})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if req.Prompt != summary {
 		t.Fatalf("summary altered: %q", req.Prompt)
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.relayRequestTx(ctx, tx, req.ID) }); err != nil {
+		t.Fatal(err)
+	}
+	var raw string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE request_id = ?
+		AND kind = 'relay' ORDER BY rowid DESC LIMIT 1`, req.ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var relay struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(raw), &relay); err != nil {
+		t.Fatal(err)
+	}
+	if relay.Summary != summary {
+		t.Fatalf("relay summary altered: %q", relay.Summary)
 	}
 }
 

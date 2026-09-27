@@ -999,11 +999,12 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 	if in.ArtifactID == "" {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "artifact_id is required."}
 	}
-	if n := utf8.RuneCountInString(in.Prompt); n < 1 || n > 1000 {
-		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
+	n := utf8.RuneCountInString(in.Prompt)
+	if in.SectionID != "" && (strings.TrimSpace(in.Prompt) == "" || n > 1000) {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Spec section summary must be 1–1000 characters."}
 	}
-	if in.SectionID != "" && (strings.TrimSpace(in.Prompt) == "" || utf8.RuneCountInString(in.Prompt) > 700) {
-		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Spec section summary must be 1–700 characters."}
+	if n < 1 || n > 1000 {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
 	}
 	var out Request
 	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {

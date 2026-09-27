@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"slices"
 	"strings"
@@ -10,6 +11,109 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/workflow"
 )
+
+func TestSpecSectionRequestAndMaterializationGateAgree(t *testing.T) {
+	for _, tc := range []struct {
+		title    string
+		required bool
+	}{
+		{"Context", false}, {"2. BACKGROUND", false}, {"2.3. Bibliography", false},
+		{"References", false}, {"File list", false}, {"FILES", false},
+		{"3. Work breakdown", false}, {"Out of scope", true},
+		{"2. Explicitly out of scope", true}, {"Unlisted decision", true},
+		{"", true},
+	} {
+		name := tc.title
+		if name == "" {
+			name = "headingless"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Review", Intent: "feature", Kind: Fake, Model: "fake-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ses, err := s.LatestSession(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := "A decision.\n"
+			if tc.title != "" {
+				body = "## " + tc.title + "\n\nA decision.\n"
+			}
+			spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec", writeFile(t, body), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			section := spec.Sections[0]
+			req, askErr := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+				SectionID: section.ID, Prompt: "Review this decision."})
+			if (askErr == nil) != tc.required {
+				t.Fatalf("section ask error = %v, required = %v", askErr, tc.required)
+			}
+			gate := func() error {
+				return s.tx(ctx, func(tx *sql.Tx) error {
+					return s.checkEverySectionApproved(ctx, tx, spec.ArtifactID)
+				})
+			}
+			if err := gate(); (err != nil) != tc.required {
+				t.Fatalf("materialization gate error = %v, required = %v", err, tc.required)
+			}
+			if tc.required {
+				if _, err := s.Approve(ctx, req.ID, ApproveInput{SectionSHA256: section.SHA256,
+					ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+					t.Fatal(err)
+				}
+				if err := gate(); err != nil {
+					t.Fatalf("approved section blocked materialization: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestRevisedSectionNeedsNewApprovalBeforePlanReviewAndMaterialization(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, specID, planID, _ := approvedFeatureSpike(t, s)
+	art, _, err := s.ArtifactMarkdown(ctx, specID, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(art.Path, []byte("# Spec\n\n## Context\n\nauth is missing\n\n## Decisions\n\ntokens\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	revised, err := s.RegisterArtifact(ctx, ses.ID, "revise", "SPIKE-1", "spec", art.Path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID,
+		Prompt: "Ship the plan."}); err == nil || !strings.Contains(err.Error(), "approval_missing") {
+		t.Fatalf("plan review opened without revised section approval: %v", err)
+	}
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", ""); err == nil ||
+		!strings.Contains(err.Error(), "approval_missing: section") {
+		t.Fatalf("materialization accepted the old section hash: %v", err)
+	}
+	section := revised.Sections[1]
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: specID,
+		SectionID: section.ID, Prompt: "Ship token auth."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, req.ID, ApproveInput{SectionSHA256: section.SHA256,
+		ArtifactRevision: revised.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID,
+		Prompt: "Ship the plan."}); err != nil {
+		t.Fatalf("plan review stayed blocked after renewed approval: %v", err)
+	}
+	if _, err := s.Materialize(ctx, ses.ID, "SPIKE-1", specID, planID, "", ""); err != nil {
+		t.Fatalf("materialization stayed blocked after renewed approval: %v", err)
+	}
+}
 
 // approvedFeatureSpike sets up a spike with one confirmed repo "chat", an approved
 // spec (2 sections) and an approved plan carrying planBody's tree, and returns the

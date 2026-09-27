@@ -30,7 +30,7 @@ var leadingSectionNumber = regexp.MustCompile(`^\d+(?:\.\d+)*\.?\s+`)
 func RequiredSpecSection(title string) bool {
 	title = strings.ToLower(strings.TrimSpace(leadingSectionNumber.ReplaceAllString(strings.TrimSpace(title), "")))
 	switch title {
-	case "context", "background", "bibliography", "references", "file list", "files", "explicitly out of scope", "out of scope", "work breakdown":
+	case "context", "background", "bibliography", "references", "file list", "files", "work breakdown":
 		return false
 	}
 	return true
