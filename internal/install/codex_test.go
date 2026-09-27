@@ -496,3 +496,41 @@ func TestCurrentSwarmMCPTableIsNotLegacy(t *testing.T) {
 		t.Errorf("config.toml changed:\n%s", after)
 	}
 }
+
+// A re-install over v2's own hooks and MCP entries must not delete and
+// rewrite them: RemoveLegacyCodex/RemoveLegacyCursor only take v1 leftovers
+// (entries whose command isn't this install's binary).
+func TestLegacyRemoversLeaveV2EntriesAlone(t *testing.T) {
+	c := fakeHome(t)
+	if _, err := install.WriteCodex(c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := install.WriteCursor(c); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{c.Codex("hooks.json"), c.Cursor("hooks.json"), c.Cursor("mcp.json")}
+	before := map[string]string{}
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[p] = string(b)
+	}
+	for name, remove := range map[string]func(install.Config) ([]string, error){
+		"codex": install.RemoveLegacyCodex, "cursor": install.RemoveLegacyCursor,
+	} {
+		changed, err := remove(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(changed) != 0 {
+			t.Errorf("RemoveLegacy %s changed %v on a clean v2 install", name, changed)
+		}
+	}
+	for _, p := range paths {
+		if b, _ := os.ReadFile(p); string(b) != before[p] {
+			t.Errorf("%s changed:\n%s", p, b)
+		}
+	}
+}

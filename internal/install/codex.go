@@ -144,7 +144,16 @@ func mergeCodexHooks(c Config, m map[string]any) error {
 
 // entryIsSwarm reports whether a matcher entry (in its generic map form) holds a
 // swarm hook command.
-func entryIsSwarm(entry any) bool {
+func entryIsSwarm(entry any) bool { return entryMatches(entry, isSwarmHookCommand) }
+
+// isLegacyHookCommand is a swarm hook command that isn't this install's own
+// binary: a v1 node script or a stale Go binary path. v2's own entries are
+// current, so a re-install must not delete and rewrite them.
+func isLegacyHookCommand(bin string) func(string) bool {
+	return func(cmd string) bool { return isSwarmHookCommand(cmd) && !strings.HasPrefix(cmd, bin+" ") }
+}
+
+func entryMatches(entry any, match func(string) bool) bool {
 	obj, ok := entry.(map[string]any)
 	if !ok {
 		return false
@@ -152,7 +161,7 @@ func entryIsSwarm(entry any) bool {
 	list, _ := obj["hooks"].([]any)
 	for _, h := range list {
 		hm, _ := h.(map[string]any)
-		if cmd, _ := hm["command"].(string); isSwarmHookCommand(cmd) {
+		if cmd, _ := hm["command"].(string); match(cmd) {
 			return true
 		}
 	}
@@ -329,7 +338,9 @@ func RemoveLegacyCodex(c Config) ([]string, error) {
 	// v1 also merged hooks into ~/.codex/hooks.json. Drop its entries without
 	// creating the file if it is absent.
 	hooksPath := c.Codex("hooks.json")
-	wrote, err := EditJSON(hooksPath, false, dropSwarmHookEntries)
+	wrote, err := EditJSON(hooksPath, false, func(m map[string]any) error {
+		return dropHookEntries(m, isLegacyHookCommand(c.Bin))
+	})
 	if err != nil {
 		return changed, err
 	}
@@ -341,7 +352,9 @@ func RemoveLegacyCodex(c Config) ([]string, error) {
 
 // dropSwarmHookEntries removes every swarm matcher entry from a hooks.json,
 // leaving empty event keys out rather than as empty arrays.
-func dropSwarmHookEntries(m map[string]any) error {
+func dropSwarmHookEntries(m map[string]any) error { return dropHookEntries(m, isSwarmHookCommand) }
+
+func dropHookEntries(m map[string]any, match func(string) bool) error {
 	hooks, _ := m["hooks"].(map[string]any)
 	if hooks == nil {
 		return nil
@@ -353,7 +366,7 @@ func dropSwarmHookEntries(m map[string]any) error {
 		}
 		var kept []any
 		for _, entry := range list {
-			if !entryIsSwarm(entry) {
+			if !entryMatches(entry, match) {
 				kept = append(kept, entry)
 			}
 		}
