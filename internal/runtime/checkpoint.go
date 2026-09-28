@@ -97,6 +97,9 @@ type CheckpointInput struct {
 	// only the orchestrator of the checkpoint's own root item may set it,
 	// only once, only 3-80 runes. Empty means "no title offered".
 	Title string
+	// Todos is a spike orchestrator's step report (spec 2026-09-28-orchestrator-todos
+	// locked decision 4); ids it leaves out keep their stored status.
+	Todos []TodoReport
 }
 
 // CheckpointResult is swarm_checkpoint's result.
@@ -115,6 +118,8 @@ type CheckpointResult struct {
 	// TitleIgnored is why in.Title was NOT applied (spec 2026-09-28), empty
 	// when in.Title was empty or TitleApplied is true.
 	TitleIgnored string
+	// TodosIgnored is set when a non-orchestrator sent todos.
+	TodosIgnored string
 }
 
 // applyPendingTitle sets its title and clears title_pending, guarded by
@@ -1208,6 +1213,28 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			}
 		}
 
+		// spec 2026-09-28-orchestrator-todos locked decision 5, in order.
+		var todosJSON any
+		if len(in.Todos) > 0 {
+			switch {
+			case a.Role != RoleOrchestrator:
+				out.TodosIgnored = "only the orchestrator keeps a task list"
+			case it.Type != items.Spike || spikeSteps[it.SpikeIntent] == nil:
+				return &items.Error{Code: items.CodeBadRequest,
+					Message: fmt.Sprintf("todos are derived from tasks for %s; don't send them", it.Key)}
+			default:
+				merged, err := s.mergeSpikeTodos(ctx, tx, it, in.Todos)
+				if err != nil {
+					return err
+				}
+				b, err := json.Marshal(merged)
+				if err != nil {
+					return err
+				}
+				todosJSON = string(b)
+			}
+		}
+
 		if n := utf8.RuneCountInString(in.Summary); n < 1 || n > 500 {
 			return &items.Error{Code: items.CodeBadRequest, Message: "Summary must be 1–500 characters."}
 		}
@@ -1389,12 +1416,12 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		now := s.Now()
 		if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind,
 			attempt, resolution, summary, next_json, blockers_json, git_json, verify_json, artifacts_json,
-			processed_json, verdict, findings_json, daemon_written, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+			processed_json, verdict, findings_json, todos_json, daemon_written, created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
 			ckpID, sessionID, a.ID, it.ID, string(in.Kind), ses.Attempt, nullIf(in.Resolution), in.Summary,
 			jsonArray(in.Next), jsonArray(in.Blockers), jsonArray(in.Git), jsonArray(in.Verification),
 			jsonArray(in.Artifacts), jsonArray(in.Processed), nullIf(in.Verdict), jsonArray(in.Findings),
-			db.Millis(now)); err != nil {
+			todosJSON, db.Millis(now)); err != nil {
 			return err
 		}
 		out.CheckpointID = ckpID

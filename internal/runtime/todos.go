@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
@@ -229,4 +232,57 @@ func ProgressOf(todos []Todo) *TodoProgress {
 		p.Current = firstPending
 	}
 	return p
+}
+
+// mergeSpikeTodos validates a spike orchestrator's step report (spec locked
+// decision 5, steps 3-4) and returns the full merged list to store, in
+// template order. The in_progress count runs on the list the orchestrator
+// sees: after the daemon's spec/approve facts.
+func (s *Store) mergeSpikeTodos(ctx context.Context, tx *sql.Tx, spike items.Item, in []TodoReport) ([]TodoReport, error) {
+	steps := spikeSteps[spike.SpikeIntent]
+	ids := make([]string, len(steps))
+	for i, st := range steps {
+		ids[i] = st.ID
+	}
+	for _, r := range in {
+		if !slices.Contains(ids, r.ID) {
+			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"todos: unknown step %q for a %s spike; use: %s", r.ID, spike.SpikeIntent, strings.Join(ids, ", "))}
+		}
+		if r.Status != TodoPending && r.Status != TodoInProgress && r.Status != TodoCompleted {
+			return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"todos: status must be pending, in_progress or completed (got %q)", r.Status)}
+		}
+	}
+	prev, err := s.latestTodoReports(ctx, tx, spike.ID)
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]TodoStatus{}
+	for _, r := range append(prev, in...) {
+		byID[r.ID] = r.Status
+	}
+	merged := make([]TodoReport, 0, len(steps))
+	for _, id := range ids {
+		st := byID[id]
+		if st == "" {
+			st = TodoPending
+		}
+		merged = append(merged, TodoReport{ID: id, Status: st})
+	}
+	view, err := s.spikeTodos(ctx, tx, spike.ID, steps, merged)
+	if err != nil {
+		return nil, err
+	}
+	var running []string
+	for _, t := range view {
+		if t.Status == TodoInProgress {
+			running = append(running, t.ID)
+		}
+	}
+	if len(running) > 1 {
+		return nil, &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+			"todos: at most one step may be in_progress (%s)", strings.Join(running, ", "))}
+	}
+	return merged, nil
 }
