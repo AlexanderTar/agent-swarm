@@ -54,8 +54,8 @@ type AskInput struct {
 	// own body (heading stripped, trimmed) exceeds 300 runes.
 	NothingToReview string
 	Withdraw        string // when set, every other field is ignored
-	Repos      []ReposProposal
-	Expansion  []ReposProposal
+	Repos           []ReposProposal
+	Expansion       []ReposProposal
 	// RequestID is I11's idempotency key, scoped to the calling MCP session
 	// (empty means "no idempotency, just run once").
 	RequestID string
