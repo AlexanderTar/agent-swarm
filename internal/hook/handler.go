@@ -173,6 +173,61 @@ func parseQuestionReply(prompt string) ([]questionReply, bool) {
 	return out, true
 }
 
+// codexAnswerText reads codex's synchronous request_user_input tool_response
+// once it has been unwrapped from its outer JSON string: inner decodes to
+// {"answers":{"<id>":{"answers":["<label>", "user_note: <note>"?]}}}
+// (docs/specs/2026-09-28-codex-sync-request-user-input.md, live probe).
+// Swarm asks one question per call, so only the first entry is read. Label is
+// the first answer element that isn't a "user_note: " remark, with any
+// trailing " (Recommended)" the model appended stripped (case-insensitive);
+// note is the text after "user_note: " in the first element that has it. ok
+// is false for anything else (a plain string tool_response, or JSON that
+// isn't this shape), so the caller falls back to today's behaviour.
+func codexAnswerText(inner string) (string, bool) {
+	var payload struct {
+		Answers map[string]struct {
+			Answers []string `json:"answers"`
+		} `json:"answers"`
+	}
+	if err := json.Unmarshal([]byte(inner), &payload); err != nil || len(payload.Answers) == 0 {
+		return "", false
+	}
+	var entry struct {
+		Answers []string `json:"answers"`
+	}
+	for _, v := range payload.Answers {
+		entry = v
+		break
+	}
+	if len(entry.Answers) == 0 {
+		return "", false
+	}
+	const notePrefix = "user_note:"
+	var label, note string
+	for _, a := range entry.Answers {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(a)), notePrefix) {
+			if note == "" {
+				note = strings.TrimSpace(a[strings.Index(a, ":")+1:])
+			}
+			continue
+		}
+		if label == "" {
+			label = a
+		}
+	}
+	if label == "" {
+		return "", false
+	}
+	const recommended = " (recommended)"
+	if strings.HasSuffix(strings.ToLower(label), recommended) {
+		label = label[:len(label)-len(recommended)]
+	}
+	if note != "" {
+		return label + ": " + note, true
+	}
+	return label, true
+}
+
 // extractToolResponseText reads the answer text out of a question tool's
 // PostToolUse tool_response. A real claude AskUserQuestion result has the
 // shape {questions, answers:{<question text>: <chosen label(s)>}, annotations}
@@ -181,13 +236,19 @@ func parseQuestionReply(prompt string) ([]questionReply, bool) {
 // extractQuestion computed for this call -- is used to pick answers' own
 // entry; a prompt that matches no key (e.g. a multi-question tool call, or a
 // truncated prompt) falls back to answers' first value rather than losing
-// the answer to the generic-key branch below.
+// the answer to the generic-key branch below. codex's synchronous
+// request_user_input answers the same way claude does, but wraps its object
+// in a JSON string (spec above) rather than sending the object directly, so
+// the string branch tries codexAnswerText before returning the raw string.
 func extractToolResponseText(raw []byte, prompt string) string {
 	if len(raw) == 0 {
 		return ""
 	}
 	var str string
 	if err := json.Unmarshal(raw, &str); err == nil {
+		if s, ok := codexAnswerText(str); ok {
+			return s
+		}
 		return strings.TrimSpace(str)
 	}
 	var obj map[string]any

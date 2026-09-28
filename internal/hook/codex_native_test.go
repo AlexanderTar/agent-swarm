@@ -43,6 +43,15 @@ func nativeFixture(t *testing.T, name string) []byte {
 	return fixture(t, "codex", "native-question", name)
 }
 
+// syncFixture is testdata/codex/native-question-sync, captured from an
+// isolated codex 0.157 probe on 2026-09-28 with
+// -c features.default_mode_request_user_input=true (the synchronous
+// request_user_input tool, not the async variant nativeFixture covers).
+func syncFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	return fixture(t, "codex", "native-question-sync", name)
+}
+
 type qrow struct {
 	ID, State, Prompt, Options, Ref string
 	Response, Via                   sql.NullString
@@ -221,6 +230,62 @@ func TestCodexMalformedQuestionReplyFallsBackToTheBlanketClose(t *testing.T) {
 		"<send_user_message_question_reply>not json</send_user_message_question_reply>"))
 	if r := questionRow(t, h, probeQuestion); r.State != "answered" || r.Response.String != "Answered in terminal" {
 		t.Fatalf("row = %+v, want the free-text fallback", r)
+	}
+}
+
+// S9: the synchronous request_user_input tool answers in the same
+// PostToolUse turn (no UserPromptSubmit round trip): a typed note rides
+// alongside the picked label as a second "user_note: " answer entry.
+func TestCodexSyncRequestChangesWithNoteAnswersInline(t *testing.T) {
+	h, ses := codexSeed(t)
+	codexHook(t, h, ses, "PreToolUse", syncFixture(t, "PreToolUse-approval.json"))
+	out := codexHook(t, h, ses, "PostToolUse", syncFixture(t, "PostToolUse-request-changes-note.json"))
+
+	q := "Section 1 of the greeting spec — which way? ⟦swarm:req_01PROBE0000000000000000001⟧"
+	r := questionRow(t, h, q)
+	if r.State != "answered" || r.Response.String != "Request changes: use German instead" {
+		t.Fatalf("row = %+v, want answered with %q", r, "Request changes: use German instead")
+	}
+	if got := contextOf(t, out); !strings.Contains(got, `decision:"request_changes"`) {
+		t.Fatalf("context = %q, want it to name decision:%q", got, "request_changes")
+	}
+}
+
+// S10: a plain option (no user_note, no trailing "(Recommended)") answers
+// with just the label.
+func TestCodexSyncFrenchAnswersInline(t *testing.T) {
+	h, ses := codexSeed(t)
+	codexHook(t, h, ses, "PreToolUse", syncFixture(t, "PreToolUse-language.json"))
+	out := codexHook(t, h, ses, "PostToolUse", syncFixture(t, "PostToolUse-language-french.json"))
+
+	q := "Which language for greeting.txt? ⟦swarm:req_01PROBE0000000000000000000⟧"
+	r := questionRow(t, h, q)
+	if r.State != "answered" || r.Response.String != "French" {
+		t.Fatalf("row = %+v, want answered with %q", r, "French")
+	}
+	if got := contextOf(t, out); !strings.Contains(got, `"French"`) {
+		t.Fatalf("French is neither Approve nor Request changes, want the generic forwarding step quoting it, got %q", got)
+	}
+}
+
+func TestCodexAnswerText(t *testing.T) {
+	for _, c := range []struct {
+		name, inner, want string
+		ok                bool
+	}{
+		{"request changes with note", `{"answers":{"spec_section_1":{"answers":["Request changes","user_note: use German instead"]}}}`,
+			"Request changes: use German instead", true},
+		{"french", `{"answers":{"language":{"answers":["French"]}}}`, "French", true},
+		{"recommended suffix stripped", `{"answers":{"language":{"answers":["Approve (Recommended)"]}}}`, "Approve", true},
+		{"non-codex json string", `{"answer":"Approve"}`, "", false},
+		{"not json", `not json`, "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := codexAnswerText(c.inner)
+			if ok != c.ok || got != c.want {
+				t.Fatalf("codexAnswerText(%q) = %q, %v; want %q, %v", c.inner, got, ok, c.want, c.ok)
+			}
+		})
 	}
 }
 
