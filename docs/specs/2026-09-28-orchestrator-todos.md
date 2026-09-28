@@ -130,14 +130,14 @@ type TodoReport struct {
 	Status TodoStatus `json:"status"`
 }
 
-type Progress struct {
+type TodoProgress struct {
 	Done    int    `json:"done"`
 	Total   int    `json:"total"`
 	Current string `json:"current"` // first in_progress label, else first pending, else ""
 }
 
 func (s *Store) Todos(ctx context.Context, rootItemID string) ([]Todo, error) // nil for no list
-func ProgressOf(todos []Todo) *Progress                                        // nil for empty
+func ProgressOf(todos []Todo) *TodoProgress                                        // nil for empty
 ```
 
 - `CheckpointInput` gains `Todos []TodoReport`, and `CheckpointResult` gains
