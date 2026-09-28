@@ -94,4 +94,20 @@ describe("AgentFields (§16.3, §16.10)", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("group", { name: "Coder" })).toBeInTheDocument();
   });
+
+  it("links visible labels to their select triggers", async () => {
+    const user = userEvent.setup();
+    render(<Host />);
+    const check = (label: HTMLElement, name: string) => {
+      expect(label).toHaveAttribute("for", screen.getByRole("combobox", { name }).id);
+    };
+    const labels = screen.getAllByText("Agent", { selector: "label" });
+    check(labels[0], "Agent");
+    check(screen.getAllByText("Model", { selector: "label" })[0], "Model");
+    check(screen.getAllByText("Advisor", { selector: "label" })[0], "Advisor");
+    check(screen.getAllByText("Model", { selector: "label" })[1], "Advisor model");
+    await user.click(screen.getByRole("button", { name: "Worker Roles" }));
+    check(screen.getAllByText("Agent", { selector: "label" })[1], "Coder Agent");
+    check(screen.getAllByText("Model", { selector: "label" })[2], "Coder Model");
+  });
 });
