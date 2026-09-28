@@ -843,6 +843,72 @@ func TestQuestionToolInterceptionCreatesHITLRequest(t *testing.T) {
 	})
 }
 
+// TestQuestionToolBindsALongMultiLineNativeQuestion is the
+// 2026-09-28-summary-in-native-question regression: nativePromptFor's
+// question now carries a summary head, optional review paths, and the
+// approve line (with warnings) ahead of the ⟦swarm:ref⟧ token -- several
+// lines, near the 1000-rune cap. PreToolUse must still bind the request row
+// to that ref regardless, for every hooked kind (claude, codex, agy).
+func TestQuestionToolBindsALongMultiLineNativeQuestion(t *testing.T) {
+	ctx := context.Background()
+	question := "Ship auth end to end: login, session cookies, and logout across web and API.\n\n" +
+		"Spec: /Users/dev/repo/docs/specs/2026-09-28-auth.md\n" +
+		"Plan: /Users/dev/repo/docs/plans/2026-09-28-auth.md\n" +
+		"Approve the plan (rev 3)?\nWarnings:\n- Task t2 has no verify command." +
+		" ⟦swarm:req_PLAN9⟧"
+
+	assertBoundToPlan9 := func(t *testing.T, h *Handler, ses string) {
+		t.Helper()
+		var bindingJSON sql.NullString
+		if err := h.DB.QueryRowContext(ctx, `SELECT binding_json FROM requests WHERE session_id = ?`, ses).
+			Scan(&bindingJSON); err != nil {
+			t.Fatal(err)
+		}
+		if !bindingJSON.Valid || bindingJSON.String != `{"ref":"req_PLAN9"}` {
+			t.Fatalf("binding_json = %v, want {\"ref\":\"req_PLAN9\"}", bindingJSON)
+		}
+	}
+
+	t.Run("claude AskUserQuestion", func(t *testing.T) {
+		h, ses := seed(t, 0, runtime.Running)
+		input, _ := json.Marshal(map[string]any{
+			"session_id": "p1",
+			"tool_name":  "AskUserQuestion",
+			"tool_input": map[string]any{"question": question, "options": []string{"Approve", "Request changes"}},
+		})
+		if _, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, input); err != nil {
+			t.Fatal(err)
+		}
+		assertBoundToPlan9(t, h, ses)
+	})
+
+	t.Run("codex request_user_input", func(t *testing.T) {
+		h, ses := codexSeed(t)
+		codexHook(t, h, ses, "PreToolUse", codexPreToolUse(map[string]any{"title": question,
+			"options": []string{"Approve", "Request changes"}}))
+		assertBoundToPlan9(t, h, ses)
+	})
+
+	t.Run("agy ask_question", func(t *testing.T) {
+		h, ses := seed(t, 0, runtime.Running)
+		if _, err := h.DB.ExecContext(ctx, `UPDATE agents SET kind = 'agy' WHERE id = 'agt_1'`); err != nil {
+			t.Fatal(err)
+		}
+		input, _ := json.Marshal(map[string]any{
+			"conversationId": "p1",
+			"toolCall": map[string]any{
+				"name": "ask_question",
+				"args": map[string]any{"questions": []map[string]any{{"question": question,
+					"options": []string{"Approve", "Request changes"}}}},
+			},
+		})
+		if _, err := h.Handle(ctx, runtime.Agy, "PreToolUse", ses, input); err != nil {
+			t.Fatal(err)
+		}
+		assertBoundToPlan9(t, h, ses)
+	})
+}
+
 // TestAgyLiveHookFixturesOpenAndCloseAQuestionRow replays the byte-for-byte
 // PreToolUse/PostToolUse payloads captured from a live, non-Swarm agy session
 // asking `ask_question` (docs/plans/2026-09-25-needs-you-and-child-approval-routing.md

@@ -1010,11 +1010,11 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "artifact_id is required."}
 	}
 	n := utf8.RuneCountInString(in.Prompt)
-	if in.SectionID != "" && (strings.TrimSpace(in.Prompt) == "" || n > 1000) {
-		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Spec section summary must be 1–1000 characters."}
+	if in.SectionID != "" && (strings.TrimSpace(in.Prompt) == "" || n > 2000) {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Spec section summary must be 1–2000 characters."}
 	}
-	if n < 1 || n > 1000 {
-		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–1000 characters."}
+	if n < 1 || n > 2000 {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–2000 characters."}
 	}
 	var out Request
 	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
@@ -1116,7 +1116,7 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			}
 			json.Unmarshal([]byte(warningsJSON), &warnings)
 		}
-		np, err := s.nativePromptFor(ctx, tx, out, sectionTitle, warnings)
+		np, err := s.nativePromptFor(ctx, tx, out, sectionTitle, warnings, reviewPaths)
 		if err != nil {
 			return err
 		}

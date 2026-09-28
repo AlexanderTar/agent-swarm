@@ -29,7 +29,7 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = s.tx(ctx, func(tx *sql.Tx) error {
-		got, err := s.nativePromptFor(ctx, tx, Request{ID: "req_e1", Kind: KindAcceptEpic, ItemID: ep.ID}, "", nil)
+		got, err := s.nativePromptFor(ctx, tx, Request{ID: "req_e1", Kind: KindAcceptEpic, ItemID: ep.ID}, "", nil, nil)
 		if err != nil {
 			return err
 		}
@@ -37,7 +37,7 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("accept_epic prompt = %+v, want %+v", got, want)
 		}
-		got, err = s.nativePromptFor(ctx, tx, Request{ID: "req_f1", Kind: KindAcceptFix, ItemID: bug.ID}, "", nil)
+		got, err = s.nativePromptFor(ctx, tx, Request{ID: "req_f1", Kind: KindAcceptFix, ItemID: bug.ID}, "", nil, nil)
 		if err != nil {
 			return err
 		}
@@ -46,7 +46,7 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("accept_fix prompt = %+v, want %+v", got, want)
 		}
-		got, err = s.nativePromptFor(ctx, tx, Request{ID: "req_c1", Kind: KindAcceptFix, ItemID: chore.ID}, "", nil)
+		got, err = s.nativePromptFor(ctx, tx, Request{ID: "req_c1", Kind: KindAcceptFix, ItemID: chore.ID}, "", nil, nil)
 		if err != nil {
 			return err
 		}

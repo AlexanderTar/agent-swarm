@@ -74,31 +74,133 @@ func truncateWithToken(body, ref string) string {
 	return body + token
 }
 
+// buildApprovalQuestion assembles a daemon-issued approve_section/
+// approve_plan/approve_report native question: a head of the request's
+// stored summary (approvalSummaryHead), a blank line, any review paths
+// (plan only), the approve line (with plan warnings already folded in), and
+// the ref token -- all within the existing 1000-rune cap
+// (2026-09-28-summary-in-native-question). The full summary is printed in
+// chat, not here; head is already capped by approvalSummaryHead, but this
+// still shortens it further, ending with "…", if the never-cut tail
+// (paths, approve line, token) alone leaves it no room. A separate helper
+// from truncateWithToken because its other callers truncate a single body,
+// not a summary glued to a fixed, never-cut tail.
+func buildApprovalQuestion(summary, paths, approveLine, ref string) string {
+	token := refToken(ref)
+	tail := paths + approveLine
+	limit := 1000 - utf8.RuneCountInString(token) - utf8.RuneCountInString(tail) - 2 // "\n\n"
+	sr := []rune(summary)
+	switch {
+	case limit <= 0:
+		summary = ""
+	case len(sr) > limit:
+		if limit == 1 {
+			summary = "…"
+		} else {
+			summary = string(sr[:limit-1]) + "…"
+		}
+	}
+	if summary == "" {
+		return tail + token
+	}
+	return summary + "\n\n" + tail + token
+}
+
+// capRunes shortens s to at most limit runes, ending with "…" when cut.
+func capRunes(s string, limit int) string {
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	if limit <= 0 {
+		return ""
+	}
+	return string(r[:limit-1]) + "…"
+}
+
+// approvalSummaryHead is the portion of a stored approval summary shown
+// inline in the native question (2026-09-28-summary-in-native-question
+// scope change): the full summary is printed verbatim in chat by the asking
+// agent (a later hook task enforces that for the hooked kinds), so the
+// native question itself only needs a short head. claude/agy/codex
+// (questionHookKinds -- their native question tool is hooked, so Swarm can
+// later confirm the chat print) get the summary's first line, capped to 200
+// runes; cursor/muse (no hook, nothing enforces the chat print) get up to
+// 600 runes of the summary, unlined.
+func approvalSummaryHead(summary string, kind AgentKind) string {
+	if questionHookKinds[kind] {
+		if i := strings.IndexByte(summary, '\n'); i >= 0 {
+			summary = summary[:i]
+		}
+		return capRunes(summary, 200)
+	}
+	return capRunes(summary, 600)
+}
+
+// requestAgentKindTx looks up the kind of the agent a request is filed
+// under -- the agent that will show this request's native question -- so
+// nativePromptFor can size the summary head to it.
+func (s *Store) requestAgentKindTx(ctx context.Context, tx *sql.Tx, agentID string) (AgentKind, error) {
+	var kind AgentKind
+	err := tx.QueryRowContext(ctx, `SELECT kind FROM agents WHERE id = ?`, agentID).Scan(&kind)
+	return kind, err
+}
+
+// planPathsBlock formats a plan approval's review paths as the lines shown
+// immediately above the approve line: "Spec: <abs path>\n" (when a spec
+// exists) followed by "Plan: <abs path>\n". Empty when paths is nil (no
+// review paths available, e.g. built outside askApproval/storedNativePromptTx).
+func planPathsBlock(paths *ReviewPaths) string {
+	if paths == nil {
+		return ""
+	}
+	var b strings.Builder
+	if paths.Spec != "" {
+		b.WriteString("Spec: " + paths.Spec + "\n")
+	}
+	b.WriteString("Plan: " + paths.Plan + "\n")
+	return b.String()
+}
+
 // nativePromptFor builds the daemon-issued native prompt for an approval-kind
 // request (spec section 6): approve_section, approve_plan, approve_report,
 // confirm_repos, close_spike, accept_epic, accept_fix. sectionTitle and
-// warnings are only used by the kinds that need them; passing them for the
-// others is harmless.
-func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, sectionTitle string, warnings []string) (NativePrompt, error) {
+// warnings are only used by the kinds that need them, and reviewPaths only
+// by approve_plan; passing them for the others is harmless. For
+// approve_section/approve_plan/approve_report the question leads with the
+// request's own stored summary (req.Prompt) so the user sees it even if the
+// asking agent never prints it (2026-09-28-summary-in-native-question).
+func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, sectionTitle string, warnings []string, reviewPaths *ReviewPaths) (NativePrompt, error) {
 	switch req.Kind {
-	case KindApproveSection:
-		q := fmt.Sprintf("Approve Spec section %q (rev %d)?", sectionTitle, req.ArtifactRevision)
-		return NativePrompt{Header: "Spike approval", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
-	case KindApprovePlan:
-		q := fmt.Sprintf("Approve the plan (rev %d)?", req.ArtifactRevision)
-		if len(warnings) > 0 {
-			var b strings.Builder
-			b.WriteString(q)
-			b.WriteString("\nWarnings:")
-			for _, w := range warnings {
-				b.WriteString("\n- " + w)
-			}
-			q = b.String()
+	case KindApproveSection, KindApprovePlan, KindApproveReport:
+		agentKind, err := s.requestAgentKindTx(ctx, tx, req.AgentID)
+		if err != nil {
+			return NativePrompt{}, err
 		}
-		return NativePrompt{Header: "Spike approval", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
-	case KindApproveReport:
-		q := fmt.Sprintf("Approve the debug report (rev %d)?", req.ArtifactRevision)
-		return NativePrompt{Header: "Spike approval", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+		head := approvalSummaryHead(req.Prompt, agentKind)
+		switch req.Kind {
+		case KindApproveSection:
+			approveLine := fmt.Sprintf("Approve Spec section %q (rev %d)?", sectionTitle, req.ArtifactRevision)
+			q := buildApprovalQuestion(head, "", approveLine, req.ID)
+			return NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}, nil
+		case KindApprovePlan:
+			approveLine := fmt.Sprintf("Approve the plan (rev %d)?", req.ArtifactRevision)
+			if len(warnings) > 0 {
+				var b strings.Builder
+				b.WriteString(approveLine)
+				b.WriteString("\nWarnings:")
+				for _, w := range warnings {
+					b.WriteString("\n- " + w)
+				}
+				approveLine = b.String()
+			}
+			q := buildApprovalQuestion(head, planPathsBlock(reviewPaths), approveLine, req.ID)
+			return NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}, nil
+		default: // KindApproveReport
+			approveLine := fmt.Sprintf("Approve the debug report (rev %d)?", req.ArtifactRevision)
+			q := buildApprovalQuestion(head, "", approveLine, req.ID)
+			return NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}, nil
+		}
 	case KindConfirmRepos:
 		key, err := s.itemKey(ctx, tx, req.ItemID)
 		if err != nil {
@@ -168,7 +270,9 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 // every daemon-issued native prompt: swarm_ask's result (mcpserver
 // requestOut) and the request_open relay share it verbatim.
 func NativePromptNextStep(ref string) string {
-	return fmt.Sprintf("Print the request summary in chat first (use summary exactly when supplied), not in the question. For a plan print full absolute review_paths.spec and review_paths.plan immediately before asking. Then show native_prompt "+
+	return fmt.Sprintf("Print the request summary in chat first, verbatim and complete (markdown is fine), "+
+		"immediately before the native question; for a plan also print the full absolute review_paths.spec and "+
+		"review_paths.plan. The native question shows only its first line. Then show native_prompt "+
 		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
 		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
 		"forwarding only what the user picked. Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion must include answer_text exactly as returned by the native tool; this has agent_reported provenance. Muse request_user_input: call native_answer right after the tool returns, with answer_text exactly as returned; Swarm checks it against Muse's own session log. On cancellation or no returned answer, submit nothing and leave the request open. "+
@@ -185,6 +289,7 @@ func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Reques
 		return NativePrompt{}, err
 	}
 	var warnings []string
+	var reviewPaths *ReviewPaths
 	if req.Kind == KindApprovePlan {
 		var raw string
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(warnings_json,'[]') FROM artifact_revisions
@@ -192,8 +297,13 @@ func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Reques
 			return NativePrompt{}, err
 		}
 		json.Unmarshal([]byte(raw), &warnings)
+		paths, _, err := s.planReviewPathsTx(ctx, tx, req.ItemID, req.ArtifactID)
+		if err != nil {
+			return NativePrompt{}, err
+		}
+		reviewPaths = &paths
 	}
-	return s.nativePromptFor(ctx, tx, req, title, warnings)
+	return s.nativePromptFor(ctx, tx, req, title, warnings, reviewPaths)
 }
 
 func (s *Store) planReviewPathsTx(ctx context.Context, tx *sql.Tx, itemID, planID string) (ReviewPaths, string, error) {

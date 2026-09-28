@@ -178,7 +178,7 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 		if err != nil {
 			return err
 		}
-		np, err := s.nativePromptFor(ctx, tx, out, "", nil)
+		np, err := s.nativePromptFor(ctx, tx, out, "", nil, nil)
 		if err != nil {
 			return err
 		}

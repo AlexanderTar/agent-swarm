@@ -107,7 +107,7 @@ func TestApprovalSkillsDescribeCurrentContract(t *testing.T) {
 	orch := string(install.SkillBody("swarm-orchestrator"))
 	spike := string(install.SkillBody("swarm-spike"))
 	for name, body := range map[string]string{"swarm-orchestrator": orch, "swarm-spike": spike} {
-		for _, want := range []string{"starting repositories are hints", "1–1000", "Out of scope", "Explicitly out of scope", "review_paths.spec", "review_paths.plan"} {
+		for _, want := range []string{"starting repositories are hints", "1–2000", "Out of scope", "Explicitly out of scope", "review_paths.spec", "review_paths.plan"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s missing %q", name, want)
 			}

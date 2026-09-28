@@ -12,7 +12,7 @@ import (
 
 func TestNativePromptNextStepDescribesVisibleReviewAndAgentReportedAnswers(t *testing.T) {
 	got := NativePromptNextStep("req_A")
-	for _, want := range []string{"summary exactly", "review_paths.spec", "review_paths.plan", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
+	for _, want := range []string{"verbatim and complete", "shows only its first line", "review_paths.spec", "review_paths.plan", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
 		"Codex: use request_user_input, not request_user_input_async", "a review question is a design decision the user chooses, not a permission request"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("next step missing %q: %s", want, got)
@@ -46,6 +46,73 @@ func TestTruncateWithTokenNeverCutsTheRefToken(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, refToken(ref)) {
 		t.Fatalf("ref token missing or cut: tail = %q", got[len(got)-40:])
+	}
+}
+
+// TestApprovalSummaryHeadForHookedKindsIsFirstLineCappedAt200Runes is
+// 2026-09-28-summary-in-native-question: claude/agy/codex have Swarm's
+// native-question hook, so a later hook step can confirm the asking agent
+// printed the full summary in chat; the native question itself only needs
+// the summary's first line, capped to 200 runes.
+func TestApprovalSummaryHeadForHookedKindsIsFirstLineCappedAt200Runes(t *testing.T) {
+	multiline := "First line is the important part.\nSecond line should never appear."
+	for _, kind := range []AgentKind{Claude, Agy, Codex} {
+		got := approvalSummaryHead(multiline, kind)
+		if got != "First line is the important part." {
+			t.Fatalf("%s head = %q, want only the first line", kind, got)
+		}
+	}
+	long := strings.Repeat("x", 300)
+	got := approvalSummaryHead(long, Claude)
+	if n := utf8.RuneCountInString(got); n > 200 {
+		t.Fatalf("head = %d runes, want <= 200", n)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("head = %q, want a truncated head ending in an ellipsis", got)
+	}
+}
+
+// TestApprovalSummaryHeadForUnhookedKindsAllowsUpTo600Runes: cursor/muse have
+// no native-question hook, so nothing can later confirm the full summary was
+// printed in chat -- their native question head runs longer (600 runes) and
+// is not restricted to the first line.
+func TestApprovalSummaryHeadForUnhookedKindsAllowsUpTo600Runes(t *testing.T) {
+	multiline := "First line.\nSecond line stays too, within the 600-rune budget."
+	for _, kind := range []AgentKind{Cursor, Muse} {
+		if got := approvalSummaryHead(multiline, kind); got != multiline {
+			t.Fatalf("%s head = %q, want the summary unchanged", kind, got)
+		}
+	}
+	long := strings.Repeat("y", 700)
+	got := approvalSummaryHead(long, Cursor)
+	if n := utf8.RuneCountInString(got); n > 600 {
+		t.Fatalf("head = %d runes, want <= 600", n)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("head = %q, want a truncated head ending in an ellipsis", got)
+	}
+}
+
+// TestBuildApprovalQuestionCapsAt1000RunesWithoutCuttingTail is the
+// 2026-09-28-summary-in-native-question truncation contract directly on the
+// helper: only the summary head is shortened (ending in "…") to make room;
+// the paths, approve line and ref token survive completely, and the total
+// never exceeds 1000 runes.
+func TestBuildApprovalQuestionCapsAt1000RunesWithoutCuttingTail(t *testing.T) {
+	summary := strings.Repeat("word ", 200) // 1000 runes on its own
+	paths := "Spec: /repo/docs/specs/plan.md\nPlan: /repo/docs/plans/plan.md\n"
+	approveLine := "Approve the plan (rev 4)?\nWarnings:\n- Task t2 has no verify command."
+	ref := "req_CAP1"
+
+	got := buildApprovalQuestion(summary, paths, approveLine, ref)
+	if n := utf8.RuneCountInString(got); n > 1000 {
+		t.Fatalf("question = %d runes, want <= 1000", n)
+	}
+	if !strings.HasSuffix(got, paths+approveLine+refToken(ref)) {
+		t.Fatalf("tail (paths+approve line+token) was cut: %q", got)
+	}
+	if !strings.Contains(got, "…") {
+		t.Fatalf("question = %q, want the shortened summary to end with an ellipsis", got)
 	}
 }
 
@@ -107,50 +174,66 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 	repoA := seedRepo(t, s, "endurio-chat")
 	repoB := seedRepo(t, s, "endurio-web")
 	repoC := seedRepo(t, s, "endurio-docs")
-	_ = a
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
 
+	// a is a Fake-kind agent (not in questionHookKinds), so its summary head
+	// takes the unhooked, un-firstlined, up-to-600-rune path -- these short
+	// single-line summaries pass through unchanged either way.
+	sectionSummary := "Users table gets id, email, and hashed_password columns; sessions reference it by user_id."
+	planSummary := "Ship auth end to end: login, session cookies, and logout across web and API."
+	reportSummary := "Root cause: the token cache read stale entries after rotation; fix invalidates on rotate."
+
 	tests := []struct {
-		name       string
-		req        Request
-		section    string
-		warnings   []string
-		wantHeader string
-		wantQ      string
-		wantOpts   []string
+		name        string
+		req         Request
+		section     string
+		warnings    []string
+		reviewPaths *ReviewPaths
+		wantHeader  string
+		wantQ       string
+		wantOpts    []string
 	}{
 		{
 			name:       "approve_section",
-			req:        Request{ID: "req_SEC1", Kind: "approve_section", ArtifactRevision: 2, ItemID: it.ID},
+			req:        Request{ID: "req_SEC1", Kind: "approve_section", ArtifactRevision: 2, ItemID: it.ID, AgentID: a.ID, Prompt: sectionSummary},
 			section:    "Data model",
 			wantHeader: "Spike approval",
-			wantQ:      `Approve Spec section "Data model" (rev 2)?` + refToken("req_SEC1"),
+			wantQ:      sectionSummary + "\n\n" + `Approve Spec section "Data model" (rev 2)?` + refToken("req_SEC1"),
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 		{
 			name:       "approve_plan_no_warnings",
-			req:        Request{ID: "req_PLAN1", Kind: "approve_plan", ArtifactRevision: 1, ItemID: it.ID},
+			req:        Request{ID: "req_PLAN1", Kind: "approve_plan", ArtifactRevision: 1, ItemID: it.ID, AgentID: a.ID, Prompt: planSummary},
 			wantHeader: "Spike approval",
-			wantQ:      `Approve the plan (rev 1)?` + refToken("req_PLAN1"),
+			wantQ:      planSummary + "\n\n" + `Approve the plan (rev 1)?` + refToken("req_PLAN1"),
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 		{
+			name:        "approve_plan_with_paths",
+			req:         Request{ID: "req_PLAN3", Kind: "approve_plan", ArtifactRevision: 1, ItemID: it.ID, AgentID: a.ID, Prompt: planSummary},
+			reviewPaths: &ReviewPaths{Spec: "/abs/repo/specs/spec.md", Plan: "/abs/repo/plans/plan.md"},
+			wantHeader:  "Spike approval",
+			wantQ: planSummary + "\n\n" + "Spec: /abs/repo/specs/spec.md\nPlan: /abs/repo/plans/plan.md\n" +
+				`Approve the plan (rev 1)?` + refToken("req_PLAN3"),
+			wantOpts: []string{"Approve", "Request changes"},
+		},
+		{
 			name:       "approve_plan_with_warnings",
-			req:        Request{ID: "req_PLAN2", Kind: "approve_plan", ArtifactRevision: 3, ItemID: it.ID},
+			req:        Request{ID: "req_PLAN2", Kind: "approve_plan", ArtifactRevision: 3, ItemID: it.ID, AgentID: a.ID, Prompt: planSummary},
 			warnings:   []string{"Task t2 has no verify command."},
 			wantHeader: "Spike approval",
-			wantQ:      "Approve the plan (rev 3)?\nWarnings:\n- Task t2 has no verify command." + refToken("req_PLAN2"),
+			wantQ:      planSummary + "\n\n" + "Approve the plan (rev 3)?\nWarnings:\n- Task t2 has no verify command." + refToken("req_PLAN2"),
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 		{
 			name:       "approve_report",
-			req:        Request{ID: "req_REP1", Kind: "approve_report", ArtifactRevision: 1, ItemID: it.ID},
+			req:        Request{ID: "req_REP1", Kind: "approve_report", ArtifactRevision: 1, ItemID: it.ID, AgentID: a.ID, Prompt: reportSummary},
 			wantHeader: "Spike approval",
-			wantQ:      `Approve the debug report (rev 1)?` + refToken("req_REP1"),
+			wantQ:      reportSummary + "\n\n" + `Approve the debug report (rev 1)?` + refToken("req_REP1"),
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 		{
@@ -182,7 +265,7 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			np, err := s.nativePromptFor(ctx, tx, tc.req, tc.section, tc.warnings)
+			np, err := s.nativePromptFor(ctx, tx, tc.req, tc.section, tc.warnings, tc.reviewPaths)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -254,7 +337,7 @@ func TestAskApprovalReturnsNativePrompt(t *testing.T) {
 	if req.NativePrompt == nil {
 		t.Fatalf("NativePrompt is nil on %+v", req)
 	}
-	want := `Approve Spec section "Data model" (rev 1)?` + refToken(req.ID)
+	want := "Review " + sec.Title + "\n\n" + `Approve Spec section "Data model" (rev 1)?` + refToken(req.ID)
 	if req.NativePrompt.Question != want {
 		t.Fatalf("question = %q, want %q", req.NativePrompt.Question, want)
 	}
@@ -285,7 +368,7 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	if req.NativePrompt == nil || !strings.HasSuffix(req.NativePrompt.Question, refToken(req.ID)) {
 		t.Fatalf("native prompt = %+v", req.NativePrompt)
 	}
-	if !strings.Contains(NativePromptNextStep(req.ID), "review_paths.spec and review_paths.plan immediately before asking") {
+	if !strings.Contains(NativePromptNextStep(req.ID), "for a plan also print the full absolute review_paths.spec and review_paths.plan") {
 		t.Fatalf("initial next step lacks path display instruction: %q", NativePromptNextStep(req.ID))
 	}
 	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.relayRequestTx(ctx, tx, req.ID) }); err != nil {
@@ -305,6 +388,74 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	native, ok := payload["native_prompt"].(map[string]any)
 	if !ok || native["question"] != req.NativePrompt.Question {
 		t.Fatalf("replay native prompt changed: %v", payload["native_prompt"])
+	}
+}
+
+// TestNativePromptForPlanApprovalShowsOnlySummaryHeadForHookedAgent is
+// 2026-09-28-summary-in-native-question: for a hooked-kind agent (claude,
+// agy, codex) the native question shows only the summary's first line,
+// capped to 200 runes -- the full summary is printed in chat by the asking
+// agent instead (a later hook task enforces that print, not this one).
+func TestNativePromptForPlanApprovalShowsOnlySummaryHeadForHookedAgent(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, _, planID, _ := approvedFeatureSpike(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude' WHERE id = ?`, ses.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	longFirstLine := strings.Repeat("word ", 60) // > 200 runes
+	summary := longFirstLine + "\nsecond line must not appear in the native question."
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: summary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := req.NativePrompt.Question
+	if strings.Contains(q, "second line must not appear") {
+		t.Fatalf("native question leaked the summary's second line: %q", q)
+	}
+	head := strings.SplitN(q, "\n\n", 2)[0]
+	if n := utf8.RuneCountInString(head); n > 200 {
+		t.Fatalf("summary head = %d runes, want <= 200", n)
+	}
+	if !strings.HasSuffix(head, "…") {
+		t.Fatalf("summary head = %q, want it truncated with an ellipsis", head)
+	}
+}
+
+// TestStoredNativePromptRebuildIsByteIdenticalForPlanApproval is Task 13a's
+// replay contract, re-verified after 2026-09-28-summary-in-native-question:
+// storedNativePromptTx (used by relayRequestTx for a re-shown or resurfaced
+// question) must reconstruct the exact same Question swarm_ask's own
+// askApproval call returned -- summary head, review paths and warnings all
+// included -- so the hook's question row still binds to the same ref.
+func TestStoredNativePromptRebuildIsByteIdenticalForPlanApproval(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, _, planID, _ := approvedFeatureSpike(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude' WHERE id = ?`, ses.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	summary := strings.Repeat("word ", 60) + "\nsecond line, never shown inline."
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: summary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := req.NativePrompt.Question
+
+	var rebuilt NativePrompt
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		reqRow, err := s.requestTx(ctx, tx, req.ID)
+		if err != nil {
+			return err
+		}
+		rebuilt, err = s.storedNativePromptTx(ctx, tx, reqRow)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt.Question != original {
+		t.Fatalf("rebuilt question = %q, want byte-identical to original %q", rebuilt.Question, original)
 	}
 }
 
