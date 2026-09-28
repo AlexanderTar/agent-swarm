@@ -241,9 +241,10 @@ type notificationsWire struct {
 
 // spikeResponseWire is contracts §4 POST /api/spikes.
 type spikeResponseWire struct {
-	Item   itemWire      `json:"item"`
-	Agent  agentNodeWire `json:"agent"`
-	Queued bool          `json:"queued"`
+	Item              itemWire      `json:"item"`
+	Agent             agentNodeWire `json:"agent"`
+	Queued            bool          `json:"queued"`
+	AttachmentsFailed bool          `json:"attachments_failed,omitempty"`
 }
 
 // terminalWire is contracts §4 POST /api/agents/{name}/terminal. TmuxSocket
@@ -321,17 +322,24 @@ func rolesFromBody(b map[string]roleDefaultBody) map[runtime.Role]settings.RoleD
 	return out
 }
 
+// attachmentBody is one image in spikeRequestBody.Attachments (standard base64).
+type attachmentBody struct {
+	Name string `json:"name"`
+	Data string `json:"data"`
+}
+
 type spikeRequestBody struct {
-	RequestID string                     `json:"request_id"`
-	Name      string                     `json:"name"`
-	Intent    string                     `json:"intent"`
-	Repos     []string                   `json:"repos"`
-	Agent     string                     `json:"agent"`
-	Model     string                     `json:"model"`
-	Effort    string                     `json:"effort"`
-	Advisor   *advisorChoiceBody         `json:"advisor"`
-	Roles     map[string]roleDefaultBody `json:"roles"`
-	Request   string                     `json:"request"`
+	RequestID   string                     `json:"request_id"`
+	Name        string                     `json:"name"`
+	Intent      string                     `json:"intent"`
+	Repos       []string                   `json:"repos"`
+	Agent       string                     `json:"agent"`
+	Model       string                     `json:"model"`
+	Effort      string                     `json:"effort"`
+	Advisor     *advisorChoiceBody         `json:"advisor"`
+	Roles       map[string]roleDefaultBody `json:"roles"`
+	Request     string                     `json:"request"`
+	Attachments []attachmentBody           `json:"attachments"`
 }
 
 type orchestratorRequestBody struct {

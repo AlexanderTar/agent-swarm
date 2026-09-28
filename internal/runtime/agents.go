@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/attachments"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
@@ -310,6 +311,26 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	it, err := s.Items.Create(ctx, ci, items.User("board"))
 	if err != nil {
 		return "", Agent{}, false, err
+	}
+
+	// Attachments are saved after the item exists (its key names their
+	// directory) and before Preflight, so the failed-preflight agent row
+	// below and the real kickoff Objective further down both see the
+	// combined brief either way (spec Locked Decision 4/step 3).
+	if len(in.Attachments) > 0 {
+		section := ""
+		if saved, err := attachments.Save(s.Home, it.Key, in.Attachments); err != nil {
+			section = attachments.FailureSection(len(in.Attachments), err)
+			if in.AttachmentsFailed != nil {
+				*in.AttachmentsFailed = true
+			}
+		} else {
+			section = attachments.BriefSection(saved)
+		}
+		in.Request = strings.TrimSpace(in.Request + "\n\n" + section)
+		if _, err := s.Items.Update(ctx, it.Key, items.Patch{Brief: &in.Request, Revision: it.Revision}, items.Daemon()); err != nil {
+			return "", Agent{}, false, err
+		}
 	}
 
 	// origKind is captured before resolveUsageFallback may substitute in.Kind,

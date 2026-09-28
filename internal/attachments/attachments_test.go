@@ -20,7 +20,9 @@ func png(t *testing.T) []byte {
 	return b
 }
 
-func in(name string, b []byte) Input { return Input{Name: name, Data: base64.StdEncoding.EncodeToString(b)} }
+func in(name string, b []byte) Input {
+	return Input{Name: name, Data: base64.StdEncoding.EncodeToString(b)}
+}
 
 func badRequest(t *testing.T, err error, want string) {
 	t.Helper()
@@ -58,9 +60,9 @@ func TestDecodeRefusals(t *testing.T) {
 
 func TestSafeName(t *testing.T) {
 	for in, want := range map[string]string{
-		"Login bug.png":        "login-bug.png",
-		"../../etc/passwd":     "etc-passwd",
-		"   ":                  "image",
+		"Login bug.png":         "login-bug.png",
+		"../../etc/passwd":      "etc-passwd",
+		"   ":                   "image",
 		strings.Repeat("a", 90): strings.Repeat("a", 60),
 	} {
 		if got := safeName(in); got != want {

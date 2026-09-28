@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/attachments"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
@@ -133,6 +134,9 @@ type SpikeInput struct {
 	RepoPaths []string
 	Repos     []string // suggested repo ids, shown back on the confirm_repos ask (D42)
 	Roles     map[Role]settings.RoleDefault
+
+	Attachments       []attachments.File
+	AttachmentsFailed *bool // out: set true when Save failed (avoids widening the return signature)
 }
 
 type OrchestratorInput struct {

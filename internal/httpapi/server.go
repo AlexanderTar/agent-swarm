@@ -306,8 +306,11 @@ func (s *Server) writeErr(w http.ResponseWriter, err error) {
 }
 
 // readJSON decodes a body of at most 1 MB; an empty body leaves v unchanged.
-func readJSON(r *http.Request, v any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20))
+func readJSON(r *http.Request, v any) error { return readJSONLimit(r, v, 1<<20) }
+
+// readJSONLimit is readJSON with a caller-chosen cap (createSpike carries images).
+func readJSONLimit(r *http.Request, v any, limit int64) error {
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, limit))
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
 		return apiErr(http.StatusBadRequest, "bad_request", "Invalid JSON body.")
 	}

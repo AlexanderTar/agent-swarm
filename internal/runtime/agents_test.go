@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
+	"github.com/AlexanderTar/agent-swarm/internal/attachments"
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/db/dbtest"
@@ -25,6 +27,17 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
 	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
+
+// onePNG is a valid 1x1 PNG, matching internal/attachments/testdata/one.png.
+var onePNG = mustDecodeBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4DwAAAQEABRjYTgAAAABJRU5ErkJggg==")
+
+func mustDecodeBase64(s string) []byte {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
 
 // fakeTmux records every call and serves scripted captures.
 type fakeTmux struct {
@@ -338,6 +351,66 @@ func TestStartSpikeCreatesTheItemTheAgentAndTheSession(t *testing.T) {
 	}
 	if kind != "assignment" || !strings.Contains(payload, key) {
 		t.Fatalf("message = %s %s", kind, payload)
+	}
+}
+
+// Attachments are saved after the item exists, and the brief's Attachments
+// section flows into the kickoff Objective via RenderBrief.
+func TestStartSpikeWithAttachmentsSavesFilesAndRewritesTheBriefAndObjective(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	files := []attachments.File{{Name: "Login bug.png", Ext: ".png", Body: onePNG}}
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "With a picture",
+		Intent: "debug", Kind: Fake, Model: "fake-1", Request: "See attached.", Attachments: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := filepath.Join(s.Home, "attachments", key, "01-login-bug.png")
+	if !strings.Contains(it.Brief, "## Attachments") || !strings.Contains(it.Brief, wantPath) {
+		t.Fatalf("brief = %q, want it to contain %q", it.Brief, wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("file not saved: %v", err)
+	}
+	// the assignment message (the rendered kickoff Objective) carries the path too.
+	var payload string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE to_agent_id = ?`, a.ID).
+		Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, wantPath) {
+		t.Fatalf("kickoff objective missing the attachment path: %s", payload)
+	}
+}
+
+// A Save failure still creates the item and the agent, with AttachmentsFailed
+// set and the FailureSection in the brief instead.
+func TestStartSpikeWithAttachmentsSaveFailureSetsTheOutFlag(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(s.Home, "attachments"), nil, 0o600); err != nil { // blocks the dir
+		t.Fatal(err)
+	}
+	files := []attachments.File{{Name: "a.png", Ext: ".png", Body: onePNG}}
+	var failed bool
+	key, _, _, err := s.StartSpike(ctx, SpikeInput{Name: "Blocked home",
+		Intent: "debug", Kind: Fake, Model: "fake-1", Attachments: files, AttachmentsFailed: &failed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !failed {
+		t.Fatal("AttachmentsFailed was not set")
+	}
+	it, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(it.Brief, "could not save them") {
+		t.Fatalf("brief missing FailureSection: %q", it.Brief)
 	}
 }
 

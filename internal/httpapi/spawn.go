@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/AlexanderTar/agent-swarm/internal/attachments"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
@@ -31,14 +32,29 @@ func (s *Server) spawnRoutes() []route {
 
 func (s *Server) createSpike(w http.ResponseWriter, r *http.Request) {
 	var body spikeRequestBody
-	if err := readJSON(r, &body); err != nil {
+	// createSpike carries base64 images, so it reads with a raised cap
+	// instead of readJSON's 1 MiB (spec Locked Decision 5).
+	if err := readJSONLimit(r, &body, 160<<20); err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	in := make([]attachments.Input, len(body.Attachments))
+	for i, a := range body.Attachments {
+		in[i] = attachments.Input{Name: a.Name, Data: a.Data}
+	}
+	files, err := attachments.Decode(in)
+	if err != nil {
+		// Decode never touches disk, so a 400 here means nothing was created
+		// (spec Locked Decision 5 / plan Task 3 step 1).
 		s.writeErr(w, err)
 		return
 	}
 	s.idempotent(w, r, body.RequestID, "POST /api/spikes", http.StatusOK, func(ctx context.Context) (any, error) {
+		var failed bool
 		key, a, queued, err := s.RT.StartSpike(ctx, runtime.SpikeInput{Name: body.Name, Intent: body.Intent,
 			Kind: runtime.AgentKind(body.Agent), Model: body.Model, Effort: body.Effort,
-			Advisor: advisorChoiceFromBody(body.Advisor), Roles: rolesFromBody(body.Roles), Request: body.Request, Repos: body.Repos})
+			Advisor: advisorChoiceFromBody(body.Advisor), Roles: rolesFromBody(body.Roles), Request: body.Request, Repos: body.Repos,
+			Attachments: files, AttachmentsFailed: &failed})
 		if err != nil {
 			// A plain error here (e.g. "no agent kind given") isn't an
 			// *items.Error, so wrapPreflightErr maps it to 422 preflight_failed
@@ -59,7 +75,7 @@ func (s *Server) createSpike(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		return spikeResponseWire{Item: itemW, Agent: agentW, Queued: queued}, nil
+		return spikeResponseWire{Item: itemW, Agent: agentW, Queued: queued, AttachmentsFailed: failed}, nil
 	})
 }
 

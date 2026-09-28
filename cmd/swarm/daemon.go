@@ -362,7 +362,7 @@ func serve(ctx context.Context, cfg daemonConfig) error {
 			func(ctx context.Context) { dm.rt.WakeLoop(ctx, 5*time.Second) },              // §11.3
 			func(ctx context.Context) { dm.rt.ReclaimWorktreesLoop(ctx, 10*time.Minute) }, // worktree cleanup enforcement
 			func(ctx context.Context) { attachments.SweepLoop(ctx, dm.db.DB, cfg.Home, 10*time.Minute, cfg.Log) },
-			func(ctx context.Context) { dm.up.Loop(ctx, nil) },                            // §13 (a no-op with no sources, S-4)
+			func(ctx context.Context) { dm.up.Loop(ctx, nil) }, // §13 (a no-op with no sources, S-4)
 			func(ctx context.Context) { quotaResetLoop(ctx, dm.up, dm.rt, cfg.Log) },
 		)
 	}

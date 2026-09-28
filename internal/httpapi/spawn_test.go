@@ -2,7 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -11,6 +15,10 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
+
+// onePNGBase64 is internal/attachments/testdata/one.png (a valid 1x1 PNG),
+// base64-encoded, so these tests don't reach across packages for it.
+const onePNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4DwAAAQEABRjYTgAAAABJRU5ErkJggg=="
 
 // contracts §4: POST /api/spikes returns {item, agent, queued}.
 func TestCreateSpike(t *testing.T) {
@@ -109,6 +117,169 @@ func TestCreateSpikeWithNoDefaultKindIs422WithGuidance(t *testing.T) {
 	}
 	if !strings.Contains(body.Error.Message, "--agent") {
 		t.Fatalf("message must guide the user to pass --agent: %q", body.Error.Message)
+	}
+}
+
+// (a) happy path: two images land on disk, the brief lists both paths.
+func TestCreateSpikeWithAttachmentsSavesFilesAndListsThemInTheBrief(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	rec := s.post(t, "/api/spikes", fmt.Sprintf(`{"request_id":"r1","name":"With pics",
+		"intent":"debug","agent":"fake","model":"fake-1","request":"See attached.",
+		"attachments":[{"name":"Login bug.png","data":%q},{"name":"second.png","data":%q}]}`,
+		onePNGBase64, onePNGBase64))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Item              map[string]any `json:"item"`
+		AttachmentsFailed bool           `json:"attachments_failed"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.AttachmentsFailed {
+		t.Fatal("attachments_failed = true on a happy save")
+	}
+	key, _ := body.Item["key"].(string)
+	dir := filepath.Join(s.RT.Home, "attachments", key)
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("attachments dir = %v, %v", entries, err)
+	}
+	brief, _ := body.Item["brief"].(string)
+	if !strings.Contains(brief, "## Attachments") || !strings.Contains(brief, filepath.Join(dir, "01-login-bug.png")) {
+		t.Fatalf("brief missing attachments section: %q", brief)
+	}
+}
+
+// (b) 11 images is a 400 and creates no item.
+func TestCreateSpikeWithElevenAttachmentsIs400AndCreatesNoItem(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	var n int
+	s.DB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM items`).Scan(&n)
+	before := n
+	var atts strings.Builder
+	for i := 0; i < 11; i++ {
+		if i > 0 {
+			atts.WriteString(",")
+		}
+		fmt.Fprintf(&atts, `{"name":"a%d.png","data":%q}`, i, onePNGBase64)
+	}
+	rec := s.post(t, "/api/spikes", fmt.Sprintf(`{"request_id":"r2","name":"Too many",
+		"intent":"debug","agent":"fake","model":"fake-1","attachments":[%s]}`, atts.String()))
+	if rec.Code != 400 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Error struct{ Code, Message string }
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Message != "At most 10 images." {
+		t.Fatalf("message = %q", body.Error.Message)
+	}
+	s.DB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM items`).Scan(&n)
+	if n != before {
+		t.Fatalf("an item was created despite the 400: %d -> %d", before, n)
+	}
+}
+
+// (c) a non-image is a 400 and creates no item.
+func TestCreateSpikeWithUnsupportedAttachmentIs400AndCreatesNoItem(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	var before int
+	s.DB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM items`).Scan(&before)
+	notImage := base64.StdEncoding.EncodeToString([]byte("just text, not an image"))
+	rec := s.post(t, "/api/spikes", fmt.Sprintf(`{"request_id":"r3","name":"Bad file",
+		"intent":"debug","agent":"fake","model":"fake-1","attachments":[{"name":"notes.png","data":%q}]}`, notImage))
+	if rec.Code != 400 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Error struct{ Code, Message string }
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Message != `Image "notes.png" is not a PNG, JPEG, GIF or WebP.` {
+		t.Fatalf("message = %q", body.Error.Message)
+	}
+	var after int
+	s.DB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM items`).Scan(&after)
+	if after != before {
+		t.Fatalf("an item was created despite the 400: %d -> %d", before, after)
+	}
+}
+
+// (d) a replayed request_id with images returns the same result and writes
+// nothing a second time (one directory, two files).
+func TestCreateSpikeAttachmentsReplayWritesOnce(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	reqBody := fmt.Sprintf(`{"request_id":"r4","name":"Replay me",
+		"intent":"debug","agent":"fake","model":"fake-1",
+		"attachments":[{"name":"a.png","data":%q},{"name":"b.png","data":%q}]}`, onePNGBase64, onePNGBase64)
+	first := s.post(t, "/api/spikes", reqBody)
+	second := s.post(t, "/api/spikes", reqBody)
+	if first.Body.String() != second.Body.String() {
+		t.Fatal("a replayed request_id must return the first result")
+	}
+	var body struct {
+		Item map[string]any `json:"item"`
+	}
+	json.Unmarshal(first.Body.Bytes(), &body)
+	key, _ := body.Item["key"].(string)
+	entries, err := os.ReadDir(filepath.Join(s.RT.Home, "attachments", key))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("attachments dir = %v, %v", entries, err)
+	}
+}
+
+// (e) Save failing (home/attachments is a file, not a dir) still creates the
+// item, with attachments_failed true and the failure section in the brief.
+func TestCreateSpikeAttachmentsSaveFailureStillCreatesTheItem(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	if err := os.WriteFile(filepath.Join(s.RT.Home, "attachments"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := s.post(t, "/api/spikes", fmt.Sprintf(`{"request_id":"r5","name":"Blocked home",
+		"intent":"debug","agent":"fake","model":"fake-1","attachments":[{"name":"a.png","data":%q}]}`, onePNGBase64))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Item              map[string]any `json:"item"`
+		AttachmentsFailed bool           `json:"attachments_failed"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if !body.AttachmentsFailed {
+		t.Fatal("attachments_failed should be true")
+	}
+	brief, _ := body.Item["brief"].(string)
+	if !strings.Contains(brief, "could not save them") {
+		t.Fatalf("brief missing FailureSection: %q", brief)
+	}
+}
+
+// (f) createSpike's readJSONLimit is raised past readJSON's 1 MiB cap; other
+// routes (POST /api/items) keep the old limit.
+func TestCreateSpikeAcceptsABodyLargerThanTheOldOneMiBLimit(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	// a valid PNG followed by padding bytes: http.DetectContentType only
+	// sniffs the prefix, so this is still a valid, decodable PNG.
+	pngBytes, err := base64.StdEncoding.DecodeString(onePNGBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padded := append(pngBytes, make([]byte, 1500*1024)...)
+	big := base64.StdEncoding.EncodeToString(padded)
+	rec := s.post(t, "/api/spikes", fmt.Sprintf(`{"request_id":"r6","name":"Big body",
+		"intent":"debug","agent":"fake","model":"fake-1","attachments":[{"name":"big.png","data":%q}]}`, big))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestCreateItemStillRefusesABodyOverOneMiB(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	big := strings.Repeat("a", 2<<20)
+	rec := s.post(t, "/api/items", fmt.Sprintf(`{"type":"epic","title":"t","brief":%q}`, big))
+	if rec.Code != 400 {
+		t.Fatalf("status = %d, want 400 (readJSON keeps its 1 MiB limit)", rec.Code)
 	}
 }
 
