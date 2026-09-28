@@ -280,6 +280,14 @@ func (s *Server) getItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out["artifacts"] = artifactWires
+		todos, err := s.RT.Todos(ctx, it.ID)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		if todos != nil {
+			out["todos"] = todos
+		}
 		ws, hasWf, err := s.RT.WorkflowFor(ctx, key)
 		if err != nil {
 			s.writeErr(w, err)

@@ -48,27 +48,28 @@ type advisorInfoWire struct {
 // agentNodeWire is contracts §3.2 AgentNode. Children/Finished are always []
 // (W4), never null, even for a leaf.
 type agentNodeWire struct {
-	ID             string             `json:"id"`
-	Name           string             `json:"name"`
-	Kind           runtime.AgentKind  `json:"kind"`
-	Model          string             `json:"model"`
-	Effort         *string            `json:"effort"`
-	Role           runtime.Role       `json:"role"`
-	Step           *string            `json:"step,omitempty"`
-	ItemKey        string             `json:"item_key"`
-	ItemTitle      string             `json:"item_title"`
-	RootKey        string             `json:"root_key"`
-	ParentName     *string            `json:"parent_name"`
-	Advisor        *advisorInfoWire   `json:"advisor"`
-	State          runtime.AgentState `json:"state"`
-	Session        *sessionInfoWire   `json:"session"`
-	Replacement    *replacementWire   `json:"replacement,omitempty"`
-	PreflightError *string            `json:"preflight_error"`
-	KindReason     *string            `json:"kind_reason"` // why kind/model isn't the role default; null = settings
-	CreatedAt      int64              `json:"created_at"`
-	FinishedAt     *int64             `json:"finished_at"`
-	Children       []agentNodeWire    `json:"children"`
-	Finished       []agentNodeWire    `json:"finished"`
+	ID             string                `json:"id"`
+	Name           string                `json:"name"`
+	Kind           runtime.AgentKind     `json:"kind"`
+	Model          string                `json:"model"`
+	Effort         *string               `json:"effort"`
+	Role           runtime.Role          `json:"role"`
+	Step           *string               `json:"step,omitempty"`
+	ItemKey        string                `json:"item_key"`
+	ItemTitle      string                `json:"item_title"`
+	RootKey        string                `json:"root_key"`
+	ParentName     *string               `json:"parent_name"`
+	Advisor        *advisorInfoWire      `json:"advisor"`
+	State          runtime.AgentState    `json:"state"`
+	Session        *sessionInfoWire      `json:"session"`
+	Replacement    *replacementWire      `json:"replacement,omitempty"`
+	PreflightError *string               `json:"preflight_error"`
+	KindReason     *string               `json:"kind_reason"`        // why kind/model isn't the role default; null = settings
+	Progress       *runtime.TodoProgress `json:"progress,omitempty"` // orchestrators of a root with a list only
+	CreatedAt      int64                 `json:"created_at"`
+	FinishedAt     *int64                `json:"finished_at"`
+	Children       []agentNodeWire       `json:"children"`
+	Finished       []agentNodeWire       `json:"finished"`
 }
 
 type gitRefWire struct {
@@ -510,6 +511,11 @@ func (s *Server) agentNodeOut(ctx context.Context, a runtime.Agent, live map[str
 		// Batch 3: the optional in-flight replacement; the existing effort
 		// field above is reused as-is, no new effort surface.
 		w.Replacement = s.replacementFor(ctx, a.ID)
+		if a.Role == runtime.RoleOrchestrator && a.ItemID == a.RootItemID {
+			if todos, err := s.RT.Todos(ctx, a.ItemID); err == nil {
+				w.Progress = runtime.ProgressOf(todos)
+			}
+		}
 	}
 	return w, nil
 }
