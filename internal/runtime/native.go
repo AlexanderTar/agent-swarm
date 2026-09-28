@@ -135,22 +135,36 @@ func capRunes(s string, limit int) string {
 // agent (a later hook task enforces that for the hooked kinds), so the
 // native question itself only needs a short head. claude/agy/codex
 // (questionHookKinds -- their native question tool is hooked, so Swarm can
-// later confirm the chat print) get the summary's first line, capped to 200
+// later confirm the chat print) get the summary's first NON-blank line,
+// trimmed of surrounding whitespace (so a leading \n or \r\n, or stray
+// spaces/\r around it, never leave the head blank or dirty), capped to 200
 // runes; cursor/muse (no hook, nothing enforces the chat print) get up to
 // 600 runes of the summary, unlined.
 func approvalSummaryHead(summary string, kind AgentKind) string {
 	if questionHookKinds[kind] {
-		if i := strings.IndexByte(summary, '\n'); i >= 0 {
-			summary = summary[:i]
+		for _, line := range strings.Split(summary, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				return capRunes(line, 200)
+			}
 		}
-		return capRunes(summary, 200)
+		return ""
 	}
 	return capRunes(summary, 600)
 }
 
 // requestAgentKindTx looks up the kind of the agent a request is filed
 // under -- the agent that will show this request's native question -- so
-// nativePromptFor can size the summary head to it.
+// nativePromptFor can size the summary head to it. Read fresh on every call
+// (never cached on Request), including from storedNativePromptTx's replay
+// path: if the agent's kind changes between the original ask and a later
+// relay/resurface (reassignment, kind fallback), the rebuilt head is sized
+// to the CURRENT kind and can legitimately differ from the one first shown
+// -- byte-identical replay (TestStoredNativePromptRebuildIsByteIdentical...)
+// only holds when the kind hasn't changed. That's safe: the hook binds an
+// answered question row to its request purely by the trailing
+// ⟦swarm:ref⟧ token (refFromPrompt), never by the rest of the question
+// text, so a differing head never breaks binding (see
+// TestStoredNativePromptRebuildToleratesAgentKindChange).
 func (s *Store) requestAgentKindTx(ctx context.Context, tx *sql.Tx, agentID string) (AgentKind, error) {
 	var kind AgentKind
 	err := tx.QueryRowContext(ctx, `SELECT kind FROM agents WHERE id = ?`, agentID).Scan(&kind)
@@ -283,7 +297,7 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 func NativePromptNextStep(ref string) string {
 	return fmt.Sprintf("Print the request summary in chat first, verbatim and complete (markdown is fine), "+
 		"immediately before the native question; for a plan also print the full absolute review_paths.spec and "+
-		"review_paths.plan. The native question shows only its first line. Then show native_prompt "+
+		"review_paths.plan. The native question shows only a short head of the summary. Then show native_prompt "+
 		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
 		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
 		"forwarding only what the user picked. Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion must include answer_text exactly as returned by the native tool; this has agent_reported provenance. Muse request_user_input: call native_answer right after the tool returns, with answer_text exactly as returned; Swarm checks it against Muse's own session log. On cancellation or no returned answer, submit nothing and leave the request open. "+

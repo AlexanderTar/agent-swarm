@@ -12,7 +12,7 @@ import (
 
 func TestNativePromptNextStepDescribesVisibleReviewAndAgentReportedAnswers(t *testing.T) {
 	got := NativePromptNextStep("req_A")
-	for _, want := range []string{"verbatim and complete", "shows only its first line", "review_paths.spec", "review_paths.plan", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
+	for _, want := range []string{"verbatim and complete", "shows only a short head of the summary", "review_paths.spec", "review_paths.plan", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
 		"Codex: use request_user_input, not request_user_input_async", "a review question is a design decision the user chooses, not a permission request"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("next step missing %q: %s", want, got)
@@ -69,6 +69,29 @@ func TestApprovalSummaryHeadForHookedKindsIsFirstLineCappedAt200Runes(t *testing
 	}
 	if !strings.HasSuffix(got, "…") {
 		t.Fatalf("head = %q, want a truncated head ending in an ellipsis", got)
+	}
+}
+
+// TestApprovalSummaryHeadSkipsLeadingBlankLinesAndTrims covers a summary
+// that starts with a blank line (bare \n or \r\n) or leading/trailing
+// whitespace on its first real line: the hooked-kind head must be the
+// first NON-blank line, trimmed -- not an empty string, and not a line
+// carrying a stray \r or spaces.
+func TestApprovalSummaryHeadSkipsLeadingBlankLinesAndTrims(t *testing.T) {
+	for _, tc := range []struct {
+		name, summary, want string
+	}{
+		{"leading blank line", "\nFirst real line.\nSecond line.", "First real line."},
+		{"leading CRLF blank line", "\r\nFirst real line.\r\nSecond line.", "First real line."},
+		{"whitespace-only first lines", "   \n\t\nFirst real line.", "First real line."},
+		{"surrounding whitespace on first line", "  First real line.  \nSecond.", "First real line."},
+		{"trailing CR on first line", "First real line.\r\nSecond.", "First real line."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := approvalSummaryHead(tc.summary, Claude); got != tc.want {
+				t.Fatalf("head = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -394,6 +417,39 @@ func TestAskApprovalReturnsNativePrompt(t *testing.T) {
 	}
 }
 
+// TestAskApprovalAcceptsA1500CharacterSummary is the Opus-review fix: the
+// application-level cap moved from 1000 to 2000 characters (askApproval),
+// but requests.prompt's own CHECK constraint had to move with it (schema
+// migration 0019) or a summary between 1001 and 2000 characters would pass
+// Go validation only to fail at INSERT. Unlike TestNativePromptForBuildsExactCopy
+// (which builds a Request{} directly, bypassing the DB), this goes through
+// the real s.Ask -> askApproval -> INSERT path against the actual migrated
+// schema.
+func TestAskApprovalAcceptsA1500CharacterSummary(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Long summary", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, _ := s.LatestSession(ctx, a.ID)
+	p := writeFile(t, "# Spec\n\n## Data model\n\nrows\n")
+	res, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", p, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec := res.Sections[0]
+	summary := strings.Repeat("word ", 300) // 1500 runes
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: summary,
+		ArtifactID: res.ArtifactID, SectionID: sec.ID})
+	if err != nil {
+		t.Fatalf("1500-character summary must be accepted (cap is 2000): %v", err)
+	}
+	if req.Prompt != summary {
+		t.Fatalf("stored prompt length = %d, want %d", len(req.Prompt), len(summary))
+	}
+}
+
 func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -510,6 +566,56 @@ func TestStoredNativePromptRebuildIsByteIdenticalForPlanApproval(t *testing.T) {
 	}
 	if rebuilt.Question != original {
 		t.Fatalf("rebuilt question = %q, want byte-identical to original %q", rebuilt.Question, original)
+	}
+}
+
+// TestStoredNativePromptRebuildToleratesAgentKindChange documents and pins a
+// deliberate design point: storedNativePromptTx looks up the request's
+// CURRENT agent kind (requestAgentKindTx), not the kind at ask time. If that
+// kind changes between the original ask and a later relay or resurface
+// (reassignment, kind fallback), the rebuilt summary head can legitimately
+// differ from the one first shown -- claude's first-line/200-rune budget
+// vs. cursor/muse's up-to-600-rune, unlined one -- so byte equality with the
+// original is only guaranteed when the kind is unchanged (see
+// TestStoredNativePromptRebuildIsByteIdenticalForPlanApproval above). That's
+// fine: the hook binds an answered question row to its request purely by
+// the trailing ⟦swarm:ref⟧ token (refFromPrompt), never by the rest of the
+// question text, so a differing head never breaks binding.
+func TestStoredNativePromptRebuildToleratesAgentKindChange(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, _, planID, _ := approvedFeatureSpike(t, s)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude' WHERE id = ?`, ses.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	summary := strings.Repeat("word ", 60) + "\nsecond line."
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: summary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := req.NativePrompt.Question
+
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'cursor' WHERE id = ?`, req.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	var rebuilt NativePrompt
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		reqRow, err := s.requestTx(ctx, tx, req.ID)
+		if err != nil {
+			return err
+		}
+		rebuilt, err = s.storedNativePromptTx(ctx, tx, reqRow)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt.Question == original {
+		t.Fatalf("expected the rebuilt question to differ after a kind change (claude's first-line head vs. cursor's up-to-600-rune head)")
+	}
+	if refFromPrompt(rebuilt.Question) != req.ID || refFromPrompt(original) != req.ID {
+		t.Fatalf("both questions must still bind to the same ref despite the differing head: original ref=%q rebuilt ref=%q",
+			refFromPrompt(original), refFromPrompt(rebuilt.Question))
 	}
 }
 
