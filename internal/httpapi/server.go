@@ -312,6 +312,10 @@ func readJSON(r *http.Request, v any) error { return readJSONLimit(r, v, 1<<20) 
 func readJSONLimit(r *http.Request, v any, limit int64) error {
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, limit))
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return apiErr(http.StatusRequestEntityTooLarge, "request_too_large", "The request is too large.")
+		}
 		return apiErr(http.StatusBadRequest, "bad_request", "Invalid JSON body.")
 	}
 	return nil

@@ -274,12 +274,22 @@ func TestCreateSpikeAcceptsABodyLargerThanTheOldOneMiBLimit(t *testing.T) {
 	}
 }
 
+// A body over the limit is now a distinguishable 413, not a generic 400 (the
+// decoder never even reaches malformed-JSON territory: MaxBytesReader cuts it
+// off first).
 func TestCreateItemStillRefusesABodyOverOneMiB(t *testing.T) {
 	s, _ := newRuntimeServer(t)
 	big := strings.Repeat("a", 2<<20)
 	rec := s.post(t, "/api/items", fmt.Sprintf(`{"type":"epic","title":"t","brief":%q}`, big))
-	if rec.Code != 400 {
-		t.Fatalf("status = %d, want 400 (readJSON keeps its 1 MiB limit)", rec.Code)
+	if rec.Code != 413 {
+		t.Fatalf("status = %d, want 413 (readJSON keeps its 1 MiB limit)", rec.Code)
+	}
+	var body struct {
+		Error struct{ Code, Message string }
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Code != "request_too_large" || body.Error.Message != "The request is too large." {
+		t.Fatalf("error = %+v", body.Error)
 	}
 }
 

@@ -414,6 +414,44 @@ func TestStartSpikeWithAttachmentsSaveFailureSetsTheOutFlag(t *testing.T) {
 	}
 }
 
+// No test forces Items.Update to fail after a successful Save (the cleanup
+// path added at agents.go's Update-error branch): Update's only failure
+// modes are a stale Revision or a missing item, and Patch.Revision here is
+// always the it.Revision just returned by the preceding Items.Create in the
+// very same synchronous call — nothing else in this test's control runs
+// between the two calls to make them disagree without either racing the DB
+// from a second goroutine (flaky) or adding a test-only seam to StartSpike
+// that doesn't otherwise exist. The cleanup line itself is a one-line
+// os.RemoveAll guarded by an if that's exercised by every other Attachments
+// test path (Save success, Save failure); only the "Update itself errors"
+// branch is unverified.
+
+// A preflight failure still routes through the attachments Save-and-rewrite
+// step first (it runs before Preflight, spec Locked Decision 4/step 3), so
+// the failed-preflight agent row's own Brief field carries the Attachments
+// section too, not just the item's.
+func TestStartSpikeWithAttachmentsAndFailingPreflightPutsAttachmentsOnTheFailedAgent(t *testing.T) {
+	s, tm, f := newStore(t)
+	f.NoSuperpowers = true
+	ctx := context.Background()
+	files := []attachments.File{{Name: "Login bug.png", Ext: ".png", Body: onePNG}}
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Look into it with a picture", Intent: "feature",
+		Kind: Fake, Model: "fake-1", Attachments: files})
+	if err != nil {
+		t.Fatalf("StartSpike must succeed and record the failure: %v", err)
+	}
+	if len(tm.started) != 0 {
+		t.Fatalf("nothing should be spawned: %v", tm.started)
+	}
+	wantPath := filepath.Join(s.Home, "attachments", key, "01-login-bug.png")
+	if !strings.Contains(a.Brief, "## Attachments") || !strings.Contains(a.Brief, wantPath) {
+		t.Fatalf("failed-preflight agent brief = %q, want it to contain %q", a.Brief, wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("file not saved: %v", err)
+	}
+}
+
 // Chore spec decision 2 / E7: intent chore creates a Ready chore, not a spike.
 func TestStartSpikeWithChoreIntentCreatesAReadyChore(t *testing.T) {
 	s, _, fa := newStore(t)

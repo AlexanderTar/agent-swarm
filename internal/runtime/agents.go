@@ -329,6 +329,13 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		}
 		in.Request = strings.TrimSpace(in.Request + "\n\n" + section)
 		if _, err := s.Items.Update(ctx, it.Key, items.Patch{Brief: &in.Request, Revision: it.Revision}, items.Daemon()); err != nil {
+			// The brief write failed after a successful Save: the files are
+			// now orphaned under a draft item Sweep will never reach (a
+			// failed StartSpike never reopens or closes the item), so clean
+			// up here instead of waiting on a sweep that can't happen.
+			if in.AttachmentsFailed == nil || !*in.AttachmentsFailed {
+				os.RemoveAll(attachments.Dir(s.Home, it.Key))
+			}
 			return "", Agent{}, false, err
 		}
 	}

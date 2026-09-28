@@ -34,6 +34,10 @@ func (s *Server) createSpike(w http.ResponseWriter, r *http.Request) {
 	var body spikeRequestBody
 	// createSpike carries base64 images, so it reads with a raised cap
 	// instead of readJSON's 1 MiB (spec Locked Decision 5).
+	// ponytail: a 160 MiB body can peak ~400 MiB RSS for this request (raw
+	// JSON bytes + decoded json.Decoder value + base64-decoded image bytes
+	// all live at once); fine for a single-user local daemon, stream
+	// multipart if concurrent large uploads ever make that a problem.
 	if err := readJSONLimit(r, &body, 160<<20); err != nil {
 		s.writeErr(w, err)
 		return
