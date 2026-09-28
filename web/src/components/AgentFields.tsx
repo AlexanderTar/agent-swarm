@@ -19,7 +19,7 @@ export interface AgentFieldsValue {
 }
 
 const WORKER_ROLES: SettingsRole[] = ["coder", "reviewer", "ui_reviewer", "designer", "researcher", "debugger", "mechanical"];
-const ROW = "grid grid-cols-[72px_150px_52px_minmax(0,1fr)] items-center gap-x-2 gap-y-1";
+const ROW = "grid grid-cols-[72px_minmax(0,1fr)] items-center gap-x-2 gap-y-1 sm:grid-cols-[72px_150px_52px_minmax(0,1fr)]";
 const DEFAULT = "__default";
 
 function Pick(p: { label: string; value: string; options: Option[]; onChange(v: string): void; disabled?: boolean; placeholder?: string }) {
@@ -73,17 +73,17 @@ export function AgentFields(p: {
           setNote(r.note);
           p.onChange({ ...p.value, choice: r.choice });
         }} />
-        {(errors.agent || agentError || (choice.model ? errors.model : undefined)) && <p className="col-start-2 col-end-5 text-xs text-destructive">{errors.agent || agentError || errors.model}</p>}
+        {(errors.agent || agentError || (choice.model ? errors.model : undefined)) && <p className="col-start-2 text-xs text-destructive sm:col-end-5">{errors.agent || agentError || errors.model}</p>}
         {efforts && <>
-          <Label>{C.effort}</Label><span className="col-span-2" />
+          <Label>{C.effort}</Label><span className="hidden sm:col-span-2 sm:block" />
           <Pick label={C.effort} value={choice.effort} options={efforts} onChange={(v) => { setNote(undefined); p.onChange({ ...p.value, choice: { ...choice, effort: v } }); }} />
         </>}
-        {note && <p className="col-start-4 text-xs text-muted-foreground">{note}</p>}
+        {note && <p className="col-start-2 text-xs text-muted-foreground sm:col-start-4">{note}</p>}
         <Label>{C.advisor}</Label>
         <Pick label={C.advisor} value={advisor === "none" ? "none" : advisor.agent} options={advisorAgentOptions(p.settings.enabled_agents)} onChange={(v) => p.onChange({ ...p.value, advisor: changeAdvisorAgent(v as AgentKind | "none", p.settings, p.catalog) })} />
         <Label>{C.model}</Label>
         <Pick label={C.advisorModel} value={advisor === "none" ? "" : advisor.model} placeholder="—" disabled={advisor === "none"} options={advisor === "none" ? [] : advisorModelOptions(p.catalog, advisor.agent)} onChange={(m) => advisor !== "none" && p.onChange({ ...p.value, advisor: { agent: advisor.agent, model: m } })} />
-        {errors.advisor && <p className="col-start-2 col-end-5 text-xs text-destructive">{errors.advisor}</p>}
+        {errors.advisor && <p className="col-start-2 text-xs text-destructive sm:col-end-5">{errors.advisor}</p>}
       </div>
       <p className="text-xs text-muted-foreground">{C.defaultsFromSettings}</p>
       {stale && <p className="text-xs text-warning">{stale}</p>}
@@ -100,7 +100,7 @@ export function AgentFields(p: {
             const roleEfforts = effortOptions(roleAgent, resolveModel(roleEntry, roleModel));
             return (
               <fieldset key={role} aria-label={ROLE_LABEL[role]} className={`${ROW} border-t border-border pt-2`}>
-                <legend className="col-span-4 text-sm font-semibold">{ROLE_LABEL[role]}</legend>
+                <legend className="col-span-2 text-sm font-semibold sm:col-span-4">{ROLE_LABEL[role]}</legend>
                 <Label>{C.agent}</Label>
                 <Pick label={`${ROLE_LABEL[role]} ${C.agent}`} value={roleAgent} options={agentOptions(p.settings.enabled_agents)} onChange={(v) => {
                   const newAgent = v as AgentKind;
@@ -112,7 +112,7 @@ export function AgentFields(p: {
                 <Label>{C.model}</Label>
                 <Pick label={`${ROLE_LABEL[role]} ${C.model}`} value={roleModel} options={modelOptions(roleEntry)} onChange={(v) => updateRole(role, roleAgent, v, normalizeEffort(roleAgent, resolveModel(roleEntry, v), roleEffort) || undefined)} />
                 {roleEfforts && <>
-                  <Label>{C.effort}</Label><span className="col-span-2" />
+                  <Label>{C.effort}</Label><span className="hidden sm:col-span-2 sm:block" />
                   <Pick label={`${ROLE_LABEL[role]} ${C.effort}`} value={roleEffort} options={roleEfforts} onChange={(v) => updateRole(role, roleAgent, roleModel, v || undefined)} />
                 </>}
               </fieldset>

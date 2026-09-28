@@ -4,6 +4,19 @@ test.beforeEach(async ({ request }) => {
   await request.get("/__mock/reset");
 });
 
+test("form sheet controls fit a narrow viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "New spike" }).click();
+  const sheet = page.getByRole("dialog", { name: "New orchestrator" });
+  await page.screenshot({ animations: "disabled" });
+  const model = sheet.getByRole("combobox", { name: "Model", exact: true });
+  const modelBox = await model.boundingBox();
+  const rescanBox = await sheet.getByRole("button", { name: "Rescan" }).boundingBox();
+  expect(modelBox?.width).toBeGreaterThanOrEqual(160);
+  expect(rescanBox && rescanBox.x + rescanBox.width).toBeLessThanOrEqual(390);
+});
+
 test("foundation controls keep dark palette, contrast and density under a light OS", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/");

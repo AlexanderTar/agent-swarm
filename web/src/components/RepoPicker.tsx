@@ -71,7 +71,7 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
       <legend id={labelId} className="font-medium">{p.label}</legend>
       {p.selected.length > 0 && <p className="text-xs text-muted-foreground">{p.selected.length} selected</p>}
       {p.caption && <p className="text-xs text-muted-foreground">{p.caption}</p>}
-      <ScrollArea className="h-[242px] rounded-md border border-border">
+      <ScrollArea className="h-[242px] w-full min-w-0 rounded-md border border-border">
         <div role="listbox" aria-multiselectable="true" aria-labelledby={labelId} className="p-0.5">
           {!data && !!repos.error && <div className="flex h-60 items-center justify-center gap-1 text-muted-foreground">{C.reposUnavailable}<Button variant="link" size="sm" onClick={repos.reload}>{C.retry}</Button></div>}
           {data && rows.length === 0 && <div className="flex h-60 items-center justify-center text-muted-foreground">{data.scanning ? C.reposScanning : C.reposEmpty}</div>}
@@ -84,15 +84,15 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
                 className={cn("flex h-[30px] cursor-default items-center gap-2 rounded-sm px-2 outline-none focus-visible:ring-2 focus-visible:ring-ring", on ? "bg-accent" : "hover:bg-accent/60")}
               >
                 <Check aria-hidden className={cn("size-3.5 text-link", !on && "invisible")} />
-                <span className="w-44 truncate font-medium">{r.name}</span>
-                <span className="key truncate text-muted-foreground">{shortPath(r.path)}</span>
+                <span className="w-28 shrink-0 truncate font-medium sm:w-44">{r.name}</span>
+                <span className="key min-w-0 flex-1 truncate text-muted-foreground">{shortPath(r.path)}</span>
                 {r.dirty && <span aria-label={C.repoDirty} title={C.repoDirty} className="ml-auto size-1.5 shrink-0 rounded-full bg-warning" />}
               </div>
             );
           })}
         </div>
       </ScrollArea>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" size="sm" onClick={() => setAdding((a) => !a)}>{C.addFolder}</Button>
         <span className="ml-auto text-xs text-muted-foreground">{data ? scanLine(data) : ""}</span>
         <Button variant="ghost" size="sm" disabled={rescan.pending} onClick={() => void doRescan()}>{C.rescan}</Button>
