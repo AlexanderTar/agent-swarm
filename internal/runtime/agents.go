@@ -451,8 +451,20 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	}
 
 	payload, _ := json.Marshal(map[string]string{"brief": briefText, "item_key": it.Key})
+	// Admit like StartOrchestrator: a new orchestrator at the limit queues
+	// (DrainQueue starts it) instead of taking a slot EnforceCapacity would
+	// then reclaim from a running agent.
+	var queued bool
 	err = s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO agents
+		admitted, err := s.Admit(ctx, tx, RoleOrchestrator, it.ID)
+		if err != nil {
+			return err
+		}
+		if !admitted {
+			queued = true
+			a.State = AgentQueued
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO agents
 			(id, name, kind, model, effort, role, item_id, root_item_id, brief, state, created_at,
 			 advisor_kind, advisor_model, advisor_effort, advisor_mode, advisor_requested_effort, role_overrides)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`,
@@ -479,6 +491,18 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		return "", Agent{}, false, err
 	}
 
+	if substituted && s.Notify != nil {
+		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name, ItemKey: it.Key,
+			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
+	}
+	if queued {
+		if s.Notify != nil {
+			_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.queued", AgentName: a.Name, ItemKey: it.Key,
+				Args: map[string]string{"name": a.Name}})
+		}
+		return it.Key, a, true, nil
+	}
+
 	ses, err := s.startSession(ctx, a, 1, 1, false, "", "")
 	if err != nil {
 		return "", Agent{}, false, err
@@ -488,10 +512,6 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 			s.logf("spawn: watchStartup %s: %v", a.Name, err)
 		}
 	})
-	if substituted && s.Notify != nil {
-		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name, ItemKey: it.Key,
-			Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
-	}
 
 	return it.Key, a, false, nil
 }

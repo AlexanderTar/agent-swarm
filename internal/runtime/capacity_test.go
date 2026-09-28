@@ -535,3 +535,58 @@ func TestEnforceCapacityCountsHoldersAlreadyLeaving(t *testing.T) {
 		})
 	}
 }
+
+// A new orchestrator started at the limit waits in the queue; it never takes
+// a running agent's slot (the 2026-09-28 incident: StartSpike skipped Admit,
+// so EnforceCapacity paused a working designer to make room).
+func TestStartSpikeAtTheLimitQueuesInsteadOfPausingOthers(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	for _, id := range []string{orch.ID, w.ID} {
+		if _, err := s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'running' WHERE agent_id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setLimits(t, s, 2)
+
+	_, a, queued, err := s.StartSpike(ctx, SpikeInput{Name: "At the limit", Intent: "debug",
+		Kind: Fake, Model: "fake-1", Request: "Look into it."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !queued {
+		t.Fatal("StartSpike at the limit must queue")
+	}
+	var state string
+	var sessions int
+	if err := s.DB.QueryRow(`SELECT state, (SELECT COUNT(*) FROM sessions WHERE agent_id = agents.id)
+		FROM agents WHERE id = ?`, a.ID).Scan(&state, &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(AgentQueued) || sessions != 0 {
+		t.Fatalf("new orchestrator state=%s sessions=%d, want queued with no session", state, sessions)
+	}
+	if err := s.EnforceCapacity(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ops := capacityOps(t, s); len(ops) != 0 {
+		t.Fatalf("capacity paused running agents: %v", ops)
+	}
+	if got := latestState(t, s, w.ID); got != "running" {
+		t.Fatalf("worker %s is %s, want running", wSes.ID, got)
+	}
+
+	// A freed slot starts the queued orchestrator.
+	setLimits(t, s, 3)
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(`SELECT state, (SELECT COUNT(*) FROM sessions WHERE agent_id = agents.id)
+		FROM agents WHERE id = ?`, a.ID).Scan(&state, &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(AgentActive) || sessions != 1 {
+		t.Fatalf("after drain state=%s sessions=%d, want active with one session", state, sessions)
+	}
+}
