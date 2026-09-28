@@ -185,6 +185,34 @@ func TestReadRecoveryDeniesAnotherAgentsHistory(t *testing.T) {
 	}
 }
 
+// Agents under the same orchestrator read each other's checkpoints: a
+// reviewer needs the coder's red/green evidence (2026-09-28: a reviewer was
+// refused "outside your subtree" and re-ran the coder's tests itself).
+func TestReadRecoveryAllowsASameRootPeer(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	_, _, rootID := seedAgentAndSession(t, s, runtime.RoleOrchestrator, "", "")
+	coderID, coderSes, _ := seedAgentAndSession(t, s, runtime.RoleCoder, rootID, rootID)
+	revID, revSes, _ := seedAgentAndSession(t, s, runtime.RoleReviewer, rootID, rootID)
+	var coderName, revName string
+	s.RT.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, coderID).Scan(&coderName)
+	s.RT.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, revID).Scan(&revName)
+	coder := Caller{SessionID: coderSes, Role: runtime.RoleCoder, AgentID: coderID, AgentName: coderName}
+	if _, err := s.call(ctx, coder, "swarm_checkpoint",
+		`{"kind":"progress","summary":"red then green","next":["done"],"blockers":[],"verification":[{"cmd":"go test ./x","phase":"red","ok":false},{"cmd":"go test ./x","phase":"green","ok":true}]}`); err != nil {
+		t.Fatal(err)
+	}
+	rev := Caller{SessionID: revSes, Role: runtime.RoleReviewer, AgentID: revID, AgentName: revName}
+	out, err := s.call(ctx, rev, "swarm_read", `{"recovery":{"agent":"`+coderName+`"}}`)
+	if err != nil {
+		t.Fatalf("a same-root peer must read the coder's checkpoints: %v", err)
+	}
+	cps, _ := out.(map[string]any)["recovery"].(map[string]any)["checkpoints"].([]any)
+	if len(cps) != 1 || cps[0].(map[string]any)["verification"] == nil {
+		t.Fatalf("checkpoints = %v, want the coder's one with verification", cps)
+	}
+}
+
 // IMPORTANT 4: checkpoints sharing one created_at millisecond page exactly
 // once through the (created_at, id) cursor returned as next_cursor.
 func TestReadRecoveryPagesTiedTimestampsExactlyOnce(t *testing.T) {

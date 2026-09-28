@@ -45,8 +45,8 @@ func recoveryBundleOut(b *runtime.RecoveryBundle) any {
 
 // recoveryOut runs the swarm_read recovery object: history with full
 // fields/provenance plus resource discovery.
-// The read is authorized like swarm_control: the caller may read its own
-// history and its subtree's, never an unrelated agent's.
+// The read is authorized by root item: the caller may read any agent under
+// the same orchestrator, never one under another root.
 func (s *Server) recoveryOut(ctx context.Context, c Caller, in *recoveryInput) (map[string]any, error) {
 	agentID, err := s.recoveryAgentID(ctx, in.Agent)
 	if err != nil {
@@ -56,10 +56,15 @@ func (s *Server) recoveryOut(ctx context.Context, c Caller, in *recoveryInput) (
 	if err != nil {
 		return nil, err
 	}
-	if ok, err := s.RT.ControlsAgent(ctx, caller.ID, agentID); err != nil {
+	// Reads are wider than control: every agent under one orchestrator (same
+	// root item) reads the others' history, so a reviewer can see the coder's
+	// red/green evidence. Other roots stay closed.
+	target, err := s.RT.AgentByID(ctx, agentID)
+	if err != nil {
 		return nil, err
-	} else if !ok {
-		return nil, fmt.Errorf("bad_request: recovery history of %s is outside your subtree", in.Agent)
+	}
+	if target.RootItemID != caller.RootItemID {
+		return nil, fmt.Errorf("bad_request: recovery history of %s is outside your orchestrator's work", in.Agent)
 	}
 	limit := in.Limit
 	if limit <= 0 {
