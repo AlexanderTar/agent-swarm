@@ -195,6 +195,15 @@ final class AgentActionsTests: XCTestCase {
         XCTAssertEqual(AgentTree.subtitle(state.agents[0]), "Orchestrator · EPIC-12")
         XCTAssertEqual(AgentTree.subtitle(state.agents[1]), "Orchestrator · SPIKE-3 · Paused")
         XCTAssertEqual(AgentTree.subtitle(state.agents[0].children[1]), "Reviewer · TASK-101 · Waiting")
+        XCTAssertEqual(AgentTree.subtitle(state.agents[3]), "Orchestrator · 2/7 · Design · Queued")
+        let running = AgentNode(name: "o", model: "m", role: .orchestrator, itemKey: "EPIC-1",
+                                progress: AgentProgress(done: 3, total: 8, current: "TASK-12 · Add login form"))
+        XCTAssertEqual(AgentTree.subtitle(running), "Orchestrator · 3/8 · TASK-12 · Add login form")
+        let finished = AgentNode(name: "o", model: "m", role: .orchestrator, itemKey: "EPIC-1",
+                                 progress: AgentProgress(done: 8, total: 8, current: ""))
+        XCTAssertEqual(AgentTree.subtitle(finished), "Orchestrator · 8/8 · Done")
+        XCTAssertEqual(AgentTree.subtitle(AgentNode(name: "o", model: "m", role: .orchestrator, itemKey: "EPIC-1")),
+                       "Orchestrator · EPIC-1", "no progress: unchanged")
         let roles: [Role] = [.coder, .reviewer, .uiReviewer, .researcher, .debugger, .mechanical]
         XCTAssertEqual(roles.map(Copy.roleLabel), ["Coder", "Reviewer", "UI reviewer", "Researcher", "Debugger", "Mechanical"])
     }

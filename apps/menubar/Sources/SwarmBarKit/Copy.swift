@@ -111,6 +111,7 @@ public enum Copy {
     public static func imageUnsupported(_ name: String) -> String { "\(name) is not an image Swarm can attach." }
     public static let imagesNotSaved = "Started, but the images could not be saved. Share them with the orchestrator another way."
     public static let done = "Done"
+    public static let progressDone = "Done"
 
     // §17.1 settings
     public static let tabAgents = "Agents"

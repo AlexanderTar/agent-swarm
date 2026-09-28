@@ -221,6 +221,7 @@
       "role": "orchestrator",
       "item_key": "SPIKE-4",
       "item_title": "Billing export",
+      "progress": { "done": 2, "total": 7, "current": "Design" },
       "root_key": "SPIKE-4",
       "parent_name": null,
       "advisor": {

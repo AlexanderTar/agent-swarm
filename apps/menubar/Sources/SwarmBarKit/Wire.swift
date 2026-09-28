@@ -64,6 +64,17 @@ public struct SessionInfo: Codable, Sendable, Equatable {
     }
 }
 
+/// `progress` on an orchestrator AgentNode: its root item's to-do list summary.
+public struct AgentProgress: Codable, Sendable, Equatable {
+    public var done: Int
+    public var total: Int
+    public var current: String
+
+    public init(done: Int, total: Int, current: String) {
+        self.done = done; self.total = total; self.current = current
+    }
+}
+
 public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var name: String
@@ -84,11 +95,12 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     /// The in-flight replacement operation, when the coordinator owns one.
     public var replacement: AgentReplacement?
     public var preflightError: String?
+    public var progress: AgentProgress?
     public var children: [AgentNode]
     public var finished: [AgentNode]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, model, effort, role, step, state, session, replacement, children, finished
+        case id, name, kind, model, effort, role, step, state, session, replacement, children, finished, progress
         case itemKey = "item_key", itemTitle = "item_title", rootKey = "root_key"
         case parentName = "parent_name", preflightError = "preflight_error"
     }
@@ -99,13 +111,15 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
                 rootKey: String = "EPIC-1", parentName: String? = nil, state: AgentState = .active,
                 session: SessionInfo? = SessionInfo(state: .running),
                 replacement: AgentReplacement? = nil, preflightError: String? = nil,
+                progress: AgentProgress? = nil,
                 children: [AgentNode] = [], finished: [AgentNode] = []) {
         self.id = id; self.name = name; self.kind = kind; self.model = model; self.effort = effort
         self.role = role; self.step = step
         self.itemKey = itemKey; self.itemTitle = itemTitle; self.rootKey = rootKey
         self.parentName = parentName; self.state = state; self.session = session
         self.replacement = replacement
-        self.preflightError = preflightError; self.children = children; self.finished = finished
+        self.preflightError = preflightError; self.progress = progress
+        self.children = children; self.finished = finished
     }
 }
 

@@ -13,6 +13,8 @@ final class FixtureTests: XCTestCase {
         XCTAssertEqual(s.agents[0].finished.map(\.name), ["session-coder"])
         XCTAssertEqual(s.agents[0].children[1].session?.waiting, true)
         XCTAssertNil(s.agents[3].session)
+        XCTAssertEqual(s.agents[3].progress, AgentProgress(done: 2, total: 7, current: "Design"))
+        XCTAssertNil(s.agents[0].progress, "progress is absent unless the daemon sends it")
         XCTAssertEqual(s.agents[4].preflightError, "Codex isn't installed on this Mac.")
         XCTAssertEqual(s.requests.map(\.kind), [.approveSection, .question, .approvePlan, .confirmRepos])
         XCTAssertEqual(s.requests[0].sectionTitle, "Session handling")
