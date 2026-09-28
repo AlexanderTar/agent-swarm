@@ -116,6 +116,54 @@ func TestBuildApprovalQuestionCapsAt1000RunesWithoutCuttingTail(t *testing.T) {
 	}
 }
 
+// TestBuildApprovalQuestionFallsBackWhenPathsAloneOverflow is the advisor
+// review fix: when paths + approve line + token alone already exceed 1000
+// runes (huge absolute paths), buildApprovalQuestion must still return a
+// question <= 1000 runes with the token intact -- dropping the summary
+// entirely is not enough if paths themselves overflow, so the paths block
+// is dropped too (still shown losslessly via review_paths/chat).
+func TestBuildApprovalQuestionFallsBackWhenPathsAloneOverflow(t *testing.T) {
+	summary := "Ship the API."
+	paths := "Spec: /" + strings.Repeat("spec-path/", 150) + "spec.md\n" +
+		"Plan: /" + strings.Repeat("plan-path/", 150) + "plan.md\n"
+	approveLine := "Approve the plan (rev 1)?"
+	ref := "req_HUGE1"
+
+	got := buildApprovalQuestion(summary, paths, approveLine, ref)
+	if n := utf8.RuneCountInString(got); n > 1000 {
+		t.Fatalf("question = %d runes, want <= 1000", n)
+	}
+	if !strings.HasSuffix(got, refToken(ref)) {
+		t.Fatalf("token missing or cut: tail = %q", got[len(got)-40:])
+	}
+	if !strings.HasSuffix(got, approveLine+refToken(ref)) {
+		t.Fatalf("approve line was cut: %q", got)
+	}
+}
+
+// TestBuildApprovalQuestionFallsBackWhenApproveLineAloneOverflows covers the
+// no-paths case: a huge warnings block makes the approve line itself exceed
+// 1000 runes. The question must still be <= 1000 runes with the token
+// intact, even though that now means cutting from the approve line's own
+// tail (the old truncateWithToken behaviour) rather than the summary.
+func TestBuildApprovalQuestionFallsBackWhenApproveLineAloneOverflows(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Approve the plan (rev 1)?\nWarnings:")
+	for i := 0; i < 50; i++ {
+		b.WriteString("\n- Task t" + strings.Repeat("x", 20) + " has no verify command.")
+	}
+	approveLine := b.String()
+	ref := "req_HUGE2"
+
+	got := buildApprovalQuestion("Ship the API.", "", approveLine, ref)
+	if n := utf8.RuneCountInString(got); n > 1000 {
+		t.Fatalf("question = %d runes, want <= 1000", n)
+	}
+	if !strings.HasSuffix(got, refToken(ref)) {
+		t.Fatalf("token missing or cut: tail = %q", got[len(got)-40:])
+	}
+}
+
 // TestNativeAnswerNextStep covers every shape ResolveQuestionByPrompt can
 // hand PostToolUse: an observed Approve/Request changes pick, genuine typed
 // free text, and agy's placeholder "Resolved in terminal" (spec 1.7) --
@@ -367,6 +415,12 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	}
 	if req.NativePrompt == nil || !strings.HasSuffix(req.NativePrompt.Question, refToken(req.ID)) {
 		t.Fatalf("native prompt = %+v", req.NativePrompt)
+	}
+	// Paths this long overflow the 1000-rune cap on their own: the question
+	// must still fit by dropping them from the inline question (they still
+	// reach the user losslessly via review_paths and the chat print above).
+	if n := utf8.RuneCountInString(req.NativePrompt.Question); n > 1000 {
+		t.Fatalf("native prompt question = %d runes, want <= 1000", n)
 	}
 	if !strings.Contains(NativePromptNextStep(req.ID), "for a plan also print the full absolute review_paths.spec and review_paths.plan") {
 		t.Fatalf("initial next step lacks path display instruction: %q", NativePromptNextStep(req.ID))

@@ -82,12 +82,23 @@ func truncateWithToken(body, ref string) string {
 // (2026-09-28-summary-in-native-question). The full summary is printed in
 // chat, not here; head is already capped by approvalSummaryHead, but this
 // still shortens it further, ending with "…", if the never-cut tail
-// (paths, approve line, token) alone leaves it no room. A separate helper
-// from truncateWithToken because its other callers truncate a single body,
-// not a summary glued to a fixed, never-cut tail.
+// (paths, approve line, token) alone leaves it no room -- and if paths,
+// approve line and token alone already overflow 1000 runes, dropping the
+// summary can't help either: paths are dropped first (still shown
+// losslessly via review_paths and the chat print), then, if the approve
+// line/warnings alone still overflow, this falls back to
+// truncateWithToken's own behaviour (cut from its end, token survives). A
+// separate helper from truncateWithToken because its other callers
+// truncate a single body, not a summary glued to a fixed, never-cut tail.
 func buildApprovalQuestion(summary, paths, approveLine, ref string) string {
 	token := refToken(ref)
 	tail := paths + approveLine
+	if utf8.RuneCountInString(tail)+utf8.RuneCountInString(token) > 1000 {
+		if paths != "" {
+			return buildApprovalQuestion(summary, "", approveLine, ref)
+		}
+		return truncateWithToken(approveLine, ref)
+	}
 	limit := 1000 - utf8.RuneCountInString(token) - utf8.RuneCountInString(tail) - 2 // "\n\n"
 	sr := []rune(summary)
 	switch {
