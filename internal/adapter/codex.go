@@ -90,7 +90,14 @@ func (c *Codex) flags(s Spec) ([]string, error) {
 		// shared) CODEX_HOME. --no-daemon also means teardown has no daemon
 		// process to kill; see reclaimCodexHomes in internal/runtime.
 		"--no-daemon",
-		"--no-alt-screen", "-m", s.Model}
+		"--no-alt-screen", "-m", s.Model,
+		// docs/specs/2026-09-28-codex-sync-request-user-input.md: the
+		// synchronous request_user_input tool (blocks in the same turn,
+		// unlike request_user_input_async) is hidden in Default mode unless
+		// this under-development feature flag is on (openai/codex#24750).
+		// Per-launch only, never written to the user's own
+		// ~/.codex/config.toml.
+		"-c", "features.default_mode_request_user_input=true"}
 	if s.Effort != "" {
 		a = append(a, "-c", `model_reasoning_effort="`+s.Effort+`"`)
 	}

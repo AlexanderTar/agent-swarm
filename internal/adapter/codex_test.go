@@ -34,6 +34,7 @@ func TestCodexLaunchArgv(t *testing.T) {
 		`mcp_servers.swarm.command="/usr/local/bin/swarm"`,
 		`mcp_servers.swarm.args=["mcp"]`,
 		`mcp_servers.swarm.env_vars=["SWARM_URL","SWARM_SESSION","SWARM_TOKEN_FILE","SWARM_AGENT_KIND"]`,
+		`features.default_mode_request_user_input=true`,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv is missing %q:\n%s", want, joined)
@@ -61,8 +62,32 @@ func TestCodexConfigOverridesParseAsTOML(t *testing.T) {
 			t.Errorf("-c %q is not TOML: %v", l.Argv[i+1], err)
 		}
 	}
-	if n != 4 {
-		t.Fatalf("want 4 -c overrides (effort, command, args, env_vars), got %d", n)
+	if n != 5 {
+		t.Fatalf("want 5 -c overrides (effort, request_user_input, command, args, env_vars), got %d", n)
+	}
+}
+
+// docs/specs/2026-09-28-codex-sync-request-user-input.md: openai/codex#24750
+// hides the synchronous request_user_input tool in Default mode unless this
+// under-development feature is on. Never written to the user's own
+// ~/.codex/config.toml -- only passed per-launch.
+func TestCodexLaunchAndResumeEnableSyncRequestUserInput(t *testing.T) {
+	want := `features.default_mode_request_user_input=true`
+	l, err := newCodex(testDeps(t)).Launch(codexSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(l.Argv, " "), want) {
+		t.Fatalf("Launch argv is missing %q: %v", want, l.Argv)
+	}
+	s := codexSpec(t)
+	s.ProviderSessionID = "01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9"
+	l, err = newCodex(testDeps(t)).Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(l.Argv, " "), want) {
+		t.Fatalf("Resume argv is missing %q: %v", want, l.Argv)
 	}
 }
 
