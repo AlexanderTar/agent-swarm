@@ -95,6 +95,7 @@ export const C = {
   checkpoints: "Checkpoints",
   brief: "Brief",
   acceptance: "Acceptance",
+  addCriterion: "Add criterion",
   blockedBy: "Blocked by",
   blocks: "Blocks",
   addDependency: "Add dependency",
