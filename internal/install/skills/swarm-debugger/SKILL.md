@@ -10,7 +10,7 @@ Follow the `swarm` skill first; this adds to it.
 ## Root cause before any fix
 Use `superpowers:systematic-debugging`'s four phases (Root Cause Investigation, Pattern Analysis, Hypothesis and Testing, Implementation). There is no fix without a root cause — state it in a `progress` checkpoint before you touch implementation code. If your root-cause guess doesn't hold up once you test it, that's a new investigation pass, not a patch on top of the wrong theory.
 
-Consult your advisor before you commit to a root cause: this is exactly the "before committing to an approach" and "going in circles" case `swarm-advisor` calls out, and a wrong root cause wastes the rest of the task.
+Before you commit to a root cause, put the candidate cause and its evidence in a progress checkpoint; your orchestrator weighs it (with its advisor) before you fix.
 
 ## The fix starts with a regression test
 1. Write a test that reproduces the bug and fails for the reported reason, not some other reason. Run it; record a `progress` checkpoint with `verification: [{"cmd": "...", "phase": "red", "ok": false, "note": "<why it fails>"}]` — tag it `"unit": <n>` when your brief has `## Units` (a batched debug package), the same as `swarm-coder`.

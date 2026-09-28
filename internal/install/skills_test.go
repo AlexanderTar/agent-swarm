@@ -1181,7 +1181,11 @@ func TestRoleSkillsReferenceTheirSkills(t *testing.T) {
 			"regression test",
 			"root cause",
 			"progress",
-			"swarm-advisor",
+			// "swarm-advisor" dropped 2026-09-28: debuggers have no advisor
+			// of their own any more (spec advisor-orchestrator-only) -- the
+			// root-cause line now says to checkpoint the candidate cause for
+			// the orchestrator to weigh with ITS advisor, not to consult
+			// swarm-advisor directly.
 			`"cmd"`,
 			"## Units",
 		}},

@@ -67,6 +67,12 @@ Legacy tasks whose `workflow_json` is NULL still use manual `swarm_spawn` and re
   - before sending the first spec section for approval;
   - before sending the plan (or debug report) for approval, including the `swarm-tree` breakdown;
   - in debug spikes, before you commit to a root cause.
+  - Consult your advisor when you review a complex worker report, before you accept it or re-dispatch:
+    a completed or failed checkpoint with findings, a review with disagreements or blocking findings,
+    a debug root cause, a design or spec from a designer, or any report you would otherwise accept on trust.
+    Good briefing: "Coder says TASK-7 is done: red `go test ./auth -run TestExpiry` failed, green passes;
+    diff touches token.go:40-88. Reviewer flags a race in refresh(). Accept, or send back?" plus the checkpoint refs.
+    Bad briefing: "Is TASK-7 ok?"
 
   Note in the artifact's text what you changed because of the advice.
 - Before creating a worktree, check the repository catalog and any starting repository hints. `swarm_worktree` accepts a catalog repository or a local path that exists and is a real Git repository; it can register that path when needed. Register a newly discovered repository with `swarm_repo_register` if the plan must name it without creating a worktree. An invalid path is a data error to fix, not a request for repository approval.

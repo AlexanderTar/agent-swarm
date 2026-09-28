@@ -1,9 +1,11 @@
 ---
 name: swarm-advisor
-description: When and how to consult your advisor — before committing to an approach, when stuck, before completing risky or irreversible work. Referenced from the `swarm` skill's rule 9a; installed for every agent, not just one role.
+description: When and how to consult your advisor — before committing to an approach, when stuck, before completing risky or irreversible work. Referenced from the `swarm` skill's rule 9a; for orchestrators only — child agents have no advisor.
 ---
 
 # Consulting your advisor
+
+Only orchestrators have an advisor. If you are a child agent, stop here and escalate to your orchestrator instead.
 
 Follow the `swarm` skill first; this adds to it.
 
