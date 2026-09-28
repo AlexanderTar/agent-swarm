@@ -7,6 +7,8 @@ test.beforeEach(async ({ request }) => {
 test("foundation controls keep dark palette, contrast and density under a light OS", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/");
+  await expect(page.locator("body")).toHaveCSS("background-color", "rgb(11, 11, 14)");
+  await expect(page.locator("body")).toHaveCSS("font-family", /^"?Onest Variable"?,/);
   await page.addScriptTag({
     type: "module",
     content: `
