@@ -235,37 +235,7 @@ func (s *Store) pendingOperationTx(ctx context.Context, q txQuerier, agentID str
 func (s *Store) queueRetryIntent(ctx context.Context, a Agent, ses Session, note, callerSessionID, requestID string) (Agent, error) {
 	var out Agent
 	if _, err := IdemTx(ctx, s, callerSessionID, requestID, "swarm_control", &out, func(tx *sql.Tx) error {
-		if requestID != "" {
-			var n int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_operations
-				WHERE agent_id = ? AND request_key = ?`, a.ID, requestID).Scan(&n); err != nil {
-				return err
-			}
-			if n > 0 {
-				out = a
-				return nil
-			}
-		}
-		var activeID string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM agent_operations WHERE agent_id = ? AND phase IN
-			('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting')`, a.ID).Scan(&activeID)
-		if err == nil {
-			return &items.Error{Code: items.CodeConflict,
-				Message: fmt.Sprintf("A replacement is already in progress: %s.", activeID)}
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		now := db.Millis(s.now())
-		_, err = tx.ExecContext(ctx, `INSERT INTO agent_operations
-			(id, agent_id, mode, phase, request_key, session_id, generation, note, created_at, updated_at)
-			VALUES (?, ?, 'recover', 'queued', ?, ?, ?, ?, ?, ?)`,
-			ids.New("op"), a.ID, requestID, ses.ID, ses.Generation, note, now, now)
-		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-				return &items.Error{Code: items.CodeConflict,
-					Message: "A replacement is already in progress for this agent."}
-			}
+		if err := s.queueRetryOperationTx(ctx, tx, a, ses, note, requestID); err != nil {
 			return err
 		}
 		out = a
@@ -274,6 +244,50 @@ func (s *Store) queueRetryIntent(ctx context.Context, a Agent, ses Session, note
 		return Agent{}, err
 	}
 	return out, nil
+}
+
+// queueRetryOperationTx inserts a durable queued recover operation for a
+// retry that cannot launch immediately: the predecessor session has already
+// ended (stopping settled, or a retryable terminal state observed at the
+// agent limit), so the walk skips straight to 'queued' -- the same state
+// admitOperation/ResumeOperations drives every other queued op from.
+// requestKey empty means no dedup lookup (caller's own idempotency, if any,
+// already covers replay); a non-empty key already present on the agent is a
+// no-op, not a duplicate row.
+func (s *Store) queueRetryOperationTx(ctx context.Context, tx *sql.Tx, a Agent, ses Session, note, requestKey string) error {
+	if requestKey != "" {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_operations
+			WHERE agent_id = ? AND request_key = ?`, a.ID, requestKey).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+	}
+	var activeID string
+	err := tx.QueryRowContext(ctx, `SELECT id FROM agent_operations WHERE agent_id = ? AND phase IN
+		('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting')`, a.ID).Scan(&activeID)
+	if err == nil {
+		return &items.Error{Code: items.CodeConflict,
+			Message: fmt.Sprintf("A replacement is already in progress: %s.", activeID)}
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	now := db.Millis(s.now())
+	_, err = tx.ExecContext(ctx, `INSERT INTO agent_operations
+		(id, agent_id, mode, phase, request_key, session_id, generation, note, created_at, updated_at)
+		VALUES (?, ?, 'recover', 'queued', ?, ?, ?, ?, ?, ?)`,
+		ids.New("op"), a.ID, requestKey, ses.ID, ses.Generation, note, now, now)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return &items.Error{Code: items.CodeConflict,
+				Message: "A replacement is already in progress for this agent."}
+		}
+		return err
+	}
+	return nil
 }
 
 // CancelOperation marks one operation cancelled. Terminal rows are returned

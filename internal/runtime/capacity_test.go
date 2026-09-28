@@ -590,3 +590,69 @@ func TestStartSpikeAtTheLimitQueuesInsteadOfPausingOthers(t *testing.T) {
 		t.Fatalf("after drain state=%s sessions=%d, want active with one session", state, sessions)
 	}
 }
+
+// TestRetryAtTheLimitQueuesInsteadOfPausingOthers is the Retry counterpart
+// to TestResumeWhenFullQueuesForAFreeSlot: a failed/crashed session holds no
+// slot (NotAZombieSlot), so an unguarded Retry at the limit would add a
+// slot holder and let the next EnforceCapacity tick pause a running agent to
+// make room. Retry must queue instead, exactly like Resume, and a repeat
+// call while queued must not create a second operation.
+func TestRetryAtTheLimitQueuesInsteadOfPausingOthers(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	setLimits(t, s, 1) // the orchestrator alone holds the only slot
+
+	for i := 0; i < 2; i++ {
+		got, err := s.Retry(ctx, w.Name, "", "", "")
+		if err != nil {
+			t.Fatalf("retry #%d: %v", i+1, err)
+		}
+		if got.ID != w.ID {
+			t.Fatalf("retry returned %s", got.Name)
+		}
+	}
+	var phase string
+	var n int
+	if err := s.DB.QueryRow(`SELECT phase, (SELECT COUNT(*) FROM agent_operations WHERE agent_id = ?)
+		FROM agent_operations WHERE request_key = ?`, w.ID, "retry:"+wSes.ID).Scan(&phase, &n); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "queued" || n != 1 {
+		t.Fatalf("retry op = %s (ops %d), want one queued", phase, n)
+	}
+	var sessions int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 {
+		t.Fatalf("sessions = %d, want 1 (no launch while full)", sessions)
+	}
+
+	if err := s.EnforceCapacity(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ops := capacityOps(t, s); len(ops) != 0 {
+		t.Fatalf("capacity paused a running agent for a queued retry: %v", ops)
+	}
+	if got := latestState(t, s, orch.ID); got != "running" && got != "spawning" {
+		t.Fatalf("orchestrator %s is %s, want untouched", orch.ID, got)
+	}
+
+	setLimits(t, s, 2)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 2 {
+		t.Fatalf("sessions = %d, want 2 after a slot freed", sessions)
+	}
+	if n := countKind(s, "agent.retried"); n != 1 {
+		t.Fatalf("agent.retried raised %d times for the freed retry, want 1", n)
+	}
+}

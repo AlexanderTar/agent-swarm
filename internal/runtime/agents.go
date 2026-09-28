@@ -2028,13 +2028,23 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	} else if hit {
 		return out, nil
 	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		return Agent{}, err
+	}
+	// A repeat of a retry already waiting for a free slot returns the
+	// agent, not a 409 (mirrors Resume's own queued-repeat handling): this
+	// check must run before refuseIfOperationInFlight below, or the very
+	// operation this retry queued would make its own replay look like a
+	// conflicting one.
+	if op, ok, err := s.PendingOperation(ctx, a.ID); err != nil {
+		return Agent{}, err
+	} else if ok && op.RequestKey == retryKeyPrefix+ses.ID {
+		return a, nil
+	}
 	// Batch 3: Retry consults the replacement coordinator before the state
 	// guard, so a refused retry names the operation it would race.
 	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
-		return Agent{}, err
-	}
-	ses, err := s.LatestSession(ctx, a.ID)
-	if err != nil {
 		return Agent{}, err
 	}
 	if ses.State == Stopping {
@@ -2045,6 +2055,29 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	}
 	if !slices.Contains(retryableStates, ses.State) {
 		return Agent{}, &items.Error{Code: items.CodeConflict, Message: notRetryable}
+	}
+
+	// The one agent limit: a failed/crashed/completed/interrupted predecessor
+	// holds no slot (NotAZombieSlot), so launching the successor straight
+	// away would add a slot holder and let the next EnforceCapacity tick
+	// pause someone else to make room. With the pool full, queue instead --
+	// a retry-keyed recover operation exactly like queueRetryIntent's
+	// stopping-race case, so ResumeOperations starts it once a slot frees.
+	if room, err := s.admitsNow(ctx, a); err != nil {
+		return Agent{}, err
+	} else if !room {
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			return s.queueRetryOperationTx(ctx, tx, a, ses, note, retryKeyPrefix+ses.ID)
+		}); err != nil {
+			return Agent{}, err
+		}
+		if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_control", &out, func(*sql.Tx) error {
+			out = a
+			return nil
+		}); err != nil {
+			return Agent{}, err
+		}
+		return a, nil
 	}
 
 	// origKind is captured before resolveUsageFallback may substitute a.Kind,

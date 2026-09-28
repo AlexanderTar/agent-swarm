@@ -13,6 +13,7 @@ import (
 const (
 	capacityKeyPrefix = "capacity:"
 	resumeKeyPrefix   = "resume:"
+	retryKeyPrefix    = "retry:"
 )
 
 // OperationReason names why the daemon started an operation: "capacity"
