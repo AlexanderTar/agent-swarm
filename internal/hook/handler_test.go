@@ -1350,6 +1350,47 @@ func TestPreToolUseDeniesMultiQuestionBatchWithSwarmRef(t *testing.T) {
 	}
 }
 
+// TestPreToolUseDeniesMultiQuestionBatchBoundByText is
+// 2026-09-28-approval-summary-enforced: a daemon-issued native question no
+// longer carries a ⟦swarm:ref⟧ token, so the batched guard above (which
+// only ever catches an old-style token) must also catch a batch whose
+// Questions[1] matches an open approval's rebuilt text.
+func TestPreToolUseDeniesMultiQuestionBatchBoundByText(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	if _, err := h.DB.ExecContext(ctx, `INSERT INTO requests
+		(id, kind, is_hitl, agent_id, session_id, item_id, prompt, options_json, state, created_at)
+		VALUES ('req_close1', 'close_spike', 0, 'agt_1', 'ses_1', 'itm_1', '', '[]', 'open', 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	in, _ := json.Marshal(map[string]any{
+		"session_id": "p1",
+		"tool_name":  "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": "Which db?"},
+				{"question": "Close TASK-101?"},
+			},
+		},
+	})
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "Ask one swarm approval per question call.") {
+		t.Fatalf("a batched call whose second question binds by text must be denied, got %s", out)
+	}
+
+	var n int
+	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE kind = 'question'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("question rows = %d, want 0 (denied before AskQuestion ran)", n)
+	}
+}
+
 // TestPreToolUseAllowsSingleQuestionWithSwarmRef confirms the new batch
 // check does not catch the normal, single-question native_prompt flow.
 func TestPreToolUseAllowsSingleQuestionWithSwarmRef(t *testing.T) {

@@ -131,6 +131,35 @@ func questionsHaveBatchedSwarmRef(raw []byte) bool {
 	return false
 }
 
+// batchedQuestionsAfterFirst returns every question text in a multi-question
+// batch's Questions[1:] (Questions[0] is the one extractQuestion/AskQuestion
+// will actually bind, via the PreToolUse intercept below) -- "" for
+// Question falls back to Title, same as extractQuestion. Returns nil when
+// raw isn't a >=2-question batch.
+func batchedQuestionsAfterFirst(raw []byte) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var payload struct {
+		Questions []struct {
+			Question string `json:"question"`
+			Title    string `json:"title"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || len(payload.Questions) < 2 {
+		return nil
+	}
+	out := make([]string, 0, len(payload.Questions)-1)
+	for _, q := range payload.Questions[1:] {
+		text := q.Question
+		if text == "" {
+			text = q.Title
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
 // questionReply is one entry of codex's question-reply user message: the
 // answer to a request_user_input_async question arrives on the next
 // UserPromptSubmit as
@@ -720,6 +749,20 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		// never find it (2026-09-26 fix, native-railway-tracing finding).
 		if isQuestionTool(in.ToolName) && questionsHaveBatchedSwarmRef(in.RawToolInput) {
 			return adapter.HookDecision{Block: true, Reason: "[swarm] Ask one swarm approval per question call."}, nil
+		}
+
+		// Same guard, by normalized question text (2026-09-28-approval-
+		// summary-enforced locked decision 2, now that a daemon-issued
+		// question carries no token to check for): a question anywhere past
+		// Questions[0] that binds to an open approval routed to this agent
+		// would be recorded and answered but never bindable, same failure
+		// mode as the token check above.
+		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
+			for _, q := range batchedQuestionsAfterFirst(in.RawToolInput) {
+				if _, ok := h.RT.BindNativeQuestion(ctx, s.AgentID, q); ok {
+					return adapter.HookDecision{Block: true, Reason: "[swarm] Ask one swarm approval per question call."}, nil
+				}
+			}
 		}
 
 		// Intercept native question tools to record HITL request in Swarm without blocking
