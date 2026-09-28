@@ -2244,19 +2244,22 @@ func TestSpawnPersistsSimulatedAdvisorEffort(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Children never get an advisor (spec 2026-09-28), whatever the
+			// caller's explicit Advisor choice: this test used to assert
+			// tc.advisor/tc.advisorModel/high/simulated were persisted.
 			kind, model, effort, mode := advisorCols(t, s, a.ID)
-			if kind != string(tc.advisor) || model != tc.advisorModel || effort != "high" || mode != "simulated" {
-				t.Fatalf("advisor columns = %q/%q/%q/%q, want %s/%s/high/simulated", kind, model, effort, mode, tc.advisor, tc.advisorModel)
+			if kind != "" || model != "" || effort != "" || mode != "" {
+				t.Fatalf("advisor columns = %q/%q/%q/%q, want all empty (children never get an advisor)", kind, model, effort, mode)
 			}
 		})
 	}
 }
 
-// TestSpawnUsesSettingsAdvisorDefaultWhenNoneChosen is Task 12b case 1: a
-// Spawn with no Advisor on the input picks up the Settings role default
-// (roleDefaults[RoleAdvisor] = {Claude, "fable", ""}) and, with a wired
-// Advisor, its resolved mode.
-func TestSpawnUsesSettingsAdvisorDefaultWhenNoneChosen(t *testing.T) {
+// TestSpawnIgnoresSettingsAdvisorDefaultForAChild is
+// TestSpawnUsesSettingsAdvisorDefaultWhenNoneChosen's post-2026-09-28
+// replacement: a coder Spawn with no Advisor on the input must not pick up
+// the Settings role default -- children never get an advisor.
+func TestSpawnIgnoresSettingsAdvisorDefaultForAChild(t *testing.T) {
 	s, _, _ := newStore(t)
 	s.Advisor = fakeAdvisor{mode: "simulated"}
 	ctx := context.Background()
@@ -2266,12 +2269,9 @@ func TestSpawnUsesSettingsAdvisorDefaultWhenNoneChosen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kind, model, _, mode := advisorCols(t, s, a.ID)
-	if kind != "claude" || model != "fable" {
-		t.Fatalf("advisor kind/model = %q/%q, want claude/fable (Settings default)", kind, model)
-	}
-	if mode != "simulated" {
-		t.Fatalf("advisor mode = %q, want simulated (from the wired fakeAdvisor)", mode)
+	kind, model, effort, mode := advisorCols(t, s, a.ID)
+	if kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor columns = %q/%q/%q/%q, want all empty (children never get an advisor)", kind, model, effort, mode)
 	}
 }
 
@@ -2293,9 +2293,11 @@ func TestSpawnAdvisorNoneOverridesSettings(t *testing.T) {
 	}
 }
 
-// TestSpawnExplicitAdvisorChoiceOverridesSettings is Task 12b case 3: an
-// explicit AdvisorChoice wins over whatever Settings has.
-func TestSpawnExplicitAdvisorChoiceOverridesSettings(t *testing.T) {
+// TestSpawnIgnoresExplicitAdvisorChoiceForAChild is
+// TestSpawnExplicitAdvisorChoiceOverridesSettings's post-2026-09-28
+// replacement: an explicit AdvisorChoice on a child Spawn is ignored --
+// children never get an advisor, whatever the caller asks for.
+func TestSpawnIgnoresExplicitAdvisorChoiceForAChild(t *testing.T) {
 	s, _, _ := newStore(t)
 	s.Advisor = fakeAdvisor{mode: "native"}
 	ctx := context.Background()
@@ -2305,20 +2307,18 @@ func TestSpawnExplicitAdvisorChoiceOverridesSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kind, model, _, mode := advisorCols(t, s, a.ID)
-	if kind != "codex" || model != "some-model" {
-		t.Fatalf("advisor kind/model = %q/%q, want codex/some-model (explicit choice)", kind, model)
-	}
-	if mode != "native" {
-		t.Fatalf("advisor mode = %q, want native (from the wired fakeAdvisor)", mode)
+	kind, model, effort, mode := advisorCols(t, s, a.ID)
+	if kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor cols = %q/%q/%q/%q, want all empty (children never get an advisor)", kind, model, effort, mode)
 	}
 }
 
-// TestSpawnPassesAdvisorModelToSpecWhenNative is a regression test: a native-
-// mode agent's chosen advisor model must reach adapter.Spec.AdvisorModel, or
-// the Claude launch settings never get an advisorModel and the worker has no
-// advisor tool at all.
-func TestSpawnPassesAdvisorModelToSpecWhenNative(t *testing.T) {
+// TestSpawnNeverPassesAdvisorModelToSpecForAChild is
+// TestSpawnPassesAdvisorModelToSpecWhenNative's post-2026-09-28 replacement:
+// the advisor belongs to the orchestrator only, so a child spawned in
+// native advisor mode must never get adapter.Spec.AdvisorModel set, however
+// explicit its own Advisor choice.
+func TestSpawnNeverPassesAdvisorModelToSpecForAChild(t *testing.T) {
 	s, _, fa := newStore(t)
 	s.Advisor = fakeAdvisor{mode: "native"}
 	ctx := context.Background()
@@ -2329,8 +2329,33 @@ func TestSpawnPassesAdvisorModelToSpecWhenNative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fa.LastSpec.AdvisorModel != "fable" {
-		t.Fatalf("LastSpec.AdvisorModel = %q, want %q (native advisor mode)", fa.LastSpec.AdvisorModel, "fable")
+	if fa.LastSpec.AdvisorModel != "" {
+		t.Fatalf("LastSpec.AdvisorModel = %q, want empty (children never get an advisor)", fa.LastSpec.AdvisorModel)
+	}
+}
+
+// TestSpawnNeverPersistsAdvisorForACoder is the advisor-orchestrator-only
+// spec's core regression test (2026-09-28): a coder spawned with an
+// explicit Advisor choice and a native-capable advisor gets no advisor at
+// all -- neither the agent row's advisor_* columns nor
+// adapter.Spec.AdvisorModel.
+func TestSpawnNeverPersistsAdvisorForACoder(t *testing.T) {
+	s, _, fa := newStore(t)
+	s.Advisor = fakeAdvisor{mode: "native"}
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Advisor: &AdvisorChoice{Kind: Codex, Model: "some-model"}, Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, model, effort, mode := advisorCols(t, s, a.ID)
+	if kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor cols = %q/%q/%q/%q, want all empty (children never get an advisor)", kind, model, effort, mode)
+	}
+	if fa.LastSpec.AdvisorModel != "" {
+		t.Fatalf("LastSpec.AdvisorModel = %q, want empty (children never get an advisor)", fa.LastSpec.AdvisorModel)
 	}
 }
 

@@ -865,6 +865,14 @@ func (s *Store) resolveAdvisor(ctx context.Context, sessionKind AgentKind, choic
 	return kind, model, effort, mode, requestedEffort
 }
 
+// advisorAllowed reports whether role may be given an advisor. Only the
+// orchestrator role gets one (spec 2026-09-28-advisor-orchestrator-only):
+// every non-orchestrator spawn, relaunch and re-resolution path must resolve
+// no advisor, whatever Settings or a caller's explicit advisor choice says.
+func advisorAllowed(role Role) bool {
+	return role == RoleOrchestrator
+}
+
 func (s *Store) resolveAdvisorAfterFallback(ctx context.Context, originalKind, sessionKind AgentKind, choice *AdvisorChoice) (kind AgentKind, model, effort, mode, requestedEffort string) {
 	kind, model, effort, mode, requestedEffort = s.resolveAdvisor(ctx, sessionKind, choice)
 	if originalKind == sessionKind || choice == nil || choice.Effort != "" || mode != "simulated" {
@@ -1104,7 +1112,11 @@ func (s *Store) Spawn(ctx context.Context, in SpawnInput) (Agent, bool, error) {
 		kindReason = joinReason(kindReason, fallbackReason(origKind))
 	}
 
-	advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisorAfterFallback(ctx, origKind, in.Kind, in.Advisor)
+	var advKind AgentKind
+	var advModel, advEffort, advMode, advRequestedEffort string
+	if advisorAllowed(in.Role) {
+		advKind, advModel, advEffort, advMode, advRequestedEffort = s.resolveAdvisorAfterFallback(ctx, origKind, in.Kind, in.Advisor)
+	}
 
 	if err := s.Preflight(ctx, PreflightInput{
 		Kind:      in.Kind,
