@@ -609,7 +609,7 @@ type spawnWorktreeRef struct {
 func spawnTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_spawn",
-		Description: "Spawn a worker agent on an item. Agent, model, effort and advisor come from the user's Settings role default. Pass agent/model/effort only when the user asked for them, with override_reason saying what the user asked for.",
+		Description: "Spawn a worker agent on an item. Agent, model and effort come from the user's Settings role default. Pass agent/model/effort only when the user asked for them, with override_reason saying what the user asked for.",
 		Roles:       orchestratorRole,
 		Schema: objSchemaRequired(`"item":{"type":"string"},"role":{"type":"string"},"agent":{"type":"string"},
 			"model":{"type":"string"},"effort":{"type":"string"},"override_reason":{"type":"string"},"name":{"type":"string"},
@@ -632,10 +632,11 @@ func spawnTool(s *Server) ToolDef {
 				// any of Agent/Model/Effort (2026-09-26 worker-defaults spec).
 				OverrideReason string `json:"override_reason"`
 				Name           string `json:"name"`
-				// Advisor and Cwd are accepted (§8.1) but not yet wired to the spawned
-				// agent: runtime.SpawnInput/Spawn (internal/runtime/agents.go, outside
-				// this batch's file ownership) has no advisor_* columns in its INSERT
-				// and startSession always uses the neutral folder — a pre-existing gap
+				// Advisor is decoded for backward JSON compatibility but always
+				// ignored: children never get an advisor (spec
+				// 2026-09-28-advisor-orchestrator-only), so nothing reads this field.
+				// Cwd is accepted (§8.1) but not yet wired to the spawned agent:
+				// startSession always uses the neutral folder — a pre-existing gap
 				// from Batches 1-4, confirmed unchanged, carried forward rather than
 				// worked around here.
 				Advisor json.RawMessage `json:"advisor"`
