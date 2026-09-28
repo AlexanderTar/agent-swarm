@@ -427,12 +427,18 @@ type bindCandidate struct {
 // tx -- callers already inside one (e.g. askQuestion) must call
 // bindNativeQuestionTx directly instead, to avoid nesting BEGIN IMMEDIATE
 // transactions on the same connection pool.
-func (s *Store) BindNativeQuestion(ctx context.Context, agentID, question string) (ref string, ok bool) {
+// header is the observed native tool call's own header field, when the
+// adapter's question shape carries one (Claude/Codex/agy/Muse all can); ""
+// when unavailable. It only ever disambiguates a child-approval (msg_)
+// match -- an approval-kind request's header is a fixed, kind-wide string
+// ("Spike approval", "Repositories", ...) shared by every request of that
+// kind, so it carries no per-request identity and is never checked there.
+func (s *Store) BindNativeQuestion(ctx context.Context, agentID, header, question string) (ref string, ok bool) {
 	var out string
 	var found bool
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		var err error
-		out, found, err = s.bindNativeQuestionTx(ctx, tx, agentID, question)
+		out, found, err = s.bindNativeQuestionTx(ctx, tx, agentID, header, question)
 		return err
 	})
 	if err != nil {
@@ -443,7 +449,7 @@ func (s *Store) BindNativeQuestion(ctx context.Context, agentID, question string
 
 // bindNativeQuestionTx is BindNativeQuestion's tx-scoped core: the same
 // logic, running inside a caller-supplied transaction.
-func (s *Store) bindNativeQuestionTx(ctx context.Context, tx *sql.Tx, agentID, question string) (ref string, ok bool, err error) {
+func (s *Store) bindNativeQuestionTx(ctx context.Context, tx *sql.Tx, agentID, header, question string) (ref string, ok bool, err error) {
 	if ref := refFromPrompt(question); ref != "" {
 		return ref, true, nil
 	}
@@ -528,11 +534,23 @@ func (s *Store) bindNativeQuestionTx(ctx context.Context, tx *sql.Tx, agentID, q
 		return "", false, err
 	}
 	msgRows.Close()
+	normHeader := NormalizeQuestion(header)
 	for _, r := range msgRowsList {
 		np := nativePromptForMsg(r.fromName, r.body, r.id)
-		if NormalizeQuestion(np.Question) == norm {
-			candidates = append(candidates, bindCandidate{ref: r.id, createdAt: r.ts})
+		if NormalizeQuestion(np.Question) != norm {
+			continue
 		}
+		// A supplied header must match this candidate's own ("<child>
+		// asks") exactly -- post-review fix: without this, two children
+		// with byte-identical bodies, or an orchestrator's own unrelated
+		// plain question that happens to equal a child's body, could bind
+		// to the wrong (or a wholly unintended) child approval. No header
+		// supplied (an adapter/path that can't expose one) falls back to
+		// question-only matching, same as before.
+		if normHeader != "" && NormalizeQuestion(np.Header) != normHeader {
+			continue
+		}
+		candidates = append(candidates, bindCandidate{ref: r.id, createdAt: r.ts})
 	}
 
 	if len(candidates) == 0 {

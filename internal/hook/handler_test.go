@@ -2219,3 +2219,18 @@ func TestAllPathsPresentMatchesBarePathNotLabeledLine(t *testing.T) {
 		t.Fatal("missing paths must not pass")
 	}
 }
+
+// TestExtractQuestionHeader covers the shapes confirmed live: a header per
+// question (Claude/Codex/agy/Muse) and no header at all.
+func TestExtractQuestionHeader(t *testing.T) {
+	got := extractQuestionHeader("AskUserQuestion", []byte(`{"questions":[{"header":"Section 1","question":"Approve?"}]}`))
+	if got != "Section 1" {
+		t.Fatalf("header = %q, want %q", got, "Section 1")
+	}
+	if got := extractQuestionHeader("AskUserQuestion", []byte(`{"question":"Approve?"}`)); got != "" {
+		t.Fatalf("header = %q, want empty", got)
+	}
+	if got := extractQuestionHeader("AskUserQuestion", nil); got != "" {
+		t.Fatalf("header = %q, want empty for nil input", got)
+	}
+}

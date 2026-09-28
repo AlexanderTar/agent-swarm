@@ -105,6 +105,33 @@ func extractQuestion(toolName string, raw []byte) (string, []string) {
 	return prompt, options
 }
 
+// extractQuestionHeader reads a native question tool call's own header
+// field, when its shape carries one -- confirmed live for Claude, Codex
+// (request_user_input's questions[].header) and Muse (same field); agy's
+// ask_question also carries one per question (spec probe). "" when the raw
+// input is empty, doesn't parse, or has no header at any level. Used only
+// to disambiguate a child-approval (msg_) BindNativeQuestion match
+// (2026-09-28-approval-summary-enforced, post-review): every other use of
+// the observed question ignores it.
+func extractQuestionHeader(toolName string, raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload struct {
+		Header    string `json:"header"`
+		Questions []struct {
+			Header string `json:"header"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	if len(payload.Questions) > 0 && payload.Questions[0].Header != "" {
+		return payload.Questions[0].Header
+	}
+	return payload.Header
+}
+
 // questionsHaveBatchedSwarmRef reports whether a native question tool's raw
 // input is a multi-question batch where at least one question carries a
 // daemon-issued ⟦swarm:ref⟧ token (native.go's refToken). extractQuestion
@@ -410,7 +437,7 @@ type transcriptTexter interface {
 // normalized, since a path is never reformatted by markdown the way a
 // summary might be. Matching the bare path only (post-review fix) means a
 // markdown-wrapped label around the same path (`**Spec:**`, `Spec:
-// `/abs/path``) still passes; only the label text used to be checked
+// `/abs/path“) still passes; only the label text used to be checked
 // verbatim, which such wrapping would have defeated. Always true for an
 // empty paths (every non-plan approval, and a plan SummaryGate couldn't
 // resolve paths for).
@@ -801,26 +828,32 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		// question carries no token to check for): a question anywhere past
 		// Questions[0] that binds to an open approval routed to this agent
 		// would be recorded and answered but never bindable, same failure
-		// mode as the token check above.
+		// mode as the token check above. No header available per batched
+		// entry (documented scope limit): falls back to question-only
+		// matching, same collision risk the single-question path below no
+		// longer has.
 		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
 			for _, q := range batchedQuestionsAfterFirst(in.RawToolInput) {
-				if _, ok := h.RT.BindNativeQuestion(ctx, s.AgentID, q); ok {
+				if _, ok := h.RT.BindNativeQuestion(ctx, s.AgentID, "", q); ok {
 					return adapter.HookDecision{Block: true, Reason: "[swarm] Ask one swarm approval per question call."}, nil
 				}
 			}
 		}
 
 		// Summary gate (2026-09-28-approval-summary-enforced locked decision
-		// 3): a question that binds to an open approve_section/plan/report
-		// request is refused until the request's full summary has been
-		// printed in the asking agent's own chat output, so the user is
-		// never asked to approve blind. Must run -- and, on a deny, return --
-		// strictly before the AskQuestion intercept below: a denied call
-		// never reaches the native tool, so no PostToolUse ever fires for it,
-		// and recording the question row here would strand it open forever.
+		// 3) plus the AskQuestion intercept that records the HITL row,
+		// merged into one block (post-review fix) so a single PreToolUse
+		// call resolves BindNativeQuestion's scan at most once -- the gate
+		// passes its ref straight to AskQuestionBoundTo instead of letting
+		// AskQuestion re-derive it. On a deny, this must return before ever
+		// reaching AskQuestionBoundTo: a denied call never reaches the
+		// native tool, so no PostToolUse ever fires for it, and recording
+		// the question row here would strand it open forever.
 		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
-			prompt, _ := extractQuestion(in.ToolName, in.RawToolInput)
-			if ref, ok := h.RT.BindNativeQuestion(ctx, s.AgentID, prompt); ok {
+			prompt, options := extractQuestion(in.ToolName, in.RawToolInput)
+			header := extractQuestionHeader(in.ToolName, in.RawToolInput)
+			ref, bound := h.RT.BindNativeQuestion(ctx, s.AgentID, header, prompt)
+			if bound {
 				summary, paths, blocks, err := h.RT.SummaryGate(ctx, ref)
 				if err != nil {
 					h.logf("hook: summary gate lookup for %s: %v", ref, err)
@@ -843,12 +876,11 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 					}
 				}
 			}
-		}
-
-		// Intercept native question tools to record HITL request in Swarm without blocking
-		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
-			prompt, options := extractQuestion(in.ToolName, in.RawToolInput)
-			_, _ = h.RT.AskQuestion(ctx, s.ID, prompt, options)
+			if bound {
+				_, _ = h.RT.AskQuestionBoundTo(ctx, s.ID, prompt, options, ref)
+			} else {
+				_, _ = h.RT.AskQuestion(ctx, s.ID, prompt, options)
+			}
 		}
 
 		return adapter.HookDecision{}, nil

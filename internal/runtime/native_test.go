@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/ids"
 )
 
 func TestNativePromptNextStepDescribesVisibleReviewAndAgentReportedAnswers(t *testing.T) {
@@ -628,7 +631,7 @@ func TestFrozenNativeQuestionSurvivesStateChanges(t *testing.T) {
 	if rebuilt.Question != original {
 		t.Fatalf("frozen question drifted after state changes: got %q, want the original %q", rebuilt.Question, original)
 	}
-	ref, ok := s.BindNativeQuestion(ctx, req.AgentID, original)
+	ref, ok := s.BindNativeQuestion(ctx, req.AgentID, "", original)
 	if !ok || ref != req.ID {
 		t.Fatalf("BindNativeQuestion(original) = %q, %v, want %q, true (frozen text still binds after state changes)", ref, ok, req.ID)
 	}
@@ -887,32 +890,32 @@ func TestBindNativeQuestion(t *testing.T) {
 	want := req.NativePrompt.Question
 
 	t.Run("exact match", func(t *testing.T) {
-		ref, ok := s.BindNativeQuestion(ctx, a.ID, want)
+		ref, ok := s.BindNativeQuestion(ctx, a.ID, "", want)
 		if !ok || ref != req.ID {
 			t.Fatalf("BindNativeQuestion = %q, %v, want %q, true", ref, ok, req.ID)
 		}
 	})
 	t.Run("reflowed whitespace still binds", func(t *testing.T) {
 		reflowed := strings.ReplaceAll(want, " ", "  \n")
-		ref, ok := s.BindNativeQuestion(ctx, a.ID, reflowed)
+		ref, ok := s.BindNativeQuestion(ctx, a.ID, "", reflowed)
 		if !ok || ref != req.ID {
 			t.Fatalf("BindNativeQuestion(reflowed) = %q, %v, want %q, true", ref, ok, req.ID)
 		}
 	})
 	t.Run("altered text does not bind", func(t *testing.T) {
-		if _, ok := s.BindNativeQuestion(ctx, a.ID, want+" extra words"); ok {
+		if _, ok := s.BindNativeQuestion(ctx, a.ID, "", want+" extra words"); ok {
 			t.Fatal("altered text must not bind")
 		}
 	})
 	t.Run("old token question still binds via fallback", func(t *testing.T) {
-		ref, ok := s.BindNativeQuestion(ctx, a.ID, "Some other question entirely"+refToken(req.ID))
+		ref, ok := s.BindNativeQuestion(ctx, a.ID, "", "Some other question entirely"+refToken(req.ID))
 		if !ok || ref != req.ID {
 			t.Fatalf("BindNativeQuestion(token) = %q, %v, want %q, true", ref, ok, req.ID)
 		}
 	})
 	t.Run("no match for an unrelated agent", func(t *testing.T) {
 		_, other, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Other", Intent: "feature", Kind: Fake, Model: "fake-1"})
-		if _, ok := s.BindNativeQuestion(ctx, other.ID, want); ok {
+		if _, ok := s.BindNativeQuestion(ctx, other.ID, "", want); ok {
 			t.Fatal("a question routed to a different agent must not bind")
 		}
 	})
@@ -925,7 +928,7 @@ func TestBindNativeQuestion(t *testing.T) {
 	}
 	_ = w
 	t.Run("child-approval message binds by text", func(t *testing.T) {
-		ref, ok := s.BindNativeQuestion(ctx, orch.ID, "may I drop table x?")
+		ref, ok := s.BindNativeQuestion(ctx, orch.ID, "", "may I drop table x?")
 		if !ok || ref != msgID {
 			t.Fatalf("BindNativeQuestion(child msg) = %q, %v, want %q, true", ref, ok, msgID)
 		}
@@ -943,7 +946,7 @@ func TestBindNativeQuestion(t *testing.T) {
 		if req2.NativePrompt.Question != want {
 			t.Fatalf("expected the second approval's rebuilt question to collide with the first: %q vs %q", req2.NativePrompt.Question, want)
 		}
-		ref, ok := s.BindNativeQuestion(ctx, a.ID, want)
+		ref, ok := s.BindNativeQuestion(ctx, a.ID, "", want)
 		if !ok || ref != req2.ID {
 			t.Fatalf("BindNativeQuestion = %q, %v, want the newer %q", ref, ok, req2.ID)
 		}
@@ -1037,4 +1040,96 @@ func TestSummaryGate(t *testing.T) {
 			t.Fatalf("blocks = %d, want 2", blocks)
 		}
 	})
+}
+
+// spawnSecondChild inserts a second coder agent (and a live session) as
+// another child of parent, directly via SQL -- worker(t, s) already
+// provides the first child; this is the minimal second one, for tests that
+// only need two children's names and sessions to exist, not a full spawn
+// lifecycle.
+func spawnSecondChild(t *testing.T, s *Store, name string, parent Agent) (Agent, string) {
+	t.Helper()
+	ctx := context.Background()
+	id := ids.New("agt")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO agents
+		(id, name, kind, model, role, item_id, root_item_id, parent_agent_id, brief, state, created_at)
+		VALUES (?, ?, 'fake', 'fake-1', 'coder', ?, ?, ?, '', 'active', ?)`,
+		id, name, parent.ItemID, parent.RootItemID, parent.ID, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+	sesID := ids.New("ses")
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO sessions
+		(id, agent_id, attempt, generation, token_hash, tmux_name, cwd, state, cwd_kind, started_at)
+		VALUES (?, ?, 1, 1, ?, ?, '/tmp', 'running', 'neutral', ?)`,
+		sesID, id, "hash-"+id, name, db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+	return Agent{ID: id, Name: name, ItemID: parent.ItemID, RootItemID: parent.RootItemID}, sesID
+}
+
+// TestBindNativeQuestionHeaderDisambiguatesIdenticalChildBodies is
+// 2026-09-28-approval-summary-enforced Task 3 (post-review): two children
+// of the same orchestrator sending byte-identical approval bodies must not
+// cross-bind -- the observed native question's header ("<child> asks")
+// picks out the right one.
+func TestBindNativeQuestionHeaderDisambiguatesIdenticalChildBodies(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, childA, childASes := worker(t, s)
+	childB, childBSes := spawnSecondChild(t, s, "childB", orch)
+
+	msgA, err := s.SendApproval(ctx, childASes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgB, err := s.SendApproval(ctx, childBSes, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Without a header, the match is ambiguous by design (question-only
+	// fallback): newest wins, which is msgB here.
+	ref, ok := s.BindNativeQuestion(ctx, orch.ID, "", "may I drop table x?")
+	if !ok || ref != msgB {
+		t.Fatalf("no-header bind = %q, %v, want the newest %q", ref, ok, msgB)
+	}
+
+	// With the correct header, each child's own message binds regardless of
+	// which is newer.
+	ref, ok = s.BindNativeQuestion(ctx, orch.ID, childA.Name+" asks", "may I drop table x?")
+	if !ok || ref != msgA {
+		t.Fatalf("childA-headered bind = %q, %v, want %q", ref, ok, msgA)
+	}
+	ref, ok = s.BindNativeQuestion(ctx, orch.ID, childB.Name+" asks", "may I drop table x?")
+	if !ok || ref != msgB {
+		t.Fatalf("childB-headered bind = %q, %v, want %q", ref, ok, msgB)
+	}
+}
+
+// TestBindNativeQuestionHeaderPreventsPlainQuestionCrossBindingToChildApproval
+// is the other collision the review flagged: an orchestrator's own native
+// question tool call, with a header that is NOT "<child> asks" (its own
+// plain question's header, whatever that happens to be), must never bind to
+// a child's open approval merely because the question text coincides.
+func TestBindNativeQuestionHeaderPreventsPlainQuestionCrossBindingToChildApproval(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, child, childSes := worker(t, s)
+
+	msgID, err := s.SendApproval(ctx, childSes.ID, "restart the service?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = child
+
+	// The orchestrator's own plain question tool call happens to have the
+	// exact same text, but a different (its own) header.
+	if _, ok := s.BindNativeQuestion(ctx, orch.ID, "Confirm", "restart the service?"); ok {
+		t.Fatalf("a plain question with an unrelated header must not bind to the child's approval %q", msgID)
+	}
+	// Sanity: with no header at all, it still falls back to matching (the
+	// documented, pre-existing limitation for callers that can't supply one).
+	if ref, ok := s.BindNativeQuestion(ctx, orch.ID, "", "restart the service?"); !ok || ref != msgID {
+		t.Fatalf("no-header bind = %q, %v, want %q (fallback)", ref, ok, msgID)
+	}
 }

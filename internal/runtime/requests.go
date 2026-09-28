@@ -62,6 +62,17 @@ type AskInput struct {
 	// free text.
 	Ref, Decision, Comment string
 	AnswerText             string // exact native tool return, Cursor and Muse only
+	// Header and PresetRef are internal-only (never exposed by the MCP
+	// swarm_ask schema): the hook's PreToolUse native-question intercept
+	// sets them. Header is the observed native tool call's own header field
+	// (Claude/Codex/agy/Muse questions can carry one), used only to
+	// disambiguate a child-approval (msg_) match when two children's
+	// bodies collide (2026-09-28-approval-summary-enforced, post-review).
+	// PresetRef, when non-empty, is a ref the PreToolUse summary gate
+	// already resolved via BindNativeQuestion for this same call: askQuestion
+	// binds to it directly instead of re-deriving it, so one hook
+	// invocation runs bindNativeQuestionTx's scan at most once, not twice.
+	Header, PresetRef string
 }
 
 // ReposProposal is one repository the orchestrator proposes (or drops) on a
@@ -863,9 +874,14 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 		// can later find its evidence. A plain question binds nothing, so
 		// binding_json stays NULL.
 		var binding any
-		if ref, ok, err := s.bindNativeQuestionTx(ctx, tx, a.ID, in.Prompt); err != nil {
-			return err
-		} else if ok {
+		ref, ok := in.PresetRef, in.PresetRef != ""
+		if !ok {
+			var err error
+			if ref, ok, err = s.bindNativeQuestionTx(ctx, tx, a.ID, in.Header, in.Prompt); err != nil {
+				return err
+			}
+		}
+		if ok {
 			b, err := json.Marshal(map[string]string{"ref": ref})
 			if err != nil {
 				return err
@@ -894,6 +910,21 @@ func (s *Store) AskQuestion(ctx context.Context, sessionID, prompt string, optio
 		Kind:    "question",
 		Prompt:  prompt,
 		Options: options,
+	})
+}
+
+// AskQuestionBoundTo is AskQuestion for a caller that already resolved the
+// ref via BindNativeQuestion for this exact call (the PreToolUse summary
+// gate does, to decide allow/deny before ever recording the row): it binds
+// directly to ref instead of re-running bindNativeQuestionTx's scan, so one
+// hook invocation causes at most one bind attempt, not two (post-review
+// fix). An empty ref behaves exactly like AskQuestion (no binding).
+func (s *Store) AskQuestionBoundTo(ctx context.Context, sessionID, prompt string, options []string, ref string) (Request, error) {
+	return s.askQuestion(ctx, sessionID, AskInput{
+		Kind:      "question",
+		Prompt:    prompt,
+		Options:   options,
+		PresetRef: ref,
 	})
 }
 
@@ -1382,11 +1413,17 @@ func (s *Store) ResolveQuestionByPrompt(ctx context.Context, sessionID, prompt, 
 // ResolveQuestionByPrompt. No match is not an error: the zero Request comes
 // back.
 func (s *Store) ResolveQuestionReply(ctx context.Context, sessionID, question, answer string) (Request, error) {
+	// A missing/unknown session row (or any other lookup error) falls back
+	// to the plain-prompt resolver, exactly like "no ref"/"no bind" below --
+	// restored post-review: this used to return the error outright, unlike
+	// every other branch here, which treats "can't identify a ref" as
+	// nothing more than "resolve by prompt instead."
 	var agentID string
-	if err := s.DB.QueryRowContext(ctx, `SELECT agent_id FROM sessions WHERE id = ?`, sessionID).Scan(&agentID); err != nil {
-		return Request{}, err
+	err := s.DB.QueryRowContext(ctx, `SELECT agent_id FROM sessions WHERE id = ?`, sessionID).Scan(&agentID)
+	if err != nil {
+		return s.ResolveQuestionByPrompt(ctx, sessionID, question, answer)
 	}
-	ref, ok := s.BindNativeQuestion(ctx, agentID, question)
+	ref, ok := s.BindNativeQuestion(ctx, agentID, "", question)
 	if !ok {
 		return s.ResolveQuestionByPrompt(ctx, sessionID, question, answer)
 	}
