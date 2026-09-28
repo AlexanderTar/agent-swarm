@@ -61,7 +61,6 @@ export const SESSION_LABEL: Record<SessionState | "queued" | "waiting" | "stale"
 export const C = {
   appTitle: "Agent Swarm",
   needsYou: "Needs you",
-  newSpike: "New spike",
   newOrchestrator: "New orchestrator",
   newChore: "New chore",
   newItem: "New item",

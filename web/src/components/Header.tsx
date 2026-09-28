@@ -1,11 +1,16 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { ChevronDown, Search } from "lucide-react";
 import { C, STATUS_LABEL, T, TYPE_LABEL, TYPE_PLURAL } from "../copy";
 import { effectiveGrouping } from "../logic/kanban";
 import type { BoardUrl } from "../state/url";
 import { ITEM_STATUSES } from "../types";
 import type { CardLevel, Grouping, ItemStatus, ItemType, View } from "../types";
-import { Segmented } from "./Segmented";
+import { Button } from "./ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { Input } from "./ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
+const ALL = "__all";
 const TYPES: ItemType[] = ["epic", "story", "task", "bug", "spike", "chore"];
 const NEW_TYPES: ItemType[] = ["epic", "bug", "story", "task", "spike", "chore"];
 const VIEWS: { value: View; label: string }[] = [
@@ -13,7 +18,6 @@ const VIEWS: { value: View; label: string }[] = [
   { value: "kanban", label: C.kanban },
   { value: "dependencies", label: C.dependencies },
 ];
-const selectCls = "rounded border border-line bg-canvas px-2 py-1";
 
 export function Header(p: {
   url: BoardUrl;
@@ -24,125 +28,64 @@ export function Header(p: {
   onNewItem(type: ItemType): void;
 }) {
   const { url, setUrl } = p;
-  const [menu, setMenu] = useState(false);
-  // T15/T17 standing rule: transient UI takes focus on open and restores it on close.
-  const newItemTrigger = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (menu) menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
-  }, [menu]);
-  const closeMenu = () => {
-    setMenu(false);
-    newItemTrigger.current?.focus();
-  };
-  const onMenuKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== "Escape") return;
-    e.stopPropagation();
-    closeMenu();
-  };
   return (
-    <header className="space-y-2 border-b border-line bg-panel px-4 py-3">
-      <div className="flex items-center gap-3">
-        <h1 className="text-base font-semibold">{C.appTitle}</h1>
-        <button type="button" onClick={() => setUrl({ view: "inbox" })} className="ml-auto rounded bg-raised px-2 py-1">
+    <header className="space-y-2 border-b border-border bg-card px-4 py-2">
+      <div className="flex h-12 items-center gap-2">
+        <h1 className="text-[14px] font-semibold">{C.appTitle}</h1>
+        <Button type="button" variant="secondary" className="ml-auto" onClick={() => setUrl({ view: "inbox" })}>
+          {p.needsYou > 0 && <span data-dot className="size-1.5 rounded-full bg-warning" />}
           {T.needsYouButton(p.needsYou)}
-        </button>
-        <button type="button" onClick={p.onNewSpike} className="rounded border border-line px-2 py-1">{C.newSpike}</button>
-        <div className="relative">
-          <button
-            ref={newItemTrigger}
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded={menu}
-            onClick={() => setMenu((m) => !m)}
-            className="rounded bg-primary px-2 py-1 text-white"
-          >
-            {C.newItem}
-          </button>
-          {menu && (
-            <div
-              ref={menuRef}
-              role="menu"
-              aria-label={C.newItem}
-              tabIndex={-1}
-              onKeyDown={onMenuKeyDown}
-              className="absolute right-0 z-30 mt-1 w-32 rounded border border-line bg-panel p-1 shadow-lg"
-            >
-              {NEW_TYPES.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  role="menuitem"
-                  className="block w-full rounded px-2 py-1 text-left hover:bg-raised"
-                  onClick={() => {
-                    closeMenu();
-                    p.onNewItem(t);
-                  }}
-                >
-                  {TYPE_LABEL[t]}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        </Button>
+        <Button type="button" variant="outline" onClick={p.onNewSpike}>{C.newOrchestrator}</Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button">{C.newItem}<ChevronDown className="size-4" /></Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" aria-label={C.newItem}>
+            {NEW_TYPES.map((t) => <DropdownMenuItem key={t} onSelect={() => p.onNewItem(t)}>{TYPE_LABEL[t]}</DropdownMenuItem>)}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <input
-          type="search"
-          aria-label={C.search}
-          placeholder={C.search}
-          value={url.q}
-          onChange={(e) => setUrl({ q: e.target.value })}
-          className={`${selectCls} w-64`}
-        />
-        <label className="flex items-center gap-1">
-          {C.type}
-          <select aria-label={C.type} value={url.type} onChange={(e) => setUrl({ type: e.target.value as ItemType | "" })} className={selectCls}>
-            <option value="">{C.all}</option>
-            {TYPES.map((t) => <option key={t} value={t}>{TYPE_PLURAL[t]}</option>)}
-          </select>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-2 size-4 text-muted-foreground" />
+          <Input type="search" aria-label={C.search} placeholder={C.search} value={url.q} onChange={(e) => setUrl({ q: e.target.value })} className="h-8 w-64 pl-8" />
+        </div>
+        <label className="flex items-center gap-1.5">{C.type}
+          <Select value={url.type || ALL} onValueChange={(v) => setUrl({ type: (v === ALL ? "" : v) as ItemType | "" })}>
+            <SelectTrigger aria-label={C.type}><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value={ALL}>{C.all}</SelectItem>{TYPES.map((t) => <SelectItem key={t} value={t}>{TYPE_PLURAL[t]}</SelectItem>)}</SelectContent>
+          </Select>
         </label>
-        <label className="flex items-center gap-1">
-          {C.status}
-          <select aria-label={C.status} value={url.status} onChange={(e) => setUrl({ status: e.target.value as ItemStatus | "" })} className={selectCls}>
-            <option value="">{C.all}</option>
-            {ITEM_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-          </select>
+        <label className="flex items-center gap-1.5">{C.status}
+          <Select value={url.status || ALL} onValueChange={(v) => setUrl({ status: (v === ALL ? "" : v) as ItemStatus | "" })}>
+            <SelectTrigger aria-label={C.status}><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value={ALL}>{C.all}</SelectItem>{ITEM_STATUSES.map((s) => <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>)}</SelectContent>
+          </Select>
         </label>
-        {p.matches !== null && (
-          <>
-            <button type="button" onClick={() => setUrl({ q: "", type: "", status: "" })} className="text-link">{C.clearFilters}</button>
-            <span className="ml-auto text-muted-foreground">{T.matches(p.matches)}</span>
-          </>
-        )}
+        {p.matches !== null && <>
+          <Button type="button" variant="link" onClick={() => setUrl({ q: "", type: "", status: "" })}>{C.clearFilters}</Button>
+          <span className="ml-auto text-muted-foreground">{T.matches(p.matches)}</span>
+        </>}
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <Segmented label="View" value={url.view} options={VIEWS} onChange={(v) => setUrl({ view: v })} />
-        {url.view === "kanban" && (
-          <>
-            <label className="flex items-center gap-1">
-              {C.cardLevel}
-              <select aria-label={C.cardLevel} value={url.level} onChange={(e) => setUrl({ level: e.target.value as CardLevel })} className={selectCls}>
-                <option value="tasks">{C.tasks}</option>
-                <option value="stories">{C.stories}</option>
-                <option value="top">{C.topLevel}</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-1">
-              {C.groupBy}
-              <select
-                aria-label={C.groupBy}
-                value={effectiveGrouping(url.level, url.group)}
-                disabled={url.level === "top"}
-                onChange={(e) => setUrl({ group: e.target.value as Grouping })}
-                className={selectCls}
-              >
-                <option value="root">{C.groupRoot}</option>
-                <option value="flat">{C.flat}</option>
-              </select>
-            </label>
-          </>
-        )}
+        <Tabs value={url.view} onValueChange={(v) => setUrl({ view: v as View })}>
+          <TabsList aria-label={C.view}>{VIEWS.map((v) => <TabsTrigger key={v.value} value={v.value}>{v.label}</TabsTrigger>)}</TabsList>
+        </Tabs>
+        {url.view === "kanban" && <>
+          <label className="flex items-center gap-1.5">{C.cardLevel}
+            <Select value={url.level} onValueChange={(v) => setUrl({ level: v as CardLevel })}>
+              <SelectTrigger aria-label={C.cardLevel}><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="tasks">{C.tasks}</SelectItem><SelectItem value="stories">{C.stories}</SelectItem><SelectItem value="top">{C.topLevel}</SelectItem></SelectContent>
+            </Select>
+          </label>
+          <label className="flex items-center gap-1.5">{C.groupBy}
+            <Select value={effectiveGrouping(url.level, url.group)} disabled={url.level === "top"} onValueChange={(v) => setUrl({ group: v as Grouping })}>
+              <SelectTrigger aria-label={C.groupBy}><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="root">{C.groupRoot}</SelectItem><SelectItem value="flat">{C.flat}</SelectItem></SelectContent>
+            </Select>
+          </label>
+        </>}
       </div>
     </header>
   );
