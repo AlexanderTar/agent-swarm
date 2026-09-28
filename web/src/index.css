@@ -75,3 +75,5 @@
 }
 
 .key { @apply font-mono; font-size: 12px; }
+
+.react-flow__node.selected > div { border-color: var(--ring); }

@@ -1,7 +1,9 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useRef, useState } from "react";
 import { Key, TypeIcon } from "../components/icons";
 import { StatusPill } from "../components/StatusLabel";
+import { Button } from "../components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { C, T } from "../copy";
 import { PARENT_TYPES, hierarchyRows, isFilterActive } from "../logic/tree";
 import { useLocalSet } from "../state/local";
@@ -13,7 +15,6 @@ export function Hierarchy(p: HierarchyProps) {
   const [menu, setMenu] = useState<{ key: string; type: "story" | "task" } | null>(null);
   const rows = hierarchyRows(p.items, p.filter, collapsed, opened);
   const tree = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   // Store the outcome, not a flip: a fold survives a status change, and old collapsed keys stay collapsed.
   const toggle = (key: string, expanded: boolean) => {
     if (collapsed.has(key) === expanded) toggleCollapsed(key);
@@ -23,9 +24,6 @@ export function Hierarchy(p: HierarchyProps) {
   // Standing rule: transient UI (the add-child context menu) takes focus on open and restores it
   // to its trigger on close. A context menu has no single trigger button, so "the trigger" here is
   // the tree itself — the single tab stop that owns keyboard navigation for every row.
-  useEffect(() => {
-    if (menu) menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
-  }, [menu]);
   const closeMenu = () => {
     setMenu(null);
     tree.current?.focus();
@@ -36,7 +34,7 @@ export function Hierarchy(p: HierarchyProps) {
     return (
       <div className="p-8 text-center">
         <p>{C.noItems}</p>
-        <button type="button" onClick={p.onNewItem} className="mt-2 text-link">{C.newItem}</button>
+        <Button type="button" variant="link" onClick={p.onNewItem} className="mt-2">{C.newItem}</Button>
       </div>
     );
   }
@@ -44,7 +42,7 @@ export function Hierarchy(p: HierarchyProps) {
     return (
       <div className="p-8 text-center">
         <p>{C.filteredNone}</p>
-        <button type="button" onClick={p.onClearFilters} className="mt-2 text-link">{C.clearFilters}</button>
+        <Button type="button" variant="link" onClick={p.onClearFilters} className="mt-2">{C.clearFilters}</Button>
       </div>
     );
   }
@@ -81,8 +79,8 @@ export function Hierarchy(p: HierarchyProps) {
           // re-deriving it, so this can't drift from PARENT_TYPES (and the daemon rules it mirrors).
           const childType = (["story", "task"] as const).find((c) => PARENT_TYPES[c]?.includes(it.type)) ?? null;
           return (
+            <DropdownMenu key={it.key} open={menu?.key === it.key} onOpenChange={(open) => { if (!open && menu?.key === it.key) closeMenu(); }}>
             <div
-              key={it.key}
               role="treeitem"
               aria-label={`${it.key} ${it.title}`}
               aria-level={r.depth + 1}
@@ -95,12 +93,12 @@ export function Hierarchy(p: HierarchyProps) {
                 e.preventDefault();
                 setMenu(childType ? { key: it.key, type: childType } : null);
               }}
-              className={`relative grid cursor-pointer grid-cols-[1fr_140px_64px] items-center rounded px-2 py-1 hover:bg-raised ${
+              className={`relative grid h-[30px] cursor-pointer grid-cols-[1fr_140px_64px] items-center rounded px-2 hover:bg-accent/60 ${
                 top ? "mt-3 font-semibold" : ""
-              } ${r.context ? "opacity-50" : ""} ${it.key === p.selected ? "bg-raised" : ""}`}
+              } ${r.context ? "opacity-50" : ""} ${it.key === p.selected ? "bg-accent" : ""}`}
             >
               <span className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: r.depth * 20 }}>
-                {r.depth > 0 && <span aria-hidden className="absolute top-0 bottom-0 w-px bg-line" style={{ left: 8 + (r.depth - 1) * 20 + 10 }} />}
+                {r.depth > 0 && <span aria-hidden className="absolute top-0 bottom-0 w-px bg-border" style={{ left: 8 + (r.depth - 1) * 20 + 10 }} />}
                 {r.hasChildren ? (
                   <button
                     type="button"
@@ -118,7 +116,7 @@ export function Hierarchy(p: HierarchyProps) {
                 <TypeIcon type={it.type} />
                 <Key>{it.key}</Key>
                 <span className="truncate">{it.title}</span>
-                {r.context && <span className="rounded bg-raised px-1 text-[11px] font-normal">{C.context}</span>}
+                {r.context && <span className="rounded bg-muted px-1 text-[11px] font-normal">{C.context}</span>}
               </span>
               <span><StatusPill status={it.status} /></span>
               <span className="flex items-center justify-end gap-1.5">
@@ -134,35 +132,16 @@ export function Hierarchy(p: HierarchyProps) {
                     {it.active_agents}
                   </button>
                 )}
-                {it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warn" />}
+                {it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warning" />}
               </span>
-              {menu?.key === it.key && (
-                <div
-                  ref={menuRef}
-                  role="menu"
-                  tabIndex={-1}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Escape") return;
-                    e.stopPropagation();
-                    closeMenu();
-                  }}
-                  className="absolute top-full left-8 z-30 rounded border border-line bg-panel p-1 font-normal shadow-lg"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      closeMenu();
-                      p.onAddChild(it.key, menu.type);
-                    }}
-                    className="block rounded px-2 py-1 hover:bg-raised"
-                  >
-                    {menu.type === "story" ? C.addStory : C.addTask}
-                  </button>
-                </div>
-              )}
+              <DropdownMenuTrigger asChild><span aria-hidden className="pointer-events-none absolute left-8 bottom-0 size-px" /></DropdownMenuTrigger>
             </div>
+            {menu?.key === it.key && <DropdownMenuContent align="start" onCloseAutoFocus={(e) => { e.preventDefault(); tree.current?.focus(); }}>
+              <DropdownMenuItem onSelect={() => { closeMenu(); p.onAddChild(it.key, menu.type); }}>
+                {menu.type === "story" ? C.addStory : C.addTask}
+              </DropdownMenuItem>
+            </DropdownMenuContent>}
+            </DropdownMenu>
           );
         })}
       </div>

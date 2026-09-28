@@ -84,6 +84,7 @@ export const C = {
   scope: "Scope",
   root: "Root",
   neighbourhood: "Neighbourhood",
+  hops: "Hops",
   expandHop: "Expand one hop",
   fit: "Fit",
   reset: "Reset",

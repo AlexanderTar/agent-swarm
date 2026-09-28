@@ -7,6 +7,9 @@ import { errorText } from "../api";
 import { Key } from "../components/icons";
 import { Segmented } from "../components/Segmented";
 import { StatusPill } from "../components/StatusLabel";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { C } from "../copy";
 import { useGraph } from "../data/queries";
 import { type ItemNodeData, LayoutCache, type StoryNodeData, dimmedKeys, storyOfFn, toFlow } from "../logic/graphLayout";
@@ -21,13 +24,13 @@ function ItemNode({ data }: NodeProps<Node<ItemNodeData>>) {
       data-testid={`node-${n.key}`}
       data-dimmed={data.dimmed}
       data-external={n.external}
-      className={`h-full rounded-md border bg-panel p-2 ${n.external ? "border-dashed" : ""} ${data.dimmed ? "opacity-35" : ""}`}
+      className={`h-full rounded-md border border-border bg-card p-2 text-foreground ${n.external ? "border-dashed" : ""} ${data.dimmed ? "opacity-35" : ""}`}
     >
       <Handle type="target" position={Position.Left} />
       <div className="flex items-center gap-1">
         <Key>{n.key}</Key>
         {n.external && <span className="text-[11px] text-muted-foreground">{n.root_key}</span>}
-        {data.needsYou && <span role="img" aria-label={C.needsYou} className="ml-auto size-2 rounded-full bg-warn" />}
+        {data.needsYou && <span role="img" aria-label={C.needsYou} className="ml-auto size-2 rounded-full bg-warning" />}
       </div>
       <p className="line-clamp-2 text-[12px]">{n.title}</p>
       <StatusPill status={n.status} />
@@ -37,7 +40,7 @@ function ItemNode({ data }: NodeProps<Node<ItemNodeData>>) {
 }
 
 const StoryNode = ({ data }: NodeProps<Node<StoryNodeData>>) => (
-  <div className="h-full rounded-lg border border-line bg-raised/40 px-2 py-1 text-[12px] text-muted-foreground">{data.label}</div>
+  <div className="h-full rounded-lg border border-border bg-muted/40 px-2 py-1 text-[12px] text-muted-foreground">{data.label}</div>
 );
 
 const nodeTypes = { item: ItemNode, story: StoryNode };
@@ -91,15 +94,15 @@ function Graph(p: DependenciesProps) {
   if (graph.error) {
     return (
       <div className="p-8 text-center">
-        <p className="text-bad">{errorText(graph.error)}</p>
-        <button type="button" onClick={graph.reload} className="mt-2 text-link">{C.retry}</button>
+        <p className="text-destructive">{errorText(graph.error)}</p>
+        <Button type="button" variant="link" onClick={graph.reload} className="mt-2">{C.retry}</Button>
       </div>
     );
   }
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <span>{C.scope}</span>
         <Segmented
           label={C.scope}
@@ -107,22 +110,27 @@ function Graph(p: DependenciesProps) {
           onChange={(s) => { setScope(s); setHops(1); }}
           options={[{ value: "root", label: C.root }, { value: "neighbourhood", label: C.neighbourhood }]}
         />
-        <button type="button" disabled={scope !== "neighbourhood"} onClick={() => setHops((h) => h + 1)} className="text-link disabled:text-muted-foreground">{C.expandHop}</button>
-        <button type="button" onClick={() => void rf.fitView()}>{C.fit}</button>
-        <button type="button" aria-label="−" onClick={() => void rf.zoomOut()}>−</button>
-        <button type="button" aria-label="+" onClick={() => void rf.zoomIn()}>+</button>
-        <button type="button" onClick={() => { setHops(1); void rf.fitView(); }}>{C.reset}</button>
-        <input
+        <label className="flex items-center gap-1.5">{C.hops}
+          <Select value={String(hops)} disabled={scope !== "neighbourhood"} onValueChange={(v) => setHops(Number(v))}>
+            <SelectTrigger aria-label={C.hops}><SelectValue /></SelectTrigger>
+            <SelectContent>{[1, 2, 3].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
+          </Select>
+        </label>
+        <Button type="button" variant="outline" onClick={() => void rf.fitView()}>{C.fit}</Button>
+        <Button type="button" variant="outline" aria-label="−" onClick={() => void rf.zoomOut()}>−</Button>
+        <Button type="button" variant="outline" aria-label="+" onClick={() => void rf.zoomIn()}>+</Button>
+        <Button type="button" variant="outline" onClick={() => { setHops(1); void rf.fitView(); }}>{C.reset}</Button>
+        <Input
           type="search"
           placeholder={C.find}
           aria-label={C.find}
           value={find}
           onChange={(e) => setFind(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && onFind()}
-          className="rounded border border-line bg-canvas px-2 py-0.5"
+          className="h-8 w-40"
         />
         {picked && (
-          <button type="button" onClick={() => p.onSelect(picked.root_key)} className="text-link">{C.openRoot}</button>
+          <Button type="button" variant="link" onClick={() => p.onSelect(picked.root_key)}>{C.openRoot}</Button>
         )}
       </div>
       <p className="px-3 py-1 text-muted-foreground">{C.depLegend}</p>
@@ -133,7 +141,7 @@ function Graph(p: DependenciesProps) {
           {flow && (
             <ReactFlow
               nodes={flow.nodes}
-              edges={flow.edges}
+              edges={flow.edges.map((e) => ({ ...e, style: { stroke: "var(--border)" } }))}
               nodeTypes={nodeTypes}
               nodesDraggable={false}
               nodesConnectable={false}

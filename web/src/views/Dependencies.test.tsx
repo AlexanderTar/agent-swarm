@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { useItems } from "../data/queries";
 import { createMockDaemon } from "../mock/daemon";
 import { clickNode, renderWithDaemon } from "../test/render";
+import { pickOption } from "../test/select";
 import type { Filter } from "../types";
 import { Dependencies } from "./Dependencies";
 
@@ -44,11 +45,11 @@ describe("Dependencies view (§16.8)", () => {
   it("switches to the neighbourhood and expands one hop", async () => {
     const { user, daemon } = renderWithDaemon(<Host selected="TASK-104" />, { events: false });
     await screen.findByTestId("node-TASK-104");
-    expect(screen.getByRole("button", { name: "Expand one hop" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Hops" })).toBeDisabled();
     await user.click(screen.getByRole("radio", { name: "Neighbourhood" }));
     await waitFor(() => expect(screen.queryByTestId("node-TASK-98")).not.toBeInTheDocument());
     expect(screen.queryByTestId("node-TASK-103")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Expand one hop" }));
+    await pickOption(user, "Hops", "2");
     expect(await screen.findByTestId("node-TASK-98")).toBeInTheDocument();
     expect(daemon.calls.some((c) => c.path === "/api/items/TASK-104/graph?scope=neighbourhood&hops=2")).toBe(true);
     await user.click(screen.getByRole("button", { name: "Reset" }));

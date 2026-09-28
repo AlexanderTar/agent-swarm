@@ -95,7 +95,9 @@ describe("Hierarchy view (§16.6)", () => {
 
   it("offers Add story on epics and Add task on stories, bugs and spikes", async () => {
     const { user, props } = setup();
+    expect(row("EPIC-12")).toHaveClass("h-[30px]");
     fireEvent.contextMenu(row("EPIC-12"));
+    expect(screen.getByRole("menuitem", { name: "Add story" })).toHaveAttribute("data-slot", "dropdown-menu-item");
     await user.click(screen.getByRole("menuitem", { name: "Add story" }));
     expect(props.onAddChild).toHaveBeenCalledWith("EPIC-12", "story");
     fireEvent.contextMenu(row("BUG-7"));
@@ -125,7 +127,7 @@ describe("Hierarchy view (§16.6)", () => {
     const { user } = setup();
     screen.getByRole("tree").focus();
     fireEvent.contextMenu(row("EPIC-12"));
-    expect(screen.getByRole("menuitem", { name: "Add story" })).toHaveFocus();
+    expect(screen.getByRole("menu").contains(document.activeElement)).toBe(true);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(screen.getByRole("tree")).toHaveFocus();
