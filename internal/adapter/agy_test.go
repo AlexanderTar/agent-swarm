@@ -880,3 +880,36 @@ func TestAgyLaunchSettingsCopyKeepsTheRealFileMode(t *testing.T) {
 		t.Errorf("settings.json copy mode = %v, want the real file's 0600", fi.Mode().Perm())
 	}
 }
+
+// TestAgyAssistantTextSinceLastTurn is 2026-09-28-approval-summary-enforced
+// Task 7, built from a real live transcript_full.jsonl format (read
+// read-only from ~/.gemini/antigravity-cli/brain, never modified) into a
+// sanitized fixture.
+func TestAgyAssistantTextSinceLastTurn(t *testing.T) {
+	a := newAgy(Deps{})
+	text, ok := a.AssistantTextSinceLastTurn("testdata/agy/transcripts/summary-then-ask.jsonl")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if !strings.Contains(text, "Ship auth end to end: login, session cookies, and logout across web and API.") {
+		t.Fatalf("text = %q, missing the summary", text)
+	}
+}
+
+func TestAgyAssistantTextSinceLastTurnNoSummary(t *testing.T) {
+	a := newAgy(Deps{})
+	text, ok := a.AssistantTextSinceLastTurn("testdata/agy/transcripts/no-summary.jsonl")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if strings.TrimSpace(text) != "" {
+		t.Fatalf("text = %q, want empty", text)
+	}
+}
+
+func TestAgyAssistantTextSinceLastTurnUnreadableFileFailsOpen(t *testing.T) {
+	a := newAgy(Deps{})
+	if _, ok := a.AssistantTextSinceLastTurn("testdata/agy/transcripts/does-not-exist.jsonl"); ok {
+		t.Fatal("ok = true for a missing file, want false (fail open)")
+	}
+}

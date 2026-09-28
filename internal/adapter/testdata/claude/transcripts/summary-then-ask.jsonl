@@ -1,0 +1,3 @@
+{"type":"user","message":{"role":"user","content":"Please review the plan."}}
+{"type":"assistant","message":{"id":"msg_01Sum1","role":"assistant","content":[{"type":"text","text":"Ship auth end to end: login, session cookies, and logout across web and API."}]}}
+{"type":"assistant","message":{"id":"msg_01Sum1","role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Approve the plan (rev 1)?","options":[{"label":"Approve"},{"label":"Request changes"}]}]}}]}}

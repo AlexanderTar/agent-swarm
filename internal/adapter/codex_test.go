@@ -738,3 +738,35 @@ func TestCodexWakeUsesTheAgentsCodexHome(t *testing.T) {
 		}
 	}
 }
+
+// TestCodexAssistantTextSinceLastTurn is 2026-09-28-approval-summary-
+// enforced Task 7: the assistant text since the last real user message in
+// the rollout, using the live-confirmed "output_text" content block type.
+func TestCodexAssistantTextSinceLastTurn(t *testing.T) {
+	c := newCodex(Deps{})
+	text, ok := c.AssistantTextSinceLastTurn("testdata/codex/transcripts/summary-then-ask.jsonl")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if !strings.Contains(text, "Ship auth end to end: login, session cookies, and logout across web and API.") {
+		t.Fatalf("text = %q, missing the summary", text)
+	}
+}
+
+func TestCodexAssistantTextSinceLastTurnNoSummary(t *testing.T) {
+	c := newCodex(Deps{})
+	text, ok := c.AssistantTextSinceLastTurn("testdata/codex/transcripts/no-summary.jsonl")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if strings.TrimSpace(text) != "" {
+		t.Fatalf("text = %q, want empty", text)
+	}
+}
+
+func TestCodexAssistantTextSinceLastTurnUnreadableFileFailsOpen(t *testing.T) {
+	c := newCodex(Deps{})
+	if _, ok := c.AssistantTextSinceLastTurn("testdata/codex/transcripts/does-not-exist.jsonl"); ok {
+		t.Fatal("ok = true for a missing file, want false (fail open)")
+	}
+}

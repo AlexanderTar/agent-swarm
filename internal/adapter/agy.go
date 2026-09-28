@@ -520,3 +520,55 @@ func (a *Agy) ForgetFolder(ctx context.Context, path string) error {
 	}
 	return writeFileAtomic(p, out, 0o644)
 }
+
+type agyTranscriptRecord struct {
+	Type    string `json:"type"`
+	Source  string `json:"source"`
+	Content string `json:"content"`
+}
+
+// AssistantTextSinceLastTurn is the PreToolUse summary gate's transcript
+// reader for agy (2026-09-28-approval-summary-enforced): the assistant text
+// printed since the last user turn, from the real, live-confirmed
+// transcript_full.jsonl shape (read 2026-09-28 from a real, unmodified
+// transcript under ~/.gemini/antigravity-cli/brain/*/.system_generated/
+// logs/, never written to): one JSON object per line, no wrapping array,
+// {"type":"USER_INPUT"|"PLANNER_RESPONSE"|"GENERIC"|"SYSTEM_MESSAGE"|
+// "ERROR_MESSAGE"|"CHECKPOINT", "source":"MODEL"|"USER_EXPLICIT"|"SYSTEM",
+// "content":"<text>"?, "tool_calls":[...]?}. A model turn's assistant text
+// and its own tool call can be on the same PLANNER_RESPONSE line or two
+// separate ones (confirmed live: an ask_question call can share its entry
+// with "thinking" only and no "content"), so this collects "content" from
+// every PLANNER_RESPONSE line after the last USER_INPUT line, whether or
+// not that same line also carries tool_calls. ok is false only when the
+// file can't be opened or read, or not a single line parses as valid JSON.
+func (a *Agy) AssistantTextSinceLastTurn(transcriptPath string) (string, bool) {
+	lines, err := readTranscriptLines(transcriptPath)
+	if err != nil {
+		return "", false
+	}
+	var recs []agyTranscriptRecord
+	for _, line := range lines {
+		var r agyTranscriptRecord
+		if err := json.Unmarshal(line, &r); err != nil {
+			continue
+		}
+		recs = append(recs, r)
+	}
+	if len(recs) == 0 {
+		return "", false
+	}
+	lastUser := -1
+	for i, r := range recs {
+		if r.Type == "USER_INPUT" {
+			lastUser = i
+		}
+	}
+	var texts []string
+	for _, r := range recs[lastUser+1:] {
+		if r.Type == "PLANNER_RESPONSE" && r.Content != "" {
+			texts = append(texts, r.Content)
+		}
+	}
+	return strings.Join(texts, "\n"), true
+}

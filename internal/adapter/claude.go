@@ -491,3 +491,73 @@ func (c *Claude) SuperpowersInstalled() bool {
 	t2, _ := filepath.Glob(filepath.Join(c.d.UserHome, ".claude", "plugins", "cache", "superpowers", "*", "skills", "test-driven-development", "SKILL.md"))
 	return (len(b1) > 0 || len(b2) > 0) && (len(t1) > 0 || len(t2) > 0)
 }
+
+type claudeTranscriptBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type claudeTranscriptRecord struct {
+	Type    string `json:"type"`
+	Message struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// AssistantTextSinceLastTurn is the PreToolUse summary gate's transcript
+// reader for Claude (2026-09-28-approval-summary-enforced): the assistant
+// text printed since the last user turn (a real user message or a
+// tool_result envelope, both recorded as a top-level type=="user" line), so
+// the gate can check the approval summary was printed in chat immediately
+// before this question tool call. Content is either a plain string or a
+// list of typed blocks (text/tool_use/tool_result); only "text" blocks
+// contribute. ok is false only when the file can't be opened or read, or
+// not a single line parses as valid JSON -- an unreadable or unparseable
+// transcript, per spec, fails the gate open (the caller allows the call).
+func (c *Claude) AssistantTextSinceLastTurn(transcriptPath string) (string, bool) {
+	lines, err := readTranscriptLines(transcriptPath)
+	if err != nil {
+		return "", false
+	}
+	var recs []claudeTranscriptRecord
+	for _, line := range lines {
+		var r claudeTranscriptRecord
+		if err := json.Unmarshal(line, &r); err != nil {
+			continue
+		}
+		recs = append(recs, r)
+	}
+	if len(recs) == 0 {
+		return "", false
+	}
+	lastUser := -1
+	for i, r := range recs {
+		if r.Type == "user" {
+			lastUser = i
+		}
+	}
+	var texts []string
+	for _, r := range recs[lastUser+1:] {
+		if r.Type != "assistant" {
+			continue
+		}
+		var s string
+		if json.Unmarshal(r.Message.Content, &s) == nil {
+			if s != "" {
+				texts = append(texts, s)
+			}
+			continue
+		}
+		var blocks []claudeTranscriptBlock
+		if json.Unmarshal(r.Message.Content, &blocks) != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				texts = append(texts, b.Text)
+			}
+		}
+	}
+	return strings.Join(texts, "\n"), true
+}

@@ -1216,3 +1216,40 @@ func TestClaudeForgetFolderNeverDeletesANonSwarmOwnedRealpathTwin(t *testing.T) 
 		t.Error("a realpath twin outside <home>/work and <home>/worktrees must never be removed")
 	}
 }
+
+// TestClaudeAssistantTextSinceLastTurn is 2026-09-28-approval-summary-
+// enforced Task 7: the summary gate's transcript reader picks up the
+// assistant text printed since the last user turn, and only that.
+func TestClaudeAssistantTextSinceLastTurn(t *testing.T) {
+	c := newClaude(Deps{})
+	text, ok := c.AssistantTextSinceLastTurn("testdata/claude/transcripts/summary-then-ask.jsonl")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if !strings.Contains(text, "Ship auth end to end: login, session cookies, and logout across web and API.") {
+		t.Fatalf("text = %q, missing the summary", text)
+	}
+}
+
+// TestClaudeAssistantTextSinceLastTurnNoSummary confirms a transcript with
+// no assistant text before the question tool call returns an empty string
+// (a genuine deny case), not ok=false (which would fail the gate open).
+func TestClaudeAssistantTextSinceLastTurnNoSummary(t *testing.T) {
+	c := newClaude(Deps{})
+	text, ok := c.AssistantTextSinceLastTurn("testdata/claude/transcripts/no-summary.jsonl")
+	if !ok {
+		t.Fatal("ok = false, want true (file parses fine, just has no assistant text)")
+	}
+	if strings.TrimSpace(text) != "" {
+		t.Fatalf("text = %q, want empty", text)
+	}
+}
+
+// TestClaudeAssistantTextSinceLastTurnUnreadableFileFailsOpen confirms a
+// missing transcript reports ok=false, the fail-open signal.
+func TestClaudeAssistantTextSinceLastTurnUnreadableFileFailsOpen(t *testing.T) {
+	c := newClaude(Deps{})
+	if _, ok := c.AssistantTextSinceLastTurn("testdata/claude/transcripts/does-not-exist.jsonl"); ok {
+		t.Fatal("ok = true for a missing file, want false (fail open)")
+	}
+}

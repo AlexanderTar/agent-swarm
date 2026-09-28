@@ -447,3 +447,82 @@ func writeCodexTrust(codexHome, cwd string) error {
 	}
 	return writeFileAtomic(cfg, out, 0o644)
 }
+
+type codexTranscriptEnvelope struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+type codexTranscriptPayload struct {
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// AssistantTextSinceLastTurn is the PreToolUse summary gate's transcript
+// reader for Codex (2026-09-28-approval-summary-enforced): the assistant
+// text printed since the last real user message in the rollout
+// (transcript_path), so the gate can check the approval summary was
+// printed in chat immediately before this question tool call.
+// response_item/message entries carry role "user" or "assistant"; an
+// assistant message's own content blocks use type "output_text" (confirmed
+// against a live rollout, internal/advisor/testdata/codex/rollout-
+// sample.jsonl). function_call/function_call_output entries (tool calls and
+// their results, including request_user_input itself) never reset the user-
+// turn boundary -- only a real user message does. ok is false only when the
+// file can't be opened or read, or not a single line parses as valid JSON.
+func (c *Codex) AssistantTextSinceLastTurn(transcriptPath string) (string, bool) {
+	lines, err := readTranscriptLines(transcriptPath)
+	if err != nil {
+		return "", false
+	}
+	type msg struct {
+		role string
+		text string
+	}
+	var msgs []msg
+	anyParsed := false
+	for _, line := range lines {
+		var e codexTranscriptEnvelope
+		if err := json.Unmarshal(line, &e); err != nil {
+			continue
+		}
+		anyParsed = true
+		if e.Type != "response_item" {
+			continue
+		}
+		var p codexTranscriptPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			continue
+		}
+		if p.Type != "message" {
+			continue
+		}
+		var texts []string
+		for _, blk := range p.Content {
+			if (blk.Type == "output_text" || blk.Type == "input_text") && blk.Text != "" {
+				texts = append(texts, blk.Text)
+			}
+		}
+		msgs = append(msgs, msg{role: p.Role, text: strings.Join(texts, "\n")})
+	}
+	if !anyParsed {
+		return "", false
+	}
+	lastUser := -1
+	for i, m := range msgs {
+		if m.role == "user" {
+			lastUser = i
+		}
+	}
+	var out []string
+	for _, m := range msgs[lastUser+1:] {
+		if m.role == "assistant" && m.text != "" {
+			out = append(out, m.text)
+		}
+	}
+	return strings.Join(out, "\n"), true
+}

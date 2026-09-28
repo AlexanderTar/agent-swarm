@@ -1,0 +1,3 @@
+{"timestamp":"2026-09-28T11:45:09Z","type":"session_meta","payload":{"id":"conv-codex-nosummary","cwd":"/private/tmp/repos/codex/r1"}}
+{"timestamp":"2026-09-28T11:45:09Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please review the plan."}]}}
+{"timestamp":"2026-09-28T11:45:11Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"call_1","arguments":"{\"questions\":[{\"question\":\"Approve the plan (rev 1)?\"}]}"}}
