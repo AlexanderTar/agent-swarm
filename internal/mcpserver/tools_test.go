@@ -254,6 +254,48 @@ func TestAskRequiresArtifactForApproval(t *testing.T) {
 	}
 }
 
+// TestAskToolForwardsNothingToReview is the mcpserver wiring for
+// docs/specs/2026-09-28-empty-section-auto-approve.md: nothing_to_review
+// reaches runtime.AskInput and the result's "next" carries the print-in-
+// chat copy back out.
+func TestAskToolForwardsNothingToReview(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	p := writeSpec(t, "# Spec\n\n## DB models\n\nNone.\n")
+	artOut, err := s.call(ctx, seed.Caller, "swarm_artifact",
+		`{"op":"register","item":"`+seed.RootKey+`","kind":"spec","path":"`+p+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var art struct {
+		ArtifactID string `json:"artifact_id"`
+		Sections   []struct {
+			ID string `json:"id"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(mustJSON(artOut), &art); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_ask", `{"kind":"approval","artifact":"`+art.ArtifactID+
+		`","section":"`+art.Sections[0].ID+`","prompt":"No DB changes.","nothing_to_review":"No new tables or columns."}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		State string `json:"state"`
+		Next  string `json:"next"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.State != "approved" {
+		t.Fatalf("state = %q, want approved", res.State)
+	}
+	if !strings.Contains(res.Next, "auto-approved") {
+		t.Fatalf("next = %q, want it to mention auto-approved", res.Next)
+	}
+}
+
 // swarm_ask's success path: a plain question round-trips through requestOut.
 // §8.1: the result is exactly {"request_id","state"} - no kind/prompt/
 // artifact_id/section_id echoed back (fix round 2, item 1).
