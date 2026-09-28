@@ -747,9 +747,52 @@ func matchDecisionEvidence(responseText, label, callerComment string) (evidence,
 // settled answer before falling back to the agent's self-report (spec
 // docs/specs/2026-09-28-muse-observed-answers.md). Declared as an interface,
 // not a concrete adapter.Muse type, purely to keep this package's tests
-// able to fake it without an adapter import cycle risk.
+// able to fake it without an adapter import cycle risk. question is the
+// exact native-question text ObservedAnswer's Muse session-log scan matches
+// against, normalized (2026-09-28-approval-summary-enforced locked decision
+// 2) -- the caller builds it from the same stored-prompt rebuild the hook
+// binding path uses, so an old logged question still carrying a ⟦swarm:
+// ref⟧ token matches via the fallback the adapter keeps for it.
 type observedAnswerer interface {
-	ObservedAnswer(providerSessionID, ref string, since time.Time) (label, note string, ok bool)
+	ObservedAnswer(providerSessionID, ref, question string, since time.Time) (label, note string, ok bool)
+}
+
+// questionTextForRef rebuilds the exact native-question text a ref's
+// request or child-approval message would show right now -- the same text
+// Muse's ObservedAnswer session-log scan needs to match against (locked
+// decision 2). "" (with a nil error) when the ref names nothing rebuildable;
+// the caller's own RequestByID/verifyApprovalMsgAddressedTo lookups still
+// refuse an invalid ref properly afterward.
+func (s *Store) questionTextForRef(ctx context.Context, ref string) (string, error) {
+	if strings.HasPrefix(ref, "msg_") {
+		var fromName, body string
+		err := s.DB.QueryRowContext(ctx, `SELECT ag.name, COALESCE(json_extract(m.payload_json, '$.body'), '')
+			FROM messages m JOIN agents ag ON ag.id = m.from_agent_id WHERE m.id = ?`, ref).Scan(&fromName, &body)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return nativePromptForMsg(fromName, body, ref).Question, nil
+	}
+	var question string
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		req, err := s.requestTx(ctx, tx, ref)
+		if err != nil {
+			return err
+		}
+		np, err := s.storedNativePromptTx(ctx, tx, req)
+		if err != nil {
+			return err
+		}
+		question = np.Question
+		return nil
+	})
+	if err != nil {
+		return "", nil // an unrebuildable/unknown ref: nothing to match on, not this function's refusal to make
+	}
+	return question, nil
 }
 
 // refCreatedAt is the anti-forgery lower bound nativeAnswer passes into
@@ -801,7 +844,8 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 			sessionID).Scan(&providerSessionID); err == nil {
 			if oa, ok := s.Adapters[Muse].(observedAnswerer); ok {
 				since := s.refCreatedAt(ctx, in.Ref)
-				if lbl, note, found := oa.ObservedAnswer(providerSessionID, in.Ref, since); found {
+				question, _ := s.questionTextForRef(ctx, in.Ref)
+				if lbl, note, found := oa.ObservedAnswer(providerSessionID, in.Ref, question, since); found {
 					observedResponseText = lbl
 					if note != "" {
 						observedResponseText = lbl + ": " + note

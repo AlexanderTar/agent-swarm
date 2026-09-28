@@ -818,3 +818,43 @@ func TestAskNativePromptForMsg(t *testing.T) {
 		t.Fatal("native_prompt for an unknown msg_id must be refused")
 	}
 }
+
+// TestQuestionTextForRef is 2026-09-28-approval-summary-enforced Task 9:
+// nativeAnswer's Muse branch rebuilds the exact native-question text a ref
+// currently shows, so ObservedAnswer's session-log scan can match Muse's
+// own logged question by text instead of a ref token.
+func TestQuestionTextForRef(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, _, planID, _ := approvedFeatureSpike(t, s)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: "Ship it."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.questionTextForRef(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != req.NativePrompt.Question {
+		t.Fatalf("questionTextForRef = %q, want %q", got, req.NativePrompt.Question)
+	}
+
+	orch, w, wSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgPrompt, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotMsg, err := s.questionTextForRef(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMsg != msgPrompt.NativePrompt.Question {
+		t.Fatalf("questionTextForRef(msg) = %q, want %q", gotMsg, msgPrompt.NativePrompt.Question)
+	}
+	_ = w
+}

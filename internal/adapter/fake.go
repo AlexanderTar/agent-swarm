@@ -99,7 +99,7 @@ func (f *Fake) DiscoverSession(context.Context, int, string) (string, bool) {
 	return f.DiscoverSessionResult, f.DiscoverSessionOK
 }
 
-func (f *Fake) ObservedAnswer(string, string, time.Time) (string, string, bool) {
+func (f *Fake) ObservedAnswer(string, string, string, time.Time) (string, string, bool) {
 	return f.ObservedAnswerLabel, f.ObservedAnswerNote, f.ObservedAnswerOK
 }
 

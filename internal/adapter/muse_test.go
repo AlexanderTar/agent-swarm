@@ -922,7 +922,7 @@ var museFixtureRecordedAt = map[string]time.Time{
 func TestMuseObservedAnswerNoNote(t *testing.T) {
 	d := testDeps(t)
 	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-1")
-	label, note, ok := newMuse(d).ObservedAnswer("sess-1", "req_01PROBE0000000000000000000", time.Time{})
+	label, note, ok := newMuse(d).ObservedAnswer("sess-1", "req_01PROBE0000000000000000000", "", time.Time{})
 	if !ok || label != "French" || note != "" {
 		t.Fatalf("ObservedAnswer = %q, %q, %v; want %q, %q, true", label, note, ok, "French", "")
 	}
@@ -933,7 +933,7 @@ func TestMuseObservedAnswerNoNote(t *testing.T) {
 func TestMuseObservedAnswerWithNote(t *testing.T) {
 	d := testDeps(t)
 	museSessionLogFixture(t, d.UserHome, "session-user-input-note-1.4.0.jsonl", "sess-2")
-	label, note, ok := newMuse(d).ObservedAnswer("sess-2", "req_01PROBE0000000000000000002", time.Time{})
+	label, note, ok := newMuse(d).ObservedAnswer("sess-2", "req_01PROBE0000000000000000002", "", time.Time{})
 	if !ok || label != "Request changes" || note != "use German instead" {
 		t.Fatalf("ObservedAnswer = %q, %q, %v; want %q, %q, true", label, note, ok,
 			"Request changes", "use German instead")
@@ -945,7 +945,7 @@ func TestMuseObservedAnswerWithNote(t *testing.T) {
 func TestMuseObservedAnswerUnknownRef(t *testing.T) {
 	d := testDeps(t)
 	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-3")
-	_, _, ok := newMuse(d).ObservedAnswer("sess-3", "req_doesNotExist", time.Time{})
+	_, _, ok := newMuse(d).ObservedAnswer("sess-3", "req_doesNotExist", "", time.Time{})
 	if ok {
 		t.Fatal("ObservedAnswer must not match an absent ref token")
 	}
@@ -967,7 +967,7 @@ func TestMuseObservedAnswerUnsettled(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(lines[0]+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, ok := newMuse(d).ObservedAnswer("sess-4", "req_01PROBE0000000000000000000", time.Time{})
+	_, _, ok := newMuse(d).ObservedAnswer("sess-4", "req_01PROBE0000000000000000000", "", time.Time{})
 	if ok {
 		t.Fatal("ObservedAnswer must not match an unsettled prompt")
 	}
@@ -977,7 +977,7 @@ func TestMuseObservedAnswerUnsettled(t *testing.T) {
 // session id at all (glob finds nothing).
 func TestMuseObservedAnswerMissingFile(t *testing.T) {
 	d := testDeps(t)
-	_, _, ok := newMuse(d).ObservedAnswer("sess-does-not-exist", "req_01PROBE0000000000000000000", time.Time{})
+	_, _, ok := newMuse(d).ObservedAnswer("sess-does-not-exist", "req_01PROBE0000000000000000000", "", time.Time{})
 	if ok {
 		t.Fatal("ObservedAnswer must not match when no session.jsonl exists")
 	}
@@ -992,7 +992,7 @@ func TestMuseObservedAnswerIgnoresXDGDataHomeEnv(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "/nonexistent")
 	d := testDeps(t)
 	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-env")
-	label, _, ok := newMuse(d).ObservedAnswer("sess-env", "req_01PROBE0000000000000000000", time.Time{})
+	label, _, ok := newMuse(d).ObservedAnswer("sess-env", "req_01PROBE0000000000000000000", "", time.Time{})
 	if !ok || label != "French" {
 		t.Fatalf("ObservedAnswer = %q, %v; want %q, true (env must be ignored)", label, ok, "French")
 	}
@@ -1004,7 +1004,7 @@ func TestMuseObservedAnswerIgnoresXDGDataHomeEnv(t *testing.T) {
 func TestMuseObservedAnswerEmptyProviderSessionID(t *testing.T) {
 	d := testDeps(t)
 	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-1")
-	_, _, ok := newMuse(d).ObservedAnswer("", "req_01PROBE0000000000000000000", time.Time{})
+	_, _, ok := newMuse(d).ObservedAnswer("", "req_01PROBE0000000000000000000", "", time.Time{})
 	if ok {
 		t.Fatal("ObservedAnswer must refuse an empty providerSessionID")
 	}
@@ -1027,7 +1027,7 @@ func TestMuseObservedAnswerAmbiguousMultipleFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir2, "session.jsonl"), raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, ok := newMuse(d).ObservedAnswer("sess-dup", "req_01PROBE0000000000000000000", time.Time{})
+	_, _, ok := newMuse(d).ObservedAnswer("sess-dup", "req_01PROBE0000000000000000000", "", time.Time{})
 	if ok {
 		t.Fatal("ObservedAnswer must not match when more than one session.jsonl exists for the id")
 	}
@@ -1040,13 +1040,13 @@ func TestMuseObservedAnswerIgnoresPromptOlderThanSince(t *testing.T) {
 	d := testDeps(t)
 	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-old")
 	after := museFixtureRecordedAt["session-user-input-1.4.0.jsonl"].Add(time.Microsecond)
-	_, _, ok := newMuse(d).ObservedAnswer("sess-old", "req_01PROBE0000000000000000000", after)
+	_, _, ok := newMuse(d).ObservedAnswer("sess-old", "req_01PROBE0000000000000000000", "", after)
 	if ok {
 		t.Fatal("ObservedAnswer must ignore a prompt recorded before since")
 	}
 	// Sanity: the same since minus a microsecond still matches, proving the
 	// refusal above is really about the boundary, not something else broken.
-	label, _, ok := newMuse(d).ObservedAnswer("sess-old", "req_01PROBE0000000000000000000",
+	label, _, ok := newMuse(d).ObservedAnswer("sess-old", "req_01PROBE0000000000000000000", "",
 		museFixtureRecordedAt["session-user-input-1.4.0.jsonl"])
 	if !ok || label != "French" {
 		t.Fatalf("ObservedAnswer at the exact boundary = %q, %v; want match", label, ok)
@@ -1076,8 +1076,32 @@ func TestMuseObservedAnswerResetsOnNewerAskWithSameRef(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, ok := newMuse(d).ObservedAnswer("sess-reask", "req_01PROBE0000000000000000000", time.Time{})
+	_, _, ok := newMuse(d).ObservedAnswer("sess-reask", "req_01PROBE0000000000000000000", "", time.Time{})
 	if ok {
 		t.Fatal("ObservedAnswer must reset once a newer ask reuses the same ref, not return the stale answer")
+	}
+}
+
+// TestMuseObservedAnswerMatchesByNormalizedQuestionText is 2026-09-28-
+// approval-summary-enforced Task 9: a logged question with no ref token at
+// all still matches when its normalized text equals the caller's question.
+func TestMuseObservedAnswerMatchesByNormalizedQuestionText(t *testing.T) {
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-user-input-no-token.jsonl", "sess-text")
+	label, _, ok := newMuse(d).ObservedAnswer("sess-text", "req_ANYTHING",
+		"  Which  language\nfor greeting.txt?  ", time.Time{})
+	if !ok || label != "French" {
+		t.Fatalf("ObservedAnswer = %q, %v; want %q, true (text match, reflowed whitespace)", label, ok, "French")
+	}
+}
+
+// TestMuseObservedAnswerTextMismatchDoesNotBind confirms an unrelated
+// question text does not match a token-free logged question.
+func TestMuseObservedAnswerTextMismatchDoesNotBind(t *testing.T) {
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-user-input-no-token.jsonl", "sess-text2")
+	_, _, ok := newMuse(d).ObservedAnswer("sess-text2", "req_ANYTHING", "Approve the plan?", time.Time{})
+	if ok {
+		t.Fatal("ObservedAnswer must not match unrelated question text")
 	}
 }

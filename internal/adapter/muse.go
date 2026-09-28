@@ -628,21 +628,33 @@ type museLogRecord struct {
 	} `json:"payload"`
 }
 
+// normalizeMuseQuestion mirrors runtime.NormalizeQuestion (trim + collapse
+// whitespace runs to one space) without importing internal/runtime, which
+// would be a cycle (runtime already imports adapter). Kept in lockstep with
+// that function by 2026-09-28-approval-summary-enforced's tests on both
+// sides.
+func normalizeMuseQuestion(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // ObservedAnswer scans Muse's own session log for the newest settled
-// request_user_input prompt whose first question contains ⟦swarm:<ref>⟧,
-// recorded at or after since (the ref's own created_at -- an older match is
-// a stale or replayed log entry, never this ref's real answer). ok is false
-// when nothing matches: providerSessionID is empty, the file is missing or
-// ambiguous, the session id is unknown, the prompt never settled, it
-// settled some other way than "answered", or it settled before since.
-// Read-only -- nothing here is ever written to Muse's files.
+// request_user_input prompt whose first question matches (2026-09-28-
+// approval-summary-enforced locked decision 2: normalized question text,
+// with an old ⟦swarm:<ref>⟧ token in the logged question still matching as
+// a fallback for a session logged before that deploy), recorded at or after
+// since (the ref's own created_at -- an older match is a stale or replayed
+// log entry, never this ref's real answer). ok is false when nothing
+// matches: providerSessionID is empty, the file is missing or ambiguous,
+// the session id is unknown, the prompt never settled, it settled some
+// other way than "answered", or it settled before since. Read-only --
+// nothing here is ever written to Muse's files.
 //
 // This is same-user evidence: it proves a settled Muse prompt exists in
 // this machine's own Muse data dir, stronger than the agent's bare word
 // (agent_reported), but it is still forgeable by any other process running
 // as the same user with write access to that dir. It is not a substitute
 // for a hook running inside Muse itself.
-func (m *Muse) ObservedAnswer(providerSessionID, ref string, since time.Time) (label, note string, ok bool) {
+func (m *Muse) ObservedAnswer(providerSessionID, ref, question string, since time.Time) (label, note string, ok bool) {
 	if providerSessionID == "" {
 		return "", "", false
 	}
@@ -659,20 +671,22 @@ func (m *Muse) ObservedAnswer(providerSessionID, ref string, since time.Time) (l
 		// for a single provider session id to have two dated session logs.
 		return "", "", false
 	}
-	return scanMuseSessionLog(matches[0], "⟦swarm:"+ref+"⟧", since)
+	return scanMuseSessionLog(matches[0], "⟦swarm:"+ref+"⟧", normalizeMuseQuestion(question), since)
 }
 
 // scanMuseSessionLog streams one session.jsonl (bufio.Reader.ReadBytes,
 // no per-line size cap -- these lines can carry a full turn's tool output)
 // and returns the settled answer for the newest prompt whose first question
-// carries token, recorded at or after since, if any. A line that fails to
-// parse, or doesn't even mention "user_input_prompt_" (M2's cheap
-// pre-filter, skipped before the json.Unmarshal below), is not fatal: the
-// file is muse's own append-only log, mostly full of unrelated tool-call
-// records. A read error partway through the file is surfaced as no match
-// (M2), discarding any match already found -- a truncated or corrupted read
-// is not proof of anything.
-func scanMuseSessionLog(path, token string, since time.Time) (label, note string, ok bool) {
+// either carries token (the old ⟦swarm:ref⟧ fallback) or, normalized,
+// equals normQuestion (2026-09-28-approval-summary-enforced locked decision
+// 2), recorded at or after since, if any. A line that fails to parse, or
+// doesn't even mention "user_input_prompt_" (M2's cheap pre-filter, skipped
+// before the json.Unmarshal below), is not fatal: the file is muse's own
+// append-only log, mostly full of unrelated tool-call records. A read error
+// partway through the file is surfaced as no match (M2), discarding any
+// match already found -- a truncated or corrupted read is not proof of
+// anything.
+func scanMuseSessionLog(path, token, normQuestion string, since time.Time) (label, note string, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", "", false
@@ -690,7 +704,9 @@ func scanMuseSessionLog(path, token string, since time.Time) (label, note string
 				ev := rec.Payload.Event
 				switch ev.Kind {
 				case "user_input_prompt_requested":
-					if len(ev.Questions) > 0 && strings.Contains(ev.Questions[0].Question, token) {
+					matches := len(ev.Questions) > 0 && (strings.Contains(ev.Questions[0].Question, token) ||
+						(normQuestion != "" && normalizeMuseQuestion(ev.Questions[0].Question) == normQuestion))
+					if matches {
 						// M1: a fresh ask reusing this ref supersedes any
 						// earlier match for it -- that settled answer
 						// belonged to a now-stale ask.
