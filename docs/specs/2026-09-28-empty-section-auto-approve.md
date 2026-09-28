@@ -13,11 +13,12 @@ The same flow also has one bug to fix here (Opus review of 576a53d, minor 1). `R
 ## Locked decisions
 
 1. `swarm_ask` for a spec-section approval (the approve_section path) accepts an optional `nothing_to_review` string: a one-line reason, 3–200 runes.
-2. The daemon auto-approves only when both hold:
+2. The daemon auto-approves only when all hold (tightened post-review from the originally approved 300-rune bound):
    - the flag is set;
-   - the section's stored body, with its heading line removed and trimmed, is at most 300 runes.
+   - the section heading is at most 80 runes;
+   - the section's stored body, with its heading line removed and trimmed, is a single short line (≤120 characters), no tables, lists or code: at most 120 runes, one non-empty line, and no table row (`|`), list item (a line starting with `-`, `*`, `+`, or a numbered marker like `1.`), or code fence (```` ``` ````).
 
-   If the body is longer, it refuses with the copy below and creates no request. Plans and reports never auto-approve; the field is refused on those kinds.
+   If the body fails any of those, it refuses with the copy below (using the body's real character count) and creates no request. Plans and reports never auto-approve; the field is refused on those kinds.
 3. An auto-approval resolves the section exactly as a user approval would: same state transition, same `approval_result` delivery, same downstream behaviour, such as the spec becoming approved when all sections are. Its evidence is `auto_empty`, and `binding_json` records `nothing_to_review: <reason>`. `responded_via` is `auto`. No native question is issued; the result tells the agent what to print.
 4. The user sees one line in chat, printed by the agent from the tool result's `next`:
    `Section "<title>": nothing to review (<reason>) — auto-approved.`
@@ -37,7 +38,7 @@ None. The `responded_via` value `auto` is new; check any CHECK constraint on `re
 - Result `next`:
   `Print this line in chat: Section "<title>": nothing to review (<reason>) — auto-approved. Then continue with the next section.`
 - `swarm_ask` schema description of the field:
-  `Spec sections only: a one-line reason there is nothing for the user to review (e.g. "No DB changes: no tables, columns or migrations."). The section body must be at most 300 characters.`
+  `Spec sections only: a one-line reason there is nothing for the user to review (e.g. "No DB changes: no tables, columns or migrations."). The section body must be a single short line (≤120 characters), no tables, lists or code.`
 - `swarm-orchestrator` and `swarm-spike` skills: one bullet (both copies byte-identical):
   `A spec section with nothing for the user to review (e.g. "DB models: none") is asked with nothing_to_review: "<one-line reason>" instead of a native question; print the line the result gives you. Never use it to skip a section that has content.`
 

@@ -50,8 +50,11 @@ type AskInput struct {
 	// NothingToReview is a spec-section approval's optional one-line reason
 	// there is nothing for the user to review (docs/specs/2026-09-28-empty-
 	// section-auto-approve.md locked decision 1): 3-200 runes. Refused on
-	// any approval kind other than approve_section, and when the section's
-	// own body (heading stripped, trimmed) exceeds 300 runes.
+	// any approval kind other than approve_section, when the section
+	// heading exceeds 80 runes, and when the section's own body (heading
+	// stripped, trimmed) is not a single short line of at most 120 runes
+	// with no table row, list item or code fence (nothingToReviewBodyOK,
+	// tightened post-review from the originally approved 300-rune bound).
 	NothingToReview string
 	Withdraw        string // when set, every other field is ignored
 	Repos           []ReposProposal
@@ -1047,6 +1050,67 @@ func (s *Store) ResolveDialogPrompt(ctx context.Context, sessionID, title string
 	return nil
 }
 
+// stripSectionHeadingLine drops a section's own "# " or "## " heading line
+// (after skipping any leading blank lines) so nothing_to_review's body guard
+// counts only the section's actual content -- never for the headingless
+// "document" preamble section, whose first line is real content, not a
+// heading to discard (review fix, 2026-09-28-empty-section-auto-approve).
+func stripSectionHeadingLine(body string, isDocument bool) string {
+	if isDocument {
+		return strings.TrimSpace(body)
+	}
+	lines := strings.SplitAfter(body, "\n")
+	i := 0
+	for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
+		i++
+	}
+	if i < len(lines) {
+		line := strings.TrimRight(lines[i], "\r\n")
+		if strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ") {
+			i++
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines[i:], ""))
+}
+
+// startsWithNumberedListMarker reports whether s (already trimmed) opens
+// with a numbered-list marker like "1.".
+func startsWithNumberedListMarker(s string) bool {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	return i > 0 && i < len(s) && s[i] == '.'
+}
+
+// nothingToReviewBodyOK is the coordinator's tightened auto-approve guard
+// (2026-09-28-empty-section-auto-approve, post-review): the body, already
+// heading-stripped and trimmed, must be at most 120 runes, a single
+// non-empty line, and contain no table row ('|'), list item (a line
+// starting with -, *, + or a numbered marker like "1."), or code fence
+// (```). A longer or richer body is refused, never auto-approved.
+func nothingToReviewBodyOK(body string) bool {
+	if utf8.RuneCountInString(body) > 120 {
+		return false
+	}
+	if strings.Contains(body, "|") || strings.Contains(body, "```") {
+		return false
+	}
+	nonEmptyLines := 0
+	for _, line := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		nonEmptyLines++
+		if strings.HasPrefix(t, "-") || strings.HasPrefix(t, "*") || strings.HasPrefix(t, "+") ||
+			startsWithNumberedListMarker(t) {
+			return false
+		}
+	}
+	return nonEmptyLines <= 1
+}
+
 func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) (Request, error) {
 	if in.ArtifactID == "" {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "artifact_id is required."}
@@ -1136,24 +1200,17 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			}
 			sectionID = sql.NullString{String: in.SectionID, Valid: true}
 			if in.NothingToReview != "" {
+				if utf8.RuneCountInString(sectionTitle) > 80 {
+					return &items.Error{Code: items.CodeBadRequest,
+						Message: "This section's heading is too long for nothing_to_review; ask for approval normally."}
+				}
 				var content string
 				if err := tx.QueryRowContext(ctx, `SELECT content FROM artifact_revisions
 					WHERE artifact_id = ? AND revision = ?`, in.ArtifactID, headRev).Scan(&content); err != nil {
 					return err
 				}
-				body := content[matched.Start:matched.End]
-				// Only a "## " heading line is ever stripped -- a headingless
-				// preamble ("document" section) has no heading line, and its
-				// first line is real content, not a heading to discard.
-				if strings.HasPrefix(strings.TrimSpace(body), "#") {
-					if idx := strings.IndexByte(body, '\n'); idx >= 0 {
-						body = body[idx+1:]
-					} else {
-						body = ""
-					}
-				}
-				body = strings.TrimSpace(body)
-				if bn := utf8.RuneCountInString(body); bn > 300 {
+				body := stripSectionHeadingLine(content[matched.Start:matched.End], matched.ID == "document")
+				if bn := utf8.RuneCountInString(body); !nothingToReviewBodyOK(body) {
 					return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
 						"This section has content to review (%d characters); ask for approval normally.", bn)}
 				}
@@ -1557,15 +1614,15 @@ func (s *Store) ResolveQuestionReply(ctx context.Context, sessionID, question, a
 		if err != nil {
 			return Request{}, err
 		}
-		var matchID string
+		var matches []string
 		for rows.Next() {
 			var id, prompt string
 			if err := rows.Scan(&id, &prompt); err != nil {
 				rows.Close()
 				return Request{}, err
 			}
-			if matchID == "" && NormalizeQuestion(prompt) == norm {
-				matchID = id
+			if NormalizeQuestion(prompt) == norm {
+				matches = append(matches, id)
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -1573,8 +1630,18 @@ func (s *Store) ResolveQuestionReply(ctx context.Context, sessionID, question, a
 			return Request{}, err
 		}
 		rows.Close()
-		if matchID != "" {
-			return s.ResolveQuestion(ctx, matchID, answer, "terminal")
+		switch len(matches) {
+		case 1:
+			return s.ResolveQuestion(ctx, matches[0], answer, "terminal")
+		case 0:
+			// fall through to the plain-prompt fallback below.
+		default:
+			// More than one already-bound open row matches this text: never
+			// guess which one the reply is for (post-review minor 3). Fall
+			// through to the plain-prompt fallback instead, which has its
+			// own separate, pre-existing tie-break.
+			s.log("resolve_question_reply: %d already-bound rows match %q for agent %s, refusing to guess",
+				len(matches), norm, agentID)
 		}
 	}
 	return s.ResolveQuestionByPrompt(ctx, sessionID, question, answer)

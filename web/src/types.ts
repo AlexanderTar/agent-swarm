@@ -233,12 +233,12 @@ export interface Request {
   confirmed: string[] | null;
   binding: RequestBinding | null;
   response_text: string | null;
-  responded_via: "menubar" | "board" | "cli" | null;
+  responded_via: "menubar" | "board" | "cli" | "terminal" | "auto" | null;
   responded_at: number | null;
   created_at: number;
   // True while an approval's native prompt is open in the asking agent's terminal (spec 2.2.1).
   native_pending: boolean;
-  approval_evidence: "observed" | "agent_reported" | null;
+  approval_evidence: "observed" | "agent_reported" | "auto_empty" | null;
 }
 
 export interface ArtifactSection { id: string; title: string; sha256: string }

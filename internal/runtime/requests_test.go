@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -1104,6 +1105,76 @@ func TestResolveQuestionReplyUsesAlreadyBoundRowNotFreshRebind(t *testing.T) {
 	}
 }
 
+// TestResolveQuestionReplyFallsThroughOnAmbiguousBoundMatch is post-review
+// minor 3: when more than one open, already-bound question row's normalized
+// prompt matches the observed text, ResolveQuestionReply must never guess
+// among them -- it falls through to the plain-prompt fallback (which has
+// its own separate, pre-existing tie-break) and logs the ambiguity.
+func TestResolveQuestionReplyFallsThroughOnAmbiguousBoundMatch(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, childA, childASes := worker(t, s)
+	_, childBSes := spawnSecondChild(t, s, "childB", orch)
+
+	_, err := s.SendApproval(ctx, childASes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgB, err := s.SendApproval(ctx, childBSes, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowA, err := s.askQuestion(ctx, orchSes.ID, AskInput{Prompt: "may I drop table x?",
+		Options: []string{"Approve", "Request changes"}, Header: childA.Name + " asks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second, independently-bound open question row for the same agent
+	// and the same normalized text -- an ambiguous state that can only be
+	// reached out-of-band (askQuestion itself dedups on (agent, prompt)),
+	// but that ResolveQuestionReply must still never guess through.
+	rowBID := ids.New("req")
+	binding, err := json.Marshal(map[string]string{"ref": msgB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO requests
+		(id, kind, is_hitl, agent_id, session_id, item_id, prompt, options_json, state, binding_json, created_at)
+		VALUES (?, 'question', 1, ?, ?, ?, ?, '["Approve","Request changes"]', 'open', ?, ?)`,
+		rowBID, orch.ID, orchSes.ID, orch.ItemID, "may I drop table x?", string(binding), db.Millis(s.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs []string
+	s.Log = func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+
+	got, err := s.ResolveQuestionReply(ctx, orchSes.ID, "may I drop table x?", "Approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The new bound-row matcher refused to guess between rowA and rowB;
+	// resolution (if any) came from the pre-existing plain-prompt fallback,
+	// which is free to pick either by its own rule -- the point under test
+	// is that the ambiguity was logged, not silently resolved by the new code.
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "refusing to guess") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ambiguous match was not logged: %v", logs)
+	}
+	if got.ID != "" && got.ID != rowA.ID && got.ID != rowBID {
+		t.Fatalf("resolved an unrelated row: %+v", got)
+	}
+}
+
 // registerSpecSection registers a one-section spec ("## "+heading) and
 // returns the artifact id, the section id and the head revision.
 func registerSpecSection(t *testing.T, s *Store, ses Session, key, heading, body string) (artifactID, sectionID string, revision int) {
@@ -1176,8 +1247,9 @@ func TestAskApprovalNothingToReviewLengthValidated(t *testing.T) {
 }
 
 // TestAskApprovalNothingToReviewRefusedWhenSectionHasContent is locked
-// decision 2: a section body over 300 runes (heading stripped, trimmed) is
-// refused with the exact character count, and no request row is created.
+// decision 2 (post-review tightened bound): a section body over 120 runes
+// (heading stripped, trimmed) is refused with the exact character count,
+// and no request row is created.
 func TestAskApprovalNothingToReviewRefusedWhenSectionHasContent(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -1207,6 +1279,114 @@ func TestAskApprovalNothingToReviewRefusedWhenSectionHasContent(t *testing.T) {
 	}
 	if after != before {
 		t.Fatalf("a request row was created on refusal: before=%d after=%d", before, after)
+	}
+}
+
+// TestAskApprovalNothingToReviewRefusesMultiLineBody is the coordinator's
+// tightened guard (post-review): a short-but-substantive multi-line body
+// (each line well under 120 runes) is still refused -- only a single
+// non-empty line auto-approves.
+func TestAskApprovalNothingToReviewRefusesMultiLineBody(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR multiline", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "Adds table foo.\nAdds table bar."
+	artifactID, sectionID, _ := registerSpecSection(t, s, ses, key, "DB models", body)
+	_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: artifactID, SectionID: sectionID,
+		Prompt: "Two tables.", NothingToReview: "Nothing to review."})
+	if err == nil || !strings.Contains(err.Error(), "This section has content to review") {
+		t.Fatalf("err = %v, want the content refusal", err)
+	}
+}
+
+// TestAskApprovalNothingToReviewRefusesTableListOrFence is the coordinator's
+// tightened guard: a table row, a list item or a code fence refuses the
+// auto-approve even when the body is short.
+func TestAskApprovalNothingToReviewRefusesTableListOrFence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"table", "| a | b |"},
+		{"dash list", "- one thing"},
+		{"star list", "* one thing"},
+		{"plus list", "+ one thing"},
+		{"numbered list", "1. one thing"},
+		{"code fence", "```\nx\n```"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR marker", Intent: "feature", Kind: Fake, Model: "fake-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ses, err := s.LatestSession(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			artifactID, sectionID, _ := registerSpecSection(t, s, ses, key, "DB models", tc.body)
+			_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: artifactID, SectionID: sectionID,
+				Prompt: "Review.", NothingToReview: "Nothing to review."})
+			if err == nil || !strings.Contains(err.Error(), "This section has content to review") {
+				t.Fatalf("err = %v, want the content refusal", err)
+			}
+		})
+	}
+}
+
+// TestAskApprovalNothingToReviewAllowsShortSingleLineReason is the
+// coordinator's canonical allowed body: a single short line naming what's
+// absent, no tables, lists or code.
+func TestAskApprovalNothingToReviewAllowsShortSingleLineReason(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR allowed", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactID, sectionID, _ := registerSpecSection(t, s, ses, key, "DB models",
+		"None — no tables, columns or migrations.")
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: artifactID, SectionID: sectionID,
+		Prompt: "No DB changes.", NothingToReview: "No new tables, columns or migrations."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.State != "approved" {
+		t.Fatalf("request = %+v", req)
+	}
+}
+
+// TestAskApprovalNothingToReviewRefusedForLongHeading is the coordinator's
+// tightened guard: a section heading over 80 runes is refused.
+func TestAskApprovalNothingToReviewRefusedForLongHeading(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR heading", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	longHeading := strings.Repeat("h", 81)
+	artifactID, sectionID, _ := registerSpecSection(t, s, ses, key, longHeading, "None.")
+	_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: artifactID, SectionID: sectionID,
+		Prompt: "Nothing here.", NothingToReview: "Nothing to review."})
+	if err == nil || !strings.Contains(err.Error(), "heading is too long") {
+		t.Fatalf("err = %v, want the long-heading refusal", err)
 	}
 }
 
