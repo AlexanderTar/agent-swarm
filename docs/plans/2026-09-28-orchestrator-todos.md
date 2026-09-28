@@ -65,7 +65,7 @@ T8 (skills) : any time after T1 is committed, parallel with T2–T7
 - Create: `internal/runtime/todos_test.go`
 
 **Interfaces:**
-- Consumes: `(*Store).checkEverySectionApproved(ctx, tx *sql.Tx, artifactID string) error` (materialize.go:25, unchanged); `items.Type`, `items.Status` constants; test helpers `newStore`, `seedSectionApproval`, `seedTopLevelItem` (checkpoint_test.go:619), `StartSpike`, `StartOrchestrator`, `LatestSession`.
+- Consumes: `(*Store).checkEverySectionApproved(ctx, tx txQuerier, artifactID string) error` (materialize.go:25 — widen the param from `*sql.Tx` to `txQuerier`, body unchanged); `items.Type`, `items.Status` constants; test helpers `newStore`, `seedSectionApproval`, `seedTopLevelItem` (checkpoint_test.go:619), `StartSpike`, `StartOrchestrator`, `LatestSession`.
 - Produces (used by T2–T5):
   ```go
   type TodoStatus string
@@ -76,12 +76,12 @@ T8 (skills) : any time after T1 is committed, parallel with T2–T7
   type todoStep struct{ ID, Label string }
   var spikeSteps map[string][]todoStep                                      // keys "feature","debug"
   func (s *Store) Todos(ctx context.Context, rootItemID string) ([]Todo, error)          // own DB.Tx
-  func (s *Store) todosTx(ctx context.Context, tx *sql.Tx, rootItemID string) ([]Todo, error)
-  func (s *Store) latestTodoReports(ctx context.Context, tx *sql.Tx, itemID string) ([]TodoReport, error)
-  func (s *Store) spikeTodos(ctx context.Context, tx *sql.Tx, spikeID string, steps []todoStep, reports []TodoReport) ([]Todo, error)
+  func (s *Store) todosTx(ctx context.Context, tx todoQuerier, rootItemID string) ([]Todo, error)
+  func (s *Store) latestTodoReports(ctx context.Context, tx todoQuerier, itemID string) ([]TodoReport, error)
+  func (s *Store) spikeTodos(ctx context.Context, tx todoQuerier, spikeID string, steps []todoStep, reports []TodoReport) ([]Todo, error)
   func ProgressOf(todos []Todo) *Progress
   ```
-  **Rule:** `Todos` opens its own `s.DB.Tx` (immediate write lock via `_txlock=immediate`). Code already inside a transaction (`WriteCheckpoint`, `Sync`) must call `todosTx(ctx, tx, id)`, never `Todos`, or it deadlocks on the busy timeout.
+  **Rule:** `Todos` reads through `s.DB` with no transaction (no write lock; `/api/state` calls it per orchestrator per poll). Code already inside a transaction (`WriteCheckpoint`, `Sync`) must call `todosTx(ctx, tx, id)`, never `Todos`, so it reads its own uncommitted writes and never waits on its own lock. The read helpers take `todoQuerier` (`txQuerier` from requests.go:149 plus `QueryContext`); change `checkEverySectionApproved`'s `tx *sql.Tx` parameter to `tx txQuerier` (it only calls `QueryRowContext`; existing callers pass `*sql.Tx` unchanged).
 
 - [ ] **Step 1: Write the failing migration test**
 
@@ -442,23 +442,21 @@ func taskTodoStatus(s items.Status) TodoStatus {
 	return TodoPending
 }
 
-// Todos is the root item's progress list; nil when the item has none (not a
-// root, or a root type with no list). It opens its own transaction: callers
-// already inside one use todosTx.
-// ponytail: an immediate (write-locking) tx per call, because
-// checkEverySectionApproved takes *sql.Tx; /api/state pays it once per
-// orchestrator per poll. Switch to a read-only querier if lock contention shows.
-func (s *Store) Todos(ctx context.Context, rootItemID string) ([]Todo, error) {
-	var out []Todo
-	err := s.DB.Tx(ctx, func(tx *sql.Tx) error {
-		var err error
-		out, err = s.todosTx(ctx, tx, rootItemID)
-		return err
-	})
-	return out, err
+// todoQuerier is the read surface *sql.DB and *sql.Tx share; the list is
+// read-only, so /api/state reads it without taking the immediate write lock.
+type todoQuerier interface {
+	txQuerier
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-func (s *Store) todosTx(ctx context.Context, tx *sql.Tx, rootItemID string) ([]Todo, error) {
+// Todos is the root item's progress list; nil when the item has none (not a
+// root, or a root type with no list). Callers already inside a transaction
+// pass their tx to todosTx instead.
+func (s *Store) Todos(ctx context.Context, rootItemID string) ([]Todo, error) {
+	return s.todosTx(ctx, s.DB, rootItemID)
+}
+
+func (s *Store) todosTx(ctx context.Context, tx todoQuerier, rootItemID string) ([]Todo, error) {
 	var typ, status, intent string
 	var parent sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT type, status, COALESCE(spike_intent, ''), parent_id FROM items WHERE id = ?`,
@@ -486,7 +484,7 @@ func (s *Store) todosTx(ctx context.Context, tx *sql.Tx, rootItemID string) ([]T
 	return nil, nil
 }
 
-func (s *Store) taskTodos(ctx context.Context, tx *sql.Tx, rootID string, typ items.Type, rootStatus items.Status) ([]Todo, error) {
+func (s *Store) taskTodos(ctx context.Context, tx todoQuerier, rootID string, typ items.Type, rootStatus items.Status) ([]Todo, error) {
 	// Tasks directly under the root first (p is NULL), then by story order.
 	rows, err := tx.QueryContext(ctx, `SELECT t.key, t.title, t.status FROM items t
 		LEFT JOIN items p ON p.id = t.parent_id AND p.id <> t.root_id
@@ -542,7 +540,7 @@ func (s *Store) taskTodos(ctx context.Context, tx *sql.Tx, rootID string, typ it
 }
 
 // latestTodoReports is the newest stored spike step list for itemID, nil if none.
-func (s *Store) latestTodoReports(ctx context.Context, tx *sql.Tx, itemID string) ([]TodoReport, error) {
+func (s *Store) latestTodoReports(ctx context.Context, tx todoQuerier, itemID string) ([]TodoReport, error) {
 	var raw string
 	err := tx.QueryRowContext(ctx, `SELECT todos_json FROM checkpoints WHERE item_id = ? AND todos_json IS NOT NULL
 		ORDER BY created_at DESC, rowid DESC LIMIT 1`, itemID).Scan(&raw)
@@ -558,7 +556,7 @@ func (s *Store) latestTodoReports(ctx context.Context, tx *sql.Tx, itemID string
 
 // spikeTodos lays reports over the template and applies the two facts the
 // daemon owns: spec approved, and the spike materialized.
-func (s *Store) spikeTodos(ctx context.Context, tx *sql.Tx, spikeID string, steps []todoStep, reports []TodoReport) ([]Todo, error) {
+func (s *Store) spikeTodos(ctx context.Context, tx todoQuerier, spikeID string, steps []todoStep, reports []TodoReport) ([]Todo, error) {
 	byID := map[string]TodoStatus{}
 	for _, r := range reports {
 		byID[r.ID] = r.Status
