@@ -87,8 +87,12 @@ func (s *Store) applyRetryFallback(ctx context.Context, a Agent) (Agent, AgentKi
 	if err := s.Preflight(ctx, PreflightInput{Kind: fbKind, Model: fbModel, Effort: fbEffort, Role: a.Role}); err != nil {
 		return a, origKind, false, err
 	}
-	advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisor(ctx, fbKind,
-		&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorRequestedEffort})
+	var advKind AgentKind
+	var advModel, advEffort, advMode, advRequestedEffort string
+	if advisorAllowed(a.Role) {
+		advKind, advModel, advEffort, advMode, advRequestedEffort = s.resolveAdvisor(ctx, fbKind,
+			&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorRequestedEffort})
+	}
 	if err := s.tx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ?,
 			advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, ''), advisor_requested_effort = NULLIF(?, ''),

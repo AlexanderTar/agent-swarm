@@ -562,6 +562,87 @@ func TestRetryReResolvesAdvisorModeOnKindSwap(t *testing.T) {
 	}
 }
 
+// TestApplyRetryFallbackNeverReResolvesAdvisorForAChild is
+// TestRetryReResolvesAdvisorModeOnKindSwap's child counterpart: a coder's
+// advisor (never set to begin with, per Spawn's advisorAllowed guard) stays
+// empty across a Retry usage-fallback kind swap -- applyRetryFallback must
+// not re-resolve one for a non-orchestrator role, even with a
+// kind-sensitive advisor that would otherwise happily assign one.
+func TestApplyRetryFallbackNeverReResolvesAdvisorForAChild(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	s.Advisor = kindSensitiveAdvisor{}
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Advisor: &AdvisorChoice{Kind: Claude, Model: "claude-fable-5-1", Effort: "high"},
+		Brief: BriefInput{Objective: "task"}})
+	if err != nil || queued {
+		t.Fatalf("err = %v, queued = %v", err, queued)
+	}
+	if kind, model, effort, mode := advisorCols(t, s, a.ID); kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor cols before retry = %q/%q/%q/%q, want all empty (children never get an advisor)", kind, model, effort, mode)
+	}
+	crashLatestSession(t, s, a)
+	s.Usage = fakeUsage{Claude: true}
+	out, err := s.Retry(ctx, a.Name, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != Codex {
+		t.Fatalf("agent kind = %s, want substituted to Codex", out.Kind)
+	}
+	if out.AdvisorMode != "" {
+		t.Fatalf("out.AdvisorMode = %q, want empty (children never get an advisor)", out.AdvisorMode)
+	}
+	if kind, model, effort, mode := advisorCols(t, s, a.ID); kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor cols after retry = %q/%q/%q/%q, want all empty (children never get an advisor)", kind, model, effort, mode)
+	}
+}
+
+// TestApplyRetryFallbackNeverReResolvesAdvisorForAPreChangeChildRow is
+// TestApplyRetryFallbackNeverReResolvesAdvisorForAChild's stale-row variant
+// (Task 2/3's same shape): a coder row that still carries a pre-change
+// advisor choice, set directly rather than through Spawn's own
+// advisorAllowed guard, must not have that advisor re-resolved and
+// re-persisted by a Retry kind swap.
+func TestApplyRetryFallbackNeverReResolvesAdvisorForAPreChangeChildRow(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	s.Advisor = kindSensitiveAdvisor{}
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "task"}})
+	if err != nil || queued {
+		t.Fatalf("err = %v, queued = %v", err, queued)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET
+		advisor_kind = 'claude', advisor_model = 'claude-fable-5-1', advisor_mode = 'native'
+		WHERE id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	a, err = s.AgentByID(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashLatestSession(t, s, a)
+	s.Usage = fakeUsage{Claude: true}
+	out, err := s.Retry(ctx, a.Name, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != Codex {
+		t.Fatalf("agent kind = %s, want substituted to Codex", out.Kind)
+	}
+	if out.AdvisorMode != "" {
+		t.Fatalf("out.AdvisorMode = %q, want empty (a stale pre-change advisor is dropped, not re-resolved)", out.AdvisorMode)
+	}
+	if kind, model, effort, mode := advisorCols(t, s, a.ID); kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor cols after retry = %q/%q/%q/%q, want all empty (a stale pre-change advisor is dropped, not re-resolved)", kind, model, effort, mode)
+	}
+}
+
 func TestRetryBothExhaustedReturnsErrorNoNewSession(t *testing.T) {
 	s, tm := newStoreWithFallback(t)
 	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
