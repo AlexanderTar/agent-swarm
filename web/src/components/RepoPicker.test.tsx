@@ -51,6 +51,21 @@ describe("RepoPicker (§16.3)", () => {
     expect(await screen.findByText("1 selected repository is no longer available.")).toBeInTheDocument();
   });
 
+  it("waits for a delayed rescan response before removing selected repos and announces the change", async () => {
+    const daemon = createMockDaemon();
+    const { user } = renderWithDaemon(<Host initial={["repo_chat"]} />, { daemon, events: false });
+    await screen.findByRole("option", { name: /endurio-chat/ });
+    const release = daemon.hold("GET /api/repos");
+    daemon.db.repos.all = daemon.db.repos.all.filter((r) => r.id !== "repo_chat");
+    await user.click(screen.getByRole("button", { name: "Rescan" }));
+    expect(screen.getByText("Selected: endurio-chat")).toBeInTheDocument();
+    expect(screen.queryByText("1 selected repository is no longer available.")).not.toBeInTheDocument();
+    release();
+    const notice = await screen.findByText("1 selected repository is no longer available.");
+    expect(notice).toHaveAttribute("aria-live", "polite");
+    expect(screen.queryByText("Selected: endurio-chat")).not.toBeInTheDocument();
+  });
+
   it("keeps the listbox for empty and scanning states", async () => {
     const daemon = createMockDaemon();
     daemon.db.repos.all = [];

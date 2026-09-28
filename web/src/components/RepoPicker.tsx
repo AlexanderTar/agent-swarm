@@ -28,14 +28,14 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
   const labelId = useId();
 
   useEffect(() => {
-    if (!reconcilePending || !data || data.scanning) return;
+    if (!reconcilePending || !data || data.scanning || repos.loading || repos.error) return;
     setReconcilePending(false);
     const result = reconcileSelection(p.selected, rows);
     if (result.removed > 0) {
       p.onChange(result.selection);
       setNotice(T.reposNoLonger(result.removed));
     }
-  }, [reconcilePending, rows, data, p]);
+  }, [reconcilePending, rows, data, repos.loading, repos.error, p]);
 
   const toggle = (id: string) => {
     setNotice("");
@@ -104,7 +104,7 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
           {addError && <p className="w-full text-xs text-destructive">{addError}</p>}
         </form>
       )}
-      {notice && <p className="text-xs text-muted-foreground">{notice}</p>}
+      <p aria-live="polite" className="text-xs text-muted-foreground">{notice}</p>
       <p className="text-xs">{selectedLine(p.selected, [...rows, ...created])}</p>
     </fieldset>
   );
