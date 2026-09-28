@@ -1,4 +1,4 @@
-import { type ReactNode, useRef } from "react";
+import { type CSSProperties, type ReactNode, useRef } from "react";
 import {
   Sheet as UiSheet,
   SheetContent,
@@ -28,8 +28,8 @@ export function Sheet(p: {
         overlay={modal}
         aria-label={p.title}
         aria-describedby={undefined}
-        style={{ width: `${p.width ?? 420}px` }}
-        className="flex w-full max-w-full flex-col gap-0 bg-card p-0 sm:max-w-full"
+        style={{ "--sheet-width": `${p.width ?? 420}px` } as CSSProperties}
+        className="flex w-full max-w-full flex-col gap-0 bg-card p-0 sm:w-[var(--sheet-width)] sm:max-w-full"
         onInteractOutside={keepOpen}
         onPointerDownOutside={keepOpen}
         onCloseAutoFocus={(e) => {

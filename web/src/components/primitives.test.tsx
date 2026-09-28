@@ -59,7 +59,7 @@ describe("Sheet", () => {
     const user = userEvent.setup();
     render(<Sheet title="Start orchestrator" subtitle="EPIC-12 · Authentication" onClose={onClose} footer={<button type="button">ok</button>}>body</Sheet>);
     expect(document.querySelector("[data-slot=sheet-overlay]")).toHaveClass("bg-black/60");
-    expect(screen.getByRole("dialog", { name: "Start orchestrator" })).toHaveStyle({ width: "420px" });
+    expect(screen.getByRole("dialog", { name: "Start orchestrator" })).toHaveStyle({ "--sheet-width": "420px" });
     expect(screen.getByText("EPIC-12 · Authentication")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close" }));
     await user.keyboard("{Escape}");
@@ -97,6 +97,24 @@ describe("Sheet", () => {
     render(<Sheet title="Details" header={false} onClose={vi.fn()}>body</Sheet>);
     expect(screen.getByRole("dialog", { name: "Details" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Details" })).toHaveClass("sr-only");
+  });
+
+  it("fills narrow screens and applies configured widths from 640px up", () => {
+    const { rerender } = render(<Sheet title="New item" width={480} onClose={vi.fn()}>body</Sheet>);
+    const dialog = screen.getByRole("dialog", { name: "New item" });
+    expect(dialog).toHaveClass("w-full", "sm:w-[var(--sheet-width)]", "max-w-full", "sm:max-w-full");
+    expect(dialog.style.width).toBe("");
+    expect(dialog).toHaveStyle({ "--sheet-width": "480px" });
+
+    rerender(<Sheet title="Details" header={false} onClose={vi.fn()}>body</Sheet>);
+    expect(screen.getByRole("dialog", { name: "Details" })).toHaveStyle({ "--sheet-width": "420px" });
+  });
+
+  it("gives Close a 44px target and disables sheet animations for reduced motion", () => {
+    render(<Sheet title="New item" onClose={vi.fn()}>body</Sheet>);
+    expect(screen.getByRole("button", { name: "Close" })).toHaveClass("size-11");
+    expect(screen.getByRole("dialog", { name: "New item" })).toHaveClass("motion-reduce:animate-none");
+    expect(document.querySelector("[data-slot=sheet-overlay]")).toHaveClass("motion-reduce:animate-none");
   });
 
   it("non-modal sheet has no overlay and ignores outside clicks", async () => {
