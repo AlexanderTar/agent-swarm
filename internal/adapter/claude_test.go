@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -1252,4 +1253,64 @@ func TestClaudeAssistantTextSinceLastTurnUnreadableFileFailsOpen(t *testing.T) {
 	if _, ok := c.AssistantTextSinceLastTurn("testdata/claude/transcripts/does-not-exist.jsonl"); ok {
 		t.Fatal("ok = true for a missing file, want false (fail open)")
 	}
+}
+
+// TestClaudeAssistantTextSinceLastTurnFailsOpenOnScanError is a post-review
+// fix: a line over the scanner's 16 MiB per-line cap (or any other scan
+// error) must fail the gate open (ok=false), never be silently treated as
+// "end of input" with whatever partial text was read so far.
+func TestClaudeAssistantTextSinceLastTurnFailsOpenOnScanError(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "huge-line.jsonl")
+	huge := append([]byte(`{"type":"user","message":{"role":"user","content":"`), bytes.Repeat([]byte("x"), 17<<20)...)
+	huge = append(huge, []byte(`"}}`+"\n")...)
+	if err := os.WriteFile(p, huge, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := newClaude(Deps{})
+	if _, ok := c.AssistantTextSinceLastTurn(p); ok {
+		t.Fatal("ok = true for a line over the scanner's buffer cap, want false (fail open)")
+	}
+}
+
+// TestClaudeAssistantTextSinceLastTurnTailRead is a post-review fix: on a
+// transcript much larger than the 4 MiB tail window, the reader must still
+// find the summary printed just before the question -- it widens its read
+// window until it finds a turn boundary (here, well within the first 4 MiB
+// window read from the end, since the padding and the real content are both
+// near the tail).
+func TestClaudeAssistantTextSinceLastTurnTailRead(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "large.jsonl")
+	var b bytes.Buffer
+	// ~6 MiB of padding lines before the real content, forcing a tail read.
+	padLine, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{
+		"id": "pad", "role": "assistant", "content": []map[string]any{{"type": "text", "text": strings.Repeat("p", 900)}}}})
+	for i := 0; i < 7000; i++ {
+		b.Write(padLine)
+		b.WriteByte('\n')
+	}
+	b.WriteString(claudeUserLineForTest("go") + "\n")
+	summaryLine, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{
+		"id": "m1", "role": "assistant", "content": []map[string]any{{"type": "text",
+			"text": "Ship auth end to end: login, session cookies, and logout across web and API."}}}})
+	b.Write(summaryLine)
+	b.WriteByte('\n')
+	if err := os.WriteFile(p, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := newClaude(Deps{})
+	text, ok := c.AssistantTextSinceLastTurn(p)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if !strings.Contains(text, "Ship auth end to end") {
+		t.Fatalf("text = %q, missing the summary (tail read missed it)", text)
+	}
+	if strings.Contains(text, "ppppp") {
+		t.Fatalf("text leaked padding from before the user turn: %q", text[:80])
+	}
+}
+
+func claudeUserLineForTest(text string) string {
+	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}})
+	return string(b)
 }

@@ -505,6 +505,20 @@ type claudeTranscriptRecord struct {
 	} `json:"message"`
 }
 
+// claudeIsBoundaryLine is readTranscriptTailLines' hasBoundary predicate for
+// Claude: a top-level type=="user" line, the same boundary
+// AssistantTextSinceLastTurn itself resets on below (a real user message or
+// a tool_result envelope).
+func claudeIsBoundaryLine(line []byte) bool {
+	var r struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(line, &r); err != nil {
+		return false
+	}
+	return r.Type == "user"
+}
+
 // AssistantTextSinceLastTurn is the PreToolUse summary gate's transcript
 // reader for Claude (2026-09-28-approval-summary-enforced): the assistant
 // text printed since the last user turn (a real user message or a
@@ -516,7 +530,7 @@ type claudeTranscriptRecord struct {
 // not a single line parses as valid JSON -- an unreadable or unparseable
 // transcript, per spec, fails the gate open (the caller allows the call).
 func (c *Claude) AssistantTextSinceLastTurn(transcriptPath string) (string, bool) {
-	lines, err := readTranscriptLines(transcriptPath)
+	lines, err := readTranscriptTailLines(transcriptPath, claudeIsBoundaryLine)
 	if err != nil {
 		return "", false
 	}

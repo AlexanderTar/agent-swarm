@@ -527,6 +527,17 @@ type agyTranscriptRecord struct {
 	Content string `json:"content"`
 }
 
+// agyIsBoundaryLine is readTranscriptTailLines' hasBoundary predicate for
+// agy: a USER_INPUT or GENERIC (a tool call's result) line, the same
+// boundary AssistantTextSinceLastTurn itself resets on below.
+func agyIsBoundaryLine(line []byte) bool {
+	var r agyTranscriptRecord
+	if err := json.Unmarshal(line, &r); err != nil {
+		return false
+	}
+	return r.Type == "USER_INPUT" || r.Type == "GENERIC"
+}
+
 // AssistantTextSinceLastTurn is the PreToolUse summary gate's transcript
 // reader for agy (2026-09-28-approval-summary-enforced): the assistant text
 // printed since the last user turn OR tool result -- the same boundary the
@@ -549,7 +560,7 @@ type agyTranscriptRecord struct {
 // when the file can't be opened or read, or not a single line parses as
 // valid JSON.
 func (a *Agy) AssistantTextSinceLastTurn(transcriptPath string) (string, bool) {
-	lines, err := readTranscriptLines(transcriptPath)
+	lines, err := readTranscriptTailLines(transcriptPath, agyIsBoundaryLine)
 	if err != nil {
 		return "", false
 	}

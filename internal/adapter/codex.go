@@ -462,6 +462,25 @@ type codexTranscriptPayload struct {
 	} `json:"content"`
 }
 
+// codexIsBoundaryLine is readTranscriptTailLines' hasBoundary predicate for
+// Codex: a real user message or a tool result (function_call_output/
+// custom_tool_call_output), the same boundary AssistantTextSinceLastTurn
+// itself resets on below.
+func codexIsBoundaryLine(line []byte) bool {
+	var e codexTranscriptEnvelope
+	if err := json.Unmarshal(line, &e); err != nil || e.Type != "response_item" {
+		return false
+	}
+	var p codexTranscriptPayload
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return false
+	}
+	if p.Type == "message" && p.Role == "user" {
+		return true
+	}
+	return p.Type == "function_call_output" || p.Type == "custom_tool_call_output"
+}
+
 // AssistantTextSinceLastTurn is the PreToolUse summary gate's transcript
 // reader for Codex (2026-09-28-approval-summary-enforced): the assistant
 // text printed since the last real user message OR tool result in the
@@ -479,7 +498,7 @@ type codexTranscriptPayload struct {
 // only when the file can't be opened or read, or not a single line parses
 // as valid JSON.
 func (c *Codex) AssistantTextSinceLastTurn(transcriptPath string) (string, bool) {
-	lines, err := readTranscriptLines(transcriptPath)
+	lines, err := readTranscriptTailLines(transcriptPath, codexIsBoundaryLine)
 	if err != nil {
 		return "", false
 	}
