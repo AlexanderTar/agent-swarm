@@ -224,6 +224,20 @@ func (a *Agy) setupEnv(s Spec) (map[string]string, error) {
 
 // Launch is §11.1. The model is the exact suffixed slug for the chosen effort;
 // --effort is never passed (P0-12).
+//
+// Every argv flag Launch and Resume pass to `agy`, one line each:
+//
+//   - -i <kickoff>: the initial prompt.
+//   - --conversation <id> (Resume only): the provider session to reattach to.
+//   - --model <model>: the agent's configured model, already suffixed for
+//     its effort (P0-12: agy has no separate --effort flag).
+//   - --dangerously-skip-permissions: Swarm supervises tool use itself
+//     (hooks); agy's own permission prompts would otherwise block a
+//     headless session with nobody in the terminal to answer them.
+//
+// The one env var, HOME=<agy-home> (setupEnv), isolates agy's config, MCP
+// registration and instructions from the user's own ~/.gemini -- see
+// setupEnv's own comment for the per-entry symlink layout underneath it.
 func (a *Agy) Launch(s Spec) (Launch, error) {
 	env, err := a.setupEnv(s)
 	if err != nil {

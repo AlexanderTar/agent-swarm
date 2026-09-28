@@ -32,9 +32,16 @@ Muse 1.4.0-R4302.1 probe, same day (documented only; no behaviour change here):
   `user_input_prompt_settled` (`answers[{id, selected_label}]`). Fixture:
   `internal/adapter/testdata/muse/session-user-input-1.4.0.jsonl`. Follow-up candidate.
 - `muse session-message` needs `MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS=on` in the
-  **caller's** env to list sessions. `send` from a non-Muse process then fails
-  `sender_unverified` ("sender session context is missing"); `MUSE_SESSION_ID` does
-  not satisfy it. Native wake from the daemon stays unavailable.
+  **caller's** env to list sessions. `send` still fails `sender_unverified`
+  ("sender session context is missing") -- a follow-up probe ruled out the
+  caller being an external, non-muse process: running `send` from inside a
+  live muse session's own shell tool failed the same way. Muse's native
+  `send_session_message` tool does reach the target, but the target then shows
+  a peer-approval dialog ("Unverified macOS process", "On approval: queue for
+  the next turn; do not wake") even though the binary is signed Developer ID
+  Application: Meta Platforms, Inc. (V9WTTPBFK9) -- likely a signing-identity
+  mismatch in the peer verifier, not a missing sender identity. Native wake
+  from the daemon stays unavailable either way; Wake stays on tmux paste.
 
 ## Locked decisions
 

@@ -74,6 +74,32 @@ func CodexHomeDir(home, agentID string) string {
 	return filepath.Join(home, "cx", CodexHomeDirName(agentID))
 }
 
+// flags is every argv override Launch and Resume pass to `codex`, one line
+// each with its reason:
+//
+//   - --dangerously-bypass-approvals-and-sandbox: Swarm supervises tool use
+//     itself (hooks); codex's own approval/sandbox prompts would otherwise
+//     block a headless session with nobody in the terminal to answer them.
+//   - --dangerously-bypass-hook-trust: codex's own hooks.json (symlinked in
+//     by setupEnv) would otherwise show a one-time hook-sandbox-trust dialog.
+//   - --no-daemon: see the flag's own inline comment below (orphan process
+//     and disk-space cost of the shared per-CODEX_HOME app-server daemon,
+//     probed live not to change Wake behaviour).
+//   - --no-alt-screen: keeps codex's output in the normal terminal buffer,
+//     which is what tmux capture-pane reads.
+//   - -m <model>: the agent's configured model.
+//   - -c features.default_mode_request_user_input=true: see the override's
+//     own inline comment below (openai/codex#24750).
+//   - -c model_reasoning_effort="<effort>": the agent's configured reasoning
+//     effort, when set.
+//   - -c model_instructions_file="<path>": the role's instructions file,
+//     when set.
+//   - -c mcp_servers.swarm.command/args: registers the swarm MCP server
+//     (`<bin> mcp`) so this session can call swarm_* tools.
+//   - -c mcp_servers.swarm.env_vars=[...]: names the parent-process env vars
+//     (SWARM_URL, SWARM_SESSION, SWARM_TOKEN_FILE, SWARM_AGENT_KIND) codex
+//     passes through to the swarm MCP server -- literal env={…} would put
+//     those session values in argv instead (P0-1).
 func (c *Codex) flags(s Spec) ([]string, error) {
 	quoted := make([]string, len(mcpEnvVars))
 	for i, v := range mcpEnvVars {
@@ -114,6 +140,11 @@ func (c *Codex) flags(s Spec) ([]string, error) {
 		"-c", `mcp_servers.swarm.env_vars=[`+strings.Join(quoted, ",")+`]`), nil
 }
 
+// setupEnv is the one env var Launch and Resume pass to `codex`:
+// CODEX_HOME=<per-agent short dir> (CodexHomeDir), isolating this agent's
+// config, auth symlink, thread store and app-server-control socket from
+// every other agent and from the user's own ~/.codex (see CodexHomeDir's
+// doc comment for the SUN_LEN reasoning behind the short, hashed path).
 func (c *Codex) setupEnv(s Spec) (map[string]string, error) {
 	codexHome := CodexHomeDir(c.d.Home, s.AgentID)
 	// MINOR 1 (review round 1): fail clearly here rather than let codex itself

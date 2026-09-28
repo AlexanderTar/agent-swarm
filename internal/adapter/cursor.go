@@ -35,6 +35,27 @@ func CursorMCPEnv() map[string]string {
 	}
 }
 
+// argv is every flag Launch and Resume pass to `cursor-agent`, one line each:
+//
+//   - --resume <chat>: the chat id PreRun's create-chat produced (Launch), or
+//     the provider session id to reattach to (Resume).
+//   - --yolo: Swarm supervises tool use itself (hooks); cursor's own
+//     permission prompts would otherwise block a headless session with
+//     nobody in the terminal to answer them.
+//   - --trust: skips the "Trust this workspace" dialog (P-U1); cursorTrust
+//     below still detects it in case a future version reintroduces it.
+//   - --approve-mcps: skips a per-server MCP approval prompt for the swarm
+//     server registered in cursor-home/mcp.json.
+//   - --sandbox disabled: cursor's own sandbox would otherwise restrict
+//     tool use on top of --yolo.
+//   - --model <model>: the agent's configured model.
+//   - --workspace <cwd>: the session's working directory.
+//   - --plugin-dir <dir> (repeated): every plugin directory Spec carries.
+//
+// The one env var, CURSOR_DATA_DIR=<cursor-home> (setupEnv), isolates
+// cursor's MCP registration to just the swarm server; cursor has no other
+// HOME-wide config dir to isolate (setupEnv's own comment has the plugin
+// caveat).
 func (c *Cursor) argv(s Spec, chat string) []string {
 	a := []string{"cursor-agent", "--resume", chat, "--yolo", "--trust", "--approve-mcps", "--sandbox", "disabled",
 		"--model", s.Model, "--workspace", s.Cwd}

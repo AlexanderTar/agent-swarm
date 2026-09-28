@@ -59,6 +59,27 @@ func TestMuseLaunchFlagsProbe(t *testing.T) {
 // key, or schema surface enables ingress. Native wake is therefore unavailable
 // and Wake stays on the tmux-paste fallback. Re-run this probe if a newer muse
 // documents an ingress opt-in; until it passes, do not flip Wake to native.
+//
+// Re-probed 1.4.0-R4302.1, 2026-09-28 (docs/specs/2026-09-28-codex-sync-request-user-input.md):
+// setting MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS=on in the caller's own env
+// does open `muse session-message list` -- sessions are listed. `send` still
+// fails sender_unverified ("sender session context is missing"), and this is
+// NOT about the caller being an external, non-muse process: a follow-up
+// probe ran `send` from inside a live muse session's own shell tool (so the
+// caller genuinely is muse) and it still failed the same way. Muse's native
+// send_session_message tool does reach the target, but the target then shows
+// a peer-approval dialog ("Unverified macOS process", "On approval: queue
+// for the next turn; do not wake") -- even though the binary is signed
+// Developer ID Application: Meta Platforms, Inc. (V9WTTPBFK9). The likely
+// cause is that the peer verifier does not accept this build's own signature
+// (a signing-identity mismatch), not a missing sender identity. Net result:
+// no unattended native wake either way, so Wake stays on the tmux-paste
+// fallback. Separately, request_user_input still dispatches no
+// PreToolUse/PostToolUse hook at all in 1.4.0, but muse's own
+// ~/.local/share/muse/sessions/YYYY/MM/DD/<session>/session.jsonl now records
+// user_input_prompt_requested (with the question text) and
+// user_input_prompt_settled (with the picked answers) -- a candidate for a
+// follow-up that reads observed answers from there instead.
 func TestMuseWakeProbe(t *testing.T) {
 	if os.Getenv("MUSE_LIVE_PROBE") != "1" {
 		t.Skip("live probe against real muse CLI; set MUSE_LIVE_PROBE=1 to run")

@@ -49,6 +49,32 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 	return json.Marshal(cfg)
 }
 
+// flags is every argv override Launch and Resume pass to `claude`. No env
+// vars: the swarm MCP server reads SWARM_URL/SWARM_SESSION/SWARM_TOKEN_FILE/
+// SWARM_AGENT_KIND from swarm's own process environment (claude spawns MCP
+// servers inheriting its env; no per-server env_vars mechanism to route them
+// through, unlike codex's mcp_servers.swarm.env_vars).
+//
+//   - -n <name>: the session's agent name, shown in Claude's own UI.
+//   - --model / --effort: the agent's configured model and reasoning effort.
+//   - --dangerously-skip-permissions: Swarm supervises tool use itself
+//     (hooks); Claude's own permission prompts would otherwise block a
+//     headless session with nobody in the terminal to answer them.
+//   - --strict-mcp-config: only the swarm MCP server below is loaded, never
+//     a server from the user's own ~/.claude.json or project .mcp.json.
+//   - --mcp-config <path>: a per-launch file registering the swarm MCP
+//     server (stdio, `<bin> mcp`), so every session gets a fresh, correct
+//     absolute path to the swarm binary.
+//   - --settings <path>: a per-launch file disabling commit/PR attribution,
+//     blanking the user's global status line, and wiring every hook event
+//     Swarm intercepts (see settingsJSON).
+//   - --setting-sources project,local: excludes the "user" scope, where
+//     `swarm install` writes ~/.claude/skills and ~/.claude/CLAUDE.md live --
+//     writeProjectSwarmConfig re-admits the swarm skill and MCP config at
+//     project scope instead (see its own comment for why).
+//   - --append-system-prompt-file <path>: the role's instructions, when set.
+//   - --dangerously-load-development-channels server:swarm: required for the
+//     swarm MCP server's own channel/notification bridge (Wake).
 func (c *Claude) flags(s Spec) ([]string, error) {
 	mcp, err := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{

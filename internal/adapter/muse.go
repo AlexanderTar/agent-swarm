@@ -27,6 +27,33 @@ func museEffort(effort string) string {
 	return effort
 }
 
+// argv is every flag Launch (and, inlined, Resume) pass to `muse`, one line
+// each with its reason. See setupEnv's own comment for the env vars.
+//
+//   - --model <model>: the agent's configured model, the raw Spark slug.
+//   - --reasoning-effort <tier>: the agent's configured effort, or "high"
+//     (museEffort) when unset.
+//   - --yolo --trust-workspace: Swarm supervises tool use itself (hooks);
+//     muse's own permission prompts would otherwise block a headless
+//     session with nobody in the terminal to answer them. --trust-workspace
+//     also loads the workspace's skills and AGENTS.md.
+//   - resume <session-ref> (Resume only, in place of a kickoff): muse resume
+//     takes exactly one positional, the session ref, with no room for a
+//     trailing prompt (confirmed live).
+//
+// Native wake and request_user_input hooking, probed live on 1.4.0-R4302.1
+// (2026-09-28, docs/specs/2026-09-28-codex-sync-request-user-input.md): no
+// launch flag or env var enables either.
+// MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS=on in the caller's own env opens
+// `muse session-message list`, but `send` still fails sender_unverified --
+// even called from inside a live muse session's own shell tool, not just an
+// external process -- because the target's peer-approval dialog does not
+// accept this build's signature ("Unverified macOS process", despite a valid
+// Developer ID Application signature). Wake therefore stays on tmux paste.
+// request_user_input still dispatches no PreToolUse/PostToolUse hook at all,
+// but muse's own session.jsonl records user_input_prompt_requested and
+// user_input_prompt_settled events (see muse_wake_probe_test.go's
+// TestMuseWakeProbe comment).
 func (m *Muse) argv(s Spec) []string {
 	return []string{"muse", "--model", s.Model,
 		"--reasoning-effort", museEffort(s.Effort), "--yolo", "--trust-workspace", s.Kickoff}
