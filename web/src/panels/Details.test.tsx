@@ -40,7 +40,7 @@ describe("Details panel (§16.9)", () => {
       crew: [{ agent: "builder", role: "coder", step: "build", state: "active" }],
     } });
     const { user } = setup("TASK-103", {}, d);
-    expect(await screen.findByText("Workflow · tdd-reviewed · Running · Round 2 of 3")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
     await user.click(screen.getByRole("button", { name: "builder" }));
     await waitFor(() => expect(d.calls).toContainEqual(expect.objectContaining({ method: "POST", path: "/api/agents/builder/terminal" })));
   });

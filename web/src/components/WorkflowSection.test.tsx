@@ -17,7 +17,11 @@ const state: NonNullable<ItemDetail["workflow_state"]> = {
 describe("WorkflowSection", () => {
   it("shows steps, run verdicts and unit-tagged findings", async () => {
     render(<WorkflowSection workflow={workflow} state={state} onOpenTerminal={vi.fn()} />);
-    expect(screen.getByText("Workflow · tdd-reviewed · Running · Round 2 of 3")).toBeInTheDocument();
+    const workflowToggle = screen.getByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" });
+    expect(workflowToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("build")).not.toBeInTheDocument();
+    await userEvent.click(workflowToggle);
+    expect(workflowToggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("build")).toBeInTheDocument();
     expect(screen.getByText("review")).toBeInTheDocument();
     expect(screen.getByText("Changes requested")).toBeInTheDocument();
@@ -31,12 +35,14 @@ describe("WorkflowSection", () => {
   it("opens the run agent's terminal", async () => {
     const onOpenTerminal = vi.fn();
     render(<WorkflowSection workflow={workflow} state={state} onOpenTerminal={onOpenTerminal} />);
+    await userEvent.click(screen.getByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
     await userEvent.click(screen.getByRole("button", { name: "critic" }));
     expect(onOpenTerminal).toHaveBeenCalledWith("critic");
   });
 
-  it("shows the escalation reason and next action", () => {
+  it("shows the escalation reason and next action", async () => {
     render(<WorkflowSection workflow={workflow} state={{ ...state, state: "escalated", escalation: "Review blocked" }} onOpenTerminal={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Workflow · tdd-reviewed · Escalated · Round 2 of 3" }));
     const alert = screen.getByRole("alert");
     expect(within(alert).getByText("Review blocked")).toBeInTheDocument();
     expect(within(alert).getByText("The orchestrator decides next.")).toBeInTheDocument();

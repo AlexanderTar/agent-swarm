@@ -20,7 +20,11 @@ export function WorkflowSection(p: { workflow: Workflow | null | undefined; stat
   const title = `Workflow · ${workflow.template ?? "custom"} · ${state.state.charAt(0).toUpperCase()}${state.state.slice(1)} · Round ${state.round} of ${workflow.max_rounds ?? 1}`;
   return (
     <section aria-label="Workflow" className="space-y-2 border-t border-line pt-3">
-      <h3 className="font-semibold">{title}</h3>
+      <Collapsible>
+      <h3 className="font-semibold">
+        <CollapsibleTrigger asChild><Button variant="ghost" className="h-auto justify-start px-0 text-left font-semibold">{title}</Button></CollapsibleTrigger>
+      </h3>
+      <CollapsibleContent className="space-y-2">
       {state.state === "escalated" && (
         <div role="alert" className="rounded border border-bad bg-bad/10 p-2 text-bad">
           <p>{state.escalation}</p><p>The orchestrator decides next.</p>
@@ -52,6 +56,8 @@ export function WorkflowSection(p: { workflow: Workflow | null | undefined; stat
           </li>
         ))}
       </ol>
+      </CollapsibleContent>
+      </Collapsible>
     </section>
   );
 }
