@@ -1053,3 +1053,307 @@ func TestResolveQuestionReplyBindsByRefThenByPrompt(t *testing.T) {
 		t.Fatalf("repointed: got %+v, %v", got, err)
 	}
 }
+
+// TestResolveQuestionReplyUsesAlreadyBoundRowNotFreshRebind is
+// docs/specs/2026-09-28-empty-section-auto-approve.md locked decision 6
+// (Opus review of 576a53d, minor 1): two children of the same orchestrator
+// send byte-identical approval bodies. The orchestrator's PreToolUse hook
+// observed childA's native question first, with the correct header, so
+// askQuestion froze childA's msg_ ref onto that row (bindNativeQuestionTx,
+// header-disambiguated, mirroring TestBindNativeQuestionHeaderDisambiguates
+// IdenticalChildBodies). Codex's async reply for that same question text
+// carries no header. The old ResolveQuestionReply re-ran BindNativeQuestion
+// fresh with header="", which -- with two open identical-body children --
+// picks the newest (msgB) and finds no open row bound to it, leaving the
+// right row open. The fix resolves through the already-bound row instead.
+func TestResolveQuestionReplyUsesAlreadyBoundRowNotFreshRebind(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	orch, childA, childASes := worker(t, s)
+	childB, childBSes := spawnSecondChild(t, s, "childB", orch)
+
+	_, err := s.SendApproval(ctx, childASes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.SendApproval(ctx, childBSes, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = childB
+
+	orchSes, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowA, err := s.askQuestion(ctx, orchSes.ID, AskInput{Prompt: "may I drop table x?",
+		Options: []string{"Approve", "Request changes"}, Header: childA.Name + " asks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ResolveQuestionReply(ctx, orchSes.ID, "may I drop table x?", "Approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != rowA.ID {
+		t.Fatalf("resolved %+v, want the already-bound row %q (childA)", got, rowA.ID)
+	}
+	if got.State != "answered" || got.RespondedVia != "terminal" {
+		t.Fatalf("resolved request state = %+v", got)
+	}
+}
+
+// registerSpecSection registers a one-section spec ("## "+heading) and
+// returns the artifact id, the section id and the head revision.
+func registerSpecSection(t *testing.T, s *Store, ses Session, key, heading, body string) (artifactID, sectionID string, revision int) {
+	t.Helper()
+	ctx := context.Background()
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
+		writeFile(t, "# s\n\n## "+heading+"\n\n"+body+"\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec.ArtifactID, spec.Sections[0].ID, spec.Revision
+}
+
+// TestAskApprovalNothingToReviewRefusedOnPlan is locked decision 2: the
+// field is refused on any approval kind other than approve_section.
+func TestAskApprovalNothingToReviewRefusedOnPlan(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR plan", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "plan", writeFile(t, planBody), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: plan.ArtifactID,
+		Prompt: "Ship the plan.", NothingToReview: "No new endpoints."})
+	if err == nil || !strings.Contains(err.Error(), "nothing_to_review is only for spec sections.") {
+		t.Fatalf("err = %v, want the spec-sections-only refusal", err)
+	}
+}
+
+// TestAskApprovalNothingToReviewLengthValidated is locked decision 1: the
+// reason is 3-200 runes.
+func TestAskApprovalNothingToReviewLengthValidated(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+		ok     bool
+	}{
+		{"too short", "No", false},
+		{"too long", strings.Repeat("x", 201), false},
+		{"minimum", "Yes", true},
+		{"maximum", strings.Repeat("x", 200), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := newStore(t)
+			ctx := context.Background()
+			key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR len", Intent: "feature", Kind: Fake, Model: "fake-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ses, err := s.LatestSession(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			artifactID, sectionID, _ := registerSpecSection(t, s, ses, key, "DB models", "None.")
+			_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: artifactID, SectionID: sectionID,
+				Prompt: "No DB changes.", NothingToReview: tc.reason})
+			if (err == nil) != tc.ok {
+				t.Fatalf("reason %q: err = %v, want ok=%v", tc.reason, err, tc.ok)
+			}
+		})
+	}
+}
+
+// TestAskApprovalNothingToReviewRefusedWhenSectionHasContent is locked
+// decision 2: a section body over 300 runes (heading stripped, trimmed) is
+// refused with the exact character count, and no request row is created.
+func TestAskApprovalNothingToReviewRefusedWhenSectionHasContent(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR content", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("a", 301)
+	artifactID, sectionID, _ := registerSpecSection(t, s, ses, key, "DB models", long)
+	var before int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE artifact_id = ?`, artifactID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: artifactID, SectionID: sectionID,
+		Prompt: "No DB changes.", NothingToReview: "No new tables or columns."})
+	wantMsg := "This section has content to review (301 characters); ask for approval normally."
+	if err == nil || !strings.Contains(err.Error(), wantMsg) {
+		t.Fatalf("err = %v, want %q", err, wantMsg)
+	}
+	var after int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE artifact_id = ?`, artifactID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("a request row was created on refusal: before=%d after=%d", before, after)
+	}
+}
+
+// TestAskApprovalNothingToReviewAutoApproves is locked decisions 2-4: a
+// short, flagged section is approved immediately, exactly like a user
+// approval (same message, same event, same reconcile), with no native
+// question ever issued.
+func TestAskApprovalNothingToReviewAutoApproves(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR auto", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactID, sectionID, _ := registerSpecSection(t, s, ses, key, "DB models", "None.")
+	reason := "No new tables, columns or migrations."
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: artifactID, SectionID: sectionID,
+		Prompt: "No DB changes.", NothingToReview: reason})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.State != "approved" || req.RespondedVia != "auto" {
+		t.Fatalf("request = %+v", req)
+	}
+	var binding string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(binding_json,'') FROM requests WHERE id = ?`, req.ID).Scan(&binding); err != nil {
+		t.Fatal(err)
+	}
+	var b struct {
+		Evidence        string `json:"evidence"`
+		NothingToReview string `json:"nothing_to_review"`
+	}
+	if err := json.Unmarshal([]byte(binding), &b); err != nil {
+		t.Fatalf("binding_json = %q: %v", binding, err)
+	}
+	if b.Evidence != "auto_empty" || b.NothingToReview != reason {
+		t.Fatalf("binding = %+v", b)
+	}
+	wantNext := `Print this line in chat: Section "DB models": nothing to review (` + reason + `) — auto-approved. Then continue with the next section.`
+	if req.Next != wantNext {
+		t.Fatalf("next = %q, want %q", req.Next, wantNext)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages
+		WHERE to_agent_id = ? AND kind = 'approval_result' AND request_id = ?`, a.ID, req.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("approval_result messages to %s = %d, want 1", a.ID, n)
+	}
+	var qn int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE kind = 'question'`).Scan(&qn); err != nil {
+		t.Fatal(err)
+	}
+	if qn != 0 {
+		t.Fatalf("no native question should have been issued, found %d", qn)
+	}
+	if got := notifiedCount(s, "request.approve_section"); got != 0 {
+		t.Fatalf("Needs-you notification raised for an auto-approved section: %d", got)
+	}
+}
+
+// TestSpecApprovedWhenAllSectionsIncludingAutoApproved is locked decision 3:
+// the spec's materialization gate treats an auto-approved section exactly
+// like a user-approved one.
+func TestSpecApprovedWhenAllSectionsIncludingAutoApproved(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR rollup", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
+		writeFile(t, "# s\n\n## Screens\n\nA screen.\n\n## DB models\n\nNone.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var screens, dbModels ArtifactSection
+	for _, sec := range spec.Sections {
+		switch sec.Title {
+		case "Screens":
+			screens = sec
+		case "DB models":
+			dbModels = sec
+		}
+	}
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+		SectionID: screens.ID, Prompt: "One screen."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, req.ID, ApproveInput{SectionSHA256: screens.SHA256,
+		ArtifactRevision: spec.Revision, Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID,
+		SectionID: dbModels.ID, Prompt: "No DB changes.", NothingToReview: "No new tables or columns."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.checkEverySectionApproved(ctx, tx, spec.ArtifactID)
+	}); err != nil {
+		t.Fatalf("spec not approved with one normal and one auto-approved section: %v", err)
+	}
+}
+
+// TestAutoApprovedSectionRevisedRequiresNormalApproval is locked decision 5:
+// revising an auto-approved section's content requires a fresh approval at
+// the new hash, exactly like any other stale-revision rule -- no new
+// production code, the existing section_sha256 match already covers it.
+func TestAutoApprovedSectionRevisedRequiresNormalApproval(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR stale", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactID, sectionID, _ := registerSpecSection(t, s, ses, key, "DB models", "None.")
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: artifactID, SectionID: sectionID,
+		Prompt: "No DB changes.", NothingToReview: "No new tables or columns."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.checkEverySectionApproved(ctx, tx, artifactID)
+	}); err != nil {
+		t.Fatalf("auto-approved section blocks materialization: %v", err)
+	}
+	revised, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
+		writeFile(t, "# s\n\n## DB models\n\nAdds a `users` table.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		return s.checkEverySectionApproved(ctx, tx, revised.ArtifactID)
+	}); err == nil || !strings.Contains(err.Error(), "approval_missing") {
+		t.Fatalf("revised section should require a fresh approval: %v", err)
+	}
+}

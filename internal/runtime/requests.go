@@ -47,7 +47,13 @@ type AskInput struct {
 	Options    []string
 	ArtifactID string
 	SectionID  string
-	Withdraw   string // when set, every other field is ignored
+	// NothingToReview is a spec-section approval's optional one-line reason
+	// there is nothing for the user to review (docs/specs/2026-09-28-empty-
+	// section-auto-approve.md locked decision 1): 3-200 runes. Refused on
+	// any approval kind other than approve_section, and when the section's
+	// own body (heading stripped, trimmed) exceeds 300 runes.
+	NothingToReview string
+	Withdraw        string // when set, every other field is ignored
 	Repos      []ReposProposal
 	Expansion  []ReposProposal
 	// RequestID is I11's idempotency key, scoped to the calling MCP session
@@ -1052,6 +1058,11 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 	if n < 1 || n > 2000 {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–2000 characters."}
 	}
+	if in.NothingToReview != "" {
+		if rn := utf8.RuneCountInString(in.NothingToReview); rn < 3 || rn > 200 {
+			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "nothing_to_review must be 3–200 characters."}
+		}
+	}
 	var out Request
 	_, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_ask", &out, func(tx *sql.Tx) error {
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
@@ -1082,6 +1093,9 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		default:
 			return &items.Error{Code: items.CodeBadRequest, Message: "This artifact kind cannot be approved."}
 		}
+		if in.NothingToReview != "" && reqKind != "approve_section" {
+			return &items.Error{Code: items.CodeBadRequest, Message: "nothing_to_review is only for spec sections."}
+		}
 		var reviewPaths *ReviewPaths
 		if reqKind == "approve_plan" {
 			paths, specID, err := s.planReviewPathsTx(ctx, tx, itemID, in.ArtifactID)
@@ -1106,9 +1120,11 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 			var secs []ArtifactSection
 			json.Unmarshal([]byte(raw), &secs)
 			found := false
+			var matched ArtifactSection
 			for _, sec := range secs {
 				if sec.ID == in.SectionID {
 					sectionSHA, sectionTitle, found = sec.SHA256, sec.Title, true
+					matched = sec
 					break
 				}
 			}
@@ -1119,6 +1135,28 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 				return &items.Error{Code: items.CodeBadRequest, Message: "This spec section is informational and needs no approval."}
 			}
 			sectionID = sql.NullString{String: in.SectionID, Valid: true}
+			if in.NothingToReview != "" {
+				var content string
+				if err := tx.QueryRowContext(ctx, `SELECT content FROM artifact_revisions
+					WHERE artifact_id = ? AND revision = ?`, in.ArtifactID, headRev).Scan(&content); err != nil {
+					return err
+				}
+				body := content[matched.Start:matched.End]
+				if idx := strings.IndexByte(body, '\n'); idx >= 0 {
+					body = body[idx+1:]
+				} else {
+					body = ""
+				}
+				body = strings.TrimSpace(body)
+				if bn := utf8.RuneCountInString(body); bn > 300 {
+					return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+						"This section has content to review (%d characters); ask for approval normally.", bn)}
+				}
+			}
+		}
+		if in.NothingToReview != "" {
+			out, err = s.autoApproveSectionTx(ctx, tx, a, itemID, sessionID, in, sectionID, sectionSHA, sectionTitle, headRev)
+			return err
 		}
 		id := ids.New("req")
 		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, agent_id, session_id, item_id,
@@ -1164,6 +1202,67 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		return nil
 	})
 	return out, err
+}
+
+// autoApproveSectionTx inserts a spec-section approval already resolved as
+// approved (docs/specs/2026-09-28-empty-section-auto-approve.md locked
+// decisions 2-4): no native question is ever issued -- finishOpen,
+// nativePromptFor and freezeNativeQuestionTx are all skipped -- and delivery
+// otherwise matches Approve's resolve() path exactly: the same
+// approval_result message, the same events.RequestResolved append, the same
+// Items.ReconcileTx, so the section rolls up into spec approval like any
+// user approval. Its evidence is "auto_empty" and binding_json records the
+// reason under "nothing_to_review"; approvalEvidenceTx already reads
+// binding_json.evidence directly off a non-question request, so no wire
+// changes are needed to surface it. Next is set to the exact copy the
+// caller must print in chat.
+func (s *Store) autoApproveSectionTx(ctx context.Context, tx *sql.Tx, a Agent, itemID, sessionID string,
+	in AskInput, sectionID sql.NullString, sectionSHA, sectionTitle string, headRev int) (Request, error) {
+	id := ids.New("req")
+	now := s.Now()
+	binding, err := json.Marshal(map[string]string{"evidence": "auto_empty", "nothing_to_review": in.NothingToReview})
+	if err != nil {
+		return Request{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, agent_id, session_id, item_id,
+		artifact_id, section_id, section_sha256, prompt, state, artifact_revision, binding_json,
+		responded_via, responded_at, created_at)
+		VALUES (?, 'approve_section', ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, 'auto', ?, ?)`,
+		id, a.ID, sessionID, itemID, in.ArtifactID, sectionID, nullIf(sectionSHA), in.Prompt,
+		headRev, string(binding), db.Millis(now), db.Millis(now)); err != nil {
+		return Request{}, err
+	}
+	payload, err := json.Marshal(map[string]any{"decision": "approved",
+		"section_id": in.SectionID, "section_sha256": sectionSHA})
+	if err != nil {
+		return Request{}, err
+	}
+	if _, err := s.enqueue(ctx, tx, Message{Kind: "approval_result", Origin: "daemon", ToAgentID: a.ID,
+		RootItemID: a.RootItemID, ItemID: itemID, RequestID: id, Payload: payload}); err != nil {
+		return Request{}, err
+	}
+	w, err := s.RequestWireTx(ctx, tx, id)
+	if err != nil {
+		return Request{}, err
+	}
+	if _, err := s.Events.Append(ctx, tx, events.RequestResolved, w); err != nil {
+		return Request{}, err
+	}
+	key, err := s.itemKey(ctx, tx, itemID)
+	if err != nil {
+		return Request{}, err
+	}
+	if err := s.Items.ReconcileTx(ctx, tx, key); err != nil {
+		return Request{}, err
+	}
+	out, err := s.requestTx(ctx, tx, id)
+	if err != nil {
+		return Request{}, err
+	}
+	out.Next = fmt.Sprintf(
+		"Print this line in chat: Section %q: nothing to review (%s) — auto-approved. Then continue with the next section.",
+		sectionTitle, in.NothingToReview)
+	return out, nil
 }
 
 // resolve is the shared body of the five user-action methods, plus
@@ -1414,7 +1513,7 @@ func (s *Store) ResolveQuestionByPrompt(ctx context.Context, sessionID, prompt, 
 // back.
 func (s *Store) ResolveQuestionReply(ctx context.Context, sessionID, question, answer string) (Request, error) {
 	// A missing/unknown session row (or any other lookup error) falls back
-	// to the plain-prompt resolver, exactly like "no ref"/"no bind" below --
+	// to the plain-prompt resolver, exactly like "no ref"/"no match" below --
 	// restored post-review: this used to return the error outright, unlike
 	// every other branch here, which treats "can't identify a ref" as
 	// nothing more than "resolve by prompt instead."
@@ -1423,21 +1522,57 @@ func (s *Store) ResolveQuestionReply(ctx context.Context, sessionID, question, a
 	if err != nil {
 		return s.ResolveQuestionByPrompt(ctx, sessionID, question, answer)
 	}
-	ref, ok := s.BindNativeQuestion(ctx, agentID, "", question)
-	if !ok {
-		return s.ResolveQuestionByPrompt(ctx, sessionID, question, answer)
+	// A literal ⟦swarm:ref⟧ token (a prompt built before this deploy)
+	// resolves directly by that ref, exactly as before -- no text
+	// comparison, so a reworded surrounding message still binds.
+	if ref := refFromPrompt(question); ref != "" {
+		ids, err := s.queryIDs(ctx, `SELECT id FROM requests WHERE agent_id = ? AND kind = 'question' AND state = 'open'
+			AND json_extract(binding_json, '$.ref') = ? ORDER BY created_at DESC LIMIT 1`, agentID, ref)
+		if err != nil {
+			return Request{}, err
+		}
+		if len(ids) == 0 {
+			return Request{}, nil
+		}
+		return s.ResolveQuestion(ctx, ids[0], answer, "terminal")
 	}
-	ids, err := s.queryIDs(ctx, `SELECT r.id FROM requests r JOIN sessions se ON se.agent_id = r.agent_id
-		WHERE se.id = ? AND r.kind = 'question' AND r.state = 'open'
-		  AND json_extract(r.binding_json, '$.ref') = ?
-		ORDER BY r.created_at DESC LIMIT 1`, sessionID, ref)
-	if err != nil {
-		return Request{}, err
+	// docs/specs/2026-09-28-empty-section-auto-approve.md locked decision 6
+	// (Opus review of 576a53d, minor 1): resolve through the row the daemon
+	// already bound at ask time (askQuestion -> bindNativeQuestionTx, with
+	// the adapter's real header disambiguating identical child bodies) --
+	// never re-bind by text here, where no header is available. With two
+	// children sending byte-identical bodies, a fresh header-less rebind
+	// can pick the wrong child's ref and leave the right row open.
+	norm := NormalizeQuestion(question)
+	if norm != "" {
+		rows, err := s.DB.QueryContext(ctx, `SELECT id, prompt FROM requests
+			WHERE agent_id = ? AND kind = 'question' AND state = 'open'
+			  AND json_extract(binding_json, '$.ref') IS NOT NULL
+			ORDER BY created_at DESC`, agentID)
+		if err != nil {
+			return Request{}, err
+		}
+		var matchID string
+		for rows.Next() {
+			var id, prompt string
+			if err := rows.Scan(&id, &prompt); err != nil {
+				rows.Close()
+				return Request{}, err
+			}
+			if matchID == "" && NormalizeQuestion(prompt) == norm {
+				matchID = id
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return Request{}, err
+		}
+		rows.Close()
+		if matchID != "" {
+			return s.ResolveQuestion(ctx, matchID, answer, "terminal")
+		}
 	}
-	if len(ids) == 0 {
-		return Request{}, nil
-	}
-	return s.ResolveQuestion(ctx, ids[0], answer, "terminal")
+	return s.ResolveQuestionByPrompt(ctx, sessionID, question, answer)
 }
 
 // retiredSessionRequests is the continuity fallback for the session-scoped

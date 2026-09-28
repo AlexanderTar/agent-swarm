@@ -282,6 +282,11 @@ type Request struct {
 	// requestTx never fills it.
 	NativePrompt *NativePrompt
 	ReviewPaths  *ReviewPaths
+	// Next is set only in-process, by askApproval's auto-approve path
+	// (2026-09-28-empty-section-auto-approve locked decision 4): the exact
+	// line to print in chat and continue with the next section. Never
+	// persisted, and requestTx never fills it.
+	Next string
 }
 
 // ReviewPaths are displayed in full before a plan's native approval prompt.
