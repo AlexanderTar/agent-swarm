@@ -68,10 +68,8 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
 
   return (
     <fieldset className="space-y-1.5">
-      <div className="flex items-baseline justify-between">
-        <legend id={labelId} className="font-medium">{p.label}</legend>
-        {p.selected.length > 0 && <span className="text-xs text-muted-foreground">{p.selected.length} selected</span>}
-      </div>
+      <legend id={labelId} className="font-medium">{p.label}</legend>
+      {p.selected.length > 0 && <p className="text-xs text-muted-foreground">{p.selected.length} selected</p>}
       {p.caption && <p className="text-xs text-muted-foreground">{p.caption}</p>}
       <ScrollArea className="h-[242px] rounded-md border border-border">
         <div role="listbox" aria-multiselectable="true" aria-labelledby={labelId} className="p-0.5">

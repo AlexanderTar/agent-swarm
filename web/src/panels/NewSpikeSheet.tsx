@@ -26,7 +26,6 @@ function Form(p: {
   catalog: AgentCatalogEntry[];
   agents: AgentNode[];
   intent?: SpikeIntent;
-  chore?: boolean;
   onClose(): void;
   onCreated(key: string): void;
 }) {
@@ -35,7 +34,7 @@ function Form(p: {
   const nameId = useId();
   const requestIdField = useId();
   const [name, setName] = useState("");
-  const [intent, setIntent] = useState<SpikeIntent>(p.intent ?? (p.chore ? "chore" : "feature"));
+  const [intent, setIntent] = useState<SpikeIntent>(p.intent ?? "feature");
   const [repos, setRepos] = useState<string[]>([]);
   const [fields, setFields] = useState<AgentFieldsValue>(() => prefill(p.settings, "orchestrator", p.catalog));
   const [request, setRequest] = useState("");
@@ -109,7 +108,7 @@ function Form(p: {
   );
 }
 
-export function NewSpikeSheet(p: { intent?: SpikeIntent; caption?: string; chore?: boolean; onClose(): void; onCreated(key: string): void }) {
+export function NewSpikeSheet(p: { intent?: SpikeIntent; onClose(): void; onCreated(key: string): void }) {
   const settings = useSettings();
   const catalog = useCatalog();
   const agents = useAgents();

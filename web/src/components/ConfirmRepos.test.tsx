@@ -37,7 +37,7 @@ describe("ConfirmRepos (§16.11)", () => {
     const { user, daemon } = setup();
     await user.click(await within(screen.getByRole("group", { name: "Suggested additions" })).findByRole("checkbox", { name: /endurio-landing/ }));
     const picker = screen.getByRole("group", { name: "Add another" });
-    await user.click(within(await within(picker).findByRole("group", { name: "All" })).getByRole("checkbox", { name: /agent-swarm/ }));
+    await user.click(await within(picker).findByRole("option", { name: /agent-swarm/ }));
     await user.type(screen.getByRole("textbox", { name: "Comment (optional)" }), "Landing too");
     await user.click(screen.getByRole("button", { name: "Confirm repositories" }));
     await waitFor(() => expect(daemon.calls.at(-1)).toMatchObject({
