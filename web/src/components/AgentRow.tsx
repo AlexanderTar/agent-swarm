@@ -40,7 +40,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
     <div
       id={`agent-${agent.name}`}
       data-testid={`agent-${agent.name}`}
-      className="flex items-center justify-between gap-2 py-1"
+      className="flex flex-col items-start gap-2 py-1 sm:flex-row sm:items-center sm:justify-between"
       style={{ paddingLeft: depth * 16 }}
     >
       <div className="min-w-0">
@@ -53,7 +53,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
         )}
         <StateDot state={displayState(agent)} withLabel />
       </div>
-      <div className="flex shrink-0 gap-1">
+      <div className="flex flex-wrap gap-1">
         {agentActions(agent).map((a) => {
           const inFlight = a.endpoint === requested;
           return (

@@ -20,6 +20,7 @@ describe("AgentRow (§10.7 on the board)", () => {
     expect(row).toHaveTextContent("login-form-coder · Coder");
     expect(row).toHaveTextContent("Running");
     expect(within(row).getAllByRole("button").map((b) => b.textContent)).toEqual(["Terminal", "Pause", "Cancel"]);
+    expect(row).toHaveClass("flex-col", "sm:flex-row");
   });
 
   it("says why the agent isn't on the user's role default", () => {
@@ -50,6 +51,18 @@ describe("AgentRow (§10.7 on the board)", () => {
     await user.click(screen.getByRole("button", { name: "Pause group" }));
     await waitFor(() => expect(daemon.calls.at(-1)).toMatchObject({ method: "POST", path: "/api/agents/auth-epic-orchestrator/pause", body: { scope: "subtree" } }));
     expect(await screen.findByText("Pausing auth-epic-orchestrator and its agents")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["paused", "resume", "Resume", "Resumed action-agent"],
+    ["interrupted", "ack", "Acknowledge", "Acknowledged action-agent"],
+    ["crashed", "retry", "Retry", "Retrying action-agent"],
+  ] as const)("toasts after %s agent action", async (state, endpoint, action, toast) => {
+    const d = daemon0();
+    d.override(`POST /api/agents/action-agent/${endpoint}`, { status: 200, body: {} });
+    const { user } = renderWithDaemon(<AgentRow agent={makeAgent({ name: "action-agent", session: ses(state, state !== "crashed") })} />, { daemon: d, events: false });
+    await user.click(screen.getByRole("button", { name: action }));
+    expect(await screen.findByText(toast)).toBeInTheDocument();
   });
 
   it("asks before cancelling an orchestrator with agents", async () => {
