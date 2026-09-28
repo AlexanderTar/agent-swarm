@@ -119,6 +119,10 @@ describe("App shell (§16.5)", () => {
     );
     const { user } = renderWithDaemon(<App />, { hash: "#/hierarchy?item=TASK-102" });
     expect(await screen.findByRole("dialog", { name: "TASK-102" })).toBeInTheDocument();
+    const narrowBody = screen.getByTestId("details").parentElement!;
+    expect(narrowBody).toHaveClass("py-4");
+    expect(narrowBody).not.toHaveClass("pt-16");
+    expect(await screen.findByTestId("details-panel")).not.toHaveClass("p-4");
     expect(screen.getByTestId("view")).toBeInTheDocument();
     await user.click(within(screen.getByRole("dialog", { name: "TASK-102" })).getByRole("button", { name: "Close" }));
     expect(window.location.hash).toBe("#/hierarchy");
@@ -128,6 +132,7 @@ describe("App shell (§16.5)", () => {
   it("swaps the open details sheet when another card is clicked", async () => {
     const { user } = renderWithDaemon(<App />, { hash: "#/kanban?item=TASK-101" });
     expect(await screen.findByRole("dialog", { name: "TASK-101" })).toBeInTheDocument();
+    expect(screen.getByTestId("details").parentElement).toHaveClass("py-4");
     await user.click(await screen.findByTestId("card-TASK-103"));
     expect(await screen.findByRole("dialog", { name: "TASK-103" })).toBeInTheDocument();
     expect(screen.getByTestId("details")).toHaveTextContent("TASK-103");

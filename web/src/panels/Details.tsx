@@ -147,7 +147,7 @@ export function Details(p: DetailsProps) {
   const crumbs = [...d.ancestors.map((a) => a.key), item.key].join(" › ");
 
   return (
-    <div data-testid="details-panel" className="space-y-4 p-4">
+    <div data-testid="details-panel" className="space-y-4">
       {stale && <p className="rounded bg-warn/10 px-2 py-1 text-warn">{C.staleRevision}</p>}
       <div className="flex items-start justify-between gap-2 pr-10">
         <div className="flex min-w-0 flex-wrap items-center gap-2">

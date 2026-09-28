@@ -48,7 +48,7 @@ export function Sheet(p: {
             {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
           </SheetHeader>
         )}
-        <div className={`flex-1 space-y-4 overflow-y-auto px-5 pb-4 ${p.header === false ? "pt-16" : "pt-4"}`}>{p.children}</div>
+        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">{p.children}</div>
         {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 border-t border-border px-5 py-3">{p.footer}</SheetFooter>}
       </SheetContent>
     </UiSheet>
