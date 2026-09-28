@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 )
 
 func reportKind(t *testing.T, s *Store, ses string, kind AgentKind) {
@@ -232,6 +234,102 @@ func TestUnhookedNativeReportRejectsContradictoryComment(t *testing.T) {
 				t.Fatalf("request = %+v, err = %v", still, err)
 			}
 		})
+	}
+}
+
+// setProviderSessionIDForTest stands in for a real Muse launch's discovered
+// provider session id (agents.go's setProviderSessionID), which nativeAnswer
+// reads to call Muse.ObservedAnswer.
+func setProviderSessionIDForTest(t *testing.T, s *Store, ses, providerID string) {
+	t.Helper()
+	if _, err := s.DB.ExecContext(context.Background(),
+		`UPDATE sessions SET provider_session_id = ? WHERE id = ?`, providerID, ses); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMuseNativeAnswerObservedFromSessionLog covers the spec's happy path
+// (docs/specs/2026-09-28-muse-observed-answers.md, Task 2): a Muse adapter
+// whose ObservedAnswer finds a settled match needs no answer_text at all,
+// and the recorded evidence is observed, not agent_reported, with
+// answer_source muse_session_log.
+func TestMuseNativeAnswerObservedFromSessionLog(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	reportKind(t, s, ses, Muse)
+	setProviderSessionIDForTest(t, s, ses, "prov-1")
+	s.Adapters[Muse] = &adapter.Fake{ObservedAnswerOK: true, ObservedAnswerLabel: "Approve"}
+
+	out, err := s.Ask(context.Background(), ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "approve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "approved" {
+		t.Fatalf("out=%+v", out)
+	}
+	wire, err := s.RequestWireByID(context.Background(), req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.ApprovalEvidence == nil || *wire.ApprovalEvidence != EvidenceObserved {
+		t.Fatalf("evidence=%v", wire.ApprovalEvidence)
+	}
+	var source string
+	if err := s.DB.QueryRowContext(context.Background(),
+		`SELECT json_extract(binding_json,'$.answer_source') FROM requests WHERE id = ?`, req.ID).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != "muse_session_log" {
+		t.Fatalf("answer_source=%q", source)
+	}
+	if payload := latestMessagePayload(t, s, "approval_result"); !strings.Contains(payload, `"evidence":"observed"`) {
+		t.Fatal(payload)
+	}
+}
+
+// TestMuseNativeAnswerObservedMismatchRefused: the session log says the user
+// picked the other option, so the forwarded decision is refused as a
+// mismatch, exactly like a hook-observed mismatch (matchDecisionEvidence).
+func TestMuseNativeAnswerObservedMismatchRefused(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	reportKind(t, s, ses, Muse)
+	setProviderSessionIDForTest(t, s, ses, "prov-2")
+	s.Adapters[Muse] = &adapter.Fake{ObservedAnswerOK: true,
+		ObservedAnswerLabel: "Request changes", ObservedAnswerNote: "use German instead"}
+
+	if _, err := s.Ask(context.Background(), ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "approve"}); err == nil {
+		t.Fatal("mismatch accepted")
+	}
+	still, err := s.RequestByID(context.Background(), req.ID)
+	if err != nil || still.State != "open" {
+		t.Fatalf("request = %+v, err = %v", still, err)
+	}
+}
+
+// TestMuseNativeAnswerFallsBackToReportedWithoutLogMatch: ObservedAnswerOK
+// false (no session-log match) still requires answer_text and records
+// agent_reported evidence, exactly as before this feature existed.
+func TestMuseNativeAnswerFallsBackToReportedWithoutLogMatch(t *testing.T) {
+	s, ses, req := seedApprovalWithNativePrompt(t)
+	reportKind(t, s, ses, Muse)
+	setProviderSessionIDForTest(t, s, ses, "prov-3")
+	s.Adapters[Muse] = &adapter.Fake{ObservedAnswerOK: false}
+
+	if _, err := s.Ask(context.Background(), ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "approve"}); err == nil {
+		t.Fatal("missing answer_text accepted without a log match")
+	}
+	out, err := s.Ask(context.Background(), ses, AskInput{Kind: "native_answer", Ref: req.ID, Decision: "approve", AnswerText: "Approve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "approved" {
+		t.Fatalf("out=%+v", out)
+	}
+	wire, err := s.RequestWireByID(context.Background(), req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.ApprovalEvidence == nil || *wire.ApprovalEvidence != EvidenceAgentReported {
+		t.Fatalf("evidence=%v", wire.ApprovalEvidence)
 	}
 }
 

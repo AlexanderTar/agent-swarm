@@ -390,6 +390,16 @@ func matchDecisionEvidence(responseText, label, callerComment string) (evidence,
 	return EvidenceAgentReported, comment, nil
 }
 
+// observedAnswerer is implemented by Muse's adapter (Muse.ObservedAnswer):
+// nativeAnswer's Muse branch checks the provider's own session log for a
+// settled answer before falling back to the agent's self-report (spec
+// docs/specs/2026-09-28-muse-observed-answers.md). Declared as an interface,
+// not a concrete adapter.Muse type, purely to keep this package's tests
+// able to fake it without an adapter import cycle risk.
+type observedAnswerer interface {
+	ObservedAnswer(providerSessionID, ref string) (label, note string, ok bool)
+}
+
 // nativeAnswer is swarm_ask kind:"native_answer" (spec section 2.3 steps
 // 4-6, Task 13c): it forwards the orchestrator's observed decision for a
 // request ref into a real Approve/RequestChanges/ConfirmRepos, but only
@@ -403,14 +413,31 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if in.Ref == "" {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "ref is required."}
 	}
-	var rowID, responseText, callerID string
+	var rowID, responseText, callerID, observedSource string
 	var reported bool
 	err := s.tx(ctx, func(tx *sql.Tx) error {
-		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
 		}
 		callerID = a.ID
+		// Muse first, before the agent_reported fallback below: a settled
+		// answer straight from Muse's own session log is observed evidence,
+		// not the agent's word (locked decision). No match (no adapter
+		// wired, unknown provider session, no settled prompt for this ref)
+		// falls through unchanged to the reported path.
+		if a.Kind == Muse {
+			if oa, ok := s.Adapters[Muse].(observedAnswerer); ok {
+				if lbl, note, found := oa.ObservedAnswer(ses.ProviderSessionID, in.Ref); found {
+					responseText = lbl
+					if note != "" {
+						responseText = lbl + ": " + note
+					}
+					observedSource = "muse_session_log"
+					return nil
+				}
+			}
+		}
 		reported = a.Kind == Cursor || a.Kind == Muse
 		if reported {
 			if strings.TrimSpace(in.AnswerText) == "" || in.AnswerText == ResolvedInTerminal {
@@ -470,6 +497,20 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 				evidence, in.AnswerText, in.Ref)
 			return err
 		}
+		if observedSource != "" {
+			// answer_text is only recorded when the agent actually sent one
+			// (spec Types section): the log itself is the evidence either way.
+			if in.AnswerText != "" {
+				_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'),
+					'$.evidence', ?, '$.answer_source', ?, '$.answer_text', ?) WHERE id = ?`,
+					evidence, observedSource, in.AnswerText, in.Ref)
+				return err
+			}
+			_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'),
+				'$.evidence', ?, '$.answer_source', ?) WHERE id = ?`,
+				evidence, observedSource, in.Ref)
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `UPDATE requests SET
 			binding_json = json_set(COALESCE(binding_json, '{}'), '$.evidence', ?) WHERE id = ?`,
 			evidence, rowID)
@@ -485,7 +526,16 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 		if err := s.verifyApprovalMsgAddressedTo(ctx, in.Ref, callerID); err != nil {
 			return Request{}, err
 		}
-		return s.nativeAnswerForMsg(ctx, sessionID, callerID, in.Ref, in.Decision, comment, evidence, rowID, in.AnswerText, bindEvidence)
+		// A Muse observed match has no pre-existing bound question row to
+		// transition (unlike the hook path) and its answer_text may be empty
+		// (the agent need not repeat what the log already proved), so the
+		// log's own responseText -- never empty once observedSource is set --
+		// stands in for it, tagged with the matching answer_source.
+		msgAnswerText, answerSource := in.AnswerText, "native_tool_report"
+		if observedSource != "" {
+			msgAnswerText, answerSource = responseText, observedSource
+		}
+		return s.nativeAnswerForMsg(ctx, sessionID, callerID, in.Ref, in.Decision, comment, evidence, rowID, msgAnswerText, answerSource, bindEvidence)
 	}
 
 	req, err := s.RequestByID(ctx, in.Ref)
@@ -572,7 +622,7 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 // question row itself is the approval record, so it moves from "answered"
 // straight to "approved" or "changes_requested", and the daemon tells the
 // child directly with an approval_result reply.
-func (s *Store) nativeAnswerForMsg(ctx context.Context, sessionID, callerID, msgID, decision, comment, evidence, rowID, answerText string,
+func (s *Store) nativeAnswerForMsg(ctx context.Context, sessionID, callerID, msgID, decision, comment, evidence, rowID, answerText, answerSource string,
 	bindEvidence func(*sql.Tx, Request) error) (Request, error) {
 	newState := "approved"
 	if decision == "request_changes" {
@@ -615,7 +665,7 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, sessionID, callerID, msg
 			}
 			rowID = ids.New("req")
 			binding, err := json.Marshal(map[string]string{"ref": msgID, "evidence": evidence,
-				"answer_text": answerText, "answer_source": "native_tool_report"})
+				"answer_text": answerText, "answer_source": answerSource})
 			if err != nil {
 				return err
 			}

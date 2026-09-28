@@ -29,6 +29,13 @@ type Fake struct {
 	// the muse-style no-hook discovery path (see Muse.DiscoverSession).
 	DiscoverSessionResult string
 	DiscoverSessionOK     bool
+
+	// ObservedAnswerLabel/Note/OK let a test opt this kind into the
+	// muse-style observed-answer path (see Muse.ObservedAnswer) without a
+	// real session.jsonl fixture.
+	ObservedAnswerLabel string
+	ObservedAnswerNote  string
+	ObservedAnswerOK    bool
 }
 
 func NewFake(d Deps) *Fake {
@@ -89,6 +96,10 @@ func (f *Fake) Wake(_ context.Context, w WakeTarget) (bool, error) {
 
 func (f *Fake) DiscoverSession(context.Context, int, string) (string, bool) {
 	return f.DiscoverSessionResult, f.DiscoverSessionOK
+}
+
+func (f *Fake) ObservedAnswer(string, string) (string, string, bool) {
+	return f.ObservedAnswerLabel, f.ObservedAnswerNote, f.ObservedAnswerOK
 }
 
 // HookOutput mirrors claude's shapes so the e2e harness can reuse one client.
