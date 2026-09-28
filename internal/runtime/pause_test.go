@@ -2085,3 +2085,142 @@ func TestHandoffCheckpointMovesRunningSessionToStopping(t *testing.T) {
 		t.Fatalf("expected tmux kill on %s, got %v", a.Name, tm.killed)
 	}
 }
+
+// questionDialogPause is the fixture for the 2026-09-28 gate/handoff bug: a
+// top-level agent of the given kind with an open approval whose native
+// question the hook recorded (so the agent sits inside the dialog), then a
+// session pause requested on top of it.
+func questionDialogPause(t *testing.T, kind AgentKind) (s *Store, tm *fakeTmux, ses Session, req Request) {
+	t.Helper()
+	ctx := context.Background()
+	s, sesID, req := seedApprovalWithNativePrompt(t)
+	tm = s.Tmux.(*fakeTmux)
+	s.Adapters[kind] = s.Adapters[Fake]
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = ? WHERE id = (SELECT agent_id FROM sessions WHERE id = ?)`, kind, sesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AskQuestionBoundTo(ctx, sesID, req.NativePrompt.Question, req.NativePrompt.Options, req.ID); err != nil {
+		t.Fatal(err)
+	}
+	var agentID string
+	s.DB.QueryRowContext(ctx, `SELECT agent_id FROM sessions WHERE id = ?`, sesID).Scan(&agentID)
+	a, _ := s.agentByID(ctx, agentID)
+	ses, _ = s.LatestSession(ctx, agentID)
+	tm.env[ses.TmuxName] = map[string]string{"SWARM_SESSION": ses.ID}
+	if _, err := s.Pause(ctx, a.Name, "session"); err != nil {
+		t.Fatal(err)
+	}
+	return s, tm, ses, req
+}
+
+func keysFor(tm *fakeTmux, tmux string) int {
+	n := 0
+	for _, k := range tm.keys {
+		if strings.HasPrefix(k, tmux+"|") {
+			n++
+		}
+	}
+	return n
+}
+
+func openQuestions(t *testing.T, s *Store, sesID string) int {
+	t.Helper()
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE session_id = ? AND kind = 'question' AND state = 'open'`, sesID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A pause requested while a hookable native question dialog is open must
+// dismiss the dialog right away (so the agent can read its control message)
+// instead of stalling to the deadline, close the orphaned question row, leave
+// the approval open, and not start the kill-after-interrupt timer.
+func TestPauseDismissesAnOpenNativeQuestionDialogImmediately(t *testing.T) {
+	s, tm, ses, req := questionDialogPause(t, Claude)
+	ctx := context.Background()
+	if w, _ := s.RequestWireByID(ctx, req.ID); !w.NativePending {
+		t.Fatal("fixture: native_pending must be true while the dialog is open")
+	}
+	killedBefore := len(tm.killed) // startSession's defensive stale-pane kill
+	tm.clk.Advance(5 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysFor(tm, ses.TmuxName); got != 1 {
+		t.Fatalf("interrupt keys sent %d times, want 1 (keys=%v)", got, tm.keys)
+	}
+	if n := openQuestions(t, s, ses.ID); n != 0 {
+		t.Fatalf("orphaned question rows still open: %d", n)
+	}
+	w, _ := s.RequestWireByID(ctx, req.ID)
+	if w.NativePending || w.State != "open" {
+		t.Fatalf("approval after dismissal: native_pending=%v state=%s, want false/open", w.NativePending, w.State)
+	}
+	// Once per session: a second dialog opened later is not dismissed again.
+	if _, err := s.AskQuestion(ctx, ses.ID, "Another question?", []string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	tm.clk.Advance(killAfterInterrupt + time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysFor(tm, ses.TmuxName); got != 1 {
+		t.Fatalf("second tick sent keys again: %d", got)
+	}
+	if len(tm.killed) != killedBefore {
+		t.Fatalf("dismissal must not schedule a kill, killed=%v", tm.killed)
+	}
+	// The deadline fallback still interrupts and kills.
+	tm.clk.Advance(2 * time.Minute)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysFor(tm, ses.TmuxName); got != 2 {
+		t.Fatalf("deadline interrupt: keys sent %d times, want 2", got)
+	}
+	tm.clk.Advance(killAfterInterrupt + time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != killedBefore+1 || tm.killed[len(tm.killed)-1] != ses.TmuxName {
+		t.Fatalf("deadline fallback must kill, killed=%v", tm.killed)
+	}
+}
+
+// Cursor and Muse question rows come from swarm_ask, not a hooked dialog:
+// they must never trigger an Escape before the deadline.
+func TestPauseLeavesUnhookedQuestionRowsAlone(t *testing.T) {
+	for _, kind := range []AgentKind{Cursor, Muse} {
+		t.Run(string(kind), func(t *testing.T) {
+			s, tm, ses, _ := questionDialogPause(t, kind)
+			tm.clk.Advance(5 * time.Second)
+			if err := s.TickPause(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := keysFor(tm, ses.TmuxName); got != 0 {
+				t.Fatalf("keys sent for %s: %v", kind, tm.keys)
+			}
+			if n := openQuestions(t, s, ses.ID); n != 1 {
+				t.Fatalf("question row closed for %s: open=%d", kind, n)
+			}
+		})
+	}
+}
+
+// With no open question a pause_requested session gets no keys before the
+// deadline (unchanged behavior).
+func TestPauseSendsNoKeysBeforeTheDeadlineWithoutADialog(t *testing.T) {
+	s, tm, ses, req := questionDialogPause(t, Claude)
+	ctx := context.Background()
+	if _, err := s.ResolveQuestionByPrompt(ctx, ses.ID, req.NativePrompt.Question, "Approve"); err != nil {
+		t.Fatal(err)
+	}
+	tm.clk.Advance(5 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysFor(tm, ses.TmuxName); got != 0 {
+		t.Fatalf("keys sent with no dialog open: %v", tm.keys)
+	}
+}

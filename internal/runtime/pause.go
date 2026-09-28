@@ -232,6 +232,25 @@ func (s *Store) setInterrupted(sessionID string, at time.Time) {
 	s.interruptedAt[sessionID] = at
 }
 
+// getDialogDismissed and setDialogDismissed guard Store.dialogDismissed:
+// whether a pause already sent interrupt keys to close this session's native
+// question dialog. Kept apart from interruptedAt so a dismissal never starts
+// the kill-after-interrupt timer.
+func (s *Store) getDialogDismissed(sessionID string) bool {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	return s.dialogDismissed[sessionID]
+}
+
+func (s *Store) setDialogDismissed(sessionID string) {
+	s.bookkeepingMu.Lock()
+	defer s.bookkeepingMu.Unlock()
+	if s.dialogDismissed == nil {
+		s.dialogDismissed = map[string]bool{}
+	}
+	s.dialogDismissed[sessionID] = true
+}
+
 // pausingRow is one pausing session's bookkeeping, joined from sessions,
 // agents and checkpoints. InterruptedAt is kept in memory (D57-style: no
 // column exists for it, and none is needed — a restart mid-interrupt is an
@@ -245,13 +264,15 @@ type pausingRow struct {
 	HandoffAt                    time.Time
 	InterruptedAt                *time.Time
 	Attempt                      int
+	OpenQuestion                 bool // an open question row on this session (a native dialog for questionHookKinds)
 }
 
 // pausingSessions loads every session in a pausing state (§10.5).
 func (s *Store) pausingSessions(ctx context.Context) ([]pausingRow, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.agent_id, ses.tmux_name, a.kind, ses.state,
 		ses.pause_deadline_at, ses.attempt,
-		(SELECT MAX(created_at) FROM checkpoints c WHERE c.session_id = ses.id AND c.kind = 'handoff')
+		(SELECT MAX(created_at) FROM checkpoints c WHERE c.session_id = ses.id AND c.kind = 'handoff'),
+		EXISTS (SELECT 1 FROM requests q WHERE q.session_id = ses.id AND q.kind = 'question' AND q.state = 'open')
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
 		WHERE ses.state IN ('pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {
@@ -265,7 +286,7 @@ func (s *Store) pausingSessions(ctx context.Context) ([]pausingRow, error) {
 		var deadline sql.NullInt64
 		var handoff sql.NullInt64
 		if err := rows.Scan(&r.SessionID, &r.AgentID, &r.TmuxName, &kind, &state,
-			&deadline, &r.Attempt, &handoff); err != nil {
+			&deadline, &r.Attempt, &handoff, &r.OpenQuestion); err != nil {
 			return nil, err
 		}
 		r.AgentKind, r.State = AgentKind(kind), SessionState(state)
@@ -296,6 +317,11 @@ func (s *Store) TickPause(ctx context.Context) error {
 			}
 		case r.InterruptedAt != nil && s.Now().Sub(*r.InterruptedAt) >= killAfterInterrupt:
 			if err := s.killIfOurs(ctx, r); err != nil {
+				return err
+			}
+		case r.State == PauseRequested && r.InterruptedAt == nil && r.OpenQuestion &&
+			questionHookKinds[r.AgentKind] && !s.getDialogDismissed(r.SessionID):
+			if err := s.dismissQuestionDialog(ctx, r); err != nil {
 				return err
 			}
 		case r.InterruptedAt == nil && r.PauseDeadlineAt != nil && s.Now().After(*r.PauseDeadlineAt):
@@ -335,6 +361,53 @@ func (s *Store) interrupt(ctx context.Context, r pausingRow) error {
 	}
 	s.setInterrupted(r.SessionID, s.Now())
 	return nil
+}
+
+// dismissQuestionDialog closes the native question dialog (Claude
+// AskUserQuestion, Codex request_user_input, agy ask_question) a
+// pause_requested agent is blocked in, so it returns to its prompt and the
+// wake loop can deliver the pause/handoff control message instead of the
+// pause stalling to its deadline. It sends the interrupt keys once per
+// session and withdraws the question rows the dismissal orphans (no
+// PostToolUse fires), which clears the bound approval's native_pending; the
+// approval itself stays open for the successor to re-ask.
+func (s *Store) dismissQuestionDialog(ctx context.Context, r pausingRow) error {
+	ad, ok := s.Adapters[r.AgentKind]
+	if !ok {
+		s.logf("pause: no adapter for %s", r.AgentKind)
+		return nil
+	}
+	if err := s.Tmux.Keys(ctx, r.TmuxName, ad.InterruptKeys()...); err != nil {
+		return err
+	}
+	s.setDialogDismissed(r.SessionID)
+	s.logf("pause: dismissed the open question dialog in %s so it can read its pause notice", r.TmuxName)
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM requests
+			WHERE session_id = ? AND kind = 'question' AND state = 'open'`, r.SessionID)
+		if err != nil {
+			return err
+		}
+		var qids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			qids = append(qids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, id := range qids {
+			if err := s.closeRequestTx(ctx, tx, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // onPausingSync is Sync's hook (called from inbox.go): the first sync after a

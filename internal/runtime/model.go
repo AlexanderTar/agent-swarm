@@ -402,6 +402,7 @@ type Store struct {
 	// stuck delivery either way.
 	bookkeepingMu      sync.Mutex
 	interruptedAt      map[string]time.Time
+	dialogDismissed    map[string]bool // sessions whose native question dialog a pause already dismissed
 	pasteAttempts      map[string]int
 	lastPasteAttemptAt map[string]time.Time
 	wakeSubs           map[string][]chan string
