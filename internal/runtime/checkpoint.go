@@ -117,7 +117,7 @@ type CheckpointResult struct {
 	TitleIgnored string
 }
 
-// applyPendingTitle sets it's title and clears title_pending, guarded by
+// applyPendingTitle sets its title and clears title_pending, guarded by
 // title_pending = 1 so a race between two checkpoints applies at most once
 // (a lost race reports ok=false, same as "already has a name"). Raises the
 // same events.ItemChanged event items.Store's own writes raise, so board/
