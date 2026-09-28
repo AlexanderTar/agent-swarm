@@ -2,6 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
+import { comboText, pickOption } from "../test/select";
 import type { DetailsProps } from "../views/props";
 import { Details } from "./Details";
 
@@ -44,13 +45,11 @@ describe("Details panel (§16.9)", () => {
     await waitFor(() => expect(d.calls).toContainEqual(expect.objectContaining({ method: "POST", path: "/api/agents/builder/terminal" })));
   });
   it("shows the breadcrumb, title, status and priority", async () => {
-    const { user, props } = setup("STORY-40");
+    setup("STORY-40");
     expect(await screen.findByText("EPIC-12 › STORY-40")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Login" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "In progress" })).toHaveAttribute("aria-haspopup", "menu");
-    expect(screen.getByRole("combobox", { name: "Priority" })).toHaveValue("2");
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    expect(props.onClose).toHaveBeenCalled();
+    expect(comboText("Priority")).toBe("P2");
   });
 
   it("edits the title in place and shows the conflict banner", async () => {
@@ -75,7 +74,8 @@ describe("Details panel (§16.9)", () => {
     expect(await screen.findByRole("menuitem", { name: /^Done/ })).toHaveAttribute("aria-disabled", "true");
     await user.click(screen.getByRole("menuitem", { name: /^Blocked/ }));
     await waitFor(() => expect(daemon.calls.find((c) => c.method === "PATCH")?.body).toMatchObject({ status: "blocked" }));
-    await user.selectOptions(await screen.findByRole("combobox", { name: "Priority" }), "0");
+    expect(await screen.findByText("Moved TASK-103 to Blocked")).toBeInTheDocument();
+    await pickOption(user, "Priority", "P0");
     await waitFor(() => expect(daemon.calls.filter((c) => c.method === "PATCH").at(-1)?.body).toMatchObject({ priority: 0 }));
   });
 
@@ -239,7 +239,7 @@ describe("Details panel (§16.9)", () => {
     const { user } = setup("TASK-103", {}, d);
     const titleButton = await screen.findByRole("button", { name: "Password reset form" });
     const briefButton = screen.getByRole("button", { name: "Brief" });
-    await user.selectOptions(screen.getByRole("combobox", { name: "Priority" }), "0");
+    await pickOption(user, "Priority", "P0");
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Priority" })).toBeDisabled());
     expect(titleButton).toBeDisabled();
     expect(briefButton).toBeDisabled();

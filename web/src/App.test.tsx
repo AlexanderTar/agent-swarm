@@ -113,15 +113,24 @@ describe("App shell (§16.5)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Connection lost. Status changes are unavailable.");
   });
 
-  it("replaces the view with the details panel on narrow windows", async () => {
+  it("keeps the view behind the details sheet on narrow windows", async () => {
     vi.spyOn(window, "matchMedia").mockImplementation(
       (q: string) => ({ matches: q === "(max-width: 1099px)", addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList,
     );
     const { user } = renderWithDaemon(<App />, { hash: "#/hierarchy?item=TASK-102" });
-    expect(screen.queryByTestId("view")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "← Back" }));
+    expect(await screen.findByRole("dialog", { name: "TASK-102" })).toBeInTheDocument();
+    expect(screen.getByTestId("view")).toBeInTheDocument();
+    await user.click(within(screen.getByRole("dialog", { name: "TASK-102" })).getByRole("button", { name: "Close" }));
     expect(window.location.hash).toBe("#/hierarchy");
     expect(screen.getByTestId("view")).toBeInTheDocument();
+  });
+
+  it("swaps the open details sheet when another card is clicked", async () => {
+    const { user } = renderWithDaemon(<App />, { hash: "#/kanban?item=TASK-101" });
+    expect(await screen.findByRole("dialog", { name: "TASK-101" })).toBeInTheDocument();
+    await user.click(await screen.findByTestId("card-TASK-103"));
+    expect(await screen.findByRole("dialog", { name: "TASK-103" })).toBeInTheDocument();
+    expect(screen.getByTestId("details")).toHaveTextContent("TASK-103");
   });
 
   it("offers every type in New item", async () => {

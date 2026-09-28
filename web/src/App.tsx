@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { createApi, errorText } from "./api";
 import { ConnectionBanner, ItemsErrorBanner, OutsideViewBanner } from "./components/Banners";
 import { Header } from "./components/Header";
+import { Sheet } from "./components/Sheet";
 import { ToastProvider } from "./components/Toast";
 import { C } from "./copy";
 import { DataProvider, useConnection } from "./data/hooks";
@@ -14,7 +15,6 @@ import { NewItemSheet } from "./panels/NewItemSheet";
 import { NewSpikeSheet } from "./panels/NewSpikeSheet";
 import { Review } from "./panels/Review";
 import { SpawnSheet } from "./panels/SpawnSheet";
-import { NARROW, useMediaQuery } from "./state/media";
 import { filterOf, useBoardUrl } from "./state/url";
 import type { Item, ItemType } from "./types";
 import { Dependencies } from "./views/Dependencies";
@@ -32,7 +32,6 @@ export function App() {
   const agents = useAgents();
   const requests = useRequests();
   const conn = useConnection();
-  const narrow = useMediaQuery(NARROW);
   const [focus, setFocus] = useState<"agents" | undefined>();
   const [sheet, setSheet] = useState<SheetState>(null);
   const filter = filterOf(url);
@@ -110,14 +109,10 @@ export function App() {
         onNewItem={(t) => newItem(t, url.item || undefined)}
       />
       <main className="flex min-h-0 flex-1">
-        {!(narrow && showDetails) && (
-          <section data-testid="view" className="min-w-0 flex-1 overflow-auto">{view}</section>
-        )}
+        <section data-testid="view" className="min-w-0 flex-1 overflow-auto">{view}</section>
         {showDetails && (
-          <div data-testid="details" className={narrow ? "flex-1 overflow-auto" : "w-[410px] shrink-0 overflow-auto border-l border-line bg-panel"}>
-            {narrow && (
-              <button type="button" onClick={() => setUrl({ item: "" })} className="m-3 text-link">{C.back}</button>
-            )}
+          <Sheet title={url.item} header={false} modal={false} width={560} onClose={() => setUrl({ item: "" })}>
+          <div data-testid="details">
             {outside && <OutsideViewBanner onShowInHierarchy={() => setUrl({ view: "hierarchy" })} onClearFilters={clearFilters} />}
             <Details
               key={url.item}
@@ -130,6 +125,7 @@ export function App() {
               onStartOrchestrator={startOrchestrator}
             />
           </div>
+          </Sheet>
         )}
       </main>
       {sheet?.kind === "spike" && <NewSpikeSheet caption={sheet.caption} chore={sheet.chore} onClose={closeSheet} onCreated={created} />}

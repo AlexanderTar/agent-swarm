@@ -1,4 +1,3 @@
-import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, errorText } from "../api";
 import { AddDependency } from "../components/AddDependency";
@@ -8,10 +7,14 @@ import { CheckpointList } from "../components/CheckpointList";
 import { MoveToMenu } from "../components/MoveToMenu";
 import { useToast } from "../components/Toast";
 import { WorkflowSection } from "../components/WorkflowSection";
+import { Alert } from "../components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { C, STATUS_LABEL, T } from "../copy";
 import { useInvalidate, useMutation } from "../data/hooks";
 import { qk, useItemDetail } from "../data/queries";
 import { flattenAgents } from "../logic/agentActions";
+import { agentActionToast } from "../logic/toasts";
 import { ARTIFACT_LABEL, requestTitle } from "../logic/requestTitle";
 import { checkMove, failureMessage } from "../logic/transitions";
 import type { Item, ItemStatus, PatchItemBody, Priority } from "../types";
@@ -93,21 +96,22 @@ export function Details(p: DetailsProps) {
   // Standing rule: a failed load gets a message + retry, never a permanent "…" placeholder.
   if (detail.error) {
     return (
-      <p className="p-4 text-bad">
+      <Alert variant="destructive" className="m-4">
         {errorText(detail.error)}{" "}
         <button type="button" className="text-link underline" onClick={() => detail.reload()}>
           {C.retry}
         </button>
-      </p>
+      </Alert>
     );
   }
-  if (!d) return <p className="p-4 text-muted-foreground">…</p>;
+  if (!d) return <div className="space-y-3 p-4" aria-label={C.openDetails}>{[1, 2, 3].map((n) => <div key={n} className="h-3 animate-pulse rounded bg-muted" />)}</div>;
   const item = d.item;
 
   const save = async (body: Omit<PatchItemBody, "revision">): Promise<boolean> => {
     try {
       await patch.run(item.key, { ...body, revision: item.revision });
       setStale(false);
+      if (body.status) toast.success(T.toastMoved(item.key, STATUS_LABEL[body.status]));
       return true;
     } catch (e) {
       if (e instanceof ApiError && e.code === "conflict") {
@@ -143,9 +147,8 @@ export function Details(p: DetailsProps) {
   return (
     <div data-testid="details-panel" className="space-y-4 p-4">
       {stale && <p className="rounded bg-warn/10 px-2 py-1 text-warn">{C.staleRevision}</p>}
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start justify-between gap-2 pr-10">
         <span className="key text-muted-foreground">{crumbs}</span>
-        <button type="button" aria-label="Close" onClick={p.onClose}><X className="size-4" /></button>
       </div>
       <Editable
         label={C.title}
@@ -159,15 +162,10 @@ export function Details(p: DetailsProps) {
         <MoveToMenu item={item} buttonLabel={STATUS_LABEL[item.status]} disabled={!p.connected || patch.pending} onMove={onMove} />
         <label className="flex items-center gap-1">
           {C.priority}
-          <select
-            aria-label={C.priority}
-            value={String(item.priority)}
-            disabled={!p.connected || patch.pending}
-            onChange={(e) => void save({ priority: Number(e.target.value) as Priority })}
-            className="rounded border border-line bg-canvas px-1"
-          >
-            {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{`P${n}`}</option>)}
-          </select>
+          <Select value={String(item.priority)} disabled={!p.connected || patch.pending} onValueChange={(value) => void save({ priority: Number(value) as Priority })}>
+            <SelectTrigger aria-label={C.priority} size="sm"><SelectValue /></SelectTrigger>
+            <SelectContent>{[0, 1, 2, 3].map((n) => <SelectItem key={n} value={String(n)}>{`P${n}`}</SelectItem>)}</SelectContent>
+          </Select>
         </label>
       </div>
 
@@ -191,16 +189,12 @@ export function Details(p: DetailsProps) {
       </section>
 
       <WorkflowSection workflow={item.workflow} state={d.workflow_state} onOpenTerminal={(name) => {
-        void terminal.run(name).catch((e: unknown) => toast({ message: errorText(e) }));
+        void terminal.run(name).then(() => toast.success(agentActionToast("terminal", name))).catch((e: unknown) => toast({ message: errorText(e) }));
       }} />
 
-      <div role="tablist" className="flex gap-3 border-t border-line pt-3">
-        {(["overview", "checkpoints"] as const).map((t) => (
-          <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={tab === t ? "font-semibold" : "text-muted-foreground"}>
-            {t === "overview" ? C.overview : C.checkpoints}
-          </button>
-        ))}
-      </div>
+      <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)}>
+        <TabsList variant="line">{(["overview", "checkpoints"] as const).map((t) => <TabsTrigger key={t} value={t}>{t === "overview" ? C.overview : C.checkpoints}</TabsTrigger>)}</TabsList>
+      </Tabs>
 
       {tab === "overview" ? (
         <div className="space-y-3">
