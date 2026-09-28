@@ -75,6 +75,100 @@ func TestATopLevelOrchestratorGetsNoRelay(t *testing.T) {
 	}
 }
 
+// spec 2026-09-28: the orchestrator of a title_pending item may name it
+// through swarm_checkpoint's title, but only once, only its own root item,
+// and only within the 3-80 rune length.
+func titlePendingSpike(t *testing.T, s *Store) (a Agent, ses Session, key string) {
+	t.Helper()
+	ctx := context.Background()
+	var err error
+	key, a, _, err = s.StartSpike(ctx, SpikeInput{Intent: "feature", Kind: Fake, Model: "fake-1",
+		Request: "Fix the login redirect loop that happens after SSO sign-in on Safari"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err = s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, ses, key
+}
+
+func TestCheckpointTitleAppliesOnceForTheOrchestratorsOwnRootItem(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, ses, key := titlePendingSpike(t, s)
+
+	res, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting",
+		Title: "Fix login redirect loop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.TitleApplied || res.TitleIgnored != "" {
+		t.Fatalf("result = %+v", res)
+	}
+	it, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Title != "Fix login redirect loop" || it.TitlePending {
+		t.Fatalf("item = %+v", it)
+	}
+
+	res2, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Progress, Summary: "still going",
+		Title: "A different title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.TitleApplied || res2.TitleIgnored != "This item already has a name." {
+		t.Fatalf("result2 = %+v", res2)
+	}
+	it2, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it2.Title != "Fix login redirect loop" {
+		t.Fatalf("title must stay unchanged: %q", it2.Title)
+	}
+}
+
+func TestCheckpointTitleFromAChildAgentIsIgnored(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if w.Role == RoleOrchestrator {
+		t.Fatal("worker() must return a non-orchestrator child")
+	}
+	res, err := s.WriteCheckpoint(ctx, wSes.ID, CheckpointInput{Kind: Accepted, Summary: "starting",
+		Title: "Some title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TitleApplied || res.TitleIgnored != "Only the orchestrator can name its item." {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestCheckpointTitleTooShortIsIgnoredAndFlagStays(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, ses, key := titlePendingSpike(t, s)
+	res, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting", Title: "ab"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TitleApplied || res.TitleIgnored != "A title must be 3 to 80 characters." {
+		t.Fatalf("result = %+v", res)
+	}
+	it, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !it.TitlePending {
+		t.Fatal("flag must stay set after a refused title")
+	}
+}
+
 func TestBlockedThenProgressBlocksAndUnblocksTheItem(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()

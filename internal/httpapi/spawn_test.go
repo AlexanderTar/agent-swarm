@@ -71,6 +71,43 @@ func TestCreateSpikeWithATakenNameIs409(t *testing.T) {
 	}
 }
 
+// spec 2026-09-28 Locked Decision 3: both Name and Request empty is a 400.
+func TestCreateSpikeWithNoNameAndNoRequestIs400(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	rec := s.post(t, "/api/spikes", `{"request_id":"r","intent":"debug","agent":"fake","model":"fake-1"}`)
+	if rec.Code != 400 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Error struct{ Code, Message string }
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Code != "bad_request" || body.Error.Message != "Give a name or a request." {
+		t.Fatalf("error = %+v", body.Error)
+	}
+}
+
+// spec 2026-09-28: an empty Name with a Request marks the item's wire
+// title_pending, and the item's title is the inferred placeholder.
+func TestCreateSpikeWithNoNameSetsTitlePendingOnTheWire(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	rec := s.post(t, "/api/spikes", `{"request_id":"r","intent":"debug","agent":"fake","model":"fake-1",
+		"request":"Fix the login redirect loop that happens after SSO sign-in on Safari"}`)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Item map[string]any `json:"item"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Item["title_pending"] != true {
+		t.Fatalf("item = %v, want title_pending true", body.Item)
+	}
+	if body.Item["title"] != "Fix the login redirect loop that happens after SSO sign-in…" {
+		t.Fatalf("title = %v", body.Item["title"])
+	}
+}
+
 // §10.2: a preflight failure still returns 200 with a failed agent (I15).
 func TestCreateSpikeWithAPreflightFailure(t *testing.T) {
 	s, _ := newRuntimeServerNoSuperpowers(t)

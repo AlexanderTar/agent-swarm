@@ -108,6 +108,12 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 0018_title_pending.sql adds items.title_pending with plain ALTER TABLE,
+	// so a simulated v1 database must not still carry it when 0003's items
+	// rebuild replays (same precedent as the workflow columns above).
+	if _, err := raw.Exec(`ALTER TABLE items DROP COLUMN title_pending`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := raw.Exec(`ALTER TABLE artifact_revisions DROP COLUMN warnings_json`); err != nil {
 		t.Fatal(err)
 	}

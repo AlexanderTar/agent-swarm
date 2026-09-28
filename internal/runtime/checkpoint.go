@@ -93,6 +93,10 @@ type CheckpointInput struct {
 	// result instead of writing a second one. Empty means "no idempotency,
 	// just run once" (Store.Idempotent's own documented behavior).
 	RequestID string
+	// Title names a title_pending item (spec 2026-09-28 Locked Decision 4):
+	// only the orchestrator of the checkpoint's own root item may set it,
+	// only once, only 3-80 runes. Empty means "no title offered".
+	Title string
 }
 
 // CheckpointResult is swarm_checkpoint's result.
@@ -106,6 +110,35 @@ type CheckpointResult struct {
 	// swarm_items update can use the correct value outright instead of
 	// guessing whether this checkpoint bumped it, then re-reading to find out.
 	ItemRevision int
+	// TitleApplied is true when in.Title just named a title_pending item.
+	TitleApplied bool
+	// TitleIgnored is why in.Title was NOT applied (spec 2026-09-28), empty
+	// when in.Title was empty or TitleApplied is true.
+	TitleIgnored string
+}
+
+// applyPendingTitle sets its title and clears title_pending, guarded by
+// title_pending = 1 so a race between two checkpoints applies at most once
+// (a lost race reports ok=false, same as "already has a name"). Raises the
+// same events.ItemChanged event items.Store's own writes raise, so board/
+// menubar subscribers see the rename exactly like any other item edit.
+func (s *Store) applyPendingTitle(ctx context.Context, tx *sql.Tx, it items.Item, title string) (bool, error) {
+	res, err := tx.ExecContext(ctx, `UPDATE items SET title = ?, title_pending = 0, revision = revision + 1,
+		updated_at = ? WHERE id = ? AND title_pending = 1`, title, db.Millis(s.Now()), it.ID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if _, err := s.Events.Append(ctx, tx, events.ItemChanged, map[string]string{"key": it.Key, "root_key": it.RootKey}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // verifyOK is L24. Evidence is every verification entry of this attempt, earlier
@@ -1148,6 +1181,30 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if !ok {
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: fmt.Sprintf("%s is outside your assignment.", itemKey)}
+			}
+		}
+
+		// spec 2026-09-28 Locked Decision 4: at most one of these fires, in
+		// order, and only when a non-blank title was offered at all.
+		if title := strings.TrimSpace(in.Title); title != "" {
+			switch {
+			case a.Role != RoleOrchestrator || it.ID != a.RootItemID:
+				out.TitleIgnored = "Only the orchestrator can name its item."
+			case !it.TitlePending:
+				out.TitleIgnored = "This item already has a name."
+			case utf8.RuneCountInString(title) < 3 || utf8.RuneCountInString(title) > 80:
+				out.TitleIgnored = "A title must be 3 to 80 characters."
+			default:
+				applied, err := s.applyPendingTitle(ctx, tx, it, title)
+				if err != nil {
+					return err
+				}
+				if applied {
+					out.TitleApplied = true
+					it.Title = title
+				} else {
+					out.TitleIgnored = "This item already has a name."
+				}
 			}
 		}
 

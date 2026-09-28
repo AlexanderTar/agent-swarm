@@ -64,6 +64,7 @@ type CreateInput struct {
 	SuggestedRepos []string
 	SpikeIntent    string
 	OriginSpikeID  string
+	TitlePending   bool // true when Title is a daemon-computed placeholder (spec 2026-09-28)
 	LegacyKey      string
 	SortOrder      int
 }
@@ -97,7 +98,8 @@ const itemCols = `i.id, i.key, i.type, COALESCE(i.parent_id, ''), COALESCE(p.key
  COALESCE(i.role_hint, ''), COALESCE(i.tdd_exempt, ''), i.confirmed_repos_json, i.repos_version,
  i.repo_hints_json, i.suggested_repos_json, COALESCE(i.spike_intent, ''), COALESCE(i.origin_spike_id, ''),
  COALESCE(i.legacy_key, ''), i.sort_order, i.revision, i.archived_at, i.created_at, i.updated_at,
- i.workflow_json, COALESCE(i.steps_json, '[]'), COALESCE(i.units_json, '[]'), COALESCE(i.solo, ''), COALESCE(i.verify_json, '[]')
+ i.workflow_json, COALESCE(i.steps_json, '[]'), COALESCE(i.units_json, '[]'), COALESCE(i.solo, ''), COALESCE(i.verify_json, '[]'),
+ i.title_pending
  FROM items i LEFT JOIN items p ON p.id = i.parent_id JOIN items r ON r.id = i.root_id`
 
 type scanner interface{ Scan(dest ...any) error }
@@ -109,15 +111,17 @@ func scanItem(sc scanner) (Item, error) {
 	var created, updated int64
 	var workflowJSON sql.NullString
 	var stepsRaw, unitsRaw, verifyRaw string
+	var titlePending int
 	err := sc.Scan(&it.ID, &it.Key, &it.Type, &it.ParentID, &it.ParentKey, &it.RootID, &it.RootKey,
 		&it.Title, &it.Brief, &acc, &it.Status, &it.StatusBeforeBlock, &it.Priority,
 		&it.RoleHint, &it.TddExempt, &confirmed, &it.ReposVersion,
 		&hints, &suggested, &it.SpikeIntent, &it.OriginSpikeID,
 		&it.LegacyKey, &it.SortOrder, &it.Revision, &archived, &created, &updated,
-		&workflowJSON, &stepsRaw, &unitsRaw, &it.Solo, &verifyRaw)
+		&workflowJSON, &stepsRaw, &unitsRaw, &it.Solo, &verifyRaw, &titlePending)
 	if err != nil {
 		return it, err
 	}
+	it.TitlePending = titlePending != 0
 	if workflowJSON.Valid && workflowJSON.String != "" {
 		var spec workflow.Spec
 		if err := json.Unmarshal([]byte(workflowJSON.String), &spec); err != nil {
@@ -505,13 +509,13 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 	_, err = tx.ExecContext(ctx, `INSERT INTO items (id, key, type, parent_id, root_id, title, brief, acceptance_json,
 		status, priority, role_hint, tdd_exempt, confirmed_repos_json, repos_version, repo_hints_json, spike_intent,
 		suggested_repos_json, origin_spike_id, legacy_key, sort_order, created_at, updated_at,
-		workflow_json, steps_json, units_json, solo, verify_json)
+		workflow_json, steps_json, units_json, solo, verify_json, title_pending)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?,
-		NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?)`,
+		NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?)`,
 		id, key, in.Type, parentID, rootID, in.Title, in.Brief, jsonList(in.Acceptance),
 		in.Status, prio, in.RoleHint, in.TddExempt, confirmed, reposVersion, hints, in.SpikeIntent,
 		jsonList(in.SuggestedRepos), in.OriginSpikeID, in.LegacyKey, in.SortOrder, now, now,
-		workflowJSONString(in.Workflow), jsonList(in.Steps), jsonUnits(in.Units), in.Solo, jsonList(in.Verify))
+		workflowJSONString(in.Workflow), jsonList(in.Steps), jsonUnits(in.Units), in.Solo, jsonList(in.Verify), in.TitlePending)
 	if err != nil {
 		return Item{}, err
 	}

@@ -98,7 +98,7 @@ public struct NewOrchestratorView: View {
     private var nameField: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(Copy.name)
-            TextField(Copy.name, text: $form.name).textFieldStyle(.roundedBorder).labelsHidden()
+            TextField(Copy.nameOptionalPlaceholder, text: $form.name).textFieldStyle(.roundedBorder).labelsHidden()
             if let error = form.nameError {
                 Text(error).font(.caption).foregroundStyle(.red)
             } else if !form.preview.isEmpty {

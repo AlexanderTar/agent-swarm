@@ -74,6 +74,9 @@ public enum Copy {
     // §17.1 new orchestrator window
     public static func agentName(_ kebab: String) -> String { "Agent name: \(kebab)" }
     public static let name = "Name"
+    /// The Name field's placeholder when a Request makes it optional (spec 2026-09-28).
+    public static let nameOptionalPlaceholder = "Optional if you write a request"
+    public static let nameOrRequestRequired = "Give a name or a request."
     public static let intent = "Intent"
     public static let choreIntent = "Chore"
     public static let choreCaption = "Creates a top-level chore orchestrator for maintenance, refactoring, or general work."

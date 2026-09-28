@@ -127,6 +127,31 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertFalse(f.canStart)
     }
 
+    /// spec 2026-09-28: Start is enabled with an empty Name once a Request is written, and the
+    /// body sends an empty name.
+    func testCanStartWithEmptyNameAndARequest() async {
+        let f = await form()
+        XCTAssertFalse(f.canStart, "both empty must not allow Start")
+        f.request = "Fix the login redirect loop."
+        XCTAssertNil(f.nameError)
+        XCTAssertTrue(f.canStart)
+        XCTAssertEqual(f.body()?.name, "")
+    }
+
+    /// Typing a name and then clearing it, with no Request, shows the "give a name or a
+    /// request" error; simply never touching Name shows nothing (today's placeholder state).
+    func testNameOrRequestRequiredOnlyAfterTypingThenClearingName() async {
+        let f = await form()
+        XCTAssertNil(f.nameError, "never having typed a name shows no error")
+        f.name = "Investigate"
+        f.name = ""
+        XCTAssertEqual(f.nameError, Copy.nameOrRequestRequired)
+        XCTAssertFalse(f.canStart)
+        f.request = "Fix it"
+        XCTAssertNil(f.nameError, "a request satisfies the requirement again")
+        XCTAssertTrue(f.canStart)
+    }
+
     func testAgentModelEffortAndAdvisorMessages() async {
         let f = await form()
         f.name = "x"

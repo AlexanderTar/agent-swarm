@@ -272,8 +272,28 @@ func (s *Store) fillDefaultModel(ctx context.Context, kind AgentKind, model stri
 	return model
 }
 
+// titlePendingKickoff is appended to a placeholder-titled spike's kickoff
+// Objective (spec 2026-09-28 Locked Decision 4 / User-facing copy): it never
+// reaches the item's own stored Brief, only the rendered brief text.
+const titlePendingKickoff = `This item has no name yet. In your first swarm_checkpoint kind:"accepted", pass title: a 3–6 word name for the work (good: "Fix login redirect loop"; bad: "Task from request").`
+
 func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, bool, error) {
-	name, err := s.resolveName(ctx, in.Name, in.Name)
+	trimmedName := strings.TrimSpace(in.Name)
+	trimmedRequest := strings.TrimSpace(in.Request)
+	if trimmedName == "" && trimmedRequest == "" {
+		return "", Agent{}, false, &items.Error{Code: items.CodeBadRequest, Message: "Give a name or a request."}
+	}
+
+	// Locked decision 2: an empty Name infers a placeholder title (and its
+	// kebabed agent-name candidate) from the Request; a typed Name keeps
+	// today's behavior untouched.
+	title, generated, titlePending := trimmedName, trimmedName, false
+	if trimmedName == "" {
+		title = placeholderTitle(in.Request)
+		generated = placeholderAgentName(title)
+		titlePending = true
+	}
+	name, err := s.resolveName(ctx, trimmedName, generated)
 	if err != nil {
 		return "", Agent{}, false, err
 	}
@@ -299,11 +319,12 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 	// both in one transaction.
 	ci := items.CreateInput{
 		Type:           items.Spike,
-		Title:          in.Name,
+		Title:          title,
 		SpikeIntent:    in.Intent,
 		Brief:          in.Request,
 		Repos:          in.Repos,
 		SuggestedRepos: in.Repos,
+		TitlePending:   titlePending,
 	}
 	if in.Intent == "chore" { // chore spec decision 2: a chore is not a spike
 		ci.Type, ci.SpikeIntent, ci.Status = items.Chore, "", items.Ready
@@ -416,13 +437,17 @@ func (s *Store) StartSpike(ctx context.Context, in SpikeInput) (string, Agent, b
 		return it.Key, a, false, nil
 	}
 
+	objective := in.Request
+	if titlePending {
+		objective = strings.TrimSpace(objective + "\n\n" + titlePendingKickoff)
+	}
 	briefText, err := RenderBrief(BriefInput{
 		Key:       it.Key,
 		Title:     it.Title,
 		Name:      name,
 		Role:      RoleOrchestrator,
 		RootKey:   it.Key,
-		Objective: in.Request,
+		Objective: objective,
 	})
 	if err != nil {
 		return "", Agent{}, false, err

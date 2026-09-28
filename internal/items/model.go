@@ -106,12 +106,16 @@ type Item struct {
 	SuggestedRepos []string       `json:"suggested_repos"`
 	SpikeIntent    string         `json:"spike_intent,omitempty"`
 	OriginSpikeID  string         `json:"origin_spike_id,omitempty"`
-	LegacyKey      string         `json:"legacy_key,omitempty"`
-	SortOrder      int            `json:"sort_order"`
-	Revision       int            `json:"revision"`
-	ArchivedAt     *time.Time     `json:"archived_at,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	// TitlePending is set when Title is a daemon-computed placeholder (an
+	// orchestrator started with no Name): the orchestrator's first accepted
+	// checkpoint may still name the item (spec 2026-09-28).
+	TitlePending bool       `json:"title_pending,omitempty"`
+	LegacyKey    string     `json:"legacy_key,omitempty"`
+	SortOrder    int        `json:"sort_order"`
+	Revision     int        `json:"revision"`
+	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 	// computed, not stored
 	BlockedBy    []string  `json:"blocked_by"`
 	Progress     *Progress `json:"progress,omitempty"`

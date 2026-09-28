@@ -143,6 +143,51 @@ func TestCheckpointRejectsABadKind(t *testing.T) {
 	}
 }
 
+// spec 2026-09-28: swarm_checkpoint's title names a title_pending item when
+// the caller is the orchestrator of its own root item.
+func TestSwarmCheckpointTitleAppliesForTheOrchestratorsOwnRootItem(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	agentID, sessionID, itemID := seedAgentAndSession(t, s, runtime.RoleOrchestrator, "", "")
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE items SET title_pending = 1 WHERE id = ?`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	var agentName string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, agentID).Scan(&agentName); err != nil {
+		t.Fatal(err)
+	}
+	caller := Caller{SessionID: sessionID, AgentID: agentID, AgentName: agentName, Role: runtime.RoleOrchestrator}
+	out, err := s.call(ctx, caller, "swarm_checkpoint", `{"kind":"accepted","summary":"starting","title":"Fix login redirect loop"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if m["title_applied"] != true {
+		t.Fatalf("result = %+v, want title_applied true", m)
+	}
+	if _, ok := m["title_ignored"]; ok {
+		t.Fatalf("result = %+v, title_ignored must be omitted", m)
+	}
+}
+
+// A non-orchestrator's title is ignored, and the reason is reported (not
+// title_applied).
+func TestSwarmCheckpointTitleIgnoredIsReported(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_checkpoint", `{"kind":"accepted","summary":"starting","title":"Some title"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if m["title_ignored"] != "Only the orchestrator can name its item." {
+		t.Fatalf("result = %+v", m)
+	}
+	if _, ok := m["title_applied"]; ok {
+		t.Fatalf("result = %+v, title_applied must be omitted", m)
+	}
+}
+
 func countCheckpoints(t *testing.T, s *Server) int {
 	t.Helper()
 	var n int
