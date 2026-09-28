@@ -98,8 +98,9 @@ describe("AgentFields (§16.3, §16.10)", () => {
   it("links visible labels to their select triggers", async () => {
     const user = userEvent.setup();
     render(<Host />);
-    const check = (label: HTMLElement, name: string) => {
-      expect(label).toHaveAttribute("for", screen.getByRole("combobox", { name }).id);
+    const check = (label: HTMLElement | undefined, name: string) => {
+      expect(label).toBeDefined();
+      expect(label!).toHaveAttribute("for", screen.getByRole("combobox", { name }).id);
     };
     const labels = screen.getAllByText("Agent", { selector: "label" });
     check(labels[0], "Agent");
