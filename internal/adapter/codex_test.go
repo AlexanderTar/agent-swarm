@@ -62,8 +62,8 @@ func TestCodexConfigOverridesParseAsTOML(t *testing.T) {
 			t.Errorf("-c %q is not TOML: %v", l.Argv[i+1], err)
 		}
 	}
-	if n != 5 {
-		t.Fatalf("want 5 -c overrides (effort, request_user_input, command, args, env_vars), got %d", n)
+	if n != 6 {
+		t.Fatalf("want 6 -c overrides (effort, request_user_input, update_plan, command, args, env_vars), got %d", n)
 	}
 }
 
@@ -73,6 +73,29 @@ func TestCodexConfigOverridesParseAsTOML(t *testing.T) {
 // ~/.codex/config.toml -- only passed per-launch.
 func TestCodexLaunchAndResumeEnableSyncRequestUserInput(t *testing.T) {
 	want := `features.default_mode_request_user_input=true`
+	l, err := newCodex(testDeps(t)).Launch(codexSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(l.Argv, " "), want) {
+		t.Fatalf("Launch argv is missing %q: %v", want, l.Argv)
+	}
+	s := codexSpec(t)
+	s.ProviderSessionID = "01a0af28-1d53-7ed0-a6e1-5ac92d9d3ac9"
+	l, err = newCodex(testDeps(t)).Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(l.Argv, " "), want) {
+		t.Fatalf("Resume argv is missing %q: %v", want, l.Argv)
+	}
+}
+
+// codex 0.158 leaves update_plan out unless tools.update_plan.enabled is set
+// (codex-rs/config/src/config_toml.rs UpdatePlanToolConfig, default false);
+// the orchestrator's native progress list needs it.
+func TestCodexLaunchAndResumeEnableUpdatePlan(t *testing.T) {
+	want := `tools.update_plan.enabled=true`
 	l, err := newCodex(testDeps(t)).Launch(codexSpec(t))
 	if err != nil {
 		t.Fatal(err)

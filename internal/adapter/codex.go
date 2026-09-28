@@ -90,6 +90,8 @@ func CodexHomeDir(home, agentID string) string {
 //   - -m <model>: the agent's configured model.
 //   - -c features.default_mode_request_user_input=true: see the override's
 //     own inline comment below (openai/codex#24750).
+//   - -c tools.update_plan.enabled=true: turns on codex's update_plan tool
+//     (off by default); see the override's own inline comment below.
 //   - -c model_reasoning_effort="<effort>": the agent's configured reasoning
 //     effort, when set.
 //   - -c model_instructions_file="<path>": the role's instructions file,
@@ -127,7 +129,13 @@ func (c *Codex) flags(s Spec) ([]string, error) {
 		// this under-development feature flag is on (openai/codex#24750).
 		// Per-launch only, never written to the user's own
 		// ~/.codex/config.toml.
-		"-c", "features.default_mode_request_user_input=true"}
+		"-c", "features.default_mode_request_user_input=true",
+		// update_plan is off unless tools.update_plan.enabled is set
+		// (codex-rs/config/src/config_toml.rs UpdatePlanToolConfig, default
+		// false; probed 2026-09-28 on 0.158: absent without it). The
+		// orchestrator's native progress list (swarm-orchestrator skill,
+		// "Progress list") uses it. Per-launch only.
+		"-c", "tools.update_plan.enabled=true"}
 	if s.Effort != "" {
 		a = append(a, "-c", `model_reasoning_effort="`+s.Effort+`"`)
 	}
