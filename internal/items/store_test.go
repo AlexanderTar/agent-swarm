@@ -100,7 +100,7 @@ func TestCreateDefaultsAndKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if e.Key != "EPIC-1" || e.Status != items.Draft || e.Priority != 2 || e.Revision != 1 ||
-		e.Title != "Auth" || e.Acceptance == nil || len(e.Acceptance) != 0 || e.Repos == nil {
+		e.Title != "Auth" || e.Acceptance == nil || len(e.Acceptance) != 0 || e.Repos == nil || e.TitlePending {
 		t.Fatalf("epic = %+v", e)
 	}
 	if b := mk(t, s, items.Bug, "", "B"); b.Key != "BUG-1" {
@@ -113,6 +113,25 @@ func TestCreateDefaultsAndKeys(t *testing.T) {
 	evs, _ := s.Events.After(ctx, 0, 10)
 	if len(evs) != 3 || evs[0].Type != "item.changed" || !strings.Contains(string(evs[0].Payload), `"key":"EPIC-1"`) {
 		t.Fatalf("events = %+v", evs)
+	}
+}
+
+func TestCreateWithTitlePendingRoundTrips(t *testing.T) {
+	s := newStore(t)
+	sp, err := s.Create(ctx, items.CreateInput{Type: items.Spike, Title: "Fix login redirect loop",
+		SpikeIntent: "feature", TitlePending: true}, items.User("board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sp.TitlePending {
+		t.Fatalf("spike = %+v, want TitlePending true", sp)
+	}
+	got, err := s.Get(ctx, sp.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TitlePending {
+		t.Fatalf("reread = %+v, want TitlePending true", got)
 	}
 }
 
