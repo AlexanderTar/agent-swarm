@@ -7,7 +7,9 @@ test.beforeEach(async ({ request }) => {
 test("form sheet controls fit a narrow viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await page.getByRole("button", { name: "New spike" }).click();
+  const newItem = await page.getByRole("button", { name: "New item" }).boundingBox();
+  expect(newItem && newItem.x + newItem.width).toBeLessThanOrEqual(390);
+  await page.getByRole("button", { name: "New orchestrator" }).click();
   const sheet = page.getByRole("dialog", { name: "New orchestrator" });
   await page.screenshot({ animations: "disabled" });
   const model = sheet.getByRole("combobox", { name: "Model", exact: true });
@@ -80,7 +82,7 @@ test("hierarchy, filters and view switching keep the selection", async ({ page }
   await page.goto("/#/hierarchy?item=TASK-102");
   await expect(page.getByRole("treeitem", { name: /^EPIC-12 / })).toBeVisible();
   await expect(page.getByTestId("details-panel")).toContainText("Persist session");
-  await page.getByRole("radio", { name: "Kanban" }).click();
+  await page.getByRole("tab", { name: "Kanban" }).click();
   await expect(page).toHaveURL(/#\/kanban\?item=TASK-102$/);
   await page.getByRole("searchbox", { name: "Search name or key…" }).fill("session");
   await expect(page.getByText("1 matches")).toBeVisible();
@@ -103,6 +105,7 @@ test("dragging an allowed card shows Updating… and settles", async ({ page }) 
   await drop();
   await expect(page.getByTestId("cell-EPIC-12-blocked").getByTestId("card-TASK-103")).toBeVisible();
   await expect(page.getByTestId("card-TASK-103")).not.toContainText("Updating…");
+  await expect(page.getByText("Moved TASK-103 to Blocked")).toBeVisible();
 });
 
 test("dragging to a refused column shows the lock, returns the card and toasts", async ({ page }) => {
@@ -110,10 +113,7 @@ test("dragging to a refused column shows the lock, returns the card and toasts",
   const drop = await drag(page, "card-TASK-101", "cell-EPIC-12-ready");
   await expect(page.getByTestId("cell-EPIC-12-ready")).toContainText("Couldn't update status. The item remains In progress.");
   await drop();
-  // dnd-kit renders its own `role="status"` live region alongside the app's toast; scope to the toast text.
-  await expect(page.getByRole("status").filter({ hasText: "Couldn't update status" })).toContainText(
-    "Couldn't update status. The item remains In progress.",
-  );
+  await expect(page.getByText("Couldn't update status. The item remains In progress.").last()).toBeVisible();
   await expect(page.getByTestId("cell-EPIC-12-in_progress").getByTestId("card-TASK-101")).toBeVisible();
 });
 
@@ -124,7 +124,7 @@ test("Move to… works from the keyboard", async ({ page }) => {
   // scope to the card to get the actual Move-to button.
   await page.getByTestId("card-TASK-110").getByRole("button", { name: "Move to… TASK-110" }).focus();
   await page.keyboard.press("Enter");
-  await page.keyboard.press("ArrowDown");
+  await page.getByRole("menuitem", { name: /^Cancelled/ }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("card-TASK-110")).toHaveCount(0);
   // TASK-110 was the last open item in BUG-7: moving it to Cancelled makes the whole lane
@@ -143,7 +143,6 @@ test("the inbox shows a question read-only and approves a section", async ({ pag
   // The question no longer resolves from the board, so the approval is opened directly
   // (it used to be auto-selected once the answered question left the list).
   await page.goto("/#/inbox?req=req_section");
-  await page.getByRole("button", { name: /Approve "Data model"/ }).click();
   await expect(page.getByText("A local queue of pending messages.")).toBeVisible();
   await page.getByRole("button", { name: "Approve section" }).click();
   await expect(page.getByText("Already resolved.")).toBeVisible();
@@ -154,7 +153,8 @@ test("the dependency graph renders and expands a hop", async ({ page }) => {
   await expect(page.getByTestId("node-TASK-98")).toBeVisible();
   await page.getByRole("radio", { name: "Neighbourhood" }).click();
   await expect(page.getByTestId("node-TASK-98")).toHaveCount(0);
-  await page.getByRole("button", { name: "Expand one hop" }).click();
+  await page.getByRole("combobox", { name: "Hops" }).click();
+  await page.getByRole("option", { name: "2" }).click();
   await expect(page.getByTestId("node-TASK-98")).toBeVisible();
 });
 
@@ -173,16 +173,28 @@ test("losing the connection shows the banner and disables moves", async ({ page,
 
 test("a new spike is created and selected", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "New spike" }).click();
+  await page.getByRole("button", { name: "New orchestrator" }).click();
   await page.getByRole("textbox", { name: "Name" }).fill("Offline sync");
   await page.getByRole("button", { name: /orchestrator$/ }).click();
   await expect(page).toHaveURL(/item=SPIKE-\d+/);
 });
 
-test("narrow windows show details instead of the view", async ({ page }) => {
+test("creating an item confirms success", async ({ page }) => {
+  await page.goto("/#/hierarchy");
+  await page.getByRole("button", { name: "New item" }).click();
+  await page.getByRole("menuitem", { name: "Story" }).click();
+  const sheet = page.getByRole("dialog", { name: "New item" });
+  await sheet.getByRole("combobox", { name: "Parent" }).click();
+  await page.getByRole("option", { name: /EPIC-12/ }).click();
+  await sheet.getByRole("textbox", { name: "Title" }).fill("Two-factor login");
+  await sheet.getByRole("button", { name: "Create item" }).click();
+  await expect(page.getByText(/Created STORY-\d+/)).toBeVisible();
+});
+
+test("narrow windows show a details sheet above the view", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 800 });
   await page.goto("/#/hierarchy?item=TASK-101");
-  await expect(page.getByTestId("view")).toHaveCount(0);
-  await page.getByRole("button", { name: "← Back" }).click();
+  await expect(page.getByRole("dialog", { name: "TASK-101" })).toBeVisible();
+  await page.getByRole("dialog", { name: "TASK-101" }).getByRole("button", { name: "Close" }).click();
   await expect(page.getByTestId("view")).toBeVisible();
 });
