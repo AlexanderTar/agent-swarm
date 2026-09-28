@@ -18,13 +18,16 @@ const (
 
 // OperationReason names why the daemon started an operation: "capacity"
 // (paused to fit the agent limit), "resume" (a manual resume waiting for a
-// slot) or "" (anything else).
+// slot), "retry" (a manual retry waiting for a slot, or one that arrived
+// while its predecessor was still stopping) or "" (anything else).
 func OperationReason(requestKey string) string {
 	switch {
 	case strings.HasPrefix(requestKey, capacityKeyPrefix):
 		return "capacity"
 	case strings.HasPrefix(requestKey, resumeKeyPrefix):
 		return "resume"
+	case strings.HasPrefix(requestKey, retryKeyPrefix):
+		return "retry"
 	}
 	return ""
 }

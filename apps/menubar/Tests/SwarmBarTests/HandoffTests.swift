@@ -162,6 +162,19 @@ final class HandoffTests: XCTestCase {
         a.replacement?.phase = "starting"
         XCTAssertEqual(AgentTree.handoffStatus(a), "Starting successor…")
     }
+
+    // A queued Retry (waiting for a free slot, or for its predecessor to
+    // finish stopping) gets its own copy, distinct from a queued Resume,
+    // and the same cancel-only action set every queued replacement gets.
+    func testRetryQueuedReasonLabelsTheRowAndOfferOnlyCancel() {
+        var a = agent(.crashed)
+        a.replacement = AgentReplacement(operationID: "op_1", mode: "recover", phase: "queued", reason: "retry")
+        XCTAssertEqual(AgentTree.handoffStatus(a), "Retry waiting for a free slot")
+        XCTAssertTrue(AgentTree.subtitle(a).hasSuffix(" · Retry waiting for a free slot"), AgentTree.subtitle(a))
+        XCTAssertEqual(endpoints(a), ["cancel:Cancel:menu"])
+        a.replacement?.phase = "starting"
+        XCTAssertEqual(AgentTree.handoffStatus(a), "Starting successor…")
+    }
 }
 
 @MainActor

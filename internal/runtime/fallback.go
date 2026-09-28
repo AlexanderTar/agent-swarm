@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"slices"
 
@@ -63,4 +64,56 @@ func (s *Store) resolveUsageFallback(ctx context.Context, kind AgentKind, model,
 		}
 	}
 	return fb.Agent, fbModel, fbEffort, true, nil
+}
+
+// applyRetryFallback re-resolves a's kind/model/effort against usage
+// exhaustion the way Retry has always done, whether the launch happens
+// immediately or after waiting in the agent-limit queue (startSuccessor,
+// reason "retry"): a freshly substituted kind has never been Preflighted,
+// so it must be here, and the advisor kind/mode is re-resolved for it since
+// the kind swap can flip whether "native" advisor mode still applies.
+// Returns the (possibly updated) agent, the kind it had before any
+// substitution (for the fallback_used notification), and whether one
+// happened.
+func (s *Store) applyRetryFallback(ctx context.Context, a Agent) (Agent, AgentKind, bool, error) {
+	origKind := a.Kind
+	fbKind, fbModel, fbEffort, substituted, err := s.resolveUsageFallback(ctx, a.Kind, a.Model, a.Effort)
+	if err != nil {
+		return a, origKind, false, err
+	}
+	if !substituted {
+		return a, origKind, false, nil
+	}
+	if err := s.Preflight(ctx, PreflightInput{Kind: fbKind, Model: fbModel, Effort: fbEffort, Role: a.Role}); err != nil {
+		return a, origKind, false, err
+	}
+	advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisor(ctx, fbKind,
+		&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorRequestedEffort})
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ?,
+			advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, ''), advisor_requested_effort = NULLIF(?, ''),
+			kind_reason = ?
+			WHERE id = ?`,
+			string(fbKind), fbModel, fbEffort, string(advKind), advModel, advEffort, advMode, advRequestedEffort,
+			joinReason(a.KindReason, fallbackReason(origKind)), a.ID)
+		return err
+	}); err != nil {
+		return a, origKind, false, err
+	}
+	a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
+	a.KindReason = joinReason(a.KindReason, fallbackReason(origKind))
+	a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.AdvisorRequestedEffort = string(advKind), advModel, advEffort, advMode, advRequestedEffort
+	return a, origKind, true, nil
+}
+
+// notifyRetryFallback raises agent.fallback_used after a retry substitution,
+// immediate or queued.
+func (s *Store) notifyRetryFallback(ctx context.Context, a Agent, origKind AgentKind) {
+	if s.Notify == nil {
+		return
+	}
+	var itemKey string
+	_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey)
+	_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: a.Name, ItemKey: itemKey,
+		Args: map[string]string{"name": a.Name, "agent": a.Kind.Display(), "from": origKind.Display()}})
 }

@@ -2036,10 +2036,20 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	// agent, not a 409 (mirrors Resume's own queued-repeat handling): this
 	// check must run before refuseIfOperationInFlight below, or the very
 	// operation this retry queued would make its own replay look like a
-	// conflicting one.
+	// conflicting one. A different note on the repeat call still reaches
+	// the successor -- the latest call wins.
 	if op, ok, err := s.PendingOperation(ctx, a.ID); err != nil {
 		return Agent{}, err
 	} else if ok && op.RequestKey == retryKeyPrefix+ses.ID {
+		if note != op.Note {
+			if err := s.tx(ctx, func(tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, `UPDATE agent_operations SET note = ?, updated_at = ? WHERE id = ?`,
+					note, db.Millis(s.now()), op.ID)
+				return err
+			}); err != nil {
+				return Agent{}, err
+			}
+		}
 		return a, nil
 	}
 	// Batch 3: Retry consults the replacement coordinator before the state
@@ -2080,43 +2090,17 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		return a, nil
 	}
 
-	// origKind is captured before resolveUsageFallback may substitute a.Kind,
-	// so the agent.fallback_used notification below can report what was
-	// actually configured.
-	origKind := a.Kind
-	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, a.Kind, a.Model, a.Effort)
+	// Retry never re-validates the *original* kind -- it trusts the agent
+	// row was already vetted at spawn time -- but a freshly substituted
+	// kind is re-Preflighted and re-advised by applyRetryFallback, or a
+	// broken substitute (not installed, not signed in) would spawn a
+	// session doomed to fail instead of surfacing a clear refusal.
+	var origKind AgentKind
+	var substituted bool
+	var ferr error
+	a, origKind, substituted, ferr = s.applyRetryFallback(ctx, a)
 	if ferr != nil {
 		return Agent{}, ferr
-	}
-	if substituted {
-		// Retry never re-validates the *original* kind -- it trusts the
-		// agent row was already vetted at spawn time -- but a freshly
-		// substituted kind has never been Preflighted, so it must be here,
-		// or a broken substitute (not installed, not signed in) would spawn
-		// a session doomed to fail instead of surfacing a clear refusal.
-		if err := s.Preflight(ctx, PreflightInput{Kind: fbKind, Model: fbModel, Effort: fbEffort, Role: a.Role}); err != nil {
-			return Agent{}, err
-		}
-		// The kind swap above can flip whether "native" advisor mode still
-		// applies (it's Claude-only): re-resolve with the agent's existing
-		// advisor kind/model/effort as an explicit choice, so mode gets
-		// recomputed for fbKind instead of surviving stale from spawn time.
-		advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisor(ctx, fbKind,
-			&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorRequestedEffort})
-		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ?,
-				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, ''), advisor_requested_effort = NULLIF(?, ''),
-				kind_reason = ?
-				WHERE id = ?`,
-				string(fbKind), fbModel, fbEffort, string(advKind), advModel, advEffort, advMode, advRequestedEffort,
-				joinReason(a.KindReason, fallbackReason(origKind)), a.ID)
-			return err
-		}); err != nil {
-			return Agent{}, err
-		}
-		a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
-		a.KindReason = joinReason(a.KindReason, fallbackReason(origKind))
-		a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.AdvisorRequestedEffort = string(advKind), advModel, advEffort, advMode, advRequestedEffort
 	}
 
 	if note != "" {
@@ -2150,11 +2134,8 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	}); err != nil {
 		return Agent{}, err
 	}
-	if substituted && s.Notify != nil {
-		var itemKey string
-		_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, out.ItemID).Scan(&itemKey)
-		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: out.Name, ItemKey: itemKey,
-			Args: map[string]string{"name": out.Name, "agent": out.Kind.Display(), "from": origKind.Display()}})
+	if substituted {
+		s.notifyRetryFallback(ctx, out, origKind)
 	}
 	s.go_(func() {
 		if err := s.watchStartup(context.WithoutCancel(ctx), out, newSes, s.Adapters[out.Kind]); err != nil {

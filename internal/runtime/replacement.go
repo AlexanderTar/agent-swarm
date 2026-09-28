@@ -227,15 +227,20 @@ func (s *Store) pendingOperationTx(ctx context.Context, q txQuerier, agentID str
 }
 
 // queueRetryIntent persists a Retry that arrived while the latest session
-// is still stopping: a durable queued recover operation carrying the note,
-// idempotent per (caller session, request key) like every other control
-// mutation. The agent row and sessions are untouched -- no launch happens
-// here. The next ResumeOperations executes the intent once the session
-// settles into a retryable state, and Cancel wins over it meanwhile.
+// is still stopping: a durable queued recover operation carrying the note.
+// The operation's own request key is the same "retry:<session id>" scheme
+// the agent-limit queueing path uses (capacity.go), so both converge on one
+// OperationReason ("retry") and startSuccessor treats them identically --
+// a fresh attempt, not a recovery. The outer IdemTx is a second, independent
+// idempotency layer keyed on the caller's own (session, request id), same as
+// every other control mutation. The agent row and sessions are untouched --
+// no launch happens here. The next ResumeOperations executes the intent once
+// the session settles into a retryable state, and Cancel wins over it
+// meanwhile.
 func (s *Store) queueRetryIntent(ctx context.Context, a Agent, ses Session, note, callerSessionID, requestID string) (Agent, error) {
 	var out Agent
 	if _, err := IdemTx(ctx, s, callerSessionID, requestID, "swarm_control", &out, func(tx *sql.Tx) error {
-		if err := s.queueRetryOperationTx(ctx, tx, a, ses, note, requestID); err != nil {
+		if err := s.queueRetryOperationTx(ctx, tx, a, ses, note, retryKeyPrefix+ses.ID); err != nil {
 			return err
 		}
 		out = a
@@ -287,7 +292,12 @@ func (s *Store) queueRetryOperationTx(ctx context.Context, tx *sql.Tx, a Agent, 
 		}
 		return err
 	}
-	return nil
+	// An explicit Retry is a user request to launch again, exactly like
+	// RequestReplacement's own auto_restart re-enable above: without this, a
+	// Retry-after-Cancel queued here would report success but ResumeOperations
+	// (autoRestart check) would skip it forever.
+	_, err = tx.ExecContext(ctx, `UPDATE agents SET auto_restart = 1 WHERE id = ?`, a.ID)
+	return err
 }
 
 // CancelOperation marks one operation cancelled. Terminal rows are returned
@@ -914,16 +924,37 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 	}
 	// The successor continues the same assignment: its kickoff is the
 	// section-4 template for the operation mode (pause never reaches here;
-	// it lands succeeded at stop with no successor).
+	// it lands succeeded at stop with no successor). A queued retry
+	// ("retry:<session id>", whether it waited for a free slot or for its
+	// predecessor to finish stopping) is a genuine new attempt, not a
+	// recovery: same attempt bump, same fresh kickoff, and the same usage
+	// fallback re-resolution an immediate Retry gets -- otherwise
+	// reconcile's terminalCheckpointKind would read the *old* attempt's
+	// checkpoint against this new session, hasAnyCheckpoint would suppress
+	// a genuine no-ack, and the successor would open with a recovery
+	// kickoff (or a broken-predecessor warning) instead of a fresh one.
 	reason := OperationReason(op.RequestKey)
 	succMode := "handoff"
+	attempt := latest.Attempt
 	switch {
+	case reason == "retry":
+		succMode = ""
+		attempt = latest.Attempt + 1
+		var substituted bool
+		var origKind AgentKind
+		var err error
+		if a, origKind, substituted, err = s.applyRetryFallback(ctx, a); err != nil {
+			return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
+		}
+		if substituted {
+			s.notifyRetryFallback(ctx, a, origKind)
+		}
 	case op.Mode == ModeRecover:
 		succMode = "recovery"
 	case reason == "resume":
 		succMode = "resume" // a manual Resume that waited for a slot
 	}
-	succ, err := s.startSession(ctx, a, latest.Attempt, latest.Generation+1, false, "", succMode)
+	succ, err := s.startSession(ctx, a, attempt, latest.Generation+1, false, "", succMode)
 	if err != nil {
 		return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
 	}
@@ -956,8 +987,9 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 			return err
 		}
 		// A capacity pause or a queued resume coming back is expected, not a
-		// retry: no agent.retried (spec decision 9).
-		if reason == "" {
+		// retry: no agent.retried (spec decision 9). A queued retry is a
+		// genuine retry and does fire it, same as an immediate one.
+		if reason == "" || reason == "retry" {
 			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.retried", AgentName: a.Name,
 				ItemKey: key, Args: map[string]string{"name": a.Name, "N": fmt.Sprint(succ.Attempt), "KEY": key}}); err != nil {
 				return err
