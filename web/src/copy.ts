@@ -92,6 +92,7 @@ export const C = {
   openRoot: "Open root",
   overview: "Overview",
   checkpoints: "Checkpoints",
+  progress: "Progress",
   brief: "Brief",
   acceptance: "Acceptance",
   blockedBy: "Blocked by",

@@ -83,6 +83,9 @@ export interface Item {
 
 export interface ItemsResponse { items: Item[]; matches: number }
 
+export type TodoStatus = "pending" | "in_progress" | "completed";
+export interface Todo { id: string; label: string; status: TodoStatus; item_key?: string }
+
 export interface ItemDetail {
   item: Item;
   ancestors: Item[];               // root first
@@ -93,6 +96,7 @@ export interface ItemDetail {
   artifacts: Artifact[];
   workflow_state?: WorkflowState;
   crew?: WorkflowCrewMember[];
+  todos?: Todo[];                  // root items with a progress list only
 }
 
 export interface WorkflowFinding { severity: string; file: string; line?: number; unit?: number; summary: string; reviewer?: string }

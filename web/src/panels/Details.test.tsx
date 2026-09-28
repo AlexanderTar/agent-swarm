@@ -27,6 +27,28 @@ beforeEach(() => {
 });
 
 describe("Details panel (§16.9)", () => {
+  it("shows the Progress block only when the detail carries todos", async () => {
+    const d = createMockDaemon();
+    const real = d.handle({ method: "GET", url: "/api/items/EPIC-12", headers: { authorization: `Bearer ${d.db.token}` } });
+    d.override("GET /api/items/EPIC-12", () => ({
+      ...real,
+      body: { ...(real.body as object), todos: [
+        { id: "TASK-101", label: "TASK-101 · Login form", status: "in_progress", item_key: "TASK-101" },
+        { id: "integrate", label: "Merge + verify", status: "pending" },
+      ] },
+    }));
+    const { user, props } = setup("EPIC-12", {}, d);
+    expect(await screen.findByRole("heading", { name: "Progress 0/2" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "TASK-101 · Login form" }));
+    expect(props.onSelect).toHaveBeenCalledWith("TASK-101");
+  });
+
+  it("has no Progress block without todos", async () => {
+    setup("EPIC-12");
+    expect(await screen.findByTestId("details-panel")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^Progress/ })).toBeNull();
+  });
+
   it("shows workflow runs from the item detail payload and opens their terminal", async () => {
     const d = createMockDaemon();
     const base = d.handle({ method: "GET", url: "/api/items/TASK-103", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;

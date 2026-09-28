@@ -6,6 +6,7 @@ import { AgentList } from "../components/AgentRow";
 import { ArtifactViewer } from "../components/ArtifactViewer";
 import { CheckpointList } from "../components/CheckpointList";
 import { MoveToMenu } from "../components/MoveToMenu";
+import { TodoList } from "../components/TodoList";
 import { useToast } from "../components/Toast";
 import { WorkflowSection } from "../components/WorkflowSection";
 import { C, STATUS_LABEL, T } from "../copy";
@@ -193,6 +194,8 @@ export function Details(p: DetailsProps) {
       <WorkflowSection workflow={item.workflow} state={d.workflow_state} onOpenTerminal={(name) => {
         void terminal.run(name).catch((e: unknown) => toast({ message: errorText(e) }));
       }} />
+
+      {d.todos && <TodoList todos={d.todos} onSelect={p.onSelect} />}
 
       <div role="tablist" className="flex gap-3 border-t border-line pt-3">
         {(["overview", "checkpoints"] as const).map((t) => (
