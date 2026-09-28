@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { C, STATUS_LABEL, T, TYPE_LABEL } from "../copy";
 import { useInvalidate, useMutation } from "../data/hooks";
 import { qk, useItemDetail } from "../data/queries";
-import { flattenAgents } from "../logic/agentActions";
+import { displayState, flattenAgents, isFinished } from "../logic/agentActions";
 import { agentActionToast } from "../logic/toasts";
 import { ARTIFACT_LABEL, requestTitle } from "../logic/requestTitle";
 import { checkMove, failureMessage } from "../logic/transitions";
@@ -82,16 +82,26 @@ export function Details(p: DetailsProps) {
   const detail = useItemDetail(p.itemKey);
   const invalidate = useInvalidate();
   const toast = useToast();
-  const [tab, setTab] = useState<"overview" | "checkpoints">("overview");
+  const [tab, setTab] = useState<"overview" | "agents" | "checkpoints" | "deps">("overview");
+  const pendingAgentScroll = useRef<string | null>(null);
   const [stale, setStale] = useState(false);
   const [viewing, setViewing] = useState<{ id: string; revision: number } | null>(null);
-  const agentsRef = useRef<HTMLElement>(null);
   const patch = useMutation((api, key: string, body: PatchItemBody) => api.patchItem(key, body), ["items", "item:", "graph:"]);
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
 
   useEffect(() => {
-    if (p.focus === "agents" && detail.data) agentsRef.current?.scrollIntoView?.({ block: "start" });
+    if (p.focus === "agents" && detail.data) setTab("agents");
   }, [p.focus, detail.data]);
+
+  const setAgentsRef = (node: HTMLElement | null) => {
+    if (!node) return;
+    if (pendingAgentScroll.current) {
+      node.querySelector<HTMLElement>(`#agent-${pendingAgentScroll.current}`)?.scrollIntoView?.({ block: "center" });
+      pendingAgentScroll.current = null;
+    } else if (p.focus === "agents") {
+      node.scrollIntoView?.({ block: "start" });
+    }
+  };
 
   const d = detail.data;
   // Standing rule: a failed load gets a message + retry, never a permanent "…" placeholder.
@@ -174,31 +184,13 @@ export function Details(p: DetailsProps) {
         </label>
       </div>
 
-      {d.requests.length > 0 && (
-        <section aria-label={C.needsYou} className="border-t border-line pt-3">
-          <h3 className="mb-1 font-semibold">{C.needsYou}</h3>
-          <ul className="space-y-1">
-            {[...d.requests].sort((a, b) => a.created_at - b.created_at).map((r) => (
-              <li key={r.id} className="flex items-center justify-between gap-2">
-                <span className="truncate">{requestTitle(r)}</span>
-                <button type="button" onClick={() => p.onReview(r.id)} className="text-link">{C.review}</button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <section ref={agentsRef} aria-label={C.agents} className="border-t border-line pt-3">
-        <h3 className="mb-1 font-semibold">{C.agents}</h3>
-        <AgentList agents={d.agents} />
-      </section>
-
-      <WorkflowSection workflow={item.workflow} state={d.workflow_state} connected={p.connected} onOpenTerminal={(name) => {
-        void terminal.run(name).then(() => toast.success(agentActionToast("terminal", name))).catch((e: unknown) => toast({ message: errorText(e) }));
-      }} />
-
       <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)}>
-        <TabsList variant="line">{(["overview", "checkpoints"] as const).map((t) => <TabsTrigger key={t} value={t}>{t === "overview" ? C.overview : C.checkpoints}</TabsTrigger>)}</TabsList>
+        <TabsList variant="line" className="w-full justify-start overflow-x-auto">
+          <TabsTrigger value="overview">{C.overview}</TabsTrigger>
+          <TabsTrigger value="agents">{C.agents}</TabsTrigger>
+          <TabsTrigger value="checkpoints">{C.checkpoints}</TabsTrigger>
+          <TabsTrigger value="deps">{C.deps}</TabsTrigger>
+        </TabsList>
         <TabsContent value="overview" className="space-y-3">
           <div>
             <h4 className="text-muted-foreground">{C.brief}</h4>
@@ -210,6 +202,58 @@ export function Details(p: DetailsProps) {
               <ul className="list-disc pl-5">{item.acceptance.map((a) => <li key={a}>{a}</li>)}</ul>
             </div>
           )}
+          <WorkflowSection workflow={item.workflow} state={d.workflow_state} connected={p.connected} onOpenTerminal={(name) => {
+            void terminal.run(name).then(() => toast.success(agentActionToast("terminal", name))).catch((e: unknown) => toast({ message: errorText(e) }));
+          }} />
+          <section aria-label={C.agents} className="border-t border-line pt-3">
+            <h3 className="mb-1 font-semibold">{C.agents}</h3>
+            <ul className="space-y-1 text-sm">
+              {d.agents.filter((agent) => !isFinished(agent)).map((agent) => (
+                <li key={agent.id} className="flex justify-between gap-2">
+                  <span className="truncate">{agent.name}</span>
+                  <span className="shrink-0 text-muted-foreground">{displayState(agent)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+          {d.artifacts.length > 0 && (
+            <div>
+              <h4 className="text-muted-foreground">{C.artifacts}</h4>
+              {d.artifacts.map((a) => (
+                <button key={a.id} type="button" onClick={() => setViewing({ id: a.id, revision: a.head_revision })} className="block text-link">
+                  {`${ARTIFACT_LABEL[a.kind]} · rev ${a.head_revision} · ${C.view}`}
+                </button>
+              ))}
+            </div>
+          )}
+          {item.origin_spike_key && (
+            <button type="button" onClick={() => p.onSelect(item.origin_spike_key ?? "")} className="text-link">
+              {T.startedFrom(item.origin_spike_key)}
+            </button>
+          )}
+          {d.requests.length > 0 && (
+            <section aria-label={C.needsYou} className="border-t border-line pt-3">
+              <h3 className="mb-1 font-semibold">{C.needsYou}</h3>
+              <ul className="space-y-1">
+                {[...d.requests].sort((a, b) => a.created_at - b.created_at).map((r) => (
+                  <li key={r.id} className="flex items-center justify-between gap-2">
+                    <span className="truncate">{requestTitle(r)}</span>
+                    <button type="button" onClick={() => p.onReview(r.id)} className="text-link">{C.review}</button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </TabsContent>
+        <TabsContent value="agents">
+          <section ref={setAgentsRef} aria-label={C.agents} className="pt-2">
+            <AgentList agents={d.agents} />
+          </section>
+        </TabsContent>
+        <TabsContent value="checkpoints">
+          <CheckpointList itemKey={item.key} agentNames={flattenAgents(d.agents).map((a) => a.name)} />
+        </TabsContent>
+        <TabsContent value="deps" className="space-y-3">
           {d.deps.blocked_by.length > 0 && (
             <p>
               {`${C.blockedBy}: `}
@@ -227,24 +271,6 @@ export function Details(p: DetailsProps) {
             </p>
           )}
           <AddDependency itemKey={item.key} disabled={!p.connected} />
-          {d.artifacts.length > 0 && (
-            <div>
-              <h4 className="text-muted-foreground">{C.artifacts}</h4>
-              {d.artifacts.map((a) => (
-                <button key={a.id} type="button" onClick={() => setViewing({ id: a.id, revision: a.head_revision })} className="block text-link">
-                  {`${ARTIFACT_LABEL[a.kind]} · rev ${a.head_revision} · ${C.view}`}
-                </button>
-              ))}
-            </div>
-          )}
-          {item.origin_spike_key && (
-            <button type="button" onClick={() => p.onSelect(item.origin_spike_key ?? "")} className="text-link">
-              {T.startedFrom(item.origin_spike_key)}
-            </button>
-          )}
-        </TabsContent>
-        <TabsContent value="checkpoints">
-          <CheckpointList itemKey={item.key} agentNames={flattenAgents(d.agents).map((a) => a.name)} />
         </TabsContent>
       </Tabs>
 
@@ -253,7 +279,10 @@ export function Details(p: DetailsProps) {
           {orchestrator ? (
             <button
               type="button"
-              onClick={() => document.getElementById(`agent-${orchestrator.name}`)?.scrollIntoView?.({ block: "center" })}
+              onClick={() => {
+                if (tab === "agents") document.getElementById(`agent-${orchestrator.name}`)?.scrollIntoView?.({ block: "center" });
+                else { pendingAgentScroll.current = orchestrator.name; setTab("agents"); }
+              }}
               className="rounded border border-line px-3 py-1"
             >
               {C.viewOrchestrator}

@@ -92,6 +92,7 @@ export const C = {
   depLegend: "A → B: B waits for A",
   openRoot: "Open root",
   overview: "Overview",
+  deps: "Deps",
   checkpoints: "Checkpoints",
   brief: "Brief",
   acceptance: "Acceptance",

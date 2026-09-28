@@ -130,6 +130,7 @@ describe("Details panel (§16.9)", () => {
 
   it("lists agents and scrolls to them when asked", async () => {
     setup("EPIC-12", { focus: "agents" });
+    expect(await screen.findByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true");
     const agents = await screen.findByRole("region", { name: "Agents" });
     expect(within(agents).getByTestId("agent-auth-epic-orchestrator")).toBeInTheDocument();
     expect(within(agents).getByTestId("agent-login-form-coder")).toBeInTheDocument();
@@ -149,13 +150,15 @@ describe("Details panel (§16.9)", () => {
   });
 
   it("shows blocked-by and blocks lines", async () => {
-    setup("TASK-102");
+    const { user } = setup("TASK-102");
+    await user.click(await screen.findByRole("tab", { name: "Deps" }));
     expect(await screen.findByText("TASK-98 (Done)")).toBeInTheDocument();
     expect(screen.getByText("TASK-104")).toBeInTheDocument();
   });
 
   it("adds a dependency and shows the cycle error", async () => {
     const { user, daemon } = setup("TASK-98");
+    await user.click(await screen.findByRole("tab", { name: "Deps" }));
     await user.click(await screen.findByRole("button", { name: "+ Add dependency" }));
     await user.type(screen.getByRole("searchbox", { name: "Add dependency" }), "validate");
     await user.click(await screen.findByRole("button", { name: "TASK-104 · Validate inputs" }));
@@ -178,6 +181,23 @@ describe("Details panel (§16.9)", () => {
     expect(await screen.findByText(/Form renders; wiring submit\./)).toBeInTheDocument();
   });
 
+  it("places four tabs before long content and keeps agents and dependencies in their panels", async () => {
+    const { user } = setup("EPIC-12");
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Overview", "Agents", "Checkpoints", "Deps"]);
+    const panel = screen.getByTestId("details-panel");
+    const overview = screen.getByRole("tabpanel", { name: "Overview" });
+    expect(panel.contains(tabs[0]!)).toBe(true);
+    expect(tabs[0]!.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(overview).getByText("Sign-in for the chat app.")).toBeInTheDocument();
+    expect(within(overview).getByText("Users can log in")).toBeInTheDocument();
+    expect(within(overview).queryByTestId("agent-auth-epic-orchestrator")).not.toBeInTheDocument();
+    await user.click(tabs[1]!);
+    expect(within(screen.getByRole("tabpanel", { name: "Agents" })).getByTestId("agent-auth-epic-orchestrator")).toBeInTheDocument();
+    await user.click(tabs[3]!);
+    expect(within(screen.getByRole("tabpanel", { name: "Deps" })).getByRole("button", { name: "+ Add dependency" })).toBeInTheDocument();
+  });
+
   it("offers Start or View orchestrator on top-level items only", async () => {
     const a = setup("EPIC-20");
     await a.user.click(await screen.findByRole("button", { name: "Start orchestrator" }));
@@ -185,7 +205,8 @@ describe("Details panel (§16.9)", () => {
     a.unmount();
     const b = setup("EPIC-12");
     await b.user.click(await screen.findByRole("button", { name: "View orchestrator" }));
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true"));
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
     b.unmount();
     setup("TASK-101");
     await screen.findByText(/Build login form/);
@@ -249,6 +270,7 @@ describe("Details panel (§16.9)", () => {
 
   it("focuses the dependency search on open and restores focus to its trigger on close", async () => {
     const { user } = setup("TASK-98");
+    await user.click(await screen.findByRole("tab", { name: "Deps" }));
     const opener = await screen.findByRole("button", { name: "+ Add dependency" });
     await user.click(opener);
     expect(screen.getByRole("searchbox", { name: "Add dependency" })).toHaveFocus();
