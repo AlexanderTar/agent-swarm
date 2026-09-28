@@ -45,23 +45,23 @@ public struct NewOrchestratorView: View {
                     }
                 }
             }
+            // Once the orchestrator has started (even with unsaved images), the whole form —
+            // fields, image strip, Cancel — is inert; only Done stays active.
+            .disabled(form.startedWithUnsavedImages != nil)
             Divider()
             HStack {
                 if let caption = form.queuedCaption { Text(caption).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
                 Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction)
+                    .disabled(form.startedWithUnsavedImages != nil)
                 if let agent = form.startedWithUnsavedImages {
-                    // AXButton (not a plain Button): its NSButton backing is how the render test
-                    // finds "Done" headlessly, the same trick used for the image strip's buttons.
-                    AXButton(title: Copy.done, accessibilityLabel: Copy.done) { onStarted(agent) }
-                        .fixedSize()
-                        .keyboardShortcut(.defaultAction)
+                    Button(Copy.done) { onStarted(agent) }.keyboardShortcut(.defaultAction)
                 } else {
-                    AXButton(title: form.startLabel, accessibilityLabel: form.startLabel, enabled: form.canStart) {
+                    Button(form.startLabel) {
                         Task { if let agent = await form.submit(), form.startedWithUnsavedImages == nil { onStarted(agent) } }
                     }
-                    .fixedSize()
                     .keyboardShortcut(.defaultAction)
+                    .disabled(!form.canStart)
                 }
             }
             .padding(.horizontal, 22)
@@ -277,46 +277,139 @@ struct RequestEditor: View {
 
     var body: some View {
         // Inset inside the border: flush against it, the first line's ascenders are clipped.
-        TextEditor(text: $text)
-            .background(SubtleScrollerConfig(adjacentScrollView: true))
+        ImagePasteTextEditor(text: $text, onImageData: onImageData, onImageURLs: onImageURLs)
             .frame(minHeight: Self.minimumHeight, maxHeight: .infinity)
             .padding(.vertical, 6)
             .padding(.horizontal, 4)
             .border(.separator)
-            // A plain-text paste must still reach the editor; only intercept when the pasteboard
-            // carries no string (a copied image, or a Finder file).
-            .onPasteCommand(of: [.image, .fileURL]) { providers in
-                guard !NSPasteboard.general.canReadItem(withDataConformingToTypes: [NSPasteboard.PasteboardType.string.rawValue]) else { return }
-                for provider in providers {
-                    if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                            guard let url else { return }
-                            DispatchQueue.main.async { onImageURLs([url]) }
-                        }
-                    } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-                        provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                            guard let data else { return }
-                            DispatchQueue.main.async { onImageData(data, "Pasted image.png") }
-                        }
-                    }
-                }
+    }
+}
+
+/// Wraps `ImagePasteTextView` in a scroll view configured the way the rest of the app's text areas
+/// are (overlay scroller, small, autohiding) — set directly here rather than through the
+/// `SubtleScrollerConfig` sibling-view trick `TextEditor` needs, since this scroll view is ours.
+private struct ImagePasteTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    var onImageData: (Data, String) -> Void
+    var onImageURLs: ([URL]) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let textView = ImagePasteTextView()
+        textView.delegate = context.coordinator
+        textView.string = text
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.font = .systemFont(ofSize: NSFont.systemFontSize)
+        textView.onImageData = onImageData
+        textView.onImageURLs = onImageURLs
+        textView.registerForDraggedTypes([.fileURL, .tiff, .png])
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.drawsBackground = false
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
+        scrollView.verticalScroller?.controlSize = .small
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? ImagePasteTextView else { return }
+        context.coordinator.text = $text
+        textView.onImageData = onImageData
+        textView.onImageURLs = onImageURLs
+        textView.isEditable = context.environment.isEnabled
+        if textView.string != text { textView.string = text }
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
+        scrollView.verticalScroller?.controlSize = .small
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView, text.wrappedValue != textView.string else { return }
+            text.wrappedValue = textView.string
+        }
+    }
+}
+
+/// An `NSTextView` that hands an image — pasted from the clipboard, dropped as a file, or a
+/// pasted/dropped image file's URL — to the New orchestrator form instead of inserting it as text.
+/// Plain text paste and drop still land in the text normally: `NSTextView` owns paste and drop
+/// itself once it is first responder, so interception has to happen at this level, not with
+/// `.onPasteCommand`/`.onDrop` on a SwiftUI wrapper (those never see it — verified empirically).
+final class ImagePasteTextView: NSTextView {
+    var onImageData: (Data, String) -> Void = { _, _ in }
+    var onImageURLs: ([URL]) -> Void = { _ in }
+
+    private static let imageTypes: [NSPasteboard.PasteboardType] = [.tiff, .png]
+
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        Self.imageTypes + [.fileURL] + super.readablePasteboardTypes
+    }
+
+    override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        handle(pboard, type: type) || super.readSelection(from: pboard, type: type)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        canHandle(sender.draggingPasteboard) ? .copy : super.draggingEntered(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        canHandle(sender.draggingPasteboard) || super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let pboard = sender.draggingPasteboard
+        if let urls = imageFileURLs(pboard) {
+            onImageURLs(urls)
+            return true
+        }
+        for type in Self.imageTypes {
+            if let data = pboard.data(forType: type) {
+                onImageData(data, "Dropped image.png")
+                return true
             }
-            .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
-                for provider in providers {
-                    if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                            guard let url else { return }
-                            DispatchQueue.main.async { onImageURLs([url]) }
-                        }
-                    } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-                        provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                            guard let data else { return }
-                            DispatchQueue.main.async { onImageData(data, "Dropped image.png") }
-                        }
-                    }
-                }
-                return !providers.isEmpty
-            }
+        }
+        return super.performDragOperation(sender)
+    }
+
+    /// True (and the callback fired) when `type` is an image or an image file's URL — nothing is
+    /// inserted as text in that case. False, unhandled, for anything else (plain text included).
+    @discardableResult
+    private func handle(_ pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        if Self.imageTypes.contains(type), let data = pboard.data(forType: type) {
+            onImageData(data, "Pasted image.png")
+            return true
+        }
+        if type == .fileURL, let urls = imageFileURLs(pboard) {
+            onImageURLs(urls)
+            return true
+        }
+        return false
+    }
+
+    private func canHandle(_ pboard: NSPasteboard) -> Bool {
+        imageFileURLs(pboard) != nil || Self.imageTypes.contains { pboard.data(forType: $0) != nil }
+    }
+
+    private func imageFileURLs(_ pboard: NSPasteboard) -> [URL]? {
+        guard let urls = pboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] else { return nil }
+        let images = urls.filter { (try? $0.resourceValues(forKeys: [.contentTypeKey]))?.contentType?.conforms(to: .image) == true }
+        return images.isEmpty ? nil : images
     }
 }
 
@@ -337,9 +430,9 @@ struct RequestImageStrip: View {
                     .scrollIndicators(.never)
                     .fixedSize(horizontal: false, vertical: true)
                 }
-                AXButton(title: Copy.addImages, accessibilityLabel: Copy.addImages,
-                         enabled: form.images.count < 10, action: addImages)
-                    .fixedSize()
+                Button(Copy.addImages) { addImages() }
+                    .accessibilityLabel(Copy.addImages)
+                    .disabled(form.images.count >= 10)
                 if !form.images.isEmpty {
                     Text(Copy.imageCount(form.images.count)).font(.caption).foregroundStyle(.secondary)
                 }
@@ -360,10 +453,13 @@ struct RequestImageStrip: View {
             }
             .frame(width: 48, height: 48)
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            AXButton(image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: nil),
-                     accessibilityLabel: Copy.removeImage(image.name), help: image.name) { form.removeImage(image.id) }
-                .frame(width: 14, height: 14)
-                .offset(x: 4, y: -4)
+            Button { form.removeImage(image.id) } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(.white, .black.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 4, y: -4)
+            .accessibilityLabel(Copy.removeImage(image.name))
+            .help(image.name)
         }
         .frame(width: 48, height: 48)
     }
@@ -376,48 +472,6 @@ struct RequestImageStrip: View {
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
         form.addImages(from: panel.urls)
-    }
-}
-
-/// A push button (or, with `image`, a borderless icon button) backed by a real `NSButton` so tests
-/// can find it by `accessibilityLabel()` the way `WideOptionPicker`'s `NSPopUpButton` already is —
-/// a plain SwiftUI `Button` in this file draws directly, with no `NSView` a headless test can query.
-private struct AXButton: NSViewRepresentable {
-    var title: String = ""
-    var image: NSImage?
-    let accessibilityLabel: String
-    var help: String?
-    var enabled = true
-    let action: () -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
-
-    func makeNSView(context: Context) -> NSButton {
-        let button: NSButton
-        if let image {
-            button = NSButton(image: image, target: context.coordinator, action: #selector(Coordinator.fire))
-            button.isBordered = false
-            button.imagePosition = .imageOnly
-        } else {
-            button = NSButton(title: title, target: context.coordinator, action: #selector(Coordinator.fire))
-            button.bezelStyle = .rounded
-        }
-        button.setAccessibilityLabel(accessibilityLabel)
-        return button
-    }
-
-    func updateNSView(_ button: NSButton, context: Context) {
-        context.coordinator.action = action
-        if image == nil { button.title = title }
-        button.isEnabled = enabled
-        button.toolTip = help
-        button.setAccessibilityLabel(accessibilityLabel)
-    }
-
-    @MainActor final class Coordinator: NSObject {
-        var action: () -> Void
-        init(action: @escaping () -> Void) { self.action = action }
-        @objc func fire() { action() }
     }
 }
 

@@ -412,11 +412,6 @@ final class NewOrchestratorRenderTests: XCTestCase {
 
     // MARK: images
 
-    private func buttons(_ view: NSView) -> [NSButton] {
-        let own = (view as? NSButton).map { [$0] } ?? []
-        return own + view.subviews.flatMap(buttons)
-    }
-
     /// Plain `Text`/`Button` draw directly in this codebase (no backing `NSView`), so visible
     /// copy is read back with OCR, the same technique `testEmptyChooserExplainsHowToAddRepositories`
     /// and `testAgentAndAdvisorSelectorsShareAlignedSixColumnRows` already use.
@@ -453,8 +448,11 @@ final class NewOrchestratorRenderTests: XCTestCase {
         let form = model.makeNewOrchestratorForm()
         await form.load()
         let h = host(form)
-        XCTAssertTrue(buttons(h).contains { $0.accessibilityLabel() == Copy.addImages })
+        // Button copy (any Button in this codebase, not just the footer's) never reaches OCR --
+        // verified empirically -- so only the counter, a plain Text, is checked here. The button
+        // itself is exercised at the model layer (NewOrchestratorFormTests' image tests).
         XCTAssertFalse(try visibleText(h).contains(Copy.imageCount(0)))
+        XCTAssertEqual(form.images.count, 0)
     }
 
     func testImageStripShowsThumbnailsAndCounter() async throws {
@@ -466,9 +464,8 @@ final class NewOrchestratorRenderTests: XCTestCase {
         form.addImage(data: pngData, name: "a.png")
         form.addImage(data: pngData, name: "b.png")
         form.addImage(data: pngData, name: "c.png")
+        XCTAssertEqual(form.images.map(\.name), ["a.png", "b.png", "c.png"])
         let h = host(form)
-        let removeLabels = buttons(h).compactMap { $0.accessibilityLabel() }.filter { $0.hasPrefix("Remove ") }
-        XCTAssertEqual(Set(removeLabels), Set(["Remove a.png", "Remove b.png", "Remove c.png"]))
         XCTAssertTrue(try visibleText(h).contains(Copy.imageCount(3)))
     }
 
@@ -479,9 +476,11 @@ final class NewOrchestratorRenderTests: XCTestCase {
         let form = model.makeNewOrchestratorForm()
         await form.load()
         for i in 0..<10 { form.addImage(data: pngData, name: "\(i).png") }
+        // The Add images… button's disabled binding is form.images.count >= 10, exercised at the
+        // model layer (testAddImageCapsAtTen); this just confirms the maxed-out strip still renders.
+        XCTAssertEqual(form.images.count, 10)
         let h = host(form)
-        let add = try XCTUnwrap(buttons(h).first { $0.accessibilityLabel() == Copy.addImages })
-        XCTAssertFalse(add.isEnabled)
+        XCTAssertTrue(try visibleText(h).contains(Copy.imageCount(10)))
     }
 
     func testImageStripShowsErrorText() async throws {
@@ -507,14 +506,64 @@ final class NewOrchestratorRenderTests: XCTestCase {
         form.addImage(data: pngData, name: "a.png")
         client.spikeResult = .success(CreateSpikeResponse(
             agent: AgentNode(name: "x", kind: .claude, model: "opus", role: .orchestrator), queued: false, attachmentsFailed: true))
-        _ = await form.submit()
+        let created = await form.submit()
+        XCTAssertNotNil(created)
+        XCTAssertNotNil(form.startedWithUnsavedImages, "the view swaps Start for Done off this flag")
+        // Start/Cancel/Done draw through a Liquid Glass material `cacheDisplay` can't rasterize
+        // (verified empirically: even the pre-existing Cancel button's text never reaches OCR), so
+        // only the warning banner is checked here; the Start-vs-Done swap itself is a one-line
+        // `if let agent = form.startedWithUnsavedImages` in NewOrchestratorView, driven by the
+        // model-level state already asserted above.
         let h = host(form)
         XCTAssertTrue(try visibleText(h).contains(Copy.imagesNotSaved))
-        // Start/Cancel/Done draw through a Liquid Glass material `cacheDisplay` can't rasterize
-        // (their text never reaches OCR, even for the pre-existing Cancel button), so Done and
-        // Start orchestrator are told apart via the NSButton the AXButton wrapper backs them with.
-        let labels = buttons(h).compactMap { $0.accessibilityLabel() }
-        XCTAssertTrue(labels.contains(Copy.done))
-        XCTAssertFalse(labels.contains(Copy.startOrchestrator))
+    }
+
+    // MARK: ImagePasteTextView
+
+    private func testPasteboard() -> NSPasteboard { NSPasteboard(name: NSPasteboard.Name("swarm-test-\(UUID().uuidString)")) }
+
+    func testReadSelectionRoutesImageDataToCallbackAndLeavesTextUnchanged() {
+        let pboard = testPasteboard()
+        pboard.declareTypes([.png], owner: nil)
+        pboard.setData(pngData, forType: .png)
+        let textView = ImagePasteTextView()
+        textView.string = "existing text"
+        var received: (Data, String)?
+        textView.onImageData = { data, name in received = (data, name) }
+        let handled = textView.readSelection(from: pboard, type: .png)
+        XCTAssertTrue(handled)
+        XCTAssertEqual(received?.0, pngData)
+        XCTAssertEqual(textView.string, "existing text")
+    }
+
+    func testReadSelectionRoutesImageFileURLToCallbackWithoutInsertingItsPath() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".png")
+        try pngData.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pboard = testPasteboard()
+        pboard.writeObjects([url as NSURL])
+        let textView = ImagePasteTextView()
+        textView.string = ""
+        var received: [URL]?
+        textView.onImageURLs = { urls in received = urls }
+        let handled = textView.readSelection(from: pboard, type: .fileURL)
+        XCTAssertTrue(handled)
+        XCTAssertEqual(received, [url])
+        XCTAssertEqual(textView.string, "", "the path must not land in the request text")
+    }
+
+    func testReadSelectionInsertsPlainTextNormally() {
+        let pboard = testPasteboard()
+        pboard.declareTypes([.string], owner: nil)
+        pboard.setString("hello there", forType: .string)
+        let textView = ImagePasteTextView()
+        textView.string = ""
+        var calledBack = false
+        textView.onImageData = { _, _ in calledBack = true }
+        textView.onImageURLs = { _ in calledBack = true }
+        let handled = textView.readSelection(from: pboard, type: .string)
+        XCTAssertTrue(handled, "NSTextView's own text insertion still handles this type")
+        XCTAssertFalse(calledBack)
+        XCTAssertEqual(textView.string, "hello there")
     }
 }
