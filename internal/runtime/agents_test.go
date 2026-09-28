@@ -535,6 +535,87 @@ func TestStartSpikeRefusesADuplicateUserTypedName(t *testing.T) {
 	}
 }
 
+// spec 2026-09-28: an empty Name with a Request infers the item title and
+// the agent name, marks the item title_pending, and appends the kickoff
+// line to the rendered Objective.
+func TestStartSpikeWithNoNameInfersTitleAndAgentNameFromRequest(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Intent: "debug", Kind: Fake, Model: "fake-1",
+		Request: "Fix the login redirect loop that happens after SSO sign-in on Safari"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Name != "fix-the-login-redirect" {
+		t.Fatalf("agent name = %q, want fix-the-login-redirect", a.Name)
+	}
+	it, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTitle := "Fix the login redirect loop that happens after SSO sign-in…"
+	if it.Title != wantTitle {
+		t.Fatalf("title = %q, want %q", it.Title, wantTitle)
+	}
+	if !it.TitlePending {
+		t.Fatal("item must be title_pending")
+	}
+	var payload string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE to_agent_id = ?`, a.ID).
+		Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, "This item has no name yet.") {
+		t.Fatalf("kickoff objective missing the title_pending line: %s", payload)
+	}
+}
+
+// A typed Name never sets title_pending, and the kickoff carries no line
+// about naming the item.
+func TestStartSpikeWithATypedNameLeavesTitlePendingUnset(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Investigate login crash", Intent: "debug",
+		Kind: Fake, Model: "fake-1", Request: "Users see a crash after the second login attempt."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Items.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.TitlePending {
+		t.Fatal("a typed name must never set title_pending")
+	}
+	var payload string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM messages WHERE to_agent_id = ?`, a.ID).
+		Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(payload, "This item has no name yet.") {
+		t.Fatalf("a typed name must not get the title_pending kickoff line: %s", payload)
+	}
+}
+
+// Locked decision 3: empty Name and empty Request refuses with a clear 400,
+// not a fallthrough to kind resolution.
+func TestStartSpikeWithNoNameAndNoRequestRefuses(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, _, _, err := s.StartSpike(ctx, SpikeInput{Intent: "debug", Kind: Fake, Model: "fake-1"})
+	var ie *items.Error
+	if !errors.As(err, &ie) || ie.Code != items.CodeBadRequest || ie.Message != "Give a name or a request." {
+		t.Fatalf("err = %v", err)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("no agent row must be created, got %d", n)
+	}
+}
+
 // §4: a daemon-generated worker name gets the -2 suffix instead.
 func TestSpawnSuffixesADaemonGeneratedName(t *testing.T) {
 	s, _, _ := newStore(t)
