@@ -282,6 +282,10 @@ type Request struct {
 	// requestTx never fills it.
 	NativePrompt *NativePrompt
 	ReviewPaths  *ReviewPaths
+	// ChatBlock is set only in-process, next to NativePrompt, for an
+	// approval that carries a summary (docs/specs/2026-09-28-approval-chat-block.md):
+	// the exact chat message to print before the native question.
+	ChatBlock string
 	// Next is set only in-process, by askApproval's auto-approve path
 	// (2026-09-28-empty-section-auto-approve locked decision 4): the exact
 	// line to print in chat and continue with the next section. Never

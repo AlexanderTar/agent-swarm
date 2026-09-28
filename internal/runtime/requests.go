@@ -526,6 +526,9 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID)
 		if req.Kind == KindApproveSection || req.Kind == KindApprovePlan || req.Kind == KindApproveReport {
 			payload["summary"] = req.Prompt
+			if payload["chat_block"], err = s.approvalChatBlockTx(ctx, tx, req); err != nil {
+				return err
+			}
 		}
 		if req.Kind == KindApprovePlan {
 			paths, _, err := s.planReviewPathsTx(ctx, tx, req.ItemID, req.ArtifactID)
@@ -1122,6 +1125,10 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 	if n < 1 || n > 2000 {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–2000 characters."}
 	}
+	if n > 300 && !strings.Contains(in.Prompt, "\n") {
+		return Request{}, &items.Error{Code: items.CodeBadRequest,
+			Message: "Summary must be a lead sentence plus bullets (see swarm-orchestrator: approval summaries)."}
+	}
 	if in.NothingToReview != "" {
 		if rn := utf8.RuneCountInString(in.NothingToReview); rn < 3 || rn > 200 {
 			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "nothing_to_review must be 3–200 characters."}
@@ -1261,7 +1268,8 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		}
 		out.NativePrompt = &np
 		out.ReviewPaths = reviewPaths
-		return nil
+		out.ChatBlock, err = s.approvalChatBlockTx(ctx, tx, out)
+		return err
 	})
 	return out, err
 }

@@ -2031,8 +2031,12 @@ func TestPreToolUseSummaryGateDeniesWithoutTheSummaryInChat(t *testing.T) {
 	if !strings.Contains(string(out), summary) {
 		t.Fatalf("deny reason must quote the summary verbatim, got %s", out)
 	}
-	if !strings.Contains(string(out), "Print this approval's summary in chat first") {
-		t.Fatalf("deny reason missing the exact copy, got %s", out)
+	wantReason := "[swarm] Your chat message must be the block below, copied exactly — not a summary or paraphrase. " +
+		"Print it, then call the question tool again with the same question.\n\n" +
+		runtime.ApprovalChatBlock(runtime.ChatBlockInput{Kind: string(runtime.KindApproveSection), Revision: 1, Summary: summary})
+	wantJSON, _ := json.Marshal(wantReason)
+	if !strings.Contains(string(out), strings.Trim(string(wantJSON), `"`)) {
+		t.Fatalf("deny reason is not the exact copy + chat block %q, got %s", wantReason, out)
 	}
 	var n int
 	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE kind = 'question'`).Scan(&n); err != nil {
@@ -2058,7 +2062,7 @@ func TestPreToolUseSummaryGateAllowsAMarkdownReformattedSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
 		t.Fatalf("a reformatted-but-matching summary must not be denied, got %s", out)
 	}
 }
@@ -2079,7 +2083,7 @@ func TestPreToolUseSummaryGateAllowsAfterTwoDenials(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(out), "Print this approval's summary in chat first") {
+		if !strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
 			t.Fatalf("attempt %d: expected a deny, got %s", i+1, out)
 		}
 	}
@@ -2094,7 +2098,7 @@ func TestPreToolUseSummaryGateAllowsAfterTwoDenials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
 		t.Fatalf("the third attempt after 2 denials must be allowed, got %s", out)
 	}
 }
@@ -2111,7 +2115,7 @@ func TestPreToolUseSummaryGateAllowsWhenTranscriptUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
 		t.Fatalf("an unreadable transcript must fail open, got %s", out)
 	}
 }
@@ -2162,7 +2166,7 @@ func TestPreToolUseSummaryGatePlanDeniesWithoutPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "Print this approval's summary in chat first") {
+	if !strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
 		t.Fatalf("a plan approval missing the printed review paths must be denied, got %s", out)
 	}
 }
@@ -2181,7 +2185,7 @@ func TestPreToolUseSummaryGatePlanAllowsWithSummaryAndPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
 		t.Fatalf("summary + both review paths printed must be allowed, got %s", out)
 	}
 }
@@ -2202,7 +2206,7 @@ func TestPreToolUseSummaryGatePlanAllowsMarkdownWrappedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
 		t.Fatalf("markdown-wrapped review paths must still be allowed, got %s", out)
 	}
 }

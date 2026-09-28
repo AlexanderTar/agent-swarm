@@ -451,19 +451,11 @@ func allPathsPresent(text string, paths []runtime.ReviewPathLine) bool {
 }
 
 // summaryGateDenyReason is the PreToolUse summary gate's exact deny copy
-// (spec "User-facing copy"): the stored summary verbatim, then, for a plan,
-// the review paths lines ("Spec: <path>" / "Plan: <path>", shown so the
-// agent knows exactly what to print -- allPathsPresent itself only checks
-// the bare path, not this exact line).
-func summaryGateDenyReason(summary string, paths []runtime.ReviewPathLine) string {
-	var b strings.Builder
-	b.WriteString("[swarm] Print this approval's summary in chat first, verbatim and complete (markdown is fine), " +
-		"then ask again with the same question.\n\n")
-	b.WriteString(summary)
-	for _, p := range paths {
-		b.WriteString("\n" + p.Label + ": " + p.Path)
-	}
-	return b.String()
+// (docs/specs/2026-09-28-approval-chat-block.md): the daemon-built chat
+// block the agent must print, copied exactly.
+func summaryGateDenyReason(chatBlock string) string {
+	return "[swarm] Your chat message must be the block below, copied exactly — not a summary or paraphrase. " +
+		"Print it, then call the question tool again with the same question.\n\n" + chatBlock
 }
 
 // asyncQuestionTool is codex 0.157's native question tool. It returns
@@ -854,7 +846,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			header := extractQuestionHeader(in.ToolName, in.RawToolInput)
 			ref, bound := h.RT.BindNativeQuestion(ctx, s.AgentID, header, prompt)
 			if bound {
-				summary, paths, blocks, err := h.RT.SummaryGate(ctx, ref)
+				summary, paths, chatBlock, blocks, err := h.RT.SummaryGate(ctx, ref)
 				if err != nil {
 					h.logf("hook: summary gate lookup for %s: %v", ref, err)
 				} else if summary != "" && blocks >= 2 {
@@ -872,7 +864,7 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 						if err := h.RT.RecordSummaryBlock(ctx, ref); err != nil {
 							h.logf("hook: record summary block for %s: %v", ref, err)
 						}
-						return adapter.HookDecision{Block: true, Reason: summaryGateDenyReason(summary, paths)}, nil
+						return adapter.HookDecision{Block: true, Reason: summaryGateDenyReason(chatBlock)}, nil
 					}
 				}
 			}

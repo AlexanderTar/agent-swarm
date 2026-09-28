@@ -1255,4 +1255,52 @@ func TestAskNativePromptForMsgMCP(t *testing.T) {
 	if res.NativePrompt.Question != "may I drop table x?" {
 		t.Fatalf("native_prompt = %+v, want no ref token (2026-09-28-approval-summary-enforced)", res)
 	}
+	var cb struct {
+		ChatBlock string `json:"chat_block"`
+	}
+	json.Unmarshal(mustJSON(out2), &cb)
+	if !strings.HasPrefix(cb.ChatBlock, "### Approval · ") || !strings.HasSuffix(cb.ChatBlock, "asks\n\nmay I drop table x?") {
+		t.Fatalf("chat_block = %q", cb.ChatBlock)
+	}
+}
+
+// TestAskApprovalResultHasChatBlock: swarm_ask's approval result carries
+// the daemon-built chat_block next to native_prompt
+// (docs/specs/2026-09-28-approval-chat-block.md).
+func TestAskApprovalResultHasChatBlock(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	p := writeSpec(t, "# Spec\n\n## DB models\n\nOne table.\n")
+	artOut, err := s.call(ctx, seed.Caller, "swarm_artifact",
+		`{"op":"register","item":"`+seed.RootKey+`","kind":"spec","path":"`+p+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var art struct {
+		ArtifactID string `json:"artifact_id"`
+		Sections   []struct {
+			ID string `json:"id"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(mustJSON(artOut), &art); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_ask", `{"kind":"approval","artifact":"`+art.ArtifactID+
+		`","section":"`+art.Sections[0].ID+`","prompt":"One users table."}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		ChatBlock string `json:"chat_block"`
+		Next      string `json:"next"`
+	}
+	if err := json.Unmarshal(mustJSON(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(res.ChatBlock, "### Approval 1 of 1 · Spec section \"DB models\" (rev 1)\n\nOne users table.\n\nFull section: ") {
+		t.Fatalf("chat_block = %q", res.ChatBlock)
+	}
+	if !strings.Contains(res.Next, "chat_block") {
+		t.Fatalf("next = %q, want it to point at chat_block", res.Next)
+	}
 }

@@ -306,13 +306,117 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 	}
 }
 
+// ChatBlockInput is everything ApprovalChatBlock formats
+// (docs/specs/2026-09-28-approval-chat-block.md). Kind is an approval
+// request kind, or "" for a child approval message (Child names the child).
+// N/M is the section's position among the revision's required sections;
+// 0 means unknown. Path is the absolute spec (section) or report path, ""
+// when unknown; Paths is a plan's review paths.
+type ChatBlockInput struct {
+	Kind         string
+	Revision     int
+	Summary      string
+	SectionTitle string
+	N, M         int
+	Path         string
+	Paths        *ReviewPaths
+	Child        string
+}
+
+// ApprovalChatBlock is the exact chat message an agent prints immediately
+// before an approval's native question. Every emitter (swarm_ask result,
+// request_open relay, for_msg result) and the PreToolUse gate's deny reason
+// share it.
+func ApprovalChatBlock(in ChatBlockInput) string {
+	var head, foot string
+	switch RequestKind(in.Kind) {
+	case KindApproveSection:
+		pos := ""
+		if in.N > 0 && in.M > 0 {
+			pos = fmt.Sprintf(" %d of %d", in.N, in.M)
+		}
+		head = fmt.Sprintf("### Approval%s · Spec section %q (rev %d)", pos, in.SectionTitle, in.Revision)
+		if in.Path != "" {
+			foot = fmt.Sprintf("Full section: %s → \"## %s\"", in.Path, in.SectionTitle)
+		}
+	case KindApprovePlan:
+		head = fmt.Sprintf("### Approval · Plan (rev %d)", in.Revision)
+		foot = strings.TrimSuffix(planPathsBlock(in.Paths), "\n")
+	case KindApproveReport:
+		head = fmt.Sprintf("### Approval · Debug report (rev %d)", in.Revision)
+		if in.Path != "" {
+			foot = "Report: " + in.Path
+		}
+	default:
+		head = "### Approval · " + in.Child + " asks"
+	}
+	out := head + "\n\n" + in.Summary
+	if foot != "" {
+		out += "\n\n" + foot
+	}
+	return out
+}
+
+// approvalChatBlockTx gathers a stored approval request's ApprovalChatBlock
+// inputs: section title and N/M from the asked revision's sections_json
+// (so a replay matches the first ask), the artifact's absolute path, and a
+// plan's review paths. "" for a kind with no summary.
+func (s *Store) approvalChatBlockTx(ctx context.Context, tx *sql.Tx, req Request) (string, error) {
+	in := ChatBlockInput{Kind: string(req.Kind), Revision: req.ArtifactRevision, Summary: req.Prompt}
+	switch req.Kind {
+	case KindApproveSection:
+		var raw string
+		err := tx.QueryRowContext(ctx, `SELECT sections_json FROM artifact_revisions
+			WHERE artifact_id = ? AND revision = ?`, req.ArtifactID, req.ArtifactRevision).Scan(&raw)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		var secs []ArtifactSection
+		json.Unmarshal([]byte(raw), &secs)
+		for _, sec := range secs {
+			if sec.ID == req.SectionID {
+				in.SectionTitle = sec.Title
+			}
+			if RequiredSpecSection(sec.Title) {
+				in.M++
+				if sec.ID == req.SectionID {
+					in.N = in.M
+				}
+			}
+		}
+		if in.N == 0 {
+			in.M = 0
+		}
+		fallthrough
+	case KindApproveReport:
+		var path string
+		err := tx.QueryRowContext(ctx, `SELECT path FROM artifacts WHERE id = ?`, req.ArtifactID).Scan(&path)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		if path != "" {
+			if in.Path, err = filepath.Abs(path); err != nil {
+				return "", err
+			}
+		}
+	case KindApprovePlan:
+		paths, _, err := s.planReviewPathsTx(ctx, tx, req.ItemID, req.ArtifactID)
+		if err == nil {
+			in.Paths = &paths
+		}
+	default:
+		return "", nil
+	}
+	return ApprovalChatBlock(in), nil
+}
+
 // NativePromptNextStep is the show-and-forward instruction that rides with
 // every daemon-issued native prompt: swarm_ask's result (mcpserver
 // requestOut) and the request_open relay share it verbatim.
 func NativePromptNextStep(ref string) string {
-	return fmt.Sprintf("Print the request summary in chat first, verbatim and complete (markdown is fine), "+
-		"immediately before the native question; for a plan also print the full absolute review_paths.spec and "+
-		"review_paths.plan. The native question shows only a short head of the summary. Then show native_prompt "+
+	return fmt.Sprintf("If chat_block is present, print it exactly as your whole chat message immediately "+
+		"before the native question: nothing before or after it, never restated, shortened or paraphrased. "+
+		"The native question shows only a short head of the summary. Then show native_prompt "+
 		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
 		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
 		"forwarding only what the user picked. Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion must include answer_text exactly as returned by the native tool; this has agent_reported provenance. Muse request_user_input: call native_answer right after the tool returns, with answer_text exactly as returned; Swarm checks it against Muse's own session log. On cancellation or no returned answer, submit nothing and leave the request open. "+
@@ -581,7 +685,8 @@ func (s *Store) log(format string, args ...any) {
 // approval-summary-enforced locked decision 3). summary is "" for a ref
 // that names no request, a msg_ ref (a child approval has no stored
 // summary), or a request kind other than approve_section/plan/report --
-// the caller treats an empty summary as "nothing to enforce". blocks is the
+// the caller treats an empty summary as "nothing to enforce". chatBlock is
+// the request's ApprovalChatBlock, quoted by the deny reason. blocks is the
 // number of denials already recorded (binding_json.summary_blocks, 0 when
 // absent).
 // ReviewPathLine is one review-path line SummaryGate's plan enforcement
@@ -595,22 +700,25 @@ type ReviewPathLine struct {
 	Label, Path string
 }
 
-func (s *Store) SummaryGate(ctx context.Context, ref string) (summary string, paths []ReviewPathLine, blocks int, err error) {
+func (s *Store) SummaryGate(ctx context.Context, ref string) (summary string, paths []ReviewPathLine, chatBlock string, blocks int, err error) {
 	if strings.HasPrefix(ref, "msg_") {
-		return "", nil, 0, nil
+		return "", nil, "", 0, nil
 	}
 	req, err := s.RequestByID(ctx, ref)
 	if err != nil {
-		return "", nil, 0, nil // an unknown/bad ref has nothing to enforce; the caller's own lookups refuse it properly
+		return "", nil, "", 0, nil // an unknown/bad ref has nothing to enforce; the caller's own lookups refuse it properly
 	}
 	switch req.Kind {
 	case KindApproveSection, KindApprovePlan, KindApproveReport:
 	default:
-		return "", nil, 0, nil
+		return "", nil, "", 0, nil
 	}
 	summary = req.Prompt
-	if req.Kind == KindApprovePlan {
-		err = s.tx(ctx, func(tx *sql.Tx) error {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		if chatBlock, err = s.approvalChatBlockTx(ctx, tx, req); err != nil {
+			return err
+		}
+		if req.Kind == KindApprovePlan {
 			rp, _, err := s.planReviewPathsTx(ctx, tx, req.ItemID, req.ArtifactID)
 			if err != nil {
 				return nil // review paths unavailable -- enforce the summary alone
@@ -619,11 +727,11 @@ func (s *Store) SummaryGate(ctx context.Context, ref string) (summary string, pa
 				paths = append(paths, ReviewPathLine{"Spec", rp.Spec})
 			}
 			paths = append(paths, ReviewPathLine{"Plan", rp.Plan})
-			return nil
-		})
-		if err != nil {
-			return "", nil, 0, err
 		}
+		return nil
+	})
+	if err != nil {
+		return "", nil, "", 0, err
 	}
 	var binding struct {
 		SummaryBlocks int `json:"summary_blocks"`
@@ -631,7 +739,7 @@ func (s *Store) SummaryGate(ctx context.Context, ref string) (summary string, pa
 	if len(req.Binding) > 0 {
 		json.Unmarshal(req.Binding, &binding)
 	}
-	return summary, paths, binding.SummaryBlocks, nil
+	return summary, paths, chatBlock, binding.SummaryBlocks, nil
 }
 
 // RecordSummaryBlock increments an approval request's summary_blocks count
@@ -1295,7 +1403,8 @@ func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in 
 			return err
 		}
 		np := nativePromptForMsg(fromName, body, in.ForMsg)
-		out = Request{ID: in.ForMsg, State: "open", NativePrompt: &np}
+		out = Request{ID: in.ForMsg, State: "open", NativePrompt: &np,
+			ChatBlock: ApprovalChatBlock(ChatBlockInput{Child: fromName, Summary: body})}
 		return nil
 	})
 	return out, err

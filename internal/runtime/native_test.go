@@ -15,7 +15,7 @@ import (
 
 func TestNativePromptNextStepDescribesVisibleReviewAndAgentReportedAnswers(t *testing.T) {
 	got := NativePromptNextStep("req_A")
-	for _, want := range []string{"verbatim and complete", "shows only a short head of the summary", "review_paths.spec", "review_paths.plan", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
+	for _, want := range []string{"If chat_block is present, print it exactly as your whole chat message", "never restated, shortened or paraphrased", "shows only a short head of the summary", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
 		"Codex: use request_user_input, not request_user_input_async", "a review question is a design decision the user chooses, not a permission request"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("next step missing %q: %s", want, got)
@@ -450,7 +450,9 @@ func TestAskApprovalAcceptsA1500CharacterSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	sec := res.Sections[0]
-	summary := strings.Repeat("word ", 300) // 1500 runes
+	// 1500 runes, multi-line: a single line over 300 runes is refused
+	// (2026-09-28-approval-chat-block), which is not what this test covers.
+	summary := strings.Repeat("word\n", 300)
 	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: summary,
 		ArtifactID: res.ArtifactID, SectionID: sec.ID})
 	if err != nil {
@@ -489,8 +491,13 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	if n := utf8.RuneCountInString(req.NativePrompt.Question); n > 1000 {
 		t.Fatalf("native prompt question = %d runes, want <= 1000", n)
 	}
-	if !strings.Contains(NativePromptNextStep(req.ID), "for a plan also print the full absolute review_paths.spec and review_paths.plan") {
-		t.Fatalf("initial next step lacks path display instruction: %q", NativePromptNextStep(req.ID))
+	// The full paths now reach the user through chat_block, which the next
+	// step says to print (2026-09-28-approval-chat-block).
+	if !strings.Contains(NativePromptNextStep(req.ID), "chat_block") {
+		t.Fatalf("initial next step lacks the chat_block instruction: %q", NativePromptNextStep(req.ID))
+	}
+	if !strings.Contains(req.ChatBlock, "Spec: "+longSpec+"\nPlan: "+longPlan) {
+		t.Fatalf("chat_block lacks the full review paths: %q", req.ChatBlock)
 	}
 	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.relayRequestTx(ctx, tx, req.ID) }); err != nil {
 		t.Fatal(err)
@@ -972,7 +979,7 @@ func TestSummaryGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		summary, paths, blocks, err := s.SummaryGate(ctx, req.ID)
+		summary, paths, _, blocks, err := s.SummaryGate(ctx, req.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -988,7 +995,7 @@ func TestSummaryGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		summary, paths, _, err := s2.SummaryGate(ctx, req.ID)
+		summary, paths, _, _, err := s2.SummaryGate(ctx, req.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1010,7 +1017,7 @@ func TestSummaryGate(t *testing.T) {
 			VALUES ('req_closegate', 'close_spike', 0, ?, ?, ?, '', '[]', 'open', 1)`, a.ID, ses.ID, a.ItemID); err != nil {
 			t.Fatal(err)
 		}
-		summary, _, blocks, err := s2.SummaryGate(ctx, "req_closegate")
+		summary, _, _, blocks, err := s2.SummaryGate(ctx, "req_closegate")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1032,7 +1039,7 @@ func TestSummaryGate(t *testing.T) {
 		if err := s2.RecordSummaryBlock(ctx, sreq.ID); err != nil {
 			t.Fatal(err)
 		}
-		_, _, blocks, err = s2.SummaryGate(ctx, sreq.ID)
+		_, _, _, blocks, err = s2.SummaryGate(ctx, sreq.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
