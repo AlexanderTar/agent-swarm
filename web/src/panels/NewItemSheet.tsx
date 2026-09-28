@@ -78,12 +78,15 @@ export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): 
           </Button>
         </Alert>
       ) : null}
-      <Segmented
-        label={C.type}
-        value={form.type}
-        onChange={(type) => { set({ type }); setParentTouched(false); }}
-        options={TYPES.map((t) => ({ value: t, label: TYPE_LABEL[t] }))}
-      />
+      <div className="grid grid-cols-[72px_1fr] items-center gap-2">
+        <Label>{C.type}</Label>
+        <Segmented
+          label={C.type}
+          value={form.type}
+          onChange={(type) => { set({ type }); setParentTouched(false); }}
+          options={TYPES.map((t) => ({ value: t, label: TYPE_LABEL[t] }))}
+        />
+      </div>
       {PARENT_TYPES[form.type].length > 0 && items.data && (
         <div className="space-y-1.5">
           <Label htmlFor={parentId}>{C.parent}</Label>

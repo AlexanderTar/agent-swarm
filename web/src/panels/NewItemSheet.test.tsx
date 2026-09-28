@@ -9,6 +9,7 @@ describe("NewItemSheet (§16.5)", () => {
   it("shows the parent picker for stories and tasks with the right options", async () => {
     const { user } = renderWithDaemon(<NewItemSheet type="story" parentKey="BUG-7" onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
     const sheet = await screen.findByRole("dialog", { name: "New item" });
+    expect(within(sheet).getByText("Type", { selector: "label" })).toBeVisible();
     const parent = await within(sheet).findByRole("combobox", { name: "Parent" });
     expect(parent).toHaveTextContent("—");
     expect(await optionTexts(user, "Parent")).toEqual(["—", "EPIC-12 · Authentication", "EPIC-20 · Billing", "EPIC-30 · Legacy cleanup"]);
