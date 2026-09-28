@@ -81,7 +81,7 @@ func syncTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{
+			out := map[string]any{
 				"messages":      res.Messages,
 				"unacked":       res.Unacked,
 				"more":          res.More,
@@ -89,7 +89,11 @@ func syncTool(s *Server) ToolDef {
 				"assignment":    assignmentOut(rec.Assignment),
 				"recovery":      recoveryBundleOut(rec.Recovery),
 				"first_sync":    rec.FirstSync,
-			}, nil
+			}
+			if res.Todos != nil {
+				out["todos"] = res.Todos
+			}
+			return out, nil
 		},
 	}
 }
@@ -111,6 +115,7 @@ func checkpointTool(s *Server) ToolDef {
 				"required":["cmd","ok"]}},
 			"artifacts":{"type":"array"},"processed":{"type":"array"},
 			"title":{"type":"string","description":"Only when your kickoff says the item has no name yet: a 3–6 word name for the work."},
+			"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["id","status"]},"description":"Spike orchestrators only: step statuses by id; omitted ids keep their status."},
 			"verdict":{"type":"string","enum":["","pass","changes_requested","blocked"]},
 			"findings":{"type":"array","items":{"type":"object","properties":{
 				"severity":{"type":"string","enum":["critical","major","minor","nit"]},
@@ -121,20 +126,21 @@ func checkpointTool(s *Server) ToolDef {
 			"request_id":{"type":"string"}`, []string{"kind", "summary"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Kind         string             `json:"kind"`
-				ItemKey      string             `json:"item"`
-				Summary      string             `json:"summary"`
-				Resolution   string             `json:"resolution"`
-				Next         []string           `json:"next"`
-				Blockers     []string           `json:"blockers"`
-				Git          []runtime.GitRef   `json:"git"`
-				Verification []runtime.Verify   `json:"verification"`
-				Artifacts    []string           `json:"artifacts"`
-				Processed    []string           `json:"processed"`
-				Verdict      string             `json:"verdict"`
-				Findings     []workflow.Finding `json:"findings"`
-				RequestID    string             `json:"request_id"`
-				Title        string             `json:"title"`
+				Kind         string               `json:"kind"`
+				ItemKey      string               `json:"item"`
+				Summary      string               `json:"summary"`
+				Resolution   string               `json:"resolution"`
+				Next         []string             `json:"next"`
+				Blockers     []string             `json:"blockers"`
+				Git          []runtime.GitRef     `json:"git"`
+				Verification []runtime.Verify     `json:"verification"`
+				Artifacts    []string             `json:"artifacts"`
+				Processed    []string             `json:"processed"`
+				Verdict      string               `json:"verdict"`
+				Findings     []workflow.Finding   `json:"findings"`
+				RequestID    string               `json:"request_id"`
+				Title        string               `json:"title"`
+				Todos        []runtime.TodoReport `json:"todos"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -144,7 +150,7 @@ func checkpointTool(s *Server) ToolDef {
 				Resolution: in.Resolution, Next: in.Next, Blockers: in.Blockers,
 				Git: in.Git, Verification: in.Verification, Artifacts: in.Artifacts, Processed: in.Processed,
 				Verdict: in.Verdict, Findings: in.Findings,
-				RequestID: in.RequestID, Title: in.Title,
+				RequestID: in.RequestID, Title: in.Title, Todos: in.Todos,
 			})
 			if err != nil {
 				return nil, err
@@ -156,6 +162,9 @@ func checkpointTool(s *Server) ToolDef {
 			}
 			if res.TitleIgnored != "" {
 				out["title_ignored"] = res.TitleIgnored
+			}
+			if res.TodosIgnored != "" {
+				out["todos_ignored"] = res.TodosIgnored
 			}
 			return out, nil
 		},
