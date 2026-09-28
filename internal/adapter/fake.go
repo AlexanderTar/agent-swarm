@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/kinds"
@@ -98,7 +99,7 @@ func (f *Fake) DiscoverSession(context.Context, int, string) (string, bool) {
 	return f.DiscoverSessionResult, f.DiscoverSessionOK
 }
 
-func (f *Fake) ObservedAnswer(string, string) (string, string, bool) {
+func (f *Fake) ObservedAnswer(string, string, time.Time) (string, string, bool) {
 	return f.ObservedAnswerLabel, f.ObservedAnswerNote, f.ObservedAnswerOK
 }
 

@@ -47,28 +47,48 @@ the third line is a task-output record and must be ignored) and
 
 ```go
 // ObservedAnswer scans Muse's own session log for the newest settled
-// request_user_input prompt whose first question contains ⟦swarm:<ref>⟧.
-// ok is false when nothing matches.
-func (m *Muse) ObservedAnswer(providerSessionID, ref string) (label, note string, ok bool)
+// request_user_input prompt whose first question contains ⟦swarm:<ref>⟧,
+// recorded at or after since. ok is false when nothing matches.
+func (m *Muse) ObservedAnswer(providerSessionID, ref string, since time.Time) (label, note string, ok bool)
 ```
 
-- Path: glob `<UserHome>/.local/share/muse/sessions/*/*/*/<providerSessionID>/session.jsonl`.
-  If `XDG_DATA_HOME` is set in the daemon env, use `$XDG_DATA_HOME/muse/sessions/...` instead.
-- Stream the file line by line (bufio.Scanner with a large buffer, 4 MiB max line). Skip
-  lines that fail to parse.
+- `providerSessionID == ""` returns `ok = false` immediately, before any glob.
+- Path: glob `<UserHome>/.local/share/muse/sessions/<YYYY>/<MM>/<DD>/<providerSessionID>/session.jsonl`
+  with each date segment matched as `[0-9][0-9][0-9][0-9]` / `[0-9][0-9]` / `[0-9][0-9]`, never `*`.
+  `XDG_DATA_HOME` in the daemon's own process env is never consulted: Launch always pins Muse's
+  *own* `XDG_DATA_HOME` to `UserHome/.local/share` (muse.go `setupEnv`), and that is the one real
+  path regardless of what the daemon's env happens to have set. More than one matching file is
+  ambiguous, not "pick one" -- treated the same as no match.
+- Stream the file line by line (`bufio.Reader.ReadBytes('\n')`, no per-line size cap). Skip a
+  line that doesn't contain `"user_input_prompt_"` before ever calling `json.Unmarshal`, and skip
+  a line that fails to parse. A read error partway through the file discards any match already
+  found and returns `ok = false` -- a truncated/corrupted read proves nothing.
 - Match on `strings.Contains(question, "⟦swarm:"+ref+"⟧")`. Use `runtime`'s existing token
   helper if it is importable without a cycle; otherwise build the literal.
+- Anti-forgery: each record's top-level `recorded_at` (µs epoch) is compared against `since`
+  (`nativeAnswer` passes the ref's own row's `created_at`). A `user_input_prompt_requested` line
+  whose `recorded_at` is before `since` is not tracked as a candidate at all -- its later settled
+  answer, if any, can never match. A `user_input_prompt_requested` line matching the ref's token
+  resets any already-found label/note/ok back to not-found, so a newer re-ask of the same ref
+  supersedes an earlier settled answer to it (an unsettled re-ask must not resolve to the stale
+  answer). This is same-user evidence: it proves a settled Muse prompt exists in this machine's
+  own Muse data dir, stronger than `agent_reported`, but still forgeable by any other process
+  running as the same user with write access to that directory -- it is not a substitute for a
+  hook running inside Muse itself.
 
 `internal/runtime`: an optional interface, checked via `s.Adapters[a.Kind]`:
 
 ```go
 type observedAnswerer interface {
-    ObservedAnswer(providerSessionID, ref string) (label, note string, ok bool)
+    ObservedAnswer(providerSessionID, ref string, since time.Time) (label, note string, ok bool)
 }
 ```
 
-`nativeAnswer`, Muse branch: take the provider session id from the caller's session row. If
-`ObservedAnswer` returns ok, `responseText = label` or `label + ": " + note`, and
+`nativeAnswer`: before opening the state-changing tx, if the caller's agent kind is Muse, read
+the session row's provider session id and the ref's own `created_at` (from `requests` or
+`messages` depending on the ref prefix) with plain, non-tx queries, then call `ObservedAnswer`
+outside any transaction -- it does file I/O and must never run inside the DB tx. Muse branch:
+if `ObservedAnswer` returns ok, `responseText = label` or `label + ": " + note`, and
 `reported = false` for evidence purposes. `bindEvidence` writes
 `$.evidence = <matchDecisionEvidence result>`, `$.answer_source = 'muse_session_log'`, plus
 `$.answer_text` when the agent sent one. Otherwise the existing reported path runs.

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/execx"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
@@ -907,12 +908,21 @@ func museSessionLogFixture(t *testing.T, userHome, fixture, providerSessionID st
 	}
 }
 
+// museFixtureRecordedAt is the recorded_at (µs epoch) of the first line of
+// both testdata/muse/session-user-input*.jsonl fixtures' requested event
+// (1790578308261665 / 1790579193020490): a since bound at or before this
+// never excludes the fixture, one strictly after it always does.
+var museFixtureRecordedAt = map[string]time.Time{
+	"session-user-input-1.4.0.jsonl":      time.UnixMicro(1790578308261665),
+	"session-user-input-note-1.4.0.jsonl": time.UnixMicro(1790579193020490),
+}
+
 // TestMuseObservedAnswerNoNote covers the no-note fixture: the settled
 // answer's selected_label alone becomes the label, with no note.
 func TestMuseObservedAnswerNoNote(t *testing.T) {
 	d := testDeps(t)
 	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-1")
-	label, note, ok := newMuse(d).ObservedAnswer("sess-1", "req_01PROBE0000000000000000000")
+	label, note, ok := newMuse(d).ObservedAnswer("sess-1", "req_01PROBE0000000000000000000", time.Time{})
 	if !ok || label != "French" || note != "" {
 		t.Fatalf("ObservedAnswer = %q, %q, %v; want %q, %q, true", label, note, ok, "French", "")
 	}
@@ -923,7 +933,7 @@ func TestMuseObservedAnswerNoNote(t *testing.T) {
 func TestMuseObservedAnswerWithNote(t *testing.T) {
 	d := testDeps(t)
 	museSessionLogFixture(t, d.UserHome, "session-user-input-note-1.4.0.jsonl", "sess-2")
-	label, note, ok := newMuse(d).ObservedAnswer("sess-2", "req_01PROBE0000000000000000002")
+	label, note, ok := newMuse(d).ObservedAnswer("sess-2", "req_01PROBE0000000000000000002", time.Time{})
 	if !ok || label != "Request changes" || note != "use German instead" {
 		t.Fatalf("ObservedAnswer = %q, %q, %v; want %q, %q, true", label, note, ok,
 			"Request changes", "use German instead")
@@ -935,7 +945,7 @@ func TestMuseObservedAnswerWithNote(t *testing.T) {
 func TestMuseObservedAnswerUnknownRef(t *testing.T) {
 	d := testDeps(t)
 	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-3")
-	_, _, ok := newMuse(d).ObservedAnswer("sess-3", "req_doesNotExist")
+	_, _, ok := newMuse(d).ObservedAnswer("sess-3", "req_doesNotExist", time.Time{})
 	if ok {
 		t.Fatal("ObservedAnswer must not match an absent ref token")
 	}
@@ -957,7 +967,7 @@ func TestMuseObservedAnswerUnsettled(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(lines[0]+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, ok := newMuse(d).ObservedAnswer("sess-4", "req_01PROBE0000000000000000000")
+	_, _, ok := newMuse(d).ObservedAnswer("sess-4", "req_01PROBE0000000000000000000", time.Time{})
 	if ok {
 		t.Fatal("ObservedAnswer must not match an unsettled prompt")
 	}
@@ -967,8 +977,107 @@ func TestMuseObservedAnswerUnsettled(t *testing.T) {
 // session id at all (glob finds nothing).
 func TestMuseObservedAnswerMissingFile(t *testing.T) {
 	d := testDeps(t)
-	_, _, ok := newMuse(d).ObservedAnswer("sess-does-not-exist", "req_01PROBE0000000000000000000")
+	_, _, ok := newMuse(d).ObservedAnswer("sess-does-not-exist", "req_01PROBE0000000000000000000", time.Time{})
 	if ok {
 		t.Fatal("ObservedAnswer must not match when no session.jsonl exists")
+	}
+}
+
+// TestMuseObservedAnswerIgnoresXDGDataHomeEnv is I1: Launch always pins
+// Muse's own XDG_DATA_HOME to UserHome/.local/share (muse.go setupEnv), so
+// ObservedAnswer must read that real path regardless of what the daemon's
+// own process env happens to have set -- a stale or unrelated
+// XDG_DATA_HOME in the daemon's env must not steer it anywhere else.
+func TestMuseObservedAnswerIgnoresXDGDataHomeEnv(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/nonexistent")
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-env")
+	label, _, ok := newMuse(d).ObservedAnswer("sess-env", "req_01PROBE0000000000000000000", time.Time{})
+	if !ok || label != "French" {
+		t.Fatalf("ObservedAnswer = %q, %v; want %q, true (env must be ignored)", label, ok, "French")
+	}
+}
+
+// TestMuseObservedAnswerEmptyProviderSessionID is I3: an empty
+// providerSessionID (session discovery hasn't run yet) must refuse before
+// ever globbing, not match some accidental empty-path listing.
+func TestMuseObservedAnswerEmptyProviderSessionID(t *testing.T) {
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-1")
+	_, _, ok := newMuse(d).ObservedAnswer("", "req_01PROBE0000000000000000000", time.Time{})
+	if ok {
+		t.Fatal("ObservedAnswer must refuse an empty providerSessionID")
+	}
+}
+
+// TestMuseObservedAnswerAmbiguousMultipleFiles is I4: two dated session logs
+// for the same provider session id (e.g. a clock-skewed retry, or a forged
+// sibling) is ambiguous, not "pick one" -- must not match.
+func TestMuseObservedAnswerAmbiguousMultipleFiles(t *testing.T) {
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-dup")
+	raw, err := os.ReadFile(filepath.Join("testdata", "muse", "session-user-input-1.4.0.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir2 := filepath.Join(d.UserHome, ".local", "share", "muse", "sessions", "2026", "09", "29", "sess-dup")
+	if err := os.MkdirAll(dir2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir2, "session.jsonl"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, ok := newMuse(d).ObservedAnswer("sess-dup", "req_01PROBE0000000000000000000", time.Time{})
+	if ok {
+		t.Fatal("ObservedAnswer must not match when more than one session.jsonl exists for the id")
+	}
+}
+
+// TestMuseObservedAnswerIgnoresPromptOlderThanSince is I4's other half: a
+// settled prompt recorded strictly before since (the ref's own created_at)
+// is a stale or replayed log entry, not this ref's real answer.
+func TestMuseObservedAnswerIgnoresPromptOlderThanSince(t *testing.T) {
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-old")
+	after := museFixtureRecordedAt["session-user-input-1.4.0.jsonl"].Add(time.Microsecond)
+	_, _, ok := newMuse(d).ObservedAnswer("sess-old", "req_01PROBE0000000000000000000", after)
+	if ok {
+		t.Fatal("ObservedAnswer must ignore a prompt recorded before since")
+	}
+	// Sanity: the same since minus a microsecond still matches, proving the
+	// refusal above is really about the boundary, not something else broken.
+	label, _, ok := newMuse(d).ObservedAnswer("sess-old", "req_01PROBE0000000000000000000",
+		museFixtureRecordedAt["session-user-input-1.4.0.jsonl"])
+	if !ok || label != "French" {
+		t.Fatalf("ObservedAnswer at the exact boundary = %q, %v; want match", label, ok)
+	}
+}
+
+// TestMuseObservedAnswerResetsOnNewerAskWithSameRef is M1: a second
+// request_user_input asking the exact same ref token again (a re-ask after
+// the first was somehow abandoned) must supersede the first ask's settled
+// answer -- an unsettled re-ask must not resolve to the earlier answer.
+func TestMuseObservedAnswerResetsOnNewerAskWithSameRef(t *testing.T) {
+	d := testDeps(t)
+	raw, err := os.ReadFile(filepath.Join("testdata", "muse", "session-user-input-1.4.0.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	// lines[0] is the requested event, lines[1] the matching settled/answered
+	// event (French); reappend a fresh requested line with a later
+	// recorded_at and the same ref token, with no settled line after it.
+	reAsk := strings.Replace(lines[0], `"recorded_at":1790578308261665`, `"recorded_at":1790578400000000`, 1)
+	body := strings.Join([]string{lines[0], lines[1], reAsk}, "\n") + "\n"
+	dir := filepath.Join(d.UserHome, ".local", "share", "muse", "sessions", "2026", "09", "28", "sess-reask")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, ok := newMuse(d).ObservedAnswer("sess-reask", "req_01PROBE0000000000000000000", time.Time{})
+	if ok {
+		t.Fatal("ObservedAnswer must reset once a newer ask reuses the same ref, not return the stale answer")
 	}
 }

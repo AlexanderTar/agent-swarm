@@ -2,13 +2,16 @@ package adapter
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
@@ -615,64 +618,101 @@ type museLogEvent struct {
 	} `json:"answers"`
 }
 
+// museLogRecord is one session.jsonl line. RecordedAt is a µs-epoch
+// timestamp on the record itself (not inside payload.event), the anti-
+// forgery clock ObservedAnswer compares against the ref's own created_at.
 type museLogRecord struct {
-	Payload struct {
+	RecordedAt int64 `json:"recorded_at"`
+	Payload    struct {
 		Event museLogEvent `json:"event"`
 	} `json:"payload"`
 }
 
 // ObservedAnswer scans Muse's own session log for the newest settled
-// request_user_input prompt whose first question contains ⟦swarm:<ref>⟧.
-// ok is false when nothing matches: the file is missing, the session id is
-// unknown, the prompt never settled, or it settled some other way than
-// "answered". Read-only -- nothing here is ever written to Muse's files.
-func (m *Muse) ObservedAnswer(providerSessionID, ref string) (label, note string, ok bool) {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		dataHome = filepath.Join(m.d.UserHome, ".local", "share")
+// request_user_input prompt whose first question contains ⟦swarm:<ref>⟧,
+// recorded at or after since (the ref's own created_at -- an older match is
+// a stale or replayed log entry, never this ref's real answer). ok is false
+// when nothing matches: providerSessionID is empty, the file is missing or
+// ambiguous, the session id is unknown, the prompt never settled, it
+// settled some other way than "answered", or it settled before since.
+// Read-only -- nothing here is ever written to Muse's files.
+//
+// This is same-user evidence: it proves a settled Muse prompt exists in
+// this machine's own Muse data dir, stronger than the agent's bare word
+// (agent_reported), but it is still forgeable by any other process running
+// as the same user with write access to that dir. It is not a substitute
+// for a hook running inside Muse itself.
+func (m *Muse) ObservedAnswer(providerSessionID, ref string, since time.Time) (label, note string, ok bool) {
+	if providerSessionID == "" {
+		return "", "", false
 	}
-	matches, _ := filepath.Glob(filepath.Join(dataHome, "muse", "sessions", "*", "*", "*",
-		providerSessionID, "session.jsonl"))
-	token := "⟦swarm:" + ref + "⟧"
-	for _, path := range matches {
-		if l, n, found := scanMuseSessionLog(path, token); found {
-			label, note, ok = l, n, true
-		}
+	// XDG_DATA_HOME is never consulted here (I1): Launch always pins Muse's
+	// own XDG_DATA_HOME to UserHome/.local/share (setupEnv), so that is the
+	// one real path, matching DiscoverSession's own glob below. The date
+	// segments are digit-only globs, not "*", so a maliciously named
+	// sibling directory elsewhere under sessions/ can't be glob-matched in.
+	matches, _ := filepath.Glob(filepath.Join(m.d.UserHome, ".local", "share", "muse", "sessions",
+		"[0-9][0-9][0-9][0-9]", "[0-9][0-9]", "[0-9][0-9]", providerSessionID, "session.jsonl"))
+	if len(matches) != 1 {
+		// Zero is the ordinary "no log yet" case; more than one is treated
+		// as ambiguous rather than picking one -- there is no legitimate way
+		// for a single provider session id to have two dated session logs.
+		return "", "", false
 	}
-	return label, note, ok
+	return scanMuseSessionLog(matches[0], "⟦swarm:"+ref+"⟧", since)
 }
 
-// scanMuseSessionLog streams one session.jsonl (bufio.Scanner, 4 MiB max
-// line -- these lines can carry a full turn's tool output) and returns the
-// settled answer for the prompt whose first question carries token, if any.
-// A line that fails to parse is skipped, not fatal: the file is muse's own
-// append-only log, still being written by a live session.
-func scanMuseSessionLog(path, token string) (label, note string, ok bool) {
+// scanMuseSessionLog streams one session.jsonl (bufio.Reader.ReadBytes,
+// no per-line size cap -- these lines can carry a full turn's tool output)
+// and returns the settled answer for the newest prompt whose first question
+// carries token, recorded at or after since, if any. A line that fails to
+// parse, or doesn't even mention "user_input_prompt_" (M2's cheap
+// pre-filter, skipped before the json.Unmarshal below), is not fatal: the
+// file is muse's own append-only log, mostly full of unrelated tool-call
+// records. A read error partway through the file is surfaced as no match
+// (M2), discarding any match already found -- a truncated or corrupted read
+// is not proof of anything.
+func scanMuseSessionLog(path, token string, since time.Time) (label, note string, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", "", false
 	}
 	defer f.Close()
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	sinceMicros := since.UnixMicro()
+	r := bufio.NewReader(f)
 	wantPromptID := ""
-	for sc.Scan() {
-		var rec museLogRecord
-		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
-			continue
+	for {
+		line, readErr := r.ReadBytes('\n')
+		if len(line) > 0 && bytes.Contains(line, []byte("user_input_prompt_")) {
+			var rec museLogRecord
+			if err := json.Unmarshal(line, &rec); err == nil {
+				ev := rec.Payload.Event
+				switch ev.Kind {
+				case "user_input_prompt_requested":
+					if len(ev.Questions) > 0 && strings.Contains(ev.Questions[0].Question, token) {
+						// M1: a fresh ask reusing this ref supersedes any
+						// earlier match for it -- that settled answer
+						// belonged to a now-stale ask.
+						label, note, ok = "", "", false
+						wantPromptID = ""
+						if rec.RecordedAt >= sinceMicros {
+							wantPromptID = ev.PromptID
+						}
+					}
+				case "user_input_prompt_settled":
+					if wantPromptID != "" && ev.PromptID == wantPromptID &&
+						ev.Outcome == "answered" && len(ev.Answers) > 0 {
+						label, note, ok = ev.Answers[0].SelectedLabel, ev.Answers[0].Note, true
+					}
+				}
+			}
 		}
-		ev := rec.Payload.Event
-		switch ev.Kind {
-		case "user_input_prompt_requested":
-			if len(ev.Questions) > 0 && strings.Contains(ev.Questions[0].Question, token) {
-				wantPromptID = ev.PromptID
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
 			}
-		case "user_input_prompt_settled":
-			if wantPromptID != "" && ev.PromptID == wantPromptID &&
-				ev.Outcome == "answered" && len(ev.Answers) > 0 {
-				label, note, ok = ev.Answers[0].SelectedLabel, ev.Answers[0].Note, true
-			}
+			return "", "", false
 		}
 	}
 	return label, note, ok
