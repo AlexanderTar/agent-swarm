@@ -2,6 +2,31 @@
 // request (spec docs/specs/2026-09-28-request-images.md). The directory
 // <SWARM_HOME>/attachments/<ITEM-KEY>/ is the only record; Sweep removes it once
 // the root item is Done, Cancelled or gone.
+//
+// # Which agent kinds can view an attached image
+//
+// Every kind gets the saved paths in its kickoff prompt (see the runtime's
+// prompt assembly); only some can actually open the file. Probed live
+// 2026-09-28 on an isolated `tmux -L imgprobe` socket, one session per kind,
+// each pointed at a PNG reading "SWARM" and asked to open it by absolute
+// path and report the word:
+//
+//	kind    CLI version              result
+//	claude  2.1.283 (Claude Code)    sees image (Read tool; answered SWARM)
+//	codex   codex-cli 0.158.0        not probed (real account's 5h usage
+//	                                 window was exhausted by the other
+//	                                 probes; codex ships a view_image tool
+//	                                 for local paths, but that was not
+//	                                 confirmed live this run)
+//	agy     1.2.12                   sees image (Read tool; answered SWARM)
+//	cursor  2026.09.26-dd393fe       sees image (Read tool; answered SWARM,
+//	                                 on the account's Auto model -- named
+//	                                 models were unavailable on this plan)
+//	muse    1.4.0 (1.4.0-R4302.1)    sees image (Read tool; answered SWARM)
+//
+// A kind that can't view images (none observed here) still gets every
+// attachment's absolute path, so it can still act on them (e.g. shell out
+// to an image tool) even without native vision.
 package attachments
 
 import (
