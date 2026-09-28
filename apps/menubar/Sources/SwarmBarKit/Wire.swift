@@ -655,6 +655,13 @@ public enum SpikeIntent: String, Codable, Sendable, CaseIterable {
     case chore, feature, debug
 }
 
+/// One image attached to a New orchestrator request; `data` is standard base64.
+public struct AttachmentPayload: Codable, Sendable, Equatable {
+    public var name: String
+    public var data: String
+    public init(name: String, data: String) { self.name = name; self.data = data }
+}
+
 public struct CreateSpikeBody: Codable, Sendable, Equatable {
     public var requestId: String
     public var name: String
@@ -665,22 +672,34 @@ public struct CreateSpikeBody: Codable, Sendable, Equatable {
     public var effort: String?
     public var advisor: AdvisorPayload
     public var request: String?
+    public var attachments: [AttachmentPayload]?
 
     enum CodingKeys: String, CodingKey {
-        case name, intent, repos, agent, model, effort, advisor, request, requestId = "request_id"
+        case name, intent, repos, agent, model, effort, advisor, request, requestId = "request_id", attachments
     }
 
     public init(requestId: String, name: String, intent: SpikeIntent, repos: [String], agent: AgentKind,
-                model: String, effort: String?, advisor: AdvisorPayload, request: String?) {
+                model: String, effort: String?, advisor: AdvisorPayload, request: String?,
+                attachments: [AttachmentPayload]? = nil) {
         self.requestId = requestId; self.name = name; self.intent = intent; self.repos = repos
         self.agent = agent; self.model = model; self.effort = effort; self.advisor = advisor; self.request = request
+        self.attachments = attachments
     }
 }
 
 public struct CreateSpikeResponse: Codable, Sendable, Equatable {
     public var agent: AgentNode
     public var queued: Bool
-    public init(agent: AgentNode, queued: Bool) { self.agent = agent; self.queued = queued }
+    /// True when the daemon could not save the attached images (§ request-images spec).
+    public var attachmentsFailed: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case agent, queued, attachmentsFailed = "attachments_failed"
+    }
+
+    public init(agent: AgentNode, queued: Bool, attachmentsFailed: Bool? = nil) {
+        self.agent = agent; self.queued = queued; self.attachmentsFailed = attachmentsFailed
+    }
 }
 
 public enum AgentEndpoint: String, Sendable, CaseIterable {

@@ -154,7 +154,7 @@ public final class HTTPDaemonClient: DaemonClient {
     public func rescanRepos() async throws -> ScanStats { try await call("POST", "/api/repos/rescan", timeout: Self.slowTimeout) }
 
     public func createSpike(_ body: CreateSpikeBody) async throws -> CreateSpikeResponse {
-        try await call("POST", "/api/spikes", body: body)
+        try await call("POST", "/api/spikes", body: body, timeout: 60)
     }
 
     public func terminalOpened(name: String) async throws {

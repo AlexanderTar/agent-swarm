@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import SwarmBarKit
@@ -338,5 +339,94 @@ final class NewOrchestratorFormTests: XCTestCase {
         await f.load()
         XCTAssertEqual(f.advisor, .none)
         XCTAssertEqual(f.body()?.advisor, AdvisorPayload.none)
+    }
+
+    // MARK: images
+
+    /// A valid 1×1 PNG, inline so the images tests need no fixture file.
+    private var pngData: Data {
+        Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+              0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+              0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8, 0x0F, 0x00, 0x00,
+              0x01, 0x01, 0x00, 0x05, 0x18, 0xD8, 0x4E, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+              0x42, 0x60, 0x82])
+    }
+
+    func testAddImageKeepsPNGAsIs() async {
+        let f = await form()
+        f.addImage(data: pngData, name: "a.png")
+        XCTAssertEqual(f.images.count, 1)
+        XCTAssertEqual(f.images.first?.data, pngData)
+        XCTAssertNil(f.imageError)
+    }
+
+    func testAddImageConvertsTIFFToPNG() async {
+        let f = await form()
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
+                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        let tiff = rep.tiffRepresentation!
+        f.addImage(data: tiff, name: "a.tiff")
+        XCTAssertEqual(f.images.count, 1)
+        XCTAssertEqual(f.images.first?.data.prefix(4), Data([0x89, 0x50, 0x4E, 0x47]))
+    }
+
+    func testAddImageRejectsUnreadableData() async {
+        let f = await form()
+        f.addImage(data: Data("text".utf8), name: "n.txt")
+        XCTAssertEqual(f.imageError, "n.txt is not an image Swarm can attach.")
+        XCTAssertEqual(f.images.count, 0)
+    }
+
+    func testAddImageCapsAtTen() async {
+        let f = await form()
+        for i in 0..<11 { f.addImage(data: pngData, name: "\(i).png") }
+        XCTAssertEqual(f.imageError, "Up to 10 images.")
+        XCTAssertEqual(f.images.count, 10)
+    }
+
+    func testAddImageRejectsOversize() async {
+        let f = await form()
+        var big = pngData
+        big.append(Data(count: 10 << 20))
+        f.addImage(data: big, name: "big.png")
+        XCTAssertEqual(f.imageError, "big.png is larger than 10 MB.")
+        XCTAssertEqual(f.images.count, 0)
+    }
+
+    func testRemoveImageClearsErrorAndEntry() async {
+        let f = await form()
+        f.addImage(data: pngData, name: "a.png")
+        f.addImage(data: Data("text".utf8), name: "n.txt")
+        XCTAssertNotNil(f.imageError)
+        f.removeImage(f.images[0].id)
+        XCTAssertEqual(f.images.count, 0)
+        XCTAssertNil(f.imageError)
+    }
+
+    func testSubmitCarriesAttachmentsAsBase64() async throws {
+        let f = await form()
+        f.name = "x"
+        f.addImage(data: pngData, name: "a.png")
+        let body = try XCTUnwrap(f.body())
+        XCTAssertEqual(body.attachments, [AttachmentPayload(name: "a.png", data: pngData.base64EncodedString())])
+    }
+
+    func testBodyOmitsAttachmentsWhenEmpty() async throws {
+        let f = await form()
+        f.name = "x"
+        let body = try XCTUnwrap(f.body())
+        XCTAssertNil(body.attachments)
+    }
+
+    func testAttachmentsFailedSetsStartedWithUnsavedImages() async throws {
+        let f = await form()
+        f.name = "x"
+        f.addImage(data: pngData, name: "a.png")
+        client.spikeResult = .success(CreateSpikeResponse(
+            agent: AgentNode(name: "x", kind: .claude, model: "opus", role: .orchestrator), queued: false, attachmentsFailed: true))
+        let created = await f.submit()
+        XCTAssertNotNil(created)
+        XCTAssertNotNil(f.startedWithUnsavedImages)
     }
 }
