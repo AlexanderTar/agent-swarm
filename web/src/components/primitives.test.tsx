@@ -190,6 +190,8 @@ describe("MoveToMenu", () => {
     const done = await screen.findByRole("menuitem", { name: /Done/ });
     expect(done).toHaveAttribute("aria-disabled", "true");
     expect(done).toHaveAttribute("data-slot", "dropdown-menu-item");
+    expect(done).toHaveClass("data-[disabled]:opacity-100");
+    expect(done.querySelector("svg")).toBeInTheDocument();
     expect(done).toHaveTextContent("Couldn't move STORY-40 to Done. Complete all child tasks and their checkpoints first.");
     expect(screen.getByRole("menuitem", { name: /Blocked/ })).not.toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByRole("menuitem", { name: /^In review/ })).not.toBeInTheDocument();
