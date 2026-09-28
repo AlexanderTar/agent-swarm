@@ -1,6 +1,7 @@
 import type { ItemDetail, Workflow } from "../types";
 import { ROLE_EMOJI, ROLE_LABEL } from "../copy";
 import type { Role, WorkflowFinding } from "../types";
+import { ChevronRight } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 import { Button } from "./ui/button";
 
@@ -22,7 +23,7 @@ export function WorkflowSection(p: { workflow: Workflow | null | undefined; stat
     <section aria-label="Workflow" className="space-y-2 border-t border-line pt-3">
       <Collapsible>
       <h3 className="font-semibold">
-        <CollapsibleTrigger asChild><Button variant="ghost" className="h-auto w-full min-w-0 shrink justify-start whitespace-normal break-words px-0 text-left font-semibold">{title}</Button></CollapsibleTrigger>
+        <CollapsibleTrigger asChild><Button variant="ghost" className="group h-auto w-full min-w-0 shrink justify-start whitespace-normal break-words px-0 text-left font-semibold"><ChevronRight aria-hidden className="size-4 shrink-0 transition-transform group-data-[state=open]:rotate-90" />{title}</Button></CollapsibleTrigger>
       </h3>
       <CollapsibleContent className="space-y-2">
       {state.state === "escalated" && (

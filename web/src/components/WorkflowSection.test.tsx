@@ -15,6 +15,17 @@ const state: NonNullable<ItemDetail["workflow_state"]> = {
 };
 
 describe("WorkflowSection", () => {
+  it("shows a chevron that rotates with the workflow disclosure state", async () => {
+    render(<WorkflowSection workflow={workflow} state={state} connected onOpenTerminal={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" });
+    const chevron = trigger.querySelector("svg.lucide-chevron-right");
+    expect(chevron).toBeInTheDocument();
+    expect(chevron).toHaveClass("group-data-[state=open]:rotate-90");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("shows steps, run verdicts and unit-tagged findings", async () => {
     render(<WorkflowSection workflow={workflow} state={state} connected onOpenTerminal={vi.fn()} />);
     const workflowToggle = screen.getByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" });
