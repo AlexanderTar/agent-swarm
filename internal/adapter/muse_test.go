@@ -1105,3 +1105,22 @@ func TestMuseObservedAnswerTextMismatchDoesNotBind(t *testing.T) {
 		t.Fatal("ObservedAnswer must not match unrelated question text")
 	}
 }
+
+// Muse 1.4.0 probe: a paste while Muse is busy is safe (it steers a running
+// shell tool or queues behind streaming), so PasteReady is true for a busy
+// pane. Only the request_user_input dialog eats a paste: typed letters move
+// the highlight and Enter selects an option.
+func TestMusePasteReady(t *testing.T) {
+	a := newMuse(testDeps(t))
+	busy := "◈ Running command (12s · esc to interrupt)\n─────\n❯ \n─────\n"
+	if !a.PasteReady(busy) {
+		t.Error("busy pane should be paste-ready: Muse steers or queues the paste")
+	}
+	if !a.PasteReady(pane(t, "muse", "pane-idle.txt")) {
+		t.Error("idle ❯ pane should be paste-ready")
+	}
+	dialog := "Which option?\n\x1b[1m› 1. Approve\x1b[0m\n  2. Request changes\n\n\x1b[2mEnter to select · ↑/↓ to move · Tab for an optional note\x1b[0m\n"
+	if a.PasteReady(dialog) {
+		t.Error("request_user_input dialog on screen must refuse the paste")
+	}
+}

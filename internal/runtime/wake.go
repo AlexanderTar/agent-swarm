@@ -276,7 +276,13 @@ func (s *Store) tryPaste(ctx context.Context, ad adapter.Adapter, r wakeRow, pas
 	if err != nil {
 		return fail("capture failed")
 	}
-	if !ad.Idle(capture) {
+	// An adapter whose TUI safely steers or queues a paste mid-turn (Muse)
+	// gates on PasteReady instead of Idle; everyone else needs a real idle pane.
+	if pr, ok := ad.(interface{ PasteReady(capture string) bool }); ok {
+		if !pr.PasteReady(capture) {
+			return fail("question dialog open")
+		}
+	} else if !ad.Idle(capture) {
 		return fail("pane not idle")
 	}
 	if err := s.Tmux.PasteLine(ctx, r.TmuxName, pasteNotice); err != nil {

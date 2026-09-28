@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 )
 
 // A real tmux failure to list panes must surface, not be treated as "no
@@ -1156,5 +1158,47 @@ func TestWakeOnQuotaResetFlushesOneDigest(t *testing.T) {
 	s.DB.QueryRowContext(ctx, `SELECT last_wake_at FROM sessions WHERE id = ?`, ses.ID).Scan(&wakeAt)
 	if wakeAt == nil {
 		t.Fatal("session not woken after the flush")
+	}
+}
+
+// pasteReadyFake is a Fake whose paste gate is PasteReady, as Muse's is.
+type pasteReadyFake struct{ *adapter.Fake }
+
+func (pasteReadyFake) PasteReady(capture string) bool {
+	return !strings.Contains(capture, "Enter to select")
+}
+
+func TestTryPasteUsesPasteReadyWhenTheAdapterHasIt(t *testing.T) {
+	busy := "✽ Beboppin'… (48s · ↓ 114 tokens)\n─────\n❯ \n─────\n" // Fake.Idle: busy
+	dialog := "  2. Request changes\nEnter to select · ↑/↓ to move · Tab for an optional note\n"
+	cases := []struct {
+		name    string
+		ad      func(*adapter.Fake) adapter.Adapter
+		capture string
+		paste   bool
+		log     string
+	}{
+		{"PasteReady pastes into a busy pane", func(f *adapter.Fake) adapter.Adapter { return pasteReadyFake{f} }, busy, true, ""},
+		{"PasteReady refuses the question dialog", func(f *adapter.Fake) adapter.Adapter { return pasteReadyFake{f} }, dialog, false, "question dialog open"},
+		{"plain adapter still needs Idle", func(f *adapter.Fake) adapter.Adapter { return f }, busy, false, "pane not idle"},
+	}
+	for _, c := range cases {
+		s, tm, fa := newStore(t)
+		var logs []string
+		s.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+		ctx := context.Background()
+		_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "PR " + c.name, Intent: "feature", Kind: Fake, Model: "fake-1"})
+		ses, _ := s.LatestSession(ctx, a.ID)
+		tm.captures[ses.TmuxName] = []string{c.capture}
+		r := wakeRow{SessionID: ses.ID, AgentID: a.ID, AgentName: a.Name, TmuxName: ses.TmuxName, PaneCommand: "swarm-fake-agent"}
+		if err := s.tryPaste(ctx, c.ad(fa), r, "notice"); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(tm.pasted) > 0; got != c.paste {
+			t.Errorf("%s: pasted = %v, want %v (logs %v)", c.name, got, c.paste, logs)
+		}
+		if c.log != "" && !strings.Contains(strings.Join(logs, "\n"), c.log) {
+			t.Errorf("%s: logs %v missing %q", c.name, logs, c.log)
+		}
 	}
 }

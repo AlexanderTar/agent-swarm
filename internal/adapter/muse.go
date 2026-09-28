@@ -397,12 +397,26 @@ var (
 	museProcess = []*regexp.Regexp{regexp.MustCompile(`^muse(-bin.*)?$`)}
 	museIdle    = regexp.MustCompile("(?m)^(?:\x1b\\[[0-9;?]*[A-Za-z]|\\s)*❯(?:\x1b\\[[0-9;?]*[A-Za-z]|\\s)*$")
 	museBusy    = regexp.MustCompile(`(?m)^[^\n]*[◈◇][^\n]*interrupt[^\n]*$`)
+	// museQuestionDialog marks Muse's request_user_input dialog. Its footer,
+	// from the 1.4.0 probe: "Enter to select · ↑/↓ to move · Tab for an
+	// optional note". With it on screen a paste is unsafe: typed letters move
+	// the option highlight and the Enter selects an option (live, a paste
+	// silently answered "Request changes") while the paste text is lost.
+	museQuestionDialog = regexp.MustCompile(`Enter to select`)
 )
 
 func (m *Muse) ProcessNames() []*regexp.Regexp { return museProcess }
 func (m *Muse) IdlePrompt() *regexp.Regexp     { return museIdle }
 func (m *Muse) Busy() *regexp.Regexp           { return museBusy }
 func (m *Muse) Idle(capture string) bool       { return idle(m, capture) }
+
+// PasteReady is the wake-paste gate (runtime tryPaste). Muse 1.4.0 accepts a
+// paste mid-turn: during a shell tool it steers the running turn, during
+// streaming it queues the input for after the turn. Only the question dialog
+// eats it. Idle stays the real idleness check for every other caller.
+func (m *Muse) PasteReady(capture string) bool {
+	return !museQuestionDialog.MatchString(StripANSI(capture))
+}
 
 // museTrust is D7 (dialog-needs-you spec): --yolo --trust-workspace already
 // avoids this dialog (P-M1), confirmed live not to trigger any blocking
