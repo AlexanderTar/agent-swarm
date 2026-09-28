@@ -944,6 +944,17 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 		var origKind AgentKind
 		var err error
 		if a, origKind, substituted, err = s.applyRetryFallback(ctx, a); err != nil {
+			// PendingOperation hides terminal phases (blocked included), so
+			// without this notification a queued retry that fails here
+			// would go silently stuck: an immediate Retry hands this same
+			// error straight back to its synchronous caller, but nothing is
+			// waiting on this background driver.
+			if s.Notify != nil {
+				var itemKey string
+				_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey)
+				_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.preflight_failed", AgentName: a.Name,
+					ItemKey: itemKey, Args: map[string]string{"reason": err.Error()}})
+			}
 			return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
 		}
 		if substituted {

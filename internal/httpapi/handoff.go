@@ -20,8 +20,8 @@ type replacementWire struct {
 	Mode        string `json:"mode"`
 	Phase       string `json:"phase"`
 	RequestKey  string `json:"request_key,omitempty"`
-	// Reason is "capacity" or "resume" for an operation the agent limit
-	// started (runtime.OperationReason); omitted otherwise.
+	// Reason is "capacity", "resume" or "retry" for an operation the agent
+	// limit started (runtime.OperationReason); omitted otherwise.
 	Reason string `json:"reason,omitempty"`
 	Error  string `json:"error,omitempty"`
 }

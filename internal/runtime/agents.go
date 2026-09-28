@@ -2037,14 +2037,17 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	// check must run before refuseIfOperationInFlight below, or the very
 	// operation this retry queued would make its own replay look like a
 	// conflicting one. A different note on the repeat call still reaches
-	// the successor -- the latest call wins.
+	// the successor -- the latest call wins -- but only while still queued:
+	// once the driver has moved past queued, startSuccessor has already
+	// delivered the old note, and overwriting the row now would rewrite
+	// history without redelivering anything.
 	if op, ok, err := s.PendingOperation(ctx, a.ID); err != nil {
 		return Agent{}, err
 	} else if ok && op.RequestKey == retryKeyPrefix+ses.ID {
 		if note != op.Note {
 			if err := s.tx(ctx, func(tx *sql.Tx) error {
-				_, err := tx.ExecContext(ctx, `UPDATE agent_operations SET note = ?, updated_at = ? WHERE id = ?`,
-					note, db.Millis(s.now()), op.ID)
+				_, err := tx.ExecContext(ctx, `UPDATE agent_operations SET note = ?, updated_at = ?
+					WHERE id = ? AND phase = 'queued'`, note, db.Millis(s.now()), op.ID)
 				return err
 			}); err != nil {
 				return Agent{}, err
@@ -2127,6 +2130,17 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	}
 	if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_control", &out, func(tx *sql.Tx) error {
 		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
+			return err
+		}
+		// Matches the queued-retry path (startSuccessor, reason "" or
+		// "retry"): an immediate Retry is exactly as much "a retry"
+		// happened as a queued one.
+		key, err := s.itemKey(ctx, tx, a.ItemID)
+		if err != nil {
+			return err
+		}
+		if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.retried", AgentName: a.Name,
+			ItemKey: key, Args: map[string]string{"name": a.Name, "N": fmt.Sprint(newSes.Attempt), "KEY": key}}); err != nil {
 			return err
 		}
 		out = a

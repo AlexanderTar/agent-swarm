@@ -906,6 +906,14 @@ func TestRetryStartsANewAttemptAndRevokesTheOldToken(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("assignment_update count = %d", n)
 	}
+	// An immediate Retry fires agent.retried exactly once, matching the
+	// queued-retry path (startSuccessor).
+	if got := notifiedCount(s, "agent.retried"); got != 1 {
+		t.Fatalf("agent.retried raised %d times, want 1", got)
+	}
+	if got := notified(t, s, "agent.retried"); got.Args["N"] != fmt.Sprint(next.Attempt) {
+		t.Fatalf("agent.retried args = %+v, want N=%d", got.Args, next.Attempt)
+	}
 }
 
 // P0-crash-1 (2026-09-19): a real incident where a crashed session's tmux

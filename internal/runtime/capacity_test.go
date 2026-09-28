@@ -747,3 +747,35 @@ func TestRetryAtTheLimitRepeatUpdatesTheNote(t *testing.T) {
 		t.Fatalf("operations = %d, want 1", n)
 	}
 }
+
+// TestRetryAtTheLimitRepeatPastQueuedDoesNotRewriteTheNote is the second
+// Opus review's fix 2: once the driver has moved the operation past queued,
+// startSuccessor has already delivered whatever note it carried -- a repeat
+// Retry racing in after that must not silently rewrite history in the row.
+func TestRetryAtTheLimitRepeatPastQueuedDoesNotRewriteTheNote(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	setLimits(t, s, 1)
+	if _, err := s.Retry(ctx, w.Name, "first note", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the driver having moved past queued (its note already
+	// delivered to the successor's inbox).
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agent_operations SET phase = 'starting' WHERE agent_id = ?`, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Retry(ctx, w.Name, "second note", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	var note string
+	if err := s.DB.QueryRow(`SELECT note FROM agent_operations WHERE agent_id = ?`, w.ID).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	if note != "first note" {
+		t.Fatalf("note = %q, want unchanged (already delivered past queued)", note)
+	}
+}
