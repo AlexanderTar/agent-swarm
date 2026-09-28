@@ -1441,3 +1441,26 @@ func TestOrchestratorStoryAndRootReviewUseIntegratedHead(t *testing.T) {
 		}
 	}
 }
+
+func TestSkillsCarryTheProgressListRule(t *testing.T) {
+	orch := string(install.SkillBody("swarm-orchestrator"))
+	for _, want := range []string{
+		"- Progress list: when `swarm_sync` returns `todos`, replace your native to-do list with it",
+		"Codex: `update_plan` (only one `in_progress` is allowed",
+		"agy: rewrite your `task.md` artifact (`[x]` completed, `[/]` in progress, `[ ]` pending)",
+		"never send `todos` for it.",
+		"- Report spike step progress on each checkpoint with `todos: [{id, status}]`",
+		"debug: frame, evidence, root_cause, report, plan, critic, approve",
+		"Swarm ticks `spec` and `approve` itself.",
+	} {
+		if !strings.Contains(orch, want) {
+			t.Errorf("swarm-orchestrator missing %q", want)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimRight(orch, "\n"), "remove your worktrees with `swarm_worktree` `op: \"remove\"`, and stop.") {
+		t.Error("the materialize line must stay last in swarm-orchestrator")
+	}
+	if spike := string(install.SkillBody("swarm-spike")); !strings.Contains(spike, "`todos`") {
+		t.Error("swarm-spike must point at the todos rule")
+	}
+}
