@@ -394,6 +394,46 @@ func isQuestionTool(name string) bool {
 	return false
 }
 
+// transcriptTexter is implemented by the adapters whose native question
+// tool is hooked (Claude, Codex, agy): AssistantTextSinceLastTurn reads the
+// agent's own transcript for the text printed since the last user turn, so
+// the PreToolUse summary gate can check the approval summary was actually
+// printed in chat. Declared here, not on adapter.Adapter, so every other
+// adapter (Cursor, Muse, Fake) needs no stub implementation -- a type
+// assertion picks it up where it exists.
+type transcriptTexter interface {
+	AssistantTextSinceLastTurn(transcriptPath string) (text string, ok bool)
+}
+
+// allPathsPresent reports whether every line in paths (SummaryGate's
+// "Spec: <abs path>" / "Plan: <abs path>" lines, plan approvals only) is a
+// verbatim substring of text -- an exact-path check, not normalized, since
+// a path is never reformatted by markdown the way a summary might be.
+// Always true for an empty paths (every non-plan approval, and a plan
+// SummaryGate couldn't resolve paths for).
+func allPathsPresent(text string, paths []string) bool {
+	for _, p := range paths {
+		if !strings.Contains(text, p) {
+			return false
+		}
+	}
+	return true
+}
+
+// summaryGateDenyReason is the PreToolUse summary gate's exact deny copy
+// (spec "User-facing copy"): the stored summary verbatim, then, for a plan,
+// the review paths lines.
+func summaryGateDenyReason(summary string, paths []string) string {
+	var b strings.Builder
+	b.WriteString("[swarm] Print this approval's summary in chat first, verbatim and complete (markdown is fine), " +
+		"then ask again with the same question.\n\n")
+	b.WriteString(summary)
+	for _, p := range paths {
+		b.WriteString("\n" + p)
+	}
+	return b.String()
+}
+
 // asyncQuestionTool is codex 0.157's native question tool. It returns
 // {"accepted":true} at once; the user's answer arrives later as a
 // <send_user_message_question_reply> UserPromptSubmit (parseQuestionReply).
@@ -761,6 +801,39 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			for _, q := range batchedQuestionsAfterFirst(in.RawToolInput) {
 				if _, ok := h.RT.BindNativeQuestion(ctx, s.AgentID, q); ok {
 					return adapter.HookDecision{Block: true, Reason: "[swarm] Ask one swarm approval per question call."}, nil
+				}
+			}
+		}
+
+		// Summary gate (2026-09-28-approval-summary-enforced locked decision
+		// 3): a question that binds to an open approve_section/plan/report
+		// request is refused until the request's full summary has been
+		// printed in the asking agent's own chat output, so the user is
+		// never asked to approve blind. Must run -- and, on a deny, return --
+		// strictly before the AskQuestion intercept below: a denied call
+		// never reaches the native tool, so no PostToolUse ever fires for it,
+		// and recording the question row here would strand it open forever.
+		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
+			prompt, _ := extractQuestion(in.ToolName, in.RawToolInput)
+			if ref, ok := h.RT.BindNativeQuestion(ctx, s.AgentID, prompt); ok {
+				summary, paths, blocks, err := h.RT.SummaryGate(ctx, ref)
+				if err != nil {
+					h.logf("hook: summary gate lookup for %s: %v", ref, err)
+				} else if summary != "" && blocks < 2 {
+					texter, hasTexter := a.(transcriptTexter)
+					var text string
+					var textOK bool
+					if hasTexter && in.TranscriptPath != "" {
+						text, textOK = texter.AssistantTextSinceLastTurn(in.TranscriptPath)
+					}
+					if !textOK {
+						h.logf("hook: summary gate for %s: transcript unreadable, allowing", ref)
+					} else if !strings.Contains(runtime.NormForMatch(text), runtime.NormForMatch(summary)) || !allPathsPresent(text, paths) {
+						if err := h.RT.RecordSummaryBlock(ctx, ref); err != nil {
+							h.logf("hook: record summary block for %s: %v", ref, err)
+						}
+						return adapter.HookDecision{Block: true, Reason: summaryGateDenyReason(summary, paths)}, nil
+					}
 				}
 			}
 		}

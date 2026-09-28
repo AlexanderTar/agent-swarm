@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1947,5 +1948,240 @@ func TestStopBlocksWithHandoffNoticeDuringHandoff(t *testing.T) {
 	json.Unmarshal(out, &m)
 	if m["decision"] != "block" || m["reason"] != runtime.HandoffPreservationNotice("login-form-coder", "TASK-101") {
 		t.Fatalf("handoff stop = %s", out)
+	}
+}
+
+// summaryGateApproval seeds an open approve_section request for agt_1 (an
+// empty artifact/section id, so sectionTitle resolves to "" without a DB
+// lookup) with the given summary as its prompt, and returns the exact
+// native question text a real hook-bound question tool call must carry to
+// bind to it (buildApprovalQuestion's approve_section shape, capped
+// summary head first line included -- agt_1 is kind claude, so the head is
+// the summary's own first non-blank line, capped to 200 runes).
+func summaryGateApproval(t *testing.T, h *Handler, summary string) (reqID, question string) {
+	t.Helper()
+	ctx := context.Background()
+	reqID = "req_sumgate1"
+	if _, err := h.DB.ExecContext(ctx, `INSERT INTO requests
+		(id, kind, is_hitl, agent_id, session_id, item_id, artifact_revision, prompt, options_json, state, created_at)
+		VALUES (?, 'approve_section', 0, 'agt_1', 'ses_1', 'itm_1', 1, ?, '[]', 'open', 1)`, reqID, summary); err != nil {
+		t.Fatal(err)
+	}
+	head := summary
+	if i := strings.IndexByte(head, '\n'); i >= 0 {
+		head = head[:i]
+	}
+	question = head + "\n\n" + `Approve Spec section "" (rev 1)?`
+	return reqID, question
+}
+
+func summaryGateAskInput(t *testing.T, question, transcriptPath string) []byte {
+	t.Helper()
+	in, err := json.Marshal(map[string]any{
+		"session_id":      "p1",
+		"tool_name":       "AskUserQuestion",
+		"transcript_path": transcriptPath,
+		"tool_input": map[string]any{
+			"questions": []map[string]any{
+				{"question": question, "options": []map[string]any{{"label": "Approve"}, {"label": "Request changes"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in
+}
+
+func writeTranscript(t *testing.T, lines ...string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func claudeUserLine(text string) string {
+	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}})
+	return string(b)
+}
+
+func claudeAssistantTextLine(id, text string) string {
+	b, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{
+		"id": id, "role": "assistant", "content": []map[string]any{{"type": "text", "text": text}}}})
+	return string(b)
+}
+
+// TestPreToolUseSummaryGateDeniesWithoutTheSummaryInChat is
+// 2026-09-28-approval-summary-enforced Task 8: a question binding to an
+// open approve_section request is refused until the transcript shows the
+// summary was printed in chat.
+func TestPreToolUseSummaryGateDeniesWithoutTheSummaryInChat(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	summary := "Users table gets id, email, and hashed_password columns."
+	_, question := summaryGateApproval(t, h, summary)
+	transcript := writeTranscript(t, claudeUserLine("go"))
+
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), summary) {
+		t.Fatalf("deny reason must quote the summary verbatim, got %s", out)
+	}
+	if !strings.Contains(string(out), "Print this approval's summary in chat first") {
+		t.Fatalf("deny reason missing the exact copy, got %s", out)
+	}
+	var n int
+	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE kind = 'question'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("question rows = %d, want 0 (denied before AskQuestion ran)", n)
+	}
+}
+
+// TestPreToolUseSummaryGateAllowsAMarkdownReformattedSummary confirms the
+// match is normalized: punctuation, casing and markdown around the summary
+// don't matter, only the letters and digits.
+func TestPreToolUseSummaryGateAllowsAMarkdownReformattedSummary(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	summary := "Users table gets id, email, and hashed_password columns."
+	_, question := summaryGateApproval(t, h, summary)
+	reformatted := "# Summary\n\n**Users table** gets `id`, `email`, and `hashed_password` columns!!"
+	transcript := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m1", reformatted))
+
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+		t.Fatalf("a reformatted-but-matching summary must not be denied, got %s", out)
+	}
+}
+
+// TestPreToolUseSummaryGateAllowsAfterTwoDenials confirms the escape hatch:
+// a third attempt is let through regardless of transcript content, so the
+// approval can never deadlock.
+func TestPreToolUseSummaryGateAllowsAfterTwoDenials(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	summary := "Users table gets id, email, and hashed_password columns."
+	reqID, question := summaryGateApproval(t, h, summary)
+	transcript := writeTranscript(t, claudeUserLine("go"))
+	in := summaryGateAskInput(t, question, transcript)
+
+	for i := 0; i < 2; i++ {
+		out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), "Print this approval's summary in chat first") {
+			t.Fatalf("attempt %d: expected a deny, got %s", i+1, out)
+		}
+	}
+	var blocks int
+	if err := h.DB.QueryRowContext(ctx, `SELECT json_extract(binding_json, '$.summary_blocks') FROM requests WHERE id = ?`, reqID).Scan(&blocks); err != nil {
+		t.Fatal(err)
+	}
+	if blocks != 2 {
+		t.Fatalf("summary_blocks = %d, want 2", blocks)
+	}
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+		t.Fatalf("the third attempt after 2 denials must be allowed, got %s", out)
+	}
+}
+
+// TestPreToolUseSummaryGateAllowsWhenTranscriptUnreadable is the fail-open
+// case: an unreadable transcript never blocks the approval.
+func TestPreToolUseSummaryGateAllowsWhenTranscriptUnreadable(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	summary := "Users table gets id, email, and hashed_password columns."
+	_, question := summaryGateApproval(t, h, summary)
+
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, "/does/not/exist.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+		t.Fatalf("an unreadable transcript must fail open, got %s", out)
+	}
+}
+
+// summaryGatePlanApproval seeds a real spec+plan artifact pair and an open
+// approve_plan request over them, so SummaryGate can resolve real review
+// paths -- unlike a bare request row with no artifacts, this exercises the
+// "paths present but not printed" deny path.
+func summaryGatePlanApproval(t *testing.T, h *Handler, summary string) (reqID, question, specPath, planPath string) {
+	t.Helper()
+	ctx := context.Background()
+	specPath, planPath = filepath.Join(t.TempDir(), "spec.md"), filepath.Join(t.TempDir(), "plan.md")
+	if _, err := h.DB.ExecContext(ctx, `INSERT INTO artifacts (id, item_id, kind, path, head_revision, created_at)
+		VALUES ('art_spec1', 'itm_1', 'spec', ?, 1, 1)`, specPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.DB.ExecContext(ctx, `INSERT INTO artifacts (id, item_id, kind, path, head_revision, created_at)
+		VALUES ('art_plan1', 'itm_1', 'plan', ?, 1, 2)`, planPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.DB.ExecContext(ctx, `INSERT INTO artifact_revisions
+		(artifact_id, revision, sha256, content, sections_json, warnings_json, created_at)
+		VALUES ('art_plan1', 1, 'x', 'x', '[]', '[]', 2)`); err != nil {
+		t.Fatal(err)
+	}
+	reqID = "req_sumplan1"
+	if _, err := h.DB.ExecContext(ctx, `INSERT INTO requests
+		(id, kind, is_hitl, agent_id, session_id, item_id, artifact_id, artifact_revision, prompt, options_json, state, created_at)
+		VALUES (?, 'approve_plan', 0, 'agt_1', 'ses_1', 'itm_1', 'art_plan1', 1, ?, '[]', 'open', 3)`, reqID, summary); err != nil {
+		t.Fatal(err)
+	}
+	question = summary + "\n\n" + "Spec: " + specPath + "\nPlan: " + planPath + "\n" + `Approve the plan (rev 1)?`
+	return reqID, question, specPath, planPath
+}
+
+// TestPreToolUseSummaryGatePlanDeniesWithoutPaths confirms a plan approval
+// requires the review paths lines too, even when the summary alone is
+// present in chat.
+func TestPreToolUseSummaryGatePlanDeniesWithoutPaths(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	summary := "Ship auth end to end."
+	_, question, _, _ := summaryGatePlanApproval(t, h, summary)
+	// The transcript prints the summary but never the Spec:/Plan: lines.
+	transcript := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m1", summary))
+
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "Print this approval's summary in chat first") {
+		t.Fatalf("a plan approval missing the printed review paths must be denied, got %s", out)
+	}
+}
+
+// TestPreToolUseSummaryGatePlanAllowsWithSummaryAndPaths is the positive
+// case: summary and both review paths printed verbatim in chat.
+func TestPreToolUseSummaryGatePlanAllowsWithSummaryAndPaths(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	summary := "Ship auth end to end."
+	_, question, specPath, planPath := summaryGatePlanApproval(t, h, summary)
+	transcript := writeTranscript(t, claudeUserLine("go"),
+		claudeAssistantTextLine("m1", summary+"\n\nSpec: "+specPath+"\nPlan: "+planPath))
+
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+		t.Fatalf("summary + both review paths printed must be allowed, got %s", out)
 	}
 }
