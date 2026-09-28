@@ -858,3 +858,175 @@ func TestQuestionTextForRef(t *testing.T) {
 	}
 	_ = w
 }
+
+// TestBindNativeQuestion is 2026-09-28-approval-summary-enforced Task 2:
+// BindNativeQuestion's text-match binding, the old-token fallback, the
+// newest-wins tie-break, and a child-approval message match.
+func TestBindNativeQuestion(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Bind", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	ses, _ := s.LatestSession(ctx, a.ID)
+
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "## Design\n\nUse SQLite.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: "Use SQLite for storage.",
+		ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := req.NativePrompt.Question
+
+	t.Run("exact match", func(t *testing.T) {
+		ref, ok := s.BindNativeQuestion(ctx, a.ID, want)
+		if !ok || ref != req.ID {
+			t.Fatalf("BindNativeQuestion = %q, %v, want %q, true", ref, ok, req.ID)
+		}
+	})
+	t.Run("reflowed whitespace still binds", func(t *testing.T) {
+		reflowed := strings.ReplaceAll(want, " ", "  \n")
+		ref, ok := s.BindNativeQuestion(ctx, a.ID, reflowed)
+		if !ok || ref != req.ID {
+			t.Fatalf("BindNativeQuestion(reflowed) = %q, %v, want %q, true", ref, ok, req.ID)
+		}
+	})
+	t.Run("altered text does not bind", func(t *testing.T) {
+		if _, ok := s.BindNativeQuestion(ctx, a.ID, want+" extra words"); ok {
+			t.Fatal("altered text must not bind")
+		}
+	})
+	t.Run("old token question still binds via fallback", func(t *testing.T) {
+		ref, ok := s.BindNativeQuestion(ctx, a.ID, "Some other question entirely"+refToken(req.ID))
+		if !ok || ref != req.ID {
+			t.Fatalf("BindNativeQuestion(token) = %q, %v, want %q, true", ref, ok, req.ID)
+		}
+	})
+	t.Run("no match for an unrelated agent", func(t *testing.T) {
+		_, other, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Other", Intent: "feature", Kind: Fake, Model: "fake-1"})
+		if _, ok := s.BindNativeQuestion(ctx, other.ID, want); ok {
+			t.Fatal("a question routed to a different agent must not bind")
+		}
+	})
+
+	// Child-approval message.
+	orch, w, wSes := worker(t, s)
+	msgID, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w
+	t.Run("child-approval message binds by text", func(t *testing.T) {
+		ref, ok := s.BindNativeQuestion(ctx, orch.ID, "may I drop table x?")
+		if !ok || ref != msgID {
+			t.Fatalf("BindNativeQuestion(child msg) = %q, %v, want %q, true", ref, ok, msgID)
+		}
+	})
+
+	t.Run("newest of two candidates wins", func(t *testing.T) {
+		// A second approval over the exact same artifact revision/section
+		// rebuilds byte-identical question text, so a fresh AskQuestion of
+		// `want` is genuinely ambiguous between req and req2: newest wins.
+		req2, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: "Use SQLite for storage.",
+			ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req2.NativePrompt.Question != want {
+			t.Fatalf("expected the second approval's rebuilt question to collide with the first: %q vs %q", req2.NativePrompt.Question, want)
+		}
+		ref, ok := s.BindNativeQuestion(ctx, a.ID, want)
+		if !ok || ref != req2.ID {
+			t.Fatalf("BindNativeQuestion = %q, %v, want the newer %q", ref, ok, req2.ID)
+		}
+	})
+}
+
+// TestSummaryGate is 2026-09-28-approval-summary-enforced Task 5:
+// SummaryGate reads a request's own stored summary and, for a plan, its
+// resolved review paths; RecordSummaryBlock accumulates denial counts.
+func TestSummaryGate(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("approve_section returns its own prompt as summary, 0 blocks", func(t *testing.T) {
+		s, _, _ := newStore(t)
+		_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Gate1", Intent: "feature", Kind: Fake, Model: "fake-1"})
+		ses, _ := s.LatestSession(ctx, a.ID)
+		spec, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "## Design\n\nUse SQLite.\n"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: "Use SQLite for storage.",
+			ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary, paths, blocks, err := s.SummaryGate(ctx, req.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary != "Use SQLite for storage." || len(paths) != 0 || blocks != 0 {
+			t.Fatalf("SummaryGate = %q, %v, %d", summary, paths, blocks)
+		}
+	})
+
+	t.Run("approve_plan returns review paths", func(t *testing.T) {
+		s2, _, _ := newStore(t)
+		ses, _, planID, _ := approvedFeatureSpike(t, s2)
+		req, err := s2.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: "Ship it."})
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary, paths, _, err := s2.SummaryGate(ctx, req.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary != "Ship it." || len(paths) != 2 || !strings.HasPrefix(paths[0], "Spec: ") || !strings.HasPrefix(paths[1], "Plan: ") {
+			t.Fatalf("SummaryGate = %q, %v", summary, paths)
+		}
+	})
+
+	t.Run("RecordSummaryBlock accumulates, close_spike has no summary to enforce", func(t *testing.T) {
+		s2, _, _ := newStore(t)
+		_, a, _, err := s2.StartSpike(ctx, SpikeInput{Name: "Gate2", Intent: "feature", Kind: Fake, Model: "fake-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ses, _ := s2.LatestSession(ctx, a.ID)
+		if _, err := s2.DB.ExecContext(ctx, `INSERT INTO requests
+			(id, kind, is_hitl, agent_id, session_id, item_id, prompt, options_json, state, created_at)
+			VALUES ('req_closegate', 'close_spike', 0, ?, ?, ?, '', '[]', 'open', 1)`, a.ID, ses.ID, a.ItemID); err != nil {
+			t.Fatal(err)
+		}
+		summary, _, blocks, err := s2.SummaryGate(ctx, "req_closegate")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary != "" || blocks != 0 {
+			t.Fatalf("close_spike SummaryGate = %q, blocks=%d, want empty summary", summary, blocks)
+		}
+
+		spec, err := s2.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "## D\n\nx.\n"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sreq, err := s2.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: "x.", ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s2.RecordSummaryBlock(ctx, sreq.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := s2.RecordSummaryBlock(ctx, sreq.ID); err != nil {
+			t.Fatal(err)
+		}
+		_, _, blocks, err = s2.SummaryGate(ctx, sreq.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blocks != 2 {
+			t.Fatalf("blocks = %d, want 2", blocks)
+		}
+	})
+}
