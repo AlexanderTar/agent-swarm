@@ -264,7 +264,11 @@ type pausingRow struct {
 	HandoffAt                    time.Time
 	InterruptedAt                *time.Time
 	Attempt                      int
-	OpenQuestion                 bool // an open question row on this session (a native dialog for questionHookKinds)
+	// OpenQuestion: an open question row raised during this session's
+	// lifetime (a native dialog for questionHookKinds). Older rows were
+	// repointed from a predecessor (repointRequestsTx) or left open by an
+	// unmatched hook reply; neither means a dialog is on screen.
+	OpenQuestion bool
 }
 
 // pausingSessions loads every session in a pausing state (§10.5).
@@ -272,7 +276,8 @@ func (s *Store) pausingSessions(ctx context.Context) ([]pausingRow, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT ses.id, ses.agent_id, ses.tmux_name, a.kind, ses.state,
 		ses.pause_deadline_at, ses.attempt,
 		(SELECT MAX(created_at) FROM checkpoints c WHERE c.session_id = ses.id AND c.kind = 'handoff'),
-		EXISTS (SELECT 1 FROM requests q WHERE q.session_id = ses.id AND q.kind = 'question' AND q.state = 'open')
+		EXISTS (SELECT 1 FROM requests q WHERE q.session_id = ses.id AND q.kind = 'question' AND q.state = 'open'
+			AND q.created_at >= ses.started_at)
 		FROM sessions ses JOIN agents a ON a.id = ses.agent_id
 		WHERE ses.state IN ('pause_requested', 'quiescing', 'stopping')`)
 	if err != nil {

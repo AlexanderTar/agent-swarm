@@ -2092,6 +2092,18 @@ func TestHandoffCheckpointMovesRunningSessionToStopping(t *testing.T) {
 // session pause requested on top of it.
 func questionDialogPause(t *testing.T, kind AgentKind) (s *Store, tm *fakeTmux, ses Session, req Request) {
 	t.Helper()
+	s, tm, ses, req = questionDialogSession(t, kind)
+	a, _ := s.agentByID(context.Background(), ses.AgentID)
+	if _, err := s.Pause(context.Background(), a.Name, "session"); err != nil {
+		t.Fatal(err)
+	}
+	return s, tm, ses, req
+}
+
+// questionDialogSession is questionDialogPause without the pause: a live
+// session of kind blocked in an open native question dialog.
+func questionDialogSession(t *testing.T, kind AgentKind) (s *Store, tm *fakeTmux, ses Session, req Request) {
+	t.Helper()
 	ctx := context.Background()
 	s, sesID, req := seedApprovalWithNativePrompt(t)
 	tm = s.Tmux.(*fakeTmux)
@@ -2104,12 +2116,8 @@ func questionDialogPause(t *testing.T, kind AgentKind) (s *Store, tm *fakeTmux, 
 	}
 	var agentID string
 	s.DB.QueryRowContext(ctx, `SELECT agent_id FROM sessions WHERE id = ?`, sesID).Scan(&agentID)
-	a, _ := s.agentByID(ctx, agentID)
 	ses, _ = s.LatestSession(ctx, agentID)
 	tm.env[ses.TmuxName] = map[string]string{"SWARM_SESSION": ses.ID}
-	if _, err := s.Pause(ctx, a.Name, "session"); err != nil {
-		t.Fatal(err)
-	}
 	return s, tm, ses, req
 }
 
@@ -2185,6 +2193,64 @@ func TestPauseDismissesAnOpenNativeQuestionDialogImmediately(t *testing.T) {
 	}
 	if len(tm.killed) != killedBefore+1 || tm.killed[len(tm.killed)-1] != ses.TmuxName {
 		t.Fatalf("deadline fallback must kill, killed=%v", tm.killed)
+	}
+}
+
+// An open question row older than the session was not raised by this
+// session's hook: repointRequestsTx carries open rows onto a successor, and an
+// unmatched hook reply can leave one open forever. Neither means a dialog is
+// on screen, so no Escape before the deadline.
+func TestPauseIgnoresAQuestionRowFromAnEarlierSession(t *testing.T) {
+	s, tm, ses, _ := questionDialogPause(t, Claude)
+	ctx := context.Background()
+	if _, err := s.DB.ExecContext(ctx, `UPDATE requests SET created_at = ? WHERE session_id = ? AND kind = 'question'`,
+		db.Millis(ses.StartedAt)-1000, ses.ID); err != nil {
+		t.Fatal(err)
+	}
+	tm.clk.Advance(5 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysFor(tm, ses.TmuxName); got != 0 {
+		t.Fatalf("stale question row sent keys: %v", tm.keys)
+	}
+	if n := openQuestions(t, s, ses.ID); n != 1 {
+		t.Fatalf("stale question row closed: open=%d", n)
+	}
+}
+
+// The handoff route reaches pause_requested through RequestReplacement, not
+// Pause; a dialog open at that moment is dismissed on the next tick too.
+func TestHandoffDismissesAnOpenNativeQuestionDialog(t *testing.T) {
+	s, tm, ses, _ := questionDialogSession(t, Claude)
+	ctx := context.Background()
+	if err := s.SetSessionState(ctx, ses.ID, Running); err != nil {
+		t.Fatal(err)
+	}
+	panes(tm, Pane{Session: ses.TmuxName})
+	tm.killed = nil
+	if _, err := s.RequestReplacement(ctx, ses.AgentID, ModeHandoff, "dlg1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if pre, _ := s.LatestSession(ctx, ses.AgentID); pre.ID != ses.ID || pre.State != PauseRequested {
+		t.Fatalf("predecessor = %s/%s, want %s pause_requested", pre.ID, pre.State, ses.ID)
+	}
+	tm.clk.Advance(5 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysFor(tm, ses.TmuxName); got != 1 {
+		t.Fatalf("interrupt keys sent %d times, want 1 (keys=%v)", got, tm.keys)
+	}
+	if n := openQuestions(t, s, ses.ID); n != 0 {
+		t.Fatalf("question row still open: %d", n)
+	}
+	tm.clk.Advance(killAfterInterrupt + time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.killed) != 0 {
+		t.Fatalf("dismissal must not schedule a kill, killed=%v", tm.killed)
 	}
 }
 
