@@ -197,6 +197,15 @@ func adoptPreExistingSkills(root string) error {
 	return nil
 }
 
+// claudeEnv is the extra environment for every Claude session.
+// CLAUDE_CODE_ENABLE_TODO_TOOLS=1: Claude Code gives TaskCreate/TaskGet/
+// TaskUpdate/TaskList only to older models (through Opus 4.7 / Sonnet 4.6) by
+// default; newer ones need this opt-in, and the orchestrator's native progress
+// list (swarm-orchestrator skill, "Progress list") uses them.
+func claudeEnv() map[string]string {
+	return map[string]string{"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}
+}
+
 func (c *Claude) Launch(s Spec) (Launch, error) {
 	if err := trustClaudeWorkspace(c.d.UserHome, s.Cwd); err != nil {
 		c.d.Log("claude: pre-trust %s: %v", s.Cwd, err)
@@ -206,7 +215,7 @@ func (c *Claude) Launch(s Spec) (Launch, error) {
 		return Launch{}, err
 	}
 	argv := append([]string{"claude", "--session-id", newUUIDv4()}, f...)
-	return Launch{Argv: append(argv, "--", s.Kickoff), Env: map[string]string{}}, nil
+	return Launch{Argv: append(argv, "--", s.Kickoff), Env: claudeEnv()}, nil
 }
 
 func (c *Claude) Resume(s Spec) (Launch, error) {
@@ -218,7 +227,7 @@ func (c *Claude) Resume(s Spec) (Launch, error) {
 		return Launch{}, err
 	}
 	argv := append([]string{"claude", "--resume", s.ProviderSessionID}, f...)
-	return Launch{Argv: append(argv, "--", s.Kickoff), Env: map[string]string{}}, nil
+	return Launch{Argv: append(argv, "--", s.Kickoff), Env: claudeEnv()}, nil
 }
 
 // trustClaudeWorkspace marks cwd (and its realpath, if it differs) trusted

@@ -1314,3 +1314,26 @@ func claudeUserLineForTest(text string) string {
 	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}})
 	return string(b)
 }
+
+// Opus 5.x / Sonnet 5 don't get TaskCreate/TaskUpdate by default; the
+// orchestrator's progress list (swarm-orchestrator "Progress list") needs them.
+func TestClaudeLaunchAndResumeEnableTodoTools(t *testing.T) {
+	d := testDeps(t)
+	a := newClaude(d)
+	l, err := a.Launch(claudeSpec(t, d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "1" {
+		t.Fatalf("launch env = %v, want CLAUDE_CODE_ENABLE_TODO_TOOLS=1", l.Env)
+	}
+	s := claudeSpec(t, d)
+	s.ProviderSessionID = "00000000-0000-4000-8000-000000000000"
+	r, err := a.Resume(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "1" {
+		t.Fatalf("resume env = %v, want CLAUDE_CODE_ENABLE_TODO_TOOLS=1", r.Env)
+	}
+}
