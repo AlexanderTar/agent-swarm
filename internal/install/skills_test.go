@@ -107,18 +107,24 @@ func TestApprovalSkillsDescribeCurrentContract(t *testing.T) {
 	orch := string(install.SkillBody("swarm-orchestrator"))
 	spike := string(install.SkillBody("swarm-spike"))
 	for name, body := range map[string]string{"swarm-orchestrator": orch, "swarm-spike": spike} {
-		for _, want := range []string{"starting repositories are hints", "1–2000", "Out of scope", "Explicitly out of scope", "review_paths.spec", "review_paths.plan"} {
+		for _, want := range []string{"starting repositories are hints", "1–2000", "Out of scope", "Explicitly out of scope",
+			// 2026-09-28-approval-chat-block: review paths reach the user
+			// inside the daemon-built chat_block, printed exactly.
+			"chat_block", "never restated, shortened or paraphrased"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s missing %q", name, want)
 			}
 		}
-		for _, stale := range []string{"1–700", "update scope with `swarm_repos`", "out-of-scope or unknown repository"} {
+		for _, stale := range []string{"1–700", "update scope with `swarm_repos`", "out-of-scope or unknown repository",
+			"verbatim and complete"} {
 			if strings.Contains(body, stale) {
 				t.Errorf("%s retains stale instruction %q", name, stale)
 			}
 		}
 	}
-	for _, want := range []string{"Cursor `AskQuestion`", "Muse `request_user_input`", "answer_text", "agent_reported", "cancellation"} {
+	for _, want := range []string{"Cursor `AskQuestion`", "Muse `request_user_input`", "answer_text", "agent_reported", "cancellation",
+		"Approval summaries", "arrow chains", "Verification: how we'll prove the graphify install is correct, repeatable and safe to undo.",
+		"as your whole chat message, with nothing before or after it"} {
 		if !strings.Contains(orch, want) {
 			t.Errorf("swarm-orchestrator missing %q", want)
 		}
