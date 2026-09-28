@@ -44,7 +44,7 @@ export function Sheet(p: {
           </>
         ) : (
           <SheetHeader className="border-b border-border px-5 py-4 pr-16">
-            <SheetTitle className="text-[15px] font-semibold">{p.title}</SheetTitle>
+            <SheetTitle className="break-words text-[15px] font-semibold">{p.title}</SheetTitle>
             {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
           </SheetHeader>
         )}

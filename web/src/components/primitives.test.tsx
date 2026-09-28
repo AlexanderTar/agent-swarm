@@ -106,6 +106,13 @@ describe("Sheet", () => {
     expect(dialog.querySelector("[data-slot=sheet-header]")).toHaveClass("pr-16");
   });
 
+  it("wraps a long unbroken title before the Close target", () => {
+    const title = "TASK-" + "verylongidentifier".repeat(8);
+    render(<Sheet title={title} onClose={vi.fn()}>body</Sheet>);
+    expect(screen.getByRole("heading", { name: title })).toHaveClass("break-words");
+    expect(screen.getByRole("button", { name: "Close" })).toHaveClass("size-11");
+  });
+
   it("omits a description and clears the close button for headerless content", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     render(<Sheet title="Details" header={false} onClose={vi.fn()}>body</Sheet>);
