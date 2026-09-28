@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -588,5 +590,192 @@ func TestStartSpikeAtTheLimitQueuesInsteadOfPausingOthers(t *testing.T) {
 	}
 	if state != string(AgentActive) || sessions != 1 {
 		t.Fatalf("after drain state=%s sessions=%d, want active with one session", state, sessions)
+	}
+}
+
+// TestRetryAtTheLimitQueuesInsteadOfPausingOthers is the Retry counterpart
+// to TestResumeWhenFullQueuesForAFreeSlot: a failed/crashed session holds no
+// slot (NotAZombieSlot), so an unguarded Retry at the limit would add a
+// slot holder and let the next EnforceCapacity tick pause a running agent to
+// make room. Retry must queue instead, exactly like Resume, and a repeat
+// call while queued must not create a second operation.
+func TestRetryAtTheLimitQueuesInsteadOfPausingOthers(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	setLimits(t, s, 1) // the orchestrator alone holds the only slot
+
+	for i := 0; i < 2; i++ {
+		got, err := s.Retry(ctx, w.Name, "", "", "")
+		if err != nil {
+			t.Fatalf("retry #%d: %v", i+1, err)
+		}
+		if got.ID != w.ID {
+			t.Fatalf("retry returned %s", got.Name)
+		}
+	}
+	var phase string
+	var n int
+	if err := s.DB.QueryRow(`SELECT phase, (SELECT COUNT(*) FROM agent_operations WHERE agent_id = ?)
+		FROM agent_operations WHERE request_key = ?`, w.ID, "retry:"+wSes.ID).Scan(&phase, &n); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "queued" || n != 1 {
+		t.Fatalf("retry op = %s (ops %d), want one queued", phase, n)
+	}
+	var sessions int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 {
+		t.Fatalf("sessions = %d, want 1 (no launch while full)", sessions)
+	}
+
+	if err := s.EnforceCapacity(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ops := capacityOps(t, s); len(ops) != 0 {
+		t.Fatalf("capacity paused a running agent for a queued retry: %v", ops)
+	}
+	if got := latestState(t, s, orch.ID); got != "running" && got != "spawning" {
+		t.Fatalf("orchestrator %s is %s, want untouched", orch.ID, got)
+	}
+
+	setLimits(t, s, 2)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 2 {
+		t.Fatalf("sessions = %d, want 2 after a slot freed", sessions)
+	}
+	if n := countKind(s, "agent.retried"); n != 1 {
+		t.Fatalf("agent.retried raised %d times for the freed retry, want 1", n)
+	}
+	succ, err := s.LatestSession(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succ.Attempt != wSes.Attempt+1 {
+		t.Fatalf("successor attempt = %d, want %d (same bump as an immediate Retry)", succ.Attempt, wSes.Attempt+1)
+	}
+	if got := lastNotified(t, s); got.Kind != "agent.retried" || got.Args["N"] != fmt.Sprint(succ.Attempt) {
+		t.Fatalf("agent.retried args = %+v, want N=%d", got.Args, succ.Attempt)
+	}
+	if !strings.Contains(fa.LastSpec.Kickoff, "Call swarm_sync now to get your assignment") ||
+		strings.Contains(fa.LastSpec.Kickoff, "continuing in a fresh session after") {
+		t.Fatalf("queued retry kickoff must be the plain Kickoff template, not a recovery successor: %s", fa.LastSpec.Kickoff)
+	}
+}
+
+// TestRetryAfterCancelAtTheLimitAutoRestarts is CRITICAL fix 1: Cancel sets
+// auto_restart = 0, and ResumeOperations skips any agent with it off (the
+// user's own Cancel must keep winning over a stray restart). Retry is an
+// explicit user request to launch again, so -- exactly like
+// RequestReplacement already does for pause/handoff/recover -- queueing it
+// must re-enable auto_restart, or a Retry-after-Cancel at the limit reports
+// success but never actually starts.
+func TestRetryAfterCancelAtTheLimitAutoRestarts(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Cancel(ctx, w.Name, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	setLimits(t, s, 1) // the orchestrator alone holds the only slot
+	if _, err := s.Retry(ctx, w.Name, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	var autoRestart sql.NullInt64
+	if err := s.DB.QueryRow(`SELECT auto_restart FROM agents WHERE id = ?`, w.ID).Scan(&autoRestart); err != nil {
+		t.Fatal(err)
+	}
+	if autoRestart.Valid && autoRestart.Int64 == 0 {
+		t.Fatal("auto_restart still 0 after Retry: queued retry can never start")
+	}
+
+	setLimits(t, s, 2)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var sessions int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, w.ID).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 2 {
+		t.Fatalf("sessions = %d, want 2 (queued retry started once the slot freed)", sessions)
+	}
+}
+
+// TestRetryAtTheLimitRepeatUpdatesTheNote is minor fix 5: a second Retry
+// call while still queued must not create a second operation, but a
+// different note must still reach the agent -- the latest call wins.
+func TestRetryAtTheLimitRepeatUpdatesTheNote(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	setLimits(t, s, 1)
+	if _, err := s.Retry(ctx, w.Name, "first note", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Retry(ctx, w.Name, "second note", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	op, ok, err := s.PendingOperation(ctx, w.ID)
+	if err != nil || !ok {
+		t.Fatalf("pending op = %+v, %v", op, err)
+	}
+	if op.Note != "second note" {
+		t.Fatalf("queued note = %q, want the latest call's note", op.Note)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM agent_operations WHERE agent_id = ?`, w.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("operations = %d, want 1", n)
+	}
+}
+
+// TestRetryAtTheLimitRepeatPastQueuedDoesNotRewriteTheNote is the second
+// Opus review's fix 2: once the driver has moved the operation past queued,
+// startSuccessor has already delivered whatever note it carried -- a repeat
+// Retry racing in after that must not silently rewrite history in the row.
+func TestRetryAtTheLimitRepeatPastQueuedDoesNotRewriteTheNote(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, w, wSes := worker(t, s)
+	if err := s.SetSessionState(ctx, wSes.ID, Crashed); err != nil {
+		t.Fatal(err)
+	}
+	setLimits(t, s, 1)
+	if _, err := s.Retry(ctx, w.Name, "first note", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the driver having moved past queued (its note already
+	// delivered to the successor's inbox).
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agent_operations SET phase = 'starting' WHERE agent_id = ?`, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Retry(ctx, w.Name, "second note", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	var note string
+	if err := s.DB.QueryRow(`SELECT note FROM agent_operations WHERE agent_id = ?`, w.ID).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	if note != "first note" {
+		t.Fatalf("note = %q, want unchanged (already delivered past queued)", note)
 	}
 }

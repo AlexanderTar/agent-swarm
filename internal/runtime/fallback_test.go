@@ -584,6 +584,63 @@ func TestRetryBothExhaustedReturnsErrorNoNewSession(t *testing.T) {
 	}
 }
 
+// TestRetryFallbackExhaustionOnAQueuedRetryBlocksAndNotifies is fix 1 from
+// the second Opus review of fix/retry-admit: a queued retry re-resolves
+// usage fallback in startSuccessor (there is no synchronous caller left to
+// hand an error to, unlike an immediate Retry), and PendingOperation hides
+// terminal (including blocked) rows -- so without a notification, a retry
+// that queued fine but then found both the agent and its fallback exhausted
+// would go silently blocked forever.
+func TestRetryFallbackExhaustionOnAQueuedRetryBlocksAndNotifies(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	// Two holders fill the pool below; the default limit (4) admits all
+	// three StartSpike calls here without queueing.
+	_, holder1, _, err := s.StartSpike(ctx, SpikeInput{Name: "Holder 1", Intent: "feature", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, holder2, _, err := s.StartSpike(ctx, SpikeInput{Name: "Holder 2", Intent: "feature", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Retry me", Intent: "feature", Kind: Claude, Model: "claude-sonnet-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashLatestSession(t, s, a)
+	setLimits(t, s, 2) // the crashed session holds no slot; the two holders fill the pool
+	if _, err := s.Retry(ctx, a.Name, "", "", ""); err != nil {
+		t.Fatalf("retry should queue, not fail synchronously: %v", err)
+	}
+	if row := agentRow(t, s, a.Name); row.Kind != Claude {
+		t.Fatalf("row kind = %s, want unchanged while still queued", row.Kind)
+	}
+
+	s.Usage = fakeUsage{Claude: true, Codex: true} // both exhausted by the time a slot frees
+	setLimits(t, s, 3)
+	if err := s.ResumeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = holder1, holder2
+	if op, ok, err := s.PendingOperation(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatalf("operation still nonterminal: %+v, want blocked", op)
+	}
+	var phase, opErr string
+	if err := s.DB.QueryRow(`SELECT phase, error FROM agent_operations WHERE agent_id = ?`, a.ID).Scan(&phase, &opErr); err != nil {
+		t.Fatal(err)
+	}
+	if phase != string(PhaseBlocked) || opErr == "" {
+		t.Fatalf("operation phase=%q error=%q, want blocked with a reason", phase, opErr)
+	}
+	if got := lastNotified(t, s); got.Kind != "agent.preflight_failed" || got.Args["reason"] == "" {
+		t.Fatalf("notify = %+v, want agent.preflight_failed with a reason", got)
+	}
+}
+
 // TestRetrySubstitutedFallbackFailsItsOwnPreflight covers a substituted
 // fallback that is itself broken (not installed): Retry must return that
 // error rather than spawn a session doomed to fail, and must not persist

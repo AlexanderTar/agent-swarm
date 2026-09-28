@@ -227,45 +227,20 @@ func (s *Store) pendingOperationTx(ctx context.Context, q txQuerier, agentID str
 }
 
 // queueRetryIntent persists a Retry that arrived while the latest session
-// is still stopping: a durable queued recover operation carrying the note,
-// idempotent per (caller session, request key) like every other control
-// mutation. The agent row and sessions are untouched -- no launch happens
-// here. The next ResumeOperations executes the intent once the session
-// settles into a retryable state, and Cancel wins over it meanwhile.
+// is still stopping: a durable queued recover operation carrying the note.
+// The operation's own request key is the same "retry:<session id>" scheme
+// the agent-limit queueing path uses (capacity.go), so both converge on one
+// OperationReason ("retry") and startSuccessor treats them identically --
+// a fresh attempt, not a recovery. The outer IdemTx is a second, independent
+// idempotency layer keyed on the caller's own (session, request id), same as
+// every other control mutation. The agent row and sessions are untouched --
+// no launch happens here. The next ResumeOperations executes the intent once
+// the session settles into a retryable state, and Cancel wins over it
+// meanwhile.
 func (s *Store) queueRetryIntent(ctx context.Context, a Agent, ses Session, note, callerSessionID, requestID string) (Agent, error) {
 	var out Agent
 	if _, err := IdemTx(ctx, s, callerSessionID, requestID, "swarm_control", &out, func(tx *sql.Tx) error {
-		if requestID != "" {
-			var n int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_operations
-				WHERE agent_id = ? AND request_key = ?`, a.ID, requestID).Scan(&n); err != nil {
-				return err
-			}
-			if n > 0 {
-				out = a
-				return nil
-			}
-		}
-		var activeID string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM agent_operations WHERE agent_id = ? AND phase IN
-			('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting')`, a.ID).Scan(&activeID)
-		if err == nil {
-			return &items.Error{Code: items.CodeConflict,
-				Message: fmt.Sprintf("A replacement is already in progress: %s.", activeID)}
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		now := db.Millis(s.now())
-		_, err = tx.ExecContext(ctx, `INSERT INTO agent_operations
-			(id, agent_id, mode, phase, request_key, session_id, generation, note, created_at, updated_at)
-			VALUES (?, ?, 'recover', 'queued', ?, ?, ?, ?, ?, ?)`,
-			ids.New("op"), a.ID, requestID, ses.ID, ses.Generation, note, now, now)
-		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-				return &items.Error{Code: items.CodeConflict,
-					Message: "A replacement is already in progress for this agent."}
-			}
+		if err := s.queueRetryOperationTx(ctx, tx, a, ses, note, retryKeyPrefix+ses.ID); err != nil {
 			return err
 		}
 		out = a
@@ -274,6 +249,55 @@ func (s *Store) queueRetryIntent(ctx context.Context, a Agent, ses Session, note
 		return Agent{}, err
 	}
 	return out, nil
+}
+
+// queueRetryOperationTx inserts a durable queued recover operation for a
+// retry that cannot launch immediately: the predecessor session has already
+// ended (stopping settled, or a retryable terminal state observed at the
+// agent limit), so the walk skips straight to 'queued' -- the same state
+// admitOperation/ResumeOperations drives every other queued op from.
+// requestKey empty means no dedup lookup (caller's own idempotency, if any,
+// already covers replay); a non-empty key already present on the agent is a
+// no-op, not a duplicate row.
+func (s *Store) queueRetryOperationTx(ctx context.Context, tx *sql.Tx, a Agent, ses Session, note, requestKey string) error {
+	if requestKey != "" {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_operations
+			WHERE agent_id = ? AND request_key = ?`, a.ID, requestKey).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+	}
+	var activeID string
+	err := tx.QueryRowContext(ctx, `SELECT id FROM agent_operations WHERE agent_id = ? AND phase IN
+		('requested', 'preserving', 'stopping', 'ready', 'queued', 'starting')`, a.ID).Scan(&activeID)
+	if err == nil {
+		return &items.Error{Code: items.CodeConflict,
+			Message: fmt.Sprintf("A replacement is already in progress: %s.", activeID)}
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	now := db.Millis(s.now())
+	_, err = tx.ExecContext(ctx, `INSERT INTO agent_operations
+		(id, agent_id, mode, phase, request_key, session_id, generation, note, created_at, updated_at)
+		VALUES (?, ?, 'recover', 'queued', ?, ?, ?, ?, ?, ?)`,
+		ids.New("op"), a.ID, requestKey, ses.ID, ses.Generation, note, now, now)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return &items.Error{Code: items.CodeConflict,
+				Message: "A replacement is already in progress for this agent."}
+		}
+		return err
+	}
+	// An explicit Retry is a user request to launch again, exactly like
+	// RequestReplacement's own auto_restart re-enable above: without this, a
+	// Retry-after-Cancel queued here would report success but ResumeOperations
+	// (autoRestart check) would skip it forever.
+	_, err = tx.ExecContext(ctx, `UPDATE agents SET auto_restart = 1 WHERE id = ?`, a.ID)
+	return err
 }
 
 // CancelOperation marks one operation cancelled. Terminal rows are returned
@@ -900,16 +924,48 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 	}
 	// The successor continues the same assignment: its kickoff is the
 	// section-4 template for the operation mode (pause never reaches here;
-	// it lands succeeded at stop with no successor).
+	// it lands succeeded at stop with no successor). A queued retry
+	// ("retry:<session id>", whether it waited for a free slot or for its
+	// predecessor to finish stopping) is a genuine new attempt, not a
+	// recovery: same attempt bump, same fresh kickoff, and the same usage
+	// fallback re-resolution an immediate Retry gets -- otherwise
+	// reconcile's terminalCheckpointKind would read the *old* attempt's
+	// checkpoint against this new session, hasAnyCheckpoint would suppress
+	// a genuine no-ack, and the successor would open with a recovery
+	// kickoff (or a broken-predecessor warning) instead of a fresh one.
 	reason := OperationReason(op.RequestKey)
 	succMode := "handoff"
+	attempt := latest.Attempt
 	switch {
+	case reason == "retry":
+		succMode = ""
+		attempt = latest.Attempt + 1
+		var substituted bool
+		var origKind AgentKind
+		var err error
+		if a, origKind, substituted, err = s.applyRetryFallback(ctx, a); err != nil {
+			// PendingOperation hides terminal phases (blocked included), so
+			// without this notification a queued retry that fails here
+			// would go silently stuck: an immediate Retry hands this same
+			// error straight back to its synchronous caller, but nothing is
+			// waiting on this background driver.
+			if s.Notify != nil {
+				var itemKey string
+				_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey)
+				_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.preflight_failed", AgentName: a.Name,
+					ItemKey: itemKey, Args: map[string]string{"reason": err.Error()}})
+			}
+			return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
+		}
+		if substituted {
+			s.notifyRetryFallback(ctx, a, origKind)
+		}
 	case op.Mode == ModeRecover:
 		succMode = "recovery"
 	case reason == "resume":
 		succMode = "resume" // a manual Resume that waited for a slot
 	}
-	succ, err := s.startSession(ctx, a, latest.Attempt, latest.Generation+1, false, "", succMode)
+	succ, err := s.startSession(ctx, a, attempt, latest.Generation+1, false, "", succMode)
 	if err != nil {
 		return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
 	}
@@ -942,8 +998,9 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 			return err
 		}
 		// A capacity pause or a queued resume coming back is expected, not a
-		// retry: no agent.retried (spec decision 9).
-		if reason == "" {
+		// retry: no agent.retried (spec decision 9). A queued retry is a
+		// genuine retry and does fire it, same as an immediate one.
+		if reason == "" || reason == "retry" {
 			if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.retried", AgentName: a.Name,
 				ItemKey: key, Args: map[string]string{"name": a.Name, "N": fmt.Sprint(succ.Attempt), "KEY": key}}); err != nil {
 				return err

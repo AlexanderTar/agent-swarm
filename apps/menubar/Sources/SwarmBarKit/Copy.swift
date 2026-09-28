@@ -44,6 +44,7 @@ public enum Copy {
     public static func handoffBlocked(_ reason: String) -> String { "Handoff blocked: \(reason)" }
     public static let capacityPaused = "Paused: over the agent limit"
     public static let resumeQueued = "Queued: waiting for a free slot"
+    public static let retryQueued = "Retry waiting for a free slot"
     public static func finished(_ n: Int) -> String { "Finished (\(n))" }
     public static func failed(_ n: Int) -> String { "Failed (\(n))" }
     public static func viewAllRequests(_ n: Int) -> String { "View all \(n) requests" }

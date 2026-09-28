@@ -129,6 +129,7 @@ public enum AgentTree {
             switch op.reason {
             case "capacity": return Copy.capacityPaused
             case "resume": return Copy.resumeQueued
+            case "retry": return Copy.retryQueued
             default: break
             }
         }

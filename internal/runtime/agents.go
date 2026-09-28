@@ -2053,13 +2053,36 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 	} else if hit {
 		return out, nil
 	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		return Agent{}, err
+	}
+	// A repeat of a retry already waiting for a free slot returns the
+	// agent, not a 409 (mirrors Resume's own queued-repeat handling): this
+	// check must run before refuseIfOperationInFlight below, or the very
+	// operation this retry queued would make its own replay look like a
+	// conflicting one. A different note on the repeat call still reaches
+	// the successor -- the latest call wins -- but only while still queued:
+	// once the driver has moved past queued, startSuccessor has already
+	// delivered the old note, and overwriting the row now would rewrite
+	// history without redelivering anything.
+	if op, ok, err := s.PendingOperation(ctx, a.ID); err != nil {
+		return Agent{}, err
+	} else if ok && op.RequestKey == retryKeyPrefix+ses.ID {
+		if note != op.Note {
+			if err := s.tx(ctx, func(tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, `UPDATE agent_operations SET note = ?, updated_at = ?
+					WHERE id = ? AND phase = 'queued'`, note, db.Millis(s.now()), op.ID)
+				return err
+			}); err != nil {
+				return Agent{}, err
+			}
+		}
+		return a, nil
+	}
 	// Batch 3: Retry consults the replacement coordinator before the state
 	// guard, so a refused retry names the operation it would race.
 	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
-		return Agent{}, err
-	}
-	ses, err := s.LatestSession(ctx, a.ID)
-	if err != nil {
 		return Agent{}, err
 	}
 	if ses.State == Stopping {
@@ -2072,43 +2095,40 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		return Agent{}, &items.Error{Code: items.CodeConflict, Message: notRetryable}
 	}
 
-	// origKind is captured before resolveUsageFallback may substitute a.Kind,
-	// so the agent.fallback_used notification below can report what was
-	// actually configured.
-	origKind := a.Kind
-	fbKind, fbModel, fbEffort, substituted, ferr := s.resolveUsageFallback(ctx, a.Kind, a.Model, a.Effort)
-	if ferr != nil {
-		return Agent{}, ferr
-	}
-	if substituted {
-		// Retry never re-validates the *original* kind -- it trusts the
-		// agent row was already vetted at spawn time -- but a freshly
-		// substituted kind has never been Preflighted, so it must be here,
-		// or a broken substitute (not installed, not signed in) would spawn
-		// a session doomed to fail instead of surfacing a clear refusal.
-		if err := s.Preflight(ctx, PreflightInput{Kind: fbKind, Model: fbModel, Effort: fbEffort, Role: a.Role}); err != nil {
-			return Agent{}, err
-		}
-		// The kind swap above can flip whether "native" advisor mode still
-		// applies (it's Claude-only): re-resolve with the agent's existing
-		// advisor kind/model/effort as an explicit choice, so mode gets
-		// recomputed for fbKind instead of surviving stale from spawn time.
-		advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisor(ctx, fbKind,
-			&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorRequestedEffort})
+	// The one agent limit: a failed/crashed/completed/interrupted predecessor
+	// holds no slot (NotAZombieSlot), so launching the successor straight
+	// away would add a slot holder and let the next EnforceCapacity tick
+	// pause someone else to make room. With the pool full, queue instead --
+	// a retry-keyed recover operation exactly like queueRetryIntent's
+	// stopping-race case, so ResumeOperations starts it once a slot frees.
+	if room, err := s.admitsNow(ctx, a); err != nil {
+		return Agent{}, err
+	} else if !room {
 		if err := s.tx(ctx, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ?,
-				advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''), advisor_mode = NULLIF(?, ''), advisor_requested_effort = NULLIF(?, ''),
-				kind_reason = ?
-				WHERE id = ?`,
-				string(fbKind), fbModel, fbEffort, string(advKind), advModel, advEffort, advMode, advRequestedEffort,
-				joinReason(a.KindReason, fallbackReason(origKind)), a.ID)
-			return err
+			return s.queueRetryOperationTx(ctx, tx, a, ses, note, retryKeyPrefix+ses.ID)
 		}); err != nil {
 			return Agent{}, err
 		}
-		a.Kind, a.Model, a.Effort = fbKind, fbModel, fbEffort
-		a.KindReason = joinReason(a.KindReason, fallbackReason(origKind))
-		a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.AdvisorRequestedEffort = string(advKind), advModel, advEffort, advMode, advRequestedEffort
+		if _, err := IdemTx(ctx, s, sessionID, requestID, "swarm_control", &out, func(*sql.Tx) error {
+			out = a
+			return nil
+		}); err != nil {
+			return Agent{}, err
+		}
+		return a, nil
+	}
+
+	// Retry never re-validates the *original* kind -- it trusts the agent
+	// row was already vetted at spawn time -- but a freshly substituted
+	// kind is re-Preflighted and re-advised by applyRetryFallback, or a
+	// broken substitute (not installed, not signed in) would spawn a
+	// session doomed to fail instead of surfacing a clear refusal.
+	var origKind AgentKind
+	var substituted bool
+	var ferr error
+	a, origKind, substituted, ferr = s.applyRetryFallback(ctx, a)
+	if ferr != nil {
+		return Agent{}, ferr
 	}
 
 	if note != "" {
@@ -2137,16 +2157,24 @@ func (s *Store) Retry(ctx context.Context, name, note, sessionID, requestID stri
 		if err := s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID); err != nil {
 			return err
 		}
+		// Matches the queued-retry path (startSuccessor, reason "" or
+		// "retry"): an immediate Retry is exactly as much "a retry"
+		// happened as a queued one.
+		key, err := s.itemKey(ctx, tx, a.ItemID)
+		if err != nil {
+			return err
+		}
+		if err := s.notify(ctx, tx, NotifyInput{Kind: "agent.retried", AgentName: a.Name,
+			ItemKey: key, Args: map[string]string{"name": a.Name, "N": fmt.Sprint(newSes.Attempt), "KEY": key}}); err != nil {
+			return err
+		}
 		out = a
 		return nil
 	}); err != nil {
 		return Agent{}, err
 	}
-	if substituted && s.Notify != nil {
-		var itemKey string
-		_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, out.ItemID).Scan(&itemKey)
-		_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.fallback_used", AgentName: out.Name, ItemKey: itemKey,
-			Args: map[string]string{"name": out.Name, "agent": out.Kind.Display(), "from": origKind.Display()}})
+	if substituted {
+		s.notifyRetryFallback(ctx, out, origKind)
 	}
 	s.go_(func() {
 		if err := s.watchStartup(context.WithoutCancel(ctx), out, newSes, s.Adapters[out.Kind]); err != nil {
