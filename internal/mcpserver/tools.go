@@ -946,6 +946,9 @@ func advisorTool(s *Server) ToolDef {
 			if s.Advisor == nil {
 				return nil, errors.New("no advisor is configured for this agent")
 			}
+			if c.Role != runtime.RoleOrchestrator {
+				return nil, errors.New(`The advisor is only available to your orchestrator. Put the decision and your evidence in your checkpoint (blockers/next), or ask your parent with swarm_send kind:"question".`)
+			}
 			var in struct {
 				Question    string   `json:"question"`
 				Focus       []string `json:"focus"`

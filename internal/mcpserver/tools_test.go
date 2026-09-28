@@ -637,6 +637,11 @@ func TestAdvisorToolRunsWhenVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := seed.Caller
+	// newServerWithSession seeds a RoleCoder agent; swarm_advise now refuses
+	// any caller that isn't an orchestrator (spec 2026-09-28), so this test
+	// -- about the advisor RUN mechanics, not role-gating -- overrides the
+	// role. TestAdvisorToolRefusesNonOrchestratorCaller covers the refusal.
+	c.Role = runtime.RoleOrchestrator
 	c.AdvisorMode = "simulated"
 	out, err := s.call(ctx, c, "swarm_advise", `{"question":"Client or server?","wait_seconds":5}`)
 	if err != nil {
@@ -677,6 +682,60 @@ func TestAdvisorToolRefusesWithNoAdvisorConfigured(t *testing.T) {
 	c.AdvisorMode = "simulated"
 	if _, err := noAdvisor.call(ctx, c, "swarm_advise", `{"question":"q","wait_seconds":-5}`); err == nil {
 		t.Fatal("swarm_advise with no advisor configured must be refused")
+	}
+}
+
+// TestAdvisorToolRefusesNonOrchestratorCaller is spec
+// 2026-09-28-advisor-orchestrator-only's core mcpserver regression: a coder
+// (or any non-orchestrator role) calling swarm_advise gets the exact
+// refusal copy and never reaches s.Advisor.Ask.
+func TestAdvisorToolRefusesNonOrchestratorCaller(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	if _, err := s.RT.DB.ExecContext(ctx,
+		`UPDATE agents SET advisor_kind = 'claude', advisor_model = 'claude-sonnet' WHERE id = ?`,
+		seed.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	c := seed.Caller // RoleCoder, from newServerWithSession
+	c.AdvisorMode = "simulated"
+	_, err := s.call(ctx, c, "swarm_advise", `{"question":"q"}`)
+	if err == nil {
+		t.Fatal("swarm_advise from a non-orchestrator caller must be refused")
+	}
+	const wantMsg = `The advisor is only available to your orchestrator. Put the decision and your evidence in your checkpoint (blockers/next), or ask your parent with swarm_send kind:"question".`
+	if err.Error() != wantMsg {
+		t.Fatalf("err = %q, want %q", err.Error(), wantMsg)
+	}
+	var n int
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM advice`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("advice rows = %d, want 0 (refused before creating one)", n)
+	}
+}
+
+// TestAdvisorToolAllowsOrchestratorCaller is
+// TestAdvisorToolRefusesNonOrchestratorCaller's positive counterpart: an
+// orchestrator caller still gets today's behavior.
+func TestAdvisorToolAllowsOrchestratorCaller(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	if _, err := s.RT.DB.ExecContext(ctx,
+		`UPDATE agents SET advisor_kind = 'claude', advisor_model = 'claude-sonnet', role = 'orchestrator' WHERE id = ?`,
+		seed.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	c := seed.Caller
+	c.Role = runtime.RoleOrchestrator
+	c.AdvisorMode = "simulated"
+	out, err := s.call(ctx, c, "swarm_advise", `{"question":"Client or server?","wait_seconds":5}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mustJSON(out)), "advice_id") {
+		t.Fatalf("out = %s", mustJSON(out))
 	}
 }
 
