@@ -12,7 +12,8 @@ import (
 
 func TestNativePromptNextStepDescribesVisibleReviewAndAgentReportedAnswers(t *testing.T) {
 	got := NativePromptNextStep("req_A")
-	for _, want := range []string{"summary exactly", "review_paths.spec", "review_paths.plan", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`} {
+	for _, want := range []string{"summary exactly", "review_paths.spec", "review_paths.plan", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
+		"Codex: use request_user_input, not request_user_input_async", "a review question is a design decision the user chooses, not a permission request"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("next step missing %q: %s", want, got)
 		}
