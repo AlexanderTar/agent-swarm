@@ -1460,7 +1460,7 @@ func (s *Store) startSession(ctx context.Context, a Agent, attempt, generation i
 		Bin:               s.Bin,
 		Instructions:      cfg.Instructions,
 	}
-	if a.AdvisorMode == "native" {
+	if advisorAllowed(a.Role) && a.AdvisorMode == "native" {
 		spec.AdvisorModel = a.AdvisorModel
 	}
 

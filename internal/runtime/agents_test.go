@@ -2378,6 +2378,43 @@ func TestSpawnOmitsAdvisorModelWhenSimulated(t *testing.T) {
 	}
 }
 
+// TestStartSessionOmitsNativeAdvisorModelForAPreChangeChildRow is defence in
+// depth for spec 2026-09-28-advisor-orchestrator-only: a coder row written
+// before the change (advisor_mode='native', advisor_model set -- something
+// Spawn itself can no longer produce after Task 1's advisorAllowed guard,
+// but a stale DB row could still have) must not reach
+// adapter.Spec.AdvisorModel on its next launch.
+func TestStartSessionOmitsNativeAdvisorModelForAPreChangeChildRow(t *testing.T) {
+	s, _, fa := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTask(t, s)
+	a, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake, Model: "fake-1",
+		Brief: BriefInput{Objective: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET advisor_mode = 'native', advisor_model = 'fable' WHERE id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	a, err = s.AgentByID(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.AdvisorMode != "native" || a.AdvisorModel != "fable" {
+		t.Fatalf("seeded row advisor_mode/model = %q/%q, want native/fable", a.AdvisorMode, a.AdvisorModel)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.startSessionForTest(ctx, a, ses.Attempt+1, ses.Generation+1); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastSpec.AdvisorModel != "" {
+		t.Fatalf("LastSpec.AdvisorModel = %q, want empty (role coder is never allowed an advisor)", fa.LastSpec.AdvisorModel)
+	}
+}
+
 // TestSpawnPassesSettingsInstructionsToSpec is Task 6: Settings.Instructions,
 // once persisted, must reach the adapter.Spec that Launch/Resume receives on
 // every spawn -- not just get stored and never read.
