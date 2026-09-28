@@ -2,13 +2,13 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
+import { pickOption } from "../test/select";
 import { NewSpikeSheet } from "./NewSpikeSheet";
 
 describe("NewSpikeSheet (§16.3, I15)", () => {
   it("previews the agent name, validates it and switches the intent caption", async () => {
-    const { user } = renderWithDaemon(<NewSpikeSheet caption="Spikes start with an intent. Use New spike." onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
-    const sheet = await screen.findByRole("dialog", { name: "New spike" });
-    expect(within(sheet).getByText("Spikes start with an intent. Use New spike.")).toBeInTheDocument();
+    const { user } = renderWithDaemon(<NewSpikeSheet intent="feature" onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
     expect(within(sheet).getByText("Creates a spike to explore this request and turn it into an epic.")).toBeInTheDocument();
     expect(within(sheet).getByText("Repositories (optional)")).toBeInTheDocument();
     expect(within(sheet).getByText("The spike suggests repositories and asks you to confirm them.")).toBeInTheDocument();
@@ -29,11 +29,11 @@ describe("NewSpikeSheet (§16.3, I15)", () => {
     d.db.settings.max_concurrent_agents = 8;
     const onCreated = vi.fn();
     const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={onCreated} />, { daemon: d, events: false });
-    const sheet = await screen.findByRole("dialog", { name: "New spike" });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
     await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Offline sync");
     await user.click(within(sheet).getByRole("radio", { name: "Debug spike" }));
-    await user.click(within(await within(sheet).findByRole("group", { name: "Recent" })).getByRole("checkbox", { name: /endurio-chat/ }));
-    await user.selectOptions(within(sheet).getByRole("combobox", { name: "Effort" }), "max");
+    await user.click(within(sheet).getByRole("option", { name: /endurio-chat/ }));
+    await pickOption(user, "Effort", "max");
     await user.type(within(sheet).getByRole("textbox", { name: "Request (optional)" }), "App loses messages offline");
     await user.click(within(sheet).getByRole("button", { name: "Start orchestrator" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^SPIKE-/)));
@@ -51,7 +51,7 @@ describe("NewSpikeSheet (§16.3, I15)", () => {
     d.db.settings.roles.orchestrator = { agent: "claude", model: "haiku", effort: "high" };
     const onCreated = vi.fn();
     const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={onCreated} />, { daemon: d, events: false });
-    const sheet = await screen.findByRole("dialog", { name: "New spike" });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
     expect(within(sheet).queryByRole("combobox", { name: "Effort" })).not.toBeInTheDocument();
     await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Offline sync");
     await user.click(within(sheet).getByRole("button", { name: "Start orchestrator" }));
@@ -91,19 +91,23 @@ describe("NewSpikeSheet (§16.3, I15)", () => {
     expect(await screen.findByRole("textbox", { name: "Name" })).toBeInTheDocument();
   });
 
-  it("creates a chore in chore mode, with no intent choice", async () => {
+  it("offers Chore and sends it", async () => {
     const d = createMockDaemon();
     d.db.settings.max_concurrent_agents = 8;
     const onCreated = vi.fn();
-    const { user } = renderWithDaemon(<NewSpikeSheet chore onClose={vi.fn()} onCreated={onCreated} />, { daemon: d, events: false });
-    const sheet = await screen.findByRole("dialog", { name: "New chore" });
-    expect(within(sheet).getByText("Creates a top-level chore orchestrator for maintenance, refactoring, or general work.")).toBeInTheDocument();
-    expect(within(sheet).getByText("The orchestrator asks you to confirm repositories before it starts work.")).toBeInTheDocument();
-    expect(within(sheet).queryByRole("radio", { name: "Feature spike" })).not.toBeInTheDocument();
-    expect(within(sheet).queryByRole("radio", { name: "Debug spike" })).not.toBeInTheDocument();
+    const { user } = renderWithDaemon(<NewSpikeSheet onClose={vi.fn()} onCreated={onCreated} />, { daemon: d, events: false });
+    const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
     await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Bump deps");
+    await user.click(within(sheet).getByRole("radio", { name: "Chore" }));
+    expect(within(sheet).getByText("Creates a top-level chore orchestrator for maintenance, refactoring, or general work.")).toBeInTheDocument();
     await user.click(within(sheet).getByRole("button", { name: "Start orchestrator" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^CHORE-/)));
     expect(d.calls.find((c) => c.path === "/api/spikes")?.body).toMatchObject({ name: "Bump deps", intent: "chore" });
+    expect(await screen.findByText(/^(Started|Queued) /)).toBeInTheDocument();
+  });
+
+  it("presets the intent", async () => {
+    renderWithDaemon(<NewSpikeSheet intent="chore" onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
+    expect(await screen.findByRole("radio", { name: "Chore" })).toHaveAttribute("aria-checked", "true");
   });
 });
