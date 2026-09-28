@@ -63,6 +63,7 @@ describe("NeedsYou inbox (§16.11)", () => {
     expect(icons).toHaveLength(2);
     await user.click(icons[0]!); // req_question, the oldest
     await waitFor(() => expect(d.calls.some((c) => c.path === "/api/agents/offline-spike-orchestrator/terminal")).toBe(true));
+    expect(await screen.findByText("Opening terminal for offline-spike-orchestrator")).toBeInTheDocument();
 
     const before = d.calls.length;
     await user.click(screen.getByRole("radio", { name: "Approvals" }));

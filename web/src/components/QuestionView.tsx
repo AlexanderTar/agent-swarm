@@ -1,10 +1,15 @@
+import { errorText } from "../api";
 import { C } from "../copy";
 import { useMutation } from "../data/hooks";
 import { useAgents } from "../data/queries";
 import { requestTarget } from "../logic/inbox";
+import { agentActionToast } from "../logic/toasts";
 import type { Request } from "../types";
+import { useToast } from "./Toast";
+import { Button } from "./ui/button";
 
 export function QuestionView({ request, connected }: { request: Request; connected: boolean }) {
+  const toast = useToast();
   const agents = useAgents();
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
   const options = Array.isArray(request.options) ? request.options : [];
@@ -23,14 +28,15 @@ export function QuestionView({ request, connected }: { request: Request; connect
           </ul>
         </div>
       )}
-      <button
+      <Button
         type="button"
+        variant="outline"
+        size="sm"
         disabled={!connected || !open}
-        onClick={() => open && void terminal.run(open).catch(() => undefined)}
-        className="rounded border border-line px-3 py-1 disabled:opacity-50"
+        onClick={() => open && void terminal.run(open).then(() => toast.success(agentActionToast("terminal", open))).catch((e: unknown) => toast.error(errorText(e)))}
       >
         {C.openOrchestratorTerminal}
-      </button>
+      </Button>
       {target?.kind === "unavailable" && <p className="text-muted-foreground">{target.hint}</p>}
     </div>
   );

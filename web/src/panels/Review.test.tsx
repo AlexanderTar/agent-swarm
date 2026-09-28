@@ -31,6 +31,7 @@ describe("Review (§16.11)", () => {
       path: "/api/requests/req_section/approve", body: { section_sha256: "sha-dm-3", artifact_revision: 3, via: "board" },
     }));
     expect(d.calls.some((c) => c.path === "/api/artifacts/art_spec?revision=3&section=data-model")).toBe(true);
+    expect(await screen.findByText("Approved SPIKE-3")).toBeInTheDocument();
   });
 
   it("reloads when the request changed", async () => {
@@ -40,6 +41,7 @@ describe("Review (§16.11)", () => {
     await screen.findByText("A local queue of pending messages.");
     await user.click(screen.getByRole("button", { name: "Approve section" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("This request changed. Review the latest version.");
+    expect(screen.queryByText("Approved SPIKE-3")).not.toBeInTheDocument();
   });
 
   it("approves a plan and a report", async () => {
@@ -114,6 +116,7 @@ describe("Review (§16.11)", () => {
     expect(screen.getByRole("button", { name: "Request changes" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close spike" }));
     await waitFor(() => expect(lastPost(d)).toMatchObject({ path: "/api/requests/req_close/close-spike", body: { via: "board" } }));
+    expect(await screen.findByText("Closed SPIKE-4")).toBeInTheDocument();
   });
 
   it("delegates questions and repo confirmation", async () => {

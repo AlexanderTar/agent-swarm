@@ -21,6 +21,7 @@ describe("QuestionView (read-only, §16.11)", () => {
     const { user } = renderWithDaemon(<QuestionView request={question()} connected />, { daemon: d, events: false });
     await user.click(await screen.findByRole("button", { name: "Open orchestrator terminal" }));
     await waitFor(() => expect(d.calls.some((c) => c.path === "/api/agents/offline-spike-orchestrator/terminal")).toBe(true));
+    expect(await screen.findByText("Opening terminal for offline-spike-orchestrator")).toBeInTheDocument();
     expect(d.calls.some((c) => c.path.includes("/answer") || c.path.includes("/resolve"))).toBe(false);
   });
 
