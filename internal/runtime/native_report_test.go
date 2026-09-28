@@ -333,6 +333,54 @@ func TestMuseNativeAnswerFallsBackToReportedWithoutLogMatch(t *testing.T) {
 	}
 }
 
+// TestMuseNativeAnswerObservedChildApproval is M3: the msg_-ref (child
+// approval) path also takes the observed-answer branch, not just the
+// request-ref path the other TestMuseNativeAnswer* tests cover -- exercises
+// nativeAnswerForMsg's synthesized question row and its answer_source.
+func TestMuseNativeAnswerObservedChildApproval(t *testing.T) {
+	s, _, _ := newStore(t)
+	orch, _, workerSes := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	reportKind(t, s, orchSes, Muse)
+	setProviderSessionIDForTest(t, s, orchSes, "prov-child")
+	s.Adapters[Muse] = &adapter.Fake{ObservedAnswerOK: true, ObservedAnswerLabel: "Approve"}
+
+	msg, err := s.SendApproval(context.Background(), workerSes.ID, "may I change it?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := s.Ask(context.Background(), orchSes, AskInput{Kind: "native_prompt", ForMsg: msg})
+	if err != nil || prompt.NativePrompt == nil {
+		t.Fatalf("prompt=%+v err=%v", prompt, err)
+	}
+	out, err := s.Ask(context.Background(), orchSes, AskInput{Kind: "native_answer", Ref: msg, Decision: "approve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "approved" {
+		t.Fatalf("out=%+v", out)
+	}
+	wire, err := s.RequestWireByID(context.Background(), out.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.ApprovalEvidence == nil || *wire.ApprovalEvidence != EvidenceObserved {
+		t.Fatalf("evidence=%v", wire.ApprovalEvidence)
+	}
+	var source string
+	if err := s.DB.QueryRowContext(context.Background(),
+		`SELECT json_extract(binding_json,'$.answer_source') FROM requests WHERE id = ?`, out.ID).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != "muse_session_log" {
+		t.Fatalf("answer_source=%q", source)
+	}
+	payload := latestMessagePayload(t, s, "approval_result")
+	if !strings.Contains(payload, `"evidence":"observed"`) || !strings.Contains(payload, `"decision":"approved"`) {
+		t.Fatal(payload)
+	}
+}
+
 func TestUnhookedChildReportRefusesPriorPlainAnswer(t *testing.T) {
 	for _, kind := range []AgentKind{Cursor, Muse} {
 		t.Run(string(kind), func(t *testing.T) {

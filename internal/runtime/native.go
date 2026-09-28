@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -397,7 +398,27 @@ func matchDecisionEvidence(responseText, label, callerComment string) (evidence,
 // not a concrete adapter.Muse type, purely to keep this package's tests
 // able to fake it without an adapter import cycle risk.
 type observedAnswerer interface {
-	ObservedAnswer(providerSessionID, ref string) (label, note string, ok bool)
+	ObservedAnswer(providerSessionID, ref string, since time.Time) (label, note string, ok bool)
+}
+
+// refCreatedAt is the anti-forgery lower bound nativeAnswer passes into
+// ObservedAnswer: the ref's own row's created_at, so a settled prompt from
+// before this ref ever existed (a stale or replayed session.jsonl entry
+// that happens to embed the same ref text) can never be treated as its
+// evidence. Any lookup failure (bad ref, wrong table) returns the zero
+// time, i.e. no lower bound -- the ref is invalid either way and the
+// existing lookups a few lines below (RequestByID, verifyApprovalMsgAddressedTo)
+// are what actually refuse it with a proper message.
+func (s *Store) refCreatedAt(ctx context.Context, ref string) time.Time {
+	table := "requests"
+	if strings.HasPrefix(ref, "msg_") {
+		table = "messages"
+	}
+	var ms int64
+	if err := s.DB.QueryRowContext(ctx, `SELECT created_at FROM `+table+` WHERE id = ?`, ref).Scan(&ms); err != nil {
+		return time.Time{}
+	}
+	return db.FromMillis(ms)
 }
 
 // nativeAnswer is swarm_ask kind:"native_answer" (spec section 2.3 steps
@@ -413,30 +434,45 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if in.Ref == "" {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "ref is required."}
 	}
-	var rowID, responseText, callerID, observedSource string
+	// Muse's observed-answer check runs here, before any tx: it is a file
+	// scan (Muse's own session.jsonl), not a DB read, and must never run
+	// inside the state-changing tx below (I2). A settled answer straight
+	// from Muse's own session log is observed evidence, not the agent's
+	// word (locked decision); no match (no adapter wired, unknown provider
+	// session, no settled prompt for this ref) falls through unchanged to
+	// the reported path inside the tx.
+	var observedResponseText, observedSource string
+	var callerKind AgentKind
+	if err := s.DB.QueryRowContext(ctx, `SELECT a.kind FROM sessions ses
+		JOIN agents a ON a.id = ses.agent_id WHERE ses.id = ?`, sessionID).Scan(&callerKind); err == nil && callerKind == Muse {
+		var providerSessionID string
+		if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(provider_session_id,'') FROM sessions WHERE id = ?`,
+			sessionID).Scan(&providerSessionID); err == nil {
+			if oa, ok := s.Adapters[Muse].(observedAnswerer); ok {
+				since := s.refCreatedAt(ctx, in.Ref)
+				if lbl, note, found := oa.ObservedAnswer(providerSessionID, in.Ref, since); found {
+					observedResponseText = lbl
+					if note != "" {
+						observedResponseText = lbl + ": " + note
+					}
+					observedSource = "muse_session_log"
+				}
+			}
+		}
+	}
+
+	var rowID, responseText, callerID, observedSourceUsed string
 	var reported bool
 	err := s.tx(ctx, func(tx *sql.Tx) error {
-		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
+		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
 		}
 		callerID = a.ID
-		// Muse first, before the agent_reported fallback below: a settled
-		// answer straight from Muse's own session log is observed evidence,
-		// not the agent's word (locked decision). No match (no adapter
-		// wired, unknown provider session, no settled prompt for this ref)
-		// falls through unchanged to the reported path.
-		if a.Kind == Muse {
-			if oa, ok := s.Adapters[Muse].(observedAnswerer); ok {
-				if lbl, note, found := oa.ObservedAnswer(ses.ProviderSessionID, in.Ref); found {
-					responseText = lbl
-					if note != "" {
-						responseText = lbl + ": " + note
-					}
-					observedSource = "muse_session_log"
-					return nil
-				}
-			}
+		if a.Kind == Muse && observedSource != "" {
+			responseText = observedResponseText
+			observedSourceUsed = observedSource
+			return nil
 		}
 		reported = a.Kind == Cursor || a.Kind == Muse
 		if reported {
@@ -497,18 +533,18 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 				evidence, in.AnswerText, in.Ref)
 			return err
 		}
-		if observedSource != "" {
+		if observedSourceUsed != "" {
 			// answer_text is only recorded when the agent actually sent one
 			// (spec Types section): the log itself is the evidence either way.
 			if in.AnswerText != "" {
 				_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'),
 					'$.evidence', ?, '$.answer_source', ?, '$.answer_text', ?) WHERE id = ?`,
-					evidence, observedSource, in.AnswerText, in.Ref)
+					evidence, observedSourceUsed, in.AnswerText, in.Ref)
 				return err
 			}
 			_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'),
 				'$.evidence', ?, '$.answer_source', ?) WHERE id = ?`,
-				evidence, observedSource, in.Ref)
+				evidence, observedSourceUsed, in.Ref)
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE requests SET
@@ -529,11 +565,11 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 		// A Muse observed match has no pre-existing bound question row to
 		// transition (unlike the hook path) and its answer_text may be empty
 		// (the agent need not repeat what the log already proved), so the
-		// log's own responseText -- never empty once observedSource is set --
+		// log's own responseText -- never empty once observedSourceUsed is set --
 		// stands in for it, tagged with the matching answer_source.
 		msgAnswerText, answerSource := in.AnswerText, "native_tool_report"
-		if observedSource != "" {
-			msgAnswerText, answerSource = responseText, observedSource
+		if observedSourceUsed != "" {
+			msgAnswerText, answerSource = responseText, observedSourceUsed
 		}
 		return s.nativeAnswerForMsg(ctx, sessionID, callerID, in.Ref, in.Decision, comment, evidence, rowID, msgAnswerText, answerSource, bindEvidence)
 	}
