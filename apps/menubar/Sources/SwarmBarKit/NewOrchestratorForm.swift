@@ -15,7 +15,15 @@ public struct RequestImage: Identifiable, Equatable {
 @MainActor
 @Observable
 public final class NewOrchestratorForm {
-    public var name = ""
+    public var name = "" {
+        didSet {
+            // spec 2026-09-28: "typed in and then cleared" gates the
+            // nameOrRequestRequired error -- never having touched Name at
+            // all shows nothing instead, even though both fields are empty.
+            if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { nameTouched = true }
+        }
+    }
+    private var nameTouched = false
     public var intent: SpikeIntent = .chore
     public var repos = ReposResponse()
     public var selection: [String] = []
@@ -105,8 +113,14 @@ public final class NewOrchestratorForm {
     /// "Agent name: investigate-login-crash" (empty until something is typed).
     public var preview: String { kebab.map(Copy.agentName) ?? "" }
 
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedRequest: String { request.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     public var nameError: String? {
-        if name.isEmpty { return nil }
+        if trimmedName.isEmpty {
+            if trimmedRequest.isEmpty && nameTouched { return Copy.nameOrRequestRequired }
+            return nil
+        }
         guard let k = kebab else { return Kebab.emptyNameMessage }
         return takenNames.contains(k) ? Copy.nameTaken : nil
     }
@@ -148,7 +162,9 @@ public final class NewOrchestratorForm {
     public var selectedLine: String { RepoPicker.selectedLine(selection, known: rows) }
     public var scanLine: String { RepoPicker.scanLine(repos, format: format) }
 
-    public var canStart: Bool { connected && !submitting && kebab != nil && nameError == nil && errors.isValid }
+    public var canStart: Bool {
+        connected && !submitting && nameError == nil && errors.isValid && (!trimmedName.isEmpty || !trimmedRequest.isEmpty)
+    }
 
     public var startLabel: String {
         if failure != nil { return Copy.tryAgain }
