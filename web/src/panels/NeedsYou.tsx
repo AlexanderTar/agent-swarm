@@ -92,7 +92,7 @@ export function NeedsYou(p: {
                       variant="ghost"
                       size="icon"
                       aria-label={C.openAgentTerminal}
-                      disabled={target.kind === "unavailable"}
+                      disabled={!p.connected || target.kind === "unavailable"}
                       onClick={() => { if (target.kind === "terminal") void terminal.run(target.agent).then(() => toast.success(agentActionToast("terminal", target.agent))).catch((e: unknown) => toast.error(errorText(e))); }}
                     >
                       ▶

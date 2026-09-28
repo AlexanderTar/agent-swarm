@@ -6,14 +6,14 @@ import { renderWithDaemon } from "../test/render";
 import type { InboxFilter } from "../types";
 import { NeedsYou } from "./NeedsYou";
 
-function Host(p: { initial?: string; onViewItem?: (k: string) => void }) {
+function Host(p: { initial?: string; connected?: boolean; onViewItem?: (k: string) => void }) {
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [sel, setSel] = useState(p.initial ?? "");
   return (
     <NeedsYou
       filter={filter}
       selected={sel}
-      connected
+      connected={p.connected ?? true}
       onFilter={setFilter}
       onSelectRequest={setSel}
       onViewItem={p.onViewItem ?? vi.fn()}
@@ -75,6 +75,17 @@ describe("NeedsYou inbox (§16.11)", () => {
     await user.click(within(approvalsList).getAllByRole("button", { name: /Waiting for your input/ })[0]!);
     expect(screen.getByText("review:req_accept")).toBeInTheDocument();
     expect(d.calls.slice(before).some((c) => c.path.endsWith("/terminal"))).toBe(false);
+  });
+
+  it("keeps terminal actions and toasts inactive while disconnected", async () => {
+    const d = createMockDaemon();
+    const { user } = renderWithDaemon(<Host connected={false} />, { daemon: d, events: false });
+    await user.click(await screen.findByRole("radio", { name: "Questions" }));
+    const terminal = within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button", { name: "Open agent terminal" })[0]!;
+    expect(terminal).toBeDisabled();
+    await user.click(terminal);
+    expect(d.calls.some((c) => c.path.endsWith("/terminal"))).toBe(false);
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 
   it("shows Already resolved for a request that closed", async () => {
