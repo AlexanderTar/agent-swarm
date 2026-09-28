@@ -150,13 +150,13 @@ func TestSpecApprovalSummaryLengthAndPreservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{"   \n", strings.Repeat("é", 1001)} {
+	for _, bad := range []string{"   \n", strings.Repeat("é", 2001)} {
 		if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: bad}); err == nil {
 			t.Errorf("accepted invalid summary of %d runes", len([]rune(bad)))
 		}
 	}
 	table := "| Part | Delivery |\n|---|---|\n| API | Search |"
-	summary := table + strings.Repeat("é", 1000-len([]rune(table)))
+	summary := table + strings.Repeat("é", 2000-len([]rune(table)))
 	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: art.ArtifactID, SectionID: art.Sections[0].ID, Prompt: summary})
 	if err != nil {
 		t.Fatal(err)

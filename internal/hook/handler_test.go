@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -847,15 +848,31 @@ func TestQuestionToolInterceptionCreatesHITLRequest(t *testing.T) {
 // 2026-09-28-summary-in-native-question regression: nativePromptFor's
 // question now carries a summary head, optional review paths, and the
 // approve line (with warnings) ahead of the ⟦swarm:ref⟧ token -- several
-// lines, near the 1000-rune cap. PreToolUse must still bind the request row
-// to that ref regardless, for every hooked kind (claude, codex, agy).
+// lines, ~990 runes, close to the 1000-rune cap. PreToolUse must still bind
+// the request row to that ref regardless, for every hooked kind (claude,
+// codex, agy).
 func TestQuestionToolBindsALongMultiLineNativeQuestion(t *testing.T) {
 	ctx := context.Background()
-	question := "Ship auth end to end: login, session cookies, and logout across web and API.\n\n" +
+	question := "Ship auth end to end: login, session cookies, and logout across every surface -- " +
+		"web, mobile, and the public API -- including refresh-token rotation and the new " +
+		"device-approval step, with backward compatibility for existing sessions during the " +
+		"full rollout window and staged deploy.\n\n" +
 		"Spec: /Users/dev/repo/docs/specs/2026-09-28-auth.md\n" +
 		"Plan: /Users/dev/repo/docs/plans/2026-09-28-auth.md\n" +
-		"Approve the plan (rev 3)?\nWarnings:\n- Task t2 has no verify command." +
+		"Approve the plan (rev 3)?\nWarnings:" +
+		"\n- Task t2 has no verify command." +
+		"\n- Task t5 depends on t9, which is not yet materialized." +
+		"\n- Task t7's workflow role does not match its role_hint." +
+		"\n- Task t11 has no acceptance criteria listed." +
+		"\n- Task t14's verify command references a script that does not exist yet." +
+		"\n- Task t16's dependency graph has a cycle through t3 and t8." +
+		"\n- Task t18 was split from t4 but never re-batched with its siblings." +
+		"\n- Task t20's role_hint disagrees with the workflow template's own role assignment." +
+		"\n- Task t22's package review has not resolved every critical finding yet." +
 		" ⟦swarm:req_PLAN9⟧"
+	if n := utf8.RuneCountInString(question); n < 950 || n > 1000 {
+		t.Fatalf("fixture setup: question = %d runes, want ~990 (close to the 1000-rune cap)", n)
+	}
 
 	assertBoundToPlan9 := func(t *testing.T, h *Handler, ses string) {
 		t.Helper()
