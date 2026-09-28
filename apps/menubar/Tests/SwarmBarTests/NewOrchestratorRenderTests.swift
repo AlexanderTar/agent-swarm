@@ -409,4 +409,112 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertEqual(RepoChooser.visibleHeight(for: 3), 90)
         XCTAssertEqual(RepoChooser.visibleHeight(for: 4), 120)
     }
+
+    // MARK: images
+
+    private func buttons(_ view: NSView) -> [NSButton] {
+        let own = (view as? NSButton).map { [$0] } ?? []
+        return own + view.subviews.flatMap(buttons)
+    }
+
+    /// Plain `Text`/`Button` draw directly in this codebase (no backing `NSView`), so visible
+    /// copy is read back with OCR, the same technique `testEmptyChooserExplainsHowToAddRepositories`
+    /// and `testAgentAndAdvisorSelectorsShareAlignedSixColumnRows` already use.
+    private func visibleText(_ host: NSView, width: CGFloat = 820, height: CGFloat = 790) throws -> String {
+        let image = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width), pixelsHigh: Int(height),
+                                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                                   isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        host.cacheDisplay(in: host.bounds, to: image)
+        let request = VNRecognizeTextRequest()
+        try VNImageRequestHandler(cgImage: try XCTUnwrap(image.cgImage), options: [:]).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+    }
+
+    /// A valid 1×1 PNG, same bytes used by NewOrchestratorFormTests.
+    private var pngData: Data {
+        Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+              0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+              0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8, 0x0F, 0x00, 0x00,
+              0x01, 0x01, 0x00, 0x05, 0x18, 0xD8, 0x4E, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+              0x42, 0x60, 0x82])
+    }
+
+    private func host(_ form: NewOrchestratorForm) -> NSHostingView<NewOrchestratorView> {
+        let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
+        host.frame = NSRect(x: 0, y: 0, width: 820, height: 790)
+        host.layoutSubtreeIfNeeded()
+        return host
+    }
+
+    func testImageStripEmptyStateShowsOnlyAddButton() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        await form.load()
+        let h = host(form)
+        XCTAssertTrue(buttons(h).contains { $0.accessibilityLabel() == Copy.addImages })
+        XCTAssertFalse(try visibleText(h).contains(Copy.imageCount(0)))
+    }
+
+    func testImageStripShowsThumbnailsAndCounter() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        await form.load()
+        form.addImage(data: pngData, name: "a.png")
+        form.addImage(data: pngData, name: "b.png")
+        form.addImage(data: pngData, name: "c.png")
+        let h = host(form)
+        let removeLabels = buttons(h).compactMap { $0.accessibilityLabel() }.filter { $0.hasPrefix("Remove ") }
+        XCTAssertEqual(Set(removeLabels), Set(["Remove a.png", "Remove b.png", "Remove c.png"]))
+        XCTAssertTrue(try visibleText(h).contains(Copy.imageCount(3)))
+    }
+
+    func testImageStripDisablesAddButtonAtTen() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        await form.load()
+        for i in 0..<10 { form.addImage(data: pngData, name: "\(i).png") }
+        let h = host(form)
+        let add = try XCTUnwrap(buttons(h).first { $0.accessibilityLabel() == Copy.addImages })
+        XCTAssertFalse(add.isEnabled)
+    }
+
+    func testImageStripShowsErrorText() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        await form.load()
+        form.addImage(data: Data("text".utf8), name: "n.txt")
+        let h = host(form)
+        // OCR occasionally misreads a lowercase "i" as "I" in this small caption font; compare
+        // case-insensitively rather than assert exact-case text a human never sees compared.
+        XCTAssertTrue(try visibleText(h).lowercased().contains(Copy.imageUnsupported("n.txt").lowercased()))
+    }
+
+    func testStartedWithUnsavedImagesShowsWarningAndDoneButton() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeNewOrchestratorForm()
+        await form.load()
+        form.name = "x"
+        form.addImage(data: pngData, name: "a.png")
+        client.spikeResult = .success(CreateSpikeResponse(
+            agent: AgentNode(name: "x", kind: .claude, model: "opus", role: .orchestrator), queued: false, attachmentsFailed: true))
+        _ = await form.submit()
+        let h = host(form)
+        XCTAssertTrue(try visibleText(h).contains(Copy.imagesNotSaved))
+        // Start/Cancel/Done draw through a Liquid Glass material `cacheDisplay` can't rasterize
+        // (their text never reaches OCR, even for the pre-existing Cancel button), so Done and
+        // Start orchestrator are told apart via the NSButton the AXButton wrapper backs them with.
+        let labels = buttons(h).compactMap { $0.accessibilityLabel() }
+        XCTAssertTrue(labels.contains(Copy.done))
+        XCTAssertFalse(labels.contains(Copy.startOrchestrator))
+    }
 }

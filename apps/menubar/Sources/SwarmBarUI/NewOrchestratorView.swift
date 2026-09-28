@@ -1,6 +1,7 @@
 import AppKit
 import SwarmBarKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// New orchestrator window (§16.3).
 public struct NewOrchestratorView: View {
@@ -17,6 +18,12 @@ public struct NewOrchestratorView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if form.startedWithUnsavedImages != nil {
+                Label(Copy.imagesNotSaved, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 12)
+            }
             GeometryReader { geometry in
                 if sizeCategory.isAccessibilityCategory || geometry.size.height < 600 {
                     ScrollView {
@@ -43,11 +50,19 @@ public struct NewOrchestratorView: View {
                 if let caption = form.queuedCaption { Text(caption).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
                 Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction)
-                Button(form.startLabel) {
-                    Task { if let agent = await form.submit() { onStarted(agent) } }
+                if let agent = form.startedWithUnsavedImages {
+                    // AXButton (not a plain Button): its NSButton backing is how the render test
+                    // finds "Done" headlessly, the same trick used for the image strip's buttons.
+                    AXButton(title: Copy.done, accessibilityLabel: Copy.done) { onStarted(agent) }
+                        .fixedSize()
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    AXButton(title: form.startLabel, accessibilityLabel: form.startLabel, enabled: form.canStart) {
+                        Task { if let agent = await form.submit(), form.startedWithUnsavedImages == nil { onStarted(agent) } }
+                    }
+                    .fixedSize()
+                    .keyboardShortcut(.defaultAction)
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!form.canStart)
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 10)
@@ -69,7 +84,9 @@ public struct NewOrchestratorView: View {
             agentFields
             VStack(alignment: .leading, spacing: 4) {
                 Text(Copy.requestOptional)
-                RequestEditor(text: $form.request)
+                RequestEditor(text: $form.request, onImageData: { form.addImage(data: $0, name: $1) },
+                             onImageURLs: { form.addImages(from: $0) })
+                RequestImageStrip(form: form)
             }
             .frame(maxHeight: .infinity, alignment: .top)
         }
@@ -255,6 +272,8 @@ struct RepoChooser: View {
 struct RequestEditor: View {
     @Binding var text: String
     static let minimumHeight: CGFloat = 108
+    var onImageData: (Data, String) -> Void = { _, _ in }
+    var onImageURLs: ([URL]) -> Void = { _ in }
 
     var body: some View {
         // Inset inside the border: flush against it, the first line's ascenders are clipped.
@@ -264,6 +283,141 @@ struct RequestEditor: View {
             .padding(.vertical, 6)
             .padding(.horizontal, 4)
             .border(.separator)
+            // A plain-text paste must still reach the editor; only intercept when the pasteboard
+            // carries no string (a copied image, or a Finder file).
+            .onPasteCommand(of: [.image, .fileURL]) { providers in
+                guard !NSPasteboard.general.canReadItem(withDataConformingToTypes: [NSPasteboard.PasteboardType.string.rawValue]) else { return }
+                for provider in providers {
+                    if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                            guard let url else { return }
+                            DispatchQueue.main.async { onImageURLs([url]) }
+                        }
+                    } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                        provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                            guard let data else { return }
+                            DispatchQueue.main.async { onImageData(data, "Pasted image.png") }
+                        }
+                    }
+                }
+            }
+            .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
+                for provider in providers {
+                    if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                            guard let url else { return }
+                            DispatchQueue.main.async { onImageURLs([url]) }
+                        }
+                    } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                        provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                            guard let data else { return }
+                            DispatchQueue.main.async { onImageData(data, "Dropped image.png") }
+                        }
+                    }
+                }
+                return !providers.isEmpty
+            }
+    }
+}
+
+/// Thumbnail strip under the request editor (spec Screens): 0 images shows only the Add images…
+/// button; the counter is hidden until the first image; the button disables at 10.
+struct RequestImageStrip: View {
+    @Bindable var form: NewOrchestratorForm
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if !form.images.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(form.images) { image in thumbnail(image) }
+                        }
+                    }
+                    .scrollIndicators(.never)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                AXButton(title: Copy.addImages, accessibilityLabel: Copy.addImages,
+                         enabled: form.images.count < 10, action: addImages)
+                    .fixedSize()
+                if !form.images.isEmpty {
+                    Text(Copy.imageCount(form.images.count)).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            if let error = form.imageError { Text(error).font(.caption).foregroundStyle(.red) }
+        }
+    }
+
+    private func thumbnail(_ image: RequestImage) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if let nsImage = NSImage(data: image.data) {
+                    Image(nsImage: nsImage).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Color.secondary.opacity(0.2)
+                }
+            }
+            .frame(width: 48, height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            AXButton(image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: nil),
+                     accessibilityLabel: Copy.removeImage(image.name), help: image.name) { form.removeImage(image.id) }
+                .frame(width: 14, height: 14)
+                .offset(x: 4, y: -4)
+        }
+        .frame(width: 48, height: 48)
+    }
+
+    private func addImages() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        form.addImages(from: panel.urls)
+    }
+}
+
+/// A push button (or, with `image`, a borderless icon button) backed by a real `NSButton` so tests
+/// can find it by `accessibilityLabel()` the way `WideOptionPicker`'s `NSPopUpButton` already is —
+/// a plain SwiftUI `Button` in this file draws directly, with no `NSView` a headless test can query.
+private struct AXButton: NSViewRepresentable {
+    var title: String = ""
+    var image: NSImage?
+    let accessibilityLabel: String
+    var help: String?
+    var enabled = true
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button: NSButton
+        if let image {
+            button = NSButton(image: image, target: context.coordinator, action: #selector(Coordinator.fire))
+            button.isBordered = false
+            button.imagePosition = .imageOnly
+        } else {
+            button = NSButton(title: title, target: context.coordinator, action: #selector(Coordinator.fire))
+            button.bezelStyle = .rounded
+        }
+        button.setAccessibilityLabel(accessibilityLabel)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        if image == nil { button.title = title }
+        button.isEnabled = enabled
+        button.toolTip = help
+        button.setAccessibilityLabel(accessibilityLabel)
+    }
+
+    @MainActor final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func fire() { action() }
     }
 }
 
