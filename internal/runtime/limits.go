@@ -217,9 +217,13 @@ func (s *Store) startQueued(ctx context.Context, a Agent) (bool, error) {
 		// advisor kind/model/effort as an explicit choice, so mode gets
 		// recomputed for the new a.Kind instead of surviving stale from
 		// spawn time (same pattern as Retry in agents.go).
-		advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisor(ctx, a.Kind,
-			&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorRequestedEffort})
-		a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.AdvisorRequestedEffort = string(advKind), advModel, advEffort, advMode, advRequestedEffort
+		if advisorAllowed(a.Role) {
+			advKind, advModel, advEffort, advMode, advRequestedEffort := s.resolveAdvisor(ctx, a.Kind,
+				&AdvisorChoice{Kind: AgentKind(a.AdvisorKind), Model: a.AdvisorModel, Effort: a.AdvisorRequestedEffort})
+			a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.AdvisorRequestedEffort = string(advKind), advModel, advEffort, advMode, advRequestedEffort
+		} else {
+			a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.AdvisorRequestedEffort = "", "", "", "", ""
+		}
 	}
 	ad, ok := s.Adapters[a.Kind]
 	if !ok {

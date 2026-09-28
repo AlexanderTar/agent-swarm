@@ -728,11 +728,13 @@ func TestDrainQueueSubstitutesExhaustedFallback(t *testing.T) {
 	}
 }
 
-// TestDrainQueueReResolvesAdvisorModeOnKindSwap is startQueued's counterpart
-// to TestRetryReResolvesAdvisorModeOnKindSwap: a queued agent admitted after
-// its usage fallback substitutes Claude for Codex must have its advisor mode
-// recomputed too, not left at the stale "native" from spawn time.
-func TestDrainQueueReResolvesAdvisorModeOnKindSwap(t *testing.T) {
+// TestDrainQueueNeverGivesAChildAnAdvisorAcrossAKindSwap is
+// TestDrainQueueReResolvesAdvisorModeOnKindSwap's post-2026-09-28
+// replacement: children never get an advisor (spec
+// advisor-orchestrator-only), so a queued coder's advisor stays empty both
+// before and after startQueued's usage-fallback kind swap, however explicit
+// its own Advisor choice was at spawn time.
+func TestDrainQueueNeverGivesAChildAnAdvisorAcrossAKindSwap(t *testing.T) {
 	s, _ := newStoreWithFallback(t)
 	s.Advisor = kindSensitiveAdvisor{}
 	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
@@ -751,8 +753,8 @@ func TestDrainQueueReResolvesAdvisorModeOnKindSwap(t *testing.T) {
 	if err != nil || !queued {
 		t.Fatalf("second = %v, queued = %v, err = %v", second.Name, queued, err)
 	}
-	if _, _, effort, mode := advisorCols(t, s, second.ID); mode != "native" || effort != "" {
-		t.Fatalf("advisor effort/mode before drain = %q/%q, want empty/native", effort, mode)
+	if kind, model, effort, mode := advisorCols(t, s, second.ID); kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor cols before drain = %q/%q/%q/%q, want all empty (children never get an advisor)", kind, model, effort, mode)
 	}
 	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, first.ID)
 	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID)
@@ -764,14 +766,56 @@ func TestDrainQueueReResolvesAdvisorModeOnKindSwap(t *testing.T) {
 	if drained.Kind != Codex {
 		t.Fatalf("drained kind = %s, want substituted to Codex", drained.Kind)
 	}
-	if _, _, effort, mode := advisorCols(t, s, second.ID); mode != "simulated" || effort != "high" {
-		t.Fatalf("advisor effort/mode after drain = %q/%q, want high/simulated", effort, mode)
+	if kind, model, effort, mode := advisorCols(t, s, second.ID); kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor cols after drain = %q/%q/%q/%q, want all empty (children never get an advisor)", kind, model, effort, mode)
 	}
-	if drained.AdvisorMode != "simulated" {
-		t.Fatalf("drained.AdvisorMode = %q, want simulated (recomputed for the Codex session)", drained.AdvisorMode)
+	if drained.AdvisorMode != "" {
+		t.Fatalf("drained.AdvisorMode = %q, want empty (children never get an advisor)", drained.AdvisorMode)
 	}
-	if _, _, _, mode := advisorCols(t, s, second.ID); mode != "simulated" {
-		t.Fatalf("persisted advisor mode = %q, want simulated", mode)
+}
+
+// TestStartQueuedNeverReResolvesAdvisorForAPreChangeChildRow is defence in
+// depth for startQueued's re-resolution block: a queued coder row that
+// somehow still carries a pre-change advisor choice (advisor_kind/model set
+// directly, bypassing Spawn's own advisorAllowed guard -- the same
+// stale-row shape Task 2's startSession test covers) must not have that
+// advisor re-resolved and re-persisted across a usage-fallback kind swap.
+func TestStartQueuedNeverReResolvesAdvisorForAPreChangeChildRow(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	s.Advisor = kindSensitiveAdvisor{}
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	setLimits(t, s, 1)
+	seedEpicWithTwoTasks(t, s)
+	first, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "one"}})
+	if err != nil || queued {
+		t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+	}
+	second, queued, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-2", Role: RoleCoder, Kind: Claude,
+		Model: "claude-sonnet-5", Brief: BriefInput{Objective: "two"}})
+	if err != nil || !queued {
+		t.Fatalf("second = %v, queued = %v, err = %v", second.Name, queued, err)
+	}
+	// Simulate a stale pre-change row directly, the way Task 2's
+	// startSession test does: something Spawn itself can no longer produce.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET
+		advisor_kind = 'claude', advisor_model = 'claude-fable-5-1', advisor_mode = 'native'
+		WHERE id = ?`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, first.ID)
+	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID)
+	s.Usage = fakeUsage{Claude: true}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	drained := agentRow(t, s, second.Name)
+	if drained.Kind != Codex {
+		t.Fatalf("drained kind = %s, want substituted to Codex", drained.Kind)
+	}
+	if kind, model, effort, mode := advisorCols(t, s, second.ID); kind != "" || model != "" || effort != "" || mode != "" {
+		t.Fatalf("advisor cols after drain = %q/%q/%q/%q, want all empty (a stale pre-change advisor is dropped, not re-resolved)", kind, model, effort, mode)
 	}
 }
 
