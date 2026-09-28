@@ -10,6 +10,7 @@ function Trigger({ onAction }: { onAction: () => void }) {
       <button type="button" onClick={() => toast({ message: "This spike reaches Done after materialization.", action: { label: "View spike", onClick: onAction } })}>legacy action</button>
       <button type="button" onClick={() => toast({ message: "Failed to move item" })}>legacy</button>
       <button type="button" onClick={() => toast.success("Created TASK-9")}>ok</button>
+      <button type="button" onClick={() => toast.error("Could not start", "Try again later")}>error helper</button>
     </>
   );
 }
@@ -43,5 +44,17 @@ describe("Toast (Sonner)", () => {
     expect(await screen.findByText("Created TASK-9")).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(4_600));
     expect(screen.queryByText("Created TASK-9")).not.toBeInTheDocument();
+  });
+
+  it("error helper shows its description for 6 s", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<ToastProvider><Trigger onAction={vi.fn()} /></ToastProvider>);
+    await user.click(screen.getByRole("button", { name: "error helper" }));
+    expect(await screen.findByText("Try again later")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(4_600));
+    expect(screen.getByText("Could not start")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(screen.queryByText("Could not start")).not.toBeInTheDocument();
   });
 });
