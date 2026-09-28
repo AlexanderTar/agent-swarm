@@ -856,11 +856,16 @@ func (s *Store) askQuestion(ctx context.Context, sessionID string, in AskInput) 
 		}
 		id := ids.New("req")
 		// A prompt forwarded verbatim from a daemon-issued native_prompt
-		// carries a ⟦swarm:<ref>⟧ token (spec 2.3 step 3, Task 13b): bind
-		// the row to it so native_answer can later find its evidence. A
-		// plain question's prompt has no token, so binding_json stays NULL.
+		// matches the normalized question text of an open approval routed to
+		// this agent (2026-09-28-approval-summary-enforced locked decision
+		// 2, with the old ⟦swarm:ref⟧ token kept as a fallback for a
+		// pre-deploy in-flight session): bind the row to it so native_answer
+		// can later find its evidence. A plain question binds nothing, so
+		// binding_json stays NULL.
 		var binding any
-		if ref := refFromPrompt(in.Prompt); ref != "" {
+		if ref, ok, err := s.bindNativeQuestionTx(ctx, tx, a.ID, in.Prompt); err != nil {
+			return err
+		} else if ok {
 			b, err := json.Marshal(map[string]string{"ref": ref})
 			if err != nil {
 				return err
@@ -1374,8 +1379,12 @@ func (s *Store) ResolveQuestionByPrompt(ctx context.Context, sessionID, prompt, 
 // ResolveQuestionByPrompt. No match is not an error: the zero Request comes
 // back.
 func (s *Store) ResolveQuestionReply(ctx context.Context, sessionID, question, answer string) (Request, error) {
-	ref := refFromPrompt(question)
-	if ref == "" {
+	var agentID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT agent_id FROM sessions WHERE id = ?`, sessionID).Scan(&agentID); err != nil {
+		return Request{}, err
+	}
+	ref, ok := s.BindNativeQuestion(ctx, agentID, question)
+	if !ok {
 		return s.ResolveQuestionByPrompt(ctx, sessionID, question, answer)
 	}
 	ids, err := s.queryIDs(ctx, `SELECT r.id FROM requests r JOIN sessions se ON se.agent_id = r.agent_id

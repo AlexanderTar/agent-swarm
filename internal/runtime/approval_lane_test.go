@@ -33,7 +33,7 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		want := NativePrompt{Header: "Accept epic", Question: `Accept EPIC-1 "Build it" as done? ⟦swarm:req_e1⟧`, Options: approveOptions}
+		want := NativePrompt{Header: "Accept epic", Question: `Accept EPIC-1 "Build it" as done?`, Options: approveOptions}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("accept_epic prompt = %+v, want %+v", got, want)
 		}
@@ -42,7 +42,7 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 			return err
 		}
 		want = NativePrompt{Header: "Accept fix",
-			Question: fmt.Sprintf(`Accept the fix for %s "Login loop" as done? ⟦swarm:req_f1⟧`, bug.Key), Options: approveOptions}
+			Question: fmt.Sprintf(`Accept the fix for %s "Login loop" as done?`, bug.Key), Options: approveOptions}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("accept_fix prompt = %+v, want %+v", got, want)
 		}
@@ -51,7 +51,7 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 			return err
 		}
 		want = NativePrompt{Header: "Accept chore",
-			Question: fmt.Sprintf(`Accept %s "Bump deps" as done? ⟦swarm:req_c1⟧`, chore.Key), Options: approveOptions}
+			Question: fmt.Sprintf(`Accept %s "Bump deps" as done?`, chore.Key), Options: approveOptions}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("chore accept_fix prompt = %+v, want %+v", got, want)
 		}
@@ -141,7 +141,7 @@ func TestAcceptRowRoutesToLiveRootOrchestrator(t *testing.T) {
 		t.Fatalf("relay payload = %v", p)
 	}
 	np := decodeNP(t, p)
-	if np.Header != "Accept epic" || np.Question != `Accept EPIC-1 "Build it" as done? ⟦swarm:req_accept⟧` {
+	if np.Header != "Accept epic" || np.Question != `Accept EPIC-1 "Build it" as done?` {
 		t.Fatalf("native_prompt = %+v", np)
 	}
 	if p["question"] != np.Question || p["next"] != NativePromptNextStep("req_accept") {
@@ -285,7 +285,7 @@ func TestCloseSpikeRelaysNativePrompt(t *testing.T) {
 		t.Fatalf("%d relays for close_spike, want 1", n)
 	}
 	np := decodeNP(t, p)
-	if np.Header != "Close spike" || np.Question != "Close SPIKE-1? ⟦swarm:"+reqID+"⟧" {
+	if np.Header != "Close spike" || np.Question != "Close SPIKE-1?" {
 		t.Fatalf("native_prompt = %+v", np)
 	}
 	hookSimulate(t, s, ses, np, "Approve")

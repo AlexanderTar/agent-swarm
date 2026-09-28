@@ -33,19 +33,37 @@ func TestRefTokenAndRefFromPrompt(t *testing.T) {
 	}
 }
 
-// TestTruncateWithTokenNeverCutsTheRefToken is the 2026-09-26 fix
-// (native-railway-tracing finding): a body over 1000 runes must be trimmed
-// from its own end, never the trailing ref token the hook needs to bind the
-// answer back to the request.
-func TestTruncateWithTokenNeverCutsTheRefToken(t *testing.T) {
+// TestCapRunesToOneThousand is the 2026-09-28-approval-summary-enforced
+// replacement for the old truncateWithToken cap: with no ref token to
+// preserve, a body over 1000 runes is simply capped at 1000, ending in "…".
+func TestCapRunesToOneThousand(t *testing.T) {
 	body := strings.Repeat("a", 2000)
-	ref := "req_ABC123"
-	got := truncateWithToken(body, ref)
+	got := capRunes(body, 1000)
 	if n := utf8.RuneCountInString(got); n > 1000 {
 		t.Fatalf("length = %d runes, want <= 1000", n)
 	}
-	if !strings.HasSuffix(got, refToken(ref)) {
-		t.Fatalf("ref token missing or cut: tail = %q", got[len(got)-40:])
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("capped body = %q, want it to end with an ellipsis", got)
+	}
+}
+
+// TestNormalizeQuestion is locked decision 2: trimmed, whitespace runs
+// collapsed to one space, so reflowed native-tool text still binds.
+func TestNormalizeQuestion(t *testing.T) {
+	got := NormalizeQuestion("  Approve  the\nplan   (rev 1)?  ")
+	if want := "Approve the plan (rev 1)?"; got != want {
+		t.Fatalf("NormalizeQuestion = %q, want %q", got, want)
+	}
+}
+
+// TestNormForMatch is the summary gate's substring-match normalizer: case
+// folded, letters and digits only, so markdown reformatting and wrapping
+// never break the match.
+func TestNormForMatch(t *testing.T) {
+	a := NormForMatch("# Locked Decisions\n\n1. Foo-Bar!")
+	b := NormForMatch("locked decisions 1 foobar")
+	if a != b {
+		t.Fatalf("NormForMatch mismatch: %q vs %q", a, b)
 	}
 }
 
@@ -125,14 +143,12 @@ func TestBuildApprovalQuestionCapsAt1000RunesWithoutCuttingTail(t *testing.T) {
 	summary := strings.Repeat("word ", 200) // 1000 runes on its own
 	paths := "Spec: /repo/docs/specs/plan.md\nPlan: /repo/docs/plans/plan.md\n"
 	approveLine := "Approve the plan (rev 4)?\nWarnings:\n- Task t2 has no verify command."
-	ref := "req_CAP1"
-
-	got := buildApprovalQuestion(summary, paths, approveLine, ref)
+	got := buildApprovalQuestion(summary, paths, approveLine)
 	if n := utf8.RuneCountInString(got); n > 1000 {
 		t.Fatalf("question = %d runes, want <= 1000", n)
 	}
-	if !strings.HasSuffix(got, paths+approveLine+refToken(ref)) {
-		t.Fatalf("tail (paths+approve line+token) was cut: %q", got)
+	if !strings.HasSuffix(got, paths+approveLine) {
+		t.Fatalf("tail (paths+approve line) was cut: %q", got)
 	}
 	if !strings.Contains(got, "…") {
 		t.Fatalf("question = %q, want the shortened summary to end with an ellipsis", got)
@@ -150,16 +166,12 @@ func TestBuildApprovalQuestionFallsBackWhenPathsAloneOverflow(t *testing.T) {
 	paths := "Spec: /" + strings.Repeat("spec-path/", 150) + "spec.md\n" +
 		"Plan: /" + strings.Repeat("plan-path/", 150) + "plan.md\n"
 	approveLine := "Approve the plan (rev 1)?"
-	ref := "req_HUGE1"
 
-	got := buildApprovalQuestion(summary, paths, approveLine, ref)
+	got := buildApprovalQuestion(summary, paths, approveLine)
 	if n := utf8.RuneCountInString(got); n > 1000 {
 		t.Fatalf("question = %d runes, want <= 1000", n)
 	}
-	if !strings.HasSuffix(got, refToken(ref)) {
-		t.Fatalf("token missing or cut: tail = %q", got[len(got)-40:])
-	}
-	if !strings.HasSuffix(got, approveLine+refToken(ref)) {
+	if !strings.HasSuffix(got, approveLine) {
 		t.Fatalf("approve line was cut: %q", got)
 	}
 }
@@ -176,14 +188,13 @@ func TestBuildApprovalQuestionFallsBackWhenApproveLineAloneOverflows(t *testing.
 		b.WriteString("\n- Task t" + strings.Repeat("x", 20) + " has no verify command.")
 	}
 	approveLine := b.String()
-	ref := "req_HUGE2"
 
-	got := buildApprovalQuestion("Ship the API.", "", approveLine, ref)
+	got := buildApprovalQuestion("Ship the API.", "", approveLine)
 	if n := utf8.RuneCountInString(got); n > 1000 {
 		t.Fatalf("question = %d runes, want <= 1000", n)
 	}
-	if !strings.HasSuffix(got, refToken(ref)) {
-		t.Fatalf("token missing or cut: tail = %q", got[len(got)-40:])
+	if got != capRunes(approveLine, 1000) {
+		t.Fatalf("approve-line-only fallback = %q, want capRunes result", got)
 	}
 }
 
@@ -229,8 +240,8 @@ func TestNativeAnswerNextStep(t *testing.T) {
 }
 
 // TestNativePromptForBuildsExactCopy is Task 13a: the daemon-issued native
-// prompt for each approval kind matches spec section 6, verbatim, and ends
-// with the ref token.
+// prompt for each approval kind matches spec section 6, verbatim, with no
+// ref token or id (2026-09-28-approval-summary-enforced).
 func TestNativePromptForBuildsExactCopy(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -273,14 +284,14 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 			req:        Request{ID: "req_SEC1", Kind: "approve_section", ArtifactRevision: 2, ItemID: it.ID, AgentID: a.ID, Prompt: sectionSummary},
 			section:    "Data model",
 			wantHeader: "Spike approval",
-			wantQ:      sectionSummary + "\n\n" + `Approve Spec section "Data model" (rev 2)?` + refToken("req_SEC1"),
+			wantQ:      sectionSummary + "\n\n" + `Approve Spec section "Data model" (rev 2)?`,
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 		{
 			name:       "approve_plan_no_warnings",
 			req:        Request{ID: "req_PLAN1", Kind: "approve_plan", ArtifactRevision: 1, ItemID: it.ID, AgentID: a.ID, Prompt: planSummary},
 			wantHeader: "Spike approval",
-			wantQ:      planSummary + "\n\n" + `Approve the plan (rev 1)?` + refToken("req_PLAN1"),
+			wantQ:      planSummary + "\n\n" + `Approve the plan (rev 1)?`,
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 		{
@@ -289,7 +300,7 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 			reviewPaths: &ReviewPaths{Spec: "/abs/repo/specs/spec.md", Plan: "/abs/repo/plans/plan.md"},
 			wantHeader:  "Spike approval",
 			wantQ: planSummary + "\n\n" + "Spec: /abs/repo/specs/spec.md\nPlan: /abs/repo/plans/plan.md\n" +
-				`Approve the plan (rev 1)?` + refToken("req_PLAN3"),
+				`Approve the plan (rev 1)?`,
 			wantOpts: []string{"Approve", "Request changes"},
 		},
 		{
@@ -297,14 +308,14 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 			req:        Request{ID: "req_PLAN2", Kind: "approve_plan", ArtifactRevision: 3, ItemID: it.ID, AgentID: a.ID, Prompt: planSummary},
 			warnings:   []string{"Task t2 has no verify command."},
 			wantHeader: "Spike approval",
-			wantQ:      planSummary + "\n\n" + "Approve the plan (rev 3)?\nWarnings:\n- Task t2 has no verify command." + refToken("req_PLAN2"),
+			wantQ:      planSummary + "\n\n" + "Approve the plan (rev 3)?\nWarnings:\n- Task t2 has no verify command.",
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 		{
 			name:       "approve_report",
 			req:        Request{ID: "req_REP1", Kind: "approve_report", ArtifactRevision: 1, ItemID: it.ID, AgentID: a.ID, Prompt: reportSummary},
 			wantHeader: "Spike approval",
-			wantQ:      reportSummary + "\n\n" + `Approve the debug report (rev 1)?` + refToken("req_REP1"),
+			wantQ:      reportSummary + "\n\n" + `Approve the debug report (rev 1)?`,
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 		{
@@ -312,7 +323,7 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 			req: Request{ID: "req_REPO1", Kind: "confirm_repos", ItemID: it.ID,
 				Options: []byte(`{"proposed":[{"repo":"` + repoA + `","reason":"r"}]}`)},
 			wantHeader: "Repositories",
-			wantQ:      "Confirm 1 repositories for " + key + ": endurio-chat?" + refToken("req_REPO1"),
+			wantQ:      "Confirm 1 repositories for " + key + ": endurio-chat?",
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 		{
@@ -323,14 +334,14 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 					`"expansion":[{"repo":"` + repoB + `","reason":"client/server pair"}]}`)},
 			wantHeader: "Repositories",
 			wantQ: "Confirm 2 repositories for " + key + ": endurio-chat, endurio-web?" +
-				"\nDropped: endurio-docs." + refToken("req_REPO2"),
+				"\nDropped: endurio-docs.",
 			wantOpts: []string{"Approve", "Request changes"},
 		},
 		{
 			name:       "close_spike",
 			req:        Request{ID: "req_CLOSE1", Kind: "close_spike", ItemID: it.ID},
 			wantHeader: "Close spike",
-			wantQ:      "Close " + key + "?" + refToken("req_CLOSE1"),
+			wantQ:      "Close " + key + "?",
 			wantOpts:   []string{"Approve", "Request changes"},
 		},
 	}
@@ -349,9 +360,6 @@ func TestNativePromptForBuildsExactCopy(t *testing.T) {
 			if strings.Join(np.Options, ",") != strings.Join(tc.wantOpts, ",") {
 				t.Errorf("options = %v, want %v", np.Options, tc.wantOpts)
 			}
-			if refFromPrompt(np.Question) != tc.req.ID {
-				t.Errorf("refFromPrompt(%q) = %q, want %q", np.Question, refFromPrompt(np.Question), tc.req.ID)
-			}
 		})
 	}
 }
@@ -361,29 +369,26 @@ func TestNativePromptForMsg(t *testing.T) {
 	if np.Header != "go-migration-agent asks" {
 		t.Fatalf("header = %q", np.Header)
 	}
-	want := "may I drop table x?" + refToken("msg_ABC")
+	want := "may I drop table x?"
 	if np.Question != want {
 		t.Fatalf("question = %q, want %q", np.Question, want)
 	}
 	if len(np.Options) != 2 || np.Options[0] != "Approve" || np.Options[1] != "Request changes" {
 		t.Fatalf("options = %v", np.Options)
 	}
-	if refFromPrompt(np.Question) != "msg_ABC" {
-		t.Fatalf("refFromPrompt = %q", refFromPrompt(np.Question))
+	if refFromPrompt(np.Question) != "" {
+		t.Fatalf("refFromPrompt = %q, want empty (no token)", refFromPrompt(np.Question))
 	}
 }
 
-func TestNativePromptQuestionTruncatesButKeepsTheToken(t *testing.T) {
+func TestNativePromptQuestionTruncatesToOneThousandRunes(t *testing.T) {
 	long := strings.Repeat("x", 1200)
 	np := nativePromptForMsg("child", long, "msg_XYZ")
 	if got := len([]rune(np.Question)); got > 1000 {
 		t.Fatalf("question is %d runes, want <= 1000", got)
 	}
-	if !strings.HasSuffix(np.Question, refToken("msg_XYZ")) {
-		t.Fatalf("token did not survive truncation: %q", np.Question[len(np.Question)-40:])
-	}
-	if refFromPrompt(np.Question) != "msg_XYZ" {
-		t.Fatalf("refFromPrompt = %q", refFromPrompt(np.Question))
+	if !strings.HasSuffix(np.Question, "…") {
+		t.Fatalf("capped question = %q, want it to end with an ellipsis", np.Question)
 	}
 }
 
@@ -408,12 +413,15 @@ func TestAskApprovalReturnsNativePrompt(t *testing.T) {
 	if req.NativePrompt == nil {
 		t.Fatalf("NativePrompt is nil on %+v", req)
 	}
-	want := "Review " + sec.Title + "\n\n" + `Approve Spec section "Data model" (rev 1)?` + refToken(req.ID)
+	want := "Review " + sec.Title + "\n\n" + `Approve Spec section "Data model" (rev 1)?`
 	if req.NativePrompt.Question != want {
 		t.Fatalf("question = %q, want %q", req.NativePrompt.Question, want)
 	}
 	if req.NativePrompt.Header != "Spike approval" {
 		t.Fatalf("header = %q", req.NativePrompt.Header)
+	}
+	if refFromPrompt(req.NativePrompt.Question) != "" {
+		t.Fatalf("question carries a ref token: %q", req.NativePrompt.Question)
 	}
 }
 
@@ -469,7 +477,7 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	if req.ReviewPaths == nil || req.ReviewPaths.Spec != longSpec || req.ReviewPaths.Plan != longPlan {
 		t.Fatalf("review paths = %+v", req.ReviewPaths)
 	}
-	if req.NativePrompt == nil || !strings.HasSuffix(req.NativePrompt.Question, refToken(req.ID)) {
+	if req.NativePrompt == nil {
 		t.Fatalf("native prompt = %+v", req.NativePrompt)
 	}
 	// Paths this long overflow the 1000-rune cap on their own: the question
@@ -569,19 +577,20 @@ func TestStoredNativePromptRebuildIsByteIdenticalForPlanApproval(t *testing.T) {
 	}
 }
 
-// TestStoredNativePromptRebuildToleratesAgentKindChange documents and pins a
-// deliberate design point: storedNativePromptTx looks up the request's
-// CURRENT agent kind (requestAgentKindTx), not the kind at ask time. If that
-// kind changes between the original ask and a later relay or resurface
-// (reassignment, kind fallback), the rebuilt summary head can legitimately
-// differ from the one first shown -- claude's first-line/200-rune budget
-// vs. cursor/muse's up-to-600-rune, unlined one -- so byte equality with the
-// original is only guaranteed when the kind is unchanged (see
-// TestStoredNativePromptRebuildIsByteIdenticalForPlanApproval above). That's
-// fine: the hook binds an answered question row to its request purely by
-// the trailing ⟦swarm:ref⟧ token (refFromPrompt), never by the rest of the
-// question text, so a differing head never breaks binding.
-func TestStoredNativePromptRebuildToleratesAgentKindChange(t *testing.T) {
+// TestStoredNativePromptRebuildAgentKindChangeBreaksTextBinding documents a
+// known limitation introduced by 2026-09-28-approval-summary-enforced:
+// storedNativePromptTx looks up the request's CURRENT agent kind
+// (requestAgentKindTx), not the kind at ask time, so a kind change between
+// the original ask and a later relay/resurface (reassignment, kind
+// fallback) legitimately changes the rebuilt summary head -- claude's
+// first-line/200-rune budget vs. cursor/muse's up-to-600-rune, unlined one.
+// Before this spec the hook bound an answered question row purely by its
+// trailing ⟦swarm:ref⟧ token, so a differing head never broke binding.
+// Binding now matches by normalized question text (BindNativeQuestion), so
+// the ORIGINALLY shown text no longer matches the freshly rebuilt one, and
+// BindNativeQuestion fails to bind it. A prompt still carrying the old ref
+// token is unaffected (the fallback binds regardless of text drift).
+func TestStoredNativePromptRebuildAgentKindChangeBreaksTextBinding(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	ses, _, planID, _ := approvedFeatureSpike(t, s)
@@ -613,9 +622,8 @@ func TestStoredNativePromptRebuildToleratesAgentKindChange(t *testing.T) {
 	if rebuilt.Question == original {
 		t.Fatalf("expected the rebuilt question to differ after a kind change (claude's first-line head vs. cursor's up-to-600-rune head)")
 	}
-	if refFromPrompt(rebuilt.Question) != req.ID || refFromPrompt(original) != req.ID {
-		t.Fatalf("both questions must still bind to the same ref despite the differing head: original ref=%q rebuilt ref=%q",
-			refFromPrompt(original), refFromPrompt(rebuilt.Question))
+	if _, ok := s.BindNativeQuestion(ctx, req.AgentID, original); ok {
+		t.Fatalf("expected the originally shown text to no longer bind after a kind change (known text-binding limitation)")
 	}
 }
 
@@ -725,7 +733,7 @@ func TestAskConfirmReposReturnsNativePrompt(t *testing.T) {
 	if req.NativePrompt.Header != "Repositories" {
 		t.Fatalf("header = %q", req.NativePrompt.Header)
 	}
-	want := "Confirm 1 repositories for " + key + ": endurio-chat?" + refToken(req.ID)
+	want := "Confirm 1 repositories for " + key + ": endurio-chat?"
 	if req.NativePrompt.Question != want {
 		t.Fatalf("question = %q, want %q", req.NativePrompt.Question, want)
 	}
@@ -791,7 +799,7 @@ func TestAskNativePromptForMsg(t *testing.T) {
 	if req.NativePrompt.Header != w.Name+" asks" {
 		t.Fatalf("header = %q", req.NativePrompt.Header)
 	}
-	want := "may I drop table x?" + refToken(q)
+	want := "may I drop table x?"
 	if req.NativePrompt.Question != want {
 		t.Fatalf("question = %q, want %q", req.NativePrompt.Question, want)
 	}

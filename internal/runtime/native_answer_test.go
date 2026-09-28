@@ -518,7 +518,7 @@ func TestNativePromptForMsgAllowsUnhookedOrchestratorKinds(t *testing.T) {
 				t.Fatal(err)
 			}
 			prompt, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q})
-			if err != nil || prompt.NativePrompt == nil || !strings.Contains(prompt.NativePrompt.Question, q) {
+			if err != nil || prompt.NativePrompt == nil || prompt.NativePrompt.Question != "may I drop table x?" {
 				t.Fatalf("prompt = %+v, err = %v", prompt, err)
 			}
 			// No returned answer means no approval.
@@ -550,8 +550,8 @@ func TestNativePromptForMsgAllowedForCodex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codex has a native approval hook now, got %v", err)
 	}
-	if out.NativePrompt == nil || !strings.HasSuffix(out.NativePrompt.Question, "⟦swarm:"+q+"⟧") {
-		t.Fatalf("native prompt = %+v, want a question ending in the %s ref token", out.NativePrompt, q)
+	if out.NativePrompt == nil || out.NativePrompt.Question != "may I drop table x?" {
+		t.Fatalf("native prompt = %+v, want the plain question with no ref token", out.NativePrompt)
 	}
 }
 

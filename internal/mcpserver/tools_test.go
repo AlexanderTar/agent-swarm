@@ -1210,8 +1210,7 @@ func TestAskNativePromptForMsgMCP(t *testing.T) {
 		} `json:"native_prompt"`
 	}
 	json.Unmarshal(mustJSON(out2), &res)
-	if !strings.Contains(res.NativePrompt.Question, "may I drop table x?") ||
-		!strings.Contains(res.NativePrompt.Question, sendRes.MsgID) {
-		t.Fatalf("native_prompt = %+v", res)
+	if res.NativePrompt.Question != "may I drop table x?" {
+		t.Fatalf("native_prompt = %+v, want no ref token (2026-09-28-approval-summary-enforced)", res)
 	}
 }

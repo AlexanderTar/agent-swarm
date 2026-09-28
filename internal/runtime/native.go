@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -20,9 +21,11 @@ import (
 
 // NativePrompt is the exact header/question/options an orchestrator shows
 // with its own native question tool for a daemon-issued approval (spec
-// section 2.3, copy in section 6). The question always ends with a ref
-// token so the hook that observes the answer can bind it back to the
-// request or message that asked for it.
+// section 2.3, copy in section 6). The question carries no id or token
+// (2026-09-28-approval-summary-enforced): the hook that observes the answer
+// binds it back to the request or message that asked for it by normalized
+// question text (BindNativeQuestion), falling back to the old ⟦swarm:ref⟧
+// token only for a prompt built before that deploy.
 type NativePrompt struct {
 	Header   string   `json:"header"`
 	Question string   `json:"question"`
@@ -58,48 +61,55 @@ func refFromPrompt(p string) string {
 // mention of the token syntax doesn't false-positive.
 func HasRefToken(p string) bool { return refRe.MatchString(p) }
 
-// truncateWithToken is extractQuestion's 1000-rune cap (handler.go:70-72),
-// applied here so the ref token always survives it: body is truncated from
-// the end to make room, never the token itself.
-func truncateWithToken(body, ref string) string {
-	token := refToken(ref)
-	limit := 1000 - utf8.RuneCountInString(token)
-	if limit < 0 {
-		limit = 0
+// NormalizeQuestion trims a question and collapses any run of whitespace to
+// a single space (2026-09-28-approval-summary-enforced locked decision 2):
+// the shape BindNativeQuestion compares an observed native question against
+// a rebuilt stored one with, so reflowed whitespace never breaks the match.
+func NormalizeQuestion(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// NormForMatch lowercases s and keeps only letters and digits, dropping
+// everything else (markdown punctuation, whitespace). The PreToolUse summary
+// gate uses it to compare a stored approval summary against the assistant
+// text an agent printed in chat, so markdown reformatting and line wrapping
+// never cause a false deny (spec section "Locked decisions" item 3).
+func NormForMatch(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
 	}
-	r := []rune(body)
-	if len(r) > limit {
-		body = string(r[:limit])
-	}
-	return body + token
+	return b.String()
 }
 
 // buildApprovalQuestion assembles a daemon-issued approve_section/
 // approve_plan/approve_report native question: a head of the request's
 // stored summary (approvalSummaryHead), a blank line, any review paths
-// (plan only), the approve line (with plan warnings already folded in), and
-// the ref token -- all within the existing 1000-rune cap
+// (plan only), and the approve line (with plan warnings already folded in)
+// -- all within the existing 1000-rune cap
 // (2026-09-28-summary-in-native-question). The full summary is printed in
 // chat, not here; head is already capped by approvalSummaryHead, but this
-// still shortens it further, ending with "…", if the never-cut tail
-// (paths, approve line, token) alone leaves it no room -- and if paths,
-// approve line and token alone already overflow 1000 runes, dropping the
-// summary can't help either: paths are dropped first (still shown
-// losslessly via review_paths and the chat print), then, if the approve
-// line/warnings alone still overflow, this falls back to
-// truncateWithToken's own behaviour (cut from its end, token survives). A
-// separate helper from truncateWithToken because its other callers
-// truncate a single body, not a summary glued to a fixed, never-cut tail.
-func buildApprovalQuestion(summary, paths, approveLine, ref string) string {
-	token := refToken(ref)
+// still shortens it further, ending with "…", if the never-cut tail (paths,
+// approve line) alone leaves it no room -- and if paths and the approve line
+// alone already overflow 1000 runes, dropping the summary can't help
+// either: paths are dropped first (still shown losslessly via review_paths
+// and the chat print), then, if the approve line/warnings alone still
+// overflow, this falls back to capRunes. A separate helper from capRunes
+// because its other callers cap a single body, not a summary glued to a
+// fixed, never-cut tail. No ref token is appended (2026-09-28-approval-
+// summary-enforced: binding moved to normalized question-text match).
+func buildApprovalQuestion(summary, paths, approveLine string) string {
 	tail := paths + approveLine
-	if utf8.RuneCountInString(tail)+utf8.RuneCountInString(token) > 1000 {
+	if utf8.RuneCountInString(tail) > 1000 {
 		if paths != "" {
-			return buildApprovalQuestion(summary, "", approveLine, ref)
+			return buildApprovalQuestion(summary, "", approveLine)
 		}
-		return truncateWithToken(approveLine, ref)
+		return capRunes(approveLine, 1000)
 	}
-	limit := 1000 - utf8.RuneCountInString(token) - utf8.RuneCountInString(tail) - 2 // "\n\n"
+	limit := 1000 - utf8.RuneCountInString(tail) - 2 // "\n\n"
 	sr := []rune(summary)
 	switch {
 	case limit <= 0:
@@ -112,9 +122,9 @@ func buildApprovalQuestion(summary, paths, approveLine, ref string) string {
 		}
 	}
 	if summary == "" {
-		return tail + token
+		return tail
 	}
-	return summary + "\n\n" + tail + token
+	return summary + "\n\n" + tail
 }
 
 // capRunes shortens s to at most limit runes, ending with "…" when cut.
@@ -160,11 +170,16 @@ func approvalSummaryHead(summary string, kind AgentKind) string {
 // relay/resurface (reassignment, kind fallback), the rebuilt head is sized
 // to the CURRENT kind and can legitimately differ from the one first shown
 // -- byte-identical replay (TestStoredNativePromptRebuildIsByteIdentical...)
-// only holds when the kind hasn't changed. That's safe: the hook binds an
-// answered question row to its request purely by the trailing
-// ⟦swarm:ref⟧ token (refFromPrompt), never by the rest of the question
-// text, so a differing head never breaks binding (see
-// TestStoredNativePromptRebuildToleratesAgentKindChange).
+// only holds when the kind hasn't changed. Before 2026-09-28-approval-
+// summary-enforced this was safe unconditionally: the hook bound an
+// answered question row purely by its trailing ⟦swarm:ref⟧ token, never by
+// the rest of the question text. Binding now matches by normalized question
+// text (BindNativeQuestion), so a kind change between the original ask and
+// the answer is a known limitation: the text actually shown no longer
+// equals the freshly rebuilt one, and BindNativeQuestion fails to bind it
+// (see TestStoredNativePromptRebuildAgentKindChangeBreaksTextBinding). A
+// prompt still carrying the old ref token is unaffected -- the token
+// fallback binds regardless of any text drift.
 func (s *Store) requestAgentKindTx(ctx context.Context, tx *sql.Tx, agentID string) (AgentKind, error) {
 	var kind AgentKind
 	err := tx.QueryRowContext(ctx, `SELECT kind FROM agents WHERE id = ?`, agentID).Scan(&kind)
@@ -206,7 +221,7 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		switch req.Kind {
 		case KindApproveSection:
 			approveLine := fmt.Sprintf("Approve Spec section %q (rev %d)?", sectionTitle, req.ArtifactRevision)
-			q := buildApprovalQuestion(head, "", approveLine, req.ID)
+			q := buildApprovalQuestion(head, "", approveLine)
 			return NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}, nil
 		case KindApprovePlan:
 			approveLine := fmt.Sprintf("Approve the plan (rev %d)?", req.ArtifactRevision)
@@ -219,11 +234,11 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 				}
 				approveLine = b.String()
 			}
-			q := buildApprovalQuestion(head, planPathsBlock(reviewPaths), approveLine, req.ID)
+			q := buildApprovalQuestion(head, planPathsBlock(reviewPaths), approveLine)
 			return NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}, nil
 		default: // KindApproveReport
 			approveLine := fmt.Sprintf("Approve the debug report (rev %d)?", req.ArtifactRevision)
-			q := buildApprovalQuestion(head, "", approveLine, req.ID)
+			q := buildApprovalQuestion(head, "", approveLine)
 			return NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}, nil
 		}
 	case KindConfirmRepos:
@@ -263,14 +278,14 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		if len(dropped) > 0 {
 			q += "\nDropped: " + strings.Join(dropped, ", ") + "."
 		}
-		return NativePrompt{Header: "Repositories", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+		return NativePrompt{Header: "Repositories", Question: capRunes(q, 1000), Options: approveOptions}, nil
 	case KindCloseSpike:
 		key, err := s.itemKey(ctx, tx, req.ItemID)
 		if err != nil {
 			return NativePrompt{}, err
 		}
 		q := fmt.Sprintf("Close %s?", key)
-		return NativePrompt{Header: "Close spike", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+		return NativePrompt{Header: "Close spike", Question: capRunes(q, 1000), Options: approveOptions}, nil
 	case KindAcceptEpic, KindAcceptFix:
 		var key, title, typ string
 		if err := tx.QueryRowContext(ctx, `SELECT key, title, type FROM items WHERE id = ?`, req.ItemID).Scan(&key, &title, &typ); err != nil {
@@ -278,14 +293,14 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		}
 		if req.Kind == KindAcceptFix && typ == string(items.Chore) {
 			q := fmt.Sprintf("Accept %s %q as done?", key, title)
-			return NativePrompt{Header: "Accept chore", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+			return NativePrompt{Header: "Accept chore", Question: capRunes(q, 1000), Options: approveOptions}, nil
 		}
 		if req.Kind == KindAcceptFix {
 			q := fmt.Sprintf("Accept the fix for %s %q as done?", key, title)
-			return NativePrompt{Header: "Accept fix", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+			return NativePrompt{Header: "Accept fix", Question: capRunes(q, 1000), Options: approveOptions}, nil
 		}
 		q := fmt.Sprintf("Accept %s %q as done?", key, title)
-		return NativePrompt{Header: "Accept epic", Question: truncateWithToken(q, req.ID), Options: approveOptions}, nil
+		return NativePrompt{Header: "Accept epic", Question: capRunes(q, 1000), Options: approveOptions}, nil
 	default:
 		return NativePrompt{}, nil
 	}
@@ -329,6 +344,207 @@ func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Reques
 		reviewPaths = &paths
 	}
 	return s.nativePromptFor(ctx, tx, req, title, warnings, reviewPaths)
+}
+
+// bindCandidate is one open row BindNativeQuestion considers: a rebuilt
+// native-question text that matched the observed one, tagged with the ref
+// it would bind to and the row's created_at for newest-wins tie-breaking.
+type bindCandidate struct {
+	ref       string
+	createdAt int64
+}
+
+// BindNativeQuestion binds a native question tool's observed question text
+// (PreToolUse, a Codex async reply, or a Muse session log entry) to an open
+// approval-kind request or open child-approval message routed to agentID,
+// by normalized text match (2026-09-28-approval-summary-enforced locked
+// decision 2). ok is false when nothing binds -- a plain, non-approval
+// question. An old prompt still carrying a ⟦swarm:ref⟧ token (a session
+// launched before this deploy) binds via that token directly, without a
+// text comparison, so in-flight sessions keep working. Opens its own read
+// tx -- callers already inside one (e.g. askQuestion) must call
+// bindNativeQuestionTx directly instead, to avoid nesting BEGIN IMMEDIATE
+// transactions on the same connection pool.
+func (s *Store) BindNativeQuestion(ctx context.Context, agentID, question string) (ref string, ok bool) {
+	var out string
+	var found bool
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		out, found, err = s.bindNativeQuestionTx(ctx, tx, agentID, question)
+		return err
+	})
+	if err != nil {
+		return "", false
+	}
+	return out, found
+}
+
+// bindNativeQuestionTx is BindNativeQuestion's tx-scoped core: the same
+// logic, running inside a caller-supplied transaction.
+func (s *Store) bindNativeQuestionTx(ctx context.Context, tx *sql.Tx, agentID, question string) (ref string, ok bool, err error) {
+	if ref := refFromPrompt(question); ref != "" {
+		return ref, true, nil
+	}
+	norm := NormalizeQuestion(question)
+	if norm == "" {
+		return "", false, nil
+	}
+	var candidates []bindCandidate
+
+	rows, err := tx.QueryContext(ctx, `SELECT id, created_at FROM requests
+		WHERE agent_id = ? AND state = 'open'`, agentID)
+	if err != nil {
+		return "", false, err
+	}
+	type reqRow struct {
+		id string
+		ts int64
+	}
+	var reqRows []reqRow
+	for rows.Next() {
+		var r reqRow
+		if err := rows.Scan(&r.id, &r.ts); err != nil {
+			rows.Close()
+			return "", false, err
+		}
+		reqRows = append(reqRows, r)
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, err
+	}
+	rows.Close()
+	for _, r := range reqRows {
+		req, err := s.requestTx(ctx, tx, r.id)
+		if err != nil {
+			return "", false, err
+		}
+		if !nativeAnswerKind(req.Kind) {
+			continue
+		}
+		np, err := s.storedNativePromptTx(ctx, tx, req)
+		if err != nil {
+			// A row whose prompt can no longer be rebuilt (e.g. a stale
+			// spec lookup) is simply not a candidate -- never fails the
+			// whole bind.
+			continue
+		}
+		if NormalizeQuestion(np.Question) == norm {
+			candidates = append(candidates, bindCandidate{ref: req.ID, createdAt: r.ts})
+		}
+	}
+
+	msgRows, err := tx.QueryContext(ctx, `SELECT m.id, m.created_at, ag.name,
+		COALESCE(json_extract(m.payload_json, '$.body'), '')
+		FROM messages m JOIN agents ag ON ag.id = m.from_agent_id
+		WHERE m.to_agent_id = ? AND m.kind = 'question'
+		  AND json_extract(m.payload_json, '$.approval') = 1
+		  AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.kind IN ('approval_result', 'answer') AND r.reply_to = m.id)
+		  AND NOT EXISTS (SELECT 1 FROM requests rq WHERE json_extract(rq.binding_json, '$.ref') = m.id
+		      AND rq.state IN ('approved', 'changes_requested'))`, agentID)
+	if err != nil {
+		return "", false, err
+	}
+	type msgRow struct {
+		id, fromName, body string
+		ts                 int64
+	}
+	var msgRowsList []msgRow
+	for msgRows.Next() {
+		var r msgRow
+		if err := msgRows.Scan(&r.id, &r.ts, &r.fromName, &r.body); err != nil {
+			msgRows.Close()
+			return "", false, err
+		}
+		msgRowsList = append(msgRowsList, r)
+	}
+	if err := msgRows.Err(); err != nil {
+		return "", false, err
+	}
+	msgRows.Close()
+	for _, r := range msgRowsList {
+		np := nativePromptForMsg(r.fromName, r.body, r.id)
+		if NormalizeQuestion(np.Question) == norm {
+			candidates = append(candidates, bindCandidate{ref: r.id, createdAt: r.ts})
+		}
+	}
+
+	if len(candidates) == 0 {
+		return "", false, nil
+	}
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.createdAt > best.createdAt {
+			best = c
+		}
+	}
+	if len(candidates) > 1 {
+		s.log("bind_native_question: %d candidates for agent %s, chose newest %s", len(candidates), agentID, best.ref)
+	}
+	return best.ref, true, nil
+}
+
+// log is a nil-safe wrapper around Store.Log, used by BindNativeQuestion's
+// multiple-candidate note (locked decision 2: "log it").
+func (s *Store) log(format string, args ...any) {
+	if s.Log != nil {
+		s.Log(format, args...)
+	}
+}
+
+// SummaryGate reads an approval request's stored summary and, for a plan,
+// its review paths, for the PreToolUse enforcement gate (2026-09-28-
+// approval-summary-enforced locked decision 3). summary is "" for a ref
+// that names no request, a msg_ ref (a child approval has no stored
+// summary), or a request kind other than approve_section/plan/report --
+// the caller treats an empty summary as "nothing to enforce". blocks is the
+// number of denials already recorded (binding_json.summary_blocks, 0 when
+// absent).
+func (s *Store) SummaryGate(ctx context.Context, ref string) (summary string, paths []string, blocks int, err error) {
+	if strings.HasPrefix(ref, "msg_") {
+		return "", nil, 0, nil
+	}
+	req, err := s.RequestByID(ctx, ref)
+	if err != nil {
+		return "", nil, 0, nil // an unknown/bad ref has nothing to enforce; the caller's own lookups refuse it properly
+	}
+	switch req.Kind {
+	case KindApproveSection, KindApprovePlan, KindApproveReport:
+	default:
+		return "", nil, 0, nil
+	}
+	summary = req.Prompt
+	if req.Kind == KindApprovePlan {
+		err = s.tx(ctx, func(tx *sql.Tx) error {
+			rp, _, err := s.planReviewPathsTx(ctx, tx, req.ItemID, req.ArtifactID)
+			if err != nil {
+				return nil // review paths unavailable -- enforce the summary alone
+			}
+			if rp.Spec != "" {
+				paths = append(paths, "Spec: "+rp.Spec)
+			}
+			paths = append(paths, "Plan: "+rp.Plan)
+			return nil
+		})
+		if err != nil {
+			return "", nil, 0, err
+		}
+	}
+	var binding struct {
+		SummaryBlocks int `json:"summary_blocks"`
+	}
+	if len(req.Binding) > 0 {
+		json.Unmarshal(req.Binding, &binding)
+	}
+	return summary, paths, binding.SummaryBlocks, nil
+}
+
+// RecordSummaryBlock increments an approval request's summary_blocks count
+// (locked decision 3): after 2 denials, the PreToolUse gate allows the call
+// through rather than risk deadlocking the approval forever.
+func (s *Store) RecordSummaryBlock(ctx context.Context, ref string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'),
+		'$.summary_blocks', COALESCE(json_extract(binding_json, '$.summary_blocks'), 0) + 1) WHERE id = ?`, ref)
+	return err
 }
 
 func (s *Store) planReviewPathsTx(ctx context.Context, tx *sql.Tx, itemID, planID string) (ReviewPaths, string, error) {
@@ -950,5 +1166,5 @@ func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in 
 // text and options verbatim, headed "<child> asks", with a ref token to the
 // message id so native_answer can bind to it.
 func nativePromptForMsg(child, body, msgID string) NativePrompt {
-	return NativePrompt{Header: child + " asks", Question: truncateWithToken(body, msgID), Options: approveOptions}
+	return NativePrompt{Header: child + " asks", Question: capRunes(body, 1000), Options: approveOptions}
 }
