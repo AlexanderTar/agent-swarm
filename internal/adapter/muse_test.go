@@ -888,3 +888,87 @@ func TestMuseHookOutputStaysNil(t *testing.T) {
 		}
 	}
 }
+
+// museSessionLogFixture copies a testdata session.jsonl fixture into
+// <UserHome>/.local/share/muse/sessions/2026/09/28/<providerSessionID>/session.jsonl,
+// the real live path (spec: ObservedAnswer's Path).
+func museSessionLogFixture(t *testing.T, userHome, fixture, providerSessionID string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "muse", fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(userHome, ".local", "share", "muse", "sessions", "2026", "09", "28", providerSessionID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMuseObservedAnswerNoNote covers the no-note fixture: the settled
+// answer's selected_label alone becomes the label, with no note.
+func TestMuseObservedAnswerNoNote(t *testing.T) {
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-1")
+	label, note, ok := newMuse(d).ObservedAnswer("sess-1", "req_01PROBE0000000000000000000")
+	if !ok || label != "French" || note != "" {
+		t.Fatalf("ObservedAnswer = %q, %q, %v; want %q, %q, true", label, note, ok, "French", "")
+	}
+}
+
+// TestMuseObservedAnswerWithNote covers the note fixture: selected_label and
+// the free-text note both come back.
+func TestMuseObservedAnswerWithNote(t *testing.T) {
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-user-input-note-1.4.0.jsonl", "sess-2")
+	label, note, ok := newMuse(d).ObservedAnswer("sess-2", "req_01PROBE0000000000000000002")
+	if !ok || label != "Request changes" || note != "use German instead" {
+		t.Fatalf("ObservedAnswer = %q, %q, %v; want %q, %q, true", label, note, ok,
+			"Request changes", "use German instead")
+	}
+}
+
+// TestMuseObservedAnswerUnknownRef: the file exists, but no question in it
+// carries the ref's token.
+func TestMuseObservedAnswerUnknownRef(t *testing.T) {
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-user-input-1.4.0.jsonl", "sess-3")
+	_, _, ok := newMuse(d).ObservedAnswer("sess-3", "req_doesNotExist")
+	if ok {
+		t.Fatal("ObservedAnswer must not match an absent ref token")
+	}
+}
+
+// TestMuseObservedAnswerUnsettled: only the requested line is present (the
+// settled line never arrived, e.g. mid-answer or a crash) -- must not match.
+func TestMuseObservedAnswerUnsettled(t *testing.T) {
+	d := testDeps(t)
+	raw, err := os.ReadFile(filepath.Join("testdata", "muse", "session-user-input-1.4.0.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	dir := filepath.Join(d.UserHome, ".local", "share", "muse", "sessions", "2026", "09", "28", "sess-4")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(lines[0]+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, ok := newMuse(d).ObservedAnswer("sess-4", "req_01PROBE0000000000000000000")
+	if ok {
+		t.Fatal("ObservedAnswer must not match an unsettled prompt")
+	}
+}
+
+// TestMuseObservedAnswerMissingFile: no session.jsonl for that provider
+// session id at all (glob finds nothing).
+func TestMuseObservedAnswerMissingFile(t *testing.T) {
+	d := testDeps(t)
+	_, _, ok := newMuse(d).ObservedAnswer("sess-does-not-exist", "req_01PROBE0000000000000000000")
+	if ok {
+		t.Fatal("ObservedAnswer must not match when no session.jsonl exists")
+	}
+}

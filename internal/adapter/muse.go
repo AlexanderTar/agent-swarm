@@ -1,12 +1,14 @@
 package adapter
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/catalog"
 	"github.com/AlexanderTar/agent-swarm/internal/install"
@@ -434,6 +436,11 @@ func (m *Muse) InterruptKeys() []string { return []string{"C-c"} }
 // `{hook_event_name, prompt, session_id, turn_id, cwd, transcript_path,
 // model, permission_mode, model_provider}` (testdata/muse-hook-userpromptsubmit.json).
 //
+// ObservedAnswer (added for the muse-observed-answers spec) reads exactly
+// this session.jsonl -- muse's own record of request_user_input, not a hook
+// -- so a Muse native_answer can be verified against it instead of trusting
+// the agent's own report.
+//
 // Items 3 and 4 (deny, tool name as the hook sees it): **muse's own
 // `request_user_input` tool never dispatches `PreToolUse`/`PostToolUse` at
 // all.** Two independent live turns asked the model to call
@@ -587,4 +594,86 @@ func (m *Muse) DiscoverSession(ctx context.Context, pid int, workspaceRoot strin
 		}
 	}
 	return "", false
+}
+
+// museLogEvent is the subset of a session.jsonl record's payload.event this
+// package cares about, spanning both event kinds ObservedAnswer matches on
+// (spec docs/specs/2026-09-28-muse-observed-answers.md):
+// user_input_prompt_requested (Questions, first question only) and
+// user_input_prompt_settled (Outcome, Answers, first answer only -- swarm's
+// own native prompts only ever ask one question).
+type museLogEvent struct {
+	Kind      string `json:"kind"`
+	PromptID  string `json:"prompt_id"`
+	Outcome   string `json:"outcome"`
+	Questions []struct {
+		Question string `json:"question"`
+	} `json:"questions"`
+	Answers []struct {
+		SelectedLabel string `json:"selected_label"`
+		Note          string `json:"note"`
+	} `json:"answers"`
+}
+
+type museLogRecord struct {
+	Payload struct {
+		Event museLogEvent `json:"event"`
+	} `json:"payload"`
+}
+
+// ObservedAnswer scans Muse's own session log for the newest settled
+// request_user_input prompt whose first question contains ⟦swarm:<ref>⟧.
+// ok is false when nothing matches: the file is missing, the session id is
+// unknown, the prompt never settled, or it settled some other way than
+// "answered". Read-only -- nothing here is ever written to Muse's files.
+func (m *Muse) ObservedAnswer(providerSessionID, ref string) (label, note string, ok bool) {
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if dataHome == "" {
+		dataHome = filepath.Join(m.d.UserHome, ".local", "share")
+	}
+	matches, _ := filepath.Glob(filepath.Join(dataHome, "muse", "sessions", "*", "*", "*",
+		providerSessionID, "session.jsonl"))
+	token := "⟦swarm:" + ref + "⟧"
+	for _, path := range matches {
+		if l, n, found := scanMuseSessionLog(path, token); found {
+			label, note, ok = l, n, true
+		}
+	}
+	return label, note, ok
+}
+
+// scanMuseSessionLog streams one session.jsonl (bufio.Scanner, 4 MiB max
+// line -- these lines can carry a full turn's tool output) and returns the
+// settled answer for the prompt whose first question carries token, if any.
+// A line that fails to parse is skipped, not fatal: the file is muse's own
+// append-only log, still being written by a live session.
+func scanMuseSessionLog(path, token string) (label, note string, ok bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", "", false
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	wantPromptID := ""
+	for sc.Scan() {
+		var rec museLogRecord
+		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
+			continue
+		}
+		ev := rec.Payload.Event
+		switch ev.Kind {
+		case "user_input_prompt_requested":
+			if len(ev.Questions) > 0 && strings.Contains(ev.Questions[0].Question, token) {
+				wantPromptID = ev.PromptID
+			}
+		case "user_input_prompt_settled":
+			if wantPromptID != "" && ev.PromptID == wantPromptID &&
+				ev.Outcome == "answered" && len(ev.Answers) > 0 {
+				label, note, ok = ev.Answers[0].SelectedLabel, ev.Answers[0].Note, true
+			}
+		}
+	}
+	return label, note, ok
 }
