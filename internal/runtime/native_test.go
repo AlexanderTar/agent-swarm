@@ -577,20 +577,18 @@ func TestStoredNativePromptRebuildIsByteIdenticalForPlanApproval(t *testing.T) {
 	}
 }
 
-// TestStoredNativePromptRebuildAgentKindChangeBreaksTextBinding documents a
-// known limitation introduced by 2026-09-28-approval-summary-enforced:
-// storedNativePromptTx looks up the request's CURRENT agent kind
-// (requestAgentKindTx), not the kind at ask time, so a kind change between
-// the original ask and a later relay/resurface (reassignment, kind
-// fallback) legitimately changes the rebuilt summary head -- claude's
-// first-line/200-rune budget vs. cursor/muse's up-to-600-rune, unlined one.
-// Before this spec the hook bound an answered question row purely by its
-// trailing ⟦swarm:ref⟧ token, so a differing head never broke binding.
-// Binding now matches by normalized question text (BindNativeQuestion), so
-// the ORIGINALLY shown text no longer matches the freshly rebuilt one, and
-// BindNativeQuestion fails to bind it. A prompt still carrying the old ref
-// token is unaffected (the fallback binds regardless of text drift).
-func TestStoredNativePromptRebuildAgentKindChangeBreaksTextBinding(t *testing.T) {
+// TestFrozenNativeQuestionSurvivesStateChanges is 2026-09-28-approval-
+// summary-enforced locked decision 2 (post-review): the exact question
+// shown at ask time is frozen into binding_json.question/header and
+// replayed verbatim by storedNativePromptTx, with no DB lookup at all on
+// the frozen path -- a kind change, a plan revision gaining warnings, or any
+// other state drift after the question was first issued must never change
+// the replayed text or break BindNativeQuestion's match against it. (Before
+// this fix, storedNativePromptTx always rebuilt from current state, so a
+// kind change between ask and answer broke text-based binding -- see the
+// old TestStoredNativePromptRebuildAgentKindChangeBreaksTextBinding this
+// test replaces.)
+func TestFrozenNativeQuestionSurvivesStateChanges(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
 	ses, _, planID, _ := approvedFeatureSpike(t, s)
@@ -604,9 +602,17 @@ func TestStoredNativePromptRebuildAgentKindChangeBreaksTextBinding(t *testing.T)
 	}
 	original := req.NativePrompt.Question
 
+	// Change the asking agent's kind (would change the summary head budget
+	// if rebuilt) and add a warning to the plan's own revision (would
+	// change the approve line if rebuilt).
 	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'cursor' WHERE id = ?`, req.AgentID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE artifact_revisions SET warnings_json = '["new warning"]'
+		WHERE artifact_id = ? AND revision = ?`, planID, req.ArtifactRevision); err != nil {
+		t.Fatal(err)
+	}
+
 	var rebuilt NativePrompt
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		reqRow, err := s.requestTx(ctx, tx, req.ID)
@@ -619,11 +625,12 @@ func TestStoredNativePromptRebuildAgentKindChangeBreaksTextBinding(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rebuilt.Question == original {
-		t.Fatalf("expected the rebuilt question to differ after a kind change (claude's first-line head vs. cursor's up-to-600-rune head)")
+	if rebuilt.Question != original {
+		t.Fatalf("frozen question drifted after state changes: got %q, want the original %q", rebuilt.Question, original)
 	}
-	if _, ok := s.BindNativeQuestion(ctx, req.AgentID, original); ok {
-		t.Fatalf("expected the originally shown text to no longer bind after a kind change (known text-binding limitation)")
+	ref, ok := s.BindNativeQuestion(ctx, req.AgentID, original)
+	if !ok || ref != req.ID {
+		t.Fatalf("BindNativeQuestion(original) = %q, %v, want %q, true (frozen text still binds after state changes)", ref, ok, req.ID)
 	}
 }
 
@@ -982,8 +989,9 @@ func TestSummaryGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if summary != "Ship it." || len(paths) != 2 || !strings.HasPrefix(paths[0], "Spec: ") || !strings.HasPrefix(paths[1], "Plan: ") {
-			t.Fatalf("SummaryGate = %q, %v", summary, paths)
+		if summary != "Ship it." || len(paths) != 2 || paths[0].Label != "Spec" || paths[0].Path == "" ||
+			paths[1].Label != "Plan" || paths[1].Path == "" {
+			t.Fatalf("SummaryGate = %q, %+v", summary, paths)
 		}
 	})
 

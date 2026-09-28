@@ -1125,6 +1125,9 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		if err != nil {
 			return err
 		}
+		if err := s.freezeNativeQuestionTx(ctx, tx, out.ID, np.Header, np.Question); err != nil {
+			return err
+		}
 		out.NativePrompt = &np
 		out.ReviewPaths = reviewPaths
 		return nil

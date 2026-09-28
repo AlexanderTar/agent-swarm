@@ -182,6 +182,9 @@ func (s *Store) askConfirmRepos(ctx context.Context, sessionID string, in AskInp
 		if err != nil {
 			return err
 		}
+		if err := s.freezeNativeQuestionTx(ctx, tx, out.ID, np.Header, np.Question); err != nil {
+			return err
+		}
 		out.NativePrompt = &np
 		return nil
 	})

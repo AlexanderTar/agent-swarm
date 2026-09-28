@@ -2185,3 +2185,37 @@ func TestPreToolUseSummaryGatePlanAllowsWithSummaryAndPaths(t *testing.T) {
 		t.Fatalf("summary + both review paths printed must be allowed, got %s", out)
 	}
 }
+
+// TestPreToolUseSummaryGatePlanAllowsMarkdownWrappedPaths is a post-review
+// fix: allPathsPresent must match the bare absolute path, not the literal
+// "Spec: <path>" line -- a markdown-bolded or backtick-wrapped label around
+// the same path must still pass.
+func TestPreToolUseSummaryGatePlanAllowsMarkdownWrappedPaths(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	summary := "Ship auth end to end."
+	_, question, specPath, planPath := summaryGatePlanApproval(t, h, summary)
+	transcript := writeTranscript(t, claudeUserLine("go"),
+		claudeAssistantTextLine("m1", summary+"\n\n**Spec:** `"+specPath+"`\n**Plan:** `"+planPath+"`"))
+
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Print this approval's summary in chat first") {
+		t.Fatalf("markdown-wrapped review paths must still be allowed, got %s", out)
+	}
+}
+
+// TestAllPathsPresentMatchesBarePathNotLabeledLine is the direct unit test
+// for the same fix: allPathsPresent checks runtime.ReviewPathLine.Path
+// alone.
+func TestAllPathsPresentMatchesBarePathNotLabeledLine(t *testing.T) {
+	paths := []runtime.ReviewPathLine{{Label: "Spec", Path: "/abs/spec.md"}, {Label: "Plan", Path: "/abs/plan.md"}}
+	if !allPathsPresent("summary\n\n**Spec:** `/abs/spec.md`\n**Plan:** `/abs/plan.md`", paths) {
+		t.Fatal("a markdown-wrapped label around the bare path must still pass")
+	}
+	if allPathsPresent("summary with no paths at all", paths) {
+		t.Fatal("missing paths must not pass")
+	}
+}

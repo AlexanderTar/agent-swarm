@@ -405,15 +405,18 @@ type transcriptTexter interface {
 	AssistantTextSinceLastTurn(transcriptPath string) (text string, ok bool)
 }
 
-// allPathsPresent reports whether every line in paths (SummaryGate's
-// "Spec: <abs path>" / "Plan: <abs path>" lines, plan approvals only) is a
-// verbatim substring of text -- an exact-path check, not normalized, since
-// a path is never reformatted by markdown the way a summary might be.
-// Always true for an empty paths (every non-plan approval, and a plan
-// SummaryGate couldn't resolve paths for).
-func allPathsPresent(text string, paths []string) bool {
+// allPathsPresent reports whether every ReviewPathLine's bare Path (never
+// its Label) is a verbatim substring of text -- an exact-path check, not
+// normalized, since a path is never reformatted by markdown the way a
+// summary might be. Matching the bare path only (post-review fix) means a
+// markdown-wrapped label around the same path (`**Spec:**`, `Spec:
+// `/abs/path``) still passes; only the label text used to be checked
+// verbatim, which such wrapping would have defeated. Always true for an
+// empty paths (every non-plan approval, and a plan SummaryGate couldn't
+// resolve paths for).
+func allPathsPresent(text string, paths []runtime.ReviewPathLine) bool {
 	for _, p := range paths {
-		if !strings.Contains(text, p) {
+		if !strings.Contains(text, p.Path) {
 			return false
 		}
 	}
@@ -422,14 +425,16 @@ func allPathsPresent(text string, paths []string) bool {
 
 // summaryGateDenyReason is the PreToolUse summary gate's exact deny copy
 // (spec "User-facing copy"): the stored summary verbatim, then, for a plan,
-// the review paths lines.
-func summaryGateDenyReason(summary string, paths []string) string {
+// the review paths lines ("Spec: <path>" / "Plan: <path>", shown so the
+// agent knows exactly what to print -- allPathsPresent itself only checks
+// the bare path, not this exact line).
+func summaryGateDenyReason(summary string, paths []runtime.ReviewPathLine) string {
 	var b strings.Builder
 	b.WriteString("[swarm] Print this approval's summary in chat first, verbatim and complete (markdown is fine), " +
 		"then ask again with the same question.\n\n")
 	b.WriteString(summary)
 	for _, p := range paths {
-		b.WriteString("\n" + p)
+		b.WriteString("\n" + p.Label + ": " + p.Path)
 	}
 	return b.String()
 }

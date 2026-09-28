@@ -324,9 +324,58 @@ func NativePromptNextStep(ref string) string {
 // same plan warnings), so a re-shown question matches the original byte for
 // byte and the hook's question row binds to the same ref.
 func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Request) (NativePrompt, error) {
-	title, err := s.sectionTitle(ctx, tx, req.ArtifactID, req.ArtifactRevision, req.SectionID)
+	np, frozen, err := s.effectiveNativeQuestionTx(ctx, tx, req)
 	if err != nil {
 		return NativePrompt{}, err
+	}
+	if !frozen {
+		// This is the request's first real issuance seen by a freezing call
+		// site: askApproval/askConfirmRepos already froze their own row
+		// before ever returning it, so reaching here unfrozen only happens
+		// for a daemon-issued kind whose row is created ahead of its first
+		// prompt (close_spike, accept_epic/accept_fix -- relayRequestTx,
+		// which calls storedNativePromptTx, is their first caller), or a row
+		// created before this change (an in-flight pre-deploy session).
+		// Freeze it now so every later call, including a replay, returns
+		// this exact text.
+		if err := s.freezeNativeQuestionTx(ctx, tx, req.ID, np.Header, np.Question); err != nil {
+			return NativePrompt{}, err
+		}
+	}
+	return np, nil
+}
+
+// effectiveNativeQuestionTx returns a request's native prompt: the frozen
+// one (binding_json.question/header) if already issued, else a fresh
+// rebuild -- never writing anything, so a caller that only needs the text
+// to compare against (BindNativeQuestion's per-candidate scan) never risks
+// prematurely freezing a row's question from state that could still change
+// before its real first issuance (locked decision 2's "Remove the per-row
+// rebuild on bind" is honored by the frozen fast path; a still-unissued row
+// keeps behaving exactly as before, a plain rebuild, until it really is
+// issued). frozen reports whether the returned prompt came from binding_json
+// (true) or was just rebuilt (false).
+func (s *Store) effectiveNativeQuestionTx(ctx context.Context, tx *sql.Tx, req Request) (np NativePrompt, frozen bool, err error) {
+	var binding struct {
+		Question string `json:"question"`
+		Header   string `json:"header"`
+	}
+	if len(req.Binding) > 0 {
+		json.Unmarshal(req.Binding, &binding)
+	}
+	// A frozen question (2026-09-28-approval-summary-enforced): replay it
+	// verbatim, with no DB lookup at all -- Header and Options never vary
+	// once frozen either, so nothing here can be affected by state that
+	// changed since the question was first issued (a spec revised, a
+	// warning added or cleared, the asking agent's kind changed). This is
+	// also what keeps BindNativeQuestion's match stable: the same frozen
+	// text is what gets compared, not a fresh rebuild that could drift.
+	if binding.Question != "" && binding.Header != "" {
+		return NativePrompt{Header: binding.Header, Question: binding.Question, Options: approveOptions}, true, nil
+	}
+	title, err := s.sectionTitle(ctx, tx, req.ArtifactID, req.ArtifactRevision, req.SectionID)
+	if err != nil {
+		return NativePrompt{}, false, err
 	}
 	var warnings []string
 	var reviewPaths *ReviewPaths
@@ -334,16 +383,29 @@ func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Reques
 		var raw string
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(warnings_json,'[]') FROM artifact_revisions
 			WHERE artifact_id = ? AND revision = ?`, req.ArtifactID, req.ArtifactRevision).Scan(&raw); err != nil {
-			return NativePrompt{}, err
+			return NativePrompt{}, false, err
 		}
 		json.Unmarshal([]byte(raw), &warnings)
 		paths, _, err := s.planReviewPathsTx(ctx, tx, req.ItemID, req.ArtifactID)
 		if err != nil {
-			return NativePrompt{}, err
+			return NativePrompt{}, false, err
 		}
 		reviewPaths = &paths
 	}
-	return s.nativePromptFor(ctx, tx, req, title, warnings, reviewPaths)
+	np, err = s.nativePromptFor(ctx, tx, req, title, warnings, reviewPaths)
+	return np, false, err
+}
+
+// freezeNativeQuestionTx stores the exact header and question text of a
+// request's first-issued native prompt in binding_json (locked decision 2,
+// 2026-09-28-approval-summary-enforced): a no-op once already frozen, so it
+// never overwrites the originally issued text with a later rebuild.
+func (s *Store) freezeNativeQuestionTx(ctx context.Context, tx *sql.Tx, reqID, header, question string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(json_set(
+		COALESCE(binding_json, '{}'), '$.question', ?), '$.header', ?)
+		WHERE id = ? AND json_extract(COALESCE(binding_json, '{}'), '$.question') IS NULL`,
+		question, header, reqID)
+	return err
 }
 
 // bindCandidate is one open row BindNativeQuestion considers: a rebuilt
@@ -421,7 +483,12 @@ func (s *Store) bindNativeQuestionTx(ctx context.Context, tx *sql.Tx, agentID, q
 		if !nativeAnswerKind(req.Kind) {
 			continue
 		}
-		np, err := s.storedNativePromptTx(ctx, tx, req)
+		// effectiveNativeQuestionTx, not storedNativePromptTx: a bind attempt
+		// is a read, and must never freeze a row's question as a side effect
+		// of merely being scanned as a candidate -- that could pin the wrong
+		// text if the row's real first issuance (a later relay) would have
+		// built it from different, still-changing state.
+		np, _, err := s.effectiveNativeQuestionTx(ctx, tx, req)
 		if err != nil {
 			// A row whose prompt can no longer be rebuilt (e.g. a stale
 			// spec lookup) is simply not a candidate -- never fails the
@@ -499,7 +566,18 @@ func (s *Store) log(format string, args ...any) {
 // the caller treats an empty summary as "nothing to enforce". blocks is the
 // number of denials already recorded (binding_json.summary_blocks, 0 when
 // absent).
-func (s *Store) SummaryGate(ctx context.Context, ref string) (summary string, paths []string, blocks int, err error) {
+// ReviewPathLine is one review-path line SummaryGate's plan enforcement
+// checks and the deny copy shows. Label is "Spec" or "Plan"; Path is the
+// bare absolute path with no leading label or markdown -- the PreToolUse
+// gate's allPathsPresent matches Path alone against the transcript, so
+// `**Spec:** /abs/path` or a differently worded label around the same path
+// still passes (post-review fix: the earlier check matched the full
+// "Spec: <path>" line, which a markdown-wrapped label would defeat).
+type ReviewPathLine struct {
+	Label, Path string
+}
+
+func (s *Store) SummaryGate(ctx context.Context, ref string) (summary string, paths []ReviewPathLine, blocks int, err error) {
 	if strings.HasPrefix(ref, "msg_") {
 		return "", nil, 0, nil
 	}
@@ -520,9 +598,9 @@ func (s *Store) SummaryGate(ctx context.Context, ref string) (summary string, pa
 				return nil // review paths unavailable -- enforce the summary alone
 			}
 			if rp.Spec != "" {
-				paths = append(paths, "Spec: "+rp.Spec)
+				paths = append(paths, ReviewPathLine{"Spec", rp.Spec})
 			}
-			paths = append(paths, "Plan: "+rp.Plan)
+			paths = append(paths, ReviewPathLine{"Plan", rp.Plan})
 			return nil
 		})
 		if err != nil {
