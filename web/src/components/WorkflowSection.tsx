@@ -14,7 +14,7 @@ function findingText(f: WorkflowFinding): string {
   return `[${f.severity}] ${f.file}${f.line ? `:${f.line}` : ""} — ${f.summary}${f.unit ? ` [unit ${f.unit}]` : ""}`;
 }
 
-export function WorkflowSection(p: { workflow: Workflow | null | undefined; state: ItemDetail["workflow_state"]; onOpenTerminal(name: string): void }) {
+export function WorkflowSection(p: { workflow: Workflow | null | undefined; state: ItemDetail["workflow_state"]; connected: boolean; onOpenTerminal(name: string): void }) {
   if (!p.workflow || !p.state) return null;
   const { workflow, state } = p;
   const title = `Workflow · ${workflow.template ?? "custom"} · ${state.state.charAt(0).toUpperCase()}${state.state.slice(1)} · Round ${state.round} of ${workflow.max_rounds ?? 1}`;
@@ -22,7 +22,7 @@ export function WorkflowSection(p: { workflow: Workflow | null | undefined; stat
     <section aria-label="Workflow" className="space-y-2 border-t border-line pt-3">
       <Collapsible>
       <h3 className="font-semibold">
-        <CollapsibleTrigger asChild><Button variant="ghost" className="h-auto justify-start px-0 text-left font-semibold">{title}</Button></CollapsibleTrigger>
+        <CollapsibleTrigger asChild><Button variant="ghost" className="h-auto w-full min-w-0 shrink justify-start whitespace-normal break-words px-0 text-left font-semibold">{title}</Button></CollapsibleTrigger>
       </h3>
       <CollapsibleContent className="space-y-2">
       {state.state === "escalated" && (
@@ -41,7 +41,7 @@ export function WorkflowSection(p: { workflow: Workflow | null | undefined; stat
                   <li key={run.id ?? `${run.round}-${run.role}-${i}`} className="text-sm">
                     <div className="flex flex-wrap items-center gap-2">
                       <span>{ROLE_EMOJI[run.role as Role] ?? "👤"} {ROLE_LABEL[run.role as Role] ?? run.role}</span>
-                      {run.agent && <button type="button" className="text-link underline" onClick={() => p.onOpenTerminal(run.agent)}>{run.agent}</button>}
+                      {run.agent && <button type="button" disabled={!p.connected} className="text-link underline disabled:text-muted-foreground disabled:no-underline" onClick={() => p.onOpenTerminal(run.agent)}>{run.agent}</button>}
                       <span className="rounded bg-raised px-1.5 py-0.5">{run.state.charAt(0).toUpperCase()}{run.state.slice(1)}</span>
                       {verdict && <span className={`rounded px-1.5 py-0.5 ${verdict.className}`}>{verdict.label}</span>}
                     </div>

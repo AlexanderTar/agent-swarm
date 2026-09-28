@@ -16,7 +16,7 @@ const state: NonNullable<ItemDetail["workflow_state"]> = {
 
 describe("WorkflowSection", () => {
   it("shows steps, run verdicts and unit-tagged findings", async () => {
-    render(<WorkflowSection workflow={workflow} state={state} onOpenTerminal={vi.fn()} />);
+    render(<WorkflowSection workflow={workflow} state={state} connected onOpenTerminal={vi.fn()} />);
     const workflowToggle = screen.getByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" });
     expect(workflowToggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("build")).not.toBeInTheDocument();
@@ -34,14 +34,30 @@ describe("WorkflowSection", () => {
 
   it("opens the run agent's terminal", async () => {
     const onOpenTerminal = vi.fn();
-    render(<WorkflowSection workflow={workflow} state={state} onOpenTerminal={onOpenTerminal} />);
+    render(<WorkflowSection workflow={workflow} state={state} connected onOpenTerminal={onOpenTerminal} />);
     await userEvent.click(screen.getByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
     await userEvent.click(screen.getByRole("button", { name: "critic" }));
     expect(onOpenTerminal).toHaveBeenCalledWith("critic");
   });
 
+  it("disables run terminals while disconnected", async () => {
+    const onOpenTerminal = vi.fn();
+    render(<WorkflowSection workflow={workflow} state={state} connected={false} onOpenTerminal={onOpenTerminal} />);
+    await userEvent.click(screen.getByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
+    const terminal = screen.getByRole("button", { name: "critic" });
+    expect(terminal).toBeDisabled();
+    await userEvent.click(terminal);
+    expect(onOpenTerminal).not.toHaveBeenCalled();
+  });
+
+  it("allows the workflow label to wrap in a narrow sheet", () => {
+    render(<div style={{ width: 320 }}><WorkflowSection workflow={workflow} state={state} connected onOpenTerminal={vi.fn()} /></div>);
+    const trigger = screen.getByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" });
+    expect(trigger).toHaveClass("whitespace-normal", "min-w-0", "break-words");
+  });
+
   it("shows the escalation reason and next action", async () => {
-    render(<WorkflowSection workflow={workflow} state={{ ...state, state: "escalated", escalation: "Review blocked" }} onOpenTerminal={vi.fn()} />);
+    render(<WorkflowSection workflow={workflow} state={{ ...state, state: "escalated", escalation: "Review blocked" }} connected onOpenTerminal={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Workflow · tdd-reviewed · Escalated · Round 2 of 3" }));
     const alert = screen.getByRole("alert");
     expect(within(alert).getByText("Review blocked")).toBeInTheDocument();
@@ -49,7 +65,7 @@ describe("WorkflowSection", () => {
   });
 
   it("is hidden for legacy tasks", () => {
-    const { container } = render(<WorkflowSection workflow={null} state={undefined} onOpenTerminal={vi.fn()} />);
+    const { container } = render(<WorkflowSection workflow={null} state={undefined} connected onOpenTerminal={vi.fn()} />);
     expect(container).toBeEmptyDOMElement();
   });
 });

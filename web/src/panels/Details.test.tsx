@@ -44,6 +44,24 @@ describe("Details panel (§16.9)", () => {
     await user.click(screen.getByRole("button", { name: "builder" }));
     await waitFor(() => expect(d.calls).toContainEqual(expect.objectContaining({ method: "POST", path: "/api/agents/builder/terminal" })));
   });
+  it("does not open a workflow terminal or toast while disconnected", async () => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/TASK-103", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    d.override("GET /api/items/TASK-103", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), workflow: { template: "tdd-reviewed", max_rounds: 3, steps: [{ id: "build", run: "coder" }] } },
+      workflow_state: { state: "running", round: 2, escalation: "", runs: [
+        { step: "build", role: "coder", agent: "builder", state: "active", verdict: "", sha: "", round: 2, findings: [] },
+      ] },
+    } });
+    const { user } = setup("TASK-103", { connected: false }, d);
+    await user.click(await screen.findByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
+    const terminal = screen.getByRole("button", { name: "builder" });
+    expect(terminal).toBeDisabled();
+    await user.click(terminal);
+    expect(d.calls.some((c) => c.path.endsWith("/terminal"))).toBe(false);
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+  });
   it("shows the breadcrumb, title, status and priority", async () => {
     setup("STORY-40");
     expect(await screen.findByText("EPIC-12 › STORY-40")).toBeInTheDocument();

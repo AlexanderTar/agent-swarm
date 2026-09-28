@@ -193,7 +193,7 @@ export function Details(p: DetailsProps) {
         <AgentList agents={d.agents} />
       </section>
 
-      <WorkflowSection workflow={item.workflow} state={d.workflow_state} onOpenTerminal={(name) => {
+      <WorkflowSection workflow={item.workflow} state={d.workflow_state} connected={p.connected} onOpenTerminal={(name) => {
         void terminal.run(name).then(() => toast.success(agentActionToast("terminal", name))).catch((e: unknown) => toast({ message: errorText(e) }));
       }} />
 
