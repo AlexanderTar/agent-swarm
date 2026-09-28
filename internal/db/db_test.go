@@ -153,6 +153,14 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE sessions DROP COLUMN first_sync_at`); err != nil {
 		t.Fatal(err)
 	}
+	// 0021_orchestrator_todos.sql adds checkpoints.todos_json and
+	// sessions.todos_sent_hash with plain ALTER TABLE (same precedent).
+	if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN todos_json`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`ALTER TABLE sessions DROP COLUMN todos_sent_hash`); err != nil {
+		t.Fatal(err)
+	}
 	// 0014_agent_continuity.sql likewise creates its tables with plain
 	// CREATE TABLE, so replaying it must not find them already there.
 	if _, err := raw.Exec(`DROP TABLE agent_operations`); err != nil {

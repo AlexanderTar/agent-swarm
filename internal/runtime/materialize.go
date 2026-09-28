@@ -22,7 +22,7 @@ type MaterializeResult struct {
 
 // checkEverySectionApproved is C1/I10 for a spec: every section of the head
 // revision needs an approved request whose hash matches.
-func (s *Store) checkEverySectionApproved(ctx context.Context, tx *sql.Tx, artifactID string) error {
+func (s *Store) checkEverySectionApproved(ctx context.Context, tx txQuerier, artifactID string) error {
 	var headRev int
 	if err := tx.QueryRowContext(ctx, `SELECT head_revision FROM artifacts WHERE id = ?`, artifactID).Scan(&headRev); err != nil {
 		return err
