@@ -1,7 +1,7 @@
 import { ApiError, errorText } from "../api";
 import type { AgentFieldsValue } from "../components/AgentFields";
 import { C } from "../copy";
-import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, Item, Settings, StartOrchestratorBody } from "../types";
+import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, Item, Settings, SpikeIntent, StartOrchestratorBody } from "../types";
 import { flattenAgents } from "./agentActions";
 import { advisorPayload, choicePayload } from "./catalog";
 import { kebab } from "./kebab";
@@ -34,7 +34,7 @@ export function mapSubmitError(e: unknown): SubmitFailure {
 }
 
 export interface SpawnFormState { name: string; repos: string[]; fields: AgentFieldsValue }
-export interface SpikeFormState extends SpawnFormState { intent: "feature" | "debug" | "chore"; request: string }
+export interface SpikeFormState extends SpawnFormState { intent: SpikeIntent; request: string }
 
 // Deviation from the brief: advisorPayload (logic/catalog.ts) takes a `catalog` argument in this
 // codebase -- normalizing the advisor's stored effort against the model the user actually has

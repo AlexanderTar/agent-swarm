@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentCatalogEntry, CatalogModel, Settings } from "../types";
 import {
-  advisorOptions, advisorPayload, agentOptions, catalogNote, changeAgent, changeModel, choicePayload, decodeAdvisor,
+  advisorAgentOptions, advisorModelOptions, advisorOptions, advisorPayload, agentOptions, catalogNote, changeAdvisorAgent, changeAgent, changeModel, choicePayload, decodeAdvisor,
   defaultEffortLabel, effortOptions, encodeAdvisor, isValid, modelLabel, modelOptions, normalizeEffort, prefill,
   resolveModel, validateChoice,
 } from "./catalog";
@@ -9,6 +9,25 @@ import {
 // L26/L27: no real model names anywhere in src/logic, fixtures included.
 const m = (p: Partial<CatalogModel> & { id: string }): CatalogModel => ({
   label: p.id, efforts: [], default_effort: "", effort_encoding: "flag", advisor_capable: false, ...p,
+});
+
+describe("advisor split (menubar parity)", () => {
+  it("offers enabled agents followed by No advisor", () => {
+    expect(advisorAgentOptions(["claude", "codex"])).toEqual([
+      { value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }, { value: "none", label: "No advisor" },
+    ]);
+  });
+
+  it("lists only advisor-capable Claude models", () => {
+    expect(advisorModelOptions(catalog, "claude").map((o) => o.value)).toEqual(["alpha", "delta", "model-1", "model-2"]);
+    expect(advisorModelOptions(catalog, "codex").map((o) => o.value)).toEqual(["model-5"]);
+  });
+
+  it("keeps the saved model for its agent and otherwise picks the first model", () => {
+    expect(changeAdvisorAgent("claude", settings, catalog)).toEqual({ agent: "claude", model: "model-2" });
+    expect(changeAdvisorAgent("codex", settings, catalog)).toEqual({ agent: "codex", model: "model-5" });
+    expect(changeAdvisorAgent("none", settings, catalog)).toBe("none");
+  });
 });
 
 const entry = (p: Partial<AgentCatalogEntry> & Pick<AgentCatalogEntry, "kind" | "models">): AgentCatalogEntry => ({
@@ -77,7 +96,7 @@ describe("catalog rules (§16.3, §16.4, L26–L28)", () => {
     ]);
     expect(modelOptions(catalog[0], true).map((o) => o.value)).toEqual(["alpha", "delta", "model-1", "model-2"]);
     expect(modelOptions(undefined)).toEqual([]);
-    expect(agentOptions(["claude", "agy"])).toEqual([{ value: "claude", label: "Claude" }, { value: "agy", label: "agy" }]);
+    expect(agentOptions(["claude", "agy"])).toEqual([{ value: "claude", label: "Claude" }, { value: "agy", label: "Antigravity" }]);
   });
 
   it("offers a model whose id is its own alias exactly once", () => {

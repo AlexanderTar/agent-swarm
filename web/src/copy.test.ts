@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_LABEL, C, ITEM_TYPE_LABEL, ROLE_LABEL, SESSION_LABEL, STATUS_LABEL, T, TYPE_PLURAL } from "./copy";
+import { AGENT_LABEL, AGENT_LOGIN_CMD, C, ITEM_TYPE_LABEL, ROLE_LABEL, SESSION_LABEL, STATUS_LABEL, T, TYPE_PLURAL } from "./copy";
 
 describe("copy (§17)", () => {
   it("has the item status labels (§17.2)", () => {
@@ -22,7 +22,7 @@ describe("copy (§17)", () => {
     expect(ROLE_LABEL.designer).toBe("Designer");
     expect(ITEM_TYPE_LABEL.chore).toBe("Chore");
     expect(TYPE_PLURAL.spike).toBe("Spikes");
-    expect(AGENT_LABEL).toMatchObject({ claude: "Claude", codex: "Codex", agy: "agy", cursor: "Cursor", muse: "Muse" });
+    expect(AGENT_LABEL).toMatchObject({ claude: "Claude", codex: "Codex", agy: "Antigravity", cursor: "Cursor", muse: "Muse" });
   });
 
   // Added by the fix-round-2 rulings; queued for the P5 §17 spec pass.
@@ -68,7 +68,7 @@ describe("copy (§17)", () => {
       bugDone: "Accept this fix to mark it Done.",
       choreDone: "Accept this chore to mark it Done.",
       newChore: "New chore",
-      choreCaption: "Creates a chore orchestrator that works on the scope you describe.",
+      choreCaption: "Creates a top-level chore orchestrator for maintenance, refactoring, or general work.",
       choreReposCaption: "The orchestrator asks you to confirm repositories before it starts work.",
       spikeDone: "This spike reaches Done after materialization.",
       awaitingNonSpike: "Only spikes can await approval.",
@@ -141,5 +141,51 @@ describe("copy (§17)", () => {
     expect(T.proposedBy("offline-spike-orchestrator", "3 min ago")).toBe("Proposed by offline-spike-orchestrator · 3 min ago");
     expect(T.advice("codex/gpt-6-astra (high)", "9s", "12.3k", "$0.04")).toBe("Advice · codex/gpt-6-astra (high) · 9s · 12.3k · $0.04");
     expect(T.advice("claude/claude-fable-5-1", "", "", "")).toBe("Advice · claude/claude-fable-5-1");
+  });
+});
+
+describe("re-dress copy", () => {
+  it("has the menubar parity labels and selection notice", () => {
+    expect(C.newOrchestrator).toBe("New orchestrator");
+    expect(C.choreIntent).toBe("Chore");
+    expect(C.choreCaption).toBe("Creates a top-level chore orchestrator for maintenance, refactoring, or general work.");
+    expect(C.agentEffort).toBe("Agent Effort");
+    expect(C.advisorModel).toBe("Advisor model");
+    expect(C.reposEmpty).toBe("No repositories found.");
+    expect(C.reposScanning).toBe("Scanning repositories…");
+    expect(C.reposUnavailable).toBe("Repositories unavailable.");
+    expect(C.selectRepoHint).toBe("Click to select one or more repositories.");
+    expect(C.close).toBe("Close");
+    expect(C.openDetails).toBe("Item details");
+    expect(T.reposNoLonger(1)).toBe("1 selected repository is no longer available.");
+    expect(T.reposNoLonger(2)).toBe("2 selected repositories are no longer available.");
+  });
+
+  it("names Antigravity while keeping its login command", () => {
+    expect(AGENT_LABEL.agy).toBe("Antigravity");
+    expect(AGENT_LOGIN_CMD.agy).toBe("agy");
+  });
+
+  it("has the toast messages", () => {
+    expect(T.toastItemCreated("TASK-9")).toBe("Created TASK-9");
+    expect(T.toastStarted("auth-orch", "EPIC-3")).toBe("Started auth-orch on EPIC-3");
+    expect(T.toastQueued("auth-orch")).toBe("Queued auth-orch. It starts when an agent slot becomes available.");
+    expect(T.toastMoved("TASK-9", "In review")).toBe("Moved TASK-9 to In review");
+    expect(T.toastDepAdded("TASK-9", "TASK-2")).toBe("TASK-9 is now blocked by TASK-2");
+    expect(T.toastPaused("auth-orch")).toBe("Pausing auth-orch");
+    expect(T.toastPausedGroup("o")).toBe("Pausing o and its agents");
+    expect(T.toastResumed("auth-orch")).toBe("Resumed auth-orch");
+    expect(T.toastCancelled("auth-orch")).toBe("Cancelled auth-orch");
+    expect(T.toastAcked("auth-orch")).toBe("Acknowledged auth-orch");
+    expect(T.toastRetrying("auth-orch")).toBe("Retrying auth-orch");
+    expect(T.toastTerminal("auth-orch")).toBe("Opening terminal for auth-orch");
+    expect(T.toastApproved("TASK-9")).toBe("Approved TASK-9");
+    expect(T.toastSpikeClosed("SPIKE-4")).toBe("Closed SPIKE-4");
+    expect(T.toastChangesSent("auth-orch")).toBe("Sent change request to auth-orch");
+    expect(T.toastReposConfirmed(1)).toBe("Confirmed 1 repository");
+    expect(T.toastReposConfirmed(3)).toBe("Confirmed 3 repositories");
+    expect(T.toastRepoAdded("agent-swarm")).toBe("Added agent-swarm");
+    expect(T.toastRescanned(12, 0)).toBe("Found 12 repositories");
+    expect(T.toastRescanned(12, 1)).toBe("Found 12 repositories · 1 missing");
   });
 });

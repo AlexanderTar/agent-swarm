@@ -36,6 +36,11 @@ export function modelLabel(entry: AgentCatalogEntry | undefined, value: string):
 
 export const agentOptions = (enabled: AgentKind[]): Option[] => enabled.map((k) => ({ value: k, label: AGENT_LABEL[k] }));
 
+export const advisorAgentOptions = (enabled: AgentKind[]): Option[] => [
+  ...agentOptions(enabled),
+  { value: "none", label: C.noAdvisor },
+];
+
 export function modelOptions(entry: AgentCatalogEntry | undefined, advisorOnly = false): Option[] {
   if (!entry) return [];
   const visible = entry.models.filter((m) => !m.hidden && (!advisorOnly || m.advisor_capable));
@@ -50,6 +55,18 @@ export function modelOptions(entry: AgentCatalogEntry | undefined, advisorOnly =
     out.push(o);
   }
   return out;
+}
+
+export const advisorModelOptions = (catalog: AgentCatalogEntry[], agent: AgentKind): Option[] =>
+  modelOptions(entryFor(catalog, agent), agent === "claude");
+
+export function changeAdvisorAgent(value: AgentKind | "none", settings: Settings, catalog: AgentCatalogEntry[]): AdvisorChoice {
+  if (value === "none") return "none";
+  const models = advisorModelOptions(catalog, value).filter((o) => !o.disabled);
+  const saved = settings.roles.advisor;
+  if (saved?.agent === value && models.some((o) => o.value === saved.model)) return { agent: value, model: saved.model };
+  const first = models[0];
+  return first ? { agent: value, model: first.value } : "none";
 }
 
 export function defaultEffortLabel(kind: AgentKind, model: CatalogModel): string {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Repo, ReposResponse } from "../types";
-import { knownRepos, parentFolder, repoSections, repoSubtitle, scanLine, selectAll, selectedLine, toggleRepo } from "./repos";
+import { chooserRows, knownRepos, reconcileSelection, scanLine, selectedLine, shortPath, toggleRepo } from "./repos";
 
 const repo = (id: string, name: string, p: Partial<Repo> = {}): Repo => ({
   id, name, path: `/Users/alex/GitHub/${name}`, remote_url: null, remote_owner: null, default_branch: "main",
@@ -25,25 +25,14 @@ const resp: ReposResponse = {
 };
 
 describe("repo picker rules (§16.3)", () => {
-  it("abbreviates the parent folder and builds the subtitle", () => {
-    expect(parentFolder("/Users/alex/GitHub/endurio-chat")).toBe("~/GitHub");
-    expect(parentFolder("/opt/src/x")).toBe("/opt/src");
-    expect(repoSubtitle(chat)).toBe("~/GitHub · EndurioApp");
-    expect(repoSubtitle(gone)).toBe("~/GitHub");
-  });
-
-  it("orders sections Recent, local groups, owner groups, All and merges same-name groups", () => {
-    const s = repoSections(resp);
-    expect(s.map((x) => x.title)).toEqual(["Recent", "endurio", "AlexanderTar", "EndurioApp", "All"]);
-    expect(s[1]?.repos.map((r) => r.name)).toEqual(["endurio-chat", "endurio-app", "endurio-landing"]);
-    expect(s[1]?.groupName).toBe("endurio");
-    expect(repoSections({ ...resp, recent: [], groups: [], all: [] })).toEqual([]);
+  it("shortens home paths but keeps other paths", () => {
+    expect(shortPath("/Users/alex/GitHub/endurio-chat")).toBe("~/GitHub/endurio-chat");
+    expect(shortPath("/opt/src/x")).toBe("/opt/src/x");
   });
 
   it("selects, toggles and summarises", () => {
     expect(toggleRepo([], "r1")).toEqual(["r1"]);
     expect(toggleRepo(["r1", "r2"], "r1")).toEqual(["r2"]);
-    expect(selectAll(["r2"], [chat, app, gone])).toEqual(["r2", "r1"]);
     expect(selectedLine(["r1", "r3"], knownRepos(resp))).toBe("Selected: endurio-chat, endurio-landing");
     expect(selectedLine([], knownRepos(resp))).toBe("");
     expect(knownRepos(resp).map((r) => r.id)).toEqual(["r1", "r2", "r3", "r4"]);
@@ -55,5 +44,29 @@ describe("repo picker rules (§16.3)", () => {
     // Ruling (fix round 2): no usable scanned_at means never scanned, not a 20000-day age.
     expect(scanLine({ ...resp, scanned_at: 0 }, 2 * 3_600_000)).toBe("Never scanned");
     expect(scanLine({ ...resp, scanned_at: -1 }, 2 * 3_600_000)).toBe("Never scanned");
+  });
+});
+
+describe("repo chooser (menubar parity)", () => {
+  it("uses all, drops missing, dedupes by path, sorts by name then path", () => {
+    const data: ReposResponse = {
+      ...resp,
+      recent: [repo("x", "zzz")],
+      groups: [],
+      all: [
+        repo("b", "beta"),
+        repo("a2", "alpha", { path: "/Users/alex/work/alpha" }),
+        repo("a1", "alpha"),
+        repo("dup", "beta"),
+        repo("missing", "aaa", { missing: true }),
+      ],
+    };
+    expect(chooserRows(data).map((r) => r.id)).toEqual(["a1", "a2", "b"]);
+  });
+
+  it("drops selections that are no longer rows", () => {
+    const rows = [repo("a", "a"), repo("b", "b")];
+    expect(reconcileSelection(["a", "c", "d"], rows)).toEqual({ selection: ["a"], removed: 2 });
+    expect(reconcileSelection(["b", "a"], rows)).toEqual({ selection: ["b", "a"], removed: 0 });
   });
 });
