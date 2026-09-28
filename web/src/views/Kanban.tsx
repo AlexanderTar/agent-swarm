@@ -5,8 +5,10 @@ import { ChevronDown, ChevronRight, Lock } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { AgentIcon, Key, TypeIcon } from "../components/icons";
 import { MoveToMenu } from "../components/MoveToMenu";
+import { StatusPill } from "../components/StatusLabel";
+import { Button } from "../components/ui/button";
 import { useToast } from "../components/Toast";
-import { C, ROLE_EMOJI } from "../copy";
+import { C, ROLE_EMOJI, STATUS_LABEL, T } from "../copy";
 import { useMutation } from "../data/hooks";
 import { displayState, stateLabel } from "../logic/agentActions";
 import {
@@ -56,13 +58,14 @@ function Card(p: {
         drag.listeners?.onKeyDown?.(e);
         if (e.key === "Enter" && !drag.isDragging) p.onSelect();
       }}
-      className="w-[256px] cursor-grab space-y-1 rounded-md border border-line bg-panel p-2 shadow-sm"
+      className="w-[256px] cursor-grab space-y-1 rounded-md border border-border bg-card p-2 shadow-sm"
     >
       <div className="flex items-center gap-1.5">
         <TypeIcon type={card.type} />
         <Key>{card.key}</Key>
+        <StatusPill status={card.status} />
         {card.type === "task" && (card.workflow_state?.round ?? 0) > 1 && <span className="rounded bg-primary/10 px-1 text-[11px] text-link">R{card.workflow_state?.round}</span>}
-        {needs && <span className="ml-auto rounded bg-warn/15 px-1 text-[11px] text-warn">{needs}</span>}
+        {needs && <span className="ml-auto rounded bg-warning/15 px-1 text-[11px] text-warning">{needs}</span>}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: stops card selection */}
         <span className={needs ? "" : "ml-auto"} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
           <MoveToMenu item={card} buttonLabel="…" ariaLabel={`${C.moveTo} ${card.key}`} disabled={p.disabled || p.pending} onMove={(s) => p.onMove(s)} />
@@ -82,7 +85,7 @@ function Card(p: {
         {p.crew.roles.map((role, i) => <span key={i} role="img" aria-label={role}>{ROLE_EMOJI[role]}</span>)}
         {p.crew.extra > 0 && <span className="text-muted-foreground">+{p.crew.extra}</span>}
       </div>}
-      {blocked && <p className="text-bad">{blocked}</p>}
+      {blocked && <p className="text-destructive">{blocked}</p>}
       {progress && <p className="text-muted-foreground">{progress}</p>}
       {p.pending && <p className="text-link">{C.updating}</p>}
     </div>
@@ -97,7 +100,7 @@ function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string 
     <div
       ref={drop.setNodeRef}
       data-testid={p.testId}
-      className={`w-[280px] shrink-0 space-y-2 p-3 ${drop.isOver ? "bg-raised" : ""}`}
+      className={`w-[280px] shrink-0 space-y-2 p-3 ${drop.isOver ? "ring-1 ring-ring" : ""}`}
     >
       {p.lock !== null && (
         <p className="flex items-center gap-1 text-[12px] text-muted-foreground"><Lock aria-hidden className="size-3" />{p.lock}</p>
@@ -178,6 +181,7 @@ export function Kanban(p: KanbanProps) {
     setPending((cur) => ({ ...cur, [card.key]: { to: status, revision: card.revision } }));
     try {
       await patch.run(card.key, status, card.revision);
+      toast.success(T.toastMoved(card.key, STATUS_LABEL[status]));
     } catch (e) {
       setPending(({ [card.key]: _drop, ...rest }) => rest);
       toast({ message: failureMessage(e, card) });
@@ -202,7 +206,7 @@ export function Kanban(p: KanbanProps) {
     return (
       <div className="p-8 text-center">
         <p>{empty.text}</p>
-        {a && <button type="button" onClick={a[1]} className="mt-2 text-link">{a[0]}</button>}
+        {a && <Button type="button" variant="link" onClick={a[1]} className="mt-2">{a[0]}</Button>}
       </div>
     );
   }
@@ -229,7 +233,7 @@ export function Kanban(p: KanbanProps) {
         onScroll={(e) => writeJson(storage("localStorage"), SCROLL_KEY, { left: e.currentTarget.scrollLeft, top: e.currentTarget.scrollTop })}
         className="h-full overflow-auto"
       >
-        <div className="sticky top-0 z-20 flex w-max border-b border-line bg-canvas">
+        <div className="sticky top-0 z-20 flex w-max border-b border-border bg-background">
           {cols.map((s) => {
             const t = columnTitle(s, counts.get(s) ?? { shown: 0, total: 0 }, filtered);
             const collapsed = collapsedCols.has(s);
@@ -241,7 +245,7 @@ export function Kanban(p: KanbanProps) {
                 data-collapsed={collapsed}
                 title={t.tooltip}
                 onClick={() => toggleCol(s)}
-                className={`shrink-0 px-3 py-2 text-left font-medium ${collapsed ? "w-[44px] truncate" : "w-[280px]"}`}
+                className={`shrink-0 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate" : "w-[280px]"}`}
               >
                 {collapsed ? String(counts.get(s)?.shown ?? 0) : t.text}
                 {collapsed && <span className="sr-only">{t.text}</span>}
@@ -252,7 +256,7 @@ export function Kanban(p: KanbanProps) {
         {lanes.map((l) => {
           const collapsed = group === "root" && laneCollapsed(l);
           return (
-            <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-line">
+            <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border">
               {group === "root" && (
                 <button type="button" onClick={() => toggleLane(l)} className="sticky left-0 flex items-center gap-2 px-3 py-2 font-semibold">
                   {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}

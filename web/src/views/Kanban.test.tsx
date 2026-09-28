@@ -136,6 +136,7 @@ describe("Kanban view (§16.7)", () => {
     expect(within(cell("EPIC-12", "blocked")).getByTestId("card-TASK-103")).toHaveTextContent("Updating…");
     release();
     await waitFor(() => expect(card("TASK-103")).not.toHaveTextContent("Updating…"));
+    expect(await screen.findByText("Moved TASK-103 to Blocked")).toBeInTheDocument();
     expect(within(cell("EPIC-12", "blocked")).getByTestId("card-TASK-103")).toBeInTheDocument();
     expect(daemon.calls.find((c) => c.method === "PATCH")).toMatchObject({ path: "/api/items/TASK-103", body: { status: "blocked" } });
   });
