@@ -5,13 +5,17 @@
 package attachments
 
 import (
+	"context"
+	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
@@ -117,4 +121,50 @@ func BriefSection(saved []Saved) string {
 
 func FailureSection(count int, err error) string {
 	return fmt.Sprintf("## Attachments\n\nThe user attached %d images, but Swarm could not save them (%v). Ask the user to share them another way.", count, err)
+}
+
+// Sweep removes a key's attachments once its root item is Done, Cancelled or
+// gone. ponytail: reopening an item after a sweep leaves it without images.
+func Sweep(ctx context.Context, db *sql.DB, home string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(home, "attachments"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		var status string
+		err := db.QueryRowContext(ctx, `SELECT status FROM items WHERE key = ?`, e.Name()).Scan(&status)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return removed, err
+		}
+		if err == nil && status != string(items.Done) && status != string(items.Cancelled) {
+			continue
+		}
+		if err := os.RemoveAll(Dir(home, e.Name())); err != nil {
+			return removed, err
+		}
+		removed = append(removed, e.Name())
+	}
+	return removed, nil
+}
+
+func SweepLoop(ctx context.Context, db *sql.DB, home string, every time.Duration, log func(string, ...any)) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		if _, err := Sweep(ctx, db, home); err != nil && ctx.Err() == nil {
+			log("attachments sweep: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
