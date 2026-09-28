@@ -97,13 +97,14 @@ describe("Sheet", () => {
 describe("Segmented", () => {
   it("selects an option", async () => {
     const user = userEvent.setup();
+    const onChange = vi.fn();
     function Host() {
       const [v, setV] = useState<"root" | "neighbourhood">("root");
       return (
         <Segmented<"root" | "neighbourhood">
           label="Scope"
           value={v}
-          onChange={setV}
+          onChange={(value) => { onChange(value); setV(value); }}
           options={[{ value: "root", label: "Root" }, { value: "neighbourhood", label: "Neighbourhood" }]}
         />
       );
@@ -112,7 +113,10 @@ describe("Segmented", () => {
     expect(screen.getByRole("radio", { name: "Root" })).toHaveAttribute("aria-checked", "true");
     await user.click(screen.getByRole("radio", { name: "Neighbourhood" }));
     expect(screen.getByRole("radio", { name: "Neighbourhood" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("radiogroup", { name: "Scope" })).toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: "Neighbourhood" }));
+    expect(screen.getByRole("radio", { name: "Neighbourhood" })).toHaveAttribute("aria-checked", "true");
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("radiogroup", { name: "Scope" })).toHaveAttribute("data-slot", "toggle-group");
   });
 });
 
