@@ -110,6 +110,7 @@ func checkpointTool(s *Server) ToolDef {
 				"unit":{"type":"integer"}},
 				"required":["cmd","ok"]}},
 			"artifacts":{"type":"array"},"processed":{"type":"array"},
+			"title":{"type":"string","description":"Only when your kickoff says the item has no name yet: a 3–6 word name for the work."},
 			"verdict":{"type":"string","enum":["","pass","changes_requested","blocked"]},
 			"findings":{"type":"array","items":{"type":"object","properties":{
 				"severity":{"type":"string","enum":["critical","major","minor","nit"]},
@@ -133,6 +134,7 @@ func checkpointTool(s *Server) ToolDef {
 				Verdict      string             `json:"verdict"`
 				Findings     []workflow.Finding `json:"findings"`
 				RequestID    string             `json:"request_id"`
+				Title        string             `json:"title"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -142,13 +144,20 @@ func checkpointTool(s *Server) ToolDef {
 				Resolution: in.Resolution, Next: in.Next, Blockers: in.Blockers,
 				Git: in.Git, Verification: in.Verification, Artifacts: in.Artifacts, Processed: in.Processed,
 				Verdict: in.Verdict, Findings: in.Findings,
-				RequestID: in.RequestID,
+				RequestID: in.RequestID, Title: in.Title,
 			})
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"checkpoint_id": res.CheckpointID, "item_status": res.ItemStatus,
-				"item_revision": res.ItemRevision}, nil
+			out := map[string]any{"checkpoint_id": res.CheckpointID, "item_status": res.ItemStatus,
+				"item_revision": res.ItemRevision}
+			if res.TitleApplied {
+				out["title_applied"] = true
+			}
+			if res.TitleIgnored != "" {
+				out["title_ignored"] = res.TitleIgnored
+			}
+			return out, nil
 		},
 	}
 }
