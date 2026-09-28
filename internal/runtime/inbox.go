@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -233,6 +235,7 @@ type SyncResult struct {
 	Unacked      []UnackedRef
 	More         bool
 	SessionState SessionState
+	Todos        []Todo // set only when the list changed since this session last got it
 }
 
 const defaultSyncLimit = 20
@@ -300,10 +303,41 @@ func (s *Store) Sync(ctx context.Context, sessionID string, ack []string, limit 
 			}
 			immediate = append(immediate, d)
 		}
-		out.Messages, err = s.envelopes(ctx, tx, a, immediate)
+		if out.Messages, err = s.envelopes(ctx, tx, a, immediate); err != nil {
+			return err
+		}
+		if a.Role == RoleOrchestrator && a.ItemID == a.RootItemID {
+			out.Todos, err = s.todosToSend(ctx, tx, sessionID, a.ItemID)
+		}
 		return err
 	})
 	return out, err
+}
+
+// todosToSend is spec locked decision 6: the root's list when its sha256
+// differs from sessions.todos_sent_hash, storing the new hash in the same tx.
+func (s *Store) todosToSend(ctx context.Context, tx *sql.Tx, sessionID, rootItemID string) ([]Todo, error) {
+	todos, err := s.todosTx(ctx, tx, rootItemID)
+	if err != nil || todos == nil {
+		return nil, err
+	}
+	b, err := json.Marshal(todos)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(b)
+	hash := hex.EncodeToString(sum[:])
+	var sent sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT todos_sent_hash FROM sessions WHERE id = ?`, sessionID).Scan(&sent); err != nil {
+		return nil, err
+	}
+	if sent.String == hash {
+		return nil, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET todos_sent_hash = ? WHERE id = ?`, hash, sessionID); err != nil {
+		return nil, err
+	}
+	return todos, nil
 }
 
 // staleUnackedFor lists delivered non-control messages that have used their
