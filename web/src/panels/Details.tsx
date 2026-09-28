@@ -69,7 +69,7 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
     value: draft,
     maxLength: p.maxLength,
     onBlur: save,
-    className: "w-full rounded border border-line bg-canvas px-2 py-1",
+    className: "w-full rounded border border-border bg-background px-2 py-1",
   };
   return p.multiline ? (
     <textarea {...common} rows={4} onChange={(e) => setDraft(e.target.value)} />
@@ -163,7 +163,7 @@ export function Details(p: DetailsProps) {
 
   return (
     <div data-testid="details-panel" className="space-y-4">
-      {stale && <p className="rounded bg-warn/10 px-2 py-1 text-warn">{C.staleRevision}</p>}
+      {stale && <p className="rounded bg-warning/10 px-2 py-1 text-warning">{C.staleRevision}</p>}
       <div className="flex items-start justify-between gap-2 pr-10">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="key text-muted-foreground">{crumbs}</span>
@@ -210,7 +210,7 @@ export function Details(p: DetailsProps) {
           <WorkflowSection workflow={item.workflow} state={d.workflow_state} connected={p.connected} onOpenTerminal={(name) => {
             void terminal.run(name).then(() => toast.success(agentActionToast("terminal", name))).catch((e: unknown) => toast({ message: errorText(e) }));
           }} />
-          <section aria-label={C.agents} className="border-t border-line pt-3">
+          <section aria-label={C.agents} className="border-t border-border pt-3">
             <h3 className="mb-1 font-semibold">{C.agents}</h3>
             <ul className="space-y-1 text-sm">
               {flattenAgents(d.agents).filter((agent) => !isFinished(agent)).map((agent) => (
@@ -237,7 +237,7 @@ export function Details(p: DetailsProps) {
             </button>
           )}
           {d.requests.length > 0 && (
-            <section aria-label={C.needsYou} className="border-t border-line pt-3">
+            <section aria-label={C.needsYou} className="border-t border-border pt-3">
               <h3 className="mb-1 font-semibold">{C.needsYou}</h3>
               <ul className="space-y-1">
                 {[...d.requests].sort((a, b) => a.created_at - b.created_at).map((r) => (
@@ -280,7 +280,7 @@ export function Details(p: DetailsProps) {
       </Tabs>
 
       {topLevel && open && (
-        <div className="border-t border-line pt-3">
+        <div className="border-t border-border pt-3">
           {orchestrator ? (
             <button
               type="button"
@@ -288,7 +288,7 @@ export function Details(p: DetailsProps) {
                 if (tab === "agents") document.getElementById(`agent-${orchestrator.name}`)?.scrollIntoView?.({ block: "center" });
                 else { pendingAgentScroll.current = orchestrator.name; setTab("agents"); }
               }}
-              className="rounded border border-line px-3 py-1"
+              className="rounded border border-border px-3 py-1"
             >
               {C.viewOrchestrator}
             </button>

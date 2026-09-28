@@ -58,15 +58,6 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-info: var(--info);
-  /* Legacy aliases — deleted in Package E once grep finds no usage. */
-  --color-canvas: var(--background);
-  --color-panel: var(--card);
-  --color-raised: var(--muted);
-  --color-line: var(--border);
-  --color-ink: var(--foreground);
-  --color-ok: var(--success);
-  --color-warn: var(--warning);
-  --color-bad: var(--destructive);
 }
 
 @layer base {

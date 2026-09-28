@@ -18,7 +18,7 @@ const roomy = () => {
 describe("App flows", () => {
   it("opens New orchestrator from the header and presets Feature spike from New item", async () => {
     const { user } = renderWithDaemon(<App />, { daemon: roomy() });
-    await user.click(await screen.findByRole("button", { name: "New spike" }));
+    await user.click(await screen.findByRole("button", { name: "New orchestrator" }));
     const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
     await user.click(within(sheet).getByRole("button", { name: "Cancel" }));
     await user.click(screen.getByRole("button", { name: "New item" }));
@@ -28,7 +28,7 @@ describe("App flows", () => {
 
   it("creates a spike and selects it", async () => {
     const { user } = renderWithDaemon(<App />, { daemon: roomy() });
-    await user.click(await screen.findByRole("button", { name: "New spike" }));
+    await user.click(await screen.findByRole("button", { name: "New orchestrator" }));
     const sheet = await screen.findByRole("dialog", { name: "New orchestrator" });
     await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Offline sync");
     await user.click(await within(sheet).findByRole("button", { name: "Start orchestrator" }));

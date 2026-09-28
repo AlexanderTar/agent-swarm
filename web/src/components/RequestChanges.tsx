@@ -38,7 +38,7 @@ export function RequestChanges({ requestId, agentName, connected }: { requestId:
   return (
     <div className="w-full space-y-2">
       <Textarea aria-label={C.comment} rows={3} maxLength={2000} value={comment} onChange={(e) => setComment(e.target.value)} />
-      {error && <p className="text-bad">{error}</p>}
+      {error && <p className="text-destructive">{error}</p>}
       <Button type="button" variant="outline" size="sm" disabled={!connected || send.pending} onClick={() => void submit()}>
         {C.sendChangeRequest}
       </Button>

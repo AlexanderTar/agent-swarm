@@ -24,8 +24,8 @@ function CheckpointRow({ c }: { c: Checkpoint }) {
       <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-auto w-full justify-start whitespace-normal text-left">
         <span className="text-muted-foreground">{formatTime(c.created_at)}</span>{" "}
         <span>{c.agent_name ?? ""}</span>{" "}
-        <span className="rounded bg-raised px-1 text-[12px]">{kindLabel(c.kind)}</span>{" "}
-        {c.daemon_written && <span className="text-[12px] text-warn">{C.writtenBySwarm}</span>}{" "}
+        <span className="rounded bg-muted px-1 text-[12px]">{kindLabel(c.kind)}</span>{" "}
+        {c.daemon_written && <span className="text-[12px] text-warning">{C.writtenBySwarm}</span>}{" "}
         <span>{c.summary}</span>
       </Button></CollapsibleTrigger>
       <CollapsibleContent className="mt-2 space-y-1">
@@ -51,7 +51,7 @@ export function CheckpointList({ itemKey, agentNames }: { itemKey: string; agent
   const err = cps.error ?? advice.error;
   if (err) {
     return (
-      <p className="text-bad">
+      <p className="text-destructive">
         {errorText(err)}{" "}
         <button
           type="button"

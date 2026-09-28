@@ -61,7 +61,7 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
               {`${i.key} · ${i.title}`}
             </Button>
           ))}
-          {error && <p className="text-bad">{error}</p>}
+          {error && <p className="text-destructive">{error}</p>}
         </div>
       )}
     </div>

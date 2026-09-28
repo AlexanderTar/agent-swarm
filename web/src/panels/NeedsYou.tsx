@@ -31,7 +31,7 @@ export function NeedsYou(p: {
   // the review pane empty forever with no indication anything went wrong.
   if (requests.error) {
     return (
-      <p className="p-4 text-bad">
+      <p className="p-4 text-destructive">
         {errorText(requests.error)}{" "}
         <Button type="button" variant="link" size="sm" onClick={() => requests.reload()}>
           {C.retry}
@@ -51,7 +51,7 @@ export function NeedsYou(p: {
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="w-[280px] shrink-0 space-y-2 overflow-y-auto border-r border-line p-3">
+      <div className="w-[280px] shrink-0 space-y-2 overflow-y-auto border-r border-border p-3">
         <h2 className="font-semibold">{C.needsYou}</h2>
         <Segmented
           label={C.needsYou}
@@ -72,7 +72,7 @@ export function NeedsYou(p: {
             return (
               <li
                 key={r.id}
-                className={`rounded bg-warn/15 px-2 py-1 ${isCurrent ? "ring-1 ring-warn" : ""}`}
+                className={`rounded bg-warning/15 px-2 py-1 ${isCurrent ? "ring-1 ring-warning" : ""}`}
               >
                 <div className="flex items-start gap-2">
                   <Button

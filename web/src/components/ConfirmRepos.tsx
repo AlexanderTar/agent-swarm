@@ -72,7 +72,7 @@ export function ConfirmRepos({ request, connected }: { request: Request; connect
         <span>{C.commentOptional}</span>
         <Input aria-label={C.commentOptional} value={comment} onChange={(e) => setComment(e.target.value)} className="mt-1" />
       </label>
-      {error && <p className="text-bad">{error}</p>}
+      {error && <p className="text-destructive">{error}</p>}
       <Button type="button" disabled={!connected || confirm.pending} onClick={() => void submit()}>
         {C.confirmRepositories}
       </Button>

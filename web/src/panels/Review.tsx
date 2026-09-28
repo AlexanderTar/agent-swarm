@@ -137,7 +137,7 @@ export function Review({ request: r, connected }: { request: Request; connected:
 
   return (
     <article className="space-y-4">
-      <header className="space-y-0.5 border-b border-line pb-3">
+      <header className="space-y-0.5 border-b border-border pb-3">
         <h2 className="text-base font-semibold">{head.title}</h2>
         {head.by && <p className="text-muted-foreground">{head.by}</p>}
         {head.revision && <p className="text-muted-foreground">{head.revision}</p>}
@@ -151,7 +151,7 @@ export function Review({ request: r, connected }: { request: Request; connected:
       {r.kind === "close_spike" && <CloseBody r={r} />}
 
       {(isApprovalKind(r.kind) || r.kind === "close_spike") && (
-        <footer className="flex flex-wrap items-start gap-2 border-t border-line pt-3">
+        <footer className="flex flex-wrap items-start gap-2 border-t border-border pt-3">
           <Button
             type="button"
             disabled={!connected || decide.pending}
