@@ -1125,7 +1125,7 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 	if n < 1 || n > 2000 {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Prompt must be 1–2000 characters."}
 	}
-	if n > 300 && !strings.Contains(in.Prompt, "\n") {
+	if n > 300 && !strings.Contains(strings.TrimSpace(in.Prompt), "\n") {
 		return Request{}, &items.Error{Code: items.CodeBadRequest,
 			Message: "Summary must be a lead sentence plus bullets (see swarm-orchestrator: approval summaries)."}
 	}

@@ -389,7 +389,8 @@ func (s *Store) dismissQuestionDialog(ctx context.Context, r pausingRow) error {
 	s.logf("pause: dismissed the open question dialog in %s so it can read its pause notice", r.TmuxName)
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT id FROM requests
-			WHERE session_id = ? AND kind = 'question' AND state = 'open'`, r.SessionID)
+			WHERE session_id = ? AND kind = 'question' AND state = 'open'
+			AND created_at >= (SELECT started_at FROM sessions WHERE id = ?)`, r.SessionID, r.SessionID)
 		if err != nil {
 			return err
 		}

@@ -152,6 +152,10 @@ func TestAskApprovalRefusesLongSingleLineSummary(t *testing.T) {
 	if err == nil || err.Error() != "Summary must be a lead sentence plus bullets (see swarm-orchestrator: approval summaries)." {
 		t.Fatalf("err = %v", err)
 	}
+	_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: long + "\n", ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID})
+	if err == nil {
+		t.Fatal("a trailing newline let a run-on summary through")
+	}
 	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: "Lead.\n" + long, ArtifactID: spec.ArtifactID,
 		SectionID: spec.Sections[0].ID}); err != nil {
 		t.Fatalf("multi-line summary refused: %v", err)

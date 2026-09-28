@@ -2219,6 +2219,38 @@ func TestPauseIgnoresAQuestionRowFromAnEarlierSession(t *testing.T) {
 	}
 }
 
+// A dismissal withdraws only this session's dialog row; an older row
+// repointed onto the session stays open for the user to answer.
+func TestPauseDismissalLeavesAnEarlierSessionsQuestionOpen(t *testing.T) {
+	s, tm, ses, _ := questionDialogPause(t, Claude)
+	ctx := context.Background()
+	stale, err := s.AskQuestion(ctx, ses.ID, "Older question?", []string{"Yes", "No"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE requests SET created_at = ? WHERE id = ?`,
+		db.Millis(ses.StartedAt)-1000, stale.ID); err != nil {
+		t.Fatal(err)
+	}
+	tm.clk.Advance(5 * time.Second)
+	if err := s.TickPause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysFor(tm, ses.TmuxName); got != 1 {
+		t.Fatalf("interrupt keys sent %d times, want 1", got)
+	}
+	var state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT state FROM requests WHERE id = ?`, stale.ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "open" {
+		t.Fatalf("earlier session's question = %s, want open", state)
+	}
+	if n := openQuestions(t, s, ses.ID); n != 1 {
+		t.Fatalf("open questions = %d, want only the earlier one", n)
+	}
+}
+
 // The handoff route reaches pause_requested through RequestReplacement, not
 // Pause; a dialog open at that moment is dismissed on the next tick too.
 func TestHandoffDismissesAnOpenNativeQuestionDialog(t *testing.T) {
