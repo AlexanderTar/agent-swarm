@@ -2238,3 +2238,26 @@ func TestExtractQuestionHeader(t *testing.T) {
 		t.Fatalf("header = %q, want empty for nil input", got)
 	}
 }
+
+// TestPreToolUseSummaryGateAllowsThePrintedChatBlock pins the deny → print →
+// pass loop (2026-09-28-approval-chat-block): a transcript holding exactly
+// the chat block the deny reason quotes must pass the gate.
+func TestPreToolUseSummaryGateAllowsThePrintedChatBlock(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	summary := "Ship auth end to end.\n\n- Login\n- Logout"
+	reqID, question, _, _ := summaryGatePlanApproval(t, h, summary)
+	_, _, block, _, err := h.RT.SummaryGate(ctx, reqID)
+	if err != nil || block == "" {
+		t.Fatalf("SummaryGate chat block = %q, %v", block, err)
+	}
+	transcript := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m1", block))
+
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
+		t.Fatalf("printing the chat block exactly must pass the gate, got %s", out)
+	}
+}
