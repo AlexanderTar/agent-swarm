@@ -685,10 +685,40 @@ func TestAdvisorToolRefusesWithNoAdvisorConfigured(t *testing.T) {
 	}
 }
 
+// TestAdvisorToolRefusesNonOrchestratorCallerEvenWithNoAdvisorConfigured
+// pins the check order inside advisorTool: the role refusal must run
+// before the "no advisor configured" check, so a non-orchestrator caller
+// always gets the spec's exact copy -- never an unrelated "no advisor"
+// message that would let it think the fix is on the ops side, not the role.
+// After ToolsFor stopped listing swarm_advise for a non-orchestrator (fix
+// 2), s.call's normal ToolsFor-gated lookup can no longer reach this
+// caller into the Handler at all -- so this test calls s.dispatch directly
+// against the tool definition, the same way CallTool/MCPServer would if a
+// caller's role changed mid-session and a stale registration let the
+// request through; the Handler's own ordering is the last line of defense
+// for that case.
+func TestAdvisorToolRefusesNonOrchestratorCallerEvenWithNoAdvisorConfigured(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	noAdvisor := &Server{RT: s.RT, KB: s.KB} // s.Advisor left nil
+	ctx := context.Background()
+	c := seed.Caller // RoleCoder, from newServerWithSession
+	c.AdvisorMode = "simulated"
+	_, err := noAdvisor.dispatch(ctx, c, advisorTool(noAdvisor), json.RawMessage(`{"question":"q"}`))
+	if err == nil {
+		t.Fatal("swarm_advise from a non-orchestrator caller must be refused")
+	}
+	const wantMsg = `The advisor is only available to your orchestrator. Put the decision and your evidence in your checkpoint (blockers/next), or ask your parent with swarm_send kind:"question".`
+	if err.Error() != wantMsg {
+		t.Fatalf("err = %q, want %q (role refusal before the nil-advisor check)", err.Error(), wantMsg)
+	}
+}
+
 // TestAdvisorToolRefusesNonOrchestratorCaller is spec
 // 2026-09-28-advisor-orchestrator-only's core mcpserver regression: a coder
-// (or any non-orchestrator role) calling swarm_advise gets the exact
-// refusal copy and never reaches s.Advisor.Ask.
+// (or any non-orchestrator role) that somehow still invokes swarm_advise
+// (see the comment on the test above) gets the exact refusal copy and
+// never reaches s.Advisor.Ask. TestAdviseToolNeverListedForANonOrchestrator
+// covers the normal case, where such a caller never even sees the tool.
 func TestAdvisorToolRefusesNonOrchestratorCaller(t *testing.T) {
 	s, seed := newServerWithSession(t)
 	ctx := context.Background()
@@ -699,7 +729,7 @@ func TestAdvisorToolRefusesNonOrchestratorCaller(t *testing.T) {
 	}
 	c := seed.Caller // RoleCoder, from newServerWithSession
 	c.AdvisorMode = "simulated"
-	_, err := s.call(ctx, c, "swarm_advise", `{"question":"q"}`)
+	_, err := s.dispatch(ctx, c, advisorTool(s), json.RawMessage(`{"question":"q"}`))
 	if err == nil {
 		t.Fatal("swarm_advise from a non-orchestrator caller must be refused")
 	}

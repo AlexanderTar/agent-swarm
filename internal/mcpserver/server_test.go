@@ -61,20 +61,36 @@ func TestToolListsByRole(t *testing.T) {
 	}
 }
 
-// L28: swarm_advise only in simulated mode.
+// L28: swarm_advise only in simulated mode -- and, since spec
+// 2026-09-28-advisor-orchestrator-only, only for an orchestrator caller.
 func TestAdviseToolFollowsTheAdvisorMode(t *testing.T) {
 	s := newTestServer(t)
-	sim := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleCoder, AdvisorMode: "simulated"}))
+	sim := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleOrchestrator, AdvisorMode: "simulated"}))
 	if !slices.Contains(sim, "swarm_advise") {
-		t.Error("a simulated advisor exposes swarm_advise")
+		t.Error("a simulated advisor exposes swarm_advise to an orchestrator")
 	}
-	native := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleCoder, AdvisorMode: "native"}))
+	native := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleOrchestrator, AdvisorMode: "native"}))
 	if slices.Contains(native, "swarm_advise") {
 		t.Error("a native Claude advisor uses the built-in tool, not swarm_advise")
 	}
-	none := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleCoder}))
+	none := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: runtime.RoleOrchestrator}))
 	if slices.Contains(none, "swarm_advise") {
 		t.Error("no advisor means no tool")
+	}
+}
+
+// TestAdviseToolNeverListedForANonOrchestrator is
+// TestAdviseToolFollowsTheAdvisorMode's post-2026-09-28 counterpart: a
+// child caller with a (pre-change or stale) simulated AdvisorMode must not
+// see swarm_advise -- children have no advisor at all now.
+func TestAdviseToolNeverListedForANonOrchestrator(t *testing.T) {
+	s := newTestServer(t)
+	for _, role := range []runtime.Role{runtime.RoleCoder, runtime.RoleReviewer, runtime.RoleUIReviewer,
+		runtime.RoleResearcher, runtime.RoleDebugger, runtime.RoleMechanical} {
+		got := names(s.ToolsFor(Caller{SessionID: "ses_1", Role: role, AdvisorMode: "simulated"}))
+		if slices.Contains(got, "swarm_advise") {
+			t.Errorf("%s with AdvisorMode=simulated must not see swarm_advise (children never get an advisor)", role)
+		}
 	}
 }
 

@@ -73,7 +73,11 @@ func (s *Server) ToolsFor(c Caller) []ToolDef {
 			out[i] = kbToolFor(s) // a bound caller may write; unbound never reaches this branch
 		}
 	}
-	if c.AdvisorMode == "simulated" {
+	// swarm_advise is only for an orchestrator (spec
+	// 2026-09-28-advisor-orchestrator-only): a child's AdvisorMode can still
+	// be "simulated" on a pre-change or stale row, but it must never see the
+	// tool.
+	if c.AdvisorMode == "simulated" && c.Role == runtime.RoleOrchestrator {
 		out = append(out, advisorTool(s))
 	}
 	if c.Role == runtime.RoleOrchestrator {

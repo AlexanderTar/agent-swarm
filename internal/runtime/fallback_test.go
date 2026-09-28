@@ -900,6 +900,52 @@ func TestStartQueuedNeverReResolvesAdvisorForAPreChangeChildRow(t *testing.T) {
 	}
 }
 
+// TestDrainQueueReResolvesAdvisorModeOnKindSwapForAnOrchestrator restores
+// the orchestrator coverage TestDrainQueueReResolvesAdvisorModeOnKindSwap
+// carried before it was rewritten for the advisor-orchestrator-only spec's
+// child case (that rewrite covers limits.go:220-223's guard; this test
+// covers the branch it guards still runs, and still re-resolves the
+// advisor, for role orchestrator): a queued *orchestrator* admitted after
+// its usage fallback substitutes Claude for Codex must have its advisor
+// mode recomputed and persisted, native -> simulated, exactly as before.
+func TestDrainQueueReResolvesAdvisorModeOnKindSwapForAnOrchestrator(t *testing.T) {
+	s, _ := newStoreWithFallback(t)
+	s.Advisor = kindSensitiveAdvisor{}
+	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
+	ctx := context.Background()
+	setLimits(t, s, 1)
+	_, first, queued, err := s.StartSpike(ctx, SpikeInput{Name: "Holder", Intent: "feature", Kind: Claude,
+		Model: "claude-sonnet-5"})
+	if err != nil || queued {
+		t.Fatalf("first = %v, queued = %v, err = %v", first.Name, queued, err)
+	}
+	_, second, queued, err := s.StartSpike(ctx, SpikeInput{Name: "Queued orchestrator", Intent: "feature",
+		Kind: Claude, Model: "claude-sonnet-5",
+		Advisor: &AdvisorChoice{Kind: Claude, Model: "claude-fable-5-1", Effort: "high"}})
+	if err != nil || !queued {
+		t.Fatalf("second = %v, queued = %v, err = %v", second.Name, queued, err)
+	}
+	if _, _, effort, mode := advisorCols(t, s, second.ID); mode != "native" || effort != "" {
+		t.Fatalf("advisor effort/mode before drain = %q/%q, want empty/native", effort, mode)
+	}
+	s.DB.ExecContext(ctx, `UPDATE sessions SET state = 'completed' WHERE agent_id = ?`, first.ID)
+	s.DB.ExecContext(ctx, `UPDATE agents SET state = 'finished' WHERE id = ?`, first.ID)
+	s.Usage = fakeUsage{Claude: true}
+	if err := s.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	drained := agentRow(t, s, second.Name)
+	if drained.Kind != Codex {
+		t.Fatalf("drained kind = %s, want substituted to Codex", drained.Kind)
+	}
+	if _, _, effort, mode := advisorCols(t, s, second.ID); mode != "simulated" || effort != "high" {
+		t.Fatalf("advisor effort/mode after drain = %q/%q, want high/simulated", effort, mode)
+	}
+	if drained.AdvisorMode != "simulated" {
+		t.Fatalf("drained.AdvisorMode = %q, want simulated (recomputed for the Codex session)", drained.AdvisorMode)
+	}
+}
+
 func TestDrainQueueBothExhaustedRelaysToParent(t *testing.T) {
 	s, _ := newStoreWithFallback(t)
 	setFallback(t, s, settings.RoleDefault{Agent: Codex, Model: "gpt-6-astra"})
