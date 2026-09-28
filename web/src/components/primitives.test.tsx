@@ -99,6 +99,30 @@ describe("Sheet", () => {
     expect(screen.getByRole("heading", { name: "Details" })).toHaveClass("sr-only");
   });
 
+  it("associates a visible subtitle with the dialog", () => {
+    render(<Sheet title="A long sheet title that could reach the close button" subtitle="Helpful context" onClose={vi.fn()}>body</Sheet>);
+    const dialog = screen.getByRole("dialog", { name: /A long sheet title/ });
+    expect(dialog).toHaveAccessibleDescription("Helpful context");
+    expect(dialog.querySelector("[data-slot=sheet-header]")).toHaveClass("pr-16");
+  });
+
+  it("omits a description and clears the close button for headerless content", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(<Sheet title="Details" header={false} onClose={vi.fn()}>body</Sheet>);
+    const dialog = screen.getByRole("dialog", { name: "Details" });
+    expect(dialog).not.toHaveAttribute("aria-describedby");
+    expect(screen.getByText("body")).toHaveClass("pt-16");
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("keeps a headerless subtitle available as the dialog description", () => {
+    render(<Sheet title="Details" subtitle="TASK-1 context" header={false} onClose={vi.fn()}>body</Sheet>);
+    const dialog = screen.getByRole("dialog", { name: "Details" });
+    expect(dialog).toHaveAccessibleDescription("TASK-1 context");
+    expect(screen.getByText("TASK-1 context")).toHaveClass("sr-only");
+  });
+
   it("fills narrow screens and applies configured widths from 640px up", () => {
     const { rerender } = render(<Sheet title="New item" width={480} onClose={vi.fn()}>body</Sheet>);
     const dialog = screen.getByRole("dialog", { name: "New item" });

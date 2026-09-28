@@ -27,7 +27,7 @@ export function Sheet(p: {
         side="right"
         overlay={modal}
         aria-label={p.title}
-        aria-describedby={undefined}
+        {...(p.subtitle ? {} : { "aria-describedby": undefined })}
         style={{ "--sheet-width": `${p.width ?? 420}px` } as CSSProperties}
         className="flex w-full max-w-full flex-col gap-0 bg-card p-0 sm:w-[var(--sheet-width)] sm:max-w-full"
         onInteractOutside={keepOpen}
@@ -38,14 +38,17 @@ export function Sheet(p: {
         }}
       >
         {p.header === false ? (
-          <SheetTitle className="sr-only">{p.title}</SheetTitle>
+          <>
+            <SheetTitle className="sr-only">{p.title}</SheetTitle>
+            {p.subtitle && <SheetDescription className="sr-only">{p.subtitle}</SheetDescription>}
+          </>
         ) : (
-          <SheetHeader className="border-b border-border px-5 py-4">
+          <SheetHeader className="border-b border-border px-5 py-4 pr-16">
             <SheetTitle className="text-[15px] font-semibold">{p.title}</SheetTitle>
             {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
           </SheetHeader>
         )}
-        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">{p.children}</div>
+        <div className={`flex-1 space-y-4 overflow-y-auto px-5 pb-4 ${p.header === false ? "pt-16" : "pt-4"}`}>{p.children}</div>
         {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 border-t border-border px-5 py-3">{p.footer}</SheetFooter>}
       </SheetContent>
     </UiSheet>
