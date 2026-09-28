@@ -118,7 +118,7 @@ describe("Sheet", () => {
     render(<Sheet title="Details" header={false} onClose={vi.fn()}>body</Sheet>);
     const dialog = screen.getByRole("dialog", { name: "Details" });
     expect(dialog).not.toHaveAttribute("aria-describedby");
-    expect(screen.getByText("body")).toHaveClass("pt-16");
+    expect(screen.getByText("body")).toHaveClass("py-4");
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });

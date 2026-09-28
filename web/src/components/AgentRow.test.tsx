@@ -1,5 +1,5 @@
 import { screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { makeAgent } from "../logic/agentActions";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
@@ -20,6 +20,7 @@ describe("AgentRow (§10.7 on the board)", () => {
     expect(row).toHaveTextContent("login-form-coder · Coder");
     expect(row).toHaveTextContent("Running");
     expect(within(row).getAllByRole("button").map((b) => b.textContent)).toEqual(["Terminal", "Pause", "Cancel"]);
+    expect(row).toHaveClass("flex-col", "sm:flex-row");
   });
 
   it("says why the agent isn't on the user's role default", () => {
@@ -49,17 +50,33 @@ describe("AgentRow (§10.7 on the board)", () => {
     const { daemon, user } = renderWithDaemon(<AgentRow agent={d.db.agents[0] ?? makeAgent()} />, { daemon: d, events: false });
     await user.click(screen.getByRole("button", { name: "Pause group" }));
     await waitFor(() => expect(daemon.calls.at(-1)).toMatchObject({ method: "POST", path: "/api/agents/auth-epic-orchestrator/pause", body: { scope: "subtree" } }));
+    expect(await screen.findByText("Pausing auth-epic-orchestrator and its agents")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["paused", "resume", "Resume", "Resumed action-agent"],
+    ["interrupted", "ack", "Acknowledge", "Acknowledged action-agent"],
+    ["crashed", "retry", "Retry", "Retrying action-agent"],
+  ] as const)("toasts after %s agent action", async (state, endpoint, action, toast) => {
+    const d = daemon0();
+    d.override(`POST /api/agents/action-agent/${endpoint}`, { status: 200, body: {} });
+    const { user } = renderWithDaemon(<AgentRow agent={makeAgent({ name: "action-agent", session: ses(state, state !== "crashed") })} />, { daemon: d, events: false });
+    await user.click(screen.getByRole("button", { name: action }));
+    expect(await screen.findByText(toast)).toBeInTheDocument();
   });
 
   it("asks before cancelling an orchestrator with agents", async () => {
     const d = daemon0();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     const { user, daemon } = renderWithDaemon(<AgentRow agent={d.db.agents[0] ?? makeAgent()} />, { daemon: d, events: false });
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(confirm).toHaveBeenCalledWith("Cancel auth-epic-orchestrator and its 2 agents?");
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Cancel auth-epic-orchestrator and its 2 agents?");
+    await user.click(within(dialog).getByRole("button", { name: "Keep running" }));
     expect(daemon.calls.some((c) => c.path.endsWith("/cancel"))).toBe(false);
     await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(daemon.calls.some((c) => c.path === "/api/agents/auth-epic-orchestrator/cancel")).toBe(true));
+    expect(await screen.findByText("Cancelled auth-epic-orchestrator")).toBeInTheDocument();
   });
 
   it("toasts a daemon refusal", async () => {
@@ -140,9 +157,11 @@ describe("AgentList", () => {
     const d = daemon0();
     const { user } = renderWithDaemon(<AgentList agents={d.db.agents.slice(0, 1)} />, { daemon: d, events: false });
     expect(screen.getByTestId("agent-login-form-coder")).toBeInTheDocument();
-    const finished = screen.getByText("Finished (1)");
-    expect(screen.getByTestId("agent-login-form-coder-1")).not.toBeVisible();
+    const finished = screen.getByRole("button", { name: "Finished (1)" });
+    expect(finished).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("agent-login-form-coder-1")).not.toBeInTheDocument();
     await user.click(finished);
+    expect(finished).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByTestId("agent-login-form-coder-1")).toBeVisible();
     expect(within(screen.getByTestId("agent-login-form-coder-1")).queryAllByRole("button")).toEqual([]);
   });

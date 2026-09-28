@@ -7,6 +7,13 @@ import { type ConfirmRow, confirmError, confirmModel, confirmPayload } from "../
 import { knownRepos, toggleRepo } from "../logic/repos";
 import type { ConfirmReposBody, Request } from "../types";
 import { RepoPicker } from "./RepoPicker";
+import { useToast } from "./Toast";
+import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
+import { Badge } from "./ui/badge";
+import { Alert } from "./ui/alert";
 
 function Rows({ title, rows, checked, onToggle }: { title: string; rows: ConfirmRow[]; checked: string[]; onToggle(id: string): void }) {
   if (rows.length === 0) return null;
@@ -14,20 +21,21 @@ function Rows({ title, rows, checked, onToggle }: { title: string; rows: Confirm
     <fieldset className="space-y-1">
       <legend className="font-medium">{title}</legend>
       {rows.map((r) => (
-        <label key={r.id} className="flex gap-2">
-          <input type="checkbox" checked={checked.includes(r.id)} disabled={r.repo?.missing} onChange={() => onToggle(r.id)} />
+        <Label key={r.id} className="flex items-start gap-2">
+          <Checkbox checked={checked.includes(r.id)} disabled={r.repo?.missing} onCheckedChange={() => onToggle(r.id)} />
           <span>
             <span className="font-medium">{r.name}</span> <span className="text-muted-foreground">{r.subtitle}</span>
-            {r.youSelected && <span className="ml-2 rounded bg-raised px-1 text-[11px]">{C.youSelected}</span>}
+            {r.youSelected && <Badge variant="outline" className="ml-2">{C.youSelected}</Badge>}
             {r.reason && <span className="block text-muted-foreground">{T.reason(r.reason)}</span>}
           </span>
-        </label>
+        </Label>
       ))}
     </fieldset>
   );
 }
 
 export function ConfirmRepos({ request, connected }: { request: Request; connected: boolean }) {
+  const toast = useToast();
   const repos = useRepos("");
   const model = confirmModel(request, repos.data ? knownRepos(repos.data) : []);
   const [checked, setChecked] = useState<string[]>(model.initial);
@@ -44,6 +52,7 @@ export function ConfirmRepos({ request, connected }: { request: Request; connect
     if (err) return;
     try {
       await confirm.run(confirmPayload(checked, comment, model.version));
+      toast.success(T.toastReposConfirmed(checked.length));
     } catch (e) {
       if (e instanceof ApiError && e.code === "conflict") {
         setStale(true);
@@ -54,19 +63,19 @@ export function ConfirmRepos({ request, connected }: { request: Request; connect
 
   return (
     <div className="space-y-3">
-      {stale && <p role="alert" className="rounded bg-warn/10 p-2 text-warn">{C.staleApproval}</p>}
+      {stale && <Alert variant="destructive">{C.staleApproval}</Alert>}
       <p className="italic">{`“${request.prompt}”`}</p>
       <Rows title={C.proposed} rows={model.proposed} checked={checked} onToggle={toggle} />
       <Rows title={C.suggestedAdditions} rows={model.additions} checked={checked} onToggle={toggle} />
       <RepoPicker label={C.addAnother} selected={checked} onChange={setChecked} />
       <label className="block">
         <span>{C.commentOptional}</span>
-        <input aria-label={C.commentOptional} value={comment} onChange={(e) => setComment(e.target.value)} className="mt-1 w-full rounded border border-line bg-canvas px-2 py-1" />
+        <Input aria-label={C.commentOptional} value={comment} onChange={(e) => setComment(e.target.value)} className="mt-1" />
       </label>
       {error && <p className="text-bad">{error}</p>}
-      <button type="button" disabled={!connected || confirm.pending} onClick={() => void submit()} className="rounded bg-primary px-3 py-1 text-white disabled:opacity-50">
+      <Button type="button" disabled={!connected || confirm.pending} onClick={() => void submit()}>
         {C.confirmRepositories}
-      </button>
+      </Button>
     </div>
   );
 }

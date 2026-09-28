@@ -44,6 +44,7 @@ describe("ConfirmRepos (§16.11)", () => {
       path: "/api/requests/req_repos/confirm-repos",
       body: { repos: ["repo_chat", "repo_app", "repo_landing", "repo_swarm"], comment: "Landing too", repos_version: 0, via: "board" },
     }));
+    expect(await screen.findByText("Confirmed 4 repositories")).toBeInTheDocument();
   });
 
   it("shows the stale-version banner", async () => {
@@ -52,5 +53,6 @@ describe("ConfirmRepos (§16.11)", () => {
     const { user } = setup(d);
     await user.click(await screen.findByRole("button", { name: "Confirm repositories" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("This request changed. Review the latest version.");
+    expect(screen.queryByText(/Confirmed \d+ repositories/)).not.toBeInTheDocument();
   });
 });

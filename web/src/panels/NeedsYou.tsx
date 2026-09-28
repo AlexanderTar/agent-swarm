@@ -3,9 +3,12 @@ import { errorText } from "../api";
 import { Segmented } from "../components/Segmented";
 import { C } from "../copy";
 import { useMutation } from "../data/hooks";
+import { agentActionToast } from "../logic/toasts";
 import { useAgents, useRequests } from "../data/queries";
 import { filterRequests, needsYouRow, pickRequest, requestTarget } from "../logic/inbox";
 import type { InboxFilter, Request } from "../types";
+import { useToast } from "../components/Toast";
+import { Button } from "../components/ui/button";
 
 export function NeedsYou(p: {
   filter: InboxFilter;
@@ -19,6 +22,7 @@ export function NeedsYou(p: {
   const requests = useRequests();
   const agents = useAgents();
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
+  const toast = useToast();
   const seen = useRef(new Map<string, Request>());
   for (const r of requests.data ?? []) seen.current.set(r.id, r);
 
@@ -29,9 +33,9 @@ export function NeedsYou(p: {
     return (
       <p className="p-4 text-bad">
         {errorText(requests.error)}{" "}
-        <button type="button" className="text-link underline" onClick={() => requests.reload()}>
+        <Button type="button" variant="link" size="sm" onClick={() => requests.reload()}>
           {C.retry}
-        </button>
+        </Button>
       </p>
     );
   }
@@ -71,26 +75,28 @@ export function NeedsYou(p: {
                 className={`rounded bg-warn/15 px-2 py-1 ${isCurrent ? "ring-1 ring-warn" : ""}`}
               >
                 <div className="flex items-start gap-2">
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
                     aria-current={isCurrent}
                     onClick={() => p.onSelectRequest(r.id)}
-                    className="min-w-0 flex-1 text-left"
+                    className="h-auto min-w-0 flex-1 flex-col items-stretch whitespace-normal text-left"
                   >
                     <span className="block truncate text-muted-foreground">{line1}</span>
                     <span className="block truncate">{line2}</span>
                     <span className="block truncate">{line3}</span>
-                  </button>
+                  </Button>
                   {target && (
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon"
                       aria-label={C.openAgentTerminal}
-                      disabled={target.kind === "unavailable"}
-                      onClick={() => { if (target.kind === "terminal") void terminal.run(target.agent).catch(() => undefined); }}
-                      className="shrink-0 disabled:opacity-40"
+                      disabled={!p.connected || target.kind === "unavailable"}
+                      onClick={() => { if (target.kind === "terminal") void terminal.run(target.agent).then(() => toast.success(agentActionToast("terminal", target.agent))).catch((e: unknown) => toast.error(errorText(e))); }}
                     >
                       ▶
-                    </button>
+                    </Button>
                   )}
                 </div>
               </li>
@@ -103,7 +109,7 @@ export function NeedsYou(p: {
           <div className="space-y-2">
             <p>{C.resolved}</p>
             {known && (
-              <button type="button" onClick={() => p.onViewItem(known.item_key)} className="text-link">{C.viewItem}</button>
+              <Button type="button" variant="link" size="sm" onClick={() => p.onViewItem(known.item_key)}>{C.viewItem}</Button>
             )}
           </div>
         ) : current ? (

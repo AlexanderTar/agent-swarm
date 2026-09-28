@@ -7,7 +7,7 @@ import { RequestChanges } from "./RequestChanges";
 describe("RequestChanges (§16.11)", () => {
   it("requires a comment and sends it", async () => {
     const d = createMockDaemon();
-    const { user } = renderWithDaemon(<RequestChanges requestId="req_section" connected />, { daemon: d, events: false });
+    const { user } = renderWithDaemon(<RequestChanges requestId="req_section" agentName="offline-spike-orchestrator" connected />, { daemon: d, events: false });
     await user.click(screen.getByRole("button", { name: "Request changes" }));
     await user.click(screen.getByRole("button", { name: "Send change request" }));
     expect(screen.getByText("Add a comment describing what to change.")).toBeInTheDocument();
@@ -17,14 +17,15 @@ describe("RequestChanges (§16.11)", () => {
     await user.type(box, "Split the queue table");
     await user.click(screen.getByRole("button", { name: "Send change request" }));
     await waitFor(() => expect(d.calls.at(-1)).toMatchObject({ path: "/api/requests/req_section/request-changes", body: { comment: "Split the queue table", via: "board" } }));
+    expect(await screen.findByText("Sent change request to offline-spike-orchestrator")).toBeInTheDocument();
   });
 
   it("keeps unsent text", async () => {
-    const a = renderWithDaemon(<RequestChanges requestId="req_plan" connected />, { events: false });
+    const a = renderWithDaemon(<RequestChanges requestId="req_plan" agentName="offline-spike-orchestrator" connected />, { events: false });
     await a.user.click(screen.getByRole("button", { name: "Request changes" }));
     await a.user.type(screen.getByRole("textbox", { name: "Comment" }), "Draft");
     a.unmount();
-    const b = renderWithDaemon(<RequestChanges requestId="req_plan" connected />, { events: false });
+    const b = renderWithDaemon(<RequestChanges requestId="req_plan" agentName="offline-spike-orchestrator" connected />, { events: false });
     await b.user.click(screen.getByRole("button", { name: "Request changes" }));
     expect(screen.getByRole("textbox", { name: "Comment" })).toHaveValue("Draft");
   });

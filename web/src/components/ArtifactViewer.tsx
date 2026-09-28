@@ -4,6 +4,8 @@ import { errorText } from "../api";
 import { C } from "../copy";
 import { useArtifact } from "../data/queries";
 import { Markdown } from "./Markdown";
+import { Button } from "./ui/button";
+import { Alert } from "./ui/alert";
 
 export function ArtifactViewer(p: { artifactId: string; revision?: number; section?: string; onClose(): void }) {
   const art = useArtifact(p.artifactId, p.revision, p.section);
@@ -16,19 +18,19 @@ export function ArtifactViewer(p: { artifactId: string; revision?: number; secti
     return () => previouslyFocused?.focus();
   }, []);
   return (
-    <dialog open aria-label={art.data?.artifact.path ?? p.artifactId} className="fixed inset-8 z-50 overflow-auto rounded-lg border border-line bg-panel p-4 text-ink shadow-2xl">
+    <dialog open aria-label={art.data?.artifact.path ?? p.artifactId} className="fixed inset-8 z-50 overflow-auto rounded-lg border border-border bg-card p-4 text-foreground shadow-2xl">
       <div className="mb-3 flex items-center justify-between gap-2">
         <span className="key truncate">{art.data?.artifact.path ?? p.artifactId}</span>
-        <button ref={closeButton} type="button" aria-label="Close" onClick={p.onClose}><X className="size-4" /></button>
+        <Button ref={closeButton} variant="ghost" size="icon" type="button" aria-label="Close" onClick={p.onClose}><X className="size-4" /></Button>
       </div>
       {/* Standing rule: a failed load gets a message + retry, never a permanent "…" placeholder. */}
       {art.error ? (
-        <p className="text-bad">
+        <Alert variant="destructive">
           {errorText(art.error)}{" "}
-          <button type="button" className="text-link underline" onClick={() => art.reload()}>
+          <Button type="button" variant="link" size="sm" onClick={() => art.reload()}>
             {C.retry}
-          </button>
-        </p>
+          </Button>
+        </Alert>
       ) : art.data ? (
         <Markdown>{art.data.markdown}</Markdown>
       ) : (

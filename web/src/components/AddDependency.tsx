@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { errorText } from "../api";
-import { C } from "../copy";
+import { C, T } from "../copy";
 import { useMutation } from "../data/hooks";
 import { useItems } from "../data/queries";
 import { matches } from "../logic/tree";
+import { useToast } from "./Toast";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
 
 export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled: boolean }) {
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [error, setError] = useState("");
@@ -29,6 +33,7 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
     setError("");
     try {
       await add.run(key);
+      toast.success(T.toastDepAdded(itemKey, key));
       setQ("");
       close();
     } catch (e) {
@@ -37,24 +42,24 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
   };
   return (
     <div>
-      <button ref={trigger} type="button" disabled={disabled} onClick={() => setOpen((o) => !o)} className="text-link disabled:text-muted-foreground">
+      <Button ref={trigger} variant="link" size="sm" type="button" disabled={disabled} onClick={() => setOpen((o) => !o)}>
         {`+ ${C.addDependency}`}
-      </button>
+      </Button>
       {open && (
         <div className="mt-1 space-y-1">
-          <input
+          <Input
             ref={search}
             type="search"
             aria-label={C.addDependency}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && close()}
-            className="w-full rounded border border-line bg-canvas px-2 py-1"
+            className="w-full"
           />
           {hits.map((i) => (
-            <button key={i.key} type="button" disabled={add.pending} onClick={() => void pick(i.key)} className="block w-full truncate rounded px-2 py-0.5 text-left hover:bg-raised">
+            <Button key={i.key} variant="ghost" size="sm" type="button" disabled={add.pending} onClick={() => void pick(i.key)} className="block w-full truncate text-left">
               {`${i.key} · ${i.title}`}
-            </button>
+            </Button>
           ))}
           {error && <p className="text-bad">{error}</p>}
         </div>
