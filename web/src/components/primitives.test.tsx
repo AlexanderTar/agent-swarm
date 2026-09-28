@@ -22,6 +22,19 @@ describe("icons and labels", () => {
     expect(screen.getByText("Finishing current step")).toBeInTheDocument();
     expect(screen.getByLabelText("Running")).toBeInTheDocument();
   });
+
+  it("keeps the in-progress border visible on the dark palette", () => {
+    render(<StatusPill status="in_progress" />);
+    expect(screen.getByText("In progress")).toHaveClass("border-link/40");
+  });
+
+  it("keeps muted state dots visible on the dark palette", () => {
+    const { container } = render(<><StateDot state="queued" /><StateDot state="spawning" /><StateDot state="capacity_paused" /></>);
+    const dots = container.querySelectorAll(".size-2");
+    expect(dots[0]).toHaveClass("bg-muted-foreground");
+    expect(dots[1]).toHaveClass("bg-muted-foreground", "animate-pulse");
+    expect(dots[2]).toHaveClass("border-muted-foreground");
+  });
 });
 
 describe("Sheet", () => {

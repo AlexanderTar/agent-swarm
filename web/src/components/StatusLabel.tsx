@@ -5,7 +5,7 @@ import type { ItemStatus } from "../types";
 const PILL: Record<ItemStatus, string> = {
   draft: "text-muted-foreground border-line",
   ready: "text-ink border-line",
-  in_progress: "text-link border-accent/40",
+  in_progress: "text-link border-link/40",
   blocked: "text-bad border-bad/40",
   in_review: "text-warn border-warn/40",
   awaiting_approval: "text-warn border-warn/40",
@@ -20,10 +20,10 @@ export const StatusPill = ({ status }: { status: ItemStatus }) => (
 const DOT = {
   green: "bg-ok",
   "green-hollow": "border-2 border-ok",
-  grey: "bg-muted",
-  "grey-pulse": "bg-muted animate-pulse",
+  grey: "bg-muted-foreground",
+  "grey-pulse": "bg-muted-foreground animate-pulse",
   amber: "bg-warn",
-  hollow: "border-2 border-muted",
+  hollow: "border-2 border-muted-foreground",
   red: "bg-bad",
 } as const;
 
