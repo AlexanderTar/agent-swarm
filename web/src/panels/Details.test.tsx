@@ -132,6 +132,7 @@ describe("Details panel (§16.9)", () => {
     await user.type(screen.getByRole("searchbox", { name: "Add dependency" }), "TASK-110");
     await user.click(await screen.findByRole("button", { name: "TASK-110 · Add crash regression test" }));
     await waitFor(() => expect(daemon.calls.some((c) => c.path === "/api/items/TASK-98/deps" && (c.body as { blocked_by: string }).blocked_by === "TASK-110")).toBe(true));
+    expect(await screen.findByText("TASK-98 is now blocked by TASK-110")).toBeInTheDocument();
   });
 
   it("shows the checkpoints tab", async () => {

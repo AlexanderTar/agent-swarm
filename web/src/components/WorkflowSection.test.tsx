@@ -21,8 +21,10 @@ describe("WorkflowSection", () => {
     expect(screen.getByText("build")).toBeInTheDocument();
     expect(screen.getByText("review")).toBeInTheDocument();
     expect(screen.getByText("Changes requested")).toBeInTheDocument();
-    const disclosure = screen.getByText("1 findings");
+    const disclosure = screen.getByRole("button", { name: "1 findings" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("[major] internal/x.go:42 — Handle nil [unit 3]")).toBeInTheDocument();
   });
 

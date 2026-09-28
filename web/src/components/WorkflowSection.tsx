@@ -1,6 +1,8 @@
 import type { ItemDetail, Workflow } from "../types";
 import { ROLE_EMOJI, ROLE_LABEL } from "../copy";
 import type { Role, WorkflowFinding } from "../types";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
+import { Button } from "./ui/button";
 
 const VERDICT = {
   pass: { label: "Pass", className: "bg-ok/10 text-ok" },
@@ -39,10 +41,10 @@ export function WorkflowSection(p: { workflow: Workflow | null | undefined; stat
                       <span className="rounded bg-raised px-1.5 py-0.5">{run.state.charAt(0).toUpperCase()}{run.state.slice(1)}</span>
                       {verdict && <span className={`rounded px-1.5 py-0.5 ${verdict.className}`}>{verdict.label}</span>}
                     </div>
-                    {run.findings.length > 0 && <details className="pl-6">
-                      <summary className="cursor-pointer text-link">{run.findings.length} findings</summary>
-                      <ul className="list-disc pl-5">{run.findings.map((f, j) => <li key={j}>{findingText(f)}</li>)}</ul>
-                    </details>}
+                    {run.findings.length > 0 && <Collapsible className="pl-6">
+                      <CollapsibleTrigger asChild><Button variant="link" size="sm">{run.findings.length} findings</Button></CollapsibleTrigger>
+                      <CollapsibleContent><ul className="list-disc pl-5">{run.findings.map((f, j) => <li key={j}>{findingText(f)}</li>)}</ul></CollapsibleContent>
+                    </Collapsible>}
                   </li>
                 );
               })}
