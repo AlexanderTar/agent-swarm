@@ -1210,6 +1210,38 @@ func TestAskApprovalNothingToReviewRefusedWhenSectionHasContent(t *testing.T) {
 	}
 }
 
+// TestAskApprovalNothingToReviewRefusedForHeadinglessPreambleContent is a
+// review fix: a headingless preamble (the "document" section) has no "## "
+// heading line to strip, so its first line is real content, not a heading --
+// stripping it unconditionally would let a long single-line preamble slip
+// under the 300-rune guard.
+func TestAskApprovalNothingToReviewRefusedForHeadinglessPreambleContent(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "NTR preamble", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("a", 400)
+	spec, err := s.RegisterArtifact(ctx, ses.ID, "register", key, "spec",
+		writeFile(t, long+"\n\n## Context\n\nWhy it matters.\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Sections[0].ID != "document" {
+		t.Fatalf("registered sections = %+v, want a headingless document section first", spec.Sections)
+	}
+	_, err = s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID,
+		Prompt: "Ship it.", NothingToReview: "Nothing new here."})
+	if err == nil || !strings.Contains(err.Error(), "This section has content to review (400 characters)") {
+		t.Fatalf("err = %v, want the content refusal with 400 characters", err)
+	}
+}
+
 // TestAskApprovalNothingToReviewAutoApproves is locked decisions 2-4: a
 // short, flagged section is approved immediately, exactly like a user
 // approval (same message, same event, same reconcile), with no native

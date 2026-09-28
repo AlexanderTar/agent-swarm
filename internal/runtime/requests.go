@@ -1142,10 +1142,15 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 					return err
 				}
 				body := content[matched.Start:matched.End]
-				if idx := strings.IndexByte(body, '\n'); idx >= 0 {
-					body = body[idx+1:]
-				} else {
-					body = ""
+				// Only a "## " heading line is ever stripped -- a headingless
+				// preamble ("document" section) has no heading line, and its
+				// first line is real content, not a heading to discard.
+				if strings.HasPrefix(strings.TrimSpace(body), "#") {
+					if idx := strings.IndexByte(body, '\n'); idx >= 0 {
+						body = body[idx+1:]
+					} else {
+						body = ""
+					}
 				}
 				body = strings.TrimSpace(body)
 				if bn := utf8.RuneCountInString(body); bn > 300 {
