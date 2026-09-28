@@ -257,9 +257,12 @@ struct RequestEditor: View {
     static let minimumHeight: CGFloat = 108
 
     var body: some View {
+        // Inset inside the border: flush against it, the first line's ascenders are clipped.
         TextEditor(text: $text)
             .background(SubtleScrollerConfig(adjacentScrollView: true))
             .frame(minHeight: Self.minimumHeight, maxHeight: .infinity)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 4)
             .border(.separator)
     }
 }

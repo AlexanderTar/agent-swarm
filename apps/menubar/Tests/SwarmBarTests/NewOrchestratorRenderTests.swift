@@ -236,6 +236,22 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertEqual(scroll.verticalScroller?.controlSize, .small)
     }
 
+    func testRequestEditorInsetsTextFromItsBorder() {
+        let host = NSHostingView(rootView: RequestEditor(text: .constant("A request")))
+        host.frame = NSRect(x: 0, y: 0, width: 500, height: 200)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        func scrolls(in view: NSView) -> [NSScrollView] {
+            let own = (view as? NSScrollView).map { [$0] } ?? []
+            return own + view.subviews.flatMap(scrolls)
+        }
+        guard let scroll = scrolls(in: host).first else { return XCTFail("Request editor scroll view missing") }
+        let frame = scroll.convert(scroll.bounds, to: host)
+        // NSHostingView is flipped: minY is the gap between the border and the text area's top.
+        XCTAssertGreaterThanOrEqual(host.isFlipped ? frame.minY : host.bounds.height - frame.maxY, 4,
+                                    "the first line must not touch the top border")
+    }
+
     func testEmptyChooserExplainsHowToAddRepositories() throws {
         let host = NSHostingView(rootView: RepoChooser(rows: [], selection: .constant([])))
         host.frame = NSRect(x: 0, y: 0, width: 500, height: 240)

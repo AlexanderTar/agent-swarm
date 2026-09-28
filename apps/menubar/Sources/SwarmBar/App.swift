@@ -191,6 +191,7 @@ struct PopoverHost: View {
     var body: some View {
         PopoverView(model: model,
                     openNewOrchestrator: {
+                        StatusItemWatcher.dismissPopover()
                         NSApp.activate(ignoringOtherApps: true)
                         openWindow(id: "new-orchestrator")
                         // macOS restores the last frame on reopen; always center it on the active screen.
