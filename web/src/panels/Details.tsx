@@ -8,9 +8,10 @@ import { MoveToMenu } from "../components/MoveToMenu";
 import { useToast } from "../components/Toast";
 import { WorkflowSection } from "../components/WorkflowSection";
 import { Alert } from "../components/ui/alert";
+import { Badge } from "../components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { C, STATUS_LABEL, T } from "../copy";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { C, STATUS_LABEL, T, TYPE_LABEL } from "../copy";
 import { useInvalidate, useMutation } from "../data/hooks";
 import { qk, useItemDetail } from "../data/queries";
 import { flattenAgents } from "../logic/agentActions";
@@ -117,7 +118,8 @@ export function Details(p: DetailsProps) {
       if (e instanceof ApiError && e.code === "conflict") {
         setStale(true);
         invalidate([qk.item(item.key), "items"]);
-      } else toast({ message: body.status ? failureMessage(e, item) : errorText(e) });
+      }
+      toast.error(body.status ? failureMessage(e, item) : errorText(e));
       return false;
     }
   };
@@ -148,7 +150,11 @@ export function Details(p: DetailsProps) {
     <div data-testid="details-panel" className="space-y-4 p-4">
       {stale && <p className="rounded bg-warn/10 px-2 py-1 text-warn">{C.staleRevision}</p>}
       <div className="flex items-start justify-between gap-2 pr-10">
-        <span className="key text-muted-foreground">{crumbs}</span>
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="key text-muted-foreground">{crumbs}</span>
+          <Badge variant="outline">{TYPE_LABEL[item.type]}</Badge>
+        </div>
+        <MoveToMenu item={item} buttonLabel={STATUS_LABEL[item.status]} disabled={!p.connected || patch.pending} onMove={onMove} />
       </div>
       <Editable
         label={C.title}
@@ -159,7 +165,6 @@ export function Details(p: DetailsProps) {
         className="text-base font-semibold"
       />
       <div className="flex items-center justify-between gap-2">
-        <MoveToMenu item={item} buttonLabel={STATUS_LABEL[item.status]} disabled={!p.connected || patch.pending} onMove={onMove} />
         <label className="flex items-center gap-1">
           {C.priority}
           <Select value={String(item.priority)} disabled={!p.connected || patch.pending} onValueChange={(value) => void save({ priority: Number(value) as Priority })}>
@@ -194,10 +199,7 @@ export function Details(p: DetailsProps) {
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)}>
         <TabsList variant="line">{(["overview", "checkpoints"] as const).map((t) => <TabsTrigger key={t} value={t}>{t === "overview" ? C.overview : C.checkpoints}</TabsTrigger>)}</TabsList>
-      </Tabs>
-
-      {tab === "overview" ? (
-        <div className="space-y-3">
+        <TabsContent value="overview" className="space-y-3">
           <div>
             <h4 className="text-muted-foreground">{C.brief}</h4>
             <Editable label={C.brief} value={item.brief} multiline disabled={!p.connected || patch.pending} onSave={(brief) => save({ brief })} />
@@ -240,10 +242,11 @@ export function Details(p: DetailsProps) {
               {T.startedFrom(item.origin_spike_key)}
             </button>
           )}
-        </div>
-      ) : (
-        <CheckpointList itemKey={item.key} agentNames={flattenAgents(d.agents).map((a) => a.name)} />
-      )}
+        </TabsContent>
+        <TabsContent value="checkpoints">
+          <CheckpointList itemKey={item.key} agentNames={flattenAgents(d.agents).map((a) => a.name)} />
+        </TabsContent>
+      </Tabs>
 
       {topLevel && open && (
         <div className="border-t border-line pt-3">

@@ -50,6 +50,20 @@ describe("Details panel (§16.9)", () => {
     expect(screen.getByRole("button", { name: "Login" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "In progress" })).toHaveAttribute("aria-haspopup", "menu");
     expect(comboText("Priority")).toBe("P2");
+    expect(screen.getByText("Story")).toBeInTheDocument();
+    const header = screen.getByText("EPIC-12 › STORY-40").parentElement?.parentElement;
+    expect(within(header!).getByRole("button", { name: "In progress" })).toBeInTheDocument();
+  });
+
+  it("toasts a status conflict without reporting a successful move", async () => {
+    const d = createMockDaemon();
+    d.override("PATCH /api/items/TASK-103", { status: 409, body: { error: { code: "conflict", message: "stale" } } });
+    const { user } = setup("TASK-103", {}, d);
+    await user.click(await screen.findByRole("button", { name: "Ready" }));
+    await user.click(screen.getByRole("menuitem", { name: /^Blocked/ }));
+    await waitFor(() => expect(screen.getAllByText("This item changed elsewhere. Showing its latest status.")).toHaveLength(2));
+    await waitFor(() => expect(document.querySelector("[data-sonner-toast]")).toHaveTextContent("This item changed elsewhere. Showing its latest status."));
+    expect(screen.queryByText("Moved TASK-103 to Blocked")).not.toBeInTheDocument();
   });
 
   it("edits the title in place and shows the conflict banner", async () => {
@@ -137,7 +151,12 @@ describe("Details panel (§16.9)", () => {
 
   it("shows the checkpoints tab", async () => {
     const { user } = setup("TASK-101");
+    await screen.findByRole("tab", { name: "Overview" });
+    const overview = screen.getByRole("tab", { name: "Overview" });
+    expect(document.getElementById(overview.getAttribute("aria-controls")!)).toHaveAttribute("role", "tabpanel");
     await user.click(await screen.findByRole("tab", { name: "Checkpoints" }));
+    const checkpoints = screen.getByRole("tab", { name: "Checkpoints" });
+    expect(document.getElementById(checkpoints.getAttribute("aria-controls")!)).toHaveAttribute("role", "tabpanel");
     expect(await screen.findByText(/Form renders; wiring submit\./)).toBeInTheDocument();
   });
 

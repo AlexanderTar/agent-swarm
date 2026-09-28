@@ -133,6 +133,19 @@ describe("App shell (§16.5)", () => {
     expect(screen.getByTestId("details")).toHaveTextContent("TASK-103");
   });
 
+  it("closes a form above Details before closing Details on Escape", async () => {
+    const { user } = renderWithDaemon(<App />, { hash: "#/kanban?item=TASK-101" });
+    expect(await screen.findByRole("dialog", { name: "TASK-101" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "New item" }));
+    await user.click(screen.getByRole("menuitem", { name: "Epic" }));
+    expect(await screen.findByRole("dialog", { name: "New item" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "New item" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "TASK-101" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "TASK-101" })).not.toBeInTheDocument();
+  });
+
   it("offers every type in New item", async () => {
     const { user } = renderWithDaemon(<App />);
     await user.click(screen.getByRole("button", { name: "New item" }));
