@@ -84,23 +84,28 @@ export function Details(p: DetailsProps) {
   const toast = useToast();
   const [tab, setTab] = useState<"overview" | "agents" | "checkpoints" | "deps">("overview");
   const pendingAgentScroll = useRef<string | null>(null);
+  const agentsNode = useRef<HTMLElement | null>(null);
   const [stale, setStale] = useState(false);
   const [viewing, setViewing] = useState<{ id: string; revision: number } | null>(null);
   const patch = useMutation((api, key: string, body: PatchItemBody) => api.patchItem(key, body), ["items", "item:", "graph:"]);
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
 
   useEffect(() => {
-    if (p.focus === "agents" && detail.data) setTab("agents");
-  }, [p.focus, detail.data]);
+    if (p.focus !== "agents") return;
+    pendingAgentScroll.current = "";
+    setTab("agents");
+    if (agentsNode.current) {
+      agentsNode.current.scrollIntoView?.({ block: "start" });
+      pendingAgentScroll.current = null;
+    }
+  }, [p.focus, p.itemKey]);
 
   const setAgentsRef = (node: HTMLElement | null) => {
-    if (!node) return;
-    if (pendingAgentScroll.current) {
-      node.querySelector<HTMLElement>(`#agent-${pendingAgentScroll.current}`)?.scrollIntoView?.({ block: "center" });
-      pendingAgentScroll.current = null;
-    } else if (p.focus === "agents") {
-      node.scrollIntoView?.({ block: "start" });
-    }
+    agentsNode.current = node;
+    if (!node || pendingAgentScroll.current === null) return;
+    if (pendingAgentScroll.current) node.querySelector<HTMLElement>(`#agent-${pendingAgentScroll.current}`)?.scrollIntoView?.({ block: "center" });
+    else node.scrollIntoView?.({ block: "start" });
+    pendingAgentScroll.current = null;
   };
 
   const d = detail.data;
@@ -208,7 +213,7 @@ export function Details(p: DetailsProps) {
           <section aria-label={C.agents} className="border-t border-line pt-3">
             <h3 className="mb-1 font-semibold">{C.agents}</h3>
             <ul className="space-y-1 text-sm">
-              {d.agents.filter((agent) => !isFinished(agent)).map((agent) => (
+              {flattenAgents(d.agents).filter((agent) => !isFinished(agent)).map((agent) => (
                 <li key={agent.id} className="flex justify-between gap-2">
                   <span className="truncate">{agent.name}</span>
                   <span className="shrink-0 text-muted-foreground">{displayState(agent)}</span>

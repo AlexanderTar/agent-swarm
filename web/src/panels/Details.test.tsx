@@ -137,6 +137,24 @@ describe("Details panel (§16.9)", () => {
     await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
   });
 
+  it.each(["Overview", "Checkpoints", "Deps"] as const)("keeps %s after an agent-focused detail refetch and scrolls only once", async (chosenTab) => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/EPIC-12", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    const { user, props, rerender } = setup("EPIC-12", { focus: "agents" }, d);
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true"));
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1));
+    rerender(<Details {...props} />);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("tab", { name: chosenTab }));
+    d.override("GET /api/items/EPIC-12", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), title: "Refetched title" },
+    } });
+    await pickOption(user, "Priority", "P0");
+    await screen.findByRole("button", { name: "Refetched title" });
+    expect(screen.getByRole("tab", { name: chosenTab })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("shows the overview: brief, acceptance, dependencies, artifacts and origin", async () => {
     const { user, props } = setup("EPIC-12");
     expect(await screen.findByText("Sign-in for the chat app.")).toBeInTheDocument();
@@ -182,7 +200,14 @@ describe("Details panel (§16.9)", () => {
   });
 
   it("places four tabs before long content and keeps agents and dependencies in their panels", async () => {
-    const { user } = setup("EPIC-12");
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/EPIC-12", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    d.override("GET /api/items/EPIC-12", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), workflow: { template: "tdd-reviewed", max_rounds: 3, steps: [{ id: "build", run: "coder" }] } },
+      workflow_state: { state: "running", round: 1, escalation: "", runs: [] },
+    } });
+    const { user } = setup("EPIC-12", {}, d);
     const tabs = await screen.findAllByRole("tab");
     expect(tabs.map((tab) => tab.textContent)).toEqual(["Overview", "Agents", "Checkpoints", "Deps"]);
     const panel = screen.getByTestId("details-panel");
@@ -191,6 +216,16 @@ describe("Details panel (§16.9)", () => {
     expect(tabs[0]!.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(overview).getByText("Sign-in for the chat app.")).toBeInTheDocument();
     expect(within(overview).getByText("Users can log in")).toBeInTheDocument();
+    const brief = within(overview).getByText("Brief");
+    const acceptance = within(overview).getByText("Acceptance");
+    const workflow = within(overview).getByRole("button", { name: /Workflow/ });
+    const agents = within(overview).getByRole("region", { name: "Agents" });
+    for (const [first, second] of [[brief, acceptance], [acceptance, workflow], [workflow, agents]] as const) {
+      expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(within(agents).getByText("auth-epic-orchestrator")).toBeInTheDocument();
+    expect(within(agents).getByText("login-form-coder")).toBeInTheDocument();
+    expect(within(agents).getByText("login-review")).toBeInTheDocument();
     expect(within(overview).queryByTestId("agent-auth-epic-orchestrator")).not.toBeInTheDocument();
     await user.click(tabs[1]!);
     expect(within(screen.getByRole("tabpanel", { name: "Agents" })).getByTestId("agent-auth-epic-orchestrator")).toBeInTheDocument();
@@ -206,7 +241,9 @@ describe("Details panel (§16.9)", () => {
     const b = setup("EPIC-12");
     await b.user.click(await screen.findByRole("button", { name: "View orchestrator" }));
     await waitFor(() => expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true"));
-    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1));
+    b.rerender(<Details {...b.props} />);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
     b.unmount();
     setup("TASK-101");
     await screen.findByText(/Build login form/);
