@@ -1,40 +1,53 @@
-import { X } from "lucide-react";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useRef } from "react";
+import {
+  Sheet as UiSheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 
-export function Sheet(p: { title: string; subtitle?: string; width?: number; onClose(): void; children: ReactNode; footer?: ReactNode }) {
-  const { onClose } = p;
-  const closeButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-  // Take focus into the sheet on mount (an accessibility basic, not polish — otherwise a keyboard
-  // user who opened it never lands anywhere near it), and restore it to whatever had focus before
-  // (the trigger, in every real caller) once the sheet unmounts.
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    closeButton.current?.focus();
-    return () => previouslyFocused?.focus();
-  }, []);
+export function Sheet(p: {
+  title: string;
+  subtitle?: string;
+  width?: number;
+  modal?: boolean;
+  header?: boolean;
+  onClose(): void;
+  children: ReactNode;
+  footer?: ReactNode;
+}) {
+  const modal = p.modal ?? true;
+  const previousFocus = useRef(typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
+  const keepOpen = modal ? undefined : (e: Event) => e.preventDefault();
   return (
-    <aside
-      role="dialog"
-      aria-label={p.title}
-      style={{ width: `${p.width ?? 420}px` }}
-      className="fixed inset-y-0 right-0 z-40 flex max-w-full flex-col border-l border-line bg-panel shadow-xl"
-    >
-      <header className="flex items-start justify-between gap-2 border-b border-line p-4">
-        <div>
-          <h2 className="font-semibold">{p.title}</h2>
-          {p.subtitle && <p className="text-muted-foreground">{p.subtitle}</p>}
-        </div>
-        <button ref={closeButton} type="button" aria-label="Close" onClick={onClose} className="rounded p-1 hover:bg-raised">
-          <X className="size-4" />
-        </button>
-      </header>
-      <div className="flex-1 space-y-4 overflow-y-auto p-4">{p.children}</div>
-      {p.footer && <footer className="flex justify-end gap-2 border-t border-line p-4">{p.footer}</footer>}
-    </aside>
+    <UiSheet open modal={modal} onOpenChange={(open) => { if (!open) p.onClose(); }}>
+      <SheetContent
+        side="right"
+        overlay={modal}
+        aria-label={p.title}
+        aria-describedby={undefined}
+        style={{ width: `${p.width ?? 420}px` }}
+        className="flex w-full max-w-full flex-col gap-0 bg-card p-0 sm:max-w-full"
+        onInteractOutside={keepOpen}
+        onPointerDownOutside={keepOpen}
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          previousFocus.current?.focus();
+        }}
+      >
+        {p.header === false ? (
+          <SheetTitle className="sr-only">{p.title}</SheetTitle>
+        ) : (
+          <SheetHeader className="border-b border-border px-5 py-4">
+            <SheetTitle className="text-[15px] font-semibold">{p.title}</SheetTitle>
+            {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
+          </SheetHeader>
+        )}
+        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">{p.children}</div>
+        {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 border-t border-border px-5 py-3">{p.footer}</SheetFooter>}
+      </SheetContent>
+    </UiSheet>
   );
 }

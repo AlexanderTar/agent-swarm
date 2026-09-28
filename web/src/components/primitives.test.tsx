@@ -70,10 +70,27 @@ describe("Sheet", () => {
     await user.click(trigger);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     // Focus must land inside the sheet, not stay behind it or fall to <body>.
-    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it("keeps an accessible title without a visible header", () => {
+    render(<Sheet title="Details" header={false} onClose={vi.fn()}>body</Sheet>);
+    expect(screen.getByRole("dialog", { name: "Details" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Details" })).toHaveClass("sr-only");
+  });
+
+  it("non-modal sheet has no overlay and ignores outside clicks", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<><button type="button">outside</button><Sheet title="Details" modal={false} onClose={onClose}>body</Sheet></>);
+    expect(document.querySelector("[data-slot=sheet-overlay]")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "outside" }));
+    expect(onClose).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
 

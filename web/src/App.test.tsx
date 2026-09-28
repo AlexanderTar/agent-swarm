@@ -146,6 +146,6 @@ describe("App shell (§16.5)", () => {
     // Task 31: selecting a type now opens the New item sheet, which (Sheet.tsx's own standing rule)
     // takes focus into itself rather than leaving it on the trigger behind it.
     const sheet = await screen.findByRole("dialog", { name: "New item" });
-    expect(within(sheet).getByRole("button", { name: "Close" })).toHaveFocus();
+    expect(sheet.contains(document.activeElement)).toBe(true);
   });
 });
