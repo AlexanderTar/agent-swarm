@@ -1,11 +1,15 @@
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { C } from "../copy";
 
 function AlertBanner({ message, onRetry }: { message: string; onRetry(): void }) {
   return (
-    <div role="alert" className="flex items-center gap-3 bg-bad/10 px-4 py-2 text-bad">
-      <span>{message}</span>
-      <button type="button" onClick={onRetry} className="underline">{C.retry}</button>
-    </div>
+    <Alert variant="destructive">
+      <AlertDescription className="flex flex-wrap items-center gap-2">
+        <span>{message}</span>
+        <Button type="button" variant="link" size="sm" onClick={onRetry}>{C.retry}</Button>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -16,9 +20,11 @@ export const ConnectionBanner = ({ onRetry }: { onRetry(): void }) => <AlertBann
 export const ItemsErrorBanner = ({ message, onRetry }: { message: string; onRetry(): void }) => <AlertBanner message={message} onRetry={onRetry} />;
 
 export const OutsideViewBanner = (p: { onShowInHierarchy(): void; onClearFilters(): void }) => (
-  <div className="flex flex-wrap items-center gap-2 border-b border-line bg-raised px-3 py-2">
-    <span>{C.outsideView}</span>
-    <button type="button" onClick={p.onShowInHierarchy} className="text-link">{C.showInHierarchy}</button>
-    <button type="button" onClick={p.onClearFilters} className="text-link">{C.clearFilters}</button>
-  </div>
+  <Alert>
+    <AlertDescription className="flex flex-wrap items-center gap-2">
+      <span>{C.outsideView}</span>
+      <Button type="button" variant="link" size="sm" onClick={p.onShowInHierarchy}>{C.showInHierarchy}</Button>
+      <Button type="button" variant="link" size="sm" onClick={p.onClearFilters}>{C.clearFilters}</Button>
+    </AlertDescription>
+  </Alert>
 );

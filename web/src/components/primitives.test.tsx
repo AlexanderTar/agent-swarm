@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { AgentIcon, Key, TypeIcon } from "./icons";
+import { ConnectionBanner } from "./Banners";
 import { MoveToMenu } from "./MoveToMenu";
 import { Segmented } from "./Segmented";
 import { Sheet } from "./Sheet";
@@ -25,14 +26,29 @@ describe("icons and labels", () => {
 
   it("keeps the in-progress border visible on the dark palette", () => {
     render(<StatusPill status="in_progress" />);
-    expect(screen.getByText("In progress")).toHaveClass("border-link/40");
+    expect(screen.getByText("In progress")).toHaveClass("border-info/30");
+  });
+
+  it("renders status as a badge with a tone", () => {
+    render(<StatusPill status="awaiting_approval" />);
+    expect(screen.getByText("Awaiting approval")).toHaveAttribute("data-slot", "badge");
+    expect(screen.getByText("Awaiting approval")).toHaveAttribute("data-tone", "warning");
+  });
+
+  it("renders a retryable connection alert", async () => {
+    const onRetry = vi.fn();
+    const user = userEvent.setup();
+    render(<ConnectionBanner onRetry={onRetry} />);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-slot", "alert");
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it("keeps muted state dots visible on the dark palette", () => {
     const { container } = render(<><StateDot state="queued" /><StateDot state="spawning" /><StateDot state="capacity_paused" /></>);
     const dots = container.querySelectorAll(".size-2");
     expect(dots[0]).toHaveClass("bg-muted-foreground");
-    expect(dots[1]).toHaveClass("bg-muted-foreground", "animate-pulse");
+    expect(dots[1]).toHaveClass("bg-muted-foreground", "animate-pulse", "motion-reduce:animate-none");
     expect(dots[2]).toHaveClass("border-muted-foreground");
   });
 });
