@@ -464,23 +464,27 @@ type codexTranscriptPayload struct {
 
 // AssistantTextSinceLastTurn is the PreToolUse summary gate's transcript
 // reader for Codex (2026-09-28-approval-summary-enforced): the assistant
-// text printed since the last real user message in the rollout
-// (transcript_path), so the gate can check the approval summary was
-// printed in chat immediately before this question tool call.
+// text printed since the last real user message OR tool result in the
+// rollout (transcript_path) -- the same boundary the spec's Claude reader
+// uses (a `type=="user"` line there covers both a real user message and a
+// tool_result envelope) -- so the gate can check the approval summary was
+// printed in chat immediately before this question tool call, and a
+// "print summary -> read a file -> ask" turn still counts the summary.
 // response_item/message entries carry role "user" or "assistant"; an
 // assistant message's own content blocks use type "output_text" (confirmed
 // against a live rollout, internal/advisor/testdata/codex/rollout-
-// sample.jsonl). function_call/function_call_output entries (tool calls and
-// their results, including request_user_input itself) never reset the user-
-// turn boundary -- only a real user message does. ok is false only when the
-// file can't be opened or read, or not a single line parses as valid JSON.
+// sample.jsonl). function_call/custom_tool_call entries (the calls
+// themselves, including request_user_input) do not reset the boundary, only
+// their _output counterparts do, same as a real user message. ok is false
+// only when the file can't be opened or read, or not a single line parses
+// as valid JSON.
 func (c *Codex) AssistantTextSinceLastTurn(transcriptPath string) (string, bool) {
 	lines, err := readTranscriptLines(transcriptPath)
 	if err != nil {
 		return "", false
 	}
 	type msg struct {
-		role string
+		role string // "user", "assistant", or "boundary" (a tool result -- resets like "user", contributes no text)
 		text string
 	}
 	var msgs []msg
@@ -498,28 +502,30 @@ func (c *Codex) AssistantTextSinceLastTurn(transcriptPath string) (string, bool)
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
 			continue
 		}
-		if p.Type != "message" {
-			continue
-		}
-		var texts []string
-		for _, blk := range p.Content {
-			if (blk.Type == "output_text" || blk.Type == "input_text") && blk.Text != "" {
-				texts = append(texts, blk.Text)
+		switch p.Type {
+		case "message":
+			var texts []string
+			for _, blk := range p.Content {
+				if (blk.Type == "output_text" || blk.Type == "input_text") && blk.Text != "" {
+					texts = append(texts, blk.Text)
+				}
 			}
+			msgs = append(msgs, msg{role: p.Role, text: strings.Join(texts, "\n")})
+		case "function_call_output", "custom_tool_call_output":
+			msgs = append(msgs, msg{role: "boundary"})
 		}
-		msgs = append(msgs, msg{role: p.Role, text: strings.Join(texts, "\n")})
 	}
 	if !anyParsed {
 		return "", false
 	}
-	lastUser := -1
+	lastBoundary := -1
 	for i, m := range msgs {
-		if m.role == "user" {
-			lastUser = i
+		if m.role == "user" || m.role == "boundary" {
+			lastBoundary = i
 		}
 	}
 	var out []string
-	for _, m := range msgs[lastUser+1:] {
+	for _, m := range msgs[lastBoundary+1:] {
 		if m.role == "assistant" && m.text != "" {
 			out = append(out, m.text)
 		}

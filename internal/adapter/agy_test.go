@@ -913,3 +913,19 @@ func TestAgyAssistantTextSinceLastTurnUnreadableFileFailsOpen(t *testing.T) {
 		t.Fatal("ok = true for a missing file, want false (fail open)")
 	}
 }
+
+// TestAgyAssistantTextSinceLastTurnResetsOnToolResult pins the 2026-09-28-
+// approval-summary-enforced boundary fix: a GENERIC entry (a tool call's
+// result) between the printed summary and the question call resets the
+// "since last turn" window, matching Claude's type=="user" tool-result
+// envelope boundary.
+func TestAgyAssistantTextSinceLastTurnResetsOnToolResult(t *testing.T) {
+	a := newAgy(Deps{})
+	text, ok := a.AssistantTextSinceLastTurn("testdata/agy/transcripts/summary-before-tool-result.jsonl")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if strings.Contains(text, "Ship auth end to end") {
+		t.Fatalf("text = %q, want the summary excluded (it precedes a tool result)", text)
+	}
+}

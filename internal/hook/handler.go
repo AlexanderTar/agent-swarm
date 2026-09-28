@@ -819,7 +819,9 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 				summary, paths, blocks, err := h.RT.SummaryGate(ctx, ref)
 				if err != nil {
 					h.logf("hook: summary gate lookup for %s: %v", ref, err)
-				} else if summary != "" && blocks < 2 {
+				} else if summary != "" && blocks >= 2 {
+					h.logf("hook: summary gate for %s: %d prior denials, allowing", ref, blocks)
+				} else if summary != "" {
 					texter, hasTexter := a.(transcriptTexter)
 					var text string
 					var textOK bool

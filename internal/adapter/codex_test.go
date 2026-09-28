@@ -770,3 +770,21 @@ func TestCodexAssistantTextSinceLastTurnUnreadableFileFailsOpen(t *testing.T) {
 		t.Fatal("ok = true for a missing file, want false (fail open)")
 	}
 }
+
+// TestCodexAssistantTextSinceLastTurnResetsOnToolResult pins the
+// 2026-09-28-approval-summary-enforced boundary fix: a tool result
+// (function_call_output) between the printed summary and the question call
+// resets the "since last turn" window, same as Claude's type=="user" tool-
+// result envelope -- "print summary -> read a file -> ask" is consistently
+// denied (the summary text does not survive past the tool result) across
+// every hooked kind, not just Claude.
+func TestCodexAssistantTextSinceLastTurnResetsOnToolResult(t *testing.T) {
+	c := newCodex(Deps{})
+	text, ok := c.AssistantTextSinceLastTurn("testdata/codex/transcripts/summary-before-tool-result.jsonl")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if strings.Contains(text, "Ship auth end to end") {
+		t.Fatalf("text = %q, want the summary excluded (it precedes a tool result)", text)
+	}
+}
