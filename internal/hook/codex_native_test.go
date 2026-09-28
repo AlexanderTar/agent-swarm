@@ -279,6 +279,12 @@ func TestCodexAnswerText(t *testing.T) {
 		{"recommended suffix stripped", `{"answers":{"language":{"answers":["Approve (Recommended)"]}}}`, "Approve", true},
 		{"non-codex json string", `{"answer":"Approve"}`, "", false},
 		{"not json", `not json`, "", false},
+		{"note only, no label", `{"answers":{"spec_section_1":{"answers":["user_note: just fix it"]}}}`,
+			"just fix it", true},
+		{"empty answers map", `{"answers":{}}`, "", true},
+		{"empty answers array", `{"answers":{"language":{"answers":[]}}}`, "", true},
+		{"multiple entries take the sorted-first key", `{"answers":{"zeta":{"answers":["Zeta pick"]},"alpha":{"answers":["Alpha pick"]}}}`,
+			"Alpha pick", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, ok := codexAnswerText(c.inner)

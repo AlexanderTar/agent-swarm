@@ -28,7 +28,7 @@ func museEffort(effort string) string {
 }
 
 // argv is every flag Launch (and, inlined, Resume) pass to `muse`, one line
-// each with its reason. See setupEnv's own comment for the env vars.
+// each with its reason:
 //
 //   - --model <model>: the agent's configured model, the raw Spark slug.
 //   - --reasoning-effort <tier>: the agent's configured effort, or "high"
@@ -40,6 +40,25 @@ func museEffort(effort string) string {
 //   - resume <session-ref> (Resume only, in place of a kickoff): muse resume
 //     takes exactly one positional, the session ref, with no room for a
 //     trailing prompt (confirmed live).
+//
+// The five env vars setupEnv returns, one line each with its reason:
+//
+//   - HOME=<muse-home>: isolates other coding agents' personal roots
+//     (~/.claude, ~/.codex, ~/.cursor, ~/.agents, ~/.gemini -- see
+//     museHomeDenylist) so muse never imports their "foreign personal"
+//     skills or rules (spec A8); every other real dotfile is symlinked
+//     through unchanged.
+//   - XDG_CONFIG_HOME=<muse-config>: a per-launch settings.json with only
+//     the swarm MCP server registered (every operator server dropped, Q1)
+//     and its env block carrying the four SWARM_* vars -- the only surface
+//     muse will deliver them through (museMCPEnv's own comment has the
+//     probe). Every other real ~/.config sibling is symlinked through.
+//   - XDG_DATA_HOME/XDG_STATE_HOME/XDG_CACHE_HOME=the real, UserHome-rooted
+//     paths (~/.local/share, ~/.local/state, ~/.cache): pinned explicitly,
+//     not left to fall back under the now-isolated HOME, because muse's
+//     plugin store and session registry must stay the real, shared ones --
+//     every isolated reconstruction tried was rejected by the plugin
+//     store's own integrity check (probe Finding 5).
 //
 // Native wake and request_user_input hooking, probed live on 1.4.0-R4302.1
 // (2026-09-28, docs/specs/2026-09-28-codex-sync-request-user-input.md): no

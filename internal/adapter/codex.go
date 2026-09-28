@@ -100,6 +100,10 @@ func CodexHomeDir(home, agentID string) string {
 //     (SWARM_URL, SWARM_SESSION, SWARM_TOKEN_FILE, SWARM_AGENT_KIND) codex
 //     passes through to the swarm MCP server -- literal env={…} would put
 //     those session values in argv instead (P0-1).
+//
+// Resume prepends `resume <ProviderSessionID>` before these same flags
+// (the thread to reattach to); Launch and Resume both append the kickoff
+// prompt as the trailing positional.
 func (c *Codex) flags(s Spec) ([]string, error) {
 	quoted := make([]string, len(mcpEnvVars))
 	for i, v := range mcpEnvVars {

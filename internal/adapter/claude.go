@@ -75,6 +75,11 @@ func (c *Claude) settingsJSON(s Spec) ([]byte, error) {
 //   - --append-system-prompt-file <path>: the role's instructions, when set.
 //   - --dangerously-load-development-channels server:swarm: required for the
 //     swarm MCP server's own channel/notification bridge (Wake).
+//   - --session-id <uuid> (Launch only): a fresh v4 UUID, so this session's
+//     transcript starts under a known id instead of one Claude mints itself.
+//   - --resume <id> (Resume only): the provider session to reattach to.
+//   - -- <kickoff>: the initial prompt, as a trailing positional after "--"
+//     so it is never parsed as a flag.
 func (c *Claude) flags(s Spec) ([]string, error) {
 	mcp, err := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{

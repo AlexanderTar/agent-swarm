@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -177,34 +178,38 @@ func parseQuestionReply(prompt string) ([]questionReply, bool) {
 // once it has been unwrapped from its outer JSON string: inner decodes to
 // {"answers":{"<id>":{"answers":["<label>", "user_note: <note>"?]}}}
 // (docs/specs/2026-09-28-codex-sync-request-user-input.md, live probe).
-// Swarm asks one question per call, so only the first entry is read. Label is
-// the first answer element that isn't a "user_note: " remark, with any
-// trailing " (Recommended)" the model appended stripped (case-insensitive);
-// note is the text after "user_note: " in the first element that has it. ok
-// is false for anything else (a plain string tool_response, or JSON that
-// isn't this shape), so the caller falls back to today's behaviour.
+// Swarm asks one question per call, so only the first entry is read -- by
+// sorted id, since Go map iteration order is random and a Codex batch would
+// otherwise bind a different question's answer on every run. Label is the
+// first answer element that isn't a "user_note: " remark, with any trailing
+// " (Recommended)" the model appended stripped (case-insensitive); note is
+// the text after "user_note: " in the first element that has it. ok is true
+// once the "answers" key itself is present -- confirming the codex shape --
+// even when the id's own answers array is empty or note-only (the caller
+// then falls back to ResolvedInTerminal or the note alone rather than the
+// generic-key branch below). ok is false only for a plain string
+// tool_response or JSON with no "answers" key at all (not this shape).
 func codexAnswerText(inner string) (string, bool) {
 	var payload struct {
 		Answers map[string]struct {
 			Answers []string `json:"answers"`
 		} `json:"answers"`
 	}
-	if err := json.Unmarshal([]byte(inner), &payload); err != nil || len(payload.Answers) == 0 {
+	if err := json.Unmarshal([]byte(inner), &payload); err != nil || payload.Answers == nil {
 		return "", false
 	}
-	var entry struct {
-		Answers []string `json:"answers"`
+	ids := make([]string, 0, len(payload.Answers))
+	for id := range payload.Answers {
+		ids = append(ids, id)
 	}
-	for _, v := range payload.Answers {
-		entry = v
-		break
-	}
-	if len(entry.Answers) == 0 {
-		return "", false
+	sort.Strings(ids)
+	var entryAnswers []string
+	if len(ids) > 0 {
+		entryAnswers = payload.Answers[ids[0]].Answers
 	}
 	const notePrefix = "user_note:"
 	var label, note string
-	for _, a := range entry.Answers {
+	for _, a := range entryAnswers {
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(a)), notePrefix) {
 			if note == "" {
 				note = strings.TrimSpace(a[strings.Index(a, ":")+1:])
@@ -216,7 +221,7 @@ func codexAnswerText(inner string) (string, bool) {
 		}
 	}
 	if label == "" {
-		return "", false
+		return note, true // note alone, or nothing answered yet -- either way, the shape is confirmed
 	}
 	const recommended = " (recommended)"
 	if strings.HasSuffix(strings.ToLower(label), recommended) {
