@@ -31,6 +31,7 @@ describe("NeedsYou inbox (§16.11)", () => {
     const rows = within(list).getAllByRole("button", { name: /Waiting for your input/ });
     expect(rows).toHaveLength(9);
     expect(rows[0]).toHaveTextContent("EPIC-12 · Authentication");
+    expect(rows[0]).toHaveClass("flex-col", "items-stretch");
     expect(rows[0]).toHaveAttribute("aria-current", "true");
     expect(screen.queryByText("Which sync strategy?")).not.toBeInTheDocument();
     expect(screen.getByText("review:req_accept")).toBeInTheDocument();

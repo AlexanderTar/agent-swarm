@@ -80,7 +80,7 @@ export function NeedsYou(p: {
                     variant="ghost"
                     aria-current={isCurrent}
                     onClick={() => p.onSelectRequest(r.id)}
-                    className="min-w-0 flex-1 text-left"
+                    className="h-auto min-w-0 flex-1 flex-col items-stretch whitespace-normal text-left"
                   >
                     <span className="block truncate text-muted-foreground">{line1}</span>
                     <span className="block truncate">{line2}</span>
