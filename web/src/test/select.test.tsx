@@ -26,5 +26,7 @@ describe("Radix Select test helpers", () => {
     expect(await optionTexts(user, "Letter")).toEqual(["Alpha", "Beta"]);
     await pickOption(user, "Letter", "Beta");
     expect(comboText("Letter")).toBe("Beta");
+    await pickOption(user, /letter/i, /Alpha/);
+    expect(comboText(/letter/i)).toBe("Alpha");
   });
 });
