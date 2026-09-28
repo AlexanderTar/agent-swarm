@@ -58,6 +58,7 @@ describe("Sheet", () => {
     const onClose = vi.fn();
     const user = userEvent.setup();
     render(<Sheet title="Start orchestrator" subtitle="EPIC-12 · Authentication" onClose={onClose} footer={<button type="button">ok</button>}>body</Sheet>);
+    expect(document.querySelector("[data-slot=sheet-overlay]")).toHaveClass("bg-black/60");
     expect(screen.getByRole("dialog", { name: "Start orchestrator" })).toHaveStyle({ width: "420px" });
     expect(screen.getByText("EPIC-12 · Authentication")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close" }));
