@@ -72,7 +72,7 @@ describe("Details panel (§16.9)", () => {
   it("changes status and priority, and explains refusals", async () => {
     const { user, daemon } = setup("TASK-103");
     await user.click(await screen.findByRole("button", { name: "Ready" }));
-    expect(screen.getByRole("menuitem", { name: /^Done/ })).toBeDisabled();
+    expect(await screen.findByRole("menuitem", { name: /^Done/ })).toHaveAttribute("aria-disabled", "true");
     await user.click(screen.getByRole("menuitem", { name: /^Blocked/ }));
     await waitFor(() => expect(daemon.calls.find((c) => c.method === "PATCH")?.body).toMatchObject({ status: "blocked" }));
     await user.selectOptions(await screen.findByRole("combobox", { name: "Priority" }), "0");
@@ -82,7 +82,7 @@ describe("Details panel (§16.9)", () => {
   it("routes Done on an epic to acceptance", async () => {
     const { user, props } = setup("EPIC-12");
     await user.click(await screen.findByRole("button", { name: "In progress" }));
-    await user.click(screen.getByRole("menuitem", { name: /^Done/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Done/ }));
     expect(props.onReview).toHaveBeenCalledWith("req_accept");
   });
 

@@ -5,6 +5,12 @@ import { afterEach, vi } from "vitest";
 
 afterEach(() => {
   toast.dismiss();
+  // jsdom retains focus on detached nodes after a test unmounts them; Radix treats the next focus as window blur.
+  const focusReset = document.createElement("button");
+  document.body.append(focusReset);
+  focusReset.focus();
+  focusReset.blur();
+  focusReset.remove();
   cleanup();
   localStorage.clear();
   sessionStorage.clear();

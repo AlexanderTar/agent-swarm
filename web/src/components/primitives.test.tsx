@@ -128,10 +128,11 @@ describe("MoveToMenu", () => {
     const user = userEvent.setup();
     render(<MoveToMenu item={story} onMove={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Move to…" }));
-    const done = screen.getByRole("menuitem", { name: /Done/ });
-    expect(done).toBeDisabled();
+    const done = await screen.findByRole("menuitem", { name: /Done/ });
+    expect(done).toHaveAttribute("aria-disabled", "true");
+    expect(done).toHaveAttribute("data-slot", "dropdown-menu-item");
     expect(done).toHaveTextContent("Couldn't move STORY-40 to Done. Complete all child tasks and their checkpoints first.");
-    expect(screen.getByRole("menuitem", { name: /Blocked/ })).toBeEnabled();
+    expect(screen.getByRole("menuitem", { name: /Blocked/ })).not.toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByRole("menuitem", { name: /^In review/ })).not.toBeInTheDocument();
   });
 

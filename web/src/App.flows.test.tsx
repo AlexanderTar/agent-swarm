@@ -22,7 +22,7 @@ describe("App flows", () => {
     expect(within(sheet).queryByText("Spikes start with an intent. Use New spike.")).not.toBeInTheDocument();
     await user.click(within(sheet).getByRole("button", { name: "Cancel" }));
     await user.click(screen.getByRole("button", { name: "New item" }));
-    await user.click(screen.getByRole("menuitem", { name: "Spike" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Spike" }));
     expect(await screen.findByText("Spikes start with an intent. Use New spike.")).toBeInTheDocument();
   });
 
@@ -39,7 +39,7 @@ describe("App flows", () => {
   it("creates a chore from New item and selects it (chore spec E16)", async () => {
     const { user } = renderWithDaemon(<App />, { daemon: roomy() });
     await user.click(await screen.findByRole("button", { name: "New item" }));
-    await user.click(screen.getByRole("menuitem", { name: "Chore" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Chore" }));
     const sheet = await screen.findByRole("dialog", { name: "New chore" });
     expect(within(sheet).queryByText("Spikes start with an intent. Use New spike.")).not.toBeInTheDocument();
     await user.type(within(sheet).getByRole("textbox", { name: "Name" }), "Bump deps");
@@ -52,7 +52,7 @@ describe("App flows", () => {
     const { user } = renderWithDaemon(<App />, { hash: "#/hierarchy?item=EPIC-12" });
     await screen.findByTestId("details-panel");
     await user.click(screen.getByRole("button", { name: "New item" }));
-    await user.click(screen.getByRole("menuitem", { name: "Story" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Story" }));
     const sheet = await screen.findByRole("dialog", { name: "New item" });
     expect(await within(sheet).findByRole("combobox", { name: "Parent" })).toHaveValue("EPIC-12");
     await user.type(within(sheet).getByRole("textbox", { name: "Title" }), "Two-factor");
@@ -82,7 +82,7 @@ describe("App flows", () => {
   it("routes an epic dropped on Done to its acceptance review", async () => {
     const { user } = renderWithDaemon(<App />, { hash: "#/kanban?level=top" });
     await user.click(await screen.findByRole("button", { name: "Move to… EPIC-12" }));
-    await user.click(screen.getByRole("menuitem", { name: /^Done/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Done/ }));
     expect(window.location.hash).toBe("#/inbox?level=top&req=req_accept");
     expect(await screen.findByRole("heading", { name: "Accept epic · EPIC-12 › Authentication" })).toBeInTheDocument();
   });
