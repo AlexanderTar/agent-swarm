@@ -128,6 +128,7 @@ export const C = {
   addTask: "Add task",
   back: "← Back",
   cancel: "Cancel",
+  keepRunning: "Keep running",
   tryAgain: "Try again",
   review: "Review",
   answer: "Answer",

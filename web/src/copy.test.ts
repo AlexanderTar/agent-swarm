@@ -36,7 +36,7 @@ describe("copy (§17)", () => {
   });
 
   it("has the in-flight pause/resume labels", () => {
-    expect(C).toMatchObject({ pausing: "Pausing…", resuming: "Resuming…" });
+    expect(C).toMatchObject({ pausing: "Pausing…", resuming: "Resuming…", keepRunning: "Keep running" });
   });
 
   it("has the Needs-you generic row copy", () => {

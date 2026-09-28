@@ -3,10 +3,14 @@ import { errorText } from "../api";
 import { C, ROLE_LABEL, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
 import { type AgentAction, agentActions, displayState, isFinished } from "../logic/agentActions";
+import { agentActionToast } from "../logic/toasts";
 import type { AgentEndpoint, AgentNode } from "../types";
 import { AgentIcon } from "./icons";
 import { StateDot } from "./StatusLabel";
 import { useToast } from "./Toast";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog";
+import { Button } from "./ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 
 export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: number }) {
   const { connected } = useConnection();
@@ -17,14 +21,15 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
   );
   // `act.pending` clears before the refetch lands, so remember the click until the agent's state moves.
   const [requested, setRequested] = useState<AgentEndpoint | null>(null);
+  const [confirming, setConfirming] = useState<AgentAction | null>(null);
   // Keyed on the raw session state: displayState also flips on waiting/stale flags without the pause landing.
   const sessionState = agent.session?.state;
   useEffect(() => setRequested(null), [sessionState]);
   const onAction = async (a: AgentAction) => {
-    if (a.confirm && !window.confirm(a.confirm)) return;
     if (a.endpoint === "pause" || a.endpoint === "resume") setRequested(a.endpoint);
     try {
       await act.run(a.endpoint, a.body);
+      toast.success(agentActionToast(a.endpoint, agent.name, a.body?.scope));
     } catch (e) {
       setRequested(null);
       // F20 / contracts §2: reuse errorText rather than an inline `instanceof ApiError` ternary.
@@ -52,18 +57,28 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
         {agentActions(agent).map((a) => {
           const inFlight = a.endpoint === requested;
           return (
-            <button
+            <Button
               key={a.endpoint}
               type="button"
+              variant={a.endpoint === "cancel" ? "destructive" : "outline"}
+              size="sm"
               disabled={a.disabled || inFlight || !connected || act.pending}
-              onClick={() => void onAction(a)}
-              className="rounded border border-line px-1.5 py-0.5 hover:bg-raised disabled:opacity-50"
+              onClick={() => a.confirm ? setConfirming(a) : void onAction(a)}
             >
               {inFlight ? (requested === "pause" ? C.pausing : C.resuming) : a.label}
-            </button>
+            </Button>
           );
         })}
       </div>
+      <AlertDialog open={confirming !== null} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogTitle>{confirming?.confirm}</AlertDialogTitle></AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{C.keepRunning}</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => { const action = confirming; setConfirming(null); if (action) void onAction(action); }}>{C.cancel}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -71,10 +86,10 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
 function Finished({ agents, depth }: { agents: AgentNode[]; depth: number }) {
   if (agents.length === 0) return null;
   return (
-    <details style={{ paddingLeft: depth * 16 }}>
-      <summary className="cursor-pointer text-muted-foreground">{T.finished(agents.length)}</summary>
-      {agents.map((a) => <AgentRow key={a.id} agent={a} />)}
-    </details>
+    <Collapsible style={{ paddingLeft: depth * 16 }}>
+      <CollapsibleTrigger asChild><Button variant="ghost" size="sm">{T.finished(agents.length)}</Button></CollapsibleTrigger>
+      <CollapsibleContent>{agents.map((a) => <AgentRow key={a.id} agent={a} />)}</CollapsibleContent>
+    </Collapsible>
   );
 }
 
