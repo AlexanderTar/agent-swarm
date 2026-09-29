@@ -28,6 +28,31 @@ beforeEach(() => {
 });
 
 describe("Details panel (§16.9)", () => {
+  it("uses styled editors and inline actions with focus and disabled affordances", async () => {
+    const disconnected = setup("EPIC-12", { connected: false });
+    const title = await screen.findByRole("button", { name: "Authentication" });
+    expect(title).toHaveAttribute("data-slot", "button");
+    expect(title).toHaveClass("focus-visible:ring-ring/50");
+    expect(title).toBeDisabled();
+    const artifact = screen.getByRole("button", { name: "Spec · rev 3 · View" });
+    expect(artifact).toHaveAttribute("data-variant", "link");
+    expect(artifact).toHaveClass("h-auto", "p-0");
+
+    disconnected.unmount();
+    const connected = setup("TASK-103");
+    await connected.user.click(await screen.findByRole("button", { name: "Password reset form" }));
+    const input = screen.getByRole("textbox", { name: "Title" });
+    expect(input).toHaveAttribute("data-slot", "input");
+    expect(input).toHaveClass("focus-visible:ring-ring/50");
+    connected.unmount();
+
+    const brief = setup("TASK-103");
+    await brief.user.click(await screen.findByRole("button", { name: "Brief" }));
+    expect(screen.getByRole("textbox", { name: "Brief" })).toHaveAttribute("data-slot", "textarea");
+    expect(screen.getByRole("textbox", { name: "Brief" })).toHaveClass("focus-visible:ring-ring/50");
+    brief.unmount();
+  });
+
   it("shows workflow runs from the item detail payload and opens their terminal", async () => {
     const d = createMockDaemon();
     const base = d.handle({ method: "GET", url: "/api/items/TASK-103", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;

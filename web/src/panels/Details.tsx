@@ -9,8 +9,11 @@ import { useToast } from "../components/Toast";
 import { WorkflowSection } from "../components/WorkflowSection";
 import { Alert } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T, TYPE_LABEL } from "../copy";
 import { useInvalidate, useMutation } from "../data/hooks";
 import { qk, useItemDetail } from "../data/queries";
@@ -51,16 +54,17 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
   }, [editing]);
   if (!editing) {
     return (
-      <button
+      <Button
         ref={trigger}
         type="button"
+        variant="ghost"
         aria-label={p.multiline ? p.label : undefined}
         disabled={p.disabled}
         onClick={() => { setDraft(p.value); setEditing(true); }}
-        className={`block w-full whitespace-pre-wrap text-left ${p.className ?? ""}`}
+        className={`h-auto w-full justify-start whitespace-pre-wrap p-1 text-left ${p.className ?? ""}`}
       >
         {p.value || <span className="text-muted-foreground">—</span>}
-      </button>
+      </Button>
     );
   }
   const common = {
@@ -69,12 +73,11 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
     value: draft,
     maxLength: p.maxLength,
     onBlur: save,
-    className: "w-full rounded border border-border bg-background px-2 py-1",
   };
   return p.multiline ? (
-    <textarea {...common} rows={4} onChange={(e) => setDraft(e.target.value)} />
+    <Textarea {...common} rows={4} onChange={(e) => setDraft(e.target.value)} />
   ) : (
-    <input {...common} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+    <Input {...common} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
   );
 }
 
@@ -114,13 +117,13 @@ export function Details(p: DetailsProps) {
     return (
       <Alert variant="destructive" className="m-4">
         {errorText(detail.error)}{" "}
-        <button type="button" className="text-link underline" onClick={() => detail.reload()}>
+        <Button type="button" variant="link" className="h-auto p-0" onClick={() => detail.reload()}>
           {C.retry}
-        </button>
+        </Button>
       </Alert>
     );
   }
-  if (!d) return <div className="space-y-3 p-4" aria-label={C.openDetails}>{[1, 2, 3].map((n) => <div key={n} className="h-3 animate-pulse rounded bg-muted" />)}</div>;
+  if (!d) return <div className="space-y-3 p-4" aria-label={C.openDetails}>{[1, 2, 3].map((n) => <div key={n} className="h-3 animate-pulse rounded bg-muted motion-reduce:animate-none" />)}</div>;
   const item = d.item;
 
   const save = async (body: Omit<PatchItemBody, "revision">): Promise<boolean> => {
@@ -225,16 +228,16 @@ export function Details(p: DetailsProps) {
             <div>
               <h4 className="text-muted-foreground">{C.artifacts}</h4>
               {d.artifacts.map((a) => (
-                <button key={a.id} type="button" onClick={() => setViewing({ id: a.id, revision: a.head_revision })} className="block text-link">
+                <Button key={a.id} type="button" variant="link" onClick={() => setViewing({ id: a.id, revision: a.head_revision })} className="block h-auto p-0">
                   {`${ARTIFACT_LABEL[a.kind]} · rev ${a.head_revision} · ${C.view}`}
-                </button>
+                </Button>
               ))}
             </div>
           )}
           {item.origin_spike_key && (
-            <button type="button" onClick={() => p.onSelect(item.origin_spike_key ?? "")} className="text-link">
+            <Button type="button" variant="link" onClick={() => p.onSelect(item.origin_spike_key ?? "")} className="h-auto p-0">
               {T.startedFrom(item.origin_spike_key)}
-            </button>
+            </Button>
           )}
           {d.requests.length > 0 && (
             <section aria-label={C.needsYou} className="border-t border-border pt-3">
@@ -243,7 +246,7 @@ export function Details(p: DetailsProps) {
                 {[...d.requests].sort((a, b) => a.created_at - b.created_at).map((r) => (
                   <li key={r.id} className="flex items-center justify-between gap-2">
                     <span className="truncate">{requestTitle(r)}</span>
-                    <button type="button" onClick={() => p.onReview(r.id)} className="text-link">{C.review}</button>
+                    <Button type="button" variant="link" onClick={() => p.onReview(r.id)} className="h-auto p-0">{C.review}</Button>
                   </li>
                 ))}
               </ul>
@@ -263,7 +266,7 @@ export function Details(p: DetailsProps) {
             <p>
               {`${C.blockedBy}: `}
               {d.deps.blocked_by.map((b: Item, i) => (
-                <span key={b.key}>{i > 0 && ", "}<button type="button" onClick={() => p.onSelect(b.key)} className="text-link">{`${b.key} (${STATUS_LABEL[b.status]})`}</button></span>
+                <span key={b.key}>{i > 0 && ", "}<Button type="button" variant="link" onClick={() => p.onSelect(b.key)} className="h-auto p-0">{`${b.key} (${STATUS_LABEL[b.status]})`}</Button></span>
               ))}
             </p>
           )}
@@ -271,7 +274,7 @@ export function Details(p: DetailsProps) {
             <p>
               {`${C.blocks}: `}
               {d.deps.blocks.map((b: Item, i) => (
-                <span key={b.key}>{i > 0 && ", "}<button type="button" onClick={() => p.onSelect(b.key)} className="text-link">{b.key}</button></span>
+                <span key={b.key}>{i > 0 && ", "}<Button type="button" variant="link" onClick={() => p.onSelect(b.key)} className="h-auto p-0">{b.key}</Button></span>
               ))}
             </p>
           )}
@@ -282,20 +285,20 @@ export function Details(p: DetailsProps) {
       {topLevel && open && (
         <div className="border-t border-border pt-3">
           {orchestrator ? (
-            <button
+            <Button
               type="button"
+              variant="outline"
               onClick={() => {
                 if (tab === "agents") document.getElementById(`agent-${orchestrator.name}`)?.scrollIntoView?.({ block: "center" });
                 else { pendingAgentScroll.current = orchestrator.name; setTab("agents"); }
               }}
-              className="rounded border border-border px-3 py-1"
             >
               {C.viewOrchestrator}
-            </button>
+            </Button>
           ) : (
-            <button type="button" disabled={!p.connected} onClick={() => p.onStartOrchestrator(item)} className="rounded bg-primary px-3 py-1 text-white disabled:opacity-50">
+            <Button type="button" disabled={!p.connected} onClick={() => p.onStartOrchestrator(item)}>
               {C.startOrchestrator}
-            </button>
+            </Button>
           )}
         </div>
       )}
