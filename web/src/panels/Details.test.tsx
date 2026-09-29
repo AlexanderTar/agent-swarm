@@ -34,13 +34,52 @@ describe("Details panel (§16.9)", () => {
       ...real,
       body: { ...(real.body as object), todos: [
         { id: "TASK-101", label: "TASK-101 · Login form", status: "in_progress", item_key: "TASK-101" },
-        { id: "integrate", label: "Merge + verify", status: "pending" },
+        { id: "integrate", label: "Merging and verifying", status: "pending" },
       ] },
     }));
     const { user, props } = setup("EPIC-12", {}, d);
     expect(await screen.findByRole("heading", { name: "Progress 0/2" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "TASK-101 · Login form" }));
     expect(props.onSelect).toHaveBeenCalledWith("TASK-101");
+  });
+
+  describe("Awaiting merge block", () => {
+    const todos = [
+      { id: "TASK-101", label: "TASK-101 · Login form", status: "completed", item_key: "TASK-101" },
+      { id: "integrate", label: "Merging and verifying", status: "completed" },
+    ];
+    const merge = { repo: "endurio-chat", kind: "pr", url: "https://github.com/o/endurio-chat/pull/9", number: 9, base: "main", head: "epic/epic-12", auto_merge: true, state: "open", checks: "pending" };
+    function withDetail(extra: Record<string, unknown>, status = "in_review") {
+      const d = createMockDaemon();
+      const real = d.handle({ method: "GET", url: "/api/items/EPIC-12", headers: { authorization: `Bearer ${d.db.token}` } });
+      const body = real.body as { item: object };
+      d.override("GET /api/items/EPIC-12", () => ({ ...real, body: { ...body, item: { ...body.item, status }, todos, ...extra } }));
+      return d;
+    }
+
+    it("renders above Progress while in review", async () => {
+      setup("EPIC-12", {}, withDetail({ merges: [merge] }));
+      const heading = await screen.findByRole("heading", { name: "Awaiting merge" });
+      expect(heading.compareDocumentPosition(screen.getByRole("heading", { name: "Progress 2/2" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("waits for the orchestrator with no merges yet", async () => {
+      setup("EPIC-12", {}, withDetail({ merges: [] }));
+      expect(await screen.findByText("Awaiting merge — waiting for the orchestrator to open PRs.")).toBeInTheDocument();
+    });
+
+    it("is absent without a merges key", async () => {
+      setup("EPIC-12", {}, withDetail({}));
+      await screen.findByRole("heading", { name: "Progress 2/2" });
+      expect(screen.queryByRole("heading", { name: "Awaiting merge" })).toBeNull();
+      expect(screen.queryByText(/waiting for the orchestrator/)).toBeNull();
+    });
+
+    it("is absent once done", async () => {
+      setup("EPIC-12", {}, withDetail({ merges: [merge] }, "done"));
+      await screen.findByRole("heading", { name: "Progress 2/2" });
+      expect(screen.queryByRole("heading", { name: "Awaiting merge" })).toBeNull();
+    });
   });
 
   it("has no Progress block without todos", async () => {

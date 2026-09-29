@@ -215,6 +215,13 @@ func (s *Spawner) RenameWindow(ctx context.Context, name, title string) error {
 	return err
 }
 
+// RenameSession renames a live session. oldName uses the exact-match "=name"
+// form, so renaming "login" never hits "login-2".
+func (s *Spawner) RenameSession(ctx context.Context, oldName, newName string) error {
+	_, err := s.run(ctx, "rename-session", "-t", "="+oldName, newName)
+	return err
+}
+
 // Env reads one variable from the session environment. §10.5 uses it to confirm a
 // pane's SWARM_SESSION before killing it, so a newer generation is never killed.
 func (s *Spawner) Env(ctx context.Context, name, key string) (string, error) {

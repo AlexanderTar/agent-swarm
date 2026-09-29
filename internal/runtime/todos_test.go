@@ -87,7 +87,7 @@ func TestTodosEpicTreeOrderAndStatusMapping(t *testing.T) {
 	if got[1].Label != t1.Key+" · One" || got[1].ItemKey != t1.Key {
 		t.Fatalf("task entry = %+v", got[1])
 	}
-	if got[4].Label != "Merge + verify" || got[5].Label != "User acceptance" || got[4].ItemKey != "" {
+	if got[4].Label != "Merging and verifying" || got[5].Label != "Finishing: PR or merge" || got[4].ItemKey != "" {
 		t.Fatalf("fixed entries = %+v %+v", got[4], got[5])
 	}
 }
@@ -119,12 +119,12 @@ func TestTodosChoreWithZeroTasks(t *testing.T) {
 	ctx := context.Background()
 	ch := seedTopLevelItem(t, s, items.Chore)
 	got := mustTodos(t, s, ch.ID)
-	if !reflect.DeepEqual(todoIDs(got), []string{"work", "integrate", "accept"}) ||
-		!reflect.DeepEqual(todoStatuses(got), []TodoStatus{TodoInProgress, TodoPending, TodoPending}) {
+	if !reflect.DeepEqual(todoIDs(got), []string{"context", "work", "integrate", "accept"}) ||
+		!reflect.DeepEqual(todoStatuses(got), []TodoStatus{TodoInProgress, TodoPending, TodoPending, TodoPending}) {
 		t.Fatalf("got %+v", got)
 	}
-	if got[0].Label != "Do the work" {
-		t.Fatalf("work label = %q", got[0].Label)
+	if got[0].Label != "Gathering context" || got[1].Label != "Making the changes" {
+		t.Fatalf("labels = %q / %q", got[0].Label, got[1].Label)
 	}
 	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ch.Key, Kind: Fake, Model: "fake-1"})
 	if err != nil {
@@ -134,14 +134,33 @@ func TestTodosChoreWithZeroTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	insertCheckpoint(t, s, ses.ID, orch.ID, ch.ID, "progress", nil)
+	if st := todoStatuses(mustTodos(t, s, ch.ID)); !reflect.DeepEqual(st, []TodoStatus{TodoCompleted, TodoInProgress, TodoPending, TodoPending}) {
+		t.Fatalf("after progress: %v", st)
+	}
 	insertCheckpoint(t, s, ses.ID, orch.ID, ch.ID, "integrated", nil)
 	got = mustTodos(t, s, ch.ID)
-	if !reflect.DeepEqual(todoStatuses(got), []TodoStatus{TodoCompleted, TodoCompleted, TodoInProgress}) {
+	if !reflect.DeepEqual(todoStatuses(got), []TodoStatus{TodoCompleted, TodoCompleted, TodoCompleted, TodoInProgress}) {
 		t.Fatalf("after integrated: %v", todoStatuses(got))
 	}
 	execSQL(t, s, `UPDATE items SET status = 'done' WHERE id = ?`, ch.ID)
-	if st := todoStatuses(mustTodos(t, s, ch.ID)); st[2] != TodoCompleted {
-		t.Fatalf("accept after done = %s", st[2])
+	if st := todoStatuses(mustTodos(t, s, ch.ID)); st[3] != TodoCompleted {
+		t.Fatalf("accept after done = %s", st[3])
+	}
+}
+
+func TestTodosChoreContextCompletesWithATask(t *testing.T) {
+	s, _, _ := newStore(t)
+	ch := seedTopLevelItem(t, s, items.Chore)
+	task := mkItem(t, s, items.Task, ch.Key, "Bump")
+	got := mustTodos(t, s, ch.ID)
+	if !reflect.DeepEqual(todoIDs(got), []string{"context", task.Key, "integrate", "accept"}) || got[0].Status != TodoCompleted {
+		t.Fatalf("got %+v", got)
+	}
+	execSQL(t, s, `UPDATE items SET status = 'cancelled' WHERE id = ?`, task.ID)
+	got = mustTodos(t, s, ch.ID)
+	if !reflect.DeepEqual(todoIDs(got), []string{"context", "work", "integrate", "accept"}) || got[0].Status != TodoInProgress {
+		t.Fatalf("cancelled task: %+v", got)
 	}
 }
 
@@ -154,7 +173,7 @@ func TestTodosFeatureSpikeUsesStoredReportsAndDaemonFacts(t *testing.T) {
 	if !reflect.DeepEqual(todoIDs(got), want) {
 		t.Fatalf("ids = %v", todoIDs(got))
 	}
-	if got[0].Label != "Frame the request" || got[6].Label != "Plan approval + materialize" {
+	if got[0].Label != "Understanding the request" || got[6].Label != "Reviewing the plan and setting up tasks" {
 		t.Fatalf("labels = %q / %q", got[0].Label, got[6].Label)
 	}
 	insertCheckpoint(t, s, ses.ID, ses.AgentID, spikeID, "progress",
@@ -188,6 +207,9 @@ func TestTodosDebugSpikeAndNoListCases(t *testing.T) {
 	want := []string{"frame", "evidence", "root_cause", "report", "plan", "critic", "approve"}
 	if got := todoIDs(mustTodos(t, s, sp.ID)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("debug ids = %v", got)
+	}
+	if got := mustTodos(t, s, sp.ID)[0].Label; got != "Understanding the problem" {
+		t.Fatalf("debug frame label = %q", got)
 	}
 	execSQL(t, s, `UPDATE items SET spike_intent = 'chore' WHERE id = ?`, sp.ID)
 	if got := mustTodos(t, s, sp.ID); got != nil {

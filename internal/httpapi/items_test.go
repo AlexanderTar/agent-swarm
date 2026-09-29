@@ -208,8 +208,8 @@ func TestPatchItem(t *testing.T) {
 		t.Fatalf("move = %d %s", status, b)
 	}
 	status, b = e.api("PATCH", "/api/items/EPIC-1", map[string]any{"status": "done", "revision": 3})
-	wantErr(t, status, b, 422, "transition_denied", "Accept this epic to mark it Done.")
-	if decode[errBody](t, b).Error.Reason != "Accept this epic to mark it Done." {
+	wantErr(t, status, b, 422, "transition_denied", "Finish this epic to mark it Done.")
+	if decode[errBody](t, b).Error.Reason != "Finish this epic to mark it Done." {
 		t.Fatalf("reason missing: %s", b)
 	}
 	status, b = e.api("PATCH", "/api/items/EPIC-1", "not an object")
@@ -470,4 +470,47 @@ func TestItemDetailIncludesWorkflowState(t *testing.T) {
 		return
 	}
 	t.Fatalf("flowed task missing from flat list")
+}
+
+// finish-with-pr: item detail carries merges once the finish is approved; the root orchestrator's node carries merge progress.
+func TestItemDetailMergesAndAgentMergeProgress(t *testing.T) {
+	s, seed, epicID, ckpID, repoID := newFinishServer(t, "")
+	agentID := agentIDByName(t, s, seed.AgentName)
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE agents SET role = 'orchestrator', item_id = ?, root_item_id = ?, parent_agent_id = NULL
+		WHERE id = ?`, epicID, epicID, agentID); err != nil {
+		t.Fatal(err)
+	}
+	var binding string
+	s.s.DB.QueryRowContext(bg, `SELECT binding_json FROM requests WHERE id = ?`, seed.AcceptID).Scan(&binding)
+	if rec := s.post(t, "/api/requests/"+seed.AcceptID+"/approve", `{"binding":`+binding+`,"merge":"local","via":"board"}`); rec.Code != 200 {
+		t.Fatalf("approve = %d: %s", rec.Code, rec.Body)
+	}
+	type detail struct {
+		Merges json.RawMessage `json:"merges"`
+		Agents []struct {
+			ID    string          `json:"id"`
+			Merge json.RawMessage `json:"merge"`
+		} `json:"agents"`
+	}
+	get := func() detail {
+		var d detail
+		json.Unmarshal(s.get(t, "/api/items/"+seed.EpicKey).Body.Bytes(), &d)
+		return d
+	}
+	d := get()
+	if string(d.Merges) != `[]` {
+		t.Fatalf("merges before finishing = %s", d.Merges)
+	}
+	if len(d.Agents) != 1 || string(d.Agents[0].Merge) != `{"merged":0,"total":1}` {
+		t.Fatalf("agents = %+v", d.Agents)
+	}
+	if _, err := s.s.DB.ExecContext(bg, `INSERT INTO item_merges (id, item_id, integrated_checkpoint, repo, repo_id, kind,
+		base, head, auto_merge, state, merged_sha, created_at) VALUES ('mrg_1', ?, ?, 'web', ?, 'local', 'main', 'swarm/epic', 0, 'open', NULL, 1)`,
+		epicID, ckpID, repoID); err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"repo":"web","kind":"local","base":"main","head":"swarm/epic","auto_merge":false,"state":"open","checks":""}]`
+	if d := get(); string(d.Merges) != want {
+		t.Fatalf("merges = %s", d.Merges)
+	}
 }

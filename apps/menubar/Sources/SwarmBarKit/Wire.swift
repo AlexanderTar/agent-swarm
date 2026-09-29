@@ -75,6 +75,13 @@ public struct AgentProgress: Codable, Sendable, Equatable {
     }
 }
 
+/// Merge progress of a top-level orchestrator's root awaiting merge.
+public struct MergeProgress: Codable, Sendable, Equatable {
+    public let merged: Int
+    public let total: Int
+    public init(merged: Int, total: Int) { self.merged = merged; self.total = total }
+}
+
 public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var name: String
@@ -96,11 +103,12 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var replacement: AgentReplacement?
     public var preflightError: String?
     public var progress: AgentProgress?
+    public var merge: MergeProgress?
     public var children: [AgentNode]
     public var finished: [AgentNode]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, model, effort, role, step, state, session, replacement, children, finished, progress
+        case id, name, kind, model, effort, role, step, state, session, replacement, children, finished, progress, merge
         case itemKey = "item_key", itemTitle = "item_title", rootKey = "root_key"
         case parentName = "parent_name", preflightError = "preflight_error"
     }
@@ -111,7 +119,7 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
                 rootKey: String = "EPIC-1", parentName: String? = nil, state: AgentState = .active,
                 session: SessionInfo? = SessionInfo(state: .running),
                 replacement: AgentReplacement? = nil, preflightError: String? = nil,
-                progress: AgentProgress? = nil,
+                progress: AgentProgress? = nil, merge: MergeProgress? = nil,
                 children: [AgentNode] = [], finished: [AgentNode] = []) {
         self.id = id; self.name = name; self.kind = kind; self.model = model; self.effort = effort
         self.role = role; self.step = step
@@ -119,6 +127,7 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
         self.parentName = parentName; self.state = state; self.session = session
         self.replacement = replacement
         self.preflightError = preflightError; self.progress = progress
+        self.merge = merge
         self.children = children; self.finished = finished
     }
 }

@@ -161,6 +161,10 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE sessions DROP COLUMN todos_sent_hash`); err != nil {
 		t.Fatal(err)
 	}
+	// 0022_item_merges.sql creates item_merges with plain CREATE TABLE.
+	if _, err := raw.Exec(`DROP TABLE item_merges`); err != nil {
+		t.Fatal(err)
+	}
 	// 0014_agent_continuity.sql likewise creates its tables with plain
 	// CREATE TABLE, so replaying it must not find them already there.
 	if _, err := raw.Exec(`DROP TABLE agent_operations`); err != nil {

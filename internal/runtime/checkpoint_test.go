@@ -2600,3 +2600,99 @@ func TestIntegratedNeedsFinalReviewPass(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// spec "Agent name follows the agent-authored title": a generated orchestrator
+// name follows the title the agent chose on its first accepted checkpoint.
+func TestAcceptedTitleRenamesAGeneratedOrchestrator(t *testing.T) {
+	s, tm, _ := newStore(t)
+	ctx := context.Background()
+	a, ses, _ := titlePendingSpike(t, s) // generated name "fix-the-login-redirect"
+	old := a.Name
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "starting",
+		Title: "Fix login redirect loop"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.AgentByID(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "fix-login-redirect-loop" {
+		t.Fatalf("name = %q", got.Name)
+	}
+	if !slices.Contains(tm.sessRenamed, old+"|fix-login-redirect-loop") {
+		t.Fatalf("tmux renames = %v", tm.sessRenamed)
+	}
+	ses2, _ := s.LatestSession(ctx, a.ID)
+	if ses2.TmuxName != "fix-login-redirect-loop" {
+		t.Fatalf("tmux_name = %q", ses2.TmuxName)
+	}
+	var n int
+	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE type = 'agent.changed'
+		AND json_extract(payload_json,'$.name') = 'fix-login-redirect-loop'`).Scan(&n)
+	if n == 0 {
+		t.Fatal("no agent.changed for the new name")
+	}
+}
+
+func TestAcceptedTitleNeverRenamesATypedName(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	_, a, _, err := s.StartSpike(ctx, SpikeInput{Name: "Login work", Intent: "feature", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, a.ID)
+	res, _ := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "s", Title: "Fix login redirect loop"})
+	if res.TitleApplied {
+		t.Fatal("typed-name spike has no pending title")
+	}
+	if got, _ := s.AgentByID(ctx, a.ID); got.Name != "login-work" {
+		t.Fatalf("name = %q", got.Name)
+	}
+}
+
+func TestAcceptedTitleRenameGetsASuffixOnCollision(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	if _, _, _, err := s.StartSpike(ctx, SpikeInput{Name: "fix login redirect loop", Intent: "feature", Kind: Fake, Model: "fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	a, ses, _ := titlePendingSpike(t, s)
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "s", Title: "Fix login redirect loop"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.AgentByID(ctx, a.ID); got.Name != "fix-login-redirect-loop-2" {
+		t.Fatalf("name = %q", got.Name)
+	}
+}
+
+func TestMessagesToTheRenamedOrchestratorReachIt(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	a, ses, key := titlePendingSpike(t, s)
+	child, _, err := s.Spawn(ctx, SpawnInput{ItemKey: key, Role: RoleResearcher, Kind: Fake, Model: "fake-1",
+		ParentAgentID: a.ID, Brief: BriefInput{Objective: "look around"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSes := mustSessionID(t, s, child.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: Accepted, Summary: "s", Title: "Fix login redirect loop"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.Send(ctx, childSes, "fix-login-redirect-loop", "finding", "hi", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var to string
+	s.DB.QueryRowContext(ctx, `SELECT to_agent_id FROM messages WHERE id = ?`, id).Scan(&to)
+	if to != a.ID {
+		t.Fatalf("to_agent_id = %q, want %q", to, a.ID)
+	}
+	if _, err := s.Send(ctx, childSes, "parent", "finding", "via alias", "", ""); err != nil {
+		t.Fatalf("parent alias after rename: %v", err)
+	}
+	if _, err := s.Send(ctx, childSes, "fix-the-login-redirect", "finding", "old name", "", ""); err == nil ||
+		err.Error() != "No agent fix-the-login-redirect." {
+		t.Fatalf("old name err = %v", err)
+	}
+}

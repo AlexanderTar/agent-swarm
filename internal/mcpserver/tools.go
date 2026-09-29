@@ -103,7 +103,7 @@ func syncTool(s *Server) ToolDef {
 func checkpointTool(s *Server) ToolDef {
 	return ToolDef{
 		Name:        "swarm_checkpoint",
-		Description: "Record progress: accepted, progress, blocked, handoff, completed or failed, with the verification evidence TDD requires.",
+		Description: "Record progress: accepted, progress, blocked, handoff, completed, failed, integrated or finishing, with the verification evidence TDD requires.",
 		Schema: objSchemaRequired(`"kind":{"type":"string"},"item":{"type":"string"},"summary":{"type":"string"},
 			"resolution":{"type":"string"},"next":{"type":"array"},"blockers":{"type":"array"},
 			"git":{"type":"array","items":{"type":"object","properties":{
@@ -123,24 +123,28 @@ func checkpointTool(s *Server) ToolDef {
 				"line":{"type":"integer"},
 				"unit":{"type":"integer"},"summary":{"type":"string"}},
 				"required":["severity","summary"]}},
+			"prs":{"type":"array","items":{"type":"object","properties":{"repo":{"type":"string"},"url":{"type":"string"}},"required":["repo","url"]},"description":"kind finishing: one PR per repo with a GitHub remote."},
+			"merged":{"type":"array","items":{"type":"object","properties":{"repo":{"type":"string"},"sha":{"type":"string"}},"required":["repo","sha"]},"description":"kind finishing: one local merge per repo without a GitHub remote; sha is the default-branch commit containing the integrated sha."},
 			"request_id":{"type":"string"}`, []string{"kind", "summary"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Kind         string               `json:"kind"`
-				ItemKey      string               `json:"item"`
-				Summary      string               `json:"summary"`
-				Resolution   string               `json:"resolution"`
-				Next         []string             `json:"next"`
-				Blockers     []string             `json:"blockers"`
-				Git          []runtime.GitRef     `json:"git"`
-				Verification []runtime.Verify     `json:"verification"`
-				Artifacts    []string             `json:"artifacts"`
-				Processed    []string             `json:"processed"`
-				Verdict      string               `json:"verdict"`
-				Findings     []workflow.Finding   `json:"findings"`
-				RequestID    string               `json:"request_id"`
-				Title        string               `json:"title"`
-				Todos        []runtime.TodoReport `json:"todos"`
+				Kind         string                 `json:"kind"`
+				ItemKey      string                 `json:"item"`
+				Summary      string                 `json:"summary"`
+				Resolution   string                 `json:"resolution"`
+				Next         []string               `json:"next"`
+				Blockers     []string               `json:"blockers"`
+				Git          []runtime.GitRef       `json:"git"`
+				Verification []runtime.Verify       `json:"verification"`
+				Artifacts    []string               `json:"artifacts"`
+				Processed    []string               `json:"processed"`
+				Verdict      string                 `json:"verdict"`
+				Findings     []workflow.Finding     `json:"findings"`
+				RequestID    string                 `json:"request_id"`
+				Title        string                 `json:"title"`
+				Todos        []runtime.TodoReport   `json:"todos"`
+				PRs          []runtime.FinishPR     `json:"prs"`
+				Merged       []runtime.FinishMerged `json:"merged"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -151,6 +155,7 @@ func checkpointTool(s *Server) ToolDef {
 				Git: in.Git, Verification: in.Verification, Artifacts: in.Artifacts, Processed: in.Processed,
 				Verdict: in.Verdict, Findings: in.Findings,
 				RequestID: in.RequestID, Title: in.Title, Todos: in.Todos,
+				PRs: in.PRs, Merged: in.Merged,
 			})
 			if err != nil {
 				return nil, err
@@ -191,7 +196,7 @@ func askTool(s *Server) ToolDef {
 				"required":["repo","reason"]}},
 			"for_msg":{"type":"string","description":"kind native_prompt: the msg_id of a child's approval question addressed to you"},
 			"ref":{"type":"string","description":"kind native_answer: the request_id or msg_id a native_prompt was issued for"},
-			"decision":{"type":"string","enum":["approve","request_changes"],"description":"kind native_answer: the user's observed decision"},
+			"decision":{"type":"string","enum":["approve","request_changes","auto_merge","manual_merge","merge_locally"],"description":"kind native_answer: the user's observed decision; finish requests use auto_merge, manual_merge, merge_locally or request_changes"},
 			"comment":{"type":"string","description":"kind native_answer: free text for request_changes, or when the adapter reports no answer text"},
 			"answer_text":{"type":"string","description":"kind native_answer: exact nonempty native question tool return for Cursor and Muse only; cancellation is not submitted"},
 			"request_id":{"type":"string"}`,
@@ -243,7 +248,7 @@ func requestOut(r runtime.Request) map[string]any {
 		// 2026-09-26 fix (native-railway-tracing finding): a stale skill can
 		// bind the answer and never forward it, since nothing else in this
 		// result says there is a next step. Spell it out here too.
-		out["next"] = runtime.NativePromptNextStep(r.ID)
+		out["next"] = runtime.NativePromptNextStep(r.ID, runtime.PromptDecisions(r.Kind, *r.NativePrompt))
 	}
 	if r.ChatBlock != "" {
 		out["chat_block"] = r.ChatBlock

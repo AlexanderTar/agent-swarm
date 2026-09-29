@@ -61,6 +61,8 @@ type fakeTmux struct {
 	// succeeding -- used to test callers' handling of a tmux capture failure
 	// (e.g. WakeOnQuotaReset logging it rather than silently skipping).
 	captureErr error
+	// sessRenamed records RenameSession calls as "old|new".
+	sessRenamed []string
 }
 
 func newFakeTmux() *fakeTmux {
@@ -111,6 +113,14 @@ func (f *fakeTmux) Kill(ctx context.Context, name string) error {
 }
 func (f *fakeTmux) RenameWindow(ctx context.Context, name, title string) error {
 	f.renamed = append(f.renamed, name+"|"+title)
+	return nil
+}
+func (f *fakeTmux) RenameSession(ctx context.Context, oldName, newName string) error {
+	f.sessRenamed = append(f.sessRenamed, oldName+"|"+newName)
+	if e, ok := f.env[oldName]; ok {
+		f.env[newName] = e
+		delete(f.env, oldName)
+	}
 	return nil
 }
 
@@ -221,7 +231,7 @@ func (f *fakeNotifier) Raise(ctx context.Context, tx *sql.Tx, n NotifyInput) err
 		f.t.Fatalf("notify: unknown kind %q (fakeNotifier/notifyrules.Rules disagree with notify.Rules)", n.Kind)
 		return nil
 	}
-	for _, ph := range notifyrules.Placeholders(rule.Body) {
+	for _, ph := range append(notifyrules.Placeholders(rule.Title), notifyrules.Placeholders(rule.Body)...) {
 		if _, ok := n.Args[ph]; !ok {
 			f.t.Fatalf("notify: %s is missing %s (Args = %v)", n.Kind, ph, n.Args)
 		}

@@ -6,7 +6,7 @@ describe("requestTitle", () => {
   it("names each request kind", () => {
     const byId = Object.fromEntries(seed().requests.map((r) => [r.id, requestTitle(r)]));
     expect(byId).toEqual({
-      req_accept: "Accept epic",
+      req_accept: "Finish epic",
       req_question: "Which sync strategy?",
       req_q2: "Which validation library?",
       req_section: 'Approve "Data model"',
@@ -14,7 +14,7 @@ describe("requestTitle", () => {
       req_report: "Approve report",
       req_close: "Close spike?",
       req_repos: "Confirm 2 repositories",
-      req_fix: "Accept fix",
+      req_fix: "Finish fix",
     });
     const long = { ...seed().requests[1]!, prompt: "x".repeat(100) };
     expect(requestTitle(long)).toHaveLength(80);

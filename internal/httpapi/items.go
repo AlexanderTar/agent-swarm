@@ -288,6 +288,20 @@ func (s *Server) getItem(w http.ResponseWriter, r *http.Request) {
 		if todos != nil {
 			out["todos"] = todos
 		}
+		if mp, err := s.RT.MergeProgressFor(ctx, it.ID); err != nil {
+			s.writeErr(w, err)
+			return
+		} else if mp != nil {
+			m, err := s.RT.Merges(ctx, it.ID)
+			if err != nil {
+				s.writeErr(w, err)
+				return
+			}
+			if m == nil {
+				m = []runtime.ItemMerge{}
+			}
+			out["merges"] = m
+		}
 		ws, hasWf, err := s.RT.WorkflowFor(ctx, key)
 		if err != nil {
 			s.writeErr(w, err)

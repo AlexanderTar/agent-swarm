@@ -1,5 +1,5 @@
 import { C, T } from "../copy";
-import type { AcceptBinding, ApproveBody, GitRef, Request, RequestKind } from "../types";
+import type { AcceptBinding, ApproveBody, GitRef, MergeChoice, Request, RequestKind } from "../types";
 import { ageAgo, sha7 } from "./format";
 
 export const SCOPE_LABEL: Record<RequestKind, string> = {
@@ -44,8 +44,8 @@ export function reviewHeader(r: Request, now = Date.now()) {
   return { title, by, revision: revisionLine(r) };
 }
 
-export function approveBody(r: Request): ApproveBody {
-  if (r.kind === "accept_epic" || r.kind === "accept_fix") return { binding: r.binding as AcceptBinding };
+export function approveBody(r: Request, merge?: MergeChoice): ApproveBody {
+  if (r.kind === "accept_epic" || r.kind === "accept_fix") return { binding: r.binding as AcceptBinding, merge };
   const body: ApproveBody = { artifact_revision: r.artifact_revision ?? undefined };
   return r.section_sha256 ? { section_sha256: r.section_sha256, ...body } : body;
 }

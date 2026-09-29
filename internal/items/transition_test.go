@@ -346,8 +346,8 @@ func TestEpicAcceptanceFlow(t *testing.T) {
 	if b.IntegratedCheckpoint != ckp || b.ItemRevision != mustGet(t, s, e.Key).Revision || string(b.Git) != gitJSON {
 		t.Fatalf("binding = %+v", b)
 	}
-	wantDenied(t, move(t, s, e.Key, items.Done, user), "Accept this epic to mark it Done.")
-	wantDenied(t, move(t, s, e.Key, items.Done, daemon), "Accept this epic to mark it Done.")
+	wantDenied(t, move(t, s, e.Key, items.Done, user), "Finish this epic to mark it Done.")
+	wantDenied(t, move(t, s, e.Key, items.Done, daemon), "Finish this epic to mark it Done.")
 
 	exec(t, s.DB, `UPDATE requests SET state = 'approved' WHERE item_id = ?`, e.ID)
 	s.Reconcile(ctx, e.Key)
@@ -418,7 +418,7 @@ func TestAcceptRequestsGoStale(t *testing.T) {
 	seedCheckpoint(t, s.DB, b, "integrated", 1, later(s), gitJSON)
 	s.Reconcile(ctx, b.Key)
 	wantStatus(t, s, b.Key, items.InReview)
-	wantDenied(t, move(t, s, b.Key, items.Done, user), "Accept this fix to mark it Done.")
+	wantDenied(t, move(t, s, b.Key, items.Done, user), "Finish this fix to mark it Done.")
 
 	// a newer integration replaces the request
 	second := seedCheckpoint(t, s.DB, b, "integrated", 1, later(s), gitJSON)
@@ -470,7 +470,7 @@ func TestAcceptRequestsGoStale(t *testing.T) {
 	exec(t, s.DB, `UPDATE items SET revision = revision + 1 WHERE id = ?`, b.ID)
 	s.Reconcile(ctx, b.Key)
 	wantStatus(t, s, b.Key, items.InProgress)
-	wantDenied(t, move(t, s, b.Key, items.Done, items.Daemon()), "Accept this fix to mark it Done.")
+	wantDenied(t, move(t, s, b.Key, items.Done, items.Daemon()), "Finish this fix to mark it Done.")
 }
 
 func TestEpicManualMoves(t *testing.T) {
@@ -757,7 +757,7 @@ func TestPatchStatusGoesThroughTransition(t *testing.T) {
 	}
 	done := items.Done
 	_, err = s.Update(ctx, e.Key, items.Patch{Status: &done, Revision: got.Revision}, user)
-	wantDenied(t, err, "Accept this epic to mark it Done.")
+	wantDenied(t, err, "Finish this epic to mark it Done.")
 	if _, err := s.Update(ctx, e.Key, items.Patch{Status: &done, Revision: e.Revision}, user); code(err) != items.CodeConflict {
 		t.Fatalf("stale revision: %v", err)
 	}
@@ -837,8 +837,8 @@ func TestChoreAcceptanceFlow(t *testing.T) {
 	if prompt != "Review the chore and accept it." {
 		t.Fatalf("prompt = %q", prompt)
 	}
-	wantDenied(t, move(t, s, ch.Key, items.Done, user), "Accept this chore to mark it Done.")
-	wantDenied(t, move(t, s, ch.Key, items.Done, items.Daemon()), "Accept this chore to mark it Done.")
+	wantDenied(t, move(t, s, ch.Key, items.Done, user), "Finish this chore to mark it Done.")
+	wantDenied(t, move(t, s, ch.Key, items.Done, items.Daemon()), "Finish this chore to mark it Done.")
 
 	exec(t, s.DB, `UPDATE requests SET state = 'approved' WHERE item_id = ?`, ch.ID)
 	s.Reconcile(ctx, ch.Key)
@@ -908,4 +908,153 @@ func TestDraftRootPromotionHonorsEarlierAccepted(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantStatus(t, s, fresh.Key, items.Ready)
+}
+
+const gitJSONAB = `[{"repo":"a","branch":"epic/epic-1-auth","sha":"aaa1111","dirty":false},` +
+	`{"repo":"b","branch":"epic/epic-1-auth","sha":"bbb2222","dirty":false},` +
+	`{"repo":"a","branch":"epic/epic-1-auth","sha":"aaa1111","dirty":false}]`
+
+// finishRoot builds an in_review root of typ (an epic or bug with a done task, or a
+// chore with none) whose newest integrated checkpoint names repos a and b, and returns it with that
+// checkpoint id. The open accept request is still open.
+func finishRoot(t *testing.T, s *items.Store, typ items.Type) (items.Item, string) {
+	t.Helper()
+	var root items.Item
+	if typ == items.Epic {
+		e, _, task := tree(t, s)
+		setStatus(t, s, task, items.Done)
+		s.Reconcile(ctx, task.Key)
+		root = e
+	} else {
+		root = mk(t, s, typ, "", "Root")
+		if typ == items.Bug { // a bug needs a finished task; a chore may have none
+			task := mk(t, s, items.Task, root.Key, "Fix")
+			setStatus(t, s, task, items.Done)
+		}
+		setStatus(t, s, root, items.Ready)
+	}
+	seedCheckpoint(t, s.DB, root, "accepted", 1, later(s), "")
+	s.Reconcile(ctx, root.Key)
+	ckp := seedCheckpoint(t, s.DB, root, "integrated", 1, later(s), gitJSONAB)
+	s.Reconcile(ctx, root.Key)
+	wantStatus(t, s, root.Key, items.InReview)
+	for _, r := range []string{"a", "b"} {
+		exec(t, s.DB, `INSERT OR IGNORE INTO repos (id, name, path, default_branch, source, created_at, updated_at)
+			VALUES (?, ?, ?, 'main', 'manual', 1, 1)`, "repo_"+r, r, "/tmp/"+r)
+	}
+	return mustGet(t, s, root.Key), ckp
+}
+
+func approveFinish(t *testing.T, s *items.Store, it items.Item, merge string) string {
+	t.Helper()
+	var id string
+	if err := s.DB.QueryRow(`SELECT id FROM requests WHERE item_id = ? AND state = 'open'`, it.ID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	b := `binding_json`
+	if merge != "" {
+		b = `json_set(binding_json, '$.merge', '` + merge + `')`
+	}
+	exec(t, s.DB, `UPDATE requests SET state = 'approved', agent_id = NULL, responded_at = ?, binding_json = `+b+` WHERE id = ?`, later(s), id)
+	return id
+}
+
+func insertMerge(t *testing.T, s *items.Store, it items.Item, ckp, repo, state string) {
+	t.Helper()
+	exec(t, s.DB, `INSERT INTO item_merges (id, item_id, integrated_checkpoint, repo, repo_id, kind, base, head, state, created_at)
+		VALUES (?, ?, ?, ?, ?, 'local', 'main', 'epic/epic-1-auth', ?, ?)`,
+		"mrg_"+repo+"_"+ckp, it.ID, ckp, repo, "repo_"+repo, state, later(s))
+}
+
+func TestFinishStatusRule(t *testing.T) {
+	cases := []struct {
+		name  string
+		merge string
+		rows  map[string]string
+		want  items.Status
+	}{
+		{"pre-0022 approval", "", nil, items.Done},
+		{"auto, no rows", "auto", nil, items.InReview},
+		{"auto, one of two merged", "auto", map[string]string{"a": "merged", "b": "open"}, items.InReview},
+		{"auto, both merged", "auto", map[string]string{"a": "merged", "b": "merged"}, items.Done},
+		{"manual, both merged", "manual", map[string]string{"a": "merged", "b": "merged"}, items.Done},
+		{"auto, one closed", "auto", map[string]string{"a": "closed"}, items.InProgress},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStore(t)
+			e, ckp := finishRoot(t, s, items.Epic)
+			approveFinish(t, s, e, c.merge)
+			for repo, st := range c.rows {
+				insertMerge(t, s, e, ckp, repo, st)
+			}
+			s.Reconcile(ctx, e.Key)
+			s.Reconcile(ctx, e.Key)
+			wantStatus(t, s, e.Key, c.want)
+			var n int
+			s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE item_id = ? AND kind = 'accept_epic'
+				AND json_extract(binding_json, '$.integrated_checkpoint') = ?`, e.ID, ckp).Scan(&n)
+			if n != 1 {
+				t.Fatalf("accept_epic rows for the checkpoint = %d, want 1", n)
+			}
+		})
+	}
+}
+
+func TestFinishOlderCheckpointRowsDoNotCount(t *testing.T) {
+	s := newStore(t)
+	ch, old := finishRoot(t, s, items.Chore)
+	exec(t, s.DB, `UPDATE requests SET state = 'changes_requested' WHERE item_id = ?`, ch.ID)
+	insertMerge(t, s, ch, old, "a", "merged")
+	insertMerge(t, s, ch, old, "b", "merged")
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.InProgress)
+	seedCheckpoint(t, s.DB, ch, "integrated", 1, later(s), gitJSONAB)
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.InReview)
+	approveFinish(t, s, mustGet(t, s, ch.Key), "auto")
+	s.Reconcile(ctx, ch.Key)
+	wantStatus(t, s, ch.Key, items.InReview)
+}
+
+func TestFinishDaemonDoneDeniedUntilMerged(t *testing.T) {
+	for typ, msg := range map[items.Type]string{
+		items.Epic:  "Finish this epic to mark it Done.",
+		items.Chore: "Finish this chore to mark it Done.",
+		items.Bug:   "Finish this fix to mark it Done.",
+	} {
+		t.Run(string(typ), func(t *testing.T) {
+			s := newStore(t)
+			it, ckp := finishRoot(t, s, typ)
+			approveFinish(t, s, it, "auto")
+			wantDenied(t, move(t, s, it.Key, items.Done, items.Daemon()), msg)
+			insertMerge(t, s, it, ckp, "a", "merged")
+			insertMerge(t, s, it, ckp, "b", "merged")
+			if err := move(t, s, it.Key, items.Done, items.Daemon()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestFinishApprovalTx(t *testing.T) {
+	s := newStore(t)
+	e, ckp := finishRoot(t, s, items.Epic)
+	if _, ok, err := s.FinishApprovalTx(ctx, s.DB, e.ID); err != nil || ok {
+		t.Fatalf("open request: ok = %v, err = %v", ok, err)
+	}
+	reqID := approveFinish(t, s, e, "auto")
+	agentID, _ := seedSession(t, s.DB, e, "running")
+	exec(t, s.DB, `UPDATE requests SET agent_id = ? WHERE id = ?`, agentID, reqID)
+	fa, ok, err := s.FinishApprovalTx(ctx, s.DB, e.ID)
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v", ok, err)
+	}
+	if fa.RequestID != reqID || fa.AgentID != agentID || fa.Merge != "auto" || fa.CheckpointID != ckp || string(fa.Git) != gitJSONAB {
+		t.Fatalf("fa = %+v", fa)
+	}
+	exec(t, s.DB, `UPDATE items SET revision = revision + 1 WHERE id = ?`, e.ID)
+	if _, ok, err := s.FinishApprovalTx(ctx, s.DB, e.ID); err != nil || ok {
+		t.Fatalf("revision moved: ok = %v, err = %v", ok, err)
+	}
 }

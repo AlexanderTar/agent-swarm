@@ -12,7 +12,7 @@ import { useArtifact, useCheckpoints, useItemDetail } from "../data/queries";
 import { ARTIFACT_LABEL } from "../logic/requestTitle";
 import { SCOPE_LABEL, approveBody, closeResolution, gitBindingLine, isApprovalKind, reviewHeader } from "../logic/review";
 import { verifyLine } from "../logic/timeline";
-import type { AcceptBinding, Request } from "../types";
+import type { AcceptBinding, MergeChoice, Request } from "../types";
 
 function Snapshot({ r }: { r: Request }) {
   const [full, setFull] = useState(false);
@@ -117,12 +117,13 @@ export function Review({ request: r, connected }: { request: Request; connected:
   const invalidate = useInvalidate();
   const toast = useToast();
   const decide = useMutation(
-    (api, kind: "approve" | "close") => (kind === "approve" ? api.approve(r.id, approveBody(r)) : api.closeSpike(r.id)),
+    (api, a: { kind: "approve" | "close"; merge?: MergeChoice }) =>
+      a.kind === "approve" ? api.approve(r.id, approveBody(r, a.merge)) : api.closeSpike(r.id),
     ["requests", "items", "item:"],
   );
-  const run = async (kind: "approve" | "close") => {
+  const run = async (kind: "approve" | "close", merge?: MergeChoice) => {
     try {
-      await decide.run(kind);
+      await decide.run({ kind, merge });
     } catch (e) {
       if (e instanceof ApiError && e.code === "conflict") {
         setStale(true);
@@ -148,14 +149,28 @@ export function Review({ request: r, connected }: { request: Request; connected:
 
       {(isApprovalKind(r.kind) || r.kind === "close_spike") && (
         <footer className="flex flex-wrap items-start gap-2 border-t border-line pt-3">
-          <button
-            type="button"
-            disabled={!connected || decide.pending}
-            onClick={() => void run(r.kind === "close_spike" ? "close" : "approve")}
-            className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
-          >
-            {SCOPE_LABEL[r.kind]}
-          </button>
+          {r.kind === "accept_epic" || r.kind === "accept_fix" ? (
+            r.finish_local ? (
+              <button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "local")}
+                className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">{C.mergeLocally}</button>
+            ) : (
+              <>
+                <button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "auto")}
+                  className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">{C.createPrAutoMerge}</button>
+                <button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "manual")}
+                  className="rounded border border-line px-3 py-1 disabled:opacity-50">{C.createPr}</button>
+              </>
+            )
+          ) : (
+            <button
+              type="button"
+              disabled={!connected || decide.pending}
+              onClick={() => void run(r.kind === "close_spike" ? "close" : "approve")}
+              className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
+            >
+              {SCOPE_LABEL[r.kind]}
+            </button>
+          )}
           <RequestChanges requestId={r.id} connected={connected} />
         </footer>
       )}

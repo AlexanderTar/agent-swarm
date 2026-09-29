@@ -98,6 +98,7 @@ type ApproveInput struct {
 	ArtifactRevision int
 	Binding          json.RawMessage // compared for accept_epic/accept_fix only
 	Via              string
+	Merge            string // accept_epic/accept_fix only: "auto" | "manual" | "local"
 }
 
 // RequestWire is the contracts §3.3 Request. It is the payload of request.opened
@@ -133,6 +134,8 @@ type RequestWire struct {
 	// row is still open: Needs you hides the approval row in that window,
 	// because the open question row already represents it (spec 2.2.1, Task 13e).
 	NativePending bool `json:"native_pending"`
+	// FinishLocal is true on an accept row when no repo in its binding has a GitHub remote.
+	FinishLocal bool `json:"finish_local,omitempty"`
 }
 
 // EvidenceObserved/EvidenceAgentReported are native_answer's two evidence
@@ -399,6 +402,13 @@ func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (Reque
 	w.TerminalAgent = s.terminalAgent(ctx, tx, r)
 	w.ApprovalEvidence = s.approvalEvidenceTx(ctx, tx, r)
 	w.NativePending = s.nativePendingTx(ctx, tx, r)
+	if isAcceptKind(r.Kind) {
+		local, err := s.finishLocalTx(ctx, tx, r)
+		if err != nil {
+			return RequestWire{}, err
+		}
+		w.FinishLocal = local
+	}
 	if r.ArtifactID != "" {
 		id := r.ArtifactID
 		w.ArtifactID = &id
@@ -523,7 +533,12 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 		if err != nil {
 			return err
 		}
-		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID)
+		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID, PromptDecisions(req.Kind, np))
+		if isAcceptKind(req.Kind) {
+			if payload["chat_block"], err = s.approvalChatBlockTx(ctx, tx, req); err != nil {
+				return err
+			}
+		}
 		if req.Kind == KindApproveSection || req.Kind == KindApprovePlan || req.Kind == KindApproveReport {
 			payload["summary"] = req.Prompt
 			if payload["chat_block"], err = s.approvalChatBlockTx(ctx, tx, req); err != nil {
@@ -627,6 +642,9 @@ func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID st
 				  AND item_id IN (SELECT id FROM items WHERE root_id = ?)`, a.ID, sessionID, a.RootItemID); err != nil {
 				return err
 			}
+			if err := s.deliverFinishApproval(ctx, tx, a, sessionID); err != nil {
+				return err
+			}
 		}
 		// A relay counts as still pending while unackedFor would still
 		// redeliver its body (pending, or delivered fewer than
@@ -682,6 +700,30 @@ func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID st
 		return nil
 	})
 	return n, err
+}
+
+// deliverFinishApproval sends a board/CLI finish approval made while no orchestrator was routed
+// (locked decision 12) to the root's top-level orchestrator, once: binding the row stops a later
+// session start re-sending it, and item_merges rows mean finishing already ran. The origin is the
+// user's own approval, which Approve could not deliver (resolve skips an agentless row).
+func (s *Store) deliverFinishApproval(ctx context.Context, tx *sql.Tx, a Agent, sessionID string) error {
+	fa, ok, err := s.Items.FinishApprovalTx(ctx, tx, a.RootItemID)
+	if err != nil || !ok || fa.Merge == "" || fa.AgentID != "" {
+		return err
+	}
+	var rows int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?`,
+		a.RootItemID, fa.CheckpointID).Scan(&rows); err != nil || rows > 0 {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET agent_id = ?, session_id = ? WHERE id = ?`,
+		a.ID, sessionID, fa.RequestID); err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(map[string]any{"decision": "approved", "merge": fa.Merge, "section_id": "", "section_sha256": ""})
+	_, err = s.enqueue(ctx, tx, Message{Kind: "approval_result", Origin: "user_action", ToAgentID: a.ID,
+		RootItemID: a.RootItemID, ItemID: a.RootItemID, RequestID: fa.RequestID, Payload: payload})
+	return err
 }
 
 // finishOpen is the shared tail of every ask* helper: publish request.opened
@@ -1263,7 +1305,7 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		if err != nil {
 			return err
 		}
-		if err := s.freezeNativeQuestionTx(ctx, tx, out.ID, np.Header, np.Question); err != nil {
+		if err := s.freezeNativeQuestionTx(ctx, tx, out.ID, np); err != nil {
 			return err
 		}
 		out.NativePrompt = &np
@@ -1479,12 +1521,62 @@ func approveCheck(in ApproveInput) func(Request) error {
 
 // Approve binds to the artifact's section hash and revision (L7): a stale
 // caller conflicts instead of silently approving a since-changed section.
+// An accept row also needs a finish choice (in.Merge), checked against the
+// binding's repos and stored in $.merge in the same tx.
 func (s *Store) Approve(ctx context.Context, id string, in ApproveInput, after ...func(*sql.Tx, Request) error) (Request, error) {
+	merge := func(tx *sql.Tx, req Request) error {
+		if !isAcceptKind(req.Kind) {
+			return nil
+		}
+		local, err := s.finishLocalTx(ctx, tx, req)
+		if err != nil {
+			return err
+		}
+		if local && in.Merge != "local" {
+			return &items.Error{Code: items.CodeBadRequest, Message: `Choose how to finish: merge must be "local" (no repository has a GitHub remote).`}
+		}
+		if !local && in.Merge != "auto" && in.Merge != "manual" {
+			return &items.Error{Code: items.CodeBadRequest, Message: `Choose how to finish: merge must be "auto" or "manual".`}
+		}
+		return setMergeHook(ctx, id, in.Merge)(tx, req)
+	}
 	return s.resolve(ctx, id, "approved", "", in.Via, "user_action", approveCheck(in),
 		func(req Request) (MessageKind, any) {
-			return "approval_result", map[string]any{"decision": "approved",
+			p := map[string]any{"decision": "approved",
 				"section_id": req.SectionID, "section_sha256": req.SectionSHA256}
-		}, after...)
+			if isAcceptKind(req.Kind) {
+				p["merge"] = in.Merge
+			}
+			return "approval_result", p
+		}, append([]func(*sql.Tx, Request) error{merge}, after...)...)
+}
+
+func isAcceptKind(k RequestKind) bool { return k == KindAcceptEpic || k == KindAcceptFix }
+
+// setMergeHook is a resolve after hook recording a finish approval's merge choice.
+func setMergeHook(ctx context.Context, id, merge string) func(*sql.Tx, Request) error {
+	return func(tx *sql.Tx, _ Request) error {
+		_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(binding_json, '$.merge', ?) WHERE id = ?`, merge, id)
+		return err
+	}
+}
+
+// finishLocalTx reports an accept row whose integrated repos all lack a GitHub remote.
+func (s *Store) finishLocalTx(ctx context.Context, tx *sql.Tx, req Request) (bool, error) {
+	var b struct {
+		Git []GitRef `json:"git"`
+	}
+	json.Unmarshal(req.Binding, &b)
+	repos, err := s.finishReposTx(ctx, tx, req.ItemID, b.Git)
+	if err != nil || len(repos) == 0 {
+		return false, err
+	}
+	for _, r := range repos {
+		if r.GitHub {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // RequestChanges needs a comment describing what to change.

@@ -317,7 +317,8 @@ func (f *testTmux) Kill(ctx context.Context, name string) error {
 	f.killed = append(f.killed, name)
 	return nil
 }
-func (f *testTmux) RenameWindow(ctx context.Context, name, title string) error { return nil }
+func (f *testTmux) RenameWindow(ctx context.Context, name, title string) error       { return nil }
+func (f *testTmux) RenameSession(ctx context.Context, oldName, newName string) error { return nil }
 
 func seedFakeAgentCatalog(t *testing.T, d *db.DB) {
 	t.Helper()
@@ -768,7 +769,7 @@ func newAcceptServer(t *testing.T) (*runtimeEnv, acceptSeed) {
 	}
 	seed := base
 	seed.EpicKey = epic.Key
-	currentBody := fmt.Sprintf(`{"binding":%s,"via":"board"}`, string(bindingBytes))
+	currentBody := fmt.Sprintf(`{"binding":%s,"merge":"manual","via":"board"}`, string(bindingBytes))
 	return e, acceptSeed{httpSeed: seed, AcceptID: reqID, CurrentBindingBody: currentBody}
 }
 

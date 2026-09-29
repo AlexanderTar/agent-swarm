@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -69,8 +70,9 @@ func TestAcceptEpicChecksTheBinding(t *testing.T) {
 	}
 	var it map[string]any
 	json.Unmarshal(s.get(t, "/api/items/"+seed.EpicKey).Body.Bytes(), &it)
-	if it["item"].(map[string]any)["status"] != "done" {
-		t.Fatalf("the epic should be done: %v", it["item"])
+	// An approved finish waits in review until its PRs merge (2026-09-29-finish-with-pr).
+	if it["item"].(map[string]any)["status"] != "in_review" {
+		t.Fatalf("the epic should stay in review: %v", it["item"])
 	}
 }
 
@@ -326,5 +328,59 @@ func TestArtifactRouteReturnsRevisionWarnings(t *testing.T) {
 		if len(body.Warnings) != 1 || body.Warnings[0] != tc.want {
 			t.Fatalf("revision %s warnings=%v", tc.revision, body.Warnings)
 		}
+	}
+}
+
+// newFinishServer: newAcceptServer with repo "web" in the integrated checkpoint and the binding;
+// remote "" makes the accept row all-local.
+func newFinishServer(t *testing.T, remote string) (e *runtimeEnv, seed acceptSeed, epicID, ckpID, repoID string) {
+	t.Helper()
+	e, seed = newAcceptServer(t)
+	repoID = seedRepo(t, e, "web", filepath.Join(e.home, "GitHub", "web"))
+	if remote != "" {
+		if _, err := e.s.DB.ExecContext(bg, `UPDATE repos SET remote_url = ?, remote_owner = 'o', default_branch = 'main' WHERE id = ?`,
+			remote, repoID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git := `[{"repo":"web","branch":"swarm/epic","sha":"3f9c2ab0000"}]`
+	if err := e.s.DB.QueryRowContext(bg, `SELECT item_id, json_extract(binding_json, '$.integrated_checkpoint') FROM requests WHERE id = ?`,
+		seed.AcceptID).Scan(&epicID, &ckpID); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{`UPDATE checkpoints SET git_json = ? WHERE id = ?`,
+		`UPDATE requests SET binding_json = json_set(binding_json, '$.git', json(?)) WHERE json_extract(binding_json, '$.integrated_checkpoint') = ?`} {
+		if _, err := e.s.DB.ExecContext(bg, q, git, ckpID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return
+}
+
+func TestApproveAcceptNeedsMerge(t *testing.T) {
+	s, seed, _, _, _ := newFinishServer(t, "https://github.com/o/web.git")
+	var binding string
+	s.s.DB.QueryRowContext(bg, `SELECT binding_json FROM requests WHERE id = ?`, seed.AcceptID).Scan(&binding)
+	rec := s.post(t, "/api/requests/"+seed.AcceptID+"/approve", `{"binding":`+binding+`,"via":"board"}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), `Choose how to finish: merge must be \"auto\" or \"manual\".`) {
+		t.Fatalf("no merge = %d: %s", rec.Code, rec.Body)
+	}
+	rec = s.post(t, "/api/requests/"+seed.AcceptID+"/approve", `{"binding":`+binding+`,"merge":"manual","via":"board"}`)
+	var out map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != 200 || out["state"] != "approved" || out["finish_local"] != nil {
+		t.Fatalf("manual = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestAcceptAllLocalCarriesFinishLocal(t *testing.T) {
+	s, seed, _, _, _ := newFinishServer(t, "")
+	var binding string
+	s.s.DB.QueryRowContext(bg, `SELECT binding_json FROM requests WHERE id = ?`, seed.AcceptID).Scan(&binding)
+	rec := s.post(t, "/api/requests/"+seed.AcceptID+"/approve", `{"binding":`+binding+`,"merge":"local","via":"board"}`)
+	var out map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != 200 || out["finish_local"] != true {
+		t.Fatalf("local = %d: %s", rec.Code, rec.Body)
 	}
 }

@@ -82,7 +82,8 @@ func (f *fakeTmux) Kill(ctx context.Context, name string) error {
 	f.killed = append(f.killed, name)
 	return nil
 }
-func (f *fakeTmux) RenameWindow(ctx context.Context, name, title string) error { return nil }
+func (f *fakeTmux) RenameWindow(ctx context.Context, name, title string) error       { return nil }
+func (f *fakeTmux) RenameSession(ctx context.Context, oldName, newName string) error { return nil }
 
 // testClock is the one clock every runtime test shares; copied from
 // internal/runtime/agents_test.go.
@@ -136,7 +137,7 @@ func (f *fakeNotifier) Raise(ctx context.Context, tx *sql.Tx, n runtime.NotifyIn
 		f.t.Fatalf("notify: unknown kind %q", n.Kind)
 		return nil
 	}
-	for _, ph := range notifyrules.Placeholders(rule.Body) {
+	for _, ph := range append(notifyrules.Placeholders(rule.Title), notifyrules.Placeholders(rule.Body)...) {
 		if _, ok := n.Args[ph]; !ok {
 			f.t.Fatalf("notify: %s is missing %s (Args = %v)", n.Kind, ph, n.Args)
 		}

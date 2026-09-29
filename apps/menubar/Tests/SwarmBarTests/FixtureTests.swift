@@ -73,7 +73,13 @@ final class FixtureTests: XCTestCase {
         let manual: Repo = try Fixture.decode("repo.json")
         XCTAssertEqual(manual.source, "manual")
         XCTAssertEqual(try Fixture.decode("rescan.json", as: ScanStats.self), ScanStats(found: 112, missing: 1))
-        XCTAssertEqual(try Fixture.decode("agent.json", as: AgentNode.self).name, "login-form-coder")
+        let agent = try Fixture.decode("agent.json", as: AgentNode.self)
+        XCTAssertEqual(agent.name, "login-form-coder")
+        XCTAssertNil(agent.merge, "absent merge key decodes to nil")
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(agent)) as! [String: Any]
+        json["merge"] = ["merged": 1, "total": 2]
+        let merging = try JSONDecoder().decode(AgentNode.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(merging.merge, MergeProgress(merged: 1, total: 2))
         XCTAssertEqual(try Fixture.decode("spike-response.json", as: CreateSpikeResponse.self).queued, false)
         let failed = try Fixture.decode("spike-response-preflight.json", as: CreateSpikeResponse.self)
         XCTAssertNil(failed.agent.session)

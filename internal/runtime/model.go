@@ -90,6 +90,7 @@ const (
 	CompletedCkp CheckpointKind = "completed"
 	FailedCkp    CheckpointKind = "failed"
 	Integrated   CheckpointKind = "integrated"
+	Finishing    CheckpointKind = "finishing" // API-only; stored as a 'progress' row
 )
 
 type Agent struct {
@@ -333,6 +334,7 @@ type Tmux interface {
 	Env(ctx context.Context, name, key string) (string, error)
 	Kill(ctx context.Context, name string) error
 	RenameWindow(ctx context.Context, name, title string) error
+	RenameSession(ctx context.Context, oldName, newName string) error
 }
 
 // Notifier raises a §17.5 notification. internal/notify implements it (Task 23).

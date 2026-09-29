@@ -42,12 +42,12 @@ type TodoProgress struct {
 type todoStep struct{ ID, Label string }
 
 var spikeSteps = map[string][]todoStep{
-	"feature": {{"frame", "Frame the request"}, {"research", "Research"}, {"design", "Design"},
-		{"spec", "Spec approval"}, {"plan", "Write plan"}, {"critic", "Completeness check"},
-		{"approve", "Plan approval + materialize"}},
-	"debug": {{"frame", "Frame the problem"}, {"evidence", "Reproduce + gather evidence"},
-		{"root_cause", "Root cause"}, {"report", "Debug report approval"}, {"plan", "Plan fix packages"},
-		{"critic", "Completeness check"}, {"approve", "Approval + materialize"}},
+	"feature": {{"frame", "Understanding the request"}, {"research", "Researching"}, {"design", "Designing"},
+		{"spec", "Reviewing the spec"}, {"plan", "Writing the plan"}, {"critic", "Checking for gaps"},
+		{"approve", "Reviewing the plan and setting up tasks"}},
+	"debug": {{"frame", "Understanding the problem"}, {"evidence", "Reproducing and gathering evidence"},
+		{"root_cause", "Finding the root cause"}, {"report", "Reviewing the findings"}, {"plan", "Planning the fixes"},
+		{"critic", "Checking for gaps"}, {"approve", "Reviewing the plan and setting up tasks"}},
 }
 
 func taskTodoStatus(s items.Status) TodoStatus {
@@ -146,15 +146,31 @@ func (s *Store) taskTodos(ctx context.Context, tx todoQuerier, rootID string, ty
 	} else if integrate == TodoCompleted {
 		accept = TodoInProgress
 	}
-	if typ == items.Chore && len(out) == 0 {
-		work := TodoInProgress
-		if integrate == TodoCompleted {
-			work = TodoCompleted
+	if typ == items.Chore {
+		var progressed bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM checkpoints WHERE item_id = ? AND kind = 'progress')`,
+			rootID).Scan(&progressed); err != nil {
+			return nil, err
 		}
-		out = append(out, Todo{ID: "work", Label: "Do the work", Status: work})
+		ctxDone := len(out) > 0 || progressed // out = the non-cancelled tasks listed above
+		ctxTodo := Todo{ID: "context", Label: "Gathering context", Status: TodoInProgress}
+		if ctxDone {
+			ctxTodo.Status = TodoCompleted
+		}
+		if len(out) == 0 {
+			work := TodoPending
+			switch {
+			case integrate == TodoCompleted:
+				work = TodoCompleted
+			case ctxDone:
+				work = TodoInProgress
+			}
+			out = append(out, Todo{ID: "work", Label: "Making the changes", Status: work})
+		}
+		out = append([]Todo{ctxTodo}, out...)
 	}
-	return append(out, Todo{ID: "integrate", Label: "Merge + verify", Status: integrate},
-		Todo{ID: "accept", Label: "User acceptance", Status: accept}), nil
+	return append(out, Todo{ID: "integrate", Label: "Merging and verifying", Status: integrate},
+		Todo{ID: "accept", Label: "Finishing: PR or merge", Status: accept}), nil
 }
 
 // latestTodoReports is the newest stored spike step list for itemID, nil if none.

@@ -1,3 +1,4 @@
+import { sha7 } from "./logic/format";
 import type { AgentKind, ItemStatus, ItemType, Role, SessionState } from "./types";
 
 export const STATUS_LABEL: Record<ItemStatus, string> = {
@@ -114,8 +115,20 @@ export const C = {
   approveSection: "Approve section",
   approvePlan: "Approve plan",
   approveReport: "Approve report",
-  acceptEpic: "Accept epic",
-  acceptFix: "Accept fix",
+  acceptEpic: "Finish epic",
+  acceptFix: "Finish fix",
+  createPrAutoMerge: "Create PR + auto-merge",
+  createPr: "Create PR",
+  mergeLocally: "Merge locally",
+  awaitingMerge: "Awaiting merge",
+  checksPassing: "✓ passing",
+  checksFailing: "✗ failing",
+  checksPending: "… pending",
+  noChecks: "no checks",
+  autoMergeOn: "auto-merge on",
+  orchestratorFixing: "(orchestrator fixing)",
+  merged: "merged",
+  awaitingOrchestrator: "Awaiting merge — waiting for the orchestrator to open PRs.",
   closeSpike: "Close spike",
   closeSpikeRow: "Close spike?",
   requestChanges: "Request changes",
@@ -231,6 +244,7 @@ export const C = {
 const joinParts = (parts: string[]) => parts.filter((p) => p !== "").join(" · ");
 
 export const T = {
+  mergedLocally: (sha: string) => `merged locally ${sha7(sha)}`,
   matches: (n: number) => `${n} matches`,
   startedFrom: (key: string) => `Started from ${key}`,
   agentName: (kebab: string) => `Agent name: ${kebab}`,
