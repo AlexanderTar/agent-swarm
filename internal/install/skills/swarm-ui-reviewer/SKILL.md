@@ -17,3 +17,5 @@ Follow the `swarm` skill first; this adds to it. Then read the `swarm-reviewer` 
 - **Mobile**: for React Native / Expo or native iOS/Android surfaces, apply whichever of `mobile-ios-design`, `mobile-android-design`, `expo-native-ui`, `vercel-react-native-skills` fits the platform, plus the `ui-ux-pro-max` pre-delivery checklist (`references/pro-rules.md`): safe areas, touch targets ≥ 44pt (iOS) / 48dp (Android), dynamic type / font scaling, reduced motion, dark mode, contrast.
 
 Cite the rule source in every UI finding (e.g. "web-design-guidelines: insufficient contrast" or "ui-ux-pro-max pro-rules.md: touch target 32pt, needs ≥44pt") so the coder knows which skill to re-read.
+
+Your review tree is a fresh checkout. Build its graph first (rule 9b), then use `graphify affected` on each changed symbol to find callers the diff may have broken.

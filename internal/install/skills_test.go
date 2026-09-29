@@ -987,6 +987,7 @@ var vendoredSkillNames = []string{
 	"ponytail",
 	"ponytail-review",
 	"ponytail-debt",
+	"graphify",
 }
 
 // bannedVendorStrings must never appear anywhere under skills/vendor/: each is
@@ -1003,7 +1004,7 @@ var bannedVendorStrings = []string{
 }
 
 // P2 acceptance: every vendored skill has a license file and a VENDORED.md in
-// the spec's format, the vendored set is exactly the 11 names in spec A2, and
+// the spec's format, the vendored set is exactly the 12 names in spec A2, and
 // none of the banned strings leaked in from upstream or from our own edits.
 func TestVendoredSkillsHaveLicenseAndProvenance(t *testing.T) {
 	vendorRoot := filepath.Join("..", "..", "skills", "vendor")
@@ -1095,6 +1096,51 @@ func TestVendoredSkillsHaveLicenseAndProvenance(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// P1 unit 1: the vendored graphify skill is registered in the embedded
+// registry and carries the Inside Swarm prelude.
+func TestGraphifySkillRegistered(t *testing.T) {
+	if !slices.Contains(install.SkillNames(), "graphify") {
+		t.Fatalf("SkillNames() lacks graphify: %v", install.SkillNames())
+	}
+	if body := string(install.SkillBody("graphify")); !strings.Contains(body, "## Inside Swarm") {
+		t.Errorf("graphify SKILL.md lacks the Inside Swarm prelude")
+	}
+}
+
+// P1 unit 2: the swarm skill carries rule 9b, the graphify navigation rule.
+func TestSwarmSkillRule9b(t *testing.T) {
+	body := string(install.SkillBody("swarm"))
+	for _, want := range []string{
+		"9b. In every worktree you work in, use graphify",
+		"graphify extract . --code-only",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("swarm SKILL.md lacks %q", want)
+		}
+	}
+}
+
+// P1 unit 3: each role skill carries its exact spec one-liner pointing at
+// graphify (rule 9b).
+func TestRoleSkillsMentionGraphify(t *testing.T) {
+	cases := []struct {
+		skill string
+		want  string
+	}{
+		{"swarm-orchestrator", "build the code graph once before sharing the tree"},
+		{"swarm-reviewer", "use `graphify affected` on each changed symbol"},
+		{"swarm-ui-reviewer", "use `graphify affected` on each changed symbol"},
+		{"swarm-debugger", "trace the failing path with `graphify path`"},
+		{"swarm-coder", "Start orientation with `graphify query`"},
+		{"swarm-researcher", "Start orientation with `graphify query`"},
+	}
+	for _, c := range cases {
+		if body := string(install.SkillBody(c.skill)); !strings.Contains(body, c.want) {
+			t.Errorf("%s SKILL.md lacks %q", c.skill, c.want)
+		}
 	}
 }
 

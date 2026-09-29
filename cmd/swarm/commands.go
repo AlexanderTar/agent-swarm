@@ -75,7 +75,7 @@ func agentsOpts(cfg install.Config, yes, pluginsOnly bool, stdin io.Reader, out 
 		Cfg: cfg, Run: execx.RunFor(120 * time.Second), HTTP: &http.Client{Timeout: 30 * time.Second},
 		MarketplaceURL: install.MarketplaceURL,
 		Installed:      install.InstalledKinds(exec.LookPath),
-		Confirm:        confirm, PluginsOnly: pluginsOnly, Out: out,
+		Confirm:        confirm, PluginsOnly: pluginsOnly, LookPath: exec.LookPath, Out: out,
 	}
 }
 
@@ -197,7 +197,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	fs, home, base := flags("install", stderr, true) // --url: D3's prune asks the daemon
 	dry := fs.Bool("dry-run", false, "print what would change")
-	plugins := fs.Bool("plugins", false, "only install or update the superpowers plugins")
+	plugins := fs.Bool("plugins", false, "only install or update the superpowers plugins and graphify")
 	yes := fs.Bool("yes", false, "answer the Agent Swarm 1.x removal prompt with yes")
 	if code, done := parse(fs, args); done {
 		return code

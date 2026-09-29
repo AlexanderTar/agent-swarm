@@ -139,6 +139,21 @@ func Inbox(items []InboxItem, more int, name, key string) string {
 	}
 }
 
+// GraphifyHint is the SessionStart line for the worktrees an agent holds;
+// "" when paths is empty. ready[i] reports whether
+// paths[i]/graphify-out/graph.json exists.
+func GraphifyHint(paths []string, ready []bool) string {
+	var out []string
+	for i, p := range paths {
+		if i < len(ready) && ready[i] {
+			out = append(out, fmt.Sprintf("[swarm] graphify: %s has a code graph — query it before grepping (see the `swarm` skill).", p))
+		} else {
+			out = append(out, fmt.Sprintf("[swarm] graphify: %s has no code graph yet — build it before exploring: cd %s && graphify extract . --code-only", p, p))
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 // ErrBriefTooLong is the §17.3 copy for an over-long brief.
 const ErrBriefTooLong = "Brief too long (max 6000 characters). Move detail into an artifact and reference it."
 

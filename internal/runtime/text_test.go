@@ -421,3 +421,24 @@ func TestPreservationChecklistLeavesTheManifestToTheDaemon(t *testing.T) {
 		t.Fatalf("checklist must say the daemon assembles the manifest: %s", PreservationChecklist)
 	}
 }
+
+func TestGraphifyHint(t *testing.T) {
+	ready := "[swarm] graphify: /a has a code graph — query it before grepping (see the `swarm` skill)."
+	notReady := "[swarm] graphify: /b has no code graph yet — build it before exploring: cd /b && graphify extract . --code-only"
+	cases := []struct {
+		name       string
+		paths      []string
+		readyFlags []bool
+		want       string
+	}{
+		{"empty", nil, nil, ""},
+		{"ready", []string{"/a"}, []bool{true}, ready},
+		{"not ready", []string{"/b"}, []bool{false}, notReady},
+		{"mixed", []string{"/a", "/b"}, []bool{true, false}, ready + " " + notReady},
+	}
+	for _, c := range cases {
+		if got := GraphifyHint(c.paths, c.readyFlags); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
