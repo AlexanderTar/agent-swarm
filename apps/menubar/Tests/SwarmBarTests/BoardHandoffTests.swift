@@ -235,6 +235,16 @@ final class BoardHandoffTests: XCTestCase {
         XCTAssertNil(f.workerRolesPayload, "changing back to the Settings default omits the role again")
     }
 
+    func testWorkerSettersWorkWhenSettingsLacksRoleDefault() async {
+        var settings = state.settings
+        settings[.coder] = nil
+        let f = BoardHandoffForm(client: client, settings: settings, agents: state.agents, connected: true, preselectAgent: nil)
+        await f.load()
+        f.selectedKey = "BUG-7"
+        f.setWorkerAgent(.coder, "codex")
+        XCTAssertEqual(f.workerChoice(.coder).agent, .codex, "picker edits apply even with no Settings default")
+    }
+
     func testWorkerRolesPayloadIsNilInHandoffMode() async {
         let f = await form(preselect: "auth-epic-orchestrator")
         XCTAssertTrue(f.isHandoff)

@@ -107,6 +107,22 @@ final class BoardHandoffRenderTests: XCTestCase {
         }
     }
 
+    func testStartModeWorkerEditAppliesWithoutSettingsDefault() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        var settings = model.state.settings
+        settings[.coder] = nil
+        let form = BoardHandoffForm(client: client, settings: settings, agents: model.state.agents,
+                                    connected: true, preselectAgent: nil)
+        await form.load()
+        form.selectedKey = "BUG-7"
+        form.setWorkerAgent(.coder, "codex")
+        let host = render(form)
+        let coder = try XCTUnwrap(popups(host).first { $0.accessibilityLabel() == "Coding Agent" })
+        XCTAssertEqual(coder.titleOfSelectedItem, "Codex", "edited worker pick reaches the row picker")
+    }
+
     func testHandoffModeHidesWorkerRows() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let model = makeAppModel(client)
