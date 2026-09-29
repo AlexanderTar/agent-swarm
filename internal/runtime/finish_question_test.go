@@ -291,6 +291,19 @@ func TestFinishNativeAnswer(t *testing.T) {
 			t.Fatalf("out = %+v, %v", out, err)
 		}
 	})
+	t.Run("old frozen approve prompt", func(t *testing.T) {
+		s, orch, ses, _, reqID := finishFixture(t, githubRemote, "")
+		mustExec(t, s.DB, `UPDATE requests SET binding_json = json_set(binding_json, '$.question', 'Accept it?', '$.header', 'Accept chore') WHERE id = ?`, reqID)
+		if err := s.tx(ctx, func(tx *sql.Tx) error { return s.OnRequestOpened(ctx, tx, reqID) }); err != nil {
+			t.Fatal(err)
+		}
+		p, _ := relayFor(t, s, orch.ID, reqID)
+		hookSimulate(t, s, ses, decodeNP(t, p), "Approve")
+		for _, d := range []string{"approve", "merge_locally"} {
+			_, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: reqID, Decision: d})
+			wantBadRequest(t, err, "decision for a finish request must be one of: request_changes.")
+		}
+	})
 	t.Run("request_changes", func(t *testing.T) {
 		s, _, ses, key, reqID := routedFinish(t, githubRemote, "Request changes: rename it")
 		out, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: reqID, Decision: "request_changes"})

@@ -1030,6 +1030,13 @@ func decisionLabels(req Request, np NativePrompt, decision string) (string, []st
 		return "", nil, errors.New("decision must be approve or request_changes.")
 	}
 	ds := finishDecisions(np.Options)
+	if len(np.Descriptions) == 0 {
+		// A pre-0022 frozen Approve/Request changes prompt: its Approve is refused (locked decision 11).
+		ds = []string{"request_changes"}
+		if decision == "request_changes" {
+			return "Request changes", []string{"Approve"}, nil
+		}
+	}
 	i := slices.Index(ds, decision)
 	if i < 0 || i >= len(np.Options) {
 		return "", nil, fmt.Errorf("decision for a finish request must be one of: %s.", strings.Join(ds, ", "))
