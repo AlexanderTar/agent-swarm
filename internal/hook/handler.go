@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -660,6 +662,31 @@ func (h *Handler) inboxNoticeOrFallback(ctx context.Context, s *sessionRow) stri
 	return notice
 }
 
+// graphifyHint is the SessionStart line for the agent's active worktrees.
+// "" when there is nothing to say. A ForAgent failure is logged and the
+// hint skipped, never blocking the hook.
+func (h *Handler) graphifyHint(ctx context.Context, s *sessionRow) string {
+	if h.RT == nil || h.RT.Worktree == nil || s.AgentID == "" {
+		return ""
+	}
+	wts, err := h.RT.Worktree.ForAgent(ctx, s.AgentID)
+	if err != nil {
+		h.logf("hook: graphify hint for %s: %v", s.AgentID, err)
+		return ""
+	}
+	var paths []string
+	var ready []bool
+	for _, wt := range wts {
+		if wt.State != "active" {
+			continue
+		}
+		paths = append(paths, wt.Path)
+		_, statErr := os.Stat(filepath.Join(wt.Path, "graphify-out", "graph.json"))
+		ready = append(ready, statErr == nil)
+	}
+	return runtime.GraphifyHint(paths, ready)
+}
+
 func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.Adapter, s *sessionRow, ev string, in adapter.HookInput) (adapter.HookDecision, error) {
 	switch ev {
 	case "SessionStart":
@@ -679,6 +706,9 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 		}
 		if s.Pending > 0 {
 			parts = append(parts, h.inboxNoticeOrFallback(ctx, s))
+		}
+		if hint := h.graphifyHint(ctx, s); hint != "" {
+			parts = append(parts, hint)
 		}
 		return adapter.HookDecision{Context: strings.Join(parts, " ")}, nil
 

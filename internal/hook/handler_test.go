@@ -19,6 +19,7 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 	"github.com/AlexanderTar/agent-swarm/internal/settings"
+	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
 func now() time.Time { return time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC) }
@@ -2259,5 +2260,146 @@ func TestPreToolUseSummaryGateAllowsThePrintedChatBlock(t *testing.T) {
 	}
 	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
 		t.Fatalf("printing the chat block exactly must pass the gate, got %s", out)
+	}
+}
+
+// seedGraphifyWorktree wires a worktree service into the handler and inserts
+// one active worktree row owned by agt_1 at path.
+func seedGraphifyWorktree(t *testing.T, h *Handler, id, path string) {
+	t.Helper()
+	h.RT.Worktree = &worktree.Service{DB: h.DB, Log: func(string, ...any) {}}
+	if _, err := h.DB.ExecContext(context.Background(), `
+		INSERT INTO repos (id, path, name, source, created_at, updated_at)
+		VALUES ('repo_1', '/tmp/proj', 'proj', 'scan', 1, 1)
+		ON CONFLICT(id) DO NOTHING;`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.DB.ExecContext(context.Background(), `
+		INSERT INTO worktrees (id, repo_id, path, branch, base_ref, base_sha,
+			owner_agent_id, root_item_id, state, created_at)
+		VALUES (?, 'repo_1', ?, 'task/x', 'main', 'abc', 'agt_1', 'itm_1', 'active', 1);`,
+		id, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeGraphJSON(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "graphify-out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "graphify-out", "graph.json"),
+		[]byte(`{"built_at_commit":"abc"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A worktree with a built graph appends the ready hint after the inbox notice.
+func TestSessionStartAppendsTheGraphifyHintAfterTheInboxNotice(t *testing.T) {
+	h, ses := seed(t, 1, runtime.Running)
+	dir := t.TempDir()
+	seedGraphifyWorktree(t, h, "wt_1", dir)
+	writeGraphJSON(t, dir)
+	out, err := h.Handle(context.Background(), runtime.Claude, "SessionStart", ses,
+		[]byte(`{"session_id":"p1","source":"startup"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := contextOf(t, out)
+	inbox := strings.Index(got, "swarm_sync")
+	hint := strings.Index(got, "has a code graph")
+	if inbox < 0 {
+		t.Fatalf("context = %q, want the inbox notice", got)
+	}
+	if hint < 0 || hint < inbox {
+		t.Fatalf("context = %q, want the graphify hint after the inbox notice", got)
+	}
+}
+
+// No worktrees means no graphify text.
+func TestSessionStartOmitsTheGraphifyHintWithoutWorktrees(t *testing.T) {
+	h, ses := seed(t, 1, runtime.Running)
+	h.RT.Worktree = &worktree.Service{DB: h.DB, Log: func(string, ...any) {}}
+	out, err := h.Handle(context.Background(), runtime.Claude, "SessionStart", ses,
+		[]byte(`{"session_id":"p1","source":"startup"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := contextOf(t, out); strings.Contains(got, "graphify") {
+		t.Fatalf("context = %q, want no graphify text without worktrees", got)
+	}
+}
+
+// An active worktree without a graph gets the build hint.
+func TestSessionStartHintsAWorktreeWithoutAGraph(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	dir := t.TempDir()
+	seedGraphifyWorktree(t, h, "wt_1", dir)
+	out, err := h.Handle(context.Background(), runtime.Claude, "SessionStart", ses,
+		[]byte(`{"session_id":"p1","source":"startup"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := contextOf(t, out)
+	if !strings.Contains(got, "has no code graph yet") ||
+		!strings.Contains(got, "cd "+dir+" && graphify extract . --code-only") {
+		t.Fatalf("context = %q, want the no-graph build hint for %s", got, dir)
+	}
+}
+
+// A ForAgent failure logs and leaves the rest of the context unchanged.
+func TestSessionStartSkipsTheGraphifyHintWhenForAgentFails(t *testing.T) {
+	h, ses := seed(t, 1, runtime.Running)
+	var logs []string
+	h.Log = func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	h.RT.Worktree = &worktree.Service{DB: h.DB, Log: func(string, ...any) {}}
+	// Drop the worktrees table, not the DB: the earlier session lookup still
+	// works, but ForAgent fails.
+	if _, err := h.DB.ExecContext(context.Background(), `DROP TABLE worktrees`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Handle(context.Background(), runtime.Claude, "SessionStart", ses,
+		[]byte(`{"session_id":"p1","source":"startup"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := contextOf(t, out)
+	h2, ses2 := seed(t, 1, runtime.Running)
+	out2, err := h2.Handle(context.Background(), runtime.Claude, "SessionStart", ses2,
+		[]byte(`{"session_id":"p1","source":"startup"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := contextOf(t, out2); got != want {
+		t.Fatalf("context = %q, want the no-hint context %q", got, want)
+	}
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "hook: graphify hint for") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("logs = %q, want a hook: graphify hint for line", logs)
+	}
+}
+
+// The hint is SessionStart-only: UserPromptSubmit never carries it.
+func TestUserPromptSubmitOmitsTheGraphifyHint(t *testing.T) {
+	h, ses := seed(t, 1, runtime.Running)
+	dir := t.TempDir()
+	seedGraphifyWorktree(t, h, "wt_1", dir)
+	writeGraphJSON(t, dir)
+	out, err := h.Handle(context.Background(), runtime.Claude, "UserPromptSubmit", ses,
+		[]byte(`{"session_id":"p1","prompt":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := contextOf(t, out)
+	if got == "" {
+		t.Fatal("want the inbox notice on UserPromptSubmit, got nothing")
+	}
+	if strings.Contains(got, "graphify") {
+		t.Fatalf("context = %q, want no graphify text on UserPromptSubmit", got)
 	}
 }
