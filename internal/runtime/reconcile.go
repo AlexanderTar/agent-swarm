@@ -1531,6 +1531,7 @@ const reclaimGateWhere = `w WHERE w.state IN ('active', 'retained')
 // worktree's row write is its own transaction, so there is no partial state
 // to unwind.
 func (s *Store) ReclaimWorktrees(ctx context.Context) error {
+	s.Worktree.BeginPass()
 	cutoff := db.Millis(s.Now().Add(-reclaimGrace))
 	cands, err := s.Worktree.Candidates(ctx, reclaimGateWhere, cutoff)
 	if err != nil {

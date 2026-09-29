@@ -25,6 +25,9 @@ func (s *Service) BeginPass() {
 	s.pass.mu.Lock()
 	s.pass.fetched = map[string]bool{}
 	s.pass.mu.Unlock()
+	if p, ok := s.Evidence.(interface{ BeginPass() }); ok {
+		p.BeginPass()
+	}
 }
 
 // fetchOnce runs `git fetch origin` for repoPath, once per pass. A failed
