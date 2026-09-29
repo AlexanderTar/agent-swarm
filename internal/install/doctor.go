@@ -38,12 +38,12 @@ type Doctor struct {
 
 var tmuxVersion = regexp.MustCompile(`tmux (\d+)\.(\d+)`)
 
-// Checks runs every prerequisite check in a fixed order: P1's eight first (their
-// order is asserted), then the per-agent blocks, superpowers, and the one legacy
-// item §11.1 says must fail.
+// Checks runs every prerequisite check in a fixed order: the base checks first
+// (P1's eight, then python3 and graphify — their order is asserted), then the
+// per-agent blocks, superpowers, and the one legacy item §11.1 says must fail.
 func (d Doctor) Checks(ctx context.Context) []Check {
 	out := []Check{d.tmux(ctx), d.ghostty(), d.ollama(ctx), d.agents(), d.signing(ctx),
-		d.launchAgent(), d.daemon(ctx), d.data(), d.python3()}
+		d.launchAgent(), d.daemon(ctx), d.data(), d.python3(), d.graphify(ctx)}
 	for _, k := range d.installedKinds(ctx) {
 		switch k {
 		case KindClaude:
@@ -181,6 +181,89 @@ func (d Doctor) python3() Check {
 		return Check{"python3", true, "python3 isn't installed. ui-ux-pro-max's search script needs it: install it if you use that skill."}
 	}
 	return Check{"python3", true, "python3 is installed."}
+}
+
+// graphify gates on the pinned CLI. uv is looked up only when graphify itself
+// is missing, too old, or unparseable, to pick the fix text — a correct
+// graphify installed some other way (e.g. pipx) passes without uv.
+func (d Doctor) graphify(ctx context.Context) Check {
+	out, err := d.Run(ctx, "graphify", "--version")
+	v := ""
+	if err == nil {
+		v = strings.TrimSpace(string(out))
+		if i := strings.Index(v, "\n"); i >= 0 {
+			v = v[:i]
+		}
+	}
+	if v == "" {
+		return Check{"graphify", false, d.graphifyMissingDetail()}
+	}
+	have, parseable := parseDottedVersion(v)
+	if !parseable {
+		return Check{"graphify", false, d.graphifyTooOldDetail(v)}
+	}
+	switch c := compareVersions(have, parseMust(GraphifyVersion)); {
+	case c == 0:
+		return Check{"graphify", true, v}
+	case c > 0:
+		return Check{"graphify", true, "graphify " + have + " is newer than the tested " + GraphifyVersion + ". Run swarm install to use the tested version."}
+	default:
+		return Check{"graphify", false, d.graphifyTooOldDetail(v)}
+	}
+}
+
+// graphifyMissingDetail picks the missing-graphify fix text: the plain install
+// hint when uv exists, the brew hint when it does not.
+func (d Doctor) graphifyMissingDetail() string {
+	if d.LookPath != nil {
+		if _, err := d.LookPath("uv"); err == nil {
+			return "graphify isn't installed. Install it: swarm install (or uv tool install graphifyy==" + GraphifyVersion + ")."
+		}
+	}
+	return "uv isn't installed. Install it: brew install uv, then run swarm install."
+}
+
+// graphifyTooOldDetail picks the too-old fix text the same way.
+func (d Doctor) graphifyTooOldDetail(output string) string {
+	if d.LookPath != nil {
+		if _, err := d.LookPath("uv"); err == nil {
+			return output + " is too old. Install graphify " + GraphifyVersion + ": swarm install."
+		}
+	}
+	return "uv isn't installed. Install it: brew install uv, then run swarm install."
+}
+
+// parseDottedVersion parses the version out of `graphify --version` output.
+func parseDottedVersion(s string) (string, bool) {
+	m := graphifyVersionRE.FindStringSubmatch(s)
+	if m == nil {
+		return "", false
+	}
+	return m[1] + "." + m[2] + "." + m[3], true
+}
+
+func parseMust(v string) [3]int {
+	var out [3]int
+	for i, p := range strings.Split(v, ".") {
+		out[i], _ = strconv.Atoi(p)
+	}
+	return out
+}
+
+func compareVersions(have string, want [3]int) int {
+	var h [3]int
+	for i, p := range strings.Split(have, ".") {
+		h[i], _ = strconv.Atoi(p)
+	}
+	for i := 0; i < 3; i++ {
+		if h[i] != want[i] {
+			if h[i] > want[i] {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
 }
 
 func (d Doctor) signing(ctx context.Context) Check {

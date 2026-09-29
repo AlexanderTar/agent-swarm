@@ -26,6 +26,7 @@ func newDoctorEnv(t *testing.T) *doctorEnv {
 	e.fake = &execx.Fake{Responses: map[string]execx.Result{
 		"tmux -V":                            {Out: "tmux 3.7c\n"},
 		"git config --global commit.gpgsign": {Out: "true\n"},
+		"graphify --version":                 {Out: "graphify 0.9.71\n"},
 	}}
 	e.daemon = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !e.healthy || r.URL.Path != "/api/health" {
@@ -59,7 +60,7 @@ func byName(t *testing.T, checks []Check) map[string]Check {
 	for _, c := range checks {
 		m[c.Name] = c
 	}
-	if len(m) != 9 { // A1 added "python3" to the base checks
+	if len(m) != 10 { // A1 added "python3", P2 "graphify" to the base checks
 		t.Fatalf("checks = %+v", checks)
 	}
 	return m
@@ -79,11 +80,57 @@ func TestDoctorAllGood(t *testing.T) {
 		// python3 warns rather than fails (A1): "all good" still reports its
 		// absence, since newDoctorEnv's LookPath only knows claude and codex.
 		"python3": "python3 isn't installed. ui-ux-pro-max's search script needs it: install it if you use that skill.",
+		// P2: graphify 0.9.71 is installed by the fake runner above.
+		"graphify": "graphify 0.9.71",
 	}
 	for name, c := range byName(t, e.d.Checks(bg)) {
 		if !c.OK || c.Detail != want[name] {
 			t.Errorf("%s = %+v, want detail %q", name, c, want[name])
 		}
+	}
+}
+
+// P2: the graphify row's five states. uv is looked up only when graphify is
+// missing, too old, or unparseable.
+func TestDoctorGraphifyStates(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		version   execx.Result
+		hasUV     bool
+		wantOK    bool
+		want      string
+		wantUVHit bool
+	}{
+		{"ok", execx.Result{Out: "graphify 0.9.71\n"}, false, true, "graphify 0.9.71", false},
+		{"newer", execx.Result{Out: "graphify 0.9.80\n"}, false, true, "graphify 0.9.80 is newer than the tested 0.9.71. Run swarm install to use the tested version.", false},
+		{"missing", execx.Result{Err: errors.New("not found")}, true, false, "graphify isn't installed. Install it: swarm install (or uv tool install graphifyy==0.9.71).", true},
+		{"missing without uv", execx.Result{Err: errors.New("not found")}, false, false, "uv isn't installed. Install it: brew install uv, then run swarm install.", true},
+		{"too old", execx.Result{Out: "graphify 0.9.60\n"}, true, false, "graphify 0.9.60 is too old. Install graphify 0.9.71: swarm install.", true},
+		{"too old without uv", execx.Result{Out: "graphify 0.9.60\n"}, false, false, "uv isn't installed. Install it: brew install uv, then run swarm install.", true},
+		{"unparseable", execx.Result{Out: "garbage\n"}, true, false, "garbage is too old. Install graphify 0.9.71: swarm install.", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newDoctorEnv(t)
+			e.fake.Responses["graphify --version"] = tc.version
+			if tc.hasUV {
+				e.found["uv"] = true
+			}
+			var uvHits int
+			look := e.d.LookPath
+			e.d.LookPath = func(name string) (string, error) {
+				if name == "uv" {
+					uvHits++
+				}
+				return look(name)
+			}
+			got := byName(t, e.d.Checks(bg))["graphify"]
+			if got.OK != tc.wantOK || got.Detail != tc.want {
+				t.Errorf("= %+v, want ok=%v detail %q", got, tc.wantOK, tc.want)
+			}
+			if (uvHits > 0) != tc.wantUVHit {
+				t.Errorf("uv looked up %d times, want hit=%v", uvHits, tc.wantUVHit)
+			}
+		})
 	}
 }
 
