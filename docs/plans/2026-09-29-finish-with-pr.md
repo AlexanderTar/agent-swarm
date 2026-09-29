@@ -253,7 +253,7 @@ func finishFixture(t *testing.T, remoteURL, merge string) (s *Store, orch Agent,
   - `TestFinishingPRAlreadyMergedIsDone`: `ghMerged` → the row is `merged` with `merged_sha = "abc123"`, the item is `done`, and `fakeNotifier.kinds()` contains `item.merged`.
   - `TestFinishingLocalMerge`: remote `""`, merge `local`. The fake has `git -C /tmp/proj merge-base --is-ancestor 3f9c2ab0000 d00d` → `{Out:""}` and `git -C /tmp/proj merge-base --is-ancestor d00d main` → `{Out:""}`. Result: a `merged` row and the item is `done`.
   - `TestFinishingRefusals`, table-driven over each row of `spec:598-612` plus assumption 1. Each case asserts the exact error string, and that no `item_merges` row and no new checkpoint was written. Cases:
-    - a worker session;
+    - a worker session: `w, _, _ := s.Spawn(ctx, SpawnInput{ItemKey: key, Role: RoleCoder, Kind: Fake, Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "x"}})`, then write finishing from `mustSessionID(t, s, w.ID)`;
     - not approved (merge `""`);
     - a repeat (a second call after success);
     - missing repo (empty lists);
@@ -409,7 +409,7 @@ want := NativePrompt{Header: "Finish epic",
   - `freezeNativeQuestionTx(ctx, tx, reqID string, np NativePrompt)`: change the signature. Update both callers (`storedNativePromptTx`, and `askApproval`/`askConfirmRepos`, which you find with `grep -n freezeNativeQuestionTx`). When `len(np.Descriptions) > 0`, also `json_set` `$.options` to `json(?)` of the marshalled options and `$.descriptions` likewise. Keep the `$.question IS NULL` guard.
   - `effectiveNativeQuestionTx`: the frozen struct gains `Options []string` and `Descriptions []string`. When frozen, return them if `len(Options) > 0`, else `approveOptions`.
   - `ApprovalChatBlock`: add the case `KindAcceptEpic, KindAcceptFix`. The head is `"### Approval · Finish " + in.ItemKey`. The foot is one `"<repo>: <branch> at <sha7>"` line per `in.Git` entry, joined by `"\n"`.
-  - `approvalChatBlockTx`, accept case: read the item key, `SELECT summary FROM checkpoints WHERE id = binding.integrated_checkpoint` into `in.Summary`, and `in.Git` from the binding.
+  - `approvalChatBlockTx`, accept case: read the item key, `SELECT summary FROM checkpoints WHERE id = binding.integrated_checkpoint` into `in.Summary`, and `in.Git` from the binding. If that row is missing (`errors.Is(err, sql.ErrNoRows)`, as with the fixtures' `"ckp_x"`), keep an empty summary and still return the block. Returning an error would fail `relayRequestTx` and every routed-accept test.
   - `finishDecisions`: 3 options → `[auto_merge, manual_merge, request_changes]`; 2 options → `[merge_locally, request_changes]`.
   - `decisionLabels`:
     - Non-accept or `req.ID == ""` (a msg ref): `approve` → `("Approve", ["Request changes"])`; `request_changes` → `("Request changes", ["Approve"])`; anything else → `errors.New("decision must be approve or request_changes.")`.
@@ -676,7 +676,7 @@ const merges: ItemMerge[] = [
 ```
 
   - `Details.test.tsx`, overriding `GET /api/items/EPIC-12` the same way the Progress test does:
-    - `status: "in_review", merges: [one row]` → the `Awaiting merge` heading appears *before* the Progress heading (`compareDocumentPosition`);
+    - `status: "in_review", merges: [one row], todos: [the Progress test's todos array]` → the `Awaiting merge` heading appears *before* the Progress heading (`compareDocumentPosition`);
     - `merges: []` → the text `Awaiting merge — waiting for the orchestrator to open PRs.`;
     - no `merges` key → neither is shown;
     - `status: "done"` with merges → neither is shown.
