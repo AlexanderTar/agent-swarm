@@ -67,6 +67,19 @@ final class HandoffTests: XCTestCase {
                        "a · T-1 · Claude · Opus 4.6")
     }
 
+    func testPreviewEffortLabel() {
+        let entry = AgentCatalogEntry(kind: .claude, models: [
+            CatalogModel(id: "m-opus", label: "Opus 5", aliases: ["opus"], efforts: ["low", "medium", "high"]),
+            CatalogModel(id: "m-haiku", label: "Haiku 4.5", aliases: ["haiku"]),
+        ])
+        let label = CatalogRules.previewEffortLabel
+        XCTAssertEqual(label(entry, .claude, "opus", "high"), "High")
+        XCTAssertEqual(label(entry, .claude, "opus", ""), Copy.defaultLevel("high"))
+        XCTAssertEqual(label(entry, .claude, "opus", nil), Copy.defaultLevel("high"))
+        XCTAssertNil(label(entry, .claude, "mystery-9", ""))
+        XCTAssertNil(label(entry, .claude, "haiku", nil))
+    }
+
     func testUnknownModelFallsBackToID() {
         XCTAssertEqual(CatalogRules.modelLabel(nil, "mystery-9"), "mystery-9")
     }

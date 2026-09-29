@@ -124,6 +124,15 @@ public enum CatalogRules {
             + levels.map { PickerOption($0, levelLabel(kind, $0)) }
     }
 
+    /// The pane preview's effort: the stored level, else the model's default label ('' = CLI default);
+    /// nil when the model is unknown or has no effort control.
+    public static func previewEffortLabel(_ entry: AgentCatalogEntry?, _ kind: AgentKind,
+                                          _ model: String, _ effort: String?) -> String? {
+        if let effort, !effort.isEmpty { return Copy.humanEffort(effort) }
+        guard let m = resolve(entry, model), effortOptions(kind, m) != nil else { return nil }
+        return defaultEffortLabel(kind, m)
+    }
+
     /// A stored level the model's menu doesn't offer means the agent default (L27): an effort the model
     /// dropped, or a bare level that merged into the "" row.
     public static func normalizeEffort(_ kind: AgentKind?, _ model: CatalogModel?, _ effort: String) -> String {
