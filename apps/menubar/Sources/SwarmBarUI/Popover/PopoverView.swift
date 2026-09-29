@@ -113,24 +113,38 @@ public struct PopoverView: View {
 
     private var footer: some View {
         HStack {
-            Menu {
-                Button(Copy.orchestrateBoardItemMenu) { openBoardHandoff(nil) }
-            } label: {
-                Label(Copy.newOrchestrator, systemImage: "plus")
-            } primaryAction: {
-                openNewOrchestrator()
-            }
-            .menuStyle(.button)
-            .controlSize(.small)
-            .fixedSize()
-            .help(Copy.moreStartOptions)
-            .accessibilityLabel(Copy.newOrchestrator)
-            .disabled(!model.connected)
+            PopoverFooterSplitButton(openNewOrchestrator: openNewOrchestrator,
+                                     openBoardHandoff: openBoardHandoff,
+                                     connected: model.connected)
             Spacer()
             IconButton("square.grid.2x2", help: Copy.openBoard) { model.openBoard() }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+}
+
+/// The footer's split button: primary action starts a new orchestrator, the chevron
+/// segment opens the More-ways-to-start menu.
+struct PopoverFooterSplitButton: View {
+    let openNewOrchestrator: () -> Void
+    let openBoardHandoff: (String?) -> Void
+    let connected: Bool
+
+    var body: some View {
+        Menu {
+            Button(Copy.orchestrateBoardItemMenu) { openBoardHandoff(nil) }
+        } label: {
+            Label(Copy.newOrchestrator, systemImage: "plus")
+        } primaryAction: {
+            openNewOrchestrator()
+        }
+        .menuStyle(.button)
+        .controlSize(.small)
+        .fixedSize()
+        .help(Copy.moreStartOptions)
+        .accessibilityLabel(Copy.newOrchestrator)
+        .disabled(!connected)
     }
 }
 
