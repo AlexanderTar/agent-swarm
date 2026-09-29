@@ -42,6 +42,7 @@ Commands:
   confirm-repos REQ PATH... [--comment TEXT]
   request-changes REQ COMMENT
   usage [--refresh]
+  cleanup [--dry-run] [--no-grace]  remove finished agents' work dirs, orphan work dirs and reclaimable worktrees
   dev-seed                          load the contract fixture keys (make dev only)
   version
 
@@ -121,6 +122,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdRequestChanges(args[1:], stdout, stderr)
 	case "usage":
 		return cmdUsage(args[1:], stdout, stderr)
+	case "cleanup":
+		return cmdCleanup(args[1:], stdout, stderr)
 	case "dev-seed":
 		return cmdDevSeed(args[1:], stdout, stderr)
 	case "version", "--version":
