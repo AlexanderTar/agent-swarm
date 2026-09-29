@@ -27,6 +27,8 @@ export default defineConfig({
   build: { outDir: "dist", emptyOutDir: true },
   server: { port: 5173, proxy: mock ? undefined : { "/api": { target: daemon } } },
   test: {
+    // Radix/jsdom interaction tests exceed the default timeout when workers compete for CPU.
+    maxWorkers: 1,
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
