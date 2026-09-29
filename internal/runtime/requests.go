@@ -554,7 +554,7 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 		}
 		// A request with a chat_block is two turns (print-then-ask): this relay carries only the
 		// block; the question follows in a request_ask relay once the reply is checked.
-		if payload["chat_block"] != nil {
+		if cb, _ := payload["chat_block"].(string); cb != "" {
 			delete(payload, "question")
 			delete(payload, "native_prompt")
 			payload["next"] = PrintNext

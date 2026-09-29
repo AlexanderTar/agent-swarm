@@ -208,3 +208,16 @@ func TestPrintTurnTickMuseStyle(t *testing.T) {
 		t.Fatalf("relay = %v", p)
 	}
 }
+
+func TestPrintTurnTickUnreadableReplyAsks(t *testing.T) {
+	s, tm, fa, ses, req := printSectionAll(t)
+	s.DB.Exec(`UPDATE messages SET state = 'acked' WHERE to_agent_id = ?`, req.AgentID)
+	tm.captures[ses.TmuxName] = []string{"─────\n❯ \n─────\n"} // idle
+	fa.LastReplyReadable = false
+	if err := s.PrintTurnTick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := relayFor(t, s, req.AgentID, req.ID); p["event"] != "request_ask" {
+		t.Fatalf("relay = %v, want request_ask (fail open)", p)
+	}
+}
