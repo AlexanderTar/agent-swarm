@@ -1497,6 +1497,15 @@ func (s *Store) sweepFinishedRoots(ctx context.Context) error {
 // real, not decorative.
 const reclaimGrace = time.Hour
 
+// staleHolder is true for a reservation row r whose holder is finished with
+// no live session: such a reservation pins nothing (finished reviewers never
+// release theirs).
+const staleHolder = `EXISTS (
+			SELECT 1 FROM agents h WHERE h.id = r.agent_id AND h.state IN ('finished', 'acknowledged'))
+		  AND NOT EXISTS (
+			SELECT 1 FROM sessions hs WHERE hs.agent_id = r.agent_id
+			  AND hs.state IN ('spawning','running','pause_requested','quiescing','stopping'))`
+
 // reclaimGateWhere is the §4.3 eligibility clause, passed to
 // Worktree.Candidates. The owner's own unreleased reservation never blocks
 // (measured: 91 real rows look like this, from the self-completion asymmetry
@@ -1516,8 +1525,18 @@ const reclaimGateWhere = `w WHERE w.state IN ('active', 'retained')
 		SELECT 1 FROM worktree_reservations r
 		WHERE r.worktree_id = w.id
 		  AND r.agent_id <> w.owner_agent_id
-		  AND r.released_at IS NULL)
+		  AND r.released_at IS NULL
+		  AND NOT (` + staleHolder + `))
 	ORDER BY w.created_at`
+
+// releaseStaleReservations releases wtID's unreleased reservations held by
+// finished agents with no live session, so the worktree's own removal guard
+// sees no other holder.
+func (s *Store) releaseStaleReservations(ctx context.Context, wtID string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE worktree_reservations AS r SET released_at = ?
+		WHERE r.worktree_id = ? AND r.released_at IS NULL AND `+staleHolder, db.Millis(s.Now()), wtID)
+	return err
+}
 
 // ReclaimWorktrees is the per-agent backstop sweepFinishedRoots cannot be.
 // sweepFinishedRoots waits for a whole root item to reach done/cancelled,
@@ -1551,6 +1570,11 @@ func (s *Store) ReclaimWorktrees(ctx context.Context) error {
 		if live > 0 {
 			s.logf("worktree: keeping %s (owner has a live descendant)", wt.Path)
 			kept++
+			continue
+		}
+		if err := s.releaseStaleReservations(ctx, wt.ID); err != nil {
+			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
+			failed++
 			continue
 		}
 		_, pathErr := os.Lstat(wt.Path)
