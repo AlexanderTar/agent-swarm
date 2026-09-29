@@ -24,8 +24,8 @@ final class NewOrchestratorFormTests: XCTestCase {
 
     func testPrefillFromSettingsAndPreview() async {
         let f = await form()
-        XCTAssertEqual(f.choice, AgentChoice(agent: .claude, model: "opus"))
-        XCTAssertEqual(f.advisor, .pair(.claude, "fable"))
+        XCTAssertEqual(f.picker.choice, AgentChoice(agent: .claude, model: "opus"))
+        XCTAssertEqual(f.picker.advisor, .pair(.claude, "fable"))
         XCTAssertEqual(f.preview, "")
         XCTAssertNil(f.nameError)
         XCTAssertFalse(f.canStart)
@@ -33,11 +33,11 @@ final class NewOrchestratorFormTests: XCTestCase {
         XCTAssertEqual(f.preview, "Agent name: investigate-login-crash")
         XCTAssertNil(f.nameError)
         XCTAssertTrue(f.canStart)
-        XCTAssertEqual(f.agentOptions.map(\.label), ["Claude", "Codex", "Antigravity"])
-        XCTAssertEqual(f.modelOptions.first?.label, "Fable 5.1 (latest)")
-        XCTAssertEqual(f.effortOptions?.first?.label, "Default (high)")
-        XCTAssertEqual(f.advisorAgentOptions.first?.label, "Claude")
-        XCTAssertEqual(f.advisorAgentOptions.last?.label, "No advisor")
+        XCTAssertEqual(f.picker.agentOptions.map(\.label), ["Claude", "Codex", "Antigravity"])
+        XCTAssertEqual(f.picker.modelOptions.first?.label, "Fable 5.1 (latest)")
+        XCTAssertEqual(f.picker.effortOptions?.first?.label, "Default (high)")
+        XCTAssertEqual(f.picker.advisorAgentOptions.first?.label, "Claude")
+        XCTAssertEqual(f.picker.advisorAgentOptions.last?.label, "No advisor")
         XCTAssertEqual(f.intent, .chore)
         XCTAssertEqual(f.intentCaption, Copy.choreCaption)
         f.intent = .feature
@@ -54,9 +54,9 @@ final class NewOrchestratorFormTests: XCTestCase {
         settings[.orchestrator] = RoleDefault(agent: .claude, model: "opus", effort: "ultra") // opus doesn't offer "ultra"
         let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true,
                                     format: Format(now: fixtureNow))
-        XCTAssertEqual(f.choice.effort, "ultra", "before load() the catalog hasn't arrived to check it against")
+        XCTAssertEqual(f.picker.choice.effort, "ultra", "before load() the catalog hasn't arrived to check it against")
         await f.load()
-        XCTAssertEqual(f.choice.effort, "", "normalised once the catalog arrives")
+        XCTAssertEqual(f.picker.choice.effort, "", "normalised once the catalog arrives")
         f.name = "x"
         XCTAssertNil(f.body()?.effort, "a level the model doesn't offer must never reach the spike body")
     }
@@ -64,9 +64,9 @@ final class NewOrchestratorFormTests: XCTestCase {
     func testExplicitPrimaryEffortReachesBodyAndInvalidSelectionDoesNot() async {
         let f = await form()
         f.name = "x"
-        f.setEffort("xhigh")
+        f.picker.setEffort("xhigh")
         XCTAssertEqual(f.body()?.effort, "xhigh")
-        f.setEffort("ultra")
+        f.picker.setEffort("ultra")
         XCTAssertNil(f.body()?.effort, "Opus does not offer ultra")
     }
 
@@ -75,19 +75,19 @@ final class NewOrchestratorFormTests: XCTestCase {
         settings[.advisor] = RoleDefault(agent: .claude, model: "fable", effort: "xhigh")
         let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true)
         await f.load()
-        XCTAssertNil(f.advisorEffortOptions)
-        f.setAdvisorEffort("max")
+        XCTAssertNil(f.picker.advisorEffortOptions)
+        f.picker.setAdvisorEffort("max")
         XCTAssertEqual(f.body()?.advisor, .pair(agent: .claude, model: "fable", effort: nil))
     }
 
     func testClaudePrimaryCodexAdvisorUsesSelectedEffort() async {
         let f = await form()
-        f.setAdvisorAgent("codex")
-        XCTAssertNotNil(f.advisorEffortOptions)
-        f.setAdvisorEffort("xhigh")
+        f.picker.setAdvisorAgent("codex")
+        XCTAssertNotNil(f.picker.advisorEffortOptions)
+        f.picker.setAdvisorEffort("xhigh")
         XCTAssertEqual(f.body()?.advisor, .pair(agent: .codex, model: "gpt-6-astra", effort: "xhigh"))
-        f.setAdvisorModel("gpt-5.3-codex")
-        XCTAssertEqual(f.advisorEffort, "", "new model does not offer xhigh")
+        f.picker.setAdvisorModel("gpt-5.3-codex")
+        XCTAssertEqual(f.picker.advisorEffort, "", "new model does not offer xhigh")
         XCTAssertEqual(f.body()?.advisor, .pair(agent: .codex, model: "gpt-5.3-codex", effort: nil))
     }
 
@@ -96,21 +96,21 @@ final class NewOrchestratorFormTests: XCTestCase {
         settings[.advisor] = RoleDefault(agent: .claude, model: "fable", effort: "xhigh")
         let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true)
         await f.load()
-        f.setAgent("codex")
-        XCTAssertNotNil(f.advisorEffortOptions)
-        XCTAssertEqual(f.advisorEffort, "xhigh")
+        f.picker.setAgent("codex")
+        XCTAssertNotNil(f.picker.advisorEffortOptions)
+        XCTAssertEqual(f.picker.advisorEffort, "xhigh")
         XCTAssertEqual(f.body()?.advisor, .pair(agent: .claude, model: "fable", effort: "xhigh"))
-        f.setAdvisorModel("claude-sonnet-4-6")
-        XCTAssertEqual(f.advisorEffort, "", "selected level is normalized for the new model")
+        f.picker.setAdvisorModel("claude-sonnet-4-6")
+        XCTAssertEqual(f.picker.advisorEffort, "", "selected level is normalized for the new model")
     }
 
     func testNoAdvisorAndEffortlessModelHideAdvisorEffort() async {
         let f = await form()
-        f.setAdvisorAgent("none")
-        XCTAssertNil(f.advisorEffortOptions)
+        f.picker.setAdvisorAgent("none")
+        XCTAssertNil(f.picker.advisorEffortOptions)
         XCTAssertEqual(f.body()?.advisor, AdvisorPayload.none)
-        f.setModel("claude-haiku-4-5-20251001")
-        XCTAssertNil(f.effortOptions)
+        f.picker.setModel("claude-haiku-4-5-20251001")
+        XCTAssertNil(f.picker.effortOptions)
         XCTAssertNil(f.body()?.effort)
     }
 
@@ -155,39 +155,39 @@ final class NewOrchestratorFormTests: XCTestCase {
     func testAgentModelEffortAndAdvisorMessages() async {
         let f = await form()
         f.name = "x"
-        f.setModel("claude-opus-5")
-        f.setEffort("xhigh")
-        f.setModel("claude-sonnet-4-6")
-        XCTAssertEqual(f.effortNote, "xhigh isn't available for Sonnet 4.6; using the default.")
-        XCTAssertEqual(f.choice.effort, "")
-        f.setEffort("max")
-        XCTAssertNil(f.effortNote)
+        f.picker.setModel("claude-opus-5")
+        f.picker.setEffort("xhigh")
+        f.picker.setModel("claude-sonnet-4-6")
+        XCTAssertEqual(f.picker.effortNote, "xhigh isn't available for Sonnet 4.6; using the default.")
+        XCTAssertEqual(f.picker.choice.effort, "")
+        f.picker.setEffort("max")
+        XCTAssertNil(f.picker.effortNote)
 
-        f.setAgent("codex")
-        XCTAssertEqual(f.choice, AgentChoice(agent: .codex, model: "gpt-6-astra", effort: ""))
-        XCTAssertNil(f.errors.model, "an incompatible switch substitutes the first model instead of an error")
+        f.picker.setAgent("codex")
+        XCTAssertEqual(f.picker.choice, AgentChoice(agent: .codex, model: "gpt-6-astra", effort: ""))
+        XCTAssertNil(f.picker.errors.model, "an incompatible switch substitutes the first model instead of an error")
         XCTAssertTrue(f.canStart)
-        XCTAssertEqual(f.effortOptions?.first?.label, "Default (medium)")
+        XCTAssertEqual(f.picker.effortOptions?.first?.label, "Default (medium)")
 
-        f.setAgent("agy")
-        f.setModel("gemini-3.8-flash")
-        XCTAssertEqual(f.errors.agent, "Antigravity isn't signed in. Run `agy` in a terminal.")
-        f.setAgent("claude")
-        f.setModel("claude-haiku-4-5-20251001")
-        XCTAssertNil(f.effortOptions, "Effort is hidden for models without it")
-        f.setAgent("bogus")
-        XCTAssertEqual(f.choice.agent, .claude)
+        f.picker.setAgent("agy")
+        f.picker.setModel("gemini-3.8-flash")
+        XCTAssertEqual(f.picker.errors.agent, "Antigravity isn't signed in. Run `agy` in a terminal.")
+        f.picker.setAgent("claude")
+        f.picker.setModel("claude-haiku-4-5-20251001")
+        XCTAssertNil(f.picker.effortOptions, "Effort is hidden for models without it")
+        f.picker.setAgent("bogus")
+        XCTAssertEqual(f.picker.choice.agent, .claude)
 
-        f.setAdvisorModel("gone")
-        XCTAssertEqual(f.advisor, .pair(.claude, "fable"), "unavailable models cannot enter a payload")
-        f.setAdvisorAgent("none")
-        XCTAssertTrue(f.errors.isValid)
+        f.picker.setAdvisorModel("gone")
+        XCTAssertEqual(f.picker.advisor, .pair(.claude, "fable"), "unavailable models cannot enter a payload")
+        f.picker.setAdvisorAgent("none")
+        XCTAssertTrue(f.picker.errors.isValid)
 
         var noSuperpowers = client.catalogEntries
         noSuperpowers[0].superpowers = false
         client.catalogEntries = noSuperpowers
         await f.load()
-        XCTAssertEqual(f.errors.agent, "Install the superpowers plugin for Claude to run orchestrators.")
+        XCTAssertEqual(f.picker.errors.agent, "Install the superpowers plugin for Claude to run orchestrators.")
     }
 
     func testReposPicker() async {
@@ -336,19 +336,19 @@ final class NewOrchestratorFormTests: XCTestCase {
 
     func testAdvisorAgentAndModelStayValid() async {
         let f = await form()
-        XCTAssertEqual(f.advisorAgentOptions.map(\.label), ["Claude", "Codex", "Antigravity", "No advisor"])
-        XCTAssertFalse(f.advisorModelOptions.isEmpty)
-        f.setAdvisorAgent("codex")
-        XCTAssertEqual(f.advisor, .pair(.codex, f.advisorModelOptions[0].value))
-        let alternate = try? XCTUnwrap(f.advisorModelOptions.last?.value)
-        if let alternate { f.setAdvisorModel(alternate) }
+        XCTAssertEqual(f.picker.advisorAgentOptions.map(\.label), ["Claude", "Codex", "Antigravity", "No advisor"])
+        XCTAssertFalse(f.picker.advisorModelOptions.isEmpty)
+        f.picker.setAdvisorAgent("codex")
+        XCTAssertEqual(f.picker.advisor, .pair(.codex, f.picker.advisorModelOptions[0].value))
+        let alternate = try? XCTUnwrap(f.picker.advisorModelOptions.last?.value)
+        if let alternate { f.picker.setAdvisorModel(alternate) }
         if case let .pair(agent, model, _) = f.body()?.advisor {
             XCTAssertEqual(agent, .codex)
             XCTAssertEqual(model, alternate)
         } else { XCTFail("advisor pair missing") }
-        f.setAdvisorAgent("none")
-        XCTAssertEqual(f.advisor, .none)
-        XCTAssertTrue(f.advisorModelOptions.isEmpty)
+        f.picker.setAdvisorAgent("none")
+        XCTAssertEqual(f.picker.advisor, .none)
+        XCTAssertTrue(f.picker.advisorModelOptions.isEmpty)
         XCTAssertEqual(f.body()?.advisor, AdvisorPayload.none)
     }
 
@@ -357,12 +357,12 @@ final class NewOrchestratorFormTests: XCTestCase {
         settings[.advisor] = RoleDefault(agent: .claude, model: "gone", effort: "high")
         let f = NewOrchestratorForm(client: client, settings: settings, agents: state.agents, connected: true)
         await f.load()
-        XCTAssertNotEqual(f.advisor, .pair(.claude, "gone"))
+        XCTAssertNotEqual(f.picker.advisor, .pair(.claude, "gone"))
         f.name = "x"
-        XCTAssertNil(f.errors.advisor)
+        XCTAssertNil(f.picker.errors.advisor)
         client.catalogEntries = []
         await f.load()
-        XCTAssertEqual(f.advisor, .none)
+        XCTAssertEqual(f.picker.advisor, .none)
         XCTAssertEqual(f.body()?.advisor, AdvisorPayload.none)
     }
 

@@ -182,4 +182,41 @@ final class HTTPDaemonClientTests: XCTestCase {
         XCTAssertEqual(bodies.count, 2)
         XCTAssertTrue(bodies.allSatisfy { $0.contains("\"request_id\":\"key-1\"") }, "\(bodies)")
     }
+
+    func testHandoffWithoutSwitchSendsOnlyRequestID() async throws {
+        let session = StubURLProtocol.install { _ in (202, Data("{}".utf8)) }
+        let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)
+        try await client.handoff("auth-epic-orchestrator", HandoffRequest(requestId: "k1"))
+        let seen = try XCTUnwrap(StubURLProtocol.seen.last)
+        XCTAssertEqual(seen.method, "POST")
+        XCTAssertEqual(seen.path, "/api/agents/auth-epic-orchestrator/handoff")
+        XCTAssertEqual(try Fixture.json(Data(seen.body.utf8)), try Fixture.json(Data(#"{"request_id":"k1"}"#.utf8)))
+    }
+
+    func testHandoffWithSwitchSendsPicksAndNoneAdvisor() async throws {
+        let session = StubURLProtocol.install { _ in (202, Data("{}".utf8)) }
+        let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)
+        try await client.handoff("o", HandoffRequest(requestId: "k2", agent: .codex, model: "gpt-6-astra", effort: "high", advisor: AdvisorPayload.none))
+        let body = try XCTUnwrap(StubURLProtocol.seen.last).body
+        XCTAssertEqual(try Fixture.json(Data(body.utf8)),
+                       try Fixture.json(Data(#"{"request_id":"k2","agent":"codex","model":"gpt-6-astra","effort":"high","advisor":"none"}"#.utf8)))
+    }
+
+    func testStartOrchestratorBodyHasNoRolesOrRepos() async throws {
+        let session = StubURLProtocol.install { _ in (200, try Fixture.data("agent.json")) }
+        let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)
+        _ = try await client.startOrchestrator(itemKey: "BUG-7", StartOrchestratorBody(requestId: "r", agent: .claude, model: "opus", effort: nil, advisor: .none))
+        let seen = try XCTUnwrap(StubURLProtocol.seen.last)
+        XCTAssertEqual(seen.path, "/api/items/BUG-7/orchestrator")
+        XCTAssertFalse(seen.body.contains("roles") || seen.body.contains("repos"), seen.body)
+    }
+
+    func testBoardItemsDecodesFlatListIncludingUnknownTypes() async throws {
+        let session = StubURLProtocol.install { _ in (200, try Fixture.data("items.json")) }
+        let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)
+        let items = try await client.boardItems()
+        XCTAssertEqual(StubURLProtocol.seen.last?.path, "/api/items?view=flat")
+        XCTAssertEqual(items.count, 9)
+        XCTAssertEqual(items.last?.type, "widget")
+    }
 }

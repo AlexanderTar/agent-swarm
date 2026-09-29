@@ -9,11 +9,15 @@ import SwiftUI
 public struct PopoverView: View {
     @Bindable var model: AppModel
     let openNewOrchestrator: () -> Void
+    let openBoardHandoff: (String?) -> Void
     let openSettings: () -> Void
 
-    public init(model: AppModel, openNewOrchestrator: @escaping () -> Void, openSettings: @escaping () -> Void) {
+    public init(model: AppModel, openNewOrchestrator: @escaping () -> Void,
+                openBoardHandoff: @escaping (String?) -> Void = { _ in },
+                openSettings: @escaping () -> Void) {
         self.model = model
         self.openNewOrchestrator = openNewOrchestrator
+        self.openBoardHandoff = openBoardHandoff
         self.openSettings = openSettings
     }
 
@@ -58,7 +62,7 @@ public struct PopoverView: View {
                     if let note = model.compactNote { Text(note).font(.callout).foregroundStyle(.secondary) }
                     NeedsYouSection(model: model, cap: cap(.needsYou))
                     Divider()
-                    AgentsSection(model: model, cap: cap(.agents))
+                    AgentsSection(model: model, cap: cap(.agents), openBoardHandoff: openBoardHandoff)
                     Divider()
                     UsageSectionView(model: model)
                     Divider()
@@ -109,10 +113,22 @@ public struct PopoverView: View {
 
     private var footer: some View {
         HStack {
-            Button {
-                openNewOrchestrator()
-            } label: {
-                Label(Copy.newOrchestrator, systemImage: "plus")
+            HStack(spacing: 0) {
+                Button {
+                    openNewOrchestrator()
+                } label: {
+                    Label(Copy.newOrchestrator, systemImage: "plus")
+                }
+                Menu {
+                    Button(Copy.orchestrateBoardItemMenu) { openBoardHandoff(nil) }
+                } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 18)
+                .help(Copy.moreStartOptions)
+                .accessibilityLabel(Copy.moreStartOptions)
             }
             .disabled(!model.connected)
             Spacer()
