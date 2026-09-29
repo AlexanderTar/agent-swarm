@@ -142,11 +142,12 @@ struct PopoverFooterSplitButton: View {
     let connected: Bool
 
     /// The fixed segment height. Both segments declare it (the label's content
-    /// frame, the chevron's layout frame) and the container hugs them, so the
-    /// row is 22 pt because the segments are — never the other way round.
-    /// The chevron's AppKit popup itself stays its intrinsic ~14 pt, centered
-    /// in its 28 pt segment; no modifier can stretch it, so the segment frame
-    /// (hit area) is what matches, and the layout test measures exactly that.
+    /// frame, the chevron popup's representable frame) and the container hugs
+    /// them, so the row is 22 pt because the segments are — never the other
+    /// way round. The chevron is a real NSPopUpButton sized to its 28 pt
+    /// segment (a SwiftUI Menu's popup keeps its intrinsic ~14 pt and centers
+    /// itself, leaving dead hit area — measured), so popup, segment, and hit
+    /// area are all the same 28×22.
     static let rowHeight: CGFloat = 22
     private static let cornerRadius: CGFloat = 7
     private static let chevronWidth: CGFloat = 28
@@ -158,6 +159,7 @@ struct PopoverFooterSplitButton: View {
         HStack(spacing: 0) {
             Button(action: openNewOrchestrator) {
                 Label(Copy.newOrchestrator, systemImage: "plus")
+                    .padding(.horizontal, 8)
                     .frame(height: Self.rowHeight)
                     .contentShape(Rectangle())
             }
@@ -171,30 +173,118 @@ struct PopoverFooterSplitButton: View {
                         in: UnevenRoundedRectangle(topLeadingRadius: Self.cornerRadius,
                                                    bottomLeadingRadius: Self.cornerRadius))
             .onHover { labelHovered = $0 }
+            .help(Copy.newOrchestrator)
             HairlineDivider()
                 .frame(width: 1, height: Self.rowHeight - 6)
-            Menu {
-                Button(Copy.orchestrateBoardItemMenu) { openBoardHandoff(nil) }
-            } label: {
-                Image(systemName: "chevron.down")
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(width: Self.chevronWidth, height: Self.rowHeight)
-            .contentShape(Rectangle())
-            .background(Color.primary.opacity(chevronHovered ? 0.08 : 0),
-                        in: UnevenRoundedRectangle(bottomTrailingRadius: Self.cornerRadius,
-                                                   topTrailingRadius: Self.cornerRadius))
-            .onHover { chevronHovered = $0 }
-            .accessibilityLabel(Copy.moreStartOptions)
+            SplitChevronPopUp(openBoardHandoff: openBoardHandoff, enabled: connected)
+                .frame(width: Self.chevronWidth, height: Self.rowHeight)
+                .background(Color.primary.opacity(chevronHovered ? 0.08 : 0),
+                            in: UnevenRoundedRectangle(bottomTrailingRadius: Self.cornerRadius,
+                                                       topTrailingRadius: Self.cornerRadius))
+                .onHover { chevronHovered = $0 }
+                .help(Copy.moreStartOptions)
+                .accessibilityLabel(Copy.moreStartOptions)
         }
-        .modifier(SplitBoxChrome(cornerRadius: Self.cornerRadius))
+        .background {
+            SplitBoxBackground()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        // Clip first so the glass edge/shadow drawn by the chrome keeps its
+        // own shape; the segments' hover tints already carry their own
+        // half-rounded shapes.
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
+        .modifier(SplitBoxChrome(cornerRadius: Self.cornerRadius))
         .controlSize(.small)
-        .help(Copy.moreStartOptions)
         .disabled(!connected)
     }
+}
+
+/// The chevron segment: a borderless pull-down NSPopUpButton filling its
+/// 28×22 slot, showing only a centered chevron glyph. A SwiftUI Menu renders
+/// a ~14 pt popup centered in the slot (measured), so its top/bottom edges
+/// and trailing strip hit-test as hosting-view no-ops while looking
+/// clickable; this owns its whole frame, so slot, popup, and hit area match.
+private struct SplitChevronPopUp: NSViewRepresentable {
+    var openBoardHandoff: (String?) -> Void
+    var enabled: Bool
+
+    func makeNSView(context: Context) -> SplitChevronSlotView {
+        SplitChevronSlotView(frame: NSRect(x: 0, y: 0, width: 28, height: 22),
+                             onPick: openBoardHandoff, enabled: enabled)
+    }
+
+    func updateNSView(_ slot: SplitChevronSlotView, context: Context) {
+        slot.button.onPick = openBoardHandoff
+        slot.button.isEnabled = enabled
+    }
+}
+
+/// The chevron's 28×22 layout slot. A plain view, so SwiftUI sizes it to the
+/// proposed frame exactly (like SplitDividerView); the popup fills it in
+/// layout, no matter what size its cell prefers — the cell sizing itself to
+/// its content and centering with dead margins is the bug this replaces.
+private final class SplitChevronSlotView: NSView {
+    let button: SplitChevronPopUpButton
+
+    init(frame: NSRect, onPick: ((String?) -> Void)?, enabled: Bool) {
+        button = SplitChevronPopUpButton(frame: NSRect(origin: .zero, size: frame.size), onPick: onPick)
+        button.controlSize = .small
+        button.isEnabled = enabled
+        super.init(frame: frame)
+        addSubview(button)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        button.frame = bounds
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 28, height: 22) }
+}
+
+/// The split control's chevron popup. Internal (not private) so the layout
+/// test can find it by class; cf. TranslucentWindowAccessor.AccessorView.
+final class SplitChevronPopUpButton: NSPopUpButton {
+    var onPick: ((String?) -> Void)?
+
+    init(frame: NSRect, onPick: ((String?) -> Void)?) {
+        self.onPick = onPick
+        super.init(frame: frame, pullsDown: true)
+        isBordered = false
+        let menu = NSMenu()
+        let item = NSMenuItem(title: Copy.orchestrateBoardItemMenu,
+                              action: #selector(fire), keyEquivalent: "")
+        item.target = self
+        // The chevron lives on the item, not the button: a pullsDown button
+        // re-syncs its displayed title/image from its items (measured: a
+        // directly assigned button image reads back nil with the item title
+        // showing), and with imagePosition .imageOnly the button shows just
+        // the glyph while the menu row keeps its title.
+        item.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
+        menu.addItem(item)
+        self.menu = menu
+        showChevron()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    /// Re-apply after each item sync so the button keeps showing the glyph.
+    override func synchronizeTitleAndSelectedItem() {
+        super.synchronizeTitleAndSelectedItem()
+        showChevron()
+    }
+
+    private func showChevron() {
+        imagePosition = .imageOnly
+        image = itemArray.first?.image
+        (cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
+    }
+
+    @objc private func fire() { onPick?(nil) }
 }
 
 /// The split control's box: Liquid Glass shaped to its own rounded rect on
@@ -224,6 +314,24 @@ private struct HairlineDivider: NSViewRepresentable {
     func makeNSView(context: Context) -> SplitDividerView { SplitDividerView(frame: .zero) }
 
     func updateNSView(_ view: SplitDividerView, context: Context) {}
+}
+
+/// The split control's shared container marker: a pass-through background view
+/// filling the HStack, so the layout test can measure the one box both
+/// segments sit in. Pure SwiftUI chrome (glass/material) is never measurable —
+/// deleting it leaves layout tests green — so this view is the structural
+/// assertion, and it must only exist as this control's background.
+private struct SplitBoxBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> SplitBoxContainerView { SplitBoxContainerView(frame: .zero) }
+
+    func updateNSView(_ view: SplitBoxContainerView, context: Context) {}
+}
+
+/// The split control's container. Internal (not private) so the layout test
+/// can find it by class; cf. TranslucentWindowAccessor.AccessorView.
+/// Pass-through for clicks: the segments beneath keep their own hit areas.
+final class SplitBoxContainerView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// The split control's divider. Internal (not private) so the layout test can
