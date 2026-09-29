@@ -12,13 +12,13 @@
 
 ## Locked decisions
 
-- Work dir removal gate: agent `finished`/`acknowledged`, `finished_at` older than `reclaimGrace` (1h), no session in a live state, path is exactly `<home>/work/<agent.name>`, not a symlink. Retry recreates the dir via `MkdirAll`, so removal is safe.
+- Work dir removal gate: agent `finished`/`acknowledged`, `finished_at` older than `reclaimGrace` (1h), no session in a live state, path is exactly `<home>/work/<agent.name>`, not a symlink. Retry recreates the dir via `MkdirAll`; the Claude adapter rewrites `.mcp.json` and skill links on every Launch/Resume (`internal/adapter/claude.go` `writeProjectSwarmConfig`). Every other adapter kind must be verified to do the same; any that writes create-if-absent is fixed in the same package.
 - Orphan work dirs (no agent row with that name) are removed when their mtime is older than `reclaimGrace`.
 - Merged evidence for a worktree (any one suffices, checked after dirty check):
   1. HEAD is ancestor of `wt.BaseRef` (unchanged),
   2. HEAD is ancestor of the repo's remote default branch (`origin/<default>`), fetched at most once per repo per reclaim pass,
-  3. HEAD is ancestor of the `head` branch/`merged_sha` of an `item_merges` row with `state='merged'` for the worktree's root item,
-  4. For GitHub remotes: HEAD is ancestor of (or equal to) the head OID of a merged PR in `gh pr list --state merged` for that repo (cached per repo per pass; missing OIDs fetched with `git fetch origin <oid>`; gh failure = no evidence, never an error).
+  3. HEAD is ancestor of the tip of the `head` branch (resolved locally, or `origin/<head>`) of an `item_merges` row with `state='merged'` for the worktree's root item. `merged_sha` is NOT used: for a squash merge it is the squash commit, which no task HEAD is an ancestor of,
+  4. For GitHub remotes: HEAD is ancestor of (or equal to) the head OID of a merged PR from `gh pr list --state merged --limit 1000 --json number,headRefName,headRefOid` for that repo (run through `s.runner()` so tests fake gh; cached per repo per pass; a missing OID is fetched with `git fetch origin refs/pull/<number>/head`, since the head branch is often deleted after merge; gh failure = no evidence, never an error).
   Dirty trees are never removed. Detached trees keep the existing `atDetachedSHA` rule, extended with evidence 2–4.
 - A reservation held by a `finished`/`acknowledged` agent with no live session does not block reclaim; reclaim releases it.
 - After any removal in a repo, run `git worktree prune` in that repo once per pass.
