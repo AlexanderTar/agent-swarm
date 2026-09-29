@@ -846,6 +846,77 @@ func TestAskNativePromptForMsg(t *testing.T) {
 	}
 }
 
+// TestAskNativePromptForOwnOpenRequest (TASK-356): swarm_ask
+// kind:"native_prompt" with for_msg naming the caller's own open request
+// returns the stored native prompt without touching the print phase or
+// emitting a relay; a foreign or resolved request is refused.
+func TestAskNativePromptForOwnOpenRequest(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, _, planID, _ := approvedFeatureSpike(t, s)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: "Approve the plan."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.NativePrompt == nil {
+		t.Fatalf("NativePrompt is nil on %+v", req)
+	}
+	var phaseBefore string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(json_extract(binding_json,'$.print_phase'),'') FROM requests WHERE id = ?`, req.ID).Scan(&phaseBefore); err != nil {
+		t.Fatal(err)
+	}
+	var relaysBefore int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'`).Scan(&relaysBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := s.Ask(ctx, ses.ID, AskInput{Kind: "native_prompt", ForMsg: req.ID})
+	if err != nil {
+		t.Fatalf("native_prompt for own open request: %v", err)
+	}
+	if out.NativePrompt == nil {
+		t.Fatalf("NativePrompt is nil on %+v", out)
+	}
+	if out.NativePrompt.Question != req.NativePrompt.Question {
+		t.Fatalf("question = %q, want stored %q", out.NativePrompt.Question, req.NativePrompt.Question)
+	}
+	if out.ID != req.ID {
+		t.Fatalf("id = %q, want %q", out.ID, req.ID)
+	}
+	if out.ChatBlock != "" {
+		t.Fatalf("ChatBlock = %q, want empty so requestOut renders native_prompt and next", out.ChatBlock)
+	}
+	var phaseAfter string
+	if err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(json_extract(binding_json,'$.print_phase'),'') FROM requests WHERE id = ?`, req.ID).Scan(&phaseAfter); err != nil {
+		t.Fatal(err)
+	}
+	if phaseAfter != phaseBefore {
+		t.Fatalf("print_phase = %q, want unchanged %q", phaseAfter, phaseBefore)
+	}
+	var relaysAfter int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE kind = 'relay'`).Scan(&relaysAfter); err != nil {
+		t.Fatal(err)
+	}
+	if relaysAfter != relaysBefore {
+		t.Fatalf("relay count = %d, want unchanged %d", relaysAfter, relaysBefore)
+	}
+
+	// Another agent's open request is refused.
+	orch, _, _ := worker(t, s)
+	orchSes := mustSessionID(t, s, orch.ID)
+	if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: req.ID}); err == nil {
+		t.Fatal("native_prompt for another agent's request must be refused")
+	}
+
+	// A resolved request is refused too.
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Withdraw: req.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, ses.ID, AskInput{Kind: "native_prompt", ForMsg: req.ID}); err == nil {
+		t.Fatal("native_prompt for a resolved request must be refused")
+	}
+}
+
 // TestQuestionTextForRef is 2026-09-28-approval-summary-enforced Task 9:
 // nativeAnswer's Muse branch rebuilds the exact native-question text a ref
 // currently shows, so ObservedAnswer's session-log scan can match Muse's

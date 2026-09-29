@@ -1520,6 +1520,9 @@ func (s *Store) verifyApprovalMsgAddressedTo(ctx context.Context, msgID, callerI
 // prompt for an approval question the child sent this orchestrator, without
 // creating any new request row -- the bound question row native_answer
 // later needs is the one the hook creates once the prompt is shown.
+// A for_msg naming the caller's own open request (TASK-356) recovers its
+// stored native prompt instead: a request_ask relay acked before its prompt
+// was read is otherwise unrecoverable, since the print phase is terminal.
 func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in AskInput) (Request, error) {
 	if in.ForMsg == "" {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "for_msg is required."}
@@ -1529,6 +1532,9 @@ func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in 
 		_, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
 			return err
+		}
+		if !isMsgRef(in.ForMsg) {
+			return s.ownRequestPromptTx(ctx, tx, a, in.ForMsg, &out)
 		}
 		var fromName, body string
 		err = tx.QueryRowContext(ctx, `SELECT ag.name, json_extract(m.payload_json, '$.body')
@@ -1547,6 +1553,29 @@ func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in 
 		return s.startPrintTx(ctx, tx, in.ForMsg)
 	})
 	return out, err
+}
+
+// ownRequestPromptTx recovers the stored native prompt of the caller's own
+// open request, leaving the print phase and relays untouched: no print
+// restart, no new relay, no phase write. A request owned by another agent
+// or no longer open is refused with a clear error.
+func (s *Store) ownRequestPromptTx(ctx context.Context, tx *sql.Tx, a Agent, reqID string, out *Request) error {
+	req, err := s.requestTx(ctx, tx, reqID)
+	if err != nil {
+		return err
+	}
+	if req.AgentID != a.ID {
+		return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("request %s is not addressed to you.", reqID)}
+	}
+	if req.State != "open" {
+		return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf("request %s is not open (state=%s).", reqID, req.State)}
+	}
+	np, err := s.storedNativePromptTx(ctx, tx, req)
+	if err != nil {
+		return err
+	}
+	*out = Request{ID: req.ID, Kind: req.Kind, State: req.State, NativePrompt: &np}
+	return nil
 }
 
 // nativePromptForMsg is the child-approval native prompt (spec section 2.4,
