@@ -167,6 +167,13 @@ struct SwarmBarApp: App {
         .defaultSize(width: 820, height: 790)
         .defaultPosition(.center)
 
+        Window(Copy.orchestrateBoardItem, id: "board-handoff") {
+            BoardHandoffHost(model: delegate.model)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 820, height: 300)
+        .defaultPosition(.center)
+
         Settings {
             SettingsHost(model: delegate.model)
         }
@@ -190,22 +197,60 @@ struct PopoverHost: View {
 
     var body: some View {
         PopoverView(model: model,
-                    openNewOrchestrator: {
-                        StatusItemWatcher.dismissPopover()
-                        NSApp.activate(ignoringOtherApps: true)
-                        openWindow(id: "new-orchestrator")
-                        // macOS restores the last frame on reopen; always center it on the active screen.
-                        DispatchQueue.main.async {
-                            guard let w = NSApp.windows.first(where: { $0.identifier?.rawValue.contains("new-orchestrator") == true }),
-                                  let screen = NSScreen.main?.visibleFrame else { return }
-                            w.setFrameOrigin(NSPoint(x: screen.midX - w.frame.width / 2, y: screen.midY - w.frame.height / 2))
-                        }
+                    openNewOrchestrator: { openCentered("new-orchestrator") },
+                    openBoardHandoff: { name in
+                        model.boardHandoffPreselect = name
+                        openCentered("board-handoff")
                     },
                     openSettings: {
                         StatusItemWatcher.dismissPopover()
                         NSApp.activate(ignoringOtherApps: true)
                         openSettings()
                     })
+    }
+}
+
+extension PopoverHost {
+    private func openCentered(_ id: String) {
+        StatusItemWatcher.dismissPopover()
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: id)
+        // macOS restores the last frame on reopen; always center it on the active screen.
+        DispatchQueue.main.async {
+            guard let w = NSApp.windows.first(where: { $0.identifier?.rawValue.contains(id) == true }),
+                  let screen = NSScreen.main?.visibleFrame else { return }
+            w.setFrameOrigin(NSPoint(x: screen.midX - w.frame.width / 2, y: screen.midY - w.frame.height / 2))
+        }
+    }
+}
+
+struct BoardHandoffHost: View {
+    let model: AppModel
+    @State private var form: BoardHandoffForm?
+    @Environment(\.dismissWindow) private var dismissWindow
+
+    var body: some View {
+        Group {
+            if let form {
+                BoardHandoffView(form: form,
+                                 onDone: { dismissWindow(id: "board-handoff"); Task { await model.refresh() } },
+                                 onCancel: { dismissWindow(id: "board-handoff") })
+            } else {
+                ProgressView().frame(width: 480, height: 200)
+            }
+        }
+        .onAppear { reopen() }
+        .onDisappear { form = nil }
+        // "Hand off to…" while the window is already open: rebuild with the new preselection.
+        .onChange(of: model.boardHandoffPreselect) { _, name in if name != nil { reopen() } }
+        .onChange(of: model.state.agents) { _, a in form?.update(agents: a) }
+        .onChange(of: model.connected) { _, up in form?.connected = up }
+    }
+
+    private func reopen() {
+        let f = model.makeBoardHandoffForm()
+        form = f
+        Task { await f.load() }
     }
 }
 

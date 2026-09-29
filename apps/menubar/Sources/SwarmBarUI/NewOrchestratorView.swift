@@ -81,7 +81,7 @@ public struct NewOrchestratorView: View {
             nameField
             intentField
             reposField(maxRows: maxRows)
-            agentFields
+            AgentPickerGrid(picker: form.picker)
             VStack(alignment: .leading, spacing: 4) {
                 Text(Copy.requestOptional)
                 RequestEditor(text: $form.request, onImageData: { form.addImage(data: $0, name: $1) },
@@ -143,70 +143,6 @@ public struct NewOrchestratorView: View {
         if form.repoError != nil { return "Repositories unavailable." }
         if form.repos.scanning { return "Scanning repositories…" }
         return "No repositories found."
-    }
-
-    private var advisorAgentValue: String {
-        if case let .pair(agent, _) = form.picker.advisor { return agent.rawValue }
-        return "none"
-    }
-
-    private var advisorModelValue: String {
-        if case let .pair(_, model) = form.picker.advisor { return model }
-        return "—"
-    }
-
-    private var agentFields: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
-                GridRow {
-                    Text(Copy.agent).frame(width: 70, alignment: .leading)
-                    WideOptionPicker(Copy.agent, options: form.picker.agentOptions, value: form.picker.choice.agent?.rawValue ?? "",
-                                     icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.picker.setAgent($0) }
-                        .frame(width: 130)
-                    Text(Copy.model).frame(width: 50, alignment: .leading)
-                    WideOptionPicker(Copy.model, options: form.picker.modelOptions, value: form.picker.choice.model) { form.picker.setModel($0) }
-                        .frame(minWidth: 200, maxWidth: .infinity)
-                    if let efforts = form.picker.effortOptions {
-                        Text(Copy.effort).frame(width: 45, alignment: .leading)
-                        WideOptionPicker(Copy.agentEffort, options: efforts, value: form.picker.choice.effort) { form.picker.setEffort($0) }
-                            .frame(width: 170)
-                    } else {
-                        Text("").frame(width: 45)
-                        Color.clear.frame(width: 170, height: 1)
-                    }
-                }
-                if let error = form.picker.errors.agent, !error.isEmpty {
-                    GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
-                }
-                if let error = form.picker.errors.model {
-                    GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
-                }
-                if let note = form.picker.effortNote {
-                    GridRow { Text(note).font(.caption).foregroundStyle(.secondary).gridCellColumns(6) }
-                }
-                GridRow {
-                    Text(Copy.advisor).frame(width: 70, alignment: .leading)
-                    WideOptionPicker(Copy.advisor, options: form.picker.advisorAgentOptions, value: advisorAgentValue,
-                                     icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.picker.setAdvisorAgent($0) }
-                        .frame(width: 130)
-                    Text(Copy.model).frame(width: 50, alignment: .leading)
-                    WideOptionPicker("Advisor model", options: form.picker.advisorModelOptions, value: advisorModelValue) { form.picker.setAdvisorModel($0) }
-                        .frame(minWidth: 200, maxWidth: .infinity).disabled(form.picker.advisor == .none)
-                    if let efforts = form.picker.advisorEffortOptions {
-                        Text(Copy.effort).frame(width: 45, alignment: .leading)
-                        WideOptionPicker(Copy.advisorEffort, options: efforts, value: form.picker.advisorEffort) { form.picker.setAdvisorEffort($0) }
-                            .frame(width: 170)
-                    } else {
-                        Text("").frame(width: 45)
-                        Color.clear.frame(width: 170, height: 1)
-                    }
-                }
-                if let error = form.picker.errors.advisor {
-                    GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
-                }
-            }
-            Text(Copy.defaultsFromSettings).font(.caption).foregroundStyle(.secondary)
-        }
     }
 
     private func chooseFolder() {
@@ -472,63 +408,5 @@ struct RequestImageStrip: View {
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
         form.addImages(from: panel.urls)
-    }
-}
-
-/// AppKit keeps the visible popup as wide as its SwiftUI frame, including at the window minimum.
-private struct WideOptionPicker: NSViewRepresentable {
-    @Environment(\.isEnabled) private var isEnabled
-    let title: String
-    let options: [PickerOption]
-    let value: String
-    let icon: ((PickerOption) -> IconName?)?
-    let onChange: (String) -> Void
-
-    init(_ title: String, options: [PickerOption], value: String,
-         icon: ((PickerOption) -> IconName?)? = nil, onChange: @escaping (String) -> Void) {
-        self.title = title
-        self.options = options
-        self.value = value
-        self.icon = icon
-        self.onChange = onChange
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
-
-    func makeNSView(context: Context) -> NSPopUpButton {
-        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-        popup.target = context.coordinator
-        popup.action = #selector(Coordinator.changed(_:))
-        popup.setAccessibilityLabel(title)
-        return popup
-    }
-
-    func updateNSView(_ popup: NSPopUpButton, context: Context) {
-        context.coordinator.onChange = onChange
-        let displayed = options.contains(where: { $0.value == value })
-            ? options : [PickerOption(value, value.isEmpty ? " " : value)] + options
-        let current = popup.itemArray.map { (($0.representedObject as? String) ?? "", $0.title) }
-        let wanted = displayed.map { ($0.value, $0.label) }
-        if !zip(current, wanted).allSatisfy({ $0 == $1 }) || current.count != wanted.count {
-            popup.removeAllItems()
-            for option in displayed {
-                let item = NSMenuItem(title: option.label, action: nil, keyEquivalent: "")
-                item.representedObject = option.value
-                if let icon = icon?(option) { item.image = Icons.image(icon) }
-                popup.menu?.addItem(item)
-            }
-        }
-        if let index = displayed.firstIndex(where: { $0.value == value }) { popup.selectItem(at: index) }
-        popup.isEnabled = isEnabled
-        popup.setAccessibilityLabel(title)
-    }
-
-    @MainActor final class Coordinator: NSObject {
-        var onChange: (String) -> Void
-        init(onChange: @escaping (String) -> Void) { self.onChange = onChange }
-        @objc func changed(_ popup: NSPopUpButton) {
-            guard let value = popup.selectedItem?.representedObject as? String else { return }
-            onChange(value)
-        }
     }
 }

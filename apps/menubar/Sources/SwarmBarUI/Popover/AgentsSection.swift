@@ -4,6 +4,7 @@ import SwiftUI
 struct AgentsSection: View {
     @Bindable var model: AppModel
     let cap: CGFloat
+    var openBoardHandoff: (String?) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -24,7 +25,7 @@ struct AgentsSection: View {
                 ForEach(model.agentRows) { row in
                     switch row.kind {
                     case let .agent(a):
-                        AgentRowView(model: model, agent: a, depth: row.depth, expanded: row.expanded)
+                        AgentRowView(model: model, agent: a, depth: row.depth, expanded: row.expanded, openBoardHandoff: openBoardHandoff)
                     case let .finished(parent, count):
                         Button {
                             model.toggleFinished(parent)
@@ -62,6 +63,7 @@ struct AgentRowView: View {
     let agent: AgentNode
     let depth: Int
     let expanded: Bool?
+    var openBoardHandoff: (String?) -> Void = { _ in }
     @State private var confirming: AgentAction?
     @State private var anchor = ScreenAnchor()
 
@@ -111,6 +113,9 @@ struct AgentRowView: View {
         .contextMenu {
             ForEach(actions) { a in
                 Button(a.label) { run(a) }.disabled(a.disabled)
+                if a.endpoint == .handoff, BoardHandoffRules.offersHandOffTo(agent, actions: actions) {
+                    Button(Copy.handOffTo) { openBoardHandoff(agent.name) }
+                }
             }
         }
         .confirmationDialog(confirming?.confirm ?? "", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
