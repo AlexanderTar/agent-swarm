@@ -1,0 +1,11 @@
+{"items": [
+  {"key": "BUG-7", "type": "bug", "status": "ready", "title": "Login crash", "parent_key": null},
+  {"key": "SPIKE-4", "type": "spike", "status": "in_progress", "title": "Billing options", "parent_key": null},
+  {"key": "EPIC-20", "type": "epic", "status": "in_progress", "title": "Orphan epic", "parent_key": null},
+  {"key": "STORY-4", "type": "story", "status": "ready", "title": "A story", "parent_key": null},
+  {"key": "EPIC-12", "type": "epic", "status": "in_progress", "title": "Authentication", "parent_key": null},
+  {"key": "CHORE-3", "type": "chore", "status": "ready", "title": "Bump deps", "parent_key": null},
+  {"key": "TASK-101", "type": "task", "status": "ready", "title": "Login form", "parent_key": "EPIC-12"},
+  {"key": "EPIC-40", "type": "epic", "status": "done", "title": "Shipped", "parent_key": null},
+  {"key": "WIDGET-1", "type": "widget", "status": "ready", "title": "Unknown type", "parent_key": null}
+], "matches": 9}

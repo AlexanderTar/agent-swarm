@@ -534,6 +534,15 @@ public final class AppModel {
 
     public func openBoard(_ fragment: String = "") { openURL(endpoint.boardURL(fragment: fragment)) }
 
+    /// Agent name whose item the next Orchestrate board item window preselects; consumed by makeBoardHandoffForm().
+    public var boardHandoffPreselect: String?
+
+    public func makeBoardHandoffForm() -> BoardHandoffForm {
+        defer { boardHandoffPreselect = nil }
+        return BoardHandoffForm(client: client, settings: state.settings, agents: state.agents, connected: connected,
+                                preselectAgent: boardHandoffPreselect)
+    }
+
     public func makeNewOrchestratorForm() -> NewOrchestratorForm {
         NewOrchestratorForm(client: client, settings: state.settings, agents: state.agents, connected: connected, format: format)
     }

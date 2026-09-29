@@ -574,7 +574,11 @@ func (s *Store) StartOrchestrator(ctx context.Context, in OrchestratorInput) (Ag
 	if rec, ok, err := s.recoverableOrchestrator(ctx, it); err != nil {
 		return Agent{}, false, err
 	} else if ok {
-		return s.restartOrchestratorInPlace(ctx, rec)
+		var sw *AgentSwitch
+		if in.Kind != "" { // picks sent (menubar, web); CLI without --agent sends "" → unchanged
+			sw = &AgentSwitch{Kind: in.Kind, Model: in.Model, Effort: in.Effort, Advisor: in.Advisor}
+		}
+		return s.restartOrchestratorInPlace(ctx, rec, sw, in.RepoPaths)
 	}
 
 	var existing int
@@ -783,11 +787,24 @@ func (s *Store) recoverableOrchestrator(ctx context.Context, it items.Item) (Age
 // in-flight guard. The request re-enables auto_restart, so a parked
 // operation is resumed by the reconciler. queued reports an operation
 // still waiting (for the old pane to die, or for an admission slot).
-func (s *Store) restartOrchestratorInPlace(ctx context.Context, a Agent) (Agent, bool, error) {
+// Picks, when sent, ride the operation as switch_json and apply at start.
+func (s *Store) restartOrchestratorInPlace(ctx context.Context, a Agent, sw *AgentSwitch, repoPaths []string) (Agent, bool, error) {
 	if err := s.refuseIfOperationInFlight(ctx, a.ID); err != nil {
 		return Agent{}, false, err
 	}
-	op, err := s.RequestReplacement(ctx, a.ID, ModeRecover, "", "")
+	switchJSON := ""
+	if sw != nil {
+		if err := s.Preflight(ctx, PreflightInput{Kind: sw.Kind, Model: sw.Model, Effort: sw.Effort,
+			Role: RoleOrchestrator, RepoPaths: repoPaths}); err != nil {
+			return Agent{}, false, err
+		}
+		b, err := json.Marshal(sw)
+		if err != nil {
+			return Agent{}, false, err
+		}
+		switchJSON = string(b)
+	}
+	op, err := s.requestReplacement(ctx, a.ID, ModeRecover, "", "", switchJSON)
 	if err != nil {
 		return Agent{}, false, err
 	}

@@ -253,6 +253,29 @@ public enum Copy {
     public static func superpowersMissing(_ agent: String) -> String { "Install the superpowers plugin for \(agent) to run orchestrators." }
     public static let launchFailed = "Couldn't start orchestrator. Your entries are saved."
     public static let queuedCaption = "Starts when an agent slot becomes available."
+
+    // Orchestrate board item / Hand off to… (spec 2026-09-29-menubar-board-handoff).
+    public static let orchestrateBoardItem = "Orchestrate board item"
+    public static let orchestrateBoardItemMenu = "Orchestrate board item…"
+    public static let moreStartOptions = "More ways to start"
+    public static let handOffTo = "Hand off to…"
+    public static let handOff = "Hand off"
+    public static let item = "Item"
+    public static let noBoardItems = "No board items to orchestrate"
+    public static let boardItemsLoadFailed = "Couldn't load board items."
+    public static let handoffFailed = "Couldn't hand off. Your entries are saved."
+    public static let handoffUnavailable = "This orchestrator can't hand off right now."
+    public static let ready = "Ready"
+    public static func itemType(_ slug: String) -> String {
+        switch slug {
+        case "epic": return "Epic"
+        case "bug": return "Bug"
+        case "chore": return "Chore"
+        case "spike": return "Spike"
+        default: return slug.prefix(1).uppercased() + slug.dropFirst()
+        }
+    }
+    public static func boardItemTitle(_ key: String, _ title: String) -> String { "\(key) · \(title)" }
     /// An empty error (nothing to report) drops the sentence instead of leaving a dangling
     /// "Couldn't refresh: " — the same twin bug `catalogNeverFetched` had.
     public static func catalogStale(_ age: String, _ error: String) -> String {

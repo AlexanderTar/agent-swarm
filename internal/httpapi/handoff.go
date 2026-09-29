@@ -32,9 +32,15 @@ func replacementOut(name string, op runtime.Operation) replacementWire {
 		Reason: runtime.OperationReason(op.RequestKey), Error: op.Error}
 }
 
+// handoffBody: agent set → the successor runs as that agent/model/effort/
+// advisor (orchestrators only; note is ignored on that path).
 type handoffBody struct {
-	RequestID string `json:"request_id"`
-	Note      string `json:"note"`
+	RequestID string             `json:"request_id"`
+	Note      string             `json:"note"`
+	Agent     string             `json:"agent,omitempty"`
+	Model     string             `json:"model,omitempty"`
+	Effort    string             `json:"effort,omitempty"`
+	Advisor   *advisorChoiceBody `json:"advisor,omitempty"` // object or "none"
 }
 
 func (s *Server) handoffAgent(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +63,19 @@ func (s *Server) handoffAgent(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
-	op, err := s.RT.RequestReplacement(r.Context(), a.ID, runtime.ModeHandoff, body.RequestID, body.Note)
+	var op runtime.Operation
+	switch {
+	case body.Agent == "" && (body.Model != "" || body.Effort != "" || body.Advisor != nil):
+		s.writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "Choose an agent."))
+		return
+	case body.Agent != "":
+		op, err = s.RT.RequestHandoffTo(r.Context(), a.ID, body.RequestID, runtime.AgentSwitch{
+			Kind: runtime.AgentKind(body.Agent), Model: body.Model, Effort: body.Effort,
+			Advisor: advisorChoiceFromBody(body.Advisor)})
+		err = wrapPreflightErr(err)
+	default:
+		op, err = s.RT.RequestReplacement(r.Context(), a.ID, runtime.ModeHandoff, body.RequestID, body.Note)
+	}
 	if err != nil {
 		s.writeErr(w, err)
 		return

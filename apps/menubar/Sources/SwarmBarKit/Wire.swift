@@ -767,3 +767,54 @@ public struct APIErrorBody: Codable, Sendable, Equatable {
     }
     public var error: Detail
 }
+
+/// One row of GET /api/items?view=flat. `type` stays a string: unknown types must not fail decode.
+public struct BoardItem: Codable, Sendable, Equatable, Identifiable {
+    public var key: String
+    public var type: String
+    public var status: String
+    public var title: String
+    public var parentKey: String?
+    public var id: String { key }
+
+    enum CodingKeys: String, CodingKey { case key, type, status, title, parentKey = "parent_key" }
+
+    public init(key: String, type: String, status: String, title: String, parentKey: String? = nil) {
+        self.key = key; self.type = type; self.status = status; self.title = title; self.parentKey = parentKey
+    }
+}
+
+public struct BoardItemList: Codable, Sendable, Equatable {
+    public var items: [BoardItem]
+    public init(items: [BoardItem]) { self.items = items }
+}
+
+/// POST /api/items/{key}/orchestrator.
+public struct StartOrchestratorBody: Codable, Sendable, Equatable {
+    public var requestId: String
+    public var agent: AgentKind
+    public var model: String
+    public var effort: String?
+    public var advisor: AdvisorPayload
+
+    enum CodingKeys: String, CodingKey { case agent, model, effort, advisor, requestId = "request_id" }
+
+    public init(requestId: String, agent: AgentKind, model: String, effort: String?, advisor: AdvisorPayload) {
+        self.requestId = requestId; self.agent = agent; self.model = model; self.effort = effort; self.advisor = advisor
+    }
+}
+
+/// POST /api/agents/{name}/handoff. `agent == nil` is a plain handoff (`{"request_id":…}` only).
+public struct HandoffRequest: Codable, Sendable, Equatable {
+    public var requestId: String
+    public var agent: AgentKind?
+    public var model: String?
+    public var effort: String?
+    public var advisor: AdvisorPayload?
+
+    enum CodingKeys: String, CodingKey { case agent, model, effort, advisor, requestId = "request_id" }
+
+    public init(requestId: String, agent: AgentKind? = nil, model: String? = nil, effort: String? = nil, advisor: AdvisorPayload? = nil) {
+        self.requestId = requestId; self.agent = agent; self.model = model; self.effort = effort; self.advisor = advisor
+    }
+}
