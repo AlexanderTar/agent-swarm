@@ -365,6 +365,7 @@ type approveBody struct {
 	ArtifactRevision int    `json:"artifact_revision"`
 	Binding          any    `json:"binding"`
 	Via              string `json:"via"`
+	Merge            string `json:"merge"`
 }
 
 type changesBody struct {

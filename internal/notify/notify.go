@@ -35,7 +35,7 @@ const dedupWindow = 30 * time.Second
 // placeholderRe finds every {name} in a template, for substitution in Render.
 var placeholderRe = regexp.MustCompile(`\{([A-Za-z][A-Za-z0-9 _-]*)\}`)
 
-// Render substitutes args into kind's template and fails on a placeholder
+// Render substitutes args into kind's title and body and fails on a placeholder
 // with no argument, so a missed key is a test failure rather than a literal
 // {name} in a banner.
 func Render(kind string, args map[string]string) (Rule, error) {
@@ -44,7 +44,7 @@ func Render(kind string, args map[string]string) (Rule, error) {
 		return Rule{}, fmt.Errorf("notify: unknown kind %q", kind)
 	}
 	var missing []string
-	body := placeholderRe.ReplaceAllStringFunc(r.Body, func(m string) string {
+	expand := func(m string) string {
 		key := m[1 : len(m)-1]
 		v, ok := args[key]
 		if !ok {
@@ -52,11 +52,13 @@ func Render(kind string, args map[string]string) (Rule, error) {
 			return m
 		}
 		return v
-	})
+	}
+	title := placeholderRe.ReplaceAllStringFunc(r.Title, expand)
+	body := placeholderRe.ReplaceAllStringFunc(r.Body, expand)
 	if len(missing) > 0 {
 		return Rule{}, fmt.Errorf("notify: %s is missing %s", kind, strings.Join(missing, ", "))
 	}
-	r.Body = body
+	r.Title, r.Body = title, body
 	return r, nil
 }
 

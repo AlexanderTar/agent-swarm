@@ -236,8 +236,8 @@ func TestApproveRefusesAnAcceptRequestWhoseBindingIsOmittedOrStale(t *testing.T)
 		Via:     "board"}); err == nil || !strings.Contains(err.Error(), "This request changed. Review the latest version.") {
 		t.Fatalf("a mismatched binding must be refused: %v", err)
 	}
-	// echoing the exact stored binding back succeeds
-	if _, err := s.Approve(ctx, reqID, ApproveInput{Binding: json.RawMessage(binding), Via: "board"}); err != nil {
+	// echoing the exact stored binding back, with a finish choice, succeeds
+	if _, err := s.Approve(ctx, reqID, ApproveInput{Binding: json.RawMessage(binding), Merge: "auto", Via: "board"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -301,8 +301,12 @@ func TestOnlyTheUserPathsWriteUserActionMessages(t *testing.T) {
 	// native-evidence check (the bound question row's own responded_via =
 	// 'terminal'), not because an MCP path may otherwise claim a user
 	// action for free.
+	// deliverFinishApproval re-sends a finish approval the user already made on
+	// the board or CLI (Approve set its $.merge) to the orchestrator that
+	// starts after it (2026-09-29-finish-with-pr locked decision 12); it
+	// never creates a decision.
 	allowed := map[string]bool{"Answer": true, "Approve": true, "RequestChanges": true,
-		"ConfirmRepos": true, "CloseSpike": true, "nativeAnswer": true}
+		"ConfirmRepos": true, "CloseSpike": true, "nativeAnswer": true, "deliverFinishApproval": true}
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Files {
 			ast.Inspect(file, func(n ast.Node) bool {

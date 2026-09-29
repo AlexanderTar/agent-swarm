@@ -221,7 +221,7 @@ func (f *fakeNotifier) Raise(ctx context.Context, tx *sql.Tx, n NotifyInput) err
 		f.t.Fatalf("notify: unknown kind %q (fakeNotifier/notifyrules.Rules disagree with notify.Rules)", n.Kind)
 		return nil
 	}
-	for _, ph := range notifyrules.Placeholders(rule.Body) {
+	for _, ph := range append(notifyrules.Placeholders(rule.Title), notifyrules.Placeholders(rule.Body)...) {
 		if _, ok := n.Args[ph]; !ok {
 			f.t.Fatalf("notify: %s is missing %s (Args = %v)", n.Kind, ph, n.Args)
 		}

@@ -768,7 +768,7 @@ func newAcceptServer(t *testing.T) (*runtimeEnv, acceptSeed) {
 	}
 	seed := base
 	seed.EpicKey = epic.Key
-	currentBody := fmt.Sprintf(`{"binding":%s,"via":"board"}`, string(bindingBytes))
+	currentBody := fmt.Sprintf(`{"binding":%s,"merge":"manual","via":"board"}`, string(bindingBytes))
 	return e, acceptSeed{httpSeed: seed, AcceptID: reqID, CurrentBindingBody: currentBody}
 }
 

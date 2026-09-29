@@ -15,7 +15,8 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 )
 
-// Spec E1 copy: the two accept kinds' native prompts.
+// Spec E1 copy, now the finish question (2026-09-29-finish-with-pr): with no
+// integrated git refs (the "git":[] fixture shape) it keeps the three PR options.
 func TestNativePromptForAcceptKinds(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
@@ -33,7 +34,7 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		want := NativePrompt{Header: "Accept epic", Question: `Accept EPIC-1 "Build it" as done?`, Options: approveOptions}
+		want := finishNoGit("Finish epic", `Finish EPIC-1 "Build it"? Not pushed.`)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("accept_epic prompt = %+v, want %+v", got, want)
 		}
@@ -41,8 +42,7 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		want = NativePrompt{Header: "Accept fix",
-			Question: fmt.Sprintf(`Accept the fix for %s "Login loop" as done?`, bug.Key), Options: approveOptions}
+		want = finishNoGit("Finish fix", fmt.Sprintf(`Finish %s "Login loop"? Not pushed.`, bug.Key))
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("accept_fix prompt = %+v, want %+v", got, want)
 		}
@@ -50,8 +50,7 @@ func TestNativePromptForAcceptKinds(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		want = NativePrompt{Header: "Accept chore",
-			Question: fmt.Sprintf(`Accept %s "Bump deps" as done?`, chore.Key), Options: approveOptions}
+		want = finishNoGit("Finish chore", fmt.Sprintf(`Finish %s "Bump deps"? Not pushed.`, chore.Key))
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("chore accept_fix prompt = %+v, want %+v", got, want)
 		}
@@ -141,10 +140,10 @@ func TestAcceptRowRoutesToLiveRootOrchestrator(t *testing.T) {
 		t.Fatalf("relay payload = %v", p)
 	}
 	np := decodeNP(t, p)
-	if np.Header != "Accept epic" || np.Question != `Accept EPIC-1 "Build it" as done?` {
+	if np.Header != "Finish epic" || np.Question != `Finish EPIC-1 "Build it"? Not pushed.` {
 		t.Fatalf("native_prompt = %+v", np)
 	}
-	if p["question"] != np.Question || p["next"] != NativePromptNextStep("req_accept") {
+	if p["question"] != np.Question || p["next"] != NativePromptNextStep("req_accept", PromptDecisions(KindAcceptEpic, np)) {
 		t.Fatalf("question/next = %v / %v", p["question"], p["next"])
 	}
 }
@@ -216,9 +215,9 @@ func approvalResultFor(t *testing.T, s *Store, toAgentID, reqID string) map[stri
 
 // Spec E2.
 func TestNativeAnswerApprovesRoutedAcceptRow(t *testing.T) {
-	s, orch, orchSes := routedAccept(t, "Approve")
+	s, orch, orchSes := routedAccept(t, "Create PR, auto-merge when checks pass")
 	ctx := context.Background()
-	out, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: "req_accept", Decision: "approve"})
+	out, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_answer", Ref: "req_accept", Decision: "auto_merge"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +225,7 @@ func TestNativeAnswerApprovesRoutedAcceptRow(t *testing.T) {
 		t.Fatalf("state/via = %s/%s", out.State, out.RespondedVia)
 	}
 	p := approvalResultFor(t, s, orch.ID, "req_accept")
-	if p["decision"] != "approved" || p["evidence"] != EvidenceObserved {
+	if p["decision"] != "approved" || p["evidence"] != EvidenceObserved || p["merge"] != "auto" {
 		t.Fatalf("approval_result = %v", p)
 	}
 }
@@ -537,10 +536,13 @@ func TestQuotaResetWakeResurfacesOnlyWhatIsNotVisible(t *testing.T) {
 }
 
 // Chore spec E9 end to end: a zero-task chore goes accepted -> integrated ->
-// accept_fix routed natively to its orchestrator -> approve -> Done.
+// accept_fix routed natively to its orchestrator -> auto_merge -> stays in
+// review until merged (2026-09-29-finish-with-pr).
 func TestChoreEndToEndAcceptFix(t *testing.T) {
 	s, _, _ := newStore(t)
 	ctx := context.Background()
+	mustExec(t, s.DB, `INSERT INTO repos (id, name, path, remote_url, remote_owner, default_branch, source, created_at, updated_at)
+		VALUES ('repo_proj', 'proj', '/tmp/proj', 'git@github.com:o/proj.git', 'o', 'main', 'manual', 1, 1)`)
 	key, orch, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bump deps", Intent: "chore", Kind: Fake, Model: "fake-1"})
 	if err != nil {
 		t.Fatal(err)
@@ -577,15 +579,16 @@ func TestChoreEndToEndAcceptFix(t *testing.T) {
 		t.Fatalf("%d relays, want 1", n)
 	}
 	np := decodeNP(t, p)
-	if np.Header != "Accept chore" {
+	if np.Header != "Finish chore" || len(np.Options) != 3 {
 		t.Fatalf("native prompt = %+v", np)
 	}
-	hookSimulate(t, s, ses, np, "Approve")
-	out, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: reqID, Decision: "approve"})
+	hookSimulate(t, s, ses, np, "Create PR, auto-merge when checks pass")
+	out, err := s.Ask(ctx, ses, AskInput{Kind: "native_answer", Ref: reqID, Decision: "auto_merge"})
 	if err != nil || out.State != "approved" {
 		t.Fatalf("native_answer = %+v, %v", out, err)
 	}
-	if it, _ := s.Items.Get(ctx, key); it.Status != items.Done {
+	// Approved is not Done any more: the item waits in review for its PR to merge.
+	if it, _ := s.Items.Get(ctx, key); it.Status != items.InReview {
 		t.Fatalf("after approval: %s", it.Status)
 	}
 }

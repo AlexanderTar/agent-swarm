@@ -14,9 +14,10 @@ import (
 )
 
 func TestNativePromptNextStepDescribesVisibleReviewAndAgentReportedAnswers(t *testing.T) {
-	got := NativePromptNextStep("req_A")
+	got := NativePromptNextStep("req_A", approvePair)
 	for _, want := range []string{"If chat_block is present, print it exactly as your whole chat message", "never restated, shortened or paraphrased", "shows only a short head of the summary", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
-		"Codex: use request_user_input, not request_user_input_async", "a review question is a design decision the user chooses, not a permission request"} {
+		"Codex: use request_user_input, not request_user_input_async", "a review question is a design decision the user chooses, not a permission request",
+		`decision:"approve"|"request_changes"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("next step missing %q: %s", want, got)
 		}
@@ -493,8 +494,8 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	}
 	// The full paths now reach the user through chat_block, which the next
 	// step says to print (2026-09-28-approval-chat-block).
-	if !strings.Contains(NativePromptNextStep(req.ID), "chat_block") {
-		t.Fatalf("initial next step lacks the chat_block instruction: %q", NativePromptNextStep(req.ID))
+	if !strings.Contains(NativePromptNextStep(req.ID, approvePair), "chat_block") {
+		t.Fatalf("initial next step lacks the chat_block instruction: %q", NativePromptNextStep(req.ID, approvePair))
 	}
 	if !strings.Contains(req.ChatBlock, "Spec: "+longSpec+"\nPlan: "+longPlan) {
 		t.Fatalf("chat_block lacks the full review paths: %q", req.ChatBlock)
@@ -510,7 +511,7 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	if !ok || paths["spec"] != longSpec || paths["plan"] != longPlan {
 		t.Fatalf("relay review_paths = %v", payload["review_paths"])
 	}
-	if payload["summary"] != req.Prompt || payload["next"] != NativePromptNextStep(req.ID) {
+	if payload["summary"] != req.Prompt || payload["next"] != NativePromptNextStep(req.ID, approvePair) {
 		t.Fatalf("replay summary or next step changed: summary=%v next=%v", payload["summary"], payload["next"])
 	}
 	native, ok := payload["native_prompt"].(map[string]any)

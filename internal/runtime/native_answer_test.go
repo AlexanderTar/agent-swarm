@@ -221,9 +221,10 @@ func TestMatchDecisionEvidence(t *testing.T) {
 			"Approve, but drop endurio-docs", "Approve",
 			"", EvidenceAgentReported, "Approve, but drop endurio-docs", false},
 	}
+	other := map[string]string{"Approve": "Request changes", "Request changes": "Approve"}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			evidence, comment, err := matchDecisionEvidence(tc.responseText, tc.label, tc.callerComment)
+			evidence, comment, err := matchDecisionEvidence(tc.responseText, tc.label, []string{other[tc.label]}, tc.callerComment)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("err = nil, want a mismatch error")

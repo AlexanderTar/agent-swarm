@@ -69,8 +69,9 @@ func TestAcceptEpicChecksTheBinding(t *testing.T) {
 	}
 	var it map[string]any
 	json.Unmarshal(s.get(t, "/api/items/"+seed.EpicKey).Body.Bytes(), &it)
-	if it["item"].(map[string]any)["status"] != "done" {
-		t.Fatalf("the epic should be done: %v", it["item"])
+	// An approved finish waits in review until its PRs merge (2026-09-29-finish-with-pr).
+	if it["item"].(map[string]any)["status"] != "in_review" {
+		t.Fatalf("the epic should stay in review: %v", it["item"])
 	}
 }
 

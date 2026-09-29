@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -27,9 +29,10 @@ import (
 // question text (BindNativeQuestion), falling back to the old ⟦swarm:ref⟧
 // token only for a prompt built before that deploy.
 type NativePrompt struct {
-	Header   string   `json:"header"`
-	Question string   `json:"question"`
-	Options  []string `json:"options"`
+	Header       string   `json:"header"`
+	Question     string   `json:"question"`
+	Options      []string `json:"options"`
+	Descriptions []string `json:"descriptions,omitempty"` // parallel to Options; finish prompts only
 }
 
 // ResolvedInTerminal is the hook's PostToolUse fallback response text for a
@@ -291,19 +294,81 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		if err := tx.QueryRowContext(ctx, `SELECT key, title, type FROM items WHERE id = ?`, req.ItemID).Scan(&key, &title, &typ); err != nil {
 			return NativePrompt{}, err
 		}
-		if req.Kind == KindAcceptFix && typ == string(items.Chore) {
-			q := fmt.Sprintf("Accept %s %q as done?", key, title)
-			return NativePrompt{Header: "Accept chore", Question: capRunes(q, 1000), Options: approveOptions}, nil
-		}
+		header := "Finish epic"
 		if req.Kind == KindAcceptFix {
-			q := fmt.Sprintf("Accept the fix for %s %q as done?", key, title)
-			return NativePrompt{Header: "Accept fix", Question: capRunes(q, 1000), Options: approveOptions}, nil
+			header = "Finish fix"
+			if typ == string(items.Chore) {
+				header = "Finish chore"
+			}
 		}
-		q := fmt.Sprintf("Accept %s %q as done?", key, title)
-		return NativePrompt{Header: "Accept epic", Question: capRunes(q, 1000), Options: approveOptions}, nil
+		var b struct {
+			Git []GitRef `json:"git"`
+		}
+		json.Unmarshal(req.Binding, &b)
+		repos, err := s.finishReposTx(ctx, tx, req.ItemID, b.Git)
+		if err != nil {
+			return NativePrompt{}, err
+		}
+		return finishPrompt(header, key, title, repos), nil
 	default:
 		return NativePrompt{}, nil
 	}
+}
+
+// finishPrompt is the finish question's copy (2026-09-29-finish-with-pr): three PR options, or two
+// when no repo has a GitHub remote. An empty repo list (a fixture's "git":[]) reads "Not pushed."
+// and keeps the PR options; a repo with no catalog row counts as local with no base.
+func finishPrompt(header, key, title string, repos []finishRepo) NativePrompt {
+	q := fmt.Sprintf("Finish %s %q?", key, title)
+	switch len(repos) {
+	case 0:
+		q += " Not pushed."
+	case 1:
+		q += fmt.Sprintf(" Branch %s at %s, not pushed.", repos[0].Ref.Branch, shortSHA(repos[0].Ref.SHA))
+	default:
+		parts := make([]string, len(repos))
+		for i, r := range repos {
+			parts[i] = fmt.Sprintf("%s %s at %s", r.Ref.Repo, r.Ref.Branch, shortSHA(r.Ref.SHA))
+		}
+		q += " Not pushed: " + strings.Join(parts, ", ") + "."
+	}
+	base, github := "", false
+	var local []string
+	for _, r := range repos {
+		switch {
+		case r.Base == "":
+		case base == "":
+			base = r.Base
+		case base != r.Base:
+			base = "each repo's default branch"
+		}
+		if r.GitHub {
+			github = true
+		} else {
+			local = append(local, r.Ref.Repo)
+		}
+	}
+	if base == "" {
+		base = "the default branch"
+	}
+	changes := "Say what to change; I'll re-integrate and ask again."
+	np := NativePrompt{Header: header, Question: capRunes(q, 1000)}
+	if len(repos) > 0 && !github {
+		np.Options = []string{"Merge into " + base + " locally", "Request changes"}
+		np.Descriptions = []string{"Merge the branch into " + base + " in your local checkout; Done once it's merged.", changes}
+		return np
+	}
+	note := ""
+	for _, l := range local {
+		note += " " + l + " has no GitHub remote: merged into " + base + " locally."
+	}
+	np.Options = []string{"Create PR, auto-merge when checks pass", "Create PR, I'll merge it myself", "Request changes"}
+	np.Descriptions = []string{
+		"Push, open a PR into " + base + ", merge automatically when checks pass." + note,
+		"Push and open a PR into " + base + "; Done when you merge it." + note,
+		changes,
+	}
+	return np
 }
 
 // ChatBlockInput is everything ApprovalChatBlock formats
@@ -321,6 +386,8 @@ type ChatBlockInput struct {
 	Path         string
 	Paths        *ReviewPaths
 	Child        string
+	ItemKey      string   // finish: root key
+	Git          []GitRef // finish: integrated refs, one line each
 }
 
 // ApprovalChatBlock is the exact chat message an agent prints immediately
@@ -347,6 +414,13 @@ func ApprovalChatBlock(in ChatBlockInput) string {
 		if in.Path != "" {
 			foot = "Report: " + in.Path
 		}
+	case KindAcceptEpic, KindAcceptFix:
+		head = "### Approval · Finish " + in.ItemKey
+		lines := make([]string, len(in.Git))
+		for i, g := range in.Git {
+			lines[i] = fmt.Sprintf("%s: %s at %s", g.Repo, g.Branch, shortSHA(g.SHA))
+		}
+		foot = strings.Join(lines, "\n")
 	default:
 		head = "### Approval · " + in.Child + " asks"
 	}
@@ -404,6 +478,21 @@ func (s *Store) approvalChatBlockTx(ctx context.Context, tx *sql.Tx, req Request
 		if err == nil {
 			in.Paths = &paths
 		}
+	case KindAcceptEpic, KindAcceptFix:
+		var b struct {
+			Checkpoint string   `json:"integrated_checkpoint"`
+			Git        []GitRef `json:"git"`
+		}
+		json.Unmarshal(req.Binding, &b)
+		key, err := s.itemKey(ctx, tx, req.ItemID)
+		if err != nil {
+			return "", err
+		}
+		in.ItemKey, in.Git, in.Summary = key, b.Git, ""
+		err = tx.QueryRowContext(ctx, `SELECT summary FROM checkpoints WHERE id = ?`, b.Checkpoint).Scan(&in.Summary)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
 	default:
 		return "", nil
 	}
@@ -413,14 +502,27 @@ func (s *Store) approvalChatBlockTx(ctx context.Context, tx *sql.Tx, req Request
 // NativePromptNextStep is the show-and-forward instruction that rides with
 // every daemon-issued native prompt: swarm_ask's result (mcpserver
 // requestOut) and the request_open relay share it verbatim.
-func NativePromptNextStep(ref string) string {
+func NativePromptNextStep(ref string, decisions []string) string {
+	quoted := make([]string, len(decisions))
+	for i, d := range decisions {
+		quoted[i] = strconv.Quote(d)
+	}
 	return fmt.Sprintf("If chat_block is present, print it exactly as your whole chat message immediately "+
 		"before the native question: nothing before or after it, never restated, shortened or paraphrased. "+
 		"The native question shows only a short head of the summary. Then show native_prompt "+
 		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
-		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:\"approve\"|\"request_changes\" "+
+		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:%s "+
 		"forwarding only what the user picked. Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion must include answer_text exactly as returned by the native tool; this has agent_reported provenance. Muse request_user_input: call native_answer right after the tool returns, with answer_text exactly as returned; Swarm checks it against Muse's own session log. On cancellation or no returned answer, submit nothing and leave the request open. "+
-		"Codex: use request_user_input, not request_user_input_async; a review question is a design decision the user chooses, not a permission request.", ref)
+		"Codex: use request_user_input, not request_user_input_async; a review question is a design decision the user chooses, not a permission request.", ref, strings.Join(quoted, "|"))
+}
+
+// PromptDecisions is the decision list a request's native prompt offers: the finish decisions for
+// an accept row, approve/request_changes for every other kind.
+func PromptDecisions(kind RequestKind, np NativePrompt) []string {
+	if kind == KindAcceptEpic || kind == KindAcceptFix {
+		return finishDecisions(np.Options)
+	}
+	return []string{"approve", "request_changes"}
 }
 
 // storedNativePromptTx rebuilds a stored approval's native prompt exactly as
@@ -442,7 +544,7 @@ func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Reques
 		// created before this change (an in-flight pre-deploy session).
 		// Freeze it now so every later call, including a replay, returns
 		// this exact text.
-		if err := s.freezeNativeQuestionTx(ctx, tx, req.ID, np.Header, np.Question); err != nil {
+		if err := s.freezeNativeQuestionTx(ctx, tx, req.ID, np); err != nil {
 			return NativePrompt{}, err
 		}
 	}
@@ -461,8 +563,10 @@ func (s *Store) storedNativePromptTx(ctx context.Context, tx *sql.Tx, req Reques
 // (true) or was just rebuilt (false).
 func (s *Store) effectiveNativeQuestionTx(ctx context.Context, tx *sql.Tx, req Request) (np NativePrompt, frozen bool, err error) {
 	var binding struct {
-		Question string `json:"question"`
-		Header   string `json:"header"`
+		Question     string   `json:"question"`
+		Header       string   `json:"header"`
+		Options      []string `json:"options"`
+		Descriptions []string `json:"descriptions"`
 	}
 	if len(req.Binding) > 0 {
 		json.Unmarshal(req.Binding, &binding)
@@ -475,6 +579,10 @@ func (s *Store) effectiveNativeQuestionTx(ctx context.Context, tx *sql.Tx, req R
 	// also what keeps BindNativeQuestion's match stable: the same frozen
 	// text is what gets compared, not a fresh rebuild that could drift.
 	if binding.Question != "" && binding.Header != "" {
+		if len(binding.Options) > 0 {
+			return NativePrompt{Header: binding.Header, Question: binding.Question, Options: binding.Options,
+				Descriptions: binding.Descriptions}, true, nil
+		}
 		return NativePrompt{Header: binding.Header, Question: binding.Question, Options: approveOptions}, true, nil
 	}
 	title, err := s.sectionTitle(ctx, tx, req.ArtifactID, req.ArtifactRevision, req.SectionID)
@@ -504,11 +612,20 @@ func (s *Store) effectiveNativeQuestionTx(ctx context.Context, tx *sql.Tx, req R
 // request's first-issued native prompt in binding_json (locked decision 2,
 // 2026-09-28-approval-summary-enforced): a no-op once already frozen, so it
 // never overwrites the originally issued text with a later rebuild.
-func (s *Store) freezeNativeQuestionTx(ctx context.Context, tx *sql.Tx, reqID, header, question string) error {
+// A finish prompt (Descriptions set) also freezes its options and descriptions.
+func (s *Store) freezeNativeQuestionTx(ctx context.Context, tx *sql.Tx, reqID string, np NativePrompt) error {
 	_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(json_set(
 		COALESCE(binding_json, '{}'), '$.question', ?), '$.header', ?)
 		WHERE id = ? AND json_extract(COALESCE(binding_json, '{}'), '$.question') IS NULL`,
-		question, header, reqID)
+		np.Question, np.Header, reqID)
+	if err != nil || len(np.Descriptions) == 0 {
+		return err
+	}
+	opts, _ := json.Marshal(np.Options)
+	descs, _ := json.Marshal(np.Descriptions)
+	_, err = tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(binding_json,
+		'$.options', json(?), '$.descriptions', json(?))
+		WHERE id = ? AND json_extract(binding_json, '$.options') IS NULL`, string(opts), string(descs), reqID)
 	return err
 }
 
@@ -802,6 +919,10 @@ func NativeAnswerNextStep(req Request) string {
 		return ""
 	}
 	trimmed := strings.TrimSpace(req.ResponseText)
+	if d := finishDecisionFor(trimmed); d != "" {
+		return fmt.Sprintf(`[swarm] Recorded %q for %s. Forward it now: `+
+			`swarm_ask kind:"native_answer", ref:%q, decision:%q`, trimmed, binding.Ref, binding.Ref, d)
+	}
 	if matched, _ := labelShape(trimmed, "Approve"); matched {
 		return fmt.Sprintf(`[swarm] Recorded "Approve" for %s. Forward it now: `+
 			`swarm_ask kind:"native_answer", ref:%q, decision:"approve"`, binding.Ref, binding.Ref)
@@ -879,18 +1000,58 @@ func requireNativeApprovalHook(a Agent, msgID string) error {
 	return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(errChildApprovalNoNativePath, msgID)}
 }
 
-// decisionLabel maps native_answer's decision enum to the native prompt
-// label the bound row's response text must (case-fold) start with to count
-// as observed evidence (spec section 2.3.5).
-var decisionLabel = map[string]string{"approve": "Approve", "request_changes": "Request changes"}
+// nativeDecisions is native_answer's decision enum.
+var nativeDecisions = map[string]bool{"approve": true, "request_changes": true,
+	"auto_merge": true, "manual_merge": true, "merge_locally": true}
 
-// otherApprovalLabel returns the option label decisionLabel does not map to,
-// given the one it does: the two-choice prompt's other button.
-func otherApprovalLabel(label string) string {
-	if strings.EqualFold(label, "Approve") {
-		return "Request changes"
+// finishMerge maps a finish decision to binding_json.$.merge.
+var finishMerge = map[string]string{"auto_merge": "auto", "manual_merge": "manual", "merge_locally": "local"}
+
+// finishDecisions lists a finish prompt's decisions in option order:
+// 3 options → auto_merge, manual_merge, request_changes; 2 options → merge_locally, request_changes.
+func finishDecisions(opts []string) []string {
+	if len(opts) == 2 {
+		return []string{"merge_locally", "request_changes"}
 	}
-	return "Approve"
+	return []string{"auto_merge", "manual_merge", "request_changes"}
+}
+
+// decisionLabels returns the chosen decision's option label and every other label. A msg_ ref and
+// every non-accept kind keep approve → "Approve" (others ["Request changes"]) and
+// request_changes → "Request changes" (others ["Approve"]).
+func decisionLabels(req Request, np NativePrompt, decision string) (string, []string, error) {
+	if req.ID == "" || (req.Kind != KindAcceptEpic && req.Kind != KindAcceptFix) {
+		switch decision {
+		case "approve":
+			return "Approve", []string{"Request changes"}, nil
+		case "request_changes":
+			return "Request changes", []string{"Approve"}, nil
+		}
+		return "", nil, errors.New("decision must be approve or request_changes.")
+	}
+	ds := finishDecisions(np.Options)
+	i := slices.Index(ds, decision)
+	if i < 0 || i >= len(np.Options) {
+		return "", nil, fmt.Errorf("decision for a finish request must be one of: %s.", strings.Join(ds, ", "))
+	}
+	others := slices.Delete(slices.Clone(np.Options), i, i+1)
+	return np.Options[i], others, nil
+}
+
+// finishDecisionFor maps a native answer's text to a finish decision ("" when none).
+func finishDecisionFor(trimmed string) string {
+	if ok, _ := labelShape(trimmed, "Create PR, auto-merge when checks pass"); ok {
+		return "auto_merge"
+	}
+	if ok, _ := labelShape(trimmed, "Create PR, I'll merge it myself"); ok {
+		return "manual_merge"
+	}
+	fold := strings.ToLower(trimmed)
+	head, _, _ := strings.Cut(fold, ":")
+	if strings.HasPrefix(fold, "merge into ") && strings.HasSuffix(head, " locally") {
+		return "merge_locally"
+	}
+	return ""
 }
 
 // labelShape reports whether trimmed is exactly label (an AskUserQuestion
@@ -926,7 +1087,7 @@ func labelShape(trimmed, label string) (matched bool, remainder string) {
 // orchestrator forwarded the wrong one (finding B6-1: refusal is narrowed to
 // this exact-or-"label:" shape so typed free text is never wrongly refused
 // or wrongly marked observed just because it starts with a label's word).
-func matchDecisionEvidence(responseText, label, callerComment string) (evidence, comment string, err error) {
+func matchDecisionEvidence(responseText, label string, others []string, callerComment string) (evidence, comment string, err error) {
 	trimmed := strings.TrimSpace(responseText)
 	if matched, remainder := labelShape(trimmed, label); matched {
 		comment = callerComment
@@ -935,9 +1096,10 @@ func matchDecisionEvidence(responseText, label, callerComment string) (evidence,
 		}
 		return EvidenceObserved, comment, nil
 	}
-	other := otherApprovalLabel(label)
-	if matched, _ := labelShape(trimmed, other); matched {
-		return "", "", fmt.Errorf(errDecisionMismatch, trimmed, label)
+	for _, other := range others {
+		if matched, _ := labelShape(trimmed, other); matched {
+			return "", "", fmt.Errorf(errDecisionMismatch, trimmed, label)
+		}
 	}
 	comment = callerComment
 	if comment == "" && trimmed != "" && trimmed != ResolvedInTerminal {
@@ -1025,8 +1187,7 @@ func (s *Store) refCreatedAt(ctx context.Context, ref string) time.Time {
 // once it has verified a matching native-question row (Task 13b's binding)
 // really was answered in that agent's own terminal.
 func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput) (Request, error) {
-	label, ok := decisionLabel[in.Decision]
-	if !ok {
+	if !nativeDecisions[in.Decision] {
 		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "decision must be approve or request_changes."}
 	}
 	if in.Ref == "" {
@@ -1104,23 +1265,33 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	if reported {
 		callerComment = "" // the reported tool answer is the only source of user text
 	}
-	evidence, comment, err := matchDecisionEvidence(responseText, label, callerComment)
-	if err != nil {
-		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
-	}
-	if reported {
-		if in.Comment != "" && in.Comment != comment {
-			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "comment does not match answer_text."}
+	var evidence, comment string
+	// classify matches the answer against the decision's label once the request (and so its
+	// prompt's labels) is known: right away for a msg_ ref, after the target checks for a req_ ref.
+	classify := func(req Request, np NativePrompt) error {
+		label, others, err := decisionLabels(req, np, in.Decision)
+		if err != nil {
+			return &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
 		}
-		evidence = EvidenceAgentReported
-	}
-	// RequestChanges' own length cap, reapplied here (Task 13c): nativeAnswer
-	// builds the changes_requested result with s.resolve directly (so the
-	// payload can carry evidence), not through RequestChanges itself. A
-	// comment is optional (spec 1.8 D1): the old "Request changes needs a
-	// comment" refusal is removed -- keep it simple, not too tight.
-	if in.Decision == "request_changes" && utf8.RuneCountInString(comment) > 2000 {
-		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Comment must be at most 2000 characters."}
+		evidence, comment, err = matchDecisionEvidence(responseText, label, others, callerComment)
+		if err != nil {
+			return &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
+		}
+		if reported {
+			if in.Comment != "" && in.Comment != comment {
+				return &items.Error{Code: items.CodeBadRequest, Message: "comment does not match answer_text."}
+			}
+			evidence = EvidenceAgentReported
+		}
+		// RequestChanges' own length cap, reapplied here (Task 13c): nativeAnswer
+		// builds the changes_requested result with s.resolve directly (so the
+		// payload can carry evidence), not through RequestChanges itself. A
+		// comment is optional (spec 1.8 D1): the old "Request changes needs a
+		// comment" refusal is removed -- keep it simple, not too tight.
+		if in.Decision == "request_changes" && utf8.RuneCountInString(comment) > 2000 {
+			return &items.Error{Code: items.CodeBadRequest, Message: "Comment must be at most 2000 characters."}
+		}
+		return nil
 	}
 	// bindEvidence runs inside the same tx as the state change (resolve's or
 	// ConfirmRepos's own), right after the UPDATE: the audit record's (a)
@@ -1153,6 +1324,9 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	}
 
 	if strings.HasPrefix(in.Ref, "msg_") {
+		if err := classify(Request{}, NativePrompt{}); err != nil {
+			return Request{}, err
+		}
 		// The message ref must name an approval question addressed to the
 		// caller (spec 2.3, Task 13b): reuse askNativePromptForMsg's own
 		// query rather than trusting the evidence row's binding, which any
@@ -1175,6 +1349,10 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 
 	req, err := s.RequestByID(ctx, in.Ref)
 	if err != nil {
+		// Unknown ref: an observed mismatch against the approve pair still wins.
+		if cerr := classify(Request{}, NativePrompt{}); cerr != nil {
+			return Request{}, cerr
+		}
 		return Request{}, err
 	}
 	// native_answer only forwards approval kinds (nativeAnswerKind), and only
@@ -1197,6 +1375,17 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 			return Request{}, err
 		}
 		return Request{}, &items.Error{Code: items.CodeConflict, Message: fmt.Sprintf(errRequestStale, in.Ref, key)}
+	}
+	var np NativePrompt
+	if err := s.tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		np, _, err = s.effectiveNativeQuestionTx(ctx, tx, req)
+		return err
+	}); err != nil {
+		return Request{}, err
+	}
+	if err := classify(req, np); err != nil {
+		return Request{}, err
 	}
 	// nativeAnswer is the one agent-reachable user_action origin
 	// (requests.go's resolve doc comment): it is guarded by the evidence
@@ -1241,6 +1430,13 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	}
 	in2 := ApproveInput{SectionSHA256: req.SectionSHA256, ArtifactRevision: req.ArtifactRevision,
 		Binding: req.Binding, Via: "terminal"}
+	if m := finishMerge[in.Decision]; m != "" {
+		return s.resolve(ctx, in.Ref, "approved", comment, "terminal", "user_action", approveCheck(in2),
+			func(req Request) (MessageKind, any) {
+				return "approval_result", map[string]any{"decision": "approved", "merge": m,
+					"section_id": "", "section_sha256": "", "evidence": evidence}
+			}, bindEvidence, setMergeHook(ctx, in.Ref, m))
+	}
 	// comment carries any typed free text the user added alongside "Approve"
 	// (spec 1.8 D1) into the request's own response_text, the same way
 	// request_changes and confirm_repos already do.
