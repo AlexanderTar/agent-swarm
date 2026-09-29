@@ -13,6 +13,7 @@ import (
 
 	"github.com/AlexanderTar/agent-swarm/internal/adapter"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
+	"github.com/AlexanderTar/agent-swarm/internal/worktree"
 )
 
 const staleAfter = 30 * time.Minute
@@ -1497,6 +1498,15 @@ func (s *Store) sweepFinishedRoots(ctx context.Context) error {
 // real, not decorative.
 const reclaimGrace = time.Hour
 
+// staleHolder is true for a reservation row r whose holder is finished with
+// no live session: such a reservation pins nothing (finished reviewers never
+// release theirs).
+const staleHolder = `EXISTS (
+			SELECT 1 FROM agents h WHERE h.id = r.agent_id AND h.state IN ('finished', 'acknowledged'))
+		  AND NOT EXISTS (
+			SELECT 1 FROM sessions hs WHERE hs.agent_id = r.agent_id
+			  AND hs.state IN ('spawning','running','pause_requested','quiescing','stopping'))`
+
 // reclaimGateWhere is the §4.3 eligibility clause, passed to
 // Worktree.Candidates. The owner's own unreleased reservation never blocks
 // (measured: 91 real rows look like this, from the self-completion asymmetry
@@ -1516,8 +1526,18 @@ const reclaimGateWhere = `w WHERE w.state IN ('active', 'retained')
 		SELECT 1 FROM worktree_reservations r
 		WHERE r.worktree_id = w.id
 		  AND r.agent_id <> w.owner_agent_id
-		  AND r.released_at IS NULL)
+		  AND r.released_at IS NULL
+		  AND NOT (` + staleHolder + `))
 	ORDER BY w.created_at`
+
+// releaseStaleReservations releases wtID's unreleased reservations held by
+// finished agents with no live session, so the worktree's own removal guard
+// sees no other holder.
+func (s *Store) releaseStaleReservations(ctx context.Context, wtID string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE worktree_reservations AS r SET released_at = ?
+		WHERE r.worktree_id = ? AND r.released_at IS NULL AND `+staleHolder, db.Millis(s.Now()), wtID)
+	return err
+}
 
 // ReclaimWorktrees is the per-agent backstop sweepFinishedRoots cannot be.
 // sweepFinishedRoots waits for a whole root item to reach done/cancelled,
@@ -1531,53 +1551,8 @@ const reclaimGateWhere = `w WHERE w.state IN ('active', 'retained')
 // worktree's row write is its own transaction, so there is no partial state
 // to unwind.
 func (s *Store) ReclaimWorktrees(ctx context.Context) error {
-	cutoff := db.Millis(s.Now().Add(-reclaimGrace))
-	cands, err := s.Worktree.Candidates(ctx, reclaimGateWhere, cutoff)
-	if err != nil {
-		return err
-	}
-	var reclaimed, kept, failed int
-	for _, wt := range cands {
-		if ctx.Err() != nil {
-			break
-		}
-		live, err := s.liveDescendants(ctx, s.DB, wt.OwnerAgentID)
-		if err != nil {
-			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
-			failed++
-			continue
-		}
-		if live > 0 {
-			s.logf("worktree: keeping %s (owner has a live descendant)", wt.Path)
-			kept++
-			continue
-		}
-		_, pathErr := os.Lstat(wt.Path)
-		pathWasGone := pathErr != nil
-		done, err := s.Worktree.ReclaimOne(ctx, wt)
-		if err != nil {
-			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
-			failed++
-			continue
-		}
-		switch done.State {
-		case "removed":
-			if pathWasGone {
-				s.logf("worktree: %s is gone, closing its row", wt.Path)
-			} else {
-				s.logf("worktree: reclaimed %s", wt.Path)
-			}
-			reclaimed++
-		default:
-			s.logf("worktree: keeping %s (%s)", wt.Path, done.RetainedReason)
-			kept++
-		}
-	}
-	s.logf("worktree: reclaim pass: %d reclaimed, %d kept, %d failed", reclaimed, kept, failed)
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return nil
+	_, err := s.ReclaimWorktreesWith(ctx, CleanupOptions{})
+	return err
 }
 
 // ReclaimWorktreesLoop runs ReclaimWorktrees every `every` until ctx is
@@ -1941,4 +1916,103 @@ func (s *Store) notifyUndeliveredMessages(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// CleanupOptions tunes one reclaim pass: DryRun deletes and releases nothing;
+// NoGrace treats every finished owner as past reclaimGrace.
+type CleanupOptions struct{ DryRun, NoGrace bool }
+
+// CleanupResult is one path's outcome. Action: removed | kept | would_remove | untracked.
+type CleanupResult struct{ Path, Action, Reason string }
+
+// ReclaimWorktreesWith is ReclaimWorktrees, reporting each path's outcome.
+func (s *Store) ReclaimWorktreesWith(ctx context.Context, opt CleanupOptions) ([]CleanupResult, error) {
+	s.Worktree.BeginPass()
+	cutoff := db.Millis(s.Now().Add(-reclaimGrace))
+	if opt.NoGrace {
+		cutoff = db.Millis(s.Now())
+	}
+	cands, err := s.Worktree.Candidates(ctx, reclaimGateWhere, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	var results []CleanupResult
+	pruneRepos := map[string]bool{}
+	var reclaimed, kept, failed int
+	keep := func(wt worktree.Worktree, reason string) {
+		s.logf("worktree: keeping %s (%s)", wt.Path, reason)
+		results = append(results, CleanupResult{Path: wt.Path, Action: "kept", Reason: reason})
+		kept++
+	}
+	for _, wt := range cands {
+		if ctx.Err() != nil {
+			break
+		}
+		live, err := s.liveDescendants(ctx, s.DB, wt.OwnerAgentID)
+		if err != nil {
+			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
+			results = append(results, CleanupResult{Path: wt.Path, Action: "kept", Reason: "error: " + err.Error()})
+			failed++
+			continue
+		}
+		if live > 0 {
+			keep(wt, "owner has a live descendant")
+			continue
+		}
+		if opt.DryRun {
+			if ok, reason := s.Worktree.WouldRemove(ctx, wt); ok {
+				results = append(results, CleanupResult{Path: wt.Path, Action: "would_remove"})
+				reclaimed++
+			} else {
+				keep(wt, reason)
+			}
+			continue
+		}
+		if err := s.releaseStaleReservations(ctx, wt.ID); err != nil {
+			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
+			results = append(results, CleanupResult{Path: wt.Path, Action: "kept", Reason: "error: " + err.Error()})
+			failed++
+			continue
+		}
+		_, pathErr := os.Lstat(wt.Path)
+		pathWasGone := pathErr != nil
+		done, err := s.Worktree.ReclaimOne(ctx, wt)
+		if err != nil {
+			s.logf("worktree: reclaim of %s failed, keeping it: %v", wt.Path, err)
+			results = append(results, CleanupResult{Path: wt.Path, Action: "kept", Reason: "error: " + err.Error()})
+			failed++
+			continue
+		}
+		switch done.State {
+		case "removed":
+			if pathWasGone {
+				s.logf("worktree: %s is gone, closing its row", wt.Path)
+			} else {
+				s.logf("worktree: reclaimed %s", wt.Path)
+			}
+			results = append(results, CleanupResult{Path: wt.Path, Action: "removed"})
+			pruneRepos[wt.RepoID] = true
+			reclaimed++
+		default:
+			keep(wt, done.RetainedReason)
+		}
+	}
+	for repoID := range pruneRepos {
+		if err := s.Worktree.PruneRepo(ctx, repoID); err != nil {
+			s.logf("worktree: prune for repo %s failed: %v", repoID, err)
+		}
+	}
+	if stray, err := s.Worktree.Untracked(ctx); err != nil {
+		s.logf("worktree: untracked scan failed: %v", err)
+	} else {
+		for _, p := range stray {
+			s.logf("worktree: untracked dir %s (no swarm record)", p)
+			results = append(results, CleanupResult{Path: p, Action: "untracked", Reason: "no swarm record"})
+		}
+	}
+	s.logf("worktree: reclaim pass: %d reclaimed, %d kept, %d failed", reclaimed, kept, failed)
+	if ctx.Err() != nil {
+		return results, ctx.Err()
+	}
+	return results, nil
 }

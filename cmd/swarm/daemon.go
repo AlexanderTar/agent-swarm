@@ -275,6 +275,7 @@ func openDaemon(ctx context.Context, cfg daemonConfig) (*daemon, error) {
 		// They come from the same Spawner the daemon spawns through, so they
 		// can never disagree.
 		TmuxPath: spawner.Tmux, TmuxSocketName: spawner.Socket}
+	wt.Evidence = rt.MergeEvidence()
 	adDeps.PublishWake = rt.PublishWake // the claude channel bridge
 	rt.Adapters = adapter.All(adDeps)
 	if err := rt.MigrateOpenRepoConfirmations(ctx); err != nil {
