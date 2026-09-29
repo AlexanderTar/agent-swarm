@@ -28,6 +28,22 @@ final class PopoverRenderTests: XCTestCase {
         XCTAssertEqual(IconName(.fake), .claude)
     }
 
+    func testLabelFitsToContentAndTooltipSlotsMatch() {
+        func label(_ texts: [String]) -> MenuLabel {
+            MenuLabel(count: "1", segments: zip(AgentKind.selectable, texts).map { kind, text in
+                MenuLabel.Segment(agent: kind, text: text, dimmed: false, tooltip: kind.rawValue)
+            }, compact: false)
+        }
+        let mixed = label(["36%", "100%", "0%", "5%"])
+        let widths = MenuBarLabelView.tooltipSlots(mixed).map(\.1)
+        XCTAssertEqual(widths.count, 4)
+        XCTAssertGreaterThan(widths[1], widths[0], "no fixed 100% slot: each segment is as wide as its own text")
+        XCTAssertGreaterThan(widths[0], widths[2])
+        let narrow = LabelRenderer.image(label(["5%", "0%", "5%", "0%"]))
+        let wide = LabelRenderer.image(label(["100%", "100%", "100%", "100%"]))
+        XCTAssertLessThan(narrow.size.width, wide.size.width, "rendered label fits to content")
+    }
+
     func testPopoverRendersConnectedEmptyAndDown() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let m = makeAppModel(client)

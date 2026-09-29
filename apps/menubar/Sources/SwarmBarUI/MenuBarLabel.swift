@@ -2,8 +2,8 @@ import AppKit
 import SwarmBarKit
 import SwiftUI
 
-/// `[swarm] 6   ✳ 42%   ◎ 18%   ▲ 63%   ⌘ 27%M` (§16.1). Values sit in fixed-width slots sized
-/// for "100%" so the item never shifts; stale values are dimmed.
+/// `[swarm] 6   ✳ 42%   ◎ 18%   ▲ 63%   ⌘ 27%` (§16.1). Each value is as wide as its
+/// own text, so the item grows and shrinks with the percentages; stale values are dimmed.
 public struct MenuBarLabelView: View {
     let label: MenuLabel
 
@@ -21,13 +21,10 @@ public struct MenuBarLabelView: View {
                 HStack(spacing: 3) {
                     AgentIcon(s.agent)
                     if !label.compact {
-                        ZStack(alignment: .leading) {
-                            Text(s.agent == .cursor ? MenuLabel.widestMonthlyValue : MenuLabel.widestValue).hidden()
-                            Text(s.text)
-                        }
-                        .monospacedDigit()
+                        Text(s.text)
                     }
                 }
+                .monospacedDigit()
                 .opacity(s.dimmed ? 0.45 : 1)
             }
         }
@@ -42,9 +39,16 @@ public struct MenuBarLabelView: View {
     public static let badgeOffset = CGPoint(x: 9, y: 0)
     public static let badgeSize: CGFloat = 5
 
+    /// Width of one agent slot: the 14 pt icon plus the value text beside it, so tooltip
+    /// rectangles line up with the fit-to-content segments above.
+    static func slotWidth(_ text: String) -> CGFloat {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        return 14 + 3 + ceil((text as NSString).size(withAttributes: [.font: font]).width)
+    }
+
     /// Slot rectangles (label coordinates, origin top-left) for per-agent tooltips.
     public static func tooltipSlots(_ label: MenuLabel) -> [(String, CGFloat)] {
-        label.segments.map { ($0.tooltip, $0.agent == .cursor ? 64 : 54) }
+        label.segments.map { ($0.tooltip, slotWidth($0.text)) }
     }
 }
 

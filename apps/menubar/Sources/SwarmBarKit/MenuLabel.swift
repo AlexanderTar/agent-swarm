@@ -21,13 +21,6 @@ public struct MenuLabel: Equatable, Sendable {
     public var compact: Bool
     public var badge: Badge = .none
 
-    /// Width reserved for each value, so the item never shifts: "100%".
-    public static let widestValue = "100%"
-    /// Monthly meters render the same compact "100%" as any other meter now
-    /// (no more "M" suffix) — kept as an alias so MenuBarLabel.swift's width
-    /// reservation for the cursor column stays a no-op without editing it.
-    public static let widestMonthlyValue = widestValue
-
     public static func make(activeCount: Int, connected: Bool, needsYou: Int = 0, enabled: [AgentKind],
                             usage: [UsageSnapshot], compact: Bool, format: Format) -> MenuLabel {
         let agents = AgentKind.selectable.filter(enabled.contains)
