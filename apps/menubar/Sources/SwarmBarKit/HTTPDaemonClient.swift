@@ -50,10 +50,6 @@ public final class HTTPDaemonClient: DaemonClient {
 
     private struct Empty: Codable {}
     private struct Scope: Encodable { let scope: PauseScope }
-    private struct HandoffBody: Encodable {
-        let requestID: String
-        enum CodingKeys: String, CodingKey { case requestID = "request_id" }
-    }
     private struct PauseAll: Decodable { let requested: Int }
     private struct UsageRefresh: Encodable { let agent: AgentKind? }
     private struct AddRepo: Encodable { let path: String }
@@ -113,7 +109,7 @@ public final class HTTPDaemonClient: DaemonClient {
         // id (one per user action): the daemon replays a repeated one onto the
         // same operation instead of starting a second or answering 409.
         let body: (any Encodable)? = endpoint == .handoff
-            ? HandoffBody(requestID: requestID ?? UUID().uuidString)
+            ? HandoffRequest(requestId: requestID ?? UUID().uuidString)
             : scope.map { Scope(scope: $0) }
         _ = try await call("POST", "/api/agents/\(Self.segment(name))/\(endpoint.rawValue)", body: body, as: Empty.self)
     }
@@ -155,6 +151,18 @@ public final class HTTPDaemonClient: DaemonClient {
 
     public func createSpike(_ body: CreateSpikeBody) async throws -> CreateSpikeResponse {
         try await call("POST", "/api/spikes", body: body, timeout: 60)
+    }
+
+    public func boardItems() async throws -> [BoardItem] {
+        try await call("GET", "/api/items?view=flat", as: BoardItemList.self).items
+    }
+
+    public func startOrchestrator(itemKey: String, _ body: StartOrchestratorBody) async throws -> AgentNode {
+        try await call("POST", "/api/items/\(Self.segment(itemKey))/orchestrator", body: body, timeout: 60)
+    }
+
+    public func handoff(_ name: String, _ body: HandoffRequest) async throws {
+        _ = try await call("POST", "/api/agents/\(Self.segment(name))/handoff", body: body, timeout: 60, as: Empty.self)
     }
 
     public func terminalOpened(name: String) async throws {

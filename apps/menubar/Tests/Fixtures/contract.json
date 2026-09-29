@@ -253,6 +253,13 @@
       "method": "GET",
       "path": "/api/events",
       "direction": "event"
+    },
+    {
+      "file": "items.json",
+      "method": "GET",
+      "path": "/api/items?view=flat",
+      "direction": "response",
+      "status": 200
     }
   ]
 }

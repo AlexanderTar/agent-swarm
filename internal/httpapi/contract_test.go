@@ -114,6 +114,11 @@ func typeFor(key string) (any, bool) {
 		return &[]map[string]any{}, true
 	case "response GET /api/repos":
 		return &map[string]any{}, true // ReposResponse is an object, not a list
+	case "response GET /api/items":
+		return &struct {
+			Items   []itemWire `json:"items"`
+			Matches int        `json:"matches"`
+		}{}, true
 	case "response POST /api/repos":
 		return &repoWire{}, true
 	case "response POST /api/repos/rescan":

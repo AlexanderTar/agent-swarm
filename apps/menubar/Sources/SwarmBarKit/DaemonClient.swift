@@ -39,6 +39,12 @@ public protocol DaemonClient: Sendable {
     func addRepo(path: String) async throws -> Repo
     func rescanRepos() async throws -> ScanStats
     func createSpike(_ body: CreateSpikeBody) async throws -> CreateSpikeResponse
+    /// GET /api/items?view=flat.
+    func boardItems() async throws -> [BoardItem]
+    /// POST /api/items/{key}/orchestrator.
+    func startOrchestrator(itemKey: String, _ body: StartOrchestratorBody) async throws -> AgentNode
+    /// POST /api/agents/{name}/handoff with optional agent/model/effort/advisor picks (202, body ignored).
+    func handoff(_ name: String, _ body: HandoffRequest) async throws
     func terminalOpened(name: String) async throws
     func pane(_ name: String, lines: Int) async throws -> PaneCapture
 }
@@ -59,6 +65,12 @@ public final class MockDaemonClient: DaemonClient {
     public var notificationList: [SwarmNotification]
     public var spikeResult: Result<CreateSpikeResponse, DaemonError>?
     public var paneResult: Result<PaneCapture, DaemonError>
+    public var boardItemList: [BoardItem] = []
+    /// Fails only `boardItems()` (`failNext` would be consumed by a parallel `catalog()`).
+    public var boardItemsError: DaemonError?
+    public var startResult: Result<AgentNode, DaemonError>?
+    public private(set) var handoffRequests: [HandoffRequest] = []
+    public private(set) var startBodies: [StartOrchestratorBody] = []
     public var failNext: DaemonError?
     /// Any error for the next call, e.g. `CancellationError()`.
     public var failNextWith: Error?
@@ -85,6 +97,7 @@ public final class MockDaemonClient: DaemonClient {
                   repos: try load("repos.json", ReposResponse.self),
                   notifications: try load("notifications.json", [SwarmNotification].self),
                   pane: try load("pane.json", PaneCapture.self))
+        boardItemList = (try? load("items.json", BoardItemList.self))?.items ?? []
     }
 
     private func record(_ call: String) throws {
@@ -185,6 +198,24 @@ public final class MockDaemonClient: DaemonClient {
         try record("spike \(body.name)")
         if let r = spikeResult { return try r.get() }
         return CreateSpikeResponse(agent: AgentNode(name: body.name, kind: body.agent, model: body.model, role: .orchestrator), queued: false)
+    }
+
+    public func boardItems() async throws -> [BoardItem] {
+        try record("items")
+        if let e = boardItemsError { throw e }
+        return boardItemList
+    }
+
+    public func startOrchestrator(itemKey: String, _ body: StartOrchestratorBody) async throws -> AgentNode {
+        startBodies.append(body)
+        try record("start \(itemKey) \(body.agent.rawValue) \(body.model)")
+        return try (startResult ?? .success(AgentNode(name: "new-orchestrator", model: body.model, role: .orchestrator,
+                                                      itemKey: itemKey, rootKey: itemKey))).get()
+    }
+
+    public func handoff(_ name: String, _ body: HandoffRequest) async throws {
+        handoffRequests.append(body)
+        try record("handoff \(name) \(body.agent?.rawValue ?? "-") \(body.model ?? "-")")
     }
 
     public func terminalOpened(name: String) async throws {

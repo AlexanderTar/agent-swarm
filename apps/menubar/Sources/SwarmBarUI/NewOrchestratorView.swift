@@ -146,12 +146,12 @@ public struct NewOrchestratorView: View {
     }
 
     private var advisorAgentValue: String {
-        if case let .pair(agent, _) = form.advisor { return agent.rawValue }
+        if case let .pair(agent, _) = form.picker.advisor { return agent.rawValue }
         return "none"
     }
 
     private var advisorModelValue: String {
-        if case let .pair(_, model) = form.advisor { return model }
+        if case let .pair(_, model) = form.picker.advisor { return model }
         return "—"
     }
 
@@ -160,48 +160,48 @@ public struct NewOrchestratorView: View {
             Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
                 GridRow {
                     Text(Copy.agent).frame(width: 70, alignment: .leading)
-                    WideOptionPicker(Copy.agent, options: form.agentOptions, value: form.choice.agent?.rawValue ?? "",
-                                     icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAgent($0) }
+                    WideOptionPicker(Copy.agent, options: form.picker.agentOptions, value: form.picker.choice.agent?.rawValue ?? "",
+                                     icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.picker.setAgent($0) }
                         .frame(width: 130)
                     Text(Copy.model).frame(width: 50, alignment: .leading)
-                    WideOptionPicker(Copy.model, options: form.modelOptions, value: form.choice.model) { form.setModel($0) }
+                    WideOptionPicker(Copy.model, options: form.picker.modelOptions, value: form.picker.choice.model) { form.picker.setModel($0) }
                         .frame(minWidth: 200, maxWidth: .infinity)
-                    if let efforts = form.effortOptions {
+                    if let efforts = form.picker.effortOptions {
                         Text(Copy.effort).frame(width: 45, alignment: .leading)
-                        WideOptionPicker(Copy.agentEffort, options: efforts, value: form.choice.effort) { form.setEffort($0) }
+                        WideOptionPicker(Copy.agentEffort, options: efforts, value: form.picker.choice.effort) { form.picker.setEffort($0) }
                             .frame(width: 170)
                     } else {
                         Text("").frame(width: 45)
                         Color.clear.frame(width: 170, height: 1)
                     }
                 }
-                if let error = form.errors.agent, !error.isEmpty {
+                if let error = form.picker.errors.agent, !error.isEmpty {
                     GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
                 }
-                if let error = form.errors.model {
+                if let error = form.picker.errors.model {
                     GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
                 }
-                if let note = form.effortNote {
+                if let note = form.picker.effortNote {
                     GridRow { Text(note).font(.caption).foregroundStyle(.secondary).gridCellColumns(6) }
                 }
                 GridRow {
                     Text(Copy.advisor).frame(width: 70, alignment: .leading)
-                    WideOptionPicker(Copy.advisor, options: form.advisorAgentOptions, value: advisorAgentValue,
-                                     icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setAdvisorAgent($0) }
+                    WideOptionPicker(Copy.advisor, options: form.picker.advisorAgentOptions, value: advisorAgentValue,
+                                     icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.picker.setAdvisorAgent($0) }
                         .frame(width: 130)
                     Text(Copy.model).frame(width: 50, alignment: .leading)
-                    WideOptionPicker("Advisor model", options: form.advisorModelOptions, value: advisorModelValue) { form.setAdvisorModel($0) }
-                        .frame(minWidth: 200, maxWidth: .infinity).disabled(form.advisor == .none)
-                    if let efforts = form.advisorEffortOptions {
+                    WideOptionPicker("Advisor model", options: form.picker.advisorModelOptions, value: advisorModelValue) { form.picker.setAdvisorModel($0) }
+                        .frame(minWidth: 200, maxWidth: .infinity).disabled(form.picker.advisor == .none)
+                    if let efforts = form.picker.advisorEffortOptions {
                         Text(Copy.effort).frame(width: 45, alignment: .leading)
-                        WideOptionPicker(Copy.advisorEffort, options: efforts, value: form.advisorEffort) { form.setAdvisorEffort($0) }
+                        WideOptionPicker(Copy.advisorEffort, options: efforts, value: form.picker.advisorEffort) { form.picker.setAdvisorEffort($0) }
                             .frame(width: 170)
                     } else {
                         Text("").frame(width: 45)
                         Color.clear.frame(width: 170, height: 1)
                     }
                 }
-                if let error = form.errors.advisor {
+                if let error = form.picker.errors.advisor {
                     GridRow { Text(error).font(.caption).foregroundStyle(.red).gridCellColumns(6) }
                 }
             }

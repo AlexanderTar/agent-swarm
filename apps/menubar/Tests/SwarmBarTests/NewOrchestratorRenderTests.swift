@@ -13,7 +13,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         await model.refresh()
         let form = model.makeNewOrchestratorForm()
         await form.load()
-        form.setAdvisorAgent("codex")
+        form.picker.setAdvisorAgent("codex")
 
         for width: CGFloat in [760, 820] {
             let host = NSHostingView(rootView: NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {}))
@@ -104,7 +104,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         }
         XCTAssertTrue(controls().0.contains("Agent Effort"))
         XCTAssertFalse(controls().0.contains("Advisor Effort"), "native Claude pairing has no independent effort")
-        form.setAdvisorAgent("codex")
+        form.picker.setAdvisorAgent("codex")
         let simulated = controls(capture: "820")
         let narrow = controls(width: 760, capture: "760")
         XCTAssertTrue(simulated.0.contains("Agent Effort"))
@@ -116,7 +116,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
         XCTAssertTrue(narrow.labels.contains(Copy.advisorEffort))
         XCTAssertEqual(narrow.scrollCount, 2)
         XCTAssertGreaterThanOrEqual(narrow.editorHeight, 250)
-        form.setAdvisorAgent("none")
+        form.picker.setAdvisorAgent("none")
         XCTAssertFalse(controls().0.contains("Advisor Effort"))
     }
 
@@ -200,7 +200,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
                                            message: String(repeating: "Repository needs attention. ", count: 12)))
         _ = await form.submit()
         form.name = "🔥"
-        form.setAgent("agy")
+        form.picker.setAgent("agy")
         client.failNext = .api(status: 500, code: "scan_failed",
                                message: String(repeating: "Could not scan repository. ", count: 10))
         await form.search()
@@ -296,7 +296,7 @@ final class NewOrchestratorRenderTests: XCTestCase {
            let codex = agent.itemArray.first(where: { $0.representedObject as? String == "codex" }) {
             agent.select(codex)
             XCTAssertTrue(NSApp.sendAction(agent.action!, to: agent.target, from: agent))
-            XCTAssertEqual(form.choice.agent, .codex)
+            XCTAssertEqual(form.picker.choice.agent, .codex)
         } else {
             XCTFail("Native Agent popup has no Codex choice")
         }
@@ -394,10 +394,10 @@ final class NewOrchestratorRenderTests: XCTestCase {
         await form.load()
         XCTAssertGreaterThanOrEqual(renderedSize(NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {})).width, 760)
         form.name = "🔥"
-        form.setAgent("codex")
+        form.picker.setAgent("codex")
         XCTAssertGreaterThanOrEqual(renderedSize(NewOrchestratorView(form: form, onStarted: { _ in }, onCancel: {})).width, 760)
         form.name = "Investigate login crash"
-        form.setModel("gpt-6-astra")
+        form.picker.setModel("gpt-6-astra")
         client.spikeResult = .failure(.unreachable)
         _ = await form.submit()
         XCTAssertNotNil(form.failure)
