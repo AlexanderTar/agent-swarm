@@ -44,7 +44,7 @@ final class BoardHandoffTests: XCTestCase {
 
     func testDraftItemStartsLikeReady() async {
         client.boardItemList = [BoardItem(key: "CHORE-9", type: "chore", status: "draft", title: "Tidy")]
-        let f = await form()
+        let f = await form(max: 99)
         XCTAssertEqual(f.selectedKey, "CHORE-9")
         XCTAssertEqual(f.primaryLabel, Copy.startOrchestrator)
     }
