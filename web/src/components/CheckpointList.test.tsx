@@ -51,6 +51,8 @@ describe("CheckpointList (§16.9)", () => {
     });
     expect(await screen.findByText("Couldn't load checkpoints.")).toBeInTheDocument();
     const retry = screen.getByRole("button", { name: "Retry" });
+    expect(retry).toHaveAttribute("data-slot", "button");
+    expect(retry).toHaveClass("h-auto", "p-0", "focus-visible:ring-ring/50");
     await user.click(retry);
     await waitFor(() => expect(screen.getByText(/Form renders/)).toBeInTheDocument());
     expect(screen.queryByText("Couldn't load checkpoints.")).not.toBeInTheDocument();

@@ -42,7 +42,7 @@ export function WorkflowSection(p: { workflow: Workflow | null | undefined; stat
                   <li key={run.id ?? `${run.round}-${run.role}-${i}`} className="text-sm">
                     <div className="flex flex-wrap items-center gap-2">
                       <span>{ROLE_EMOJI[run.role as Role] ?? "👤"} {ROLE_LABEL[run.role as Role] ?? run.role}</span>
-                      {run.agent && <button type="button" disabled={!p.connected} className="text-link underline disabled:text-muted-foreground disabled:no-underline" onClick={() => p.onOpenTerminal(run.agent)}>{run.agent}</button>}
+                      {run.agent && <Button type="button" variant="link" disabled={!p.connected} className="h-auto p-0 disabled:text-muted-foreground disabled:no-underline" onClick={() => p.onOpenTerminal(run.agent)}>{run.agent}</Button>}
                       <span className="rounded bg-muted px-1.5 py-0.5">{run.state.charAt(0).toUpperCase()}{run.state.slice(1)}</span>
                       {verdict && <span className={`rounded px-1.5 py-0.5 ${verdict.className}`}>{verdict.label}</span>}
                     </div>

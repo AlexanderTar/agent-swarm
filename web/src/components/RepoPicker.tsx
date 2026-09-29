@@ -86,7 +86,7 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
                 <Check aria-hidden className={cn("size-3.5 text-link", !on && "invisible")} />
                 <span className="w-28 shrink-0 truncate font-medium sm:w-44">{r.name}</span>
                 <span className="key min-w-0 flex-1 truncate text-muted-foreground">{shortPath(r.path)}</span>
-                {r.dirty && <span aria-label={C.repoDirty} title={C.repoDirty} className="ml-auto size-1.5 shrink-0 rounded-full bg-warning" />}
+                {r.dirty && <span role="img" aria-label={C.repoDirty} title={C.repoDirty} className="ml-auto size-1.5 shrink-0 rounded-full bg-warning" />}
               </div>
             );
           })}

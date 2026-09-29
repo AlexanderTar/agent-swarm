@@ -53,16 +53,17 @@ export function CheckpointList({ itemKey, agentNames }: { itemKey: string; agent
     return (
       <p className="text-destructive">
         {errorText(err)}{" "}
-        <button
+        <Button
           type="button"
-          className="text-link underline"
+          variant="link"
+          className="h-auto p-0"
           onClick={() => {
             cps.reload();
             advice.reload();
           }}
         >
           {C.retry}
-        </button>
+        </Button>
       </p>
     );
   }

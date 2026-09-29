@@ -56,6 +56,8 @@ describe("WorkflowSection", () => {
     render(<WorkflowSection workflow={workflow} state={state} connected={false} onOpenTerminal={onOpenTerminal} />);
     await userEvent.click(screen.getByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
     const terminal = screen.getByRole("button", { name: "critic" });
+    expect(terminal).toHaveAttribute("data-slot", "button");
+    expect(terminal).toHaveClass("h-auto", "p-0", "focus-visible:ring-ring/50");
     expect(terminal).toBeDisabled();
     await userEvent.click(terminal);
     expect(onOpenTerminal).not.toHaveBeenCalled();

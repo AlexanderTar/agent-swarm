@@ -28,6 +28,7 @@ describe("RepoPicker (§16.3)", () => {
     expect(screen.getByText("Scanned 2h ago")).toBeInTheDocument();
     expect(screen.getByText("The spike suggests repositories and asks you to confirm them.")).toBeInTheDocument();
     expect(rows().some((r) => within(r).queryByLabelText(C.repoDirty))).toBe(true);
+    expect(screen.getAllByRole("img", { name: C.repoDirty }).length).toBeGreaterThan(0);
   });
 
   it("toggles rows by click and Space and summarises", async () => {
