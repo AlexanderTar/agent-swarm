@@ -32,9 +32,11 @@ public struct SettingsView: View {
             }
         }
         .frame(width: 740, height: 520)
+        // The Settings tab/toolbar strip stays opaque on its own: hide its background
+        // so the window material runs edge to edge like the popover.
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .translucentDialogBackground()
         .background(TranslucentWindowAccessor())
-        .glassButtons()
         .task { await model.load() }
     }
 }
@@ -65,14 +67,14 @@ struct AgentsTab: View {
                         HStack {
                             Text(notice).font(.caption)
                             Button(Copy.apply) { Task { await model.applyDisable() } }.prominentDefaultAction()
-                            Button(Copy.cancel) { model.cancelDisable() }
+                            Button(Copy.cancel) { model.cancelDisable() }.glassButtons()
                         }
                         .padding(.leading, 24)
                     }
                 }
             }
             if let error = model.agentsError { Text(error).foregroundStyle(.red) }
-            Button(Copy.checkAgain) { Task { await model.checkAgain() } }.disabled(!model.connected)
+            Button(Copy.checkAgain) { Task { await model.checkAgain() } }.glassButtons().disabled(!model.connected)
             Spacer()
         }
         .padding(20)
@@ -132,7 +134,7 @@ struct DefaultsTab: View {
             HStack {
                 if let line = model.catalogLine { Text(line).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                Button(Copy.refreshModels) { Task { await model.refreshModels() } }.disabled(!model.connected)
+                Button(Copy.refreshModels) { Task { await model.refreshModels() } }.glassButtons().disabled(!model.connected)
             }
             Spacer()
         }
@@ -221,6 +223,7 @@ struct AppTab: View {
                 panel.canChooseFiles = false
                 if panel.runModal() == .OK, let url = panel.url { Task { await model.addExclude(url.path) } }
             }
+            .glassButtons()
             .disabled(!model.connected)
             HStack {
                 Text(model.scanLine).font(.caption).foregroundStyle(.secondary)
@@ -262,10 +265,10 @@ struct InstructionsTab: View {
                 Text(editing ? Copy.editInstructions : Copy.agentInstructions).font(.headline)
                 Spacer()
                 if editing {
-                    Button(Copy.cancel) { editing = false }
+                    Button(Copy.cancel) { editing = false }.glassButtons()
                     Button(Copy.save) { commit() }.keyboardShortcut(.return, modifiers: .command).prominentDefaultAction()
                 } else if !model.instructions.isEmpty {
-                    Button(Copy.edit) { draft = model.instructions; editing = true }
+                    Button(Copy.edit) { draft = model.instructions; editing = true }.glassButtons()
                 }
             }
             Text(editing ? Copy.editInstructionsCaption : Copy.instructionsCaption)
@@ -287,7 +290,7 @@ struct InstructionsTab: View {
                     Text(Copy.noInstructionsConfigured).foregroundStyle(.secondary)
                     Text(Copy.noInstructionsSubtitle).font(.caption).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                    Button(Copy.addInstructions) { draft = ""; editing = true }
+                    Button(Copy.addInstructions) { draft = ""; editing = true }.glassButtons()
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -302,7 +305,7 @@ struct InstructionsTab: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
                 HStack {
                     Spacer()
-                    Button(copied ? Copy.copied : Copy.copyInstructions) { copyToClipboard() }
+                    Button(copied ? Copy.copied : Copy.copyInstructions) { copyToClipboard() }.glassButtons()
                 }
             }
         }

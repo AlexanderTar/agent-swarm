@@ -141,7 +141,6 @@ struct PopoverFooterSplitButton: View {
         }
         .menuStyle(.button)
         .controlSize(.small)
-        .fixedSize()
         .help(Copy.moreStartOptions)
         .accessibilityLabel(Copy.newOrchestrator)
         .disabled(!connected)

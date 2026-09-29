@@ -231,7 +231,9 @@ public struct SectionBody<Content: View>: View {
 
 extension View {
     /// Liquid Glass buttons where the OS has them (macOS 26), the platform's own bordered buttons
-    /// below that. Applied once at a window root; inner `.borderless`/`.plain`/`.link` styles win.
+    /// below that. Applied once at a window root; inner `.borderless`/`.plain`/`.link` styles win —
+    /// but an inner `.glassProminent` does NOT (it flattens to plain glass), so windows with a
+    /// default action style their buttons per button instead of at the root (see `prominentDefaultAction`).
     @ViewBuilder public func glassButtons() -> some View {
         if #available(macOS 26, *) { buttonStyle(.glass) } else { self }
     }

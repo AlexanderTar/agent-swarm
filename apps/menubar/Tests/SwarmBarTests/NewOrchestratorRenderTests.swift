@@ -7,6 +7,20 @@ import XCTest
 
 @MainActor
 final class NewOrchestratorRenderTests: XCTestCase {
+    /// Offscreen `cacheDisplay` snapshots blank with Liquid Glass prominent buttons
+    /// (real windows render them fine — verified with screencapture), so OCR layout
+    /// captures pin the bordered style; the glassProminent product default is locked
+    /// separately by DialogChromeTests.testProminentStyleMatchesOS.
+    override func setUp() {
+        super.setUp()
+        DialogChrome.prominentStyleOverride = .borderedProminent
+    }
+
+    override func tearDown() {
+        DialogChrome.prominentStyleOverride = nil
+        super.tearDown()
+    }
+
     func testAgentAndAdvisorSelectorsShareAlignedSixColumnRows() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let model = makeAppModel(client)

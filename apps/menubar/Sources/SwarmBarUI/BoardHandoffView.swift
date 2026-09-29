@@ -42,7 +42,7 @@ public struct BoardHandoffView: View {
             HStack {
                 if let caption = form.caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction)
+                Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction).glassButtons()
                 Button(form.primaryLabel) { Task { if await form.primary() { onDone() } } }
                     .keyboardShortcut(.defaultAction)
                     .prominentDefaultAction()
@@ -53,7 +53,6 @@ public struct BoardHandoffView: View {
         .frame(minWidth: 760, idealWidth: 820)
         .translucentDialogBackground()
         .background(TranslucentWindowAccessor())
-        .glassButtons()
     }
 
     private func detailLine(_ row: BoardItemRow) -> NSAttributedString {

@@ -9,6 +9,7 @@ public enum DialogChrome {
     public static func configure(_ window: NSWindow) {
         window.isOpaque = false
         window.backgroundColor = .clear
+        window.titlebarAppearsTransparent = true
     }
 
     /// Which prominent style the default action takes: Liquid Glass where the OS
@@ -18,13 +19,17 @@ public enum DialogChrome {
         case borderedProminent
     }
 
-    /// HIG default action: tinted and prominent on every macOS version.
-    /// ponytail: stays `.borderedProminent` on macOS 26 instead of `.glassProminent`
-    /// because a glassProminent button makes `cacheDisplay` rasterize the whole window
-    /// black (verified: /tmp/banner-probe.png), which blinds the OCR render tests;
-    /// upgrade to `.glassProminent` on 26 once offscreen snapshots survive it.
-    /// (`prominentDefaultAction()` keeps the switch so the upgrade is one line.)
+    /// Test seam for offscreen snapshots only: a `.glassProminent` button makes
+    /// `cacheDisplay` rasterize its whole snapshot near-black (0.05 brightness,
+    /// measured this session), which blinds the OCR layout tests. Real windows
+    /// composite it correctly (verified with screencapture), so those tests pin this
+    /// to `.borderedProminent` while capturing. Product default is nil: follow the OS.
+    nonisolated(unsafe) public static var prominentStyleOverride: ProminentStyle?
+
+    /// HIG default action: prominent and tinted on every macOS version.
     public static var prominentStyle: ProminentStyle {
+        if let override = prominentStyleOverride { return override }
+        if #available(macOS 26, *) { return .glassProminent }
         return .borderedProminent
     }
 }
@@ -42,23 +47,30 @@ struct TranslucentWindowAccessor: NSViewRepresentable {
     func makeNSView(context: Context) -> AccessorView { AccessorView(frame: .zero) }
 
     func updateNSView(_ nsView: AccessorView, context: Context) {
-        if let window = nsView.window { DialogChrome.configure(window) }
+        guard let window = nsView.window else { return }
+        let bgClear = (window.backgroundColor as? NSColor)?.isEqual(NSColor.clear) == true
+        guard window.isOpaque || !bgClear || !window.titlebarAppearsTransparent else { return }
+        DialogChrome.configure(window)
     }
 }
 
 extension View {
-    /// The window material behind dialog content on every macOS version: the same
-    /// ultra-thin material the MenuBarExtra popover window gives its content. A
-    /// full-content `glassEffect` would refract the text as well and break
-    /// offscreen rendering; Liquid Glass accents live on the controls themselves
-    /// via `dialogGlass()`.
+    /// The window material behind dialog content on every macOS version: the
+    /// popover-weight regular material. Ultra-thin let bright backdrops through
+    /// almost unblurred and tinted captions to the background, leaving
+    /// secondary text unreadable. A full-content `glassEffect` would refract the
+    /// text as well; Liquid Glass accents live on the controls themselves via
+    /// `dialogGlass()`.
     func translucentDialogBackground() -> some View {
-        background(.ultraThinMaterial)
+        background(.regularMaterial)
     }
 
     /// The default action (Start/Queue orchestrator, Hand off, Done, Try again):
     /// prominent and tinted per Apple HIG so it stands apart from plain Cancel.
-    /// Wins over the window root's `glassButtons()`, which styles every button alike.
+    /// Keep it out from under any `glassButtons()` ancestor: a glass-styled
+    /// ancestor flattens an inner `.glassProminent` back to plain glass (verified
+    /// with real-window screenshots — identical fills), so dialog roots style
+    /// their other buttons with `glassButtons()` per button instead of at the root.
     @ViewBuilder func prominentDefaultAction() -> some View {
         switch DialogChrome.prominentStyle {
         case .glassProminent:
@@ -73,11 +85,14 @@ extension View {
     }
 
     /// Liquid Glass container for controls on the translucent dialog background
-    /// (intent picker, repo list): glass on macOS 26, the control's own bezel
-    /// below — never an opaque fill, so the window material shows through.
-    @ViewBuilder func dialogGlass() -> some View {
+    /// (repo list): glass on macOS 26 shaped to the control's own rounded rect —
+    /// the default capsule glass draws a dark oval inside a rectangular border —
+    /// the control's own bezel below. Never an opaque fill, so the window material
+    /// shows through. (The segmented intent picker keeps its own chrome: wrapping
+    /// it in a second glass double-draws it.)
+    @ViewBuilder func dialogGlass(cornerRadius: CGFloat = 5) -> some View {
         if #available(macOS 26, *) {
-            glassEffect(.regular)
+            glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
         } else {
             self
         }
