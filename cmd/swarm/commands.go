@@ -75,7 +75,7 @@ func agentsOpts(cfg install.Config, yes, pluginsOnly bool, stdin io.Reader, out 
 		Cfg: cfg, Run: execx.RunFor(120 * time.Second), HTTP: &http.Client{Timeout: 30 * time.Second},
 		MarketplaceURL: install.MarketplaceURL,
 		Installed:      install.InstalledKinds(exec.LookPath),
-		Confirm:        confirm, PluginsOnly: pluginsOnly, Out: out,
+		Confirm:        confirm, PluginsOnly: pluginsOnly, LookPath: exec.LookPath, Out: out,
 	}
 }
 

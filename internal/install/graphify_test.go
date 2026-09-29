@@ -75,7 +75,7 @@ func TestSyncGraphify(t *testing.T) {
 		{
 			name: "uv failure",
 			responses: map[string]execx.Result{
-				"graphify --version":               {Err: errors.New("not found")},
+				"graphify --version":                {Err: errors.New("not found")},
 				"uv tool install graphifyy==0.9.71": {Out: "error: boom\nmore", Err: errors.New("exit status 1")},
 			},
 			lookPath:  okUV,
