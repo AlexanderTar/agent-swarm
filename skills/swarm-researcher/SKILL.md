@@ -14,7 +14,7 @@ Your brief carries one sub-question of a spike's research split. Before you sear
 - Decide, concretely, what "answered" looks like: the fact, decision, or comparison that lets you stop.
 
 ## The research loop
-Then run the deep-research loop: short, targeted searches; fetch full sources rather than trusting a snippet; prefer primary sources — the actual docs, the actual code, the actual spec — over summaries and secondhand write-ups. When two sources disagree, record the conflict instead of silently picking a winner. Budget roughly 10–15 tool calls. Stop when your question is answered, or when the budget runs dry — a dry budget with an open question becomes a Gap, not a reason to guess.
+Start orientation with `graphify query` (rule 9b) rather than a repo-wide grep. Then run the deep-research loop: short, targeted searches; fetch full sources rather than trusting a snippet; prefer primary sources — the actual docs, the actual code, the actual spec — over summaries and secondhand write-ups. When two sources disagree, record the conflict instead of silently picking a winner. Budget roughly 10–15 tool calls. Stop when your question is answered, or when the budget runs dry — a dry budget with an open question becomes a Gap, not a reason to guess.
 
 ## Notes format
 Write your notes to `~/.swarm/research/<SPIKE-KEY>/<ITEM-KEY>.md`, with these sections:
