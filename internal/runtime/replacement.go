@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -86,6 +87,84 @@ type Operation struct {
 // without running anything again; a different key while one is in flight
 // is a 409 naming the active operation.
 func (s *Store) RequestReplacement(ctx context.Context, agentID string, mode ReplacementMode, requestKey, note string) (Operation, error) {
+	return s.requestReplacement(ctx, agentID, mode, requestKey, note, "")
+}
+
+const (
+	errSwitchNotOrchestrator = "Only an orchestrator can switch agents on handoff."
+	errSwitchNotLive         = "This orchestrator is no longer running. Reopen the list."
+)
+
+// RequestHandoffTo records a handoff whose successor runs as sw. A replayed
+// request key returns the recorded operation without validating again; the
+// switch itself is stored as switch_json and applied at PhaseStarting
+// (applyAgentSwitch), so the predecessor stops under its own kind.
+func (s *Store) RequestHandoffTo(ctx context.Context, agentID, requestKey string, sw AgentSwitch) (Operation, error) {
+	if requestKey != "" {
+		op, err := s.operationByKey(ctx, agentID, requestKey)
+		if err == nil {
+			return op, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Operation{}, err
+		}
+	}
+	a, err := s.agentByID(ctx, agentID)
+	if err != nil {
+		return Operation{}, err
+	}
+	if a.Role != RoleOrchestrator {
+		return Operation{}, &items.Error{Code: items.CodeBadRequest, Message: errSwitchNotOrchestrator}
+	}
+	if a.State != AgentQueued && a.State != AgentActive {
+		return Operation{}, &items.Error{Code: items.CodeConflict, Message: errSwitchNotLive}
+	}
+	if err := s.Preflight(ctx, PreflightInput{Kind: sw.Kind, Model: sw.Model, Effort: sw.Effort, Role: RoleOrchestrator}); err != nil {
+		return Operation{}, err
+	}
+	b, err := json.Marshal(sw)
+	if err != nil {
+		return Operation{}, err
+	}
+	return s.requestReplacement(ctx, agentID, ModeHandoff, requestKey, "", string(b))
+}
+
+// applyAgentSwitch applies an operation's pending switch to the agent row
+// right before its successor starts. No switch → a unchanged. Preflight runs
+// again (catalog or auth may have moved since the request); on failure the
+// row is untouched.
+func (s *Store) applyAgentSwitch(ctx context.Context, opID string, a Agent) (Agent, error) {
+	var raw string
+	if err := s.DB.QueryRowContext(ctx, `SELECT switch_json FROM agent_operations WHERE id = ?`, opID).Scan(&raw); err != nil {
+		return a, err
+	}
+	if raw == "" {
+		return a, nil
+	}
+	var sw AgentSwitch
+	if err := json.Unmarshal([]byte(raw), &sw); err != nil {
+		return a, err
+	}
+	if err := s.Preflight(ctx, PreflightInput{Kind: sw.Kind, Model: sw.Model, Effort: sw.Effort, Role: a.Role}); err != nil {
+		return a, err
+	}
+	advKind, advModel, advEffort, advMode, advReq := s.resolveAdvisor(ctx, sw.Kind, sw.Advisor)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = ?, model = ?, effort = ?,
+		advisor_kind = NULLIF(?, ''), advisor_model = NULLIF(?, ''), advisor_effort = NULLIF(?, ''),
+		advisor_mode = NULLIF(?, ''), advisor_requested_effort = NULLIF(?, ''),
+		role_overrides = NULL, kind_reason = '' WHERE id = ?`,
+		string(sw.Kind), sw.Model, sw.Effort, string(advKind), advModel, advEffort, advMode, advReq, a.ID); err != nil {
+		return a, err
+	}
+	a.Kind, a.Model, a.Effort = sw.Kind, sw.Model, sw.Effort
+	a.AdvisorKind, a.AdvisorModel, a.AdvisorEffort, a.AdvisorMode, a.AdvisorRequestedEffort = string(advKind), advModel, advEffort, advMode, advReq
+	a.RoleOverrides, a.KindReason = nil, ""
+	return a, nil
+}
+
+// requestReplacement is RequestReplacement plus an optional pending agent
+// switch (switch_json, "" = none) stored on the operation row.
+func (s *Store) requestReplacement(ctx context.Context, agentID string, mode ReplacementMode, requestKey, note, switchJSON string) (Operation, error) {
 	switch mode {
 	case ModePause, ModeHandoff, ModeRecover:
 	default:
@@ -138,10 +217,10 @@ func (s *Store) RequestReplacement(ctx context.Context, agentID string, mode Rep
 			RequestKey: requestKey, SessionID: ses.ID, Generation: ses.Generation, Note: note,
 			CreatedAt: s.now(), UpdatedAt: s.now()}
 		_, err = tx.ExecContext(ctx, `INSERT INTO agent_operations
-			(id, agent_id, mode, phase, request_key, session_id, generation, note, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, agent_id, mode, phase, request_key, session_id, generation, note, switch_json, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			op.ID, op.AgentID, string(op.Mode), string(op.Phase), op.RequestKey,
-			op.SessionID, op.Generation, op.Note, now, now)
+			op.SessionID, op.Generation, op.Note, switchJSON, now, now)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 				return &items.Error{Code: items.CodeConflict,
@@ -949,12 +1028,7 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 			// would go silently stuck: an immediate Retry hands this same
 			// error straight back to its synchronous caller, but nothing is
 			// waiting on this background driver.
-			if s.Notify != nil {
-				var itemKey string
-				_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey)
-				_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.preflight_failed", AgentName: a.Name,
-					ItemKey: itemKey, Args: map[string]string{"reason": err.Error()}})
-			}
+			s.raisePreflightFailed(ctx, a, err)
 			return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
 		}
 		if substituted {
@@ -964,6 +1038,13 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 		succMode = "recovery"
 	case reason == "resume":
 		succMode = "resume" // a manual Resume that waited for a slot
+	}
+	// A handoff or in-place restart that carries picks switches the row
+	// only now, so the predecessor stopped under its own kind.
+	var err error
+	if a, err = s.applyAgentSwitch(ctx, op.ID, a); err != nil {
+		s.raisePreflightFailed(ctx, a, err)
+		return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
 	}
 	succ, err := s.startSession(ctx, a, attempt, latest.Generation+1, false, "", succMode)
 	if err != nil {
@@ -1008,4 +1089,16 @@ func (s *Store) startSuccessor(ctx context.Context, op Operation, a Agent, lates
 		}
 		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
 	})
+}
+
+// raisePreflightFailed notifies agent.preflight_failed for a background
+// successor start that Preflight refused; nothing synchronous is waiting.
+func (s *Store) raisePreflightFailed(ctx context.Context, a Agent, err error) {
+	if s.Notify == nil {
+		return
+	}
+	var itemKey string
+	_ = s.DB.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.ItemID).Scan(&itemKey)
+	_ = s.Notify.Raise(ctx, nil, NotifyInput{Kind: "agent.preflight_failed", AgentName: a.Name,
+		ItemKey: itemKey, Args: map[string]string{"reason": err.Error()}})
 }

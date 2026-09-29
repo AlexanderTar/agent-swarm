@@ -124,6 +124,14 @@ type AdvisorChoice struct {
 	Effort string
 }
 
+// AgentSwitch is a handoff's requested successor identity (spec 2026-09-29-menubar-board-handoff).
+type AgentSwitch struct {
+	Kind    AgentKind      `json:"kind"`
+	Model   string         `json:"model"`
+	Effort  string         `json:"effort,omitempty"`
+	Advisor *AdvisorChoice `json:"advisor,omitempty"` // nil = Settings, None = no advisor
+}
+
 type SpikeInput struct {
 	Name      string
 	Intent    string

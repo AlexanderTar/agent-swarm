@@ -164,3 +164,34 @@ func TestStateNodeReplacementCarriesCapacityReason(t *testing.T) {
 		t.Fatalf("plain handoff must omit reason: %s", rec.Body)
 	}
 }
+
+func TestHandoffWithSwitchIs202(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	rec := s.post(t, "/api/agents/root-orchestrator/handoff",
+		`{"request_id":"s1","agent":"fake","model":"fake-1","advisor":"none"}`)
+	if rec.Code != 202 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var sw string
+	if err := s.DB.QueryRowContext(bg, `SELECT switch_json FROM agent_operations WHERE request_key = 's1'`).Scan(&sw); err != nil || sw == "" {
+		t.Fatalf("switch_json = %q (%v), want the stored switch", sw, err)
+	}
+}
+
+func TestHandoffSwitchFieldsWithoutAgentIs400(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	rec := s.post(t, "/api/agents/root-orchestrator/handoff", `{"request_id":"s2","model":"x"}`)
+	wantErr(t, rec.Code, rec.Body.Bytes(), 400, "bad_request", "Choose an agent.")
+}
+
+func TestHandoffSwitchOnWorkerIs400(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	rec := s.post(t, "/api/agents/task-worker/handoff", `{"request_id":"s3","agent":"fake","model":"fake-1"}`)
+	wantErr(t, rec.Code, rec.Body.Bytes(), 400, "bad_request", "Only an orchestrator can switch agents on handoff.")
+}
+
+func TestHandoffSwitchBadModelIs422(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	rec := s.post(t, "/api/agents/root-orchestrator/handoff", `{"request_id":"s4","agent":"fake","model":"nope"}`)
+	wantErr(t, rec.Code, rec.Body.Bytes(), 422, "preflight_failed", "")
+}
