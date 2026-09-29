@@ -84,10 +84,13 @@ func (e *mergeEvidence) mergedPRContains(ctx context.Context, wt worktree.Worktr
 	if wt.Branch == "" {
 		return false
 	}
-	// ponytail: only the PR whose head branch is this tree's branch is
-	// checked; a tree whose HEAD sits inside some other branch's merged PR
-	// needs a per-PR ancestry scan, which costs a git call per PR per tree.
-	for _, pr := range e.listMerged(ctx, wt.RepoID, repoPath) {
+	prs := e.listMerged(ctx, wt.RepoID, repoPath)
+	if e.anyMergedPRHeadContains(ctx, wt, head, prs) {
+		return true
+	}
+	// A PR whose head branch is this tree's branch may have its head OID only
+	// on refs/pull/N/head, which the ref scan above cannot see.
+	for _, pr := range prs {
 		if pr.HeadRefName != wt.Branch || !fullOID.MatchString(pr.HeadRefOid) {
 			continue
 		}
@@ -98,6 +101,34 @@ func (e *mergeEvidence) mergedPRContains(ctx context.Context, wt worktree.Worktr
 			}
 		}
 		if e.git(ctx, wt.Path, "merge-base", "--is-ancestor", head, pr.HeadRefOid) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// anyMergedPRHeadContains is true when a local ref tip containing head is the
+// head OID of any merged PR (e.g. an integration PR from another branch): one
+// for-each-ref per tree, no per-PR ancestry loop.
+// ponytail: only PR heads that are a local ref tip are seen; a deleted
+// integration branch is covered only by the same-branch pull-ref path.
+func (e *mergeEvidence) anyMergedPRHeadContains(ctx context.Context, wt worktree.Worktree, head string, prs []mergedPR) bool {
+	heads := map[string]bool{}
+	for _, pr := range prs {
+		if fullOID.MatchString(pr.HeadRefOid) {
+			heads[pr.HeadRefOid] = true
+		}
+	}
+	if len(heads) == 0 || !fullOID.MatchString(head) {
+		return false
+	}
+	out, err := e.s.runner()(ctx, "git", "-C", wt.Path, "for-each-ref", "--contains", head,
+		"--format=%(objectname)", "refs/remotes", "refs/heads")
+	if err != nil {
+		return false
+	}
+	for _, oid := range strings.Fields(string(out)) {
+		if heads[oid] {
 			return true
 		}
 	}

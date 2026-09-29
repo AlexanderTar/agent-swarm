@@ -182,3 +182,35 @@ func TestReclaimRetainsATreeWithNoMergeEvidence(t *testing.T) {
 		t.Fatalf("state/reason = %s/%s, want retained/unmerged", state, reason)
 	}
 }
+
+// A task branch merged (true merge) into an integration branch whose PR was
+// merged counts as merged, though the PR's head branch is a different one.
+func TestReclaimUsesAnIntegrationPRHeadContainingHEAD(t *testing.T) {
+	f := newEvidenceFixture(t)
+	wt := f.tree(t, "task/via-integration")
+	head := strings.TrimSpace(gitOutput(t, wt.Path, "rev-parse", "HEAD"))
+	gitOutput(t, f.repoPath, "branch", "integ/tmp", "origin/main")
+	integ := filepath.Join(t.TempDir(), "integ")
+	gitOutput(t, f.repoPath, "worktree", "add", "-q", integ, "integ/tmp")
+	gitOutput(t, integ, "config", "user.email", "t@example.invalid")
+	gitOutput(t, integ, "config", "user.name", "T")
+	commitFile(t, integ, "other.txt", "other")
+	gitOutput(t, integ, "merge", "--no-ff", "-q", "-m", "merge task", head)
+	oid := strings.TrimSpace(gitOutput(t, integ, "rev-parse", "HEAD"))
+	f.ghOut = fmt.Sprintf(`[{"number":589,"headRefName":"integ/tmp","headRefOid":%q}]`, oid)
+	if state, _ := f.reclaim(t, wt); state != "removed" {
+		t.Fatalf("state = %s, want removed: HEAD is contained in merged integration PR #589's head", state)
+	}
+}
+
+// A merged PR on another branch that does not contain HEAD is no evidence.
+func TestReclaimRetainsATreeNotInAnyMergedPRHead(t *testing.T) {
+	f := newEvidenceFixture(t)
+	wt := f.tree(t, "task/not-in-integration")
+	gitOutput(t, f.repoPath, "branch", "integ/other", "origin/main")
+	oid := strings.TrimSpace(gitOutput(t, f.repoPath, "rev-parse", "integ/other"))
+	f.ghOut = fmt.Sprintf(`[{"number":590,"headRefName":"integ/other","headRefOid":%q}]`, oid)
+	if state, reason := f.reclaim(t, wt); state != "retained" || reason != "unmerged" {
+		t.Fatalf("state/reason = %s/%s, want retained/unmerged", state, reason)
+	}
+}
