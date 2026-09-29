@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -219,5 +220,75 @@ func TestPrintTurnTickUnreadableReplyAsks(t *testing.T) {
 	}
 	if p, _ := relayFor(t, s, req.AgentID, req.ID); p["event"] != "request_ask" {
 		t.Fatalf("relay = %v, want request_ask (fail open)", p)
+	}
+}
+
+// pendingChildAsk counts the child approval's unacked request_ask/request_print relays.
+func pendingChildAsk(t *testing.T, s *Store, msgID string) int {
+	t.Helper()
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM messages WHERE correlation_id = ? AND kind = 'relay' AND state <> 'acked'
+		AND json_extract(payload_json, '$.event') IN ('request_ask', 'request_print')`, msgID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// childApprovalInAsk leaves a child approval with a pending request_ask relay for its orchestrator.
+func childApprovalInAsk(t *testing.T, s *Store) (orch Agent, orchSes, child, msgID string) {
+	t.Helper()
+	ctx := context.Background()
+	orch, w, wSes := worker(t, s)
+	orchSes = mustSessionID(t, s, orch.ID)
+	q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PrintTurnEnded(ctx, orchSes, TurnReply{Trusted: true}); err != nil {
+		t.Fatal(err)
+	}
+	if pendingChildAsk(t, s, q) != 1 {
+		t.Fatal("expected one pending request_ask relay")
+	}
+	return orch, orchSes, w.Name, q
+}
+
+func TestChildApprovalAnsweredDirectlyRetiresAsk(t *testing.T) {
+	s, _, _ := newStore(t)
+	_, orchSes, child, q := childApprovalInAsk(t, s)
+	ctx := context.Background()
+	if _, err := s.Send(ctx, orchSes, child, "answer", "yes, go ahead", q, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := pendingChildAsk(t, s, q); n != 0 {
+		t.Fatalf("%d print/ask relays left pending after a direct answer", n)
+	}
+	// The retired relay is acked, so sync never delivers it.
+	res, err := s.Sync(ctx, orchSes, nil, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fmt.Sprint(res), "request_ask") {
+		t.Fatalf("sync delivered a retired request_ask: %v", res)
+	}
+}
+
+func TestResurfaceRetiresChildApprovalAsk(t *testing.T) {
+	s, _, _ := newStore(t)
+	orch, _, _, q := childApprovalInAsk(t, s)
+	ctx := context.Background()
+	if _, err := s.resurfaceOpenRequests(ctx, orch, "", true, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if n := pendingChildAsk(t, s, q); n != 0 {
+		t.Fatalf("%d print/ask relays left after fresh resurface", n)
+	}
+	var phase string
+	s.DB.QueryRow(`SELECT COALESCE(json_extract(payload_json, '$.print_phase'), '') FROM messages WHERE id = ?`, q).Scan(&phase)
+	if phase != "" {
+		t.Fatalf("print_phase = %q, want cleared", phase)
 	}
 }

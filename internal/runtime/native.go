@@ -1471,6 +1471,9 @@ func (s *Store) nativeAnswerForMsg(ctx context.Context, sessionID, callerID, msg
 			RootItemID: rootItemID, ItemID: itemID, ReplyTo: msgID, Payload: payload}); err != nil {
 			return err
 		}
+		if err := s.retirePrintRelaysTx(ctx, tx, msgID); err != nil {
+			return err
+		}
 		w, err := s.RequestWireTx(ctx, tx, rowID)
 		if err != nil {
 			return err

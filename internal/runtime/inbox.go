@@ -656,7 +656,10 @@ func (s *Store) Send(ctx context.Context, sessionID, to string, kind MessageKind
 			FromAgentID: a.ID, FromSessionID: sessionID, ToAgentID: target.ID,
 			RootItemID: a.RootItemID, ItemID: a.ItemID, CorrelationID: correlationID, ReplyTo: replyTo, Payload: payload})
 		id = m.ID
-		return err
+		if err != nil || kind != "answer" {
+			return err
+		}
+		return s.retirePrintRelaysTx(ctx, tx, replyTo)
 	})
 	return id, err
 }

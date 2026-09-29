@@ -671,6 +671,9 @@ func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID st
 					return err
 				}
 			}
+			if err := s.retireUnansweredChildPrintTx(ctx, tx, a.ID); err != nil {
+				return err
+			}
 		}
 		if a.Role == RoleOrchestrator && a.ParentAgentID == "" {
 			if _, err := tx.ExecContext(ctx, `UPDATE requests SET agent_id = ?, session_id = ?

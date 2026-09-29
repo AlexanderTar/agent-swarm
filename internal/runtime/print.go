@@ -103,14 +103,52 @@ func (s *Store) startPrintTx(ctx context.Context, tx *sql.Tx, ref string) error 
 	return s.setPrintTx(ctx, tx, ref, printPhasePrint, 0)
 }
 
-// retirePrintRelaysTx acks a request's unacked request_ask/request_print relays, so a resolved or
-// resurfaced request never leaves a stale instruction for the agent.
-func (s *Store) retirePrintRelaysTx(ctx context.Context, tx *sql.Tx, requestID string) error {
+// retirePrintRelaysTx acks a ref's unacked request_ask/request_print relays, so a resolved or
+// resurfaced approval never leaves a stale instruction for the agent. ref is a request id
+// (relay keyed by request_id) or a child approval's msg_ id (keyed by correlation_id).
+func (s *Store) retirePrintRelaysTx(ctx context.Context, tx *sql.Tx, ref string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE messages SET state = 'acked', acked_at = ?
-		WHERE request_id = ? AND kind = 'relay' AND state <> 'acked'
+		WHERE (request_id = ? OR correlation_id = ?) AND kind = 'relay' AND state <> 'acked'
 		  AND json_extract(payload_json, '$.event') IN ('request_ask', 'request_print')`,
-		db.Millis(s.Now()), requestID)
+		db.Millis(s.Now()), ref, ref)
 	return err
+}
+
+// retireUnansweredChildPrintTx is retirePrintRelaysTx for a fresh session: every child approval
+// still waiting on the agent loses its pending instructions and its print phase, so the next
+// native_prompt for_msg restarts the print step.
+func (s *Store) retireUnansweredChildPrintTx(ctx context.Context, tx *sql.Tx, agentID string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT m.id FROM messages m
+		WHERE m.to_agent_id = ? AND m.kind = 'question' AND json_extract(m.payload_json, '$.approval') = 1
+		  AND json_extract(m.payload_json, '$.print_phase') IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM messages a WHERE a.kind IN ('answer', 'approval_result', 'relay')
+		                  AND (a.reply_to = m.id OR (a.kind = 'answer' AND a.correlation_id = m.id)))`, agentID)
+	if err != nil {
+		return err
+	}
+	var refs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		refs = append(refs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range refs {
+		if err := s.retirePrintRelaysTx(ctx, tx, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET payload_json = json_remove(payload_json,
+			'$.print_phase', '$.print_attempts', '$.print_at') WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // printTarget is what a print-phase relay needs about its ref.

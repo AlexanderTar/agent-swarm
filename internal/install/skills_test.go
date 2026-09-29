@@ -106,6 +106,12 @@ func TestSkillBodyCarriesTheSpecFrontmatterAndLastRule(t *testing.T) {
 func TestApprovalSkillsDescribeCurrentContract(t *testing.T) {
 	orch := string(install.SkillBody("swarm-orchestrator"))
 	spike := string(install.SkillBody("swarm-spike"))
+	if !strings.Contains(orch, "carries `chat_block` and `next` only") {
+		t.Error("swarm-orchestrator does not say request_open carries chat_block and next only")
+	}
+	if strings.Contains(spike, "already holds both review paths") {
+		t.Error("swarm-spike retains stale request_ask review-paths claim")
+	}
 	for name, body := range map[string]string{"swarm-orchestrator": orch, "swarm-spike": spike} {
 		for _, want := range []string{"starting repositories are hints", "1–2000", "Out of scope", "Explicitly out of scope",
 			// 2026-09-28-approval-chat-block: review paths reach the user
