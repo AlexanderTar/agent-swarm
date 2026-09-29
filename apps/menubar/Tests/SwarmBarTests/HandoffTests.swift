@@ -70,14 +70,20 @@ final class HandoffTests: XCTestCase {
     func testPreviewEffortLabel() {
         let entry = AgentCatalogEntry(kind: .claude, models: [
             CatalogModel(id: "m-opus", label: "Opus 5", aliases: ["opus"], efforts: ["low", "medium", "high"]),
+            CatalogModel(id: "m-sonnet", label: "Sonnet 5", aliases: ["sonnet"], efforts: ["low", "medium", "high"],
+                         defaultEffort: "medium"),
+            CatalogModel(id: "m-bare", label: "Bare", aliases: ["bare"], efforts: ["default", "low"],
+                         defaultEffort: "default"),
             CatalogModel(id: "m-haiku", label: "Haiku 4.5", aliases: ["haiku"]),
         ])
         let label = CatalogRules.previewEffortLabel
-        XCTAssertEqual(label(entry, .claude, "opus", "high"), "High")
-        XCTAssertEqual(label(entry, .claude, "opus", ""), Copy.defaultLevel("high"))
-        XCTAssertEqual(label(entry, .claude, "opus", nil), Copy.defaultLevel("high"))
-        XCTAssertNil(label(entry, .claude, "mystery-9", ""))
-        XCTAssertNil(label(entry, .claude, "haiku", nil))
+        XCTAssertEqual(label(entry, "opus", "high"), "High")
+        XCTAssertEqual(label(entry, "sonnet", ""), "Medium")
+        XCTAssertEqual(label(entry, "opus", ""), "High")
+        XCTAssertEqual(label(entry, "opus", nil), "High")
+        XCTAssertNil(label(entry, "bare", ""))
+        XCTAssertNil(label(entry, "mystery-9", ""))
+        XCTAssertNil(label(entry, "haiku", nil))
     }
 
     func testUnknownModelFallsBackToID() {

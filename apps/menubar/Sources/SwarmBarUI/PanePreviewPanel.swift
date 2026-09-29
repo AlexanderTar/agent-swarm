@@ -31,7 +31,7 @@ public struct PanePreviewPanel: View {
         let entry = CatalogRules.entry(catalog, found.kind)
         return Copy.paneHeader(name, found.itemKey, Copy.agentLabel(found.kind),
                                CatalogRules.modelLabel(entry, found.model),
-                               CatalogRules.previewEffortLabel(entry, found.kind, found.model, found.effort))
+                               CatalogRules.previewEffortLabel(entry, found.model, found.effort))
     }
 
     public var body: some View {
