@@ -55,9 +55,10 @@ migration (main's head is `0022`).
    "Fail open" means an empty `transcript_path`, or a reader that returns `ok=false`: send the
    ask.
 4. **Verification** on turn end, for each of the agent's refs in `print` phase:
-   - **Delivered guard.** A ref with any unacked relay (`request_id` = ref, or
-     `correlation_id` = ref for `msg_`) is skipped: the agent hasn't seen its instruction.
-     `swarm_ask` and `for_msg` results are delivered by construction.
+   - **Delivered guard.** A ref with a relay still in `state='pending'` (`request_id` = ref,
+     or `correlation_id` = ref for `msg_`) is skipped: the agent hasn't seen its instruction.
+     `delivered` counts as seen, since Sync delivers before any separate ack. `swarm_ask` and
+     `for_msg` results are delivered by construction.
    - **Pass:** `NormForMatch(reply)` contains `NormForMatch(chat_block)`, the same `norm` as the
      old gate. The block holds the review paths, so they are checked too. Also pass: a trusted
      kind, or an unreadable reply. On pass, set `print_phase="ask"` and enqueue `request_ask`.
@@ -227,7 +228,7 @@ Changed:
 - `internal/hook/handler.go`: Stop check; PreToolUse gate removed; `allPathsPresent` and
   `summaryGateDenyReason` deleted.
 - `internal/mcpserver/tools.go`: `requestOut` print output; `swarm_ask` description.
-- `internal/adapter/muse.go` (`LastReply`), `internal/adapter/fake.go` (stub).
+- `internal/adapter/muse.go` (`LastReply`) and `muse_test.go`, `internal/adapter/fake.go` (stub).
 - `skills/swarm-orchestrator/SKILL.md`, `skills/swarm-spike/SKILL.md`, and the
   `internal/install/skills/` mirror (`make skills-sync`).
 - New fixture `internal/adapter/testdata/muse/session-assistant-reply.jsonl`.
@@ -271,8 +272,8 @@ Their norm, unreadable and plan-path cases move to the new print tests below.
 ## Verification
 
 Commands, in order: `gofmt -l .` (empty), `go vet ./...`, `go test ./internal/runtime/
-./internal/hook/ ./internal/mcpserver/ ./internal/adapter/`, `make skills-sync && git diff
---exit-code internal/install/skills`, then `go test ./...`.
+./internal/hook/ ./internal/mcpserver/ ./internal/adapter/`, `go test ./...`. After committing,
+re-run `make skills-sync` and expect `git status` to be clean.
 
 Scenarios, each a test:
 1. **Print step:**

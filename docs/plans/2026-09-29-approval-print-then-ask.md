@@ -28,12 +28,12 @@ import (
 	"time"
 )
 
-// passPrint acks every relay to the session's agent and ends the turn as a trusted kind,
+// passPrint marks every relay to the session's agent delivered (seen; the guard only skips pending) and ends the turn as a trusted kind,
 // so the next relay for a chat_block request is its request_ask.
 func passPrint(t *testing.T, s *Store, sessionID string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := s.DB.ExecContext(ctx, `UPDATE messages SET state = 'acked' WHERE kind = 'relay'
+	if _, err := s.DB.ExecContext(ctx, `UPDATE messages SET state = 'delivered' WHERE kind = 'relay' AND state = 'pending'
 		AND to_agent_id = (SELECT agent_id FROM sessions WHERE id = ?)`, sessionID); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestPrintTurnEndedParaphraseRetriesThenPasses(t *testing.T) {
 
 func passPrintWith(t *testing.T, s *Store, ses, text string) {
 	t.Helper()
-	s.DB.Exec(`UPDATE messages SET state = 'acked' WHERE kind = 'relay'`)
+	s.DB.Exec(`UPDATE messages SET state = 'delivered' WHERE kind = 'relay' AND state = 'pending'`)
 	if _, err := s.PrintTurnEnded(context.Background(), ses, TurnReply{Text: text, Readable: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -349,8 +349,8 @@ go test ./internal/hook/ -run 'Stop|PreToolUseAllows' 2>&1 | tail -20
      - select the open requests (`agent_id` = the session's agent, `state='open'`,
        `print_phase='print'`) and the unanswered `msg_` questions to that agent (reuse
        reconcile.go:1775's NOT EXISTS);
-     - skip any ref with a relay `state <> 'acked'` where `request_id` = ref or
-       `correlation_id` = ref;
+     - skip any ref with a relay in `state = 'pending'` where `request_id` = ref or
+       `correlation_id` = ref (`delivered` counts as seen);
      - apply decision 4, logging with the spec's copy.
      - Build the blocks with `approvalChatBlockTx`; for `msg_`, with
        `ApprovalChatBlock(ChatBlockInput{Child, Summary: body})`.
