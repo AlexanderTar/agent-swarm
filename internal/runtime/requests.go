@@ -533,7 +533,7 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 		if err != nil {
 			return err
 		}
-		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID, PromptDecisions(req.Kind, np))
+		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID, np.Options, PromptDecisions(req.Kind, np))
 		if isAcceptKind(req.Kind) {
 			if payload["chat_block"], err = s.approvalChatBlockTx(ctx, tx, req); err != nil {
 				return err

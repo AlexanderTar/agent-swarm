@@ -151,7 +151,7 @@ func TestAcceptRowRoutesToLiveRootOrchestrator(t *testing.T) {
 	if np.Header != "Finish epic" || np.Question != `Finish EPIC-1 "Build it"? Not pushed.` {
 		t.Fatalf("native_prompt = %+v", np)
 	}
-	if p["question"] != np.Question || p["next"] != NativePromptNextStep("req_accept", PromptDecisions(KindAcceptEpic, np)) {
+	if p["question"] != np.Question || p["next"] != NativePromptNextStep("req_accept", np.Options, PromptDecisions(KindAcceptEpic, np)) {
 		t.Fatalf("question/next = %v / %v", p["question"], p["next"])
 	}
 }

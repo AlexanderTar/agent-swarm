@@ -413,6 +413,15 @@ func (c *Claude) HookOutput(event string, d HookDecision) ([]byte, error) {
 			},
 		})
 	}
+	if len(d.UpdatedInput) > 0 {
+		return json.Marshal(map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName":      event,
+				"permissionDecision": "ask",
+				"updatedInput":       d.UpdatedInput,
+			},
+		})
+	}
 	if d.Context == "" {
 		return nil, nil
 	}

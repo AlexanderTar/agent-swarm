@@ -197,18 +197,24 @@ func TestFinishChatBlock(t *testing.T) {
 	passPrint(t, s, mustSessionID(t, s, orch.ID))
 	p, _ = relayFor(t, s, orch.ID, reqID)
 	np := decodeNP(t, p)
-	if p["event"] != "request_ask" || p["next"] != NativePromptNextStep(reqID, PromptDecisions(KindAcceptFix, np)) {
+	if p["event"] != "request_ask" || p["next"] != NativePromptNextStep(reqID, np.Options, PromptDecisions(KindAcceptFix, np)) {
 		t.Fatalf("relay = %v", p)
 	}
 }
 
 func TestFinishNextStepDecisions(t *testing.T) {
-	got := NativePromptNextStep("req_A", []string{"auto_merge", "manual_merge", "request_changes"})
+	finishOpts := []string{"Create PR, auto-merge when checks pass", "Create PR, I'll merge it myself", "Request changes"}
+	got := NativePromptNextStep("req_A", finishOpts, []string{"auto_merge", "manual_merge", "request_changes"})
 	if !strings.HasPrefix(got, "Ask this now with your native question tool:") {
 		t.Fatalf("next = %s", got)
 	}
-	if !strings.Contains(got, `decision:"auto_merge"|"manual_merge"|"request_changes"`) {
+	want := `decision set from their pick: "Create PR, auto-merge when checks pass" → "auto_merge", "Create PR, I'll merge it myself" → "manual_merge", "Request changes" → "request_changes"`
+	if !strings.Contains(got, want) {
 		t.Fatalf("next = %s", got)
+	}
+	// Decision codes must not sit beside the ask instruction.
+	if ask := got[:strings.Index(got, "After the user answers")]; strings.Contains(ask, "auto_merge") || strings.Contains(ask, "manual_merge") {
+		t.Fatalf("codes listed beside the ask instruction: %s", ask)
 	}
 	if d := PromptDecisions(KindAcceptEpic, NativePrompt{Options: []string{"Merge into main locally", "Request changes"}}); !reflect.DeepEqual(d, []string{"merge_locally", "request_changes"}) {
 		t.Fatalf("local decisions = %v", d)

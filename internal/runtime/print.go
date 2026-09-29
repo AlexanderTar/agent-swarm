@@ -245,7 +245,7 @@ func (s *Store) sendAskTx(ctx context.Context, tx *sql.Tx, ref string) error {
 		np = nativePromptForMsg(child, body, ref)
 	}
 	payload["event"], payload["question"], payload["native_prompt"] = "request_ask", np.Question, np
-	payload["next"] = NativePromptNextStep(ref, decisions)
+	payload["next"] = NativePromptNextStep(ref, np.Options, decisions)
 	return s.enqueuePrintRelayTx(ctx, tx, t, payload)
 }
 

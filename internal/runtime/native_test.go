@@ -14,13 +14,14 @@ import (
 )
 
 func TestNativePromptNextStepDescribesVisibleReviewAndAgentReportedAnswers(t *testing.T) {
-	got := NativePromptNextStep("req_A", approvePair)
+	got := NativePromptNextStep("req_A", approveOptions, approvePair)
 	if !strings.HasPrefix(got, "Ask this now with your native question tool:") || strings.Contains(got, "print it exactly") {
 		t.Errorf("next step must be the ask instruction only: %s", got)
 	}
 	for _, want := range []string{"Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
 		"Codex: use request_user_input, not request_user_input_async", "a review question is a design decision the user chooses, not a permission request",
-		`decision:"approve"|"request_changes"`} {
+		`decision set from their pick: "Approve" → "approve", "Request changes" → "request_changes"`,
+		"native_prompt's question, header and options word for word"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("next step missing %q: %s", want, got)
 		}
@@ -519,7 +520,7 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	}
 	passPrint(t, s, req.SessionID)
 	payload, _ = relayFor(t, s, req.AgentID, req.ID)
-	if payload["next"] != NativePromptNextStep(req.ID, approvePair) {
+	if payload["next"] != NativePromptNextStep(req.ID, approveOptions, approvePair) {
 		t.Fatalf("ask next step = %v", payload["next"])
 	}
 	native, ok := payload["native_prompt"].(map[string]any)

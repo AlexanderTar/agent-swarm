@@ -256,7 +256,7 @@ func requestOut(r runtime.Request) map[string]any {
 		// 2026-09-26 fix (native-railway-tracing finding): a stale skill can
 		// bind the answer and never forward it, since nothing else in this
 		// result says there is a next step. Spell it out here too.
-		out["next"] = runtime.NativePromptNextStep(r.ID, runtime.PromptDecisions(r.Kind, *r.NativePrompt))
+		out["next"] = runtime.NativePromptNextStep(r.ID, r.NativePrompt.Options, runtime.PromptDecisions(r.Kind, *r.NativePrompt))
 	}
 	if r.ReviewPaths != nil {
 		out["review_paths"] = r.ReviewPaths

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -612,7 +613,7 @@ func (h *Handler) Handle(ctx context.Context, kind runtime.AgentKind, event, ses
 	if err != nil {
 		return nil, err
 	}
-	if d.Context == "" && !d.Block {
+	if d.Context == "" && !d.Block && len(d.UpdatedInput) == 0 {
 		return nil, nil
 	}
 	return a.HookOutput(event, d)
@@ -840,7 +841,21 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			prompt, options := extractQuestion(in.ToolName, in.RawToolInput)
 			header := extractQuestionHeader(in.ToolName, in.RawToolInput)
 			if ref, bound := h.RT.BindNativeQuestion(ctx, s.AgentID, header, prompt); bound {
+				// Hold the native tool to the stored options word for word: an
+				// agent that invents labels from decision codes gets its input
+				// rewritten (Claude) or the call denied (Codex, agy).
+				np, haveNP := h.RT.NativePromptForRef(ctx, ref)
+				haveNP = haveNP && len(np.Options) > 0
+				if haveNP && (kind == runtime.Codex || kind == runtime.Agy) && !slices.Equal(options, np.Options) {
+					return adapter.HookDecision{Block: true, Reason: "[swarm] Use native_prompt's options word for word: " +
+						strings.Join(np.Options, " / ") + ". Ask again with exactly those labels."}, nil
+				}
 				_, _ = h.RT.AskQuestionBoundTo(ctx, s.ID, prompt, options, ref)
+				if haveNP && kind == runtime.Claude && in.ToolName == "AskUserQuestion" {
+					if upd, changed := rewriteClaudeQuestion(in.RawToolInput, np); changed {
+						return adapter.HookDecision{UpdatedInput: upd}, nil
+					}
+				}
 			} else {
 				_, _ = h.RT.AskQuestion(ctx, s.ID, prompt, options)
 			}
@@ -956,4 +971,51 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 	}
 
 	return adapter.HookDecision{}, nil
+}
+
+// rewriteClaudeQuestion returns tool_input with questions[0] (the bound
+// question) carrying np's header, question and options (label + description),
+// single-select, and every other field untouched. changed is false when the
+// options and select mode already equal np's, so nothing needs rewriting.
+func rewriteClaudeQuestion(raw []byte, np runtime.NativePrompt) (json.RawMessage, bool) {
+	var input map[string]any
+	if json.Unmarshal(raw, &input) != nil {
+		return nil, false
+	}
+	qs, _ := input["questions"].([]any)
+	if len(qs) == 0 {
+		return nil, false
+	}
+	q, _ := qs[0].(map[string]any)
+	if q == nil {
+		return nil, false
+	}
+	want := make([]any, len(np.Options))
+	same := q["multiSelect"] != true
+	have, _ := q["options"].([]any)
+	same = same && len(have) == len(np.Options)
+	for i, label := range np.Options {
+		opt := map[string]any{"label": label}
+		desc := ""
+		if i < len(np.Descriptions) {
+			desc = np.Descriptions[i]
+			if desc != "" {
+				opt["description"] = desc
+			}
+		}
+		want[i] = opt
+		if same {
+			h, _ := have[i].(map[string]any)
+			hd, _ := h["description"].(string)
+			if h["label"] != label || hd != desc {
+				same = false
+			}
+		}
+	}
+	if same {
+		return nil, false
+	}
+	q["header"], q["question"], q["options"], q["multiSelect"] = np.Header, np.Question, want, false
+	out, err := json.Marshal(input)
+	return out, err == nil
 }

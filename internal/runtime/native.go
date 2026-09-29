@@ -501,17 +501,23 @@ func (s *Store) approvalChatBlockTx(ctx context.Context, tx *sql.Tx, req Request
 
 // NativePromptNextStep is the show-and-forward instruction that rides with
 // every daemon-issued native prompt: swarm_ask's result (mcpserver
-// requestOut) and the request_open relay share it verbatim.
-func NativePromptNextStep(ref string, decisions []string) string {
-	quoted := make([]string, len(decisions))
+// requestOut) and the request_open relay share it verbatim. Decision codes
+// appear only in the after-the-answer mapping (label -> code), never beside
+// the ask instruction, so an agent can't build its options from them; options
+// are native_prompt.options, index-parallel to decisions.
+func NativePromptNextStep(ref string, options, decisions []string) string {
+	pairs := make([]string, 0, len(decisions))
 	for i, d := range decisions {
-		quoted[i] = strconv.Quote(d)
+		if i >= len(options) {
+			break
+		}
+		pairs = append(pairs, strconv.Quote(options[i])+" \u2192 "+strconv.Quote(d))
 	}
-	return fmt.Sprintf("Ask this now with your native question tool: show native_prompt verbatim, one question per call, "+
-		"no added text, and don't print chat_block again. Once the user "+
-		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:%s "+
-		"forwarding only what the user picked. Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion must include answer_text exactly as returned by the native tool; this has agent_reported provenance. Muse request_user_input: call native_answer right after the tool returns, with answer_text exactly as returned; Swarm checks it against Muse's own session log. On cancellation or no returned answer, submit nothing and leave the request open. "+
-		"Codex: use request_user_input, not request_user_input_async; a review question is a design decision the user chooses, not a permission request.", ref, strings.Join(quoted, "|"))
+	return fmt.Sprintf("Ask this now with your native question tool: native_prompt's question, header and options word for word "+
+		"(labels and descriptions), one question per call, no added text; don't print chat_block again. "+
+		"After the user answers, call swarm_ask kind:\"native_answer\", ref:%q, decision set from their pick: %s. "+
+		"Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion must include answer_text exactly as returned by the native tool; this has agent_reported provenance. Muse request_user_input: call native_answer right after the tool returns, with answer_text exactly as returned; Swarm checks it against Muse's own session log. On cancellation or no returned answer, submit nothing and leave the request open. "+
+		"Codex: use request_user_input, not request_user_input_async; a review question is a design decision the user chooses, not a permission request.", ref, strings.Join(pairs, ", "))
 }
 
 // PromptDecisions is the decision list a request's native prompt offers: the finish decisions for
@@ -1549,4 +1555,29 @@ func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in 
 // message id so native_answer can bind to it.
 func nativePromptForMsg(child, body, msgID string) NativePrompt {
 	return NativePrompt{Header: child + " asks", Question: capRunes(body, 1000), Options: approveOptions}
+}
+
+// NativePromptForRef returns the native prompt a bound question ref (req_ or
+// msg_) was issued with -- the frozen one for a request -- so the hook can
+// hold the agent's native question tool to its options word for word. ok is
+// false when the ref no longer resolves.
+func (s *Store) NativePromptForRef(ctx context.Context, ref string) (np NativePrompt, ok bool) {
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		if strings.HasPrefix(ref, "msg_") {
+			var child, body string
+			if err := tx.QueryRowContext(ctx, `SELECT ag.name, COALESCE(json_extract(m.payload_json, '$.body'), '')
+				FROM messages m JOIN agents ag ON ag.id = m.from_agent_id WHERE m.id = ?`, ref).Scan(&child, &body); err != nil {
+				return err
+			}
+			np = nativePromptForMsg(child, body, ref)
+			return nil
+		}
+		req, err := s.requestTx(ctx, tx, ref)
+		if err != nil {
+			return err
+		}
+		np, _, err = s.effectiveNativeQuestionTx(ctx, tx, req)
+		return err
+	})
+	return np, err == nil
 }

@@ -6,6 +6,7 @@ package adapter
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -65,6 +66,10 @@ type HookDecision struct {
 	Context string
 	Block   bool
 	Reason  string
+	// UpdatedInput, when set on a PreToolUse decision, is the full rewritten
+	// tool_input; Claude renders it as permissionDecision "ask" (never "allow",
+	// which would skip the dialog). Other adapters ignore it.
+	UpdatedInput json.RawMessage
 }
 
 // HookInput is what ParseHook extracts from an agent's hook stdin.

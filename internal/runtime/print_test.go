@@ -74,7 +74,7 @@ func TestPrintTurnEndedPassSendsAsk(t *testing.T) {
 		t.Fatalf("sent=%v err=%v", sent, err)
 	}
 	p, _ := relayFor(t, s, agentID, req.ID)
-	if p["event"] != "request_ask" || p["next"] != NativePromptNextStep(req.ID, []string{"approve", "request_changes"}) {
+	if p["event"] != "request_ask" || p["next"] != NativePromptNextStep(req.ID, approveOptions, []string{"approve", "request_changes"}) {
 		t.Fatalf("relay = %v", p)
 	}
 	if np := decodeNP(t, p); np.Question != req.NativePrompt.Question {
