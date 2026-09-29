@@ -32,6 +32,17 @@ func (s *Service) BeginPass() {
 	}
 }
 
+// EndPass ends the pass BeginPass started, so a later direct Remove or
+// ReclaimOne fetches afresh instead of trusting the pass's cache.
+func (s *Service) EndPass() {
+	s.pass.mu.Lock()
+	s.pass.fetched = nil
+	s.pass.mu.Unlock()
+	if p, ok := s.Evidence.(interface{ EndPass() }); ok {
+		p.EndPass()
+	}
+}
+
 // fetchOnce runs `git fetch origin` for repoPath, once per pass. A failed
 // fetch is logged and leaves whatever refs are already local.
 func (s *Service) fetchOnce(ctx context.Context, repoPath string) {

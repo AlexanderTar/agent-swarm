@@ -125,3 +125,60 @@ func TestReclaimTreatsAGhFailureAsNoEvidence(t *testing.T) {
 		t.Fatalf("state/reason = %s/%s, want retained/unmerged", state, reason)
 	}
 }
+
+// A reclaim pass caches fetches; once the pass ends, a direct ReclaimOne must
+// fetch afresh and see what was pushed since.
+func TestReclaimOneFetchesAfreshAfterAPassEnds(t *testing.T) {
+	f := newEvidenceFixture(t)
+	wt := f.tree(t, "task/stale-cache")
+	f.ghErr = errors.New("gh unavailable")
+	if _, err := f.s.ReclaimWorktreesWith(context.Background(), CleanupOptions{NoGrace: true}); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason := reclaimWorktreeState(t, f.s, wt.ID); state != "active" && state != "retained" {
+		t.Fatalf("after the pass: state/reason = %s/%s, want unmerged and kept", state, reason)
+	}
+	head := strings.TrimSpace(gitOutput(t, wt.Path, "rev-parse", "HEAD"))
+	oldMain := strings.TrimSpace(gitOutput(t, f.repoPath, "rev-parse", "refs/remotes/origin/main"))
+	gitOutput(t, f.repoPath, "push", "origin", head+":refs/heads/main")
+	// push also moves the local tracking ref; put it back so only a fetch can fix it
+	gitOutput(t, f.repoPath, "update-ref", "refs/remotes/origin/main", oldMain)
+	if state, _ := f.reclaim(t, wt); state != "removed" {
+		t.Fatalf("state = %s, want removed: HEAD is now in origin/main and a direct call must re-fetch", state)
+	}
+}
+
+// gh output is untrusted: a headRefOid that is not a full hex object id must
+// never reach git as an argument.
+func TestReclaimIgnoresANonHexHeadRefOid(t *testing.T) {
+	f := newEvidenceFixture(t)
+	wt := f.tree(t, "task/bad-oid")
+	const bad = "--upload-pack=touch-pwned"
+	f.ghOut = fmt.Sprintf(`[{"number":3,"headRefName":"task/bad-oid","headRefOid":%q}]`, bad)
+	inner := f.s.Exec
+	var leaked bool
+	f.s.Exec = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		for _, a := range args {
+			if strings.Contains(a, bad) {
+				leaked = true
+			}
+		}
+		return inner(ctx, name, args...)
+	}
+	if state, reason := f.reclaim(t, wt); state != "retained" || reason != "unmerged" {
+		t.Fatalf("state/reason = %s/%s, want retained/unmerged", state, reason)
+	}
+	if leaked {
+		t.Fatal("a non-hex headRefOid was passed to git")
+	}
+}
+
+// HEAD in no ref and no merged PR (gh answers, with nothing): retained unmerged.
+func TestReclaimRetainsATreeWithNoMergeEvidence(t *testing.T) {
+	f := newEvidenceFixture(t)
+	wt := f.tree(t, "task/no-evidence")
+	f.ghOut = `[]`
+	if state, reason := f.reclaim(t, wt); state != "retained" || reason != "unmerged" {
+		t.Fatalf("state/reason = %s/%s, want retained/unmerged", state, reason)
+	}
+}

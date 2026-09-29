@@ -26,6 +26,10 @@ type mergedPR struct {
 	HeadRefOid  string `json:"headRefOid"`
 }
 
+// fullOID is a complete git object id; gh output is untrusted, so anything
+// else must never reach git as an argument.
+var fullOID = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
 var githubRepoRe = regexp.MustCompile(`github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$`)
 
 // MergeEvidence is the worktree.Service hook for merged-PR evidence.
@@ -39,6 +43,9 @@ func (e *mergeEvidence) BeginPass() {
 	e.prs = map[string][]mergedPR{}
 	e.mu.Unlock()
 }
+
+// EndPass drops the cached PR lists once a pass is over.
+func (e *mergeEvidence) EndPass() { e.BeginPass() }
 
 func (e *mergeEvidence) Merged(ctx context.Context, wt worktree.Worktree, repoPath, head string) bool {
 	return e.itemMergeContains(ctx, wt, head) || e.mergedPRContains(ctx, wt, repoPath, head)
@@ -81,7 +88,7 @@ func (e *mergeEvidence) mergedPRContains(ctx context.Context, wt worktree.Worktr
 	// checked; a tree whose HEAD sits inside some other branch's merged PR
 	// needs a per-PR ancestry scan, which costs a git call per PR per tree.
 	for _, pr := range e.listMerged(ctx, wt.RepoID, repoPath) {
-		if pr.HeadRefName != wt.Branch || pr.HeadRefOid == "" {
+		if pr.HeadRefName != wt.Branch || !fullOID.MatchString(pr.HeadRefOid) {
 			continue
 		}
 		if e.git(ctx, wt.Path, "cat-file", "-e", pr.HeadRefOid+"^{commit}") != nil {
@@ -115,6 +122,9 @@ func (e *mergeEvidence) listMerged(ctx context.Context, repoID, repoPath string)
 			e.s.logf("worktree: gh merged PR list for %s failed, no PR evidence: %v", repoPath, err)
 			prs = nil
 		}
+	}
+	if len(prs) >= 1000 {
+		e.s.logf("worktree: gh returned %d merged PRs for %s, the --limit; older PRs give no evidence", len(prs), repoPath)
 	}
 	e.prs[repoPath] = prs
 	return prs
