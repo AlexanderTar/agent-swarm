@@ -1123,6 +1123,27 @@ func TestSwarmSkillRule9b(t *testing.T) {
 	}
 }
 
+// P1 unit 3: each role skill carries its exact spec one-liner pointing at
+// graphify (rule 9b).
+func TestRoleSkillsMentionGraphify(t *testing.T) {
+	cases := []struct {
+		skill string
+		want  string
+	}{
+		{"swarm-orchestrator", "build the code graph once before sharing the tree"},
+		{"swarm-reviewer", "use `graphify affected` on each changed symbol"},
+		{"swarm-ui-reviewer", "use `graphify affected` on each changed symbol"},
+		{"swarm-debugger", "trace the failing path with `graphify path`"},
+		{"swarm-coder", "Start orientation with `graphify query`"},
+		{"swarm-researcher", "Start orientation with `graphify query`"},
+	}
+	for _, c := range cases {
+		if body := string(install.SkillBody(c.skill)); !strings.Contains(body, c.want) {
+			t.Errorf("%s SKILL.md lacks %q", c.skill, c.want)
+		}
+	}
+}
+
 // P3 unit 3.1: one table row per role skill this package writes, each a list
 // of substrings that must appear in its SKILL.md. A skill that doesn't exist
 // yet fails its own subtest (fs.ReadFile error) without taking the rest of

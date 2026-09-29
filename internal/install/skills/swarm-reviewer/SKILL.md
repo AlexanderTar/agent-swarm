@@ -20,6 +20,7 @@ Borrow `superpowers:requesting-code-review`'s reviewer template and severity sca
 4. **Security** — injected input, secrets, auth, unsafe defaults.
 5. **Simplicity / YAGNI** — then run `ponytail-review` as your second lens, specifically hunting reinvented stdlib, unneeded dependencies, and speculative abstractions the ladder in `ponytail` would have skipped.
 6. **Repo conventions** — naming, error handling, commit style match the rest of the codebase.
+7. **Graph blast radius** — Your review tree is a fresh checkout. Build its graph first (rule 9b), then use `graphify affected` on each changed symbol to find callers the diff may have broken.
 
 ## Verdict and findings
 `completed` carries `verdict` (`pass` | `changes_requested` | `blocked`) and `findings[]`, each `{severity: critical|major|minor|nit, file, line, summary, unit}`.

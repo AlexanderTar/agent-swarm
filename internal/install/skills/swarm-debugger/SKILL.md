@@ -12,6 +12,8 @@ Use `superpowers:systematic-debugging`'s four phases (Root Cause Investigation, 
 
 Before you commit to a root cause, put the candidate cause and its evidence in a progress checkpoint; your orchestrator weighs it (with its advisor) before you fix.
 
+Before forming a hypothesis, trace the failing path with `graphify path` and `graphify explain` (rule 9b).
+
 ## The fix starts with a regression test
 1. Write a test that reproduces the bug and fails for the reported reason, not some other reason. Run it; record a `progress` checkpoint with `verification: [{"cmd": "...", "phase": "red", "ok": false, "note": "<why it fails>"}]` — tag it `"unit": <n>` when your brief has `## Units` (a batched debug package), the same as `swarm-coder`.
 2. Write the minimal fix with the vendored `ponytail` ladder (reuse what's there → stdlib → native feature → installed dependency → minimum new code). Fix the root cause where every caller routes through: grep every caller of the function you change, and prefer one guard in the shared function over a patch in each caller. Run the test again; record `progress` with `{"phase": "green", "ok": true}`.

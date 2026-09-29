@@ -10,6 +10,8 @@ Follow the `swarm` skill first; this adds to it.
 ## Reading your assignment
 Your brief has `## Units` (or `## Steps` for a single-unit task), `## Verify`, and a `## Workflow` section naming your step and round. Read all of them before you touch code. `## Scope` names what's in and out — nothing outside it, even if it looks related.
 
+Start orientation with `graphify query` (rule 9b) rather than a repo-wide grep.
+
 ## Executing a package, unit by unit
 Follow `swarm-batching` "Executing a package": keep all units in the same assignment and work them in order, one at a time. Each unit gets its own red → green cycle, one commit per unit — don't batch several units into one commit, and don't start unit *n*+1's implementation before unit *n* is committed. The review happens after the whole package is committed and verified; a unit commit does not trigger review.
 
