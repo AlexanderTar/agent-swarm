@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -110,7 +111,10 @@ func TestSyncPairsTodosWithAKindSpecificTodosNext(t *testing.T) {
 			t.Errorf("no todos_next for %s", k)
 		}
 	}
-	if want := "Update your task list now to match todos exactly: TaskCreate each missing entry, then TaskUpdate every status. Labels verbatim, same order; don't add, rename or drop entries."; todosNext[Claude] != want {
+	if want := "Update your task list now to match todos exactly: TaskCreate each missing entry, TaskUpdate every status, and TaskUpdate status deleted any task not in todos. Labels verbatim, same order; don't add or rename entries."; todosNext[Claude] != want {
 		t.Errorf("claude todos_next = %q", todosNext[Claude])
+	}
+	if !strings.Contains(todosNext[Cursor], "merge: false") {
+		t.Errorf("cursor todos_next = %q", todosNext[Cursor])
 	}
 }
