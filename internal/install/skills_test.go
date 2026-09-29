@@ -131,7 +131,9 @@ func TestApprovalSkillsDescribeCurrentContract(t *testing.T) {
 	}
 	for _, want := range []string{"Cursor `AskQuestion`", "Muse `request_user_input`", "answer_text", "agent_reported", "cancellation",
 		"Approval summaries", "arrow chains", "Verification: how we'll prove the graphify install is correct, repeatable and safe to undo.",
-		"reply with exactly that block and nothing else"} {
+		"reply with exactly that block and nothing else",
+		// TASK-356: recovery of a request_ask acked before its prompt was read.
+		"acked before its prompt was read"} {
 		if !strings.Contains(orch, want) {
 			t.Errorf("swarm-orchestrator missing %q", want)
 		}
