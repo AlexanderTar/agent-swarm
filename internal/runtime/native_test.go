@@ -15,7 +15,10 @@ import (
 
 func TestNativePromptNextStepDescribesVisibleReviewAndAgentReportedAnswers(t *testing.T) {
 	got := NativePromptNextStep("req_A", approvePair)
-	for _, want := range []string{"If chat_block is present, print it exactly as your whole chat message", "never restated, shortened or paraphrased", "shows only a short head of the summary", "Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
+	if !strings.HasPrefix(got, "Ask this now with your native question tool:") || strings.Contains(got, "print it exactly") {
+		t.Errorf("next step must be the ask instruction only: %s", got)
+	}
+	for _, want := range []string{"Cursor AskQuestion", "Muse request_user_input", "answer_text", "agent_reported", "cancellation", `ref:"req_A"`,
 		"Codex: use request_user_input, not request_user_input_async", "a review question is a design decision the user chooses, not a permission request",
 		`decision:"approve"|"request_changes"`} {
 		if !strings.Contains(got, want) {
@@ -492,10 +495,10 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	if n := utf8.RuneCountInString(req.NativePrompt.Question); n > 1000 {
 		t.Fatalf("native prompt question = %d runes, want <= 1000", n)
 	}
-	// The full paths now reach the user through chat_block, which the next
-	// step says to print (2026-09-28-approval-chat-block).
-	if !strings.Contains(NativePromptNextStep(req.ID, approvePair), "chat_block") {
-		t.Fatalf("initial next step lacks the chat_block instruction: %q", NativePromptNextStep(req.ID, approvePair))
+	// The full paths now reach the user through chat_block, which the print
+	// step tells the agent to reply with.
+	if !strings.Contains(PrintNext, "chat_block") {
+		t.Fatalf("print step lacks the chat_block instruction: %q", PrintNext)
 	}
 	if !strings.Contains(req.ChatBlock, "Spec: "+longSpec+"\nPlan: "+longPlan) {
 		t.Fatalf("chat_block lacks the full review paths: %q", req.ChatBlock)
@@ -511,8 +514,13 @@ func TestPlanApprovalCarriesFullReviewPaths(t *testing.T) {
 	if !ok || paths["spec"] != longSpec || paths["plan"] != longPlan {
 		t.Fatalf("relay review_paths = %v", payload["review_paths"])
 	}
-	if payload["summary"] != req.Prompt || payload["next"] != NativePromptNextStep(req.ID, approvePair) {
-		t.Fatalf("replay summary or next step changed: summary=%v next=%v", payload["summary"], payload["next"])
+	if payload["summary"] != req.Prompt || payload["next"] != PrintNext || payload["native_prompt"] != nil {
+		t.Fatalf("replay summary or print step changed: summary=%v next=%v", payload["summary"], payload["next"])
+	}
+	passPrint(t, s, req.SessionID)
+	payload, _ = relayFor(t, s, req.AgentID, req.ID)
+	if payload["next"] != NativePromptNextStep(req.ID, approvePair) {
+		t.Fatalf("ask next step = %v", payload["next"])
 	}
 	native, ok := payload["native_prompt"].(map[string]any)
 	if !ok || native["question"] != req.NativePrompt.Question {
@@ -957,95 +965,6 @@ func TestBindNativeQuestion(t *testing.T) {
 		ref, ok := s.BindNativeQuestion(ctx, a.ID, "", want)
 		if !ok || ref != req2.ID {
 			t.Fatalf("BindNativeQuestion = %q, %v, want the newer %q", ref, ok, req2.ID)
-		}
-	})
-}
-
-// TestSummaryGate is 2026-09-28-approval-summary-enforced Task 5:
-// SummaryGate reads a request's own stored summary and, for a plan, its
-// resolved review paths; RecordSummaryBlock accumulates denial counts.
-func TestSummaryGate(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("approve_section returns its own prompt as summary, 0 blocks", func(t *testing.T) {
-		s, _, _ := newStore(t)
-		_, a, _, _ := s.StartSpike(ctx, SpikeInput{Name: "Gate1", Intent: "feature", Kind: Fake, Model: "fake-1"})
-		ses, _ := s.LatestSession(ctx, a.ID)
-		spec, err := s.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "## Design\n\nUse SQLite.\n"), "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: "Use SQLite for storage.",
-			ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		summary, paths, _, blocks, err := s.SummaryGate(ctx, req.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if summary != "Use SQLite for storage." || len(paths) != 0 || blocks != 0 {
-			t.Fatalf("SummaryGate = %q, %v, %d", summary, paths, blocks)
-		}
-	})
-
-	t.Run("approve_plan returns review paths", func(t *testing.T) {
-		s2, _, _ := newStore(t)
-		ses, _, planID, _ := approvedFeatureSpike(t, s2)
-		req, err := s2.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: "Ship it."})
-		if err != nil {
-			t.Fatal(err)
-		}
-		summary, paths, _, _, err := s2.SummaryGate(ctx, req.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if summary != "Ship it." || len(paths) != 2 || paths[0].Label != "Spec" || paths[0].Path == "" ||
-			paths[1].Label != "Plan" || paths[1].Path == "" {
-			t.Fatalf("SummaryGate = %q, %+v", summary, paths)
-		}
-	})
-
-	t.Run("RecordSummaryBlock accumulates, close_spike has no summary to enforce", func(t *testing.T) {
-		s2, _, _ := newStore(t)
-		_, a, _, err := s2.StartSpike(ctx, SpikeInput{Name: "Gate2", Intent: "feature", Kind: Fake, Model: "fake-1"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ses, _ := s2.LatestSession(ctx, a.ID)
-		if _, err := s2.DB.ExecContext(ctx, `INSERT INTO requests
-			(id, kind, is_hitl, agent_id, session_id, item_id, prompt, options_json, state, created_at)
-			VALUES ('req_closegate', 'close_spike', 0, ?, ?, ?, '', '[]', 'open', 1)`, a.ID, ses.ID, a.ItemID); err != nil {
-			t.Fatal(err)
-		}
-		summary, _, _, blocks, err := s2.SummaryGate(ctx, "req_closegate")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if summary != "" || blocks != 0 {
-			t.Fatalf("close_spike SummaryGate = %q, blocks=%d, want empty summary", summary, blocks)
-		}
-
-		spec, err := s2.RegisterArtifact(ctx, ses.ID, "register", "SPIKE-1", "spec", writeFile(t, "## D\n\nx.\n"), "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		sreq, err := s2.Ask(ctx, ses.ID, AskInput{Kind: "approval", Prompt: "x.", ArtifactID: spec.ArtifactID, SectionID: spec.Sections[0].ID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := s2.RecordSummaryBlock(ctx, sreq.ID); err != nil {
-			t.Fatal(err)
-		}
-		if err := s2.RecordSummaryBlock(ctx, sreq.ID); err != nil {
-			t.Fatal(err)
-		}
-		_, _, _, blocks, err = s2.SummaryGate(ctx, sreq.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if blocks != 2 {
-			t.Fatalf("blocks = %d, want 2", blocks)
 		}
 	})
 }

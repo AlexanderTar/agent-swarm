@@ -423,41 +423,13 @@ func isQuestionTool(name string) bool {
 	return false
 }
 
-// transcriptTexter is implemented by the adapters whose native question
-// tool is hooked (Claude, Codex, agy): AssistantTextSinceLastTurn reads the
-// agent's own transcript for the text printed since the last user turn, so
-// the PreToolUse summary gate can check the approval summary was actually
-// printed in chat. Declared here, not on adapter.Adapter, so every other
-// adapter (Cursor, Muse, Fake) needs no stub implementation -- a type
-// assertion picks it up where it exists.
+// transcriptTexter is implemented by the adapters with a Stop hook and a readable transcript
+// (Claude, Codex, agy): AssistantTextSinceLastTurn reads the text the agent printed since the last
+// user turn, so Stop can check the approval chat_block was actually printed. Declared here, not on
+// adapter.Adapter, so every other adapter (Cursor, Muse, Fake) needs no stub -- a type assertion
+// picks it up where it exists.
 type transcriptTexter interface {
 	AssistantTextSinceLastTurn(transcriptPath string) (text string, ok bool)
-}
-
-// allPathsPresent reports whether every ReviewPathLine's bare Path (never
-// its Label) is a verbatim substring of text -- an exact-path check, not
-// normalized, since a path is never reformatted by markdown the way a
-// summary might be. Matching the bare path only (post-review fix) means a
-// markdown-wrapped label around the same path (`**Spec:**`, `Spec:
-// `/abs/path“) still passes; only the label text used to be checked
-// verbatim, which such wrapping would have defeated. Always true for an
-// empty paths (every non-plan approval, and a plan SummaryGate couldn't
-// resolve paths for).
-func allPathsPresent(text string, paths []runtime.ReviewPathLine) bool {
-	for _, p := range paths {
-		if !strings.Contains(text, p.Path) {
-			return false
-		}
-	}
-	return true
-}
-
-// summaryGateDenyReason is the PreToolUse summary gate's exact deny copy
-// (docs/specs/2026-09-28-approval-chat-block.md): the daemon-built chat
-// block the agent must print, copied exactly.
-func summaryGateDenyReason(chatBlock string) string {
-	return "[swarm] Your chat message must be the block below, copied exactly — not a summary or paraphrase. " +
-		"Print it, then call the question tool again with the same question.\n\n" + chatBlock
 }
 
 // asyncQuestionTool is codex 0.157's native question tool. It returns
@@ -862,43 +834,12 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 			}
 		}
 
-		// Summary gate (2026-09-28-approval-summary-enforced locked decision
-		// 3) plus the AskQuestion intercept that records the HITL row,
-		// merged into one block (post-review fix) so a single PreToolUse
-		// call resolves BindNativeQuestion's scan at most once -- the gate
-		// passes its ref straight to AskQuestionBoundTo instead of letting
-		// AskQuestion re-derive it. On a deny, this must return before ever
-		// reaching AskQuestionBoundTo: a denied call never reaches the
-		// native tool, so no PostToolUse ever fires for it, and recording
-		// the question row here would strand it open forever.
+		// Bind the question to its swarm ref and record the HITL row. There is no summary gate any
+		// more: the chat_block is checked at turn end (Stop), before the question is ever sent.
 		if isQuestionTool(in.ToolName) && h.RT != nil && s.ID != "" {
 			prompt, options := extractQuestion(in.ToolName, in.RawToolInput)
 			header := extractQuestionHeader(in.ToolName, in.RawToolInput)
-			ref, bound := h.RT.BindNativeQuestion(ctx, s.AgentID, header, prompt)
-			if bound {
-				summary, paths, chatBlock, blocks, err := h.RT.SummaryGate(ctx, ref)
-				if err != nil {
-					h.logf("hook: summary gate lookup for %s: %v", ref, err)
-				} else if summary != "" && blocks >= 2 {
-					h.logf("hook: summary gate for %s: %d prior denials, allowing", ref, blocks)
-				} else if summary != "" {
-					texter, hasTexter := a.(transcriptTexter)
-					var text string
-					var textOK bool
-					if hasTexter && in.TranscriptPath != "" {
-						text, textOK = texter.AssistantTextSinceLastTurn(in.TranscriptPath)
-					}
-					if !textOK {
-						h.logf("hook: summary gate for %s: transcript unreadable, allowing", ref)
-					} else if !strings.Contains(runtime.NormForMatch(text), runtime.NormForMatch(summary)) || !allPathsPresent(text, paths) {
-						if err := h.RT.RecordSummaryBlock(ctx, ref); err != nil {
-							h.logf("hook: record summary block for %s: %v", ref, err)
-						}
-						return adapter.HookDecision{Block: true, Reason: summaryGateDenyReason(chatBlock)}, nil
-					}
-				}
-			}
-			if bound {
+			if ref, bound := h.RT.BindNativeQuestion(ctx, s.AgentID, header, prompt); bound {
 				_, _ = h.RT.AskQuestionBoundTo(ctx, s.ID, prompt, options, ref)
 			} else {
 				_, _ = h.RT.AskQuestion(ctx, s.ID, prompt, options)
@@ -979,6 +920,23 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 				reason = runtime.HandoffPreservationNotice(s.AgentName, s.ItemKey)
 			}
 			return adapter.HookDecision{Block: true, Reason: reason}, nil
+		}
+		// Print-then-ask: judge the reply that just ended against any approval block the agent was
+		// told to print, and send the question (or a reprint) in a fresh relay. print_attempts
+		// bounds this, so it never touches stop_blocks.
+		if h.RT != nil && s.ID != "" {
+			r := runtime.TurnReply{}
+			if texter, ok := a.(transcriptTexter); !ok {
+				r.Trusted = true
+			} else if in.TranscriptPath != "" {
+				r.Text, r.Readable = texter.AssistantTextSinceLastTurn(in.TranscriptPath)
+			}
+			sent, err := h.RT.PrintTurnEnded(ctx, s.ID, r)
+			if err != nil {
+				h.logf("hook: print check for %s: %v", s.ID, err)
+			} else if sent {
+				return adapter.HookDecision{Block: true, Reason: h.inboxNoticeOrFallback(ctx, s)}, nil
+			}
 		}
 		if s.Pending > 0 && s.StopBlocks < maxStopBlocks {
 			if _, err := h.DB.ExecContext(ctx, `UPDATE sessions SET stop_blocks = stop_blocks + 1 WHERE id = ?`, s.ID); err != nil {

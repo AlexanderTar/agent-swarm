@@ -1952,14 +1952,14 @@ func TestStopBlocksWithHandoffNoticeDuringHandoff(t *testing.T) {
 	}
 }
 
-// summaryGateApproval seeds an open approve_section request for agt_1 (an
+// seedApproval seeds an open approve_section request for agt_1 (an
 // empty artifact/section id, so sectionTitle resolves to "" without a DB
 // lookup) with the given summary as its prompt, and returns the exact
 // native question text a real hook-bound question tool call must carry to
 // bind to it (buildApprovalQuestion's approve_section shape, capped
 // summary head first line included -- agt_1 is kind claude, so the head is
 // the summary's own first non-blank line, capped to 200 runes).
-func summaryGateApproval(t *testing.T, h *Handler, summary string) (reqID, question string) {
+func seedApproval(t *testing.T, h *Handler, summary string) (reqID, question string) {
 	t.Helper()
 	ctx := context.Background()
 	reqID = "req_sumgate1"
@@ -1976,7 +1976,7 @@ func summaryGateApproval(t *testing.T, h *Handler, summary string) (reqID, quest
 	return reqID, question
 }
 
-func summaryGateAskInput(t *testing.T, question, transcriptPath string) []byte {
+func askInput(t *testing.T, question, transcriptPath string) []byte {
 	t.Helper()
 	in, err := json.Marshal(map[string]any{
 		"session_id":      "p1",
@@ -2014,118 +2014,10 @@ func claudeAssistantTextLine(id, text string) string {
 	return string(b)
 }
 
-// TestPreToolUseSummaryGateDeniesWithoutTheSummaryInChat is
-// 2026-09-28-approval-summary-enforced Task 8: a question binding to an
-// open approve_section request is refused until the transcript shows the
-// summary was printed in chat.
-func TestPreToolUseSummaryGateDeniesWithoutTheSummaryInChat(t *testing.T) {
-	ctx := context.Background()
-	h, ses := seed(t, 0, runtime.Running)
-	summary := "Users table gets id, email, and hashed_password columns."
-	_, question := summaryGateApproval(t, h, summary)
-	transcript := writeTranscript(t, claudeUserLine("go"))
-
-	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(out), summary) {
-		t.Fatalf("deny reason must quote the summary verbatim, got %s", out)
-	}
-	wantReason := "[swarm] Your chat message must be the block below, copied exactly — not a summary or paraphrase. " +
-		"Print it, then call the question tool again with the same question.\n\n" +
-		runtime.ApprovalChatBlock(runtime.ChatBlockInput{Kind: string(runtime.KindApproveSection), Revision: 1, Summary: summary})
-	wantJSON, _ := json.Marshal(wantReason)
-	if !strings.Contains(string(out), strings.Trim(string(wantJSON), `"`)) {
-		t.Fatalf("deny reason is not the exact copy + chat block %q, got %s", wantReason, out)
-	}
-	var n int
-	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE kind = 'question'`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Fatalf("question rows = %d, want 0 (denied before AskQuestion ran)", n)
-	}
-}
-
-// TestPreToolUseSummaryGateAllowsAMarkdownReformattedSummary confirms the
-// match is normalized: punctuation, casing and markdown around the summary
-// don't matter, only the letters and digits.
-func TestPreToolUseSummaryGateAllowsAMarkdownReformattedSummary(t *testing.T) {
-	ctx := context.Background()
-	h, ses := seed(t, 0, runtime.Running)
-	summary := "Users table gets id, email, and hashed_password columns."
-	_, question := summaryGateApproval(t, h, summary)
-	reformatted := "# Summary\n\n**Users table** gets `id`, `email`, and `hashed_password` columns!!"
-	transcript := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m1", reformatted))
-
-	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
-		t.Fatalf("a reformatted-but-matching summary must not be denied, got %s", out)
-	}
-}
-
-// TestPreToolUseSummaryGateAllowsAfterTwoDenials confirms the escape hatch:
-// a third attempt is let through regardless of transcript content, so the
-// approval can never deadlock.
-func TestPreToolUseSummaryGateAllowsAfterTwoDenials(t *testing.T) {
-	ctx := context.Background()
-	h, ses := seed(t, 0, runtime.Running)
-	summary := "Users table gets id, email, and hashed_password columns."
-	reqID, question := summaryGateApproval(t, h, summary)
-	transcript := writeTranscript(t, claudeUserLine("go"))
-	in := summaryGateAskInput(t, question, transcript)
-
-	for i := 0; i < 2; i++ {
-		out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
-			t.Fatalf("attempt %d: expected a deny, got %s", i+1, out)
-		}
-	}
-	var blocks int
-	if err := h.DB.QueryRowContext(ctx, `SELECT json_extract(binding_json, '$.summary_blocks') FROM requests WHERE id = ?`, reqID).Scan(&blocks); err != nil {
-		t.Fatal(err)
-	}
-	if blocks != 2 {
-		t.Fatalf("summary_blocks = %d, want 2", blocks)
-	}
-	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
-		t.Fatalf("the third attempt after 2 denials must be allowed, got %s", out)
-	}
-}
-
-// TestPreToolUseSummaryGateAllowsWhenTranscriptUnreadable is the fail-open
-// case: an unreadable transcript never blocks the approval.
-func TestPreToolUseSummaryGateAllowsWhenTranscriptUnreadable(t *testing.T) {
-	ctx := context.Background()
-	h, ses := seed(t, 0, runtime.Running)
-	summary := "Users table gets id, email, and hashed_password columns."
-	_, question := summaryGateApproval(t, h, summary)
-
-	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, "/does/not/exist.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
-		t.Fatalf("an unreadable transcript must fail open, got %s", out)
-	}
-}
-
-// summaryGatePlanApproval seeds a real spec+plan artifact pair and an open
-// approve_plan request over them, so SummaryGate can resolve real review
-// paths -- unlike a bare request row with no artifacts, this exercises the
-// "paths present but not printed" deny path.
-func summaryGatePlanApproval(t *testing.T, h *Handler, summary string) (reqID, question, specPath, planPath string) {
+// seedPlanApproval seeds a real spec+plan artifact pair and an open
+// approve_plan request over them, so the print check can resolve real review
+// paths -- unlike a bare request row with no artifacts.
+func seedPlanApproval(t *testing.T, h *Handler, summary string) (reqID, question, specPath, planPath string) {
 	t.Helper()
 	ctx := context.Background()
 	specPath, planPath = filepath.Join(t.TempDir(), "spec.md"), filepath.Join(t.TempDir(), "plan.md")
@@ -2152,76 +2044,118 @@ func summaryGatePlanApproval(t *testing.T, h *Handler, summary string) (reqID, q
 	return reqID, question, specPath, planPath
 }
 
-// TestPreToolUseSummaryGatePlanDeniesWithoutPaths confirms a plan approval
-// requires the review paths lines too, even when the summary alone is
-// present in chat.
-func TestPreToolUseSummaryGatePlanDeniesWithoutPaths(t *testing.T) {
+func TestPreToolUseAllowsAnApprovalQuestionWithoutAGate(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	summary := "Ship auth end to end."
-	_, question, _, _ := summaryGatePlanApproval(t, h, summary)
-	// The transcript prints the summary but never the Spec:/Plan: lines.
-	transcript := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m1", summary))
-
-	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
-	if err != nil {
-		t.Fatal(err)
+	_, question := seedApproval(t, h, "Users table gets id, email, and hashed_password columns.")
+	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, askInput(t, question, writeTranscript(t, claudeUserLine("go"))))
+	if err != nil || len(out) != 0 {
+		t.Fatalf("out=%s err=%v, want allowed", out, err)
 	}
-	if !strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
-		t.Fatalf("a plan approval missing the printed review paths must be denied, got %s", out)
+	var n int
+	h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE kind = 'question'
+		AND json_extract(binding_json, '$.ref') = 'req_sumgate1'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("bound question rows = %d, want 1", n)
 	}
 }
 
-// TestPreToolUseSummaryGatePlanAllowsWithSummaryAndPaths is the positive
-// case: summary and both review paths printed verbatim in chat.
-func TestPreToolUseSummaryGatePlanAllowsWithSummaryAndPaths(t *testing.T) {
+func printingApproval(t *testing.T, h *Handler, summary string) (reqID, block string) {
+	t.Helper()
+	reqID, _ = seedApproval(t, h, summary)
+	h.DB.Exec(`UPDATE requests SET binding_json = json_object('print_phase', 'print', 'print_attempts', 0, 'print_at', 1) WHERE id = ?`, reqID)
+	return reqID, runtime.ApprovalChatBlock(runtime.ChatBlockInput{Kind: string(runtime.KindApproveSection), Revision: 1, Summary: summary})
+}
+
+func stopInput(t *testing.T, transcript string) []byte {
+	b, _ := json.Marshal(map[string]any{"session_id": "p1", "transcript_path": transcript})
+	return b
+}
+
+func relayEvent(t *testing.T, h *Handler, reqID string) string {
+	t.Helper()
+	var ev string
+	h.DB.QueryRowContext(context.Background(), `SELECT COALESCE(json_extract(payload_json, '$.event'), '') FROM messages
+		WHERE request_id = ? ORDER BY seq DESC LIMIT 1`, reqID).Scan(&ev)
+	return ev
+}
+
+func TestStopAfterPrintedBlockSendsAskAndBlocks(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	summary := "Ship auth end to end."
-	_, question, specPath, planPath := summaryGatePlanApproval(t, h, summary)
-	transcript := writeTranscript(t, claudeUserLine("go"),
-		claudeAssistantTextLine("m1", summary+"\n\nSpec: "+specPath+"\nPlan: "+planPath))
-
-	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
-	if err != nil {
-		t.Fatal(err)
+	reqID, block := printingApproval(t, h, "Users table gets id and email.")
+	tr := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m1", "**"+block+"**"))
+	out, err := h.Handle(ctx, runtime.Claude, "Stop", ses, stopInput(t, tr))
+	if err != nil || !strings.Contains(string(out), `"decision":"block"`) {
+		t.Fatalf("out=%s err=%v", out, err)
 	}
-	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
-		t.Fatalf("summary + both review paths printed must be allowed, got %s", out)
+	var stopBlocks int
+	h.DB.QueryRowContext(ctx, `SELECT stop_blocks FROM sessions WHERE id = ?`, ses).Scan(&stopBlocks)
+	if ev := relayEvent(t, h, reqID); ev != "request_ask" || stopBlocks != 0 {
+		t.Fatalf("event=%q stop_blocks=%d", ev, stopBlocks)
 	}
 }
 
-// TestPreToolUseSummaryGatePlanAllowsMarkdownWrappedPaths is a post-review
-// fix: allPathsPresent must match the bare absolute path, not the literal
-// "Spec: <path>" line -- a markdown-bolded or backtick-wrapped label around
-// the same path must still pass.
-func TestPreToolUseSummaryGatePlanAllowsMarkdownWrappedPaths(t *testing.T) {
+func TestStopAfterParaphraseSendsReprint(t *testing.T) {
 	ctx := context.Background()
 	h, ses := seed(t, 0, runtime.Running)
-	summary := "Ship auth end to end."
-	_, question, specPath, planPath := summaryGatePlanApproval(t, h, summary)
-	transcript := writeTranscript(t, claudeUserLine("go"),
-		claudeAssistantTextLine("m1", summary+"\n\n**Spec:** `"+specPath+"`\n**Plan:** `"+planPath+"`"))
-
-	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
-	if err != nil {
+	reqID, _ := printingApproval(t, h, "Users table gets id and email.")
+	tr := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m1", "Approving the users table."))
+	if _, err := h.Handle(ctx, runtime.Claude, "Stop", ses, stopInput(t, tr)); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
-		t.Fatalf("markdown-wrapped review paths must still be allowed, got %s", out)
+	if ev := relayEvent(t, h, reqID); ev != "request_print" {
+		t.Fatalf("event = %q", ev)
 	}
 }
 
-// TestAllPathsPresentMatchesBarePathNotLabeledLine is the direct unit test
-// for the same fix: allPathsPresent checks runtime.ReviewPathLine.Path
-// alone.
-func TestAllPathsPresentMatchesBarePathNotLabeledLine(t *testing.T) {
-	paths := []runtime.ReviewPathLine{{Label: "Spec", Path: "/abs/spec.md"}, {Label: "Plan", Path: "/abs/plan.md"}}
-	if !allPathsPresent("summary\n\n**Spec:** `/abs/spec.md`\n**Plan:** `/abs/plan.md`", paths) {
-		t.Fatal("a markdown-wrapped label around the bare path must still pass")
+func TestStopWithUnreadableTranscriptSendsAsk(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	reqID, _ := printingApproval(t, h, "Users table gets id and email.")
+	if _, err := h.Handle(ctx, runtime.Claude, "Stop", ses, stopInput(t, "/does/not/exist.jsonl")); err != nil {
+		t.Fatal(err)
 	}
-	if allPathsPresent("summary with no paths at all", paths) {
-		t.Fatal("missing paths must not pass")
+	if ev := relayEvent(t, h, reqID); ev != "request_ask" {
+		t.Fatalf("event = %q, want request_ask (fail open)", ev)
+	}
+}
+
+func TestStopPlanBlockNeedsReviewPaths(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	summary := "Ship auth end to end.\n\n- Login\n- Logout"
+	reqID, _, specPath, planPath := seedPlanApproval(t, h, summary)
+	h.DB.Exec(`UPDATE requests SET binding_json = json_object('print_phase', 'print', 'print_attempts', 0, 'print_at', 1) WHERE id = ?`, reqID)
+	block := runtime.ApprovalChatBlock(runtime.ChatBlockInput{Kind: string(runtime.KindApprovePlan), Revision: 1, Summary: summary,
+		Paths: &runtime.ReviewPaths{Spec: specPath, Plan: planPath}})
+
+	noPaths := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m1", summary))
+	if _, err := h.Handle(ctx, runtime.Claude, "Stop", ses, stopInput(t, noPaths)); err != nil {
+		t.Fatal(err)
+	}
+	if ev := relayEvent(t, h, reqID); ev != "request_print" {
+		t.Fatalf("summary without the review paths: event = %q, want request_print", ev)
+	}
+	h.DB.Exec(`UPDATE messages SET state = 'delivered' WHERE state = 'pending'`)
+	wrapped := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m2",
+		strings.ReplaceAll(block, "Spec: "+specPath, "**Spec:** `"+specPath+"`")))
+	if _, err := h.Handle(ctx, runtime.Claude, "Stop", ses, stopInput(t, wrapped)); err != nil {
+		t.Fatal(err)
+	}
+	if ev := relayEvent(t, h, reqID); ev != "request_ask" {
+		t.Fatalf("markdown-wrapped block: event = %q, want request_ask", ev)
+	}
+}
+
+func TestStopCursorIsTrusted(t *testing.T) {
+	ctx := context.Background()
+	h, ses := seed(t, 0, runtime.Running)
+	h.DB.Exec(`UPDATE agents SET kind = 'cursor' WHERE id = 'agt_1'`)
+	printingApproval(t, h, "Users table gets id and email.")
+	out, err := h.Handle(ctx, runtime.Cursor, "stop", ses, []byte(`{"conversation_id":"c1"}`))
+	if err != nil || !strings.Contains(string(out), "followup_message") {
+		t.Fatalf("out=%s err=%v", out, err)
 	}
 }
 
@@ -2237,29 +2171,6 @@ func TestExtractQuestionHeader(t *testing.T) {
 	}
 	if got := extractQuestionHeader("AskUserQuestion", nil); got != "" {
 		t.Fatalf("header = %q, want empty for nil input", got)
-	}
-}
-
-// TestPreToolUseSummaryGateAllowsThePrintedChatBlock pins the deny → print →
-// pass loop (2026-09-28-approval-chat-block): a transcript holding exactly
-// the chat block the deny reason quotes must pass the gate.
-func TestPreToolUseSummaryGateAllowsThePrintedChatBlock(t *testing.T) {
-	ctx := context.Background()
-	h, ses := seed(t, 0, runtime.Running)
-	summary := "Ship auth end to end.\n\n- Login\n- Logout"
-	reqID, question, _, _ := summaryGatePlanApproval(t, h, summary)
-	_, _, block, _, err := h.RT.SummaryGate(ctx, reqID)
-	if err != nil || block == "" {
-		t.Fatalf("SummaryGate chat block = %q, %v", block, err)
-	}
-	transcript := writeTranscript(t, claudeUserLine("go"), claudeAssistantTextLine("m1", block))
-
-	out, err := h.Handle(ctx, runtime.Claude, "PreToolUse", ses, summaryGateAskInput(t, question, transcript))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(out), "Your chat message must be the block below, copied exactly") {
-		t.Fatalf("printing the chat block exactly must pass the gate, got %s", out)
 	}
 }
 

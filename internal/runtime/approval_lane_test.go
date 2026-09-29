@@ -139,6 +139,14 @@ func TestAcceptRowRoutesToLiveRootOrchestrator(t *testing.T) {
 	if p["event"] != "request_open" || p["kind"] != "accept_epic" || p["item"] != "EPIC-1" || p["request_id"] != "req_accept" {
 		t.Fatalf("relay payload = %v", p)
 	}
+	if p["chat_block"] == nil || p["native_prompt"] != nil || p["next"] != PrintNext {
+		t.Fatalf("request_open must carry the print step only: %v", p)
+	}
+	passPrint(t, s, orchSes)
+	p, _ = relayFor(t, s, orch.ID, "req_accept")
+	if p["event"] != "request_ask" {
+		t.Fatalf("relay after the print step = %v", p)
+	}
 	np := decodeNP(t, p)
 	if np.Header != "Finish epic" || np.Question != `Finish EPIC-1 "Build it"? Not pushed.` {
 		t.Fatalf("native_prompt = %+v", np)
@@ -178,8 +186,12 @@ func TestAcceptRelayIsNotHeldWhileExhausted(t *testing.T) {
 	orch, _, _ := worker(t, s)
 	s.Usage = fakeUsage{Fake: true}
 	openAcceptRow(t, s, "req_accept", "accept_epic", "EPIC-1")
-	if _, n := relayFor(t, s, orch.ID, "req_accept"); n != 1 {
-		t.Fatalf("%d relays while exhausted, want 1", n)
+	if p, n := relayFor(t, s, orch.ID, "req_accept"); n != 1 || p["chat_block"] == nil {
+		t.Fatalf("%d relays while exhausted, want 1 request_open with the chat_block: %v", n, p)
+	}
+	passPrint(t, s, mustSessionID(t, s, orch.ID))
+	if p, n := relayFor(t, s, orch.ID, "req_accept"); n != 2 || p["event"] != "request_ask" || p["native_prompt"] == nil {
+		t.Fatalf("request_ask while exhausted = %d relays, %v; want it kept, native_prompt included", n, p)
 	}
 	var held int
 	s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM suppressed_relays`).Scan(&held)
@@ -196,6 +208,7 @@ func routedAccept(t *testing.T, answer string) (s *Store, orch Agent, orchSes st
 	orch, _, _ = worker(t, s)
 	orchSes = mustSessionID(t, s, orch.ID)
 	openAcceptRow(t, s, "req_accept", "accept_epic", "EPIC-1")
+	passPrint(t, s, orchSes)
 	p, _ := relayFor(t, s, orch.ID, "req_accept")
 	hookSimulate(t, s, orchSes, decodeNP(t, p), answer)
 	return s, orch, orchSes
@@ -478,8 +491,13 @@ func TestResumeResurfacesOpenRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	pa, na := relayFor(t, s, a.ID, req.ID)
-	if na != 1 || !reflect.DeepEqual(decodeNP(t, pa), *req.NativePrompt) {
-		t.Fatalf("approval relay = %d × %v, want the original %+v", na, pa, *req.NativePrompt)
+	if na != 1 || pa["chat_block"] != req.ChatBlock || pa["native_prompt"] != nil {
+		t.Fatalf("approval relay = %d × %v, want the print step with chat_block %q", na, pa, req.ChatBlock)
+	}
+	passPrint(t, s, mustSessionID(t, s, a.ID))
+	pa, _ = relayFor(t, s, a.ID, req.ID)
+	if !reflect.DeepEqual(decodeNP(t, pa), *req.NativePrompt) {
+		t.Fatalf("approval ask = %v, want the original %+v", pa, *req.NativePrompt)
 	}
 	pq, nq := relayFor(t, s, a.ID, q.ID)
 	if nq != 1 || pq["next"] != reaskQuestionNext {
@@ -578,6 +596,8 @@ func TestChoreEndToEndAcceptFix(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("%d relays, want 1", n)
 	}
+	passPrint(t, s, ses)
+	p, _ = relayFor(t, s, orch.ID, reqID)
 	np := decodeNP(t, p)
 	if np.Header != "Finish chore" || len(np.Options) != 3 {
 		t.Fatalf("native prompt = %+v", np)

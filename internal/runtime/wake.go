@@ -465,6 +465,9 @@ func (s *Store) WakeLoop(ctx context.Context, every time.Duration) {
 		if err := s.WakeDue(ctx); err != nil {
 			s.logf("wake: %v", err)
 		}
+		if err := s.PrintTurnTick(ctx); err != nil {
+			s.logf("print: %v", err)
+		}
 	}
 }
 

@@ -552,6 +552,16 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 			}
 			payload["review_paths"] = paths
 		}
+		// A request with a chat_block is two turns (print-then-ask): this relay carries only the
+		// block; the question follows in a request_ask relay once the reply is checked.
+		if payload["chat_block"] != nil {
+			delete(payload, "question")
+			delete(payload, "native_prompt")
+			payload["next"] = PrintNext
+			if err := s.startPrintTx(ctx, tx, req.ID); err != nil {
+				return err
+			}
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -636,6 +646,32 @@ func (s *Store) resurfaceOpenRequests(ctx context.Context, a Agent, sessionID st
 	n := 0
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		n = 0
+		if fresh {
+			// A fresh session never saw the print/ask instructions of its predecessor:
+			// retire them, and the request_open relay below restarts the print step.
+			rows, err := tx.QueryContext(ctx, `SELECT id FROM requests WHERE agent_id = ? AND state = 'open'`, a.ID)
+			if err != nil {
+				return err
+			}
+			var open []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					rows.Close()
+					return err
+				}
+				open = append(open, id)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			for _, id := range open {
+				if err := s.retirePrintRelaysTx(ctx, tx, id); err != nil {
+					return err
+				}
+			}
+		}
 		if a.Role == RoleOrchestrator && a.ParentAgentID == "" {
 			if _, err := tx.ExecContext(ctx, `UPDATE requests SET agent_id = ?, session_id = ?
 				WHERE state = 'open' AND kind IN ('accept_epic', 'accept_fix')
@@ -1308,6 +1344,9 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		if err := s.freezeNativeQuestionTx(ctx, tx, out.ID, np); err != nil {
 			return err
 		}
+		if err := s.startPrintTx(ctx, tx, out.ID); err != nil {
+			return err
+		}
 		out.NativePrompt = &np
 		out.ReviewPaths = reviewPaths
 		out.ChatBlock, err = s.approvalChatBlockTx(ctx, tx, out)
@@ -1421,6 +1460,9 @@ func (s *Store) resolve(ctx context.Context, id, state, responseText, via, origi
 		if _, err := tx.ExecContext(ctx, `UPDATE requests SET state = ?, response_text = ?,
 			responded_via = ?, responded_at = ? WHERE id = ?`,
 			state, nullIf(responseText), nullIf(via), db.Millis(now), id); err != nil {
+			return err
+		}
+		if err := s.retirePrintRelaysTx(ctx, tx, id); err != nil {
 			return err
 		}
 		for _, fn := range after {

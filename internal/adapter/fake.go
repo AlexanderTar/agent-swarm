@@ -37,6 +37,11 @@ type Fake struct {
 	ObservedAnswerLabel string
 	ObservedAnswerNote  string
 	ObservedAnswerOK    bool
+
+	// LastReplyText/Found/Readable let a test opt this kind into the
+	// muse-style print-then-ask turn-end path (see Muse.LastReply).
+	LastReplyText                     string
+	LastReplyFound, LastReplyReadable bool
 }
 
 func NewFake(d Deps) *Fake {
@@ -101,6 +106,10 @@ func (f *Fake) DiscoverSession(context.Context, int, string) (string, bool) {
 
 func (f *Fake) ObservedAnswer(string, string, string, time.Time) (string, string, bool) {
 	return f.ObservedAnswerLabel, f.ObservedAnswerNote, f.ObservedAnswerOK
+}
+
+func (f *Fake) LastReply(string, time.Time) (string, bool, bool) {
+	return f.LastReplyText, f.LastReplyFound, f.LastReplyReadable
 }
 
 // HookOutput mirrors claude's shapes so the e2e harness can reuse one client.

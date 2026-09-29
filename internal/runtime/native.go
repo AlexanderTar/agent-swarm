@@ -507,10 +507,8 @@ func NativePromptNextStep(ref string, decisions []string) string {
 	for i, d := range decisions {
 		quoted[i] = strconv.Quote(d)
 	}
-	return fmt.Sprintf("If chat_block is present, print it exactly as your whole chat message immediately "+
-		"before the native question: nothing before or after it, never restated, shortened or paraphrased. "+
-		"The native question shows only a short head of the summary. Then show native_prompt "+
-		"with your native question tool now (one question per call, verbatim, no added text). Once the user "+
+	return fmt.Sprintf("Ask this now with your native question tool: show native_prompt verbatim, one question per call, "+
+		"no added text, and don't print chat_block again. Once the user "+
 		"answers, call swarm_ask kind:\"native_answer\", ref:%q, decision:%s "+
 		"forwarding only what the user picked. Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion must include answer_text exactly as returned by the native tool; this has agent_reported provenance. Muse request_user_input: call native_answer right after the tool returns, with answer_text exactly as returned; Swarm checks it against Muse's own session log. On cancellation or no returned answer, submit nothing and leave the request open. "+
 		"Codex: use request_user_input, not request_user_input_async; a review question is a design decision the user chooses, not a permission request.", ref, strings.Join(quoted, "|"))
@@ -795,77 +793,6 @@ func (s *Store) log(format string, args ...any) {
 	if s.Log != nil {
 		s.Log(format, args...)
 	}
-}
-
-// SummaryGate reads an approval request's stored summary and, for a plan,
-// its review paths, for the PreToolUse enforcement gate (2026-09-28-
-// approval-summary-enforced locked decision 3). summary is "" for a ref
-// that names no request, a msg_ ref (a child approval has no stored
-// summary), or a request kind other than approve_section/plan/report --
-// the caller treats an empty summary as "nothing to enforce". chatBlock is
-// the request's ApprovalChatBlock, quoted by the deny reason. blocks is the
-// number of denials already recorded (binding_json.summary_blocks, 0 when
-// absent).
-// ReviewPathLine is one review-path line SummaryGate's plan enforcement
-// checks and the deny copy shows. Label is "Spec" or "Plan"; Path is the
-// bare absolute path with no leading label or markdown -- the PreToolUse
-// gate's allPathsPresent matches Path alone against the transcript, so
-// `**Spec:** /abs/path` or a differently worded label around the same path
-// still passes (post-review fix: the earlier check matched the full
-// "Spec: <path>" line, which a markdown-wrapped label would defeat).
-type ReviewPathLine struct {
-	Label, Path string
-}
-
-func (s *Store) SummaryGate(ctx context.Context, ref string) (summary string, paths []ReviewPathLine, chatBlock string, blocks int, err error) {
-	if strings.HasPrefix(ref, "msg_") {
-		return "", nil, "", 0, nil
-	}
-	req, err := s.RequestByID(ctx, ref)
-	if err != nil {
-		return "", nil, "", 0, nil // an unknown/bad ref has nothing to enforce; the caller's own lookups refuse it properly
-	}
-	switch req.Kind {
-	case KindApproveSection, KindApprovePlan, KindApproveReport:
-	default:
-		return "", nil, "", 0, nil
-	}
-	summary = req.Prompt
-	err = s.tx(ctx, func(tx *sql.Tx) error {
-		if chatBlock, err = s.approvalChatBlockTx(ctx, tx, req); err != nil {
-			return err
-		}
-		if req.Kind == KindApprovePlan {
-			rp, _, err := s.planReviewPathsTx(ctx, tx, req.ItemID, req.ArtifactID)
-			if err != nil {
-				return nil // review paths unavailable -- enforce the summary alone
-			}
-			if rp.Spec != "" {
-				paths = append(paths, ReviewPathLine{"Spec", rp.Spec})
-			}
-			paths = append(paths, ReviewPathLine{"Plan", rp.Plan})
-		}
-		return nil
-	})
-	if err != nil {
-		return "", nil, "", 0, err
-	}
-	var binding struct {
-		SummaryBlocks int `json:"summary_blocks"`
-	}
-	if len(req.Binding) > 0 {
-		json.Unmarshal(req.Binding, &binding)
-	}
-	return summary, paths, chatBlock, binding.SummaryBlocks, nil
-}
-
-// RecordSummaryBlock increments an approval request's summary_blocks count
-// (locked decision 3): after 2 denials, the PreToolUse gate allows the call
-// through rather than risk deadlocking the approval forever.
-func (s *Store) RecordSummaryBlock(ctx context.Context, ref string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'),
-		'$.summary_blocks', COALESCE(json_extract(binding_json, '$.summary_blocks'), 0) + 1) WHERE id = ?`, ref)
-	return err
 }
 
 func (s *Store) planReviewPathsTx(ctx context.Context, tx *sql.Tx, itemID, planID string) (ReviewPaths, string, error) {
@@ -1608,7 +1535,7 @@ func (s *Store) askNativePromptForMsg(ctx context.Context, sessionID string, in 
 		np := nativePromptForMsg(fromName, body, in.ForMsg)
 		out = Request{ID: in.ForMsg, State: "open", NativePrompt: &np,
 			ChatBlock: ApprovalChatBlock(ChatBlockInput{Child: fromName, Summary: body})}
-		return nil
+		return s.startPrintTx(ctx, tx, in.ForMsg)
 	})
 	return out, err
 }

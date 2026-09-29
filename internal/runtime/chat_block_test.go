@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -85,10 +86,8 @@ func TestAskApprovalReturnsChatBlock(t *testing.T) {
 	if p["chat_block"] != want {
 		t.Fatalf("relay chat_block = %v, want %q", p["chat_block"], want)
 	}
-
-	_, _, block, _, err := s.SummaryGate(ctx, req.ID)
-	if err != nil || block != want {
-		t.Fatalf("SummaryGate chat block = %q, %v", block, err)
+	if p["native_prompt"] != nil || p["next"] != PrintNext {
+		t.Fatalf("relay native_prompt = %v, next = %v; want the print step only", p["native_prompt"], p["next"])
 	}
 }
 
@@ -129,6 +128,67 @@ func TestNativePromptForMsgReturnsChatBlock(t *testing.T) {
 	}
 	if want := "### Approval · " + w.Name + " asks\n\nmay I drop table x?"; out.ChatBlock != want {
 		t.Fatalf("ChatBlock = %q, want %q", out.ChatBlock, want)
+	}
+	var phase string
+	s.DB.QueryRow(`SELECT COALESCE(json_extract(payload_json, '$.print_phase'), '') FROM messages WHERE id = ?`, q).Scan(&phase)
+	if phase != "print" {
+		t.Fatalf("print_phase on the child message = %q", phase)
+	}
+}
+
+// TestForMsgPrintThenAsk: a child approval goes through the same print step; the
+// request_ask relay carries the msg id as request_id and correlation_id, and a child
+// message that was already answered is never judged.
+func TestForMsgPrintThenAsk(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	orch, w, wSes := worker(t, s)
+	q, err := s.SendApproval(ctx, wSes.ID, "may I drop table x?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchSes := mustSessionID(t, s, orch.ID)
+	if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q}); err != nil {
+		t.Fatal(err)
+	}
+	relays := func() (n int, payload map[string]any) {
+		rows, err := s.DB.QueryContext(ctx, `SELECT payload_json FROM messages WHERE kind = 'relay' AND correlation_id = ? ORDER BY seq`, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p string
+			rows.Scan(&p)
+			payload = map[string]any{}
+			json.Unmarshal([]byte(p), &payload)
+			n++
+		}
+		return n, payload
+	}
+	passPrint(t, s, orchSes)
+	n, p := relays()
+	if n != 1 || p["event"] != "request_ask" || p["kind"] != "child_approval" || p["request_id"] != q {
+		t.Fatalf("relays = %d, %v", n, p)
+	}
+	if np := decodeNP(t, p); np.Header != w.Name+" asks" || np.Question != "may I drop table x?" {
+		t.Fatalf("native_prompt = %+v", np)
+	}
+
+	q2, err := s.SendApproval(ctx, wSes.ID, "may I rename y?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ask(ctx, orchSes, AskInput{Kind: "native_prompt", ForMsg: q2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO messages (id, seq, kind, wake_class, priority, origin, to_agent_id, root_item_id,
+		reply_to, payload_json, state, created_at) SELECT 'msg_ans', COALESCE(MAX(seq), 0) + 1, 'answer', 'deferred', 1, 'agent', ?, ?, ?, '{}', 'acked', 1 FROM messages`,
+		w.ID, w.RootItemID, q2); err != nil {
+		t.Fatal(err)
+	}
+	if sent, err := s.PrintTurnEnded(ctx, orchSes, TurnReply{Trusted: true}); err != nil || sent {
+		t.Fatalf("judged an already-answered child approval: sent=%v err=%v", sent, err)
 	}
 }
 

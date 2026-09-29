@@ -140,6 +140,7 @@ func TestFinishPromptFreezesOptionsAndReplays(t *testing.T) {
 	seedFinishRepo(t, s, "agent-swarm", githubRemote, "main")
 	seedFinishRepo(t, s, "docs", "", "main")
 	openAcceptRowGit(t, s, "req_accept", "accept_epic", "EPIC-1", gitMixed)
+	passPrint(t, s, mustSessionID(t, s, orch.ID))
 	p, _ := relayFor(t, s, orch.ID, "req_accept")
 	first := decodeNP(t, p)
 	// The catalog changing after the ask must not change the replay.
@@ -190,17 +191,22 @@ func TestFinishChatBlock(t *testing.T) {
 	if p["chat_block"] != "### Approval · Finish "+key+"\n\nmerged\n\nproj: swarm/chore-1 at 3f9c2ab" {
 		t.Fatalf("relay chat_block = %q", p["chat_block"])
 	}
-	np := decodeNP(t, p)
-	if p["next"] != NativePromptNextStep(reqID, PromptDecisions(KindAcceptFix, np)) {
-		t.Fatalf("next = %v", p["next"])
+	if p["next"] != PrintNext || p["native_prompt"] != nil {
+		t.Fatalf("next = %v, native_prompt = %v; want the print step only", p["next"], p["native_prompt"])
 	}
-	if _, _, block, _, err := s.SummaryGate(ctx, reqID); err != nil || block != "" {
-		t.Fatalf("SummaryGate chat block = %q, %v", block, err)
+	passPrint(t, s, mustSessionID(t, s, orch.ID))
+	p, _ = relayFor(t, s, orch.ID, reqID)
+	np := decodeNP(t, p)
+	if p["event"] != "request_ask" || p["next"] != NativePromptNextStep(reqID, PromptDecisions(KindAcceptFix, np)) {
+		t.Fatalf("relay = %v", p)
 	}
 }
 
 func TestFinishNextStepDecisions(t *testing.T) {
 	got := NativePromptNextStep("req_A", []string{"auto_merge", "manual_merge", "request_changes"})
+	if !strings.HasPrefix(got, "Ask this now with your native question tool:") {
+		t.Fatalf("next = %s", got)
+	}
 	if !strings.Contains(got, `decision:"auto_merge"|"manual_merge"|"request_changes"`) {
 		t.Fatalf("next = %s", got)
 	}
@@ -236,6 +242,7 @@ func routedFinish(t *testing.T, remote, answer string) (s *Store, orch Agent, se
 	if err := s.tx(ctx, func(tx *sql.Tx) error { return s.OnRequestOpened(ctx, tx, reqID) }); err != nil {
 		t.Fatal(err)
 	}
+	passPrint(t, s, ses)
 	p, _ := relayFor(t, s, orch.ID, reqID)
 	hookSimulate(t, s, ses, decodeNP(t, p), answer)
 	return
@@ -297,6 +304,7 @@ func TestFinishNativeAnswer(t *testing.T) {
 		if err := s.tx(ctx, func(tx *sql.Tx) error { return s.OnRequestOpened(ctx, tx, reqID) }); err != nil {
 			t.Fatal(err)
 		}
+		passPrint(t, s, ses)
 		p, _ := relayFor(t, s, orch.ID, reqID)
 		hookSimulate(t, s, ses, decodeNP(t, p), "Approve")
 		for _, d := range []string{"approve", "merge_locally"} {
