@@ -2,6 +2,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { C } from "../copy";
+import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
 import { NOW } from "../mock/fixtures";
 import { renderWithDaemon } from "../test/render";
@@ -10,6 +11,11 @@ import { RepoPicker } from "./RepoPicker";
 function Host({ initial = [] as string[] }) {
   const [sel, setSel] = useState(initial);
   return <RepoPicker label="Repositories (optional)" caption="The spike suggests repositories and asks you to confirm them." selected={sel} onChange={setSel} />;
+}
+
+function ReconnectHost() {
+  const { retry } = useConnection();
+  return <><Host /><button type="button" onClick={retry}>Reconnect stream</button></>;
 }
 
 const rows = () => within(screen.getByRole("listbox", { name: "Repositories (optional)" })).getAllByRole("option");
@@ -137,6 +143,32 @@ describe("RepoPicker (§16.3)", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled());
     await act(async () => { release(); });
     await waitFor(() => expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true));
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+  });
+
+  it.each([
+    { action: "add", failed: false },
+    { action: "rescan", failed: false },
+    { action: "rescan", failed: true },
+  ])("shows no toast when pending $action crosses disconnect and reconnect (failed: $failed)", async ({ action, failed }) => {
+    const daemon = createMockDaemon();
+    const { user } = renderWithDaemon(<ReconnectHost />, { daemon });
+    await screen.findByRole("listbox");
+    const route = action === "add" ? "POST /api/repos" : "POST /api/repos/rescan";
+    if (action === "add") {
+      await user.click(screen.getByRole("button", { name: C.addFolder }));
+      await user.type(screen.getByRole("textbox", { name: C.addFolder }), "/Users/alex/code/newrepo");
+    }
+    if (failed) daemon.override(route, { status: 500, body: { error: { code: "internal", message: "Rescan failed." } } });
+    const release = daemon.hold(route);
+    await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
+    act(() => daemon.disconnect());
+    await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled());
+    daemon.reconnect();
+    await user.click(screen.getByRole("button", { name: "Reconnect stream" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: C.addFolder })).toBeEnabled());
+    await act(async () => { release(); });
+    await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeEnabled());
     expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 });
