@@ -11,12 +11,11 @@ final class DialogChromeTests: XCTestCase {
         XCTAssertEqual(Copy.orchestrateBoardItemMenu, "Orchestrate task")
     }
 
-    func testProminentStyleMatchesOS() {
-        if #available(macOS 26, *) {
-            XCTAssertEqual(DialogChrome.prominentStyle, .glassProminent)
-        } else {
-            XCTAssertEqual(DialogChrome.prominentStyle, .borderedProminent)
-        }
+    /// Deliberately `.borderedProminent` on every OS (see the ponytail note on
+    /// `DialogChrome.prominentStyle`): HIG-tinted and prominent, and the only
+    /// prominent style offscreen snapshots survive.
+    func testProminentStyleIsBorderedProminent() {
+        XCTAssertEqual(DialogChrome.prominentStyle, .borderedProminent)
     }
 
     @MainActor

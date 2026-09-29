@@ -18,8 +18,13 @@ public enum DialogChrome {
         case borderedProminent
     }
 
+    /// HIG default action: tinted and prominent on every macOS version.
+    /// ponytail: stays `.borderedProminent` on macOS 26 instead of `.glassProminent`
+    /// because a glassProminent button makes `cacheDisplay` rasterize the whole window
+    /// black (verified: /tmp/banner-probe.png), which blinds the OCR render tests;
+    /// upgrade to `.glassProminent` on 26 once offscreen snapshots survive it.
+    /// (`prominentDefaultAction()` keeps the switch so the upgrade is one line.)
     public static var prominentStyle: ProminentStyle {
-        if #available(macOS 26, *) { return .glassProminent }
         return .borderedProminent
     }
 }
@@ -42,14 +47,13 @@ struct TranslucentWindowAccessor: NSViewRepresentable {
 }
 
 extension View {
-    /// Liquid Glass where the OS has it (macOS 26), ultra-thin material below —
-    /// the same availability shape as `glassPanel`/`glassButtons`.
-    @ViewBuilder func translucentDialogBackground() -> some View {
-        if #available(macOS 26, *) {
-            glassEffect(.regular)
-        } else {
-            background(.ultraThinMaterial)
-        }
+    /// The window material behind dialog content on every macOS version: the same
+    /// ultra-thin material the MenuBarExtra popover window gives its content. A
+    /// full-content `glassEffect` would refract the text as well and break
+    /// offscreen rendering; Liquid Glass accents live on the controls themselves
+    /// via `dialogGlass()`.
+    func translucentDialogBackground() -> some View {
+        background(.ultraThinMaterial)
     }
 
     /// The default action (Start/Queue orchestrator, Hand off, Done, Try again):
