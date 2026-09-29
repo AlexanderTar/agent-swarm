@@ -91,6 +91,12 @@ describe("Kanban view (§16.7)", () => {
     expect(card("TASK-103")).not.toHaveTextContent("Blocked by");
   });
 
+  it("keeps card keys together beside status badges", async () => {
+    renderWithDaemon(<Host />, { events: false });
+    const key = within(await screen.findByTestId("card-TASK-104")).getByText("TASK-104");
+    expect(key.parentElement).toHaveClass("whitespace-nowrap");
+  });
+
   it("shows ROOT / PARENT in flat mode and story progress at story level", async () => {
     const a = renderWithDaemon(<Host group="flat" />, { events: false });
     expect(await screen.findByTestId("card-TASK-101")).toHaveTextContent("EPIC-12 / STORY-40");

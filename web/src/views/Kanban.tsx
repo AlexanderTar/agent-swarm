@@ -60,9 +60,9 @@ function Card(p: {
       }}
       className="w-[256px] cursor-grab space-y-1 rounded-md border border-border bg-card p-2 shadow-sm"
     >
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <TypeIcon type={card.type} />
-        <Key>{card.key}</Key>
+        <span className="shrink-0 whitespace-nowrap"><Key>{card.key}</Key></span>
         <StatusPill status={card.status} />
         {card.type === "task" && (card.workflow_state?.round ?? 0) > 1 && <span className="rounded bg-primary/10 px-1 text-[11px] text-link">R{card.workflow_state?.round}</span>}
         {needs && <span className="ml-auto rounded bg-warning/15 px-1 text-[11px] text-warning">{needs}</span>}
