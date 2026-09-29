@@ -1239,3 +1239,121 @@ func TestShareTxValidatesModeAndState(t *testing.T) {
 		t.Fatalf("ShareTx on removed worktree = %v, want %q", err, want)
 	}
 }
+
+// excludePath resolves <git-common-dir>/info/exclude for repo the way
+// ignoreGraphifyOut does: rev-parse --git-path, absolute against the repo.
+func excludePath(t *testing.T, repo string) string {
+	t.Helper()
+	out := strings.TrimSpace(run(t, repo, "rev-parse", "--git-path", "info/exclude"))
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(repo, out)
+	}
+	return out
+}
+
+func countGraphifyExcludeLines(t *testing.T, path string) int {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "graphify-out/" {
+			n++
+		}
+	}
+	return n
+}
+
+// Create writes graphify-out/ to info/exclude once, however many worktrees
+// share the repo.
+func TestCreateIgnoresGraphifyOutIdempotently(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	in := CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/graph-a",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"}
+	if _, err := s.Create(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	in.Branch = "task/graph-b"
+	if _, err := s.Create(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if n := countGraphifyExcludeLines(t, excludePath(t, repo)); n != 1 {
+		t.Fatalf("graphify-out/ lines = %d, want exactly 1", n)
+	}
+}
+
+// A built graph leaves porcelain empty, and Remove removes the tree.
+func TestCreateLeavesAGraphifyGraphUntrackedAndRemovable(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/graph-c",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(wt.Path, "graphify-out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "graphify-out", "graph.json"),
+		[]byte(`{"built_at_commit":"x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if porcelain := strings.TrimSpace(run(t, wt.Path, "status", "--porcelain")); porcelain != "" {
+		t.Fatalf("porcelain = %q, want empty", porcelain)
+	}
+	removed, err := s.Remove(ctx, wt.ID, "agt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.State != "removed" {
+		t.Fatalf("state = %q, want removed", removed.State)
+	}
+	if fileExists(wt.Path) {
+		t.Fatalf("%s still exists after Remove", wt.Path)
+	}
+}
+
+// Review adds the same exclude line.
+func TestReviewIgnoresGraphifyOut(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	sha := strings.TrimSpace(run(t, repo, "rev-parse", "HEAD"))
+	if _, err := s.Review(ctx, CreateInput{RepoID: repoID, RepoPath: repo,
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"}, sha); err != nil {
+		t.Fatal(err)
+	}
+	if n := countGraphifyExcludeLines(t, excludePath(t, repo)); n != 1 {
+		t.Fatalf("graphify-out/ lines = %d, want exactly 1", n)
+	}
+}
+
+// An unwritable exclude file logs and never fails Create.
+func TestCreateSucceedsWhenTheExcludeIsUnwritable(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	var logs []string
+	s.Log = func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	excl := excludePath(t, repo)
+	if err := os.Chmod(excl, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(context.Background(), CreateInput{RepoID: repoID, RepoPath: repo,
+		Branch: "task/graph-d", OwnerAgentID: "agt_1", RootItemID: "itm_1"}); err != nil {
+		t.Fatalf("Create with an unwritable exclude = %v, want nil", err)
+	}
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "worktree: graphify exclude") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("logs = %q, want a worktree: graphify exclude line", logs)
+	}
+}

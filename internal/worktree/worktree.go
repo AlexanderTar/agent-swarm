@@ -457,7 +457,61 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Worktree, error) 
 	wt := Worktree{ID: ids.New("wt"), RepoID: in.RepoID, Path: path, Branch: in.Branch,
 		BaseRef: base, BaseSHA: strings.TrimSpace(string(sha)),
 		OwnerAgentID: in.OwnerAgentID, RootItemID: in.RootItemID, State: "active", CreatedAt: s.Now()}
-	return wt, s.insert(ctx, wt)
+	if err := s.insert(ctx, wt); err != nil {
+		return Worktree{}, err
+	}
+	s.ignoreGraphifyOut(ctx, in.RepoPath)
+	return wt, nil
+}
+
+// ignoreGraphifyOut appends "graphify-out/" to <common-dir>/info/exclude
+// when absent, so a built code graph never dirties any worktree of the repo.
+// A failure is logged and never fails the worktree operation.
+func (s *Service) ignoreGraphifyOut(ctx context.Context, repoPath string) {
+	out, err := s.git(ctx, repoPath, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		s.logf("worktree: graphify exclude %s: %v", repoPath, err)
+		return
+	}
+	p := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(repoPath, p)
+	}
+	if err := appendLineOnce(p, "graphify-out/"); err != nil {
+		s.logf("worktree: graphify exclude %s: %v", repoPath, err)
+	}
+}
+
+// appendLineOnce creates the file (and its dir) when missing and appends
+// line only when no existing line matches it by trimmed equality.
+func appendLineOnce(path, line string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+	} else {
+		for _, l := range strings.Split(string(b), "\n") {
+			if strings.TrimSpace(l) == line {
+				return nil
+			}
+		}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if len(b) > 0 && !strings.HasSuffix(string(b), "\n") {
+		if _, err := f.WriteString("\n"); err != nil {
+			return err
+		}
+	}
+	_, err = f.WriteString(line + "\n")
+	return err
 }
 
 // shaPattern rejects anything that isn't a plausible git commit-ish before it
@@ -478,7 +532,11 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 	wt := Worktree{ID: ids.New("wt"), RepoID: in.RepoID, Path: path, DetachedSHA: sha,
 		BaseRef: sha, BaseSHA: sha, OwnerAgentID: in.OwnerAgentID, RootItemID: in.RootItemID,
 		State: "active", CreatedAt: s.Now()}
-	return wt, s.insert(ctx, wt)
+	if err := s.insert(ctx, wt); err != nil {
+		return Worktree{}, err
+	}
+	s.ignoreGraphifyOut(ctx, in.RepoPath)
+	return wt, nil
 }
 
 // Remove runs the §12.1 checks in order. Only the owner may call it, and only
