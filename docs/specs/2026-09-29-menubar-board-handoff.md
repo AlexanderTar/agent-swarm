@@ -236,7 +236,8 @@ func handoff(_ name: String, _ body: HandoffRequest) async throws               
 ```
 
 `MockDaemonClient`: `boardItemList: [BoardItem]` (fixture `items.json`, optional → `[]`),
-`startResult: Result<AgentNode, DaemonError>?`; records `"items"`, `"start <KEY> <agent> <model>"`,
+`startResult: Result<AgentNode, DaemonError>?`, `boardItemsError: DaemonError?` (fails only `boardItems()`),
+recorded `handoffRequests: [HandoffRequest]` / `startBodies: [StartOrchestratorBody]`; records `"items"`, `"start <KEY> <agent> <model>"`,
 `"handoff <name> <agent> <model>"`.
 
 ```swift
@@ -276,6 +277,8 @@ public enum BoardHandoffRules {
     /// or "<Type> · Ready".
     public static func detail(_ r: BoardItemRow, catalog: [AgentCatalogEntry]) -> String
     public static func canHandOff(_ a: AgentNode, connected: Bool) -> Bool // AgentTree.actions(a, tmuxAlive: true, connected:) has enabled .handoff
+    /// Row menu "Hand off to…" gate: top-level orchestrator whose actions include an enabled .handoff.
+    public static func offersHandOffTo(_ a: AgentNode, actions: [AgentAction]) -> Bool
 }
 
 @MainActor @Observable public final class BoardHandoffForm {

@@ -212,11 +212,11 @@ func TestHandoffSwitchRejects(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
-		prep func(s *Store, orch Agent) string // returns agent id to hand off
+		prep func(t *testing.T, s *Store, orch Agent) string // returns agent id to hand off
 		sw   AgentSwitch
 		want string
 	}{
-		{"non-orchestrator", func(s *Store, orch Agent) string {
+		{"non-orchestrator", func(t *testing.T, s *Store, orch Agent) string {
 			w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Claude, Model: "claude-sonnet-5",
 				ParentAgentID: orch.ID, Brief: BriefInput{Objective: "x"}})
 			if err != nil {
@@ -224,17 +224,17 @@ func TestHandoffSwitchRejects(t *testing.T) {
 			}
 			return w.ID
 		}, AgentSwitch{Kind: Codex, Model: "gpt-6-astra"}, errSwitchNotOrchestrator},
-		{"finished", func(s *Store, orch Agent) string {
+		{"finished", func(t *testing.T, s *Store, orch Agent) string {
 			s.DB.Exec(`UPDATE agents SET state = 'finished' WHERE id = ?`, orch.ID)
 			return orch.ID
 		}, AgentSwitch{Kind: Codex, Model: "gpt-6-astra"}, errSwitchNotLive},
-		{"bad model", func(s *Store, orch Agent) string { return orch.ID },
+		{"bad model", func(t *testing.T, s *Store, orch Agent) string { return orch.ID },
 			AgentSwitch{Kind: Codex, Model: "nope"}, "model"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, tm := newStoreWithFallback(t)
 			orch, _ := claudeOrch(t, s, tm)
-			id := tc.prep(s, orch)
+			id := tc.prep(t, s, orch)
 			_, err := s.RequestHandoffTo(ctx, id, "k", tc.sw)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want containing %q", err, tc.want)
