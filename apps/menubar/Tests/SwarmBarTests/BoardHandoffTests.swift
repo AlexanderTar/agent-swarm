@@ -44,8 +44,10 @@ final class BoardHandoffTests: XCTestCase {
 
     func testDraftItemStartsLikeReady() async {
         client.boardItemList = [BoardItem(key: "CHORE-9", type: "chore", status: "draft", title: "Tidy")]
-        let f = await form(max: 99)
+        let f = await form()
         XCTAssertEqual(f.selectedKey, "CHORE-9")
+        XCTAssertFalse(f.isHandoff)
+        f.update(agents: state.agents.filter { $0.name != "billing-spike-orchestrator" }) // a queued one forces "Queue"
         XCTAssertEqual(f.primaryLabel, Copy.startOrchestrator)
     }
 
