@@ -53,14 +53,16 @@ public struct NewOrchestratorView: View {
                 if let caption = form.queuedCaption { Text(caption).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
                 Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction)
+                    .glassButtons()
                     .disabled(form.startedWithUnsavedImages != nil)
                 if let agent = form.startedWithUnsavedImages {
-                    Button(Copy.done) { onStarted(agent) }.keyboardShortcut(.defaultAction)
+                    Button(Copy.done) { onStarted(agent) }.keyboardShortcut(.defaultAction).prominentDefaultAction()
                 } else {
                     Button(form.startLabel) {
                         Task { if let agent = await form.submit(), form.startedWithUnsavedImages == nil { onStarted(agent) } }
                     }
                     .keyboardShortcut(.defaultAction)
+                    .prominentDefaultAction()
                     .disabled(!form.canStart)
                 }
             }
@@ -69,7 +71,8 @@ public struct NewOrchestratorView: View {
         }
         .frame(minWidth: 760, idealWidth: 820, maxWidth: .infinity,
                minHeight: 700, idealHeight: 790)
-        .glassButtons()
+        .translucentDialogBackground()
+        .background(TranslucentWindowAccessor())
         .task { await form.load() }
     }
 
@@ -128,10 +131,10 @@ public struct NewOrchestratorView: View {
                 set: { selected in form.selection = form.rows.map(\.id).filter(selected.contains) }
             ), emptyTitle: emptyRepoTitle)
             HStack {
-                Button(Copy.addFolder) { chooseFolder() }
+                Button(Copy.addFolder) { chooseFolder() }.glassButtons()
                 Spacer()
                 Text(form.scanLine).font(.caption).foregroundStyle(.secondary)
-                Button(Copy.rescan) { Task { await form.rescan() } }.disabled(!form.connected)
+                Button(Copy.rescan) { Task { await form.rescan() } }.glassButtons().disabled(!form.connected)
             }
             if let error = form.repoError { Text(error).font(.caption).foregroundStyle(.red) }
             if let notice = form.selectionNotice { Text(notice).font(.caption).foregroundStyle(.secondary) }
@@ -187,8 +190,14 @@ struct RepoChooser: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(SubtleScrollerConfig())
+        // The config view sits beside the List, not inside its NSScrollView, so it
+        // must reach the adjacent scroll view instead of its enclosing one.
+        .background(SubtleScrollerConfig(adjacentScrollView: true))
+        .dialogGlass(cornerRadius: 5)
         .frame(height: Self.visibleHeight(for: rows.count, maxRows: maxRows))
+        // Clip the selection fill to the same rounded rect the border draws, so a
+        // selected row never runs past it as an opaque square.
+        .clipShape(RoundedRectangle(cornerRadius: 5))
         .overlay {
             if rows.isEmpty {
                 VStack(spacing: 4) {
@@ -366,7 +375,7 @@ struct RequestImageStrip: View {
                     .scrollIndicators(.never)
                     .fixedSize(horizontal: false, vertical: true)
                 }
-                Button(Copy.addImages) { addImages() }
+                Button(Copy.addImages) { addImages() }.glassButtons()
                     .accessibilityLabel(Copy.addImages)
                     .disabled(form.images.count >= 10)
                 if !form.images.isEmpty {

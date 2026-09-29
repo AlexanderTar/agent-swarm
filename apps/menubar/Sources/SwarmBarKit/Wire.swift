@@ -789,18 +789,24 @@ public struct BoardItemList: Codable, Sendable, Equatable {
     public init(items: [BoardItem]) { self.items = items }
 }
 
-/// POST /api/items/{key}/orchestrator.
+/// POST /api/items/{key}/orchestrator. `roles` carries only workers the user changed from
+/// Settings defaults (key "roles", like the daemon's `orchestratorRequestBody`); absent means
+/// every role follows Settings. The daemon stores them without `OverridableRoles` validation
+/// (that check lives on the `swarm_role_overrides` MCP op only), so never send orchestrator/advisor.
 public struct StartOrchestratorBody: Codable, Sendable, Equatable {
     public var requestId: String
     public var agent: AgentKind
     public var model: String
     public var effort: String?
     public var advisor: AdvisorPayload
+    public var roles: [String: RoleDefault]?
 
-    enum CodingKeys: String, CodingKey { case agent, model, effort, advisor, requestId = "request_id" }
+    enum CodingKeys: String, CodingKey { case agent, model, effort, advisor, roles, requestId = "request_id" }
 
-    public init(requestId: String, agent: AgentKind, model: String, effort: String?, advisor: AdvisorPayload) {
+    public init(requestId: String, agent: AgentKind, model: String, effort: String?, advisor: AdvisorPayload,
+                roles: [String: RoleDefault]? = nil) {
         self.requestId = requestId; self.agent = agent; self.model = model; self.effort = effort; self.advisor = advisor
+        self.roles = roles
     }
 }
 

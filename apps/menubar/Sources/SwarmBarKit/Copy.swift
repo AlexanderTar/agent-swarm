@@ -99,6 +99,7 @@ public enum Copy {
     public static let agentEffort = "Agent Effort"
     public static let advisorEffort = "Advisor Effort"
     public static let defaultsFromSettings = "Defaults from Settings"
+    public static let workerOverrides = "Worker overrides"
     public static let requestOptional = "Request (optional)"
     public static let startOrchestrator = "Start orchestrator"
     public static let queueOrchestrator = "Queue orchestrator"
@@ -254,9 +255,9 @@ public enum Copy {
     public static let launchFailed = "Couldn't start orchestrator. Your entries are saved."
     public static let queuedCaption = "Starts when an agent slot becomes available."
 
-    // Orchestrate board item / Hand off to… (spec 2026-09-29-menubar-board-handoff).
-    public static let orchestrateBoardItem = "Orchestrate board item"
-    public static let orchestrateBoardItemMenu = "Orchestrate board item"
+    // Orchestrate task / Hand off to… (spec 2026-09-29-menubar-board-handoff).
+    public static let orchestrateBoardItem = "Orchestrate task"
+    public static let orchestrateBoardItemMenu = "Orchestrate task"
     public static let moreStartOptions = "More ways to start"
     public static let handOffTo = "Hand off to…"
     public static let handOff = "Hand off"

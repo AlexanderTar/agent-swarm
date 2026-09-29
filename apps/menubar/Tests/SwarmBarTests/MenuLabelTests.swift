@@ -22,8 +22,6 @@ final class MenuLabelTests: XCTestCase {
                                  usage: usage, compact: false, format: format)
         XCTAssertEqual(all.count, "6")
         XCTAssertEqual(texts(all), ["claude 42% dim", "codex 18%", "agy 6%", "cursor 27%"])
-        XCTAssertEqual(MenuLabel.widestValue, "100%")
-        XCTAssertEqual(MenuLabel.widestMonthlyValue, "100%", "no more bare \"M\" suffix on monthly meters")
     }
 
     func testNoDataAndDaemonDown() {

@@ -211,6 +211,24 @@ final class HTTPDaemonClientTests: XCTestCase {
         XCTAssertFalse(seen.body.contains("roles") || seen.body.contains("repos"), seen.body)
     }
 
+    func testStartOrchestratorBodyEncodesRoles() throws {
+        let body = StartOrchestratorBody(requestId: "r", agent: .claude, model: "opus", effort: nil, advisor: .none,
+                                         roles: ["coder": RoleDefault(agent: .codex, model: "gpt-6-astra")])
+        XCTAssertEqual(try Fixture.json(SwarmJSON.encode(body)),
+                       try Fixture.json(Data(#"{"request_id":"r","agent":"claude","model":"opus","advisor":"none","roles":{"coder":{"agent":"codex","model":"gpt-6-astra"}}}"#.utf8)),
+                       "daemon key is \"roles\" (orchestratorRequestBody)")
+    }
+
+    func testStartOrchestratorSendsRoles() async throws {
+        let session = StubURLProtocol.install { _ in (200, try Fixture.data("agent.json")) }
+        let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)
+        _ = try await client.startOrchestrator(itemKey: "BUG-7", StartOrchestratorBody(requestId: "r", agent: .claude, model: "opus",
+            effort: nil, advisor: .none, roles: ["coder": RoleDefault(agent: .codex, model: "gpt-6-astra", effort: "high")]))
+        let body = try XCTUnwrap(StubURLProtocol.seen.last).body
+        XCTAssertEqual(try Fixture.json(Data(body.utf8)),
+                       try Fixture.json(Data(#"{"request_id":"r","agent":"claude","model":"opus","advisor":"none","roles":{"coder":{"agent":"codex","model":"gpt-6-astra","effort":"high"}}}"#.utf8)))
+    }
+
     func testBoardItemsDecodesFlatListIncludingUnknownTypes() async throws {
         let session = StubURLProtocol.install { _ in (200, try Fixture.data("items.json")) }
         let client = HTTPDaemonClient(endpoint: try tempEndpoint(), session: session)

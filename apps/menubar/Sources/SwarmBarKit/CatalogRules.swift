@@ -246,6 +246,15 @@ public enum CatalogRules {
         return .pair(agent, options.first(where: { $0.value == saved })?.value ?? options[0].value)
     }
 
+    /// Native Claude advisor pairing uses Claude's own advisor session and has no separate effort.
+    /// Shared by the New orchestrator / Orchestrate task pickers and the Settings advisor row.
+    public static func hidesAdvisorEffort(orchestrator: AgentKind?, advisor: AdvisorChoice,
+                                          catalog: [AgentCatalogEntry]) -> Bool {
+        guard case let .pair(agent, model) = advisor else { return false }
+        return orchestrator == .claude && agent == .claude
+            && resolve(entry(catalog, agent), model)?.advisorCapable == true
+    }
+
     /// The spike body's advisor; its effort comes from the Settings advisor row (§16.3), re-checked against
     /// the model the user actually picked. An unsupported level is dropped, which means that model's own
     /// default effort (§6.7): the daemon resolves a missing `effort` from the catalog.

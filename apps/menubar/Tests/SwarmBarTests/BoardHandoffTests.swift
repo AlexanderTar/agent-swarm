@@ -196,4 +196,59 @@ final class BoardHandoffTests: XCTestCase {
         _ = model.makeBoardHandoffForm()
         XCTAssertNil(model.boardHandoffPreselect)
     }
+
+    func testWorkerRolesCoverEveryWorkerAndNeverOrchestratorOrAdvisor() {
+        XCTAssertEqual(BoardHandoffForm.workerRoles, [.coder, .reviewer, .uiReviewer, .researcher, .debugger, .mechanical, .designer])
+    }
+
+    func testWorkerPicksPrefillFromSettings() async {
+        let f = await form()
+        f.selectedKey = "BUG-7"
+        XCTAssertFalse(f.isHandoff)
+        XCTAssertEqual(f.workerChoice(.coder), AgentChoice(agent: .claude, model: "sonnet"))
+        XCTAssertEqual(f.workerChoice(.reviewer), AgentChoice(agent: .codex, model: "gpt-6-astra", effort: "high"))
+    }
+
+    func testWorkerRolesPayloadSendsOnlyChangedRoles() async {
+        let f = await form()
+        f.selectedKey = "BUG-7"
+        XCTAssertNil(f.workerRolesPayload, "unchanged defaults keep following Settings")
+        f.setWorkerAgent(.coder, "codex")
+        XCTAssertEqual(f.workerRolesPayload?.keys.sorted(), ["coder"])
+        XCTAssertEqual(f.workerRolesPayload?["coder"]?.agent, .codex)
+    }
+
+    func testWorkerRolesPayloadSendsEffortOnlyChange() async {
+        let f = await form()
+        f.selectedKey = "BUG-7"
+        f.setWorkerEffort(.reviewer, "low")
+        XCTAssertEqual(f.workerRolesPayload?.keys.sorted(), ["reviewer"], "effort-only change is still a change")
+        XCTAssertEqual(f.workerRolesPayload?["reviewer"]?.effort, "low")
+    }
+
+    func testWorkerRolesPayloadOmitsRoleChangedBackToDefault() async {
+        let f = await form()
+        f.selectedKey = "BUG-7"
+        f.setWorkerEffort(.reviewer, "low")
+        XCTAssertNotNil(f.workerRolesPayload)
+        f.setWorkerEffort(.reviewer, "high")
+        XCTAssertNil(f.workerRolesPayload, "changing back to the Settings default omits the role again")
+    }
+
+    func testWorkerSettersWorkWhenSettingsLacksRoleDefault() async {
+        var settings = state.settings
+        settings[.coder] = nil
+        let f = BoardHandoffForm(client: client, settings: settings, agents: state.agents, connected: true, preselectAgent: nil)
+        await f.load()
+        f.selectedKey = "BUG-7"
+        f.setWorkerAgent(.coder, "codex")
+        XCTAssertEqual(f.workerChoice(.coder).agent, .codex, "picker edits apply even with no Settings default")
+    }
+
+    func testWorkerRolesPayloadIsNilInHandoffMode() async {
+        let f = await form(preselect: "auth-epic-orchestrator")
+        XCTAssertTrue(f.isHandoff)
+        f.setWorkerAgent(.coder, "codex")
+        XCTAssertNil(f.workerRolesPayload, "HandoffRequest has no roles")
+    }
 }

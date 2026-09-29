@@ -534,7 +534,7 @@ public final class AppModel {
 
     public func openBoard(_ fragment: String = "") { openURL(endpoint.boardURL(fragment: fragment)) }
 
-    /// Agent name whose item the next Orchestrate board item window preselects; consumed by makeBoardHandoffForm().
+    /// Agent name whose item the next Orchestrate task window preselects; consumed by makeBoardHandoffForm().
     public var boardHandoffPreselect: String?
 
     public func makeBoardHandoffForm() -> BoardHandoffForm {

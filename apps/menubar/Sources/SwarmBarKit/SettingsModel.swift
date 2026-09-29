@@ -215,10 +215,14 @@ public final class SettingsModel {
             let displayModel = (model != nil || none) ? d.model : (models.first?.value ?? d.model)
             // `d.effort` is already normalised at the source (`normalizeStoredEfforts`, called from
             // `load()`/`checkAgain()`), so this is a pure projection of `settings`.
+            // A native Claude advisor pairing has no separate effort, like the dialogs
+            // (`CatalogRules.hidesAdvisorEffort`); "No advisor" never has one either.
+            let advisorHidden = isAdvisor && CatalogRules.hidesAdvisorEffort(orchestrator: settings[.orchestrator]?.agent,
+                advisor: .pair(d.agent, d.model), catalog: catalog)
             return DefaultsRow(role: role, label: Copy.defaultsRowLabel(role), agent: d.agent.rawValue,
                                agentOptions: CatalogRules.agentOptions(enabled: settings.enabledAgents),
                                model: displayModel, modelOptions: models,
-                               effortOptions: none ? nil : CatalogRules.effortOptions(d.agent, model),
+                               effortOptions: (none || advisorHidden) ? nil : CatalogRules.effortOptions(d.agent, model),
                                effort: d.effort,
                                error: incomplete[role] ?? CatalogRules.goneModel(d, catalog: catalog),
                                note: notes[role])

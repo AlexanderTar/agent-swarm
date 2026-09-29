@@ -2,36 +2,43 @@ import AppKit
 import SwarmBarKit
 import SwiftUI
 
-/// `[swarm] 6   ✳ 42%   ◎ 18%   ▲ 63%   ⌘ 27%M` (§16.1). Values sit in fixed-width slots sized
-/// for "100%" so the item never shifts; stale values are dimmed.
+/// `[swarm] 6   ✳ 42%   ◎ 18%   ▲ 63%   ⌘ 27%` (§16.1). Each value is as wide as its
+/// own text, so the item grows and shrinks with the percentages; stale values are dimmed.
 public struct MenuBarLabelView: View {
     let label: MenuLabel
 
     public init(_ label: MenuLabel) { self.label = label }
 
+    /// Layout tokens shared with `slotWidth`/`tooltipSlots` and `StatusItemWatcher.setTooltips`,
+    /// so the tooltip rectangles step by exactly the widths the HStack above lays out.
+    public static let iconSize: CGFloat = 14
+    public static let innerSpacing: CGFloat = 3
+    public static let fontSize: CGFloat = 12
+    public static let segmentSpacing: CGFloat = 10
+    public static let compactSegmentSpacing: CGFloat = 6
+    /// Compact shows icons only: one icon plus its trailing gap.
+    public static let compactSlotWidth: CGFloat = iconSize + compactSegmentSpacing
+
     public var body: some View {
-        HStack(spacing: label.compact ? 6 : 10) {
-            HStack(spacing: 3) {
+        HStack(spacing: label.compact ? Self.compactSegmentSpacing : Self.segmentSpacing) {
+            HStack(spacing: Self.innerSpacing) {
                 AgentIcon(.swarm)
                 if !label.count.isEmpty {
                     Text(label.count).monospacedDigit()
                 }
             }
             ForEach(label.segments, id: \.agent) { s in
-                HStack(spacing: 3) {
+                HStack(spacing: Self.innerSpacing) {
                     AgentIcon(s.agent)
                     if !label.compact {
-                        ZStack(alignment: .leading) {
-                            Text(s.agent == .cursor ? MenuLabel.widestMonthlyValue : MenuLabel.widestValue).hidden()
-                            Text(s.text)
-                        }
-                        .monospacedDigit()
+                        Text(s.text)
                     }
                 }
+                .monospacedDigit()
                 .opacity(s.dimmed ? 0.45 : 1)
             }
         }
-        .font(.system(size: 12))
+        .font(.system(size: Self.fontSize))
         .fixedSize()
     }
 
@@ -42,9 +49,19 @@ public struct MenuBarLabelView: View {
     public static let badgeOffset = CGPoint(x: 9, y: 0)
     public static let badgeSize: CGFloat = 5
 
+    /// Width of one agent slot: the icon plus the value text beside it plus the trailing
+    /// inter-segment gap, so a watcher stepping x by slot widths stays aligned with the
+    /// `HStack(spacing:)` layout above. Compact shows icons only (see `compactSlotWidth`).
+    static func slotWidth(_ text: String, compact: Bool = false) -> CGFloat {
+        if compact { return compactSlotWidth }
+        let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .regular)
+        return iconSize + innerSpacing + ceil((text as NSString).size(withAttributes: [.font: font]).width)
+            + segmentSpacing
+    }
+
     /// Slot rectangles (label coordinates, origin top-left) for per-agent tooltips.
     public static func tooltipSlots(_ label: MenuLabel) -> [(String, CGFloat)] {
-        label.segments.map { ($0.tooltip, $0.agent == .cursor ? 64 : 54) }
+        label.segments.map { ($0.tooltip, slotWidth($0.text, compact: label.compact)) }
     }
 }
 

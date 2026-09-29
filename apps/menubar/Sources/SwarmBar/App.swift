@@ -237,6 +237,8 @@ struct BoardHandoffHost: View {
                                  onCancel: { dismissWindow(id: "board-handoff") })
             } else {
                 ProgressView().frame(width: 480, height: 200)
+                    .translucentDialogBackground()
+                    .background(TranslucentWindowAccessor())
             }
         }
         .onAppear { reopen() }
@@ -270,6 +272,8 @@ struct NewOrchestratorHost: View {
                                     onCancel: { dismissWindow(id: "new-orchestrator") })
             } else {
                 ProgressView().frame(width: 480, height: 200)
+                    .translucentDialogBackground()
+                    .background(TranslucentWindowAccessor())
             }
         }
         .onAppear { form = model.makeNewOrchestratorForm() }
@@ -295,7 +299,11 @@ struct SettingsHost: View {
 
     var body: some View {
         Group {
-            if let settings { SettingsView(model: settings) } else { ProgressView().frame(width: 740, height: 520) }
+            if let settings { SettingsView(model: settings) } else {
+                ProgressView().frame(width: 740, height: 520)
+                    .translucentDialogBackground()
+                    .background(TranslucentWindowAccessor())
+            }
         }
         .task {
             let s = model.makeSettings()
