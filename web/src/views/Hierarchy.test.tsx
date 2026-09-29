@@ -108,6 +108,19 @@ describe("Hierarchy view (§16.6)", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
+  it("opens Add child with a visible button and the context-menu key", async () => {
+    const { user, props } = setup({ selected: "EPIC-12" });
+    const add = within(row("EPIC-12")).getByRole("button", { name: "Add child to EPIC-12" });
+    await user.click(add);
+    await user.click(screen.getByRole("menuitem", { name: "Add story" }));
+    expect(props.onAddChild).toHaveBeenCalledWith("EPIC-12", "story");
+    const tree = screen.getByRole("tree");
+    tree.focus();
+    expect(tree).toHaveClass("focus-visible:ring-2");
+    await user.keyboard("{Shift>}{F10}{/Shift}");
+    expect(screen.getByRole("menuitem", { name: "Add story" })).toBeInTheDocument();
+  });
+
   it("shows the empty and filtered states", async () => {
     const a = setup({ items: [] });
     await a.user.click(screen.getByRole("button", { name: "New item" }));

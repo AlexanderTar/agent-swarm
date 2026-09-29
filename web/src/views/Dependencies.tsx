@@ -113,9 +113,10 @@ function Graph(p: DependenciesProps) {
         <label className="flex items-center gap-1.5">{C.hops}
           <Select value={String(hops)} disabled={scope !== "neighbourhood"} onValueChange={(v) => setHops(Number(v))}>
             <SelectTrigger aria-label={C.hops}><SelectValue /></SelectTrigger>
-            <SelectContent>{[1, 2, 3].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
+            <SelectContent>{Array.from({ length: Math.max(3, hops) }, (_, i) => i + 1).map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
           </Select>
         </label>
+        <Button type="button" variant="outline" disabled={scope !== "neighbourhood"} onClick={() => setHops((n) => n + 1)}>{C.expandHop}</Button>
         <Button type="button" variant="outline" onClick={() => void rf.fitView()}>{C.fit}</Button>
         <Button type="button" variant="outline" aria-label="−" onClick={() => void rf.zoomOut()}>−</Button>
         <Button type="button" variant="outline" aria-label="+" onClick={() => void rf.zoomIn()}>+</Button>

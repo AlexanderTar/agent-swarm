@@ -56,6 +56,14 @@ describe("Dependencies view (§16.8)", () => {
     await waitFor(() => expect(screen.queryByTestId("node-TASK-98")).not.toBeInTheDocument());
   });
 
+  it("continues expanding the neighbourhood beyond three hops", async () => {
+    const { user, daemon } = renderWithDaemon(<Host selected="TASK-104" />, { events: false });
+    await screen.findByTestId("node-TASK-104");
+    await user.click(screen.getByRole("radio", { name: "Neighbourhood" }));
+    for (let n = 2; n <= 4; n += 1) await user.click(screen.getByRole("button", { name: "Expand one hop" }));
+    expect(daemon.calls.some((c) => c.path === "/api/items/TASK-104/graph?scope=neighbourhood&hops=4")).toBe(true);
+  });
+
   it("dims non-matching nodes and keeps positions when statuses change", async () => {
     const { daemon } = renderWithDaemon(<Host selected="TASK-102" filter={{ ...none, status: "blocked" }} />);
     await screen.findByTestId("node-TASK-104");

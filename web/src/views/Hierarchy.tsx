@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { Key, TypeIcon } from "../components/icons";
 import { StatusPill } from "../components/StatusLabel";
@@ -48,13 +48,18 @@ export function Hierarchy(p: HierarchyProps) {
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return;
     const idx = rows.findIndex((r) => r.item.key === p.selected);
     const cur = rows[idx];
     const go = (i: number) => {
       const r = rows[Math.max(0, Math.min(rows.length - 1, i))];
       if (r) p.onSelect(r.item.key);
     };
-    if (e.key === "ArrowDown") go(idx + 1);
+    if ((e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) && cur) {
+      const type = (["story", "task"] as const).find((c) => PARENT_TYPES[c]?.includes(cur.item.type));
+      if (type) setMenu({ key: cur.item.key, type });
+      else return;
+    } else if (e.key === "ArrowDown") go(idx + 1);
     else if (e.key === "ArrowUp") go(idx < 0 ? 0 : idx - 1);
     else if (e.key === "ArrowLeft" && cur?.hasChildren && cur.expanded && !cur.context) toggle(cur.item.key, false);
     else if (e.key === "ArrowRight" && cur?.hasChildren && !cur.expanded) toggle(cur.item.key, true);
@@ -71,7 +76,7 @@ export function Hierarchy(p: HierarchyProps) {
         <span className="text-right">AGENTS</span>
       </div>
       {/* biome-ignore lint/a11y/useSemanticElements: ARIA tree pattern */}
-      <div ref={tree} role="tree" aria-label={C.hierarchy} tabIndex={0} onKeyDown={onKeyDown} className="outline-none">
+      <div ref={tree} role="tree" aria-label={C.hierarchy} tabIndex={0} onKeyDown={onKeyDown} className="rounded outline-none focus-visible:ring-2 focus-visible:ring-ring">
         {rows.map((r) => {
           const it = r.item;
           const top = r.depth === 0;
@@ -79,7 +84,7 @@ export function Hierarchy(p: HierarchyProps) {
           // re-deriving it, so this can't drift from PARENT_TYPES (and the daemon rules it mirrors).
           const childType = (["story", "task"] as const).find((c) => PARENT_TYPES[c]?.includes(it.type)) ?? null;
           return (
-            <DropdownMenu key={it.key} open={menu?.key === it.key} onOpenChange={(open) => { if (!open && menu?.key === it.key) closeMenu(); }}>
+            <DropdownMenu key={it.key} open={menu?.key === it.key} onOpenChange={(open) => { if (open && childType) setMenu({ key: it.key, type: childType }); else if (!open && menu?.key === it.key) closeMenu(); }}>
             <div
               role="treeitem"
               aria-label={`${it.key} ${it.title}`}
@@ -133,8 +138,8 @@ export function Hierarchy(p: HierarchyProps) {
                   </button>
                 )}
                 {it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warning" />}
+                {childType && <DropdownMenuTrigger asChild><button type="button" aria-label={`Add child to ${it.key}`} className="flex size-6 shrink-0 items-center justify-center rounded hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring" onClick={(e) => e.stopPropagation()}><Plus aria-hidden className="size-3.5" /></button></DropdownMenuTrigger>}
               </span>
-              <DropdownMenuTrigger asChild><span aria-hidden className="pointer-events-none absolute left-8 bottom-0 size-px" /></DropdownMenuTrigger>
             </div>
             {menu?.key === it.key && <DropdownMenuContent align="start" onCloseAutoFocus={(e) => { e.preventDefault(); tree.current?.focus(); }}>
               <DropdownMenuItem onSelect={() => { closeMenu(); p.onAddChild(it.key, menu.type); }}>
