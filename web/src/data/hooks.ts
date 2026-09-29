@@ -8,7 +8,7 @@ import type { ConnState } from "../types";
 import { keysForEvent } from "./invalidate";
 import { QueryStore } from "./store";
 
-interface DataCtx { api: Api; store: QueryStore; conn: ConnState; retry: () => void }
+interface DataCtx { api: Api; store: QueryStore; conn: ConnState; live: { connected: boolean; epoch: number }; retry: () => void }
 const Ctx = createContext<DataCtx | null>(null);
 
 function useData(): DataCtx {
@@ -21,6 +21,7 @@ export function DataProvider(p: { api: Api; children: ReactNode; events?: boolea
   const { api, events = true, backoffMs } = p;
   const store = useMemo(() => new QueryStore(), []);
   const [conn, setConn] = useState<ConnState>(events ? "connecting" : "open");
+  const live = useMemo(() => ({ connected: true, epoch: 0 }), []);
   const handle = useRef<EventsHandle | null>(null);
   useEffect(() => {
     if (!events) return;
@@ -40,6 +41,9 @@ export function DataProvider(p: { api: Api; children: ReactNode; events?: boolea
         }
       },
       onState: (s) => {
+        const connected = s !== "closed";
+        if (live.connected && !connected) live.epoch++;
+        live.connected = connected;
         setConn(s);
         // F17: the contract wants REST-then-subscribe; subscribing at the same time as the first
         // load can miss an event fired in between. Invalidating everything on every `open` (first
@@ -49,17 +53,17 @@ export function DataProvider(p: { api: Api; children: ReactNode; events?: boolea
     });
     handle.current = h;
     return () => h.close();
-  }, [api, store, events, backoffMs]);
+  }, [api, store, live, events, backoffMs]);
   const retry = useCallback(() => handle.current?.retryNow(), []);
-  const value = useMemo(() => ({ api, store, conn, retry }), [api, store, conn, retry]);
+  const value = useMemo(() => ({ api, store, conn, live, retry }), [api, store, conn, live, retry]);
   return createElement(Ctx.Provider, { value }, p.children);
 }
 
 export const useApi = () => useData().api;
 
 export function useConnection() {
-  const { conn, retry } = useData();
-  return { state: conn, connected: conn !== "closed", retry };
+  const { conn, live, retry } = useData();
+  return { state: conn, connected: conn !== "closed", live, retry };
 }
 
 export function useInvalidate(): (prefixes: string[]) => void {

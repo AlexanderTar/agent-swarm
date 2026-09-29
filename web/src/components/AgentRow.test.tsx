@@ -1,11 +1,23 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { useConnection } from "../data/hooks";
 import { makeAgent } from "../logic/agentActions";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import type { SessionState } from "../types";
 import { AgentList, AgentRow } from "./AgentRow";
+
+const streamState = vi.hoisted(() => ({ current: "connecting" }));
+vi.mock("../sse", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../sse")>();
+  return {
+    ...actual,
+    connectEvents: (options: Parameters<typeof actual.connectEvents>[0]) => actual.connectEvents({
+      ...options,
+      onState: (state) => { streamState.current = state; options.onState(state); },
+    }),
+  };
+});
 
 const daemon0 = () => createMockDaemon();
 
@@ -128,6 +140,37 @@ describe("AgentRow (§10.7 on the board)", () => {
     }
     await act(async () => { release(); });
     await waitFor(() => expect(d.calls.filter((c) => `${c.method} ${c.path}` === route)).toHaveLength(1));
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+  });
+
+  it.each([false, true])("does not toast when a pending response settles before the disconnect render (failed: %s)", async (failed) => {
+    const d = daemon0();
+    const route = "POST /api/agents/login-form-coder/pause";
+    if (failed) d.override(route, { status: 409, body: { error: { code: "conflict", message: "Still stopping." } } });
+    const release = d.hold(route);
+    let live: ReturnType<typeof useConnection>["live"] | undefined;
+    function RowWithLifecycle() {
+      const connection = useConnection();
+      live = connection.live;
+      return <><AgentRow agent={makeAgent({ name: "login-form-coder", session: ses("running") })} /><span data-testid="connection">{connection.connected ? "online" : "offline"}</span></>;
+    }
+    const { user } = renderWithDaemon(<RowWithLifecycle />, { daemon: d });
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Pausing…" })).toBeDisabled());
+    await act(async () => {
+      streamState.current = "open";
+      d.disconnect();
+      // Wait for the transport callback, then settle the response before React renders offline.
+      for (let i = 0; i < 20 && streamState.current !== "closed"; i++) await Promise.resolve();
+      expect(streamState.current).toBe("closed");
+      expect(screen.getByTestId("connection")).toHaveTextContent("online");
+      expect(live?.connected).toBe(false);
+      release();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByTestId("connection")).toHaveTextContent("offline"));
+    expect(d.calls.filter((c) => `${c.method} ${c.path}` === route)).toHaveLength(1);
     expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 

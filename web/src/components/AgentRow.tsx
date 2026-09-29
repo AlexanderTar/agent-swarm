@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { errorText } from "../api";
 import { C, ROLE_LABEL, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
@@ -13,7 +13,7 @@ import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 
 export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: number }) {
-  const { connected } = useConnection();
+  const { connected, live } = useConnection();
   const toast = useToast();
   const act = useMutation(
     (api, action: AgentEndpoint, body?: object) => api.agentAction(agent.name, action, body),
@@ -22,25 +22,20 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
   // `act.pending` clears before the refetch lands, so remember the click until the agent's state moves.
   const [requested, setRequested] = useState<AgentEndpoint | null>(null);
   const [confirming, setConfirming] = useState<AgentAction | null>(null);
-  const connection = useRef({ connected, epoch: 0 });
-  useEffect(() => {
-    if (connection.current.connected && !connected) connection.current.epoch++;
-    connection.current.connected = connected;
-  }, [connected]);
   // Keyed on the raw session state: displayState also flips on waiting/stale flags without the pause landing.
   const sessionState = agent.session?.state;
   useEffect(() => setRequested(null), [sessionState]);
   const onAction = async (a: AgentAction) => {
-    if (!connected) return;
-    const epoch = connection.current.epoch;
+    if (!live.connected) return;
+    const epoch = live.epoch;
     if (a.endpoint === "pause" || a.endpoint === "resume") setRequested(a.endpoint);
     try {
       await act.run(a.endpoint, a.body);
-      if (connection.current.connected && connection.current.epoch === epoch) toast.success(agentActionToast(a.endpoint, agent.name, a.body?.scope));
+      if (live.connected && live.epoch === epoch) toast.success(agentActionToast(a.endpoint, agent.name, a.body?.scope));
     } catch (e) {
       setRequested(null);
       // F20 / contracts §2: reuse errorText rather than an inline `instanceof ApiError` ternary.
-      if (connection.current.connected && connection.current.epoch === epoch) toast({ message: errorText(e) });
+      if (live.connected && live.epoch === epoch) toast({ message: errorText(e) });
     }
   };
   return (
