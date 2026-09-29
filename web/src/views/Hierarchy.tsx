@@ -108,7 +108,7 @@ export function Hierarchy(p: HierarchyProps) {
                   <Button
                     type="button"
                     variant="ghost"
-                    size="icon-xs"
+                    size="icon-sm"
                     aria-label={`${r.expanded ? "Collapse" : "Expand"} ${it.key}`}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -142,7 +142,7 @@ export function Hierarchy(p: HierarchyProps) {
                   </Button>
                 )}
                 {it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warning" />}
-                {childType && <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-xs" aria-label={`Add child to ${it.key}`} onClick={(e) => e.stopPropagation()}><Plus aria-hidden className="size-3.5" /></Button></DropdownMenuTrigger>}
+                {childType && <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label={`Add child to ${it.key}`} onClick={(e) => e.stopPropagation()}><Plus aria-hidden className="size-3.5" /></Button></DropdownMenuTrigger>}
               </span>
             </div>
             {menu?.key === it.key && <DropdownMenuContent align="start" onCloseAutoFocus={(e) => { e.preventDefault(); tree.current?.focus(); }}>

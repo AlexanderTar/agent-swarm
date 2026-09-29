@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Toaster as SonnerToaster, toast as sonner } from "sonner";
 
 export interface ToastInput { message: string; action?: { label: string; onClick: () => void } }
@@ -31,6 +31,7 @@ export function Toaster() {
       position="bottom-left"
       visibleToasts={3}
       toastOptions={{
+        style: { "--normal-bg": "var(--popover)" } as CSSProperties,
         classNames: {
           toast: "bg-popover text-popover-foreground border border-border shadow-lg font-sans text-[13px]",
           description: "text-muted-foreground",

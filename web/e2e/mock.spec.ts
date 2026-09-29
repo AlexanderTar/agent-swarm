@@ -208,6 +208,35 @@ test("creating an item confirms success", async ({ page }) => {
   await expect(page.getByText(/Created STORY-\d+/)).toBeVisible();
 });
 
+test("toast uses the popover surface in the browser", async ({ page }) => {
+  await page.goto("/#/hierarchy");
+  await page.getByRole("button", { name: "New item" }).click();
+  await page.getByRole("menuitem", { name: "Story" }).click();
+  const sheet = page.getByRole("dialog", { name: "New item" });
+  await sheet.getByRole("combobox", { name: "Parent" }).click();
+  await page.getByRole("option", { name: /EPIC-12/ }).click();
+  await sheet.getByRole("textbox", { name: "Title" }).fill("Toast surface check");
+  await sheet.getByRole("button", { name: "Create item" }).click();
+  const toast = page.locator("[data-sonner-toast]").last();
+  await expect(toast).toBeVisible();
+  expect(await toast.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(23, 23, 29)");
+});
+
+test("Hierarchy icon controls have 32px hit areas within 30px rows", async ({ page }) => {
+  await page.goto("/#/hierarchy");
+  const row = page.getByRole("treeitem", { name: /^EPIC-12 / });
+  const expand = row.getByRole("button", { name: "Collapse EPIC-12" });
+  const add = row.getByRole("button", { name: "Add child to EPIC-12" });
+  for (const control of [expand, add]) {
+    const box = await control.boundingBox();
+    expect(box?.width).toBe(32);
+    expect(box?.height).toBe(32);
+  }
+  expect((await row.boundingBox())?.height).toBe(30);
+  await expand.focus();
+  await expect(expand).toBeFocused();
+});
+
 test("narrow windows show a details sheet above the view", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 800 });
   await page.goto("/#/hierarchy?item=TASK-101");
