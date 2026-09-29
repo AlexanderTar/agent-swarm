@@ -98,3 +98,30 @@ func TestReclaimWorkDirsDryRunDeletesNothing(t *testing.T) {
 		t.Fatalf("dry run: exists=%v res=%+v", exists(dir), res)
 	}
 }
+
+func TestReclaimWorkDirsRemovesOldOrphansKeepsFreshOnes(t *testing.T) {
+	s, _, at := clockStore(t)
+	old := mkWorkDir(t, s, "ghost_old")
+	// dirs' mtimes come from the real clock; age the old one explicitly.
+	aged := s.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(old, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	fresh := mkWorkDir(t, s, "ghost_fresh")
+	if err := os.Chtimes(fresh, s.Now(), s.Now()); err != nil {
+		t.Fatal(err)
+	}
+	_ = at
+	if _, err := s.ReclaimWorkDirs(context.Background(), CleanupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if exists(old) || !exists(fresh) {
+		t.Fatalf("old exists=%v (want false), fresh exists=%v (want true)", exists(old), exists(fresh))
+	}
+	if _, err := s.ReclaimWorkDirs(context.Background(), CleanupOptions{NoGrace: true}); err != nil {
+		t.Fatal(err)
+	}
+	if exists(fresh) {
+		t.Fatal("NoGrace must remove the fresh orphan too")
+	}
+}

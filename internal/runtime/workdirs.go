@@ -11,7 +11,8 @@ import (
 // ReclaimWorkDirs removes <home>/work/<name> for every agent that is finished
 // (or acknowledged) past reclaimGrace with no live session. Retry recreates
 // the dir (agents.go MkdirAll) and every adapter rewrites its launch files
-// into it, so nothing durable lives there. Entries that are not real
+// into it, so nothing durable lives there. Dirs with no agent row (orphans)
+// go once their mtime is past the same grace. Entries that are not real
 // directories (symlinks included) are never touched.
 func (s *Store) ReclaimWorkDirs(ctx context.Context, opt CleanupOptions) ([]CleanupResult, error) {
 	root := filepath.Join(s.Home, "work")
@@ -50,10 +51,13 @@ func (s *Store) ReclaimWorkDirs(ctx context.Context, opt CleanupOptions) ([]Clea
 			continue
 		}
 		if agents == 0 {
-			keep("no agent row")
-			continue
-		}
-		if blocking > 0 {
+			// Orphan: judge by the dir's own mtime against the same grace.
+			fi, err := os.Lstat(path)
+			if err != nil || fi.ModTime().UnixMilli() > cutoff {
+				keep("orphan within grace")
+				continue
+			}
+		} else if blocking > 0 {
 			keep("agent live or within grace")
 			continue
 		}
