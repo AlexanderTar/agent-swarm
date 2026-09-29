@@ -663,6 +663,30 @@ Replace the line-63 bullet with:
 - When the work is merged and verified, write `integrated` on the chore with the merged sha per repo and the verification results. The daemon opens `accept_fix` for the chore; finish it exactly like an epic or bug (finish question, PRs or local merges, `finishing`). The chore moves to Done once everything is merged.
 ```
 
+## Progress-list wording
+
+Added by the user on 2026-09-29. The progress list (`internal/runtime/todos.go`) switches to
+present-continuous labels. The ids stay unchanged.
+
+| List | id → label |
+|---|---|
+| Fixed (epic, bug, chore) | `work` → `Making the changes`; `integrate` → `Merging and verifying`; `accept` → `Finishing: PR or merge` |
+| Feature spike | `frame` → `Understanding the request`; `research` → `Researching`; `design` → `Designing`; `spec` → `Reviewing the spec`; `plan` → `Writing the plan`; `critic` → `Checking for gaps`; `approve` → `Reviewing the plan and setting up tasks` |
+| Debug spike | `frame` → `Understanding the problem`; `evidence` → `Reproducing and gathering evidence`; `root_cause` → `Finding the root cause`; `report` → `Reviewing the findings`; `plan` → `Planning the fixes`; `critic` → `Checking for gaps`; `approve` → `Reviewing the plan and setting up tasks` |
+
+**Chore context step.** Every chore list, with or without tasks, starts with the entry
+`{id: "context", label: "Gathering context"}`:
+- It is `completed` once the chore has a non-cancelled task, or has any `progress` checkpoint on
+  the chore itself. Otherwise it is `in_progress`.
+- A chore with zero tasks also has the `work` entry ("Making the changes"). That entry is
+  `pending` while context is not completed and `in_progress` once it is. It is `completed` once an
+  `integrated` checkpoint exists, which takes precedence.
+
+**Skill.** In the chore bullet that begins "Do the work directly" (`swarm-orchestrator` SKILL.md,
+both copies), put this sentence first: `Gather context first: read the code, docs and recent
+history the chore touches, then report a progress checkpoint.` The existing text follows it
+unchanged.
+
 ## File list
 
 **Changed:**
@@ -863,3 +887,35 @@ Replace the line-63 bullet with:
     and runtime needs the approved row's id, agent, merge and checkpoint.
 18. **Notification Placeholders tests scan titles too.** `notifications.kind` has no CHECK
     (`0001_init.sql:263`), so the new kinds need no migration.
+
+## Agent name follows the agent-authored title
+
+Added by the user on 2026-09-29. A spike orchestrator started with no Name gets a daemon-generated
+agent name, `placeholderAgentName(placeholderTitle(request))`, for example `can-you-please-add`.
+When its first `accepted` checkpoint names the item (`applyPendingTitle`), the daemon also
+renames the agent. The rename happens in the same tx and makes no LLM call.
+
+- **Only generated names.** `items.title_pending = 1` is set only by `StartSpike` when the typed
+  Name is empty, and no agent-rename path exists, so a successful `applyPendingTitle` proves the
+  name was generated. A typed name is never renamed.
+- **New name:** `ids.KebabMax(title, 24)`, with no `-orchestrator` suffix. This matches a typed-Name
+  spike, which uses the kebab of the Name. It is made unique with `ids.Unique` against every other
+  agent's name, so a collision gets `-2`, `-3`, and so on. An empty kebab, or one equal to the
+  current name, means no rename.
+- **Kept in step with the name:**
+  - `agents.name` changes in the checkpoint tx, which also emits `agent.changed` with the new name.
+  - After commit, the daemon runs `tmux rename-session -t =<old> <new>` on the live session. On
+    success, a short tx sets that session's `sessions.tmux_name` to `<new>`. The reconciler's
+    single-tick dead-pane grace covers the gap between the two steps.
+  - If the rename fails, the daemon logs it and leaves `tmux_name` as it was. The agent keeps
+    running, and only terminal attach by the new name fails until its next session. Menubar
+    attaches with `attach -t =<agent name>`, and `Store.Terminal` returns `a.Name`.
+- **Needs no change (verified):**
+  - messages, `parent_agent_id` and notifications are keyed by agent id. A child addresses its
+    parent as `"parent"`, and notifications join `agents` for the name.
+  - Worktree paths and branches come from the branch, not the agent name.
+  - The reconciler's window title reads `sessions.tmux_name` and the current `agents.name`.
+  - Historical message payloads keep the old name.
+  - Claude's `-n <name>` display label keeps the old name until the next session.
+- **Out of scope:** renaming a typed name, renaming non-orchestrator agents, and a user-facing
+  rename command.
