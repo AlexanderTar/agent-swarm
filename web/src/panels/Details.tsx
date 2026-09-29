@@ -71,6 +71,7 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
     "aria-label": p.label,
     autoFocus: true,
     value: draft,
+    disabled: p.disabled,
     maxLength: p.maxLength,
     onBlur: save,
   };

@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
@@ -367,6 +367,32 @@ describe("Details panel (§16.9)", () => {
     expect(briefButton).toBeDisabled();
     release();
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Priority" })).toBeEnabled());
+  });
+
+  it("disables an open title editor while its save is in flight", async () => {
+    const d = createMockDaemon();
+    const release = d.hold("PATCH /api/items/TASK-103");
+    const { user } = setup("TASK-103", {}, d);
+    await user.click(await screen.findByRole("button", { name: "Password reset form" }));
+    const input = screen.getByRole("textbox", { name: "Title" });
+    await user.clear(input);
+    await user.type(input, "Reset form{Enter}");
+    await waitFor(() => expect(input).toBeDisabled());
+    expect(input).toHaveValue("Reset form");
+    release();
+    expect(await screen.findByRole("button", { name: "Reset form" })).toBeEnabled();
+  });
+
+  it("disables an open brief editor when connection drops", async () => {
+    const d = createMockDaemon();
+    const opened = setup("TASK-103", {}, d);
+    await opened.user.click(await screen.findByRole("button", { name: "Brief" }));
+    const textarea = screen.getByRole("textbox", { name: "Brief" });
+    await opened.user.type(textarea, " More detail");
+    opened.rerender(<Details {...opened.props} connected={false} />);
+    expect(textarea).toBeDisabled();
+    fireEvent.blur(textarea);
+    expect(d.calls.some((call) => call.method === "PATCH")).toBe(false);
   });
 
   it("returns focus to the title button after an in-place edit saves", async () => {
