@@ -84,7 +84,7 @@ describe("App flows", () => {
     await user.click(await screen.findByRole("button", { name: "Move to… EPIC-12" }));
     await user.click(screen.getByRole("menuitem", { name: /^Done/ }));
     expect(window.location.hash).toBe("#/inbox?level=top&req=req_accept");
-    expect(await screen.findByRole("heading", { name: "Accept epic · EPIC-12 › Authentication" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Finish epic · EPIC-12 › Authentication" })).toBeInTheDocument();
   });
 
   it("reviews from Details and resolves a request in the inbox", async () => {

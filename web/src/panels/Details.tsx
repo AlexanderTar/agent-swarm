@@ -5,6 +5,7 @@ import { AddDependency } from "../components/AddDependency";
 import { AgentList } from "../components/AgentRow";
 import { ArtifactViewer } from "../components/ArtifactViewer";
 import { CheckpointList } from "../components/CheckpointList";
+import { MergeList } from "../components/MergeList";
 import { MoveToMenu } from "../components/MoveToMenu";
 import { TodoList } from "../components/TodoList";
 import { useToast } from "../components/Toast";
@@ -195,6 +196,9 @@ export function Details(p: DetailsProps) {
         void terminal.run(name).catch((e: unknown) => toast({ message: errorText(e) }));
       }} />
 
+      {item.status === "in_review" && d.merges && (d.merges.length ? <MergeList merges={d.merges} /> : (
+        <p className="border-t border-line pt-3 text-muted">{C.awaitingOrchestrator}</p>
+      ))}
       {d.todos && <TodoList todos={d.todos} onSelect={p.onSelect} />}
 
       <div role="tablist" className="flex gap-3 border-t border-line pt-3">

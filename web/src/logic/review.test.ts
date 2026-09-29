@@ -9,7 +9,7 @@ describe("review rules (§16.11)", () => {
   it("labels scopes", () => {
     expect(SCOPE_LABEL).toEqual({
       question: "Answer", prompt: "Prompt", blocker: "Blocker", confirm_repos: "Confirm repositories", approve_section: "Approve section", approve_plan: "Approve plan",
-      approve_report: "Approve report", accept_epic: "Accept epic", accept_fix: "Accept fix", close_spike: "Close spike",
+      approve_report: "Approve report", accept_epic: "Finish epic", accept_fix: "Finish fix", close_spike: "Close spike",
     });
     expect(isApprovalKind("accept_fix")).toBe(true);
     expect(isApprovalKind("close_spike")).toBe(false);
@@ -32,7 +32,7 @@ describe("review rules (§16.11)", () => {
   it("builds approve bodies and resolutions", () => {
     expect(approveBody(req("req_section"))).toEqual({ section_sha256: "sha-dm-3", artifact_revision: 3 });
     expect(approveBody(req("req_plan"))).toEqual({ section_sha256: "sha-plan-1", artifact_revision: 1 });
-    expect(approveBody(req("req_accept"))).toEqual({ binding: req("req_accept").binding });
+    expect(approveBody(req("req_accept"), "auto")).toEqual({ binding: req("req_accept").binding, merge: "auto" });
     expect(closeResolution(req("req_close"))).toBe("Duplicate of EPIC-12");
     expect(closeResolution({ ...req("req_close"), binding: { resolution: "no_change" } })).toBe("No change needed");
     expect(gitBindingLine({ repo: "endurio-chat", branch: "epic/epic-12-authentication", sha: "a1b2c3d4e5f6" })).toBe("endurio-chat · epic/epic-12-authentication · a1b2c3d");

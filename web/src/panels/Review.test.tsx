@@ -71,7 +71,7 @@ describe("Review (§16.11)", () => {
   it("shows the accept-epic binding, verification, children and plan, and sends the binding back", async () => {
     const d = createMockDaemon();
     const { user } = setup("req_accept", d);
-    expect(screen.getByRole("heading", { name: "Accept epic · EPIC-12 › Authentication" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Finish epic · EPIC-12 › Authentication" })).toBeInTheDocument();
     expect(screen.getByText("endurio-chat · epic/epic-12-authentication · a1b2c3d")).toBeInTheDocument();
     expect(await screen.findByText("✓ go test ./...")).toBeInTheDocument();
     const children = await screen.findByRole("list", { name: "Children" });
@@ -82,11 +82,31 @@ describe("Review (§16.11)", () => {
     await user.click(screen.getByRole("button", { name: "Plan · rev 2 · View" }));
     expect(await screen.findByText("Login and reset.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close" }));
-    await user.click(screen.getByRole("button", { name: "Accept epic" }));
+    expect(screen.getByRole("button", { name: "Create PR" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Request changes" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create PR + auto-merge" }));
     await waitFor(() => expect(lastPost(d)?.body).toMatchObject({
       binding: { item_revision: 7, integrated_checkpoint: "ckp_int", git: [{ repo: "endurio-chat", sha: "a1b2c3d4e5f6a7b8" }] },
+      merge: "auto",
     }));
+  });
+
+  it("finishes with a PR and no auto-merge", async () => {
+    const d = createMockDaemon();
+    const { user } = setup("req_accept", d);
+    await user.click(screen.getByRole("button", { name: "Create PR" }));
+    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ binding: { item_revision: 7 }, merge: "manual" }));
+  });
+
+  it("offers only a local merge when no repo has a GitHub remote", async () => {
+    const d = createMockDaemon();
+    const req = d.db.requests.find((r) => r.id === "req_accept")!;
+    const { user } = renderWithDaemon(<Review request={{ ...req, finish_local: true }} connected />, { daemon: d, events: false });
+    expect(screen.queryByRole("button", { name: "Create PR" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create PR + auto-merge" })).toBeNull();
     expect(screen.getByRole("button", { name: "Request changes" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Merge locally" }));
+    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ binding: { item_revision: 7 }, merge: "local" }));
   });
 
   it("shows a stale acceptance binding", async () => {
@@ -96,13 +116,13 @@ describe("Review (§16.11)", () => {
       <Review request={{ ...req, binding: { item_revision: 6, integrated_checkpoint: "ckp_old", git: [] } }} connected />,
       { daemon: d, events: false },
     );
-    await user.click(await screen.findByRole("button", { name: "Accept epic" }));
+    await user.click(await screen.findByRole("button", { name: "Create PR + auto-merge" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("This request changed. Review the latest version.");
   });
 
   it("accepts a fix with its failing verification line", async () => {
     setup("req_fix");
-    expect(screen.getByRole("button", { name: "Accept fix" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create PR" })).toBeInTheDocument();
     expect(await screen.findByText("✗ pnpm test — 1 flaky test")).toBeInTheDocument();
   });
 

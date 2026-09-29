@@ -256,12 +256,13 @@ public enum AgentTree {
         return out
     }
 
-    /// Line 2: the orchestrator's progress ("3/8 · <current>") when the daemon
+    /// Line 2: merge progress while the root awaits merge, else the orchestrator's progress ("3/8 · <current>") when the daemon
     /// sends one, else workflow step for a workflow agent, item key for a
     /// legacy agent, plus the handoff phase while a replacement is in flight,
     /// else the state label when not running.
     public static func subtitle(_ a: AgentNode) -> String {
-        let middle = a.progress.map { "\($0.done)/\($0.total) · \($0.current.isEmpty ? Copy.progressDone : $0.current)" }
+        let middle = a.merge.map { Copy.awaitingMerge($0.merged, $0.total) }
+            ?? a.progress.map { "\($0.done)/\($0.total) · \($0.current.isEmpty ? Copy.progressDone : $0.current)" }
             ?? a.step ?? a.itemKey
         return ([Copy.roleLabel(a.role), middle] + [handoffStatus(a) ?? DisplayState(a).label].compactMap { $0 })
             .joined(separator: " · ")

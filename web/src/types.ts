@@ -97,6 +97,13 @@ export interface ItemDetail {
   workflow_state?: WorkflowState;
   crew?: WorkflowCrewMember[];
   todos?: Todo[];                  // root items with a progress list only
+  merges?: ItemMerge[];            // root in review with an approved finish only
+}
+
+export type MergeChoice = "auto" | "manual" | "local";
+export interface ItemMerge {
+  repo: string; kind: "pr" | "local"; url?: string; number?: number; base: string; head: string;
+  auto_merge: boolean; state: "open" | "merged" | "closed"; checks: "" | "pending" | "passing" | "failing"; merged_sha?: string;
 }
 
 export interface WorkflowFinding { severity: string; file: string; line?: number; unit?: number; summary: string; reviewer?: string }
@@ -242,6 +249,7 @@ export interface Request {
   created_at: number;
   // True while an approval's native prompt is open in the asking agent's terminal (spec 2.2.1).
   native_pending: boolean;
+  finish_local?: boolean;          // finish request whose repos have no GitHub remote
   approval_evidence: "observed" | "agent_reported" | "auto_empty" | null;
 }
 
@@ -375,7 +383,7 @@ export interface CreateSpikeBody {
 export interface CreateSpikeResponse { item: Item; agent: AgentNode; queued: boolean }
 
 export type AgentEndpoint = "pause" | "resume" | "cancel" | "ack" | "retry" | "terminal";
-export interface ApproveBody { section_sha256?: string; artifact_revision?: number; binding?: AcceptBinding }
+export interface ApproveBody { section_sha256?: string; artifact_revision?: number; binding?: AcceptBinding; merge?: MergeChoice }
 export interface ConfirmReposBody { repos: string[]; comment?: string; repos_version: number }
 
 export type ApiErrorCode =

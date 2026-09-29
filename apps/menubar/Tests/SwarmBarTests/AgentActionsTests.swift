@@ -204,6 +204,11 @@ final class AgentActionsTests: XCTestCase {
         XCTAssertEqual(AgentTree.subtitle(finished), "Orchestrator · 8/8 · Done")
         XCTAssertEqual(AgentTree.subtitle(AgentNode(name: "o", model: "m", role: .orchestrator, itemKey: "EPIC-1")),
                        "Orchestrator · EPIC-1", "no progress: unchanged")
+        let waiting = AgentNode(name: "o", model: "m", role: .orchestrator, itemKey: "EPIC-14",
+                                progress: AgentProgress(done: 6, total: 6, current: ""),
+                                merge: MergeProgress(merged: 1, total: 2))
+        XCTAssertEqual(AgentTree.subtitle(waiting), "Orchestrator · Awaiting merge · 1/2 merged")
+        XCTAssertEqual(Copy.awaitingMerge(1, 2), "Awaiting merge · 1/2 merged")
         let roles: [Role] = [.coder, .reviewer, .uiReviewer, .researcher, .debugger, .mechanical]
         XCTAssertEqual(roles.map(Copy.roleLabel), ["Coder", "Reviewer", "UI reviewer", "Researcher", "Debugger", "Mechanical"])
     }

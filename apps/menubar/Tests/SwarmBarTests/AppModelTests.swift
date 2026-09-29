@@ -172,7 +172,7 @@ final class AppModelTests: XCTestCase {
 
         let lines = [RequestKind.approveReport, .acceptEpic, .acceptFix, .confirmRepos, .closeSpike, .prompt, .blocker]
             .map { RequestLine.text(SwarmRequest(id: "r", kind: $0, itemKey: "EPIC-12", prompt: "Sample prompt")) }
-        XCTAssertEqual(lines, ["Approve report", "Accept EPIC-12", "Accept EPIC-12", "Confirm repositories", "Close spike?", "Sample prompt", "Sample prompt"])
+        XCTAssertEqual(lines, ["Approve report", "Finish EPIC-12", "Finish EPIC-12", "Confirm repositories", "Close spike?", "Sample prompt", "Sample prompt"])
         let repos = SwarmRequest(id: "r", kind: .confirmRepos, proposedRepos: 2)
         XCTAssertEqual(RequestLine.text(repos), "Confirm 2 repositories")
         XCTAssertEqual(RequestLine.text(SwarmRequest(id: "r", kind: .approveSection, prompt: "Fallback")), "Approve \"Fallback\"")
@@ -772,9 +772,9 @@ final class AppModelTests: XCTestCase {
 
         let accept = SwarmRequest(id: "r", kind: .acceptEpic, agentName: "auth-orch", itemKey: "EPIC-12",
                                   itemTitle: "Authentication", prompt: "SECRET")
-        XCTAssertEqual(NeedsYouRow.lines(accept), ["EPIC-12 · Authentication", "auth-orch", "Accept EPIC-12"])
+        XCTAssertEqual(NeedsYouRow.lines(accept), ["EPIC-12 · Authentication", "auth-orch", "Finish EPIC-12"])
         XCTAssertEqual(NeedsYouRow.lines(SwarmRequest(id: "r", kind: .acceptFix, itemKey: "BUG-3", prompt: "SECRET"))[2],
-                       "Accept BUG-3")
+                       "Finish BUG-3")
 
         for kind in RequestKind.allCases {
             let r = SwarmRequest(id: "r", kind: kind, prompt: "SECRET")

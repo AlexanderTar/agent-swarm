@@ -287,7 +287,8 @@ public enum Copy {
     // §17.5 request lines in Needs you
     public static let approvePlan = "Approve plan"
     public static let approveReport = "Approve report"
-    public static func acceptItem(_ key: String) -> String { "Accept \(key)" }
+    public static func acceptItem(_ key: String) -> String { "Finish \(key)" }
+    public static func awaitingMerge(_ merged: Int, _ total: Int) -> String { "Awaiting merge · \(merged)/\(total) merged" }
     public static let confirmRepositories = "Confirm repositories"
     public static func confirmRepositories(_ n: Int) -> String { "Confirm \(n) repositories" }
     public static let closeSpike = "Close spike?"
