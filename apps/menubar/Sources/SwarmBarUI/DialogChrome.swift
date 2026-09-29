@@ -10,6 +10,18 @@ public enum DialogChrome {
         window.isOpaque = false
         window.backgroundColor = .clear
     }
+
+    /// Which prominent style the default action takes: Liquid Glass where the OS
+    /// has it (macOS 26), tinted bordered buttons below.
+    public enum ProminentStyle: Equatable {
+        case glassProminent
+        case borderedProminent
+    }
+
+    public static var prominentStyle: ProminentStyle {
+        if #available(macOS 26, *) { return .glassProminent }
+        return .borderedProminent
+    }
 }
 
 /// Attaches to a dialog root so its NSWindow gets the translucent treatment once the
@@ -37,6 +49,22 @@ extension View {
             glassEffect(.regular)
         } else {
             background(.ultraThinMaterial)
+        }
+    }
+
+    /// The default action (Start/Queue orchestrator, Hand off, Done, Try again):
+    /// prominent and tinted per Apple HIG so it stands apart from plain Cancel.
+    /// Wins over the window root's `glassButtons()`, which styles every button alike.
+    @ViewBuilder func prominentDefaultAction() -> some View {
+        switch DialogChrome.prominentStyle {
+        case .glassProminent:
+            if #available(macOS 26, *) {
+                buttonStyle(.glassProminent)
+            } else {
+                buttonStyle(.borderedProminent)
+            }
+        case .borderedProminent:
+            buttonStyle(.borderedProminent)
         }
     }
 }

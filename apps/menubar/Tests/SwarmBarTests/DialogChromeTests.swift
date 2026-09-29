@@ -10,6 +10,14 @@ final class DialogChromeTests: XCTestCase {
         XCTAssertEqual(Copy.orchestrateBoardItemMenu, "Orchestrate task")
     }
 
+    func testProminentStyleMatchesOS() {
+        if #available(macOS 26, *) {
+            XCTAssertEqual(DialogChrome.prominentStyle, .glassProminent)
+        } else {
+            XCTAssertEqual(DialogChrome.prominentStyle, .borderedProminent)
+        }
+    }
+
     @MainActor
     func testTranslucentWindowConfig() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),

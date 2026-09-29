@@ -45,6 +45,7 @@ public struct BoardHandoffView: View {
                 Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction)
                 Button(form.primaryLabel) { Task { if await form.primary() { onDone() } } }
                     .keyboardShortcut(.defaultAction)
+                    .prominentDefaultAction()
                     .disabled(!form.canSubmit)
             }
             .padding(.horizontal, 22).padding(.vertical, 12)

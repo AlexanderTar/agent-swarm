@@ -25,7 +25,7 @@ public struct SettingsView: View {
                 HStack {
                     Text(error).foregroundStyle(.red)
                     Spacer()
-                    if model.connected { Button(Copy.retry) { Task { await model.save() } } }
+                    if model.connected { Button(Copy.retry) { Task { await model.save() } }.prominentDefaultAction() }
                 }
                 .padding(10)
                 .background(.bar)
@@ -64,7 +64,7 @@ struct AgentsTab: View {
                     if model.pendingDisable == row.kind, let notice = model.disableNotice {
                         HStack {
                             Text(notice).font(.caption)
-                            Button(Copy.apply) { Task { await model.applyDisable() } }
+                            Button(Copy.apply) { Task { await model.applyDisable() } }.prominentDefaultAction()
                             Button(Copy.cancel) { model.cancelDisable() }
                         }
                         .padding(.leading, 24)
@@ -185,7 +185,7 @@ struct LimitsTab: View {
             if let notice = model.limitNotice {
                 HStack {
                     Text(notice).font(.caption)
-                    Button(Copy.apply) { Task { await model.applyLimit() } }
+                    Button(Copy.apply) { Task { await model.applyLimit() } }.prominentDefaultAction()
                 }
             }
             LimitField(model: model, title: Copy.pauseDeadline, limit: .pauseDeadline, unit: Copy.seconds)
@@ -263,7 +263,7 @@ struct InstructionsTab: View {
                 Spacer()
                 if editing {
                     Button(Copy.cancel) { editing = false }
-                    Button(Copy.save) { commit() }.keyboardShortcut(.return, modifiers: .command)
+                    Button(Copy.save) { commit() }.keyboardShortcut(.return, modifiers: .command).prominentDefaultAction()
                 } else if !model.instructions.isEmpty {
                     Button(Copy.edit) { draft = model.instructions; editing = true }
                 }

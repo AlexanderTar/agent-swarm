@@ -55,12 +55,13 @@ public struct NewOrchestratorView: View {
                 Button(Copy.cancel, action: onCancel).keyboardShortcut(.cancelAction)
                     .disabled(form.startedWithUnsavedImages != nil)
                 if let agent = form.startedWithUnsavedImages {
-                    Button(Copy.done) { onStarted(agent) }.keyboardShortcut(.defaultAction)
+                    Button(Copy.done) { onStarted(agent) }.keyboardShortcut(.defaultAction).prominentDefaultAction()
                 } else {
                     Button(form.startLabel) {
                         Task { if let agent = await form.submit(), form.startedWithUnsavedImages == nil { onStarted(agent) } }
                     }
                     .keyboardShortcut(.defaultAction)
+                    .prominentDefaultAction()
                     .disabled(!form.canStart)
                 }
             }
