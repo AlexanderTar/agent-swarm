@@ -111,6 +111,26 @@ func TestSuperpowersCheckFailsWhenBothVariantsAreInstalled(t *testing.T) {
 	}
 }
 
+// P2: the graphify row sits right after python3.
+func TestChecksPutsGraphifyRightAfterPython3(t *testing.T) {
+	c := fakeHome(t)
+	d := newTestDoctor(t, c)
+	var names []string
+	for _, ch := range d.Checks(context.Background()) {
+		names = append(names, ch.Name)
+	}
+	for i, n := range names {
+		if n != "python3" {
+			continue
+		}
+		if i+1 >= len(names) || names[i+1] != "graphify" {
+			t.Fatalf("row after python3 = %v, want graphify; order = %v", names[i+1:], names)
+		}
+		return
+	}
+	t.Fatalf("no python3 row; order = %v", names)
+}
+
 // P1's eight checks stay first, in their original order.
 func TestChecksKeepsThePhaseOneOrderFirst(t *testing.T) {
 	c := fakeHome(t)

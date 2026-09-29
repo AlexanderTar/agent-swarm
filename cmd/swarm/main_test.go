@@ -934,6 +934,33 @@ func seedLegacyDB(t *testing.T, path string) {
 	}
 }
 
+// P2: --plugins covers graphify as well as the superpowers plugins.
+func TestInstallPluginsHelpMentionsGraphify(t *testing.T) {
+	code, _, e := swarm("install", "--help")
+	if code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if want := "only install or update the superpowers plugins and graphify"; !strings.Contains(e, want) {
+		t.Errorf("stderr lacks %q:\n%s", want, e)
+	}
+}
+
+// P2: a graphify ✗ check prints its row and fails doctor.
+func TestDoctorOutputPrintsAGraphifyFailure(t *testing.T) {
+	orig := doctorChecks
+	defer func() { doctorChecks = orig }()
+	doctorChecks = func(context.Context, install.Doctor) []install.Check {
+		return []install.Check{{Name: "graphify", Detail: "graphify isn't installed. Install it: swarm install (or uv tool install graphifyy==0.9.71)."}}
+	}
+	code, out, _ := swarm("doctor")
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if want := "✗ graphify: graphify isn't installed."; !strings.Contains(out, want) {
+		t.Errorf("out lacks %q:\n%s", want, out)
+	}
+}
+
 // swarm install refuses to run while v1 data is present (C5), with §17.3's sentence.
 func TestInstallRefusesWithLegacyData(t *testing.T) {
 	home := t.TempDir()

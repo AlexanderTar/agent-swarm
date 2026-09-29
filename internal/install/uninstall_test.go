@@ -182,6 +182,22 @@ func TestUninstallRemovesOnlySwarmSkills(t *testing.T) {
 	}
 }
 
+// P2: uninstall keeps the graphify CLI (like the plugins) and prints how to
+// remove it.
+func TestUninstallKeepsGraphifyAndPrintsTheHint(t *testing.T) {
+	c := fakeHome(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{"launchctl bootout gui/501/dev.swarm.daemon": {}}}
+	out := &bytes.Buffer{}
+	o := agentsOpts(t, c, f)
+	o.Out = out
+	if err := install.Uninstall(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	if want := "graphify was left installed. Remove it with: uv tool uninstall graphifyy"; !strings.Contains(out.String(), want) {
+		t.Errorf("out lacks %q:\n%s", want, out)
+	}
+}
+
 func TestUninstallOnACleanHomeSucceedsAndCreatesNothing(t *testing.T) {
 	c := fakeHome(t)
 	f := &execx.Fake{Responses: map[string]execx.Result{

@@ -18,11 +18,15 @@ import (
 func agentsOpts(t *testing.T, c install.Config, f *execx.Fake, kinds ...install.Kind) install.AgentsOpts {
 	t.Helper()
 	srv := marketplaceServer(t)
+	if _, ok := f.Responses["graphify --version"]; !ok {
+		f.Responses["graphify --version"] = execx.Result{Out: "graphify 0.9.71\n"}
+	}
 	return install.AgentsOpts{
 		Cfg: c, Run: f.Runner(), HTTP: srv.Client(), MarketplaceURL: srv.URL,
 		Installed: func(context.Context) []install.Kind { return kinds },
 		Confirm:   alwaysYes,
 		Out:       &bytes.Buffer{},
+		LookPath:  func(string) (string, error) { return "/usr/local/bin/uv", nil },
 	}
 }
 
@@ -216,6 +220,130 @@ func TestAgentsFailsWhenAWriterFails(t *testing.T) {
 	o := agentsOpts(t, c, f, install.KindAgy)
 	if err := install.Agents(context.Background(), o); err == nil {
 		t.Fatal("want an error when `agy mcp add` fails")
+	}
+}
+
+// P2: swarm install and swarm install --plugins print exactly one spec
+// graphify line after the plugin lines, and the full uv output reaches
+// install.log. A graphify failure never fails Agents.
+func TestAgentsPrintsTheGraphifyLine(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		graphify    execx.Result
+		uv          map[string]execx.Result
+		lookPath    func(string) (string, error)
+		pluginsOnly bool
+		want        string
+		wantLog     []string
+	}{
+		{
+			name:     "installed",
+			graphify: execx.Result{Err: errors.New("not found")},
+			uv:       map[string]execx.Result{"uv tool install graphifyy==0.9.71": {Out: "installed graphifyy 0.9.71\n"}},
+			want:     "✓ graphify 0.9.71 installed.",
+			wantLog:  []string{"✓ graphify 0.9.71 installed.", "installed graphifyy"},
+		},
+		{
+			name:     "current",
+			graphify: execx.Result{Out: "graphify 0.9.71\n"},
+			want:     "✓ graphify 0.9.71 is current.",
+			wantLog:  []string{"✓ graphify 0.9.71 is current."},
+		},
+		{
+			name:     "updated",
+			graphify: execx.Result{Out: "graphify 0.9.60\n"},
+			uv:       map[string]execx.Result{"uv tool install --force graphifyy==0.9.71": {Out: "installed\n"}},
+			want:     "✓ graphify updated from 0.9.60 to 0.9.71.",
+			wantLog:  []string{"✓ graphify updated from 0.9.60 to 0.9.71."},
+		},
+		{
+			name:        "plugins only",
+			graphify:    execx.Result{Out: "graphify 0.9.71\n"},
+			pluginsOnly: true,
+			want:        "✓ graphify 0.9.71 is current.",
+			wantLog:     []string{"✓ graphify 0.9.71 is current."},
+		},
+		{
+			name:     "no uv",
+			graphify: execx.Result{Err: errors.New("not found")},
+			lookPath: func(string) (string, error) { return "", errors.New("not found") },
+			want:     "✗ graphify: uv isn't installed. Install it: brew install uv, then run swarm install again.",
+			wantLog:  []string{"✗ graphify: uv isn't installed."},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := fakeHome(t)
+			responses := map[string]execx.Result{
+				"launchctl bootout gui/501/dev.swarm.updater":      {},
+				"agy mcp add --type stdio swarm " + c.Bin + " mcp": {},
+				"agy plugin list": {Out: `{"imports":[{"name":"superpowers"},{"name":"elements-of-style"}]}`},
+				"agy plugin install https://github.com/obra/superpowers":       {Out: "ok"},
+				"agy plugin install https://github.com/obra/elements-of-style": {Out: "ok"},
+				"graphify --version": tc.graphify,
+			}
+			for k, v := range tc.uv {
+				responses[k] = v
+			}
+			f := &execx.Fake{Responses: responses}
+			out := &bytes.Buffer{}
+			o := agentsOpts(t, c, f, install.KindAgy)
+			o.Out = out
+			o.PluginsOnly = tc.pluginsOnly
+			if tc.lookPath != nil {
+				o.LookPath = tc.lookPath
+			}
+			if err := install.Agents(context.Background(), o); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+			if last := lines[len(lines)-1]; last != tc.want {
+				t.Errorf("last line = %q, want %q\nfull output:\n%s", last, tc.want, out)
+			}
+			raw, err := os.ReadFile(c.Logs("install.log"))
+			if err != nil {
+				t.Fatalf("install.log: %v", err)
+			}
+			for _, want := range tc.wantLog {
+				if !strings.Contains(string(raw), want) {
+					t.Errorf("install.log lacks %q:\n%s", want, raw)
+				}
+			}
+		})
+	}
+}
+
+// §12.4 extends to graphify: a uv failure prints its exact ✗ line but the
+// plugin lines are still there and Agents returns nil.
+func TestAgentsReportsAGraphifyFailureWithoutFailing(t *testing.T) {
+	c := fakeHome(t)
+	f := &execx.Fake{Responses: map[string]execx.Result{
+		"launchctl bootout gui/501/dev.swarm.updater":       {},
+		"claude mcp remove swarm -s user":                   {},
+		"claude mcp add swarm -s user -- " + c.Bin + " mcp": {},
+		"claude plugin marketplace list":                    {Out: install.MarketplaceName},
+		"claude plugin list --json":                         {Out: `{"plugins":[]}`},
+		"graphify --version":                                {Err: errors.New("not found")},
+		"uv tool install graphifyy==0.9.71":                 {Out: "error: boom\nmore", Err: errors.New("exit status 1")},
+	}}
+	out := &bytes.Buffer{}
+	o := agentsOpts(t, c, f, install.KindClaude)
+	o.Out = out
+	if err := install.Agents(context.Background(), o); err != nil {
+		t.Fatalf("a graphify failure must not fail swarm install: %v", err)
+	}
+	want := "✗ graphify: uv tool install graphifyy==0.9.71 failed: error: boom. See ~/.swarm/logs/install.log."
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("no exact graphify failure line:\n%s", out)
+	}
+	if !strings.Contains(out.String(), "✗ claude:") {
+		t.Errorf("the plugin lines are missing:\n%s", out)
+	}
+	raw, err := os.ReadFile(c.Logs("install.log"))
+	if err != nil {
+		t.Fatalf("install.log: %v", err)
+	}
+	if !strings.Contains(string(raw), "more") {
+		t.Errorf("install.log lacks the full uv output:\n%s", raw)
 	}
 }
 

@@ -21,6 +21,7 @@ type AgentsOpts struct {
 	Installed      func(ctx context.Context) []Kind
 	Confirm        func(prompt string) bool
 	PluginsOnly    bool
+	LookPath       func(string) (string, error)
 	Out            io.Writer
 	ClaudeSessions ClaudeSessionsFunc // D3: the daemon's finished Claude sessions, for the trust prune
 }
@@ -158,7 +159,37 @@ func (o AgentsOpts) syncPlugins(ctx context.Context, installed []Kind) error {
 			fmt.Fprintf(o.Out, "✓ %s: %s installed\n", r.Kind, r.Plugin)
 		}
 	}
+	// Graphify (§12.4 shares its rule): one line, and the uv output joins the
+	// same install.log. A failure is reported, never returned.
+	g := SyncGraphify(ctx, o.Run, o.LookPath)
+	if line := graphifyLine(g); line != "" {
+		fmt.Fprintln(o.Out, line)
+		fmt.Fprintln(log, line)
+		if len(g.Log) > 0 {
+			log.Write(g.Log)
+		}
+	}
 	return nil
+}
+
+// graphifyLine formats the single install line from a GraphifyResult. All
+// install copy lives here, and the result's Log is appended to install.log by
+// the caller right after the line.
+func graphifyLine(g GraphifyResult) string {
+	switch g.Action {
+	case "installed":
+		return "✓ graphify " + GraphifyVersion + " installed."
+	case "current":
+		return "✓ graphify " + GraphifyVersion + " is current."
+	case "updated":
+		return "✓ graphify updated from " + g.Detail + " to " + GraphifyVersion + "."
+	case "failed":
+		if g.Detail == "uv missing" {
+			return "✗ graphify: uv isn't installed. Install it: brew install uv, then run swarm install again."
+		}
+		return "✗ graphify: uv tool install graphifyy==" + GraphifyVersion + " failed: " + g.Detail + ". See ~/.swarm/logs/install.log."
+	}
+	return ""
 }
 
 func (o AgentsOpts) report(verb string, paths []string) {

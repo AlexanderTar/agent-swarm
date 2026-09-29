@@ -30,10 +30,11 @@ Specs and plans live in `~/.swarm/specs` and `~/.swarm/plans`, not in your repos
 - [Ollama](https://ollama.com) with `qwen3-embedding:0.6b` (knowledge base search)
 - At least one agent CLI, signed in: `claude`, `codex`, `agy`, `cursor-agent`
 - Nothing to install for [superpowers](https://github.com/obra/superpowers): `swarm install` installs the superpowers plugins for every agent it finds (Cursor must be signed in first)
+- graphify 0.9.71 ([Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify)), installed by swarm install through uv
 - Git commit signing enabled (`commit.gpgsign=true`) in repositories agents work in
 
 ```bash
-brew install go tmux pnpm
+brew install go tmux pnpm uv
 brew install --cask ghostty ollama
 ollama pull qwen3-embedding:0.6b
 ```
@@ -54,6 +55,7 @@ open /Applications/Swarm.app
 - writes `~/Library/LaunchAgents/dev.swarm.daemon.plist` and starts the daemon on 127.0.0.1:7777
 - writes `~/.swarm/tmux.conf` (agents run on a private tmux socket, `tmux -L swarm`)
 - for each installed agent, installs the superpowers plugins it supports, and adds the `swarm` MCP server, the Swarm hooks (inactive outside Swarm sessions) and the Swarm role skills (`swarm`, `swarm-orchestrator`, `swarm-spike`, `swarm-workflows`, `swarm-batching` and worker/reviewer skills)
+- installs graphify 0.9.71 with uv and gives every agent the graphify skill
 - scans your home folder for git repositories (hidden folders, `~/Library`, `~/Music`, `~/Pictures`, `~/Movies`, and `~/Downloads` are skipped by default; change exclusions in Settings)
 - removes hooks and config left by Agent Swarm 1.x
 - links `swarm` into `~/.local/bin`
@@ -195,6 +197,7 @@ Each agent runs `swarm mcp` as an MCP server. Tools: `swarm_sync`, `swarm_checkp
 - **Terminal button does nothing**: allow Swarm to control Ghostty in System Settings → Privacy & Security → Automation.
 - **Usage shows `--` or a dimmed value**: the source was unreachable or the agent's login expired; open the agent once to refresh its login.
 - **Search unavailable**: `ollama pull qwen3-embedding:0.6b`.
+- **Doctor reports graphify as missing or too old**: run `swarm install` (install `uv` first with `brew install uv` if it is missing).
 - **Commit signing fails in an agent session**: make sure gpg-agent has your key unlocked (sign one commit in any terminal), then resume the agent.
 - **See agent sessions directly**: `tmux -L swarm ls`.
 
