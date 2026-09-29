@@ -378,7 +378,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, in CreateInput, by Act
 		return Item{}, errf(CodeBadRequest, "A chore isn't a spike. Create type chore.")
 	}
 	if in.Type == Spike && in.SpikeIntent != "feature" && in.SpikeIntent != "debug" {
-		return Item{}, errf(CodeBadRequest, "Spikes start with an intent. Use New spike.")
+		return Item{}, errf(CodeBadRequest, "Spikes start with an intent. Use New orchestrator.")
 	}
 	if in.Type != Spike && in.SpikeIntent != "" {
 		return Item{}, errf(CodeBadRequest, "Only spikes have an intent.")

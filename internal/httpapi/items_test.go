@@ -50,7 +50,7 @@ func TestCreateItem(t *testing.T) {
 		status    int
 		code, msg string
 	}{
-		{map[string]any{"type": "spike", "title": "Explore"}, 400, "bad_request", "Spikes start with an intent. Use New spike."},
+		{map[string]any{"type": "spike", "title": "Explore"}, 400, "bad_request", "Spikes start with an intent. Use New orchestrator."},
 		{map[string]any{"type": "story", "title": "Orphan"}, 400, "bad_request", "A story needs a parent epic."},
 		{map[string]any{"type": "task", "title": "Orphan"}, 400, "bad_request", "A task needs a parent story, bug, spike or chore."},
 		{map[string]any{"type": "saga", "title": "x"}, 400, "bad_request", `Unknown item type "saga".`},
