@@ -1357,3 +1357,57 @@ func TestCreateSucceedsWhenTheExcludeIsUnwritable(t *testing.T) {
 		t.Fatalf("logs = %q, want a worktree: graphify exclude line", logs)
 	}
 }
+
+// withOrigin gives repo a bare remote named origin with main pushed, so
+// origin/main exists as a remote-tracking ref.
+func withOrigin(t *testing.T, repo string) string {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	run(t, filepath.Dir(bare), "init", "--bare", "-b", "main", bare)
+	run(t, repo, "remote", "add", "origin", bare)
+	run(t, repo, "push", "origin", "main")
+	run(t, repo, "fetch", "origin")
+	return bare
+}
+
+func commitFile(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, "add", name)
+	run(t, dir, "-c", "commit.gpgsign=false", "commit", "-m", name)
+}
+
+// A tree branched off another task branch (base_ref is that branch, which does
+// not contain HEAD) is merged once HEAD is contained in the remote default
+// branch; the local origin/main is stale until reclaim fetches it.
+func TestRemoveDeletesATreeContainedInOriginDefaultBranch(t *testing.T) {
+	repo := gitRepo(t)
+	withOrigin(t, repo)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	run(t, repo, "branch", "task/base")
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/child", Base: "task/base",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, wt.Path, "child.txt")
+	// not contained anywhere yet: retained
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "unmerged" {
+		t.Fatalf("worktree = %+v, want retained/unmerged before the push", out)
+	}
+	run(t, repo, "push", "origin", "task/child:main")
+	out, err = s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed: HEAD is contained in origin/main", out)
+	}
+}

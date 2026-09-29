@@ -38,6 +38,9 @@ type Service struct {
 	// OnRetained fires inside the same transaction that marks a worktree
 	// retained, so a caller can e.g. raise a notification atomically.
 	OnRetained func(ctx context.Context, tx *sql.Tx, wt Worktree) error
+	// Evidence adds merged-elsewhere checks (merged PRs); nil = base rules only.
+	Evidence MergeEvidence
+	pass     passState
 }
 
 // worktreesDir is where every worktree lives, regardless of where its repo
@@ -156,6 +159,19 @@ func (s *Service) branchExists(ctx context.Context, repoPath, branch string) boo
 // local default branch, read from the repos row and falling back to the repo's
 // current HEAD.
 func (s *Service) defaultBase(ctx context.Context, repoPath string) (string, error) {
+	name, err := s.defaultName(ctx, repoPath)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.git(ctx, repoPath, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+name); err == nil {
+		return "origin/" + name, nil
+	}
+	return name, nil
+}
+
+// defaultName is the repo's default branch name: the recorded one, else the
+// branch HEAD points at.
+func (s *Service) defaultName(ctx context.Context, repoPath string) (string, error) {
 	var branch sql.NullString
 	if err := s.DB.QueryRowContext(ctx,
 		`SELECT default_branch FROM repos WHERE path = ?`, repoPath).Scan(&branch); err != nil && err != sql.ErrNoRows {
@@ -168,9 +184,6 @@ func (s *Service) defaultBase(ctx context.Context, repoPath string) (string, err
 			return "", fmt.Errorf("worktree: could not determine the default branch of %s: %w", repoPath, err)
 		}
 		name = strings.TrimSpace(string(out))
-	}
-	if _, err := s.git(ctx, repoPath, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+name); err == nil {
-		return "origin/" + name, nil
 	}
 	return name, nil
 }
@@ -585,7 +598,7 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	// A detached worktree whose HEAD has moved off detached_sha holds commits
 	// reachable from no ref anywhere else. Branch == "" alone would skip
 	// mergedOrPushed entirely and delete those commits with the worktree.
-	if wt.Branch == "" && !s.atDetachedSHA(ctx, wt) {
+	if wt.Branch == "" && !s.atDetachedSHA(ctx, wt) && !s.mergedOnlyElsewhere(ctx, wt) {
 		return s.retain(ctx, wt, "unmerged")
 	}
 	if wt.Branch != "" && !s.mergedOrPushed(ctx, wt) {
@@ -607,9 +620,18 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	return wt, err
 }
 
+// mergedOnlyElsewhere is merged evidence 2-4 for the tree's current HEAD.
+func (s *Service) mergedOnlyElsewhere(ctx context.Context, wt Worktree) bool {
+	head, ok := s.headSHA(ctx, wt)
+	return ok && s.mergedElsewhere(ctx, wt, head)
+}
+
 // mergedOrPushed is §12.1: merged into base_ref, or pushed so the upstream matches HEAD.
 func (s *Service) mergedOrPushed(ctx context.Context, wt Worktree) bool {
 	if _, err := s.git(ctx, wt.Path, "merge-base", "--is-ancestor", "HEAD", wt.BaseRef); err == nil {
+		return true
+	}
+	if s.mergedOnlyElsewhere(ctx, wt) {
 		return true
 	}
 	up, err := s.git(ctx, wt.Path, "rev-parse", "@{u}")
