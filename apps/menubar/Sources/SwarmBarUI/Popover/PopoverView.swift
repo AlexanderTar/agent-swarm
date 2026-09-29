@@ -124,25 +124,38 @@ public struct PopoverView: View {
     }
 }
 
-/// The footer's split button: primary action starts a new orchestrator, the chevron
-/// segment opens the More-ways-to-start menu.
+/// The footer's split button: a primary button starts a new orchestrator, an
+/// adjacent chevron opens the More-ways-to-start menu. Deliberately NOT one Menu
+/// with a primaryAction: that renders a single segmented control whose chevron
+/// cell drew its pressed pill ~3 pt below the label segment with the menu open
+/// (screenshot 02), which no modifier on the Menu can fix. The chevron is a
+/// borderless menu like the header ellipsis: a popup bezel is not an option —
+/// hiding its indicator collapses it to 14 pt (misaligned), and under the
+/// popover's glass buttons the bezel rasterizes as a blank white box (verified
+/// with key-window captures). A bezel-less glyph centered in the 20 pt row
+/// cannot drift off any box.
 struct PopoverFooterSplitButton: View {
     let openNewOrchestrator: () -> Void
     let openBoardHandoff: (String?) -> Void
     let connected: Bool
 
     var body: some View {
-        Menu {
-            Button(Copy.orchestrateBoardItemMenu) { openBoardHandoff(nil) }
-        } label: {
-            Label(Copy.newOrchestrator, systemImage: "plus")
-        } primaryAction: {
-            openNewOrchestrator()
+        HStack(spacing: 0) {
+            Button(action: openNewOrchestrator) {
+                Label(Copy.newOrchestrator, systemImage: "plus")
+            }
+            Menu {
+                Button(Copy.orchestrateBoardItemMenu) { openBoardHandoff(nil) }
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .accessibilityLabel(Copy.moreStartOptions)
+            .frame(width: 28)
         }
-        .menuStyle(.button)
         .controlSize(.small)
         .help(Copy.moreStartOptions)
-        .accessibilityLabel(Copy.newOrchestrator)
         .disabled(!connected)
     }
 }

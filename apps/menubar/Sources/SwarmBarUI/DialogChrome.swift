@@ -7,6 +7,10 @@ import SwiftUI
 /// made transparent here with the material drawn by the content itself.
 public enum DialogChrome {
     public static func configure(_ window: NSWindow) {
+        // Full-size content lets the window material run under the title bar so
+        // one surface covers the whole window; without it the title strip shows
+        // the desktop unblurred (transparent titlebar, nothing behind it).
+        window.styleMask.insert(.fullSizeContentView)
         window.isOpaque = false
         window.backgroundColor = .clear
         window.titlebarAppearsTransparent = true
@@ -24,7 +28,7 @@ public enum DialogChrome {
     /// measured this session), which blinds the OCR layout tests. Real windows
     /// composite it correctly (verified with screencapture), so those tests pin this
     /// to `.borderedProminent` while capturing. Product default is nil: follow the OS.
-    nonisolated(unsafe) public static var prominentStyleOverride: ProminentStyle?
+    nonisolated(unsafe) static var prominentStyleOverride: ProminentStyle?
 
     /// HIG default action: prominent and tinted on every macOS version.
     public static var prominentStyle: ProminentStyle {
@@ -36,20 +40,25 @@ public enum DialogChrome {
 
 /// Attaches to a dialog root so its NSWindow gets the translucent treatment once the
 /// view joins a window. A plain `.background` child: zero size, no drawing.
-struct TranslucentWindowAccessor: NSViewRepresentable {
-    final class AccessorView: NSView {
-        override func viewDidMoveToWindow() {
+/// Public so the Window/Settings scene hosts (SwarmBar module) can cover their
+/// loading placeholders too — otherwise the window flashes opaque first.
+public struct TranslucentWindowAccessor: NSViewRepresentable {
+    public init() {}
+
+    public final class AccessorView: NSView {
+        override public func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if let window { DialogChrome.configure(window) }
         }
     }
 
-    func makeNSView(context: Context) -> AccessorView { AccessorView(frame: .zero) }
+    public func makeNSView(context: Context) -> AccessorView { AccessorView(frame: .zero) }
 
-    func updateNSView(_ nsView: AccessorView, context: Context) {
+    public func updateNSView(_ nsView: AccessorView, context: Context) {
         guard let window = nsView.window else { return }
-        let bgClear = (window.backgroundColor as? NSColor)?.isEqual(NSColor.clear) == true
-        guard window.isOpaque || !bgClear || !window.titlebarAppearsTransparent else { return }
+        guard window.isOpaque || window.backgroundColor != .clear
+            || !window.titlebarAppearsTransparent
+            || !window.styleMask.contains(.fullSizeContentView) else { return }
         DialogChrome.configure(window)
     }
 }
@@ -60,8 +69,9 @@ extension View {
     /// almost unblurred and tinted captions to the background, leaving
     /// secondary text unreadable. A full-content `glassEffect` would refract the
     /// text as well; Liquid Glass accents live on the controls themselves via
-    /// `dialogGlass()`.
-    func translucentDialogBackground() -> some View {
+    /// `dialogGlass()`. Public so the scene hosts (SwarmBar module) can cover
+    /// their loading placeholders with the same material.
+    public func translucentDialogBackground() -> some View {
         background(.regularMaterial)
     }
 
