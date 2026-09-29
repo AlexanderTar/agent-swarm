@@ -1244,16 +1244,11 @@ func TestAskNativePromptForMsgMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var res struct {
-		NativePrompt struct {
-			Header   string   `json:"header"`
-			Question string   `json:"question"`
-			Options  []string `json:"options"`
-		} `json:"native_prompt"`
-	}
+	// print-then-ask: the result is the print step only; the question comes in a request_ask relay.
+	var res map[string]any
 	json.Unmarshal(mustJSON(out2), &res)
-	if res.NativePrompt.Question != "may I drop table x?" {
-		t.Fatalf("native_prompt = %+v, want no ref token (2026-09-28-approval-summary-enforced)", res)
+	if res["native_prompt"] != nil || res["next"] != runtime.PrintNext {
+		t.Fatalf("result = %+v, want no native_prompt and next == PrintNext", res)
 	}
 	var cb struct {
 		ChatBlock string `json:"chat_block"`
@@ -1300,8 +1295,10 @@ func TestAskApprovalResultHasChatBlock(t *testing.T) {
 	if !strings.HasPrefix(res.ChatBlock, "### Approval 1 of 1 · Spec section \"DB models\" (rev 1)\n\nOne users table.\n\nFull section: ") {
 		t.Fatalf("chat_block = %q", res.ChatBlock)
 	}
-	if !strings.Contains(res.Next, "chat_block") {
-		t.Fatalf("next = %q, want it to point at chat_block", res.Next)
+	var raw map[string]any
+	json.Unmarshal(mustJSON(out), &raw)
+	if res.Next != runtime.PrintNext || raw["native_prompt"] != nil {
+		t.Fatalf("next = %q, native_prompt = %v; want PrintNext and no native_prompt", res.Next, raw["native_prompt"])
 	}
 }
 

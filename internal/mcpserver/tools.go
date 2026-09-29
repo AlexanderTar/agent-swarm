@@ -186,7 +186,7 @@ func askTool(s *Server) ToolDef {
 		Name: "swarm_ask",
 		Description: "Request an artifact approval, forward a native answer, or withdraw an earlier ask. New confirm_repos requests are refused; use swarm_repo_register for a newly found local repository. " +
 			"Returns at once with the request id; the answer arrives later as a message.",
-		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, legacy confirm_repos, native_prompt, native_answer, or withdraw. For spec approval, prompt is the 1–2000-character section brief: a lead sentence plus bullets (a single line over 300 characters is refused), keeping any table or sketch syntax. The result carries chat_block: print it exactly as your whole chat message immediately before each native question and replay, never restated or paraphrased -- the native question itself shows only a short head of the summary. Ask for every section except Context, Background, Bibliography, References, File list, Files, and Work breakdown; Out of scope, Explicitly out of scope, unknown headings, and headingless content require review. For plan and debug report approval, chat_block already includes the review paths; print it the same way. question is refused for claude, agy and codex (they have a native question tool Swarm hooks instead); cursor and muse keep it, since their native question tool is not hookable. native_prompt for_msg gets a child's approval question's native prompt; native_answer ref forwards an explicit decision. Cursor AskQuestion and Muse request_user_input must also pass the exact native tool return as answer_text; cancellation submits nothing and the report has agent_reported provenance."},"prompt":{"type":"string"},"options":{"type":"array"},
+		Schema: objSchemaRequired(`"kind":{"type":"string","description":"Kind: question, approval, legacy confirm_repos, native_prompt, native_answer, or withdraw. For spec approval, prompt is the 1–2000-character section brief: a lead sentence plus bullets (a single line over 300 characters is refused), keeping any table or sketch syntax. The result carries chat_block and next: end your turn with chat_block as your whole reply; Swarm then sends the native question in a request_ask relay. Ask for every section except Context, Background, Bibliography, References, File list, Files, and Work breakdown; Out of scope, Explicitly out of scope, unknown headings, and headingless content require review. For plan and debug report approval, chat_block already includes the review paths. question is refused for claude, agy and codex (they have a native question tool Swarm hooks instead); cursor and muse keep it, since their native question tool is not hookable. native_prompt for_msg gets a child's approval question's native prompt; native_answer ref forwards an explicit decision. Cursor AskQuestion and Muse request_user_input must also pass the exact native tool return as answer_text; cancellation submits nothing and the report has agent_reported provenance."},"prompt":{"type":"string"},"options":{"type":"array"},
 			"artifact":{"type":"string","description":"Artifact id for approval kinds"},"section":{"type":"string","description":"Section id for per-section approval"},"withdraw":{"type":"string"},
 				"nothing_to_review":{"type":"string","description":"Spec sections only: a one-line reason there is nothing for the user to review (e.g. \"No DB changes: no tables, columns or migrations.\"). The section body must be a single short line (≤120 characters), no tables, lists or code."},
 			"repos":{"type":"array","items":{"type":"object","properties":{
@@ -246,15 +246,17 @@ func askTool(s *Server) ToolDef {
 // NativePrompt is nil and the key is omitted.
 func requestOut(r runtime.Request) map[string]any {
 	out := map[string]any{"request_id": r.ID, "state": r.State}
-	if r.NativePrompt != nil {
+	if r.ChatBlock != "" {
+		// print-then-ask: the block alone now; the daemon sends the question in a
+		// request_ask relay once the agent's turn ends with it.
+		out["chat_block"] = r.ChatBlock
+		out["next"] = runtime.PrintNext
+	} else if r.NativePrompt != nil {
 		out["native_prompt"] = r.NativePrompt
 		// 2026-09-26 fix (native-railway-tracing finding): a stale skill can
 		// bind the answer and never forward it, since nothing else in this
 		// result says there is a next step. Spell it out here too.
 		out["next"] = runtime.NativePromptNextStep(r.ID, runtime.PromptDecisions(r.Kind, *r.NativePrompt))
-	}
-	if r.ChatBlock != "" {
-		out["chat_block"] = r.ChatBlock
 	}
 	if r.ReviewPaths != nil {
 		out["review_paths"] = r.ReviewPaths

@@ -1124,3 +1124,22 @@ func TestMusePasteReady(t *testing.T) {
 		t.Error("request_user_input dialog on screen must refuse the paste")
 	}
 }
+
+// TestMuseLastReply: the newest run's committed assistant text at or after
+// since, joined by newline; a missing log is unreadable (print-then-ask fails open).
+func TestMuseLastReply(t *testing.T) {
+	d := testDeps(t)
+	museSessionLogFixture(t, d.UserHome, "session-assistant-reply.jsonl", "sid1")
+	m := newMuse(d)
+
+	text, found, readable := m.LastReply("sid1", time.UnixMicro(1500))
+	if !readable || !found || text != "### Approval · Plan (rev 1)\nSpec: /x" {
+		t.Fatalf("got %q found=%v readable=%v", text, found, readable)
+	}
+	if _, found, _ := m.LastReply("sid1", time.UnixMicro(3000)); found {
+		t.Fatal("reply older than since counted")
+	}
+	if _, _, readable := m.LastReply("missing", time.Time{}); readable {
+		t.Fatal("missing log must be unreadable (fail open)")
+	}
+}

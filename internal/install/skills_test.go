@@ -109,8 +109,9 @@ func TestApprovalSkillsDescribeCurrentContract(t *testing.T) {
 	for name, body := range map[string]string{"swarm-orchestrator": orch, "swarm-spike": spike} {
 		for _, want := range []string{"starting repositories are hints", "1–2000", "Out of scope", "Explicitly out of scope",
 			// 2026-09-28-approval-chat-block: review paths reach the user
-			// inside the daemon-built chat_block, printed exactly.
-			"chat_block", "never restated, shortened or paraphrased"} {
+			// inside the daemon-built chat_block; 2026-09-29-approval-print-then-ask:
+			// the agent replies with it and ends its turn, then Swarm sends request_ask.
+			"chat_block", "end your turn", "request_ask"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s missing %q", name, want)
 			}
@@ -124,7 +125,7 @@ func TestApprovalSkillsDescribeCurrentContract(t *testing.T) {
 	}
 	for _, want := range []string{"Cursor `AskQuestion`", "Muse `request_user_input`", "answer_text", "agent_reported", "cancellation",
 		"Approval summaries", "arrow chains", "Verification: how we'll prove the graphify install is correct, repeatable and safe to undo.",
-		"as your whole chat message, with nothing before or after it"} {
+		"reply with exactly that block and nothing else"} {
 		if !strings.Contains(orch, want) {
 			t.Errorf("swarm-orchestrator missing %q", want)
 		}

@@ -623,6 +623,7 @@ type museLogEvent struct {
 	Kind      string `json:"kind"`
 	PromptID  string `json:"prompt_id"`
 	Outcome   string `json:"outcome"`
+	Text      string `json:"text"`
 	Questions []struct {
 		Question string `json:"question"`
 	} `json:"questions"`
@@ -638,6 +639,7 @@ type museLogEvent struct {
 type museLogRecord struct {
 	RecordedAt int64 `json:"recorded_at"`
 	Payload    struct {
+		RunID string       `json:"run_id"`
 		Event museLogEvent `json:"event"`
 	} `json:"payload"`
 }
@@ -746,4 +748,49 @@ func scanMuseSessionLog(path, token, normQuestion string, since time.Time) (labe
 		}
 	}
 	return label, note, ok
+}
+
+// LastReply returns the newest run's committed assistant text recorded at or
+// after since (joined by "\n"): Muse has no Stop hook, so the daemon's print
+// tick reads the reply here. readable is false when the log is missing or
+// ambiguous, or a read fails; found is false until such a record exists.
+func (m *Muse) LastReply(providerSessionID string, since time.Time) (text string, found, readable bool) {
+	if providerSessionID == "" {
+		return "", false, false
+	}
+	matches, _ := filepath.Glob(filepath.Join(m.d.UserHome, ".local", "share", "muse", "sessions",
+		"[0-9][0-9][0-9][0-9]", "[0-9][0-9]", "[0-9][0-9]", providerSessionID, "session.jsonl"))
+	if len(matches) != 1 {
+		return "", false, false
+	}
+	f, err := os.Open(matches[0])
+	if err != nil {
+		return "", false, false
+	}
+	defer f.Close()
+
+	sinceMicros := since.UnixMicro()
+	r := bufio.NewReader(f)
+	var runID string
+	var texts []string
+	for {
+		line, readErr := r.ReadBytes('\n')
+		if len(line) > 0 && bytes.Contains(line, []byte("assistant_message_committed")) {
+			var rec museLogRecord
+			if json.Unmarshal(line, &rec) == nil && rec.Payload.Event.Kind == "assistant_message_committed" &&
+				rec.RecordedAt >= sinceMicros {
+				if rec.Payload.RunID != runID {
+					runID, texts = rec.Payload.RunID, nil
+				}
+				texts = append(texts, rec.Payload.Event.Text)
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return "", false, false
+		}
+	}
+	return strings.Join(texts, "\n"), len(texts) > 0, true
 }
