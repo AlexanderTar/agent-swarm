@@ -987,6 +987,7 @@ var vendoredSkillNames = []string{
 	"ponytail",
 	"ponytail-review",
 	"ponytail-debt",
+	"graphify",
 }
 
 // bannedVendorStrings must never appear anywhere under skills/vendor/: each is
@@ -1095,6 +1096,17 @@ func TestVendoredSkillsHaveLicenseAndProvenance(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// P1 unit 1: the vendored graphify skill is registered in the embedded
+// registry and carries the Inside Swarm prelude.
+func TestGraphifySkillRegistered(t *testing.T) {
+	if !slices.Contains(install.SkillNames(), "graphify") {
+		t.Fatalf("SkillNames() lacks graphify: %v", install.SkillNames())
+	}
+	if body := string(install.SkillBody("graphify")); !strings.Contains(body, "## Inside Swarm") {
+		t.Errorf("graphify SKILL.md lacks the Inside Swarm prelude")
 	}
 }
 
