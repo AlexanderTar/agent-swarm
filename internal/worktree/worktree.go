@@ -126,6 +126,20 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// pathTaken is true when path exists on disk or any worktrees row, in any
+// state, holds it: a removed row keeps its path and worktrees.path is UNIQUE.
+func (s *Service) pathTaken(ctx context.Context) func(string) bool {
+	return func(path string) bool {
+		if fileExists(path) {
+			return true
+		}
+		var n int
+		// on a query error, treat the path as free and let the insert surface it
+		_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM worktrees WHERE path = ?`, path).Scan(&n)
+		return n > 0
+	}
+}
+
 func (s *Service) git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	return s.Run(ctx, "git", append([]string{"-C", dir}, args...)...)
 }
@@ -453,7 +467,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Worktree, error) 
 	if _, err := s.git(ctx, in.RepoPath, "fetch", "--quiet", "origin"); err != nil {
 		s.logf("worktree: fetch %s failed, using the local base: %v", in.RepoPath, err)
 	}
-	path := PathFor(s.worktreesDir(), in.RepoPath, in.Branch, fileExists)
+	path := PathFor(s.worktreesDir(), in.RepoPath, in.Branch, s.pathTaken(ctx))
 	args := []string{"worktree", "add"}
 	if !s.branchExists(ctx, in.RepoPath, in.Branch) {
 		args = append(args, "-b", in.Branch, path, base)
@@ -538,7 +552,7 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 	if !shaPattern.MatchString(sha) {
 		return Worktree{}, fmt.Errorf("worktree: %q is not a sha", sha)
 	}
-	path := pathWithSuffix(s.worktreesDir(), in.RepoPath, "review-"+sha[:7], fileExists)
+	path := pathWithSuffix(s.worktreesDir(), in.RepoPath, "review-"+sha[:7], s.pathTaken(ctx))
 	if out, err := s.git(ctx, in.RepoPath, "worktree", "add", "--detach", path, sha); err != nil {
 		return Worktree{}, fmt.Errorf("git worktree add --detach: %w: %s", err, out)
 	}

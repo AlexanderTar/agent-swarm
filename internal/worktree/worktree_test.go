@@ -1411,3 +1411,45 @@ func TestRemoveDeletesATreeContainedInOriginDefaultBranch(t *testing.T) {
 		t.Fatalf("worktree = %+v, want removed: HEAD is contained in origin/main", out)
 	}
 }
+
+// holdRemovedRow leaves a state='removed' row (dir gone, row kept) holding path.
+func holdRemovedRow(t *testing.T, s *Service, path string) {
+	t.Helper()
+	_, err := s.DB.ExecContext(context.Background(), `INSERT INTO worktrees
+		(id, repo_id, path, base_ref, base_sha, owner_agent_id, root_item_id, state, created_at)
+		VALUES ('wt_removed', 'repo_1', ?, 'main', 'abc', 'agt_1', 'itm_1', 'removed', 1)`, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateSkipsAPathHeldByARemovedRow(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	base := filepath.Join(s.Home, "worktrees", "proj--task-101-login-form")
+	holdRemovedRow(t, s, base)
+	wt, err := s.Create(context.Background(), CreateInput{RepoID: repoID, RepoPath: repo,
+		Branch: "task/task-101-login-form", OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wt.Path != base+"-2" {
+		t.Fatalf("path = %q, want %q", wt.Path, base+"-2")
+	}
+}
+
+func TestReviewSkipsAPathHeldByARemovedRow(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	sha := strings.TrimSpace(run(t, repo, "rev-parse", "HEAD"))
+	base := filepath.Join(s.Home, "worktrees", "proj--review-"+sha[:7])
+	holdRemovedRow(t, s, base)
+	wt, err := s.Review(context.Background(), CreateInput{RepoID: repoID, RepoPath: repo,
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"}, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wt.Path != base+"-2" {
+		t.Fatalf("path = %q, want %q", wt.Path, base+"-2")
+	}
+}
