@@ -53,6 +53,11 @@ public enum BoardHandoffRules {
 @MainActor
 @Observable
 public final class BoardHandoffForm {
+    /// Worker roles the Orchestrate task window overrides when starting a new orchestrator.
+    /// Never orchestrator/advisor: the daemon refuses advisor overrides and the primary
+    /// pickers already cover the orchestrator itself.
+    public static let workerRoles: [SettingsRole] = [.coder, .reviewer, .uiReviewer, .researcher, .debugger, .mechanical, .designer]
+
     public let picker: AgentPickerModel
     public private(set) var rows: [BoardItemRow] = []
     public var selectedKey: String?
@@ -69,9 +74,13 @@ public final class BoardHandoffForm {
     private var requestID = UUID().uuidString
     /// Same entries on retry reuse `requestID`; any edit or `.api` error mints a new one.
     private var lastAttempt: Attempt?
+    /// Worker Agent/Model/Effort picks for start mode, prefilled from Settings role defaults.
+    private var workers: [SettingsRole: AgentChoice] = [:]
+    private var workerNotes: [SettingsRole: String] = [:]
+    private var workerModelErrors: [SettingsRole: String] = [:]
 
     private struct Attempt: Equatable {
-        var key: String, agent: AgentKind, model: String, effort: String?, advisor: AdvisorPayload
+        var key: String, agent: AgentKind, model: String, effort: String?, advisor: AdvisorPayload, roles: [String: RoleDefault]?
     }
 
     public init(client: DaemonClient, settings: Settings, agents: [AgentNode], connected: Bool, preselectAgent: String?) {
@@ -80,6 +89,11 @@ public final class BoardHandoffForm {
         self.connected = connected
         self.preselectAgent = preselectAgent
         picker = AgentPickerModel(settings: settings)
+        for role in Self.workerRoles {
+            if let d = settings[role] {
+                workers[role] = AgentChoice(agent: d.agent, model: d.model, effort: d.effort)
+            }
+        }
     }
 
     public func load() async {
@@ -88,6 +102,7 @@ public final class BoardHandoffForm {
         async let c = try? client.catalog()
         async let i = client.boardItems()
         picker.apply(catalog: await c ?? [])
+        normalizeWorkerEfforts()
         do { items = try await i } catch { items = []; loadError = Copy.boardItemsLoadFailed }
         rows = BoardHandoffRules.rows(items, agents: agents)
         if let p = preselectAgent, let row = rows.first(where: { $0.orchestrator?.name == p }) { selectedKey = row.id }
@@ -122,14 +137,96 @@ public final class BoardHandoffForm {
 
     public var canSubmit: Bool {
         if loadError != nil { return connected && !loading }
-        return connected && !submitting && !loading && selected != nil && picker.errors.isValid && (!isHandoff || handoffPossible)
+        return connected && !submitting && !loading && selected != nil && picker.errors.isValid
+            && (isHandoff ? handoffPossible : workersValid)
+    }
+
+    // MARK: worker overrides (start mode only)
+
+    public func workerChoice(_ role: SettingsRole) -> AgentChoice {
+        workers[role] ?? AgentChoice(agent: picker.settings.enabledAgents.first, model: "")
+    }
+
+    public var workerAgentOptions: [PickerOption] { picker.agentOptions }
+
+    public func workerModelOptions(_ role: SettingsRole) -> [PickerOption] {
+        CatalogRules.modelOptions(CatalogRules.entry(picker.catalog, workerChoice(role).agent))
+    }
+
+    /// nil hides the Effort picker.
+    public func workerEffortOptions(_ role: SettingsRole) -> [PickerOption]? {
+        let w = workerChoice(role)
+        return CatalogRules.effortOptions(w.agent, CatalogRules.resolve(CatalogRules.entry(picker.catalog, w.agent), w.model))
+    }
+
+    public func workerErrors(_ role: SettingsRole) -> FieldErrors {
+        var e = CatalogRules.validate(workerChoice(role), advisor: .none, catalog: picker.catalog,
+                                      enabled: picker.settings.enabledAgents, role: role)
+        if e.model == nil { e.model = workerModelErrors[role] }
+        return e
+    }
+
+    public func workerNote(_ role: SettingsRole) -> String? { workerNotes[role] }
+
+    public var workersValid: Bool { Self.workerRoles.allSatisfy { workerErrors($0).isValid } }
+
+    public func setWorkerAgent(_ role: SettingsRole, _ value: String) {
+        guard let kind = AgentKind(rawValue: value), workers[role] != nil else { return }
+        let (next, errors) = CatalogRules.changeAgent(workerChoice(role), to: kind, catalog: picker.catalog)
+        workers[role] = next
+        workerModelErrors[role] = errors.model
+        workerNotes[role] = nil
+    }
+
+    public func setWorkerModel(_ role: SettingsRole, _ value: String) {
+        guard workers[role] != nil else { return }
+        let result = CatalogRules.changeModel(workerChoice(role), to: value, catalog: picker.catalog)
+        workers[role] = result.0
+        workerNotes[role] = result.note
+        workerModelErrors[role] = nil
+    }
+
+    public func setWorkerEffort(_ role: SettingsRole, _ value: String) {
+        guard workers[role] != nil else { return }
+        let w = workerChoice(role)
+        workers[role] = AgentChoice(agent: w.agent, model: w.model, effort: CatalogRules.normalizeEffort(w.agent,
+            CatalogRules.resolve(CatalogRules.entry(picker.catalog, w.agent), w.model), value))
+        workerNotes[role] = nil
+    }
+
+    /// Re-check stored worker efforts against the freshly loaded catalog, like `AgentPickerModel.apply`.
+    private func normalizeWorkerEfforts() {
+        for role in Self.workerRoles {
+            guard let w = workers[role] else { continue }
+            workers[role] = AgentChoice(agent: w.agent, model: w.model, effort: CatalogRules.normalizeEffort(w.agent,
+                CatalogRules.resolve(CatalogRules.entry(picker.catalog, w.agent), w.model), w.effort))
+        }
+    }
+
+    /// Only roles the user changed from Settings defaults, so unchanged defaults keep following
+    /// later Settings changes. nil in handoff mode (`HandoffRequest` has no roles) and when
+    /// nothing changed.
+    public var workerRolesPayload: [String: RoleDefault]? {
+        guard !isHandoff else { return nil }
+        var out: [String: RoleDefault] = [:]
+        for role in Self.workerRoles {
+            guard let w = workers[role], let agent = w.agent, let d = picker.settings[role] else { continue }
+            let effort = CatalogRules.normalizeEffort(agent,
+                CatalogRules.resolve(CatalogRules.entry(picker.catalog, agent), w.model), w.effort)
+            if agent != d.agent || w.model != d.model || effort != d.effort {
+                out[role.rawValue] = RoleDefault(agent: agent, model: w.model, effort: effort)
+            }
+        }
+        return out.isEmpty ? nil : out
     }
 
     /// Load error → reload; otherwise submit. true = close the window.
     public func primary() async -> Bool {
         if loadError != nil { await load(); return false }
         guard canSubmit, let row = selected, let agent = picker.choice.agent else { return false }
-        let attempt = Attempt(key: row.id, agent: agent, model: picker.choice.model, effort: picker.effortPayload, advisor: picker.advisorPayload)
+        let roles = workerRolesPayload
+        let attempt = Attempt(key: row.id, agent: agent, model: picker.choice.model, effort: picker.effortPayload,
+                              advisor: picker.advisorPayload, roles: roles)
         if let last = lastAttempt, last != attempt { requestID = UUID().uuidString }
         lastAttempt = attempt
         submitting = true
@@ -141,7 +238,7 @@ public final class BoardHandoffForm {
                                                                    effort: attempt.effort, advisor: attempt.advisor))
             } else {
                 _ = try await client.startOrchestrator(itemKey: row.id, StartOrchestratorBody(requestId: requestID, agent: agent,
-                    model: attempt.model, effort: attempt.effort, advisor: attempt.advisor))
+                    model: attempt.model, effort: attempt.effort, advisor: attempt.advisor, roles: roles))
             }
             failure = nil
             return true

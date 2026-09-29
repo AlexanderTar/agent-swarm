@@ -196,4 +196,32 @@ final class BoardHandoffTests: XCTestCase {
         _ = model.makeBoardHandoffForm()
         XCTAssertNil(model.boardHandoffPreselect)
     }
+
+    func testWorkerRolesCoverEveryWorkerAndNeverOrchestratorOrAdvisor() {
+        XCTAssertEqual(BoardHandoffForm.workerRoles, [.coder, .reviewer, .uiReviewer, .researcher, .debugger, .mechanical, .designer])
+    }
+
+    func testWorkerPicksPrefillFromSettings() async {
+        let f = await form()
+        f.selectedKey = "BUG-7"
+        XCTAssertFalse(f.isHandoff)
+        XCTAssertEqual(f.workerChoice(.coder), AgentChoice(agent: .claude, model: "sonnet"))
+        XCTAssertEqual(f.workerChoice(.reviewer), AgentChoice(agent: .codex, model: "gpt-6-astra", effort: "high"))
+    }
+
+    func testWorkerRolesPayloadSendsOnlyChangedRoles() async {
+        let f = await form()
+        f.selectedKey = "BUG-7"
+        XCTAssertNil(f.workerRolesPayload, "unchanged defaults keep following Settings")
+        f.setWorkerAgent(.coder, "codex")
+        XCTAssertEqual(f.workerRolesPayload?.keys.sorted(), ["coder"])
+        XCTAssertEqual(f.workerRolesPayload?["coder"]?.agent, .codex)
+    }
+
+    func testWorkerRolesPayloadIsNilInHandoffMode() async {
+        let f = await form(preselect: "auth-epic-orchestrator")
+        XCTAssertTrue(f.isHandoff)
+        f.setWorkerAgent(.coder, "codex")
+        XCTAssertNil(f.workerRolesPayload, "HandoffRequest has no roles")
+    }
 }
