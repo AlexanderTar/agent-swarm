@@ -59,6 +59,9 @@ func TestRulesCoverSection175(t *testing.T) {
 		"request.approve_report":  {"action", "Report approval needed", "{KEY}: Review the root cause and fix plan.", "swarm.approval"},
 		"request.accept_epic":     {"action", "Epic acceptance needed", "{KEY}: Review completed work and accept the epic.", "swarm.approval"},
 		"request.accept_fix":      {"action", "Fix acceptance needed", "{KEY}: Review the fix and accept it.", "swarm.approval"},
+		// Added by docs/specs/2026-09-29-finish-with-pr.md.
+		"pr.checks_failed": {"attention", "PR checks failed", "{KEY}: {repo} #{N} — {checks}", "swarm.agent"},
+		"item.merged":      {"info", "Merged", "{KEY}: all PRs merged — done.", "swarm.info"},
 	}
 	for kind, w := range want {
 		r, ok := Rules[kind]

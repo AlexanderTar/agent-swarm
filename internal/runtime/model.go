@@ -90,6 +90,7 @@ const (
 	CompletedCkp CheckpointKind = "completed"
 	FailedCkp    CheckpointKind = "failed"
 	Integrated   CheckpointKind = "integrated"
+	Finishing    CheckpointKind = "finishing" // API-only; stored as a 'progress' row
 )
 
 type Agent struct {

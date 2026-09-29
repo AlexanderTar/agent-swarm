@@ -99,7 +99,9 @@ type CheckpointInput struct {
 	Title string
 	// Todos is a spike orchestrator's step report (spec 2026-09-28-orchestrator-todos
 	// locked decision 4); ids it leaves out keep their stored status.
-	Todos []TodoReport
+	Todos  []TodoReport
+	PRs    []FinishPR     // kind finishing only
+	Merged []FinishMerged // kind finishing only
 }
 
 // CheckpointResult is swarm_checkpoint's result.
@@ -1131,6 +1133,12 @@ func (s *Store) closeCompletedSiblings(ctx context.Context, tx *sql.Tx, itemID, 
 
 // WriteCheckpoint is swarm_checkpoint (§8.1, L24).
 func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in CheckpointInput) (CheckpointResult, error) {
+	if in.Kind == Finishing {
+		return s.writeFinishing(ctx, sessionID, in)
+	}
+	if len(in.PRs) > 0 || len(in.Merged) > 0 {
+		return CheckpointResult{}, &items.Error{Code: items.CodeBadRequest, Message: "prs and merged are only for a finishing checkpoint."}
+	}
 	var out CheckpointResult
 	var toClose []siblingTeardown
 	// P9: hoisted out of the closure the same way toClose is, so the

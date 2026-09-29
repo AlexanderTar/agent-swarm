@@ -355,18 +355,18 @@ func (s *Store) checkRoot(ctx context.Context, tx *sql.Tx, it Item, to Status, d
 	switch {
 	case to == Done:
 		if daemon && it.Status == InReview {
-			ok, err := s.approvedCurrent(ctx, tx, it)
+			ok, err := s.finishedCurrent(ctx, tx, it)
 			if err != nil || ok {
 				return err
 			}
 		}
 		switch it.Type {
 		case Epic:
-			return deny("Accept this epic to mark it Done.")
+			return deny("Finish this epic to mark it Done.")
 		case Chore:
-			return deny("Accept this chore to mark it Done.")
+			return deny("Finish this chore to mark it Done.")
 		}
-		return deny("Accept this fix to mark it Done.")
+		return deny("Finish this fix to mark it Done.")
 	case it.Status == Ready && to == InProgress && daemon:
 		return orGeneric(s.acceptedSince(ctx, tx, it))(generic)
 	case it.Status == InProgress && to == InReview && daemon:
@@ -508,15 +508,95 @@ func (s *Store) rootState(ctx context.Context, q querier, it Item) (rootState, e
 	return st, err
 }
 
-func (s *Store) approvedCurrent(ctx context.Context, q querier, it Item) (bool, error) {
+// FinishApproval is the approved finish request bound to a root's newest integrated checkpoint.
+type FinishApproval struct {
+	RequestID, AgentID, Merge, CheckpointID string          // Merge "" for a pre-0022 approval
+	Git                                     json.RawMessage // the checkpoint's git_json ([]GitRef shape; items can't import runtime)
+}
+
+// FinishApprovalTx is the exported accessor runtime uses (writeFinishing, MergeProgressFor,
+// WatchMerges, resurfaceOpenRequests). ok is false when none.
+func (s *Store) FinishApprovalTx(ctx context.Context, q querier, rootID string) (FinishApproval, bool, error) {
+	it, err := s.getByID(ctx, q, rootID)
+	if err != nil {
+		return FinishApproval{}, false, err
+	}
 	st, err := s.rootState(ctx, q, it)
-	if err != nil || st.ckpID == "" {
+	if err != nil {
+		return FinishApproval{}, false, err
+	}
+	return s.finishApproval(ctx, q, it, st)
+}
+
+func (s *Store) finishApproval(ctx context.Context, q querier, it Item, st rootState) (fa FinishApproval, ok bool, err error) {
+	if st.ckpID == "" {
+		return fa, false, nil
+	}
+	err = q.QueryRowContext(ctx, `SELECT id, COALESCE(agent_id, ''), COALESCE(json_extract(binding_json, '$.merge'), '')
+		FROM requests WHERE item_id = ? AND state = 'approved' AND kind IN ('accept_epic', 'accept_fix')
+		AND json_extract(binding_json, '$.integrated_checkpoint') = ?
+		AND json_extract(binding_json, '$.item_revision') = ?
+		ORDER BY responded_at DESC LIMIT 1`, it.ID, st.ckpID, it.Revision).Scan(&fa.RequestID, &fa.AgentID, &fa.Merge)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FinishApproval{}, false, nil
+	}
+	if err != nil {
+		return FinishApproval{}, false, err
+	}
+	fa.CheckpointID, fa.Git = st.ckpID, json.RawMessage(st.ckpGit)
+	return fa, true, nil
+}
+
+// approvedCurrent reports an approved finish request for the current integration and
+// revision, and its $.merge ("" for a pre-0022 approval).
+func (s *Store) approvedCurrent(ctx context.Context, q querier, it Item, st rootState) (bool, string, error) {
+	fa, ok, err := s.finishApproval(ctx, q, it, st)
+	return ok, fa.Merge, err
+}
+
+// mergeState counts the current integrated checkpoint's repos and their item_merges rows.
+func (s *Store) mergeState(ctx context.Context, q querier, it Item, st rootState) (merged, total int, closed bool, err error) {
+	var refs []struct {
+		Repo string `json:"repo"`
+	}
+	json.Unmarshal([]byte(st.ckpGit), &refs)
+	repos := map[string]bool{}
+	for _, r := range refs {
+		repos[r.Repo] = true
+	}
+	total = len(repos)
+	rows, err := q.QueryContext(ctx, `SELECT repo, state FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?`, it.ID, st.ckpID)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var repo, state string
+		if err := rows.Scan(&repo, &state); err != nil {
+			return 0, 0, false, err
+		}
+		if state == "merged" && repos[repo] {
+			merged++
+		}
+		if state == "closed" {
+			closed = true
+		}
+	}
+	return merged, total, closed, rows.Err()
+}
+
+// finishedCurrent = approvedCurrent && (merge == "" || merged == total && total > 0 && !closed).
+func (s *Store) finishedCurrent(ctx context.Context, q querier, it Item) (bool, error) {
+	st, err := s.rootState(ctx, q, it)
+	if err != nil {
 		return false, err
 	}
-	return exists(ctx, q, `SELECT 1 FROM requests WHERE item_id = ? AND state = 'approved'
-		AND kind IN ('accept_epic', 'accept_fix')
-		AND json_extract(binding_json, '$.integrated_checkpoint') = ?
-		AND json_extract(binding_json, '$.item_revision') = ?`, it.ID, st.ckpID, it.Revision)
+	approved, merge, err := s.approvedCurrent(ctx, q, it, st)
+	if err != nil || !approved || merge == "" {
+		return approved, err
+	}
+	merged, total, closed, err := s.mergeState(ctx, q, it, st)
+	return merged == total && total > 0 && !closed, err
 }
 
 func (s *Store) setStatus(ctx context.Context, tx *sql.Tx, it *Item, to Status) error {
@@ -674,19 +754,36 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 	}
 
 	if it.Status == InReview {
-		// 2. an approval bound to the current integration and revision completes the item
-		approved, err := s.approvedCurrent(ctx, tx, it)
+		// 2. an approval bound to the current integration and revision finishes the item
+		// once every integrated repo is merged (a pre-0022 approval has no merge: Done)
+		approved, merge, err := s.approvedCurrent(ctx, tx, it, st)
 		if err != nil {
 			return err
 		}
 		if approved && st.finished {
-			return s.setStatus(ctx, tx, &it, Done)
-		}
-		// 3. no live request (stale, changes requested, child reopened): back to work
-		if openCurrent {
+			if merge == "" {
+				return s.setStatus(ctx, tx, &it, Done)
+			}
+			merged, total, closed, err := s.mergeState(ctx, tx, it, st)
+			if err != nil {
+				return err
+			}
+			switch {
+			case closed:
+				// a PR closed without merging: back to work; step 4 sees this
+				// checkpoint's request, so none opens until a new integration
+				if err := s.setStatus(ctx, tx, &it, InProgress); err != nil {
+					return err
+				}
+			case merged == total && total > 0:
+				return s.setStatus(ctx, tx, &it, Done)
+			default:
+				return nil
+			}
+		} else if openCurrent {
+			// 3. no live request (stale, changes requested, child reopened): back to work
 			return nil
-		}
-		if err := s.setStatus(ctx, tx, &it, InProgress); err != nil {
+		} else if err := s.setStatus(ctx, tx, &it, InProgress); err != nil {
 			return err
 		}
 	}

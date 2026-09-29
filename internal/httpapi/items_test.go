@@ -208,8 +208,8 @@ func TestPatchItem(t *testing.T) {
 		t.Fatalf("move = %d %s", status, b)
 	}
 	status, b = e.api("PATCH", "/api/items/EPIC-1", map[string]any{"status": "done", "revision": 3})
-	wantErr(t, status, b, 422, "transition_denied", "Accept this epic to mark it Done.")
-	if decode[errBody](t, b).Error.Reason != "Accept this epic to mark it Done." {
+	wantErr(t, status, b, 422, "transition_denied", "Finish this epic to mark it Done.")
+	if decode[errBody](t, b).Error.Reason != "Finish this epic to mark it Done." {
 		t.Fatalf("reason missing: %s", b)
 	}
 	status, b = e.api("PATCH", "/api/items/EPIC-1", "not an object")

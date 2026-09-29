@@ -53,6 +53,8 @@ var Rules = map[string]Rule{
 	"request.approve_report":  {"action", "Report approval needed", "{KEY}: Review the root cause and fix plan.", "swarm.approval"},
 	"request.accept_epic":     {"action", "Epic acceptance needed", "{KEY}: Review completed work and accept the epic.", "swarm.approval"},
 	"request.accept_fix":      {"action", "Fix acceptance needed", "{KEY}: Review the fix and accept it.", "swarm.approval"},
+	"pr.checks_failed":        {"attention", "PR checks failed", "{KEY}: {repo} #{N} — {checks}", "swarm.agent"},
+	"item.merged":             {"info", "Merged", "{KEY}: all PRs merged — done.", "swarm.info"},
 }
 
 // placeholderRe finds every {name} in a template.
