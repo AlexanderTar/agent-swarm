@@ -165,6 +165,41 @@ test("the inbox shows a question read-only and approves a section", async ({ pag
   await expect(page.getByText("Already resolved.")).toBeVisible();
 });
 
+test("epic review fits and works at 390px", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/inbox?req=req_accept");
+  const title = page.getByRole("heading", { name: "Accept epic · EPIC-12 › Authentication" });
+  const accept = page.getByRole("button", { name: "Accept epic", exact: true });
+  const changes = page.getByRole("button", { name: "Request changes" });
+  await expect(title).toBeVisible();
+  for (const control of [title, accept, changes]) {
+    const box = await control.boundingBox();
+    expect(box?.width).toBeGreaterThan(0);
+    expect(box?.x).toBeGreaterThanOrEqual(0);
+    expect(box && box.x + box.width).toBeLessThanOrEqual(390);
+  }
+  expect((await title.boundingBox())?.width).toBeGreaterThanOrEqual(300);
+  await page.screenshot({ path: "test-results/needs-you-mobile.png", animations: "disabled" });
+  await changes.focus();
+  await expect(changes).toBeFocused();
+  await changes.click();
+  await expect(page.getByRole("textbox", { name: "Comment" })).toBeVisible();
+  await accept.click();
+  await expect(page.getByText("Already resolved.")).toBeVisible();
+});
+
+test("desktop inbox keeps its list beside the selected review", async ({ page }) => {
+  await page.goto("/#/inbox?req=req_accept");
+  await page.getByRole("radio", { name: "Approvals" }).click();
+  const list = page.getByRole("list", { name: "Needs you" });
+  const title = page.getByRole("heading", { name: "Accept epic · EPIC-12 › Authentication" });
+  await expect(title).toBeVisible();
+  const listBox = await list.boundingBox();
+  const titleBox = await title.boundingBox();
+  expect(listBox && titleBox && listBox.x + listBox.width).toBeLessThan(titleBox?.x ?? 0);
+  await page.screenshot({ path: "test-results/needs-you-desktop.png", animations: "disabled" });
+});
+
 test("the dependency graph renders and expands a hop", async ({ page }) => {
   await page.goto("/#/dependencies?item=TASK-104");
   await expect(page.getByTestId("node-TASK-98")).toBeVisible();

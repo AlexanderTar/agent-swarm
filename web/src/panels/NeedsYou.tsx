@@ -50,8 +50,8 @@ export function NeedsYou(p: {
   const known = seen.current.get(p.selected);
 
   return (
-    <div className="flex h-full min-h-0">
-      <div className="w-[280px] shrink-0 space-y-2 overflow-y-auto border-r border-border p-3">
+    <div className="flex h-full min-h-0 flex-col md:flex-row">
+      <div className="max-h-48 w-full shrink-0 space-y-2 overflow-y-auto border-b border-border p-3 md:max-h-none md:w-[280px] md:border-b-0 md:border-r">
         <h2 className="font-semibold">{C.needsYou}</h2>
         <Segmented
           label={C.needsYou}
@@ -104,7 +104,7 @@ export function NeedsYou(p: {
           })}
         </ul>
       </div>
-      <div className="min-w-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4">
         {resolved ? (
           <div className="space-y-2">
             <p>{C.resolved}</p>
