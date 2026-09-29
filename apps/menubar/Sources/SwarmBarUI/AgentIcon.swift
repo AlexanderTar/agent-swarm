@@ -36,6 +36,20 @@ public enum Icons {
         cache[name] = image
         return image
     }
+
+    /// NSTextAttachment (attributed strings) ignores template tinting and draws black; this returns a
+    /// non-template copy that repaints in `color` at draw time, so it follows appearance changes.
+    public static func tinted(_ name: IconName, _ color: NSColor = .labelColor) -> NSImage {
+        let base = image(name)
+        let out = NSImage(size: base.size, flipped: false) { rect in
+            base.draw(in: rect)
+            color.set()
+            rect.fill(using: .sourceIn)
+            return true
+        }
+        out.isTemplate = false
+        return out
+    }
 }
 
 public struct AgentIcon: View {

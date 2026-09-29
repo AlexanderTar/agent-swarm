@@ -256,7 +256,7 @@ public enum Copy {
 
     // Orchestrate board item / Hand off to… (spec 2026-09-29-menubar-board-handoff).
     public static let orchestrateBoardItem = "Orchestrate board item"
-    public static let orchestrateBoardItemMenu = "Orchestrate board item…"
+    public static let orchestrateBoardItemMenu = "Orchestrate board item"
     public static let moreStartOptions = "More ways to start"
     public static let handOffTo = "Hand off to…"
     public static let handOff = "Hand off"
