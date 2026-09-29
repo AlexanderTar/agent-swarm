@@ -389,8 +389,8 @@ func (s *Store) verifyPR(ctx context.Context, r finishRepo, url, merge string) (
 	case p.State == "CLOSED":
 		return p, badRequest("%s is closed without merging.", url)
 	case merge == "auto" && p.AutoMergeRequest == nil && p.State != "MERGED":
-		return p, badRequest("Auto-merge isn't on for %s. Run gh pr merge %s --auto --%s, then send finishing again.",
-			url, url, s.mergeMethod(ctx, m[1], m[2]))
+		return p, badRequest("Auto-merge isn't on for %s. Wait for checks (gh pr checks %s --watch), fix failures, merge with gh pr merge %s --%s, then send finishing again.",
+			url, url, url, s.mergeMethod(ctx, m[1], m[2]))
 	}
 	return p, nil
 }

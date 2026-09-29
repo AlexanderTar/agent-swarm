@@ -266,7 +266,7 @@ func finishFixture(t *testing.T, remoteURL, merge string) (s *Store, orch Agent,
     - head mismatch;
     - base mismatch;
     - closed;
-    - auto not armed: `ghOpenUnarmed`, plus `gh api repos/o/proj` → `{"allow_squash_merge":false,"allow_merge_commit":true}` → `Auto-merge isn't on for https://github.com/o/proj/pull/412. Run gh pr merge https://github.com/o/proj/pull/412 --auto --merge, then send finishing again.`;
+    - auto not armed: `ghOpenUnarmed`, plus `gh api repos/o/proj` → `{"allow_squash_merge":false,"allow_merge_commit":true}` → `Auto-merge isn't on for https://github.com/o/proj/pull/412. Wait for checks (gh pr checks https://github.com/o/proj/pull/412 --watch), fix failures, merge with gh pr merge https://github.com/o/proj/pull/412 --merge, then send finishing again.`;
     - local not merged: the first merge-base returns `errors.New("git: exit status 1: ")` → `3f9c2ab is not on proj's main; merge the integrated branch first.`;
     - unknown repo (delete the repos row).
   - `TestPrsMergedRefusedOnOtherKinds`: kind `progress` with `PRs` set → `prs and merged are only for a finishing checkpoint.`

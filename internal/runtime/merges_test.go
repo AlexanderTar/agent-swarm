@@ -227,7 +227,7 @@ func TestFinishingRefusals(t *testing.T) {
 		{name: "auto not armed", remote: gh, merge: "auto", in: prs(prURL),
 			gh: map[string]execx.Result{prView(prURL): {Out: ghOpenUnarmed},
 				"gh api repos/o/proj": {Out: `{"allow_squash_merge":false,"allow_merge_commit":true}`}},
-			want: "Auto-merge isn't on for https://github.com/o/proj/pull/412. Run gh pr merge https://github.com/o/proj/pull/412 --auto --merge, then send finishing again."},
+			want: "Auto-merge isn't on for https://github.com/o/proj/pull/412. Wait for checks (gh pr checks https://github.com/o/proj/pull/412 --watch), fix failures, merge with gh pr merge https://github.com/o/proj/pull/412 --merge, then send finishing again."},
 		{name: "local not merged", remote: "", merge: "local",
 			in:   CheckpointInput{Kind: Finishing, Summary: "s", Merged: []FinishMerged{{Repo: "proj", SHA: "d00d"}}},
 			gh:   map[string]execx.Result{"git -C /tmp/proj merge-base --is-ancestor 3f9c2ab0000 d00d": {Err: errors.New("git: exit status 1: ")}},
