@@ -1304,3 +1304,39 @@ func TestAskApprovalResultHasChatBlock(t *testing.T) {
 		t.Fatalf("next = %q, want it to point at chat_block", res.Next)
 	}
 }
+
+// finish-with-pr: swarm_checkpoint carries finishing with prs/merged; swarm_ask lists the finish decisions.
+func TestSwarmCheckpointFinishingSurface(t *testing.T) {
+	s, seed := newServerWithSession(t)
+	ctx := context.Background()
+	defs := map[string]ToolDef{}
+	for _, d := range s.ToolsFor(seed.Caller) {
+		defs[d.Name] = d
+	}
+	ckp := defs["swarm_checkpoint"]
+	if want := "Record progress: accepted, progress, blocked, handoff, completed, failed, integrated or finishing, with the verification evidence TDD requires."; ckp.Description != want {
+		t.Fatalf("description = %q", ckp.Description)
+	}
+	for _, p := range []string{`"prs"`, `"merged"`} {
+		if !strings.Contains(string(ckp.Schema), p) {
+			t.Fatalf("checkpoint schema lacks %s", p)
+		}
+	}
+	_, err := s.call(ctx, seed.Caller, "swarm_checkpoint", `{"kind":"finishing","summary":"s","prs":[{"repo":"proj","url":"u"}]}`)
+	if err == nil || !strings.Contains(err.Error(), "Only the top-level orchestrator can write finishing on its own item.") {
+		t.Fatalf("err = %v", err)
+	}
+	var ask struct {
+		Properties struct {
+			Decision struct {
+				Enum []string `json:"enum"`
+			} `json:"decision"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(defs["swarm_ask"].Schema, &ask); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"approve", "request_changes", "auto_merge", "manual_merge", "merge_locally"}; !slices.Equal(ask.Properties.Decision.Enum, want) {
+		t.Fatalf("decision enum = %v", ask.Properties.Decision.Enum)
+	}
+}

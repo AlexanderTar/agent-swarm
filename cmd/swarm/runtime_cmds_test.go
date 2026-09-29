@@ -335,6 +335,20 @@ func TestApproveSendsTheBindingBack(t *testing.T) {
 	if sent2["artifact_revision"] == nil {
 		t.Fatalf("req_2 body = %s, want artifact_revision echoed back", bodies["req_2"])
 	}
+
+	// finish-with-pr: --merge is forwarded; bare approve prints the new usage.
+	out.Reset()
+	if code := run([]string{"approve", "--home", home, "--url", srv.URL, "req_1", "--merge", "auto"}, &out, &out); code != 0 {
+		t.Fatalf("--merge: code = %d: %s", code, out.String())
+	}
+	if !strings.Contains(bodies["req_1"], `"merge":"auto"`) {
+		t.Fatalf("req_1 body = %s, want merge auto", bodies["req_1"])
+	}
+	out.Reset()
+	if code := run([]string{"approve", "--home", home, "--url", srv.URL}, &out, &out); code != 2 ||
+		!strings.Contains(out.String(), "Usage: swarm approve REQ [--merge auto|manual|local]") {
+		t.Fatalf("usage: code = %d: %s", code, out.String())
+	}
 }
 
 func TestAgentsPrintsATree(t *testing.T) {

@@ -503,8 +503,9 @@ func cmdApprove(args []string, stdout, stderr io.Writer) int {
 	if done {
 		return code
 	}
+	rest, merge, _ := pullValue(rest, "--merge")
 	if len(rest) != 1 {
-		fmt.Fprint(stderr, "Usage: swarm approve REQ\n")
+		fmt.Fprint(stderr, "Usage: swarm approve REQ [--merge auto|manual|local]\n")
 		return 2
 	}
 	req, err := requestByID(c, rest[0])
@@ -520,6 +521,9 @@ func cmdApprove(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(req.Binding) > 0 && string(req.Binding) != "null" {
 		body["binding"] = req.Binding
+	}
+	if merge != "" {
+		body["merge"] = merge
 	}
 	var wire map[string]any
 	if err := c.do("POST", "/api/requests/"+rest[0]+"/approve", body, &wire); err != nil {

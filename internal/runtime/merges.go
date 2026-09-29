@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
@@ -493,4 +495,163 @@ func (s *Store) MergeProgressFor(ctx context.Context, rootItemID string) (*Merge
 	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM item_merges WHERE item_id = ? AND integrated_checkpoint = ?
 		AND state = 'merged'`, rootItemID, fa.CheckpointID).Scan(&p.Merged)
 	return p, err
+}
+
+// WatchMerges polls each open PR row of an in_review root once (spec "WatchMerges, each tick").
+func (s *Store) WatchMerges(ctx context.Context) error {
+	type row struct {
+		id, itemID, key, repo, url, checks string
+		number                             int
+	}
+	rs, err := s.DB.QueryContext(ctx, `SELECT m.id, m.item_id, i.key, m.repo, m.url, m.number, m.checks
+		FROM item_merges m JOIN items i ON i.id = m.item_id
+		WHERE m.kind = 'pr' AND m.state = 'open' AND i.status = 'in_review' ORDER BY m.created_at, m.repo`)
+	if err != nil {
+		return err
+	}
+	var todo []row
+	for rs.Next() {
+		var r row
+		if err := rs.Scan(&r.id, &r.itemID, &r.key, &r.repo, &r.url, &r.number, &r.checks); err != nil {
+			rs.Close()
+			return err
+		}
+		todo = append(todo, r)
+	}
+	rs.Close()
+	if err := rs.Err(); err != nil {
+		return err
+	}
+	for _, r := range todo {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		p, err := s.ghPRView(ctx, r.url)
+		if err != nil {
+			s.logf("merges: gh pr view %s: %v", r.url, err)
+			continue
+		}
+		if err := s.tx(ctx, func(tx *sql.Tx) error { return s.applyPRTx(ctx, tx, r.id, r.itemID, r.key, r.repo, r.url, r.number, p) }); err != nil {
+			s.logf("merges: %s: %v", r.url, err)
+		}
+	}
+	return nil
+}
+
+// applyPRTx writes one polled PR state onto its item_merges row, re-checking it is still open.
+func (s *Store) applyPRTx(ctx context.Context, tx *sql.Tx, id, itemID, key, repo, url string, number int, p ghPR) error {
+	var state, old string
+	if err := tx.QueryRowContext(ctx, `SELECT state, checks FROM item_merges WHERE id = ?`, id).Scan(&state, &old); err != nil {
+		return err
+	}
+	if state != "open" {
+		return nil
+	}
+	checks, failing := rollupChecks(p)
+	now := db.Millis(s.Now())
+	relay := func(fa items.FinishApproval, body any) error {
+		if fa.AgentID == "" {
+			return nil
+		}
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		_, err = s.enqueueRaw(ctx, tx, Message{Kind: "relay", Origin: "daemon", ToAgentID: fa.AgentID,
+			RootItemID: itemID, ItemID: itemID, Payload: b})
+		return err
+	}
+	switch p.State {
+	case "MERGED":
+		sha := ""
+		if p.MergeCommit != nil {
+			sha = p.MergeCommit.Oid
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE item_merges SET state = 'merged', merged_sha = ?, checks = ?, checked_at = ? WHERE id = ?`,
+			nullIf(sha), checks, now, id); err != nil {
+			return err
+		}
+	case "CLOSED":
+		fa, _, err := s.Items.FinishApprovalTx(ctx, tx, itemID) // before ReconcileTx bumps the revision
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE item_merges SET state = 'closed', checks = ?, checked_at = ? WHERE id = ?`,
+			checks, now, id); err != nil {
+			return err
+		}
+		if err := relay(fa, struct {
+			Event  string `json:"event"`
+			Item   string `json:"item"`
+			Repo   string `json:"repo"`
+			URL    string `json:"url"`
+			Number int    `json:"number"`
+		}{"pr_closed", key, repo, url, number}); err != nil {
+			return err
+		}
+	default: // OPEN
+		if _, err := tx.ExecContext(ctx, `UPDATE item_merges SET checks = ?, checked_at = ? WHERE id = ?`, checks, now, id); err != nil {
+			return err
+		}
+		if checks == old {
+			return nil
+		}
+		if checks != "failing" {
+			break
+		}
+		fa, _, err := s.Items.FinishApprovalTx(ctx, tx, itemID)
+		if err != nil {
+			return err
+		}
+		if err := relay(fa, struct {
+			Event   string   `json:"event"`
+			Item    string   `json:"item"`
+			Repo    string   `json:"repo"`
+			URL     string   `json:"url"`
+			Number  int      `json:"number"`
+			Failing []string `json:"failing"`
+		}{"pr_checks_failed", key, repo, url, number, failing}); err != nil {
+			return err
+		}
+		if err := s.notify(ctx, tx, NotifyInput{Kind: "pr.checks_failed", ItemKey: key, Args: map[string]string{
+			"KEY": key, "repo": repo, "N": strconv.Itoa(number), "checks": strings.Join(failing, ", ")}}); err != nil {
+			return err
+		}
+	}
+	it, err := s.Items.GetTx(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if _, err := s.Events.Append(ctx, tx, events.ItemChanged, map[string]string{"key": it.Key, "root_key": it.RootKey}); err != nil {
+		return err
+	}
+	if p.State == "OPEN" {
+		return nil
+	}
+	if err := s.Items.ReconcileTx(ctx, tx, key); err != nil {
+		return err
+	}
+	if p.State == "MERGED" {
+		if it, err = s.Items.GetTx(ctx, tx, key); err != nil {
+			return err
+		}
+		if it.Status == items.Done {
+			return s.notify(ctx, tx, NotifyInput{Kind: "item.merged", ItemKey: key, Args: map[string]string{"KEY": key}})
+		}
+	}
+	return nil
+}
+
+// WatchMergesLoop runs WatchMerges every `every` until ctx is cancelled. Same shape as ReclaimWorktreesLoop.
+func (s *Store) WatchMergesLoop(ctx context.Context, every time.Duration) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.after(every):
+		}
+		if err := s.WatchMerges(ctx); err != nil && ctx.Err() == nil {
+			s.logf("merges: %v", err)
+		}
+	}
 }
