@@ -26,6 +26,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
   const sessionState = agent.session?.state;
   useEffect(() => setRequested(null), [sessionState]);
   const onAction = async (a: AgentAction) => {
+    if (!connected) return;
     if (a.endpoint === "pause" || a.endpoint === "resume") setRequested(a.endpoint);
     try {
       await act.run(a.endpoint, a.body);
@@ -75,7 +76,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
           <AlertDialogHeader><AlertDialogTitle>{confirming?.confirm}</AlertDialogTitle></AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{C.keepRunning}</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => { const action = confirming; setConfirming(null); if (action) void onAction(action); }}>{C.cancel}</AlertDialogAction>
+            <AlertDialogAction variant="destructive" disabled={!connected} onClick={() => { const action = confirming; setConfirming(null); if (action) void onAction(action); }}>{C.cancel}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

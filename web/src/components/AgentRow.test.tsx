@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { makeAgent } from "../logic/agentActions";
 import { createMockDaemon } from "../mock/daemon";
@@ -75,8 +75,21 @@ describe("AgentRow (§10.7 on the board)", () => {
     expect(daemon.calls.some((c) => c.path.endsWith("/cancel"))).toBe(false);
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(daemon.calls.some((c) => c.path === "/api/agents/auth-epic-orchestrator/cancel")).toBe(true));
+    await waitFor(() => expect(daemon.calls.filter((c) => c.path === "/api/agents/auth-epic-orchestrator/cancel")).toHaveLength(1));
     expect(await screen.findByText("Cancelled auth-epic-orchestrator")).toBeInTheDocument();
+  });
+
+  it("disables an open cancel confirmation when the daemon disconnects", async () => {
+    const d = daemon0();
+    const { user } = renderWithDaemon(<AgentRow agent={d.db.agents[0] ?? makeAgent()} />, { daemon: d });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    const confirm = within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" });
+    d.disconnect();
+    await waitFor(() => expect(confirm).toBeDisabled());
+    fireEvent.click(confirm);
+    fireEvent.keyDown(confirm, { key: "Enter" });
+    expect(d.calls.filter((c) => c.path === "/api/agents/auth-epic-orchestrator/cancel")).toHaveLength(0);
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 
   it("toasts a daemon refusal", async () => {
