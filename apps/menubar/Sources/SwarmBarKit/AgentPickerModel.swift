@@ -51,8 +51,7 @@ public final class AgentPickerModel {
     /// Native Claude advisor pairing uses Claude's own advisor session and has no separate effort.
     public var advisorEffortOptions: [PickerOption]? {
         guard case let .pair(agent, model) = advisor,
-              !(choice.agent == .claude && agent == .claude &&
-                CatalogRules.resolve(CatalogRules.entry(catalog, agent), model)?.advisorCapable == true) else { return nil }
+              !CatalogRules.hidesAdvisorEffort(orchestrator: choice.agent, advisor: advisor, catalog: catalog) else { return nil }
         return CatalogRules.effortOptions(agent, CatalogRules.resolve(CatalogRules.entry(catalog, agent), model))
     }
 

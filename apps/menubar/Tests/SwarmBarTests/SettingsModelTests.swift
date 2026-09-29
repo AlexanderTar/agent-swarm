@@ -97,6 +97,11 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(client.calls.last, "catalog-refresh")
     }
 
+    func testAdvisorRowHidesEffortForNativeClaudeAdvisor() async {
+        let m = await model()
+        XCTAssertNil(m.defaultsRows[1].effortOptions, "native Claude-on-Claude advisor has no separate effort (shared predicate)")
+    }
+
     func testDefaultsEditsSaveAndBlockOnErrors() async {
         let m = await model()
         await m.setModel(.coder, "claude-opus-5")
