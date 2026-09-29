@@ -87,6 +87,10 @@ func Uninstall(ctx context.Context, o AgentsOpts) error {
 			o.report("removed", []string{link})
 		}
 	}
+	// The graphify CLI stays, like the plugins (§12.4): say how to remove it.
+	if o.Out != nil {
+		fmt.Fprintln(o.Out, "graphify was left installed. Remove it with: uv tool uninstall graphifyy")
+	}
 	return nil
 }
 
