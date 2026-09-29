@@ -219,7 +219,6 @@ export const C = {
   awaitingNonSpike: "Only spikes can await approval.",
   cycle: "This dependency would create a cycle.",
   depHierarchy: "A task can't depend on its own story or epic.",
-  spikeViaNewItem: "Spikes start with an intent. Use New spike.",
   staleRevision: "This item changed elsewhere. Showing its latest status.",
   staleApproval: "This request changed. Review the latest version.",
   emptyChange: "Add a comment describing what to change.",

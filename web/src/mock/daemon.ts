@@ -170,7 +170,7 @@ export function createMockDaemon(db: MockDb = seed()): MockDaemon {
 
   function createItem(body: Body): MockResponse {
     return once(body.request_id, () => {
-      if (body.type === "spike") return fail(400, "bad_request", C.spikeViaNewItem);
+      if (body.type === "spike") return fail(400, "bad_request", "Spikes start with an intent. Use New orchestrator.");
       const type = body.type as ItemType;
       const allowed = PARENT_TYPES[type];
       const parent = body.parent_key ? item(body.parent_key) : undefined;

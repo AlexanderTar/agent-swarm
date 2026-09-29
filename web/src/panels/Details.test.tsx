@@ -28,6 +28,17 @@ beforeEach(() => {
 });
 
 describe("Details panel (§16.9)", () => {
+  it("stops the loading skeleton animation for reduced motion", async () => {
+    const daemon = createMockDaemon();
+    const release = daemon.hold("GET /api/items/TASK-103");
+    const view = setup("TASK-103", {}, daemon);
+    const skeleton = screen.getByLabelText("Item details");
+    expect(skeleton.children).toHaveLength(3);
+    for (const row of skeleton.children) expect(row).toHaveClass("motion-reduce:animate-none");
+    release();
+    await screen.findByRole("button", { name: "Password reset form" });
+    view.unmount();
+  });
   it("uses styled editors and inline actions with focus and disabled affordances", async () => {
     const disconnected = setup("EPIC-12", { connected: false });
     const title = await screen.findByRole("button", { name: "Authentication" });
