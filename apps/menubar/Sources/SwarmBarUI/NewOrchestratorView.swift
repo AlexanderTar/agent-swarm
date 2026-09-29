@@ -118,6 +118,7 @@ public struct NewOrchestratorView: View {
                 Text(Copy.debugSpike).tag(SpikeIntent.debug)
             }
             .pickerStyle(.segmented)
+            .dialogGlass()
             Text(form.intentCaption).font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -190,7 +191,10 @@ struct RepoChooser: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(SubtleScrollerConfig())
+        // The config view sits beside the List, not inside its NSScrollView, so it
+        // must reach the adjacent scroll view instead of its enclosing one.
+        .background(SubtleScrollerConfig(adjacentScrollView: true))
+        .dialogGlass()
         .frame(height: Self.visibleHeight(for: rows.count, maxRows: maxRows))
         .overlay {
             if rows.isEmpty {

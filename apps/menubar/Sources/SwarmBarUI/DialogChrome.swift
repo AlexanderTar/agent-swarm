@@ -67,4 +67,15 @@ extension View {
             buttonStyle(.borderedProminent)
         }
     }
+
+    /// Liquid Glass container for controls on the translucent dialog background
+    /// (intent picker, repo list): glass on macOS 26, the control's own bezel
+    /// below — never an opaque fill, so the window material shows through.
+    @ViewBuilder func dialogGlass() -> some View {
+        if #available(macOS 26, *) {
+            glassEffect(.regular)
+        } else {
+            self
+        }
+    }
 }

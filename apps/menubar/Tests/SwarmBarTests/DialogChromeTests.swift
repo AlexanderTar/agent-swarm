@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import SwarmBarKit
 @testable import SwarmBarUI
@@ -16,6 +17,23 @@ final class DialogChromeTests: XCTestCase {
         } else {
             XCTAssertEqual(DialogChrome.prominentStyle, .borderedProminent)
         }
+    }
+
+    @MainActor
+    func testRepoChooserUsesSubtleScroller() {
+        let rows = (0..<10).map { Repo(id: "r\($0)", name: "repo-\($0)", path: "/tmp/repo-\($0)") }
+        let host = NSHostingView(rootView: RepoChooser(rows: rows, selection: .constant([])))
+        host.frame = NSRect(x: 0, y: 0, width: 500, height: 200)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        func scrolls(in view: NSView) -> [NSScrollView] {
+            let own = (view as? NSScrollView).map { [$0] } ?? []
+            return own + view.subviews.flatMap(scrolls)
+        }
+        guard let scroll = scrolls(in: host).first else { return XCTFail("Repo list scroll view missing") }
+        XCTAssertEqual(scroll.scrollerStyle, .overlay)
+        XCTAssertTrue(scroll.autohidesScrollers)
+        XCTAssertEqual(scroll.verticalScroller?.controlSize, .small)
     }
 
     @MainActor
