@@ -139,10 +139,31 @@ final class DialogChromeTests: XCTestCase {
         XCTAssertEqual(chevronBox.midY, row.midY, accuracy: 0.5,
                        "chevron optically centered in the row: \(chevronBox) in \(row)")
         XCTAssertTrue(row.contains(chevronBox.insetBy(dx: 0.5, dy: 0.5)), "chevron inside the row")
-        // The menu item (Copy.orchestrateBoardItemMenu) is preserved by code —
-        // the same Button line as pre-fix. It is not asserted here: SwiftUI
-        // builds the NSMenu lazily on open, so itemTitles is empty pre-open
-        // (measured), and opening it is not testable headlessly.
+        // The menu the user sees: a pullsDown popup uses item 0 as its button
+        // title and hides it in the opened menu, so the action item must sit
+        // at index 1 — with a single item the menu opens empty (measured via
+        // menuWillOpen: item isHidden, no menu window). The menu is built
+        // eagerly in AppKit here, so it is asserted directly.
+        guard let menu = chevron.menu else {
+            XCTFail("chevron popup has no menu")
+            return
+        }
+        XCTAssertGreaterThanOrEqual(menu.numberOfItems, 2,
+                                    "pull-down title item plus the action item: \(menu.items.map(\.title))")
+        let actionIndex = menu.items.firstIndex(where: { $0.title == Copy.orchestrateBoardItemMenu })
+        XCTAssertEqual(actionIndex, 1,
+                       "action item sits after the pull-down title item: \(menu.items.map(\.title))")
+        if let actionIndex {
+            let actionItem = menu.items[actionIndex]
+            XCTAssertFalse(actionItem.isHidden, "action item is listed in the opened menu")
+            var picked = false
+            let firing = SplitChevronPopUpButton(frame: NSRect(x: 0, y: 0, width: 28, height: 22),
+                                                 onPick: { _ in picked = true })
+            firing.menu?.performActionForItem(at: 1)
+            XCTAssertTrue(picked, "menu action item fires onPick")
+        }
+        XCTAssertEqual(chevron.accessibilityLabel(), Copy.moreStartOptions,
+                       "chevron popup carries its own AppKit accessibility label")
         // The chevron segment fills its 28 pt slot at full row height: the
         // popup itself (not just a computed zone) matches the label segment.
         XCTAssertEqual(chevronBox.height, PopoverFooterSplitButton.rowHeight, accuracy: 0.5,

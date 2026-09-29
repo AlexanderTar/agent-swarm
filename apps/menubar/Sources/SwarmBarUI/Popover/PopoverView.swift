@@ -254,19 +254,32 @@ final class SplitChevronPopUpButton: NSPopUpButton {
         self.onPick = onPick
         super.init(frame: frame, pullsDown: true)
         isBordered = false
+        setAccessibilityLabel(Copy.moreStartOptions)
+        contentTintColor = .labelColor
         let menu = NSMenu()
+        // Index 0 is the pull-down title item: AppKit uses it as the button
+        // face and hides it in the opened menu, so it carries only the
+        // chevron glyph. With a single item the menu opened empty and the
+        // action was unreachable (measured: item isHidden, no menu window).
+        let titleItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        titleItem.image = SplitChevronPopUpButton.chevronImage()
+        menu.addItem(titleItem)
         let item = NSMenuItem(title: Copy.orchestrateBoardItemMenu,
                               action: #selector(fire), keyEquivalent: "")
         item.target = self
-        // The chevron lives on the item, not the button: a pullsDown button
-        // re-syncs its displayed title/image from its items (measured: a
-        // directly assigned button image reads back nil with the item title
-        // showing), and with imagePosition .imageOnly the button shows just
-        // the glyph while the menu row keeps its title.
-        item.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
         menu.addItem(item)
         self.menu = menu
         showChevron()
+    }
+
+    /// The chevron glyph at label weight: the default symbol config renders
+    /// larger and brighter than the small label beside it (measured in the
+    /// after-shot), so pin point size/weight and let contentTintColor match
+    /// the label's tint, disabled dimming included.
+    static func chevronImage() -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        return NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(config)
     }
 
     @available(*, unavailable)
@@ -338,7 +351,11 @@ final class SplitBoxContainerView: NSView {
 /// find it by class; cf. TranslucentWindowAccessor.AccessorView.
 final class SplitDividerView: NSView {
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.setFill()
+        // Tertiary label, not separatorColor: the separator sat at 35,35,35
+        // on a 33,36,35 box in the after-shot — invisible inside the
+        // glass/material chrome. Tertiary label is drawn for legibility on
+        // materials while staying a hairline.
+        NSColor.tertiaryLabelColor.setFill()
         NSRect(x: bounds.midX - 0.5, y: 0, width: 1, height: bounds.height).fill()
     }
 }
