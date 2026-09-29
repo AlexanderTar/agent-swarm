@@ -59,7 +59,7 @@ public struct BoardHandoffView: View {
         let out = NSMutableAttributedString()
         if let kind = row.orchestrator?.kind {
             let a = NSTextAttachment()
-            a.image = Icons.image(IconName(kind))
+            a.image = Icons.tinted(IconName(kind))
             a.bounds = CGRect(x: 0, y: -2, width: 12, height: 12)
             out.append(NSAttributedString(attachment: a))
             out.append(NSAttributedString(string: " ", attributes: attrs))

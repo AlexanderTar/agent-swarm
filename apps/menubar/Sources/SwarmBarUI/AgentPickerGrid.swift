@@ -70,7 +70,7 @@ struct AgentPickerGrid: View {
 }
 
 /// AppKit keeps the visible popup as wide as its SwiftUI frame, including at the window minimum.
-/// With `detail`, menu rows get a second line; the closed popup still shows only line one.
+/// With `detail`, menu rows get a second line and the closed popup shows both lines.
 struct WideOptionPicker: NSViewRepresentable {
     @Environment(\.isEnabled) private var isEnabled
     let title: String
@@ -95,11 +95,17 @@ struct WideOptionPicker: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
 
     func makeNSView(context: Context) -> NSPopUpButton {
-        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let popup = TwoLinePopUpButton(frame: .zero, pullsDown: false)
+        popup.twoLine = detail != nil
         popup.target = context.coordinator
         popup.action = #selector(Coordinator.changed(_:))
         popup.setAccessibilityLabel(title)
         return popup
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView popup: NSPopUpButton, context: Context) -> CGSize? {
+        guard detail != nil else { return nil }
+        return CGSize(width: proposal.width ?? popup.intrinsicContentSize.width, height: TwoLinePopUpButton.height)
     }
 
     func updateNSView(_ popup: NSPopUpButton, context: Context) {
@@ -107,9 +113,10 @@ struct WideOptionPicker: NSViewRepresentable {
         context.coordinator.usesDetail = detail != nil
         let displayed = options.contains(where: { $0.value == value })
             ? options : [PickerOption(value, value.isEmpty ? " " : value)] + options
-        let current = popup.itemArray.map { (($0.representedObject as? String) ?? "", $0.title) }
-        let wanted = displayed.map { ($0.value, $0.label) }
-        // Detail rows keep `title` = label (attributedTitle only adds line two), so this compare holds.
+        // Detail rows keep `title` = label (attributedTitle only adds line two), so line two is
+        // compared separately: a status/model-label change there must rebuild the menu too.
+        let current = popup.itemArray.map { (($0.representedObject as? String) ?? "", $0.title, $0.attributedTitle?.string.components(separatedBy: "\n").dropFirst().joined(separator: "\n") ?? "") }
+        let wanted = displayed.map { ($0.value, $0.label, detail?($0)?.string ?? "") }
         if !zip(current, wanted).allSatisfy({ $0 == $1 }) || current.count != wanted.count {
             popup.removeAllItems()
             for option in displayed {
@@ -138,11 +145,13 @@ struct WideOptionPicker: NSViewRepresentable {
         var usesDetail = false
         init(onChange: @escaping (String) -> Void) { self.onChange = onChange }
 
-        /// A two-line attributed menu row would otherwise render two lines in the closed popup.
+        /// The cell would otherwise re-derive its title from the menu and drop line two; pin a copy
+        /// of the selected row (attributed two-line title included) as the closed-state face.
         static func showLineOne(_ popup: NSPopUpButton, _ on: Bool) {
-            guard on, let cell = popup.cell as? NSPopUpButtonCell, let item = popup.selectedItem else { return }
+            guard on, let cell = popup.cell as? NSPopUpButtonCell,
+                  let item = popup.selectedItem?.copy() as? NSMenuItem else { return }
             cell.usesItemFromMenu = false
-            cell.menuItem = NSMenuItem(title: item.title, action: nil, keyEquivalent: "")
+            cell.menuItem = item
         }
 
         @objc func changed(_ popup: NSPopUpButton) {
@@ -150,5 +159,40 @@ struct WideOptionPicker: NSViewRepresentable {
             Self.showLineOne(popup, usesDetail)
             onChange(value)
         }
+    }
+}
+
+/// Popup that is one two-line row tall (title + detail) instead of AppKit's single-line 21pt.
+final class TwoLinePopUpButton: NSPopUpButton {
+    override class var cellClass: AnyClass? {
+        get { TwoLinePopUpButtonCell.self }
+        set {}
+    }
+    static let height: CGFloat = 38
+    var twoLine = false {
+        didSet { if twoLine != oldValue { bezelStyle = twoLine ? .regularSquare : .rounded; invalidateIntrinsicContentSize() } }
+    }
+    override var intrinsicContentSize: NSSize {
+        var size = super.intrinsicContentSize
+        if twoLine { size.height = Self.height }
+        return size
+    }
+}
+
+/// The stock cell truncates an attributed title to one line; draw both lines, vertically centred.
+final class TwoLinePopUpButtonCell: NSPopUpButtonCell {
+    override func drawTitle(_ title: NSAttributedString, withFrame frame: NSRect, in controlView: NSView) -> NSRect {
+        guard title.string.contains("\n") else { return super.drawTitle(title, withFrame: frame, in: controlView) }
+        let text = NSMutableAttributedString(attributedString: title)
+        let color: NSColor = isEnabled ? .labelColor : .disabledControlTextColor
+        text.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if value == nil { text.addAttribute(.foregroundColor, value: color, range: range) }
+        }
+        let width = max(frame.width, controlView.bounds.width - frame.minX - 24) // 24 = arrows
+        let height = ceil(text.boundingRect(with: NSSize(width: width, height: .greatestFiniteMagnitude), options: .usesLineFragmentOrigin).height)
+        // `frame` is the one-line title strip; centre against the whole control instead.
+        let rect = NSRect(x: frame.minX, y: controlView.bounds.minY + max(0, (controlView.bounds.height - height) / 2), width: width, height: height)
+        text.draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        return rect
     }
 }

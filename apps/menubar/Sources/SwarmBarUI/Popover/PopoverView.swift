@@ -113,23 +113,18 @@ public struct PopoverView: View {
 
     private var footer: some View {
         HStack {
-            HStack(spacing: 0) {
-                Button {
-                    openNewOrchestrator()
-                } label: {
-                    Label(Copy.newOrchestrator, systemImage: "plus")
-                }
-                Menu {
-                    Button(Copy.orchestrateBoardItemMenu) { openBoardHandoff(nil) }
-                } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .frame(width: 18)
-                .help(Copy.moreStartOptions)
-                .accessibilityLabel(Copy.moreStartOptions)
+            Menu {
+                Button(Copy.orchestrateBoardItemMenu) { openBoardHandoff(nil) }
+            } label: {
+                Label(Copy.newOrchestrator, systemImage: "plus")
+            } primaryAction: {
+                openNewOrchestrator()
             }
+            .menuStyle(.button)
+            .controlSize(.small)
+            .fixedSize()
+            .help(Copy.moreStartOptions)
+            .accessibilityLabel(Copy.newOrchestrator)
             .disabled(!model.connected)
             Spacer()
             IconButton("square.grid.2x2", help: Copy.openBoard) { model.openBoard() }
