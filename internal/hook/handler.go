@@ -975,7 +975,8 @@ func (h *Handler) decide(ctx context.Context, kind runtime.AgentKind, a adapter.
 
 // rewriteClaudeQuestion returns tool_input with questions[0] (the bound
 // question) carrying np's header, question and options (label + description),
-// single-select, and every other field untouched. changed is false when the
+// single-select, and every other field untouched. Options np gives no
+// description keep the agent's description for the same label, else "". changed is false when the
 // options and select mode already equal np's, so nothing needs rewriting.
 func rewriteClaudeQuestion(raw []byte, np runtime.NativePrompt) (json.RawMessage, bool) {
 	var input map[string]any
@@ -995,22 +996,22 @@ func rewriteClaudeQuestion(raw []byte, np runtime.NativePrompt) (json.RawMessage
 	have, _ := q["options"].([]any)
 	same = same && len(have) == len(np.Options)
 	for i, label := range np.Options {
-		opt := map[string]any{"label": label}
+		// Claude's schema requires "description" on every option, so it is
+		// always emitted: np's, else the agent's own for the same label.
 		desc := ""
 		if i < len(np.Descriptions) {
 			desc = np.Descriptions[i]
-			if desc != "" {
-				opt["description"] = desc
-			}
 		}
-		want[i] = opt
-		if same {
+		var hd string
+		if i < len(have) {
 			h, _ := have[i].(map[string]any)
-			hd, _ := h["description"].(string)
-			if h["label"] != label || hd != desc {
-				same = false
+			hd, _ = h["description"].(string)
+			if desc == "" && h["label"] == label {
+				desc = hd
 			}
+			same = same && h["label"] == label && hd == desc
 		}
+		want[i] = map[string]any{"label": label, "description": desc}
 	}
 	if same {
 		return nil, false
