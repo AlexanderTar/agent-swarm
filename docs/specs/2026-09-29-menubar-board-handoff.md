@@ -39,7 +39,7 @@ agent/model/advisor sent. Accepted as-is (see Out of scope).
 4. Picker defaults always come from Settings (`CatalogRules.prefill`), including for handoff (not the orchestrator's current kind).
 5. Ready start reuses `POST /api/items/{key}/orchestrator` with `agent/model/effort/advisor`, **no `roles`** → `role_overrides` NULL → workers use Settings.
 6. Handoff-with-switch extends the existing handoff route; no new route. The automated handoff walk runs unchanged (pre-pause, HANDOFF notice, predecessor saves its handoff checkpoint, stop, settle, admit); the switch is applied at `PhaseStarting`, immediately before `startSession`.
-7. On switch the agent row gets: new `kind/model/effort`, advisor re-resolved via `resolveAdvisor(newKind, choice)`, `role_overrides = NULL`, `kind_reason = ''` (explicit user choice reads as "settings-equivalent", model.go:111).
+7. On switch the agent row gets: new `kind/model/effort`, advisor re-resolved via `resolveAdvisor(newKind, choice)`, `role_overrides = NULL`, `kind_reason = ''` (explicit user choice reads as "settings-equivalent", model.go:111). The window always sends `agent` (no "keep current" option), so a handoff with values identical to the row still applies the switch and clears `role_overrides`.
 8. Switch is orchestrator-only; non-orchestrators get 400.
 9. No usage-fallback substitution on the switch (a normal handoff successor never re-resolves fallback either; the user picked explicitly).
 10. Data: no new endpoint. Client joins `GET /api/items?view=flat` with `/api/state` agents already held by `AppModel`.
@@ -287,10 +287,13 @@ cleared by `makeBoardHandoffForm()`. `Window` scenes take no value, so preselect
   `detail: ((PickerOption) -> NSAttributedString?)? = nil`. With `detail`, each `NSMenuItem.attributedTitle` is
   line 1 (system font) + `\n` + line 2 (`.smallSystemFontSize`, `secondaryLabelColor`, agent icon as
   `NSTextAttachment` from `Icons.image`), and the cell is set `usesItemFromMenu = false` with
-  `menuItem = NSMenuItem(title: line1)` so the closed button shows one line.
+  `menuItem = NSMenuItem(title: line1)` so the closed button shows one line; both `updateNSView` and the
+  coordinator's `changed(_:)` reset `cell.menuItem` to the newly selected row's line-1 item.
 - `BoardHandoffView(form:onDone:onCancel:)` (new), `BoardHandoffHost` + `Window(Copy.orchestrateBoardItem, id: "board-handoff")`
   in `App.swift`, `.windowResizability(.contentSize)`, `.defaultSize(width: 820, height: 300)`, centered like new-orchestrator
-  (the centering block is extracted into `PopoverHost.openCentered(_ id: String)` and used by both).
+  (the centering block is extracted into `PopoverHost.openCentered(_ id: String)` and used by both). The host adds
+  `.onChange(of: model.state.agents) { _, a in form?.update(agents: a) }` and
+  `.onChange(of: model.connected) { _, up in form?.connected = up }` (as `NewOrchestratorHost`, App.swift:216).
 - `PopoverView.init(model:openNewOrchestrator:openBoardHandoff:openSettings:)` with
   `openBoardHandoff: @escaping (String?) -> Void = { _ in }`; passed to `AgentsSection` → `AgentRowView`.
 
@@ -400,7 +403,9 @@ httpapi (`handoff_test.go`): 202 with switch; `{"model":"x"}` → 400 `Choose an
 
 Swift tests: `BoardHandoffRules.rows` (eligibility incl. chore, excludes in-progress without orchestrator, children, finished orchestrators, story/task; ordering); `detail` for orchestrator (effort fallback via `previewEffortLabel`, nil effort omitted) and Ready; `canHandOff` for queued/spawning/pausing/replacement-reason; form primary labels (Hand off / Start / Queue / Try again), preselect, load failure → `Try again` reruns load, empty list disables primary, request-id reuse; `HTTPDaemonClient` encodes `HandoffRequest` without switch as exactly `{"request_id":…}` and with switch incl. `"advisor":"none"`; `StartOrchestratorBody` has no `roles`/`repos`; render test: closed Item popup is one line high.
 
-Manual scenarios: (a) Ready epic → Start → row appears with chosen agent; (b) at capacity → Queue orchestrator + caption → agent queued; (c) live Claude orchestrator → Hand off to Codex → row shows `Saving handoff…` → `Starting…` → Codex icon, same name; workers spawned afterwards use Settings roles; (d) Cancel closes, nothing sent; (e) daemon down → primary disabled; (f) pick a model then disable that agent in Settings → 422 text in red, `Try again`; (g) handoff while another handoff runs → 409 text; (h) `Hand off to…` preselects the right item; (i) no eligible items → empty state.
+Manual scenarios: (a) Ready epic → Start → row appears with chosen agent; (b) at capacity → Queue orchestrator + caption → agent queued; (c) live Claude orchestrator → Hand off to Codex → row shows `Saving handoff…` → `Starting…` → Codex icon, same name; workers spawned afterwards use Settings roles; (d) Cancel closes, nothing sent; (e) daemon down → primary disabled; (f) pick a model then disable that agent in Settings → 422 text in red, `Try again`; (g) handoff while another handoff runs → 409 text; (h) `Hand off to…` preselects the right item; (i) no eligible items → empty state; (j) exhaust, Ready start: picked
+agent out of usage → `StartOrchestrator` substitutes the fallback and raises `agent.fallback_used` (existing, agents.go:591-597);
+(k) exhaust, handoff switch to an out-of-usage agent → launches as picked, no substitution, no notification (decision 9).
 
 ## Explicitly out of scope
 
