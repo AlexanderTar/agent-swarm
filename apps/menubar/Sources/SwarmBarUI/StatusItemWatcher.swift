@@ -71,7 +71,9 @@ public final class StatusItemWatcher {
     /// NSToolTipManager's internal timer race.
     public func setTooltips(_ label: MenuLabel) {
         guard let view = Self.statusWindow()?.contentView else { return }
-        let slots = MenuBarLabelView.tooltipSlots(label).map { (text: $0.0, width: label.compact ? 20 : $0.1) }
+        // Slot widths already include the trailing inter-segment gap (and the compact
+        // icon-only width), so stepping x by them tracks MenuBarLabelView's HStack layout.
+        let slots = MenuBarLabelView.tooltipSlots(label).map { (text: $0.0, width: $0.1) }
         if slots.elementsEqual(lastSlots, by: { $0.text == $1.text && $0.width == $1.width }) {
             return
         }

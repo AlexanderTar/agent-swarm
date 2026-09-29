@@ -82,12 +82,13 @@ struct WorkerOverridesGrid: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            Text(Copy.workerOverrides).font(.caption).foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
                 ForEach(BoardHandoffForm.workerRoles, id: \.self) { role in
                     let label = Copy.defaultsRowLabel(role)
                     let choice = form.workerChoice(role)
                     GridRow {
-                        Text(label).frame(width: 70, alignment: .leading)
+                        Text(label).frame(width: 84, alignment: .leading)
                         WideOptionPicker("\(label) \(Copy.agent)", options: form.workerAgentOptions,
                                          value: choice.agent?.rawValue ?? "",
                                          icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setWorkerAgent(role, $0) }

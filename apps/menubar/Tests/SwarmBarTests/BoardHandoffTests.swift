@@ -218,6 +218,23 @@ final class BoardHandoffTests: XCTestCase {
         XCTAssertEqual(f.workerRolesPayload?["coder"]?.agent, .codex)
     }
 
+    func testWorkerRolesPayloadSendsEffortOnlyChange() async {
+        let f = await form()
+        f.selectedKey = "BUG-7"
+        f.setWorkerEffort(.reviewer, "low")
+        XCTAssertEqual(f.workerRolesPayload?.keys.sorted(), ["reviewer"], "effort-only change is still a change")
+        XCTAssertEqual(f.workerRolesPayload?["reviewer"]?.effort, "low")
+    }
+
+    func testWorkerRolesPayloadOmitsRoleChangedBackToDefault() async {
+        let f = await form()
+        f.selectedKey = "BUG-7"
+        f.setWorkerEffort(.reviewer, "low")
+        XCTAssertNotNil(f.workerRolesPayload)
+        f.setWorkerEffort(.reviewer, "high")
+        XCTAssertNil(f.workerRolesPayload, "changing back to the Settings default omits the role again")
+    }
+
     func testWorkerRolesPayloadIsNilInHandoffMode() async {
         let f = await form(preselect: "auth-epic-orchestrator")
         XCTAssertTrue(f.isHandoff)

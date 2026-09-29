@@ -171,7 +171,7 @@ public final class BoardHandoffForm {
     public var workersValid: Bool { Self.workerRoles.allSatisfy { workerErrors($0).isValid } }
 
     public func setWorkerAgent(_ role: SettingsRole, _ value: String) {
-        guard let kind = AgentKind(rawValue: value), workers[role] != nil else { return }
+        guard let kind = AgentKind(rawValue: value) else { return }
         let (next, errors) = CatalogRules.changeAgent(workerChoice(role), to: kind, catalog: picker.catalog)
         workers[role] = next
         workerModelErrors[role] = errors.model
@@ -179,7 +179,6 @@ public final class BoardHandoffForm {
     }
 
     public func setWorkerModel(_ role: SettingsRole, _ value: String) {
-        guard workers[role] != nil else { return }
         let result = CatalogRules.changeModel(workerChoice(role), to: value, catalog: picker.catalog)
         workers[role] = result.0
         workerNotes[role] = result.note
@@ -187,7 +186,6 @@ public final class BoardHandoffForm {
     }
 
     public func setWorkerEffort(_ role: SettingsRole, _ value: String) {
-        guard workers[role] != nil else { return }
         let w = workerChoice(role)
         workers[role] = AgentChoice(agent: w.agent, model: w.model, effort: CatalogRules.normalizeEffort(w.agent,
             CatalogRules.resolve(CatalogRules.entry(picker.catalog, w.agent), w.model), value))

@@ -29,16 +29,39 @@ final class PopoverRenderTests: XCTestCase {
     }
 
     func testLabelFitsToContentAndTooltipSlotsMatch() {
-        func label(_ texts: [String]) -> MenuLabel {
+        func label(_ texts: [String], compact: Bool = false) -> MenuLabel {
             MenuLabel(count: "1", segments: zip(AgentKind.selectable, texts).map { kind, text in
                 MenuLabel.Segment(agent: kind, text: text, dimmed: false, tooltip: kind.rawValue)
-            }, compact: false)
+            }, compact: compact)
+        }
+        func textWidth(_ s: String) -> CGFloat {
+            let font = NSFont.monospacedDigitSystemFont(ofSize: MenuBarLabelView.fontSize, weight: .regular)
+            return ceil((s as NSString).size(withAttributes: [.font: font]).width)
         }
         let mixed = label(["36%", "100%", "0%", "5%"])
         let widths = MenuBarLabelView.tooltipSlots(mixed).map(\.1)
         XCTAssertEqual(widths.count, 4)
         XCTAssertGreaterThan(widths[1], widths[0], "no fixed 100% slot: each segment is as wide as its own text")
         XCTAssertGreaterThan(widths[0], widths[2])
+        // Each slot is its own icon + text plus the trailing inter-segment gap, so the
+        // watcher can step x by slot widths and stay aligned with the HStack(spacing:) layout.
+        let texts = ["36%", "100%", "0%", "5%"]
+        for (i, text) in texts.enumerated() {
+            let expected = MenuBarLabelView.iconSize + MenuBarLabelView.innerSpacing
+                + textWidth(text) + MenuBarLabelView.segmentSpacing
+            XCTAssertEqual(widths[i], expected, accuracy: 0.5, "slot \(i) equals icon+text width plus spacing")
+        }
+        var expectedSum: CGFloat = 0
+        for text in texts {
+            expectedSum += MenuBarLabelView.iconSize + MenuBarLabelView.innerSpacing + textWidth(text)
+        }
+        expectedSum += CGFloat(texts.count) * MenuBarLabelView.segmentSpacing
+        let actualSum: CGFloat = widths.reduce(0, +)
+        XCTAssertEqual(actualSum, expectedSum, accuracy: 1,
+                       "slots sum to content plus one gap per segment, matching the rendered label minus the count")
+        let compactWidths = MenuBarLabelView.tooltipSlots(label(["36%", "100%", "0%", "5%"], compact: true)).map(\.1)
+        XCTAssertTrue(compactWidths.allSatisfy { abs($0 - MenuBarLabelView.compactSlotWidth) < 0.5 },
+                      "compact shows icons only: every slot is the shared compact width")
         let narrow = LabelRenderer.image(label(["5%", "0%", "5%", "0%"]))
         let wide = LabelRenderer.image(label(["100%", "100%", "100%", "100%"]))
         XCTAssertLessThan(narrow.size.width, wide.size.width, "rendered label fits to content")

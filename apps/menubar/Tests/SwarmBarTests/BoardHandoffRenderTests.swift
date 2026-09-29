@@ -76,8 +76,35 @@ final class BoardHandoffRenderTests: XCTestCase {
         form.selectedKey = "BUG-7"
         XCTAssertFalse(form.isHandoff)
         let host = render(form)
+        for role in BoardHandoffForm.workerRoles {
+            let accessibility = "\(Copy.defaultsRowLabel(role)) \(Copy.agent)"
+            XCTAssertNotNil(popups(host).first { $0.accessibilityLabel() == accessibility }, "worker row for \(role.rawValue) in start mode")
+        }
         let coder = try XCTUnwrap(popups(host).first { $0.accessibilityLabel() == "Coding Agent" }, "worker rows in start mode")
         XCTAssertEqual(coder.titleOfSelectedItem, "Claude")
+    }
+
+    func testStartModeRendersWorkerErrorAndNoteRows() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeBoardHandoffForm()
+        await form.load()
+        form.selectedKey = "BUG-7"
+        // gpt-legacy offers only medium: the stored high effort is unavailable, leaving a note.
+        form.setWorkerModel(.reviewer, "gpt-legacy")
+        XCTAssertNotNil(form.workerNote(.reviewer), "reviewer note row has content")
+        form.setWorkerModel(.coder, "no-such-model")
+        XCTAssertNotNil(form.workerErrors(.coder).model, "coder error row has content")
+        // SwiftUI Text rows are private views (no NSTextField/accessibility string in a bare
+        // host), so the render half is a smoke check: the conditional error/note GridRows
+        // execute without breaking the worker grid.
+        let host = render(form)
+        for role in BoardHandoffForm.workerRoles {
+            let accessibility = "\(Copy.defaultsRowLabel(role)) \(Copy.agent)"
+            XCTAssertNotNil(popups(host).first { $0.accessibilityLabel() == accessibility },
+                            "worker row for \(role.rawValue) still renders with error/note rows present")
+        }
     }
 
     func testHandoffModeHidesWorkerRows() async throws {
