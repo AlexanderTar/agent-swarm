@@ -29,6 +29,26 @@ final class BoardHandoffTests: XCTestCase {
         XCTAssertNil(rows[2].orchestrator)
     }
 
+    func testDraftChoreIsListedAfterOrchestratedRows() {
+        let items = client.boardItemList + [
+            BoardItem(key: "CHORE-9", type: "chore", status: "draft", title: "Tidy"),
+            BoardItem(key: "CHORE-10", type: "chore", status: "done", title: "Old"),
+            BoardItem(key: "CHORE-11", type: "chore", status: "cancelled", title: "Nope"),
+            BoardItem(key: "BUG-30", type: "bug", status: "in_progress", title: "Busy"),
+            BoardItem(key: "CHORE-12", type: "chore", status: "draft", title: "Child", parentKey: "EPIC-12"),
+        ]
+        let rows = BoardHandoffRules.rows(items, agents: state.agents)
+        XCTAssertEqual(rows.map(\.id), ["SPIKE-4", "EPIC-12", "BUG-7", "CHORE-3", "CHORE-9"])
+        XCTAssertEqual(BoardHandoffRules.detail(rows[4], catalog: catalog), "Chore · Draft")
+    }
+
+    func testDraftItemStartsLikeReady() async {
+        client.boardItemList = [BoardItem(key: "CHORE-9", type: "chore", status: "draft", title: "Tidy")]
+        let f = await form()
+        XCTAssertEqual(f.selectedKey, "CHORE-9")
+        XCTAssertEqual(f.primaryLabel, Copy.startOrchestrator)
+    }
+
     func testFinishedOrchestratorDoesNotCount() {
         var agents = state.agents
         agents[0].state = .finished // auth-epic-orchestrator

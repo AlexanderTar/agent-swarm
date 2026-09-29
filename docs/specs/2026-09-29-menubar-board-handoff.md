@@ -49,7 +49,7 @@ today **ignores** the agent/model/advisor sent. This change applies them — see
 
 Assumptions: "live orchestrator" = `role == .orchestrator`, `state ∈ {queued, active}`, `itemKey == item.key`
 (exact assignment, as `recoverableOrchestrator` matches `item_id`). Eligible item = `parent_key == nil`,
-`type ∈ {epic, bug, chore, spike}`, and (live orchestrator) OR (`status == ready` AND none).
+`type ∈ {epic, bug, chore, spike}`, and (live orchestrator) OR (`status ∈ {draft, ready}` AND none). Board-created roots stay `draft` until an orchestrator starts (daemon `StartOrchestrator` promotes draft → ready), so drafts must be listed; detail line reads `Chore · Draft` / `Epic · Ready`, primary button is the same for both.
 
 ## DB models
 
@@ -270,7 +270,7 @@ public struct BoardItemRow: Equatable, Sendable, Identifiable {
 }
 public enum BoardHandoffRules {
     static let eligibleTypes: Set<String> = ["epic", "bug", "chore", "spike"]
-    /// Eligible rows: live-orchestrator rows first, then Ready; daemon order (updated_at DESC) within each.
+    /// Eligible rows: live-orchestrator rows first, then Draft/Ready; daemon order (updated_at DESC) within each.
     public static func rows(_ items: [BoardItem], agents: [AgentNode]) -> [BoardItemRow]
     public static func title(_ r: BoardItemRow) -> String                  // "EPIC-12 · Ship auth"
     /// "<name> · <model label> · <effort> · <state>" (effort omitted when previewEffortLabel is nil)
@@ -388,6 +388,7 @@ disabled · load failure → red `Couldn't load board items.` in place of the It
 | `handoffFailed` | `Couldn't hand off. Your entries are saved.` (+ " " + daemon message unless unreachable) |
 | `handoffUnavailable` | `This orchestrator can't hand off right now.` |
 | `ready` | `Ready` |
+| `draft` | `Draft` |
 | `itemType(_:)` | `Epic` / `Bug` / `Chore` / `Spike` (others: capitalised slug) |
 | `boardItemTitle(_:_:)` | `"\(key) · \(title)"` |
 | reused | `startOrchestrator`, `queueOrchestrator`, `tryAgain`, `cancel`, `defaultsFromSettings`, `queuedCaption`, `launchFailed` (Ready start failure), `runningLabel` |

@@ -12,14 +12,14 @@ public struct BoardItemRow: Equatable, Sendable, Identifiable {
 public enum BoardHandoffRules {
     static let eligibleTypes: Set<String> = ["epic", "bug", "chore", "spike"]
 
-    /// Eligible rows: live-orchestrator rows first, then Ready; daemon order (updated_at DESC) within each.
+    /// Eligible rows: live-orchestrator rows first, then Draft/Ready; daemon order (updated_at DESC) within each.
     public static func rows(_ items: [BoardItem], agents: [AgentNode]) -> [BoardItemRow] {
         let live = AgentTree.flatten(agents).filter { $0.role == .orchestrator && ($0.state == .queued || $0.state == .active) }
         var orchestrated: [BoardItemRow] = [], ready: [BoardItemRow] = []
         for it in items where it.parentKey == nil && eligibleTypes.contains(it.type) {
             if let o = live.first(where: { $0.itemKey == it.key }) {
                 orchestrated.append(BoardItemRow(item: it, orchestrator: o))
-            } else if it.status == "ready" {
+            } else if it.status == "ready" || it.status == "draft" {
                 ready.append(BoardItemRow(item: it, orchestrator: nil))
             }
         }
@@ -28,9 +28,9 @@ public enum BoardHandoffRules {
 
     public static func title(_ r: BoardItemRow) -> String { Copy.boardItemTitle(r.item.key, r.item.title) }
 
-    /// "<name> · <model label> · <effort> · <state>" (effort omitted when unknown) or "<Type> · Ready".
+    /// "<name> · <model label> · <effort> · <state>" (effort omitted when unknown) or "<Type> · <Draft|Ready>".
     public static func detail(_ r: BoardItemRow, catalog: [AgentCatalogEntry]) -> String {
-        guard let o = r.orchestrator else { return "\(Copy.itemType(r.item.type)) · \(Copy.ready)" }
+        guard let o = r.orchestrator else { return "\(Copy.itemType(r.item.type)) · \(r.item.status == "draft" ? Copy.draft : Copy.ready)" }
         let entry = CatalogRules.entry(catalog, o.kind)
         let state = AgentTree.handoffStatus(o) ?? DisplayState(o).label ?? Copy.runningLabel
         return [o.name, CatalogRules.modelLabel(entry, o.model), CatalogRules.previewEffortLabel(entry, o.model, o.effort), state]
@@ -48,7 +48,7 @@ public enum BoardHandoffRules {
     }
 }
 
-/// The Orchestrate board item window: start an orchestrator on a Ready item, or hand a live one
+/// The Orchestrate board item window: start an orchestrator on a Draft/Ready item, or hand a live one
 /// off to a different agent/model/effort/advisor.
 @MainActor
 @Observable

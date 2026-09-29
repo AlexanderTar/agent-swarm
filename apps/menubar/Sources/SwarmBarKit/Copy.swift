@@ -266,6 +266,7 @@ public enum Copy {
     public static let handoffFailed = "Couldn't hand off. Your entries are saved."
     public static let handoffUnavailable = "This orchestrator can't hand off right now."
     public static let ready = "Ready"
+    public static let draft = "Draft"
     public static func itemType(_ slug: String) -> String {
         switch slug {
         case "epic": return "Epic"
