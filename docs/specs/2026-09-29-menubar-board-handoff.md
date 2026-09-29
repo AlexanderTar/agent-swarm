@@ -1,7 +1,7 @@
 # Menubar: orchestrate a board item / hand off to another agent
 
 Date: 2026-09-29 · Branch: `feat/menubar-board-handoff` · Worktree: `../agent-swarm-board-handoff`
-Status: spec (no code yet). Companion plan: `docs/plans/2026-09-29-menubar-board-handoff.md` (to be written).
+Status: spec (no code yet). Companion plan: `docs/plans/2026-09-29-menubar-board-handoff.md` .
 
 ## Context
 
@@ -27,9 +27,9 @@ Verified on `main` @ `5e79012`:
 Collision warnings: `feat/finish-with-pr` just merged into the same files (`AgentActions.swift`, `Copy.swift`,
 `PopoverView.swift`); rebase before starting. Migration number 0023 must be re-checked at merge time.
 
-Caveat (scope call): a Ready item whose last orchestrator was user-cancelled is restarted in place by
-`recoverableOrchestrator`/`restartOrchestratorInPlace` (`agents.go:741-786`), which **ignores** the
-agent/model/advisor sent. Accepted as-is (see Out of scope).
+Caveat (scope call, user-approved addition): a Ready item whose last orchestrator was user-cancelled is
+restarted in place by `recoverableOrchestrator`/`restartOrchestratorInPlace` (`agents.go:741-806`), which
+today **ignores** the agent/model/advisor sent. This change applies them — see "Picks on an in-place restart".
 
 ## Locked decisions
 
@@ -44,6 +44,8 @@ agent/model/advisor sent. Accepted as-is (see Out of scope).
 9. No usage-fallback substitution on the switch (a normal handoff successor never re-resolves fallback either; the user picked explicitly).
 10. Data: no new endpoint. Client joins `GET /api/items?view=flat` with `/api/state` agents already held by `AppModel`.
 11. The shared Agent/Advisor logic is **extracted** from `NewOrchestratorForm` into `AgentPickerModel` (Kit) and `AgentPickerGrid` (UI); both windows use them. Existing tests are ported to `form.picker.*`, never deleted.
+12. An in-place restart (`StartOrchestrator` → `restartOrchestratorInPlace`, ModeRecover) applies the request's picks
+    iff `in.Kind != ""`, with the handoff switch's semantics (see "Picks on an in-place restart").
 
 Assumptions: "live orchestrator" = `role == .orchestrator`, `state ∈ {queued, active}`, `itemKey == item.key`
 (exact assignment, as `recoverableOrchestrator` matches `item_id`). Eligible item = `parent_key == nil`,
@@ -60,7 +62,7 @@ ALTER TABLE agent_operations ADD COLUMN switch_json TEXT NOT NULL DEFAULT '';
 ```
 
 `switch_json` is `json.Marshal(runtime.AgentSwitch)`; only `ModeHandoff` rows written by `RequestHandoffTo`
-carry it. It is read ad hoc (`SELECT switch_json FROM agent_operations WHERE id = ?`) inside
+(and ModeRecover rows written by `restartOrchestratorInPlace` with picks) carry it. It is read ad hoc (`SELECT switch_json FROM agent_operations WHERE id = ?`) inside
 `startSuccessor`, so the three `Operation` scanners (`operationByKey`, `pendingOperationTx`, `getOperation`)
 are untouched. No index, no backfill. `agents` table unchanged.
 
@@ -93,24 +95,22 @@ func (s *Store) requestReplacement(ctx context.Context, agentID string, mode Rep
 //  5. requestReplacement(ModeHandoff, requestKey, "", json(sw)).
 func (s *Store) RequestHandoffTo(ctx context.Context, agentID, requestKey string, sw AgentSwitch) (Operation, error)
 
-// applyHandoffSwitch runs in startSuccessor before startSession when op.Mode == ModeHandoff.
-// switch_json == "" → (a, nil). Else: Preflight again (catalog/auth may have moved), then
+// applyAgentSwitch runs in startSuccessor for every successor, after the reason switch and
+// before startSession. switch_json == "" → (a, nil) (plain handoffs, retries, resumes, capacity). Else: Preflight again (catalog/auth may have moved), then
 // resolveAdvisor(sw.Kind, sw.Advisor), then one UPDATE:
 //   UPDATE agents SET kind=?, model=?, effort=?, advisor_kind=NULLIF(?,''), advisor_model=NULLIF(?,''),
 //     advisor_effort=NULLIF(?,''), advisor_mode=NULLIF(?,''), advisor_requested_effort=NULLIF(?,''),
 //     role_overrides=NULL, kind_reason='' WHERE id=?
 // and returns the updated Agent (passed on to startSession and watchStartup).
-func (s *Store) applyHandoffSwitch(ctx context.Context, opID string, a Agent) (Agent, error)
+func (s *Store) applyAgentSwitch(ctx context.Context, opID string, a Agent) (Agent, error)
 ```
 
 `startSuccessor` change (after the `reason` switch, before `startSession`):
 
 ```go
-if op.Mode == ModeHandoff {
-	if a, err = s.applyHandoffSwitch(ctx, op.ID, a); err != nil {
-		// same Notify.Raise("agent.preflight_failed", reason) as the retry branch above
-		return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
-	}
+if a, err = s.applyAgentSwitch(ctx, op.ID, a); err != nil {
+	// same Notify.Raise("agent.preflight_failed", reason) as the retry branch above
+	return s.setPhase(ctx, op.ID, PhaseStarting, PhaseBlocked, err.Error())
 }
 ```
 
@@ -119,6 +119,33 @@ Failure semantics: Preflight fails → no row change, op `blocked`, predecessor 
 `startSession` fails after the UPDATE → op `blocked` (existing path); the row keeps the new kind, which is
 what the user asked for, and Retry launches it. `stopPredecessor` still uses the old kind's interrupt keys
 because the switch is not applied until `PhaseStarting`.
+
+### Picks on an in-place restart (user-approved addition)
+
+```go
+// agents.go — StartOrchestrator's recover branch
+} else if ok {
+	var sw *AgentSwitch
+	if in.Kind != "" { // picks sent (menubar, web); CLI without --agent sends "" → unchanged
+		sw = &AgentSwitch{Kind: in.Kind, Model: in.Model, Effort: in.Effort, Advisor: in.Advisor}
+	}
+	return s.restartOrchestratorInPlace(ctx, rec, sw, in.RepoPaths)
+}
+
+// restartOrchestratorInPlace: sw == nil → today's body (RequestReplacement(ModeRecover, "", "")).
+// sw != nil → Preflight{sw.Kind, sw.Model, sw.Effort, RoleOrchestrator, RepoPaths} first (plain error →
+// spawn.go's wrapPreflightErr → 422 preflight_failed, nothing recorded), then
+// requestReplacement(ctx, a.ID, ModeRecover, "", "", json(sw)).
+func (s *Store) restartOrchestratorInPlace(ctx context.Context, a Agent, sw *AgentSwitch, repoPaths []string) (Agent, bool, error)
+```
+
+The switch is applied by the same `applyAgentSwitch` at `PhaseStarting`: new kind/model/effort, advisor
+re-resolved, `role_overrides = NULL`, `kind_reason = ''`, no usage-fallback substitution (decision 9 parity).
+Callers checked: the menubar always sends picks; **web `choicePayload` (`web/src/logic/catalog.ts:170`) always
+sends `agent`+`model`, so a web Start on a cancelled orchestrator now also applies its picks** (improvement, no
+web change); the CLI (`cmd/swarm/runtime_cmds.go:179`) sends `"agent":""` without `--agent` → unchanged.
+A web `roles` map on this path was already ignored and stays ignored (`role_overrides` is cleared).
+`TestCancelThenStartRecoversSameOrchestrator` sends `Kind: Fake` and now takes the switch path; it must still pass.
 
 New error strings (`replacement.go`):
 
@@ -162,6 +189,7 @@ Errors (exact copy, status, source):
 | root accepted | 409 conflict | `Root accepted; write completed.` (finish.go:18) |
 | bad model / auth / not installed / superpowers | 422 preflight_failed | Preflight sentences (agents.go:167-210), e.g. `Choose a model available for this agent.` |
 | start: item already orchestrated | 409 conflict | `This item already has an orchestrator.` (agents.go:583) |
+| start in place: bad picks | 422 preflight_failed | Preflight sentences (via spawn.go `wrapPreflightErr`) |
 
 ### Swift — SwarmBarKit
 
@@ -366,7 +394,7 @@ Daemon strings: see the error table above. No new notification kinds (`agent.pre
 
 ## File list
 
-Changed (Go): `internal/httpapi/handoff.go`, `internal/runtime/replacement.go`, `internal/runtime/model.go`.
+Changed (Go): `internal/httpapi/handoff.go`, `internal/runtime/replacement.go`, `internal/runtime/model.go`, `internal/runtime/agents.go`.
 New (Go): `internal/db/schema/0023_handoff_switch.sql`, `internal/db/schema_0023_handoff_switch_test.go`,
 `internal/runtime/handoff_switch_test.go`. Extended tests: `internal/httpapi/handoff_test.go`.
 
@@ -392,26 +420,30 @@ Commands, in order (from the worktree root):
 5. `cd apps/menubar && swift test --filter 'AgentPicker|BoardHandoff|NewOrchestrator|HTTPDaemonClient|Popover'`, then `make test-menubar`.
 6. Manual on `make dev` daemon + `SWARM_URL=http://127.0.0.1:17777 swift run SwarmBar`: scenarios below.
 
-Go tests (new, in `handoff_switch_test.go`, harness `newStoreWithFallback` = Claude + Codex):
+Go tests (new, in `handoff_switch_test.go`, harness `newStoreWithFallback` = Claude + Codex, returns `(s, tm)`; the fake adapter is `s.Adapters[Codex].(*adapter.Fake)`):
 - `TestHandoffSwitchAppliesAtSuccessor`: claude orchestrator with `role_overrides` set → `RequestHandoffTo(codex, gpt-6-astra, high, advisor None)` → `ResumeOperations` → op `succeeded`; agent row kind `codex`, model, effort, advisor columns empty, `role_overrides` NULL, `kind_reason ''`; `fa.LastSpec.ProviderSessionID == ""`; kickoff contains `continuing in a fresh session after handoff`.
 - `TestHandoffSwitchReplayReturnsSameOp`: same key twice → same op id, one row; replay skips validation.
 - `TestHandoffSwitchRejectsNonOrchestrator` / `…FinishedAgent` / `…BadModel` (400 / 409 / Preflight error, no op row).
 - `TestHandoffSwitchPreflightFailsAtStartBlocks`: disable codex after request → op `blocked` with Preflight text, agent row unchanged, `agent.preflight_failed` raised.
 - `TestHandoffSwitchNativeAdvisorReResolved`: codex→claude with claude advisor → `advisor_mode` native, `advisor_effort` empty.
 - `TestPlainHandoffLeavesSwitchEmpty`: `RequestReplacement` rows have `switch_json ''`; kind unchanged (regression).
+- `TestStartAfterCancelAppliesPicks`: claude orchestrator started with `Roles` set → Cancel → `StartOrchestrator(codex, gpt-6-astra, high)` → same id/name, kind `codex`, `role_overrides` NULL, `kind_reason ''`, one recover op `succeeded`.
+- `TestStartAfterCancelWithoutPicksKeepsKind`: same, second Start with `Kind: ""` → kind stays `claude`, `role_overrides` kept, `switch_json ''`.
+- `TestStartAfterCancelBadPicksIsPreflightError`: bad model → error, no new op row, agent row unchanged.
 httpapi (`handoff_test.go`): 202 with switch; `{"model":"x"}` → 400 `Choose an agent.`; bad model → 422 `preflight_failed`; `"advisor":"none"` accepted.
 
 Swift tests: `BoardHandoffRules.rows` (eligibility incl. chore, excludes in-progress without orchestrator, children, finished orchestrators, story/task; ordering); `detail` for orchestrator (effort fallback via `previewEffortLabel`, nil effort omitted) and Ready; `canHandOff` for queued/spawning/pausing/replacement-reason; form primary labels (Hand off / Start / Queue / Try again), preselect, load failure → `Try again` reruns load, empty list disables primary, request-id reuse; `HTTPDaemonClient` encodes `HandoffRequest` without switch as exactly `{"request_id":…}` and with switch incl. `"advisor":"none"`; `StartOrchestratorBody` has no `roles`/`repos`; render test: closed Item popup is one line high.
 
-Manual scenarios: (a) Ready epic → Start → row appears with chosen agent; (b) at capacity → Queue orchestrator + caption → agent queued; (c) live Claude orchestrator → Hand off to Codex → row shows `Saving handoff…` → `Starting…` → Codex icon, same name; workers spawned afterwards use Settings roles; (d) Cancel closes, nothing sent; (e) daemon down → primary disabled; (f) pick a model then disable that agent in Settings → 422 text in red, `Try again`; (g) handoff while another handoff runs → 409 text; (h) `Hand off to…` preselects the right item; (i) no eligible items → empty state; (j) exhaust, Ready start: picked
+Manual scenarios: (a) Ready epic → Start → row appears with chosen agent; (b) at capacity → Queue orchestrator + caption → agent queued; (c) live Claude orchestrator → Hand off to Codex → row shows `Saving handoff…` → `Starting…` → Codex icon, same name; workers spawned afterwards use Settings roles; (d) Cancel closes, nothing sent; (e) daemon down → primary disabled; (f) pick a model then disable that agent in Settings → 422 text in red, `Try again`; (g) handoff while another handoff runs → 409 text; (h) `Hand off to…` preselects the right item; (i) no eligible items → empty state; (j) exhaust, Ready start of a fresh orchestrator: picked
 agent out of usage → `StartOrchestrator` substitutes the fallback and raises `agent.fallback_used` (existing, agents.go:591-597);
-(k) exhaust, handoff switch to an out-of-usage agent → launches as picked, no substitution, no notification (decision 9).
+(k) exhaust, handoff switch to an out-of-usage agent → launches as picked, no substitution, no notification (decision 9); (l) cancel a live orchestrator, pick it in the window (Ready) with
+another agent → Start → same name restarts with the picked agent (decision 12); an in-place restart to an
+out-of-usage agent launches as picked (no substitution).
 
 ## Explicitly out of scope
 
 - Switching agent on handoff via MCP `swarm_control` or `swarm` CLI (HTTP only).
 - A handoff note field in the window; repos/name/intent on Ready start.
-- Honouring picks when `StartOrchestrator` restarts a recoverable cancelled orchestrator in place.
 - Usage-fallback substitution on a switched successor.
 - Switching non-orchestrator agents; changing Settings role defaults from this window.
 - A new server endpoint or server-side filtering for eligible items; board (web) UI changes.
@@ -426,4 +458,5 @@ agent out of usage → `StartOrchestrator` substitutes the fallback and raises `
 - `kind_reason = ''`, `role_overrides = NULL` on switch; no usage fallback applied.
 - No new endpoint: client join on `itemKey` + live state; eligibility and ordering in `BoardHandoffRules`.
 - Preselection via `AppModel.boardHandoffPreselect`; primary gated by `AgentTree.actions` handoff availability.
+- In-place restart honours picks iff `in.Kind != ""`, via the same `switch_json` + `applyAgentSwitch` (decision 12).
 - Picker logic extracted to `AgentPickerModel`/`AgentPickerGrid`; tests ported to `form.picker.*`.
