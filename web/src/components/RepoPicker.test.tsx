@@ -58,6 +58,24 @@ describe("RepoPicker (§16.3)", () => {
     expect(await screen.findByText("1 selected repository is no longer available.")).toBeInTheDocument();
   });
 
+  it("shows a failed refresh instead of stale rows and restores selection on Retry", async () => {
+    const daemon = createMockDaemon();
+    const { user } = renderWithDaemon(<Host initial={["repo_chat"]} />, { daemon, events: false });
+    expect(await screen.findByRole("option", { name: /endurio-chat/ })).toHaveAttribute("aria-selected", "true");
+    const recovered = daemon.handle({ method: "GET", url: "/api/repos", headers: { authorization: `Bearer ${daemon.db.token}` } });
+    daemon.override("GET /api/repos", { status: 500, body: { error: { code: "internal", message: "Refresh failed." } } });
+
+    await user.click(screen.getByRole("button", { name: C.rescan }));
+    expect(await screen.findByText(C.reposUnavailable)).toBeInTheDocument();
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    daemon.override("GET /api/repos", recovered);
+    await user.click(screen.getByRole("button", { name: C.retry }));
+    expect(await screen.findByRole("option", { name: /endurio-chat/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText(C.reposUnavailable)).not.toBeInTheDocument();
+  });
+
   it("waits for a delayed rescan response before removing selected repos and announces the change", async () => {
     const daemon = createMockDaemon();
     const { user } = renderWithDaemon(<Host initial={["repo_chat"]} />, { daemon, events: false });

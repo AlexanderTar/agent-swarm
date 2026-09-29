@@ -86,9 +86,9 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
       {p.caption && <p className="text-xs text-muted-foreground">{p.caption}</p>}
       <ScrollArea className="h-[242px] w-full min-w-0 rounded-md border border-border">
         <div role="listbox" aria-multiselectable="true" aria-labelledby={labelId} className="p-0.5">
-          {!data && !!repos.error && <div className="flex h-60 items-center justify-center gap-1 text-muted-foreground">{C.reposUnavailable}<Button variant="link" size="sm" onClick={repos.reload}>{C.retry}</Button></div>}
-          {data && rows.length === 0 && <div className="flex h-60 items-center justify-center text-muted-foreground">{data.scanning ? C.reposScanning : C.reposEmpty}</div>}
-          {rows.map((r) => {
+          {!!repos.error && <div className="flex h-60 items-center justify-center gap-1 text-muted-foreground">{C.reposUnavailable}<Button variant="link" size="sm" onClick={repos.reload}>{C.retry}</Button></div>}
+          {!repos.error && data && rows.length === 0 && <div className="flex h-60 items-center justify-center text-muted-foreground">{data.scanning ? C.reposScanning : C.reposEmpty}</div>}
+          {!repos.error && rows.map((r) => {
             const on = p.selected.includes(r.id);
             return (
               <div key={r.id} role="option" aria-selected={on} data-name={r.name} tabIndex={0}
