@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { C } from "../copy";
@@ -107,5 +107,36 @@ describe("RepoPicker (§16.3)", () => {
     daemon.db.repos.scanning = true;
     renderWithDaemon(<Host />, { daemon, events: false });
     expect(await screen.findByText("Scanning your home folder…")).toBeInTheDocument();
+  });
+
+  it("disables Add folder, inline Add, and Rescan after disconnect", async () => {
+    const { daemon, user } = renderWithDaemon(<Host />);
+    await screen.findByRole("listbox");
+    await user.click(screen.getByRole("button", { name: C.addFolder }));
+    daemon.disconnect();
+    await waitFor(() => expect(screen.getByRole("button", { name: C.add })).toBeDisabled());
+    expect(screen.getByRole("button", { name: C.addFolder })).toBeDisabled();
+    expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled();
+    await user.type(screen.getByRole("textbox", { name: C.addFolder }), "/tmp/repo{Enter}");
+    expect(daemon.calls.filter((c) => c.method === "POST" && c.path.startsWith("/api/repos"))).toHaveLength(0);
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+  });
+
+  it.each(["add", "rescan"])("shows no toast when disconnected during pending %s", async (action) => {
+    const daemon = createMockDaemon();
+    const { user } = renderWithDaemon(<Host />, { daemon });
+    await screen.findByRole("listbox");
+    const route = action === "add" ? "POST /api/repos" : "POST /api/repos/rescan";
+    if (action === "add") {
+      await user.click(screen.getByRole("button", { name: C.addFolder }));
+      await user.type(screen.getByRole("textbox", { name: C.addFolder }), "/Users/alex/code/newrepo");
+    }
+    const release = daemon.hold(route);
+    await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
+    daemon.disconnect();
+    await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled());
+    await act(async () => { release(); });
+    await waitFor(() => expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true));
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 });

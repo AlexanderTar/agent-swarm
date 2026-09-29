@@ -1,8 +1,8 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import { ApiError, errorText } from "../api";
 import { C, T } from "../copy";
-import { useMutation } from "../data/hooks";
+import { useConnection, useMutation } from "../data/hooks";
 import { useRepos } from "../data/queries";
 import { chooserRows, reconcileSelection, scanLine, selectedLine, shortPath, toggleRepo } from "../logic/repos";
 import { cn } from "../lib/utils";
@@ -13,6 +13,9 @@ import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
 
 export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): void; label: string; caption?: string }) {
+  const { connected } = useConnection();
+  const connectedRef = useRef(connected);
+  connectedRef.current = connected;
   const toast = useToast();
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
@@ -43,25 +46,31 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
   };
 
   const submitFolder = async () => {
+    if (!connected || add.pending) return;
     setAddError("");
     try {
       const repo = await add.run(path);
+      if (!connectedRef.current) return;
       setCreated((current) => [...current, repo]);
       p.onChange(toggleRepo(p.selected, repo.id));
       toast.success(T.toastRepoAdded(repo.name));
       setPath("");
       setAdding(false);
     } catch (e) {
+      if (!connectedRef.current) return;
       setAddError(e instanceof ApiError ? errorText(e) : C.notARepo);
     }
   };
 
   const doRescan = async () => {
+    if (!connected || rescan.pending) return;
     try {
       const result = await rescan.run();
+      if (!connectedRef.current) return;
       setReconcilePending(true);
       toast.success(T.toastRescanned(result.found, result.missing));
     } catch (e) {
+      if (!connectedRef.current) return;
       toast.error(errorText(e));
     }
   };
@@ -93,14 +102,14 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
         </div>
       </ScrollArea>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={() => setAdding((a) => !a)}>{C.addFolder}</Button>
+        <Button variant="ghost" size="sm" disabled={!connected} onClick={() => setAdding((a) => !a)}>{C.addFolder}</Button>
         <span className="ml-auto text-xs text-muted-foreground">{data ? scanLine(data) : ""}</span>
-        <Button variant="ghost" size="sm" disabled={rescan.pending} onClick={() => void doRescan()}>{C.rescan}</Button>
+        <Button variant="ghost" size="sm" disabled={!connected || rescan.pending} onClick={() => void doRescan()}>{C.rescan}</Button>
       </div>
       {adding && (
         <form onSubmit={(e) => { e.preventDefault(); void submitFolder(); }} className="flex flex-wrap gap-2">
           <Input aria-label={C.addFolder} value={path} onChange={(e) => setPath(e.target.value)} className="min-w-0 flex-1" />
-          <Button size="sm" type="submit">{C.add}</Button>
+          <Button size="sm" type="submit" disabled={!connected || add.pending}>{C.add}</Button>
           {addError && <p className="w-full text-xs text-destructive">{addError}</p>}
         </form>
       )}
