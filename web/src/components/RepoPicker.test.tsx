@@ -66,12 +66,16 @@ describe("RepoPicker (§16.3)", () => {
     daemon.override("GET /api/repos", { status: 500, body: { error: { code: "internal", message: "Refresh failed." } } });
 
     await user.click(screen.getByRole("button", { name: C.rescan }));
-    expect(await screen.findByText(C.reposUnavailable)).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(C.reposUnavailable);
     expect(screen.queryAllByRole("option")).toHaveLength(0);
     expect(screen.getByText("1 selected")).toBeInTheDocument();
 
     daemon.override("GET /api/repos", recovered);
+    const release = daemon.hold("GET /api/repos");
     await user.click(screen.getByRole("button", { name: C.retry }));
+    await waitFor(() => expect(daemon.calls.filter((c) => c.method === "GET" && c.path === "/api/repos")).toHaveLength(3));
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    await act(async () => { release(); });
     expect(await screen.findByRole("option", { name: /endurio-chat/ })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByText(C.reposUnavailable)).not.toBeInTheDocument();
   });
