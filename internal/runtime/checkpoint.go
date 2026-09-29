@@ -148,6 +148,27 @@ func (s *Store) applyPendingTitle(ctx context.Context, tx *sql.Tx, it items.Item
 	return true, nil
 }
 
+// renameGeneratedAgentTx gives an orchestrator whose name was generated from the
+// request (title_pending was 1) the kebab of the title the agent just chose.
+// It returns "" when nothing was renamed.
+func (s *Store) renameGeneratedAgentTx(ctx context.Context, tx *sql.Tx, a Agent, title string) (string, error) {
+	base, err := ids.KebabMax(title, 24)
+	if err != nil || base == "" || base == a.Name {
+		return "", nil
+	}
+	name := ids.Unique(base, func(n string) bool {
+		var one int
+		return tx.QueryRowContext(ctx, `SELECT 1 FROM agents WHERE name = ? AND id <> ?`, n, a.ID).Scan(&one) == nil
+	})
+	if name == a.Name {
+		return "", nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agents SET name = ? WHERE id = ?`, name, a.ID); err != nil {
+		return "", err
+	}
+	return name, s.publishAgentChanged(ctx, tx, name, a.RootItemID)
+}
+
 // verifyOK is L24. Evidence is every verification entry of this attempt, earlier
 // checkpoints included, so a pause and resume inside one attempt keeps it.
 // It checks that at least one verification command was recorded, and returns
@@ -1150,6 +1171,9 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 	// Batch 2 checkpoint binding: hoisted like wfRun, so the post-commit
 	// manifest assembly below knows which agent's handoff to bind.
 	var bindAgentID string
+	// A generated orchestrator name renamed to the new title: the tmux
+	// session follows after commit.
+	var renameFrom, renameTo, renameSes string
 	ran, err := IdemTx(ctx, s, sessionID, in.RequestID, "swarm_checkpoint", &out, func(tx *sql.Tx) error {
 		ses, a, err := s.sessionAndAgent(ctx, tx, sessionID)
 		if err != nil {
@@ -1215,6 +1239,14 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				if applied {
 					out.TitleApplied = true
 					it.Title = title
+					newName, err := s.renameGeneratedAgentTx(ctx, tx, a, title)
+					if err != nil {
+						return err
+					}
+					if newName != "" {
+						renameFrom, renameTo, renameSes = a.Name, newName, ses.ID
+						a.Name = newName
+					}
 				} else {
 					out.TitleIgnored = "This item already has a name."
 				}
@@ -1662,6 +1694,14 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		return out, err
 	}
 	postCommitCtx := context.WithoutCancel(ctx)
+	if renameTo != "" {
+		if err := s.Tmux.RenameSession(postCommitCtx, renameFrom, renameTo); err != nil {
+			s.logf("rename: tmux rename-session %s → %s: %v", renameFrom, renameTo, err)
+		} else if _, err := s.DB.ExecContext(postCommitCtx, `UPDATE sessions SET tmux_name = ? WHERE id = ? AND tmux_name = ?`,
+			renameTo, renameSes, renameFrom); err != nil {
+			s.logf("rename: tmux_name %s: %v", renameSes, err)
+		}
+	}
 	for _, t := range toClose {
 		if ad := s.Adapters[t.Kind]; ad != nil {
 			_ = s.Tmux.Keys(ctx, t.TmuxName, ad.InterruptKeys()...)

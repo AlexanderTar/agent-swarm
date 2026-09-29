@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -259,6 +260,30 @@ func TestRenameWindowSetsTheWindowName(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(out)); got != "▶️ 🧠 🔵 renamed" {
 		t.Fatalf("window name = %q", got)
+	}
+}
+
+// RenameSession matches the old name exactly: renaming "login" must leave
+// "login-2" alone.
+func TestRenameSessionMatchesTheOldNameExactly(t *testing.T) {
+	s := newSpawner(t)
+	ctx := context.Background()
+	for _, n := range []string{"login-2", "login"} {
+		if err := s.Start(ctx, n, t.TempDir(), nil, []string{"sh", "-c", "while :; do sleep 0.2; done"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RenameSession(ctx, "login", "fixed"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.run(ctx, "list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Fields(string(out))
+	slices.Sort(got)
+	if strings.Join(got, ",") != "fixed,login-2" {
+		t.Fatalf("sessions = %v", got)
 	}
 }
 
