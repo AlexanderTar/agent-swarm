@@ -36,7 +36,8 @@ func (s *Store) ReclaimWorkDirs(ctx context.Context, opt CleanupOptions) ([]Clea
 		keep := func(reason string) {
 			results = append(results, CleanupResult{Path: path, Action: "kept", Reason: reason})
 		}
-		if fi, err := os.Lstat(path); err != nil || !fi.IsDir() {
+		fi, err := os.Lstat(path)
+		if err != nil || !fi.IsDir() {
 			keep("not a directory")
 			continue
 		}
@@ -52,8 +53,7 @@ func (s *Store) ReclaimWorkDirs(ctx context.Context, opt CleanupOptions) ([]Clea
 		}
 		if agents == 0 {
 			// Orphan: judge by the dir's own mtime against the same grace.
-			fi, err := os.Lstat(path)
-			if err != nil || fi.ModTime().UnixMilli() > cutoff {
+			if fi.ModTime().UnixMilli() > cutoff {
 				keep("orphan within grace")
 				continue
 			}

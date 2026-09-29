@@ -40,7 +40,7 @@ func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 	opt := runtime.CleanupOptions{DryRun: *dry, NoGrace: *noGrace}
 
 	counts := map[string]int{}
-	print := func(kind string, rs []runtime.CleanupResult) {
+	printResults := func(kind string, rs []runtime.CleanupResult) {
 		for _, r := range rs {
 			counts[r.Action]++
 			if r.Reason != "" {
@@ -51,9 +51,9 @@ func cmdCleanup(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	dirs, dirErr := rt.ReclaimWorkDirs(ctx, opt)
-	print("workdir", dirs)
+	printResults("workdir", dirs)
 	trees, treeErr := rt.ReclaimWorktreesWith(ctx, opt)
-	print("worktree", trees)
+	printResults("worktree", trees)
 	fmt.Fprintf(stdout, "%d removed, %d would_remove, %d kept, %d untracked\n",
 		counts["removed"], counts["would_remove"], counts["kept"], counts["untracked"])
 	for _, err := range []error{dirErr, treeErr} {
