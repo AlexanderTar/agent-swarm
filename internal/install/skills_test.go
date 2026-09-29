@@ -1004,7 +1004,7 @@ var bannedVendorStrings = []string{
 }
 
 // P2 acceptance: every vendored skill has a license file and a VENDORED.md in
-// the spec's format, the vendored set is exactly the 11 names in spec A2, and
+// the spec's format, the vendored set is exactly the 12 names in spec A2, and
 // none of the banned strings leaked in from upstream or from our own edits.
 func TestVendoredSkillsHaveLicenseAndProvenance(t *testing.T) {
 	vendorRoot := filepath.Join("..", "..", "skills", "vendor")
@@ -1107,6 +1107,19 @@ func TestGraphifySkillRegistered(t *testing.T) {
 	}
 	if body := string(install.SkillBody("graphify")); !strings.Contains(body, "## Inside Swarm") {
 		t.Errorf("graphify SKILL.md lacks the Inside Swarm prelude")
+	}
+}
+
+// P1 unit 2: the swarm skill carries rule 9b, the graphify navigation rule.
+func TestSwarmSkillRule9b(t *testing.T) {
+	body := string(install.SkillBody("swarm"))
+	for _, want := range []string{
+		"9b. In every worktree you work in, use graphify",
+		"graphify extract . --code-only",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("swarm SKILL.md lacks %q", want)
+		}
 	}
 }
 

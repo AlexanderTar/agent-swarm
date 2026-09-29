@@ -18,9 +18,10 @@ every change we made. See spec A2 for the full rationale.
 | ponytail | DietrichGebert repo, commit e3ba2aa | MIT (DietrichGebert) | swarm-coder, swarm-mechanical |
 | ponytail-review | DietrichGebert repo | MIT | swarm-reviewer |
 | ponytail-debt | DietrichGebert repo | MIT | swarm-orchestrator (integration pass) |
+| graphify | Graphify-Labs/graphify, graphifyy 0.9.71 | Apache-2.0 | swarm rule 9b, all roles |
 
 Every modification to an upstream file, however small, is listed in that
 skill's own `VENDORED.md` under `Changes`. `internal/install/skills_test.go`
-enforces that each of the 11 directories above has a license file and a
+enforces that each of the 12 directories above has a license file and a
 `VENDORED.md`, and bans a short list of leftover upstream strings anywhere
 under this tree.
