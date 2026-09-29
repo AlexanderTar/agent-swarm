@@ -579,6 +579,37 @@ func (s *Service) Remove(ctx context.Context, wtID, callerAgentID string) (Workt
 	return s.remove(ctx, wt)
 }
 
+// WouldRemove reports whether remove would delete wt now, without changing
+// anything; otherwise the retained reason it would record.
+func (s *Service) WouldRemove(ctx context.Context, wt Worktree) (bool, string) {
+	if !fileExists(wt.Path) {
+		return true, ""
+	}
+	reason := s.keepReason(ctx, wt)
+	return reason == "", reason
+}
+
+// keepReason is remove's dirty and merged checks: "" means safe to delete.
+func (s *Service) keepReason(ctx context.Context, wt Worktree) string {
+	dirty, err := s.DirtyStrict(ctx, wt.Path)
+	if dirty {
+		if err != nil {
+			s.logf("worktree: status failed for %s, keeping it: %v", wt.Path, err)
+		}
+		return "dirty"
+	}
+	// A detached worktree whose HEAD has moved off detached_sha holds commits
+	// reachable from no ref anywhere else. Branch == "" alone would skip
+	// mergedOrPushed entirely and delete those commits with the worktree.
+	if wt.Branch == "" && !s.atDetachedSHA(ctx, wt) && !s.mergedOnlyElsewhere(ctx, wt) {
+		return "unmerged"
+	}
+	if wt.Branch != "" && !s.mergedOrPushed(ctx, wt) {
+		return "unmerged"
+	}
+	return ""
+}
+
 func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 	// A path that is already gone is 'removed', not 'dirty': without this,
 	// DirtyStrict's git call fails, dirty comes back true, and a vanished
@@ -588,21 +619,8 @@ func (s *Service) remove(ctx context.Context, wt Worktree) (Worktree, error) {
 		return s.markRemoved(ctx, wt)
 	}
 
-	dirty, err := s.DirtyStrict(ctx, wt.Path)
-	if dirty {
-		if err != nil {
-			s.logf("worktree: status failed for %s, keeping it: %v", wt.Path, err)
-		}
-		return s.retain(ctx, wt, "dirty")
-	}
-	// A detached worktree whose HEAD has moved off detached_sha holds commits
-	// reachable from no ref anywhere else. Branch == "" alone would skip
-	// mergedOrPushed entirely and delete those commits with the worktree.
-	if wt.Branch == "" && !s.atDetachedSHA(ctx, wt) && !s.mergedOnlyElsewhere(ctx, wt) {
-		return s.retain(ctx, wt, "unmerged")
-	}
-	if wt.Branch != "" && !s.mergedOrPushed(ctx, wt) {
-		return s.retain(ctx, wt, "unmerged")
+	if reason := s.keepReason(ctx, wt); reason != "" {
+		return s.retain(ctx, wt, reason)
 	}
 	repoPath, err := s.repoPath(ctx, wt.RepoID)
 	if err != nil {

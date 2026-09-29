@@ -2,6 +2,8 @@ package worktree
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -72,4 +74,49 @@ func (s *Service) mergedElsewhere(ctx context.Context, wt Worktree, head string)
 func (s *Service) headSHA(ctx context.Context, wt Worktree) (string, bool) {
 	out, err := s.git(ctx, wt.Path, "rev-parse", "HEAD")
 	return strings.TrimSpace(string(out)), err == nil
+}
+
+// PruneRepo drops git's metadata for worktrees whose directory is gone.
+func (s *Service) PruneRepo(ctx context.Context, repoID string) error {
+	repoPath, err := s.repoPath(ctx, repoID)
+	if err != nil {
+		return err
+	}
+	_, err = s.git(ctx, repoPath, "worktree", "prune")
+	return err
+}
+
+// Untracked lists directories under <home>/worktrees that no non-removed row
+// points at. It only reports; nothing is deleted.
+func (s *Service) Untracked(ctx context.Context) ([]string, error) {
+	entries, err := os.ReadDir(s.worktreesDir())
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT path FROM worktrees WHERE state <> 'removed'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	known := map[string]bool{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		known[p] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if p := filepath.Join(s.worktreesDir(), e.Name()); e.IsDir() && !known[p] {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
