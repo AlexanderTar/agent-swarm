@@ -1567,6 +1567,9 @@ func (s *Store) ReclaimWorktreesLoop(ctx context.Context, every time.Duration) {
 		if err := s.ReclaimWorktrees(ctx); err != nil && ctx.Err() == nil {
 			s.logf("reclaim: %v", err)
 		}
+		if _, err := s.ReclaimWorkDirs(ctx, CleanupOptions{}); err != nil && ctx.Err() == nil {
+			s.logf("reclaim workdirs: %v", err)
+		}
 	}
 }
 
