@@ -1205,6 +1205,19 @@ func TestAskToolDescriptionSaysItReturnsAtOnce(t *testing.T) {
 	}
 }
 
+// TestAskToolDescriptionMentionsPromptRecovery (TASK-356): the swarm_ask
+// text tells the agent how to recover a request_ask acked before its
+// prompt was read.
+func TestAskToolDescriptionMentionsPromptRecovery(t *testing.T) {
+	d := askTool(nil)
+	if !strings.Contains(d.Description, "acked before its prompt was read") {
+		t.Errorf("swarm_ask description missing recovery sentence: %q", d.Description)
+	}
+	if !strings.Contains(string(d.Schema), "own open request") {
+		t.Errorf("swarm_ask schema missing own-request recovery: %s", d.Schema)
+	}
+}
+
 // TestAskConfirmReposResultHasNativePrompt is Task 13a: swarm_ask's approval
 // and confirm_repos results carry the daemon-issued native_prompt next to
 // request_id, so the orchestrator can show it verbatim.
