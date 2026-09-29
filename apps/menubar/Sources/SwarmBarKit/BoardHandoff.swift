@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// One row of the Orchestrate board item window: a board item plus its live orchestrator, if any.
+/// One row of the Orchestrate task window: a board item plus its live orchestrator, if any.
 public struct BoardItemRow: Equatable, Sendable, Identifiable {
     public var item: BoardItem
     public var orchestrator: AgentNode?
@@ -48,7 +48,7 @@ public enum BoardHandoffRules {
     }
 }
 
-/// The Orchestrate board item window: start an orchestrator on a Draft/Ready item, or hand a live one
+/// The Orchestrate task window: start an orchestrator on a Draft/Ready item, or hand a live one
 /// off to a different agent/model/effort/advisor.
 @MainActor
 @Observable

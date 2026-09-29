@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 /// The Agent / Model / Effort / Advisor picks shared by the New orchestrator and
-/// Orchestrate board item windows. Moved out of `NewOrchestratorForm`.
+/// Orchestrate task windows. Moved out of `NewOrchestratorForm`.
 @MainActor
 @Observable
 public final class AgentPickerModel {

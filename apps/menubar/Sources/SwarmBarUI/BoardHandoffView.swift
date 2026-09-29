@@ -2,7 +2,7 @@ import AppKit
 import SwarmBarKit
 import SwiftUI
 
-/// Orchestrate board item window: pick an item, then Start/Queue/Hand off with the shared agent pickers.
+/// Orchestrate task window: pick an item, then Start/Queue/Hand off with the shared agent pickers.
 public struct BoardHandoffView: View {
     @Bindable var form: BoardHandoffForm
     let onDone: () -> Void
