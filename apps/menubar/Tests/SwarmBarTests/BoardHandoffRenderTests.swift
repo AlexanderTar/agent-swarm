@@ -66,4 +66,29 @@ final class BoardHandoffRenderTests: XCTestCase {
     func testTintedIconIsNotTemplate() {
         XCTAssertFalse(Icons.tinted(IconName(.claude)).isTemplate, "attachment icons must not rely on template tinting")
     }
+
+    func testStartModeShowsWorkerRowsPrefilledFromSettings() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeBoardHandoffForm()
+        await form.load()
+        form.selectedKey = "BUG-7"
+        XCTAssertFalse(form.isHandoff)
+        let host = render(form)
+        let coder = try XCTUnwrap(popups(host).first { $0.accessibilityLabel() == "Coding Agent" }, "worker rows in start mode")
+        XCTAssertEqual(coder.titleOfSelectedItem, "Claude")
+    }
+
+    func testHandoffModeHidesWorkerRows() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        model.boardHandoffPreselect = "auth-epic-orchestrator"
+        let form = model.makeBoardHandoffForm()
+        await form.load()
+        XCTAssertTrue(form.isHandoff)
+        let host = render(form)
+        XCTAssertNil(popups(host).first { $0.accessibilityLabel() == "Coding Agent" }, "HandoffRequest has no roles")
+    }
 }
