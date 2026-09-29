@@ -114,7 +114,19 @@ option set. Picking a PR option is the acceptance, but the item only becomes Don
     section/plan/report switch. The block is delivered on the relay and in `next`, like a child
     approval's block.
 11. **Pre-deploy open accept rows:** migration 0022 removes their frozen `$.question`/`$.header`,
-    so the next relay re-freezes the new three-option question.
+    so the next relay re-freezes the new three-option question. That relay comes only on the
+    orchestrator's next session start or unacked re-relay: `resurfaceOpenRequests` skips a request
+    whose last relay was acked. A live orchestrator that already acked the old two-option relay
+    keeps the old text for that session, and its old "Approve" answer is refused by
+    `decisionLabels`. The fallback is the user answering on the board, or the new prompt arriving on
+    the next session start.
+12. **A board/CLI finish approval with no routed orchestrator is delivered on the next session
+    start.** `resolve()` skips `approval_result` when `agent_id` is empty. `resurfaceOpenRequests`
+    (`requests.go:616`), which already binds open accept rows for a top-level orchestrator, also
+    binds that root's approved accept row in the same tx. The row must have `$.merge` set, and its
+    `integrated_checkpoint` must be the newest one with no `item_merges` rows. It then enqueues the
+    same `approval_result` payload `Approve` builds. The Details panel shows a one-line
+    "waiting for the orchestrator" state for that window.
 
 ## DB models
 
@@ -280,7 +292,9 @@ type ChatBlockInput struct {
 // 3 options → auto_merge, manual_merge, request_changes; 2 options → merge_locally, request_changes.
 func finishDecisions(opts []string) []string
 
-// decisionLabels returns the chosen decision's option label and every other label.
+// decisionLabels returns the chosen decision's option label and every other label. A msg_ ref and
+// every non-accept kind keep approve → "Approve" (others ["Request changes"]) and
+// request_changes → "Request changes" (others ["Approve"]).
 func decisionLabels(req Request, np NativePrompt, decision string) (label string, others []string, err error)
 
 // finishDecisionFor maps a native answer's text to a finish decision ("" when none):
@@ -333,6 +347,16 @@ func NativePromptNextStep(ref string, decisions []string) string
 `internal/items/transition.go`:
 
 ```go
+// FinishApproval is the approved finish request bound to a root's newest integrated checkpoint.
+type FinishApproval struct {
+	RequestID, AgentID, Merge, CheckpointID string // Merge "" for a pre-0022 approval
+	Git                                     json.RawMessage // the checkpoint's git_json ([]GitRef shape; items can't import runtime)
+}
+
+// FinishApprovalTx is the exported accessor runtime uses (writeFinishing, MergeProgressFor,
+// WatchMerges for the relay recipient, resurfaceOpenRequests). ok is false when none.
+func (s *Store) FinishApprovalTx(ctx context.Context, q querier, rootID string) (fa FinishApproval, ok bool, err error)
+
 // approvedCurrent now also returns the approval's $.merge ("" for a pre-0022 approval).
 func (s *Store) approvedCurrent(ctx context.Context, q querier, it Item) (ok bool, merge string, err error)
 
@@ -354,7 +378,7 @@ func (s *Store) finishedCurrent(ctx context.Context, q querier, it Item) (bool, 
    - the session is live and its agent is an orchestrator with no parent;
    - the item is `in.ItemKey` or the agent's item, and it must be the agent's root;
    - the root is `in_review`;
-   - `approvedCurrent` returns ok and a non-empty merge;
+   - `Items.FinishApprovalTx` returns ok and a non-empty `Merge`;
    - no `item_merges` row exists for `(root, st.ckpID)`;
    - resolve repos with `finishReposTx`.
 2. **Coverage:**
@@ -434,8 +458,8 @@ Relay payloads go through `enqueueRaw`, `Kind:"relay"`, with the wake class `imm
 - `POST /api/requests/{id}/approve` body (`approveBody`) gains `"merge": "auto"|"manual"|"local"`.
   It is required for `accept_epic`/`accept_fix`.
 - The response is unchanged (`RequestWire`, now carrying `finish_local`).
-- `GET /api/items/{key}` adds `"merges": ItemMerge[]` for a root with rows on its newest integrated
-  checkpoint.
+- `GET /api/items/{key}` adds `"merges": ItemMerge[]` for a root with an approved finish on its
+  newest integrated checkpoint (`[]` before the orchestrator reports).
 - `agentNodeWire` adds `"merge": {"merged":1,"total":2}` (`*runtime.MergeProgress`,
   `json:"merge,omitempty"`) for a top-level orchestrator whose root has `MergeProgressFor` ≠ nil.
 
@@ -523,7 +547,9 @@ Awaiting merge
 - `↗` links to `url` with `target="_blank" rel="noreferrer"`.
 - Checks text: `✓ passing`, `✗ failing`, `… pending`, and `no checks` for `""`.
 - A merged PR row reads `#412  merged`.
-- Nothing is rendered with no `merges`. There is no empty state and no progress bar.
+- If the finish request is approved but `merges` is empty (the orchestrator hasn't reported
+  yet), the block shows one line: `Awaiting merge — waiting for the orchestrator to open PRs.`
+- Nothing is rendered when there is no approved finish. There is no progress bar.
 
 **Menubar orchestrator row** while `merge` is present (it overrides `progress`):
 
@@ -604,6 +630,7 @@ blank line, then one `<repo>: <branch> at <sha7>` line per repo.
   `checksPassing: "✓ passing"`, `checksFailing: "✗ failing"`, `checksPending: "… pending"`,
   `noChecks: "no checks"`, `autoMergeOn: "auto-merge on"`,
   `orchestratorFixing: "(orchestrator fixing)"`, `merged: "merged"`,
+  `awaitingOrchestrator: "Awaiting merge — waiting for the orchestrator to open PRs."`,
   `T.mergedLocally(sha) = "merged locally " + sha7(sha)`.
 
 **Menubar copy (`Copy.swift`):**
@@ -654,12 +681,16 @@ Replace the line-63 bullet with:
     `matchDecisionEvidence`;
   - `NativePromptNextStep(ref, decisions)`, `NativeAnswerNextStep`, and `nativeAnswer`;
   - `otherApprovalLabel` is removed.
-- `internal/runtime/requests.go`: `ApproveInput.Merge`, `Approve`, `relayRequestTx`, and
-  `RequestWire.FinishLocal` in `RequestWireTx`.
-- `internal/items/transition.go`: `approvedCurrent` (adds merge), `mergeState`,
+- `internal/runtime/requests.go`: `ApproveInput.Merge`, `Approve`, `relayRequestTx`,
+  `RequestWire.FinishLocal` in `RequestWireTx`, and `resurfaceOpenRequests` (it binds the approved
+  finish row and enqueues its `approval_result`).
+- `internal/items/transition.go`: `FinishApproval`/`FinishApprovalTx` (new, exported),
+  `approvedCurrent` (adds merge), `mergeState`,
   `finishedCurrent`, `reconcileRoot`, and `checkRoot` (gate plus denial copy).
 - `internal/notifyrules/notifyrules.go`: 2 changed rules and 2 new ones.
-- `internal/notify/notify.go`: `Render` expands `Title` placeholders.
+- `internal/notify/notify.go`: `Render` expands `Title` placeholders. The tests that validate Args
+  with `notifyrules.Placeholders(rule.Body)` (`notify_test.go:214`, `runtime/agents_test.go:224`,
+  `mcpserver/helpers_test.go:139`) also scan `rule.Title`.
 - `internal/mcpserver/tools.go`: the checkpoint schema, description and handler; the `decision`
   enum; `requestOut`.
 - `internal/httpapi/runtime.go`: `approveBody.Merge` and `agentNodeWire.Merge`.
@@ -697,7 +728,8 @@ Replace the line-63 bullet with:
    - apply 0022 to a copy of the live DB;
    - `PRAGMA table_info(item_merges)` lists every column;
    - row counts elsewhere are unchanged;
-   - open accept rows no longer have `$.question`;
+   - open accept rows no longer have `$.question`; an already-acked live orchestrator keeps the
+     old prompt until its next session (locked decision 11), and the board answers it meanwhile;
    - health reports `schema: 22`.
 3. **Scenarios** (each a test, with a fake `s.Exec` for `gh`/`git`):
    - **Prompt:**
@@ -745,6 +777,12 @@ Replace the line-63 bullet with:
      ERROR → failing with its `context`; one IN_PROGRESS → `pending`; all SUCCESS → `passing`.
    - **checkRoot:** a daemon Done while approved but unmerged → denied with `Finish this epic…`.
    - **Pre-0022 approval** (`$.merge` absent) on an in_review root → Done, as today.
+   - **No live orchestrator:**
+     - a board approve with `merge:"auto"` → approved, no message enqueued, Details shows the
+       waiting line;
+     - start an orchestrator → `resurfaceOpenRequests` binds the row and it receives
+       `approval_result` with `merge:"auto"`;
+     - a second session start after `finishing` rows exist enqueues nothing.
    - **HTTP:**
      - item detail has `merges` for a root with rows;
      - an orchestrator agent node has `merge: {merged, total}`;
@@ -817,3 +855,11 @@ Replace the line-63 bullet with:
     every squash-merged worktree.
 15. **A PR row inserted when gh already reports MERGED** is stored `merged` at once, which also
     satisfies "auto-merge armed" for option 1.
+16. **Approval with no routed orchestrator:** `resolve()` skips `approval_result` when `agent_id` is
+    empty. That was harmless when approval meant Done, but now it would strand the item in review.
+    `resurfaceOpenRequests` delivers it on the next session start (locked decision 12), and Details
+    shows a waiting line.
+17. **`FinishApprovalTx` is exported:** `approvedCurrent`/`rootState` are unexported in `items`,
+    and runtime needs the approved row's id, agent, merge and checkpoint.
+18. **Notification Placeholders tests scan titles too.** `notifications.kind` has no CHECK
+    (`0001_init.sql:263`), so the new kinds need no migration.
