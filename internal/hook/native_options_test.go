@@ -130,3 +130,36 @@ func TestCodexDeniesDifferingLabelsAndAllowsEqual(t *testing.T) {
 		t.Fatalf("equal labels must be allowed, got %s", out)
 	}
 }
+
+// A native_prompt whose options are plain strings has no descriptions; Claude's
+// AskUserQuestion schema still requires a description on every option, so the
+// rewrite must emit one (the agent's own when it gave one for that label).
+func TestClaudeRewriteKeepsDescriptionFieldForPlainStringOptions(t *testing.T) {
+	h, ses := seed(t, 0, runtime.Running)
+	binding, _ := json.Marshal(map[string]any{"question": finishQ, "header": "Approve",
+		"options": []string{"Approve", "Request changes"}})
+	if _, err := h.DB.ExecContext(context.Background(), `INSERT INTO requests
+		(id, kind, is_hitl, agent_id, session_id, item_id, prompt, options_json, binding_json, state, created_at)
+		VALUES ('req_pl1', 'accept_fix', 0, 'agt_1', 'ses_1', 'itm_1', '', '[]', ?, 'open', 1)`, string(binding)); err != nil {
+		t.Fatal(err)
+	}
+	out := claudeAsk(t, h, ses, finishQ, []map[string]any{
+		{"label": "approve", "description": "invented"}, {"label": "Request changes", "description": "Send it back"}})
+	var got struct {
+		HSO struct {
+			Updated struct {
+				Questions []struct {
+					Options []map[string]any `json:"options"`
+				} `json:"questions"`
+			} `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output %q: %v", out, err)
+	}
+	opts := got.HSO.Updated.Questions[0].Options
+	want := []map[string]any{{"label": "Approve", "description": ""}, {"label": "Request changes", "description": "Send it back"}}
+	if !reflect.DeepEqual(opts, want) {
+		t.Fatalf("options = %v, want %v", opts, want)
+	}
+}
