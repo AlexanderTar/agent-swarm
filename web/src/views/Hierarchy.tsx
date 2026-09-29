@@ -105,8 +105,10 @@ export function Hierarchy(p: HierarchyProps) {
               <span className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: r.depth * 20 }}>
                 {r.depth > 0 && <span aria-hidden className="absolute top-0 bottom-0 w-px bg-border" style={{ left: 8 + (r.depth - 1) * 20 + 10 }} />}
                 {r.hasChildren ? (
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="icon-xs"
                     aria-label={`${r.expanded ? "Collapse" : "Expand"} ${it.key}`}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -114,7 +116,7 @@ export function Hierarchy(p: HierarchyProps) {
                     }}
                   >
                     {r.expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                  </button>
+                  </Button>
                 ) : (
                   <span className="w-3.5" />
                 )}
@@ -126,8 +128,10 @@ export function Hierarchy(p: HierarchyProps) {
               <span><StatusPill status={it.status} /></span>
               <span className="flex items-center justify-end gap-1.5">
                 {it.active_agents > 0 && (
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="xs"
                     title={T.agentsTooltip(it.active_agents)}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -135,10 +139,10 @@ export function Hierarchy(p: HierarchyProps) {
                     }}
                   >
                     {it.active_agents}
-                  </button>
+                  </Button>
                 )}
                 {it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warning" />}
-                {childType && <DropdownMenuTrigger asChild><button type="button" aria-label={`Add child to ${it.key}`} className="flex size-6 shrink-0 items-center justify-center rounded hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring" onClick={(e) => e.stopPropagation()}><Plus aria-hidden className="size-3.5" /></button></DropdownMenuTrigger>}
+                {childType && <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-xs" aria-label={`Add child to ${it.key}`} onClick={(e) => e.stopPropagation()}><Plus aria-hidden className="size-3.5" /></Button></DropdownMenuTrigger>}
               </span>
             </div>
             {menu?.key === it.key && <DropdownMenuContent align="start" onCloseAutoFocus={(e) => { e.preventDefault(); tree.current?.focus(); }}>

@@ -238,18 +238,19 @@ export function Kanban(p: KanbanProps) {
             const t = columnTitle(s, counts.get(s) ?? { shown: 0, total: 0 }, filtered);
             const collapsed = collapsedCols.has(s);
             return (
-              <button
+              <Button
                 key={s}
                 type="button"
+                variant="ghost"
                 data-testid={`col-${s}`}
                 data-collapsed={collapsed}
                 title={t.tooltip}
                 onClick={() => toggleCol(s)}
-                className={`shrink-0 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate" : "w-[280px]"}`}
+                className={`h-auto shrink-0 justify-start rounded-none px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground ${collapsed ? "w-[44px] truncate" : "w-[280px]"}`}
               >
                 {collapsed ? String(counts.get(s)?.shown ?? 0) : t.text}
                 {collapsed && <span className="sr-only">{t.text}</span>}
-              </button>
+              </Button>
             );
           })}
         </div>
@@ -258,11 +259,11 @@ export function Kanban(p: KanbanProps) {
           return (
             <section key={l.id} data-testid={`lane-${l.id}`} data-collapsed={collapsed} className="w-max border-b border-border">
               {group === "root" && (
-                <button type="button" onClick={() => toggleLane(l)} className="sticky left-0 flex items-center gap-2 px-3 py-2 font-semibold">
+                <Button type="button" variant="ghost" onClick={() => toggleLane(l)} className="sticky left-0 h-auto justify-start gap-2 px-3 py-2">
                   {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-                  {l.root ? <><Key>{l.root.key}</Key><span>{l.root.title}</span></> : <span>{C.unassignedLane}</span>}
+                  {l.root ? <><Key>{l.root.key}</Key><span className="font-semibold">{l.root.title}</span></> : <span className="font-semibold">{C.unassignedLane}</span>}
                   <span className="font-normal text-muted-foreground">{collapsed && l.completedText ? l.completedText : l.header}</span>
-                </button>
+                </Button>
               )}
               {!collapsed && (
                 <div className="flex">

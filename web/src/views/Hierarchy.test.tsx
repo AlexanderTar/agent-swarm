@@ -19,6 +19,15 @@ function setup(p: Partial<HierarchyProps> = {}) {
 const row = (key: string) => screen.getByRole("treeitem", { name: new RegExp(`^${key} `) });
 
 describe("Hierarchy view (§16.6)", () => {
+  it("styles keyboard controls and keeps top-level mono keys at regular weight", () => {
+    setup();
+    const epic = row("EPIC-12");
+    const expand = within(epic).getByRole("button", { name: "Collapse EPIC-12" });
+    expect(expand).toHaveAttribute("data-slot", "button");
+    expect(expand).toHaveClass("focus-visible:ring-ring/50");
+    expect(within(epic).getByText("EPIC-12")).toHaveClass("font-normal");
+  });
+
   it("renders the columns, ordering, indentation and statuses", () => {
     setup();
     expect(screen.getByText("WORK ITEM")).toBeInTheDocument();

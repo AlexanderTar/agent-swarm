@@ -31,4 +31,4 @@ export function TypeIcon({ type, className = "" }: { type: ItemType; className?:
   return <Icon role="img" aria-label={TYPE_LABEL[type]} className={`size-3.5 shrink-0 text-muted-foreground ${className}`} />;
 }
 
-export const Key = ({ children }: { children: string }) => <span className="key">{children}</span>;
+export const Key = ({ children }: { children: string }) => <span className="key font-normal">{children}</span>;

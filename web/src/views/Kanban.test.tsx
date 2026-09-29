@@ -48,6 +48,17 @@ const card = (key: string) => screen.getByTestId(`card-${key}`);
 const cell = (lane: string, status: string) => screen.getByTestId(`cell-${lane}-${status}`);
 
 describe("Kanban view (§16.7)", () => {
+  it("styles column and lane controls and keeps lane keys regular", async () => {
+    renderWithDaemon(<Host />, { events: false });
+    const column = await screen.findByTestId("col-ready");
+    expect(column).toHaveAttribute("data-slot", "button");
+    expect(column).toHaveClass("focus-visible:ring-ring/50");
+    const lane = screen.getByTestId("lane-EPIC-12");
+    const toggle = within(lane).getByRole("button", { name: /EPIC-12/ });
+    expect(toggle).toHaveAttribute("data-slot", "button");
+    expect(within(toggle).getByText("EPIC-12")).toHaveClass("font-normal");
+  });
+
   it("shows active workflow crew and a badge after round one", async () => {
     const d = createMockDaemon();
     const task = d.db.items.find((i) => i.key === "TASK-101")!;
