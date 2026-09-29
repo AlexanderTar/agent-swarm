@@ -1,4 +1,5 @@
 import { type CSSProperties, type ReactNode, useRef } from "react";
+import { cn } from "@/lib/utils";
 import {
   Sheet as UiSheet,
   SheetContent,
@@ -29,7 +30,7 @@ export function Sheet(p: {
         aria-label={p.title}
         {...(p.subtitle ? {} : { "aria-describedby": undefined })}
         style={{ "--sheet-width": `${p.width ?? 420}px` } as CSSProperties}
-        className="flex w-full max-w-full flex-col gap-0 bg-card p-0 sm:w-[var(--sheet-width)] sm:max-w-full"
+        className={cn("flex w-full max-w-full flex-col gap-0 bg-card p-0 sm:max-w-full", modal ? "sm:w-[var(--sheet-width)]" : "min-[1100px]:w-[var(--sheet-width)]")}
         onInteractOutside={keepOpen}
         onPointerDownOutside={keepOpen}
         onCloseAutoFocus={(e) => {

@@ -4,6 +4,23 @@ test.beforeEach(async ({ request }) => {
   await request.get("/__mock/reset");
 });
 
+test("Details and form sheets use their separate narrow breakpoints", async ({ page }) => {
+  for (const width of [1000, 800, 600]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto("/#/hierarchy?item=TASK-102");
+    const details = page.getByRole("dialog", { name: "TASK-102" });
+    await expect(details).toBeVisible();
+    expect(Math.round((await details.boundingBox())?.width ?? 0)).toBe(width);
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "New item" }).click();
+    await page.getByRole("menuitem", { name: "Task" }).click();
+    const form = page.getByRole("dialog", { name: "New item" });
+    await expect(form).toBeVisible();
+    expect(Math.round((await form.boundingBox())?.width ?? 0)).toBe(width < 640 ? width : 480);
+  }
+});
+
 test("form sheet controls fit a narrow viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
