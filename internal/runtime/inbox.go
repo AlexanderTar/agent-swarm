@@ -236,6 +236,17 @@ type SyncResult struct {
 	More         bool
 	SessionState SessionState
 	Todos        []Todo // set only when the list changed since this session last got it
+	TodosNext    string // set with Todos: the kind's instruction to mirror it natively
+}
+
+// todosNext tells each kind how to mirror todos into its native task tool.
+// Fake has none.
+var todosNext = map[AgentKind]string{
+	Claude: "Update your task list now to match todos exactly: TaskCreate each missing entry, TaskUpdate every status, and TaskUpdate status deleted any task not in todos. Labels verbatim, same order; don't add or rename entries.",
+	Codex:  "Call update_plan now with todos as the plan: labels verbatim, same order and statuses. Only one step may be in_progress: mark the first; prefix the other running labels with \"▶ \" and keep them pending; don't add, rename or drop entries.",
+	Agy:    "Rewrite your task.md artifact now to match todos exactly: [x] completed, [/] in progress, [ ] pending. Labels verbatim, same order; don't add, rename or drop entries.",
+	Cursor: "Call TodoWrite now with merge: false and todos: labels verbatim, same order and statuses; don't add, rename or drop entries.",
+	Muse:   "Call write_todos now with todos: labels verbatim, same order and statuses; don't add, rename or drop entries.",
 }
 
 const defaultSyncLimit = 20
@@ -308,6 +319,9 @@ func (s *Store) Sync(ctx context.Context, sessionID string, ack []string, limit 
 		}
 		if a.Role == RoleOrchestrator && a.ItemID == a.RootItemID {
 			out.Todos, err = s.todosToSend(ctx, tx, sessionID, a.ItemID)
+			if out.Todos != nil {
+				out.TodosNext = todosNext[a.Kind]
+			}
 		}
 		return err
 	})

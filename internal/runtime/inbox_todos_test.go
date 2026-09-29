@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -63,5 +64,57 @@ func TestWorkerSyncNeverCarriesTodos(t *testing.T) {
 	}
 	if res.Todos != nil {
 		t.Fatalf("worker got todos: %+v", res.Todos)
+	}
+}
+
+func TestSyncPairsTodosWithAKindSpecificTodosNext(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ep := seedEpicWithTask(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: ep.Key, Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses, err := s.LatestSession(ctx, orch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake, err := s.Sync(ctx, ses.ID, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.Todos == nil || fake.TodosNext != "" {
+		t.Fatalf("fake: todos=%v todos_next=%q", fake.Todos, fake.TodosNext)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude' WHERE id = ?`, orch.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE items SET status = 'done' WHERE key = 'TASK-1'`); err != nil {
+		t.Fatal(err)
+	}
+	claude, err := s.Sync(ctx, ses.ID, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claude.Todos == nil || claude.TodosNext != todosNext[Claude] {
+		t.Fatalf("claude: todos=%v todos_next=%q", claude.Todos, claude.TodosNext)
+	}
+	again, err := s.Sync(ctx, ses.ID, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Todos != nil || again.TodosNext != "" {
+		t.Fatalf("unchanged: todos=%v todos_next=%q", again.Todos, again.TodosNext)
+	}
+	for _, k := range AgentKinds {
+		if todosNext[k] == "" {
+			t.Errorf("no todos_next for %s", k)
+		}
+	}
+	if want := "Update your task list now to match todos exactly: TaskCreate each missing entry, TaskUpdate every status, and TaskUpdate status deleted any task not in todos. Labels verbatim, same order; don't add or rename entries."; todosNext[Claude] != want {
+		t.Errorf("claude todos_next = %q", todosNext[Claude])
+	}
+	if !strings.Contains(todosNext[Cursor], "merge: false") {
+		t.Errorf("cursor todos_next = %q", todosNext[Cursor])
 	}
 }
