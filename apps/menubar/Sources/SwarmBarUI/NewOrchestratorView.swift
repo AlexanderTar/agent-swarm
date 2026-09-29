@@ -69,6 +69,8 @@ public struct NewOrchestratorView: View {
         }
         .frame(minWidth: 760, idealWidth: 820, maxWidth: .infinity,
                minHeight: 700, idealHeight: 790)
+        .translucentDialogBackground()
+        .background(TranslucentWindowAccessor())
         .glassButtons()
         .task { await form.load() }
     }

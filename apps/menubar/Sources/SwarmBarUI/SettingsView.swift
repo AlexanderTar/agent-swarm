@@ -32,6 +32,8 @@ public struct SettingsView: View {
             }
         }
         .frame(width: 740, height: 520)
+        .translucentDialogBackground()
+        .background(TranslucentWindowAccessor())
         .glassButtons()
         .task { await model.load() }
     }

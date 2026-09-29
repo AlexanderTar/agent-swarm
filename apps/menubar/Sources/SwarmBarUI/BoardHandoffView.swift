@@ -50,6 +50,8 @@ public struct BoardHandoffView: View {
             .padding(.horizontal, 22).padding(.vertical, 12)
         }
         .frame(minWidth: 760, idealWidth: 820)
+        .translucentDialogBackground()
+        .background(TranslucentWindowAccessor())
         .glassButtons()
     }
 
