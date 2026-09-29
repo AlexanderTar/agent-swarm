@@ -1451,9 +1451,7 @@ func TestOrchestratorStoryAndRootReviewUseIntegratedHead(t *testing.T) {
 func TestSkillsCarryTheProgressListRule(t *testing.T) {
 	orch := string(install.SkillBody("swarm-orchestrator"))
 	for _, want := range []string{
-		"- Progress list: when `swarm_sync` returns `todos`, replace your native to-do list with it",
-		"Codex: `update_plan` (only one `in_progress` is allowed",
-		"agy: rewrite your `task.md` artifact (`[x]` completed, `[/]` in progress, `[ ]` pending)",
+		"- Progress list: when `swarm_sync` returns `todos`, do what `todos_next` says, right away.",
 		"never send `todos` for it.",
 		"- Report spike step progress on each checkpoint with `todos: [{id, status}]`",
 		"debug: frame, evidence, root_cause, report, plan, critic, approve",

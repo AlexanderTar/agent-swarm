@@ -92,6 +92,9 @@ func syncTool(s *Server) ToolDef {
 			}
 			if res.Todos != nil {
 				out["todos"] = res.Todos
+				if res.TodosNext != "" {
+					out["todos_next"] = res.TodosNext
+				}
 			}
 			return out, nil
 		},

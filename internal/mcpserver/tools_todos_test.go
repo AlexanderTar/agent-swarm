@@ -11,6 +11,9 @@ import (
 func TestSyncToolCarriesTodosOnlyWhenChanged(t *testing.T) {
 	s, seed := newOrchestratorServer(t)
 	ctx := context.Background()
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE agents SET kind = 'codex' WHERE id = ?`, seed.Caller.AgentID); err != nil {
+		t.Fatal(err)
+	}
 	out, err := s.call(ctx, seed.Caller, "swarm_sync", `{}`)
 	if err != nil {
 		t.Fatal(err)
@@ -19,12 +22,18 @@ func TestSyncToolCarriesTodosOnlyWhenChanged(t *testing.T) {
 	if !ok || len(todos) != 4 { // two tasks + integrate + accept
 		t.Fatalf("todos = %s", mustJSON(out))
 	}
+	if next, _ := out.(map[string]any)["todos_next"].(string); !strings.HasPrefix(next, "Call update_plan now") {
+		t.Fatalf("todos_next = %q", next)
+	}
 	out, err = s.call(ctx, seed.Caller, "swarm_sync", `{}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, present := out.(map[string]any)["todos"]; present {
 		t.Fatalf("unchanged todos resent: %s", mustJSON(out))
+	}
+	if _, present := out.(map[string]any)["todos_next"]; present {
+		t.Fatalf("todos_next without todos: %s", mustJSON(out))
 	}
 }
 

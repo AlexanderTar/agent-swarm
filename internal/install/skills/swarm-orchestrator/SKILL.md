@@ -58,7 +58,7 @@ Legacy tasks whose `workflow_json` is NULL still use manual `swarm_spawn` and re
 - On `pr_closed`: the PR was closed without merging and the item is back in progress. Ask the user what to do with your native question tool before changing anything.
 - On `changes_requested`, do what the comment asks, re-integrate, and the daemon asks again. If `native_answer` says the request is stale, the item changed after the question: wait for the new `request_open`.
 - Don't poll. End your turn when waiting; the daemon wakes you.
-- Progress list: when `swarm_sync` returns `todos`, replace your native to-do list with it — labels verbatim, same order, same statuses. Claude: `TaskCreate`/`TaskUpdate`; Codex: `update_plan` (only one `in_progress` is allowed: mark the first, prefix the other running labels with "▶ " and keep them `pending`); Cursor: `TodoWrite` with `merge: false`; Muse: `write_todos`; agy: rewrite your `task.md` artifact (`[x]` completed, `[/]` in progress, `[ ]` pending). Don't add, rename or drop entries. For an epic, bug or chore the list is the item's tasks and is maintained by Swarm; never send `todos` for it.
+- Progress list: when `swarm_sync` returns `todos`, do what `todos_next` says, right away. For an epic, bug or chore the list is the item's tasks and is maintained by Swarm; never send `todos` for it.
 
 ## Chores
 - A chore (`CHORE-N`) is the user's own scope, not a proposal. It has no spec, plan or report to approve and no `swarm_materialize`.
