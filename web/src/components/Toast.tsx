@@ -26,7 +26,8 @@ const toastFn: ToastFn = Object.assign(
 export const useToast = (): ToastFn => {
   const { live } = useConnection();
   const epoch = live.epoch;
-  const current = () => live.connected && live.epoch === epoch;
+  const connected = live.connected;
+  const current = () => connected && live.connected && live.epoch === epoch;
   return Object.assign(
     (t: ToastInput) => { if (current()) toastFn(t); },
     {

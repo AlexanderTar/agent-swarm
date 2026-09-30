@@ -145,6 +145,7 @@ export function Details(p: DetailsProps) {
   };
 
   const onMove = (status: ItemStatus) => {
+    if (!live.connected) return;
     const check = checkMove(item, status);
     if (!check.ok && check.special === "accept") {
       const req = d.requests.find((r) => r.kind === "accept_epic" || r.kind === "accept_fix");

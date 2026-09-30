@@ -9,7 +9,7 @@ import { StatusPill } from "../components/StatusLabel";
 import { Button } from "../components/ui/button";
 import { useToast } from "../components/Toast";
 import { C, ROLE_EMOJI, STATUS_LABEL, T } from "../copy";
-import { useMutation } from "../data/hooks";
+import { useConnection, useMutation } from "../data/hooks";
 import { displayState, stateLabel } from "../logic/agentActions";
 import {
   type Lane, agentLine, agentsByItem, blockedLine, buildLanes, columnCounts, columnTitle, columnsFor, DEFAULT_COLLAPSED_COLUMNS,
@@ -113,6 +113,7 @@ function Cell(p: { id: string; testId: string; collapsed: boolean; lock: string 
 
 export function Kanban(p: KanbanProps) {
   const toast = useToast();
+  const { live } = useConnection();
   const [storedCols, toggleCol] = useLocalSet("swarm.kanban.columns", DEFAULT_COLLAPSED_COLUMNS);
   const [laneState, setLaneState] = useState<Record<string, boolean>>(() => readJson(storage("localStorage"), LANES_KEY, {}));
   const [pending, setPending] = useState<Record<string, { to: ItemStatus; revision: number }>>({});
@@ -162,6 +163,7 @@ export function Kanban(p: KanbanProps) {
   }, [p.loaded]);
 
   async function move(card: Item, status: ItemStatus) {
+    if (!live.connected) return;
     if (status === card.status) return;
     const check = checkMove(card, status);
     if (!check.ok && check.special === "accept") {

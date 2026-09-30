@@ -68,6 +68,27 @@ const cases: { name: string; route: string; setup?: (d: MockDaemon) => void; ui(
 ];
 
 describe("offline mutation toast audit", () => {
+  it.each([
+    { name: "details", ui: <Details itemKey="TASK-103" connected onClose={vi.fn()} onSelect={vi.fn()} onReview={vi.fn()} onStartOrchestrator={vi.fn()} />, trigger: "Ready" },
+    { name: "board", ui: <Board />, trigger: "Move to… TASK-103" },
+  ])("does not dispatch $name move from a menu opened before transport closes", async ({ ui, trigger }) => {
+    const d = createMockDaemon();
+    let live: ReturnType<typeof useConnection>["live"] | undefined;
+    function Host() {
+      live = useConnection().live;
+      return ui;
+    }
+    const { user } = renderWithDaemon(<Host />, { daemon: d });
+    await user.click(await screen.findByRole("button", { name: trigger }));
+    const item = screen.getByRole("menuitem", { name: /^Blocked/ });
+    live!.connected = false;
+    live!.epoch++;
+    fireEvent.click(item);
+    live!.connected = true;
+    await act(async () => {});
+    expect(d.calls.filter((c) => c.method === "PATCH" && c.path === "/api/items/TASK-103")).toHaveLength(0);
+  });
+
   it("does not dispatch an open dependency result after transport closes before rerender", async () => {
     const d = createMockDaemon();
     let live: ReturnType<typeof useConnection>["live"] | undefined;

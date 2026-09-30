@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -58,6 +58,29 @@ describe("Toast (Sonner)", () => {
     live!.connected = false;
     await user.click(screen.getByRole("button", { name: "Refuse" }));
     expect(screen.queryByText("Offline refusal")).not.toBeInTheDocument();
+  });
+
+  it("drops a held action started during an offline render when transport reconnects", async () => {
+    const success = vi.spyOn(sonner, "success");
+    let live: ReturnType<typeof useConnection>["live"] | undefined;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    function PendingToast() {
+      const toast = useToast();
+      live = useConnection().live;
+      return <button onClick={() => { void held.then(() => toast.success("Stale completion")); }}>Start</button>;
+    }
+    const api = createApi();
+    const ui = () => <DataProvider api={api} events={false}><ToastProvider><PendingToast /></ToastProvider></DataProvider>;
+    const view = render(ui());
+    live!.connected = false;
+    live!.epoch++;
+    view.rerender(ui());
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    live!.connected = true;
+    await act(async () => { release(); });
+    expect(success).not.toHaveBeenCalled();
+    success.mockRestore();
   });
 
   it("legacy call shows an error toast with its action", async () => {

@@ -228,4 +228,16 @@ describe("MoveToMenu", () => {
     rerender(<MoveToMenu item={story} onMove={vi.fn()} disabled />);
     expect(screen.getByRole("button", { name: "Move to…" })).toBeDisabled();
   });
+
+  it("disables an already open move option when the trigger becomes disabled", async () => {
+    const user = userEvent.setup();
+    const onMove = vi.fn();
+    const { rerender } = render(<MoveToMenu item={story} onMove={onMove} />);
+    await user.click(screen.getByRole("button", { name: "Move to…" }));
+    rerender(<MoveToMenu item={story} onMove={onMove} disabled />);
+    const blocked = screen.getByRole("menuitem", { name: /Blocked/ });
+    expect(blocked).toHaveAttribute("aria-disabled", "true");
+    await user.click(blocked);
+    expect(onMove).not.toHaveBeenCalled();
+  });
 });

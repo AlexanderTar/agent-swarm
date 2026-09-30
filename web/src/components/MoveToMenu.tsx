@@ -23,7 +23,7 @@ export function MoveToMenu(p: {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-72">
         {moveOptions(p.item).map((o) => (
-          <DropdownMenuItem key={o.status} disabled={!enabled(o.check)} onSelect={() => p.onMove(o.status, o.check)} className={`flex-col items-start gap-0.5 ${!enabled(o.check) ? "data-[disabled]:opacity-100" : ""}`}>
+          <DropdownMenuItem key={o.status} disabled={p.disabled || !enabled(o.check)} onSelect={() => p.onMove(o.status, o.check)} className={`flex-col items-start gap-0.5 ${!enabled(o.check) ? "data-[disabled]:opacity-100" : ""}`}>
             <span className="flex items-center gap-1.5">
               {!enabled(o.check) && <Lock aria-hidden className="size-3" />}
               {o.label}
