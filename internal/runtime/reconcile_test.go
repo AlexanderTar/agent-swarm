@@ -2929,7 +2929,7 @@ func TestReclaimStopsPromptlyOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	real := s.Worktree.Run
 	s.Worktree.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			cancel()
 		}
 		return real(ctx, name, args...)

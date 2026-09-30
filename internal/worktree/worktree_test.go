@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -186,7 +187,7 @@ func TestRemoveTreatsAGitFailureAsDirty(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			return nil, errors.New("fatal: not a git repository")
 		}
 		return execx.Run(ctx, name, args...)
@@ -369,7 +370,7 @@ func TestShareRefusesAConcurrentClaimRace(t *testing.T) {
 	real := s.Run
 	var once sync.Once
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			once.Do(func() { close(claimed) })
 		}
 		return real(ctx, name, args...)
@@ -412,7 +413,7 @@ func TestSweepRefusesAConcurrentShareDuringRemoval(t *testing.T) {
 	real := s.Run
 	var once sync.Once
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			once.Do(func() { close(claimed) })
 		}
 		return real(ctx, name, args...)
@@ -998,7 +999,7 @@ func TestReclaimOneRacingShareBehavesLikeRemove(t *testing.T) {
 	real := s.Run
 	var once sync.Once
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			once.Do(func() { close(claimed) })
 		}
 		return real(ctx, name, args...)
@@ -1112,7 +1113,7 @@ func TestReclaimOneTreatsAGitStatusFailureAsDirty(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			return nil, errors.New("fatal: not a git repository")
 		}
 		return execx.Run(ctx, name, args...)
@@ -1355,5 +1356,128 @@ func TestCreateSucceedsWhenTheExcludeIsUnwritable(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("logs = %q, want a worktree: graphify exclude line", logs)
+	}
+}
+
+// withOrigin gives repo a bare remote named origin with main pushed, so
+// origin/main exists as a remote-tracking ref.
+func withOrigin(t *testing.T, repo string) string {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	run(t, filepath.Dir(bare), "init", "--bare", "-b", "main", bare)
+	run(t, repo, "remote", "add", "origin", bare)
+	run(t, repo, "push", "origin", "main")
+	run(t, repo, "fetch", "origin")
+	return bare
+}
+
+func commitFile(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, "add", name)
+	run(t, dir, "-c", "commit.gpgsign=false", "commit", "-m", name)
+}
+
+// A tree branched off another task branch (base_ref is that branch, which does
+// not contain HEAD) is merged once HEAD is contained in the remote default
+// branch; the local origin/main is stale until reclaim fetches it.
+func TestRemoveDeletesATreeContainedInOriginDefaultBranch(t *testing.T) {
+	repo := gitRepo(t)
+	withOrigin(t, repo)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	run(t, repo, "branch", "task/base")
+	wt, err := s.Create(ctx, CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/child", Base: "task/base",
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, wt.Path, "child.txt")
+	// not contained anywhere yet: retained
+	out, err := s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "retained" || out.RetainedReason != "unmerged" {
+		t.Fatalf("worktree = %+v, want retained/unmerged before the push", out)
+	}
+	run(t, repo, "push", "origin", "task/child:main")
+	out, err = s.ReclaimOne(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "removed" {
+		t.Fatalf("worktree = %+v, want removed: HEAD is contained in origin/main", out)
+	}
+}
+
+// holdRemovedRow leaves a state='removed' row (dir gone, row kept) holding path.
+func holdRemovedRow(t *testing.T, s *Service, path string) {
+	t.Helper()
+	_, err := s.DB.ExecContext(context.Background(), `INSERT INTO worktrees
+		(id, repo_id, path, base_ref, base_sha, owner_agent_id, root_item_id, state, created_at)
+		VALUES ('wt_removed', 'repo_1', ?, 'main', 'abc', 'agt_1', 'itm_1', 'removed', 1)`, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateSkipsAPathHeldByARemovedRow(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	base := filepath.Join(s.Home, "worktrees", "proj--task-101-login-form")
+	holdRemovedRow(t, s, base)
+	wt, err := s.Create(context.Background(), CreateInput{RepoID: repoID, RepoPath: repo,
+		Branch: "task/task-101-login-form", OwnerAgentID: "agt_1", RootItemID: "itm_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wt.Path != base+"-2" {
+		t.Fatalf("path = %q, want %q", wt.Path, base+"-2")
+	}
+}
+
+func TestReviewSkipsAPathHeldByARemovedRow(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	sha := strings.TrimSpace(run(t, repo, "rev-parse", "HEAD"))
+	base := filepath.Join(s.Home, "worktrees", "proj--review-"+sha[:7])
+	holdRemovedRow(t, s, base)
+	wt, err := s.Review(context.Background(), CreateInput{RepoID: repoID, RepoPath: repo,
+		OwnerAgentID: "agt_1", RootItemID: "itm_1"}, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wt.Path != base+"-2" {
+		t.Fatalf("path = %q, want %q", wt.Path, base+"-2")
+	}
+}
+
+// A DB insert that fails after `git worktree add` must not strand the checkout
+// (or the branch Create just made).
+func TestCreateAndReviewLeaveNoCheckoutWhenInsertFails(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	bad := CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/doomed",
+		OwnerAgentID: "agt_missing", RootItemID: "itm_1"} // FK violation on insert
+	if _, err := s.Create(ctx, bad); err == nil {
+		t.Fatal("Create: want the insert to fail")
+	}
+	head := strings.TrimSpace(run(t, repo, "rev-parse", "HEAD"))
+	if _, err := s.Review(ctx, bad, head); err == nil {
+		t.Fatal("Review: want the insert to fail")
+	}
+	entries, _ := os.ReadDir(filepath.Join(s.Home, "worktrees"))
+	if len(entries) != 0 {
+		t.Fatalf("stranded checkouts: %v", entries)
+	}
+	if list := run(t, repo, "worktree", "list", "--porcelain"); strings.Count(list, "worktree ") != 1 {
+		t.Fatalf("git still lists added worktrees:\n%s", list)
+	}
+	if out := run(t, repo, "branch", "--list", "task/doomed"); strings.TrimSpace(out) != "" {
+		t.Fatalf("branch left behind: %q", out)
 	}
 }
