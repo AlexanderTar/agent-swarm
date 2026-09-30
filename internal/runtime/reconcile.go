@@ -1930,7 +1930,7 @@ type CleanupResult struct{ Path, Action, Reason string }
 
 // ReclaimWorktreesWith is ReclaimWorktrees, reporting each path's outcome.
 func (s *Store) ReclaimWorktreesWith(ctx context.Context, opt CleanupOptions) ([]CleanupResult, error) {
-	s.Worktree.BeginPass()
+	s.Worktree.BeginPass(opt.DryRun)
 	defer s.Worktree.EndPass()
 	cutoff := db.Millis(s.Now().Add(-reclaimGrace))
 	if opt.NoGrace {

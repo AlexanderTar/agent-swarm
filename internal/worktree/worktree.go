@@ -156,7 +156,7 @@ func (s *Service) SigningOK(ctx context.Context, repoPath string) error {
 // DirtyStrict reports uncommitted changes. A command failure means dirty: we
 // could not prove the tree is clean, and deleting it would lose work.
 func (s *Service) DirtyStrict(ctx context.Context, path string) (bool, error) {
-	out, err := s.git(ctx, path, "status", "--porcelain")
+	out, err := s.git(ctx, path, "--no-optional-locks", "status", "--porcelain")
 	if err != nil {
 		return true, err
 	}

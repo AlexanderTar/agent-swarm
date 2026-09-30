@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -186,7 +187,7 @@ func TestRemoveTreatsAGitFailureAsDirty(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			return nil, errors.New("fatal: not a git repository")
 		}
 		return execx.Run(ctx, name, args...)
@@ -369,7 +370,7 @@ func TestShareRefusesAConcurrentClaimRace(t *testing.T) {
 	real := s.Run
 	var once sync.Once
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			once.Do(func() { close(claimed) })
 		}
 		return real(ctx, name, args...)
@@ -412,7 +413,7 @@ func TestSweepRefusesAConcurrentShareDuringRemoval(t *testing.T) {
 	real := s.Run
 	var once sync.Once
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			once.Do(func() { close(claimed) })
 		}
 		return real(ctx, name, args...)
@@ -998,7 +999,7 @@ func TestReclaimOneRacingShareBehavesLikeRemove(t *testing.T) {
 	real := s.Run
 	var once sync.Once
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			once.Do(func() { close(claimed) })
 		}
 		return real(ctx, name, args...)
@@ -1112,7 +1113,7 @@ func TestReclaimOneTreatsAGitStatusFailureAsDirty(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) > 2 && args[2] == "status" {
+		if slices.Contains(args, "status") {
 			return nil, errors.New("fatal: not a git repository")
 		}
 		return execx.Run(ctx, name, args...)

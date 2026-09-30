@@ -15,9 +15,10 @@ import (
 // head branch, or a merged GitHub PR's head OID, contains the tree's HEAD.
 // Every failure means "no evidence".
 type mergeEvidence struct {
-	s   *Store
-	mu  sync.Mutex
-	prs map[string][]mergedPR // per repo path, cleared each pass
+	s      *Store
+	mu     sync.Mutex
+	prs    map[string][]mergedPR // per repo path, cleared each pass
+	dryRun bool
 }
 
 type mergedPR struct {
@@ -37,15 +38,23 @@ func (s *Store) MergeEvidence() worktree.MergeEvidence {
 	return &mergeEvidence{s: s, prs: map[string][]mergedPR{}}
 }
 
-// BeginPass drops the cached PR lists so a new reclaim pass re-asks gh.
-func (e *mergeEvidence) BeginPass() {
+// BeginPass drops the cached PR lists so a new reclaim pass re-asks gh. A
+// dryRun pass never fetches refs/pull/N/head.
+func (e *mergeEvidence) BeginPass(dryRun bool) {
 	e.mu.Lock()
 	e.prs = map[string][]mergedPR{}
+	e.dryRun = dryRun
 	e.mu.Unlock()
 }
 
 // EndPass drops the cached PR lists once a pass is over.
-func (e *mergeEvidence) EndPass() { e.BeginPass() }
+func (e *mergeEvidence) EndPass() { e.BeginPass(false) }
+
+func (e *mergeEvidence) isDryRun() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.dryRun
+}
 
 func (e *mergeEvidence) Merged(ctx context.Context, wt worktree.Worktree, repoPath, head string) bool {
 	return e.itemMergeContains(ctx, wt, head) || e.mergedPRContains(ctx, wt, repoPath, head)
@@ -96,7 +105,7 @@ func (e *mergeEvidence) mergedPRContains(ctx context.Context, wt worktree.Worktr
 		}
 		if e.git(ctx, wt.Path, "cat-file", "-e", pr.HeadRefOid+"^{commit}") != nil {
 			// the head branch is usually deleted after merge; GitHub keeps the ref
-			if e.git(ctx, repoPath, "fetch", "--quiet", "origin", fmt.Sprintf("refs/pull/%d/head", pr.Number)) != nil {
+			if e.isDryRun() || e.git(ctx, repoPath, "fetch", "--quiet", "origin", fmt.Sprintf("refs/pull/%d/head", pr.Number)) != nil {
 				continue
 			}
 		}

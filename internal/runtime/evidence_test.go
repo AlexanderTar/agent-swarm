@@ -214,3 +214,50 @@ func TestReclaimRetainsATreeNotInAnyMergedPRHead(t *testing.T) {
 		t.Fatalf("state/reason = %s/%s, want retained/unmerged", state, reason)
 	}
 }
+
+// A dry run must not touch the network or write the repo: no git fetch at all
+// (origin or refs/pull), and worktree status is read without the index lock.
+func TestReclaimDryRunRunsNoGitFetch(t *testing.T) {
+	f := newEvidenceFixture(t)
+	wt := f.tree(t, "task/dry")
+	head := strings.TrimSpace(gitOutput(t, wt.Path, "rev-parse", "HEAD"))
+	gitOutput(t, f.repoPath, "push", "origin", head+":refs/heads/tmp")
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitOutput(t, filepath.Dir(clone), "clone", "-q", "-b", "tmp", f.bare, clone)
+	gitOutput(t, clone, "config", "user.email", "t@example.invalid")
+	gitOutput(t, clone, "config", "user.name", "T")
+	commitFile(t, clone, "late.txt", "late")
+	oid := strings.TrimSpace(gitOutput(t, clone, "rev-parse", "HEAD"))
+	gitOutput(t, clone, "push", "-q", "origin", oid+":refs/pull/7/head")
+	gitOutput(t, f.repoPath, "push", "origin", ":refs/heads/tmp")
+	f.ghOut = fmt.Sprintf(`[{"number":7,"headRefName":"task/dry","headRefOid":%q}]`, oid)
+	inner := f.s.Exec
+	var calls []string
+	f.s.Exec = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return inner(ctx, name, args...)
+	}
+	innerWT := f.s.Worktree.Run
+	f.s.Worktree.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return innerWT(ctx, name, args...)
+	}
+	if _, err := f.s.ReclaimWorktreesWith(context.Background(), CleanupOptions{DryRun: true, NoGrace: true}); err != nil {
+		t.Fatal(err)
+	}
+	sawStatus := false
+	for _, c := range calls {
+		if strings.Contains(c, " fetch") {
+			t.Fatalf("dry run ran %q", c)
+		}
+		if strings.Contains(c, "status --porcelain") {
+			sawStatus = true
+			if !strings.Contains(c, "--no-optional-locks status") {
+				t.Fatalf("status without --no-optional-locks: %q", c)
+			}
+		}
+	}
+	if !sawStatus {
+		t.Fatal("expected a git status call")
+	}
+}

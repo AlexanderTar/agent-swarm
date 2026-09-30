@@ -19,16 +19,18 @@ type MergeEvidence interface {
 type passState struct {
 	mu      sync.Mutex
 	fetched map[string]bool
+	dryRun  bool
 }
 
 // BeginPass starts a reclaim pass: each repo is fetched at most once until the
-// next BeginPass.
-func (s *Service) BeginPass() {
+// next BeginPass. A dryRun pass fetches nothing and judges by local refs only.
+func (s *Service) BeginPass(dryRun bool) {
 	s.pass.mu.Lock()
 	s.pass.fetched = map[string]bool{}
+	s.pass.dryRun = dryRun
 	s.pass.mu.Unlock()
-	if p, ok := s.Evidence.(interface{ BeginPass() }); ok {
-		p.BeginPass()
+	if p, ok := s.Evidence.(interface{ BeginPass(dryRun bool) }); ok {
+		p.BeginPass(dryRun)
 	}
 }
 
@@ -37,6 +39,7 @@ func (s *Service) BeginPass() {
 func (s *Service) EndPass() {
 	s.pass.mu.Lock()
 	s.pass.fetched = nil
+	s.pass.dryRun = false
 	s.pass.mu.Unlock()
 	if p, ok := s.Evidence.(interface{ EndPass() }); ok {
 		p.EndPass()
@@ -47,6 +50,10 @@ func (s *Service) EndPass() {
 // fetch is logged and leaves whatever refs are already local.
 func (s *Service) fetchOnce(ctx context.Context, repoPath string) {
 	s.pass.mu.Lock()
+	if s.pass.dryRun {
+		s.pass.mu.Unlock()
+		return
+	}
 	if s.pass.fetched != nil {
 		if s.pass.fetched[repoPath] {
 			s.pass.mu.Unlock()
