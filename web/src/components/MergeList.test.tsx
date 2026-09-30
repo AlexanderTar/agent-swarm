@@ -27,6 +27,12 @@ describe("MergeList", () => {
     expect(links[0]).toHaveAttribute("href", "https://github.com/o/agent-swarm/pull/412");
     expect(links[0]).toHaveAttribute("target", "_blank");
     expect(links[0]).toHaveAttribute("rel", "noreferrer");
+    expect(links.map((link) => link.getAttribute("aria-label"))).toEqual([
+      "Open agent-swarm pull request #412",
+      "Open endurio pull request #88",
+      "Open web pull request #5",
+    ]);
+    for (const link of links) expect(link).toHaveClass("size-8");
   });
 
   it("shows pending and missing checks on open PRs", () => {

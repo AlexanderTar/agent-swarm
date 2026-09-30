@@ -8,6 +8,12 @@ const ICON: Record<TodoStatus, [string, string]> = {
   pending: ["○", "text-muted-foreground"],
 };
 
+const STATUS: Record<TodoStatus, string> = {
+  completed: "Completed",
+  in_progress: "In progress",
+  pending: "Pending",
+};
+
 export function TodoList({ todos, onSelect }: { todos: Todo[]; onSelect(key: string): void }) {
   const done = todos.filter((t) => t.status === "completed").length;
   return (
@@ -18,12 +24,13 @@ export function TodoList({ todos, onSelect }: { todos: Todo[]; onSelect(key: str
           const [icon, tone] = ICON[t.status];
           const key = t.item_key;
           return (
-            <li key={t.id} className="flex gap-2">
-              <span aria-hidden="true" className={tone}>{icon}</span>
+            <li key={t.id} className="flex min-w-0 items-start gap-2">
+              <span aria-hidden="true" className={`${tone} shrink-0`}>{icon}</span>
+              <span className="sr-only">{STATUS[t.status]}: </span>
               {key ? (
-                <Button type="button" variant="link" onClick={() => onSelect(key)} className="h-auto p-0 text-left">{t.label}</Button>
+                <Button type="button" variant="link" onClick={() => onSelect(key)} className="h-auto min-w-0 flex-1 shrink justify-start whitespace-normal break-words p-0 text-left">{t.label}</Button>
               ) : (
-                <span>{t.label}</span>
+                <span className="min-w-0 break-words">{t.label}</span>
               )}
             </li>
           );

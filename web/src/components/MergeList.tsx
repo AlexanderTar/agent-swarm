@@ -18,11 +18,11 @@ export function MergeList({ merges }: { merges: ItemMerge[] }) {
       <h3 className="mb-1 font-semibold">{C.awaitingMerge}</h3>
       <ul>
         {merges.map((m) => (
-          <li key={m.repo} className="flex gap-2">
-            <span className="font-medium">{m.repo}</span>
+          <li key={m.repo} className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="min-w-0 break-words font-medium">{m.repo}</span>
             {m.number !== undefined && <span>#{m.number}</span>}
             <span className="text-muted-foreground">{status(m)}</span>
-            {m.url && <a href={m.url} target="_blank" rel="noreferrer" className="text-link">↗</a>}
+            {m.url && <a href={m.url} target="_blank" rel="noreferrer" aria-label={`Open ${m.repo} pull request${m.number === undefined ? "" : ` #${m.number}`}`} className="inline-flex size-8 shrink-0 items-center justify-center rounded text-link">↗</a>}
           </li>
         ))}
       </ul>

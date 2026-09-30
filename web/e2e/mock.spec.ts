@@ -279,3 +279,28 @@ test("narrow windows show a details sheet above the view", async ({ page }) => {
   await page.getByRole("dialog", { name: "TASK-101" }).getByRole("button", { name: "Close" }).click();
   await expect(page.getByTestId("view")).toBeVisible();
 });
+
+test("Progress and PR links fit a narrow Details sheet", async ({ page }) => {
+  const label = "TASK-101 · Make the repository chooser work in a narrow mobile Details sheet";
+  await page.route("**/api/items/EPIC-12", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.item.status = "in_review";
+    body.todos = [{ id: "TASK-101", label, status: "in_progress", item_key: "TASK-101" }];
+    body.merges = [{ repo: "agent-swarm", kind: "pr", url: "https://github.com/o/agent-swarm/pull/412", number: 412, base: "main", head: "swarm/epic-12", auto_merge: true, state: "open", checks: "passing" }];
+    await route.fulfill({ response, json: body });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/hierarchy?item=EPIC-12");
+  const details = page.getByRole("dialog", { name: "EPIC-12" });
+  const task = details.getByRole("button", { name: label });
+  const pr = details.getByRole("link", { name: "Open agent-swarm pull request #412" });
+  await expect(task).toBeVisible();
+  await expect(pr).toBeVisible();
+  const sheetBox = await details.boundingBox();
+  const taskBox = await task.boundingBox();
+  const prBox = await pr.boundingBox();
+  expect(taskBox && sheetBox && taskBox.x + taskBox.width).toBeLessThanOrEqual((sheetBox?.x ?? 0) + (sheetBox?.width ?? 0));
+  expect(prBox?.width).toBeGreaterThanOrEqual(32);
+  expect(prBox?.height).toBeGreaterThanOrEqual(32);
+});
