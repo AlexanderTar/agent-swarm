@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Check } from "lucide-react";
 import { ApiError, errorText } from "../api";
 import { C, T } from "../copy";
@@ -13,11 +13,7 @@ import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
 
 export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): void; label: string; caption?: string }) {
-  const { connected } = useConnection();
-  const connectedRef = useRef(connected);
-  const disconnectEpoch = useRef(0);
-  if (connectedRef.current && !connected) disconnectEpoch.current += 1;
-  connectedRef.current = connected;
+  const { connected, live } = useConnection();
   const toast = useToast();
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
@@ -48,33 +44,33 @@ export function RepoPicker(p: { selected: string[]; onChange(ids: string[]): voi
   };
 
   const submitFolder = async () => {
-    if (!connected || add.pending) return;
-    const startedAt = disconnectEpoch.current;
+    if (!live.connected || add.pending) return;
+    const startedAt = live.epoch;
     setAddError("");
     try {
       const repo = await add.run(path);
-      if (!connectedRef.current || disconnectEpoch.current !== startedAt) return;
+      if (!live.connected || live.epoch !== startedAt) return;
       setCreated((current) => [...current, repo]);
       p.onChange(toggleRepo(p.selected, repo.id));
       toast.success(T.toastRepoAdded(repo.name));
       setPath("");
       setAdding(false);
     } catch (e) {
-      if (!connectedRef.current || disconnectEpoch.current !== startedAt) return;
+      if (!live.connected || live.epoch !== startedAt) return;
       setAddError(e instanceof ApiError ? errorText(e) : C.notARepo);
     }
   };
 
   const doRescan = async () => {
-    if (!connected || rescan.pending) return;
-    const startedAt = disconnectEpoch.current;
+    if (!live.connected || rescan.pending) return;
+    const startedAt = live.epoch;
     try {
       const result = await rescan.run();
-      if (!connectedRef.current || disconnectEpoch.current !== startedAt) return;
+      if (!live.connected || live.epoch !== startedAt) return;
       setReconcilePending(true);
       toast.success(T.toastRescanned(result.found, result.missing));
     } catch (e) {
-      if (!connectedRef.current || disconnectEpoch.current !== startedAt) return;
+      if (!live.connected || live.epoch !== startedAt) return;
       toast.error(errorText(e));
     }
   };

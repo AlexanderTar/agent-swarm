@@ -1,6 +1,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { toast as sonner } from "sonner";
 import { C } from "../copy";
 import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
@@ -161,11 +162,56 @@ describe("RepoPicker (§16.3)", () => {
     }
     const release = daemon.hold(route);
     await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
+    expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(false);
     daemon.disconnect();
     await waitFor(() => expect(screen.getByRole("button", { name: C.rescan })).toBeDisabled());
     await act(async () => { release(); });
     await waitFor(() => expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true));
     expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+    expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true);
+  });
+
+  it.each(["add", "rescan"])("shows no toast when %s settles before the disconnect render", async (action) => {
+    const success = vi.spyOn(sonner, "success");
+    const daemon = createMockDaemon();
+    let live: ReturnType<typeof useConnection>["live"] | undefined;
+    function LiveHost() {
+      const connection = useConnection();
+      live = connection.live;
+      return <><Host /><span data-testid="connection">{connection.connected ? "online" : "offline"}</span></>;
+    }
+    const { user } = renderWithDaemon(<LiveHost />, { daemon });
+    await screen.findByRole("listbox");
+    const route = action === "add" ? "POST /api/repos" : "POST /api/repos/rescan";
+    if (action === "add") {
+      await user.click(screen.getByRole("button", { name: C.addFolder }));
+      await user.type(screen.getByRole("textbox", { name: C.addFolder }), "/Users/alex/code/newrepo");
+    }
+    const baseFetch = fetch;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      if (`${init?.method ?? "GET"} ${new URL(String(input), "http://mock.test").pathname}` !== route) return baseFetch(input, init);
+      return held.then(() => {
+        const response = daemon.handle({ method: init!.method!, url: new URL(String(input), "http://mock.test").pathname,
+          headers: Object.fromEntries(new Headers(init?.headers).entries()), body: JSON.parse(String(init?.body)) });
+        return { ok: response.status < 400, status: response.status, json: () => Promise.resolve(response.body) } as Response;
+      });
+    });
+    await user.click(screen.getByRole("button", { name: action === "add" ? C.add : C.rescan }));
+    await act(async () => {
+      // Model the provider's synchronous transport update before its setConn render.
+      live!.connected = false;
+      live!.epoch++;
+      expect(screen.getByTestId("connection")).toHaveTextContent("online");
+      expect(live?.connected).toBe(false);
+      release();
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
+    expect(daemon.calls.some((c) => `${c.method} ${c.path}` === route)).toBe(true);
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+    expect(success).not.toHaveBeenCalled();
+    success.mockRestore();
   });
 
   it.each([
