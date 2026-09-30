@@ -6,7 +6,9 @@ import { Markdown } from "../components/Markdown";
 import { QuestionView } from "../components/QuestionView";
 import { RequestChanges } from "../components/RequestChanges";
 import { useToast } from "../components/Toast";
-import { C, STATUS_LABEL } from "../copy";
+import { Button } from "../components/ui/button";
+import { Alert } from "../components/ui/alert";
+import { C, STATUS_LABEL, T } from "../copy";
 import { useInvalidate, useMutation, useQuery } from "../data/hooks";
 import { useArtifact, useCheckpoints, useItemDetail } from "../data/queries";
 import { ARTIFACT_LABEL } from "../logic/requestTitle";
@@ -21,25 +23,25 @@ function Snapshot({ r }: { r: Request }) {
   // Standing rule: a failed load gets a message + retry, never a permanent "…" placeholder.
   if (art.error) {
     return (
-      <p className="text-bad">
+      <Alert variant="destructive">
         {errorText(art.error)}{" "}
-        <button type="button" className="text-accent underline" onClick={() => art.reload()}>
+        <Button type="button" variant="link" size="sm" onClick={() => art.reload()}>
           {C.retry}
-        </button>
-      </p>
+        </Button>
+      </Alert>
     );
   }
   return (
     <div className="space-y-3">
       {r.kind === "approve_plan" && art.data?.warnings && art.data.warnings.length > 0 && (
-        <section aria-label="Plan warnings" className="rounded border border-warn bg-warn/10 p-2 text-warn">
+        <Alert aria-label="Plan warnings" className="border-warning text-warning">
           <h3 className="font-semibold">Plan warnings</h3>
           <ul className="list-disc pl-5">{art.data.warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul>
-        </section>
+        </Alert>
       )}
-      {art.data ? <Markdown>{art.data.markdown}</Markdown> : <p className="text-muted">…</p>}
+      {art.data ? <Markdown>{art.data.markdown}</Markdown> : <p className="text-muted-foreground">…</p>}
       {r.kind === "approve_section" && !full && (
-        <button type="button" onClick={() => setFull(true)} className="text-accent">{C.viewFullSpec}</button>
+        <Button type="button" variant="link" size="sm" onClick={() => setFull(true)}>{C.viewFullSpec}</Button>
       )}
     </div>
   );
@@ -59,19 +61,20 @@ function AcceptBody({ r }: { r: Request }) {
   // after every hook above runs, so this early return never changes the hook order between renders.
   if (detail.error || cps.error) {
     return (
-      <p className="text-bad">
+      <Alert variant="destructive">
         {errorText(detail.error ?? cps.error)}{" "}
-        <button
+        <Button
           type="button"
-          className="text-accent underline"
+          variant="link"
+          size="sm"
           onClick={() => {
             detail.reload();
             cps.reload();
           }}
         >
           {C.retry}
-        </button>
-      </p>
+        </Button>
+      </Alert>
     );
   }
   const integrated = cps.data?.find((c) => c.id === binding.integrated_checkpoint);
@@ -86,14 +89,14 @@ function AcceptBody({ r }: { r: Request }) {
         {children.map((c, i) => (
           <li key={c.key}>
             {`${c.key} ${c.title} — ${STATUS_LABEL[c.status]}`}
-            {finals.data?.[i] && <span className="text-muted">{` · ${finals.data[i]?.summary}`}</span>}
+            {finals.data?.[i] && <span className="text-muted-foreground">{` · ${finals.data[i]?.summary}`}</span>}
           </li>
         ))}
       </ul>
       {plan && (
-        <button type="button" onClick={() => setViewing({ id: plan.id, revision: plan.head_revision })} className="text-accent">
+        <Button type="button" variant="link" size="sm" onClick={() => setViewing({ id: plan.id, revision: plan.head_revision })}>
           {`${ARTIFACT_LABEL.plan} · rev ${plan.head_revision} · ${C.view}`}
-        </button>
+        </Button>
       )}
       {viewing && <ArtifactViewer artifactId={viewing.id} revision={viewing.revision} onClose={() => setViewing(null)} />}
     </div>
@@ -124,6 +127,7 @@ export function Review({ request: r, connected }: { request: Request; connected:
   const run = async (kind: "approve" | "close", merge?: MergeChoice) => {
     try {
       await decide.run({ kind, merge });
+      toast.success(kind === "close" ? T.toastSpikeClosed(r.item_key) : T.toastApproved(r.item_key));
     } catch (e) {
       if (e instanceof ApiError && e.code === "conflict") {
         setStale(true);
@@ -134,12 +138,12 @@ export function Review({ request: r, connected }: { request: Request; connected:
 
   return (
     <article className="space-y-4">
-      <header className="space-y-0.5 border-b border-line pb-3">
+      <header className="space-y-0.5 border-b border-border pb-3">
         <h2 className="text-base font-semibold">{head.title}</h2>
-        {head.by && <p className="text-muted">{head.by}</p>}
-        {head.revision && <p className="text-muted">{head.revision}</p>}
+        {head.by && <p className="text-muted-foreground">{head.by}</p>}
+        {head.revision && <p className="text-muted-foreground">{head.revision}</p>}
       </header>
-      {stale && <p role="alert" className="rounded bg-warn/10 p-2 text-warn">{C.staleApproval}</p>}
+      {stale && <Alert variant="destructive">{C.staleApproval}</Alert>}
 
       {(r.kind === "question" || r.kind === "prompt" || r.kind === "blocker") && <QuestionView request={r} connected={connected} />}
       {r.kind === "confirm_repos" && <ConfirmRepos key={r.id} request={r} connected={connected} />}
@@ -148,30 +152,28 @@ export function Review({ request: r, connected }: { request: Request; connected:
       {r.kind === "close_spike" && <CloseBody r={r} />}
 
       {(isApprovalKind(r.kind) || r.kind === "close_spike") && (
-        <footer className="flex flex-wrap items-start gap-2 border-t border-line pt-3">
+        <footer className="flex flex-wrap items-start gap-2 border-t border-border pt-3">
           {r.kind === "accept_epic" || r.kind === "accept_fix" ? (
             r.finish_local ? (
-              <button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "local")}
-                className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">{C.mergeLocally}</button>
+              <Button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "local")}>
+                {C.mergeLocally}
+              </Button>
             ) : (
               <>
-                <button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "auto")}
-                  className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">{C.createPrAutoMerge}</button>
-                <button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "manual")}
-                  className="rounded border border-line px-3 py-1 disabled:opacity-50">{C.createPr}</button>
+                <Button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "auto")}>
+                  {C.createPrAutoMerge}
+                </Button>
+                <Button type="button" variant="outline" disabled={!connected || decide.pending} onClick={() => void run("approve", "manual")}>
+                  {C.createPr}
+                </Button>
               </>
             )
           ) : (
-            <button
-              type="button"
-              disabled={!connected || decide.pending}
-              onClick={() => void run(r.kind === "close_spike" ? "close" : "approve")}
-              className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
-            >
+            <Button type="button" disabled={!connected || decide.pending} onClick={() => void run(r.kind === "close_spike" ? "close" : "approve")}>
               {SCOPE_LABEL[r.kind]}
-            </button>
+            </Button>
           )}
-          <RequestChanges requestId={r.id} connected={connected} />
+          <RequestChanges requestId={r.id} agentName={r.agent_name ?? r.item_key} connected={connected} />
         </footer>
       )}
     </article>

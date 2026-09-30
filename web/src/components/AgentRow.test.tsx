@@ -1,16 +1,34 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { useConnection } from "../data/hooks";
 import { makeAgent } from "../logic/agentActions";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import type { SessionState } from "../types";
 import { AgentList, AgentRow } from "./AgentRow";
 
+const streamState = vi.hoisted(() => ({ current: "connecting" }));
+vi.mock("../sse", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../sse")>();
+  return {
+    ...actual,
+    connectEvents: (options: Parameters<typeof actual.connectEvents>[0]) => actual.connectEvents({
+      ...options,
+      onState: (state) => { streamState.current = state; options.onState(state); },
+    }),
+  };
+});
+
 const daemon0 = () => createMockDaemon();
 
 const ses = (state: SessionState, tmux_alive = true) => ({
   id: "s", state, attempt: 1, generation: 1, waiting: false, stale: false, tmux_alive, started_at: 0, ended_at: null,
 });
+
+function ReconnectRow() {
+  const { connected, retry } = useConnection();
+  return <><AgentRow agent={makeAgent({ name: "login-form-coder", session: ses("running") })} /><span data-testid="connection">{connected ? "online" : "offline"}</span><button type="button" onClick={retry}>Reconnect stream</button></>;
+}
 
 describe("AgentRow (§10.7 on the board)", () => {
   it("shows icon, name, role, state and the row's actions", async () => {
@@ -20,6 +38,7 @@ describe("AgentRow (§10.7 on the board)", () => {
     expect(row).toHaveTextContent("login-form-coder · Coder");
     expect(row).toHaveTextContent("Running");
     expect(within(row).getAllByRole("button").map((b) => b.textContent)).toEqual(["Terminal", "Pause", "Cancel"]);
+    expect(row).toHaveClass("flex-col", "sm:flex-row");
   });
 
   it("says why the agent isn't on the user's role default", () => {
@@ -49,17 +68,46 @@ describe("AgentRow (§10.7 on the board)", () => {
     const { daemon, user } = renderWithDaemon(<AgentRow agent={d.db.agents[0] ?? makeAgent()} />, { daemon: d, events: false });
     await user.click(screen.getByRole("button", { name: "Pause group" }));
     await waitFor(() => expect(daemon.calls.at(-1)).toMatchObject({ method: "POST", path: "/api/agents/auth-epic-orchestrator/pause", body: { scope: "subtree" } }));
+    expect(await screen.findByText("Pausing auth-epic-orchestrator and its agents")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["paused", "resume", "Resume", "Resumed action-agent"],
+    ["interrupted", "ack", "Acknowledge", "Acknowledged action-agent"],
+    ["crashed", "retry", "Retry", "Retrying action-agent"],
+  ] as const)("toasts after %s agent action", async (state, endpoint, action, toast) => {
+    const d = daemon0();
+    d.override(`POST /api/agents/action-agent/${endpoint}`, { status: 200, body: {} });
+    const { user } = renderWithDaemon(<AgentRow agent={makeAgent({ name: "action-agent", session: ses(state, state !== "crashed") })} />, { daemon: d, events: false });
+    await user.click(screen.getByRole("button", { name: action }));
+    expect(await screen.findByText(toast)).toBeInTheDocument();
   });
 
   it("asks before cancelling an orchestrator with agents", async () => {
     const d = daemon0();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     const { user, daemon } = renderWithDaemon(<AgentRow agent={d.db.agents[0] ?? makeAgent()} />, { daemon: d, events: false });
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(confirm).toHaveBeenCalledWith("Cancel auth-epic-orchestrator and its 2 agents?");
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Cancel auth-epic-orchestrator and its 2 agents?");
+    await user.click(within(dialog).getByRole("button", { name: "Keep running" }));
     expect(daemon.calls.some((c) => c.path.endsWith("/cancel"))).toBe(false);
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(daemon.calls.some((c) => c.path === "/api/agents/auth-epic-orchestrator/cancel")).toBe(true));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(daemon.calls.filter((c) => c.path === "/api/agents/auth-epic-orchestrator/cancel")).toHaveLength(1));
+    expect(await screen.findByText("Cancelled auth-epic-orchestrator")).toBeInTheDocument();
+  });
+
+  it("disables an open cancel confirmation when the daemon disconnects", async () => {
+    const d = daemon0();
+    const { user } = renderWithDaemon(<AgentRow agent={d.db.agents[0] ?? makeAgent()} />, { daemon: d });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    const confirm = within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" });
+    d.disconnect();
+    await waitFor(() => expect(confirm).toBeDisabled());
+    fireEvent.click(confirm);
+    fireEvent.keyDown(confirm, { key: "Enter" });
+    expect(d.calls.filter((c) => c.path === "/api/agents/auth-epic-orchestrator/cancel")).toHaveLength(0);
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 
   it("toasts a daemon refusal", async () => {
@@ -68,6 +116,62 @@ describe("AgentRow (§10.7 on the board)", () => {
     const { user } = renderWithDaemon(<AgentRow agent={makeAgent({ name: "login-form-coder", session: ses("running") })} />, { daemon: d, events: false });
     await user.click(screen.getByRole("button", { name: "Pause" }));
     expect(await screen.findByText("Still stopping. Try again in a few seconds.")).toBeInTheDocument();
+  });
+
+  it.each([
+    { failed: false, reconnect: false },
+    { failed: true, reconnect: false },
+    { failed: false, reconnect: true },
+    { failed: true, reconnect: true },
+  ])("does not toast when a pending agent action settles after disconnect (failed: $failed, reconnect: $reconnect)", async ({ failed, reconnect }) => {
+    const d = daemon0();
+    const route = "POST /api/agents/login-form-coder/pause";
+    if (failed) d.override(route, { status: 409, body: { error: { code: "conflict", message: "Still stopping. Try again in a few seconds." } } });
+    const release = d.hold(route);
+    const { user } = renderWithDaemon(<ReconnectRow />, { daemon: d });
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Pausing…" })).toBeDisabled());
+    act(() => d.disconnect());
+    await waitFor(() => expect(screen.getByTestId("connection")).toHaveTextContent("offline"));
+    if (reconnect) {
+      d.reconnect();
+      await user.click(screen.getByRole("button", { name: "Reconnect stream" }));
+      await waitFor(() => expect(screen.getByTestId("connection")).toHaveTextContent("online"));
+    }
+    await act(async () => { release(); });
+    await waitFor(() => expect(d.calls.filter((c) => `${c.method} ${c.path}` === route)).toHaveLength(1));
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+  });
+
+  it.each([false, true])("does not toast when a pending response settles before the disconnect render (failed: %s)", async (failed) => {
+    const d = daemon0();
+    const route = "POST /api/agents/login-form-coder/pause";
+    if (failed) d.override(route, { status: 409, body: { error: { code: "conflict", message: "Still stopping." } } });
+    const release = d.hold(route);
+    let live: ReturnType<typeof useConnection>["live"] | undefined;
+    function RowWithLifecycle() {
+      const connection = useConnection();
+      live = connection.live;
+      return <><AgentRow agent={makeAgent({ name: "login-form-coder", session: ses("running") })} /><span data-testid="connection">{connection.connected ? "online" : "offline"}</span></>;
+    }
+    const { user } = renderWithDaemon(<RowWithLifecycle />, { daemon: d });
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Pausing…" })).toBeDisabled());
+    await act(async () => {
+      streamState.current = "open";
+      d.disconnect();
+      // Wait for the transport callback, then settle the response before React renders offline.
+      for (let i = 0; i < 20 && streamState.current !== "closed"; i++) await Promise.resolve();
+      expect(streamState.current).toBe("closed");
+      expect(screen.getByTestId("connection")).toHaveTextContent("online");
+      expect(live?.connected).toBe(false);
+      release();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByTestId("connection")).toHaveTextContent("offline"));
+    expect(d.calls.filter((c) => `${c.method} ${c.path}` === route)).toHaveLength(1);
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 
   // The mock daemon flips its own copy of the agent, not the `agent` prop, so the prop's state stays
@@ -140,9 +244,11 @@ describe("AgentList", () => {
     const d = daemon0();
     const { user } = renderWithDaemon(<AgentList agents={d.db.agents.slice(0, 1)} />, { daemon: d, events: false });
     expect(screen.getByTestId("agent-login-form-coder")).toBeInTheDocument();
-    const finished = screen.getByText("Finished (1)");
-    expect(screen.getByTestId("agent-login-form-coder-1")).not.toBeVisible();
+    const finished = screen.getByRole("button", { name: "Finished (1)" });
+    expect(finished).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("agent-login-form-coder-1")).not.toBeInTheDocument();
     await user.click(finished);
+    expect(finished).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByTestId("agent-login-form-coder-1")).toBeVisible();
     expect(within(screen.getByTestId("agent-login-form-coder-1")).queryAllByRole("button")).toEqual([]);
   });

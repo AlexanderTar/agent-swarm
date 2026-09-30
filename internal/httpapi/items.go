@@ -198,7 +198,7 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Type == string(items.Spike) {
-		s.writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "Spikes start with an intent. Use New spike."))
+		s.writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "Spikes start with an intent. Use New orchestrator."))
 		return
 	}
 	s.idempotent(w, r, body.RequestID, "POST /api/items", http.StatusCreated, func(ctx context.Context) (any, error) {

@@ -1,7 +1,9 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Plus } from "lucide-react";
+import { type KeyboardEvent, useRef, useState } from "react";
 import { Key, TypeIcon } from "../components/icons";
 import { StatusPill } from "../components/StatusLabel";
+import { Button } from "../components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { C, T } from "../copy";
 import { PARENT_TYPES, hierarchyRows, isFilterActive } from "../logic/tree";
 import { useLocalSet } from "../state/local";
@@ -13,7 +15,6 @@ export function Hierarchy(p: HierarchyProps) {
   const [menu, setMenu] = useState<{ key: string; type: "story" | "task" } | null>(null);
   const rows = hierarchyRows(p.items, p.filter, collapsed, opened);
   const tree = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   // Store the outcome, not a flip: a fold survives a status change, and old collapsed keys stay collapsed.
   const toggle = (key: string, expanded: boolean) => {
     if (collapsed.has(key) === expanded) toggleCollapsed(key);
@@ -23,9 +24,6 @@ export function Hierarchy(p: HierarchyProps) {
   // Standing rule: transient UI (the add-child context menu) takes focus on open and restores it
   // to its trigger on close. A context menu has no single trigger button, so "the trigger" here is
   // the tree itself — the single tab stop that owns keyboard navigation for every row.
-  useEffect(() => {
-    if (menu) menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
-  }, [menu]);
   const closeMenu = () => {
     setMenu(null);
     tree.current?.focus();
@@ -36,7 +34,7 @@ export function Hierarchy(p: HierarchyProps) {
     return (
       <div className="p-8 text-center">
         <p>{C.noItems}</p>
-        <button type="button" onClick={p.onNewItem} className="mt-2 text-accent">{C.newItem}</button>
+        <Button type="button" variant="link" onClick={p.onNewItem} className="mt-2">{C.newItem}</Button>
       </div>
     );
   }
@@ -44,19 +42,24 @@ export function Hierarchy(p: HierarchyProps) {
     return (
       <div className="p-8 text-center">
         <p>{C.filteredNone}</p>
-        <button type="button" onClick={p.onClearFilters} className="mt-2 text-accent">{C.clearFilters}</button>
+        <Button type="button" variant="link" onClick={p.onClearFilters} className="mt-2">{C.clearFilters}</Button>
       </div>
     );
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return;
     const idx = rows.findIndex((r) => r.item.key === p.selected);
     const cur = rows[idx];
     const go = (i: number) => {
       const r = rows[Math.max(0, Math.min(rows.length - 1, i))];
       if (r) p.onSelect(r.item.key);
     };
-    if (e.key === "ArrowDown") go(idx + 1);
+    if ((e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) && cur) {
+      const type = (["story", "task"] as const).find((c) => PARENT_TYPES[c]?.includes(cur.item.type));
+      if (type) setMenu({ key: cur.item.key, type });
+      else return;
+    } else if (e.key === "ArrowDown") go(idx + 1);
     else if (e.key === "ArrowUp") go(idx < 0 ? 0 : idx - 1);
     else if (e.key === "ArrowLeft" && cur?.hasChildren && cur.expanded && !cur.context) toggle(cur.item.key, false);
     else if (e.key === "ArrowRight" && cur?.hasChildren && !cur.expanded) toggle(cur.item.key, true);
@@ -67,13 +70,13 @@ export function Hierarchy(p: HierarchyProps) {
 
   return (
     <div className="p-2">
-      <div className="grid grid-cols-[1fr_140px_64px] px-2 py-1 text-[11px] uppercase tracking-wide text-muted">
+      <div className="grid grid-cols-[1fr_140px_64px] px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
         <span>WORK ITEM</span>
         <span>STATUS</span>
         <span className="text-right">AGENTS</span>
       </div>
       {/* biome-ignore lint/a11y/useSemanticElements: ARIA tree pattern */}
-      <div ref={tree} role="tree" aria-label={C.hierarchy} tabIndex={0} onKeyDown={onKeyDown} className="outline-none">
+      <div ref={tree} role="tree" aria-label={C.hierarchy} tabIndex={0} onKeyDown={onKeyDown} className="rounded outline-none focus-visible:ring-2 focus-visible:ring-ring">
         {rows.map((r) => {
           const it = r.item;
           const top = r.depth === 0;
@@ -81,8 +84,8 @@ export function Hierarchy(p: HierarchyProps) {
           // re-deriving it, so this can't drift from PARENT_TYPES (and the daemon rules it mirrors).
           const childType = (["story", "task"] as const).find((c) => PARENT_TYPES[c]?.includes(it.type)) ?? null;
           return (
+            <DropdownMenu key={it.key} open={menu?.key === it.key} onOpenChange={(open) => { if (open && childType) setMenu({ key: it.key, type: childType }); else if (!open && menu?.key === it.key) closeMenu(); }}>
             <div
-              key={it.key}
               role="treeitem"
               aria-label={`${it.key} ${it.title}`}
               aria-level={r.depth + 1}
@@ -95,15 +98,17 @@ export function Hierarchy(p: HierarchyProps) {
                 e.preventDefault();
                 setMenu(childType ? { key: it.key, type: childType } : null);
               }}
-              className={`relative grid cursor-pointer grid-cols-[1fr_140px_64px] items-center rounded px-2 py-1 hover:bg-raised ${
+              className={`relative grid h-[30px] cursor-pointer grid-cols-[1fr_140px_64px] items-center rounded px-2 hover:bg-accent/60 ${
                 top ? "mt-3 font-semibold" : ""
-              } ${r.context ? "opacity-50" : ""} ${it.key === p.selected ? "bg-raised" : ""}`}
+              } ${r.context ? "opacity-50" : ""} ${it.key === p.selected ? "bg-accent" : ""}`}
             >
               <span className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: r.depth * 20 }}>
-                {r.depth > 0 && <span aria-hidden className="absolute top-0 bottom-0 w-px bg-line" style={{ left: 8 + (r.depth - 1) * 20 + 10 }} />}
+                {r.depth > 0 && <span aria-hidden className="absolute top-0 bottom-0 w-px bg-border" style={{ left: 8 + (r.depth - 1) * 20 + 10 }} />}
                 {r.hasChildren ? (
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="icon-sm"
                     aria-label={`${r.expanded ? "Collapse" : "Expand"} ${it.key}`}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -111,20 +116,22 @@ export function Hierarchy(p: HierarchyProps) {
                     }}
                   >
                     {r.expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                  </button>
+                  </Button>
                 ) : (
                   <span className="w-3.5" />
                 )}
                 <TypeIcon type={it.type} />
                 <Key>{it.key}</Key>
                 <span className="truncate">{it.title}</span>
-                {r.context && <span className="rounded bg-raised px-1 text-[11px] font-normal">{C.context}</span>}
+                {r.context && <span className="rounded bg-muted px-1 text-[11px] font-normal">{C.context}</span>}
               </span>
               <span><StatusPill status={it.status} /></span>
               <span className="flex items-center justify-end gap-1.5">
                 {it.active_agents > 0 && (
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="xs"
                     title={T.agentsTooltip(it.active_agents)}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -132,37 +139,18 @@ export function Hierarchy(p: HierarchyProps) {
                     }}
                   >
                     {it.active_agents}
-                  </button>
+                  </Button>
                 )}
-                {it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warn" />}
+                {it.open_requests > 0 && <span role="img" aria-label={C.needsYou} className="size-2 rounded-full bg-warning" />}
+                {childType && <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label={`Add child to ${it.key}`} onClick={(e) => e.stopPropagation()}><Plus aria-hidden className="size-3.5" /></Button></DropdownMenuTrigger>}
               </span>
-              {menu?.key === it.key && (
-                <div
-                  ref={menuRef}
-                  role="menu"
-                  tabIndex={-1}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Escape") return;
-                    e.stopPropagation();
-                    closeMenu();
-                  }}
-                  className="absolute top-full left-8 z-30 rounded border border-line bg-panel p-1 font-normal shadow-lg"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      closeMenu();
-                      p.onAddChild(it.key, menu.type);
-                    }}
-                    className="block rounded px-2 py-1 hover:bg-raised"
-                  >
-                    {menu.type === "story" ? C.addStory : C.addTask}
-                  </button>
-                </div>
-              )}
             </div>
+            {menu?.key === it.key && <DropdownMenuContent align="start" onCloseAutoFocus={(e) => { e.preventDefault(); tree.current?.focus(); }}>
+              <DropdownMenuItem onSelect={() => { closeMenu(); p.onAddChild(it.key, menu.type); }}>
+                {menu.type === "story" ? C.addStory : C.addTask}
+              </DropdownMenuItem>
+            </DropdownMenuContent>}
+            </DropdownMenu>
           );
         })}
       </div>

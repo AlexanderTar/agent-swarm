@@ -1,5 +1,6 @@
 /// <reference types="vitest/config" />
 import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
@@ -9,6 +10,7 @@ const daemon = process.env.SWARM_DEV_URL ?? "http://127.0.0.1:17777";
 const mock = process.env.SWARM_MOCK === "1";
 
 export default defineConfig({
+  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   plugins: [
     react(),
     tailwindcss(),
@@ -25,6 +27,8 @@ export default defineConfig({
   build: { outDir: "dist", emptyOutDir: true },
   server: { port: 5173, proxy: mock ? undefined : { "/api": { target: daemon } } },
   test: {
+    // Radix/jsdom interaction tests exceed the default timeout when workers compete for CPU.
+    maxWorkers: 1,
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],

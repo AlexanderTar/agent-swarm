@@ -1,34 +1,67 @@
-import { type ReactNode, createContext, useCallback, useContext, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { Toaster as SonnerToaster, toast as sonner } from "sonner";
+import { useConnection } from "../data/hooks";
 
 export interface ToastInput { message: string; action?: { label: string; onClick: () => void } }
 
-const Ctx = createContext<(t: ToastInput) => void>(() => {});
-let nextId = 0;
+export type ToastFn = ((t: ToastInput) => void) & {
+  success(message: string, description?: string): void;
+  error(message: string, description?: string): void;
+};
 
-export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<(ToastInput & { id: number })[]>([]);
-  const push = useCallback((t: ToastInput) => {
-    const id = ++nextId;
-    setToasts((x) => [...x, { ...t, id }]);
-    setTimeout(() => setToasts((x) => x.filter((y) => y.id !== id)), 6000);
-  }, []);
+const SUCCESS_MS = 4000;
+const ERROR_MS = 6000;
+
+// Legacy `toast({ message })` call sites are failure or refusal messages.
+const toastFn: ToastFn = Object.assign(
+  (t: ToastInput) => {
+    sonner.error(t.message, { duration: ERROR_MS, action: t.action && { label: t.action.label, onClick: t.action.onClick } });
+  },
+  {
+    success: (message: string, description?: string) => { sonner.success(message, { description, duration: SUCCESS_MS }); },
+    error: (message: string, description?: string) => { sonner.error(message, { description, duration: ERROR_MS }); },
+  },
+);
+
+export const useToast = (): ToastFn => {
+  const { live } = useConnection();
+  const epoch = live.epoch;
+  const connected = live.connected;
+  const current = () => connected && live.connected && live.epoch === epoch;
+  return Object.assign(
+    (t: ToastInput) => { if (current()) toastFn(t); },
+    {
+      success: (message: string, description?: string) => { if (current()) toastFn.success(message, description); },
+      error: (message: string, description?: string) => { if (current()) toastFn.error(message, description); },
+    },
+  );
+};
+
+export function Toaster() {
   return (
-    <Ctx.Provider value={push}>
-      {children}
-      <div role="status" aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex flex-col items-center gap-2">
-        {toasts.map((t) => (
-          <div key={t.id} className="pointer-events-auto flex max-w-md items-center gap-3 rounded-md border border-line bg-panel px-3 py-2 shadow-lg">
-            <span>{t.message}</span>
-            {t.action && (
-              <button type="button" className="font-medium text-accent" onClick={t.action.onClick}>
-                {t.action.label}
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-    </Ctx.Provider>
+    <SonnerToaster
+      theme="dark"
+      position="bottom-left"
+      visibleToasts={3}
+      toastOptions={{
+        style: { "--normal-bg": "var(--popover)" } as CSSProperties,
+        classNames: {
+          toast: "bg-popover text-popover-foreground border border-border shadow-lg font-sans text-[13px]",
+          description: "text-muted-foreground",
+          actionButton: "!bg-transparent !text-link font-medium",
+          success: "[&_[data-icon]]:text-success",
+          error: "[&_[data-icon]]:text-destructive",
+        },
+      }}
+    />
   );
 }
 
-export const useToast = () => useContext(Ctx);
+export function ToastProvider({ children }: { children: ReactNode }) {
+  return (
+    <>
+      {children}
+      <Toaster />
+    </>
+  );
+}

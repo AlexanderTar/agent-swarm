@@ -1,8 +1,16 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
+import { toast } from "sonner";
 import { afterEach, vi } from "vitest";
 
 afterEach(() => {
+  toast.dismiss();
+  // jsdom retains focus on detached nodes after a test unmounts them; Radix treats the next focus as window blur.
+  const focusReset = document.createElement("button");
+  document.body.append(focusReset);
+  focusReset.focus();
+  focusReset.blur();
+  focusReset.remove();
   cleanup();
   localStorage.clear();
   sessionStorage.clear();
@@ -10,6 +18,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+Object.assign(Element.prototype, {
+  hasPointerCapture: () => false,
+  setPointerCapture: () => {},
+  releasePointerCapture: () => {},
+  scrollIntoView: () => {},
 });
 
 // React Flow in jsdom: https://reactflow.dev/learn/advanced-use/testing

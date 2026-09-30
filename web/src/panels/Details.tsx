@@ -1,4 +1,3 @@
-import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, errorText } from "../api";
 import { AddDependency } from "../components/AddDependency";
@@ -10,10 +9,18 @@ import { MoveToMenu } from "../components/MoveToMenu";
 import { TodoList } from "../components/TodoList";
 import { useToast } from "../components/Toast";
 import { WorkflowSection } from "../components/WorkflowSection";
-import { C, STATUS_LABEL, T } from "../copy";
-import { useInvalidate, useMutation } from "../data/hooks";
+import { Alert } from "../components/ui/alert";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { Textarea } from "../components/ui/textarea";
+import { C, STATUS_LABEL, T, TYPE_LABEL } from "../copy";
+import { useConnection, useInvalidate, useMutation } from "../data/hooks";
 import { qk, useItemDetail } from "../data/queries";
-import { flattenAgents } from "../logic/agentActions";
+import { displayState, flattenAgents, isFinished } from "../logic/agentActions";
+import { agentActionToast } from "../logic/toasts";
 import { ARTIFACT_LABEL, requestTitle } from "../logic/requestTitle";
 import { checkMove, failureMessage } from "../logic/transitions";
 import type { Item, ItemStatus, PatchItemBody, Priority } from "../types";
@@ -49,30 +56,31 @@ function Editable(p: { label: string; value: string; multiline?: boolean; maxLen
   }, [editing]);
   if (!editing) {
     return (
-      <button
+      <Button
         ref={trigger}
         type="button"
+        variant="ghost"
         aria-label={p.multiline ? p.label : undefined}
         disabled={p.disabled}
         onClick={() => { setDraft(p.value); setEditing(true); }}
-        className={`block w-full whitespace-pre-wrap text-left ${p.className ?? ""}`}
+        className={`h-auto w-full justify-start whitespace-pre-wrap p-1 text-left ${p.className ?? ""}`}
       >
-        {p.value || <span className="text-muted">—</span>}
-      </button>
+        {p.value || <span className="text-muted-foreground">—</span>}
+      </Button>
     );
   }
   const common = {
     "aria-label": p.label,
     autoFocus: true,
     value: draft,
+    disabled: p.disabled,
     maxLength: p.maxLength,
     onBlur: save,
-    className: "w-full rounded border border-line bg-canvas px-2 py-1",
   };
   return p.multiline ? (
-    <textarea {...common} rows={4} onChange={(e) => setDraft(e.target.value)} />
+    <Textarea {...common} rows={4} onChange={(e) => setDraft(e.target.value)} />
   ) : (
-    <input {...common} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+    <Input {...common} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
   );
 }
 
@@ -80,47 +88,66 @@ export function Details(p: DetailsProps) {
   const detail = useItemDetail(p.itemKey);
   const invalidate = useInvalidate();
   const toast = useToast();
-  const [tab, setTab] = useState<"overview" | "checkpoints">("overview");
+  const { live } = useConnection();
+  const [tab, setTab] = useState<"overview" | "agents" | "checkpoints" | "deps">("overview");
+  const pendingAgentScroll = useRef<string | null>(null);
+  const agentsNode = useRef<HTMLElement | null>(null);
   const [stale, setStale] = useState(false);
   const [viewing, setViewing] = useState<{ id: string; revision: number } | null>(null);
-  const agentsRef = useRef<HTMLElement>(null);
   const patch = useMutation((api, key: string, body: PatchItemBody) => api.patchItem(key, body), ["items", "item:", "graph:"]);
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
 
   useEffect(() => {
-    if (p.focus === "agents" && detail.data) agentsRef.current?.scrollIntoView?.({ block: "start" });
-  }, [p.focus, detail.data]);
+    if (p.focus !== "agents") return;
+    pendingAgentScroll.current = "";
+    setTab("agents");
+    if (agentsNode.current) {
+      agentsNode.current.scrollIntoView?.({ block: "start" });
+      pendingAgentScroll.current = null;
+    }
+  }, [p.focus, p.itemKey]);
+
+  const setAgentsRef = (node: HTMLElement | null) => {
+    agentsNode.current = node;
+    if (!node || pendingAgentScroll.current === null) return;
+    if (pendingAgentScroll.current) node.querySelector<HTMLElement>(`#agent-${pendingAgentScroll.current}`)?.scrollIntoView?.({ block: "center" });
+    else node.scrollIntoView?.({ block: "start" });
+    pendingAgentScroll.current = null;
+  };
 
   const d = detail.data;
   // Standing rule: a failed load gets a message + retry, never a permanent "…" placeholder.
   if (detail.error) {
     return (
-      <p className="p-4 text-bad">
+      <Alert variant="destructive" className="m-4">
         {errorText(detail.error)}{" "}
-        <button type="button" className="text-accent underline" onClick={() => detail.reload()}>
+        <Button type="button" variant="link" className="h-auto p-0" onClick={() => detail.reload()}>
           {C.retry}
-        </button>
-      </p>
+        </Button>
+      </Alert>
     );
   }
-  if (!d) return <p className="p-4 text-muted">…</p>;
+  if (!d) return <div className="space-y-3 p-4" aria-label={C.openDetails}>{[1, 2, 3].map((n) => <div key={n} className="h-3 animate-pulse rounded bg-muted motion-reduce:animate-none" />)}</div>;
   const item = d.item;
 
   const save = async (body: Omit<PatchItemBody, "revision">): Promise<boolean> => {
     try {
       await patch.run(item.key, { ...body, revision: item.revision });
       setStale(false);
+      if (body.status) toast.success(T.toastMoved(item.key, STATUS_LABEL[body.status]));
       return true;
     } catch (e) {
       if (e instanceof ApiError && e.code === "conflict") {
         setStale(true);
         invalidate([qk.item(item.key), "items"]);
-      } else toast({ message: body.status ? failureMessage(e, item) : errorText(e) });
+      }
+      toast.error(body.status ? failureMessage(e, item) : errorText(e));
       return false;
     }
   };
 
   const onMove = (status: ItemStatus) => {
+    if (!live.connected) return;
     const check = checkMove(item, status);
     if (!check.ok && check.special === "accept") {
       const req = d.requests.find((r) => r.kind === "accept_epic" || r.kind === "accept_fix");
@@ -143,11 +170,14 @@ export function Details(p: DetailsProps) {
   const crumbs = [...d.ancestors.map((a) => a.key), item.key].join(" › ");
 
   return (
-    <div data-testid="details-panel" className="space-y-4 p-4">
-      {stale && <p className="rounded bg-warn/10 px-2 py-1 text-warn">{C.staleRevision}</p>}
-      <div className="flex items-start justify-between gap-2">
-        <span className="key text-muted">{crumbs}</span>
-        <button type="button" aria-label="Close" onClick={p.onClose}><X className="size-4" /></button>
+    <div data-testid="details-panel" className="space-y-4">
+      {stale && <p className="rounded bg-warning/10 px-2 py-1 text-warning">{C.staleRevision}</p>}
+      <div className="flex items-start justify-between gap-2 pr-10">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="key text-muted-foreground">{crumbs}</span>
+          <Badge variant="outline">{TYPE_LABEL[item.type]}</Badge>
+        </div>
+        <MoveToMenu item={item} buttonLabel={STATUS_LABEL[item.status]} disabled={!p.connected || patch.pending} onMove={onMove} />
       </div>
       <Editable
         label={C.title}
@@ -158,74 +188,98 @@ export function Details(p: DetailsProps) {
         className="text-base font-semibold"
       />
       <div className="flex items-center justify-between gap-2">
-        <MoveToMenu item={item} buttonLabel={STATUS_LABEL[item.status]} disabled={!p.connected || patch.pending} onMove={onMove} />
         <label className="flex items-center gap-1">
           {C.priority}
-          <select
-            aria-label={C.priority}
-            value={String(item.priority)}
-            disabled={!p.connected || patch.pending}
-            onChange={(e) => void save({ priority: Number(e.target.value) as Priority })}
-            className="rounded border border-line bg-canvas px-1"
-          >
-            {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{`P${n}`}</option>)}
-          </select>
+          <Select value={String(item.priority)} disabled={!p.connected || patch.pending} onValueChange={(value) => void save({ priority: Number(value) as Priority })}>
+            <SelectTrigger aria-label={C.priority} size="sm"><SelectValue /></SelectTrigger>
+            <SelectContent>{[0, 1, 2, 3].map((n) => <SelectItem key={n} value={String(n)}>{`P${n}`}</SelectItem>)}</SelectContent>
+          </Select>
         </label>
       </div>
 
-      {d.requests.length > 0 && (
-        <section aria-label={C.needsYou} className="border-t border-line pt-3">
-          <h3 className="mb-1 font-semibold">{C.needsYou}</h3>
-          <ul className="space-y-1">
-            {[...d.requests].sort((a, b) => a.created_at - b.created_at).map((r) => (
-              <li key={r.id} className="flex items-center justify-between gap-2">
-                <span className="truncate">{requestTitle(r)}</span>
-                <button type="button" onClick={() => p.onReview(r.id)} className="text-accent">{C.review}</button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <section ref={agentsRef} aria-label={C.agents} className="border-t border-line pt-3">
-        <h3 className="mb-1 font-semibold">{C.agents}</h3>
-        <AgentList agents={d.agents} />
-      </section>
-
-      <WorkflowSection workflow={item.workflow} state={d.workflow_state} onOpenTerminal={(name) => {
-        void terminal.run(name).catch((e: unknown) => toast({ message: errorText(e) }));
-      }} />
-
       {item.status === "in_review" && d.merges && (d.merges.length ? <MergeList merges={d.merges} /> : (
-        <p className="border-t border-line pt-3 text-muted">{C.awaitingOrchestrator}</p>
+        <p className="border-t border-border pt-3 text-muted-foreground">{C.awaitingOrchestrator}</p>
       ))}
       {d.todos && <TodoList todos={d.todos} onSelect={p.onSelect} />}
 
-      <div role="tablist" className="flex gap-3 border-t border-line pt-3">
-        {(["overview", "checkpoints"] as const).map((t) => (
-          <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={tab === t ? "font-semibold" : "text-muted"}>
-            {t === "overview" ? C.overview : C.checkpoints}
-          </button>
-        ))}
-      </div>
-
-      {tab === "overview" ? (
-        <div className="space-y-3">
+      <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)}>
+        <TabsList variant="line" className="w-full justify-start overflow-x-auto">
+          <TabsTrigger value="overview">{C.overview}</TabsTrigger>
+          <TabsTrigger value="agents">{C.agents}</TabsTrigger>
+          <TabsTrigger value="checkpoints">{C.checkpoints}</TabsTrigger>
+          <TabsTrigger value="deps">{C.deps}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="overview" className="space-y-3">
           <div>
-            <h4 className="text-muted">{C.brief}</h4>
+            <h4 className="text-muted-foreground">{C.brief}</h4>
             <Editable label={C.brief} value={item.brief} multiline disabled={!p.connected || patch.pending} onSave={(brief) => save({ brief })} />
           </div>
           {item.acceptance.length > 0 && (
             <div>
-              <h4 className="text-muted">{C.acceptance}</h4>
+              <h4 className="text-muted-foreground">{C.acceptance}</h4>
               <ul className="list-disc pl-5">{item.acceptance.map((a) => <li key={a}>{a}</li>)}</ul>
             </div>
           )}
+          <WorkflowSection workflow={item.workflow} state={d.workflow_state} connected={p.connected} onOpenTerminal={(name) => {
+            if (!live.connected) return;
+            const epoch = live.epoch;
+            void terminal.run(name).then(() => { if (live.connected && live.epoch === epoch) toast.success(agentActionToast("terminal", name)); })
+              .catch((e: unknown) => { if (live.connected && live.epoch === epoch) toast({ message: errorText(e) }); });
+          }} />
+          <section aria-label={C.agents} className="border-t border-border pt-3">
+            <h3 className="mb-1 font-semibold">{C.agents}</h3>
+            <ul className="space-y-1 text-sm">
+              {flattenAgents(d.agents).filter((agent) => !isFinished(agent)).map((agent) => (
+                <li key={agent.id} className="flex justify-between gap-2">
+                  <span className="truncate">{agent.name}</span>
+                  <span className="shrink-0 text-muted-foreground">{displayState(agent)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+          {d.artifacts.length > 0 && (
+            <div>
+              <h4 className="text-muted-foreground">{C.artifacts}</h4>
+              {d.artifacts.map((a) => (
+                <Button key={a.id} type="button" variant="link" onClick={() => setViewing({ id: a.id, revision: a.head_revision })} className="block h-auto p-0">
+                  {`${ARTIFACT_LABEL[a.kind]} · rev ${a.head_revision} · ${C.view}`}
+                </Button>
+              ))}
+            </div>
+          )}
+          {item.origin_spike_key && (
+            <Button type="button" variant="link" onClick={() => p.onSelect(item.origin_spike_key ?? "")} className="h-auto p-0">
+              {T.startedFrom(item.origin_spike_key)}
+            </Button>
+          )}
+          {d.requests.length > 0 && (
+            <section aria-label={C.needsYou} className="border-t border-border pt-3">
+              <h3 className="mb-1 font-semibold">{C.needsYou}</h3>
+              <ul className="space-y-1">
+                {[...d.requests].sort((a, b) => a.created_at - b.created_at).map((r) => (
+                  <li key={r.id} className="flex items-center justify-between gap-2">
+                    <span className="truncate">{requestTitle(r)}</span>
+                    <Button type="button" variant="link" onClick={() => p.onReview(r.id)} className="h-auto p-0">{C.review}</Button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </TabsContent>
+        <TabsContent value="agents">
+          <section ref={setAgentsRef} aria-label={C.agents} className="pt-2">
+            <AgentList agents={d.agents} />
+          </section>
+        </TabsContent>
+        <TabsContent value="checkpoints">
+          <CheckpointList itemKey={item.key} agentNames={flattenAgents(d.agents).map((a) => a.name)} />
+        </TabsContent>
+        <TabsContent value="deps" className="space-y-3">
           {d.deps.blocked_by.length > 0 && (
             <p>
               {`${C.blockedBy}: `}
               {d.deps.blocked_by.map((b: Item, i) => (
-                <span key={b.key}>{i > 0 && ", "}<button type="button" onClick={() => p.onSelect(b.key)} className="text-accent">{`${b.key} (${STATUS_LABEL[b.status]})`}</button></span>
+                <span key={b.key}>{i > 0 && ", "}<Button type="button" variant="link" onClick={() => p.onSelect(b.key)} className="h-auto p-0">{`${b.key} (${STATUS_LABEL[b.status]})`}</Button></span>
               ))}
             </p>
           )}
@@ -233,45 +287,31 @@ export function Details(p: DetailsProps) {
             <p>
               {`${C.blocks}: `}
               {d.deps.blocks.map((b: Item, i) => (
-                <span key={b.key}>{i > 0 && ", "}<button type="button" onClick={() => p.onSelect(b.key)} className="text-accent">{b.key}</button></span>
+                <span key={b.key}>{i > 0 && ", "}<Button type="button" variant="link" onClick={() => p.onSelect(b.key)} className="h-auto p-0">{b.key}</Button></span>
               ))}
             </p>
           )}
           <AddDependency itemKey={item.key} disabled={!p.connected} />
-          {d.artifacts.length > 0 && (
-            <div>
-              <h4 className="text-muted">{C.artifacts}</h4>
-              {d.artifacts.map((a) => (
-                <button key={a.id} type="button" onClick={() => setViewing({ id: a.id, revision: a.head_revision })} className="block text-accent">
-                  {`${ARTIFACT_LABEL[a.kind]} · rev ${a.head_revision} · ${C.view}`}
-                </button>
-              ))}
-            </div>
-          )}
-          {item.origin_spike_key && (
-            <button type="button" onClick={() => p.onSelect(item.origin_spike_key ?? "")} className="text-accent">
-              {T.startedFrom(item.origin_spike_key)}
-            </button>
-          )}
-        </div>
-      ) : (
-        <CheckpointList itemKey={item.key} agentNames={flattenAgents(d.agents).map((a) => a.name)} />
-      )}
+        </TabsContent>
+      </Tabs>
 
       {topLevel && open && (
-        <div className="border-t border-line pt-3">
+        <div className="border-t border-border pt-3">
           {orchestrator ? (
-            <button
+            <Button
               type="button"
-              onClick={() => document.getElementById(`agent-${orchestrator.name}`)?.scrollIntoView?.({ block: "center" })}
-              className="rounded border border-line px-3 py-1"
+              variant="outline"
+              onClick={() => {
+                if (tab === "agents") document.getElementById(`agent-${orchestrator.name}`)?.scrollIntoView?.({ block: "center" });
+                else { pendingAgentScroll.current = orchestrator.name; setTab("agents"); }
+              }}
             >
               {C.viewOrchestrator}
-            </button>
+            </Button>
           ) : (
-            <button type="button" disabled={!p.connected} onClick={() => p.onStartOrchestrator(item)} className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">
+            <Button type="button" disabled={!p.connected} onClick={() => p.onStartOrchestrator(item)}>
               {C.startOrchestrator}
-            </button>
+            </Button>
           )}
         </div>
       )}

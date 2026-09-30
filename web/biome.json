@@ -12,6 +12,6 @@
     "lineWidth": 100
   },
   "files": {
-    "ignore": ["**/dist/**", "**/.next/**", "**/node_modules/**", "**/out/**"]
+    "ignore": ["**/dist/**", "**/.next/**", "**/node_modules/**", "**/out/**", "**/src/components/ui/**"]
   }
 }

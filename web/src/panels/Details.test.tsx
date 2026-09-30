@@ -1,7 +1,10 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast as sonner } from "sonner";
+import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
+import { comboText, pickOption } from "../test/select";
 import type { DetailsProps } from "../views/props";
 import { Details } from "./Details";
 
@@ -25,6 +28,11 @@ function detailsFor(itemKey: string) {
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
+
+function ConnectedDetails() {
+  const { connected, retry } = useConnection();
+  return <><Details itemKey="TASK-103" connected={connected} onClose={vi.fn()} onSelect={vi.fn()} onReview={vi.fn()} onStartOrchestrator={vi.fn()} /><button onClick={retry}>Reconnect stream</button></>;
+}
 
 describe("Details panel (§16.9)", () => {
   it("shows the Progress block only when the detail carries todos", async () => {
@@ -88,6 +96,42 @@ describe("Details panel (§16.9)", () => {
     expect(screen.queryByRole("heading", { name: /^Progress/ })).toBeNull();
   });
 
+  it("stops the loading skeleton animation for reduced motion", async () => {
+    const daemon = createMockDaemon();
+    const release = daemon.hold("GET /api/items/TASK-103");
+    const view = setup("TASK-103", {}, daemon);
+    const skeleton = screen.getByLabelText("Item details");
+    expect(skeleton.children).toHaveLength(3);
+    for (const row of skeleton.children) expect(row).toHaveClass("motion-reduce:animate-none");
+    release();
+    await screen.findByRole("button", { name: "Password reset form" });
+    view.unmount();
+  });
+  it("uses styled editors and inline actions with focus and disabled affordances", async () => {
+    const disconnected = setup("EPIC-12", { connected: false });
+    const title = await screen.findByRole("button", { name: "Authentication" });
+    expect(title).toHaveAttribute("data-slot", "button");
+    expect(title).toHaveClass("focus-visible:ring-ring/50");
+    expect(title).toBeDisabled();
+    const artifact = screen.getByRole("button", { name: "Spec · rev 3 · View" });
+    expect(artifact).toHaveAttribute("data-variant", "link");
+    expect(artifact).toHaveClass("h-auto", "p-0");
+
+    disconnected.unmount();
+    const connected = setup("TASK-103");
+    await connected.user.click(await screen.findByRole("button", { name: "Password reset form" }));
+    const input = screen.getByRole("textbox", { name: "Title" });
+    expect(input).toHaveAttribute("data-slot", "input");
+    expect(input).toHaveClass("focus-visible:ring-ring/50");
+    connected.unmount();
+
+    const brief = setup("TASK-103");
+    await brief.user.click(await screen.findByRole("button", { name: "Brief" }));
+    expect(screen.getByRole("textbox", { name: "Brief" })).toHaveAttribute("data-slot", "textarea");
+    expect(screen.getByRole("textbox", { name: "Brief" })).toHaveClass("focus-visible:ring-ring/50");
+    brief.unmount();
+  });
+
   it("shows workflow runs from the item detail payload and opens their terminal", async () => {
     const d = createMockDaemon();
     const base = d.handle({ method: "GET", url: "/api/items/TASK-103", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
@@ -100,18 +144,78 @@ describe("Details panel (§16.9)", () => {
       crew: [{ agent: "builder", role: "coder", step: "build", state: "active" }],
     } });
     const { user } = setup("TASK-103", {}, d);
-    expect(await screen.findByText("Workflow · tdd-reviewed · Running · Round 2 of 3")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
     await user.click(screen.getByRole("button", { name: "builder" }));
     await waitFor(() => expect(d.calls).toContainEqual(expect.objectContaining({ method: "POST", path: "/api/agents/builder/terminal" })));
   });
+  it.each([{ failed: false, reconnect: false }, { failed: true, reconnect: false }, { failed: false, reconnect: true }, { failed: true, reconnect: true }])
+  ("suppresses workflow terminal completion after disconnect (failed: $failed, reconnect: $reconnect)", async ({ failed, reconnect }) => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/TASK-103", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    d.override("GET /api/items/TASK-103", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), workflow: { template: "tdd-reviewed", max_rounds: 3, steps: [{ id: "build", run: "coder" }] } },
+      workflow_state: { state: "running", round: 2, escalation: "", runs: [
+        { step: "build", role: "coder", agent: "builder", state: "active", verdict: "", sha: "", round: 2, findings: [] },
+      ] },
+      crew: [{ agent: "builder", role: "coder", step: "build", state: "active" }],
+    } });
+    const route = "POST /api/agents/builder/terminal";
+    if (failed) d.override(route, { status: 409, body: { error: { code: "conflict", message: "Terminal unavailable." } } });
+    const release = d.hold(route);
+    const success = vi.spyOn(sonner, "success");
+    const error = vi.spyOn(sonner, "error");
+    const { user } = renderWithDaemon(<ConnectedDetails />, { daemon: d });
+    await user.click(await screen.findByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
+    await user.click(screen.getByRole("button", { name: "builder" }));
+    act(() => d.disconnect());
+    await waitFor(() => expect(screen.getByRole("button", { name: "builder" })).toBeDisabled());
+    if (reconnect) { d.reconnect(); await user.click(screen.getByRole("button", { name: "Reconnect stream" })); await waitFor(() => expect(screen.getByRole("button", { name: "builder" })).toBeEnabled()); }
+    await act(async () => { release(); });
+    await waitFor(() => expect(d.calls.some((c) => c.path === "/api/agents/builder/terminal")).toBe(true));
+    expect(success).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    success.mockRestore(); error.mockRestore();
+  });
+
+  it("does not open a workflow terminal or toast while disconnected", async () => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/TASK-103", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    d.override("GET /api/items/TASK-103", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), workflow: { template: "tdd-reviewed", max_rounds: 3, steps: [{ id: "build", run: "coder" }] } },
+      workflow_state: { state: "running", round: 2, escalation: "", runs: [
+        { step: "build", role: "coder", agent: "builder", state: "active", verdict: "", sha: "", round: 2, findings: [] },
+      ] },
+    } });
+    const { user } = setup("TASK-103", { connected: false }, d);
+    await user.click(await screen.findByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
+    const terminal = screen.getByRole("button", { name: "builder" });
+    expect(terminal).toBeDisabled();
+    await user.click(terminal);
+    expect(d.calls.some((c) => c.path.endsWith("/terminal"))).toBe(false);
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+  });
   it("shows the breadcrumb, title, status and priority", async () => {
-    const { user, props } = setup("STORY-40");
+    setup("STORY-40");
     expect(await screen.findByText("EPIC-12 › STORY-40")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Login" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "In progress" })).toHaveAttribute("aria-haspopup", "menu");
-    expect(screen.getByRole("combobox", { name: "Priority" })).toHaveValue("2");
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    expect(props.onClose).toHaveBeenCalled();
+    expect(comboText("Priority")).toBe("P2");
+    expect(screen.getByText("Story")).toBeInTheDocument();
+    const header = screen.getByText("EPIC-12 › STORY-40").parentElement?.parentElement;
+    expect(within(header!).getByRole("button", { name: "In progress" })).toBeInTheDocument();
+  });
+
+  it("toasts a status conflict without reporting a successful move", async () => {
+    const d = createMockDaemon();
+    d.override("PATCH /api/items/TASK-103", { status: 409, body: { error: { code: "conflict", message: "stale" } } });
+    const { user } = setup("TASK-103", {}, d);
+    await user.click(await screen.findByRole("button", { name: "Ready" }));
+    await user.click(screen.getByRole("menuitem", { name: /^Blocked/ }));
+    await waitFor(() => expect(screen.getAllByText("This item changed elsewhere. Showing its latest status.")).toHaveLength(2));
+    await waitFor(() => expect(document.querySelector("[data-sonner-toast]")).toHaveTextContent("This item changed elsewhere. Showing its latest status."));
+    expect(screen.queryByText("Moved TASK-103 to Blocked")).not.toBeInTheDocument();
   });
 
   it("edits the title in place and shows the conflict banner", async () => {
@@ -133,17 +237,18 @@ describe("Details panel (§16.9)", () => {
   it("changes status and priority, and explains refusals", async () => {
     const { user, daemon } = setup("TASK-103");
     await user.click(await screen.findByRole("button", { name: "Ready" }));
-    expect(screen.getByRole("menuitem", { name: /^Done/ })).toBeDisabled();
+    expect(await screen.findByRole("menuitem", { name: /^Done/ })).toHaveAttribute("aria-disabled", "true");
     await user.click(screen.getByRole("menuitem", { name: /^Blocked/ }));
     await waitFor(() => expect(daemon.calls.find((c) => c.method === "PATCH")?.body).toMatchObject({ status: "blocked" }));
-    await user.selectOptions(await screen.findByRole("combobox", { name: "Priority" }), "0");
+    expect(await screen.findByText("Moved TASK-103 to Blocked")).toBeInTheDocument();
+    await pickOption(user, "Priority", "P0");
     await waitFor(() => expect(daemon.calls.filter((c) => c.method === "PATCH").at(-1)?.body).toMatchObject({ priority: 0 }));
   });
 
   it("routes Done on an epic to acceptance", async () => {
     const { user, props } = setup("EPIC-12");
     await user.click(await screen.findByRole("button", { name: "In progress" }));
-    await user.click(screen.getByRole("menuitem", { name: /^Done/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Done/ }));
     expect(props.onReview).toHaveBeenCalledWith("req_accept");
   });
 
@@ -159,10 +264,29 @@ describe("Details panel (§16.9)", () => {
 
   it("lists agents and scrolls to them when asked", async () => {
     setup("EPIC-12", { focus: "agents" });
+    expect(await screen.findByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true");
     const agents = await screen.findByRole("region", { name: "Agents" });
     expect(within(agents).getByTestId("agent-auth-epic-orchestrator")).toBeInTheDocument();
     expect(within(agents).getByTestId("agent-login-form-coder")).toBeInTheDocument();
     await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
+  });
+
+  it.each(["Overview", "Checkpoints", "Deps"] as const)("keeps %s after an agent-focused detail refetch and scrolls only once", async (chosenTab) => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/EPIC-12", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    const { user, props, rerender } = setup("EPIC-12", { focus: "agents" }, d);
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true"));
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1));
+    rerender(<Details {...props} />);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("tab", { name: chosenTab }));
+    d.override("GET /api/items/EPIC-12", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), title: "Refetched title" },
+    } });
+    await pickOption(user, "Priority", "P0");
+    await screen.findByRole("button", { name: "Refetched title" });
+    expect(screen.getByRole("tab", { name: chosenTab })).toHaveAttribute("aria-selected", "true");
   });
 
   it("shows the overview: brief, acceptance, dependencies, artifacts and origin", async () => {
@@ -178,13 +302,15 @@ describe("Details panel (§16.9)", () => {
   });
 
   it("shows blocked-by and blocks lines", async () => {
-    setup("TASK-102");
+    const { user } = setup("TASK-102");
+    await user.click(await screen.findByRole("tab", { name: "Deps" }));
     expect(await screen.findByText("TASK-98 (Done)")).toBeInTheDocument();
     expect(screen.getByText("TASK-104")).toBeInTheDocument();
   });
 
   it("adds a dependency and shows the cycle error", async () => {
     const { user, daemon } = setup("TASK-98");
+    await user.click(await screen.findByRole("tab", { name: "Deps" }));
     await user.click(await screen.findByRole("button", { name: "+ Add dependency" }));
     await user.type(screen.getByRole("searchbox", { name: "Add dependency" }), "validate");
     await user.click(await screen.findByRole("button", { name: "TASK-104 · Validate inputs" }));
@@ -193,12 +319,52 @@ describe("Details panel (§16.9)", () => {
     await user.type(screen.getByRole("searchbox", { name: "Add dependency" }), "TASK-110");
     await user.click(await screen.findByRole("button", { name: "TASK-110 · Add crash regression test" }));
     await waitFor(() => expect(daemon.calls.some((c) => c.path === "/api/items/TASK-98/deps" && (c.body as { blocked_by: string }).blocked_by === "TASK-110")).toBe(true));
+    expect(await screen.findByText("TASK-98 is now blocked by TASK-110")).toBeInTheDocument();
   });
 
   it("shows the checkpoints tab", async () => {
     const { user } = setup("TASK-101");
+    await screen.findByRole("tab", { name: "Overview" });
+    const overview = screen.getByRole("tab", { name: "Overview" });
+    expect(document.getElementById(overview.getAttribute("aria-controls")!)).toHaveAttribute("role", "tabpanel");
     await user.click(await screen.findByRole("tab", { name: "Checkpoints" }));
+    const checkpoints = screen.getByRole("tab", { name: "Checkpoints" });
+    expect(document.getElementById(checkpoints.getAttribute("aria-controls")!)).toHaveAttribute("role", "tabpanel");
     expect(await screen.findByText(/Form renders; wiring submit\./)).toBeInTheDocument();
+  });
+
+  it("places four tabs before long content and keeps agents and dependencies in their panels", async () => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/EPIC-12", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    d.override("GET /api/items/EPIC-12", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), workflow: { template: "tdd-reviewed", max_rounds: 3, steps: [{ id: "build", run: "coder" }] } },
+      workflow_state: { state: "running", round: 1, escalation: "", runs: [] },
+    } });
+    const { user } = setup("EPIC-12", {}, d);
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Overview", "Agents", "Checkpoints", "Deps"]);
+    const panel = screen.getByTestId("details-panel");
+    const overview = screen.getByRole("tabpanel", { name: "Overview" });
+    expect(panel.contains(tabs[0]!)).toBe(true);
+    expect(tabs[0]!.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(overview).getByText("Sign-in for the chat app.")).toBeInTheDocument();
+    expect(within(overview).getByText("Users can log in")).toBeInTheDocument();
+    const brief = within(overview).getByText("Brief");
+    const acceptance = within(overview).getByText("Acceptance");
+    const workflow = within(overview).getByRole("button", { name: /Workflow/ });
+    const agents = within(overview).getByRole("region", { name: "Agents" });
+    for (const [first, second] of [[brief, acceptance], [acceptance, workflow], [workflow, agents]] as const) {
+      expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(within(agents).getByText("auth-epic-orchestrator")).toBeInTheDocument();
+    expect(within(agents).getByText("login-form-coder")).toBeInTheDocument();
+    expect(within(agents).getByText("login-review")).toBeInTheDocument();
+    expect(within(overview).queryByTestId("agent-auth-epic-orchestrator")).not.toBeInTheDocument();
+    await user.click(tabs[1]!);
+    expect(within(screen.getByRole("tabpanel", { name: "Agents" })).getByTestId("agent-auth-epic-orchestrator")).toBeInTheDocument();
+    await user.click(tabs[3]!);
+    expect(within(screen.getByRole("tabpanel", { name: "Deps" })).getByRole("button", { name: "+ Add dependency" })).toBeInTheDocument();
   });
 
   it("offers Start or View orchestrator on top-level items only", async () => {
@@ -208,7 +374,10 @@ describe("Details panel (§16.9)", () => {
     a.unmount();
     const b = setup("EPIC-12");
     await b.user.click(await screen.findByRole("button", { name: "View orchestrator" }));
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true"));
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1));
+    b.rerender(<Details {...b.props} />);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
     b.unmount();
     setup("TASK-101");
     await screen.findByText(/Build login form/);
@@ -272,6 +441,7 @@ describe("Details panel (§16.9)", () => {
 
   it("focuses the dependency search on open and restores focus to its trigger on close", async () => {
     const { user } = setup("TASK-98");
+    await user.click(await screen.findByRole("tab", { name: "Deps" }));
     const opener = await screen.findByRole("button", { name: "+ Add dependency" });
     await user.click(opener);
     expect(screen.getByRole("searchbox", { name: "Add dependency" })).toHaveFocus();
@@ -300,12 +470,38 @@ describe("Details panel (§16.9)", () => {
     const { user } = setup("TASK-103", {}, d);
     const titleButton = await screen.findByRole("button", { name: "Password reset form" });
     const briefButton = screen.getByRole("button", { name: "Brief" });
-    await user.selectOptions(screen.getByRole("combobox", { name: "Priority" }), "0");
+    await pickOption(user, "Priority", "P0");
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Priority" })).toBeDisabled());
     expect(titleButton).toBeDisabled();
     expect(briefButton).toBeDisabled();
     release();
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Priority" })).toBeEnabled());
+  });
+
+  it("disables an open title editor while its save is in flight", async () => {
+    const d = createMockDaemon();
+    const release = d.hold("PATCH /api/items/TASK-103");
+    const { user } = setup("TASK-103", {}, d);
+    await user.click(await screen.findByRole("button", { name: "Password reset form" }));
+    const input = screen.getByRole("textbox", { name: "Title" });
+    await user.clear(input);
+    await user.type(input, "Reset form{Enter}");
+    await waitFor(() => expect(input).toBeDisabled());
+    expect(input).toHaveValue("Reset form");
+    release();
+    expect(await screen.findByRole("button", { name: "Reset form" })).toBeEnabled();
+  });
+
+  it("disables an open brief editor when connection drops", async () => {
+    const d = createMockDaemon();
+    const opened = setup("TASK-103", {}, d);
+    await opened.user.click(await screen.findByRole("button", { name: "Brief" }));
+    const textarea = screen.getByRole("textbox", { name: "Brief" });
+    await opened.user.type(textarea, " More detail");
+    opened.rerender(<Details {...opened.props} connected={false} />);
+    expect(textarea).toBeDisabled();
+    fireEvent.blur(textarea);
+    expect(d.calls.some((call) => call.method === "PATCH")).toBe(false);
   });
 
   it("returns focus to the title button after an in-place edit saves", async () => {

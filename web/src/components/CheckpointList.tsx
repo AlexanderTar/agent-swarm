@@ -5,12 +5,14 @@ import { qk, useCheckpoints } from "../data/queries";
 import { formatTime } from "../logic/format";
 import { adviceTitle, adviceTotals, gitLine, kindLabel, mergeTimeline, verifyLine } from "../logic/timeline";
 import type { Checkpoint } from "../types";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
+import { Button } from "./ui/button";
 
 function Lines({ title, lines }: { title: string; lines: string[] }) {
   if (lines.length === 0) return null;
   return (
     <div>
-      <p className="text-muted">{title}</p>
+      <p className="text-muted-foreground">{title}</p>
       <ul className="list-disc pl-5">{lines.map((l) => <li key={l}>{l}</li>)}</ul>
     </div>
   );
@@ -18,21 +20,21 @@ function Lines({ title, lines }: { title: string; lines: string[] }) {
 
 function CheckpointRow({ c }: { c: Checkpoint }) {
   return (
-    <details className="rounded border border-line p-2">
-      <summary className="cursor-pointer">
-        <span className="text-muted">{formatTime(c.created_at)}</span>{" "}
+    <Collapsible role="group" className="rounded border border-border p-2">
+      <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-auto w-full justify-start whitespace-normal text-left">
+        <span className="text-muted-foreground">{formatTime(c.created_at)}</span>{" "}
         <span>{c.agent_name ?? ""}</span>{" "}
-        <span className="rounded bg-raised px-1 text-[12px]">{kindLabel(c.kind)}</span>{" "}
-        {c.daemon_written && <span className="text-[12px] text-warn">{C.writtenBySwarm}</span>}{" "}
+        <span className="rounded bg-muted px-1 text-[12px]">{kindLabel(c.kind)}</span>{" "}
+        {c.daemon_written && <span className="text-[12px] text-warning">{C.writtenBySwarm}</span>}{" "}
         <span>{c.summary}</span>
-      </summary>
-      <div className="mt-2 space-y-1">
+      </Button></CollapsibleTrigger>
+      <CollapsibleContent className="mt-2 space-y-1">
         <Lines title="Next" lines={c.next} />
         <Lines title="Blockers" lines={c.blockers} />
         <Lines title="Git" lines={c.git.map(gitLine)} />
         <Lines title="Verification" lines={c.verification.map(verifyLine)} />
-      </div>
-    </details>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -49,37 +51,40 @@ export function CheckpointList({ itemKey, agentNames }: { itemKey: string; agent
   const err = cps.error ?? advice.error;
   if (err) {
     return (
-      <p className="text-bad">
+      <p className="text-destructive">
         {errorText(err)}{" "}
-        <button
+        <Button
           type="button"
-          className="text-accent underline"
+          variant="link"
+          className="h-auto p-0"
           onClick={() => {
             cps.reload();
             advice.reload();
           }}
         >
           {C.retry}
-        </button>
+        </Button>
       </p>
     );
   }
-  if (!cps.data || !advice.data) return <p className="text-muted">…</p>;
+  if (!cps.data || !advice.data) return <p className="text-muted-foreground">…</p>;
   const entries = mergeTimeline(cps.data, advice.data);
-  if (entries.length === 0) return <p className="text-muted">{C.noCheckpoints}</p>;
+  if (entries.length === 0) return <p className="text-muted-foreground">{C.noCheckpoints}</p>;
   const totals = adviceTotals(advice.data);
   return (
     <div className="space-y-2">
-      {totals && <p className="text-muted">{totals}</p>}
+      {totals && <p className="text-muted-foreground">{totals}</p>}
       {entries.map((e) =>
         e.kind === "checkpoint" ? (
           <CheckpointRow key={e.checkpoint.id} c={e.checkpoint} />
         ) : (
-          <details key={e.advice.id} className="rounded border border-line p-2">
-            <summary className="cursor-pointer">{adviceTitle(e.advice)}</summary>
+          <Collapsible key={e.advice.id} role="group" className="rounded border border-border p-2">
+            <CollapsibleTrigger asChild><Button variant="ghost" size="sm">{adviceTitle(e.advice)}</Button></CollapsibleTrigger>
+            <CollapsibleContent>
             <p className="mt-2 font-medium">{e.advice.question}</p>
             <p>{e.advice.answer ?? e.advice.error ?? ""}</p>
-          </details>
+            </CollapsibleContent>
+          </Collapsible>
         ),
       )}
     </div>

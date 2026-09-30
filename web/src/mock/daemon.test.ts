@@ -89,7 +89,7 @@ describe("mock daemon", () => {
     expect(b.status).toBe(201);
     expect(b.body).toEqual(a.body);
     expect(call(d, "POST", "/api/items", { ...body, request_id: "r2", type: "spike" })).toMatchObject({
-      status: 400, body: { error: { message: "Spikes start with an intent. Use New spike." } },
+      status: 400, body: { error: { message: "Spikes start with an intent. Use New orchestrator." } },
     });
     expect(call(d, "POST", "/api/items", { ...body, request_id: "r3", parent_key: "EPIC-12" }).status).toBe(400);
   });

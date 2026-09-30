@@ -1,8 +1,17 @@
-import { useState } from "react";
+import { useId, useState } from "react";
+import { Minus } from "lucide-react";
 import { errorText } from "../api";
 import { Segmented } from "../components/Segmented";
 import { Sheet } from "../components/Sheet";
-import { C, TYPE_LABEL } from "../copy";
+import { useToast } from "../components/Toast";
+import { Alert } from "../components/ui/alert";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Textarea } from "../components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
+import { C, T, TYPE_LABEL } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
 import { useItems } from "../data/queries";
 import {
@@ -11,7 +20,7 @@ import {
 import type { CreateItemBody } from "../types";
 
 const TYPES: NewType[] = ["epic", "bug", "story", "task"];
-const input = "mt-1 w-full rounded border border-line bg-canvas px-2 py-1";
+const NONE = "__none";
 
 export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): void; onCreated(key: string): void }) {
   const items = useItems();
@@ -21,6 +30,10 @@ export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): 
   const [parentTouched, setParentTouched] = useState(false);
   const [requestId] = useState(() => crypto.randomUUID());
   const [error, setError] = useState("");
+  const parentId = useId();
+  const titleId = useId();
+  const briefId = useId();
+  const toast = useToast();
   const create = useMutation((api, body: CreateItemBody) => api.createItem(body), ["items", "item:"]);
   const parentKey = parentTouched ? form.parentKey : initialParent(all, form.type, p.parentKey);
   const current = { ...form, parentKey };
@@ -31,6 +44,7 @@ export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): 
     setError("");
     try {
       const item = await create.run(newItemPayload(current, requestId));
+      toast.success(T.toastItemCreated(item.key));
       p.onCreated(item.key);
     } catch (e) {
       // Standing rule: route every daemon error surface through errorText (reason ?? message), not
@@ -42,72 +56,74 @@ export function NewItemSheet(p: { type: NewType; parentKey?: string; onClose(): 
   return (
     <Sheet
       title={C.newItem}
+      width={480}
       onClose={p.onClose}
       footer={
         <>
-          <button type="button" onClick={p.onClose} className="rounded border border-line px-3 py-1">{C.cancel}</button>
-          <button type="button" disabled={!canCreate(current) || !connected || create.pending} onClick={() => void submit()} className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">
+          <Button variant="secondary" onClick={p.onClose}>{C.cancel}</Button>
+          <Button disabled={!canCreate(current) || !connected || create.pending} onClick={() => void submit()}>
             {C.createItem}
-          </button>
+          </Button>
         </>
       }
     >
-      {error && <p role="alert" className="rounded bg-bad/10 p-2 text-bad">{error}</p>}
+      {error && <Alert variant="destructive" role="alert">{error}</Alert>}
       {/* Standing rule: a failed items load must not silently degrade the parent picker to "no
           options" forever -- surface it with a message + retry, same pattern used everywhere else. */}
       {items.error ? (
-        <p className="text-bad">
+        <Alert variant="destructive">
           {errorText(items.error)}{" "}
-          <button type="button" className="text-accent underline" onClick={() => items.reload()}>
+          <Button variant="link" onClick={() => items.reload()}>
             {C.retry}
-          </button>
-        </p>
+          </Button>
+        </Alert>
       ) : null}
-      <Segmented
-        label={C.type}
-        value={form.type}
-        onChange={(type) => { set({ type }); setParentTouched(false); }}
-        options={TYPES.map((t) => ({ value: t, label: TYPE_LABEL[t] }))}
-      />
+      <div className="grid grid-cols-[72px_1fr] items-center gap-2">
+        <Label>{C.type}</Label>
+        <Segmented
+          label={C.type}
+          value={form.type}
+          onChange={(type) => { set({ type }); setParentTouched(false); }}
+          options={TYPES.map((t) => ({ value: t, label: TYPE_LABEL[t] }))}
+        />
+      </div>
       {PARENT_TYPES[form.type].length > 0 && items.data && (
-        <label className="block">
-          <span>{C.parent}</span>
-          <select
-            aria-label={C.parent}
-            value={parentKey}
-            onChange={(e) => { setParentTouched(true); set({ parentKey: e.target.value }); }}
-            className={input}
-          >
-            <option value="" />
-            {parentOptions(all, form.type).map((i) => <option key={i.key} value={i.key}>{`${i.key} · ${i.title}`}</option>)}
-          </select>
-        </label>
+        <div className="space-y-1.5">
+          <Label htmlFor={parentId}>{C.parent}</Label>
+          <Select value={parentKey || NONE} onValueChange={(v) => { setParentTouched(true); set({ parentKey: v === NONE ? "" : v }); }}>
+            <SelectTrigger id={parentId} aria-label={C.parent} className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NONE}>—</SelectItem>
+              {parentOptions(all, form.type).map((i) => <SelectItem key={i.key} value={i.key}>{`${i.key} · ${i.title}`}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
       )}
-      <label className="block">
-        <span>{C.title}</span>
-        <input aria-label={C.title} maxLength={TITLE_MAX} value={form.title} onChange={(e) => set({ title: e.target.value })} className={input} />
-      </label>
-      <label className="block">
-        <span>{C.brief}</span>
-        <textarea aria-label={C.brief} rows={4} value={form.brief} onChange={(e) => set({ brief: e.target.value })} className={input} />
-      </label>
-      <fieldset className="space-y-1">
+      <div className="space-y-1.5">
+        <Label htmlFor={titleId}>{C.title}</Label>
+        <Input id={titleId} maxLength={TITLE_MAX} value={form.title} onChange={(e) => set({ title: e.target.value })} />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor={briefId}>{C.brief}</Label>
+        <Textarea id={briefId} rows={4} value={form.brief} onChange={(e) => set({ brief: e.target.value })} />
+      </div>
+      <TooltipProvider><fieldset className="space-y-1">
         <legend>{C.acceptance}</legend>
         {form.acceptance.map((a, i) => (
           <div key={i} className="flex gap-1">
-            <input
+            <Input
               aria-label={`${C.acceptance} ${i + 1}`}
               value={a}
               onChange={(e) => set({ acceptance: form.acceptance.map((x, j) => (j === i ? e.target.value : x)) })}
-              className={input}
+              className="flex-1"
             />
             {form.acceptance.length > 1 && (
-              <button type="button" aria-label={`Remove ${C.acceptance} ${i + 1}`} onClick={() => set({ acceptance: form.acceptance.filter((_, j) => j !== i) })}>−</button>
+              <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" aria-label={`Remove ${C.acceptance} ${i + 1}`} onClick={() => set({ acceptance: form.acceptance.filter((_, j) => j !== i) })}><Minus /></Button></TooltipTrigger><TooltipContent>{`Remove ${C.acceptance} ${i + 1}`}</TooltipContent></Tooltip>
             )}
           </div>
         ))}
-        <button type="button" aria-label={`Add ${C.acceptance}`} onClick={() => set({ acceptance: [...form.acceptance, ""] })} className="text-accent">+</button>
-      </fieldset>
+        <Button variant="ghost" size="sm" aria-label={`Add ${C.acceptance}`} onClick={() => set({ acceptance: [...form.acceptance, ""] })}>{`+ ${C.addCriterion}`}</Button>
+      </fieldset></TooltipProvider>
     </Sheet>
   );
 }

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { createMockDaemon } from "./mock/daemon";
 import { renderWithDaemon } from "./test/render";
+import { comboText, pickOption } from "./test/select";
 import type { Request } from "./types";
 
 // Minimal Request factory, independent of the board fixtures (spec 4.4 / Task 17a).
@@ -15,6 +16,14 @@ const req = (p: Partial<Request> & Pick<Request, "id" | "kind">): Request => ({
 });
 
 describe("App shell (§16.5)", () => {
+  it("uses header tabs, Radix filters, and the New orchestrator action", async () => {
+    const { user } = renderWithDaemon(<App />);
+    await user.click(screen.getByRole("tab", { name: "Kanban" }));
+    await pickOption(user, "Type", "Tasks");
+    expect(window.location.hash).toContain("type=task");
+    await user.click(screen.getByRole("button", { name: "New orchestrator" }));
+    expect(await screen.findByRole("dialog", { name: "New orchestrator" })).toBeInTheDocument();
+  });
   it("shows the header and the Needs you count", async () => {
     const { user } = renderWithDaemon(<App />);
     expect(screen.getByRole("heading", { name: "Agent Swarm" })).toBeInTheDocument();
@@ -44,8 +53,8 @@ describe("App shell (§16.5)", () => {
     await screen.findByRole("button", { name: /Needs you/ });
     expect(screen.queryByRole("button", { name: "Clear filters" })).not.toBeInTheDocument();
     await user.type(screen.getByRole("searchbox", { name: "Search name or key…" }), "login");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Type" }), "task");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Status" }), "in_progress");
+    await pickOption(user, "Type", "Tasks");
+    await pickOption(user, "Status", "In progress");
     expect(window.location.hash).toBe("#/hierarchy?q=login&type=task&status=in_progress");
     expect(await screen.findByText("1 matches")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Clear filters" }));
@@ -56,28 +65,28 @@ describe("App shell (§16.5)", () => {
   it("restores filters from the URL", async () => {
     renderWithDaemon(<App />, { hash: "#/kanban?q=session&status=blocked&level=stories&group=flat" });
     expect(screen.getByRole("searchbox", { name: "Search name or key…" })).toHaveValue("session");
-    expect(screen.getByRole("combobox", { name: "Status" })).toHaveValue("blocked");
-    expect(screen.getByRole("combobox", { name: "Card level" })).toHaveValue("stories");
-    expect(screen.getByRole("combobox", { name: "Group by" })).toHaveValue("flat");
+    expect(comboText("Status")).toBe("Blocked");
+    expect(comboText("Card level")).toBe("Stories");
+    expect(comboText("Group by")).toBe("Flat");
   });
 
   it("keeps the selection when switching views", async () => {
     const { user } = renderWithDaemon(<App />, { hash: "#/hierarchy?item=TASK-102" });
     expect(await screen.findByTestId("details")).toHaveTextContent("TASK-102");
-    await user.click(screen.getByRole("radio", { name: "Kanban" }));
+    await user.click(screen.getByRole("tab", { name: "Kanban" }));
     expect(window.location.hash).toBe("#/kanban?item=TASK-102");
     expect(screen.getByTestId("details")).toHaveTextContent("TASK-102");
-    await user.click(screen.getByRole("radio", { name: "Dependencies" }));
+    await user.click(screen.getByRole("tab", { name: "Dependencies" }));
     expect(window.location.hash).toBe("#/dependencies?item=TASK-102");
   });
 
   it("shows kanban controls only on Kanban and forces Flat for top-level cards", async () => {
     const { user } = renderWithDaemon(<App />, { hash: "#/hierarchy" });
     expect(screen.queryByRole("combobox", { name: "Card level" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("radio", { name: "Kanban" }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Card level" }), "top");
+    await user.click(screen.getByRole("tab", { name: "Kanban" }));
+    await pickOption(user, "Card level", "Top-level items");
     expect(screen.getByRole("combobox", { name: "Group by" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Group by" })).toHaveValue("flat");
+    expect(comboText("Group by")).toBe("Flat");
     expect(window.location.hash).toBe("#/kanban?level=top");
   });
 
@@ -113,15 +122,42 @@ describe("App shell (§16.5)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Connection lost. Status changes are unavailable.");
   });
 
-  it("replaces the view with the details panel on narrow windows", async () => {
+  it("keeps the view behind the details sheet on narrow windows", async () => {
     vi.spyOn(window, "matchMedia").mockImplementation(
       (q: string) => ({ matches: q === "(max-width: 1099px)", addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList,
     );
     const { user } = renderWithDaemon(<App />, { hash: "#/hierarchy?item=TASK-102" });
-    expect(screen.queryByTestId("view")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "← Back" }));
+    expect(await screen.findByRole("dialog", { name: "TASK-102" })).toBeInTheDocument();
+    const narrowBody = screen.getByTestId("details").parentElement!;
+    expect(narrowBody).toHaveClass("py-4");
+    expect(narrowBody).not.toHaveClass("pt-16");
+    expect(await screen.findByTestId("details-panel")).not.toHaveClass("p-4");
+    expect(screen.getByTestId("view")).toBeInTheDocument();
+    await user.click(within(screen.getByRole("dialog", { name: "TASK-102" })).getByRole("button", { name: "Close" }));
     expect(window.location.hash).toBe("#/hierarchy");
     expect(screen.getByTestId("view")).toBeInTheDocument();
+  });
+
+  it("swaps the open details sheet when another card is clicked", async () => {
+    const { user } = renderWithDaemon(<App />, { hash: "#/kanban?item=TASK-101" });
+    expect(await screen.findByRole("dialog", { name: "TASK-101" })).toBeInTheDocument();
+    expect(screen.getByTestId("details").parentElement).toHaveClass("py-4");
+    await user.click(await screen.findByTestId("card-TASK-103"));
+    expect(await screen.findByRole("dialog", { name: "TASK-103" })).toBeInTheDocument();
+    expect(screen.getByTestId("details")).toHaveTextContent("TASK-103");
+  });
+
+  it("closes a form above Details before closing Details on Escape", async () => {
+    const { user } = renderWithDaemon(<App />, { hash: "#/kanban?item=TASK-101" });
+    expect(await screen.findByRole("dialog", { name: "TASK-101" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "New item" }));
+    await user.click(screen.getByRole("menuitem", { name: "Epic" }));
+    expect(await screen.findByRole("dialog", { name: "New item" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "New item" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "TASK-101" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "TASK-101" })).not.toBeInTheDocument();
   });
 
   it("offers every type in New item", async () => {
@@ -130,13 +166,14 @@ describe("App shell (§16.5)", () => {
     expect(within(screen.getByRole("menu", { name: "New item" })).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
       "Epic", "Bug", "Story", "Task", "Spike", "Chore",
     ]);
+    await user.keyboard("{Escape}");
   });
 
   it("moves focus into the New item menu on open and back to the trigger on close (standing rule)", async () => {
     const { user } = renderWithDaemon(<App />);
     const trigger = screen.getByRole("button", { name: "New item" });
     await user.click(trigger);
-    expect(within(screen.getByRole("menu", { name: "New item" })).getAllByRole("menuitem")[0]).toHaveFocus();
+    expect((await screen.findByRole("menu", { name: "New item" })).contains(document.activeElement)).toBe(true);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu", { name: "New item" })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
@@ -146,6 +183,6 @@ describe("App shell (§16.5)", () => {
     // Task 31: selecting a type now opens the New item sheet, which (Sheet.tsx's own standing rule)
     // takes focus into itself rather than leaving it on the trigger behind it.
     const sheet = await screen.findByRole("dialog", { name: "New item" });
-    expect(within(sheet).getByRole("button", { name: "Close" })).toHaveFocus();
+    expect(sheet.contains(document.activeElement)).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-import type { AgentNode, CardLevel, Filter, Grouping, Item, ItemType, Request } from "../types";
+import type { AgentNode, CardLevel, Filter, Grouping, Item, ItemType, Request, SpikeIntent } from "../types";
 
 export interface ViewProps {
   items: Item[];
@@ -40,6 +40,6 @@ export interface DetailsProps {
 
 export type SheetState =
   | null
-  | { kind: "spike"; caption?: string; chore?: boolean }
+  | { kind: "spike"; intent?: SpikeIntent }
   | { kind: "item"; type: "epic" | "bug" | "story" | "task"; parentKey?: string }
   | { kind: "spawn"; itemKey: string };

@@ -2,17 +2,19 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
+import { comboText, optionTexts, pickOption } from "../test/select";
 import { NewItemSheet } from "./NewItemSheet";
 
 describe("NewItemSheet (§16.5)", () => {
   it("shows the parent picker for stories and tasks with the right options", async () => {
     const { user } = renderWithDaemon(<NewItemSheet type="story" parentKey="BUG-7" onClose={vi.fn()} onCreated={vi.fn()} />, { events: false });
     const sheet = await screen.findByRole("dialog", { name: "New item" });
+    expect(within(sheet).getByText("Type", { selector: "label" })).toBeVisible();
     const parent = await within(sheet).findByRole("combobox", { name: "Parent" });
-    expect(parent).toHaveValue("");
-    expect([...(parent as HTMLSelectElement).options].map((o) => o.value)).toEqual(["", "EPIC-12", "EPIC-20", "EPIC-30"]);
+    expect(parent).toHaveTextContent("—");
+    expect(await optionTexts(user, "Parent")).toEqual(["—", "EPIC-12 · Authentication", "EPIC-20 · Billing", "EPIC-30 · Legacy cleanup"]);
     await user.click(within(sheet).getByRole("radio", { name: "Task" }));
-    expect(within(sheet).getByRole("combobox", { name: "Parent" })).toHaveValue("BUG-7");
+    expect(comboText("Parent")).toContain("BUG-7");
     await user.click(within(sheet).getByRole("radio", { name: "Epic" }));
     expect(within(sheet).queryByRole("combobox", { name: "Parent" })).not.toBeInTheDocument();
   });
@@ -23,7 +25,8 @@ describe("NewItemSheet (§16.5)", () => {
     expect(create).toBeDisabled();
     await user.type(screen.getByRole("textbox", { name: "Title" }), "Add tests");
     expect(create).toBeDisabled();
-    await user.selectOptions(await screen.findByRole("combobox", { name: "Parent" }), "STORY-40");
+    await screen.findByRole("combobox", { name: "Parent" });
+    await pickOption(user, "Parent", /STORY-40/);
     expect(create).toBeEnabled();
     expect(screen.getByRole("textbox", { name: "Brief" })).toBeInTheDocument();
   });
@@ -41,6 +44,15 @@ describe("NewItemSheet (§16.5)", () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^EPIC-/)));
     expect(d.db.items.length).toBe(before + 1);
     expect(d.db.items.at(-1)).toMatchObject({ title: "Payments", acceptance: ["Cards work", "Refunds work"], status: "draft" });
+  });
+
+  it("toasts the created key", async () => {
+    const onCreated = vi.fn();
+    const { user } = renderWithDaemon(<NewItemSheet type="epic" onClose={vi.fn()} onCreated={onCreated} />, { events: false });
+    await user.type(await screen.findByRole("textbox", { name: "Title" }), "Wire banner");
+    await user.click(screen.getByRole("button", { name: "Create item" }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(await screen.findByText(`Created ${onCreated.mock.calls.at(0)?.[0]}`)).toBeInTheDocument();
   });
 
   it("shows a daemon error", async () => {

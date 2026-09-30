@@ -19,6 +19,15 @@ function setup(p: Partial<HierarchyProps> = {}) {
 const row = (key: string) => screen.getByRole("treeitem", { name: new RegExp(`^${key} `) });
 
 describe("Hierarchy view (§16.6)", () => {
+  it("styles keyboard controls and keeps top-level mono keys at regular weight", () => {
+    setup();
+    const epic = row("EPIC-12");
+    const expand = within(epic).getByRole("button", { name: "Collapse EPIC-12" });
+    expect(expand).toHaveAttribute("data-slot", "button");
+    expect(expand).toHaveClass("focus-visible:ring-ring/50");
+    expect(within(epic).getByText("EPIC-12")).toHaveClass("font-normal");
+  });
+
   it("renders the columns, ordering, indentation and statuses", () => {
     setup();
     expect(screen.getByText("WORK ITEM")).toBeInTheDocument();
@@ -95,7 +104,9 @@ describe("Hierarchy view (§16.6)", () => {
 
   it("offers Add story on epics and Add task on stories, bugs and spikes", async () => {
     const { user, props } = setup();
+    expect(row("EPIC-12")).toHaveClass("h-[30px]");
     fireEvent.contextMenu(row("EPIC-12"));
+    expect(screen.getByRole("menuitem", { name: "Add story" })).toHaveAttribute("data-slot", "dropdown-menu-item");
     await user.click(screen.getByRole("menuitem", { name: "Add story" }));
     expect(props.onAddChild).toHaveBeenCalledWith("EPIC-12", "story");
     fireEvent.contextMenu(row("BUG-7"));
@@ -104,6 +115,19 @@ describe("Hierarchy view (§16.6)", () => {
     expect(props.onAddChild).toHaveBeenCalledWith("BUG-7", "task");
     fireEvent.contextMenu(row("TASK-101"));
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("opens Add child with a visible button and the context-menu key", async () => {
+    const { user, props } = setup({ selected: "EPIC-12" });
+    const add = within(row("EPIC-12")).getByRole("button", { name: "Add child to EPIC-12" });
+    await user.click(add);
+    await user.click(screen.getByRole("menuitem", { name: "Add story" }));
+    expect(props.onAddChild).toHaveBeenCalledWith("EPIC-12", "story");
+    const tree = screen.getByRole("tree");
+    tree.focus();
+    expect(tree).toHaveClass("focus-visible:ring-2");
+    await user.keyboard("{Shift>}{F10}{/Shift}");
+    expect(screen.getByRole("menuitem", { name: "Add story" })).toBeInTheDocument();
   });
 
   it("shows the empty and filtered states", async () => {
@@ -125,7 +149,7 @@ describe("Hierarchy view (§16.6)", () => {
     const { user } = setup();
     screen.getByRole("tree").focus();
     fireEvent.contextMenu(row("EPIC-12"));
-    expect(screen.getByRole("menuitem", { name: "Add story" })).toHaveFocus();
+    expect(screen.getByRole("menu").contains(document.activeElement)).toBe(true);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(screen.getByRole("tree")).toHaveFocus();

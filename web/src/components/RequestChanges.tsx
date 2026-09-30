@@ -1,10 +1,14 @@
 import { useState } from "react";
 import { errorText } from "../api";
-import { C } from "../copy";
+import { C, T } from "../copy";
 import { useMutation } from "../data/hooks";
 import { useDraft } from "../state/drafts";
+import { useToast } from "./Toast";
+import { Button } from "./ui/button";
+import { Textarea } from "./ui/textarea";
 
-export function RequestChanges({ requestId, connected }: { requestId: string; connected: boolean }) {
+export function RequestChanges({ requestId, agentName, connected }: { requestId: string; agentName: string; connected: boolean }) {
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [comment, setComment, clear] = useDraft(requestId, "changes");
   const [error, setError] = useState("");
@@ -17,6 +21,7 @@ export function RequestChanges({ requestId, connected }: { requestId: string; co
     setError("");
     try {
       await send.run(comment);
+      toast.success(T.toastChangesSent(agentName));
       clear();
       setOpen(false);
     } catch (e) {
@@ -25,18 +30,18 @@ export function RequestChanges({ requestId, connected }: { requestId: string; co
   };
   if (!open) {
     return (
-      <button type="button" disabled={!connected} onClick={() => setOpen(true)} className="rounded border border-line px-3 py-1">
+      <Button type="button" variant="outline" size="sm" disabled={!connected} onClick={() => setOpen(true)}>
         {C.requestChanges}
-      </button>
+      </Button>
     );
   }
   return (
     <div className="w-full space-y-2">
-      <textarea aria-label={C.comment} rows={3} maxLength={2000} value={comment} onChange={(e) => setComment(e.target.value)} className="w-full rounded border border-line bg-canvas px-2 py-1" />
-      {error && <p className="text-bad">{error}</p>}
-      <button type="button" disabled={!connected || send.pending} onClick={() => void submit()} className="rounded border border-line px-3 py-1">
+      <Textarea aria-label={C.comment} rows={3} maxLength={2000} value={comment} onChange={(e) => setComment(e.target.value)} />
+      {error && <p className="text-destructive">{error}</p>}
+      <Button type="button" variant="outline" size="sm" disabled={!connected || send.pending} onClick={() => void submit()}>
         {C.sendChangeRequest}
-      </button>
+      </Button>
     </div>
   );
 }

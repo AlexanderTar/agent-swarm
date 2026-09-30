@@ -8,6 +8,7 @@ out/
 .env.local
 ~/.swarm/
 coverage/
+web/e2e/__screenshots__/
 *.db
 *.db-wal
 *.db-shm

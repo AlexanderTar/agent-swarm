@@ -368,10 +368,12 @@ export interface StartOrchestratorBody {
   name?: string;
   roles?: Partial<Record<SettingsRole, RoleDefault>>;
 }
+export type SpikeIntent = "chore" | "feature" | "debug";
+
 export interface CreateSpikeBody {
   request_id: string;
   name: string;
-  intent: "feature" | "debug" | "chore";
+  intent: SpikeIntent;
   repos?: string[];
   agent: AgentKind;
   model: string;

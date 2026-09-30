@@ -1,31 +1,40 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { errorText } from "../api";
 import { AgentFields, type AgentFieldsValue } from "../components/AgentFields";
 import { RepoPicker } from "../components/RepoPicker";
 import { Segmented } from "../components/Segmented";
 import { Sheet } from "../components/Sheet";
+import { useToast } from "../components/Toast";
+import { Alert } from "../components/ui/alert";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Textarea } from "../components/ui/textarea";
 import { C, T } from "../copy";
 import { useConnection, useMutation } from "../data/hooks";
 import { useAgents, useCatalog, useSettings } from "../data/queries";
 import { isValid, prefill, validateChoice } from "../logic/catalog";
 import { kebab } from "../logic/kebab";
+import { startedToast } from "../logic/toasts";
 import {
   type SubmitFailure, mapSubmitError, nameError, newRequestId, orchestratorsBusy, spikePayload, submitLabel,
 } from "../logic/spawnForm";
-import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, Settings } from "../types";
+import type { AgentCatalogEntry, AgentNode, CreateSpikeBody, Settings, SpikeIntent } from "../types";
 
 function Form(p: {
   settings: Settings;
   catalog: AgentCatalogEntry[];
   agents: AgentNode[];
-  caption?: string;
-  chore?: boolean;
+  intent?: SpikeIntent;
   onClose(): void;
   onCreated(key: string): void;
 }) {
   const { connected } = useConnection();
+  const toast = useToast();
+  const nameId = useId();
+  const requestIdField = useId();
   const [name, setName] = useState("");
-  const [intent, setIntent] = useState<"feature" | "debug">("feature");
+  const [intent, setIntent] = useState<SpikeIntent>(p.intent ?? "feature");
   const [repos, setRepos] = useState<string[]>([]);
   const [fields, setFields] = useState<AgentFieldsValue>(() => prefill(p.settings, "orchestrator", p.catalog));
   const [request, setRequest] = useState("");
@@ -40,7 +49,8 @@ function Form(p: {
     if (create.pending) return;
     setFailure({});
     try {
-      const r = await create.run(spikePayload({ name, intent: p.chore ? "chore" : intent, repos, request, fields }, p.settings, p.catalog, requestId));
+      const r = await create.run(spikePayload({ name, intent, repos, request, fields }, p.settings, p.catalog, requestId));
+      toast.success(startedToast(r.agent, r.item.key));
       p.onCreated(r.item.key);
     } catch (e) {
       setFailure(mapSubmitError(e));
@@ -50,61 +60,55 @@ function Form(p: {
 
   return (
     <Sheet
-      title={p.chore ? C.newChore : C.newSpike}
+      title={C.newOrchestrator}
+      width={720}
       onClose={p.onClose}
       footer={
         <>
-          {busy && <span className="mr-auto self-center text-muted">{C.queuedCaption}</span>}
-          <button type="button" onClick={p.onClose} className="rounded border border-line px-3 py-1">{C.cancel}</button>
-          <button type="button" disabled={!valid || !connected || create.pending} onClick={() => void submit()} className="rounded bg-accent px-3 py-1 text-white disabled:opacity-50">
+          {busy && <span className="mr-auto self-center text-xs text-muted-foreground">{C.queuedCaption}</span>}
+          <Button variant="secondary" onClick={p.onClose}>{C.cancel}</Button>
+          <Button disabled={!valid || !connected || create.pending} onClick={() => void submit()}>
             {failure.banner ? C.tryAgain : submitLabel(busy)}
-          </button>
+          </Button>
         </>
       }
     >
-      {p.caption && <p className="rounded bg-raised p-2">{p.caption}</p>}
       {failure.banner && (
-        <div role="alert" className="rounded bg-bad/10 p-2 text-bad">
+        <Alert variant="destructive" role="alert">
           <p>{failure.banner}</p>
           {failure.detail && <p>{failure.detail}</p>}
-        </div>
+        </Alert>
       )}
-      <label className="block">
-        <span>{C.name}</span>
-        <input
-          aria-label={C.name}
+      <div className="space-y-1.5">
+        <Label htmlFor={nameId}>{C.name}</Label>
+        <Input id={nameId}
           value={name}
           onChange={(e) => { setName(e.target.value); setFailure((f) => ({ ...f, name: undefined })); }}
-          className="mt-1 w-full rounded border border-line bg-canvas px-2 py-1"
         />
-        <span className="block text-muted">{T.agentName(kebab(name))}</span>
-        {nameErr && <span className="block text-bad">{nameErr}</span>}
-      </label>
-      {p.chore ? (
-        <p className="text-muted">{C.choreCaption}</p>
-      ) : (
-        <div className="space-y-1">
-          <span className="mr-2">{C.intent}</span>
-          <Segmented<"feature" | "debug">
+        <p className="text-xs text-muted-foreground">{T.agentName(kebab(name))}</p>
+        {nameErr && <p className="text-xs text-destructive">{nameErr}</p>}
+      </div>
+      <div className="grid grid-cols-[72px_1fr] items-start gap-x-2 gap-y-1">
+          <Label className="h-7 leading-7">{C.intent}</Label>
+          <Segmented<SpikeIntent>
             label={C.intent}
             value={intent}
             onChange={setIntent}
-            options={[{ value: "feature" as const, label: C.featureSpike }, { value: "debug" as const, label: C.debugSpike }]}
+            options={[{ value: "chore", label: C.choreIntent }, { value: "feature", label: C.featureSpike }, { value: "debug", label: C.debugSpike }]}
           />
-          <p className="text-muted">{intent === "feature" ? C.featureCaption : C.debugCaption}</p>
-        </div>
-      )}
-      <RepoPicker label={C.repositoriesOptional} caption={p.chore ? C.choreReposCaption : C.reposCaption} selected={repos} onChange={setRepos} />
+          <p className="col-start-2 text-xs text-muted-foreground">{intent === "chore" ? C.choreCaption : intent === "feature" ? C.featureCaption : C.debugCaption}</p>
+      </div>
+      <RepoPicker label={C.repositoriesOptional} caption={intent === "chore" ? C.choreReposCaption : C.reposCaption} selected={repos} onChange={setRepos} />
       <AgentFields value={fields} onChange={setFields} settings={p.settings} catalog={p.catalog} />
-      <label className="block">
-        <span>{C.requestOptional}</span>
-        <textarea aria-label={C.requestOptional} rows={3} value={request} onChange={(e) => setRequest(e.target.value)} className="mt-1 w-full rounded border border-line bg-canvas px-2 py-1" />
-      </label>
+      <div className="space-y-1.5">
+        <Label htmlFor={requestIdField}>{C.requestOptional}</Label>
+        <Textarea id={requestIdField} rows={5} value={request} onChange={(e) => setRequest(e.target.value)} />
+      </div>
     </Sheet>
   );
 }
 
-export function NewSpikeSheet(p: { caption?: string; chore?: boolean; onClose(): void; onCreated(key: string): void }) {
+export function NewSpikeSheet(p: { intent?: SpikeIntent; onClose(): void; onCreated(key: string): void }) {
   const settings = useSettings();
   const catalog = useCatalog();
   const agents = useAgents();
@@ -112,12 +116,10 @@ export function NewSpikeSheet(p: { caption?: string; chore?: boolean; onClose():
   const err = settings.error ?? catalog.error ?? agents.error;
   if (err) {
     return (
-      <Sheet title={p.chore ? C.newChore : C.newSpike} onClose={p.onClose}>
-        <p className="text-bad">
+      <Sheet title={C.newOrchestrator} width={720} onClose={p.onClose}>
+        <Alert variant="destructive">
           {errorText(err)}{" "}
-          <button
-            type="button"
-            className="text-accent underline"
+          <Button variant="link"
             onClick={() => {
               settings.reload();
               catalog.reload();
@@ -125,8 +127,8 @@ export function NewSpikeSheet(p: { caption?: string; chore?: boolean; onClose():
             }}
           >
             {C.retry}
-          </button>
-        </p>
+          </Button>
+        </Alert>
       </Sheet>
     );
   }

@@ -2,6 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
+import { comboText, pickOption } from "../test/select";
 import { SpawnSheet } from "./SpawnSheet";
 
 const roomy = () => {
@@ -16,7 +17,7 @@ describe("SpawnSheet (§16.10)", () => {
     const sheet = await screen.findByRole("dialog", { name: "Start orchestrator" });
     expect(within(sheet).getByText("EPIC-12 · Authentication")).toBeInTheDocument();
     expect(await within(sheet).findByText("Selected: endurio-chat")).toBeInTheDocument();
-    expect((within(sheet).getByRole("combobox", { name: "Model" }) as HTMLSelectElement).selectedOptions[0]?.textContent).toBe("Opus (latest)");
+    expect(comboText("Model")).toBe("Opus (latest)");
     expect(within(sheet).getByRole("textbox", { name: "Name" })).toHaveValue("authentication-orchestrator");
     expect(within(sheet).getByRole("button", { name: "Start orchestrator" })).toBeEnabled();
   });
@@ -29,7 +30,8 @@ describe("SpawnSheet (§16.10)", () => {
 
   it("re-checks the model when the agent changes and blocks submit", async () => {
     const { user } = renderWithDaemon(<SpawnSheet itemKey="EPIC-20" onClose={vi.fn()} />, { daemon: roomy(), events: false });
-    await user.selectOptions(await screen.findByRole("combobox", { name: "Agent" }), "codex");
+    await screen.findByRole("combobox", { name: "Agent" });
+    await pickOption(user, "Agent", "Codex");
     expect(screen.getByText("Choose a model available for this agent.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start orchestrator" })).toBeDisabled();
   });
@@ -38,12 +40,13 @@ describe("SpawnSheet (§16.10)", () => {
     const onClose = vi.fn();
     const { user, daemon } = renderWithDaemon(<SpawnSheet itemKey="EPIC-20" onClose={onClose} />, { daemon: roomy(), events: false });
     const sheet = await screen.findByRole("dialog", { name: "Start orchestrator" });
-    await user.click(within(await within(sheet).findByRole("group", { name: "All" })).getByRole("checkbox", { name: /agent-swarm/ }));
+    await user.click(await within(sheet).findByRole("option", { name: /agent-swarm/ }));
     const name = within(sheet).getByRole("textbox", { name: "Name" });
     await user.clear(name);
     await user.type(name, "billing-orchestrator");
     await user.dblClick(within(sheet).getByRole("button", { name: "Start orchestrator" }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(await screen.findByText(/^(Started|Queued) /)).toBeInTheDocument();
     const posts = daemon.calls.filter((c) => c.path === "/api/items/EPIC-20/orchestrator");
     expect(posts[0]?.body).toMatchObject({ agent: "claude", model: "opus", repos: ["repo_swarm"], repos_version: 0, name: "billing-orchestrator", advisor: { agent: "claude", model: "fable" } });
     expect(new Set(posts.map((c) => (c.body as { request_id: string }).request_id)).size).toBe(1);
@@ -124,9 +127,9 @@ describe("SpawnSheet (§16.10)", () => {
     const onClose = vi.fn();
     const { user, daemon } = renderWithDaemon(<SpawnSheet itemKey="EPIC-20" onClose={onClose} />, { daemon: roomy(), events: false });
     const sheet = await screen.findByRole("dialog", { name: "Start orchestrator" });
-    await user.click(within(sheet).getByText("Worker Roles"));
+    await user.click(within(sheet).getByRole("button", { name: "Worker Roles" }));
     const coderGroup = within(sheet).getByRole("group", { name: "Coder" });
-    await user.selectOptions(within(coderGroup).getByRole("combobox", { name: "Model" }), "opus");
+    await pickOption(user, "Coder Model", "Opus (latest)");
     await user.click(within(sheet).getByRole("button", { name: "Start orchestrator" }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     const posts = daemon.calls.filter((c) => c.path === "/api/items/EPIC-20/orchestrator");
@@ -144,11 +147,11 @@ describe("SpawnSheet (§16.10)", () => {
     const onClose = vi.fn();
     const { user, daemon } = renderWithDaemon(<SpawnSheet itemKey="EPIC-20" onClose={onClose} />, { daemon: roomy(), events: false });
     const sheet = await screen.findByRole("dialog", { name: "Start orchestrator" });
-    await user.click(within(sheet).getByText("Worker Roles"));
+    await user.click(within(sheet).getByRole("button", { name: "Worker Roles" }));
     const designer = within(sheet).getByRole("group", { name: "Designer" });
-    expect(within(designer).getByRole("combobox", { name: "Agent" })).toHaveValue("claude");
-    expect(within(designer).getByRole("combobox", { name: "Model" })).toHaveValue("opus");
-    await user.selectOptions(within(designer).getByRole("combobox", { name: "Model" }), "sonnet");
+    expect(within(designer).getByRole("combobox", { name: "Designer Agent" })).toHaveTextContent("Claude");
+    expect(within(designer).getByRole("combobox", { name: "Designer Model" })).toHaveTextContent("Opus (latest)");
+    await pickOption(user, "Designer Model", "Sonnet (latest)");
     await user.click(within(sheet).getByRole("button", { name: "Start orchestrator" }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     const post = daemon.calls.find((c) => c.path === "/api/items/EPIC-20/orchestrator");

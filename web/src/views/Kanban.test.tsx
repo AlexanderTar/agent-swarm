@@ -46,13 +46,19 @@ function Host(p: {
 
 const card = (key: string) => screen.getByTestId(`card-${key}`);
 const cell = (lane: string, status: string) => screen.getByTestId(`cell-${lane}-${status}`);
-// DndContext renders its own hidden `role="status"` live region (aria-live="assertive") for
-// screen-reader drag announcements, alongside the ToastProvider's own `role="status"` container
-// (aria-live="polite") — so a bare `getByRole("status")` matches both once a view wraps in
-// DndContext. Disambiguate by the aria-live value rather than weakening the query to `getAllByRole`.
-const toastRegion = () => screen.getAllByRole("status").find((el) => el.getAttribute("aria-live") === "polite") as HTMLElement;
 
 describe("Kanban view (§16.7)", () => {
+  it("styles column and lane controls and keeps lane keys regular", async () => {
+    renderWithDaemon(<Host />, { events: false });
+    const column = await screen.findByTestId("col-ready");
+    expect(column).toHaveAttribute("data-slot", "button");
+    expect(column).toHaveClass("focus-visible:ring-ring/50");
+    const lane = screen.getByTestId("lane-EPIC-12");
+    const toggle = within(lane).getByRole("button", { name: /EPIC-12/ });
+    expect(toggle).toHaveAttribute("data-slot", "button");
+    expect(within(toggle).getByText("EPIC-12")).toHaveClass("font-normal");
+  });
+
   it("shows active workflow crew and a badge after round one", async () => {
     const d = createMockDaemon();
     const task = d.db.items.find((i) => i.key === "TASK-101")!;
@@ -96,6 +102,12 @@ describe("Kanban view (§16.7)", () => {
     expect(card("TASK-103")).not.toHaveTextContent("Blocked by");
   });
 
+  it("keeps card keys together beside status badges", async () => {
+    renderWithDaemon(<Host />, { events: false });
+    const key = within(await screen.findByTestId("card-TASK-104")).getByText("TASK-104");
+    expect(key.parentElement).toHaveClass("whitespace-nowrap");
+  });
+
   it("shows ROOT / PARENT in flat mode and story progress at story level", async () => {
     const a = renderWithDaemon(<Host group="flat" />, { events: false });
     expect(await screen.findByTestId("card-TASK-101")).toHaveTextContent("EPIC-12 / STORY-40");
@@ -137,10 +149,11 @@ describe("Kanban view (§16.7)", () => {
     const release = d.hold("PATCH /api/items/TASK-103");
     const { user, daemon } = renderWithDaemon(<Host />, { daemon: d });
     await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
-    await user.click(screen.getByRole("menuitem", { name: /Blocked/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /Blocked/ }));
     expect(within(cell("EPIC-12", "blocked")).getByTestId("card-TASK-103")).toHaveTextContent("Updating…");
     release();
     await waitFor(() => expect(card("TASK-103")).not.toHaveTextContent("Updating…"));
+    expect(await screen.findByText("Moved TASK-103 to Blocked")).toBeInTheDocument();
     expect(within(cell("EPIC-12", "blocked")).getByTestId("card-TASK-103")).toBeInTheDocument();
     expect(daemon.calls.find((c) => c.method === "PATCH")).toMatchObject({ path: "/api/items/TASK-103", body: { status: "blocked" } });
   });
@@ -161,7 +174,7 @@ describe("Kanban view (§16.7)", () => {
     });
     const { user } = renderWithDaemon(<Host />, { daemon: d, events: false });
     await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
-    await user.click(screen.getByRole("menuitem", { name: /Blocked/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /Blocked/ }));
     await waitFor(() => expect(card("TASK-103")).not.toHaveTextContent("Updating…"));
     expect(within(cell("EPIC-12", "in_review")).getByTestId("card-TASK-103")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Move to… TASK-103" })).toBeEnabled();
@@ -173,8 +186,8 @@ describe("Kanban view (§16.7)", () => {
     d.override("PATCH /api/items/TASK-103", { status: 422, body: { error: { code: "transition_denied", message: reason, reason } } });
     const { user } = renderWithDaemon(<Host />, { daemon: d, events: false });
     await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
-    await user.click(screen.getByRole("menuitem", { name: /Blocked/ }));
-    await waitFor(() => expect(toastRegion()).toHaveTextContent(reason));
+    await user.click(await screen.findByRole("menuitem", { name: /Blocked/ }));
+    expect(await screen.findByText(reason)).toBeInTheDocument();
     expect(card("TASK-103")).not.toHaveTextContent("Updating…");
     expect(screen.getByRole("button", { name: "Move to… TASK-103" })).toBeEnabled();
   });
@@ -185,8 +198,8 @@ describe("Kanban view (§16.7)", () => {
     d.override("PATCH /api/items/TASK-103", { status: 422, body: { error: { code: "transition_denied", message: reason, reason } } });
     const { user } = renderWithDaemon(<Host />, { daemon: d, events: false });
     await user.click(within(await screen.findByTestId("card-TASK-103")).getByRole("button", { name: "Move to… TASK-103" }));
-    await user.click(screen.getByRole("menuitem", { name: /Blocked/ }));
-    await waitFor(() => expect(toastRegion()).toHaveTextContent(reason));
+    await user.click(await screen.findByRole("menuitem", { name: /Blocked/ }));
+    expect(await screen.findByText(reason)).toBeInTheDocument();
     expect(within(cell("EPIC-12", "ready")).getByTestId("card-TASK-103")).toBeInTheDocument();
   });
 
@@ -236,12 +249,12 @@ describe("Kanban view (§16.7)", () => {
     const onSelect = vi.fn();
     const { user } = renderWithDaemon(<Host level="top" onReview={onReview} onSelect={onSelect} />, { events: false });
     await user.click(within(await screen.findByTestId("card-EPIC-12")).getByRole("button", { name: "Move to… EPIC-12" }));
-    await user.click(screen.getByRole("menuitem", { name: /^Done/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Done/ }));
     expect(onReview).toHaveBeenCalledWith("req_accept");
     expect(within(cell("flat", "in_progress")).getByTestId("card-EPIC-12")).toBeInTheDocument();
     await user.click(within(card("SPIKE-3")).getByRole("button", { name: "Move to… SPIKE-3" }));
-    await user.click(screen.getByRole("menuitem", { name: /^Done/ }));
-    expect(toastRegion()).toHaveTextContent("This spike reaches Done after materialization.");
+    await user.click(await screen.findByRole("menuitem", { name: /^Done/ }));
+    expect(await screen.findByText("This spike reaches Done after materialization.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View spike" }));
     expect(onSelect).toHaveBeenCalledWith("SPIKE-3");
   });

@@ -2,10 +2,13 @@ import { type ReactNode, useRef } from "react";
 import { errorText } from "../api";
 import { Segmented } from "../components/Segmented";
 import { C } from "../copy";
-import { useMutation } from "../data/hooks";
+import { useConnection, useMutation } from "../data/hooks";
+import { agentActionToast } from "../logic/toasts";
 import { useAgents, useRequests } from "../data/queries";
 import { filterRequests, needsYouRow, pickRequest, requestTarget } from "../logic/inbox";
 import type { InboxFilter, Request } from "../types";
+import { useToast } from "../components/Toast";
+import { Button } from "../components/ui/button";
 
 export function NeedsYou(p: {
   filter: InboxFilter;
@@ -19,6 +22,8 @@ export function NeedsYou(p: {
   const requests = useRequests();
   const agents = useAgents();
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
+  const { live } = useConnection();
+  const toast = useToast();
   const seen = useRef(new Map<string, Request>());
   for (const r of requests.data ?? []) seen.current.set(r.id, r);
 
@@ -27,11 +32,11 @@ export function NeedsYou(p: {
   // the review pane empty forever with no indication anything went wrong.
   if (requests.error) {
     return (
-      <p className="p-4 text-bad">
+      <p className="p-4 text-destructive">
         {errorText(requests.error)}{" "}
-        <button type="button" className="text-accent underline" onClick={() => requests.reload()}>
+        <Button type="button" variant="link" size="sm" onClick={() => requests.reload()}>
           {C.retry}
-        </button>
+        </Button>
       </p>
     );
   }
@@ -46,8 +51,8 @@ export function NeedsYou(p: {
   const known = seen.current.get(p.selected);
 
   return (
-    <div className="flex h-full min-h-0">
-      <div className="w-[280px] shrink-0 space-y-2 overflow-y-auto border-r border-line p-3">
+    <div className="flex h-full min-h-0 flex-col md:flex-row">
+      <div className="max-h-48 w-full shrink-0 space-y-2 overflow-y-auto border-b border-border p-3 md:max-h-none md:w-[280px] md:border-b-0 md:border-r">
         <h2 className="font-semibold">{C.needsYou}</h2>
         <Segmented
           label={C.needsYou}
@@ -59,7 +64,7 @@ export function NeedsYou(p: {
             { value: "approvals", label: C.approvals },
           ]}
         />
-        {requests.data && list.length === 0 && <p className="text-muted">{C.inboxEmpty}</p>}
+        {requests.data && list.length === 0 && <p className="text-muted-foreground">{C.inboxEmpty}</p>}
         <ul aria-label={C.needsYou} className="space-y-1">
           {list.map((r) => {
             const [line1, line2, line3] = needsYouRow(r);
@@ -68,29 +73,35 @@ export function NeedsYou(p: {
             return (
               <li
                 key={r.id}
-                className={`rounded bg-warn/15 px-2 py-1 ${isCurrent ? "ring-1 ring-warn" : ""}`}
+                className={`rounded bg-warning/15 px-2 py-1 ${isCurrent ? "ring-1 ring-warning" : ""}`}
               >
                 <div className="flex items-start gap-2">
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
                     aria-current={isCurrent}
                     onClick={() => p.onSelectRequest(r.id)}
-                    className="min-w-0 flex-1 text-left"
+                    className="h-auto min-w-0 flex-1 flex-col items-stretch whitespace-normal text-left"
                   >
-                    <span className="block truncate text-muted">{line1}</span>
+                    <span className="block truncate text-muted-foreground">{line1}</span>
                     <span className="block truncate">{line2}</span>
                     <span className="block truncate">{line3}</span>
-                  </button>
+                  </Button>
                   {target && (
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon"
                       aria-label={C.openAgentTerminal}
-                      disabled={target.kind === "unavailable"}
-                      onClick={() => { if (target.kind === "terminal") void terminal.run(target.agent).catch(() => undefined); }}
-                      className="shrink-0 disabled:opacity-40"
+                      disabled={!p.connected || target.kind === "unavailable"}
+                      onClick={() => { if (target.kind === "terminal" && live.connected) {
+                        const epoch = live.epoch;
+                        void terminal.run(target.agent).then(() => { if (live.connected && live.epoch === epoch) toast.success(agentActionToast("terminal", target.agent)); })
+                          .catch((e: unknown) => { if (live.connected && live.epoch === epoch) toast.error(errorText(e)); });
+                      } }}
                     >
                       ▶
-                    </button>
+                    </Button>
                   )}
                 </div>
               </li>
@@ -98,18 +109,18 @@ export function NeedsYou(p: {
           })}
         </ul>
       </div>
-      <div className="min-w-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4">
         {resolved ? (
           <div className="space-y-2">
             <p>{C.resolved}</p>
             {known && (
-              <button type="button" onClick={() => p.onViewItem(known.item_key)} className="text-accent">{C.viewItem}</button>
+              <Button type="button" variant="link" size="sm" onClick={() => p.onViewItem(known.item_key)}>{C.viewItem}</Button>
             )}
           </div>
         ) : current ? (
           <div key={current.id}>{p.renderReview(current)}</div>
         ) : requests.data ? (
-          <p className="text-muted">{C.inboxEmpty}</p>
+          <p className="text-muted-foreground">{C.inboxEmpty}</p>
         ) : null}
       </div>
     </div>
