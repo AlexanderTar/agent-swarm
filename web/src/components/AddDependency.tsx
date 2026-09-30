@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { errorText } from "../api";
 import { C, T } from "../copy";
-import { useMutation } from "../data/hooks";
+import { useConnection, useMutation } from "../data/hooks";
 import { useItems } from "../data/queries";
 import { matches } from "../logic/tree";
 import { useToast } from "./Toast";
@@ -10,6 +10,7 @@ import { Input } from "./ui/input";
 
 export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled: boolean }) {
   const toast = useToast();
+  const { connected, live } = useConnection();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [error, setError] = useState("");
@@ -30,6 +31,7 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
     ? (items.data?.items ?? []).filter((i) => i.key !== itemKey && matches(i, { q, type: "", status: "" })).slice(0, 8)
     : [];
   const pick = async (key: string) => {
+    if (!live.connected) return;
     setError("");
     try {
       await add.run(key);
@@ -57,7 +59,7 @@ export function AddDependency({ itemKey, disabled }: { itemKey: string; disabled
             className="w-full"
           />
           {hits.map((i) => (
-            <Button key={i.key} variant="ghost" size="sm" type="button" disabled={add.pending} onClick={() => void pick(i.key)} className="block w-full truncate text-left">
+            <Button key={i.key} variant="ghost" size="sm" type="button" disabled={!connected || add.pending} onClick={() => void pick(i.key)} className="block w-full truncate text-left">
               {`${i.key} · ${i.title}`}
             </Button>
           ))}

@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { toast as sonner } from "sonner";
@@ -68,6 +68,38 @@ const cases: { name: string; route: string; setup?: (d: MockDaemon) => void; ui(
 ];
 
 describe("offline mutation toast audit", () => {
+  it("does not dispatch an open dependency result after transport closes before rerender", async () => {
+    const d = createMockDaemon();
+    let live: ReturnType<typeof useConnection>["live"] | undefined;
+    function Host() {
+      live = useConnection().live;
+      return <AddDependency itemKey="TASK-103" disabled={false} />;
+    }
+    const { user } = renderWithDaemon(<Host />, { daemon: d });
+    await user.click(screen.getByRole("button", { name: /Add dependency/ }));
+    await user.type(screen.getByRole("searchbox", { name: "Add dependency" }), "TASK-104");
+    const result = await screen.findByRole("button", { name: /TASK-104/ });
+    live!.connected = false;
+    live!.epoch++;
+    fireEvent.click(result);
+    await act(async () => {});
+    expect(d.calls.filter((c) => c.method === "POST" && c.path === "/api/items/TASK-103/deps")).toHaveLength(0);
+  });
+
+  it("keeps an open dependency result disabled while REST returns but the stream remains closed", async () => {
+    const d = createMockDaemon();
+    const { user } = renderWithDaemon(<AddDependency itemKey="TASK-103" disabled={false} />, { daemon: d });
+    await user.click(screen.getByRole("button", { name: /Add dependency/ }));
+    await user.type(screen.getByRole("searchbox", { name: "Add dependency" }), "TASK-104");
+    const result = await screen.findByRole("button", { name: /TASK-104/ });
+    d.disconnect();
+    await waitFor(() => expect(result).toBeDisabled());
+    d.reconnect();
+    expect(result).toBeDisabled();
+    fireEvent.click(result);
+    expect(d.calls.filter((c) => c.method === "POST" && c.path === "/api/items/TASK-103/deps")).toHaveLength(0);
+  });
+
   it.each(cases)("suppresses $name completion after disconnect", async ({ route, setup, ui, click }) => {
     const d = createMockDaemon();
     setup?.(d);
