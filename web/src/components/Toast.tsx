@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Toaster as SonnerToaster, toast as sonner } from "sonner";
+import { useConnection } from "../data/hooks";
 
 export interface ToastInput { message: string; action?: { label: string; onClick: () => void } }
 
@@ -22,7 +23,18 @@ const toastFn: ToastFn = Object.assign(
   },
 );
 
-export const useToast = (): ToastFn => toastFn;
+export const useToast = (): ToastFn => {
+  const { live } = useConnection();
+  const epoch = live.epoch;
+  const current = () => live.connected && live.epoch === epoch;
+  return Object.assign(
+    (t: ToastInput) => { if (current()) toastFn(t); },
+    {
+      success: (message: string, description?: string) => { if (current()) toastFn.success(message, description); },
+      error: (message: string, description?: string) => { if (current()) toastFn.error(message, description); },
+    },
+  );
+};
 
 export function Toaster() {
   return (

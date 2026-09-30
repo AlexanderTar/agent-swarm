@@ -1,6 +1,10 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { toast as sonner } from "sonner";
+import { createApi } from "../api";
+import { DataProvider, useConnection } from "../data/hooks";
 import { ToastProvider, useToast } from "./Toast";
 
 function Trigger({ onAction }: { onAction: () => void }) {
@@ -15,11 +19,51 @@ function Trigger({ onAction }: { onAction: () => void }) {
   );
 }
 
+const renderToast = (ui: ReactNode) => render(<DataProvider api={createApi()} events={false}><ToastProvider>{ui}</ToastProvider></DataProvider>);
+
 describe("Toast (Sonner)", () => {
+  it.each([{ failure: false, reconnect: false }, { failure: true, reconnect: false }, { failure: false, reconnect: true }, { failure: true, reconnect: true }])
+  ("drops a held completion after disconnect (failure: $failure, reconnect: $reconnect)", async ({ failure, reconnect }) => {
+    const success = vi.spyOn(sonner, "success");
+    const error = vi.spyOn(sonner, "error");
+    let live: ReturnType<typeof useConnection>["live"] | undefined;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    function PendingToast() {
+      const toast = useToast();
+      live = useConnection().live;
+      return <button onClick={() => { void held.then(() => failure ? toast.error("Failed") : toast.success("Done")); }}>Start</button>;
+    }
+    const user = userEvent.setup();
+    render(<DataProvider api={createApi()} events={false}><ToastProvider><PendingToast /></ToastProvider></DataProvider>);
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    live!.connected = false;
+    live!.epoch++;
+    if (reconnect) live!.connected = true;
+    await act(async () => { release(); });
+    expect(success).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    success.mockRestore(); error.mockRestore();
+  });
+
+  it("drops a toast from an offline click before React rerenders", async () => {
+    let live: ReturnType<typeof useConnection>["live"] | undefined;
+    function OfflineToast() {
+      const toast = useToast();
+      live = useConnection().live;
+      return <button onClick={() => toast({ message: "Offline refusal" })}>Refuse</button>;
+    }
+    const user = userEvent.setup();
+    render(<DataProvider api={createApi()} events={false}><ToastProvider><OfflineToast /></ToastProvider></DataProvider>);
+    live!.connected = false;
+    await user.click(screen.getByRole("button", { name: "Refuse" }));
+    expect(screen.queryByText("Offline refusal")).not.toBeInTheDocument();
+  });
+
   it("legacy call shows an error toast with its action", async () => {
     const onAction = vi.fn();
     const user = userEvent.setup();
-    render(<ToastProvider><Trigger onAction={onAction} /></ToastProvider>);
+    renderToast(<Trigger onAction={onAction} />);
     await user.click(screen.getByRole("button", { name: "legacy action" }));
     expect(await screen.findByText("This spike reaches Done after materialization.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View spike" }));
@@ -29,7 +73,7 @@ describe("Toast (Sonner)", () => {
   it("legacy error dismisses after 6 s", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    render(<ToastProvider><Trigger onAction={vi.fn()} /></ToastProvider>);
+    renderToast(<Trigger onAction={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: /^legacy$/ }));
     expect(await screen.findByText("Failed to move item")).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(6_600));
@@ -39,7 +83,7 @@ describe("Toast (Sonner)", () => {
   it("success toast disappears after 4 s", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    render(<ToastProvider><Trigger onAction={vi.fn()} /></ToastProvider>);
+    renderToast(<Trigger onAction={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "ok" }));
     expect(await screen.findByText("Created TASK-9")).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(4_600));
@@ -49,7 +93,7 @@ describe("Toast (Sonner)", () => {
   it("error helper shows its description for 6 s", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    render(<ToastProvider><Trigger onAction={vi.fn()} /></ToastProvider>);
+    renderToast(<Trigger onAction={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "error helper" }));
     expect(await screen.findByText("Try again later")).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(4_600));
