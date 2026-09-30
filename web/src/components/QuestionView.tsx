@@ -1,6 +1,6 @@
 import { errorText } from "../api";
 import { C } from "../copy";
-import { useMutation } from "../data/hooks";
+import { useConnection, useMutation } from "../data/hooks";
 import { useAgents } from "../data/queries";
 import { requestTarget } from "../logic/inbox";
 import { agentActionToast } from "../logic/toasts";
@@ -12,6 +12,7 @@ export function QuestionView({ request, connected }: { request: Request; connect
   const toast = useToast();
   const agents = useAgents();
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
+  const { live } = useConnection();
   const options = Array.isArray(request.options) ? request.options : [];
   const target = requestTarget(request, agents.data ?? []);
   const open = target?.kind === "terminal" ? target.agent : undefined;
@@ -33,7 +34,11 @@ export function QuestionView({ request, connected }: { request: Request; connect
         variant="outline"
         size="sm"
         disabled={!connected || !open}
-        onClick={() => open && void terminal.run(open).then(() => toast.success(agentActionToast("terminal", open))).catch((e: unknown) => toast.error(errorText(e)))}
+        onClick={() => { if (open && live.connected) {
+          const epoch = live.epoch;
+          void terminal.run(open).then(() => { if (live.connected && live.epoch === epoch) toast.success(agentActionToast("terminal", open)); })
+            .catch((e: unknown) => { if (live.connected && live.epoch === epoch) toast.error(errorText(e)); });
+        } }}
       >
         {C.openOrchestratorTerminal}
       </Button>

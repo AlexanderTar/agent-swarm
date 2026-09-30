@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T, TYPE_LABEL } from "../copy";
-import { useInvalidate, useMutation } from "../data/hooks";
+import { useConnection, useInvalidate, useMutation } from "../data/hooks";
 import { qk, useItemDetail } from "../data/queries";
 import { displayState, flattenAgents, isFinished } from "../logic/agentActions";
 import { agentActionToast } from "../logic/toasts";
@@ -86,6 +86,7 @@ export function Details(p: DetailsProps) {
   const detail = useItemDetail(p.itemKey);
   const invalidate = useInvalidate();
   const toast = useToast();
+  const { live } = useConnection();
   const [tab, setTab] = useState<"overview" | "agents" | "checkpoints" | "deps">("overview");
   const pendingAgentScroll = useRef<string | null>(null);
   const agentsNode = useRef<HTMLElement | null>(null);
@@ -212,7 +213,10 @@ export function Details(p: DetailsProps) {
             </div>
           )}
           <WorkflowSection workflow={item.workflow} state={d.workflow_state} connected={p.connected} onOpenTerminal={(name) => {
-            void terminal.run(name).then(() => toast.success(agentActionToast("terminal", name))).catch((e: unknown) => toast({ message: errorText(e) }));
+            if (!live.connected) return;
+            const epoch = live.epoch;
+            void terminal.run(name).then(() => { if (live.connected && live.epoch === epoch) toast.success(agentActionToast("terminal", name)); })
+              .catch((e: unknown) => { if (live.connected && live.epoch === epoch) toast({ message: errorText(e) }); });
           }} />
           <section aria-label={C.agents} className="border-t border-border pt-3">
             <h3 className="mb-1 font-semibold">{C.agents}</h3>

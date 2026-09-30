@@ -2,7 +2,7 @@ import { type ReactNode, useRef } from "react";
 import { errorText } from "../api";
 import { Segmented } from "../components/Segmented";
 import { C } from "../copy";
-import { useMutation } from "../data/hooks";
+import { useConnection, useMutation } from "../data/hooks";
 import { agentActionToast } from "../logic/toasts";
 import { useAgents, useRequests } from "../data/queries";
 import { filterRequests, needsYouRow, pickRequest, requestTarget } from "../logic/inbox";
@@ -22,6 +22,7 @@ export function NeedsYou(p: {
   const requests = useRequests();
   const agents = useAgents();
   const terminal = useMutation((api, name: string) => api.agentAction(name, "terminal"));
+  const { live } = useConnection();
   const toast = useToast();
   const seen = useRef(new Map<string, Request>());
   for (const r of requests.data ?? []) seen.current.set(r.id, r);
@@ -93,7 +94,11 @@ export function NeedsYou(p: {
                       size="icon"
                       aria-label={C.openAgentTerminal}
                       disabled={!p.connected || target.kind === "unavailable"}
-                      onClick={() => { if (target.kind === "terminal") void terminal.run(target.agent).then(() => toast.success(agentActionToast("terminal", target.agent))).catch((e: unknown) => toast.error(errorText(e))); }}
+                      onClick={() => { if (target.kind === "terminal" && live.connected) {
+                        const epoch = live.epoch;
+                        void terminal.run(target.agent).then(() => { if (live.connected && live.epoch === epoch) toast.success(agentActionToast("terminal", target.agent)); })
+                          .catch((e: unknown) => { if (live.connected && live.epoch === epoch) toast.error(errorText(e)); });
+                      } }}
                     >
                       ▶
                     </Button>

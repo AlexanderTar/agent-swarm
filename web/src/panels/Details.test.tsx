@@ -1,5 +1,7 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast as sonner } from "sonner";
+import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import { comboText, pickOption } from "../test/select";
@@ -26,6 +28,11 @@ function detailsFor(itemKey: string) {
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
+
+function ConnectedDetails() {
+  const { connected, retry } = useConnection();
+  return <><Details itemKey="TASK-103" connected={connected} onClose={vi.fn()} onSelect={vi.fn()} onReview={vi.fn()} onStartOrchestrator={vi.fn()} /><button onClick={retry}>Reconnect stream</button></>;
+}
 
 describe("Details panel (§16.9)", () => {
   it("stops the loading skeleton animation for reduced motion", async () => {
@@ -80,6 +87,36 @@ describe("Details panel (§16.9)", () => {
     await user.click(screen.getByRole("button", { name: "builder" }));
     await waitFor(() => expect(d.calls).toContainEqual(expect.objectContaining({ method: "POST", path: "/api/agents/builder/terminal" })));
   });
+  it.each([{ failed: false, reconnect: false }, { failed: true, reconnect: false }, { failed: false, reconnect: true }, { failed: true, reconnect: true }])
+  ("suppresses workflow terminal completion after disconnect (failed: $failed, reconnect: $reconnect)", async ({ failed, reconnect }) => {
+    const d = createMockDaemon();
+    const base = d.handle({ method: "GET", url: "/api/items/TASK-103", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;
+    d.override("GET /api/items/TASK-103", { status: 200, body: {
+      ...base,
+      item: { ...(base.item as object), workflow: { template: "tdd-reviewed", max_rounds: 3, steps: [{ id: "build", run: "coder" }] } },
+      workflow_state: { state: "running", round: 2, escalation: "", runs: [
+        { step: "build", role: "coder", agent: "builder", state: "active", verdict: "", sha: "", round: 2, findings: [] },
+      ] },
+      crew: [{ agent: "builder", role: "coder", step: "build", state: "active" }],
+    } });
+    const route = "POST /api/agents/builder/terminal";
+    if (failed) d.override(route, { status: 409, body: { error: { code: "conflict", message: "Terminal unavailable." } } });
+    const release = d.hold(route);
+    const success = vi.spyOn(sonner, "success");
+    const error = vi.spyOn(sonner, "error");
+    const { user } = renderWithDaemon(<ConnectedDetails />, { daemon: d });
+    await user.click(await screen.findByRole("button", { name: "Workflow · tdd-reviewed · Running · Round 2 of 3" }));
+    await user.click(screen.getByRole("button", { name: "builder" }));
+    act(() => d.disconnect());
+    await waitFor(() => expect(screen.getByRole("button", { name: "builder" })).toBeDisabled());
+    if (reconnect) { d.reconnect(); await user.click(screen.getByRole("button", { name: "Reconnect stream" })); await waitFor(() => expect(screen.getByRole("button", { name: "builder" })).toBeEnabled()); }
+    await act(async () => { release(); });
+    await waitFor(() => expect(d.calls.some((c) => c.path === "/api/agents/builder/terminal")).toBe(true));
+    expect(success).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    success.mockRestore(); error.mockRestore();
+  });
+
   it("does not open a workflow terminal or toast while disconnected", async () => {
     const d = createMockDaemon();
     const base = d.handle({ method: "GET", url: "/api/items/TASK-103", headers: { Authorization: `Bearer ${d.db.token}` } }).body as Record<string, unknown>;

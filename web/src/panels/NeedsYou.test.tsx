@@ -1,6 +1,8 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { toast as sonner } from "sonner";
+import { useConnection } from "../data/hooks";
 import { createMockDaemon } from "../mock/daemon";
 import { renderWithDaemon } from "../test/render";
 import type { InboxFilter } from "../types";
@@ -20,6 +22,11 @@ function Host(p: { initial?: string; connected?: boolean; onViewItem?: (k: strin
       renderReview={(r) => <p>{`review:${r.id}`}</p>}
     />
   );
+}
+
+function ConnectedHost() {
+  const { connected, retry } = useConnection();
+  return <><Host connected={connected} /><button onClick={retry}>Reconnect stream</button></>;
 }
 
 describe("NeedsYou inbox (§16.11)", () => {
@@ -86,6 +93,27 @@ describe("NeedsYou inbox (§16.11)", () => {
     await user.click(terminal);
     expect(d.calls.some((c) => c.path.endsWith("/terminal"))).toBe(false);
     expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+  });
+
+  it.each([{ failed: false, reconnect: false }, { failed: true, reconnect: false }, { failed: false, reconnect: true }, { failed: true, reconnect: true }])
+  ("suppresses terminal completion after disconnect (failed: $failed, reconnect: $reconnect)", async ({ failed, reconnect }) => {
+    const d = createMockDaemon();
+    const route = "POST /api/agents/offline-spike-orchestrator/terminal";
+    if (failed) d.override(route, { status: 409, body: { error: { code: "conflict", message: "Terminal unavailable." } } });
+    const release = d.hold(route);
+    const success = vi.spyOn(sonner, "success");
+    const error = vi.spyOn(sonner, "error");
+    const { user } = renderWithDaemon(<ConnectedHost />, { daemon: d });
+    await user.click(await screen.findByRole("radio", { name: "Questions" }));
+    await user.click(within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button", { name: "Open agent terminal" })[0]!);
+    act(() => d.disconnect());
+    await waitFor(() => expect(within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button", { name: "Open agent terminal" })[0]).toBeDisabled());
+    if (reconnect) { d.reconnect(); await user.click(screen.getByRole("button", { name: "Reconnect stream" })); await waitFor(() => expect(within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("button", { name: "Open agent terminal" })[0]).toBeEnabled()); }
+    await act(async () => { release(); });
+    await waitFor(() => expect(d.calls.some((c) => c.path === "/api/agents/offline-spike-orchestrator/terminal")).toBe(true));
+    expect(success).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    success.mockRestore(); error.mockRestore();
   });
 
   it("shows Already resolved for a request that closed", async () => {
