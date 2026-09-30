@@ -125,3 +125,85 @@ func TestReclaimWorkDirsRemovesOldOrphansKeepsFreshOnes(t *testing.T) {
 		t.Fatal("NoGrace must remove the fresh orphan too")
 	}
 }
+
+// seedCwdSession is seedReclaimSession with an explicit cwd.
+func seedCwdSession(t *testing.T, s *Store, id, agentID string, state SessionState, cwd string) {
+	t.Helper()
+	seedReclaimSession(t, s, id, agentID, state)
+	if _, err := s.DB.ExecContext(context.Background(), `UPDATE sessions SET cwd = ? WHERE id = ?`, cwd, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReclaimWorkDirsKeepsRenamedRunningAgentCwd(t *testing.T) {
+	s, _, at := clockStore(t)
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "auto-clean-swarm-work", ep.ID, "")
+	dir := mkWorkDir(t, s, "clean-up-task-directories")
+	seedCwdSession(t, s, "ses_r", "auto-clean-swarm-work", Running, dir)
+	at.Advance(2 * time.Hour)
+	if err := os.Chtimes(dir, s.Now().Add(-3*time.Hour), s.Now().Add(-3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReclaimWorkDirs(context.Background(), CleanupOptions{NoGrace: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(dir) {
+		t.Fatal("live session cwd must be kept even though agent name differs")
+	}
+}
+
+func TestReclaimWorkDirsKeepsNonFinishedAgentCwdWithoutLiveSession(t *testing.T) {
+	s, _, _ := clockStore(t)
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "renamed", ep.ID, "") // state 'active'
+	dir := mkWorkDir(t, s, "old-dir-name")
+	seedCwdSession(t, s, "ses_e", "renamed", Completed, dir)
+	if _, err := s.ReclaimWorkDirs(context.Background(), CleanupOptions{NoGrace: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(dir) {
+		t.Fatal("cwd of a non-finished agent must be kept")
+	}
+}
+
+func TestReclaimWorkDirsRemovesFinishedAgentOldSessionCwd(t *testing.T) {
+	s, _, at := clockStore(t)
+	ep := seedEpicWithTask(t, s)
+	seedReclaimAgent(t, s, "renamed", ep.ID, "")
+	finishReclaimAgent(t, s, "renamed", s.Now())
+	dir := mkWorkDir(t, s, "old-dir-name")
+	seedCwdSession(t, s, "ses_f", "renamed", Completed, dir)
+	at.Advance(2 * time.Hour)
+	if _, err := s.ReclaimWorkDirs(context.Background(), CleanupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if exists(dir) {
+		t.Fatal("finished agent's old session cwd should be removed")
+	}
+}
+
+func TestReclaimWorkDirsRefusesSymlinkedRoot(t *testing.T) {
+	s, _, _ := clockStore(t)
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim")
+	if err := os.MkdirAll(victim, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(s.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(s.Home, "work")); err != nil {
+		t.Fatal(err)
+	}
+	old := s.Now().Add(-5 * time.Hour)
+	if err := os.Chtimes(victim, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReclaimWorkDirs(context.Background(), CleanupOptions{NoGrace: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(victim) {
+		t.Fatal("symlinked work root must be refused")
+	}
+}

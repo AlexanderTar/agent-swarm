@@ -8,14 +8,24 @@ import (
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 )
 
-// ReclaimWorkDirs removes <home>/work/<name> for every agent that is finished
-// (or acknowledged) past reclaimGrace with no live session. Retry recreates
-// the dir (agents.go MkdirAll) and every adapter rewrites its launch files
-// into it, so nothing durable lives there. Dirs with no agent row (orphans)
-// go once their mtime is past the same grace. Entries that are not real
-// directories (symlinks included) are never touched.
+// ReclaimWorkDirs removes <home>/work/<dir> once nothing live refers to it.
+// A dir is referenced by any session whose cwd is the dir (or inside it) and
+// by any agent named like the dir; agents are renamed after launch, so the
+// session cwd, not the agent name, is the authoritative link. A reference
+// blocks removal while its session is live or its agent is not finished (or
+// acknowledged) past reclaimGrace. Retry recreates the dir (agents.go
+// MkdirAll) and every adapter rewrites its launch files into it, so nothing
+// durable lives there. A dir with no reference at all (an orphan) goes once
+// its own mtime -- the last time an entry was added or removed directly in
+// it, not the newest file inside -- is past the same grace. <home>/work must
+// itself be a real directory and entries that are not real directories
+// (symlinks included) are never touched.
 func (s *Store) ReclaimWorkDirs(ctx context.Context, opt CleanupOptions) ([]CleanupResult, error) {
 	root := filepath.Join(s.Home, "work")
+	if fi, err := os.Lstat(root); err == nil && !fi.IsDir() {
+		s.logf("workdir: %s is not a real directory; skipping", root)
+		return []CleanupResult{{Path: root, Action: "kept", Reason: "work root is not a real directory"}}, nil
+	}
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -51,6 +61,19 @@ func (s *Store) ReclaimWorkDirs(ctx context.Context, opt CleanupOptions) ([]Clea
 			keep("error: " + err.Error())
 			continue
 		}
+		var cwdRefs, cwdBlocking int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*),
+			COALESCE(SUM(x.state IN ('spawning','running','pause_requested','quiescing','stopping')
+			 OR NOT (a.state IN ('finished', 'acknowledged')
+				AND a.finished_at IS NOT NULL AND a.finished_at <= ?)), 0)
+			FROM sessions x JOIN agents a ON a.id = x.agent_id
+			WHERE x.cwd = ? OR substr(x.cwd, 1, length(?) + 1) = ? || '/'`,
+			cutoff, path, path, path).Scan(&cwdRefs, &cwdBlocking); err != nil {
+			keep("error: " + err.Error())
+			continue
+		}
+		agents += cwdRefs
+		blocking += cwdBlocking
 		if agents == 0 {
 			// Orphan: judge by the dir's own mtime against the same grace.
 			if fi.ModTime().UnixMilli() > cutoff {
