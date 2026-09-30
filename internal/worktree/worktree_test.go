@@ -1454,3 +1454,30 @@ func TestReviewSkipsAPathHeldByARemovedRow(t *testing.T) {
 		t.Fatalf("path = %q, want %q", wt.Path, base+"-2")
 	}
 }
+
+// A DB insert that fails after `git worktree add` must not strand the checkout
+// (or the branch Create just made).
+func TestCreateAndReviewLeaveNoCheckoutWhenInsertFails(t *testing.T) {
+	repo := gitRepo(t)
+	s, repoID := newService(t, repo)
+	ctx := context.Background()
+	bad := CreateInput{RepoID: repoID, RepoPath: repo, Branch: "task/doomed",
+		OwnerAgentID: "agt_missing", RootItemID: "itm_1"} // FK violation on insert
+	if _, err := s.Create(ctx, bad); err == nil {
+		t.Fatal("Create: want the insert to fail")
+	}
+	head := strings.TrimSpace(run(t, repo, "rev-parse", "HEAD"))
+	if _, err := s.Review(ctx, bad, head); err == nil {
+		t.Fatal("Review: want the insert to fail")
+	}
+	entries, _ := os.ReadDir(filepath.Join(s.Home, "worktrees"))
+	if len(entries) != 0 {
+		t.Fatalf("stranded checkouts: %v", entries)
+	}
+	if list := run(t, repo, "worktree", "list", "--porcelain"); strings.Count(list, "worktree ") != 1 {
+		t.Fatalf("git still lists added worktrees:\n%s", list)
+	}
+	if out := run(t, repo, "branch", "--list", "task/doomed"); strings.TrimSpace(out) != "" {
+		t.Fatalf("branch left behind: %q", out)
+	}
+}

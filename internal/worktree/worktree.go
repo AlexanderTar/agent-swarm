@@ -469,7 +469,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Worktree, error) 
 	}
 	path := PathFor(s.worktreesDir(), in.RepoPath, in.Branch, s.pathTaken(ctx))
 	args := []string{"worktree", "add"}
-	if !s.branchExists(ctx, in.RepoPath, in.Branch) {
+	newBranch := !s.branchExists(ctx, in.RepoPath, in.Branch)
+	if newBranch {
 		args = append(args, "-b", in.Branch, path, base)
 	} else {
 		args = append(args, path, in.Branch)
@@ -479,12 +480,14 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Worktree, error) 
 	}
 	sha, err := s.git(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
+		s.undoAdd(in.RepoPath, path, newBranch, in.Branch)
 		return Worktree{}, err
 	}
 	wt := Worktree{ID: ids.New("wt"), RepoID: in.RepoID, Path: path, Branch: in.Branch,
 		BaseRef: base, BaseSHA: strings.TrimSpace(string(sha)),
 		OwnerAgentID: in.OwnerAgentID, RootItemID: in.RootItemID, State: "active", CreatedAt: s.Now()}
 	if err := s.insert(ctx, wt); err != nil {
+		s.undoAdd(in.RepoPath, path, newBranch, in.Branch)
 		return Worktree{}, err
 	}
 	s.ignoreGraphifyOut(ctx, in.RepoPath)
@@ -560,10 +563,26 @@ func (s *Service) Review(ctx context.Context, in CreateInput, sha string) (Workt
 		BaseRef: sha, BaseSHA: sha, OwnerAgentID: in.OwnerAgentID, RootItemID: in.RootItemID,
 		State: "active", CreatedAt: s.Now()}
 	if err := s.insert(ctx, wt); err != nil {
+		s.undoAdd(in.RepoPath, path, false, "")
 		return Worktree{}, err
 	}
 	s.ignoreGraphifyOut(ctx, in.RepoPath)
 	return wt, nil
+}
+
+// undoAdd reverses a `git worktree add` whose row could not be recorded, so no
+// untracked checkout is left on disk (and no branch Create just made). It uses
+// a fresh context: ctx may be the very thing that cancelled the insert.
+func (s *Service) undoAdd(repoPath, path string, newBranch bool, branch string) {
+	ctx := context.Background()
+	if out, err := s.git(ctx, repoPath, "worktree", "remove", "--force", path); err != nil {
+		s.logf("worktree: undo add %s failed: %v: %s", path, err, out)
+	}
+	if newBranch {
+		if out, err := s.git(ctx, repoPath, "branch", "-D", branch); err != nil {
+			s.logf("worktree: undo branch %s failed: %v: %s", branch, err, out)
+		}
+	}
 }
 
 // Remove runs the §12.1 checks in order. Only the owner may call it, and only
