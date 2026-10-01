@@ -1,3 +1,4 @@
+import { Check, LoaderCircle, Pause, Play, RotateCcw, SquareTerminal, X, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { errorText } from "../api";
 import { C, ROLE_LABEL, T } from "../copy";
@@ -11,6 +12,15 @@ import { useToast } from "./Toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
+
+const ACTION_ICON: Record<AgentEndpoint, LucideIcon> = {
+  terminal: SquareTerminal,
+  pause: Pause,
+  resume: Play,
+  cancel: X,
+  retry: RotateCcw,
+  ack: Check,
+};
 
 export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: number }) {
   const { connected, live } = useConnection();
@@ -42,7 +52,7 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
     <div
       id={`agent-${agent.name}`}
       data-testid={`agent-${agent.name}`}
-      className="flex flex-col items-start gap-2 py-1 sm:flex-row sm:items-center sm:justify-between"
+      className="flex items-center justify-between gap-2 py-1"
       style={{ paddingLeft: depth * 16 }}
     >
       <div className="min-w-0">
@@ -55,19 +65,24 @@ export function AgentRow({ agent, depth = 0 }: { agent: AgentNode; depth?: numbe
         )}
         <StateDot state={displayState(agent)} withLabel />
       </div>
-      <div className="flex flex-wrap gap-1">
+      <div className="flex shrink-0 gap-1">
         {agentActions(agent).map((a) => {
           const inFlight = a.endpoint === requested;
+          const label = inFlight ? (requested === "pause" ? C.pausing : C.resuming) : a.label;
+          const Icon = inFlight || a.label === C.pausing ? LoaderCircle : ACTION_ICON[a.endpoint];
           return (
             <Button
               key={a.endpoint}
               type="button"
-              variant={a.endpoint === "cancel" ? "destructive" : "outline"}
-              size="sm"
+              variant="outline"
+              size="icon-sm"
+              aria-label={label}
+              title={label}
+              className={a.endpoint === "cancel" ? "text-destructive hover:text-destructive" : undefined}
               disabled={a.disabled || inFlight || !connected || act.pending}
               onClick={() => a.confirm ? setConfirming(a) : void onAction(a)}
             >
-              {inFlight ? (requested === "pause" ? C.pausing : C.resuming) : a.label}
+              <Icon aria-hidden className={Icon === LoaderCircle ? "animate-spin" : undefined} />
             </Button>
           );
         })}

@@ -104,11 +104,14 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
     public var preflightError: String?
     public var progress: AgentProgress?
     public var merge: MergeProgress?
+    /// Worker overrides stored on an orchestrator (`role_overrides`, keyed by role slug); nil when none.
+    public var roleOverrides: [String: RoleDefault]?
     public var children: [AgentNode]
     public var finished: [AgentNode]
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, model, effort, role, step, state, session, replacement, children, finished, progress, merge
+        case roleOverrides = "role_overrides"
         case itemKey = "item_key", itemTitle = "item_title", rootKey = "root_key"
         case parentName = "parent_name", preflightError = "preflight_error"
     }
@@ -120,7 +123,9 @@ public struct AgentNode: Codable, Sendable, Equatable, Identifiable {
                 session: SessionInfo? = SessionInfo(state: .running),
                 replacement: AgentReplacement? = nil, preflightError: String? = nil,
                 progress: AgentProgress? = nil, merge: MergeProgress? = nil,
+                roleOverrides: [String: RoleDefault]? = nil,
                 children: [AgentNode] = [], finished: [AgentNode] = []) {
+        self.roleOverrides = roleOverrides
         self.id = id; self.name = name; self.kind = kind; self.model = model; self.effort = effort
         self.role = role; self.step = step
         self.itemKey = itemKey; self.itemTitle = itemTitle; self.rootKey = rootKey
@@ -811,16 +816,20 @@ public struct StartOrchestratorBody: Codable, Sendable, Equatable {
 }
 
 /// POST /api/agents/{name}/handoff. `agent == nil` is a plain handoff (`{"request_id":…}` only).
+/// `roles` carries only worker roles changed from the orchestrator's current overrides; absent leaves them unchanged.
 public struct HandoffRequest: Codable, Sendable, Equatable {
     public var requestId: String
     public var agent: AgentKind?
     public var model: String?
     public var effort: String?
     public var advisor: AdvisorPayload?
+    public var roles: [String: RoleDefault]?
 
-    enum CodingKeys: String, CodingKey { case agent, model, effort, advisor, requestId = "request_id" }
+    enum CodingKeys: String, CodingKey { case agent, model, effort, advisor, roles, requestId = "request_id" }
 
-    public init(requestId: String, agent: AgentKind? = nil, model: String? = nil, effort: String? = nil, advisor: AdvisorPayload? = nil) {
+    public init(requestId: String, agent: AgentKind? = nil, model: String? = nil, effort: String? = nil, advisor: AdvisorPayload? = nil,
+                roles: [String: RoleDefault]? = nil) {
         self.requestId = requestId; self.agent = agent; self.model = model; self.effort = effort; self.advisor = advisor
+        self.roles = roles
     }
 }

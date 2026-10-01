@@ -245,10 +245,61 @@ final class BoardHandoffTests: XCTestCase {
         XCTAssertEqual(f.workerChoice(.coder).agent, .codex, "picker edits apply even with no Settings default")
     }
 
-    func testWorkerRolesPayloadIsNilInHandoffMode() async {
-        let f = await form(preselect: "auth-epic-orchestrator")
+    func testHandoffWorkersPrefillFromOrchestratorOverridesThenSettings() async {
+        var agents = state.agents
+        let i = agents.firstIndex { $0.name == "auth-epic-orchestrator" }!
+        agents[i].roleOverrides = ["coder": RoleDefault(agent: .codex, model: "gpt-6-astra", effort: "low")]
+        let f = BoardHandoffForm(client: client, settings: state.settings, agents: agents, connected: true, preselectAgent: "auth-epic-orchestrator")
+        await f.load()
         XCTAssertTrue(f.isHandoff)
-        f.setWorkerAgent(.coder, "codex")
-        XCTAssertNil(f.workerRolesPayload, "HandoffRequest has no roles")
+        XCTAssertEqual(f.workerChoice(.coder).agent, .codex, "override wins")
+        XCTAssertEqual(f.workerChoice(.coder).model, "gpt-6-astra")
+        XCTAssertEqual(f.workerChoice(.reviewer).agent, state.settings[.reviewer]?.agent, "no override falls back to Settings")
+        XCTAssertNil(f.workerRolesPayload, "prefill alone is not a change")
+    }
+
+    func testHandoffSendsOnlyChangedRoles() async throws {
+        var agents = state.agents
+        let i = agents.firstIndex { $0.name == "auth-epic-orchestrator" }!
+        agents[i].roleOverrides = ["coder": RoleDefault(agent: .codex, model: "gpt-6-astra", effort: "low")]
+        let f = BoardHandoffForm(client: client, settings: state.settings, agents: agents, connected: true, preselectAgent: "auth-epic-orchestrator")
+        await f.load()
+        f.setWorkerEffort(.coder, "high")
+        let closed = await f.primary()
+        XCTAssertTrue(closed)
+        let sent = try XCTUnwrap(client.handoffRequests.last)
+        XCTAssertEqual(sent.roles?.keys.sorted(), ["coder"])
+        XCTAssertEqual(sent.roles?["coder"]?.effort, "high")
+    }
+
+    func testHandoffBlockedByInvalidWorkerPick() async {
+        let f = await form(preselect: "auth-epic-orchestrator")
+        XCTAssertTrue(f.canSubmit)
+        f.setWorkerModel(.coder, "no-such-model")
+        XCTAssertFalse(f.workersValid)
+        XCTAssertFalse(f.canSubmit, "an invalid worker row must block Hand off, not surface as a daemon 4xx")
+    }
+
+    func testSwitchingRowsDropsWorkerEditsMadeAgainstTheOldBaseline() async {
+        let f = await form(preselect: "auth-epic-orchestrator")
+        let handoffKey = f.selectedKey
+        f.setWorkerEffort(.coder, "high")
+        let other = f.rows.first { $0.orchestrator == nil }
+        guard let other else { return XCTFail("fixture needs a start row") }
+        f.selectedKey = other.id
+        f.selectedKey = handoffKey
+        XCTAssertNil(f.workerRolesPayload, "edits belonged to the previous selection's baseline")
+    }
+
+    func testHandoffWithoutWorkerEditsSendsNoRoles() async {
+        let f = await form(preselect: "auth-epic-orchestrator")
+        _ = await f.primary()
+        XCTAssertNil(client.handoffRequests.last?.roles)
+    }
+
+    func testAgentNodeDecodesRoleOverrides() throws {
+        let json = #"{"id":"a","name":"n","kind":"claude","model":"m","role":"orchestrator","item_key":"K","item_title":"T","root_key":"K","state":"active","children":[],"finished":[],"role_overrides":{"coder":{"agent":"codex","model":"x","effort":"low"}}}"#
+        let n = try JSONDecoder().decode(AgentNode.self, from: Data(json.utf8))
+        XCTAssertEqual(n.roleOverrides?["coder"]?.agent, .codex)
     }
 }

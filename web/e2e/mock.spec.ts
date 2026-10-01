@@ -449,3 +449,25 @@ for (const start of [false, true]) {
     });
   }
 }
+
+for (const width of [1440, 390]) {
+  test(`agent actions are icon buttons on the name line at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/#/hierarchy?item=EPIC-12");
+    await page.getByRole("tab", { name: "Agents" }).click();
+    const row = page.getByTestId("agent-auth-epic-orchestrator");
+    const name = row.getByText("auth-epic-orchestrator · Orchestrator");
+    const nameBox = await name.boundingBox();
+    const rowBox = await row.boundingBox();
+    for (const label of ["Terminal", "Pause group", "Cancel"]) {
+      const button = row.getByRole("button", { name: label, exact: true });
+      await expect(button).toBeVisible();
+      await expect(button.locator("svg")).toBeVisible();
+      expect((await button.innerText()).trim()).toBe("");
+      const box = await button.boundingBox();
+      // One line, level with the name, inside the row.
+      expect(Math.abs((box?.y ?? 0) + (box?.height ?? 0) / 2 - ((nameBox?.y ?? 0) + (nameBox?.height ?? 0) / 2))).toBeLessThan(12);
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual((rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1);
+    }
+  });
+}

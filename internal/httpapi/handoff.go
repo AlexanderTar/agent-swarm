@@ -41,6 +41,9 @@ type handoffBody struct {
 	Model     string             `json:"model,omitempty"`
 	Effort    string             `json:"effort,omitempty"`
 	Advisor   *advisorChoiceBody `json:"advisor,omitempty"` // object or "none"
+	// Roles are worker-role overrides persisted on the agent before the
+	// successor starts; absent leaves its overrides unchanged.
+	Roles map[string]roleDefaultBody `json:"roles,omitempty"`
 }
 
 func (s *Server) handoffAgent(w http.ResponseWriter, r *http.Request) {
@@ -63,11 +66,19 @@ func (s *Server) handoffAgent(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
-	var op runtime.Operation
-	switch {
-	case body.Agent == "" && (body.Model != "" || body.Effort != "" || body.Advisor != nil):
+	if body.Agent == "" && (body.Model != "" || body.Effort != "" || body.Advisor != nil) {
 		s.writeErr(w, apiErr(http.StatusBadRequest, "bad_request", "Choose an agent."))
 		return
+	}
+	// Saved before the op so the successor walk sees them; undone below if
+	// the hand-off is then refused, so a failed request changes nothing.
+	prev := a.RoleOverrides
+	if err := s.RT.SetWorkerRoleOverrides(r.Context(), a.ID, rolesFromBody(body.Roles)); err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	var op runtime.Operation
+	switch {
 	case body.Agent != "":
 		op, err = s.RT.RequestHandoffTo(r.Context(), a.ID, body.RequestID, runtime.AgentSwitch{
 			Kind: runtime.AgentKind(body.Agent), Model: body.Model, Effort: body.Effort,
@@ -77,6 +88,9 @@ func (s *Server) handoffAgent(w http.ResponseWriter, r *http.Request) {
 		op, err = s.RT.RequestReplacement(r.Context(), a.ID, runtime.ModeHandoff, body.RequestID, body.Note)
 	}
 	if err != nil {
+		if len(body.Roles) > 0 {
+			_ = s.RT.RestoreRoleOverrides(r.Context(), a.ID, prev)
+		}
 		s.writeErr(w, err)
 		return
 	}

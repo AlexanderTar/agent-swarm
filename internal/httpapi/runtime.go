@@ -48,29 +48,32 @@ type advisorInfoWire struct {
 // agentNodeWire is contracts §3.2 AgentNode. Children/Finished are always []
 // (W4), never null, even for a leaf.
 type agentNodeWire struct {
-	ID             string                 `json:"id"`
-	Name           string                 `json:"name"`
-	Kind           runtime.AgentKind      `json:"kind"`
-	Model          string                 `json:"model"`
-	Effort         *string                `json:"effort"`
-	Role           runtime.Role           `json:"role"`
-	Step           *string                `json:"step,omitempty"`
-	ItemKey        string                 `json:"item_key"`
-	ItemTitle      string                 `json:"item_title"`
-	RootKey        string                 `json:"root_key"`
-	ParentName     *string                `json:"parent_name"`
-	Advisor        *advisorInfoWire       `json:"advisor"`
-	State          runtime.AgentState     `json:"state"`
-	Session        *sessionInfoWire       `json:"session"`
-	Replacement    *replacementWire       `json:"replacement,omitempty"`
-	PreflightError *string                `json:"preflight_error"`
-	KindReason     *string                `json:"kind_reason"`        // why kind/model isn't the role default; null = settings
-	Progress       *runtime.TodoProgress  `json:"progress,omitempty"` // orchestrators of a root with a list only
-	Merge          *runtime.MergeProgress `json:"merge,omitempty"`    // top-level orchestrators of a root awaiting merge
-	CreatedAt      int64                  `json:"created_at"`
-	FinishedAt     *int64                 `json:"finished_at"`
-	Children       []agentNodeWire        `json:"children"`
-	Finished       []agentNodeWire        `json:"finished"`
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	Kind        runtime.AgentKind  `json:"kind"`
+	Model       string             `json:"model"`
+	Effort      *string            `json:"effort"`
+	Role        runtime.Role       `json:"role"`
+	Step        *string            `json:"step,omitempty"`
+	ItemKey     string             `json:"item_key"`
+	ItemTitle   string             `json:"item_title"`
+	RootKey     string             `json:"root_key"`
+	ParentName  *string            `json:"parent_name"`
+	Advisor     *advisorInfoWire   `json:"advisor"`
+	State       runtime.AgentState `json:"state"`
+	Session     *sessionInfoWire   `json:"session"`
+	Replacement *replacementWire   `json:"replacement,omitempty"`
+	// RoleOverrides: the agent's stored worker overrides (omitted when none), so a
+	// client can prefill them on hand-off.
+	RoleOverrides  map[string]roleDefaultBody `json:"role_overrides,omitempty"`
+	PreflightError *string                    `json:"preflight_error"`
+	KindReason     *string                    `json:"kind_reason"`        // why kind/model isn't the role default; null = settings
+	Progress       *runtime.TodoProgress      `json:"progress,omitempty"` // orchestrators of a root with a list only
+	Merge          *runtime.MergeProgress     `json:"merge,omitempty"`    // top-level orchestrators of a root awaiting merge
+	CreatedAt      int64                      `json:"created_at"`
+	FinishedAt     *int64                     `json:"finished_at"`
+	Children       []agentNodeWire            `json:"children"`
+	Finished       []agentNodeWire            `json:"finished"`
 }
 
 type gitRefWire struct {
@@ -494,6 +497,12 @@ func (s *Server) agentNodeOut(ctx context.Context, a runtime.Agent, live map[str
 		PreflightError: optStr(a.PreflightError), KindReason: optStr(a.KindReason),
 		CreatedAt: db.Millis(a.CreatedAt), FinishedAt: optMs(a.FinishedAt),
 		Children: []agentNodeWire{}, Finished: []agentNodeWire{}}
+	if a.Role == runtime.RoleOrchestrator && len(a.RoleOverrides) > 0 {
+		w.RoleOverrides = make(map[string]roleDefaultBody, len(a.RoleOverrides))
+		for r, rd := range a.RoleOverrides {
+			w.RoleOverrides[string(r)] = roleDefaultBody{Agent: string(rd.Agent), Model: rd.Model, Effort: rd.Effort}
+		}
+	}
 	if a.ParentAgentID != "" {
 		if name, err := s.agentNameByID(ctx, a.ParentAgentID); err == nil {
 			w.ParentName = &name

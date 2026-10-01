@@ -36,9 +36,7 @@ public struct BoardHandoffView: View {
                     }
                 }
                 AgentPickerGrid(picker: form.picker)
-                if !form.isHandoff {
-                    WorkerOverridesGrid(form: form)
-                }
+                WorkerOverridesGrid(form: form)
             }
             .padding(.horizontal, 22).padding(.vertical, 12)
             Divider()
@@ -74,9 +72,8 @@ public struct BoardHandoffView: View {
     }
 }
 
-/// Worker Agent/Model/Effort overrides for start mode, prefilled from Settings.
-/// Same copy, tokens and idiom as `AgentPickerGrid`; hidden in handoff mode
-/// (`HandoffRequest` has no roles).
+/// Worker Agent/Model/Effort overrides, prefilled from Settings (start) or the orchestrator's
+/// current overrides (handoff). Same copy, tokens and idiom as `AgentPickerGrid`.
 struct WorkerOverridesGrid: View {
     @Bindable var form: BoardHandoffForm
 
@@ -88,7 +85,7 @@ struct WorkerOverridesGrid: View {
                     let label = Copy.defaultsRowLabel(role)
                     let choice = form.workerChoice(role)
                     GridRow {
-                        Text(label).frame(width: 84, alignment: .leading)
+                        Text(label).lineLimit(1).minimumScaleFactor(0.85).frame(width: PickerColumns.label, alignment: .leading)
                         WideOptionPicker("\(label) \(Copy.agent)", options: form.workerAgentOptions,
                                          value: choice.agent?.rawValue ?? "",
                                          icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setWorkerAgent(role, $0) }
@@ -96,7 +93,7 @@ struct WorkerOverridesGrid: View {
                         Text(Copy.model).frame(width: 50, alignment: .leading)
                         WideOptionPicker("\(label) \(Copy.model)", options: form.workerModelOptions(role),
                                          value: choice.model) { form.setWorkerModel(role, $0) }
-                            .frame(minWidth: 0, maxWidth: .infinity)
+                            .frame(minWidth: 200, maxWidth: .infinity)
                         if let efforts = form.workerEffortOptions(role) {
                             Text(Copy.effort).frame(width: 45, alignment: .leading)
                             WideOptionPicker("\(label) \(Copy.effort)", options: efforts,

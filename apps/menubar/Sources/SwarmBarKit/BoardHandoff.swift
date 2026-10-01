@@ -60,7 +60,14 @@ public final class BoardHandoffForm {
 
     public let picker: AgentPickerModel
     public private(set) var rows: [BoardItemRow] = []
-    public var selectedKey: String?
+    public var selectedKey: String? {
+        didSet {
+            // Worker edits are measured against the selected orchestrator's baseline, so
+            // moving to a different one (or between start and hand-off) drops them.
+            let old = rows.first { $0.id == oldValue }?.orchestrator?.name
+            if old != selected?.orchestrator?.name { workers = [:]; workerNotes = [:]; workerModelErrors = [:] }
+        }
+    }
     public private(set) var loading = true
     public private(set) var loadError: String?
     public private(set) var failure: String?
@@ -74,7 +81,7 @@ public final class BoardHandoffForm {
     private var requestID = UUID().uuidString
     /// Same entries on retry reuse `requestID`; any edit or `.api` error mints a new one.
     private var lastAttempt: Attempt?
-    /// Worker Agent/Model/Effort picks for start mode, prefilled from Settings role defaults.
+    /// Worker Agent/Model/Effort edits; unedited roles show `workerBaseline`.
     private var workers: [SettingsRole: AgentChoice] = [:]
     private var workerNotes: [SettingsRole: String] = [:]
     private var workerModelErrors: [SettingsRole: String] = [:]
@@ -89,11 +96,6 @@ public final class BoardHandoffForm {
         self.connected = connected
         self.preselectAgent = preselectAgent
         picker = AgentPickerModel(settings: settings)
-        for role in Self.workerRoles {
-            if let d = settings[role] {
-                workers[role] = AgentChoice(agent: d.agent, model: d.model, effort: d.effort)
-            }
-        }
     }
 
     public func load() async {
@@ -138,13 +140,21 @@ public final class BoardHandoffForm {
     public var canSubmit: Bool {
         if loadError != nil { return connected && !loading }
         return connected && !submitting && !loading && selected != nil && picker.errors.isValid
-            && (isHandoff ? handoffPossible : workersValid)
+            && workersValid && (!isHandoff || handoffPossible)
     }
 
-    // MARK: worker overrides (start mode only)
+    // MARK: worker overrides
+
+    /// What a role starts from: the selected orchestrator's stored override in handoff mode, else Settings.
+    private func workerBaseline(_ role: SettingsRole) -> RoleDefault? {
+        selected?.orchestrator?.roleOverrides?[role.rawValue] ?? picker.settings[role]
+    }
 
     public func workerChoice(_ role: SettingsRole) -> AgentChoice {
-        workers[role] ?? AgentChoice(agent: picker.settings.enabledAgents.first, model: "")
+        if let w = workers[role] { return w }
+        guard let d = workerBaseline(role) else { return AgentChoice(agent: picker.settings.enabledAgents.first, model: "") }
+        return AgentChoice(agent: d.agent, model: d.model, effort: CatalogRules.normalizeEffort(d.agent,
+            CatalogRules.resolve(CatalogRules.entry(picker.catalog, d.agent), d.model), d.effort))
     }
 
     public var workerAgentOptions: [PickerOption] { picker.agentOptions }
@@ -201,14 +211,13 @@ public final class BoardHandoffForm {
         }
     }
 
-    /// Only roles the user changed from Settings defaults, so unchanged defaults keep following
-    /// later Settings changes. nil in handoff mode (`HandoffRequest` has no roles) and when
-    /// nothing changed.
+    /// Only roles the user changed from their baseline (Settings, or the orchestrator's current
+    /// override in handoff mode), so unchanged defaults keep following later Settings changes.
+    /// nil when nothing changed.
     public var workerRolesPayload: [String: RoleDefault]? {
-        guard !isHandoff else { return nil }
         var out: [String: RoleDefault] = [:]
         for role in Self.workerRoles {
-            guard let w = workers[role], let agent = w.agent, let d = picker.settings[role] else { continue }
+            guard let w = workers[role], let agent = w.agent, let d = workerBaseline(role) else { continue }
             let effort = CatalogRules.normalizeEffort(agent,
                 CatalogRules.resolve(CatalogRules.entry(picker.catalog, agent), w.model), w.effort)
             if agent != d.agent || w.model != d.model || effort != d.effort {
@@ -233,7 +242,7 @@ public final class BoardHandoffForm {
         do {
             if let orch = row.orchestrator {
                 try await client.handoff(orch.name, HandoffRequest(requestId: requestID, agent: agent, model: attempt.model,
-                                                                   effort: attempt.effort, advisor: attempt.advisor))
+                                                                   effort: attempt.effort, advisor: attempt.advisor, roles: roles))
             } else {
                 _ = try await client.startOrchestrator(itemKey: row.id, StartOrchestratorBody(requestId: requestID, agent: agent,
                     model: attempt.model, effort: attempt.effort, advisor: attempt.advisor, roles: roles))
