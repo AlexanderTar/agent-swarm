@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { C, ROLE_LABEL } from "../copy";
+import { AgentIcon } from "./icons";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 import { Label } from "./ui/label";
@@ -19,17 +20,17 @@ export interface AgentFieldsValue {
 }
 
 const WORKER_ROLES: SettingsRole[] = ["coder", "reviewer", "ui_reviewer", "designer", "researcher", "debugger", "mechanical"];
-const ROW = "grid grid-cols-[72px_minmax(0,1fr)] items-center gap-x-2 gap-y-1 sm:grid-cols-[72px_150px_52px_minmax(0,1fr)]";
+const ROW = "grid min-w-0 grid-cols-[72px_minmax(0,1fr)] items-center gap-x-2 gap-y-1 @min-[700px]:grid-cols-[48px_minmax(0,1fr)_44px_minmax(0,1fr)_40px_minmax(0,1fr)]";
 const DEFAULT = "__default";
 
-function Pick(p: { id: string; label: string; value: string; options: Option[]; onChange(v: string): void; disabled?: boolean; placeholder?: string }) {
+function Pick(p: { id: string; label: string; value: string; options: Option[]; onChange(v: string): void; disabled?: boolean; placeholder?: string; agent?: boolean }) {
   const known = p.options.some((o) => o.value === p.value);
   return (
     <Select value={p.disabled ? "" : p.value || DEFAULT} onValueChange={(v) => p.onChange(v === DEFAULT ? "" : v)} disabled={p.disabled}>
-      <SelectTrigger id={p.id} aria-label={p.label} className="w-full"><SelectValue placeholder={p.placeholder} /></SelectTrigger>
+      <SelectTrigger id={p.id} aria-label={p.label} className="min-w-0 w-full"><SelectValue placeholder={p.placeholder} /></SelectTrigger>
       <SelectContent>
         {!known && p.value && <SelectItem value={p.value}>{p.value}</SelectItem>}
-        {p.options.map((o) => <SelectItem key={o.value} value={o.value || DEFAULT} disabled={o.disabled}>{o.label}</SelectItem>)}
+        {p.options.map((o) => <SelectItem key={o.value} value={o.value || DEFAULT} disabled={o.disabled}>{p.agent && o.value && o.value !== "none" && <span aria-hidden><AgentIcon kind={o.value as AgentKind} /></span>}{o.label}</SelectItem>)}
       </SelectContent>
     </Select>
   );
@@ -58,10 +59,10 @@ export function AgentFields(p: {
   };
 
   return (
-    <div className="space-y-2">
+    <div className="@container space-y-2">
       <div className={ROW}>
         <Label htmlFor={`${id}-agent`}>{C.agent}</Label>
-        <Pick id={`${id}-agent`} label={C.agent} value={choice.agent} options={agentOptions(p.settings.enabled_agents)} onChange={(v) => {
+        <Pick agent id={`${id}-agent`} label={C.agent} value={choice.agent} options={agentOptions(p.settings.enabled_agents)} onChange={(v) => {
           const r = changeAgent(choice, v as AgentKind, p.catalog);
           setAgentError(r.errors.model);
           setNote(undefined);
@@ -74,17 +75,19 @@ export function AgentFields(p: {
           setNote(r.note);
           p.onChange({ ...p.value, choice: r.choice });
         }} />
-        {(errors.agent || agentError || (choice.model ? errors.model : undefined)) && <p className="col-start-2 text-xs text-destructive sm:col-end-5">{errors.agent || agentError || errors.model}</p>}
         {efforts && <>
-          <Label htmlFor={`${id}-effort`}>{C.effort}</Label><span className="hidden sm:col-span-2 sm:block" />
+          <Label htmlFor={`${id}-effort`}>{C.effort}</Label>
           <Pick id={`${id}-effort`} label={C.effort} value={choice.effort} options={efforts} onChange={(v) => { setNote(undefined); p.onChange({ ...p.value, choice: { ...choice, effort: v } }); }} />
         </>}
-        {note && <p className="col-start-2 text-xs text-muted-foreground sm:col-start-4">{note}</p>}
+        {(errors.agent || agentError || (choice.model ? errors.model : undefined)) && <p className="col-start-2 text-xs text-destructive @min-[700px]:col-span-5">{errors.agent || agentError || errors.model}</p>}
+        {note && <p className="col-start-2 text-xs text-muted-foreground @min-[700px]:col-span-5">{note}</p>}
+      </div>
+      <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] items-center gap-x-2 gap-y-1 @min-[700px]:grid-cols-[48px_minmax(0,1fr)_44px_minmax(0,1fr)]">
         <Label htmlFor={`${id}-advisor`}>{C.advisor}</Label>
-        <Pick id={`${id}-advisor`} label={C.advisor} value={advisor === "none" ? "none" : advisor.agent} options={advisorAgentOptions(p.settings.enabled_agents)} onChange={(v) => p.onChange({ ...p.value, advisor: changeAdvisorAgent(v as AgentKind | "none", p.settings, p.catalog) })} />
+        <Pick agent id={`${id}-advisor`} label={C.advisor} value={advisor === "none" ? "none" : advisor.agent} options={advisorAgentOptions(p.settings.enabled_agents)} onChange={(v) => p.onChange({ ...p.value, advisor: changeAdvisorAgent(v as AgentKind | "none", p.settings, p.catalog) })} />
         <Label htmlFor={`${id}-advisor-model`}>{C.model}</Label>
         <Pick id={`${id}-advisor-model`} label={C.advisorModel} value={advisor === "none" ? "" : advisor.model} placeholder="—" disabled={advisor === "none"} options={advisor === "none" ? [] : advisorModelOptions(p.catalog, advisor.agent)} onChange={(m) => advisor !== "none" && p.onChange({ ...p.value, advisor: { agent: advisor.agent, model: m } })} />
-        {errors.advisor && <p className="col-start-2 text-xs text-destructive sm:col-end-5">{errors.advisor}</p>}
+        {errors.advisor && <p className="col-start-2 text-xs text-destructive @min-[700px]:col-end-5">{errors.advisor}</p>}
       </div>
       <p className="text-xs text-muted-foreground">{C.defaultsFromSettings}</p>
       {stale && <p className="text-xs text-warning">{stale}</p>}
@@ -101,9 +104,9 @@ export function AgentFields(p: {
             const roleEfforts = effortOptions(roleAgent, resolveModel(roleEntry, roleModel));
             return (
               <fieldset key={role} aria-label={ROLE_LABEL[role]} className={`${ROW} border-t border-border pt-2`}>
-                <legend className="col-span-2 text-sm font-semibold sm:col-span-4">{ROLE_LABEL[role]}</legend>
+                <legend className="col-span-2 text-sm font-semibold @min-[700px]:col-span-6">{ROLE_LABEL[role]}</legend>
                 <Label htmlFor={`${id}-${role}-agent`}>{C.agent}</Label>
-                <Pick id={`${id}-${role}-agent`} label={`${ROLE_LABEL[role]} ${C.agent}`} value={roleAgent} options={agentOptions(p.settings.enabled_agents)} onChange={(v) => {
+                <Pick agent id={`${id}-${role}-agent`} label={`${ROLE_LABEL[role]} ${C.agent}`} value={roleAgent} options={agentOptions(p.settings.enabled_agents)} onChange={(v) => {
                   const newAgent = v as AgentKind;
                   const newEntry = entryFor(p.catalog, newAgent);
                   const nextModel = resolveModel(newEntry, roleModel) ? roleModel : (newEntry?.default_model ?? newEntry?.models[0]?.id ?? "");
@@ -113,7 +116,7 @@ export function AgentFields(p: {
                 <Label htmlFor={`${id}-${role}-model`}>{C.model}</Label>
                 <Pick id={`${id}-${role}-model`} label={`${ROLE_LABEL[role]} ${C.model}`} value={roleModel} options={modelOptions(roleEntry)} onChange={(v) => updateRole(role, roleAgent, v, normalizeEffort(roleAgent, resolveModel(roleEntry, v), roleEffort) || undefined)} />
                 {roleEfforts && <>
-                  <Label htmlFor={`${id}-${role}-effort`}>{C.effort}</Label><span className="hidden sm:col-span-2 sm:block" />
+                  <Label htmlFor={`${id}-${role}-effort`}>{C.effort}</Label>
                   <Pick id={`${id}-${role}-effort`} label={`${ROLE_LABEL[role]} ${C.effort}`} value={roleEffort} options={roleEfforts} onChange={(v) => updateRole(role, roleAgent, roleModel, v || undefined)} />
                 </>}
               </fieldset>

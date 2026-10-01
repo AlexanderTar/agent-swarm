@@ -68,3 +68,11 @@
 .key { @apply font-mono; font-size: 12px; }
 
 .react-flow__node.selected > div { border-color: var(--ring); }
+
+/* Transparent tracks stay unobtrusive until pointer or keyboard interaction. */
+* { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+*:hover, *:focus-within { scrollbar-color: var(--border) transparent; }
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: transparent; border-radius: 999px; }
+*:hover::-webkit-scrollbar-thumb, *:focus-within::-webkit-scrollbar-thumb { background: var(--border); }

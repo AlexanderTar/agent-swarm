@@ -26,6 +26,8 @@ export function Sheet(p: {
     <UiSheet open modal={modal} onOpenChange={(open) => { if (!open) p.onClose(); }}>
       <SheetContent
         side="right"
+        tabIndex={-1}
+        onOpenAutoFocus={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).focus(); }}
         overlay={modal}
         aria-label={p.title}
         {...(p.subtitle ? {} : { "aria-describedby": undefined })}
@@ -49,7 +51,7 @@ export function Sheet(p: {
             {p.subtitle && <SheetDescription>{p.subtitle}</SheetDescription>}
           </SheetHeader>
         )}
-        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">{p.children}</div>
+        <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">{p.children}</div>
         {p.footer && <SheetFooter className="flex-row items-center justify-end gap-2 border-t border-border px-5 py-3">{p.footer}</SheetFooter>}
       </SheetContent>
     </UiSheet>
