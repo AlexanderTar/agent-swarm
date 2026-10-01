@@ -13,7 +13,7 @@ import { C, STATUS_LABEL, T } from "../copy";
 import { useInvalidate, useMutation, useQuery } from "../data/hooks";
 import { useArtifact, useCheckpoints, useItemDetail, useItems } from "../data/queries";
 import { ARTIFACT_LABEL } from "../logic/requestTitle";
-import { SCOPE_LABEL, agentOptions, approveBody, closeResolution, gitBindingLine, isApprovalKind, reviewHeader, treeWaiverCounts } from "../logic/review";
+import { SCOPE_LABEL, agentOptions, approveBody, closeResolution, gitBindingLine, isApprovalKind, reviewHeader } from "../logic/review";
 import { verifyLine } from "../logic/timeline";
 import type { AcceptBinding, MergeChoice, Request } from "../types";
 
@@ -120,9 +120,8 @@ export function Review({ request: r, connected }: { request: Request; connected:
   const [stale, setStale] = useState(false);
   const [comment, setComment] = useState("");
   const options = agentOptions(r);
-  const items = useItems();
   const isFinish = r.kind === "accept_epic" || r.kind === "accept_fix";
-  const tree = isFinish && items.data ? treeWaiverCounts(items.data.items, r.root_key) : null;
+  const tree = isFinish ? r.waiver_history : undefined;
   const invalidate = useInvalidate();
   const toast = useToast();
   const decide = useMutation(

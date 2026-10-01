@@ -257,6 +257,7 @@ export interface Request {
   // True while an approval's native prompt is open in the asking agent's terminal (spec 2.2.1).
   native_pending: boolean;
   finish_local?: boolean;          // finish request whose repos have no GitHub remote
+  waiver_history?: { waivers: number; overrides: number };  // finish request: every waiver/override ever applied under its root
   approval_evidence: "observed" | "agent_reported" | "auto_empty" | null;
 }
 

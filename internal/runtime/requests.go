@@ -110,6 +110,12 @@ type ApproveInput struct {
 	Comment string
 }
 
+// WaiverHistory is the audit count behind the finish banner.
+type WaiverHistory struct {
+	Waivers   int `json:"waivers"`
+	Overrides int `json:"overrides"`
+}
+
 // RequestWire is the contracts §3.3 Request. It is the payload of request.opened
 // and request.resolved (R5) and the body of every /api/requests route.
 type RequestWire struct {
@@ -145,6 +151,9 @@ type RequestWire struct {
 	NativePending bool `json:"native_pending"`
 	// FinishLocal is true on an accept row when no repo in its binding has a GitHub remote.
 	FinishLocal bool `json:"finish_local,omitempty"`
+	// WaiverHistory counts every waiver and override ever applied under an accept row's root,
+	// including removed or cleared ones; omitted when there were none.
+	WaiverHistory *WaiverHistory `json:"waiver_history,omitempty"`
 	// OptionDescriptions and Choice accompany agent-proposed options: Options is then their labels
 	// (Swarm's "Request changes" is the UI's to add), Choice the label an approval recorded.
 	OptionDescriptions []string `json:"option_descriptions"`
@@ -434,6 +443,13 @@ func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (Reque
 			return RequestWire{}, err
 		}
 		w.FinishLocal = local
+		wv, ov, err := s.waiverHistoryTx(ctx, tx, r.ItemID)
+		if err != nil {
+			return RequestWire{}, err
+		}
+		if wv+ov > 0 {
+			w.WaiverHistory = &WaiverHistory{Waivers: wv, Overrides: ov}
+		}
 	}
 	if r.ArtifactID != "" {
 		id := r.ArtifactID

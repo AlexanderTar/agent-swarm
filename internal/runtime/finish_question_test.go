@@ -595,3 +595,60 @@ func TestApproveRefusesMergeWithoutChoiceWhenOptionsExist(t *testing.T) {
 		t.Fatalf("a choice must still approve: %v", err)
 	}
 }
+
+// The count reads events the real Waive and Override paths wrote, so the payload shape
+// (empty reason = removal, one override event per forced move) stays pinned to the writers.
+func TestWaiverHistoryCountsRealWritePaths(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	ep := seedEpicWithTask(t, s)
+	orch := items.Orchestrator("agt_o", ep.ID)
+	story, _ := s.Items.Get(ctx, "STORY-1")
+	update := func(key string, p items.Patch) items.Item {
+		t.Helper()
+		cur, _ := s.Items.Get(ctx, key)
+		p.Revision = cur.Revision
+		it, err := s.Items.Update(ctx, key, p, orch)
+		if err != nil {
+			t.Fatalf("update %s: %v", key, err)
+		}
+		return it
+	}
+	update("TASK-1", items.Patch{Waive: []items.WaiveInput{{Gate: "tdd", Reason: "slow"}}})
+	update("TASK-1", items.Patch{Waive: []items.WaiveInput{{Gate: "tdd"}}}) // removed again
+	done, ready := items.Done, items.Ready
+	update(story.Key, items.Patch{Status: &done, OverrideReason: "by hand"})
+	update(story.Key, items.Patch{Status: &ready, OverrideReason: "undo"}) // clears the first override, records its own
+	update(story.Key, items.Patch{Status: &done, OverrideReason: "again"})
+	var w, o int
+	if err := s.tx(ctx, func(tx *sql.Tx) (err error) {
+		w, o, err = s.waiverHistoryTx(ctx, tx, ep.ID)
+		return
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if w != 1 || o != 1 {
+		t.Fatalf("history = %d waivers, %d overrides; want 1 and 1 (distinct per item)", w, o)
+	}
+}
+
+func TestRequestWireCarriesWaiverHistory(t *testing.T) {
+	ctx := context.Background()
+	s, orch, _, key, reqID := finishFixture(t, githubRemote, "")
+	it, _ := s.Items.Get(ctx, key)
+	actor := items.Orchestrator(orch.ID, it.ID)
+	for _, reason := range []string{"ci down", ""} {
+		cur, _ := s.Items.Get(ctx, key)
+		if _, err := s.Items.Update(ctx, key, items.Patch{Revision: cur.Revision,
+			Waive: []items.WaiveInput{{Gate: "final_review", Reason: reason}}}, actor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var w RequestWire
+	if err := s.tx(ctx, func(tx *sql.Tx) (err error) { w, err = s.RequestWireTx(ctx, tx, reqID); return }); err != nil {
+		t.Fatal(err)
+	}
+	if w.WaiverHistory == nil || w.WaiverHistory.Waivers != 1 || w.WaiverHistory.Overrides != 0 {
+		t.Fatalf("waiver_history = %+v, want 1 waiver (removed ones still count)", w.WaiverHistory)
+	}
+}
