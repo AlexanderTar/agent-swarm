@@ -102,6 +102,36 @@ type CheckpointInput struct {
 	Todos  []TodoReport
 	PRs    []FinishPR     // kind finishing only
 	Merged []FinishMerged // kind finishing only
+	// Waive records waivers on the root before the integrated checks run
+	// (integrated only; an empty Reason removes the gate's waiver).
+	Waive []Waiver
+}
+
+// Waiver names a gate an orchestrator waives, with the reason it is audited under.
+type Waiver struct {
+	Gate   string `json:"gate"`
+	Reason string `json:"reason"`
+}
+
+// waiveHint ends every refusal of a waivable gate: the orchestrator is the one
+// who can lift it, so the worker is told whom to ask.
+const waiveHint = " An orchestrator can waive this gate with a reason."
+
+func waived(it items.Item, gate string) bool {
+	return slices.ContainsFunc(it.Waivers, func(w items.Waiver) bool { return w.Gate == gate })
+}
+
+// withWaiveHint appends waiveHint to a gate's own refusal; other errors pass through.
+func withWaiveHint(err error) error {
+	var ie *items.Error
+	if errors.As(err, &ie) && ie.Code == items.CodeBadRequest {
+		msg := ie.Message
+		if !strings.HasSuffix(msg, ".") {
+			msg += "."
+		}
+		return &items.Error{Code: ie.Code, Message: msg + waiveHint}
+	}
+	return err
 }
 
 // CheckpointResult is swarm_checkpoint's result.
@@ -378,23 +408,44 @@ func (s *Store) applyGates(ctx context.Context, tx *sql.Tx, it items.Item, run w
 	}
 	for _, g := range step.Gates {
 		var err error
-		switch g {
-		case workflow.GateTDD:
+		switch {
+		case waived(it, string(g)):
+			if g == workflow.GateCommit {
+				err = s.recordHead(ctx, tx, a, run)
+			}
+		case g == workflow.GateTDD:
 			err = s.tddGate(ctx, tx, it, run, a, in)
-		case workflow.GateVerify:
+		case g == workflow.GateVerify:
 			err = s.verifyGate(ctx, tx, it, run, a, in)
-		case workflow.GateCommit:
+		case g == workflow.GateCommit:
 			err = s.commitGate(ctx, tx, a, in, run)
-		case workflow.GateArtifactDesign:
+		case g == workflow.GateArtifactDesign:
 			err = s.artifactGate(ctx, tx, it, a, in, "design", "designs")
-		case workflow.GateArtifactNotes:
+		case g == workflow.GateArtifactNotes:
 			err = s.artifactGate(ctx, tx, it, a, in, "research", "research")
 		}
 		if err != nil {
-			return err
+			return withWaiveHint(err)
 		}
 	}
 	return nil
+}
+
+// recordHead is what a waived commit gate still does: store the worktree's
+// HEAD on the run, because the workflow engine escalates a completed build
+// step with a commit gate and no sha (workflow/next.go). Best effort: with no
+// readable worktree there is no sha to store, and the engine says so itself.
+func (s *Store) recordHead(ctx context.Context, tx *sql.Tx, a Agent, run workflowRun) error {
+	wts, err := s.rwWorktreesFor(ctx, tx, a.ID)
+	if err != nil || len(wts) == 0 {
+		return err
+	}
+	head, err := s.gitHead(ctx, wts[0].Path)
+	if err != nil || head == "" {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE workflow_runs SET sha = ? WHERE id = ?`, head, run.ID)
+	return err
 }
 
 // verifySince collects every verification entry agentID recorded at or
@@ -638,7 +689,7 @@ func (s *Store) tddGate(ctx context.Context, tx *sql.Tx, it items.Item, run work
 	if len(missing) > 0 {
 		return tddMissingUnitsError(missing)
 	}
-	return errors.New(tddMissingCopy)
+	return &items.Error{Code: items.CodeBadRequest, Message: tddMissingCopy}
 }
 
 // verifyDeclaredOK reports whether entries contains an ok:true entry whose
@@ -1287,18 +1338,34 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "An integrated checkpoint needs git and verification."}
 			}
+			if len(in.Waive) > 0 {
+				w := make([]items.WaiveInput, len(in.Waive))
+				for i, x := range in.Waive {
+					w[i] = items.WaiveInput{Gate: x.Gate, Reason: x.Reason}
+				}
+				if _, err := s.Items.UpdateTx(ctx, tx, it.Key, items.Patch{Waive: w, Revision: it.Revision},
+					items.Orchestrator(a.ID, a.RootItemID)); err != nil {
+					return err
+				}
+				if it, err = s.Items.GetTx(ctx, tx, it.Key); err != nil {
+					return err
+				}
+			}
 			if it.Workflow != nil && it.Workflow.Integration != nil {
 				for _, cmd := range it.Workflow.Integration.Verify {
+					if waived(it, "integration_verify") {
+						break
+					}
 					passed, err := s.hasIntegrationVerifyPassed(ctx, tx, it.ID, in.Verification, cmd)
 					if err != nil {
 						return err
 					}
 					if !passed {
 						return &items.Error{Code: items.CodeBadRequest,
-							Message: fmt.Sprintf("Integration verify not recorded as passing: %s.", cmd)}
+							Message: fmt.Sprintf("Integration verify not recorded as passing: %s.", cmd) + waiveHint}
 					}
 				}
-				if len(it.Workflow.Integration.FinalReview) > 0 {
+				if len(it.Workflow.Integration.FinalReview) > 0 && !waived(it, "final_review") {
 					var integratedSHA string
 					for _, g := range in.Git {
 						if g.SHA != "" {
@@ -1316,10 +1383,14 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					}
 					if !passed {
 						return &items.Error{Code: items.CodeBadRequest,
-							Message: fmt.Sprintf("Integration needs a passing final review of %s.", sha7)}
+							Message: fmt.Sprintf("Integration needs a passing final review of %s.", sha7) + waiveHint}
 					}
 				}
 			}
+		}
+		if len(in.Waive) > 0 && in.Kind != Integrated {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: "waive is only valid on an integrated checkpoint."}
 		}
 		if in.Resolution != "" {
 			if in.Kind != CompletedCkp {
@@ -1378,10 +1449,10 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if err != nil {
 				return err
 			}
-			if len(blocking) > 0 {
+			if len(blocking) > 0 && !waived(it, "open_questions") {
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: fmt.Sprintf("completed is blocked by open question %s; answer or withdraw it first.",
-						strings.Join(blocking, ", "))}
+						strings.Join(blocking, ", ")) + waiveHint}
 			}
 		}
 		if in.Kind == CompletedCkp && slices.Contains(gatedRoles, a.Role) &&
@@ -1421,7 +1492,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if err := s.applyGates(ctx, tx, it, run, a, in); err != nil {
 				return err
 			}
-		} else if in.Kind == CompletedCkp && it.TddExempt == "" {
+		} else if in.Kind == CompletedCkp && it.TddExempt == "" && !waived(it, "tdd") && !waived(it, "verify") {
 			gated := slices.Contains(gatedRoles, a.Role)
 			if !gated && a.Role == RoleOrchestrator && s.changedFiles(ctx, in.Git) > 0 {
 				gated = true
@@ -1438,7 +1509,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		}
 
 		if in.Kind == CompletedCkp {
-			if kind := requiredArtifactKind(it); kind != "" {
+			if kind := requiredArtifactKind(it); kind != "" && !waived(it, "required_artifact") {
 				ok, err := s.hasArtifact(ctx, tx, it.ID, kind)
 				if err != nil {
 					return err
@@ -1446,7 +1517,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				if !ok {
 					return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
 						"completed requires a registered %s for this %s. Register one with "+
-							"swarm_artifact register, or set tdd_exempt if this genuinely needs neither.",
+							"swarm_artifact register, or set tdd_exempt if this genuinely needs neither."+waiveHint,
 						kind, it.Type)}
 				}
 			}

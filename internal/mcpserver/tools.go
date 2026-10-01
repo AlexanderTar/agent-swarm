@@ -128,6 +128,7 @@ func checkpointTool(s *Server) ToolDef {
 				"required":["severity","summary"]}},
 			"prs":{"type":"array","items":{"type":"object","properties":{"repo":{"type":"string"},"url":{"type":"string"}},"required":["repo","url"]},"description":"kind finishing: one PR per repo with a GitHub remote."},
 			"merged":{"type":"array","items":{"type":"object","properties":{"repo":{"type":"string"},"sha":{"type":"string"}},"required":["repo","sha"]},"description":"kind finishing: one local merge per repo without a GitHub remote; sha is the default-branch commit containing the integrated sha."},
+			"waive":{"type":"array","items":{"type":"object","properties":{"gate":{"type":"string"},"reason":{"type":"string"}},"required":["gate","reason"]},"description":"kind integrated, orchestrator only: waive gates on your root (e.g. integration_verify, final_review) with a reason; each is audited."},
 			"request_id":{"type":"string"}`, []string{"kind", "summary"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
@@ -148,6 +149,7 @@ func checkpointTool(s *Server) ToolDef {
 				Todos        []runtime.TodoReport   `json:"todos"`
 				PRs          []runtime.FinishPR     `json:"prs"`
 				Merged       []runtime.FinishMerged `json:"merged"`
+				Waive        []runtime.Waiver       `json:"waive"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -158,7 +160,7 @@ func checkpointTool(s *Server) ToolDef {
 				Git: in.Git, Verification: in.Verification, Artifacts: in.Artifacts, Processed: in.Processed,
 				Verdict: in.Verdict, Findings: in.Findings,
 				RequestID: in.RequestID, Title: in.Title, Todos: in.Todos,
-				PRs: in.PRs, Merged: in.Merged,
+				PRs: in.PRs, Merged: in.Merged, Waive: in.Waive,
 			})
 			if err != nil {
 				return nil, err

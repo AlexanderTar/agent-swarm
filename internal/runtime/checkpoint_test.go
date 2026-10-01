@@ -716,7 +716,7 @@ func TestCompletedOnEpicRequiresARegisteredPlan(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected completed to be refused with no registered plan")
 	}
-	const want = `completed requires a registered plan for this epic. Register one with swarm_artifact register, or set tdd_exempt if this genuinely needs neither.`
+	want := `completed requires a registered plan for this epic. Register one with swarm_artifact register, or set tdd_exempt if this genuinely needs neither.` + hintCopy
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
@@ -758,7 +758,7 @@ func TestCompletedOnBugRequiresARegisteredDebugReport(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected completed to be refused with no registered debug_report")
 	}
-	const want = `completed requires a registered debug_report for this bug. Register one with swarm_artifact register, or set tdd_exempt if this genuinely needs neither.`
+	want := `completed requires a registered debug_report for this bug. Register one with swarm_artifact register, or set tdd_exempt if this genuinely needs neither.` + hintCopy
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
@@ -1484,7 +1484,7 @@ func TestSameRoleDifferentStepNotClosed(t *testing.T) {
 
 // --- Unit 8.4: tdd and verify gates (spec B5, ruling-tdd-followups.md) ---
 
-const tddMissingRound = `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round.`
+const tddMissingRound = `TDD evidence missing: record the failing test run (phase: "red", ok: false) before the passing run (phase: "green", ok: true) in this round.` + hintCopy
 
 // buildOnly spawns a coder on a single-unit (non-batched) workflow task with
 // the given build-step gates and returns the coder's session and the
@@ -1577,7 +1577,7 @@ func TestTDDGatePerUnit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unit 2 to still be missing evidence")
 	}
-	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.` + hintCopy
 	if err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
@@ -1614,7 +1614,7 @@ func TestVerifyGateMatchesDeclaredCommands(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a verify-gate error")
 	}
-	want := `Declared verify commands not recorded as passing: go test ./....`
+	want := `Declared verify commands not recorded as passing: go test ./....` + hintCopy
 	if err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
@@ -1786,7 +1786,7 @@ func TestTDDGateMultiLoopFirstRunNeedsEveryUnit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unit 2 to be required (build's own first run needs every unit)")
 	}
-	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.` + hintCopy
 	if err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
@@ -1824,7 +1824,7 @@ func TestTDDGateReviewStepPassedOnlyNeedsEveryUnit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unit 2 to still be required -- a pass-only round is not a fix round")
 	}
-	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.` + hintCopy
 	if err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
@@ -1863,7 +1863,7 @@ func TestTDDGateFixRoundMergesFindingsFromBothReviewers(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unit 2 (from the passing ui_reviewer's own finding) to still be required")
 	}
-	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.`
+	want := `TDD evidence missing for unit(s) 2: record red then green with "unit": <n>.` + hintCopy
 	if err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
@@ -1920,7 +1920,7 @@ func TestCommitGateRefusesDirtyWorktree(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a dirty-worktree error")
 	}
-	if want := "Commit your work before completing: proj is dirty"; err.Error() != want {
+	if want := "Commit your work before completing: proj is dirty." + hintCopy; err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
 }
@@ -1937,7 +1937,7 @@ func TestCommitGateRefusesShaMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a sha-mismatch error")
 	}
-	want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s", head[:7], stale[:7])
+	want := fmt.Sprintf("Commit your work before completing: proj HEAD is %s, checkpoint says %s."+hintCopy, head[:7], stale[:7])
 	if err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
@@ -1976,7 +1976,7 @@ func TestCommitGateRefusesWithNoRWWorktree(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a no-rw-worktree error")
 	}
-	if want := "Commit your work before completing: no rw worktree shared with you"; err.Error() != want {
+	if want := "Commit your work before completing: no rw worktree shared with you." + hintCopy; err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
 }
@@ -1995,7 +1995,7 @@ func TestCommitGateRefusesMissingGitEntryForRepo(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a no-git-entry error")
 	}
-	if want := "Commit your work before completing: no git entry for proj"; err.Error() != want {
+	if want := "Commit your work before completing: no git entry for proj." + hintCopy; err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
 }
@@ -2029,7 +2029,7 @@ func TestDesignArtifactGateRegistersArtifact(t *testing.T) {
 
 	if _, err := s.WriteCheckpoint(ctx, dSes.ID, CheckpointInput{Kind: CompletedCkp, Summary: "designed"}); err == nil {
 		t.Fatal("expected an artifact-missing error")
-	} else if want := fmt.Sprintf("Completed needs your design file in artifacts (under %s/).",
+	} else if want := fmt.Sprintf("Completed needs your design file in artifacts (under %s/)."+hintCopy,
 		filepath.Join(s.Home, "designs", it.RootKey)); err.Error() != want {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
