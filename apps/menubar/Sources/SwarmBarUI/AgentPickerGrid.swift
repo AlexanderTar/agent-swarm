@@ -104,8 +104,11 @@ struct WideOptionPicker: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView popup: NSPopUpButton, context: Context) -> CGSize? {
-        guard detail != nil else { return nil }
-        return CGSize(width: proposal.width ?? popup.intrinsicContentSize.width, height: TwoLinePopUpButton.height)
+        // Take exactly the proposed width (never the title's intrinsic one) so a long label
+        // can't push a popup past its column into the next label.
+        let width = proposal.width ?? popup.intrinsicContentSize.width
+        guard detail != nil else { return CGSize(width: width, height: popup.intrinsicContentSize.height) }
+        return CGSize(width: width, height: TwoLinePopUpButton.height)
     }
 
     func updateNSView(_ popup: NSPopUpButton, context: Context) {

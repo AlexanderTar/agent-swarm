@@ -139,4 +139,46 @@ final class BoardHandoffRenderTests: XCTestCase {
                                   "hand-off mode shows the worker overrides grid")
         XCTAssertEqual(coder.titleOfSelectedItem, "Codex", "prefilled from the orchestrator's override")
     }
+
+    /// Real NSHostingView layout: every worker row's Agent/Model/Effort popups share one frame
+    /// width per column, and no popup runs into the next column (the Research row's wider
+    /// Antigravity/Gemini popup used to overlap its Effort label).
+    func testWorkerRowPickersShareColumnWidthsAndDoNotOverlap() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        // Real catalogs carry long labels ("Claude Sonnet 5.5 (latest)") that outgrow the Model column.
+        for e in client.catalogEntries.indices {
+            for m in client.catalogEntries[e].models.indices where client.catalogEntries[e].kind == .claude {
+                client.catalogEntries[e].models[m].label += " (latest) with a very long suffix"
+            }
+        }
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeBoardHandoffForm()
+        await form.load()
+        form.selectedKey = "BUG-7"
+        form.setWorkerAgent(.researcher, "agy")
+        form.setWorkerModel(.researcher, "gemini-3.8-flash")
+        form.setWorkerAgent(.mechanical, "codex")
+        let host = render(form)
+        host.frame = NSRect(x: 0, y: 0, width: 760, height: 300) // the window's minWidth
+        host.layoutSubtreeIfNeeded()
+        func frame(_ role: SettingsRole, _ kind: String) throws -> NSRect {
+            let p = try XCTUnwrap(popups(host).first { $0.accessibilityLabel() == "\(Copy.defaultsRowLabel(role)) \(kind)" })
+            return host.convert(p.bounds, from: p)
+        }
+        var agentW = Set<CGFloat>(), modelW = Set<CGFloat>(), effortW = Set<CGFloat>()
+        for role in BoardHandoffForm.workerRoles {
+            let a = try frame(role, Copy.agent), m = try frame(role, Copy.model)
+            agentW.insert(a.width.rounded()); modelW.insert(m.width.rounded())
+            XCTAssertLessThanOrEqual(a.maxX, m.minX, "\(role) agent popup runs into the Model label/popup")
+            if form.workerEffortOptions(role) != nil {
+                let e = try frame(role, Copy.effort)
+                effortW.insert(e.width.rounded())
+                XCTAssertLessThanOrEqual(m.maxX, e.minX, "\(role) model popup overlaps the Effort label")
+            }
+        }
+        XCTAssertEqual(agentW.count, 1, "agent popup widths differ across rows: \(agentW)")
+        XCTAssertEqual(modelW.count, 1, "model popup widths differ across rows: \(modelW)")
+        XCTAssertEqual(effortW.count, 1, "effort popup widths differ across rows: \(effortW)")
+    }
 }
