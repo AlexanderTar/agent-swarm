@@ -1058,3 +1058,190 @@ func TestFinishApprovalTx(t *testing.T) {
 		t.Fatalf("revision moved: ok = %v, err = %v", ok, err)
 	}
 }
+
+func forceTo(it items.Item, to items.Status, reason string) items.Patch {
+	return items.Patch{Revision: it.Revision, Status: &to, OverrideReason: reason}
+}
+
+func TestOverrideForcesWorkflowTaskDoneAndCancelsItsWorkflow(t *testing.T) {
+	s := newStore(t)
+	e, st, task := tree(t, s)
+	orch := items.Orchestrator("agt_o", e.ID)
+	setWorkflowJSON(t, s.DB, task)
+	setStatus(t, s, task, items.InReview)
+	agentID, _ := seedSession(t, s.DB, task, "running")
+	exec(t, s.DB, `INSERT INTO workflows (id, item_id, root_item_id, owner_agent_id, state, worktrees_json, created_at, updated_at)
+		VALUES ('wfl_1', ?, ?, ?, 'running', '[]', ?, ?)`, task.ID, task.RootID, agentID, later(s), later(s))
+	exec(t, s.DB, `INSERT INTO workflow_runs (id, workflow_id, step_id, round, role, agent_id, state, created_at)
+		VALUES ('wfr_1', 'wfl_1', 'build', 1, 'coder', ?, 'active', ?)`, agentID, later(s))
+	task = mustGet(t, s, task.Key)
+
+	// Without a reason the workflow still owns Done.
+	_, err := s.Update(ctx, task.Key, items.Patch{Revision: task.Revision, Status: ptr(items.Done)}, orch)
+	wantDenied(t, err, task.Key+" is finished by its workflow. It moves to Done when the workflow succeeds; use swarm_workflow resume to accept or fail it.")
+
+	got, err := s.Update(ctx, task.Key, forceTo(task, items.Done, "shipped by hand"), orch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != items.Done || got.Override == nil || got.Override.Status != items.Done ||
+		got.Override.Reason != "shipped by hand" || got.Override.Agent != "agt_o" || got.Override.At.IsZero() {
+		t.Fatalf("task = %s %+v", got.Status, got.Override)
+	}
+	var wfState, runState string
+	if err := s.DB.QueryRow(`SELECT state FROM workflows WHERE id = 'wfl_1'`).Scan(&wfState); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(`SELECT state FROM workflow_runs WHERE id = 'wfr_1'`).Scan(&runState); err != nil {
+		t.Fatal(err)
+	}
+	if wfState != "cancelled" || runState != "cancelled" {
+		t.Fatalf("workflow = %s, run = %s, want both cancelled", wfState, runState)
+	}
+	wantStatus(t, s, st.Key, items.Done) // the only child finished, so the story follows
+	evs, err := s.Events.After(ctx, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen bool
+	for _, ev := range evs {
+		if ev.Type == events.ItemOverridden {
+			seen = true
+			p := string(ev.Payload)
+			if !strings.Contains(p, task.Key) || !strings.Contains(p, "done") || !strings.Contains(p, "shipped by hand") {
+				t.Fatalf("item.overridden payload = %s", p)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("no item.overridden event")
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestOverrideStoryDoneSurvivesReconcileUntilANormalTransition(t *testing.T) {
+	s := newStore(t)
+	e, st, t1 := tree(t, s)
+	t2 := mk(t, s, items.Task, st.Key, "Second")
+	setStatus(t, s, t2, items.Ready)
+	orch := items.Orchestrator("agt_o", e.ID)
+
+	got, err := s.Update(ctx, st.Key, forceTo(st, items.Done, "split into another epic"), orch)
+	if err != nil || got.Status != items.Done || got.Override == nil {
+		t.Fatalf("override story = %s %+v, %v", got.Status, got.Override, err)
+	}
+	if err := s.Reconcile(ctx, t1.Key); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, s, st.Key, items.Done) // two unfinished children would otherwise pull it back
+	if mustGet(t, s, st.Key).Override == nil {
+		t.Fatal("reconcile must not clear the override")
+	}
+	// A later normal transition (the user reopening it) clears the override and
+	// hands the story back to derivation.
+	if err := move(t, s, st.Key, items.Ready, user); err != nil {
+		t.Fatal(err)
+	}
+	after := mustGet(t, s, st.Key)
+	if after.Override != nil || after.Status != items.Ready {
+		t.Fatalf("after reopen = %s %+v, want ready and no override", after.Status, after.Override)
+	}
+}
+
+func TestOverrideReopenDoneToReadyAndAnyNonCancelledSource(t *testing.T) {
+	s := newStore(t)
+	e, _, task := tree(t, s)
+	orch := items.Orchestrator("agt_o", e.ID)
+	for _, from := range []items.Status{items.Draft, items.Ready, items.InProgress, items.InReview, items.Done} {
+		for _, to := range []items.Status{items.Ready, items.InProgress, items.InReview, items.Done} {
+			if from == to {
+				continue
+			}
+			setStatus(t, s, task, from)
+			cur := mustGet(t, s, task.Key)
+			got, err := s.Update(ctx, task.Key, forceTo(cur, to, "orchestrator call"), orch)
+			if err != nil || got.Status != to {
+				t.Errorf("%s -> %s: status = %s, err = %v", from, to, got.Status, err)
+			}
+		}
+	}
+	setStatus(t, s, task, items.Cancelled)
+	cur := mustGet(t, s, task.Key)
+	if _, err := s.Update(ctx, task.Key, forceTo(cur, items.Ready, "x"), orch); code(err) != items.CodeTransitionDenied {
+		t.Fatalf("override out of cancelled err = %v, want transition_denied", err)
+	}
+}
+
+func TestOverrideRefusals(t *testing.T) {
+	s := newStore(t)
+	e, st, task := tree(t, s)
+	orch := items.Orchestrator("agt_o", e.ID)
+	worker := items.Actor{Kind: items.ActorAgent, AgentID: "agt_w", Role: "coder", RootID: e.RootID}
+	const only = "Only an orchestrator can waive gates or override status."
+	for name, c := range map[string]struct {
+		by    items.Actor
+		it    items.Item
+		to    items.Status
+		why   string
+		want  string
+		wcode string
+	}{
+		"worker":        {worker, task, items.Done, "x", only, items.CodeBadRequest},
+		"user":          {user, task, items.Done, "x", only, items.CodeBadRequest},
+		"empty reason":  {orch, task, items.Done, "  ", "Give a reason (1–300 characters).", items.CodeBadRequest},
+		"long reason":   {orch, task, items.Done, strings.Repeat("x", 301), "Give a reason (1–300 characters).", items.CodeBadRequest},
+		"root done":     {orch, e, items.Done, "x", "A root reaches Done only through its finish question.", items.CodeBadRequest},
+		"root progress": {orch, e, items.InProgress, "x", "Roots follow their own lifecycle; only a task or story can be overridden.", items.CodeBadRequest},
+		"blocked":       {orch, task, items.Blocked, "x", "An override can set ready, in_progress, in_review or done.", items.CodeBadRequest},
+		"cancelled":     {orch, task, items.Cancelled, "x", "An override can set ready, in_progress, in_review or done.", items.CodeBadRequest},
+	} {
+		_, err := s.Update(ctx, c.it.Key, forceTo(c.it, c.to, c.why), c.by)
+		if err == nil || err.Error() != c.want || code(err) != c.wcode {
+			t.Errorf("%s: err = %v (%s), want %q", name, err, code(err), c.want)
+		}
+	}
+	// A reason with no status has nothing to override.
+	_, err := s.Update(ctx, st.Key, items.Patch{Revision: st.Revision, OverrideReason: "x"}, orch)
+	if err == nil || err.Error() != "override_reason needs a status to force." {
+		t.Fatalf("reason without status err = %v", err)
+	}
+	if mustGet(t, s, task.Key).Override != nil || mustGet(t, s, e.Key).Override != nil {
+		t.Fatal("a refused override must not write")
+	}
+	// Outside the orchestrator's tree.
+	other := mk(t, s, items.Epic, "", "Other")
+	os := mk(t, s, items.Story, other.Key, "OS")
+	_, err = s.Update(ctx, os.Key, forceTo(os, items.Done, "x"), orch)
+	if err == nil || err.Error() != os.Key+" is outside "+e.Key+"." {
+		t.Fatalf("outside tree err = %v", err)
+	}
+}
+
+func TestOverrideReasonWithAnAllowedMoveRecordsNoOverride(t *testing.T) {
+	s := newStore(t)
+	e, _, task := tree(t, s)
+	orch := items.Orchestrator("agt_o", e.ID)
+	setStatus(t, s, task, items.InReview)
+	cur := mustGet(t, s, task.Key)
+	got, err := s.Update(ctx, task.Key, forceTo(cur, items.InProgress, "send it back"), orch)
+	if err != nil || got.Status != items.InProgress || got.Override != nil {
+		t.Fatalf("allowed move = %s %+v, %v; want a plain transition", got.Status, got.Override, err)
+	}
+}
+
+func TestLaterTransitionClearsATaskOverride(t *testing.T) {
+	s := newStore(t)
+	e, _, task := tree(t, s)
+	orch := items.Orchestrator("agt_o", e.ID)
+	got, err := s.Update(ctx, task.Key, forceTo(task, items.InProgress, "work started offline"), orch)
+	if err != nil || got.Override == nil || got.Status != items.InProgress {
+		t.Fatalf("force in_progress = %s %+v, %v", got.Status, got.Override, err)
+	}
+	if err := move(t, s, task.Key, items.Cancelled, orch); err != nil {
+		t.Fatal(err)
+	}
+	if after := mustGet(t, s, task.Key); after.Override != nil || after.Status != items.Cancelled {
+		t.Fatalf("after cancel = %s %+v", after.Status, after.Override)
+	}
+}

@@ -1,6 +1,7 @@
 package items_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -758,5 +759,117 @@ func TestChoreRootCannotProposeTopLevel(t *testing.T) {
 	var n int
 	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("items = %d (%v), want only the chore", n, err)
+	}
+}
+
+func TestWaiversAndOverrideRoundTrip(t *testing.T) {
+	s := newStore(t)
+	ch := mk(t, s, items.Chore, "", "Chore")
+	plain := mustGet(t, s, ch.Key)
+	if len(plain.Waivers) != 0 || plain.Override != nil {
+		t.Fatalf("fresh item = %+v, want no waivers or override", plain)
+	}
+	exec(t, s.DB, `UPDATE items SET waivers_json = ?, override_json = ? WHERE id = ?`,
+		`[{"gate":"verify","reason":"flaky ci","agent":"agt_1","at":"2026-10-01T09:00:00Z"}]`,
+		`{"status":"done","reason":"shipped by hand","agent":"agt_1","at":"2026-10-01T09:05:00Z"}`, ch.ID)
+	got := mustGet(t, s, ch.Key)
+	if len(got.Waivers) != 1 || got.Waivers[0].Gate != "verify" || got.Waivers[0].Reason != "flaky ci" || got.Waivers[0].Agent != "agt_1" {
+		t.Fatalf("waivers = %+v", got.Waivers)
+	}
+	if got.Override == nil || got.Override.Status != items.Done || got.Override.Reason != "shipped by hand" {
+		t.Fatalf("override = %+v", got.Override)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["waivers"] == nil || wire["override"] == nil {
+		t.Fatalf("wire lacks waivers/override: %s", raw)
+	}
+	raw, _ = json.Marshal(plain)
+	if strings.Contains(string(raw), "waivers") || strings.Contains(string(raw), "override") {
+		t.Fatalf("plain item wire should omit both: %s", raw)
+	}
+}
+
+func waivePatch(it items.Item, gate, reason string) items.Patch {
+	return items.Patch{Revision: it.Revision, Waive: []items.WaiveInput{{Gate: gate, Reason: reason}}}
+}
+
+func TestOrchestratorWaivesAndUnwaivesGate(t *testing.T) {
+	s := newStore(t)
+	ch := mk(t, s, items.Epic, "", "Epic")
+	st := mk(t, s, items.Story, ch.Key, "S")
+	orch := items.Orchestrator("agt_1", ch.RootID)
+
+	got, err := s.Update(ctx, st.Key, waivePatch(st, "verify", "ci is flaky"), orch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Waivers) != 1 || got.Waivers[0].Gate != "verify" || got.Waivers[0].Reason != "ci is flaky" || got.Waivers[0].Agent != "agt_1" || got.Waivers[0].At.IsZero() {
+		t.Fatalf("waivers = %+v", got.Waivers)
+	}
+	// Waiving again replaces the reason, never duplicates the gate.
+	got, err = s.Update(ctx, st.Key, waivePatch(got, "verify", "still flaky"), orch)
+	if err != nil || len(got.Waivers) != 1 || got.Waivers[0].Reason != "still flaky" {
+		t.Fatalf("re-waive = %+v, %v", got.Waivers, err)
+	}
+	evs, err := s.Events.After(ctx, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waived int
+	for _, e := range evs {
+		if e.Type == "item.waived" {
+			waived++
+			if !strings.Contains(string(e.Payload), st.Key) || !strings.Contains(string(e.Payload), "verify") {
+				t.Fatalf("item.waived payload = %s", e.Payload)
+			}
+		}
+	}
+	if waived != 2 {
+		t.Fatalf("item.waived events = %d, want 2", waived)
+	}
+	// An entry with an empty reason removes the gate.
+	got, err = s.Update(ctx, st.Key, waivePatch(got, "verify", ""), orch)
+	if err != nil || len(got.Waivers) != 0 {
+		t.Fatalf("remove = %+v, %v", got.Waivers, err)
+	}
+}
+
+func TestWaiveRefusals(t *testing.T) {
+	s := newStore(t)
+	ch := mk(t, s, items.Epic, "", "Epic")
+	st := mk(t, s, items.Story, ch.Key, "S")
+	other := mk(t, s, items.Epic, "", "Other")
+	otherStory := mk(t, s, items.Story, other.Key, "OS")
+	orch := items.Orchestrator("agt_1", ch.RootID)
+	worker := items.Actor{Kind: items.ActorAgent, AgentID: "agt_2", Role: "coder", RootID: ch.RootID}
+
+	for name, c := range map[string]struct {
+		by   items.Actor
+		it   items.Item
+		gate string
+		why  string
+		want string
+	}{
+		"worker":       {worker, st, "tdd", "x", "Only an orchestrator can waive gates or override status."},
+		"user":         {user, st, "tdd", "x", "Only an orchestrator can waive gates or override status."},
+		"unknown gate": {orch, st, "lint", "x", "Unknown gate lint; waivable gates: " + strings.Join(items.WaivableGates, ", ") + "."},
+		"empty reason": {orch, st, "tdd", "", "Give a reason (1–300 characters)."},
+		"long reason":  {orch, st, "tdd", strings.Repeat("x", 301), "Give a reason (1–300 characters)."},
+		"outside tree": {orch, otherStory, "tdd", "x", otherStory.Key + " is outside " + ch.Key + "."},
+	} {
+		_, err := s.Update(ctx, c.it.Key, waivePatch(c.it, c.gate, c.why), c.by)
+		if err == nil || err.Error() != c.want || code(err) != items.CodeBadRequest {
+			t.Errorf("%s: err = %v, want %q", name, err, c.want)
+		}
+	}
+	if got := mustGet(t, s, st.Key); len(got.Waivers) != 0 || got.Revision != st.Revision {
+		t.Fatalf("refused waivers must not write: %+v", got)
 	}
 }

@@ -13,6 +13,8 @@ import (
 
 const (
 	ItemChanged     = "item.changed"
+	ItemWaived      = "item.waived"
+	ItemOverridden  = "item.overridden"
 	RequestOpened   = "request.opened"
 	RequestResolved = "request.resolved"
 	SettingsChanged = "settings.changed"

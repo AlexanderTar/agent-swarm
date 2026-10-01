@@ -390,3 +390,35 @@ func TestReplacementRefusedOnceTheRootIsDone(t *testing.T) {
 		}
 	}
 }
+
+// CHORE-18: a task an orchestrator forced to Done must not keep a coder running
+// on it; one Reconcile tick stops it, and the orchestrator is untouched.
+func TestReconcileStopsWorkOnAnOverriddenDoneTask(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	seedEpicWithTwoTasks(t, s)
+	orch, _, err := s.StartOrchestrator(ctx, OrchestratorInput{ItemKey: "EPIC-1", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, _, err := s.Spawn(ctx, SpawnInput{ItemKey: "TASK-1", Role: RoleCoder, Kind: Fake,
+		Model: "fake-1", ParentAgentID: orch.ID, Brief: BriefInput{Objective: "build it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _ := s.Items.Get(ctx, "TASK-1")
+	done := items.Done
+	if _, err := s.Items.Update(ctx, "TASK-1", items.Patch{Status: &done, OverrideReason: "done by hand",
+		Revision: task.Revision}, items.Orchestrator(orch.ID, orch.RootItemID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Agent(ctx, w.Name); got.State != AgentFinished {
+		t.Fatalf("coder = %s, want finished", got.State)
+	}
+	if got, _ := s.Agent(ctx, orch.Name); got.State != AgentActive {
+		t.Fatalf("orchestrator = %s, want active", got.State)
+	}
+}

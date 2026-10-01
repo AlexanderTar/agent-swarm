@@ -113,7 +113,9 @@ func (s *Store) OnRootDone(ctx context.Context, tx *sql.Tx, rootID string) error
 // decision 5): work still running on a cancelled item stops. Workflows go
 // first, because Spawn has no cancelled-item guard and a running workflow row
 // could respawn a run. Then every queued or active agent assigned to a
-// cancelled item goes through the same Cancel the board uses. One failure is
+// cancelled item goes through the same Cancel the board uses; so does one on a
+// task an orchestrator forced to Done (CHORE-18), whose workflow was already
+// cancelled in that same transaction. One failure is
 // logged, never returned, so it cannot stall the rest of Reconcile.
 func (s *Store) cancelWorkOnCancelledItems(ctx context.Context) error {
 	rows, err := s.DB.QueryContext(ctx, `SELECT i.key, i.root_id FROM workflows w JOIN items i ON i.id = w.item_id
@@ -142,7 +144,8 @@ func (s *Store) cancelWorkOnCancelledItems(ctx context.Context) error {
 		}
 	}
 	names, err := s.queryIDs(ctx, `SELECT a.name FROM agents a JOIN items i ON i.id = a.item_id
-		WHERE i.status = 'cancelled' AND a.state IN ('queued', 'active')`)
+		WHERE (i.status = 'cancelled' OR (i.status = 'done' AND i.override_json IS NOT NULL))
+		AND a.state IN ('queued', 'active')`)
 	if err != nil {
 		return err
 	}

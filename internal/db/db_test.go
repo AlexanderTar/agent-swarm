@@ -114,6 +114,13 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 	if _, err := raw.Exec(`ALTER TABLE items DROP COLUMN title_pending`); err != nil {
 		t.Fatal(err)
 	}
+	// 0024_item_overrides.sql adds items.waivers_json and override_json with
+	// plain ALTER TABLE (same precedent).
+	for _, col := range []string{"waivers_json", "override_json"} {
+		if _, err := raw.Exec(`ALTER TABLE items DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := raw.Exec(`ALTER TABLE artifact_revisions DROP COLUMN warnings_json`); err != nil {
 		t.Fatal(err)
 	}
