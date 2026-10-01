@@ -8,11 +8,12 @@ import { RequestChanges } from "../components/RequestChanges";
 import { useToast } from "../components/Toast";
 import { Button } from "../components/ui/button";
 import { Alert } from "../components/ui/alert";
+import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T } from "../copy";
 import { useInvalidate, useMutation, useQuery } from "../data/hooks";
 import { useArtifact, useCheckpoints, useItemDetail } from "../data/queries";
 import { ARTIFACT_LABEL } from "../logic/requestTitle";
-import { SCOPE_LABEL, approveBody, closeResolution, gitBindingLine, isApprovalKind, reviewHeader } from "../logic/review";
+import { SCOPE_LABEL, agentOptions, approveBody, closeResolution, gitBindingLine, isApprovalKind, reviewHeader } from "../logic/review";
 import { verifyLine } from "../logic/timeline";
 import type { AcceptBinding, MergeChoice, Request } from "../types";
 
@@ -117,16 +118,19 @@ function CloseBody({ r }: { r: Request }) {
 export function Review({ request: r, connected }: { request: Request; connected: boolean }) {
   const head = reviewHeader(r);
   const [stale, setStale] = useState(false);
+  const [comment, setComment] = useState("");
+  const options = agentOptions(r);
+  const isFinish = r.kind === "accept_epic" || r.kind === "accept_fix";
   const invalidate = useInvalidate();
   const toast = useToast();
   const decide = useMutation(
-    (api, a: { kind: "approve" | "close"; merge?: MergeChoice }) =>
-      a.kind === "approve" ? api.approve(r.id, approveBody(r, a.merge)) : api.closeSpike(r.id),
+    (api, a: { kind: "approve" | "close"; merge?: MergeChoice; choice?: string }) =>
+      a.kind === "approve" ? api.approve(r.id, approveBody(r, a.merge, a.choice, comment)) : api.closeSpike(r.id),
     ["requests", "items", "item:"],
   );
-  const run = async (kind: "approve" | "close", merge?: MergeChoice) => {
+  const run = async (kind: "approve" | "close", merge?: MergeChoice, choice?: string) => {
     try {
-      await decide.run({ kind, merge });
+      await decide.run({ kind, merge, choice });
       toast.success(kind === "close" ? T.toastSpikeClosed(r.item_key) : T.toastApproved(r.item_key));
     } catch (e) {
       if (e instanceof ApiError && e.code === "conflict") {
@@ -153,7 +157,21 @@ export function Review({ request: r, connected }: { request: Request; connected:
 
       {(isApprovalKind(r.kind) || r.kind === "close_spike") && (
         <footer className="flex flex-wrap items-start gap-2 border-t border-border pt-3">
-          {r.kind === "accept_epic" || r.kind === "accept_fix" ? (
+          {isFinish && options.length > 0 ? (
+            <>
+              <div className="w-full space-y-2">
+                {options.map((o, i) => (
+                  <div key={o.label} className="flex flex-col items-start gap-0.5">
+                    <Button type="button" variant={i === 0 ? "default" : "outline"} disabled={!connected || decide.pending} onClick={() => void run("approve", "custom", o.label)}>
+                      {o.label}
+                    </Button>
+                    {o.description && <span className="text-muted-foreground">{o.description}</span>}
+                  </div>
+                ))}
+              </div>
+              <Textarea className="w-full" aria-label={C.approveComment} placeholder={C.approveComment} rows={2} maxLength={2000} value={comment} onChange={(e) => setComment(e.target.value)} />
+            </>
+          ) : isFinish ? (
             r.finish_local ? (
               <Button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "local")}>
                 {C.mergeLocally}

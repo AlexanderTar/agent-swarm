@@ -111,6 +111,34 @@ describe("Review (§16.11)", () => {
     await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ binding: { item_revision: 7 }, merge: "local" }));
   });
 
+  it("renders agent finish options as buttons and posts choice, comment and custom merge", async () => {
+    const d = createMockDaemon();
+    const req = d.db.requests.find((r) => r.id === "req_accept")!;
+    const { user } = renderWithDaemon(
+      <Review
+        request={{ ...req, options: ["Squash-merge PR", "Push straight to main"], option_descriptions: ["Open a PR, squash when green", "Fast-forward main, no PR"] }}
+        connected
+      />,
+      { daemon: d, events: false },
+    );
+    expect(screen.queryByRole("button", { name: "Create PR" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create PR + auto-merge" })).toBeNull();
+    expect(screen.getByText("Open a PR, squash when green")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Request changes/ })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Comment (optional)"), "ship it");
+    await user.click(screen.getByRole("button", { name: /Push straight to main/ }));
+    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({
+      binding: { item_revision: 7 }, merge: "custom", choice: "Push straight to main", comment: "ship it",
+    }));
+  });
+
+  it("keeps today's finish buttons when the request has no agent options", async () => {
+    const d = createMockDaemon();
+    setup("req_accept", d);
+    expect(screen.getByRole("button", { name: "Create PR + auto-merge" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create PR" })).toBeInTheDocument();
+  });
+
   it("shows a stale acceptance binding", async () => {
     const d = createMockDaemon();
     const req = d.db.requests.find((r) => r.id === "req_accept")!;

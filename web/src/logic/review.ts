@@ -44,9 +44,20 @@ export function reviewHeader(r: Request, now = Date.now()) {
   return { title, by, revision: revisionLine(r) };
 }
 
-export function approveBody(r: Request, merge?: MergeChoice): ApproveBody {
-  if (r.kind === "accept_epic" || r.kind === "accept_fix") return { binding: r.binding as AcceptBinding, merge };
-  const body: ApproveBody = { artifact_revision: r.artifact_revision ?? undefined };
+export interface AgentOption { label: string; description: string }
+
+// Agent-supplied approval options; none means the request keeps today's fixed buttons.
+export function agentOptions(r: Request): AgentOption[] {
+  if (!isApprovalKind(r.kind) || !Array.isArray(r.options)) return [];
+  return r.options.map((label, i) => ({ label, description: r.option_descriptions?.[i] ?? "" }));
+}
+
+export function approveBody(r: Request, merge?: MergeChoice, choice?: string, comment?: string): ApproveBody {
+  const extra: Partial<ApproveBody> = {};
+  if (choice) extra.choice = choice;
+  if (comment?.trim()) extra.comment = comment.trim();
+  if (r.kind === "accept_epic" || r.kind === "accept_fix") return { binding: r.binding as AcceptBinding, merge, ...extra };
+  const body: ApproveBody = { artifact_revision: r.artifact_revision ?? undefined, ...extra };
   return r.section_sha256 ? { section_sha256: r.section_sha256, ...body } : body;
 }
 
