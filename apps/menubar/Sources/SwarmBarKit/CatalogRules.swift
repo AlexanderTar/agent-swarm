@@ -114,7 +114,7 @@ public enum CatalogRules {
         return Copy.defaultLevel(model.efforts.contains("high") ? "high" : model.efforts.last ?? "")
     }
 
-    /// nil means the model has no effort control: hidden in New orchestrator, "Not supported" in Settings.
+    /// nil means the model has no effort control: hidden in New orchestrator, blank in Settings.
     /// When the bare level *is* the default effort it resolves to the same launch id as `""`, so it gets
     /// one row, not two (`catalog.CatalogModel.LaunchModel`).
     public static func effortOptions(_ kind: AgentKind?, _ model: CatalogModel?) -> [PickerOption]? {

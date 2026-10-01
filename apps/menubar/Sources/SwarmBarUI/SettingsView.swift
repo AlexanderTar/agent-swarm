@@ -112,8 +112,6 @@ struct DefaultsTab: View {
                                 Task { await model.setEffort(row.role, v) }
                             }
                             .labelsHidden().frame(width: 170, alignment: .leading)
-                        } else if row.model != RoleDefault.noAdvisorModel {
-                            Text(Copy.notSupported).foregroundStyle(.secondary).frame(width: 170, alignment: .leading)
                         } else {
                             Text("").frame(width: 170, alignment: .leading)
                         }

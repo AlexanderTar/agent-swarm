@@ -129,7 +129,6 @@ public enum Copy {
     public static let superpowersMissingRow = "Superpowers missing — orchestrators unavailable"
     public static let checkAgain = "Check again"
     public static let defaultsForNewAgents = "Defaults for new agents"
-    public static let notSupported = "Not supported"
     public static let notificationCenter = "Notification Center"
     public static let sound = "Sound"
     public static let levelInfo = "Info"
