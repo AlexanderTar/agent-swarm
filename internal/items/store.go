@@ -99,7 +99,7 @@ const itemCols = `i.id, i.key, i.type, COALESCE(i.parent_id, ''), COALESCE(p.key
  i.repo_hints_json, i.suggested_repos_json, COALESCE(i.spike_intent, ''), COALESCE(i.origin_spike_id, ''),
  COALESCE(i.legacy_key, ''), i.sort_order, i.revision, i.archived_at, i.created_at, i.updated_at,
  i.workflow_json, COALESCE(i.steps_json, '[]'), COALESCE(i.units_json, '[]'), COALESCE(i.solo, ''), COALESCE(i.verify_json, '[]'),
- i.title_pending
+ i.title_pending, i.waivers_json, i.override_json
  FROM items i LEFT JOIN items p ON p.id = i.parent_id JOIN items r ON r.id = i.root_id`
 
 type scanner interface{ Scan(dest ...any) error }
@@ -112,16 +112,28 @@ func scanItem(sc scanner) (Item, error) {
 	var workflowJSON sql.NullString
 	var stepsRaw, unitsRaw, verifyRaw string
 	var titlePending int
+	var waiversRaw, overrideRaw sql.NullString
 	err := sc.Scan(&it.ID, &it.Key, &it.Type, &it.ParentID, &it.ParentKey, &it.RootID, &it.RootKey,
 		&it.Title, &it.Brief, &acc, &it.Status, &it.StatusBeforeBlock, &it.Priority,
 		&it.RoleHint, &it.TddExempt, &confirmed, &it.ReposVersion,
 		&hints, &suggested, &it.SpikeIntent, &it.OriginSpikeID,
 		&it.LegacyKey, &it.SortOrder, &it.Revision, &archived, &created, &updated,
-		&workflowJSON, &stepsRaw, &unitsRaw, &it.Solo, &verifyRaw, &titlePending)
+		&workflowJSON, &stepsRaw, &unitsRaw, &it.Solo, &verifyRaw, &titlePending, &waiversRaw, &overrideRaw)
 	if err != nil {
 		return it, err
 	}
 	it.TitlePending = titlePending != 0
+	if waiversRaw.Valid && waiversRaw.String != "" {
+		if err := json.Unmarshal([]byte(waiversRaw.String), &it.Waivers); err != nil {
+			return it, fmt.Errorf("items: %s waivers_json: %w", it.Key, err)
+		}
+	}
+	if overrideRaw.Valid && overrideRaw.String != "" {
+		it.Override = new(Override)
+		if err := json.Unmarshal([]byte(overrideRaw.String), it.Override); err != nil {
+			return it, fmt.Errorf("items: %s override_json: %w", it.Key, err)
+		}
+	}
 	if workflowJSON.Valid && workflowJSON.String != "" {
 		var spec workflow.Spec
 		if err := json.Unmarshal([]byte(workflowJSON.String), &spec); err != nil {

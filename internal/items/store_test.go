@@ -1,6 +1,7 @@
 package items_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -758,5 +759,39 @@ func TestChoreRootCannotProposeTopLevel(t *testing.T) {
 	var n int
 	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("items = %d (%v), want only the chore", n, err)
+	}
+}
+
+func TestWaiversAndOverrideRoundTrip(t *testing.T) {
+	s := newStore(t)
+	ch := mk(t, s, items.Chore, "", "Chore")
+	plain := mustGet(t, s, ch.Key)
+	if len(plain.Waivers) != 0 || plain.Override != nil {
+		t.Fatalf("fresh item = %+v, want no waivers or override", plain)
+	}
+	exec(t, s.DB, `UPDATE items SET waivers_json = ?, override_json = ? WHERE id = ?`,
+		`[{"gate":"verify","reason":"flaky ci","agent":"agt_1","at":"2026-10-01T09:00:00Z"}]`,
+		`{"status":"done","reason":"shipped by hand","agent":"agt_1","at":"2026-10-01T09:05:00Z"}`, ch.ID)
+	got := mustGet(t, s, ch.Key)
+	if len(got.Waivers) != 1 || got.Waivers[0].Gate != "verify" || got.Waivers[0].Reason != "flaky ci" || got.Waivers[0].Agent != "agt_1" {
+		t.Fatalf("waivers = %+v", got.Waivers)
+	}
+	if got.Override == nil || got.Override.Status != items.Done || got.Override.Reason != "shipped by hand" {
+		t.Fatalf("override = %+v", got.Override)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["waivers"] == nil || wire["override"] == nil {
+		t.Fatalf("wire lacks waivers/override: %s", raw)
+	}
+	raw, _ = json.Marshal(plain)
+	if strings.Contains(string(raw), "waivers") || strings.Contains(string(raw), "override") {
+		t.Fatalf("plain item wire should omit both: %s", raw)
 	}
 }

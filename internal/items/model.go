@@ -76,6 +76,23 @@ type Unit struct {
 	Steps []string `json:"steps"`
 }
 
+// Waiver is an orchestrator's recorded decision to skip one gate on an item.
+type Waiver struct {
+	Gate   string    `json:"gate"`
+	Reason string    `json:"reason"`
+	Agent  string    `json:"agent"`
+	At     time.Time `json:"at"`
+}
+
+// Override is a status an orchestrator forced on an item; reconciliation leaves
+// the item alone while its status equals Status.
+type Override struct {
+	Status Status    `json:"status"`
+	Reason string    `json:"reason"`
+	Agent  string    `json:"agent"`
+	At     time.Time `json:"at"`
+}
+
 type Item struct {
 	ID                string   `json:"id"`
 	Key               string   `json:"key"`
@@ -110,6 +127,8 @@ type Item struct {
 	// orchestrator started with no Name): the orchestrator's first accepted
 	// checkpoint may still name the item (spec 2026-09-28).
 	TitlePending bool       `json:"title_pending,omitempty"`
+	Waivers      []Waiver   `json:"waivers,omitempty"`
+	Override     *Override  `json:"override,omitempty"`
 	LegacyKey    string     `json:"legacy_key,omitempty"`
 	SortOrder    int        `json:"sort_order"`
 	Revision     int        `json:"revision"`
