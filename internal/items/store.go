@@ -81,7 +81,26 @@ type Patch struct {
 	Solo       *string        // orchestrator/daemon only
 	Verify     *[]string      // orchestrator/daemon only
 	Status     *Status
+	Waive      []WaiveInput // orchestrator only; an empty Reason removes the gate's waiver
 	Revision   int
+}
+
+// WaiveInput is one waiver an orchestrator adds (or, with an empty Reason, removes).
+type WaiveInput struct {
+	Gate   string
+	Reason string
+}
+
+// WaivableGates are the gates an orchestrator may waive on an item in its tree.
+var WaivableGates = []string{"tdd", "verify", "commit", "artifact:design",
+	"artifact:notes", "integration_verify", "final_review", "open_questions",
+	"required_artifact"}
+
+const errOrchestratorOnly = "Only an orchestrator can waive gates or override status."
+
+func validReason(r string) bool {
+	n := utf8.RuneCountInString(r)
+	return n >= 1 && n <= 300
 }
 
 var allowedParents = map[Type][]Type{Story: {Epic}, Task: {Story, Bug, Spike, Chore}}
@@ -597,6 +616,12 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 	if p.Revision != it.Revision {
 		return Item{}, errf(CodeConflict, StaleRevision)
 	}
+	if len(p.Waive) > 0 {
+		if err := s.waiveTx(ctx, tx, &it, p.Waive, by); err != nil {
+			return Item{}, err
+		}
+		p.Revision = it.Revision
+	}
 	if p.Title != nil || p.Brief != nil || p.Acceptance != nil || p.Priority != nil || p.TddExempt != nil ||
 		p.Workflow != nil || p.Steps != nil || p.Units != nil || p.Solo != nil || p.Verify != nil {
 		if p.Title != nil {
@@ -689,6 +714,58 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 		return Item{}, err
 	}
 	return s.getByID(ctx, tx, it.ID)
+}
+
+// waiveTx applies waiver additions and removals to it (bumping its revision),
+// appending one item.waived event per entry.
+func (s *Store) waiveTx(ctx context.Context, tx *sql.Tx, it *Item, in []WaiveInput, by Actor) error {
+	if !by.isOrchestrator() {
+		return errf(CodeBadRequest, errOrchestratorOnly)
+	}
+	now := s.Now()
+	ws := slices.Clone(it.Waivers)
+	for _, w := range in {
+		if !slices.Contains(WaivableGates, w.Gate) {
+			return errf(CodeBadRequest, "Unknown gate %s; waivable gates: %s.", w.Gate, strings.Join(WaivableGates, ", "))
+		}
+		w.Reason = strings.TrimSpace(w.Reason)
+		i := slices.IndexFunc(ws, func(x Waiver) bool { return x.Gate == w.Gate })
+		switch {
+		case w.Reason == "" && i >= 0:
+			ws = slices.Delete(ws, i, i+1)
+		case !validReason(w.Reason):
+			return errf(CodeBadRequest, "Give a reason (1–300 characters).")
+		case i >= 0:
+			ws[i] = Waiver{Gate: w.Gate, Reason: w.Reason, Agent: by.AgentID, At: now}
+		default:
+			ws = append(ws, Waiver{Gate: w.Gate, Reason: w.Reason, Agent: by.AgentID, At: now})
+		}
+	}
+	raw := ""
+	if len(ws) > 0 {
+		b, err := json.Marshal(ws)
+		if err != nil {
+			return err
+		}
+		raw = string(b)
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE items SET waivers_json = NULLIF(?, ''), revision = revision + 1,
+		updated_at = ? WHERE id = ? AND revision = ?`, raw, db.Millis(now), it.ID, it.Revision)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errf(CodeConflict, StaleRevision)
+	}
+	for _, w := range in {
+		if _, err := s.Events.Append(ctx, tx, events.ItemWaived, map[string]string{"key": it.Key,
+			"root_key": it.RootKey, "gate": w.Gate, "reason": strings.TrimSpace(w.Reason), "agent": by.AgentID}); err != nil {
+			return err
+		}
+	}
+	it.Waivers = ws
+	it.Revision++
+	return s.changed(ctx, tx, *it)
 }
 
 // Ancestors returns the chain from the top-level item down to the parent.

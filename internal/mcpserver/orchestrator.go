@@ -165,7 +165,8 @@ func itemsTool(s *Server) ToolDef {
 			"workflow":{"type":"object"},"steps":{"type":"array"},"units":{"type":"array"},
 			"solo":{"type":"string"},"verify":{"type":"array"},"intent":{"type":"string"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
-			"blocked_by":{"type":"string"},"request_id":{"type":"string"}`,
+			"blocked_by":{"type":"string"},"request_id":{"type":"string"},
+			"waive":{"type":"array","items":{"type":"object","properties":{"gate":{"type":"string"},"reason":{"type":"string"}}}}`,
 			[]string{"op"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
@@ -194,6 +195,10 @@ func itemsTool(s *Server) ToolDef {
 				Status    string          `json:"status"`
 				BlockedBy string          `json:"blocked_by"`
 				RequestID string          `json:"request_id"`
+				Waive     []struct {
+					Gate   string `json:"gate"`
+					Reason string `json:"reason"`
+				} `json:"waive"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -286,6 +291,9 @@ func itemsTool(s *Server) ToolDef {
 				if in.Status != "" {
 					st := items.Status(in.Status)
 					p.Status = &st
+				}
+				for _, w := range in.Waive {
+					p.Waive = append(p.Waive, items.WaiveInput{Gate: w.Gate, Reason: w.Reason})
 				}
 				var out items.Item
 				if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_items", &out,

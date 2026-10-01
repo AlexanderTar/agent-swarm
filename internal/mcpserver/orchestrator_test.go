@@ -2572,3 +2572,39 @@ func TestSwarmRoleOverridesSetPersistsTheReason(t *testing.T) {
 		t.Fatalf("worker kind_reason = %q, want %q", worker.KindReason, want)
 	}
 }
+
+// CHORE-18: swarm_items update takes waive [{gate, reason}]; an empty reason removes it.
+func TestItemsToolWaive(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	out, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","revision":1,"waive":[{"gate":"tdd","reason":"docs only"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var it struct {
+		Revision int `json:"revision"`
+		Waivers  []struct {
+			Gate, Reason string
+		} `json:"waivers"`
+	}
+	json.Unmarshal(mustJSON(out), &it)
+	if len(it.Waivers) != 1 || it.Waivers[0].Gate != "tdd" || it.Waivers[0].Reason != "docs only" {
+		t.Fatalf("item = %+v", it)
+	}
+	if _, err := s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","revision":`+fmt.Sprint(it.Revision)+`,"waive":[{"gate":"lint","reason":"x"}]}`); err == nil ||
+		!strings.Contains(err.Error(), "Unknown gate lint") {
+		t.Fatalf("unknown gate err = %v", err)
+	}
+	out, err = s.call(ctx, seed.Caller, "swarm_items",
+		`{"op":"update","key":"`+seed.TaskKey+`","revision":`+fmt.Sprint(it.Revision)+`,"waive":[{"gate":"tdd","reason":""}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it.Waivers = nil
+	json.Unmarshal(mustJSON(out), &it)
+	if len(it.Waivers) != 0 {
+		t.Fatalf("waiver not removed: %+v", it)
+	}
+}
