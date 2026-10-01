@@ -355,3 +355,28 @@ test("details close starts neutral and is visibly focused by keyboard", async ({
   await close.focus();
   expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).not.toBe("none");
 });
+
+test("details tabs have no vertical overflow and remain reachable at narrow widths", async ({ page }) => {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/hierarchy?item=TASK-101");
+    const tabs = page.getByTestId("details-panel").getByRole("tablist");
+    await expect(tabs).toBeVisible();
+    expect(await tabs.evaluate(el => el.scrollHeight - el.clientHeight)).toBe(0);
+    await tabs.getByRole("tab", { name: "Deps", exact: true }).click();
+    await expect(tabs.getByRole("tab", { name: "Deps", exact: true })).toHaveAttribute("aria-selected", "true");
+    await page.screenshot({ path: `test-results/details-tabs-${width}.png` });
+  }
+});
+
+test("locked status choices show only labels and locks while valid moves still work", async ({ page }) => {
+  await page.goto("/#/hierarchy?item=TASK-101");
+  await page.getByTestId("details-panel").getByRole("button", { name: "In progress", exact: true }).click();
+  const locked = page.getByRole("menuitem", { name: /^Ready/ });
+  await expect(locked).toHaveAttribute("aria-disabled", "true");
+  await expect(locked).toHaveText("Ready");
+  await expect(locked.locator("svg")).toHaveCount(1);
+  await expect(page.getByRole("menu")).not.toContainText("Couldn't update status");
+  await page.getByRole("menuitem", { name: "Blocked", exact: true }).click();
+  await expect(page.getByTestId("details-panel").getByRole("button", { name: "Blocked", exact: true })).toBeVisible();
+});
