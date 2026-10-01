@@ -157,20 +157,17 @@ export function Review({ request: r, connected }: { request: Request; connected:
 
       {(isApprovalKind(r.kind) || r.kind === "close_spike") && (
         <footer className="flex flex-wrap items-start gap-2 border-t border-border pt-3">
-          {isFinish && options.length > 0 ? (
-            <>
-              <div className="w-full space-y-2">
-                {options.map((o, i) => (
-                  <div key={o.label} className="flex flex-col items-start gap-0.5">
-                    <Button type="button" variant={i === 0 ? "default" : "outline"} disabled={!connected || decide.pending} onClick={() => void run("approve", "custom", o.label)}>
-                      {o.label}
-                    </Button>
-                    {o.description && <span className="text-muted-foreground">{o.description}</span>}
-                  </div>
-                ))}
-              </div>
-              <Textarea className="w-full" aria-label={C.approveComment} placeholder={C.approveComment} rows={2} maxLength={2000} value={comment} onChange={(e) => setComment(e.target.value)} />
-            </>
+          {options.length > 0 ? (
+            <div className="w-full space-y-2">
+              {options.map((o, i) => (
+                <div key={o.label} className="flex flex-col items-start gap-0.5">
+                  <Button type="button" variant={i === 0 ? "default" : "outline"} disabled={!connected || decide.pending} onClick={() => void run("approve", isFinish ? "custom" : undefined, o.label)}>
+                    {o.label}
+                  </Button>
+                  {o.description && <span className="text-muted-foreground">{o.description}</span>}
+                </div>
+              ))}
+            </div>
           ) : isFinish ? (
             r.finish_local ? (
               <Button type="button" disabled={!connected || decide.pending} onClick={() => void run("approve", "local")}>
@@ -190,6 +187,9 @@ export function Review({ request: r, connected }: { request: Request; connected:
             <Button type="button" disabled={!connected || decide.pending} onClick={() => void run(r.kind === "close_spike" ? "close" : "approve")}>
               {SCOPE_LABEL[r.kind]}
             </Button>
+          )}
+          {isApprovalKind(r.kind) && (
+            <Textarea className="w-full" aria-label={C.approveComment} placeholder={C.approveComment} rows={2} maxLength={2000} value={comment} onChange={(e) => setComment(e.target.value)} />
           )}
           <RequestChanges requestId={r.id} agentName={r.agent_name ?? r.item_key} connected={connected} />
         </footer>

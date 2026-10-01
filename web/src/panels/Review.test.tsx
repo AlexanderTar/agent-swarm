@@ -139,6 +139,34 @@ describe("Review (§16.11)", () => {
     expect(screen.getByRole("button", { name: "Create PR" })).toBeInTheDocument();
   });
 
+  it.each([
+    ["req_section", "Approve section", { section_sha256: "sha-dm-3", artifact_revision: 3 }],
+    ["req_plan", "Approve plan", { artifact_revision: 1 }],
+    ["req_report", "Approve report", {}],
+  ])("renders agent options on %s as approval buttons and sends choice and comment", async (id, fixedLabel, bound) => {
+    const d = createMockDaemon();
+    const req = d.db.requests.find((r) => r.id === id)!;
+    const { user } = renderWithDaemon(
+      <Review request={{ ...req, options: ["Looks good", "Approve with follow-ups"], option_descriptions: ["Ship as written", "Ship, then fix nits"] }} connected />,
+      { daemon: d, events: false },
+    );
+    expect(screen.queryByRole("button", { name: fixedLabel })).toBeNull();
+    expect(screen.getByText("Ship, then fix nits")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Comment (optional)"), "nit: rename x");
+    await user.click(screen.getByRole("button", { name: /Approve with follow-ups/ }));
+    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ ...bound, choice: "Approve with follow-ups", comment: "nit: rename x" }));
+    expect(lastPost(d)?.body).not.toHaveProperty("merge");
+  });
+
+  it("offers an optional comment on a plain approval", async () => {
+    const d = createMockDaemon();
+    const { user } = setup("req_plan", d);
+    await user.type(screen.getByLabelText("Comment (optional)"), "thanks");
+    await user.click(screen.getByRole("button", { name: "Approve plan" }));
+    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ comment: "thanks" }));
+    expect(lastPost(d)?.body).not.toHaveProperty("choice");
+  });
+
   it("shows a stale acceptance binding", async () => {
     const d = createMockDaemon();
     const req = d.db.requests.find((r) => r.id === "req_accept")!;
