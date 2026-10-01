@@ -100,12 +100,12 @@ enum NativeDialogCheck {
                 }
                 dialogs.forEach { $0.close() }
                 openMenuOnce()
-                try? await Task.sleep(for: .milliseconds(400))
+                for _ in 0..<20 where popover?.isVisible != true { try? await Task.sleep(for: .milliseconds(100)) }
                 check(popover?.isVisible == true, "\(name): menu reopens after one request")
                 // Close through the real menu action again; direct NSWindow.close()
                 // is exactly the stale scene state this regression must avoid.
                 launch(name)
-                try? await Task.sleep(for: .milliseconds(400))
+                for _ in 0..<20 where popover?.isVisible == true { try? await Task.sleep(for: .milliseconds(100)) }
                 check(popover?.isVisible != true, "\(name): repeated launch dismisses menu")
                 NSApp.windows.filter {
                     $0.isVisible && !String(describing: type(of: $0)).contains("StatusBar")

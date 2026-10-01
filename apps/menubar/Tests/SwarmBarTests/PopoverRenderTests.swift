@@ -111,7 +111,5 @@ final class PopoverRenderTests: XCTestCase {
         let height = renderedSize(NeedsYouSection(model: m, cap: 400).frame(width: 360)).height
         XCTAssertGreaterThan(height, 0)
     }
-
-
 }
 

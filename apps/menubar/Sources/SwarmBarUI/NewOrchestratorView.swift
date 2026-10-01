@@ -98,13 +98,16 @@ public struct NewOrchestratorView: View {
         .padding(.vertical, 12)
     }
 
+    @FocusState private var nameFocused: Bool
+
     private var nameField: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(Copy.name)
             TextField(Copy.nameOptionalPlaceholder, text: $form.name)
                 .textFieldStyle(.plain).labelsHidden()
+                .focused($nameFocused)
                 .padding(.vertical, 6).padding(.horizontal, 8)
-                .dialogFieldSurface()
+                .dialogFieldSurface(focused: nameFocused)
             if let error = form.nameError {
                 Text(error).font(.caption).foregroundStyle(.red)
             } else if !form.preview.isEmpty {
@@ -175,18 +178,19 @@ struct RepoChooser: View {
         List(rows, selection: $selection) { repo in
             HStack(spacing: 12) {
                 Text(repo.name).lineLimit(1)
-                    .foregroundStyle(selection.contains(repo.id) ? Color.white : Color.primary)
+                    .foregroundStyle(selection.contains(repo.id) ? Color(nsColor: .alternateSelectedControlTextColor) : Color.primary)
                 Text(RepoPicker.subtitle(repo))
                     .font(.caption)
-                    .foregroundStyle(selection.contains(repo.id) ? Color.white.opacity(0.9) : Color.secondary)
+                    .foregroundStyle(selection.contains(repo.id) ? Color(nsColor: .alternateSelectedControlTextColor) : Color.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30, alignment: .leading)
-            .background(selection.contains(repo.id) ? Color.blue : Color.clear)
+            .padding(.horizontal, 8)
             .contentShape(Rectangle())
-            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(selection.contains(repo.id) ? Color(nsColor: .selectedContentBackgroundColor) : Color.clear)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(repo.name), \(repo.path)")
             .help(repo.path)
