@@ -384,3 +384,32 @@ func TestAcceptAllLocalCarriesFinishLocal(t *testing.T) {
 		t.Fatalf("local = %d: %s", rec.Code, rec.Body)
 	}
 }
+
+func TestApproveBodyCarriesChoiceAndComment(t *testing.T) {
+	s, seed, _, _, _ := newFinishServer(t, "https://github.com/o/web.git")
+	var binding string
+	s.s.DB.QueryRowContext(bg, `SELECT binding_json FROM requests WHERE id = ?`, seed.AcceptID).Scan(&binding)
+	opts := `[{"label":"Squash-merge PR","description":"Push, open PR"},{"label":"Keep branch","description":""}]`
+	if _, err := s.s.DB.ExecContext(bg, `UPDATE requests SET binding_json = json_set(binding_json, '$.finish_options', json(?)) WHERE id = ?`, opts, seed.AcceptID); err != nil {
+		t.Fatal(err)
+	}
+	s.s.DB.QueryRowContext(bg, `SELECT binding_json FROM requests WHERE id = ?`, seed.AcceptID).Scan(&binding)
+	rec := s.post(t, "/api/requests/"+seed.AcceptID+"/approve", `{"binding":`+binding+`,"merge":"custom","choice":"Nope","via":"board"}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "Choose one of this request's options: Squash-merge PR, Keep branch.") {
+		t.Fatalf("bad choice = %d: %s", rec.Code, rec.Body)
+	}
+	rec = s.post(t, "/api/requests/"+seed.AcceptID+"/approve", `{"binding":`+binding+`,"merge":"custom","choice":"Keep branch","comment":"ship it","via":"board"}`)
+	var out struct {
+		State              string          `json:"state"`
+		Binding            json.RawMessage `json:"binding"`
+		Options            []string        `json:"options"`
+		OptionDescriptions []string        `json:"option_descriptions"`
+		Choice             string          `json:"choice"`
+		ResponseText       string          `json:"response_text"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != 200 || out.State != "approved" || out.Choice != "Keep branch" || out.ResponseText != "ship it" ||
+		len(out.Options) != 2 || len(out.OptionDescriptions) != 2 || !strings.Contains(string(out.Binding), `"merge":"custom"`) {
+		t.Fatalf("custom = %d: %s", rec.Code, rec.Body)
+	}
+}

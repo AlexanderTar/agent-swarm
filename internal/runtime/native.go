@@ -225,7 +225,7 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		case KindApproveSection:
 			approveLine := fmt.Sprintf("Approve Spec section %q (rev %d)?", sectionTitle, req.ArtifactRevision)
 			q := buildApprovalQuestion(head, "", approveLine)
-			return NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}, nil
+			return withAgentOptions(req, NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}), nil
 		case KindApprovePlan:
 			approveLine := fmt.Sprintf("Approve the plan (rev %d)?", req.ArtifactRevision)
 			if len(warnings) > 0 {
@@ -238,11 +238,11 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 				approveLine = b.String()
 			}
 			q := buildApprovalQuestion(head, planPathsBlock(reviewPaths), approveLine)
-			return NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}, nil
+			return withAgentOptions(req, NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}), nil
 		default: // KindApproveReport
 			approveLine := fmt.Sprintf("Approve the debug report (rev %d)?", req.ArtifactRevision)
 			q := buildApprovalQuestion(head, "", approveLine)
-			return NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}, nil
+			return withAgentOptions(req, NativePrompt{Header: "Spike approval", Question: q, Options: approveOptions}), nil
 		}
 	case KindConfirmRepos:
 		key, err := s.itemKey(ctx, tx, req.ItemID)
@@ -315,10 +315,51 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 			WHERE root_id = (SELECT root_id FROM items WHERE id = ?)`, req.ItemID).Scan(&waived); err != nil {
 			return NativePrompt{}, err
 		}
-		return finishPrompt(header, key, title, repos, waived), nil
+		return withAgentOptions(req, finishPrompt(header, key, title, repos, waived)), nil
 	default:
 		return NativePrompt{}, nil
 	}
+}
+
+// agentOptions returns the options an agent proposed on a finish request (binding finish_options)
+// or a section/plan/report approval (options_json); nil when there are none.
+func agentOptions(req Request) []FinishOption {
+	var opts []FinishOption
+	switch req.Kind {
+	case KindAcceptEpic, KindAcceptFix:
+		var b struct {
+			FinishOptions []FinishOption `json:"finish_options"`
+		}
+		json.Unmarshal(req.Binding, &b)
+		opts = b.FinishOptions
+	case KindApproveSection, KindApprovePlan, KindApproveReport:
+		json.Unmarshal(req.Options, &opts)
+	}
+	return opts
+}
+
+func optionLabels(opts []FinishOption) []string {
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = o.Label
+	}
+	return labels
+}
+
+// withAgentOptions swaps a prompt's options for the agent's own (labels and descriptions) plus
+// the daemon's "Request changes"; a request without agent options keeps its prompt.
+func withAgentOptions(req Request, np NativePrompt) NativePrompt {
+	opts := agentOptions(req)
+	if len(opts) == 0 {
+		return np
+	}
+	np.Options = append(optionLabels(opts), "Request changes")
+	np.Descriptions = np.Descriptions[:0:0]
+	for _, o := range opts {
+		np.Descriptions = append(np.Descriptions, o.Description)
+	}
+	np.Descriptions = append(np.Descriptions, "Say what to change; I'll re-integrate and ask again.")
+	return np
 }
 
 // finishPrompt is the finish question's copy (2026-09-29-finish-with-pr): three PR options, or two
@@ -526,11 +567,15 @@ func NativePromptNextStep(ref string, options, decisions []string) string {
 		}
 		pairs = append(pairs, strconv.Quote(options[i])+" \u2192 "+strconv.Quote(d))
 	}
+	hint := ""
+	if i := slices.Index(decisions, "approve"); i >= 0 && slices.Contains(decisions[i+1:], "approve") {
+		hint = " For an option pick, pass decision \"approve\" and choice set to that option's exact label."
+	}
 	return fmt.Sprintf("Ask this now with your native question tool: native_prompt's question, header and options word for word "+
 		"(labels and descriptions), one question per call, no added text; don't print chat_block again. "+
 		"After the user answers, call swarm_ask kind:\"native_answer\", ref:%q, decision set from their pick: %s. "+
 		"Claude, agy, and Codex use their hook-backed answer path. Cursor AskQuestion must include answer_text exactly as returned by the native tool; this has agent_reported provenance. Muse request_user_input: call native_answer right after the tool returns, with answer_text exactly as returned; Swarm checks it against Muse's own session log. On cancellation or no returned answer, submit nothing and leave the request open. "+
-		"Codex: use request_user_input, not request_user_input_async; a review question is a design decision the user chooses, not a permission request.", ref, strings.Join(pairs, ", "))
+		"Codex: use request_user_input, not request_user_input_async; a review question is a design decision the user chooses, not a permission request.", ref, strings.Join(pairs, ", ")+hint)
 }
 
 // PromptDecisions is the decision list a request's native prompt offers: the finish decisions for
@@ -540,6 +585,20 @@ func PromptDecisions(kind RequestKind, np NativePrompt) []string {
 		return finishDecisions(np.Options)
 	}
 	return []string{"approve", "request_changes"}
+}
+
+// PromptDecisionsFor is PromptDecisions for a concrete request: every agent option is an
+// "approve" (the pick travels in native_answer's choice), then "request_changes".
+func PromptDecisionsFor(req Request, np NativePrompt) []string {
+	opts := agentOptions(req)
+	if len(opts) == 0 {
+		return PromptDecisions(req.Kind, np)
+	}
+	d := make([]string, len(opts), len(opts)+1)
+	for i := range d {
+		d[i] = "approve"
+	}
+	return append(d, "request_changes")
 }
 
 // storedNativePromptTx rebuilds a stored approval's native prompt exactly as
@@ -965,7 +1024,21 @@ func finishDecisions(opts []string) []string {
 // decisionLabels returns the chosen decision's option label and every other label. A msg_ ref and
 // every non-accept kind keep approve → "Approve" (others ["Request changes"]) and
 // request_changes → "Request changes" (others ["Approve"]).
-func decisionLabels(req Request, np NativePrompt, decision string) (string, []string, error) {
+func decisionLabels(req Request, np NativePrompt, decision, choice string) (string, []string, error) {
+	if opts := agentOptions(req); req.ID != "" && len(opts) > 0 {
+		labels := optionLabels(opts)
+		switch decision {
+		case "request_changes":
+			return "Request changes", labels, nil
+		case "approve":
+			i := slices.Index(labels, choice)
+			if i < 0 {
+				return "", nil, fmt.Errorf("Choose one of this request's options: %s.", strings.Join(labels, ", "))
+			}
+			return choice, append(slices.Delete(slices.Clone(labels), i, i+1), "Request changes"), nil
+		}
+		return "", nil, errors.New("decision must be approve or request_changes.")
+	}
 	if req.ID == "" || (req.Kind != KindAcceptEpic && req.Kind != KindAcceptFix) {
 		switch decision {
 		case "approve":
@@ -1222,7 +1295,7 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	// classify matches the answer against the decision's label once the request (and so its
 	// prompt's labels) is known: right away for a msg_ ref, after the target checks for a req_ ref.
 	classify := func(req Request, np NativePrompt) error {
-		label, others, err := decisionLabels(req, np, in.Decision)
+		label, others, err := decisionLabels(req, np, in.Decision, in.Choice)
 		if err != nil {
 			return &items.Error{Code: items.CodeBadRequest, Message: err.Error()}
 		}
@@ -1383,6 +1456,17 @@ func (s *Store) nativeAnswer(ctx context.Context, sessionID string, in AskInput)
 	}
 	in2 := ApproveInput{SectionSHA256: req.SectionSHA256, ArtifactRevision: req.ArtifactRevision,
 		Binding: req.Binding, Via: "terminal"}
+	if len(agentOptions(req)) > 0 {
+		return s.resolve(ctx, in.Ref, "approved", comment, "terminal", "user_action", approveCheck(in2),
+			func(req Request) (MessageKind, any) {
+				p := map[string]any{"decision": "approved", "choice": in.Choice,
+					"section_id": req.SectionID, "section_sha256": req.SectionSHA256, "evidence": evidence}
+				if isAcceptKind(req.Kind) {
+					p["merge"] = "custom"
+				}
+				return "approval_result", p
+			}, bindEvidence, setChoiceHook(ctx, in.Ref, in.Choice))
+	}
 	if m := finishMerge[in.Decision]; m != "" {
 		return s.resolve(ctx, in.Ref, "approved", comment, "terminal", "user_action", approveCheck(in2),
 			func(req Request) (MessageKind, any) {

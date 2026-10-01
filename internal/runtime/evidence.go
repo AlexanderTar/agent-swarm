@@ -67,7 +67,7 @@ func (e *mergeEvidence) git(ctx context.Context, dir string, args ...string) err
 
 func (e *mergeEvidence) itemMergeContains(ctx context.Context, wt worktree.Worktree, head string) bool {
 	rows, err := e.s.DB.QueryContext(ctx, `SELECT m.head FROM item_merges m JOIN items i ON i.id = m.item_id
-		WHERE i.root_id = ? AND m.repo_id = ? AND m.state = 'merged'`, wt.RootItemID, wt.RepoID)
+		WHERE i.root_id = ? AND m.repo_id = ? AND m.state = 'merged' AND m.kind != 'kept'`, wt.RootItemID, wt.RepoID)
 	if err != nil {
 		return false
 	}

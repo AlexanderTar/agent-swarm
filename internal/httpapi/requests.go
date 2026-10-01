@@ -98,7 +98,8 @@ func (s *Server) approveRequest(w http.ResponseWriter, r *http.Request) {
 		binding, _ = json.Marshal(body.Binding)
 	}
 	req, err := s.RT.Approve(ctx, id, runtime.ApproveInput{SectionSHA256: body.SectionSHA256,
-		ArtifactRevision: body.ArtifactRevision, Binding: binding, Via: viaFromBody(body.Via), Merge: body.Merge})
+		ArtifactRevision: body.ArtifactRevision, Binding: binding, Via: viaFromBody(body.Via), Merge: body.Merge,
+		Choice: body.Choice, Comment: body.Comment})
 	if err != nil {
 		s.writeErr(w, err)
 		return

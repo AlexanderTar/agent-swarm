@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -35,7 +36,7 @@ type FinishMerged struct {
 // ItemMerge is one item_merges row of a root's newest integrated checkpoint.
 type ItemMerge struct {
 	Repo      string `json:"repo"`
-	Kind      string `json:"kind"` // "pr" | "local"
+	Kind      string `json:"kind"` // "pr" | "local" | "kept"
 	URL       string `json:"url,omitempty"`
 	Number    int    `json:"number,omitempty"`
 	Base      string `json:"base"`
@@ -185,6 +186,7 @@ type verified struct {
 	url      string
 	pr       ghPR
 	localSHA string
+	note     string // kept only
 }
 
 // writeFinishing is swarm_checkpoint kind finishing (spec "writeFinishing, in order").
@@ -227,26 +229,59 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 	}
 
 	// 2. coverage
-	reported := map[string]string{} // repo -> "pr" | "local"
-	prURLs, localSHAs := map[string]string{}, map[string]string{}
+	custom := fa.Merge == "custom"
+	if len(in.Kept) > 0 && !custom {
+		return out, badRequest("kept is only valid when the user chose one of your finish options.")
+	}
+	reported := map[string]string{} // repo -> "pr" | "local" | "kept"
+	prURLs, localSHAs, keptNotes := map[string]string{}, map[string]string{}, map[string]string{}
+	var dup []string // repos reported more than once
+	report := func(repo, kind string) {
+		if reported[repo] != "" {
+			dup = append(dup, repo)
+		}
+		reported[repo] = kind
+	}
 	for _, p := range in.PRs {
-		reported[p.Repo], prURLs[p.Repo] = "pr", p.URL
+		report(p.Repo, "pr")
+		prURLs[p.Repo] = p.URL
 	}
 	for _, m := range in.Merged {
-		reported[m.Repo], localSHAs[m.Repo] = "local", m.SHA
+		report(m.Repo, "local")
+		localSHAs[m.Repo] = m.SHA
+	}
+	for _, k := range in.Kept {
+		if n := utf8.RuneCountInString(k.Note); n < 1 || n > 300 {
+			return out, badRequest("kept needs a note of 1–300 characters for each repo.")
+		}
+		report(k.Repo, "kept")
+		keptNotes[k.Repo] = k.Note
 	}
 	integrated := map[string]bool{}
 	for _, r := range repos {
 		integrated[r.Ref.Repo] = true
 	}
-	for _, name := range append(repoNames(in.PRs), mergedNames(in.Merged)...) {
+	for _, name := range append(append(repoNames(in.PRs), mergedNames(in.Merged)...), keptNames(in.Kept)...) {
 		if !integrated[name] {
 			return out, badRequest("%s is not in %s's integrated checkpoint.", name, key)
+		}
+	}
+	if custom {
+		// the user chose the orchestrator's own option: every repo reported once, however it was finished
+		missing := slices.Clone(dup)
+		for _, r := range repos {
+			if reported[r.Ref.Repo] == "" {
+				missing = append(missing, r.Ref.Repo)
+			}
+		}
+		if len(missing) > 0 {
+			return out, badRequest("Report every integrated repo once under prs, merged or kept: %s.", strings.Join(missing, ", "))
 		}
 	}
 	for _, r := range repos {
 		name := r.Ref.Repo
 		switch {
+		case custom && r.RepoID != "":
 		case r.RepoID == "":
 			return out, badRequest("Couldn't find %s in Swarm's repository catalog; register it with swarm_repo_register, then send finishing again.", name)
 		case reported[name] == "":
@@ -262,12 +297,23 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 	var checked []verified
 	for _, r := range repos {
 		v := verified{repo: r}
-		if r.GitHub {
+		switch {
+		case reported[r.Ref.Repo] == "kept":
+			v.kind, v.note = "kept", keptNotes[r.Ref.Repo]
+		case custom && reported[r.Ref.Repo] == "local":
+			// ponytail: a custom local merge is trusted, not ancestor-checked; the user chose the option.
+			v.kind, v.localSHA = "local", localSHAs[r.Ref.Repo]
+		case reported[r.Ref.Repo] == "pr" && custom:
 			v.kind, v.url = "pr", prURLs[r.Ref.Repo]
 			if v.pr, err = s.verifyPR(ctx, r, v.url, fa.Merge); err != nil {
 				return out, err
 			}
-		} else {
+		case r.GitHub:
+			v.kind, v.url = "pr", prURLs[r.Ref.Repo]
+			if v.pr, err = s.verifyPR(ctx, r, v.url, fa.Merge); err != nil {
+				return out, err
+			}
+		default:
 			v.kind, v.localSHA = "local", localSHAs[r.Ref.Repo]
 			if err := s.verifyLocal(ctx, r, v.localSHA); err != nil {
 				return out, err
@@ -309,10 +355,10 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 				}
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO item_merges (id, item_id, integrated_checkpoint, repo, repo_id,
-				kind, url, number, base, head, auto_merge, state, checks, merged_sha, checked_at, created_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				kind, url, number, base, head, auto_merge, state, checks, merged_sha, checked_at, created_at, note)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 				ids.New("mrg"), it.ID, fa.CheckpointID, v.repo.Ref.Repo, v.repo.RepoID, v.kind, url, number,
-				v.repo.Base, v.repo.Ref.Branch, fa.Merge == "auto", state, checks, sha, now, now); err != nil {
+				v.repo.Base, v.repo.Ref.Branch, fa.Merge == "auto", state, checks, sha, now, now, nullIf(v.note)); err != nil {
 				return err
 			}
 		}
@@ -384,7 +430,7 @@ func (s *Store) verifyPR(ctx context.Context, r finishRepo, url, merge string) (
 		return p, badRequest("Couldn't read %s with gh: %s. Check gh auth status, then send finishing again.", url, ghErrLine(err))
 	case p.HeadRefName != r.Ref.Branch:
 		return p, badRequest("%s merges %s, not the integrated branch %s.", url, p.HeadRefName, r.Ref.Branch)
-	case p.BaseRefName != r.Base:
+	case p.BaseRefName != r.Base && merge != "custom": // a custom option may target another branch
 		return p, badRequest("%s targets %s, not %s's default branch %s.", url, p.BaseRefName, r.Ref.Repo, r.Base)
 	case p.State == "CLOSED":
 		return p, badRequest("%s is closed without merging.", url)
@@ -435,6 +481,14 @@ func repoNames(ps []FinishPR) []string {
 	var out []string
 	for _, p := range ps {
 		out = append(out, p.Repo)
+	}
+	return out
+}
+
+func keptNames(ks []KeptRepo) []string {
+	var out []string
+	for _, k := range ks {
+		out = append(out, k.Repo)
 	}
 	return out
 }
