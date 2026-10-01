@@ -11,7 +11,7 @@ import { Alert } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T } from "../copy";
 import { useInvalidate, useMutation, useQuery } from "../data/hooks";
-import { useArtifact, useCheckpoints, useItemDetail, useItems } from "../data/queries";
+import { useArtifact, useCheckpoints, useItemDetail } from "../data/queries";
 import { ARTIFACT_LABEL } from "../logic/requestTitle";
 import { SCOPE_LABEL, agentOptions, approveBody, closeResolution, gitBindingLine, isApprovalKind, reviewHeader } from "../logic/review";
 import { verifyLine } from "../logic/timeline";

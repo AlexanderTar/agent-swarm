@@ -1,5 +1,5 @@
 import { C, T } from "../copy";
-import type { AcceptBinding, ApproveBody, GitRef, Item, MergeChoice, Request, RequestKind } from "../types";
+import type { AcceptBinding, ApproveBody, GitRef, MergeChoice, Request, RequestKind } from "../types";
 import { ageAgo, sha7 } from "./format";
 
 export const SCOPE_LABEL: Record<RequestKind, string> = {
