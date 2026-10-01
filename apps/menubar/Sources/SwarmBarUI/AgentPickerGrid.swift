@@ -1,6 +1,12 @@
 import SwarmBarKit
 import SwiftUI
 
+/// Column widths shared by the orchestrator grid and the stacked worker-overrides grid, so
+/// their Agent/Model/Effort columns line up in one window.
+enum PickerColumns {
+    static let label: CGFloat = 70
+}
+
 struct AgentPickerGrid: View {
     let picker: AgentPickerModel
 
@@ -18,7 +24,7 @@ struct AgentPickerGrid: View {
         VStack(alignment: .leading, spacing: 6) {
             Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
                 GridRow {
-                    Text(Copy.agent).frame(width: 70, alignment: .leading)
+                    Text(Copy.agent).frame(width: PickerColumns.label, alignment: .leading)
                     WideOptionPicker(Copy.agent, options: picker.agentOptions, value: picker.choice.agent?.rawValue ?? "",
                                      icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { picker.setAgent($0) }
                         .frame(width: 130)
@@ -44,7 +50,7 @@ struct AgentPickerGrid: View {
                     GridRow { Text(note).font(.caption).foregroundStyle(.secondary).gridCellColumns(6) }
                 }
                 GridRow {
-                    Text(Copy.advisor).frame(width: 70, alignment: .leading)
+                    Text(Copy.advisor).frame(width: PickerColumns.label, alignment: .leading)
                     WideOptionPicker(Copy.advisor, options: picker.advisorAgentOptions, value: advisorAgentValue,
                                      icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { picker.setAdvisorAgent($0) }
                         .frame(width: 130)

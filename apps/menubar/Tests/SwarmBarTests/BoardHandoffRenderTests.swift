@@ -170,15 +170,36 @@ final class BoardHandoffRenderTests: XCTestCase {
         for role in BoardHandoffForm.workerRoles {
             let a = try frame(role, Copy.agent), m = try frame(role, Copy.model)
             agentW.insert(a.width.rounded()); modelW.insert(m.width.rounded())
-            XCTAssertLessThanOrEqual(a.maxX, m.minX, "\(role) agent popup runs into the Model label/popup")
+            XCTAssertGreaterThanOrEqual(m.minX - a.maxX, 50, "\(role) agent popup runs into the 50pt Model label")
             if form.workerEffortOptions(role) != nil {
                 let e = try frame(role, Copy.effort)
                 effortW.insert(e.width.rounded())
-                XCTAssertLessThanOrEqual(m.maxX, e.minX, "\(role) model popup overlaps the Effort label")
+                XCTAssertGreaterThanOrEqual(e.minX - m.maxX, 45, "\(role) model popup overlaps the 45pt Effort label")
             }
         }
         XCTAssertEqual(agentW.count, 1, "agent popup widths differ across rows: \(agentW)")
         XCTAssertEqual(modelW.count, 1, "model popup widths differ across rows: \(modelW)")
         XCTAssertEqual(effortW.count, 1, "effort popup widths differ across rows: \(effortW)")
+    }
+
+    /// The orchestrator grid and the worker grid are stacked in one window: their columns must line up.
+    func testWorkerGridColumnsLineUpWithOrchestratorGrid() async throws {
+        let client = try MockDaemonClient(fixtures: Fixture.dir)
+        let model = makeAppModel(client)
+        await model.refresh()
+        let form = model.makeBoardHandoffForm()
+        await form.load()
+        form.selectedKey = "BUG-7"
+        let host = render(form)
+        host.frame = NSRect(x: 0, y: 0, width: 760, height: 300)
+        host.layoutSubtreeIfNeeded()
+        func frame(_ label: String) throws -> NSRect {
+            let p = try XCTUnwrap(popups(host).first { $0.accessibilityLabel() == label })
+            return host.convert(p.bounds, from: p)
+        }
+        let orch = try frame(Copy.agent), worker = try frame("\(Copy.defaultsRowLabel(.coder)) \(Copy.agent)")
+        XCTAssertEqual(orch.minX.rounded(), worker.minX.rounded(), "Agent columns are offset between the two grids")
+        let orchModel = try frame(Copy.model), workerModel = try frame("\(Copy.defaultsRowLabel(.coder)) \(Copy.model)")
+        XCTAssertEqual(orchModel.minX.rounded(), workerModel.minX.rounded(), "Model columns are offset between the two grids")
     }
 }

@@ -85,7 +85,7 @@ struct WorkerOverridesGrid: View {
                     let label = Copy.defaultsRowLabel(role)
                     let choice = form.workerChoice(role)
                     GridRow {
-                        Text(label).frame(width: 84, alignment: .leading)
+                        Text(label).lineLimit(1).minimumScaleFactor(0.85).frame(width: PickerColumns.label, alignment: .leading)
                         WideOptionPicker("\(label) \(Copy.agent)", options: form.workerAgentOptions,
                                          value: choice.agent?.rawValue ?? "",
                                          icon: { AgentKind(rawValue: $0.value).map(IconName.init) }) { form.setWorkerAgent(role, $0) }
@@ -93,7 +93,7 @@ struct WorkerOverridesGrid: View {
                         Text(Copy.model).frame(width: 50, alignment: .leading)
                         WideOptionPicker("\(label) \(Copy.model)", options: form.workerModelOptions(role),
                                          value: choice.model) { form.setWorkerModel(role, $0) }
-                            .frame(minWidth: 0, maxWidth: .infinity)
+                            .frame(minWidth: 200, maxWidth: .infinity)
                         if let efforts = form.workerEffortOptions(role) {
                             Text(Copy.effort).frame(width: 45, alignment: .leading)
                             WideOptionPicker("\(label) \(Copy.effort)", options: efforts,
