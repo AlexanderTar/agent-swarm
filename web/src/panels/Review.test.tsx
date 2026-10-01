@@ -111,6 +111,78 @@ describe("Review (§16.11)", () => {
     await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ binding: { item_revision: 7 }, merge: "local" }));
   });
 
+  it("renders agent finish options as buttons and posts choice, comment and custom merge", async () => {
+    const d = createMockDaemon();
+    const req = d.db.requests.find((r) => r.id === "req_accept")!;
+    const { user } = renderWithDaemon(
+      <Review
+        request={{ ...req, options: ["Squash-merge PR", "Push straight to main"], option_descriptions: ["Open a PR, squash when green", "Fast-forward main, no PR"] }}
+        connected
+      />,
+      { daemon: d, events: false },
+    );
+    expect(screen.queryByRole("button", { name: "Create PR" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create PR + auto-merge" })).toBeNull();
+    expect(screen.getByText("Open a PR, squash when green")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Request changes/ })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Comment (optional)"), "ship it");
+    await user.click(screen.getByRole("button", { name: /Push straight to main/ }));
+    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({
+      binding: { item_revision: 7 }, merge: "custom", choice: "Push straight to main", comment: "ship it",
+    }));
+  });
+
+  it("keeps today's finish buttons when the request has no agent options", async () => {
+    const d = createMockDaemon();
+    setup("req_accept", d);
+    expect(screen.getByRole("button", { name: "Create PR + auto-merge" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create PR" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["req_section", "Approve section", { section_sha256: "sha-dm-3", artifact_revision: 3 }],
+    ["req_plan", "Approve plan", { artifact_revision: 1 }],
+    ["req_report", "Approve report", {}],
+  ])("renders agent options on %s as approval buttons and sends choice and comment", async (id, fixedLabel, bound) => {
+    const d = createMockDaemon();
+    const req = d.db.requests.find((r) => r.id === id)!;
+    const { user } = renderWithDaemon(
+      <Review request={{ ...req, options: ["Looks good", "Approve with follow-ups"], option_descriptions: ["Ship as written", "Ship, then fix nits"] }} connected />,
+      { daemon: d, events: false },
+    );
+    expect(screen.queryByRole("button", { name: fixedLabel })).toBeNull();
+    expect(screen.getByText("Ship, then fix nits")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Comment (optional)"), "nit: rename x");
+    await user.click(screen.getByRole("button", { name: /Approve with follow-ups/ }));
+    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ ...bound, choice: "Approve with follow-ups", comment: "nit: rename x" }));
+    expect(lastPost(d)?.body).not.toHaveProperty("merge");
+  });
+
+  it("offers an optional comment on a plain approval", async () => {
+    const d = createMockDaemon();
+    const { user } = setup("req_plan", d);
+    await user.type(screen.getByLabelText("Comment (optional)"), "thanks");
+    await user.click(screen.getByRole("button", { name: "Approve plan" }));
+    await waitFor(() => expect(lastPost(d)?.body).toMatchObject({ comment: "thanks" }));
+    expect(lastPost(d)?.body).not.toHaveProperty("choice");
+  });
+
+  it("shows the waiver and override count for the finish request's tree", async () => {
+    const d = createMockDaemon();
+    const req = d.db.requests.find((r) => r.id === "req_accept")!;
+    const tree = d.db.items.filter((i) => i.root_key === req.root_key);
+    tree[0]!.waivers = [{ gate: "verify", reason: "r", agent: "orch", at: 1 }, { gate: "tdd", reason: "r", agent: "orch", at: 1 }];
+    tree[1]!.override = { status: "done", reason: "r", agent: "orch", at: 2 };
+    setup("req_accept", d);
+    expect(await screen.findByText("2 waivers, 1 override in this tree")).toBeInTheDocument();
+  });
+
+  it("hides the tree banner when nothing was waived or overridden", async () => {
+    setup("req_accept");
+    await screen.findByRole("list", { name: "Children" });
+    expect(screen.queryByText(/in this tree/)).toBeNull();
+  });
+
   it("shows a stale acceptance binding", async () => {
     const d = createMockDaemon();
     const req = d.db.requests.find((r) => r.id === "req_accept")!;

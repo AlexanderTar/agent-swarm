@@ -179,6 +179,12 @@ export function Details(p: DetailsProps) {
         </div>
         <MoveToMenu item={item} buttonLabel={STATUS_LABEL[item.status]} disabled={!p.connected || patch.pending} onMove={onMove} />
       </div>
+      {(item.waivers?.length || item.override) && (
+        <ul className="space-y-0.5 text-warning/80">
+          {item.waivers?.map((w) => <li key={w.gate}>{C.waivedRow(w.gate, w.reason)}</li>)}
+          {item.override && <li>{C.overrideRow(STATUS_LABEL[item.override.status], item.override.reason)}</li>}
+        </ul>
+      )}
       <Editable
         label={C.title}
         value={item.title}

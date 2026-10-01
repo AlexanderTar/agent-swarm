@@ -60,6 +60,11 @@ export const SESSION_LABEL: Record<SessionState | "queued" | "waiting" | "stale"
 };
 
 export const C = {
+  approveComment: "Comment (optional)",
+  waiversInTree: (n: number, m: number) =>
+    `${n} ${n === 1 ? "waiver" : "waivers"}, ${m} ${m === 1 ? "override" : "overrides"} in this tree`,
+  waivedRow: (gate: string, reason: string) => `Waived: ${gate} — ${reason}`,
+  overrideRow: (status: string, reason: string) => `Overridden to ${status} — ${reason}`,
   appTitle: "Agent Swarm",
   needsYou: "Needs you",
   newOrchestrator: "New orchestrator",
