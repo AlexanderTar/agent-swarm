@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/events"
@@ -599,17 +600,89 @@ func (s *Store) finishedCurrent(ctx context.Context, q querier, it Item) (bool, 
 	return merged == total && total > 0 && !closed, err
 }
 
+var overridable = []Status{Ready, InProgress, InReview, Done}
+
+// forceStatusTx is TransitionTx for an orchestrator that gave a reason: a move
+// the normal check allows stays a plain transition; one it denies is forced and
+// recorded as an override. Only tasks and stories, never a root, and never out
+// of Cancelled. Forcing Done also cancels the item's live workflow in the same
+// tx (runtime's CancelWorkflow would move the task to Ready, which Done denies).
+func (s *Store) forceStatusTx(ctx context.Context, tx *sql.Tx, key string, to Status, reason string, by Actor) error {
+	it, err := s.getTx(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if !by.isOrchestrator() {
+		return errf(CodeBadRequest, errOrchestratorOnly)
+	}
+	reason = strings.TrimSpace(reason)
+	switch {
+	case it.ID == it.RootID && to == Done:
+		return errf(CodeBadRequest, "A root reaches Done only through its finish question.")
+	case it.ID == it.RootID || (it.Type != Task && it.Type != Story):
+		return errf(CodeBadRequest, "Roots follow their own lifecycle; only a task or story can be overridden.")
+	case !validReason(reason):
+		return errf(CodeBadRequest, "Give a reason (1–300 characters).")
+	case !slices.Contains(overridable, to):
+		return errf(CodeBadRequest, "An override can set ready, in_progress, in_review or done.")
+	case it.Status == to:
+		return nil
+	}
+	denied := s.check(ctx, tx, it, to, by)
+	if denied == nil {
+		_, err := s.TransitionTx(ctx, tx, key, to, by)
+		return err
+	}
+	var ie *Error
+	if !errors.As(denied, &ie) || ie.Code != CodeTransitionDenied || it.Status == Cancelled {
+		return denied
+	}
+	from, now := it.Status, s.Now()
+	if to == Done {
+		if _, err := tx.ExecContext(ctx, `UPDATE workflows SET state = 'cancelled', updated_at = ?
+			WHERE item_id = ? AND state IN ('running', 'escalated')`, db.Millis(now), it.ID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE workflow_runs SET state = 'cancelled', ended_at = ?
+			WHERE state IN ('active', 'waiting') AND workflow_id IN
+			(SELECT id FROM workflows WHERE item_id = ? AND state = 'cancelled')`, db.Millis(now), it.ID); err != nil {
+			return err
+		}
+	}
+	if err := s.setStatus(ctx, tx, &it, to); err != nil {
+		return err
+	}
+	if from == Done && to == Ready {
+		if err := s.staleAccepts(ctx, tx, it); err != nil {
+			return err
+		}
+	}
+	raw, err := json.Marshal(Override{Status: to, Reason: reason, Agent: by.AgentID, At: now})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE items SET override_json = ? WHERE id = ?`, string(raw), it.ID); err != nil {
+		return err
+	}
+	if _, err := s.Events.Append(ctx, tx, events.ItemOverridden, map[string]string{"key": it.Key,
+		"root_key": it.RootKey, "from": string(from), "status": string(to), "reason": reason, "agent": by.AgentID}); err != nil {
+		return err
+	}
+	return s.ReconcileTx(ctx, tx, it.Key)
+}
+
 func (s *Store) setStatus(ctx context.Context, tx *sql.Tx, it *Item, to Status) error {
 	before := sql.NullString{}
 	if to == Blocked {
 		before = sql.NullString{String: string(it.Status), Valid: true}
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE items SET status = ?, status_before_block = ?, revision = revision + 1,
-		updated_at = ? WHERE id = ?`, to, before, db.Millis(s.Now()), it.ID)
+	// Any status change clears an override: it holds only while the status it forced stands.
+	_, err := tx.ExecContext(ctx, `UPDATE items SET status = ?, status_before_block = ?, override_json = NULL,
+		revision = revision + 1, updated_at = ? WHERE id = ?`, to, before, db.Millis(s.Now()), it.ID)
 	if err != nil {
 		return err
 	}
-	it.Status, it.Revision = to, it.Revision+1
+	it.Status, it.Revision, it.Override = to, it.Revision+1, nil
 	if to != Blocked {
 		it.StatusBeforeBlock = ""
 	}
@@ -658,6 +731,9 @@ func (s *Store) ReconcileTx(ctx context.Context, tx *sql.Tx, key string) error {
 func (s *Store) deriveStory(ctx context.Context, tx *sql.Tx, it Item) error {
 	if !slices.Contains([]Status{Ready, InProgress, InReview, Done}, it.Status) {
 		return nil
+	}
+	if it.Override != nil && it.Override.Status == it.Status {
+		return nil // an orchestrator forced this status; only a later transition clears it
 	}
 	var n, done, fin, review, moved int
 	err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(status = 'done'), 0),

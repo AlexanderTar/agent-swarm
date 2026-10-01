@@ -82,7 +82,10 @@ type Patch struct {
 	Verify     *[]string      // orchestrator/daemon only
 	Status     *Status
 	Waive      []WaiveInput // orchestrator only; an empty Reason removes the gate's waiver
-	Revision   int
+	// OverrideReason forces Status past the normal rules (orchestrator only); a
+	// Status the normal check allows still moves plainly, with no override recorded.
+	OverrideReason string
+	Revision       int
 }
 
 // WaiveInput is one waiver an orchestrator adds (or, with an empty Reason, removes).
@@ -706,8 +709,17 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, key string, p Patch, b
 			return Item{}, err
 		}
 	}
+	if p.OverrideReason != "" && p.Status == nil {
+		return Item{}, errf(CodeBadRequest, "override_reason needs a status to force.")
+	}
 	if p.Status != nil {
-		if _, err := s.TransitionTx(ctx, tx, it.Key, *p.Status, by); err != nil {
+		var err error
+		if p.OverrideReason != "" {
+			err = s.forceStatusTx(ctx, tx, it.Key, *p.Status, p.OverrideReason, by)
+		} else {
+			_, err = s.TransitionTx(ctx, tx, it.Key, *p.Status, by)
+		}
+		if err != nil {
 			return Item{}, err
 		}
 	} else if err := s.ReconcileTx(ctx, tx, it.Key); err != nil {

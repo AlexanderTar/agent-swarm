@@ -2608,3 +2608,44 @@ func TestItemsToolWaive(t *testing.T) {
 		t.Fatalf("waiver not removed: %+v", it)
 	}
 }
+
+// CHORE-18: swarm_items update with override_reason forces a status the normal rules refuse.
+func TestItemsToolOverrideReason(t *testing.T) {
+	s, seed := newOrchestratorServer(t)
+	ctx := context.Background()
+	type item struct {
+		Status   string `json:"status"`
+		Revision int    `json:"revision"`
+		Override *struct {
+			Status, Reason string
+		} `json:"override"`
+	}
+	var cur item
+	raw, err := s.call(ctx, seed.Caller, "swarm_read", `{"refs":["`+seed.TaskKey+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read struct {
+		Items []item `json:"items"`
+	}
+	json.Unmarshal(mustJSON(raw), &read)
+	if len(read.Items) != 1 {
+		t.Fatalf("read = %s", mustJSON(raw))
+	}
+	cur = read.Items[0]
+
+	if _, err := s.call(ctx, seed.Caller, "swarm_items", fmt.Sprintf(
+		`{"op":"update","key":%q,"revision":%d,"status":"done","override_reason":""}`, seed.TaskKey, cur.Revision)); err == nil {
+		t.Fatal("Done without a reason must stay refused")
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_items", fmt.Sprintf(
+		`{"op":"update","key":%q,"revision":%d,"status":"done","override_reason":"verified by hand"}`, seed.TaskKey, cur.Revision))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got item
+	json.Unmarshal(mustJSON(out), &got)
+	if got.Status != "done" || got.Override == nil || got.Override.Reason != "verified by hand" {
+		t.Fatalf("item = %s", mustJSON(out))
+	}
+}

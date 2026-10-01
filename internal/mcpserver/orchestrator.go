@@ -166,6 +166,7 @@ func itemsTool(s *Server) ToolDef {
 			"solo":{"type":"string"},"verify":{"type":"array"},"intent":{"type":"string"},
 			"repos":{"type":"array"},"revision":{"type":"integer"},"status":{"type":"string"},
 			"blocked_by":{"type":"string"},"request_id":{"type":"string"},
+			"override_reason":{"type":"string"},
 			"waive":{"type":"array","items":{"type":"object","properties":{"gate":{"type":"string"},"reason":{"type":"string"}}}}`,
 			[]string{"op"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
@@ -195,7 +196,9 @@ func itemsTool(s *Server) ToolDef {
 				Status    string          `json:"status"`
 				BlockedBy string          `json:"blocked_by"`
 				RequestID string          `json:"request_id"`
-				Waive     []struct {
+				// OverrideReason forces status past the normal rules (1–300 chars).
+				OverrideReason string `json:"override_reason"`
+				Waive          []struct {
 					Gate   string `json:"gate"`
 					Reason string `json:"reason"`
 				} `json:"waive"`
@@ -292,6 +295,7 @@ func itemsTool(s *Server) ToolDef {
 					st := items.Status(in.Status)
 					p.Status = &st
 				}
+				p.OverrideReason = in.OverrideReason
 				for _, w := range in.Waive {
 					p.Waive = append(p.Waive, items.WaiveInput{Gate: w.Gate, Reason: w.Reason})
 				}
