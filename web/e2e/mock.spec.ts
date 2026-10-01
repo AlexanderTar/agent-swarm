@@ -439,7 +439,7 @@ for (const start of [false, true]) {
         const icon = controls[0]!.locator('[role=img]');
         await expect(icon).toHaveCSS('background-color', 'rgb(255, 255, 255)');
       }
-      const body = sheet.locator(':scope > div').filter({ has: sheet.getByRole('button', { name: 'Worker Roles' }) }).first();
+      const body = sheet.locator(':scope > div.overflow-y-auto');
       expect(await body.evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0);
       await sheet.getByRole('textbox', { name: start ? 'Name' : 'Request (optional)', exact: true }).scrollIntoViewIfNeeded();
       await expect(sheet.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport();
