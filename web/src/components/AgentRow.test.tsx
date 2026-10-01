@@ -37,8 +37,14 @@ describe("AgentRow (§10.7 on the board)", () => {
     expect(within(row).getByRole("img", { name: "Claude" })).toBeInTheDocument();
     expect(row).toHaveTextContent("login-form-coder · Coder");
     expect(row).toHaveTextContent("Running");
-    expect(within(row).getAllByRole("button").map((b) => b.textContent)).toEqual(["Terminal", "Pause", "Cancel"]);
-    expect(row).toHaveClass("flex-col", "sm:flex-row");
+    const buttons = within(row).getAllByRole("button");
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual(["Terminal", "Pause", "Cancel"]);
+    // Icon-only: a lucide glyph, the label as tooltip and accessible name, no visible text.
+    for (const b of buttons) {
+      expect(b.querySelector("svg.lucide")).not.toBeNull();
+      expect(b).toHaveAttribute("title", b.getAttribute("aria-label"));
+      expect(b.textContent).toBe("");
+    }
   });
 
   it("says why the agent isn't on the user's role default", () => {
@@ -60,7 +66,7 @@ describe("AgentRow (§10.7 on the board)", () => {
     ["stopping", ses("stopping"), ["Terminal", "Pausing…", "Cancel"]],
   ] as const)("%s", (_n, session, labels) => {
     renderWithDaemon(<AgentRow agent={makeAgent({ name: "x", session })} />, { events: false });
-    expect(within(screen.getByTestId("agent-x")).getAllByRole("button").map((b) => b.textContent)).toEqual(labels);
+    expect(within(screen.getByTestId("agent-x")).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(labels);
   });
 
   it("pauses an orchestrator's group through the daemon", async () => {
@@ -187,17 +193,17 @@ describe("AgentRow (§10.7 on the board)", () => {
     const { user, rerender } = renderWithDaemon(<AgentRow agent={makeAgent({ name, session: ses(from) })} />, { daemon: d, events: false });
     const btn = () => within(screen.getByTestId(`agent-${name}`)).getByRole("button", { name: /^(Pause|Pausing…|Resume|Resuming…)$/ });
     await user.click(screen.getByRole("button", { name: label }));
-    await waitFor(() => expect(btn()).toHaveTextContent(busy));
+    await waitFor(() => expect(btn()).toHaveAccessibleName(busy));
     expect(btn()).toBeDisabled();
     // Let the mutation settle (pending false) with the agent unchanged: still disabled.
     await new Promise((r) => setTimeout(r, 20));
     expect(btn()).toBeDisabled();
-    expect(btn()).toHaveTextContent(busy);
+    expect(btn()).toHaveAccessibleName(busy);
     rerender(<AgentRow agent={makeAgent({ name, session: ses(to) })} />);
     if (_e === "pause") {
       // Daemon's own disabled "Pausing…" takes over.
       expect(btn()).toBeDisabled();
-      expect(btn()).toHaveTextContent("Pausing…");
+      expect(btn()).toHaveAccessibleName("Pausing…");
     } else {
       expect(within(screen.getByTestId(`agent-${name}`)).queryByRole("button", { name: /Resum/ })).toBeNull();
     }
@@ -210,15 +216,15 @@ describe("AgentRow (§10.7 on the board)", () => {
     const { user, rerender } = renderWithDaemon(<AgentRow agent={makeAgent({ name, session: ses("running") })} />, { daemon: d, events: false });
     const btn = () => within(screen.getByTestId(`agent-${name}`)).getByRole("button", { name: /^(Pause|Pausing…)$/ });
     await user.click(screen.getByRole("button", { name: "Pause" }));
-    await waitFor(() => expect(btn()).toHaveTextContent("Pausing…"));
+    await waitFor(() => expect(btn()).toHaveAccessibleName("Pausing…"));
     // running -> waiting is a flag flip, not the pause landing: the raw session state is still "running".
     rerender(<AgentRow agent={makeAgent({ name, session: { ...ses("running"), waiting: true } })} />);
     expect(btn()).toBeDisabled();
-    expect(btn()).toHaveTextContent("Pausing…");
+    expect(btn()).toHaveAccessibleName("Pausing…");
     // The daemon's own state takes over once the pause is requested.
     rerender(<AgentRow agent={makeAgent({ name, session: ses("pause_requested") })} />);
     expect(btn()).toBeDisabled();
-    expect(btn()).toHaveTextContent("Pausing…");
+    expect(btn()).toHaveAccessibleName("Pausing…");
   });
 
   it("re-enables the button and toasts when the pause request fails", async () => {
