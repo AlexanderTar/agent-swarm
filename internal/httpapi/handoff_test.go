@@ -195,3 +195,71 @@ func TestHandoffSwitchBadModelIs422(t *testing.T) {
 	rec := s.post(t, "/api/agents/root-orchestrator/handoff", `{"request_id":"s4","agent":"fake","model":"nope"}`)
 	wantErr(t, rec.Code, rec.Body.Bytes(), 422, "preflight_failed", "")
 }
+
+func handoffOverrides(t *testing.T, s *runtimeEnv, name string) map[string]map[string]string {
+	t.Helper()
+	var raw string
+	if err := s.DB.QueryRowContext(bg, `SELECT COALESCE(role_overrides, '') FROM agents WHERE name = ?`, name).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]map[string]string{}
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
+}
+
+func TestHandoffRolesPersistWorkerOverrides(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	rec := s.post(t, "/api/agents/root-orchestrator/handoff",
+		`{"request_id":"r1","roles":{"coder":{"agent":"fake","model":"fake-1","effort":""}}}`)
+	if rec.Code != 202 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	got := handoffOverrides(t, s, "root-orchestrator")
+	if got["coder"]["agent"] != "fake" || got["coder"]["model"] != "fake-1" {
+		t.Fatalf("role_overrides = %v, want coder=fake/fake-1", got)
+	}
+}
+
+func TestHandoffAbsentRolesLeavesOverridesUnchanged(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	if rec := s.post(t, "/api/agents/root-orchestrator/handoff",
+		`{"request_id":"r2","roles":{"coder":{"agent":"fake","model":"fake-1","effort":""}}}`); rec.Code != 202 {
+		t.Fatalf("seed status = %d: %s", rec.Code, rec.Body)
+	}
+	if rec := s.post(t, "/api/agents/root-orchestrator/handoff", `{"request_id":"r3"}`); rec.Code != 202 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	if got := handoffOverrides(t, s, "root-orchestrator"); got["coder"]["model"] != "fake-1" {
+		t.Fatalf("role_overrides = %v, want coder kept", got)
+	}
+}
+
+func TestHandoffRolesRejectInvalid(t *testing.T) {
+	for name, roles := range map[string]string{
+		"orchestrator role": `{"orchestrator":{"agent":"fake","model":"fake-1","effort":""}}`,
+		"advisor role":      `{"advisor":{"agent":"fake","model":"fake-1","effort":""}}`,
+		"unknown role":      `{"nope":{"agent":"fake","model":"fake-1","effort":""}}`,
+		"bad agent":         `{"coder":{"agent":"zzz","model":"fake-1","effort":""}}`,
+		"bad model":         `{"coder":{"agent":"fake","model":"nope","effort":""}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := newRuntimeServer(t)
+			rec := s.post(t, "/api/agents/root-orchestrator/handoff", `{"request_id":"bad","roles":`+roles+`}`)
+			if rec.Code < 400 || rec.Code >= 500 {
+				t.Fatalf("status = %d: %s, want 4xx", rec.Code, rec.Body)
+			}
+			if got := handoffOverrides(t, s, "root-orchestrator"); len(got) != 0 {
+				t.Fatalf("role_overrides = %v, want none persisted", got)
+			}
+			var n int
+			_ = s.DB.QueryRowContext(bg, `SELECT COUNT(*) FROM agent_operations WHERE request_key = 'bad'`).Scan(&n)
+			if n != 0 {
+				t.Fatalf("handoff operation recorded despite invalid roles")
+			}
+		})
+	}
+}

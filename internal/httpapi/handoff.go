@@ -41,6 +41,9 @@ type handoffBody struct {
 	Model     string             `json:"model,omitempty"`
 	Effort    string             `json:"effort,omitempty"`
 	Advisor   *advisorChoiceBody `json:"advisor,omitempty"` // object or "none"
+	// Roles are worker-role overrides persisted on the agent before the
+	// successor starts; absent leaves its overrides unchanged.
+	Roles map[string]roleDefaultBody `json:"roles,omitempty"`
 }
 
 func (s *Server) handoffAgent(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +63,10 @@ func (s *Server) handoffAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	if err := s.RT.SetWorkerRoleOverrides(r.Context(), a.ID, rolesFromBody(body.Roles)); err != nil {
 		s.writeErr(w, err)
 		return
 	}

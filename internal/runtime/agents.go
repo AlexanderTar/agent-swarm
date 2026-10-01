@@ -2053,6 +2053,60 @@ func (s *Store) SetRoleOverride(ctx context.Context, name string, role Role, rd 
 	return out, nil
 }
 
+// SetWorkerRoleOverrides merges roles into the agent's role_overrides (the
+// orchestrator hand-off's worker overrides). Only OverridableRoles minus
+// RoleOrchestrator are accepted, each validated like SetRoleOverride; empty
+// roles is a no-op, and roles not named stay as they are. All-or-nothing:
+// any invalid entry rejects the whole call before anything is written.
+func (s *Store) SetWorkerRoleOverrides(ctx context.Context, agentID string, roles map[Role]settings.RoleDefault) error {
+	if len(roles) == 0 {
+		return nil
+	}
+	a, err := s.agentByID(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	cfg, err := s.Settings.Get(ctx)
+	if err != nil {
+		return err
+	}
+	for role, rd := range roles {
+		if role == RoleOrchestrator || !slices.Contains(OverridableRoles, role) {
+			return &items.Error{Code: items.CodeBadRequest, Message: "Worker overrides must be one of: " + joinRoles(workerOverridableRoles())}
+		}
+		if err := s.Settings.ValidateDefault(ctx, a.RoleOverrides[role], rd, cfg.EnabledAgents, nil); err != nil {
+			return err
+		}
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var raw string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(role_overrides, '') FROM agents WHERE id = ?`, a.ID).Scan(&raw); err != nil {
+			return err
+		}
+		overrides := map[Role]settings.RoleDefault{}
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &overrides); err != nil {
+				return err
+			}
+		}
+		for role, rd := range roles {
+			overrides[role] = rd
+		}
+		b, err := json.Marshal(overrides)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET role_overrides = ? WHERE id = ?`, string(b), a.ID); err != nil {
+			return err
+		}
+		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+	})
+}
+
+func workerOverridableRoles() []Role {
+	return slices.DeleteFunc(slices.Clone(OverridableRoles), func(r Role) bool { return r == RoleOrchestrator })
+}
+
 // retryableStates is §8.1's own swarm_control description: "retry starts a
 // new attempt of a completed, failed, crashed or interrupted agent." Every
 // other live or pausing state (queued, spawning, running, pause_requested,
