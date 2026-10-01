@@ -194,6 +194,7 @@ struct PopoverHost: View {
     let model: AppModel
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.dismiss) private var dismissPopover
 
     var body: some View {
         PopoverView(model: model,
@@ -203,7 +204,7 @@ struct PopoverHost: View {
                         openCentered("board-handoff")
                     },
                     openSettings: {
-                        StatusItemWatcher.dismissPopover()
+                        dismissPopover()
                         NSApp.activate(ignoringOtherApps: true)
                         openSettings()
                     })
@@ -212,7 +213,7 @@ struct PopoverHost: View {
 
 extension PopoverHost {
     private func openCentered(_ id: String) {
-        StatusItemWatcher.dismissPopover()
+        dismissPopover()
         NSApp.activate(ignoringOtherApps: true)
         openWindow(id: id)
         // macOS restores the last frame on reopen; always center it on the active screen.
