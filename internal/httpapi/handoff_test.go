@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/AlexanderTar/agent-swarm/internal/runtime"
+	"github.com/AlexanderTar/agent-swarm/internal/settings"
 )
 
 // Batch 3: POST /api/agents/{name}/handoff with {request_id} returns 202
@@ -261,6 +264,45 @@ func TestHandoffRolesRejectInvalid(t *testing.T) {
 				t.Fatalf("handoff operation recorded despite invalid roles")
 			}
 		})
+	}
+}
+
+func TestHandoffRolesNotPersistedWhenHandoffRejected(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	// Valid roles, but a model without an agent is a 400 before any op runs.
+	rec := s.post(t, "/api/agents/root-orchestrator/handoff",
+		`{"request_id":"atom1","model":"fake-1","roles":{"coder":{"agent":"fake","model":"fake-1","effort":""}}}`)
+	if rec.Code != 400 {
+		t.Fatalf("status = %d: %s, want 400", rec.Code, rec.Body)
+	}
+	if got := handoffOverrides(t, s, "root-orchestrator"); len(got) != 0 {
+		t.Fatalf("role_overrides = %v, want none persisted after a rejected hand-off", got)
+	}
+	// Preflight failure (422) is atomic too.
+	rec = s.post(t, "/api/agents/root-orchestrator/handoff",
+		`{"request_id":"atom2","agent":"fake","model":"nope","roles":{"coder":{"agent":"fake","model":"fake-1","effort":""}}}`)
+	if rec.Code != 422 {
+		t.Fatalf("status = %d: %s, want 422", rec.Code, rec.Body)
+	}
+	if got := handoffOverrides(t, s, "root-orchestrator"); len(got) != 0 {
+		t.Fatalf("role_overrides = %v, want none persisted after preflight failure", got)
+	}
+}
+
+func TestSetWorkerRoleOverridesRejectsNonOrchestrator(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	a, err := s.RT.Agent(bg, "task-worker") // the seeded coder
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := a.ID
+	err = s.RT.SetWorkerRoleOverrides(bg, id, map[runtime.Role]settings.RoleDefault{
+		runtime.RoleCoder: {Agent: "fake", Model: "fake-1"}})
+	if err == nil {
+		t.Fatal("want error for a non-orchestrator agent")
+	}
+	if got := handoffOverrides(t, s, "task-worker"); len(got) != 0 {
+		t.Fatalf("role_overrides = %v, want none", got)
 	}
 }
 

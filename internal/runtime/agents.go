@@ -2066,6 +2066,9 @@ func (s *Store) SetWorkerRoleOverrides(ctx context.Context, agentID string, role
 	if err != nil {
 		return err
 	}
+	if a.Role != RoleOrchestrator {
+		return &items.Error{Code: items.CodeBadRequest, Message: "Worker overrides apply to orchestrators only."}
+	}
 	cfg, err := s.Settings.Get(ctx)
 	if err != nil {
 		return err
@@ -2100,6 +2103,23 @@ func (s *Store) SetWorkerRoleOverrides(ctx context.Context, agentID string, role
 			return err
 		}
 		return s.publishAgentChanged(ctx, tx, a.Name, a.RootItemID)
+	})
+}
+
+// RestoreRoleOverrides writes overrides back verbatim; the hand-off handler
+// uses it to undo SetWorkerRoleOverrides when the hand-off is then refused.
+func (s *Store) RestoreRoleOverrides(ctx context.Context, agentID string, overrides map[Role]settings.RoleDefault) error {
+	raw := ""
+	if len(overrides) > 0 {
+		b, err := json.Marshal(overrides)
+		if err != nil {
+			return err
+		}
+		raw = string(b)
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE agents SET role_overrides = NULLIF(?, '') WHERE id = ?`, raw, agentID)
+		return err
 	})
 }
 
