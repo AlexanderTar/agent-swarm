@@ -420,3 +420,25 @@ func TestResurfaceDeliversAgentlessFinishApproval(t *testing.T) {
 		t.Fatalf("%d approval_results once finishing rows exist", n)
 	}
 }
+
+// CHORE-18: the finish question tells the user when the tree was finished with
+// waived gates or forced statuses, so "accept" is never blind to them.
+func TestFinishPromptDisclosesWaiversAndOverrides(t *testing.T) {
+	s, _, _ := newStore(t)
+	ep := seedEpicWithTask(t, s)
+	plain := promptFor(t, s, KindAcceptEpic, ep.ID, gitOne)
+	if strings.Contains(plain.Question, "Waived/overridden") {
+		t.Fatalf("a clean tree must not mention waivers: %q", plain.Question)
+	}
+	seedWaiver(t, s, "TASK-1", "tdd", "verify")
+	mustExec(t, s.DB, `UPDATE items SET override_json = '{"status":"done","reason":"by hand","agent":"a","at":"2026-10-01T09:00:00Z"}'
+		WHERE key = 'STORY-1'`)
+	got := promptFor(t, s, KindAcceptEpic, ep.ID, gitOne)
+	want := plain.Question + " Waived/overridden: 3 (see board)."
+	if got.Question != want {
+		t.Fatalf("question = %q, want %q", got.Question, want)
+	}
+	if !reflect.DeepEqual(got.Options, plain.Options) || !reflect.DeepEqual(got.Descriptions, plain.Descriptions) {
+		t.Fatalf("options changed: %+v", got)
+	}
+}

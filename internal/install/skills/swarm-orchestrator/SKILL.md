@@ -60,6 +60,13 @@ Legacy tasks whose `workflow_json` is NULL still use manual `swarm_spawn` and re
 - Don't poll. End your turn when waiting; the daemon wakes you.
 - Progress list: when `swarm_sync` returns `todos`, do what `todos_next` says, right away. For an epic, bug or chore the list is the item's tasks and is maintained by Swarm; never send `todos` for it.
 
+## Waivers and overrides
+Use these when a deterministic rule blocks work that is genuinely fine to proceed: a gate that can't be met (CI is down, a docs-only change with no tests), or a status the derived rules won't reach. They are audited escape hatches, not shortcuts.
+- Waive a gate: `swarm_items update` with `key`, `revision` and `waive: [{gate, reason}]`. Gates: `tdd`, `verify`, `commit`, `artifact:design`, `artifact:notes`, `open_questions`, `required_artifact`, `integration_verify`, `final_review`. Reason is 1–300 characters. An entry with an empty reason removes that waiver. For `integration_verify` and `final_review`, pass `waive` on the `integrated` checkpoint instead.
+- Force a status: `swarm_items update` with `status` and `override_reason` (1–300 characters) on a task or story in your tree. Allowed targets: `ready`, `in_progress`, `in_review`, `done`, from any status except Cancelled; `done` to `ready` reopens. Forcing Done on a workflow task cancels its workflow and stops its agents. The status holds across reconciliation until a later normal transition clears it. A move the normal rules already allow is just made, with nothing recorded.
+- Never on a root: a root reaches Done only through the user's finish answer. Never use a waiver or override instead of asking the user a question that is theirs to decide. Workers can't waive anything; a gate refusal that says an orchestrator can waive it is a message for you to weigh, not to grant automatically.
+- Every waiver and override is an event on the board, and the finish question tells the user how many the tree carries (`Waived/overridden: <n> (see board).`). Mention each one, with its reason, in your `integrated` summary.
+
 ## Chores
 - A chore (`CHORE-N`) is the user's own scope, not a proposal. It has no spec, plan or report to approve and no `swarm_materialize`.
 - Treat the starting repositories as hints. Register a newly found local Git repository when tasks need to name it.

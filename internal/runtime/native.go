@@ -309,7 +309,13 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		if err != nil {
 			return NativePrompt{}, err
 		}
-		return finishPrompt(header, key, title, repos), nil
+		var waived int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(json_array_length(waivers_json)), 0) +
+			COALESCE(SUM(override_json IS NOT NULL), 0) FROM items
+			WHERE root_id = (SELECT root_id FROM items WHERE id = ?)`, req.ItemID).Scan(&waived); err != nil {
+			return NativePrompt{}, err
+		}
+		return finishPrompt(header, key, title, repos, waived), nil
 	default:
 		return NativePrompt{}, nil
 	}
@@ -318,7 +324,10 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 // finishPrompt is the finish question's copy (2026-09-29-finish-with-pr): three PR options, or two
 // when no repo has a GitHub remote. An empty repo list (a fixture's "git":[]) reads "Not pushed."
 // and keeps the PR options; a repo with no catalog row counts as local with no base.
-func finishPrompt(header, key, title string, repos []finishRepo) NativePrompt {
+//
+// waived is how many gate waivers and status overrides the root's tree carries; any at all adds a
+// disclosure line the user sees before accepting (CHORE-18).
+func finishPrompt(header, key, title string, repos []finishRepo, waived int) NativePrompt {
 	q := fmt.Sprintf("Finish %s %q?", key, title)
 	switch len(repos) {
 	case 0:
@@ -352,7 +361,11 @@ func finishPrompt(header, key, title string, repos []finishRepo) NativePrompt {
 		base = "the default branch"
 	}
 	changes := "Say what to change; I'll re-integrate and ask again."
-	np := NativePrompt{Header: header, Question: capRunes(q, 1000)}
+	disclosure := ""
+	if waived > 0 {
+		disclosure = fmt.Sprintf(" Waived/overridden: %d (see board).", waived)
+	}
+	np := NativePrompt{Header: header, Question: capRunes(q, 1000-utf8.RuneCountInString(disclosure)) + disclosure}
 	if len(repos) > 0 && !github {
 		np.Options = []string{"Merge into " + base + " locally", "Request changes"}
 		np.Descriptions = []string{"Merge the branch into " + base + " in your local checkout; Done once it's merged.", changes}
