@@ -39,6 +39,9 @@ export interface Workflow {
 }
 export interface Unit { title: string; steps: string[] }
 
+export interface Waiver { gate: string; reason: string; agent: string; at: number }
+export interface Override { status: ItemStatus; reason: string; agent: string; at: number }
+
 export interface Item {
   id: string;
   key: string;
@@ -55,6 +58,8 @@ export interface Item {
   priority: Priority;
   role_hint: string | null;
   tdd_exempt: TddExempt | null;
+  waivers?: Waiver[] | null;
+  override?: Override | null;
   workflow?: Workflow | null;
   workflow_state?: Pick<WorkflowState, "state" | "round">;
   steps?: string[];
@@ -100,7 +105,7 @@ export interface ItemDetail {
   merges?: ItemMerge[];            // root in review with an approved finish only
 }
 
-export type MergeChoice = "auto" | "manual" | "local";
+export type MergeChoice = "auto" | "manual" | "local" | "custom";
 export interface ItemMerge {
   repo: string; kind: "pr" | "local"; url?: string; number?: number; base: string; head: string;
   auto_merge: boolean; state: "open" | "merged" | "closed"; checks: "" | "pending" | "passing" | "failing"; merged_sha?: string;
@@ -240,6 +245,8 @@ export interface Request {
   section_sha256: string | null;
   prompt: string;
   options: string[] | ConfirmReposOptions;
+  option_descriptions?: string[] | null;  // parallel to options for approval/finish kinds
+  choice?: string | null;
   state: RequestState;
   confirmed: string[] | null;
   binding: RequestBinding | null;
@@ -385,7 +392,10 @@ export interface CreateSpikeBody {
 export interface CreateSpikeResponse { item: Item; agent: AgentNode; queued: boolean }
 
 export type AgentEndpoint = "pause" | "resume" | "cancel" | "ack" | "retry" | "terminal";
-export interface ApproveBody { section_sha256?: string; artifact_revision?: number; binding?: AcceptBinding; merge?: MergeChoice }
+export interface ApproveBody {
+  section_sha256?: string; artifact_revision?: number; binding?: AcceptBinding; merge?: MergeChoice;
+  choice?: string; comment?: string;
+}
 export interface ConfirmReposBody { repos: string[]; comment?: string; repos_version: number }
 
 export type ApiErrorCode =

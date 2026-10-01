@@ -191,4 +191,12 @@ describe("re-dress copy", () => {
     expect(T.toastRescanned(12, 0)).toBe("Found 12 repositories");
     expect(T.toastRescanned(12, 1)).toBe("Found 12 repositories · 1 missing");
   });
+
+  it("has the approval option, waiver and override copy", () => {
+    expect(C.approveComment).toBe("Comment (optional)");
+    expect(C.waiversInTree(2, 1)).toBe("2 waivers, 1 override in this tree");
+    expect(C.waiversInTree(1, 2)).toBe("1 waiver, 2 overrides in this tree");
+    expect(C.waivedRow("verify", "no tests exist")).toBe("Waived: verify — no tests exist");
+    expect(C.overrideRow("Done", "shipped by hand")).toBe("Overridden to Done — shipped by hand");
+  });
 });
