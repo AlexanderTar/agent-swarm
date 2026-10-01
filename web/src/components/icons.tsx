@@ -16,7 +16,7 @@ export function AgentIcon({ kind, className = "" }: { kind: AgentKind; className
     <span
       role="img"
       aria-label={AGENT_LABEL[kind]}
-      className={`inline-block size-3.5 shrink-0 bg-current ${className}`}
+      className={`inline-block size-3.5 shrink-0 bg-white ${className}`}
       style={{ mask, WebkitMask: mask }}
     />
   );

@@ -52,7 +52,7 @@ function Form(p: { item: Item; settings: Settings; catalog: AgentCatalogEntry[];
   return (
     <Sheet
       title={C.startOrchestrator}
-      width={520}
+      width={900}
       subtitle={`${p.item.key} · ${p.item.title}`}
       onClose={p.onClose}
       footer={
@@ -96,7 +96,7 @@ export function SpawnSheet(p: { itemKey: string; onClose(): void }) {
   const err = detail.error ?? settings.error ?? catalog.error ?? agents.error;
   if (err) {
     return (
-      <Sheet title={C.startOrchestrator} width={520} onClose={p.onClose}>
+      <Sheet title={C.startOrchestrator} width={900} onClose={p.onClose}>
         <Alert variant="destructive">
           {errorText(err)}{" "}
           <Button variant="link"

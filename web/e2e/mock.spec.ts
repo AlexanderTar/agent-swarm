@@ -380,3 +380,72 @@ test("locked status choices show only labels and locks while valid moves still w
   await page.getByRole("menuitem", { name: "Blocked", exact: true }).click();
   await expect(page.getByTestId("details-panel").getByRole("button", { name: "Blocked", exact: true })).toBeVisible();
 });
+
+for (const start of [false, true]) {
+  for (const width of [1440, 390]) {
+    test(`${start ? 'start' : 'new'} orchestrator fits long paths and expanded roles at ${width}px`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.route(/\/api\/repos(?:\?|$)/, async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        for (const repo of [...body.all, ...body.recent, ...body.groups.flatMap((g: { repos: object[] }) => g.repos)]) {
+          repo.path = '/Users/alex/' + 'verylongfolder'.repeat(40) + '/repository';
+        }
+        await route.fulfill({ response, json: body });
+      });
+      await page.route("**/api/settings", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.roles.mechanical.model = "sonnet";
+        await route.fulfill({ response, json: body });
+      });
+      await page.route("**/api/items/EPIC-12", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.agents = [];
+        await route.fulfill({ response, json: body });
+      });
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(start ? "/#/hierarchy?item=EPIC-12" : "/");
+      await page.getByRole("button", { name: start ? "Start orchestrator" : "New orchestrator", exact: true }).click();
+      const sheet = page.getByRole("dialog", { name: start ? "Start orchestrator" : "New orchestrator", exact: true });
+      await expect(sheet).toBeVisible();
+      await expect.poll(async () => Math.round((await sheet.boundingBox())!.x)).toBe(width === 1440 ? 540 : 0);
+      const sheetBox = await sheet.boundingBox();
+      expect(sheetBox?.width).toBeLessThanOrEqual(width);
+      if (width === 1440) expect(sheetBox?.width).toBeGreaterThanOrEqual(850);
+      const path = sheet.getByRole("option").first().locator(".key");
+      await expect(path).toBeVisible();
+      expect(await path.evaluate(el => el.scrollWidth)).toBeGreaterThan(await path.evaluate(el => el.clientWidth));
+      await expect(path).toHaveCSS("text-overflow", "ellipsis");
+      await sheet.getByRole("button", { name: "Worker Roles" }).click();
+      await sheet.getByRole("combobox", { name: "Coder Agent", exact: true }).scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `test-results/orchestrator-roles-${start ? 'start' : 'new'}-${width}.png` });
+      for (const role of ['', 'Coder', 'Reviewer', 'UI reviewer', 'Designer', 'Researcher', 'Debugger', 'Mechanical']) {
+        const controls = ['Agent', 'Model', 'Effort'].map(label => sheet.getByRole("combobox", { name: role ? `${role} ${label}` : label, exact: true }));
+        for (const control of controls) {
+          await control.scrollIntoViewIfNeeded();
+          await expect(control).toBeInViewport();
+          const box = await control.boundingBox();
+          expect(box?.x).toBeGreaterThanOrEqual(sheetBox?.x ?? 0);
+          expect(box && box.x + box.width).toBeLessThanOrEqual(width);
+          expect(box?.width).toBeGreaterThanOrEqual(width === 390 ? 160 : 140);
+        }
+        if (width === 1440) {
+          const boxes = await Promise.all(controls.map(control => control.boundingBox()));
+          expect(boxes[0]?.y).toBe(boxes[1]?.y);
+          expect(boxes[0]?.y).toBe(boxes[2]?.y);
+        }
+        const icon = controls[0]!.locator('[role=img]');
+        await expect(icon).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+      }
+      const body = sheet.locator(':scope > div').filter({ has: sheet.getByRole('button', { name: 'Worker Roles' }) }).first();
+      expect(await body.evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0);
+      await sheet.getByRole('textbox', { name: start ? 'Name' : 'Request (optional)', exact: true }).scrollIntoViewIfNeeded();
+      await expect(sheet.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport();
+      await page.screenshot({ path: `test-results/orchestrator-${start ? 'start' : 'new'}-${width}.png` });
+      await sheet.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(sheet).toHaveCount(0);
+    });
+  }
+}
