@@ -35,6 +35,23 @@ function ConnectedDetails() {
 }
 
 describe("Details panel (§16.9)", () => {
+  it("shows waiver and override rows on the item", async () => {
+    const d = createMockDaemon();
+    const it = d.db.items.find((i) => i.key === "TASK-103")!;
+    it.waivers = [{ gate: "verify", reason: "no harness for this repo", agent: "orch", at: 1 }];
+    it.override = { status: "done", reason: "shipped by hand", agent: "orch", at: 2 };
+    setup("TASK-103", {}, d);
+    expect(await screen.findByText("Waived: verify — no harness for this repo")).toBeInTheDocument();
+    expect(screen.getByText("Overridden to Done — shipped by hand")).toBeInTheDocument();
+  });
+
+  it("shows no waiver or override rows when the item has none", async () => {
+    setup("TASK-103");
+    await screen.findByText("Overview");
+    expect(screen.queryByText(/^Waived:/)).toBeNull();
+    expect(screen.queryByText(/^Overridden to/)).toBeNull();
+  });
+
   it("shows the Progress block only when the detail carries todos", async () => {
     const d = createMockDaemon();
     const real = d.handle({ method: "GET", url: "/api/items/EPIC-12", headers: { authorization: `Bearer ${d.db.token}` } });

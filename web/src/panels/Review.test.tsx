@@ -167,6 +167,22 @@ describe("Review (§16.11)", () => {
     expect(lastPost(d)?.body).not.toHaveProperty("choice");
   });
 
+  it("shows the waiver and override count for the finish request's tree", async () => {
+    const d = createMockDaemon();
+    const req = d.db.requests.find((r) => r.id === "req_accept")!;
+    const tree = d.db.items.filter((i) => i.root_key === req.root_key);
+    tree[0]!.waivers = [{ gate: "verify", reason: "r", agent: "orch", at: 1 }, { gate: "tdd", reason: "r", agent: "orch", at: 1 }];
+    tree[1]!.override = { status: "done", reason: "r", agent: "orch", at: 2 };
+    setup("req_accept", d);
+    expect(await screen.findByText("2 waivers, 1 override in this tree")).toBeInTheDocument();
+  });
+
+  it("hides the tree banner when nothing was waived or overridden", async () => {
+    setup("req_accept");
+    await screen.findByRole("list", { name: "Children" });
+    expect(screen.queryByText(/in this tree/)).toBeNull();
+  });
+
   it("shows a stale acceptance binding", async () => {
     const d = createMockDaemon();
     const req = d.db.requests.find((r) => r.id === "req_accept")!;

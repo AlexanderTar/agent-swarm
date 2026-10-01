@@ -11,9 +11,9 @@ import { Alert } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
 import { C, STATUS_LABEL, T } from "../copy";
 import { useInvalidate, useMutation, useQuery } from "../data/hooks";
-import { useArtifact, useCheckpoints, useItemDetail } from "../data/queries";
+import { useArtifact, useCheckpoints, useItemDetail, useItems } from "../data/queries";
 import { ARTIFACT_LABEL } from "../logic/requestTitle";
-import { SCOPE_LABEL, agentOptions, approveBody, closeResolution, gitBindingLine, isApprovalKind, reviewHeader } from "../logic/review";
+import { SCOPE_LABEL, agentOptions, approveBody, closeResolution, gitBindingLine, isApprovalKind, reviewHeader, treeWaiverCounts } from "../logic/review";
 import { verifyLine } from "../logic/timeline";
 import type { AcceptBinding, MergeChoice, Request } from "../types";
 
@@ -120,7 +120,9 @@ export function Review({ request: r, connected }: { request: Request; connected:
   const [stale, setStale] = useState(false);
   const [comment, setComment] = useState("");
   const options = agentOptions(r);
+  const items = useItems();
   const isFinish = r.kind === "accept_epic" || r.kind === "accept_fix";
+  const tree = isFinish && items.data ? treeWaiverCounts(items.data.items, r.root_key) : null;
   const invalidate = useInvalidate();
   const toast = useToast();
   const decide = useMutation(
@@ -148,6 +150,7 @@ export function Review({ request: r, connected }: { request: Request; connected:
         {head.revision && <p className="text-muted-foreground">{head.revision}</p>}
       </header>
       {stale && <Alert variant="destructive">{C.staleApproval}</Alert>}
+      {tree && <p className="text-warning">{C.waiversInTree(tree.waivers, tree.overrides)}</p>}
 
       {(r.kind === "question" || r.kind === "prompt" || r.kind === "blocker") && <QuestionView request={r} connected={connected} />}
       {r.kind === "confirm_repos" && <ConfirmRepos key={r.id} request={r} connected={connected} />}
