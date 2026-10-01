@@ -14,10 +14,9 @@ Branch `chore-18-finish-options`, migration `0024`. Workflow `tdd-reviewed`.
 1. **Integrated stores finish options.** Test in `internal/runtime/finish_question_test.go`:
    integrated with `finish_options` → accept binding has them; invalid shapes
    refused with spec copy. Implement in `checkpoint.go` + `transition.go`
-   (`acceptBinding.FinishOptions`, read the integrated checkpoint's options when
-   opening the request; store options on the checkpoint, e.g. `finish_options_json`
-   inside the existing artifacts/next JSON is NOT acceptable — add them to the
-   request binding at open time from the checkpoint input persisted in 0024).
+   (`acceptBinding.FinishOptions`); persist the options on the integrated checkpoint
+   in new column `checkpoints.finish_options_json` (migration 0024) and copy them into
+   the accept binding when `reconcileRoot` opens the request.
 2. **Prompt and native answer.** Tests: `finishPrompt` with options returns labels +
    "Request changes"; `native_answer decision:"approve", choice` maps to label;
    wrong choice refused. Implement in `native.go` (`finishDecisions`,

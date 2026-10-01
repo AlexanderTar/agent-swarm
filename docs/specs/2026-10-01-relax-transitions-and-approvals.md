@@ -51,6 +51,7 @@ Migration `0024_finish_options.sql` (package A):
 -- without a PR or local merge (free-form finish, CHORE-18).
 -- Rebuild item_merges with kind IN ('pr','local','kept'); copy rows; recreate
 -- index item_merges_open and the UNIQUE (item_id, integrated_checkpoint, repo).
+ALTER TABLE checkpoints ADD COLUMN finish_options_json TEXT; -- integrated only, [{label, description}]
 ```
 
 Request `binding_json` for `accept_epic`/`accept_fix` gains optional keys (no
