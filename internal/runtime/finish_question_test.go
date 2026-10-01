@@ -576,3 +576,22 @@ func TestFinishPromptDisclosesRemovedWaiversAndClearedOverrides(t *testing.T) {
 		t.Fatalf("question = %q, want %q", got.Question, want)
 	}
 }
+
+// A finish request that carries agent options only accepts one of them: auto/manual/local with no
+// choice would bypass the options the user was shown.
+func TestApproveRefusesMergeWithoutChoiceWhenOptionsExist(t *testing.T) {
+	ctx := context.Background()
+	s, _, _, _, reqID := finishFixture(t, githubRemote, "")
+	mustExec(t, s.DB, `UPDATE requests SET binding_json = json_set(binding_json, '$.finish_options', json(?)) WHERE id = ?`,
+		`[{"label":"Keep branch","description":""}]`, reqID)
+	req, _ := s.RequestByID(ctx, reqID)
+	for _, m := range []string{"auto", "manual", "local"} {
+		_, err := s.Approve(ctx, reqID, ApproveInput{Binding: req.Binding, Merge: m, Via: "board"})
+		if err == nil || !strings.Contains(err.Error(), "Choose one of this request's options: Keep branch.") {
+			t.Fatalf("merge %q without a choice: err = %v", m, err)
+		}
+	}
+	if _, err := s.Approve(ctx, reqID, ApproveInput{Binding: req.Binding, Merge: "custom", Choice: "Keep branch", Via: "board"}); err != nil {
+		t.Fatalf("a choice must still approve: %v", err)
+	}
+}

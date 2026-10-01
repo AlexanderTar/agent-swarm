@@ -396,6 +396,10 @@ func TestFinishingCustomRefusals(t *testing.T) {
 			"Report every integrated repo once under prs, merged or kept: docs."},
 		"kept without note": {CheckpointInput{Kept: []KeptRepo{{Repo: "proj"}, {Repo: "docs", Note: "b"}}},
 			"kept needs a note of 1–300 characters for each repo."},
+		"merged without sha": {CheckpointInput{Merged: []FinishMerged{{Repo: "proj"}}, Kept: []KeptRepo{{Repo: "docs", Note: "b"}}},
+			"merged needs a hex commit sha for each repo."},
+		"merged with non-hex sha": {CheckpointInput{Merged: []FinishMerged{{Repo: "proj", SHA: "not-a-sha"}}, Kept: []KeptRepo{{Repo: "docs", Note: "b"}}},
+			"merged needs a hex commit sha for each repo."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, ses, key := customFinishFixture(t)

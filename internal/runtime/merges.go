@@ -84,6 +84,7 @@ const prFields = "state,headRefName,baseRefName,number,url,autoMergeRequest,merg
 var (
 	prURLRe      = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)$`)
 	exitStatusRe = regexp.MustCompile(`exit status \d+: `)
+	hexSHA       = regexp.MustCompile(`^[0-9a-fA-F]{4,64}$`)
 )
 
 func isGitHubRemote(url string) bool { return strings.Contains(url, "github.com") }
@@ -247,6 +248,9 @@ func (s *Store) writeFinishing(ctx context.Context, sessionID string, in Checkpo
 		prURLs[p.Repo] = p.URL
 	}
 	for _, m := range in.Merged {
+		if custom && !hexSHA.MatchString(m.SHA) {
+			return out, badRequest("merged needs a hex commit sha for each repo.")
+		}
 		report(m.Repo, "local")
 		localSHAs[m.Repo] = m.SHA
 	}

@@ -1620,6 +1620,10 @@ func (s *Store) Approve(ctx context.Context, id string, in ApproveInput, after .
 		if !isAcceptKind(req.Kind) {
 			return nil
 		}
+		if len(opts) > 0 {
+			return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+				"Choose one of this request's options: %s.", strings.Join(optionLabels(opts), ", "))}
+		}
 		local, err := s.finishLocalTx(ctx, tx, req)
 		if err != nil {
 			return err
