@@ -162,6 +162,8 @@ struct SubtleScrollerConfig: NSViewRepresentable {
 
         func configure() {
             guard let scrollView = SubtleScrollerConfig.scrollView(for: self, adjacent: adjacentScrollView) else { return }
+            scrollView.drawsBackground = false
+            scrollView.contentView.drawsBackground = false
             scrollView.scrollerStyle = .overlay
             scrollView.autohidesScrollers = true
             scrollView.verticalScroller?.controlSize = .small
@@ -170,17 +172,25 @@ struct SubtleScrollerConfig: NSViewRepresentable {
     }
 
     private static func scrollView(for view: NSView, adjacent: Bool) -> NSScrollView? {
-        if adjacent, let container = view.superview?.superview {
-            let target = view.convert(view.bounds, to: container)
-            let candidates = container.subviews
-                .filter { $0 !== view.superview }
-                .flatMap(\.subviews)
-                .compactMap { $0 as? NSScrollView }
-            if let match = candidates.max(by: { first, second in
-                let a = target.intersection(first.convert(first.bounds, to: container))
-                let b = target.intersection(second.convert(second.bounds, to: container))
-                return a.width * a.height < b.width * b.height
-            }) { return match }
+        if adjacent {
+            // SwiftUI inserts extra hosting layers for glass/background modifiers.
+            // Search the nearest ancestor that contains an overlapping native scroll view,
+            // rather than assuming a fixed sibling depth.
+            func scrolls(in root: NSView) -> [NSScrollView] {
+                if let scroll = root as? NSScrollView { return [scroll] }
+                return root.subviews.flatMap { scrolls(in: $0) }
+            }
+            var ancestor = view.superview
+            while let container = ancestor {
+                let target = view.convert(view.bounds, to: container)
+                let matches = scrolls(in: container).compactMap { scroll -> (NSScrollView, CGFloat)? in
+                    let overlap = target.intersection(scroll.convert(scroll.bounds, to: container))
+                    guard !overlap.isNull, overlap.width > 0, overlap.height > 0 else { return nil }
+                    return (scroll, overlap.width * overlap.height)
+                }
+                if let match = matches.max(by: { $0.1 < $1.1 }) { return match.0 }
+                ancestor = container.superview
+            }
         }
         return view.enclosingScrollView
     }

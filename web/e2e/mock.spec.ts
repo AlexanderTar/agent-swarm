@@ -304,3 +304,148 @@ test("Progress and PR links fit a narrow Details sheet", async ({ page }) => {
   expect(prBox?.width).toBeGreaterThanOrEqual(32);
   expect(prBox?.height).toBeGreaterThanOrEqual(32);
 });
+
+test("artifact wraps long text in a bounded scroller and keeps close keyboard focus", async ({ page }) => {
+  await page.route("**/api/artifacts/art_epic_spec**", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.markdown = ('Paragraph ' + 'x'.repeat(500) + '\n\n').repeat(35) + '\n```\n' + 'y'.repeat(800) + '\n```\n\nEND OF ARTIFACT';
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto("/#/hierarchy?item=EPIC-12");
+  const trigger = page.getByRole("button", { name: /Spec · rev 3 · View/i });
+  await trigger.click();
+  const dialog = page.locator("dialog");
+  await expect(dialog).toBeVisible();
+  const close = dialog.getByRole("button", { name: "Close" });
+  await expect(close).not.toBeFocused();
+  expect(await dialog.evaluate(el => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(900);
+  const scroller = dialog.locator('[data-artifact-content]');
+  await expect(scroller).toBeVisible();
+  const dimensions = await scroller.evaluate(el => ({ width: el.clientWidth, scrollWidth: el.scrollWidth, height: el.clientHeight, scrollHeight: el.scrollHeight }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width);
+  expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.height);
+  await scroller.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await expect(dialog.getByText("END OF ARTIFACT")).toBeInViewport();
+  await page.mouse.move(0, 0);
+  await expect(scroller).toHaveCSS("scrollbar-width", "thin");
+  await expect(scroller).toHaveCSS("scrollbar-color", "rgba(0, 0, 0, 0) rgba(0, 0, 0, 0)");
+  await scroller.hover();
+  await expect(scroller).toHaveCSS("scrollbar-color", "rgb(38, 38, 47) rgba(0, 0, 0, 0)");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await scroller.evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0);
+  await scroller.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await expect(dialog.getByText("END OF ARTIFACT")).toBeInViewport();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).not.toBe("none");
+  await page.screenshot({ path: "test-results/artifact-scroll.png" });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test("details close starts neutral and is visibly focused by keyboard", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 800 });
+  await page.goto("/#/hierarchy?item=TASK-101");
+  const close = page.getByRole("dialog").getByRole("button", { name: "Close" });
+  await expect(close).toBeVisible();
+  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).toBe("none");
+  await page.keyboard.press("Tab");
+  await close.focus();
+  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).not.toBe("none");
+});
+
+test("details tabs have no vertical overflow and remain reachable at narrow widths", async ({ page }) => {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/#/hierarchy?item=TASK-101");
+    const tabs = page.getByTestId("details-panel").getByRole("tablist");
+    await expect(tabs).toBeVisible();
+    expect(await tabs.evaluate(el => el.scrollHeight - el.clientHeight)).toBe(0);
+    await tabs.getByRole("tab", { name: "Deps", exact: true }).click();
+    await expect(tabs.getByRole("tab", { name: "Deps", exact: true })).toHaveAttribute("aria-selected", "true");
+    await page.screenshot({ path: `test-results/details-tabs-${width}.png` });
+  }
+});
+
+test("locked status choices show only labels and locks while valid moves still work", async ({ page }) => {
+  await page.goto("/#/hierarchy?item=TASK-101");
+  await page.getByTestId("details-panel").getByRole("button", { name: "In progress", exact: true }).click();
+  const locked = page.getByRole("menuitem", { name: /^Ready/ });
+  await expect(locked).toHaveAttribute("aria-disabled", "true");
+  await expect(locked).toHaveText("Ready");
+  await expect(locked.locator("svg")).toHaveCount(1);
+  await expect(page.getByRole("menu")).not.toContainText("Couldn't update status");
+  await page.getByRole("menuitem", { name: "Blocked", exact: true }).click();
+  await expect(page.getByTestId("details-panel").getByRole("button", { name: "Blocked", exact: true })).toBeVisible();
+});
+
+for (const start of [false, true]) {
+  for (const width of [1440, 390]) {
+    test(`${start ? 'start' : 'new'} orchestrator fits long paths and expanded roles at ${width}px`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.route(/\/api\/repos(?:\?|$)/, async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        for (const repo of [...body.all, ...body.recent, ...body.groups.flatMap((g: { repos: object[] }) => g.repos)]) {
+          repo.path = '/Users/alex/' + 'verylongfolder'.repeat(40) + '/repository';
+        }
+        await route.fulfill({ response, json: body });
+      });
+      await page.route("**/api/settings", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.roles.mechanical.model = "sonnet";
+        await route.fulfill({ response, json: body });
+      });
+      await page.route("**/api/items/EPIC-12", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.agents = [];
+        await route.fulfill({ response, json: body });
+      });
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(start ? "/#/hierarchy?item=EPIC-12" : "/");
+      await page.getByRole("button", { name: start ? "Start orchestrator" : "New orchestrator", exact: true }).click();
+      const sheet = page.getByRole("dialog", { name: start ? "Start orchestrator" : "New orchestrator", exact: true });
+      await expect(sheet).toBeVisible();
+      await expect.poll(async () => Math.round((await sheet.boundingBox())!.x)).toBe(width === 1440 ? 540 : 0);
+      const sheetBox = await sheet.boundingBox();
+      expect(sheetBox?.width).toBeLessThanOrEqual(width);
+      if (width === 1440) expect(sheetBox?.width).toBeGreaterThanOrEqual(850);
+      const path = sheet.getByRole("option").first().locator(".key");
+      await expect(path).toBeVisible();
+      expect(await path.evaluate(el => el.scrollWidth)).toBeGreaterThan(await path.evaluate(el => el.clientWidth));
+      await expect(path).toHaveCSS("text-overflow", "ellipsis");
+      await sheet.getByRole("button", { name: "Worker Roles" }).click();
+      await sheet.getByRole("combobox", { name: "Coder Agent", exact: true }).scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `test-results/orchestrator-roles-${start ? 'start' : 'new'}-${width}.png` });
+      for (const role of ['', 'Coder', 'Reviewer', 'UI reviewer', 'Designer', 'Researcher', 'Debugger', 'Mechanical']) {
+        const controls = ['Agent', 'Model', 'Effort'].map(label => sheet.getByRole("combobox", { name: role ? `${role} ${label}` : label, exact: true }));
+        for (const control of controls) {
+          await control.scrollIntoViewIfNeeded();
+          await expect(control).toBeInViewport();
+          const box = await control.boundingBox();
+          expect(box?.x).toBeGreaterThanOrEqual(sheetBox?.x ?? 0);
+          expect(box && box.x + box.width).toBeLessThanOrEqual(width);
+          expect(box?.width).toBeGreaterThanOrEqual(width === 390 ? 160 : 140);
+        }
+        if (width === 1440) {
+          const boxes = await Promise.all(controls.map(control => control.boundingBox()));
+          expect(boxes[0]?.y).toBe(boxes[1]?.y);
+          expect(boxes[0]?.y).toBe(boxes[2]?.y);
+        }
+        const icon = controls[0]!.locator('[role=img]');
+        await expect(icon).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+      }
+      const body = sheet.locator(':scope > div.overflow-y-auto');
+      expect(await body.evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0);
+      await sheet.getByRole('textbox', { name: start ? 'Name' : 'Request (optional)', exact: true }).scrollIntoViewIfNeeded();
+      await expect(sheet.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport();
+      await page.screenshot({ path: `test-results/orchestrator-${start ? 'start' : 'new'}-${width}.png` });
+      await sheet.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(sheet).toHaveCount(0);
+    });
+  }
+}

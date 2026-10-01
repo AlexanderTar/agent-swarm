@@ -112,8 +112,6 @@ struct DefaultsTab: View {
                                 Task { await model.setEffort(row.role, v) }
                             }
                             .labelsHidden().frame(width: 170, alignment: .leading)
-                        } else if row.model != RoleDefault.noAdvisorModel {
-                            Text(Copy.notSupported).foregroundStyle(.secondary).frame(width: 170, alignment: .leading)
                         } else {
                             Text("").frame(width: 170, alignment: .leading)
                         }
@@ -277,6 +275,8 @@ struct InstructionsTab: View {
             if editing {
                 TextEditor(text: $draft)
                     .font(.system(.body, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .background(SubtleScrollerConfig(adjacentScrollView: true))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
                 HStack {
@@ -300,6 +300,7 @@ struct InstructionsTab: View {
                     Text(rendered).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
+                        .background(SubtleScrollerConfig())
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))

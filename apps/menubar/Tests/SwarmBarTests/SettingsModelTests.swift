@@ -82,7 +82,7 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(rows[3].effort, "high")
         XCTAssertEqual(rows[3].effortOptions?.first?.label, "Default (medium)")
         XCTAssertFalse(rows[3].modelOptions.contains { $0.value == "gpt-legacy" }, "hidden models stay out")
-        XCTAssertNil(rows[7].effortOptions, "Haiku shows Not supported")
+        XCTAssertNil(rows[7].effortOptions, "Haiku shows a blank effort cell")
         XCTAssertEqual(rows[8].agent, "claude")
         XCTAssertEqual(rows[8].model, "opus")
         // docs/specs/2026-09-19-usage-fallback-agent.md: the Fallback row is

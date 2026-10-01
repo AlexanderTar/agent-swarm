@@ -98,10 +98,16 @@ public struct NewOrchestratorView: View {
         .padding(.vertical, 12)
     }
 
+    @FocusState private var nameFocused: Bool
+
     private var nameField: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(Copy.name)
-            TextField(Copy.nameOptionalPlaceholder, text: $form.name).textFieldStyle(.roundedBorder).labelsHidden()
+            TextField(Copy.nameOptionalPlaceholder, text: $form.name)
+                .textFieldStyle(.plain).labelsHidden()
+                .focused($nameFocused)
+                .padding(.vertical, 6).padding(.horizontal, 8)
+                .dialogFieldSurface(focused: nameFocused)
             if let error = form.nameError {
                 Text(error).font(.caption).foregroundStyle(.red)
             } else if !form.preview.isEmpty {
@@ -112,12 +118,10 @@ public struct NewOrchestratorView: View {
 
     private var intentField: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Picker(Copy.intent, selection: $form.intent) {
-                Text(Copy.choreIntent).tag(SpikeIntent.chore)
-                Text(Copy.featureSpike).tag(SpikeIntent.feature)
-                Text(Copy.debugSpike).tag(SpikeIntent.debug)
+            HStack {
+                Text(Copy.intent)
+                IntentSelector(selection: $form.intent)
             }
-            .pickerStyle(.segmented)
             Text(form.intentCaption).font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -174,16 +178,19 @@ struct RepoChooser: View {
         List(rows, selection: $selection) { repo in
             HStack(spacing: 12) {
                 Text(repo.name).lineLimit(1)
+                    .foregroundStyle(selection.contains(repo.id) ? Color(nsColor: .alternateSelectedControlTextColor) : Color.primary)
                 Text(RepoPicker.subtitle(repo))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(selection.contains(repo.id) ? Color(nsColor: .alternateSelectedControlTextColor) : Color.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
             }
-            .frame(height: 30, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30, alignment: .leading)
+            .padding(.horizontal, 8)
             .contentShape(Rectangle())
-            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(selection.contains(repo.id) ? Color(nsColor: .selectedContentBackgroundColor) : Color.clear)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(repo.name), \(repo.path)")
             .help(repo.path)
@@ -193,7 +200,7 @@ struct RepoChooser: View {
         // The config view sits beside the List, not inside its NSScrollView, so it
         // must reach the adjacent scroll view instead of its enclosing one.
         .background(SubtleScrollerConfig(adjacentScrollView: true))
-        .dialogGlass(cornerRadius: 5)
+        .background { Color.clear.dialogGlass(cornerRadius: 5) }
         .frame(height: Self.visibleHeight(for: rows.count, maxRows: maxRows))
         // Clip the selection fill to the same rounded rect the border draws, so a
         // selected row never runs past it as an opaque square.
@@ -226,7 +233,7 @@ struct RequestEditor: View {
             .frame(minHeight: Self.minimumHeight, maxHeight: .infinity)
             .padding(.vertical, 6)
             .padding(.horizontal, 4)
-            .border(.separator)
+            .dialogFieldSurface()
     }
 }
 
@@ -262,6 +269,7 @@ private struct ImagePasteTextEditor: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.drawsBackground = false
+        scrollView.contentView.drawsBackground = false
         scrollView.scrollerStyle = .overlay
         scrollView.autohidesScrollers = true
         scrollView.verticalScroller?.controlSize = .small
@@ -371,6 +379,7 @@ struct RequestImageStrip: View {
                         HStack(spacing: 8) {
                             ForEach(form.images) { image in thumbnail(image) }
                         }
+                        .background(SubtleScrollerConfig())
                     }
                     .scrollIndicators(.never)
                     .fixedSize(horizontal: false, vertical: true)
@@ -417,5 +426,39 @@ struct RequestImageStrip: View {
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
         form.addImages(from: panel.urls)
+    }
+}
+
+/// AppKit owns segment focus, arrow-key selection and the OS-native appearance.
+struct IntentSelector: NSViewRepresentable {
+    @Binding var selection: SpikeIntent
+    private static let intents: [SpikeIntent] = [.chore, .feature, .debug]
+
+    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(labels: [Copy.choreIntent, Copy.featureSpike, Copy.debugSpike],
+                                         trackingMode: .selectOne, target: context.coordinator,
+                                         action: #selector(Coordinator.select(_:)))
+        control.segmentStyle = .automatic
+        if #available(macOS 26, *) { control.borderShape = .capsule }
+        control.setAccessibilityLabel(Copy.intent)
+        return control
+    }
+
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        context.coordinator.selection = $selection
+        control.selectedSegment = Self.intents.firstIndex(of: selection) ?? 0
+        control.isEnabled = context.environment.isEnabled
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var selection: Binding<SpikeIntent>
+        init(selection: Binding<SpikeIntent>) { self.selection = selection }
+        @objc func select(_ control: NSSegmentedControl) {
+            guard IntentSelector.intents.indices.contains(control.selectedSegment) else { return }
+            selection.wrappedValue = IntentSelector.intents[control.selectedSegment]
+        }
     }
 }

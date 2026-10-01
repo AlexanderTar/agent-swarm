@@ -190,7 +190,7 @@ describe("MoveToMenu", () => {
   const story = { key: "STORY-40", type: "story" as const, status: "in_review" as const, status_before_block: null };
   const epic = { key: "EPIC-12", type: "epic" as const, status: "in_review" as const, status_before_block: null };
 
-  it("lists every other status with disabled reasons", async () => {
+  it("lists every other status with locks on disabled choices", async () => {
     const user = userEvent.setup();
     render(<MoveToMenu item={story} onMove={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Move to…" }));
@@ -199,7 +199,8 @@ describe("MoveToMenu", () => {
     expect(done).toHaveAttribute("data-slot", "dropdown-menu-item");
     expect(done).toHaveClass("data-[disabled]:opacity-100");
     expect(done.querySelector("svg")).toBeInTheDocument();
-    expect(done).toHaveTextContent("Couldn't move STORY-40 to Done. Complete all child tasks and their checkpoints first.");
+    expect(done).toHaveTextContent(/^Done$/);
+    expect(done.querySelector("svg")).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /Blocked/ })).not.toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByRole("menuitem", { name: /^In review/ })).not.toBeInTheDocument();
   });

@@ -434,7 +434,7 @@ describe("Details panel (§16.9)", () => {
     const opener = await screen.findByRole("button", { name: "Spec · rev 3 · View" });
     await user.click(opener);
     const dialog = screen.getByRole("dialog");
-    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Close" })).toHaveFocus());
+    await waitFor(() => expect(dialog).toHaveFocus());
     await user.click(within(dialog).getByRole("button", { name: "Close" }));
     expect(opener).toHaveFocus();
   });

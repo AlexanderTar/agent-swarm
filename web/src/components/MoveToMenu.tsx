@@ -28,7 +28,7 @@ export function MoveToMenu(p: {
               {!enabled(o.check) && <Lock aria-hidden className="size-3" />}
               {o.label}
             </span>
-            {!o.check.ok && <span className="text-xs text-muted-foreground">{o.check.reason}</span>}
+            {!o.check.ok && enabled(o.check) && <span className="text-xs text-muted-foreground">{o.check.reason}</span>}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>

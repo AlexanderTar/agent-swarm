@@ -61,7 +61,7 @@ function Form(p: {
   return (
     <Sheet
       title={C.newOrchestrator}
-      width={720}
+      width={900}
       onClose={p.onClose}
       footer={
         <>
@@ -116,7 +116,7 @@ export function NewSpikeSheet(p: { intent?: SpikeIntent; onClose(): void; onCrea
   const err = settings.error ?? catalog.error ?? agents.error;
   if (err) {
     return (
-      <Sheet title={C.newOrchestrator} width={720} onClose={p.onClose}>
+      <Sheet title={C.newOrchestrator} width={900} onClose={p.onClose}>
         <Alert variant="destructive">
           {errorText(err)}{" "}
           <Button variant="link"

@@ -24,7 +24,7 @@ public final class SettingsModel {
         public var agentOptions: [PickerOption]
         public var model: String
         public var modelOptions: [PickerOption]
-        /// nil shows "Not supported" (or nothing for "No advisor").
+        /// nil shows a blank effort cell.
         public var effortOptions: [PickerOption]?
         public var effort: String
         public var error: String?
