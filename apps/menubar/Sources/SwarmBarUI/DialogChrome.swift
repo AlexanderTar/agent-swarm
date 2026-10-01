@@ -64,6 +64,13 @@ public struct TranslucentWindowAccessor: NSViewRepresentable {
 }
 
 extension View {
+    /// Identical inset field surfaces for single-line and image-aware multiline input.
+    func dialogFieldSurface() -> some View {
+        background(Color(nsColor: .textBackgroundColor).opacity(0.5),
+                   in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
+    }
+
     /// The window material behind dialog content on every macOS version: the
     /// popover-weight regular material. Ultra-thin let bright backdrops through
     /// almost unblurred and tinted captions to the background, leaving
