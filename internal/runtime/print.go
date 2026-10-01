@@ -228,7 +228,7 @@ func (s *Store) sendAskTx(ctx context.Context, tx *sql.Tx, ref string) error {
 		if np, err = s.storedNativePromptTx(ctx, tx, *t.req); err != nil {
 			return err
 		}
-		decisions = PromptDecisions(t.req.Kind, np)
+		decisions = PromptDecisionsFor(*t.req, np)
 		if t.req.Kind == KindApprovePlan {
 			paths, _, err := s.planReviewPathsTx(ctx, tx, t.req.ItemID, t.req.ArtifactID)
 			if err != nil {

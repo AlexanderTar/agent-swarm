@@ -42,11 +42,15 @@ func canonicalJSON(raw json.RawMessage) string {
 
 // AskInput is swarm_ask's input (§8.1).
 type AskInput struct {
-	Kind       string // "question" | "approval" | "confirm_repos" | "native_prompt" | "native_answer"
-	Prompt     string
-	Options    []string
-	ArtifactID string
-	SectionID  string
+	Kind    string // "question" | "approval" | "confirm_repos" | "native_prompt" | "native_answer"
+	Prompt  string
+	Options []string
+	// ApprovalOptions are kind:"approval"'s agent-proposed choices (1–4); the user's native
+	// prompt offers them plus "Request changes". Choice is native_answer's pick.
+	ApprovalOptions []FinishOption
+	Choice          string
+	ArtifactID      string
+	SectionID       string
 	// NothingToReview is a spec-section approval's optional one-line reason
 	// there is nothing for the user to review (docs/specs/2026-09-28-empty-
 	// section-auto-approve.md locked decision 1): 3-200 runes. Refused on
@@ -533,7 +537,7 @@ func (s *Store) relayRequestTx(ctx context.Context, tx *sql.Tx, id string) error
 		if err != nil {
 			return err
 		}
-		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID, np.Options, PromptDecisions(req.Kind, np))
+		payload["question"], payload["native_prompt"], payload["next"] = np.Question, np, NativePromptNextStep(req.ID, np.Options, PromptDecisionsFor(req, np))
 		if isAcceptKind(req.Kind) {
 			if payload["chat_block"], err = s.approvalChatBlockTx(ctx, tx, req); err != nil {
 				return err
@@ -1210,6 +1214,9 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		return Request{}, &items.Error{Code: items.CodeBadRequest,
 			Message: "Summary must be a lead sentence plus bullets (see swarm-orchestrator: approval summaries)."}
 	}
+	if err := validateFinishOptions(in.ApprovalOptions); err != nil {
+		return Request{}, err
+	}
 	if in.NothingToReview != "" {
 		if rn := utf8.RuneCountInString(in.NothingToReview); rn < 3 || rn > 200 {
 			return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "nothing_to_review must be 3–200 characters."}
@@ -1310,10 +1317,10 @@ func (s *Store) askApproval(ctx context.Context, sessionID string, in AskInput) 
 		}
 		id := ids.New("req")
 		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, agent_id, session_id, item_id,
-			artifact_id, section_id, section_sha256, prompt, state, artifact_revision, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+			artifact_id, section_id, section_sha256, prompt, options_json, state, artifact_revision, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
 			id, reqKind, a.ID, sessionID, itemID, in.ArtifactID, sectionID, nullIf(sectionSHA), in.Prompt,
-			headRev, db.Millis(s.Now())); err != nil {
+			jsonArray(in.ApprovalOptions), headRev, db.Millis(s.Now())); err != nil {
 			return err
 		}
 		key, err := s.itemKey(ctx, tx, itemID)
@@ -1602,6 +1609,19 @@ func isAcceptKind(k RequestKind) bool { return k == KindAcceptEpic || k == KindA
 func setMergeHook(ctx context.Context, id, merge string) func(*sql.Tx, Request) error {
 	return func(tx *sql.Tx, _ Request) error {
 		_, err := tx.ExecContext(ctx, `UPDATE requests SET binding_json = json_set(binding_json, '$.merge', ?) WHERE id = ?`, merge, id)
+		return err
+	}
+}
+
+// setChoiceHook records an agent-option approval's pick in $.choice; a finish request also
+// becomes a custom merge. COALESCE: section/plan/report rows have no binding.
+func setChoiceHook(ctx context.Context, id, choice string) func(*sql.Tx, Request) error {
+	return func(tx *sql.Tx, req Request) error {
+		q := `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'), '$.choice', ?) WHERE id = ?`
+		if isAcceptKind(req.Kind) {
+			q = `UPDATE requests SET binding_json = json_set(COALESCE(binding_json, '{}'), '$.choice', ?, '$.merge', 'custom') WHERE id = ?`
+		}
+		_, err := tx.ExecContext(ctx, q, choice, id)
 		return err
 	}
 }
