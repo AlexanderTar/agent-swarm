@@ -26,6 +26,8 @@ export function Sheet(p: {
     <UiSheet open modal={modal} onOpenChange={(open) => { if (!open) p.onClose(); }}>
       <SheetContent
         side="right"
+        tabIndex={-1}
+        onOpenAutoFocus={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).focus(); }}
         overlay={modal}
         aria-label={p.title}
         {...(p.subtitle ? {} : { "aria-describedby": undefined })}

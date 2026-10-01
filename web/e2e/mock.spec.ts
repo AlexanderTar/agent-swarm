@@ -304,3 +304,54 @@ test("Progress and PR links fit a narrow Details sheet", async ({ page }) => {
   expect(prBox?.width).toBeGreaterThanOrEqual(32);
   expect(prBox?.height).toBeGreaterThanOrEqual(32);
 });
+
+test("artifact wraps long text in a bounded scroller and keeps close keyboard focus", async ({ page }) => {
+  await page.route("**/api/artifacts/art_epic_spec**", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.markdown = ('Paragraph ' + 'x'.repeat(500) + '\n\n').repeat(35) + '\n```\n' + 'y'.repeat(800) + '\n```\n\nEND OF ARTIFACT';
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto("/#/hierarchy?item=EPIC-12");
+  const trigger = page.getByRole("button", { name: /Spec · rev 3 · View/i });
+  await trigger.click();
+  const dialog = page.locator("dialog");
+  await expect(dialog).toBeVisible();
+  const close = dialog.getByRole("button", { name: "Close" });
+  await expect(close).not.toBeFocused();
+  expect(await dialog.evaluate(el => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(900);
+  const scroller = dialog.locator('[data-artifact-content]');
+  await expect(scroller).toBeVisible();
+  const dimensions = await scroller.evaluate(el => ({ width: el.clientWidth, scrollWidth: el.scrollWidth, height: el.clientHeight, scrollHeight: el.scrollHeight }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width);
+  expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.height);
+  await scroller.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await expect(dialog.getByText("END OF ARTIFACT")).toBeInViewport();
+  await page.mouse.move(0, 0);
+  await expect(scroller).toHaveCSS("scrollbar-width", "thin");
+  await expect(scroller).toHaveCSS("scrollbar-color", "rgba(0, 0, 0, 0) rgba(0, 0, 0, 0)");
+  await scroller.hover();
+  await expect(scroller).toHaveCSS("scrollbar-color", "rgb(38, 38, 47) rgba(0, 0, 0, 0)");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await scroller.evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0);
+  await scroller.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await expect(dialog.getByText("END OF ARTIFACT")).toBeInViewport();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).not.toBe("none");
+  await page.screenshot({ path: "test-results/artifact-scroll.png" });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test("details close starts neutral and is visibly focused by keyboard", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 800 });
+  await page.goto("/#/hierarchy?item=TASK-101");
+  const close = page.getByRole("dialog").getByRole("button", { name: "Close" });
+  await expect(close).toBeVisible();
+  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).toBe("none");
+  await page.keyboard.press("Tab");
+  await close.focus();
+  expect(await close.evaluate(el => getComputedStyle(el).boxShadow)).not.toBe("none");
+});
