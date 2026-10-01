@@ -24,8 +24,9 @@ This chore adds three escape hatches that stay audited, plus option propagation:
 
 Repo: `agent-swarm` only. Integration branch `chore-18-relax-transitions`.
 Collision warning: packages A and B both touch `internal/runtime/checkpoint.go`,
-`internal/mcpserver/tools.go` and add migrations; A owns migration `0024`, B owns
-`0025`.
+`types.go`, `internal/items/transition.go` and `internal/mcpserver/tools.go`, so they
+run serially: B (waivers/overrides) first, then A (options), then C (web).
+B owns migration `0024`, A owns `0025`.
 
 ## Locked decisions
 
@@ -44,7 +45,7 @@ Collision warning: packages A and B both touch `internal/runtime/checkpoint.go`,
 
 ## DB models
 
-Migration `0024_finish_options.sql` (package A):
+Migration `0025_finish_options.sql` (package A):
 
 ```sql
 -- item_merges gains kind 'kept': the orchestrator reports a repo it finished
@@ -58,7 +59,7 @@ Request `binding_json` for `accept_epic`/`accept_fix` gains optional keys (no
 column change): `finish_options: [{label, description}]`, `choice: string`.
 `$.merge` gains value `"custom"`.
 
-Migration `0025_item_overrides.sql` (package B):
+Migration `0024_item_overrides.sql` (package B):
 
 ```sql
 ALTER TABLE items ADD COLUMN waivers_json  TEXT;  -- [{gate, reason, agent, at}] or NULL
@@ -105,7 +106,11 @@ type Override struct { Status Status; Reason, Agent string; At time.Time }
 MCP:
 
 - `swarm_checkpoint`: `finish_options`, `waive`, `kept` as above.
-- `swarm_ask kind:"approval"`: `options` may be `[{label, description}]` (1–4).
+- `swarm_ask kind:"approval"`: `options` may be `[{label, description}]` (1–4),
+  stored in `options_json`; the native prompt uses the labels plus "Request
+  changes"; `native_answer approve + choice` and board approve record `$.choice`;
+  `approval_result` carries `choice`. The request wire flattens options to
+  `options: string[]` + `option_descriptions` for approval and finish kinds.
 - `swarm_ask kind:"native_answer"`: new `choice` (the picked label) with
   `decision:"approve"` for agent-option requests; finish requests with agent
   options use `decision:"approve"` + `choice`.
@@ -116,7 +121,8 @@ MCP:
 HTTP: `POST /api/requests/{id}/approve` body gains `choice` and `comment`;
 `merge` accepts `"custom"` when the request has `finish_options`.
 Request wire gains `option_descriptions: string[] | null`, `choice: string | null`.
-Item wire gains `waivers` and `override`.
+Item wire gains `waivers` and `override`. New event constants `item.waived` and
+`item.overridden` in `internal/events`.
 
 Behaviour:
 
@@ -138,8 +144,8 @@ Behaviour:
   status, and reopen `done` → `ready`. A forced Done on a workflow task cancels its
   live workflow. `override_json` is set; `deriveStory`/task reconcile leave an item
   alone while `override_json.status` equals its status; any later non-override
-  transition clears it. Event `item.overridden`. Roots: only `in_review` ↔
-  `in_progress`; never Done.
+  transition clears it. Event `item.overridden`. Roots can't be overridden
+  (reconcileRoot owns them; integrated + finish is the only path).
 - **Finish prompt disclosure**: when any item in the root's tree has waivers or
   overrides, the finish question appends `Waived/overridden: <n> (see board).`.
 
@@ -209,7 +215,7 @@ with a valid/invalid choice; finishing custom with prs+kept → Done after PR me
 kept-only → Done immediately; no options → old prompt; waiver lets a worker
 complete without tdd evidence; waiver by a worker refused; unknown gate refused;
 override story Done survives reconcile; override cleared by later transition;
-root Done override refused; web renders option buttons and posts `choice`.
+root override refused; web renders option buttons and posts `choice`.
 
 ## Explicitly out of scope
 
