@@ -319,3 +319,101 @@ func mustItemID(t *testing.T, s *Store, key string) string {
 	}
 	return it.ID
 }
+
+// customFinishFixture is finishFixture approved with a custom merge (an agent option), its
+// integrated checkpoint spanning proj (GitHub remote) and docs (no remote).
+func customFinishFixture(t *testing.T) (s *Store, ses, key string) {
+	t.Helper()
+	s, orch, ses, key, _ := finishFixture(t, "https://github.com/o/proj.git", "custom")
+	mustExec(t, s.DB, `INSERT INTO repos (id, name, path, remote_url, remote_owner, default_branch, source, created_at, updated_at)
+		VALUES ('repo_docs', 'docs', '/tmp/docs', NULL, 'o', 'main', 'manual', 1, 1)`)
+	git := `[{"repo":"proj","branch":"swarm/chore-1","sha":"3f9c2ab0000"},{"repo":"docs","branch":"swarm/chore-1","sha":"aaa1110000"}]`
+	mustExec(t, s.DB, `UPDATE checkpoints SET git_json = ? WHERE agent_id = ? AND kind = 'integrated'`, git, orch.ID)
+	mustExec(t, s.DB, `UPDATE requests SET binding_json = json_set(binding_json, '$.git', json(?)) WHERE item_id = ?`, git, mustItemID(t, s, key))
+	return s, ses, key
+}
+
+func finishCustom(s *Store, ses string, in CheckpointInput) (CheckpointResult, error) {
+	in.Kind, in.Summary = Finishing, "finished as chosen"
+	return s.WriteCheckpoint(context.Background(), ses, in)
+}
+
+func TestFinishingCustomPRPlusKeptWaitsForPRThenDone(t *testing.T) {
+	s, ses, key := customFinishFixture(t)
+	fakeGH(s, map[string]execx.Result{prView(prURL): {Out: ghOpenUnarmed}}) // no auto-merge needed under custom
+	res, err := finishCustom(s, ses, CheckpointInput{PRs: []FinishPR{{Repo: "proj", URL: prURL}},
+		Kept: []KeptRepo{{Repo: "docs", Note: "docs stay on the branch"}}})
+	if err != nil || res.ItemStatus != items.InReview {
+		t.Fatalf("finishing = %+v, %v", res, err)
+	}
+	ms, _ := s.Merges(context.Background(), mustItemID(t, s, key))
+	if len(ms) != 2 || ms[0].AutoMerge || ms[1].AutoMerge {
+		t.Fatalf("merges = %+v", ms)
+	}
+	byRepo := map[string]ItemMerge{ms[0].Repo: ms[0], ms[1].Repo: ms[1]}
+	if byRepo["proj"].Kind != "pr" || byRepo["proj"].State != "open" || byRepo["docs"].Kind != "kept" || byRepo["docs"].State != "merged" {
+		t.Fatalf("rows = %+v", byRepo)
+	}
+	tick(t, s, map[string]execx.Result{prView(prURL): {Out: ghPRJSON("MERGED", `[]`)}})
+	if st := itemStatus(t, s, key); st != items.Done {
+		t.Fatalf("status = %s, want done", st)
+	}
+}
+
+func TestFinishingCustomKeptOnlyIsDone(t *testing.T) {
+	s, ses, key := customFinishFixture(t)
+	if _, err := finishCustom(s, ses, CheckpointInput{Kept: []KeptRepo{
+		{Repo: "proj", Note: "branch stays for review"}, {Repo: "docs", Note: "same"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if st := itemStatus(t, s, key); st != items.Done {
+		t.Fatalf("status = %s, want done", st)
+	}
+}
+
+func TestFinishingCustomRecordsLocalMergeWithoutVerifying(t *testing.T) {
+	s, ses, key := customFinishFixture(t)
+	fakeGH(s, map[string]execx.Result{}) // any git/gh call would fail the fake
+	// proj has a GitHub remote, yet "pushed straight to main" is reported under merged
+	if _, err := finishCustom(s, ses, CheckpointInput{Merged: []FinishMerged{{Repo: "proj", SHA: "d00d"}},
+		Kept: []KeptRepo{{Repo: "docs", Note: "kept"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if st := itemStatus(t, s, key); st != items.Done {
+		t.Fatalf("status = %s, want done", st)
+	}
+}
+
+func TestFinishingCustomRefusals(t *testing.T) {
+	for name, c := range map[string]struct {
+		in  CheckpointInput
+		msg string
+	}{
+		"missing repo": {CheckpointInput{PRs: []FinishPR{{Repo: "proj", URL: prURL}}},
+			"Report every integrated repo once under prs, merged or kept: docs."},
+		"repeated repo": {CheckpointInput{Kept: []KeptRepo{{Repo: "proj", Note: "a"}, {Repo: "docs", Note: "b"}},
+			Merged: []FinishMerged{{Repo: "docs", SHA: "d00d"}}},
+			"Report every integrated repo once under prs, merged or kept: docs."},
+		"kept without note": {CheckpointInput{Kept: []KeptRepo{{Repo: "proj"}, {Repo: "docs", Note: "b"}}},
+			"kept needs a note of 1–300 characters for each repo."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, ses, key := customFinishFixture(t)
+			fakeGH(s, map[string]execx.Result{prView(prURL): {Out: ghOpenUnarmed}})
+			if _, err := finishCustom(s, ses, c.in); err == nil || err.Error() != c.msg {
+				t.Fatalf("err = %v, want %q", err, c.msg)
+			}
+			if ms, _ := s.Merges(context.Background(), mustItemID(t, s, key)); len(ms) != 0 {
+				t.Fatalf("rows written on refusal: %+v", ms)
+			}
+		})
+	}
+}
+
+func TestFinishingKeptRefusedWithoutCustomMerge(t *testing.T) {
+	s, _, ses, _, _ := finishFixture(t, "https://github.com/o/proj.git", "auto")
+	if _, err := finishCustom(s, ses, CheckpointInput{Kept: []KeptRepo{{Repo: "proj", Note: "a"}}}); err == nil ||
+		err.Error() != "kept is only valid when the user chose one of your finish options." {
+		t.Fatalf("err = %v", err)
+	}
+}

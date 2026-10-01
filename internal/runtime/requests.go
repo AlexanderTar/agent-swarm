@@ -785,7 +785,11 @@ func (s *Store) deliverFinishApproval(ctx context.Context, tx *sql.Tx, a Agent, 
 		a.ID, sessionID, fa.RequestID); err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]any{"decision": "approved", "merge": fa.Merge, "section_id": "", "section_sha256": ""})
+	p := map[string]any{"decision": "approved", "merge": fa.Merge, "section_id": "", "section_sha256": ""}
+	if fa.Choice != "" {
+		p["choice"] = fa.Choice
+	}
+	payload, _ := json.Marshal(p)
 	_, err = s.enqueue(ctx, tx, Message{Kind: "approval_result", Origin: "user_action", ToAgentID: a.ID,
 		RootItemID: a.RootItemID, ItemID: a.RootItemID, RequestID: fa.RequestID, Payload: payload})
 	return err

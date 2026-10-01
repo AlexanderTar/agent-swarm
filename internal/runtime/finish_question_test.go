@@ -519,3 +519,25 @@ func TestIntegratedRefusesInvalidFinishOptions(t *testing.T) {
 		})
 	}
 }
+
+// A custom approval made on the board with no orchestrator routed still tells the orchestrator which
+// option the user picked once it binds.
+func TestResurfaceDeliversCustomChoiceToOrchestrator(t *testing.T) {
+	ctx := context.Background()
+	s, orch, ses, _, reqID := finishFixture(t, githubRemote, "")
+	mustExec(t, s.DB, `UPDATE requests SET binding_json = json_set(binding_json, '$.finish_options', json(?)) WHERE id = ?`,
+		`[{"label":"Keep branch","description":""}]`, reqID)
+	req, _ := s.RequestByID(ctx, reqID)
+	if _, err := s.Approve(ctx, reqID, ApproveInput{Binding: req.Binding, Merge: "custom", Choice: "Keep branch", Via: "board"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.resurfaceOpenRequests(ctx, orch, ses, true, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	var choice string
+	s.DB.QueryRowContext(ctx, `SELECT COALESCE(json_extract(payload_json,'$.choice'),'') FROM messages
+		WHERE kind = 'approval_result' AND request_id = ?`, reqID).Scan(&choice)
+	if n, merge := approvalResults(t, s, reqID); n != 1 || merge != "custom" || choice != "Keep branch" {
+		t.Fatalf("%d approval_results, merge %q, choice %q", n, merge, choice)
+	}
+}

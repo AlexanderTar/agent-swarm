@@ -513,8 +513,8 @@ func (s *Store) rootState(ctx context.Context, q querier, it Item) (rootState, e
 
 // FinishApproval is the approved finish request bound to a root's newest integrated checkpoint.
 type FinishApproval struct {
-	RequestID, AgentID, Merge, CheckpointID string          // Merge "" for a pre-0022 approval
-	Git                                     json.RawMessage // the checkpoint's git_json ([]GitRef shape; items can't import runtime)
+	RequestID, AgentID, Merge, Choice, CheckpointID string          // Merge "" for a pre-0022 approval
+	Git                                             json.RawMessage // the checkpoint's git_json ([]GitRef shape; items can't import runtime)
 }
 
 // FinishApprovalTx is the exported accessor runtime uses (writeFinishing, MergeProgressFor,
@@ -535,11 +535,12 @@ func (s *Store) finishApproval(ctx context.Context, q querier, it Item, st rootS
 	if st.ckpID == "" {
 		return fa, false, nil
 	}
-	err = q.QueryRowContext(ctx, `SELECT id, COALESCE(agent_id, ''), COALESCE(json_extract(binding_json, '$.merge'), '')
+	err = q.QueryRowContext(ctx, `SELECT id, COALESCE(agent_id, ''), COALESCE(json_extract(binding_json, '$.merge'), ''),
+		COALESCE(json_extract(binding_json, '$.choice'), '')
 		FROM requests WHERE item_id = ? AND state = 'approved' AND kind IN ('accept_epic', 'accept_fix')
 		AND json_extract(binding_json, '$.integrated_checkpoint') = ?
 		AND json_extract(binding_json, '$.item_revision') = ?
-		ORDER BY responded_at DESC LIMIT 1`, it.ID, st.ckpID, it.Revision).Scan(&fa.RequestID, &fa.AgentID, &fa.Merge)
+		ORDER BY responded_at DESC LIMIT 1`, it.ID, st.ckpID, it.Revision).Scan(&fa.RequestID, &fa.AgentID, &fa.Merge, &fa.Choice)
 	if errors.Is(err, sql.ErrNoRows) {
 		return FinishApproval{}, false, nil
 	}

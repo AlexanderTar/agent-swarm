@@ -102,12 +102,19 @@ type CheckpointInput struct {
 	Todos  []TodoReport
 	PRs    []FinishPR     // kind finishing only
 	Merged []FinishMerged // kind finishing only
+	Kept   []KeptRepo     // kind finishing only, custom merge only
 	// Waive records waivers on the root before the integrated checks run
 	// (integrated only; an empty Reason removes the gate's waiver).
 	Waive []Waiver
 	// FinishOptions are the orchestrator's free-form finish choices (integrated only, 1–4);
 	// the accept request offers them plus "Request changes".
 	FinishOptions []FinishOption
+}
+
+// KeptRepo is a repo the orchestrator finished without a PR or local merge, with what it did instead.
+type KeptRepo struct {
+	Repo string `json:"repo"`
+	Note string `json:"note"`
 }
 
 // FinishOption is one agent-proposed choice on a finish or approval request.
