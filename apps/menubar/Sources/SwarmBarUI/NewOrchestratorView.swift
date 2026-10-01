@@ -115,7 +115,10 @@ public struct NewOrchestratorView: View {
 
     private var intentField: some View {
         VStack(alignment: .leading, spacing: 4) {
-            IntentSelector(selection: $form.intent)
+            HStack {
+                Text(Copy.intent)
+                IntentSelector(selection: $form.intent)
+            }
             Text(form.intentCaption).font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -193,7 +196,7 @@ struct RepoChooser: View {
         // The config view sits beside the List, not inside its NSScrollView, so it
         // must reach the adjacent scroll view instead of its enclosing one.
         .background(SubtleScrollerConfig(adjacentScrollView: true))
-        .dialogGlass(cornerRadius: 5)
+        .background { Color.clear.dialogGlass(cornerRadius: 5) }
         .frame(height: Self.visibleHeight(for: rows.count, maxRows: maxRows))
         // Clip the selection fill to the same rounded rect the border draws, so a
         // selected row never runs past it as an opaque square.
@@ -262,6 +265,7 @@ private struct ImagePasteTextEditor: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.drawsBackground = false
+        scrollView.contentView.drawsBackground = false
         scrollView.scrollerStyle = .overlay
         scrollView.autohidesScrollers = true
         scrollView.verticalScroller?.controlSize = .small
@@ -371,6 +375,7 @@ struct RequestImageStrip: View {
                         HStack(spacing: 8) {
                             ForEach(form.images) { image in thumbnail(image) }
                         }
+                        .background(SubtleScrollerConfig())
                     }
                     .scrollIndicators(.never)
                     .fixedSize(horizontal: false, vertical: true)
@@ -443,6 +448,7 @@ struct IntentSelector: NSViewRepresentable {
         control.isEnabled = context.environment.isEnabled
     }
 
+    @MainActor
     final class Coordinator: NSObject {
         var selection: Binding<SpikeIntent>
         init(selection: Binding<SpikeIntent>) { self.selection = selection }

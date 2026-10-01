@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import SwarmBarUI
+import SwarmBarKit
 
 /// Runs inside a fixture-only build of the actual App.swift scenes. It registers the
 /// production menu callbacks, rather than duplicating their presentation logic.
@@ -44,6 +45,31 @@ enum NativeDialogCheck {
         }
     }
 
+    static func launch(_ name: String) {
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let views = popover?.contentView.map(descendants) ?? []
+        if name == "new" {
+            let chevron = views.compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == Copy.moreStartOptions }
+            let button = views.compactMap { $0 as? NSButton }.first { button in
+                guard !(button is NSPopUpButton), let chevron, let root = popover?.contentView else { return false }
+                let labelBox = button.convert(button.bounds, to: root)
+                let chevronBox = chevron.convert(chevron.bounds, to: root)
+                return abs(labelBox.midY - chevronBox.midY) < 1 && abs(labelBox.maxX - chevronBox.minX) < 3
+            }
+            check(button != nil, "new: native footer button exists")
+            button?.performClick(nil)
+        } else if name == "board" {
+            let menu = views.compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == Copy.moreStartOptions }?.menu
+            let index = menu?.items.firstIndex { $0.title == Copy.orchestrateBoardItemMenu }
+            check(index != nil, "board: native footer menu item exists")
+            if let index { menu?.performActionForItem(at: index) }
+        } else if name == "board-selected" {
+            boardAction?("auth-epic-orchestrator")
+        } else {
+            actions[name]?()
+        }
+    }
+
     static func start() {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(600))
@@ -53,11 +79,10 @@ enum NativeDialogCheck {
                 check(popover?.isVisible == true, "\(name): one request opens menu")
                 if name == "board" || name == "board-selected" {
                     check(boardAction != nil, "\(name): callback registered")
-                    boardAction?(name == "board-selected" ? "alpha" : nil)
                 } else {
                     check(actions[name] != nil, "\(name): callback registered")
-                    actions[name]?()
                 }
+                launch(name)
                 try? await Task.sleep(for: .milliseconds(600))
                 check(popover?.isVisible != true, "\(name): dialog dismisses menu")
                 let dialogs = NSApp.windows.filter {
@@ -79,8 +104,7 @@ enum NativeDialogCheck {
                 check(popover?.isVisible == true, "\(name): menu reopens after one request")
                 // Close through the real menu action again; direct NSWindow.close()
                 // is exactly the stale scene state this regression must avoid.
-                if name == "board" || name == "board-selected" { boardAction?(nil) }
-                else { actions[name]?() }
+                launch(name)
                 try? await Task.sleep(for: .milliseconds(400))
                 check(popover?.isVisible != true, "\(name): repeated launch dismisses menu")
                 NSApp.windows.filter {

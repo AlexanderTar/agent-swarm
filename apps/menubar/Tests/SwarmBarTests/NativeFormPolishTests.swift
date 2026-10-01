@@ -35,26 +35,11 @@ final class NativeFormPolishTests: XCTestCase {
         host.frame = NSRect(x: 0, y: 0, width: 500, height: 60)
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        let window = NSWindow(contentRect: host.bounds, styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = host
-        window.orderFront(nil)
-        defer { window.close() }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("repo-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let capture = Process()
-        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        capture.arguments = ["-x", "-o", "-l", "\(window.windowNumber)", url.path]
-        try capture.run()
-        capture.waitUntilExit()
-        XCTAssertEqual(capture.terminationStatus, 0)
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: url)))
-        try Data(contentsOf: url).write(to: URL(fileURLWithPath: "/tmp/task435-repo.png"))
+        let bitmap = try captureNativeWindow(host, name: "selected-repositories")
         let colors = (0..<bitmap.pixelsHigh).flatMap { y in
             (0..<bitmap.pixelsWide).compactMap { x in bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) }
         }
-        XCTAssertGreaterThan(colors.filter { $0.blueComponent > $0.redComponent + 0.25 && $0.blueComponent > $0.greenComponent + 0.1 }.count,
+        XCTAssertGreaterThan(colors.filter { $0.blueComponent > $0.redComponent + 0.25 && $0.blueComponent > $0.greenComponent + 0.1 && $0.greenComponent < 0.65 }.count,
                              5000, "both selected rows need a persistent blue surface")
     }
 

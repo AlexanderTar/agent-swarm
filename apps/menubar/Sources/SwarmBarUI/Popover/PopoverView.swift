@@ -69,6 +69,7 @@ public struct PopoverView: View {
                     NotificationsSection(model: model, cap: cap(.notifications))
                 }
                 .padding(12)
+                .background(SubtleScrollerConfig())
             }
             .frame(maxHeight: maxHeight - 120)
             .fixedSize(horizontal: false, vertical: true)
