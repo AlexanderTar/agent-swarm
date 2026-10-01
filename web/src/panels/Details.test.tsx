@@ -100,6 +100,13 @@ describe("Details panel (§16.9)", () => {
       expect(screen.queryByText(/waiting for the orchestrator/)).toBeNull();
     });
 
+    it("still shows a kept repo and its note once done", async () => {
+      const kept = { repo: "docs", kind: "kept", base: "main", head: "epic/epic-12", auto_merge: false, state: "merged", checks: "", note: "branch stays for review" };
+      setup("EPIC-12", {}, withDetail({ merges: [kept] }, "done"));
+      expect(await screen.findByText("Kept · branch stays for review")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Repos" })).toBeInTheDocument();
+    });
+
     it("is absent once done", async () => {
       setup("EPIC-12", {}, withDetail({ merges: [merge] }, "done"));
       await screen.findByRole("heading", { name: "Progress 2/2" });

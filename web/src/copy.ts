@@ -130,6 +130,7 @@ export const C = {
   createPr: "Create PR",
   mergeLocally: "Merge locally",
   awaitingMerge: "Awaiting merge",
+  repos: "Repos",
   checksPassing: "✓ passing",
   checksFailing: "✗ failing",
   checksPending: "… pending",

@@ -49,4 +49,12 @@ describe("MergeList", () => {
     expect(rows[0]).not.toContain("(orchestrator fixing)");
     expect(rows[1]).toContain("no checks");
   });
+
+  it("uses a neutral heading once nothing is awaiting a merge, and wraps long notes", () => {
+    const note = "https://example.com/" + "a".repeat(200);
+    render(<MergeList merges={[{ repo: "docs", kind: "kept", base: "main", head: "swarm/epic-14", auto_merge: false, state: "merged", checks: "", note }]} />);
+    expect(screen.getByRole("heading", { name: "Repos" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Repos" })).toBeInTheDocument();
+    expect(screen.getByText(/^Kept · /)).toHaveClass("min-w-0", "break-words");
+  });
 });
