@@ -36,9 +36,7 @@ public struct BoardHandoffView: View {
                     }
                 }
                 AgentPickerGrid(picker: form.picker)
-                if !form.isHandoff {
-                    WorkerOverridesGrid(form: form)
-                }
+                WorkerOverridesGrid(form: form)
             }
             .padding(.horizontal, 22).padding(.vertical, 12)
             Divider()
@@ -74,9 +72,8 @@ public struct BoardHandoffView: View {
     }
 }
 
-/// Worker Agent/Model/Effort overrides for start mode, prefilled from Settings.
-/// Same copy, tokens and idiom as `AgentPickerGrid`; hidden in handoff mode
-/// (`HandoffRequest` has no roles).
+/// Worker Agent/Model/Effort overrides, prefilled from Settings (start) or the orchestrator's
+/// current overrides (handoff). Same copy, tokens and idiom as `AgentPickerGrid`.
 struct WorkerOverridesGrid: View {
     @Bindable var form: BoardHandoffForm
 

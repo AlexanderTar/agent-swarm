@@ -123,15 +123,20 @@ final class BoardHandoffRenderTests: XCTestCase {
         XCTAssertEqual(coder.titleOfSelectedItem, "Codex", "edited worker pick reaches the row picker")
     }
 
-    func testHandoffModeHidesWorkerRows() async throws {
+    func testHandoffModeShowsWorkerRowsPrefilledFromOverrides() async throws {
         let client = try MockDaemonClient(fixtures: Fixture.dir)
         let model = makeAppModel(client)
         await model.refresh()
-        model.boardHandoffPreselect = "auth-epic-orchestrator"
-        let form = model.makeBoardHandoffForm()
+        var agents = model.state.agents
+        let i = agents.firstIndex { $0.name == "auth-epic-orchestrator" }!
+        agents[i].roleOverrides = ["coder": RoleDefault(agent: .codex, model: "gpt-6-astra")]
+        let form = BoardHandoffForm(client: client, settings: model.state.settings, agents: agents,
+                                    connected: true, preselectAgent: "auth-epic-orchestrator")
         await form.load()
         XCTAssertTrue(form.isHandoff)
         let host = render(form)
-        XCTAssertNil(popups(host).first { $0.accessibilityLabel() == "Coding Agent" }, "HandoffRequest has no roles")
+        let coder = try XCTUnwrap(popups(host).first { $0.accessibilityLabel() == "Coding Agent" },
+                                  "hand-off mode shows the worker overrides grid")
+        XCTAssertEqual(coder.titleOfSelectedItem, "Codex", "prefilled from the orchestrator's override")
     }
 }

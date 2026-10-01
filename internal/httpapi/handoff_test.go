@@ -263,3 +263,32 @@ func TestHandoffRolesRejectInvalid(t *testing.T) {
 		})
 	}
 }
+
+// The Orchestrate task window prefills its Worker overrides from the
+// orchestrator's stored role_overrides, so the state node must carry them.
+func TestStateNodeCarriesRoleOverrides(t *testing.T) {
+	s, _ := newRuntimeServer(t)
+	if rec := s.post(t, "/api/agents/root-orchestrator/handoff",
+		`{"request_id":"so1","roles":{"coder":{"agent":"fake","model":"fake-1","effort":""}}}`); rec.Code != 202 {
+		t.Fatalf("seed status = %d: %s", rec.Code, rec.Body)
+	}
+	rec := s.get(t, "/api/state")
+	var body struct {
+		Agents []struct {
+			Name          string                       `json:"name"`
+			RoleOverrides map[string]map[string]string `json:"role_overrides"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range body.Agents {
+		if a.Name == "root-orchestrator" {
+			if a.RoleOverrides["coder"]["model"] != "fake-1" {
+				t.Fatalf("role_overrides = %v, want coder=fake-1", a.RoleOverrides)
+			}
+			return
+		}
+	}
+	t.Fatal("root-orchestrator missing from state")
+}
