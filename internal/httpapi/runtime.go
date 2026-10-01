@@ -370,6 +370,8 @@ type approveBody struct {
 	Binding          any    `json:"binding"`
 	Via              string `json:"via"`
 	Merge            string `json:"merge"`
+	Choice           string `json:"choice"`
+	Comment          string `json:"comment"`
 }
 
 type changesBody struct {

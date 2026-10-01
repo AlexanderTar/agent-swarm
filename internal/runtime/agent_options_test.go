@@ -183,3 +183,108 @@ func TestSwarmAskApprovalOptionsStoredAndUsedInNativePrompt(t *testing.T) {
 		t.Fatalf("$.merge = %q on a non-finish request", got)
 	}
 }
+
+func approvalResultPayload(t *testing.T, s *Store, reqID string) map[string]any {
+	t.Helper()
+	var payload string
+	if err := s.DB.QueryRow(`SELECT payload_json FROM messages WHERE kind = 'approval_result' AND request_id = ?`, reqID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var p map[string]any
+	json.Unmarshal([]byte(payload), &p)
+	return p
+}
+
+func TestApproveWithChoiceOnFinishRecordsCustomMerge(t *testing.T) {
+	s, _, req := acceptWithOptions(t)
+	ctx := context.Background()
+	in := ApproveInput{Binding: req.Binding, Via: "board", Merge: "custom", Comment: "ship it"}
+	for name, choice := range map[string]string{"missing": "", "unknown": "Nope"} {
+		in.Choice = choice
+		if _, err := s.Approve(ctx, req.ID, in); err == nil ||
+			!strings.Contains(err.Error(), "Choose one of this request's options: Squash-merge PR, Keep branch.") {
+			t.Fatalf("%s choice: err = %v", name, err)
+		}
+	}
+	in.Choice = "Keep branch"
+	out, err := s.Approve(ctx, req.ID, in)
+	if err != nil || out.State != "approved" {
+		t.Fatalf("Approve = %+v, %v", out, err)
+	}
+	if bindingValue(t, s, req.ID, "$.merge") != "custom" || bindingValue(t, s, req.ID, "$.choice") != "Keep branch" {
+		t.Fatalf("binding = %s", out.Binding)
+	}
+	if out.ResponseText != "ship it" {
+		t.Fatalf("response_text = %q", out.ResponseText)
+	}
+	if p := approvalResultPayload(t, s, req.ID); p["merge"] != "custom" || p["choice"] != "Keep branch" {
+		t.Fatalf("approval_result = %v", p)
+	}
+}
+
+func TestApproveRefusesChoiceWithoutOptions(t *testing.T) {
+	s, _, _ := newStore(t)
+	req, _, _ := seedSectionApproval(t, s)
+	if _, err := s.Approve(context.Background(), req.ID, ApproveInput{SectionSHA256: req.SectionSHA256, Via: "board", Choice: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "This request has no options to choose from.") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestApproveWithChoiceOnApprovalKind(t *testing.T) {
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	ses, _, planID, _ := approvedFeatureSpike(t, s)
+	req, err := s.Ask(ctx, ses.ID, AskInput{Kind: "approval", ArtifactID: planID, Prompt: "Ship it.", ApprovalOptions: shipOptions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(ctx, req.ID, ApproveInput{Via: "board"}); err == nil ||
+		!strings.Contains(err.Error(), "Choose one of this request's options: Squash-merge PR, Keep branch.") {
+		t.Fatalf("no choice: err = %v", err)
+	}
+	if _, err := s.Approve(ctx, req.ID, ApproveInput{Via: "board", Choice: "Squash-merge PR", Comment: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	if bindingValue(t, s, req.ID, "$.choice") != "Squash-merge PR" || bindingValue(t, s, req.ID, "$.merge") != "" {
+		t.Fatal("approval kind must record $.choice and no merge")
+	}
+	if p := approvalResultPayload(t, s, req.ID); p["choice"] != "Squash-merge PR" || p["merge"] != nil {
+		t.Fatalf("approval_result = %v", p)
+	}
+}
+
+func TestRequestWireFlattensAgentOptions(t *testing.T) {
+	s, _, req := acceptWithOptions(t)
+	ctx := context.Background()
+	w, err := s.RequestWireByID(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(w.Options) != `["Squash-merge PR","Keep branch"]` ||
+		!reflect.DeepEqual(w.OptionDescriptions, []string{"Push, open PR, squash when green", "I'll ship it myself"}) || w.Choice != nil {
+		t.Fatalf("wire = options %s, descriptions %q, choice %v", w.Options, w.OptionDescriptions, w.Choice)
+	}
+	if _, err := s.Approve(ctx, req.ID, ApproveInput{Binding: req.Binding, Via: "board", Merge: "custom", Choice: "Keep branch"}); err != nil {
+		t.Fatal(err)
+	}
+	if w, _ = s.RequestWireByID(ctx, req.ID); w.Choice == nil || *w.Choice != "Keep branch" {
+		t.Fatalf("choice after approve = %v", w.Choice)
+	}
+}
+
+func TestRequestWireWithoutOptionsIsUnchanged(t *testing.T) {
+	s, _, _ := newStore(t)
+	req, _, _ := seedSectionApproval(t, s)
+	w, err := s.RequestWireByID(context.Background(), req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(w.Options) != `[]` || w.OptionDescriptions != nil || w.Choice != nil {
+		t.Fatalf("wire = %s %v %v", w.Options, w.OptionDescriptions, w.Choice)
+	}
+	b, _ := json.Marshal(w)
+	if !strings.Contains(string(b), `"option_descriptions":null`) || !strings.Contains(string(b), `"choice":null`) {
+		t.Fatalf("json = %s", b)
+	}
+}

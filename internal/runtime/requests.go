@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -102,7 +103,11 @@ type ApproveInput struct {
 	ArtifactRevision int
 	Binding          json.RawMessage // compared for accept_epic/accept_fix only
 	Via              string
-	Merge            string // accept_epic/accept_fix only: "auto" | "manual" | "local"
+	Merge            string // accept_epic/accept_fix only: "auto" | "manual" | "local" | "custom"
+	// Choice is the picked label of an agent-option request (finish_options or approval options);
+	// Merge "custom" on a finish request means the same. Comment is the user's optional note.
+	Choice  string
+	Comment string
 }
 
 // RequestWire is the contracts §3.3 Request. It is the payload of request.opened
@@ -140,6 +145,10 @@ type RequestWire struct {
 	NativePending bool `json:"native_pending"`
 	// FinishLocal is true on an accept row when no repo in its binding has a GitHub remote.
 	FinishLocal bool `json:"finish_local,omitempty"`
+	// OptionDescriptions and Choice accompany agent-proposed options: Options is then their labels
+	// (Swarm's "Request changes" is the UI's to add), Choice the label an approval recorded.
+	OptionDescriptions []string `json:"option_descriptions"`
+	Choice             *string  `json:"choice"`
 }
 
 // EvidenceObserved/EvidenceAgentReported are native_answer's two evidence
@@ -401,6 +410,19 @@ func (s *Store) RequestWireTx(ctx context.Context, tx *sql.Tx, id string) (Reque
 	if r.AgentID != "" {
 		if a, err := s.agentByIDTx(ctx, tx, r.AgentID); err == nil {
 			w.AgentName = &a.Name
+		}
+	}
+	if opts := agentOptions(r); len(opts) > 0 {
+		w.Options, _ = json.Marshal(optionLabels(opts))
+		for _, o := range opts {
+			w.OptionDescriptions = append(w.OptionDescriptions, o.Description)
+		}
+		var b struct {
+			Choice string `json:"choice"`
+		}
+		json.Unmarshal(r.Binding, &b)
+		if b.Choice != "" {
+			w.Choice = &b.Choice
 		}
 	}
 	w.TerminalAgent = s.terminalAgent(ctx, tx, r)
@@ -1576,7 +1598,21 @@ func approveCheck(in ApproveInput) func(Request) error {
 // An accept row also needs a finish choice (in.Merge), checked against the
 // binding's repos and stored in $.merge in the same tx.
 func (s *Store) Approve(ctx context.Context, id string, in ApproveInput, after ...func(*sql.Tx, Request) error) (Request, error) {
+	if utf8.RuneCountInString(in.Comment) > 2000 {
+		return Request{}, &items.Error{Code: items.CodeBadRequest, Message: "Comment must be at most 2000 characters."}
+	}
 	merge := func(tx *sql.Tx, req Request) error {
+		opts := agentOptions(req)
+		if len(opts) == 0 && in.Choice != "" {
+			return &items.Error{Code: items.CodeBadRequest, Message: "This request has no options to choose from."}
+		}
+		if picksOption(req, in) {
+			if !slices.Contains(optionLabels(opts), in.Choice) {
+				return &items.Error{Code: items.CodeBadRequest, Message: fmt.Sprintf(
+					"Choose one of this request's options: %s.", strings.Join(optionLabels(opts), ", "))}
+			}
+			return setChoiceHook(ctx, id, in.Choice)(tx, req)
+		}
 		if !isAcceptKind(req.Kind) {
 			return nil
 		}
@@ -1592,15 +1628,28 @@ func (s *Store) Approve(ctx context.Context, id string, in ApproveInput, after .
 		}
 		return setMergeHook(ctx, id, in.Merge)(tx, req)
 	}
-	return s.resolve(ctx, id, "approved", "", in.Via, "user_action", approveCheck(in),
+	return s.resolve(ctx, id, "approved", in.Comment, in.Via, "user_action", approveCheck(in),
 		func(req Request) (MessageKind, any) {
 			p := map[string]any{"decision": "approved",
 				"section_id": req.SectionID, "section_sha256": req.SectionSHA256}
-			if isAcceptKind(req.Kind) {
+			switch {
+			case picksOption(req, in):
+				p["choice"] = in.Choice
+				if isAcceptKind(req.Kind) {
+					p["merge"] = "custom"
+				}
+			case isAcceptKind(req.Kind):
 				p["merge"] = in.Merge
 			}
 			return "approval_result", p
 		}, append([]func(*sql.Tx, Request) error{merge}, after...)...)
+}
+
+// picksOption reports an approval of an agent-option request: the choice is recorded and a finish
+// request becomes a custom merge, which finishing trusts the orchestrator to carry out. A finish
+// request with options still takes today's auto/manual/local when no choice is sent.
+func picksOption(req Request, in ApproveInput) bool {
+	return len(agentOptions(req)) > 0 && (!isAcceptKind(req.Kind) || in.Choice != "" || in.Merge == "custom")
 }
 
 func isAcceptKind(k RequestKind) bool { return k == KindAcceptEpic || k == KindAcceptFix }
