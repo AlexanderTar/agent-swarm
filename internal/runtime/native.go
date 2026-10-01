@@ -309,10 +309,16 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		if err != nil {
 			return NativePrompt{}, err
 		}
+		// Counted from the audit events so a waiver removed (or an override cleared by a later
+		// transition) before finishing is still disclosed. A waiver removal has an empty reason.
 		var waived int
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(json_array_length(waivers_json)), 0) +
-			COALESCE(SUM(override_json IS NOT NULL), 0) FROM items
-			WHERE root_id = (SELECT root_id FROM items WHERE id = ?)`, req.ItemID).Scan(&waived); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT
+			(SELECT COUNT(DISTINCT json_extract(payload_json, '$.key') || '/' || json_extract(payload_json, '$.gate'))
+				FROM events WHERE type = ? AND json_extract(payload_json, '$.reason') <> ''
+				AND json_extract(payload_json, '$.root_key') = (SELECT key FROM items WHERE id = (SELECT root_id FROM items WHERE id = ?))) +
+			(SELECT COUNT(*) FROM events WHERE type = ?
+				AND json_extract(payload_json, '$.root_key') = (SELECT key FROM items WHERE id = (SELECT root_id FROM items WHERE id = ?)))`,
+			events.ItemWaived, req.ItemID, events.ItemOverridden, req.ItemID).Scan(&waived); err != nil {
 			return NativePrompt{}, err
 		}
 		return withAgentOptions(req, finishPrompt(header, key, title, repos, waived)), nil

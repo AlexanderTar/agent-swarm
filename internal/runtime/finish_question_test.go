@@ -434,6 +434,16 @@ func TestFinishPromptDisclosesWaiversAndOverrides(t *testing.T) {
 	seedWaiver(t, s, "TASK-1", "tdd", "verify")
 	mustExec(t, s.DB, `UPDATE items SET override_json = '{"status":"done","reason":"by hand","agent":"a","at":"2026-10-01T09:00:00Z"}'
 		WHERE key = 'STORY-1'`)
+	var rk string
+	if err := s.DB.QueryRow(`SELECT key FROM items WHERE id = ?`, ep.ID).Scan(&rk); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []string{"tdd", "verify"} {
+		mustExec(t, s.DB, `INSERT INTO events (type, payload_json, created_at) VALUES ('item.waived', ?, 1)`,
+			`{"key":"TASK-1","root_key":"`+rk+`","gate":"`+g+`","reason":"test","agent":"a"}`)
+	}
+	mustExec(t, s.DB, `INSERT INTO events (type, payload_json, created_at) VALUES ('item.overridden', ?, 1)`,
+		`{"key":"STORY-1","root_key":"`+rk+`","status":"done","reason":"by hand","agent":"a"}`)
 	got := promptFor(t, s, KindAcceptEpic, ep.ID, gitOne)
 	want := plain.Question + " Waived/overridden: 3 (see board)."
 	if got.Question != want {
@@ -539,5 +549,30 @@ func TestResurfaceDeliversCustomChoiceToOrchestrator(t *testing.T) {
 		WHERE kind = 'approval_result' AND request_id = ?`, reqID).Scan(&choice)
 	if n, merge := approvalResults(t, s, reqID); n != 1 || merge != "custom" || choice != "Keep branch" {
 		t.Fatalf("%d approval_results, merge %q, choice %q", n, merge, choice)
+	}
+}
+
+// A waiver removed or an override cleared before finishing is still disclosed:
+// the count comes from the audit events, not the live item columns.
+func TestFinishPromptDisclosesRemovedWaiversAndClearedOverrides(t *testing.T) {
+	s, _, _ := newStore(t)
+	ep := seedEpicWithTask(t, s)
+	plain := promptFor(t, s, KindAcceptEpic, ep.ID, gitOne)
+	var rootKey string
+	if err := s.DB.QueryRow(`SELECT key FROM items WHERE id = ?`, ep.ID).Scan(&rootKey); err != nil {
+		t.Fatal(err)
+	}
+	ev := func(typ, payload string) {
+		mustExec(t, s.DB, `INSERT INTO events (type, payload_json, created_at) VALUES (?, ?, 1)`, typ, payload)
+	}
+	// waived tdd, then removed (empty reason); one override later cleared by a transition
+	ev("item.waived", `{"key":"TASK-1","root_key":"`+rootKey+`","gate":"tdd","reason":"slow","agent":"a"}`)
+	ev("item.waived", `{"key":"TASK-1","root_key":"`+rootKey+`","gate":"tdd","reason":"","agent":"a"}`)
+	ev("item.overridden", `{"key":"STORY-1","root_key":"`+rootKey+`","from":"ready","status":"done","reason":"by hand","agent":"a"}`)
+	ev("item.waived", `{"key":"OTHER-1","root_key":"EPIC-999","gate":"tdd","reason":"x","agent":"a"}`)
+	got := promptFor(t, s, KindAcceptEpic, ep.ID, gitOne)
+	want := plain.Question + " Waived/overridden: 2 (see board)."
+	if got.Question != want {
+		t.Fatalf("question = %q, want %q", got.Question, want)
 	}
 }
