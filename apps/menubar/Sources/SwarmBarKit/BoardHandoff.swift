@@ -60,7 +60,14 @@ public final class BoardHandoffForm {
 
     public let picker: AgentPickerModel
     public private(set) var rows: [BoardItemRow] = []
-    public var selectedKey: String?
+    public var selectedKey: String? {
+        didSet {
+            // Worker edits are measured against the selected orchestrator's baseline, so
+            // moving to a different one (or between start and hand-off) drops them.
+            let old = rows.first { $0.id == oldValue }?.orchestrator?.name
+            if old != selected?.orchestrator?.name { workers = [:]; workerNotes = [:]; workerModelErrors = [:] }
+        }
+    }
     public private(set) var loading = true
     public private(set) var loadError: String?
     public private(set) var failure: String?
@@ -133,7 +140,7 @@ public final class BoardHandoffForm {
     public var canSubmit: Bool {
         if loadError != nil { return connected && !loading }
         return connected && !submitting && !loading && selected != nil && picker.errors.isValid
-            && (isHandoff ? handoffPossible : workersValid)
+            && workersValid && (!isHandoff || handoffPossible)
     }
 
     // MARK: worker overrides

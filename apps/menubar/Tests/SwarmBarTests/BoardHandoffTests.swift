@@ -272,6 +272,25 @@ final class BoardHandoffTests: XCTestCase {
         XCTAssertEqual(sent.roles?["coder"]?.effort, "high")
     }
 
+    func testHandoffBlockedByInvalidWorkerPick() async {
+        let f = await form(preselect: "auth-epic-orchestrator")
+        XCTAssertTrue(f.canSubmit)
+        f.setWorkerModel(.coder, "no-such-model")
+        XCTAssertFalse(f.workersValid)
+        XCTAssertFalse(f.canSubmit, "an invalid worker row must block Hand off, not surface as a daemon 4xx")
+    }
+
+    func testSwitchingRowsDropsWorkerEditsMadeAgainstTheOldBaseline() async {
+        let f = await form(preselect: "auth-epic-orchestrator")
+        let handoffKey = f.selectedKey
+        f.setWorkerEffort(.coder, "high")
+        let other = f.rows.first { $0.orchestrator == nil }
+        guard let other else { return XCTFail("fixture needs a start row") }
+        f.selectedKey = other.id
+        f.selectedKey = handoffKey
+        XCTAssertNil(f.workerRolesPayload, "edits belonged to the previous selection's baseline")
+    }
+
     func testHandoffWithoutWorkerEditsSendsNoRoles() async {
         let f = await form(preselect: "auth-epic-orchestrator")
         _ = await f.primary()
