@@ -222,8 +222,9 @@ func TestIntegratedHonoursRootWaiversAndWaiveInput(t *testing.T) {
 	}
 }
 
-// A task with no workflow run falls back to verifyOK; a tdd or verify waiver lifts it too.
-func TestWaivedTddLetsLegacyCompletedPass(t *testing.T) {
+// A task with no workflow run falls back to verifyOK, the verify-recorded check:
+// only a verify waiver lifts it. A tdd waiver alone must not relax it.
+func TestLegacyCompletedWaiversAreIndependent(t *testing.T) {
 	ctx := context.Background()
 	s, _, _ := newStore(t)
 	_, _, ses := worker(t, s)
@@ -231,8 +232,13 @@ func TestWaivedTddLetsLegacyCompletedPass(t *testing.T) {
 		t.Fatal("legacy completed with no verification should be refused")
 	}
 	seedWaiver(t, s, "TASK-1", "tdd")
+	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"}); err == nil ||
+		!strings.Contains(err.Error(), verifyMissing) {
+		t.Fatalf("tdd waived alone: err = %v, want the verify-recorded refusal", err)
+	}
+	seedWaiver(t, s, "TASK-1", "verify")
 	if _, err := s.WriteCheckpoint(ctx, ses.ID, CheckpointInput{Kind: CompletedCkp, Summary: "done"}); err != nil {
-		t.Fatalf("tdd waived, legacy completed should pass: %v", err)
+		t.Fatalf("verify waived, legacy completed should pass: %v", err)
 	}
 }
 
