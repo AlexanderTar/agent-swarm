@@ -481,6 +481,7 @@ type acceptBinding struct {
 	ItemRevision         int             `json:"item_revision"`
 	IntegratedCheckpoint string          `json:"integrated_checkpoint"`
 	Git                  json.RawMessage `json:"git"`
+	FinishOptions        json.RawMessage `json:"finish_options,omitempty"` // [{label, description}]
 }
 
 type rootState struct {
@@ -488,6 +489,7 @@ type rootState struct {
 	lastChild int64
 	ckpID     string
 	ckpGit    string
+	ckpOpts   string // finish_options_json, "" when none
 	ckpAt     int64
 }
 
@@ -500,9 +502,9 @@ func (s *Store) rootState(ctx context.Context, q querier, it Item) (rootState, e
 		return st, err
 	}
 	st.finished = fin == n && (n > 0 || it.Type == Chore) // a chore may have no tasks
-	err = q.QueryRowContext(ctx, `SELECT id, git_json, created_at FROM checkpoints
+	err = q.QueryRowContext(ctx, `SELECT id, git_json, COALESCE(finish_options_json, ''), created_at FROM checkpoints
 		WHERE item_id = ? AND kind = 'integrated' ORDER BY created_at DESC, rowid DESC LIMIT 1`, it.ID).
-		Scan(&st.ckpID, &st.ckpGit, &st.ckpAt)
+		Scan(&st.ckpID, &st.ckpGit, &st.ckpOpts, &st.ckpAt)
 	if err == sql.ErrNoRows {
 		err = nil
 	}
@@ -883,7 +885,11 @@ func (s *Store) reconcileRoot(ctx context.Context, tx *sql.Tx, it Item) error {
 	case Chore:
 		prompt = "Review the chore and accept it."
 	}
-	binding, _ := json.Marshal(acceptBinding{ItemRevision: it.Revision, IntegratedCheckpoint: st.ckpID, Git: json.RawMessage(st.ckpGit)})
+	ab := acceptBinding{ItemRevision: it.Revision, IntegratedCheckpoint: st.ckpID, Git: json.RawMessage(st.ckpGit)}
+	if st.ckpOpts != "" {
+		ab.FinishOptions = json.RawMessage(st.ckpOpts)
+	}
+	binding, _ := json.Marshal(ab)
 	id := ids.New("req")
 	if _, err := tx.ExecContext(ctx, `INSERT INTO requests (id, kind, item_id, prompt, state, binding_json, created_at)
 		VALUES (?, ?, ?, ?, 'open', ?, ?)`, id, kind, it.ID, prompt, string(binding), db.Millis(s.Now())); err != nil {

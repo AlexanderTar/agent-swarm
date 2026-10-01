@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strconv"
@@ -440,5 +441,81 @@ func TestFinishPromptDisclosesWaiversAndOverrides(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Options, plain.Options) || !reflect.DeepEqual(got.Descriptions, plain.Descriptions) {
 		t.Fatalf("options changed: %+v", got)
+	}
+}
+
+func finishOptionsFixture(t *testing.T, opts []FinishOption) (*Store, string, error) {
+	t.Helper()
+	s, _, _ := newStore(t)
+	ctx := context.Background()
+	key, orch, _, err := s.StartSpike(ctx, SpikeInput{Name: "Bump deps", Intent: "chore", Kind: Fake, Model: "fake-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ses := mustSessionID(t, s, orch.ID)
+	if _, err := s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Accepted, Summary: "bumping"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WriteCheckpoint(ctx, ses, CheckpointInput{Kind: Integrated, Summary: "merged",
+		Git:           []GitRef{{Repo: "proj", Branch: "swarm/chore-1", SHA: "3f9c2ab0000"}},
+		Verification:  []Verify{{Cmd: "go test ./...", Phase: "green", OK: true}},
+		FinishOptions: opts})
+	return s, key, err
+}
+
+func TestIntegratedStoresFinishOptionsInAcceptBinding(t *testing.T) {
+	want := []FinishOption{{Label: "Squash-merge PR", Description: "Push, open PR"}, {Label: "Keep branch"}}
+	s, key, err := finishOptionsFixture(t, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	it, _ := s.Items.Get(ctx, key)
+	var raw string
+	if err := s.DB.QueryRowContext(ctx, `SELECT json_extract(binding_json, '$.finish_options') FROM requests
+		WHERE item_id = ? AND kind = 'accept_fix' AND state = 'open'`, it.ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var got []FinishOption
+	if err := json.Unmarshal([]byte(raw), &got); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("binding finish_options = %q (%v), want %+v", raw, err, want)
+	}
+}
+
+func TestIntegratedWithoutFinishOptionsLeavesBindingUnchanged(t *testing.T) {
+	s, key, err := finishOptionsFixture(t, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	it, _ := s.Items.Get(ctx, key)
+	var has int
+	s.DB.QueryRowContext(ctx, `SELECT json_extract(binding_json, '$.finish_options') IS NOT NULL FROM requests
+		WHERE item_id = ? AND kind = 'accept_fix' AND state = 'open'`, it.ID).Scan(&has)
+	if has != 0 {
+		t.Fatal("binding carries finish_options without any being sent")
+	}
+}
+
+func TestIntegratedRefusesInvalidFinishOptions(t *testing.T) {
+	const shape = "finish_options needs 1–4 options with unique labels of 1–80 characters."
+	five := []FinishOption{{Label: "a"}, {Label: "b"}, {Label: "c"}, {Label: "d"}, {Label: "e"}}
+	for name, c := range map[string]struct {
+		opts []FinishOption
+		msg  string
+	}{
+		"five":      {five, shape},
+		"empty":     {[]FinishOption{{Label: ""}}, shape},
+		"long":      {[]FinishOption{{Label: strings.Repeat("x", 81)}}, shape},
+		"duplicate": {[]FinishOption{{Label: "a"}, {Label: "a"}}, shape},
+		"reserved":  {[]FinishOption{{Label: "Request changes"}}, "\"Request changes\" is added by Swarm; don't send it as an option."},
+		"longdesc":  {[]FinishOption{{Label: "a", Description: strings.Repeat("x", 301)}}, shape},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := finishOptionsFixture(t, c.opts)
+			if err == nil || err.Error() != c.msg {
+				t.Fatalf("err = %v, want %q", err, c.msg)
+			}
+		})
 	}
 }

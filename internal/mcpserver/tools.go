@@ -129,27 +129,29 @@ func checkpointTool(s *Server) ToolDef {
 			"prs":{"type":"array","items":{"type":"object","properties":{"repo":{"type":"string"},"url":{"type":"string"}},"required":["repo","url"]},"description":"kind finishing: one PR per repo with a GitHub remote."},
 			"merged":{"type":"array","items":{"type":"object","properties":{"repo":{"type":"string"},"sha":{"type":"string"}},"required":["repo","sha"]},"description":"kind finishing: one local merge per repo without a GitHub remote; sha is the default-branch commit containing the integrated sha."},
 			"waive":{"type":"array","items":{"type":"object","properties":{"gate":{"type":"string"},"reason":{"type":"string"}},"required":["gate","reason"]},"description":"kind integrated, orchestrator only: waive gates on your root (e.g. integration_verify, final_review) with a reason; each is audited."},
+			"finish_options":{"type":"array","maxItems":4,"items":{"type":"object","properties":{"label":{"type":"string"},"description":{"type":"string"}},"required":["label"]},"description":"kind integrated, orchestrator only: 1–4 ways the user can finish this work (label ≤80 chars, short description), derived from the repo's own history; the user's finish prompt offers these plus Request changes."},
 			"request_id":{"type":"string"}`, []string{"kind", "summary"}),
 		Handler: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 			var in struct {
-				Kind         string                 `json:"kind"`
-				ItemKey      string                 `json:"item"`
-				Summary      string                 `json:"summary"`
-				Resolution   string                 `json:"resolution"`
-				Next         []string               `json:"next"`
-				Blockers     []string               `json:"blockers"`
-				Git          []runtime.GitRef       `json:"git"`
-				Verification []runtime.Verify       `json:"verification"`
-				Artifacts    []string               `json:"artifacts"`
-				Processed    []string               `json:"processed"`
-				Verdict      string                 `json:"verdict"`
-				Findings     []workflow.Finding     `json:"findings"`
-				RequestID    string                 `json:"request_id"`
-				Title        string                 `json:"title"`
-				Todos        []runtime.TodoReport   `json:"todos"`
-				PRs          []runtime.FinishPR     `json:"prs"`
-				Merged       []runtime.FinishMerged `json:"merged"`
-				Waive        []runtime.Waiver       `json:"waive"`
+				Kind          string                 `json:"kind"`
+				ItemKey       string                 `json:"item"`
+				Summary       string                 `json:"summary"`
+				Resolution    string                 `json:"resolution"`
+				Next          []string               `json:"next"`
+				Blockers      []string               `json:"blockers"`
+				Git           []runtime.GitRef       `json:"git"`
+				Verification  []runtime.Verify       `json:"verification"`
+				Artifacts     []string               `json:"artifacts"`
+				Processed     []string               `json:"processed"`
+				Verdict       string                 `json:"verdict"`
+				Findings      []workflow.Finding     `json:"findings"`
+				RequestID     string                 `json:"request_id"`
+				Title         string                 `json:"title"`
+				Todos         []runtime.TodoReport   `json:"todos"`
+				PRs           []runtime.FinishPR     `json:"prs"`
+				Merged        []runtime.FinishMerged `json:"merged"`
+				Waive         []runtime.Waiver       `json:"waive"`
+				FinishOptions []runtime.FinishOption `json:"finish_options"`
 			}
 			if err := decode(args, &in); err != nil {
 				return nil, err
@@ -160,7 +162,7 @@ func checkpointTool(s *Server) ToolDef {
 				Git: in.Git, Verification: in.Verification, Artifacts: in.Artifacts, Processed: in.Processed,
 				Verdict: in.Verdict, Findings: in.Findings,
 				RequestID: in.RequestID, Title: in.Title, Todos: in.Todos,
-				PRs: in.PRs, Merged: in.Merged, Waive: in.Waive,
+				PRs: in.PRs, Merged: in.Merged, Waive: in.Waive, FinishOptions: in.FinishOptions,
 			})
 			if err != nil {
 				return nil, err

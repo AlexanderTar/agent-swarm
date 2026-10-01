@@ -121,6 +121,11 @@ func TestExistingDatabaseGainsColumnsAddedByLaterMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 0025_finish_options.sql adds checkpoints.finish_options_json with plain
+	// ALTER TABLE (same precedent).
+	if _, err := raw.Exec(`ALTER TABLE checkpoints DROP COLUMN finish_options_json`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := raw.Exec(`ALTER TABLE artifact_revisions DROP COLUMN warnings_json`); err != nil {
 		t.Fatal(err)
 	}

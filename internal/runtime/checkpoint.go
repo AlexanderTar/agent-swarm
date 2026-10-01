@@ -105,6 +105,41 @@ type CheckpointInput struct {
 	// Waive records waivers on the root before the integrated checks run
 	// (integrated only; an empty Reason removes the gate's waiver).
 	Waive []Waiver
+	// FinishOptions are the orchestrator's free-form finish choices (integrated only, 1–4);
+	// the accept request offers them plus "Request changes".
+	FinishOptions []FinishOption
+}
+
+// FinishOption is one agent-proposed choice on a finish or approval request.
+type FinishOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// validateFinishOptions enforces 1–4 unique labels of 1–80 runes, descriptions up to 300,
+// and never the daemon's own "Request changes".
+func validateFinishOptions(opts []FinishOption) error {
+	if len(opts) == 0 {
+		return nil
+	}
+	bad := &items.Error{Code: items.CodeBadRequest,
+		Message: "finish_options needs 1–4 options with unique labels of 1–80 characters."}
+	if len(opts) > 4 {
+		return bad
+	}
+	seen := map[string]bool{}
+	for _, o := range opts {
+		if o.Label == "Request changes" {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: "\"Request changes\" is added by Swarm; don't send it as an option."}
+		}
+		if n := utf8.RuneCountInString(o.Label); n < 1 || n > 80 || seen[o.Label] ||
+			utf8.RuneCountInString(o.Description) > 300 {
+			return bad
+		}
+		seen[o.Label] = true
+	}
+	return nil
 }
 
 // Waiver names a gate an orchestrator waives, with the reason it is audited under.
@@ -1338,6 +1373,9 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 				return &items.Error{Code: items.CodeBadRequest,
 					Message: "An integrated checkpoint needs git and verification."}
 			}
+			if err := validateFinishOptions(in.FinishOptions); err != nil {
+				return err
+			}
 			if len(in.Waive) > 0 {
 				w := make([]items.WaiveInput, len(in.Waive))
 				for i, x := range in.Waive {
@@ -1387,6 +1425,10 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 					}
 				}
 			}
+		}
+		if len(in.FinishOptions) > 0 && in.Kind != Integrated {
+			return &items.Error{Code: items.CodeBadRequest,
+				Message: "finish_options is only valid on an integrated checkpoint."}
 		}
 		if len(in.Waive) > 0 && in.Kind != Integrated {
 			return &items.Error{Code: items.CodeBadRequest,
@@ -1527,12 +1569,12 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 		now := s.Now()
 		if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (id, session_id, agent_id, item_id, kind,
 			attempt, resolution, summary, next_json, blockers_json, git_json, verify_json, artifacts_json,
-			processed_json, verdict, findings_json, todos_json, daemon_written, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+			processed_json, verdict, findings_json, todos_json, finish_options_json, daemon_written, created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
 			ckpID, sessionID, a.ID, it.ID, string(in.Kind), ses.Attempt, nullIf(in.Resolution), in.Summary,
 			jsonArray(in.Next), jsonArray(in.Blockers), jsonArray(in.Git), jsonArray(in.Verification),
 			jsonArray(in.Artifacts), jsonArray(in.Processed), nullIf(in.Verdict), jsonArray(in.Findings),
-			todosJSON, db.Millis(now)); err != nil {
+			todosJSON, nullIf(optionsJSON(in.FinishOptions)), db.Millis(now)); err != nil {
 			return err
 		}
 		out.CheckpointID = ckpID
@@ -1854,4 +1896,12 @@ func (s *Store) Checkpoints(ctx context.Context, itemKey string, limit int, befo
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+func optionsJSON(opts []FinishOption) string {
+	if len(opts) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(opts)
+	return string(b)
 }
