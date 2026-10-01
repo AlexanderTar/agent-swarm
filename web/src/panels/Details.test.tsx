@@ -38,8 +38,8 @@ describe("Details panel (§16.9)", () => {
   it("shows waiver and override rows on the item", async () => {
     const d = createMockDaemon();
     const it = d.db.items.find((i) => i.key === "TASK-103")!;
-    it.waivers = [{ gate: "verify", reason: "no harness for this repo", agent: "orch", at: 1 }];
-    it.override = { status: "done", reason: "shipped by hand", agent: "orch", at: 2 };
+    it.waivers = [{ gate: "verify", reason: "no harness for this repo", agent: "orch", at: "2026-10-01T09:00:00Z" }];
+    it.override = { status: "done", reason: "shipped by hand", agent: "orch", at: "2026-10-01T09:00:00Z" };
     setup("TASK-103", {}, d);
     expect(await screen.findByText("Waived: verify — no harness for this repo")).toBeInTheDocument();
     expect(screen.getByText("Overridden to Done — shipped by hand")).toBeInTheDocument();

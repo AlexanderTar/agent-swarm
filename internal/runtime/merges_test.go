@@ -421,3 +421,25 @@ func TestFinishingKeptRefusedWithoutCustomMerge(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestMergesReturnsKeptNote(t *testing.T) {
+	s, ses, key := customFinishFixture(t)
+	if _, err := finishCustom(s, ses, CheckpointInput{Kept: []KeptRepo{
+		{Repo: "proj", Note: "branch stays for review"}, {Repo: "docs", Note: "same"}}}); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := s.Merges(context.Background(), mustItemID(t, s, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := map[string]string{}
+	for _, m := range ms {
+		if m.Kind != "kept" {
+			t.Fatalf("kind = %q", m.Kind)
+		}
+		notes[m.Repo] = m.Note
+	}
+	if notes["proj"] != "branch stays for review" || notes["docs"] != "same" {
+		t.Fatalf("notes = %+v", notes)
+	}
+}

@@ -39,8 +39,8 @@ export interface Workflow {
 }
 export interface Unit { title: string; steps: string[] }
 
-export interface Waiver { gate: string; reason: string; agent: string; at: number }
-export interface Override { status: ItemStatus; reason: string; agent: string; at: number }
+export interface Waiver { gate: string; reason: string; agent: string; at: string }
+export interface Override { status: ItemStatus; reason: string; agent: string; at: string }
 
 export interface Item {
   id: string;
@@ -107,8 +107,8 @@ export interface ItemDetail {
 
 export type MergeChoice = "auto" | "manual" | "local" | "custom";
 export interface ItemMerge {
-  repo: string; kind: "pr" | "local"; url?: string; number?: number; base: string; head: string;
-  auto_merge: boolean; state: "open" | "merged" | "closed"; checks: "" | "pending" | "passing" | "failing"; merged_sha?: string;
+  repo: string; kind: "pr" | "local" | "kept"; url?: string; number?: number; base: string; head: string;
+  auto_merge: boolean; state: "open" | "merged" | "closed"; checks: "" | "pending" | "passing" | "failing"; merged_sha?: string; note?: string;
 }
 
 export interface WorkflowFinding { severity: string; file: string; line?: number; unit?: number; summary: string; reviewer?: string }

@@ -137,6 +137,7 @@ export const C = {
   autoMergeOn: "auto-merge on",
   orchestratorFixing: "(orchestrator fixing)",
   merged: "merged",
+  kept: "Kept",
   awaitingOrchestrator: "Awaiting merge — waiting for the orchestrator to open PRs.",
   closeSpike: "Close spike",
   closeSpikeRow: "Close spike?",

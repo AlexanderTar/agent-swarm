@@ -20,8 +20,8 @@ describe("types", () => {
       options: ["A", "B"], option_descriptions: ["a", "b"], choice: null,
     };
     const item: Pick<Item, "waivers" | "override"> = {
-      waivers: [{ gate: "verify", reason: "r", agent: "orch", at: 1 }],
-      override: { status: "done", reason: "r", agent: "orch", at: 2 },
+      waivers: [{ gate: "verify", reason: "r", agent: "orch", at: "2026-10-01T09:00:00Z" }],
+      override: { status: "done", reason: "r", agent: "orch", at: "2026-10-01T09:00:00Z" },
     };
     expect(body.merge).toBe("custom");
     expect(req.option_descriptions?.length).toBe(2);

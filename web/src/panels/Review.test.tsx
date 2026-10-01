@@ -171,8 +171,8 @@ describe("Review (§16.11)", () => {
     const d = createMockDaemon();
     const req = d.db.requests.find((r) => r.id === "req_accept")!;
     const tree = d.db.items.filter((i) => i.root_key === req.root_key);
-    tree[0]!.waivers = [{ gate: "verify", reason: "r", agent: "orch", at: 1 }, { gate: "tdd", reason: "r", agent: "orch", at: 1 }];
-    tree[1]!.override = { status: "done", reason: "r", agent: "orch", at: 2 };
+    tree[0]!.waivers = [{ gate: "verify", reason: "r", agent: "orch", at: "2026-10-01T09:00:00Z" }, { gate: "tdd", reason: "r", agent: "orch", at: "2026-10-01T09:00:00Z" }];
+    tree[1]!.override = { status: "done", reason: "r", agent: "orch", at: "2026-10-01T09:00:00Z" };
     setup("req_accept", d);
     expect(await screen.findByText("2 waivers, 1 override in this tree")).toBeInTheDocument();
   });

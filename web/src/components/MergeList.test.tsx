@@ -35,6 +35,13 @@ describe("MergeList", () => {
     for (const link of links) expect(link).toHaveClass("size-8");
   });
 
+  it("shows a kept repo as Kept with the orchestrator's note", () => {
+    render(<MergeList merges={[{ repo: "docs", kind: "kept", base: "main", head: "swarm/epic-14", auto_merge: false, state: "merged", checks: "", note: "branch stays for review" }]} />);
+    const row = screen.getByRole("listitem").textContent ?? "";
+    for (const s of ["docs", "Kept", "branch stays for review"]) expect(row).toContain(s);
+    expect(row).not.toContain("merged");
+  });
+
   it("shows pending and missing checks on open PRs", () => {
     render(<MergeList merges={[{ ...failing, checks: "pending" }, { ...failing, repo: "other", checks: "" }]} />);
     const rows = screen.getAllByRole("listitem").map((li) => li.textContent ?? "");

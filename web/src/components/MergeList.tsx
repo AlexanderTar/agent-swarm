@@ -6,6 +6,7 @@ const CHECKS: Record<ItemMerge["checks"], string> = {
 };
 
 function status(m: ItemMerge): string {
+  if (m.kind === "kept") return [C.kept, m.note].filter(Boolean).join(" · ");
   if (m.kind === "local") return T.mergedLocally(m.merged_sha ?? "");
   if (m.state === "merged") return C.merged;
   const extra = m.auto_merge ? C.autoMergeOn : m.checks === "failing" ? C.orchestratorFixing : "";

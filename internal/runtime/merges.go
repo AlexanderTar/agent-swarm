@@ -45,6 +45,7 @@ type ItemMerge struct {
 	State     string `json:"state"`  // "open" | "merged" | "closed"
 	Checks    string `json:"checks"` // "" | "pending" | "passing" | "failing"
 	MergedSHA string `json:"merged_sha,omitempty"`
+	Note      string `json:"note,omitempty"` // kept only: what the orchestrator did instead
 }
 
 type MergeProgress struct {
@@ -508,7 +509,7 @@ func mergedNames(ms []FinishMerged) []string {
 // Merges is the newest integrated checkpoint's item_merges rows; nil when none.
 func (s *Store) Merges(ctx context.Context, rootItemID string) ([]ItemMerge, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT repo, kind, COALESCE(url,''), COALESCE(number,0), base, head,
-		auto_merge, state, checks, COALESCE(merged_sha,'') FROM item_merges
+		auto_merge, state, checks, COALESCE(merged_sha,''), COALESCE(note,'') FROM item_merges
 		WHERE item_id = ? AND integrated_checkpoint = (SELECT id FROM checkpoints
 			WHERE item_id = ? AND kind = 'integrated' ORDER BY created_at DESC, rowid DESC LIMIT 1)
 		ORDER BY created_at, repo`, rootItemID, rootItemID)
@@ -520,7 +521,7 @@ func (s *Store) Merges(ctx context.Context, rootItemID string) ([]ItemMerge, err
 	for rows.Next() {
 		var m ItemMerge
 		if err := rows.Scan(&m.Repo, &m.Kind, &m.URL, &m.Number, &m.Base, &m.Head, &m.AutoMerge, &m.State,
-			&m.Checks, &m.MergedSHA); err != nil {
+			&m.Checks, &m.MergedSHA, &m.Note); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
