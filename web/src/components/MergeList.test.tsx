@@ -35,11 +35,26 @@ describe("MergeList", () => {
     for (const link of links) expect(link).toHaveClass("size-8");
   });
 
+  it("shows a kept repo as Kept with the orchestrator's note", () => {
+    render(<MergeList merges={[{ repo: "docs", kind: "kept", base: "main", head: "swarm/epic-14", auto_merge: false, state: "merged", checks: "", note: "branch stays for review" }]} />);
+    const row = screen.getByRole("listitem").textContent ?? "";
+    for (const s of ["docs", "Kept", "branch stays for review"]) expect(row).toContain(s);
+    expect(row).not.toContain("merged");
+  });
+
   it("shows pending and missing checks on open PRs", () => {
     render(<MergeList merges={[{ ...failing, checks: "pending" }, { ...failing, repo: "other", checks: "" }]} />);
     const rows = screen.getAllByRole("listitem").map((li) => li.textContent ?? "");
     expect(rows[0]).toContain("… pending");
     expect(rows[0]).not.toContain("(orchestrator fixing)");
     expect(rows[1]).toContain("no checks");
+  });
+
+  it("uses a neutral heading once nothing is awaiting a merge, and wraps long notes", () => {
+    const note = "https://example.com/" + "a".repeat(200);
+    render(<MergeList merges={[{ repo: "docs", kind: "kept", base: "main", head: "swarm/epic-14", auto_merge: false, state: "merged", checks: "", note }]} />);
+    expect(screen.getByRole("heading", { name: "Repos" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Repos" })).toBeInTheDocument();
+    expect(screen.getByText(/^Kept · /)).toHaveClass("min-w-0", "break-words");
   });
 });

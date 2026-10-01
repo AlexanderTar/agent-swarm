@@ -396,6 +396,10 @@ func TestFinishingCustomRefusals(t *testing.T) {
 			"Report every integrated repo once under prs, merged or kept: docs."},
 		"kept without note": {CheckpointInput{Kept: []KeptRepo{{Repo: "proj"}, {Repo: "docs", Note: "b"}}},
 			"kept needs a note of 1–300 characters for each repo."},
+		"merged without sha": {CheckpointInput{Merged: []FinishMerged{{Repo: "proj"}}, Kept: []KeptRepo{{Repo: "docs", Note: "b"}}},
+			"merged needs a hex commit sha for each repo."},
+		"merged with non-hex sha": {CheckpointInput{Merged: []FinishMerged{{Repo: "proj", SHA: "not-a-sha"}}, Kept: []KeptRepo{{Repo: "docs", Note: "b"}}},
+			"merged needs a hex commit sha for each repo."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, ses, key := customFinishFixture(t)
@@ -415,5 +419,27 @@ func TestFinishingKeptRefusedWithoutCustomMerge(t *testing.T) {
 	if _, err := finishCustom(s, ses, CheckpointInput{Kept: []KeptRepo{{Repo: "proj", Note: "a"}}}); err == nil ||
 		err.Error() != "kept is only valid when the user chose one of your finish options." {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestMergesReturnsKeptNote(t *testing.T) {
+	s, ses, key := customFinishFixture(t)
+	if _, err := finishCustom(s, ses, CheckpointInput{Kept: []KeptRepo{
+		{Repo: "proj", Note: "branch stays for review"}, {Repo: "docs", Note: "same"}}}); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := s.Merges(context.Background(), mustItemID(t, s, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := map[string]string{}
+	for _, m := range ms {
+		if m.Kind != "kept" {
+			t.Fatalf("kind = %q", m.Kind)
+		}
+		notes[m.Repo] = m.Note
+	}
+	if notes["proj"] != "branch stays for review" || notes["docs"] != "same" {
+		t.Fatalf("notes = %+v", notes)
 	}
 }

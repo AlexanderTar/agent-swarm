@@ -203,9 +203,10 @@ export function Details(p: DetailsProps) {
         </label>
       </div>
 
-      {item.status === "in_review" && d.merges && (d.merges.length ? <MergeList merges={d.merges} /> : (
+      {d.merges?.length && (item.status === "in_review" || d.merges.some((m) => m.kind === "kept")) ? <MergeList merges={d.merges} /> : null}
+      {item.status === "in_review" && d.merges?.length === 0 && (
         <p className="border-t border-border pt-3 text-muted-foreground">{C.awaitingOrchestrator}</p>
-      ))}
+      )}
       {d.todos && <TodoList todos={d.todos} onSelect={p.onSelect} />}
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)}>

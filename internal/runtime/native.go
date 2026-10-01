@@ -309,12 +309,11 @@ func (s *Store) nativePromptFor(ctx context.Context, tx *sql.Tx, req Request, se
 		if err != nil {
 			return NativePrompt{}, err
 		}
-		var waived int
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(json_array_length(waivers_json)), 0) +
-			COALESCE(SUM(override_json IS NOT NULL), 0) FROM items
-			WHERE root_id = (SELECT root_id FROM items WHERE id = ?)`, req.ItemID).Scan(&waived); err != nil {
+		w, o, err := s.waiverHistoryTx(ctx, tx, req.ItemID)
+		if err != nil {
 			return NativePrompt{}, err
 		}
+		waived := w + o
 		return withAgentOptions(req, finishPrompt(header, key, title, repos, waived)), nil
 	default:
 		return NativePrompt{}, nil
@@ -1706,4 +1705,20 @@ func (s *Store) NativePromptForRef(ctx context.Context, ref string) (np NativePr
 		return err
 	})
 	return np, err == nil
+}
+
+// waiverHistoryTx counts the waivers and overrides ever applied under itemID's root, from the audit
+// events so a waiver removed (empty reason), or an override cleared by a later transition, before
+// finishing is still disclosed. Both are distinct per item (waivers per item and gate).
+// The root_key filter scans every event of the type; fine at this volume.
+func (s *Store) waiverHistoryTx(ctx context.Context, tx *sql.Tx, itemID string) (waivers, overrides int, err error) {
+	const root = `(SELECT key FROM items WHERE id = (SELECT root_id FROM items WHERE id = ?))`
+	err = tx.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(DISTINCT json_extract(payload_json, '$.key') || '/' || json_extract(payload_json, '$.gate'))
+			FROM events WHERE type = ? AND json_extract(payload_json, '$.reason') <> ''
+			AND json_extract(payload_json, '$.root_key') = `+root+`),
+		(SELECT COUNT(DISTINCT json_extract(payload_json, '$.key'))
+			FROM events WHERE type = ? AND json_extract(payload_json, '$.root_key') = `+root+`)`,
+		events.ItemWaived, itemID, events.ItemOverridden, itemID).Scan(&waivers, &overrides)
+	return
 }

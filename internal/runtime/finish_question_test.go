@@ -434,6 +434,16 @@ func TestFinishPromptDisclosesWaiversAndOverrides(t *testing.T) {
 	seedWaiver(t, s, "TASK-1", "tdd", "verify")
 	mustExec(t, s.DB, `UPDATE items SET override_json = '{"status":"done","reason":"by hand","agent":"a","at":"2026-10-01T09:00:00Z"}'
 		WHERE key = 'STORY-1'`)
+	var rk string
+	if err := s.DB.QueryRow(`SELECT key FROM items WHERE id = ?`, ep.ID).Scan(&rk); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []string{"tdd", "verify"} {
+		mustExec(t, s.DB, `INSERT INTO events (type, payload_json, created_at) VALUES ('item.waived', ?, 1)`,
+			`{"key":"TASK-1","root_key":"`+rk+`","gate":"`+g+`","reason":"test","agent":"a"}`)
+	}
+	mustExec(t, s.DB, `INSERT INTO events (type, payload_json, created_at) VALUES ('item.overridden', ?, 1)`,
+		`{"key":"STORY-1","root_key":"`+rk+`","status":"done","reason":"by hand","agent":"a"}`)
 	got := promptFor(t, s, KindAcceptEpic, ep.ID, gitOne)
 	want := plain.Question + " Waived/overridden: 3 (see board)."
 	if got.Question != want {
@@ -539,5 +549,106 @@ func TestResurfaceDeliversCustomChoiceToOrchestrator(t *testing.T) {
 		WHERE kind = 'approval_result' AND request_id = ?`, reqID).Scan(&choice)
 	if n, merge := approvalResults(t, s, reqID); n != 1 || merge != "custom" || choice != "Keep branch" {
 		t.Fatalf("%d approval_results, merge %q, choice %q", n, merge, choice)
+	}
+}
+
+// A waiver removed or an override cleared before finishing is still disclosed:
+// the count comes from the audit events, not the live item columns.
+func TestFinishPromptDisclosesRemovedWaiversAndClearedOverrides(t *testing.T) {
+	s, _, _ := newStore(t)
+	ep := seedEpicWithTask(t, s)
+	plain := promptFor(t, s, KindAcceptEpic, ep.ID, gitOne)
+	var rootKey string
+	if err := s.DB.QueryRow(`SELECT key FROM items WHERE id = ?`, ep.ID).Scan(&rootKey); err != nil {
+		t.Fatal(err)
+	}
+	ev := func(typ, payload string) {
+		mustExec(t, s.DB, `INSERT INTO events (type, payload_json, created_at) VALUES (?, ?, 1)`, typ, payload)
+	}
+	// waived tdd, then removed (empty reason); one override later cleared by a transition
+	ev("item.waived", `{"key":"TASK-1","root_key":"`+rootKey+`","gate":"tdd","reason":"slow","agent":"a"}`)
+	ev("item.waived", `{"key":"TASK-1","root_key":"`+rootKey+`","gate":"tdd","reason":"","agent":"a"}`)
+	ev("item.overridden", `{"key":"STORY-1","root_key":"`+rootKey+`","from":"ready","status":"done","reason":"by hand","agent":"a"}`)
+	ev("item.waived", `{"key":"OTHER-1","root_key":"EPIC-999","gate":"tdd","reason":"x","agent":"a"}`)
+	got := promptFor(t, s, KindAcceptEpic, ep.ID, gitOne)
+	want := plain.Question + " Waived/overridden: 2 (see board)."
+	if got.Question != want {
+		t.Fatalf("question = %q, want %q", got.Question, want)
+	}
+}
+
+// A finish request that carries agent options only accepts one of them: auto/manual/local with no
+// choice would bypass the options the user was shown.
+func TestApproveRefusesMergeWithoutChoiceWhenOptionsExist(t *testing.T) {
+	ctx := context.Background()
+	s, _, _, _, reqID := finishFixture(t, githubRemote, "")
+	mustExec(t, s.DB, `UPDATE requests SET binding_json = json_set(binding_json, '$.finish_options', json(?)) WHERE id = ?`,
+		`[{"label":"Keep branch","description":""}]`, reqID)
+	req, _ := s.RequestByID(ctx, reqID)
+	for _, m := range []string{"auto", "manual", "local"} {
+		_, err := s.Approve(ctx, reqID, ApproveInput{Binding: req.Binding, Merge: m, Via: "board"})
+		if err == nil || !strings.Contains(err.Error(), "Choose one of this request's options: Keep branch.") {
+			t.Fatalf("merge %q without a choice: err = %v", m, err)
+		}
+	}
+	if _, err := s.Approve(ctx, reqID, ApproveInput{Binding: req.Binding, Merge: "custom", Choice: "Keep branch", Via: "board"}); err != nil {
+		t.Fatalf("a choice must still approve: %v", err)
+	}
+}
+
+// The count reads events the real Waive and Override paths wrote, so the payload shape
+// (empty reason = removal, one override event per forced move) stays pinned to the writers.
+func TestWaiverHistoryCountsRealWritePaths(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newStore(t)
+	ep := seedEpicWithTask(t, s)
+	orch := items.Orchestrator("agt_o", ep.ID)
+	story, _ := s.Items.Get(ctx, "STORY-1")
+	update := func(key string, p items.Patch) items.Item {
+		t.Helper()
+		cur, _ := s.Items.Get(ctx, key)
+		p.Revision = cur.Revision
+		it, err := s.Items.Update(ctx, key, p, orch)
+		if err != nil {
+			t.Fatalf("update %s: %v", key, err)
+		}
+		return it
+	}
+	update("TASK-1", items.Patch{Waive: []items.WaiveInput{{Gate: "tdd", Reason: "slow"}}})
+	update("TASK-1", items.Patch{Waive: []items.WaiveInput{{Gate: "tdd"}}}) // removed again
+	done, ready := items.Done, items.Ready
+	update(story.Key, items.Patch{Status: &done, OverrideReason: "by hand"})
+	update(story.Key, items.Patch{Status: &ready, OverrideReason: "undo"}) // clears the first override, records its own
+	update(story.Key, items.Patch{Status: &done, OverrideReason: "again"})
+	var w, o int
+	if err := s.tx(ctx, func(tx *sql.Tx) (err error) {
+		w, o, err = s.waiverHistoryTx(ctx, tx, ep.ID)
+		return
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if w != 1 || o != 1 {
+		t.Fatalf("history = %d waivers, %d overrides; want 1 and 1 (distinct per item)", w, o)
+	}
+}
+
+func TestRequestWireCarriesWaiverHistory(t *testing.T) {
+	ctx := context.Background()
+	s, orch, _, key, reqID := finishFixture(t, githubRemote, "")
+	it, _ := s.Items.Get(ctx, key)
+	actor := items.Orchestrator(orch.ID, it.ID)
+	for _, reason := range []string{"ci down", ""} {
+		cur, _ := s.Items.Get(ctx, key)
+		if _, err := s.Items.Update(ctx, key, items.Patch{Revision: cur.Revision,
+			Waive: []items.WaiveInput{{Gate: "final_review", Reason: reason}}}, actor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var w RequestWire
+	if err := s.tx(ctx, func(tx *sql.Tx) (err error) { w, err = s.RequestWireTx(ctx, tx, reqID); return }); err != nil {
+		t.Fatal(err)
+	}
+	if w.WaiverHistory == nil || w.WaiverHistory.Waivers != 1 || w.WaiverHistory.Overrides != 0 {
+		t.Fatalf("waiver_history = %+v, want 1 waiver (removed ones still count)", w.WaiverHistory)
 	}
 }

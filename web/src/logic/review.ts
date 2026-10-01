@@ -1,5 +1,5 @@
 import { C, T } from "../copy";
-import type { AcceptBinding, ApproveBody, GitRef, Item, MergeChoice, Request, RequestKind } from "../types";
+import type { AcceptBinding, ApproveBody, GitRef, MergeChoice, Request, RequestKind } from "../types";
 import { ageAgo, sha7 } from "./format";
 
 export const SCOPE_LABEL: Record<RequestKind, string> = {
@@ -67,11 +67,3 @@ export function closeResolution(r: Request): string {
 }
 
 export const gitBindingLine = (g: GitRef) => `${g.repo} · ${g.branch} · ${sha7(g.sha)}`;
-
-// Waivers and overrides across one root's tree, for the finish banner; null when there are none.
-export function treeWaiverCounts(items: Item[], rootKey: string): { waivers: number; overrides: number } | null {
-  const tree = items.filter((i) => i.root_key === rootKey);
-  const waivers = tree.reduce((n, i) => n + (i.waivers?.length ?? 0), 0);
-  const overrides = tree.filter((i) => i.override).length;
-  return waivers + overrides > 0 ? { waivers, overrides } : null;
-}

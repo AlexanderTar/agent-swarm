@@ -38,8 +38,8 @@ describe("Details panel (§16.9)", () => {
   it("shows waiver and override rows on the item", async () => {
     const d = createMockDaemon();
     const it = d.db.items.find((i) => i.key === "TASK-103")!;
-    it.waivers = [{ gate: "verify", reason: "no harness for this repo", agent: "orch", at: 1 }];
-    it.override = { status: "done", reason: "shipped by hand", agent: "orch", at: 2 };
+    it.waivers = [{ gate: "verify", reason: "no harness for this repo", agent: "orch", at: "2026-10-01T09:00:00Z" }];
+    it.override = { status: "done", reason: "shipped by hand", agent: "orch", at: "2026-10-01T09:00:00Z" };
     setup("TASK-103", {}, d);
     expect(await screen.findByText("Waived: verify — no harness for this repo")).toBeInTheDocument();
     expect(screen.getByText("Overridden to Done — shipped by hand")).toBeInTheDocument();
@@ -98,6 +98,13 @@ describe("Details panel (§16.9)", () => {
       await screen.findByRole("heading", { name: "Progress 2/2" });
       expect(screen.queryByRole("heading", { name: "Awaiting merge" })).toBeNull();
       expect(screen.queryByText(/waiting for the orchestrator/)).toBeNull();
+    });
+
+    it("still shows a kept repo and its note once done", async () => {
+      const kept = { repo: "docs", kind: "kept", base: "main", head: "epic/epic-12", auto_merge: false, state: "merged", checks: "", note: "branch stays for review" };
+      setup("EPIC-12", {}, withDetail({ merges: [kept] }, "done"));
+      expect(await screen.findByText("Kept · branch stays for review")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Repos" })).toBeInTheDocument();
     });
 
     it("is absent once done", async () => {

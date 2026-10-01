@@ -1541,7 +1541,7 @@ func (s *Store) WriteCheckpoint(ctx context.Context, sessionID string, in Checkp
 			if err := s.applyGates(ctx, tx, it, run, a, in); err != nil {
 				return err
 			}
-		} else if in.Kind == CompletedCkp && it.TddExempt == "" && !waived(it, "tdd") && !waived(it, "verify") {
+		} else if in.Kind == CompletedCkp && it.TddExempt == "" && !waived(it, "verify") {
 			gated := slices.Contains(gatedRoles, a.Role)
 			if !gated && a.Role == RoleOrchestrator && s.changedFiles(ctx, in.Git) > 0 {
 				gated = true
