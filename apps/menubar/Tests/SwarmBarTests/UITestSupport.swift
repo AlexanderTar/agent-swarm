@@ -2,10 +2,8 @@ import AppKit
 import SwiftUI
 @testable import SwarmBarKit
 
-/// Shared by the render smoke tests. Views are excluded from the coverage gate; these tests render
-/// each surface in its main states so a crash or an empty layout fails the run. ImageRenderer draws
-/// AppKit-backed controls (text fields, pickers, borderless buttons) as placeholders, so the look of
-/// the app is checked by hand (plan Task 20).
+/// Shared by the native render smoke tests. AppKit hosting includes text fields,
+/// pickers and tab views; real-window captures separately verify composited glass.
 @MainActor
 func makeAppModel(_ client: MockDaemonClient) -> AppModel {
     let terminals = Terminals(runner: FakeRunner(), script: FakeScript(), ghosttyPIDs: { [] })
@@ -18,8 +16,14 @@ func makeAppModel(_ client: MockDaemonClient) -> AppModel {
 
 @MainActor
 func renderedSize<V: View>(_ view: V) -> CGSize {
-    let r = ImageRenderer(content: view)
-    return r.nsImage?.size ?? .zero
+    let host = NSHostingView(rootView: view)
+    let size = host.fittingSize
+    guard size.width > 0, size.height > 0 else { return .zero }
+    host.frame = NSRect(origin: .zero, size: size)
+    host.layoutSubtreeIfNeeded()
+    guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return .zero }
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    return bitmap.cgImage == nil ? .zero : size
 }
 
 /// Capture AppKit/SwiftUI composited pixels. cacheDisplay omits layer-backed List rows
