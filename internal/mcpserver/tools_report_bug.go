@@ -5,8 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/items"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
@@ -48,8 +52,13 @@ func reportBugTool(s *Server) ToolDef {
 			if err != nil {
 				return nil, err
 			}
-			var out items.Item
-			if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_report_bug", &out,
+			// The cached idempotency result carries the transcript too, so a
+			// replay returns the same answer.
+			var res struct {
+				Item       items.Item `json:"item"`
+				Transcript string     `json:"transcript"`
+			}
+			if _, err := runtime.IdemTx(ctx, s.RT, c.SessionID, in.RequestID, "swarm_report_bug", &res,
 				func(tx *sql.Tx) (err error) {
 					var suggested []string
 					var repoID string
@@ -59,22 +68,37 @@ func reportBugTool(s *Server) ToolDef {
 					case !errors.Is(err, sql.ErrNoRows):
 						return err
 					}
-					out, err = s.RT.Items.CreateTx(ctx, tx, items.CreateInput{
-						Type: items.Bug, Title: in.Title, Brief: bugBrief(in.WhatHappened, in.Repro, in.Evidence, in.UserSaid, in.Cause, in.Area),
+					brief := bugBrief(in.WhatHappened, in.Repro, in.Evidence, in.UserSaid, in.Cause, in.Area)
+					res.Item, err = s.RT.Items.CreateTx(ctx, tx, items.CreateInput{
+						Type: items.Bug, Title: in.Title, Brief: brief,
 						SuggestedRepos: suggested, OriginSpikeID: a.RootItemID,
 					}, items.Daemon())
 					if err != nil {
 						return err
 					}
-					var originKey string
-					if err := tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.RootItemID).Scan(&originKey); err != nil {
+					// The copy's path embeds the key CreateTx just assigned, so
+					// the transcript line goes in with a follow-up brief update.
+					out := res.Item
+					res.Transcript = s.copyTranscript(ctx, tx, c, a, out.Key)
+					defer func() {
+						if err != nil { // the tx rolls back; don't leave an orphan copy
+							_ = os.RemoveAll(filepath.Join(s.RT.Home, "bug-reports", out.Key))
+						}
+					}()
+					brief += "\n- Transcript: " + res.Transcript
+					if _, err = s.RT.Items.UpdateTx(ctx, tx, out.Key, items.Patch{Revision: out.Revision, Brief: &brief}, items.Daemon()); err != nil {
 						return err
 					}
-					return s.RT.NotifyItemCreated(ctx, tx, originKey, out.Key, out.Title, out.Type)
+					var originKey string
+					if err = tx.QueryRowContext(ctx, `SELECT key FROM items WHERE id = ?`, a.RootItemID).Scan(&originKey); err != nil {
+						return err
+					}
+					err = s.RT.NotifyItemCreated(ctx, tx, originKey, out.Key, out.Title, out.Type)
+					return err
 				}); err != nil {
 				return nil, err
 			}
-			return map[string]any{"key": out.Key, "id": out.ID, "status": out.Status}, nil
+			return map[string]any{"key": res.Item.Key, "id": res.Item.ID, "status": res.Item.Status, "transcript": res.Transcript}, nil
 		},
 	}
 }
@@ -91,4 +115,38 @@ func bugBrief(whatHappened, repro, evidence, userSaid, cause, area string) strin
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// copyTranscript best-effort copies the reporter's own transcript to
+// <home>/bug-reports/<key>/transcript<ext> (the agent's work dir is deleted
+// once it finishes). It returns the copied path, or "unavailable (<reason>)";
+// a transcript problem never fails the report.
+func (s *Server) copyTranscript(ctx context.Context, tx *sql.Tx, c Caller, a runtime.Agent, key string) string {
+	var cwd, providerID string
+	if err := tx.QueryRowContext(ctx, `SELECT cwd, COALESCE(provider_session_id, '') FROM sessions WHERE id = ?`, c.SessionID).
+		Scan(&cwd, &providerID); err != nil {
+		return "unavailable (" + err.Error() + ")"
+	}
+	userHome, _ := os.UserHomeDir()
+	if s.Advisor != nil && s.Advisor.UserHome != "" {
+		userHome = s.Advisor.UserHome
+	}
+	// ponytail: derived path only; runtime doesn't persist a hook-reported transcript_path (codex has none derivable), upgrade by storing it on the session.
+	src, err := advisor.TranscriptPath(a.Kind, userHome, cwd, providerID)
+	if err != nil {
+		return "unavailable (" + err.Error() + ")"
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Sprintf("unavailable (%v)", err)
+	}
+	dir := filepath.Join(s.RT.Home, "bug-reports", key)
+	dst := filepath.Join(dir, "transcript"+filepath.Ext(src))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "unavailable (" + err.Error() + ")"
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return "unavailable (" + err.Error() + ")"
+	}
+	return dst
 }

@@ -3,9 +3,12 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/AlexanderTar/agent-swarm/internal/advisor"
 	"github.com/AlexanderTar/agent-swarm/internal/db"
 	"github.com/AlexanderTar/agent-swarm/internal/runtime"
 )
@@ -99,5 +102,75 @@ func TestReportBugCreatesDraftBugWithComposedBrief(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no item.created.bug notification from %s: %+v", seed.ChoreKey, f.raised)
+	}
+}
+
+func TestReportBugCopiesTheReportersTranscript(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	// A claude session derives its transcript path from cwd + provider id.
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE agents SET kind = 'claude' WHERE id = ?`, seed.Caller.AgentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RT.DB.ExecContext(ctx, `UPDATE sessions SET provider_session_id = 'prov-1' WHERE id = ?`, seed.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	var cwd string
+	if err := s.RT.DB.QueryRowContext(ctx, `SELECT cwd FROM sessions WHERE id = ?`, seed.SessionID).Scan(&cwd); err != nil {
+		t.Fatal(err)
+	}
+	src, err := advisor.TranscriptPath(runtime.Claude, s.Advisor.UserHome, cwd, "prov-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(src), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const body = `{"type":"user","message":"hi"}` + "\n"
+	if err := os.WriteFile(src, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.call(ctx, seed.Caller, "swarm_report_bug", `{"title":"Transcript bug","what_happened":"x"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got reportBugOut
+	json.Unmarshal(mustJSON(out), &got)
+	want := filepath.Join(s.RT.Home, "bug-reports", got.Key, "transcript.jsonl")
+	if got.Transcript != want {
+		t.Fatalf("transcript = %q, want %q", got.Transcript, want)
+	}
+	data, err := os.ReadFile(want)
+	if err != nil || string(data) != body {
+		t.Fatalf("copy = %q, %v", data, err)
+	}
+	if fi, _ := os.Stat(want); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", fi.Mode().Perm())
+	}
+	it, _ := s.RT.Items.Get(ctx, got.Key)
+	if !strings.Contains(it.Brief, "- Transcript: "+want) {
+		t.Fatalf("brief missing transcript line:\n%s", it.Brief)
+	}
+}
+
+func TestReportBugMissingTranscriptStillCreatesTheItem(t *testing.T) {
+	s, seed := newReportBugServer(t)
+	ctx := context.Background()
+	// The fake agent kind has no derivable transcript path.
+	out, err := s.call(ctx, seed.Caller, "swarm_report_bug", `{"title":"No transcript","what_happened":"x"}`)
+	if err != nil {
+		t.Fatalf("a missing transcript must not fail the report: %v", err)
+	}
+	var got reportBugOut
+	json.Unmarshal(mustJSON(out), &got)
+	if !strings.HasPrefix(got.Transcript, "unavailable (") {
+		t.Fatalf("transcript = %q, want unavailable (...)", got.Transcript)
+	}
+	it, _ := s.RT.Items.Get(ctx, got.Key)
+	if !strings.Contains(it.Brief, "- Transcript: unavailable (") {
+		t.Fatalf("brief missing unavailable line:\n%s", it.Brief)
+	}
+	if _, err := os.Stat(filepath.Join(s.RT.Home, "bug-reports", got.Key)); !os.IsNotExist(err) {
+		t.Fatalf("no bug-reports dir expected without a transcript: %v", err)
 	}
 }
